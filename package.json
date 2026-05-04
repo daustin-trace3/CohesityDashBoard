@@ -1,0 +1,16 @@
+{
+  "name": "cohesity-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm start --prefix backend\" \"npm run dev --prefix frontend\"",
+    "build": "npm run build --prefix frontend",
+    "start": "npm run build && npm start --prefix backend",
+    "start:pm2": "npm run build && pm2 start pm2.config.js",
+    "stop:pm2": "pm2 stop cohesity-dashboard",
+    "setup": "npm install && npm install --prefix backend && npm install --prefix frontend"
+  },
+  "dependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+frontend/.env.local
+*.db
+*.sqlite
+*.db-shm
+*.db-wal
+backend/data/
+logs/
+.DS_Store
+Thumbs.db
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.agents/
+.agent*
