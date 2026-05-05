@@ -10,6 +10,7 @@ import NetAppPage from './pages/NetAppPage';
 import DataProtectionPage from './pages/DataProtectionPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import ReportingPage from './pages/ReportingPage';
+import ReplicationPage from './pages/ReplicationPage';
 
 export const SearchContext = createContext({ search: '', setSearch: () => {} });
 export const PlatformContext = React.createContext();
@@ -40,6 +41,7 @@ export default function App() {
               <Route path="pure" element={<PureStoragePage />} />
               <Route path="netapp" element={<NetAppPage />} />
               <Route path="data-protection" element={<DataProtectionPage />} />
+              <Route path="replication" element={<ReplicationPage />} />
               <Route path="analytics" element={<AnalyticsPage />} />
               <Route path="reporting" element={<ReportingPage />} />
             </Route>

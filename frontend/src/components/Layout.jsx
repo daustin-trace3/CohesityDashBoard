@@ -35,6 +35,12 @@ const navItems = [
     isActive: (p) => p.startsWith('/data-protection'),
   },
   {
+    label: 'Replication',
+    route: '/replication',
+    svg: 'replication',
+    isActive: (p) => p.startsWith('/replication'),
+  },
+  {
     label: 'Infrastructure',
     route: '/hardware',
     svg: 'infra',
@@ -59,6 +65,7 @@ function NavIcon({ type }) {
     <svg width="16" height="16" viewBox="0 0 16 16" stroke="currentColor" strokeWidth="1.5" fill="none" className="flex-shrink-0">
       {type === 'globe' && <><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2a9 9 0 010 12M8 2a9 9 0 000 12"/></>}
       {type === 'shield' && <path d="M8 2l5 2v4c0 3-2.5 5-5 6C5.5 13 3 11 3 8V4l5-2z"/>}
+      {type === 'replication' && <><circle cx="4" cy="8" r="2"/><circle cx="12" cy="8" r="2"/><path d="M6 8h4"/><path d="M9 6l2 2l-2 2"/></>}
       {type === 'infra' && <><rect x="2" y="3" width="5" height="4" rx="1"/><rect x="9" y="3" width="5" height="4" rx="1"/><rect x="2" y="11" width="5" height="4" rx="1"/><rect x="9" y="11" width="5" height="4" rx="1"/></>}
       {type === 'bell' && <><path d="M8 2a4 4 0 014 4v3l1.5 2.5H2.5L4 9V6a4 4 0 014-4z"/><line x1="6.5" y1="13.5" x2="9.5" y2="13.5"/></>}
       {type === 'clusters' && <><rect x="2" y="2" width="12" height="4" rx="1"/><rect x="2" y="8" width="12" height="4" rx="1"/><line x1="5" y1="4" x2="5" y2="4" strokeWidth="2"/><line x1="5" y1="10" x2="5" y2="10" strokeWidth="2"/></>}
@@ -69,7 +76,7 @@ function NavIcon({ type }) {
 }
 
 function isActivePlatform(id, pathname) {
-  if (id === 'cohesity') return ['/', '/dashboard', '/alerts', '/clusters', '/hardware', '/data-protection', '/analytics', '/reporting'].some(r => pathname === r || pathname.startsWith(r + '/'));
+  if (id === 'cohesity') return ['/', '/dashboard', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting'].some(r => pathname === r || pathname.startsWith(r + '/'));
   if (id === 'pure') return pathname.startsWith('/pure');
   if (id === 'netapp') return pathname.startsWith('/netapp');
   return false;

@@ -165,6 +165,41 @@ async function fetchProtectionJobs(cluster) {
   return Array.isArray(data) ? data : [];
 }
 
+/**
+ * List protection groups via v2 API.
+ * Options: { startIndex, pageSize, filter }
+ */
+async function listProtectionGroupsV2(cluster, options = {}) {
+  const client = await getAuthenticatedClient(cluster);
+  const params = new URLSearchParams();
+  if (options.startIndex !== undefined) params.append('startIndex', options.startIndex);
+  if (options.pageSize !== undefined) params.append('pageSize', options.pageSize);
+  if (options.filter) params.append('filter', options.filter);
+  const queryString = params.toString();
+  const url = `/v2/data-protect/protection-groups${queryString ? '?' + queryString : ''}`;
+  const { data } = await client.get(url, { timeout: 120000 });
+  return Array.isArray(data) ? data : (data.protectionGroups || []);
+}
+
+/**
+ * Fetch protection group runs via v2 API.
+ * Options: { startTimeUsecs, endTimeUsecs, numRuns, includeObjectDetails, filterByEndTime, useCachedData }
+ */
+async function getProtectionGroupRunsV2(cluster, protectionGroupId, options = {}) {
+  const client = await getAuthenticatedClient(cluster);
+  const params = new URLSearchParams();
+  if (options.startTimeUsecs !== undefined) params.append('startTimeUsecs', options.startTimeUsecs);
+  if (options.endTimeUsecs !== undefined) params.append('endTimeUsecs', options.endTimeUsecs);
+  if (options.numRuns !== undefined) params.append('numRuns', options.numRuns);
+  if (options.includeObjectDetails !== undefined) params.append('includeObjectDetails', options.includeObjectDetails);
+  if (options.filterByEndTime !== undefined) params.append('filterByEndTime', options.filterByEndTime);
+  if (options.useCachedData !== undefined) params.append('useCachedData', options.useCachedData);
+  const queryString = params.toString();
+  const url = `/v2/data-protect/protection-groups/${protectionGroupId}/runs${queryString ? '?' + queryString : ''}`;
+  const { data } = await client.get(url, { timeout: 120000 });
+  return Array.isArray(data) ? data : (data.runs || []);
+}
+
 module.exports = {
   getAuthenticatedClient,
   invalidateSession,
@@ -175,5 +210,7 @@ module.exports = {
   fetchClusterStatus,
   fetchChassis,
   fetchProtectionRuns,
-  fetchProtectionJobs
+  fetchProtectionJobs,
+  listProtectionGroupsV2,
+  getProtectionGroupRunsV2
 };

@@ -16,6 +16,7 @@ const pollerRouter = require('./routes/poller');
 const heliosRouter = require('./routes/helios');
 const importRouter = require('./routes/import');
 const analyticsRouter = require('./routes/analytics');
+const replicationRouter = require('./routes/replication');
 const requireApiKey = require('./middleware/auth');
 const errorHandler = require('./middleware/errorHandler');
 const { initPoller } = require('./services/poller');
@@ -64,6 +65,7 @@ app.use('/api/poller', pollerRouter);
 app.use('/api/helios', heliosRouter);
 app.use('/api/import', importRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/replication', replicationRouter);
 
 // Health check — verifies DB connectivity
 app.get('/health', (req, res) => {
