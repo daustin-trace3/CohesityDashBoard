@@ -70,3 +70,16 @@ CREATE TABLE IF NOT EXISTS replication_runs (
   captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_repl_runs_cluster_time ON replication_runs(cluster_id, start_time);
+
+CREATE TABLE IF NOT EXISTS replication_status_cache (
+  cache_key             TEXT PRIMARY KEY,
+  cluster_name          TEXT NOT NULL,
+  status_filter         TEXT NOT NULL,
+  days                  INTEGER NOT NULL,
+  num_runs_per_group    INTEGER NOT NULL,
+  payload_json          TEXT NOT NULL,
+  scanning              INTEGER NOT NULL DEFAULT 0,
+  error                 TEXT,
+  updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_repl_cache_cluster_filter ON replication_status_cache(cluster_name, status_filter);

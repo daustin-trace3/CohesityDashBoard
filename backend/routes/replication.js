@@ -8,6 +8,57 @@ const router = express.Router();
 const replicationCache = new Map();
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
+/**
+ * Read replication status cache from database by cache_key.
+ * Returns parsed payload_json and metadata, or null if not found.
+ */
+function readCacheFromDb(cacheKey) {
+  try {
+    const row = db.prepare(
+      'SELECT cache_key, cluster_name, status_filter, days, num_runs_per_group, payload_json, scanning, error, updated_at FROM replication_status_cache WHERE cache_key = ?'
+    ).get(cacheKey);
+
+    if (!row) return null;
+
+    return {
+      cacheKey: row.cache_key,
+      clusterName: row.cluster_name,
+      statusFilter: row.status_filter,
+      days: row.days,
+      numRunsPerGroup: row.num_runs_per_group,
+      payload: JSON.parse(row.payload_json),
+      scanning: row.scanning === 1,
+      error: row.error,
+      updatedAt: new Date(row.updated_at).getTime()
+    };
+  } catch (err) {
+    console.error('Error reading cache from DB:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Upsert replication status cache to database.
+ * payload should be the scan result object (sourceCluster, generatedAt, etc).
+ */
+function upsertCacheToDb(cacheKey, clusterName, statusFilter, days, numRunsPerGroup, payload, scanning, error) {
+  try {
+    const payloadJson = JSON.stringify(payload);
+    db.prepare(
+      `INSERT INTO replication_status_cache 
+       (cache_key, cluster_name, status_filter, days, num_runs_per_group, payload_json, scanning, error, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(cache_key) DO UPDATE SET
+         payload_json = excluded.payload_json,
+         scanning = excluded.scanning,
+         error = excluded.error,
+         updated_at = CURRENT_TIMESTAMP`
+    ).run(cacheKey, clusterName, statusFilter, days, numRunsPerGroup, payloadJson, scanning ? 1 : 0, error || null);
+  } catch (err) {
+    console.error('Error upserting cache to DB:', err.message);
+  }
+}
+
 async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsPerGroup) {
   try {
     let protectionGroups = [];
@@ -15,6 +66,10 @@ async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsP
       protectionGroups = await listProtectionGroupsV2(cluster);
     } catch (err) {
       replicationCache.set(cacheKey, { ...replicationCache.get(cacheKey), scanning: false, error: err.message });
+      // Persist early failure to DB, preserving existing payload if present
+      const existing = readCacheFromDb(cacheKey);
+      const existingPayload = existing?.payload || {};
+      upsertCacheToDb(cacheKey, cluster.name, statusFilter, days, numRunsPerGroup, existingPayload, false, err.message);
       return;
     }
 
@@ -92,9 +147,14 @@ async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsP
     };
 
     replicationCache.set(cacheKey, { data: scanResult, timestamp: Date.now(), scanning: false, error: null });
+    upsertCacheToDb(cacheKey, cluster.name, statusFilter, days, numRunsPerGroup, scanResult, false, null);
   } catch (err) {
     const current = replicationCache.get(cacheKey);
     replicationCache.set(cacheKey, { ...current, scanning: false, error: err.message });
+    // Preserve existing payload from DB on failure; only use empty object if no prior payload exists
+    const existing = readCacheFromDb(cacheKey);
+    const existingPayload = existing?.payload || {};
+    upsertCacheToDb(cacheKey, cluster.name, statusFilter, days, numRunsPerGroup, existingPayload, false, err.message);
   }
 }
 
@@ -145,19 +205,38 @@ router.get(
     }
 
     const cacheKey = `${clusterName}:${statusFilter}:${days}:${numRunsPerGroup}`;
-    const cached = replicationCache.get(cacheKey);
     const now = Date.now();
 
-    if (!cached || (!cached.scanning && now - cached.timestamp > CACHE_TTL_MS)) {
-      replicationCache.set(cacheKey, { ...(cached || {}), scanning: true });
+    // Try to read from DB cache first (authoritative source)
+    const dbCached = readCacheFromDb(cacheKey);
+    
+    // Determine if cache is expired
+    const dbCacheExpired = !dbCached || (now - dbCached.updatedAt > CACHE_TTL_MS);
+    
+    // If DB cache is expired or missing, trigger background scan
+    if (dbCacheExpired) {
+      const memCached = replicationCache.get(cacheKey);
+      replicationCache.set(cacheKey, { ...(memCached || {}), scanning: true });
+      // Persist scanning state to DB, preserving existing payload if present
+      const existingPayload = dbCached?.payload || {};
+      upsertCacheToDb(cacheKey, clusterName, statusFilter, days, numRunsPerGroup, existingPayload, true, null);
       runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsPerGroup);
     }
 
-    if (cached && cached.data) {
-      const age = Math.round((now - cached.timestamp) / 1000);
-      return res.json({ ...cached.data, scanning: cached.scanning, cacheAgeSeconds: age });
+    // Check in-memory cache for in-flight scan status (read after potential update above)
+    const memCached = replicationCache.get(cacheKey);
+
+    // Return cached data if available (prefer DB cache)
+    if (dbCached && dbCached.payload && dbCached.payload.replications) {
+      const age = Math.round((now - dbCached.updatedAt) / 1000);
+      return res.json({ 
+        ...dbCached.payload, 
+        scanning: dbCached.scanning || (memCached && memCached.scanning) || false, 
+        cacheAgeSeconds: age 
+      });
     }
 
+    // No cache yet, return empty response with scanning flag
     return res.json({
       sourceCluster: clusterName,
       generatedAt: new Date().toISOString(),
