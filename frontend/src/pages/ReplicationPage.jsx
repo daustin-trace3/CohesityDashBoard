@@ -311,7 +311,7 @@ export default function ReplicationPage() {
                     { key: 'dataToSend', label: 'Data to Send', align: 'right' },
                     { key: 'dataSent', label: 'Data Sent', align: 'right' },
                     { key: 'progress', label: 'Progress', align: 'center' },
-                    { key: 'percentComplete', label: '% Done', align: 'right' },
+                    { key: 'percentComplete', label: 'Logical Transfer Ratio', align: 'right', tooltip: 'Computed as logicalBytesTransferred / logicalSizeBytes. May differ from Cohesity UI percent.' },
                   ].map(col => (
                     <th
                       key={col.key}
@@ -323,6 +323,7 @@ export default function ReplicationPage() {
                           handleSort(col.key);
                         }
                       }}
+                      title={col.tooltip}
                     >
                       {col.label}{' '}
                       {sortBy === col.key ? (sortDir === 'desc' ? '▼' : '▲') : <span className="text-gray-600">⇅</span>}
@@ -355,7 +356,7 @@ export default function ReplicationPage() {
                         </div>
                       </div>
                     </td>
-                    <td className="text-right px-2 py-1.5 text-cohesity-green font-medium">
+                    <td className="text-right px-2 py-1.5 text-cohesity-green font-medium" title="logicalBytesTransferred / logicalSizeBytes">
                       {rep.percentComplete ? `${rep.percentComplete.toFixed(2)}%` : '—'}
                     </td>
                   </tr>

@@ -49,7 +49,9 @@ async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsP
             if (statusFilter === 'failed' && target.status !== 'Failed') return;
 
             let percentComplete = null;
-            if (target.stats && target.stats.logicalSizeBytes && target.stats.logicalSizeBytes > 0) {
+            if (target.status === 'Succeeded') {
+              percentComplete = 100;
+            } else if (target.stats && target.stats.logicalSizeBytes && target.stats.logicalSizeBytes > 0) {
               const transferred = target.stats.logicalBytesTransferred || 0;
               percentComplete = Math.round((transferred / target.stats.logicalSizeBytes) * 10000) / 100;
             }
