@@ -239,7 +239,7 @@ export default function HardwarePage() {
             <thead className="bg-cohesity-black border-b border-cohesity-border">
               <tr>
                 <SortTh label="Cluster" field="clusterName" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
-                <SortTh label="IP Address" field="ip" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
+                <SortTh label="Node IP Address" field="ip" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
                 <SortTh label="Model" field="model" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
                 <SortTh label="Serial Number" field="serial" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
                 <SortTh label="Chassis S/N" field="chassisSerial" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />

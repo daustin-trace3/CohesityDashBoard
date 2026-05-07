@@ -290,7 +290,7 @@ export default function HardwareModal({ cluster, onClose }) {
                               </div>
                               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-2 text-xs pl-4">
                                 <div>
-                                  <p className="text-gray-500 uppercase tracking-wide text-[9px] mb-0.5">IP Address</p>
+                                  <p className="text-gray-500 uppercase tracking-wide text-[9px] mb-0.5">Node IP Address</p>
                                   <p className="text-cohesity-text font-mono">{nodeIp}</p>
                                 </div>
                                 <div>
