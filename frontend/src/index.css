@@ -15,6 +15,17 @@
   box-sizing: border-box;
 }
 
+/* ── Accessible focus rings ───────────────────────────────────────────────── */
+/* Remove browser default only; replace with a visible ring on keyboard nav   */
+*:focus {
+  outline: none;
+}
+*:focus-visible {
+  outline: 2px solid var(--cohesity-green);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
 body {
   background-color: var(--cohesity-black);
   color: var(--cohesity-text);

@@ -26,6 +26,39 @@ cron.schedule('0 2 * * *', () => {
 function upsertMetrics(cluster, clusterInfo) {
   const stats = clusterInfo.stats || {};
   const usagePerfStats = stats.usagePerfStats || {};
+  const dataUsageStats = stats.dataUsageStats || {};
+  const logicalStats = stats.logicalStats || {};
+
+  const logicalBytes =
+    dataUsageStats.totalLogicalUsageBytes ??
+    logicalStats.totalLogicalUsageBytes ??
+    usagePerfStats.totalLogicalUsageBytes ??
+    null;
+
+  const dataReductionRatio = (() => {
+    // Primary: top-level stats.dataReductionRatio (most accurate — Cohesity-computed)
+    const topLevel = stats.dataReductionRatio;
+    if (topLevel != null && topLevel > 0) return parseFloat(topLevel.toFixed(2));
+
+    // Fallback: deduplicationRatio inside usagePerfStats
+    const dedup = usagePerfStats.deduplicationRatio;
+    if (dedup != null && dedup > 0) return parseFloat(dedup.toFixed(2));
+
+    // Fallback: dataReductionRatio inside usagePerfStats
+    const usageRatio = usagePerfStats.dataReductionRatio;
+    if (usageRatio != null && usageRatio > 0) return parseFloat(usageRatio.toFixed(2));
+
+    // Fallback: compute from raw ingestion bytes (dataInBytes / dataInBytesAfterReduction)
+    const dataIn = usagePerfStats.dataInBytes ?? dataUsageStats.dataInBytes;
+    const dataInAfterReduction = usagePerfStats.dataInBytesAfterReduction ?? dataUsageStats.dataInBytesAfterReduction;
+    if (dataIn > 0 && dataInAfterReduction > 0) return parseFloat((dataIn / dataInAfterReduction).toFixed(2));
+
+    // Fallback: compute from logical / physical
+    const physical = usagePerfStats.totalPhysicalUsageBytes;
+    if (logicalBytes > 0 && physical > 0) return parseFloat((logicalBytes / physical).toFixed(2));
+
+    return null;
+  })();
 
   const stmt = db.prepare(`
     INSERT INTO metrics_history
@@ -38,27 +71,8 @@ function upsertMetrics(cluster, clusterInfo) {
     cluster.id,
     usagePerfStats.physicalCapacityBytes ?? null,
     usagePerfStats.totalPhysicalUsageBytes ?? null,
-    usagePerfStats.totalLogicalUsageBytes ?? null,
-    (() => {
-      // Primary source: deduplicationRatio from API
-      const dedup = usagePerfStats.deduplicationRatio;
-      if (dedup != null && dedup > 0) {
-        return parseFloat((dedup).toFixed(2));
-      }
-      // Fallback to existing logic
-      const dataReductionRatio = usagePerfStats.dataReductionRatio;
-      if (dataReductionRatio != null) {
-        return dataReductionRatio;
-      }
-      const logical = usagePerfStats.totalLogicalUsageBytes;
-      const physical = usagePerfStats.totalPhysicalUsageBytes;
-      const comp = usagePerfStats.compressionRatio;
-      // Try compression * dedup
-      if (comp > 0 && dedup > 0) return parseFloat((comp * dedup).toFixed(2));
-      // Try logical/physical
-      if (logical > 0 && physical > 0) return parseFloat((logical / physical).toFixed(2));
-      return null;
-    })(),
+    logicalBytes,
+    dataReductionRatio,
     clusterInfo.clusterSoftwareVersion || clusterInfo.softwareVersion || null,
     clusterInfo.nodeCount ?? null
   );

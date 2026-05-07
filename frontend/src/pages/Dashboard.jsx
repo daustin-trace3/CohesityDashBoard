@@ -10,6 +10,10 @@ import ZoomPlugin from 'chartjs-plugin-zoom';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, ChartTooltip, Legend, Filler, ArcElement, ZoomPlugin);
 import { useSearch } from '../App';
+import ClusterCard from '../components/ClusterCard';
+import SkeletonCard from '../components/SkeletonCard';
+import EmptyState, { ClusterEmptyIcon } from '../components/EmptyState';
+import Pagination from '../components/Pagination';
 
 function toTB(bytes) {
   if (!bytes) return 0;
@@ -304,6 +308,7 @@ export default function Dashboard() {
   const [trendChartHeight, setTrendChartHeight] = useState(220);
   const [growthTableHeight, setGrowthTableHeight] = useState(128);
   const [clusterPage, setClusterPage] = useState(0);
+  const [clusterHistory, setClusterHistory] = useState({});
 
   const trendChartRef = useRef(null);
   const trendResizeRef = useRef(null);
@@ -316,19 +321,23 @@ export default function Dashboard() {
       setClusters(data);
       const metricResults = await Promise.allSettled(
         data.map(c =>
-          client.get('/metrics/' + c.id + '/history?days=1').then(r => ({
+          client.get('/metrics/' + c.id + '/history?days=7').then(r => ({
             id: c.id,
-            row: r.data.length > 0 ? r.data[r.data.length - 1] : null
+            rows: r.data,
           }))
         )
       );
-      const map = {};
+      const metricsMap = {};
+      const historyMap = {};
       for (const r of metricResults) {
-        if (r.status === 'fulfilled' && r.value.row) {
-          map[r.value.id] = r.value.row;
+        if (r.status === 'fulfilled' && r.value.rows.length > 0) {
+          const rows = r.value.rows;
+          metricsMap[r.value.id] = rows[rows.length - 1];
+          historyMap[r.value.id] = rows;
         }
       }
-      setLatestMetrics(map);
+      setLatestMetrics(metricsMap);
+      setClusterHistory(historyMap);
     } catch {
       // ignore
     } finally {
@@ -372,6 +381,8 @@ export default function Dashboard() {
     return true;
   });
 
+  const CLUSTER_PAGE_SIZE = 6;
+
   const sortedFiltered = [...filtered].sort((a, b) => {
     const mA = latestMetrics[a.id];
     const mB = latestMetrics[b.id];
@@ -383,6 +394,13 @@ export default function Dashboard() {
   const activeSet = selectedClusterIds.size > 0
     ? sortedFiltered.filter(c => selectedClusterIds.has(c.id))
     : sortedFiltered;
+
+  const clusterTotalPages = Math.max(1, Math.ceil(sortedFiltered.length / CLUSTER_PAGE_SIZE));
+  const clusterSafePage = Math.min(clusterPage, clusterTotalPages - 1);
+  const clusterPageItems = sortedFiltered.slice(
+    clusterSafePage * CLUSTER_PAGE_SIZE,
+    (clusterSafePage + 1) * CLUSTER_PAGE_SIZE
+  );
 
   const chartData = activeSet
     .map(c => {
@@ -876,80 +894,48 @@ export default function Dashboard() {
 
         {/* RIGHT COLUMN */}
         <div className="xl:col-span-3">
-          {(() => {
-            const PAGE_SIZE = 12;
-            const totalPages = Math.max(1, Math.ceil(sortedFiltered.length / PAGE_SIZE));
-            const safePage = Math.min(clusterPage, totalPages - 1);
-            const pageItems = sortedFiltered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
-            return (
-          <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4 h-full">
+          <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4 h-full flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <p className="text-xs font-semibold text-cohesity-text">Cluster Health &amp; Alerts</p>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-gray-500">{sortedFiltered.length} clusters</span>
-                {totalPages > 1 && (
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => setClusterPage(p => Math.max(0, p - 1))}
-                      disabled={safePage === 0}
-                      className="text-[10px] px-1.5 py-0.5 rounded border border-cohesity-border text-gray-400 hover:border-cohesity-green hover:text-cohesity-green disabled:opacity-30 transition-colors"
-                    >‹</button>
-                    <span className="text-[10px] text-gray-500">{safePage + 1}/{totalPages}</span>
-                    <button
-                      onClick={() => setClusterPage(p => Math.min(totalPages - 1, p + 1))}
-                      disabled={safePage === totalPages - 1}
-                      className="text-[10px] px-1.5 py-0.5 rounded border border-cohesity-border text-gray-400 hover:border-cohesity-green hover:text-cohesity-green disabled:opacity-30 transition-colors"
-                    >›</button>
-                  </div>
-                )}
-              </div>
+              <span className="text-[10px] text-gray-500">{sortedFiltered.length} clusters</span>
             </div>
             {loading ? (
-              <div className="text-gray-400 text-xs text-center py-8">Loading clusters...</div>
-            ) : sortedFiltered.length === 0 ? (
-              <div className="text-gray-500 text-xs text-center py-8">
-                {clusters.length === 0 ? 'No clusters configured.' : 'No clusters match the current filters.'}
-              </div>
-            ) : (
               <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3 gap-2">
-                {pageItems.map(c => {
-                  const m = latestMetrics[c.id];
-                  const pct = m?.total_capacity_bytes > 0 ? (m.used_bytes / m.total_capacity_bytes) * 100 : null;
-                  const color = pct == null ? '#6b7280' : pct >= 86 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#6CB33F';
-                  const statusIcon = pct == null ? '○' : pct >= 86 ? '⚠' : pct >= 70 ? '!' : '✓';
-                  const statusColor = pct == null ? 'text-gray-500' : pct >= 86 ? 'text-red-400' : pct >= 70 ? 'text-amber-400' : 'text-green-400';
-                  return (
-                    <div
-                      key={c.id}
-                      onClick={() => toggleSelect(c.id)}
-                      className={`bg-cohesity-black border rounded p-2 cursor-pointer transition-colors ${
-                        selectedClusterIds.has(c.id) ? 'border-cohesity-green' : 'border-cohesity-border hover:border-gray-500'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-1 mb-1.5">
-                        <span className="text-[11px] font-medium text-cohesity-text leading-tight truncate">{c.name}</span>
-                        <span className={`text-xs flex-shrink-0 ${statusColor}`}>{statusIcon}</span>
-                      </div>
-                      <div className="flex items-center gap-1 mb-1">
-                        <div className="w-2 h-2 rounded-full bg-cohesity-green flex-shrink-0" />
-                        <span className="text-[9px] text-gray-500">Cohesity</span>
-                      </div>
-                      {pct != null && (
-                        <div>
-                          <div className="w-full bg-[#1A1A1A] rounded-full h-1">
-                            <div className="h-1 rounded-full transition-all" style={{ width: `${Math.min(100, pct)}%`, backgroundColor: color }} />
-                          </div>
-                          <span className="text-[9px] text-gray-500 mt-0.5 block">{pct.toFixed(1)}% used</span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {[...Array(CLUSTER_PAGE_SIZE)].map((_, i) => <SkeletonCard key={i} />)}
               </div>
+            ) : sortedFiltered.length === 0 ? (
+              <EmptyState
+                icon={<ClusterEmptyIcon />}
+                title="No clusters found"
+                message={clusters.length === 0 ? 'No clusters configured.' : 'No clusters match the current filters.'}
+              />
+            ) : (
+              <>
+                <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3 gap-2">
+                  {clusterPageItems.map(c => (
+                    <ClusterCard
+                      key={c.id}
+                      cluster={c}
+                      historyRows={clusterHistory[c.id]}
+                      selected={selectedClusterIds.has(c.id)}
+                      onSelect={toggleSelect}
+                      onTagClick={setTagFilter}
+                    />
+                  ))}
+                </div>
+                {clusterTotalPages > 1 && (
+                  <Pagination
+                    page={clusterSafePage}
+                    totalPages={clusterTotalPages}
+                    totalItems={sortedFiltered.length}
+                    pageSize={CLUSTER_PAGE_SIZE}
+                    onPage={setClusterPage}
+                    compact
+                  />
+                )}
+              </>
             )}
           </div>
-          );
-          })()}
         </div>
       </div>
 

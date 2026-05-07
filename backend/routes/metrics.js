@@ -1,6 +1,7 @@
 const express = require('express');
 const { param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
+const { fetchClusterInfo } = require('../services/cohesityApi');
 
 const router = express.Router();
 
@@ -38,6 +39,32 @@ router.get(
       `).all(clusterId, `-${days}`);
 
       res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * GET /api/metrics/:clusterId/debug-stats
+ * Returns raw usagePerfStats from the Cohesity API — temporary diagnostic endpoint.
+ */
+router.get(
+  '/:clusterId/debug-stats',
+  [param('clusterId').isInt({ min: 1 })],
+  validate,
+  async (req, res, next) => {
+    try {
+      const cluster = db.prepare('SELECT * FROM clusters WHERE id = ?').get(req.params.clusterId);
+      if (!cluster) return res.status(404).json({ error: 'Cluster not found' });
+      const info = await fetchClusterInfo(cluster);
+      res.json({
+        clusterSoftwareVersion: info.clusterSoftwareVersion || info.softwareVersion,
+        nodeCount: info.nodeCount,
+        statsKeys: Object.keys(info.stats || {}),
+        usagePerfStats: (info.stats || {}).usagePerfStats || null,
+        topLevelKeys: Object.keys(info),
+      });
     } catch (err) {
       next(err);
     }
