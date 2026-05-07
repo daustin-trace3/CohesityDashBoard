@@ -24,6 +24,7 @@ function friendlyStatus(raw) {
 
 function getNodeSerial(node) {
   return (
+    node?.cohesityNodeSerial ||
     node?._v2Serial ||
     node?.cohesityNodeInfo?.nodeHardwareInfo?.serialNumber ||
     node?.cohesityNodeInfo?.nodeHardwareInfo?.productSerial ||
@@ -56,6 +57,7 @@ function getNodeStatus(node) {
 
 function getNodeChassisId(node) {
   return (
+    node?.chassisInfo?.chassisId ??
     node?.cohesityNodeInfo?.nodeHardwareInfo?.chassisInfo?.chassisId ??
     node?.chassisId ??
     null
@@ -238,14 +240,15 @@ export default function HardwareModal({ cluster, onClose }) {
                 const info = group.info;
                 const isCollapsed = collapsedChassis.has(cid);
 
+                const chassisSerial = info?.serialNumber || group.nodes[0]?.chassisInfo?.chassisSerial || null;
                 const chassisLabel = cid === '__unassigned__' ? 'Unassigned Nodes'
                   : cid === '__all__' ? 'All Nodes'
-                  : info?.name || info?.serialNumber
-                    ? `${info.name || ''} ${info.serialNumber ? `(S/N: ${info.serialNumber})` : ''}`.trim()
+                  : info?.name || chassisSerial
+                    ? `${info?.name || chassisSerial || ''} ${chassisSerial && chassisSerial !== info?.name ? `(S/N: ${chassisSerial})` : ''}`.trim()
                   : `Chassis ${cid}`;
 
-                const chassisModel = info?.hardwareModel || info?.model || '—';
-                const chassisSerial = info?.serialNumber || '—';
+                const chassisModel = info?.hardwareModel || info?.model || group.nodes[0]?.productModel || '—';
+                const chassisSerialDisplay = chassisSerial || '—';
 
                 return (
                   <div key={String(cid)} className="border border-cohesity-border rounded-lg overflow-hidden">
@@ -260,7 +263,7 @@ export default function HardwareModal({ cluster, onClose }) {
                         {cid !== '__unassigned__' && cid !== '__all__' && (
                           <span className="ml-3 text-xs text-gray-500">
                             Model: <span className="text-gray-300">{chassisModel}</span>
-                            {chassisSerial !== '—' && <> · S/N: <span className="text-gray-300 font-mono">{chassisSerial}</span></>}
+                            {chassisSerialDisplay !== '—' && <> · S/N: <span className="text-gray-300 font-mono">{chassisSerialDisplay}</span></>}
                           </span>
                         )}
                       </div>
