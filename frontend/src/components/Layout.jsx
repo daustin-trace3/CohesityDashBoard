@@ -1,7 +1,12 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
+import {
+  LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, Plus, X, ClipboardCheck,
+} from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import client from '../api/client';
+import { useSearch } from '../context';
 
 const platforms = [
   { id: 'cohesity', label: 'Cohesity', route: '/dashboard', color: '#6CB33F' },
@@ -9,71 +14,32 @@ const platforms = [
   { id: 'netapp',   label: 'NetApp',    route: '/netapp',   color: '#0067C5' },
 ];
 
-const navItems = [
+const navGroups = [
   {
-    label: 'Global Overview',
-    route: '/dashboard',
-    svg: 'globe',
-    isActive: (p) => p === '/' || p === '/dashboard',
+    label: 'Monitor',
+    items: [
+      { label: 'Global Overview', route: '/dashboard', icon: LayoutDashboard, isActive: (p) => p === '/' || p.startsWith('/dashboard') },
+      { label: 'Alerts', route: '/alerts', icon: Bell, isActive: (p) => p.startsWith('/alerts'), showAlertCount: true },
+      { label: 'Analytics', route: '/analytics', icon: Activity, isActive: (p) => p.startsWith('/analytics') },
+      { label: 'Reporting', route: '/reporting', icon: FileText, isActive: (p) => p.startsWith('/reporting') },
+    ],
   },
   {
-    label: 'Alerts',
-    route: '/alerts',
-    svg: 'bell',
-    isActive: (p) => p.startsWith('/alerts'),
-  },
-  {
-    label: 'Clusters',
-    route: '/clusters',
-    svg: 'clusters',
-    isActive: (p) => p.startsWith('/clusters'),
-  },
-  {
-    label: 'Data Protection',
-    route: '/data-protection',
-    svg: 'shield',
-    isActive: (p) => p.startsWith('/data-protection'),
-  },
-  {
-    label: 'Replication',
-    route: '/replication',
-    svg: 'replication',
-    isActive: (p) => p.startsWith('/replication'),
+    label: 'Protect',
+    items: [
+      { label: 'Data Protection', route: '/data-protection', icon: ShieldCheck, isActive: (p) => p.startsWith('/data-protection') },
+      { label: 'Replication', route: '/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/replication') },
+      { label: 'Governance', route: '/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/governance') },
+    ],
   },
   {
     label: 'Infrastructure',
-    route: '/hardware',
-    svg: 'infra',
-    isActive: (p) => p.startsWith('/hardware'),
-  },
-  {
-    label: 'Analytics',
-    route: '/analytics',
-    svg: 'analytics',
-    isActive: (p) => p.startsWith('/analytics'),
-  },
-  {
-    label: 'Reporting',
-    route: '/reporting',
-    svg: 'report',
-    isActive: (p) => p.startsWith('/reporting'),
+    items: [
+      { label: 'Clusters', route: '/clusters', icon: Server, isActive: (p) => p.startsWith('/clusters') },
+      { label: 'Hardware', route: '/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/hardware') },
+    ],
   },
 ];
-
-function NavIcon({ type }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" stroke="currentColor" strokeWidth="1.5" fill="none" className="flex-shrink-0">
-      {type === 'globe' && <><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2a9 9 0 010 12M8 2a9 9 0 000 12"/></>}
-      {type === 'shield' && <path d="M8 2l5 2v4c0 3-2.5 5-5 6C5.5 13 3 11 3 8V4l5-2z"/>}
-      {type === 'replication' && <><circle cx="4" cy="8" r="2"/><circle cx="12" cy="8" r="2"/><path d="M6 8h4"/><path d="M9 6l2 2l-2 2"/></>}
-      {type === 'infra' && <><rect x="2" y="3" width="5" height="4" rx="1"/><rect x="9" y="3" width="5" height="4" rx="1"/><rect x="2" y="11" width="5" height="4" rx="1"/><rect x="9" y="11" width="5" height="4" rx="1"/></>}
-      {type === 'bell' && <><path d="M8 2a4 4 0 014 4v3l1.5 2.5H2.5L4 9V6a4 4 0 014-4z"/><line x1="6.5" y1="13.5" x2="9.5" y2="13.5"/></>}
-      {type === 'clusters' && <><rect x="2" y="2" width="12" height="4" rx="1"/><rect x="2" y="8" width="12" height="4" rx="1"/><line x1="5" y1="4" x2="5" y2="4" strokeWidth="2"/><line x1="5" y1="10" x2="5" y2="10" strokeWidth="2"/></>}
-      {type === 'analytics' && <><polyline points="3,13 7,7 10,10 14,4"/><polyline points="11,4 14,4 14,7"/></>}
-      {type === 'report' && <><path d="M5 3h8a1 1 0 011 1v12l-3-2-2 2-2-2-3 2V4a1 1 0 011-1z"/><line x1="7" y1="8" x2="11" y2="8"/><line x1="7" y1="11" x2="10" y2="11"/></>}
-    </svg>
-  );
-}
 
 function isActivePlatform(id, pathname) {
   if (id === 'cohesity') return ['/', '/dashboard', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting'].some(r => pathname === r || pathname.startsWith(r + '/'));
@@ -82,31 +48,58 @@ function isActivePlatform(id, pathname) {
   return false;
 }
 
+function BrandMark({ collapsed }) {
+  return (
+    <div className={`flex items-center gap-2.5 px-4 h-14 border-b border-cohesity-border flex-shrink-0 ${collapsed ? 'justify-center px-0' : ''}`}>
+      <div className="relative flex items-center justify-center flex-shrink-0">
+        <Hexagon size={26} className="text-brand" strokeWidth={1.75} />
+        <ShieldCheck size={12} className="text-brand absolute" strokeWidth={2.5} />
+      </div>
+      {!collapsed && (
+        <div className="leading-tight min-w-0">
+          <p className="text-[13px] font-bold text-ink tracking-tight truncate">Cohesity</p>
+          <p className="text-[10px] font-semibold text-brand uppercase tracking-[0.14em]">Command Center</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Layout() {
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState([]);
   const [clusterCount, setClusterCount] = useState(0);
+  const [apiOnline, setApiOnline] = useState(true);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
 
+  const { search, setSearch } = useSearch();
   const navigate = useNavigate();
   const location = useLocation();
   const pathname = location.pathname;
 
+  const toggleCollapsed = () => {
+    setCollapsed(c => {
+      localStorage.setItem('sidebar-collapsed', c ? '0' : '1');
+      return !c;
+    });
+  };
+
   useEffect(() => {
     const load = async () => {
-      try {
-        const [alertResp, clusterResp] = await Promise.allSettled([
-          client.get('/alerts?dismissed=0&resolved=0'),
-          client.get('/clusters')
-        ]);
-        if (alertResp.status === 'fulfilled') {
-          setAlerts(alertResp.value.data);
-          setAlertCount(alertResp.value.data.length);
-        }
-        if (clusterResp.status === 'fulfilled') {
-          setClusterCount(clusterResp.value.data.length);
-        }
-      } catch {
-        // silently fail
+      const [alertResp, clusterResp] = await Promise.allSettled([
+        client.get('/alerts?dismissed=0&resolved=0'),
+        client.get('/clusters')
+      ]);
+      if (alertResp.status === 'fulfilled') {
+        setAlerts(alertResp.value.data);
+        setAlertCount(alertResp.value.data.length);
+        setApiOnline(true);
+      }
+      if (clusterResp.status === 'fulfilled') {
+        setClusterCount(clusterResp.value.data.length);
+      }
+      if (alertResp.status === 'rejected' && clusterResp.status === 'rejected') {
+        setApiOnline(false);
       }
     };
     load();
@@ -114,78 +107,148 @@ export default function Layout() {
     return () => clearInterval(interval);
   }, []);
 
+  const criticalCount = alerts.filter(a => a.severity === 'critical').length;
+
   return (
-    <div className="min-h-screen flex flex-col bg-cohesity-black">
-      {/* Header */}
-      <header className="h-14 bg-[#111111] border-b border-cohesity-border flex-shrink-0 flex items-center px-4 gap-4">
-        <span className="text-gray-400 text-xl leading-none select-none">☰</span>
-        <span className="text-base font-bold text-white">Global Cluster Dashboard</span>
-        <div className="w-px h-5 bg-cohesity-border" />
-        <span className="text-xs bg-cohesity-gray px-2 py-0.5 rounded text-gray-300">
-          {clusterCount} Cohesity Cluster{clusterCount !== 1 ? 's' : ''}
-        </span>
-        <div className="ml-auto flex items-center gap-3">
-          <NotificationBell count={alertCount} alerts={alerts.slice(0, 10)} />
-          <span className="text-gray-400 text-lg leading-none select-none">⚙</span>
-          <span className="text-xs text-green-400">● Online</span>
+    <div className="h-screen flex flex-row bg-transparent overflow-hidden">
+      {/* Sidebar */}
+      <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
+        <BrandMark collapsed={collapsed} />
+
+        <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
+          {navGroups.map(group => (
+            <div key={group.label}>
+              {!collapsed && (
+                <p className="px-4 mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-ink-faint select-none">{group.label}</p>
+              )}
+              <div className="flex flex-col gap-0.5 px-2">
+                {group.items.map(item => {
+                  const active = item.isActive(pathname);
+                  const Icon = item.icon;
+                  return (
+                    <NavLink
+                      key={item.route}
+                      to={item.route}
+                      title={collapsed ? item.label : undefined}
+                      className={`relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors duration-150 cursor-pointer ${
+                        collapsed ? 'justify-center' : ''
+                      } ${
+                        active
+                          ? 'bg-brand/10 text-brand'
+                          : 'text-ink-muted hover:bg-surface-overlay hover:text-ink'
+                      }`}
+                    >
+                      {active && <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r bg-brand" />}
+                      <Icon size={16} strokeWidth={active ? 2.25 : 1.75} className="flex-shrink-0" />
+                      {!collapsed && <span className="truncate">{item.label}</span>}
+                      {!collapsed && item.showAlertCount && alertCount > 0 && (
+                        <span className={`ml-auto min-w-[20px] text-center rounded-full px-1.5 py-px text-[10px] font-bold tnum ${
+                          criticalCount > 0 ? 'bg-status-crit/15 text-status-crit' : 'bg-status-warn/15 text-status-warn'
+                        }`}>
+                          {alertCount > 99 ? '99+' : alertCount}
+                        </span>
+                      )}
+                    </NavLink>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </nav>
+
+        {/* Sidebar footer */}
+        <div className="border-t border-cohesity-border p-2 flex flex-col gap-1.5">
+          {!collapsed && (
+            <div className="px-2 py-1.5 flex items-center gap-2">
+              <span className={`inline-block h-2 w-2 rounded-full flex-shrink-0 ${apiOnline ? 'bg-status-ok shadow-glow-green' : 'bg-status-crit'}`} style={{ animation: apiOnline ? 'orb-pulse 2.5s ease-in-out infinite' : 'none' }} />
+              <div className="leading-tight min-w-0">
+                <p className="text-[11px] font-medium text-ink truncate">{apiOnline ? 'All systems operational' : 'API unreachable'}</p>
+                <p className="text-[10px] text-ink-faint tnum">{clusterCount} cluster{clusterCount !== 1 ? 's' : ''} monitored</p>
+              </div>
+            </div>
+          )}
+          <button
+            onClick={toggleCollapsed}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            className="flex items-center justify-center gap-2 rounded-lg px-2.5 py-2 text-ink-faint hover:bg-surface-overlay hover:text-ink transition-colors cursor-pointer text-[12px]"
+          >
+            {collapsed ? <PanelLeftOpen size={16} /> : <><PanelLeftClose size={16} /><span>Collapse</span></>}
+          </button>
         </div>
-      </header>
+      </aside>
 
-      {/* Body */}
-      <div className="flex flex-row flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="w-48 bg-[#111111] border-r border-cohesity-border flex flex-col flex-shrink-0 pt-2 gap-0.5">
-          {navItems.map(item => {
-            const active = item.isActive(pathname);
-            return (
-              <NavLink
-                key={item.route}
-                to={item.route}
-                className={`flex items-center gap-3 px-4 py-2.5 text-sm transition-colors mx-1 rounded-r ${
-                  active
-                    ? 'bg-cohesity-gray text-cohesity-text border-l-2 border-cohesity-green'
-                    : 'text-gray-400 hover:bg-cohesity-gray/40 hover:text-cohesity-text'
-                }`}
+      {/* Main column */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header */}
+        <header className="h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-3 px-4">
+          <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block">Global Cluster Dashboard</h1>
+          <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum">
+            <Server size={11} className="text-brand" />
+            {clusterCount} Cohesity Cluster{clusterCount !== 1 ? 's' : ''}
+          </span>
+          {criticalCount > 0 && (
+            <button
+              onClick={() => navigate('/alerts')}
+              className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum"
+            >
+              <Bell size={11} />
+              {criticalCount} critical
+            </button>
+          )}
+
+          {/* Global search */}
+          <div className="relative ml-auto w-56 lg:w-72">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
+            <input
+              type="search"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search clusters…"
+              aria-label="Search clusters"
+              className="w-full bg-surface border border-cohesity-border text-[13px] text-ink rounded-lg pl-9 pr-8 py-1.5 placeholder-ink-faint focus:border-brand/60 transition-colors"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                aria-label="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink cursor-pointer"
               >
-                <NavIcon type={item.svg} />
-                <span>{item.label}</span>
-              </NavLink>
-            );
-          })}
-        </aside>
+                <X size={13} />
+              </button>
+            )}
+          </div>
 
-        {/* Main content */}
-        <main className="flex-1 overflow-auto flex flex-col">
-          {/* Vendor tabs */}
-          <div className="flex items-center gap-2 px-6 pt-5 pb-3 flex-shrink-0">
-            <span className="text-xs text-gray-500 mr-2">Vendor Select</span>
+          <NotificationBell count={alertCount} alerts={alerts.slice(0, 10)} />
+        </header>
+
+        {/* Vendor platform tabs */}
+        <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Platform</span>
+          <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1">
             {platforms.map(p => {
               const active = isActivePlatform(p.id, pathname);
               return (
                 <button
                   key={p.id}
                   onClick={() => navigate(p.route)}
-                  className={`flex items-center gap-2 px-4 py-1.5 rounded border text-sm font-medium transition-colors ${
-                    active
-                      ? 'border-2 text-cohesity-text bg-cohesity-gray/60'
-                      : 'border-cohesity-border text-gray-400 hover:border-gray-500 hover:text-cohesity-text'
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
+                    active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
                   }`}
-                  style={active ? { borderColor: p.color } : {}}
                 >
-                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: p.color, boxShadow: active ? `0 0 6px ${p.color}99` : 'none' }} />
                   {p.label}
                 </button>
               );
             })}
-            <button className="flex items-center gap-1.5 px-4 py-1.5 rounded border border-dashed border-cohesity-border text-gray-500 hover:border-gray-400 hover:text-gray-300 text-sm transition-colors">
-              <span>+</span> Add Platform
-            </button>
           </div>
+          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-cohesity-border text-ink-faint hover:border-ink-faint hover:text-ink-muted text-[12px] transition-colors cursor-pointer">
+            <Plus size={13} /> Add Platform
+          </button>
+        </div>
 
-          {/* Page content */}
-          <div className="px-6 py-4 flex-1">
-            <Outlet />
-          </div>
+        {/* Page content */}
+        <main className="px-5 py-4 flex-1 overflow-auto">
+          <Outlet />
         </main>
       </div>
     </div>

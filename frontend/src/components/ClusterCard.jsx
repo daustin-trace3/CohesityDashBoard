@@ -9,6 +9,11 @@ function formatTB(bytes) {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
+// Handle both "YYYY-MM-DD HH:MM:SS" (SQLite) and "YYYY-MM-DDTHH:MM:SSZ" (ISO)
+function parseUtcMs(ts) {
+  return ts ? new Date(ts.replace(' ', 'T').replace(/Z*$/, 'Z')).getTime() : 0;
+}
+
 function AlertIcon({ level }) {
   const color = level === 'critical' ? '#ef4444' : level === 'warning' ? '#f59e0b' : '#6b7280';
   return (
@@ -96,8 +101,8 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
   const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
   const pctDisplay = total > 0 ? `${pct.toFixed(2)}%` : '—';
 
-  const pctColor = pct >= 86 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#6CB33F';
-  const barColor = pct >= 86 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-400' : 'bg-cohesity-green';
+  const pctColor = pct >= 86 ? '#F87171' : pct >= 70 ? '#FBBF24' : '#6CB33F';
+  const barColor = pct >= 86 ? 'bg-status-crit' : pct >= 70 ? 'bg-status-warn' : 'bg-brand';
   const isPulsing = pct >= 90;
 
   const drRatio = metrics?.data_reduction_ratio;
@@ -116,19 +121,53 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
         aria-pressed={selected}
         aria-label={`Cluster ${cluster.name}, ${pctDisplay} used${alertSummary.count > 0 ? `, ${alertSummary.count} alert(s)` : ''}`}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect && onSelect(cluster.id); } }}
-        className={`border rounded p-3 flex flex-col gap-1.5 transition-colors cursor-pointer ${
+        className={`border rounded-xl p-3 flex flex-col gap-1.5 transition-all duration-200 cursor-pointer shadow-panel ${
           selected
-            ? 'bg-cohesity-green bg-opacity-10 border-cohesity-green'
+            ? 'bg-brand/10 border-brand'
             : isPulsing
-              ? 'bg-cohesity-gray border-red-500 pulse-critical'
-              : 'bg-cohesity-gray border-cohesity-border hover:border-cohesity-green'
+              ? 'bg-surface border-status-crit pulse-critical'
+              : 'bg-surface border-cohesity-border hover:border-brand/50 hover:shadow-panel-hover'
         }`}
         onClick={() => onSelect && onSelect(cluster.id)}
       >
         {/* Name + alert badge */}
         <div className="flex items-start justify-between gap-1">
           <div className="min-w-0">
-            <p className="text-xs font-semibold text-cohesity-text truncate leading-tight">{cluster.name}</p>
+            <div className="flex items-center gap-1.5 min-w-0">
+              {(() => {
+                const m = historyRows?.[historyRows.length - 1];
+                const st = (() => {
+                  if (!m || !m.captured_at) return 'red';
+                  const intervalMs = (cluster.polling_interval_minutes || 15) * 2 * 60 * 1000;
+                  const age = Date.now() - parseUtcMs(m.captured_at);
+                  return age <= intervalMs ? 'green' : 'yellow';
+                })();
+                const c = { green: '#34D399', yellow: '#FBBF24', red: '#F87171' }[st] || '#5F7081';
+                const label = st === 'green' ? 'Online' : st === 'yellow' ? 'Stale' : 'Offline';
+                const lastSeen = m?.captured_at
+                  ? (() => {
+                      const diffMs = Date.now() - parseUtcMs(m.captured_at);
+                      const mins = Math.round(diffMs / 60000);
+                      if (mins < 60) return `${mins}m ago`;
+                      const hrs = Math.round(mins / 60);
+                      return hrs < 24 ? `${hrs}h ago` : `${Math.round(hrs / 24)}d ago`;
+                    })()
+                  : 'Never';
+                return (
+                  <span
+                    title={`${label} · Last seen: ${lastSeen}`}
+                    style={{
+                      display: 'inline-block', flexShrink: 0,
+                      width: 8, height: 8, borderRadius: '50%',
+                      backgroundColor: c,
+                      boxShadow: `0 0 4px ${c}99`,
+                      animation: st === 'green' ? 'orb-pulse 2.5s ease-in-out infinite' : 'none',
+                    }}
+                  />
+                );
+              })()}
+              <p className="text-xs font-semibold text-cohesity-text truncate leading-tight">{cluster.name}</p>
+            </div>
             {tags.length > 0 ? (
               <div className="flex flex-wrap gap-0.5 mt-0.5">
                 {tags.map(tag => (
@@ -137,7 +176,7 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
                     type="button"
                     aria-label={`Filter by tag ${tag}`}
                     onClick={e => { e.stopPropagation(); onTagClick && onTagClick(tag); }}
-                    className="text-[11px] text-cohesity-green bg-cohesity-black border border-cohesity-border px-1.5 py-0.5 rounded hover:border-cohesity-green transition-colors"
+                    className="text-[11px] text-brand bg-brand/5 border border-brand/20 px-1.5 py-0.5 rounded-full hover:border-brand/60 transition-colors cursor-pointer"
                   >
                     {tag}
                   </button>
@@ -168,12 +207,12 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
           <p className="text-[11px] text-gray-500 italic mt-1">Data unavailable</p>
         ) : (
           <>
-            <div className="text-2xl font-bold leading-none" style={{ color: pctColor }} aria-hidden="true">
+            <div className="text-2xl font-bold leading-none tnum" style={{ color: pctColor }} aria-hidden="true">
               {pctDisplay}
             </div>
 
-            <div className="h-1.5 bg-cohesity-black rounded overflow-hidden" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label={`Storage ${pctDisplay} used`}>
-              <div className={`h-full ${barColor} transition-all duration-500`} style={{ width: `${pct}%` }} />
+            <div className="h-1.5 bg-surface-base rounded-full overflow-hidden" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label={`Storage ${pctDisplay} used`}>
+              <div className={`h-full rounded-full ${barColor} transition-all duration-500`} style={{ width: `${pct}%` }} />
             </div>
 
             <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 mt-0.5">
@@ -213,7 +252,7 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
             type="button"
             aria-label={`View hardware info for ${cluster.name}`}
             onClick={e => { e.stopPropagation(); setHardwareOpen(true); }}
-            className="text-[11px] text-gray-500 border border-cohesity-border rounded px-1.5 py-0.5 hover:border-cohesity-green hover:text-cohesity-green transition-colors"
+            className="text-[11px] text-ink-faint border border-cohesity-border rounded-md px-1.5 py-0.5 hover:border-brand/50 hover:text-brand transition-colors cursor-pointer"
           >
             HW Info
           </button>

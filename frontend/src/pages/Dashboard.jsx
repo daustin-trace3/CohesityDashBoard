@@ -7,6 +7,10 @@ import {
 } from 'chart.js';
 import { Bar, Line, Doughnut } from 'react-chartjs-2';
 import ZoomPlugin from 'chartjs-plugin-zoom';
+import {
+  Database, HardDrive, Server, Bell, ShieldCheck, RefreshCw, Download,
+  RotateCcw, X, Globe, TrendingUp, ListFilter, LayoutGrid, AlertTriangle,
+} from 'lucide-react';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, ChartTooltip, Legend, Filler, ArcElement, ZoomPlugin);
 import { useSearch } from '../App';
@@ -14,14 +18,79 @@ import ClusterCard from '../components/ClusterCard';
 import SkeletonCard from '../components/SkeletonCard';
 import EmptyState, { ClusterEmptyIcon } from '../components/EmptyState';
 import Pagination from '../components/Pagination';
+import InsightsPanel from '../components/InsightsPanel';
+import { StatCard, Panel, Badge } from '../components/ui/primitives';
+import { useToast } from '../components/ui/Toaster';
+
+const CHART = {
+  grid: '#1F2B37',
+  tick: '#64748B',
+  tooltipBg: '#1E2A36',
+  tooltipBorder: '#2A3845',
+  titleColor: '#E8EDF2',
+  bodyColor: '#94A3B3',
+};
 
 function toTB(bytes) {
   if (!bytes) return 0;
   return parseFloat((bytes / 1e12).toFixed(2));
 }
 
+function fmtBytes(b) {
+  if (b == null || b === 0) return '—';
+  if (b >= 1e15) return (b / 1e15).toFixed(2) + ' PB';
+  if (b >= 1e12) return (b / 1e12).toFixed(2) + ' TB';
+  if (b >= 1e9)  return (b / 1e9).toFixed(2) + ' GB';
+  return (b / 1e6).toFixed(1) + ' MB';
+}
+
 function getAlertTimestamp(alert) {
   return alert.first_seen || alert.last_updated || alert.triggered_at || alert.created_at;
+}
+
+function parseUtcMs(ts) {
+  if (!ts) return 0;
+  // Handle both "YYYY-MM-DD HH:MM:SS" (SQLite) and "YYYY-MM-DDTHH:MM:SSZ" (ISO)
+  const s = ts.replace(' ', 'T').replace(/Z*$/, 'Z');
+  return new Date(s).getTime();
+}
+
+function timeAgo(ts) {
+  if (!ts) return 'Never';
+  const mins = Math.round((Date.now() - parseUtcMs(ts)) / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
+function clusterStatus(cluster, latestMetricsMap) {
+  const m = latestMetricsMap[cluster.id];
+  if (!m || !m.captured_at) return 'red';
+  const intervalMs = (cluster.polling_interval_minutes || 15) * 2 * 60 * 1000;
+  const age = Date.now() - parseUtcMs(m.captured_at);
+  return age <= intervalMs ? 'green' : 'yellow';
+}
+
+function ClusterStatusOrb({ status, lastSeen, size = 8 }) {
+  const colors = { green: '#34D399', yellow: '#FBBF24', red: '#F87171', gray: '#5F7081' };
+  const color = colors[status] || colors.gray;
+  const label = status === 'green' ? 'Online' : status === 'yellow' ? 'Stale' : 'Offline';
+  return (
+    <span title={`${label} · Last seen: ${lastSeen ? timeAgo(lastSeen) : 'Never'}`} style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>
+      <span
+        style={{
+          display: 'inline-block',
+          width: size,
+          height: size,
+          borderRadius: '50%',
+          backgroundColor: color,
+          boxShadow: `0 0 ${size / 2}px ${color}99`,
+          animation: status === 'green' ? 'orb-pulse 2.5s ease-in-out infinite' : 'none',
+        }}
+      />
+    </span>
+  );
 }
 
 // --- Sub-components ---
@@ -34,48 +103,46 @@ function GlobalStorageCard({ latestMetrics, clusters }) {
   const avgDR = drValues.length > 0 ? drValues.reduce((s, v) => s + v, 0) / drValues.length : 0;
 
   const pct = totalCap > 0 ? (totalUsed / totalCap) * 100 : 0;
-  const pctStr = pct.toFixed(1);
-  const fmtBytes = (b) => {
-    if (b >= 1e15) return (b / 1e15).toFixed(2) + ' PB';
-    if (b >= 1e12) return (b / 1e12).toFixed(2) + ' TB';
-    if (b >= 1e9)  return (b / 1e9).toFixed(2) + ' GB';
-    return (b / 1e6).toFixed(1) + ' MB';
-  };
-  const usedStr = fmtBytes(totalUsed);
-  const totalStr = fmtBytes(totalCap);
+  const pctColor = pct >= 86 ? '#F87171' : pct >= 70 ? '#FBBF24' : '#6CB33F';
 
   const donutData = {
     datasets: [{
       data: [totalUsed, Math.max(0, totalCap - totalUsed)],
-      backgroundColor: ['#6CB33F', '#3D3D3D'],
+      backgroundColor: [pctColor, '#1E2A36'],
       borderWidth: 0,
+      borderRadius: 6,
     }]
   };
 
   return (
-    <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-      <p className="text-xs font-semibold text-cohesity-text mb-3">Total Storage Used (Global)</p>
-      <div className="flex items-center gap-4">
-        <div className="relative flex-shrink-0" style={{ width: 100, height: 100 }}>
+    <Panel title="Global Storage Utilization" icon={Globe}>
+      <div className="flex items-center gap-5">
+        <div className="relative flex-shrink-0" style={{ width: 110, height: 110 }}>
           <Doughnut
             data={donutData}
             options={{
-              cutout: '70%',
+              cutout: '74%',
               maintainAspectRatio: false,
               plugins: { legend: { display: false }, tooltip: { enabled: false } }
             }}
           />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-sm font-bold text-cohesity-text">{pctStr}%</span>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-lg font-bold text-ink tnum leading-none">{pct.toFixed(1)}%</span>
+            <span className="text-[10px] text-ink-faint mt-0.5">used</span>
           </div>
         </div>
-        <div className="flex flex-col gap-1">
-          <p className="text-xs text-cohesity-text font-medium">{usedStr} Used / {totalStr} Total</p>
-          <p className="text-[10px] text-gray-400">Data Reduction: {avgDR.toFixed(1)}x</p>
-          <p className="text-[10px] text-gray-500">{entries.length} cluster(s) reporting</p>
+        <div className="flex flex-col gap-2 min-w-0">
+          <div>
+            <p className="text-sm font-semibold text-ink tnum">{fmtBytes(totalUsed)} <span className="text-ink-faint font-normal">of</span> {fmtBytes(totalCap)}</p>
+            <p className="text-[11px] text-ink-muted">{fmtBytes(Math.max(0, totalCap - totalUsed))} available</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge tone="brand" className="tnum">{avgDR.toFixed(1)}x data reduction</Badge>
+            <Badge tone="neutral" className="tnum">{entries.length} reporting</Badge>
+          </div>
         </div>
       </div>
-    </div>
+    </Panel>
   );
 }
 
@@ -86,7 +153,10 @@ function TopClustersBar({ chartData }) {
     datasets: [{
       label: '% Used',
       data: top10.map(d => d.pct),
-      backgroundColor: top10.map(d => d.pct >= 86 ? '#ef4444' : d.pct >= 70 ? '#f59e0b' : '#6CB33F'),
+      backgroundColor: top10.map(d => d.pct >= 86 ? '#F87171' : d.pct >= 70 ? '#FBBF24' : '#6CB33F'),
+      borderRadius: 3,
+      barThickness: 'flex',
+      maxBarThickness: 14,
     }]
   };
   const options = {
@@ -96,34 +166,33 @@ function TopClustersBar({ chartData }) {
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: '#2C2C2C', borderColor: '#3D3D3D', borderWidth: 1,
-        titleColor: '#E5E5E5', bodyColor: '#9ca3af',
+        backgroundColor: CHART.tooltipBg, borderColor: CHART.tooltipBorder, borderWidth: 1,
+        titleColor: CHART.titleColor, bodyColor: CHART.bodyColor,
         callbacks: { label: (item) => item.parsed.x.toFixed(1) + '% Used' }
       }
     },
     scales: {
       x: {
         max: 100,
-        ticks: { color: '#6b7280', font: { size: 9 }, callback: v => v + '%' },
-        grid: { color: '#3D3D3D' },
+        ticks: { color: CHART.tick, font: { size: 10 }, callback: v => v + '%' },
+        grid: { color: CHART.grid },
       },
       y: {
-        ticks: { color: '#6b7280', font: { size: 9 } },
-        grid: { color: '#3D3D3D' },
+        ticks: { color: CHART.tick, font: { size: 10 } },
+        grid: { display: false },
       }
     }
   };
   return (
-    <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-      <p className="text-xs font-semibold text-cohesity-text mb-3">Top Clusters by Capacity Used</p>
+    <Panel title="Top Clusters by Capacity" icon={TrendingUp}>
       <div style={{ height: 220 }}>
         {top10.length > 0 ? (
           <Bar data={barData} options={options} />
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-500 text-xs">No data</div>
+          <div className="flex items-center justify-center h-full text-ink-faint text-xs">No data</div>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }
 
@@ -139,41 +208,40 @@ function StorageDistributionTable({ sortedFiltered, latestMetrics }) {
     .slice(0, 10);
 
   return (
-    <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-      <p className="text-xs font-semibold text-cohesity-text mb-3">Storage Distribution</p>
+    <Panel title="Storage Distribution" icon={Database}>
       <div className="overflow-y-auto" style={{ maxHeight: 256 }}>
-        <table className="w-full text-[10px] text-gray-400">
-          <thead className="sticky top-0 bg-cohesity-gray">
-            <tr>
-              <th className="text-left px-1 py-1 font-medium">Cluster</th>
-              <th className="text-right px-1 py-1 font-medium">Used TB</th>
-              <th className="text-right px-1 py-1 font-medium">Total TB</th>
-              <th className="text-right px-1 py-1 font-medium">% Used</th>
+        <table className="w-full text-[11px] text-ink-muted">
+          <thead className="sticky top-0 bg-surface">
+            <tr className="text-ink-faint">
+              <th className="text-left px-1.5 py-1.5 font-semibold">Cluster</th>
+              <th className="text-right px-1.5 py-1.5 font-semibold">Used TB</th>
+              <th className="text-right px-1.5 py-1.5 font-semibold">Total TB</th>
+              <th className="text-right px-1.5 py-1.5 font-semibold">% Used</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((c, i) => {
+            {rows.map((c) => {
               const m = latestMetrics[c.id];
               const used = toTB(m?.used_bytes);
               const total = toTB(m?.total_capacity_bytes);
               const pct = total > 0 ? (used / total) * 100 : 0;
-              const pctColor = pct >= 86 ? 'text-red-400' : pct >= 70 ? 'text-amber-400' : 'text-green-400';
+              const pctColor = pct >= 86 ? 'text-status-crit' : pct >= 70 ? 'text-status-warn' : 'text-status-ok';
               return (
-                <tr key={c.id} className={i % 2 === 0 ? 'bg-cohesity-black/40' : ''}>
-                  <td className="px-1 py-1 truncate max-w-[100px]">{c.name}</td>
-                  <td className="text-right px-1 py-1">{used.toFixed(2)}</td>
-                  <td className="text-right px-1 py-1">{total.toFixed(2)}</td>
-                  <td className={`text-right px-1 py-1 font-medium ${pctColor}`}>{pct.toFixed(1)}%</td>
+                <tr key={c.id} className="border-t border-cohesity-border/60 hover:bg-surface-overlay/50 transition-colors">
+                  <td className="px-1.5 py-1.5 truncate max-w-[100px] text-ink">{c.name}</td>
+                  <td className="text-right px-1.5 py-1.5 tnum">{used.toFixed(2)}</td>
+                  <td className="text-right px-1.5 py-1.5 tnum">{total.toFixed(2)}</td>
+                  <td className={`text-right px-1.5 py-1.5 font-semibold tnum ${pctColor}`}>{pct.toFixed(1)}%</td>
                 </tr>
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={4} className="text-center py-4 text-gray-500">No data</td></tr>
+              <tr><td colSpan={4} className="text-center py-4 text-ink-faint">No data</td></tr>
             )}
           </tbody>
         </table>
       </div>
-    </div>
+    </Panel>
   );
 }
 
@@ -184,40 +252,48 @@ function AlertDetailModal({ alert, onClose }) {
     try { return new Date(ts).toLocaleString(); } catch { return ts; }
   };
   const severity = alert.severity || 'info';
-  const sevColor = severity === 'critical' ? 'text-red-400' : severity === 'warning' ? 'text-amber-400' : 'text-blue-400';
+  const sevTone = severity === 'critical' ? 'crit' : severity === 'warning' ? 'warn' : 'info';
   const msg = alert.message || alert.description || '';
-  // Scale modal width: short < 120 chars → 480px, medium < 300 → 680px, long → 860px, capped at 90vw
+  // Scale modal width: short < 120 chars → 520px, medium < 300 → 680px, long → 860px, capped at 90vw
   const modalMaxW = msg.length > 300 ? 'min(860px,90vw)' : msg.length > 120 ? 'min(680px,90vw)' : 'min(520px,90vw)';
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/60" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
-        className="relative bg-cohesity-gray border border-cohesity-border rounded-lg p-6 shadow-2xl"
+        className="relative panel bg-surface-raised p-6 shadow-modal"
         style={{ width: modalMaxW }}
         onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Alert details"
       >
         <div className="flex items-start justify-between mb-4">
-          <div>
-            <p className="text-sm font-semibold text-cohesity-text">{alert.alert_type || 'Alert'}</p>
-            <p className={`text-xs font-medium uppercase mt-0.5 ${sevColor}`}>{severity}</p>
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle size={18} className={severity === 'critical' ? 'text-status-crit' : severity === 'warning' ? 'text-status-warn' : 'text-status-info'} />
+            <div>
+              <p className="text-sm font-bold text-ink">{alert.alert_type || 'Alert'}</p>
+              <Badge tone={sevTone} className="mt-1 uppercase">{severity}</Badge>
+            </div>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-cohesity-text text-lg leading-none ml-4 flex-shrink-0">✕</button>
+          <button onClick={onClose} aria-label="Close" className="text-ink-faint hover:text-ink transition-colors cursor-pointer flex-shrink-0">
+            <X size={18} />
+          </button>
         </div>
         <div className="flex flex-col gap-2.5 text-xs">
-          <div className="flex gap-3"><span className="text-gray-500 w-20 flex-shrink-0">Cluster</span><span className="text-cohesity-text">{alert.cluster_name || alert.cluster_id || '—'}</span></div>
-          <div className="flex gap-3"><span className="text-gray-500 w-20 flex-shrink-0">Triggered</span><span className="text-cohesity-text">{fmtTime(getAlertTimestamp(alert))}</span></div>
-          {alert.resolved_at && <div className="flex gap-3"><span className="text-gray-500 w-20 flex-shrink-0">Resolved</span><span className="text-cohesity-text">{fmtTime(alert.resolved_at)}</span></div>}
+          <div className="flex gap-3"><span className="text-ink-faint w-20 flex-shrink-0">Cluster</span><span className="text-ink">{alert.cluster_name || alert.cluster_id || '—'}</span></div>
+          <div className="flex gap-3"><span className="text-ink-faint w-20 flex-shrink-0">Triggered</span><span className="text-ink tnum">{fmtTime(getAlertTimestamp(alert))}</span></div>
+          {alert.resolved_at && <div className="flex gap-3"><span className="text-ink-faint w-20 flex-shrink-0">Resolved</span><span className="text-ink tnum">{fmtTime(alert.resolved_at)}</span></div>}
           {msg && (
             <div className="flex gap-3">
-              <span className="text-gray-500 w-20 flex-shrink-0">Message</span>
-              <span className="text-cohesity-text leading-relaxed">{msg}</span>
+              <span className="text-ink-faint w-20 flex-shrink-0">Message</span>
+              <span className="text-ink leading-relaxed">{msg}</span>
             </div>
           )}
           {alert.property_list && alert.property_list.length > 0 && (
             <div className="mt-2 border-t border-cohesity-border pt-2">
-              <p className="text-gray-500 mb-1.5">Details</p>
+              <p className="text-ink-faint mb-1.5">Details</p>
               {alert.property_list.map((p, i) => (
-                <div key={i} className="flex gap-3 mb-1"><span className="text-gray-500 w-20 flex-shrink-0 truncate">{p.key}</span><span className="text-cohesity-text leading-relaxed">{p.value}</span></div>
+                <div key={i} className="flex gap-3 mb-1"><span className="text-ink-faint w-20 flex-shrink-0 truncate">{p.key}</span><span className="text-ink leading-relaxed">{p.value}</span></div>
               ))}
             </div>
           )}
@@ -253,20 +329,23 @@ function RecentAlertsPanel() {
   return (
     <>
       {selected && <AlertDetailModal alert={selected} onClose={() => setSelected(null)} />}
-      <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-        <p className="text-xs font-semibold text-cohesity-text mb-3">Recent Critical Alerts</p>
+      <Panel title="Recent Critical Alerts" icon={Bell}>
         <div className="overflow-y-auto" style={{ maxHeight: 256 }}>
           {loading ? (
-            <div className="text-center py-4 text-gray-500 text-xs">Loading...</div>
+            <div className="flex flex-col gap-2 py-1" aria-hidden="true">
+              {[...Array(4)].map((_, i) => <div key={i} className="skeleton h-7 w-full" />)}
+            </div>
           ) : alerts.length === 0 ? (
-            <div className="text-center py-4 text-green-400 text-xs">No active alerts</div>
+            <div className="text-center py-6 text-status-ok text-xs flex items-center justify-center gap-1.5">
+              <ShieldCheck size={14} /> No active critical alerts
+            </div>
           ) : (
-            <table className="w-full text-[10px] text-gray-400">
-              <thead className="sticky top-0 bg-cohesity-gray">
-                <tr>
-                  <th className="text-left px-1 py-1 font-medium">Time</th>
-                  <th className="text-left px-1 py-1 font-medium">Cluster</th>
-                  <th className="text-left px-1 py-1 font-medium">Issue</th>
+            <table className="w-full text-[11px] text-ink-muted">
+              <thead className="sticky top-0 bg-surface">
+                <tr className="text-ink-faint">
+                  <th className="text-left px-1.5 py-1.5 font-semibold">Time</th>
+                  <th className="text-left px-1.5 py-1.5 font-semibold">Cluster</th>
+                  <th className="text-left px-1.5 py-1.5 font-semibold">Issue</th>
                 </tr>
               </thead>
               <tbody>
@@ -274,19 +353,68 @@ function RecentAlertsPanel() {
                   <tr
                     key={a.id || i}
                     onClick={() => setSelected(a)}
-                    className={`cursor-pointer hover:bg-cohesity-green/10 transition-colors ${i % 2 === 0 ? 'bg-cohesity-black/40' : ''}`}
+                    className="cursor-pointer border-t border-cohesity-border/60 hover:bg-surface-overlay/50 transition-colors"
                   >
-                    <td className="px-1 py-1 whitespace-nowrap">{fmtTime(getAlertTimestamp(a))}</td>
-                    <td className="px-1 py-1 truncate max-w-[80px]">{a.cluster_name || a.cluster_id || '—'}</td>
-                    <td className="px-1 py-1 truncate max-w-[100px] text-amber-400">{a.alert_type || a.message || a.description || '—'}</td>
+                    <td className="px-1.5 py-1.5 whitespace-nowrap tnum">{fmtTime(getAlertTimestamp(a))}</td>
+                    <td className="px-1.5 py-1.5 truncate max-w-[80px] text-ink">{a.cluster_name || a.cluster_id || '—'}</td>
+                    <td className="px-1.5 py-1.5 truncate max-w-[110px] text-status-warn">{a.alert_type || a.message || a.description || '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
         </div>
-      </div>
+      </Panel>
     </>
+  );
+}
+
+function ClusterHealthPanel({ clusters, latestMetrics }) {
+  const rows = [...clusters].sort((a, b) => {
+    const order = { red: 0, yellow: 1, green: 2 };
+    return (order[clusterStatus(a, latestMetrics)] ?? 3) - (order[clusterStatus(b, latestMetrics)] ?? 3);
+  });
+  const counts = { green: 0, yellow: 0, red: 0 };
+  for (const c of clusters) counts[clusterStatus(c, latestMetrics)] = (counts[clusterStatus(c, latestMetrics)] || 0) + 1;
+
+  return (
+    <Panel
+      title="Cluster Status"
+      icon={Server}
+      actions={
+        <div className="flex items-center gap-1.5 text-[10px] tnum">
+          {counts.green > 0 && <Badge tone="ok">{counts.green} online</Badge>}
+          {counts.yellow > 0 && <Badge tone="warn">{counts.yellow} stale</Badge>}
+          {counts.red > 0 && <Badge tone="crit">{counts.red} offline</Badge>}
+        </div>
+      }
+    >
+      <div className="overflow-y-auto" style={{ maxHeight: 256 }}>
+        {rows.length === 0 ? (
+          <div className="text-center py-4 text-ink-faint text-xs">No clusters</div>
+        ) : (
+          <table className="w-full text-[11px] text-ink-muted">
+            <tbody>
+              {rows.map((c) => {
+                const st = clusterStatus(c, latestMetrics);
+                const m = latestMetrics[c.id];
+                return (
+                  <tr key={c.id} className="border-t border-cohesity-border/60 first:border-t-0 hover:bg-surface-overlay/50 transition-colors">
+                    <td className="px-1.5 py-1.5 w-5">
+                      <ClusterStatusOrb status={st} lastSeen={m?.captured_at} size={8} />
+                    </td>
+                    <td className="px-1.5 py-1.5 truncate max-w-[140px] text-ink">{c.name}</td>
+                    <td className="px-1.5 py-1.5 text-right whitespace-nowrap tnum">
+                      {m?.captured_at ? timeAgo(m.captured_at) : <span className="text-status-crit">Never</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </Panel>
   );
 }
 
@@ -309,11 +437,15 @@ export default function Dashboard() {
   const [growthTableHeight, setGrowthTableHeight] = useState(128);
   const [clusterPage, setClusterPage] = useState(0);
   const [clusterHistory, setClusterHistory] = useState({});
+  const [activeAlertCount, setActiveAlertCount] = useState(null);
+  const [criticalAlertCount, setCriticalAlertCount] = useState(0);
+  const [protectionSummary, setProtectionSummary] = useState(null);
 
   const trendChartRef = useRef(null);
   const trendResizeRef = useRef(null);
 
   const { search, setSearch } = useSearch();
+  const { toast } = useToast();
 
   const loadClusters = useCallback(async () => {
     try {
@@ -346,6 +478,19 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { loadClusters(); }, [loadClusters]);
+
+  // KPI extras: active alerts + 7-day protection success rate
+  useEffect(() => {
+    client.get('/alerts?dismissed=0&resolved=0')
+      .then(r => {
+        setActiveAlertCount(r.data.length);
+        setCriticalAlertCount(r.data.filter(a => a.severity === 'critical').length);
+      })
+      .catch(() => setActiveAlertCount(null));
+    client.get('/analytics/protection-runs?days=7')
+      .then(r => setProtectionSummary(r.data.summary))
+      .catch(() => setProtectionSummary(null));
+  }, []);
 
   useEffect(() => {
     if (!criticalOnly || clusters.length === 0) return;
@@ -446,25 +591,88 @@ export default function Dashboard() {
 
   const handleTriggerAll = async () => {
     setPolling(true);
-    await Promise.allSettled(clusters.map(c => client.post('/poller/trigger/' + c.id)));
-    setTimeout(() => { setPolling(false); loadClusters(); }, 3000);
+    const toastId = toast({ type: 'loading', title: 'Polling all clusters', message: `Requesting fresh metrics from ${clusters.length} cluster(s)…` });
+    const results = await Promise.allSettled(clusters.map(c => client.post('/poller/trigger/' + c.id)));
+    const failed = results.filter(r => r.status === 'rejected').length;
+    setTimeout(() => {
+      setPolling(false);
+      loadClusters();
+      toast({
+        id: toastId,
+        type: failed === 0 ? 'success' : 'warning',
+        title: failed === 0 ? 'Poll complete' : 'Poll finished with errors',
+        message: failed === 0
+          ? `All ${clusters.length} cluster(s) refreshed successfully.`
+          : `${clusters.length - failed} succeeded, ${failed} failed. Check cluster connectivity.`,
+      });
+    }, 3000);
   };
+
+  // KPI aggregates
+  const kpiEntries = clusters.map(c => latestMetrics[c.id]).filter(Boolean);
+  const kpiUsed = kpiEntries.reduce((s, m) => s + (m.used_bytes || 0), 0);
+  const kpiCap = kpiEntries.reduce((s, m) => s + (m.total_capacity_bytes || 0), 0);
+  const kpiPct = kpiCap > 0 ? (kpiUsed / kpiCap) * 100 : 0;
+  const onlineCount = clusters.filter(c => clusterStatus(c, latestMetrics) === 'green').length;
+  const successRate = protectionSummary?.successRate;
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Row 1: filter bar */}
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search clusters..."
-          className="bg-cohesity-gray border border-cohesity-border text-xs text-cohesity-text rounded px-3 py-1.5 w-40 focus:outline-none focus:border-cohesity-green placeholder-gray-500"
+      {/* Row 0: KPI strip */}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+        <StatCard
+          icon={Database}
+          label="Total Capacity"
+          value={fmtBytes(kpiCap)}
+          sub={`${fmtBytes(Math.max(0, kpiCap - kpiUsed))} free`}
+          tone="brand"
+          loading={loading}
         />
+        <StatCard
+          icon={HardDrive}
+          label="Storage Used"
+          value={`${kpiPct.toFixed(1)}%`}
+          sub={fmtBytes(kpiUsed)}
+          tone={kpiPct >= 86 ? 'crit' : kpiPct >= 70 ? 'warn' : 'ok'}
+          loading={loading}
+        />
+        <StatCard
+          icon={Server}
+          label="Clusters Online"
+          value={`${onlineCount} / ${clusters.length}`}
+          sub={onlineCount === clusters.length ? 'All reachable' : `${clusters.length - onlineCount} need attention`}
+          tone={onlineCount === clusters.length ? 'ok' : 'warn'}
+          loading={loading}
+        />
+        <StatCard
+          icon={Bell}
+          label="Active Alerts"
+          value={activeAlertCount ?? '—'}
+          sub={criticalAlertCount > 0 ? `${criticalAlertCount} critical` : 'No criticals'}
+          tone={criticalAlertCount > 0 ? 'crit' : (activeAlertCount ?? 0) > 0 ? 'warn' : 'ok'}
+          loading={activeAlertCount === null && loading}
+        />
+        <StatCard
+          icon={ShieldCheck}
+          label="Backup Success (7d)"
+          value={successRate != null ? `${successRate}%` : '—'}
+          sub={protectionSummary ? `${protectionSummary.failure} failed of ${protectionSummary.total}` : 'Awaiting data'}
+          tone={successRate == null ? 'default' : successRate >= 95 ? 'ok' : successRate >= 85 ? 'warn' : 'crit'}
+          loading={protectionSummary === null && loading}
+        />
+      </div>
+
+      {/* Row 1: Intelligent insights */}
+      <InsightsPanel />
+
+      {/* Row 2: filter bar */}
+      <div className="panel px-3.5 py-2.5 flex flex-wrap items-center gap-2 text-xs">
+        <ListFilter size={14} className="text-ink-faint" />
         <select
           value={connectionFilter}
           onChange={e => setConnectionFilter(e.target.value)}
-          className="bg-cohesity-gray border border-cohesity-border text-xs text-cohesity-text rounded px-2 py-1.5 focus:outline-none focus:border-cohesity-green"
+          aria-label="Filter by connection type"
+          className="bg-surface-overlay border border-cohesity-border text-xs text-ink rounded-lg px-2.5 py-1.5 focus:border-brand/60 cursor-pointer"
         >
           <option value="all">All Types</option>
           <option value="helios">Helios</option>
@@ -473,46 +681,51 @@ export default function Dashboard() {
         <select
           value={tagFilter}
           onChange={e => setTagFilter(e.target.value)}
-          className="bg-cohesity-gray border border-cohesity-border text-xs text-cohesity-text rounded px-2 py-1.5 focus:outline-none focus:border-cohesity-green"
+          aria-label="Filter by tag"
+          className="bg-surface-overlay border border-cohesity-border text-xs text-ink rounded-lg px-2.5 py-1.5 focus:border-brand/60 cursor-pointer"
         >
           <option value="all">All Tags</option>
           {allTags.map(tag => <option key={tag} value={tag}>{tag}</option>)}
         </select>
-        <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-          <input type="checkbox" checked={criticalOnly} onChange={e => setCriticalOnly(e.target.checked)} className="accent-red-500" />
+        <label className="flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer select-none">
+          <input type="checkbox" checked={criticalOnly} onChange={e => setCriticalOnly(e.target.checked)} className="accent-red-500 cursor-pointer" />
           Critical only
         </label>
         <div className="ml-auto flex items-center gap-2">
-          {(search || tagFilter !== 'all' || connectionFilter !== 'all') && (
-            <button onClick={() => { setSearch(''); setTagFilter('all'); setConnectionFilter('all'); setCriticalOnly(false); }} className="text-xs text-gray-500 hover:text-cohesity-green transition-colors">
-              ✕ Clear filters
+          {(search || tagFilter !== 'all' || connectionFilter !== 'all' || criticalOnly) && (
+            <button onClick={() => { setSearch(''); setTagFilter('all'); setConnectionFilter('all'); setCriticalOnly(false); }} className="flex items-center gap-1 text-xs text-ink-faint hover:text-brand transition-colors cursor-pointer">
+              <X size={12} /> Clear filters
             </button>
           )}
           {selectedClusterIds.size > 0 && (
-            <button onClick={() => setSelectedClusterIds(new Set())} className="text-xs text-cohesity-green hover:underline">
-              ✕ Clear selection ({selectedClusterIds.size})
+            <button onClick={() => setSelectedClusterIds(new Set())} className="flex items-center gap-1 text-xs text-brand hover:underline cursor-pointer">
+              <X size={12} /> Clear selection ({selectedClusterIds.size})
             </button>
           )}
-          <span className="text-xs text-gray-500">{sortedFiltered.length} cluster(s)</span>
+          <span className="text-xs text-ink-faint tnum">{sortedFiltered.length} cluster(s)</span>
           <button
             onClick={handleTriggerAll}
             disabled={polling || clusters.length === 0}
-            className="text-xs px-3 py-1.5 bg-cohesity-gray border border-cohesity-border rounded hover:border-cohesity-green hover:text-cohesity-green transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
           >
-            {polling ? 'Polling...' : '↻ Poll All'}
+            <RefreshCw size={13} className={polling ? 'animate-spin' : ''} />
+            {polling ? 'Polling…' : 'Poll All'}
           </button>
         </div>
       </div>
 
-      {/* Row 2: two-column main content */}
+      {/* Row 3: two-column main content */}
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
         {/* LEFT COLUMN */}
         <div className="xl:col-span-2 flex flex-col gap-4">
           <GlobalStorageCard latestMetrics={latestMetrics} clusters={clusters} />
 
           {/* Trend chart card */}
-          <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-            <p className="text-xs font-semibold text-cohesity-text mb-1">Capacity Growth Trend</p>
+          <div className="panel p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <TrendingUp size={14} className="text-brand" />
+              <p className="panel-title">Capacity Growth Trend</p>
+            </div>
             {(() => {
               const TREND_COLORS = [
                 '#6CB33F', '#3b82f6', '#f59e0b', '#a855f7', '#06b6d4',
@@ -527,14 +740,6 @@ export default function Dashboard() {
               )].sort();
 
               const trendClusters = activeSet.filter(c => trendHistory[c.id]?.length > 0);
-
-              const fmtBytes = (bytes) => {
-                if (bytes == null) return '—';
-                if (bytes >= 1e15) return (bytes / 1e15).toFixed(2) + ' PB';
-                if (bytes >= 1e12) return (bytes / 1e12).toFixed(2) + ' TB';
-                if (bytes >= 1e9)  return (bytes / 1e9).toFixed(2) + ' GB';
-                return (bytes / 1e6).toFixed(1) + ' MB';
-              };
 
               const allUsedBytes = Object.values(trendHistory).flatMap(rows => rows.map(r => r.used_bytes || 0));
               const maxBytes = Math.max(...allUsedBytes, 1);
@@ -713,14 +918,14 @@ export default function Dashboard() {
                 plugins: {
                   legend: {
                     display: trendClusters.length <= 12,
-                    labels: { color: '#9ca3af', font: { size: 9 }, boxWidth: 12 }
+                    labels: { color: CHART.bodyColor, font: { size: 10 }, boxWidth: 12 }
                   },
                   tooltip: {
-                    backgroundColor: '#2C2C2C',
-                    borderColor: '#3D3D3D',
+                    backgroundColor: CHART.tooltipBg,
+                    borderColor: CHART.tooltipBorder,
                     borderWidth: 1,
-                    titleColor: '#E5E5E5',
-                    bodyColor: '#9ca3af',
+                    titleColor: CHART.titleColor,
+                    bodyColor: CHART.bodyColor,
                     callbacks: {
                       label: (item) => {
                         const raw = item.parsed.y;
@@ -736,15 +941,15 @@ export default function Dashboard() {
                 },
                 scales: {
                   x: {
-                    ticks: { color: '#6b7280', font: { size: 9 }, maxTicksLimit: 12, maxRotation: 0 },
-                    grid: { color: '#3D3D3D' },
+                    ticks: { color: CHART.tick, font: { size: 10 }, maxTicksLimit: 12, maxRotation: 0 },
+                    grid: { color: CHART.grid },
                   },
                   y: {
                     min: yMin,
                     max: yMax,
-                    ticks: { color: '#6b7280', font: { size: 9 }, callback: v => v + ' ' + yUnit.label },
-                    title: { display: true, text: `Used (${yUnit.label})`, color: '#6b7280', font: { size: 9 } },
-                    grid: { color: '#3D3D3D' },
+                    ticks: { color: CHART.tick, font: { size: 10 }, callback: v => v + ' ' + yUnit.label },
+                    title: { display: true, text: `Used (${yUnit.label})`, color: CHART.tick, font: { size: 10 } },
+                    grid: { color: CHART.grid },
                   }
                 }
               };
@@ -769,34 +974,38 @@ export default function Dashboard() {
 
               return (
                 <>
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="text-[10px] text-gray-500">
+                  <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                    <p className="text-[10px] text-ink-faint">
                       {selectedClusterIds.size > 0 ? `${trendClusters.length} selected cluster(s)` : `${trendClusters.length} cluster(s)`}
-                      {hasData && <span className="ml-2 text-gray-600">&middot; scroll to zoom &middot; drag to pan</span>}
+                      {hasData && <span className="ml-2">&middot; scroll to zoom &middot; drag to pan</span>}
                     </p>
                     <div className="flex items-center gap-1">
                       {hasData && (
-                        <button onClick={handleCsvExport} className="text-xs px-2 py-1 rounded border border-cohesity-border text-gray-400 hover:border-cohesity-green hover:text-cohesity-green transition-colors" title="Export CSV">
-                          ↓ CSV
+                        <button onClick={handleCsvExport} className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-cohesity-border text-ink-muted hover:border-brand/50 hover:text-brand transition-colors cursor-pointer" title="Export CSV">
+                          <Download size={11} /> CSV
                         </button>
                       )}
                       {hasData && (
-                        <button onClick={() => trendChartRef.current?.resetZoom()} className="text-xs px-2 py-1 rounded border border-cohesity-border text-gray-400 hover:border-cohesity-green hover:text-cohesity-green transition-colors" title="Reset zoom">
-                          &#x21BA; Reset
+                        <button onClick={() => trendChartRef.current?.resetZoom()} className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-cohesity-border text-ink-muted hover:border-brand/50 hover:text-brand transition-colors cursor-pointer" title="Reset zoom">
+                          <RotateCcw size={11} /> Reset
                         </button>
                       )}
                       {[1, 7, 14, 30].map(d => (
                         <button key={d} onClick={() => setTrendDays(d)}
-                          className={`text-xs px-2 py-1 rounded border transition-colors ${trendDays === d ? 'bg-cohesity-green text-cohesity-black border-cohesity-green' : 'border-cohesity-border text-gray-400 hover:border-cohesity-green'}`}>
+                          className={`text-[11px] px-2 py-1 rounded-md border transition-colors cursor-pointer tnum ${trendDays === d ? 'bg-brand text-cohesity-black border-brand font-semibold' : 'border-cohesity-border text-ink-muted hover:border-brand/50'}`}>
                           {d}d
                         </button>
                       ))}
                     </div>
                   </div>
                   {trendLoading ? (
-                    <div className="flex items-center justify-center text-gray-400 text-xs" style={{ height: 200 }}>Loading trend data...</div>
+                    <div className="flex flex-col gap-2 justify-center" style={{ height: 200 }} role="status" aria-label="Loading trend data">
+                      <div className="skeleton h-3 w-1/3" />
+                      <div className="skeleton w-full" style={{ height: 140 }} />
+                      <div className="skeleton h-3 w-1/2" />
+                    </div>
                   ) : !hasData ? (
-                    <div className="flex items-center justify-center text-gray-500 text-xs" style={{ height: 200 }}>No trend data available. Select clusters or wait for polling to collect history.</div>
+                    <div className="flex items-center justify-center text-ink-faint text-xs" style={{ height: 200 }}>No trend data available. Select clusters or wait for polling to collect history.</div>
                   ) : (
                     <div style={{ height: trendChartHeight }}>
                       <Line ref={trendChartRef} data={trendChartData} options={trendOptions} />
@@ -822,24 +1031,24 @@ export default function Dashboard() {
                     className="flex items-center justify-center mt-1 h-3 cursor-ns-resize group"
                     title="Drag to resize"
                   >
-                    <div className="w-10 h-1 rounded-full bg-cohesity-border group-hover:bg-cohesity-green transition-colors" />
+                    <div className="w-10 h-1 rounded-full bg-cohesity-border group-hover:bg-brand transition-colors" />
                   </div>
                   {hasData && growthSummaries.some(s => s.growthBytesPerDay > 0) && (
-                    <div className="mt-2 border border-cohesity-border rounded overflow-hidden">
+                    <div className="mt-2 border border-cohesity-border rounded-lg overflow-hidden">
                       <div className="overflow-y-auto" style={{ height: growthTableHeight }}>
-                        <table className="w-full text-[10px] text-gray-400">
-                          <thead className="bg-cohesity-black sticky top-0">
-                            <tr>
-                              <th className="text-left px-2 py-1 font-medium">Cluster</th>
-                              <th className="text-right px-2 py-1 font-medium">Growth Rate</th>
-                              <th className="text-right px-2 py-1 font-medium">~Days to 85%</th>
-                              <th className="text-right px-2 py-1 font-medium">Date to 85%</th>
-                              <th className="text-right px-2 py-1 font-medium">~Days to 90%</th>
-                              <th className="text-right px-2 py-1 font-medium">Date to 90%</th>
+                        <table className="w-full text-[11px] text-ink-muted">
+                          <thead className="bg-surface-base sticky top-0">
+                            <tr className="text-ink-faint">
+                              <th className="text-left px-2 py-1.5 font-semibold">Cluster</th>
+                              <th className="text-right px-2 py-1.5 font-semibold">Growth Rate</th>
+                              <th className="text-right px-2 py-1.5 font-semibold">~Days to 85%</th>
+                              <th className="text-right px-2 py-1.5 font-semibold">Date to 85%</th>
+                              <th className="text-right px-2 py-1.5 font-semibold">~Days to 90%</th>
+                              <th className="text-right px-2 py-1.5 font-semibold">Date to 90%</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {growthSummaries.filter(s => s.growthBytesPerDay > 0).map((s, i) => {
+                            {growthSummaries.filter(s => s.growthBytesPerDay > 0).map((s) => {
                               const rateStr = s.growthBytesPerDay < 100e9
                                 ? `+${(s.growthBytesPerDay / 1e9).toFixed(1)} GB/day`
                                 : `+${(s.growthBytesPerDay * 7 / 1e12).toFixed(1)} TB/week`;
@@ -850,13 +1059,13 @@ export default function Dashboard() {
                                 return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
                               };
                               return (
-                                <tr key={s.name} className={i % 2 === 0 ? 'bg-cohesity-gray' : 'bg-cohesity-black'}>
-                                  <td className="px-2 py-1 truncate max-w-[120px]">{s.name}</td>
-                                  <td className="text-right px-2 py-1 text-cohesity-green">{rateStr}</td>
-                                  <td className="text-right px-2 py-1">{s.daysUntil85 != null ? Math.round(s.daysUntil85) : '—'}</td>
-                                  <td className="text-right px-2 py-1 text-amber-400">{toDateStr(s.daysUntil85)}</td>
-                                  <td className="text-right px-2 py-1">{s.daysUntilFull != null ? Math.round(s.daysUntilFull) : '—'}</td>
-                                  <td className="text-right px-2 py-1 text-amber-400">{toDateStr(s.daysUntilFull)}</td>
+                                <tr key={s.name} className="border-t border-cohesity-border/60 hover:bg-surface-overlay/50 transition-colors">
+                                  <td className="px-2 py-1.5 truncate max-w-[120px] text-ink">{s.name}</td>
+                                  <td className="text-right px-2 py-1.5 text-brand tnum">{rateStr}</td>
+                                  <td className="text-right px-2 py-1.5 tnum">{s.daysUntil85 != null ? Math.round(s.daysUntil85) : '—'}</td>
+                                  <td className="text-right px-2 py-1.5 text-status-warn tnum">{toDateStr(s.daysUntil85)}</td>
+                                  <td className="text-right px-2 py-1.5 tnum">{s.daysUntilFull != null ? Math.round(s.daysUntilFull) : '—'}</td>
+                                  <td className="text-right px-2 py-1.5 text-status-warn tnum">{toDateStr(s.daysUntilFull)}</td>
                                 </tr>
                               );
                             })}
@@ -879,10 +1088,10 @@ export default function Dashboard() {
                           window.addEventListener('mousemove', onMove);
                           window.addEventListener('mouseup', onUp);
                         }}
-                        className="flex items-center justify-center h-3 cursor-ns-resize group bg-cohesity-black"
+                        className="flex items-center justify-center h-3 cursor-ns-resize group bg-surface-base"
                         title="Drag to resize"
                       >
-                        <div className="w-10 h-1 rounded-full bg-cohesity-border group-hover:bg-cohesity-green transition-colors" />
+                        <div className="w-10 h-1 rounded-full bg-cohesity-border group-hover:bg-brand transition-colors" />
                       </div>
                     </div>
                   )}
@@ -894,10 +1103,13 @@ export default function Dashboard() {
 
         {/* RIGHT COLUMN */}
         <div className="xl:col-span-3">
-          <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4 h-full flex flex-col">
+          <div className="panel p-4 h-full flex flex-col">
             <div className="flex items-center justify-between mb-3">
-              <p className="text-xs font-semibold text-cohesity-text">Cluster Health &amp; Alerts</p>
-              <span className="text-[10px] text-gray-500">{sortedFiltered.length} clusters</span>
+              <div className="flex items-center gap-2">
+                <LayoutGrid size={14} className="text-brand" />
+                <p className="panel-title">Cluster Health &amp; Alerts</p>
+              </div>
+              <span className="text-[10px] text-ink-faint tnum">{sortedFiltered.length} clusters</span>
             </div>
             {loading ? (
               <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3 gap-2">
@@ -939,8 +1151,9 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Row 3: bottom 3 panels */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Row 4: bottom panels */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
+        <ClusterHealthPanel clusters={clusters} latestMetrics={latestMetrics} />
         <TopClustersBar chartData={chartData} />
         <StorageDistributionTable sortedFiltered={sortedFiltered} latestMetrics={latestMetrics} />
         <RecentAlertsPanel />

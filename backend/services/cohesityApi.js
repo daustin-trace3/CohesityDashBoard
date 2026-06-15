@@ -200,9 +200,87 @@ async function getProtectionGroupRunsV2(cluster, protectionGroupId, options = {}
   return Array.isArray(data) ? data : (data.runs || []);
 }
 
+const RETENTION_UNIT_DAYS = { Days: 1, Weeks: 7, Months: 30, Years: 365 };
+
+/**
+ * Fetch protection policies normalized to:
+ *   { policyId, name, retentionDays, replicationTargets[], archivalTargets[], dataLock }
+ * Tries the v2 API first, falls back to v1 for older clusters.
+ */
+async function fetchProtectionPolicies(cluster) {
+  const client = await getAuthenticatedClient(cluster);
+  try {
+    const { data } = await client.get('/v2/data-protect/policies', { timeout: 60000 });
+    const policies = Array.isArray(data) ? data : (data.policies || []);
+    return policies.map(p => {
+      const retention = p.backupPolicy?.regular?.retention || p.retention || {};
+      const retentionDays = retention.duration != null
+        ? retention.duration * (RETENTION_UNIT_DAYS[retention.unit] || 1)
+        : null;
+      const replicationTargets = (p.remoteTargetPolicy?.replicationTargets || [])
+        .map(t => t.remoteTargetConfig?.clusterName || t.targetType || 'remote')
+        .filter(Boolean);
+      const archivalTargets = (p.remoteTargetPolicy?.archivalTargets || [])
+        .map(t => t.targetName || t.targetType || 'archive')
+        .filter(Boolean);
+      return {
+        policyId: String(p.id ?? ''),
+        name: p.name || null,
+        retentionDays,
+        replicationTargets,
+        archivalTargets,
+        dataLock: !!(p.dataLock || retention.dataLockConfig),
+      };
+    });
+  } catch (v2Err) {
+    const { data } = await client.get('/irisservices/api/v1/public/protectionPolicy', { timeout: 60000 });
+    const policies = Array.isArray(data) ? data : [];
+    return policies.map(p => ({
+      policyId: String(p.id ?? ''),
+      name: p.name || null,
+      retentionDays: p.daysToKeep ?? null,
+      replicationTargets: (p.snapshotReplicationCopyPolicies || [])
+        .map(c => c.target?.clusterName)
+        .filter(Boolean),
+      archivalTargets: (p.snapshotArchivalCopyPolicies || [])
+        .map(c => c.target?.vaultName)
+        .filter(Boolean),
+      dataLock: !!p.wormRetentionType,
+    }));
+  }
+}
+
+/**
+ * Fetch registered protection sources with protected/unprotected object stats.
+ * One cheap call per cluster — stats come from registrationInfo aggregates.
+ */
+async function fetchSourceRegistrations(cluster) {
+  const client = await getAuthenticatedClient(cluster);
+  const { data } = await client.get(
+    '/irisservices/api/v1/public/protectionSources/registrationInfo?allUnderHierarchy=true',
+    { timeout: 120000 }
+  );
+  const rootNodes = data?.rootNodes || [];
+  return rootNodes.map(n => {
+    const root = n.rootNode || {};
+    const stats = n.stats || {};
+    return {
+      sourceId: root.id ?? null,
+      sourceName: root.name || null,
+      environment: (root.environment || '').replace(/^k/, ''),
+      protectedCount: stats.protectedCount ?? null,
+      unprotectedCount: stats.unprotectedCount ?? null,
+      protectedBytes: stats.protectedSize ?? null,
+      unprotectedBytes: stats.unprotectedSize ?? null,
+    };
+  });
+}
+
 module.exports = {
   getAuthenticatedClient,
   invalidateSession,
+  fetchProtectionPolicies,
+  fetchSourceRegistrations,
   fetchClusterInfo,
   fetchNodes,
   fetchNodesV2,

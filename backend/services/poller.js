@@ -1,6 +1,9 @@
 const cron = require('node-cron');
 const db = require('../db/database');
-const { fetchClusterInfo, fetchAlerts, fetchProtectionRuns, fetchProtectionJobs } = require('./cohesityApi');
+const {
+  fetchClusterInfo, fetchAlerts, fetchProtectionRuns, fetchProtectionJobs,
+  fetchProtectionPolicies, fetchSourceRegistrations,
+} = require('./cohesityApi');
 const logger = require('../utils/logger');
 
 // Map of clusterId -> cron task
@@ -123,18 +126,34 @@ function upsertAlerts(cluster, alertList) {
  * Upsert protection runs and their replication copyRuns.
  */
 function upsertProtectionRuns(cluster, runs) {
+  // Keyed on (cluster_id, job_id, start_time): re-polling the same run from
+  // Helios never duplicates it. Runs still in flight (kRunning/kAccepted) are
+  // updated in place so their final status and stats land in the local DB.
   const runStmt = db.prepare(`
-    INSERT OR IGNORE INTO protection_runs
+    INSERT INTO protection_runs
       (cluster_id, job_id, job_name, run_type, status, start_time, end_time,
        error_code, error_message, logical_bytes)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(cluster_id, job_id, start_time) DO UPDATE SET
+      status = excluded.status,
+      end_time = excluded.end_time,
+      error_code = excluded.error_code,
+      error_message = excluded.error_message,
+      logical_bytes = excluded.logical_bytes
+    WHERE protection_runs.status IN ('kRunning', 'kAccepted')
   `);
 
   const replStmt = db.prepare(`
-    INSERT OR IGNORE INTO replication_runs
+    INSERT INTO replication_runs
       (protection_run_id, cluster_id, target_cluster_name, target_cluster_id,
        status, logical_bytes, start_time, end_time, lag_seconds)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(protection_run_id, IFNULL(target_cluster_id, -1), IFNULL(target_cluster_name, ''), IFNULL(start_time, '')) DO UPDATE SET
+      status = excluded.status,
+      logical_bytes = excluded.logical_bytes,
+      end_time = excluded.end_time,
+      lag_seconds = excluded.lag_seconds
+    WHERE replication_runs.status IN ('kRunning', 'kAccepted')
   `);
 
   const findRunStmt = db.prepare(
@@ -206,6 +225,52 @@ function upsertProtectionRuns(cluster, runs) {
 }
 
 /**
+ * Replace the governance snapshot (policies + source registrations) for a
+ * cluster. Current-state data, so old rows are dropped rather than kept.
+ */
+const replacePolicies = db.transaction((clusterId, policies) => {
+  db.prepare('DELETE FROM policies WHERE cluster_id = ?').run(clusterId);
+  const stmt = db.prepare(`
+    INSERT INTO policies
+      (cluster_id, policy_id, name, retention_days, replication_targets, archival_targets, datalock)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const p of policies) {
+    stmt.run(
+      clusterId,
+      p.policyId,
+      p.name,
+      p.retentionDays,
+      JSON.stringify(p.replicationTargets || []),
+      JSON.stringify(p.archivalTargets || []),
+      p.dataLock ? 1 : 0
+    );
+  }
+});
+
+const replaceSourceRegistrations = db.transaction((clusterId, sources) => {
+  db.prepare('DELETE FROM source_registrations WHERE cluster_id = ?').run(clusterId);
+  const stmt = db.prepare(`
+    INSERT INTO source_registrations
+      (cluster_id, source_id, source_name, environment,
+       protected_count, unprotected_count, protected_bytes, unprotected_bytes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const s of sources) {
+    stmt.run(
+      clusterId,
+      s.sourceId,
+      s.sourceName,
+      s.environment,
+      s.protectedCount,
+      s.unprotectedCount,
+      s.protectedBytes,
+      s.unprotectedBytes
+    );
+  }
+});
+
+/**
  * Poll a single cluster.
  */
 function safeErrorMessage(err) {
@@ -221,10 +286,12 @@ function safeErrorMessage(err) {
 async function pollCluster(cluster) {
   try {
     const ninetyDaysAgo = (Date.now() - 90 * 24 * 60 * 60 * 1000) * 1000; // usecs
-    const [clusterInfo, alertData, protectionData] = await Promise.allSettled([
+    const [clusterInfo, alertData, protectionData, policyData, sourceData] = await Promise.allSettled([
       fetchClusterInfo(cluster),
       fetchAlerts(cluster),
-      fetchProtectionRuns(cluster, 10000, ninetyDaysAgo)
+      fetchProtectionRuns(cluster, 10000, ninetyDaysAgo),
+      fetchProtectionPolicies(cluster),
+      fetchSourceRegistrations(cluster)
     ]);
 
     if (clusterInfo.status === 'fulfilled') {
@@ -237,6 +304,26 @@ async function pollCluster(cluster) {
       upsertAlerts(cluster, alertData.value);
     } else {
       logger.error(`[Poller] Alerts fetch failed for cluster ${cluster.id}:`, safeErrorMessage(alertData.reason));
+    }
+
+    if (policyData.status === 'fulfilled') {
+      try {
+        replacePolicies(cluster.id, policyData.value);
+      } catch (err) {
+        logger.error(`[Poller] Policy snapshot failed for cluster ${cluster.id}:`, err.message);
+      }
+    } else {
+      logger.error(`[Poller] Policies fetch failed for cluster ${cluster.id}:`, safeErrorMessage(policyData.reason));
+    }
+
+    if (sourceData.status === 'fulfilled') {
+      try {
+        replaceSourceRegistrations(cluster.id, sourceData.value);
+      } catch (err) {
+        logger.error(`[Poller] Source registration snapshot failed for cluster ${cluster.id}:`, err.message);
+      }
+    } else {
+      logger.error(`[Poller] Source registrations fetch failed for cluster ${cluster.id}:`, safeErrorMessage(sourceData.reason));
     }
 
     if (protectionData.status === 'fulfilled') {

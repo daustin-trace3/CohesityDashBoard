@@ -1,9 +1,13 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Bell, Download, RefreshCw, X } from 'lucide-react';
 import client from '../api/client';
 import AlertBadge from '../components/AlertBadge';
 import SkeletonTable from '../components/SkeletonTable';
 import EmptyState, { AlertEmptyIcon } from '../components/EmptyState';
 import Pagination from '../components/Pagination';
+import { PageHeader } from '../components/ui/primitives';
+import { useToast } from '../components/ui/Toaster';
 
 function exportAlertsCSV(alerts) {
   const headers = ['ID', 'Cluster', 'Severity', 'Type', 'Description', 'First Seen', 'Status'];
@@ -31,22 +35,33 @@ export default function AlertsPage() {
   const [clusters, setClusters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [toast, setToast] = useState(null);
+  const { toast } = useToast();
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDismissConfirm, setBulkDismissConfirm] = useState(false);
 
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
 
+  const [searchParams, setSearchParams] = useSearchParams();
   const [severity, setSeverity] = useState('');
-  const [clusterId, setClusterId] = useState('');
+  const [clusterId, setClusterId] = useState(searchParams.get('clusterId') || '');
   const [showDismissed, setShowDismissed] = useState(false);
+
+  // Keep the cluster filter in sync with the URL so insight cards and other
+  // pages can deep-link to /alerts?clusterId=N.
+  useEffect(() => {
+    setClusterId(searchParams.get('clusterId') || '');
+  }, [searchParams]);
+
+  const handleClusterFilter = (value) => {
+    setClusterId(value);
+    setSearchParams(value ? { clusterId: value } : {}, { replace: true });
+  };
 
   const tableTopRef = useRef(null);
 
   const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    toast({ type, title: msg });
   };
 
   const loadAlerts = () => {
@@ -119,41 +134,31 @@ export default function AlertsPage() {
   const someSelected = dismissableAlerts.some(a => selectedIds.has(a.id));
 
   return (
-    <div className="relative">
-      {toast && (
-        <div role="alert" aria-live="polite"
-          className={`fixed top-4 right-4 z-50 px-4 py-2 rounded shadow-lg text-sm font-medium ${
-            toast.type === 'error' ? 'bg-red-900 text-red-200' : 'bg-cohesity-green text-cohesity-black'
-          }`}>
-          {toast.msg}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between mb-4" ref={tableTopRef}>
-        <h2 className="text-lg font-semibold text-cohesity-text">Alerts</h2>
-        <div className="flex items-center gap-2">
-          {alerts.length > 0 && !loading && (
-            <button
-              onClick={() => exportAlertsCSV(alerts)}
-              aria-label="Export alerts to CSV"
-              className="text-xs px-3 py-1.5 border border-cohesity-border rounded text-gray-400 hover:border-cohesity-green hover:text-cohesity-green transition-colors flex items-center gap-1.5"
-            >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-                <path d="M8 2v8M5 7l3 3 3-3" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M3 12h10" strokeLinecap="round" />
-              </svg>
-              Export CSV
-            </button>
-          )}
+    <div className="relative" ref={tableTopRef}>
+      <PageHeader
+        icon={Bell}
+        title="Alerts"
+        description="Triage, filter, and dismiss alerts across every monitored cluster"
+      >
+        {alerts.length > 0 && !loading && (
           <button
-            onClick={loadAlerts}
-            aria-label="Refresh alerts"
-            className="text-xs px-3 py-1.5 border border-cohesity-border rounded hover:border-cohesity-green text-gray-400 hover:text-cohesity-green transition-colors"
+            onClick={() => exportAlertsCSV(alerts)}
+            aria-label="Export alerts to CSV"
+            className="text-xs px-3 py-1.5 border border-cohesity-border rounded-lg text-ink-muted hover:border-brand/50 hover:text-brand transition-colors flex items-center gap-1.5 cursor-pointer"
           >
-            Refresh
+            <Download size={13} />
+            Export CSV
           </button>
-        </div>
-      </div>
+        )}
+        <button
+          onClick={loadAlerts}
+          aria-label="Refresh alerts"
+          className="text-xs px-3 py-1.5 border border-cohesity-border rounded-lg text-ink-muted hover:border-brand/50 hover:text-brand transition-colors flex items-center gap-1.5 cursor-pointer"
+        >
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </PageHeader>
 
       <div className="flex flex-wrap gap-3 mb-4 items-center">
         <label className="sr-only" htmlFor="severity-filter">Severity</label>
@@ -166,7 +171,7 @@ export default function AlertsPage() {
         </select>
 
         <label className="sr-only" htmlFor="cluster-filter">Cluster</label>
-        <select id="cluster-filter" value={clusterId} onChange={e => setClusterId(e.target.value)}
+        <select id="cluster-filter" value={clusterId} onChange={e => handleClusterFilter(e.target.value)}
           className="bg-cohesity-black border border-cohesity-border text-sm text-cohesity-text rounded px-3 py-1.5 focus:border-cohesity-green">
           <option value="">All Clusters</option>
           {clusters.map(c => (
@@ -186,11 +191,11 @@ export default function AlertsPage() {
       </div>
 
       {error && (
-        <div role="alert" className="bg-red-900 border border-red-700 text-red-300 rounded p-3 mb-4 text-sm">{error}</div>
+        <div role="alert" className="bg-status-crit/10 border border-status-crit/30 text-status-crit rounded-lg p-3 mb-4 text-sm">{error}</div>
       )}
 
       {loading ? (
-        <SkeletonTable rows={8} colWidths={['w-4', 'w-28', 'w-16', 'w-20', 'w-48', 'w-20', 'w-14', 'w-12']} />
+        <div className="panel p-4"><SkeletonTable rows={8} colWidths={['w-4', 'w-28', 'w-16', 'w-20', 'w-48', 'w-20', 'w-14', 'w-12']} /></div>
       ) : alerts.length === 0 ? (
         <EmptyState
           icon={<AlertEmptyIcon />}
@@ -202,13 +207,13 @@ export default function AlertsPage() {
           }
           action={
             (severity || clusterId)
-              ? { label: 'Clear filters', onClick: () => { setSeverity(''); setClusterId(''); } }
+              ? { label: 'Clear filters', onClick: () => { setSeverity(''); handleClusterFilter(''); } }
               : undefined
           }
         />
       ) : (
         <>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto panel p-4">
             <table className="w-full text-sm border-collapse" aria-label="Alerts table">
               <thead>
                 <tr className="text-left text-xs text-gray-400 border-b border-cohesity-border">
@@ -289,7 +294,7 @@ export default function AlertsPage() {
       )}
 
       {selectedIds.size > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 bg-cohesity-black border-t border-cohesity-border px-6 py-3 flex items-center gap-3 z-40 shadow-lg">
+        <div className="fixed bottom-0 left-0 right-0 bg-surface-raised/95 backdrop-blur border-t border-cohesity-border px-6 py-3 flex items-center gap-3 z-40 shadow-modal">
           <span className="text-sm text-cohesity-text">{selectedIds.size} alert(s) selected</span>
           <div className="flex-1" />
           {bulkDismissConfirm ? (
@@ -312,8 +317,8 @@ export default function AlertsPage() {
           )}
           <button onClick={() => { setSelectedIds(new Set()); setBulkDismissConfirm(false); }}
             aria-label="Clear selection"
-            className="text-xs px-3 py-1.5 border border-cohesity-border rounded text-gray-400 hover:text-cohesity-text transition-colors">
-            ✕ Clear
+            className="text-xs px-3 py-1.5 border border-cohesity-border rounded-lg text-ink-muted hover:text-ink transition-colors flex items-center gap-1 cursor-pointer">
+            <X size={12} /> Clear
           </button>
         </div>
       )}

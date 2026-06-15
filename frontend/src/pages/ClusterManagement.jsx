@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
+import { Server, Upload, Plus } from 'lucide-react';
 import client from '../api/client';
+import { PageHeader } from '../components/ui/primitives';
+import SkeletonTable from '../components/SkeletonTable';
+import { useToast } from '../components/ui/Toaster';
 
 const EMPTY_FORM = {
   name: '',
@@ -499,7 +503,7 @@ export default function ClusterManagement() {
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState(null); // null | 'add' | { edit: cluster }
   const [deleteConfirm, setDeleteConfirm] = useState(null);
-  const [toast, setToast] = useState(null);
+  const { toast } = useToast();
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkModal, setBulkModal] = useState(null); // null | 'replaceTags' | 'appendTags' | 'credentials'
   const [bulkConfirmDelete, setBulkConfirmDelete] = useState(false);
@@ -514,8 +518,7 @@ export default function ClusterManagement() {
   const [importOverwrite, setImportOverwrite] = useState(false);
 
   const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
+    toast({ type, title: msg });
   };
 
   const loadClusters = () => {
@@ -624,19 +627,29 @@ export default function ClusterManagement() {
   return (
     <>
     <div className="relative">
-      {toast && (
-        <div
-          className={`fixed top-4 right-4 z-50 px-4 py-2 rounded shadow-lg text-sm font-medium ${
-            toast.type === 'error' ? 'bg-red-900 text-red-200' : 'bg-cohesity-green text-cohesity-black'
-          }`}
+      <PageHeader
+        icon={Server}
+        title="Cluster Management"
+        description="Connect, organize, and maintain Cohesity clusters across your estate"
+      >
+        <button
+          onClick={() => setImportOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-2 bg-surface border border-cohesity-border text-brand rounded-lg text-xs font-semibold hover:border-brand/50 transition-colors cursor-pointer"
         >
-          {toast.msg}
-        </div>
-      )}
+          <Upload size={13} /> Import CSV
+        </button>
+        {!mode && (
+          <button
+            onClick={() => setMode('add')}
+            className="flex items-center gap-1.5 px-4 py-2 bg-brand text-cohesity-black rounded-lg text-xs font-bold hover:bg-brand-bright transition-colors cursor-pointer"
+          >
+            <Plus size={14} /> Add Cluster
+          </button>
+        )}
+      </PageHeader>
 
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-3 mb-6">
-        <h2 className="text-lg font-semibold text-cohesity-text mr-2">Cluster Management</h2>
         <input
           type="text"
           value={clusterSearch}
@@ -672,23 +685,7 @@ export default function ClusterManagement() {
             Select all
           </label>
         )}
-        <span className="text-xs text-gray-500">{filteredClusters.length} of {clusters.length}</span>
-        <div className="ml-auto flex gap-2">
-          <button
-            onClick={() => setImportOpen(true)}
-            className="px-3 py-2 bg-cohesity-gray border border-cohesity-border text-cohesity-green rounded text-sm font-semibold hover:border-cohesity-green transition-colors"
-          >
-            ↑ Import CSV
-          </button>
-          {!mode && (
-            <button
-              onClick={() => setMode('add')}
-              className="px-4 py-2 bg-cohesity-green text-cohesity-black rounded text-sm font-semibold hover:bg-cohesity-green-dark transition-colors"
-            >
-              + Add Cluster
-            </button>
-          )}
-        </div>
+        <span className="text-xs text-gray-500 ml-auto">{filteredClusters.length} of {clusters.length}</span>
       </div>
 
       {mode === 'add' && (
@@ -710,7 +707,7 @@ export default function ClusterManagement() {
       )}
 
       {loading ? (
-        <div className="text-gray-400 text-sm">Loading clusters...</div>
+        <div className="panel p-4"><SkeletonTable rows={6} colWidths={['w-40', 'w-20', 'w-24', 'w-32', 'w-16']} /></div>
       ) : clusters.length === 0 ? (
         <div className="text-gray-500 text-sm">No clusters configured.</div>
       ) : filteredClusters.length === 0 ? (

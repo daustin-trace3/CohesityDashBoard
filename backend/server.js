@@ -17,6 +17,8 @@ const heliosRouter = require('./routes/helios');
 const importRouter = require('./routes/import');
 const analyticsRouter = require('./routes/analytics');
 const replicationRouter = require('./routes/replication');
+const insightsRouter = require('./routes/insights');
+const governanceRouter = require('./routes/governance');
 const requireApiKey = require('./middleware/auth');
 const errorHandler = require('./middleware/errorHandler');
 const { initPoller } = require('./services/poller');
@@ -25,7 +27,16 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Security headers
-app.use(helmet());
+// Non-HTTPS/public-IP testing: avoid forced HTTPS asset upgrades and COOP/OAC warnings; harden these behind HTTPS.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      upgradeInsecureRequests: null
+    }
+  },
+  crossOriginOpenerPolicy: false,
+  originAgentCluster: false
+}));
 
 // CORS — restrict to localhost origins only
 app.use(cors({
@@ -35,16 +46,19 @@ app.use(cors({
     'http://localhost:3000',
     'http://127.0.0.1:5173',
     'http://127.0.0.1:3001',
-    'http://127.0.0.1:3000'
+    'http://127.0.0.1:3000',
+    'http://136.63.53.121:5173',
+    'http://136.63.53.121:3001',
+    'http://136.63.53.121:3000'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key']
 }));
 
-// Rate limiting: 500 requests per minute per IP (dashboard loads many per-cluster requests)
+// Rate limiting: 1000 requests per minute per IP (dashboard loads many per-cluster requests)
 const limiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 500,
+  max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' }
@@ -66,6 +80,8 @@ app.use('/api/helios', heliosRouter);
 app.use('/api/import', importRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/replication', replicationRouter);
+app.use('/api/insights', insightsRouter);
+app.use('/api/governance', governanceRouter);
 
 // Health check — verifies DB connectivity
 app.get('/health', (req, res) => {
@@ -104,8 +120,8 @@ if (!process.env.HELIOS_API_KEY) {
   logger.warn('HELIOS_API_KEY is not set — Helios discovery will be unavailable.');
 }
 
-app.listen(PORT, () => {
-  logger.info(`Backend running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
   initPoller();
 });
 

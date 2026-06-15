@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { ShieldCheck } from 'lucide-react';
 import client from '../api/client';
 import { Bar } from 'react-chartjs-2';
+import { PageHeader, Spinner } from '../components/ui/primitives';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
@@ -200,7 +202,12 @@ export default function DataProtectionPage() {
   const noSuccessCount = atRiskJobs.filter(j => j.hoursSinceLastSuccess && j.hoursSinceLastSuccess >= 24).length;
 
   return (
-    <div className="p-4 space-y-6">
+    <div className="space-y-6">
+      <PageHeader
+        icon={ShieldCheck}
+        title="Data Protection"
+        description="Protection job health, at-risk workloads, and failure analysis"
+      />
       {/* Filter Bar */}
       <div className="sticky top-0 z-10 bg-cohesity-black py-2 flex flex-wrap gap-3 items-center border-b border-cohesity-border">
         <select
@@ -219,13 +226,13 @@ export default function DataProtectionPage() {
             <button
               key={d}
               onClick={() => setDays(d)}
-              className={`text-xs px-3 py-1.5 rounded font-medium transition-colors ${
+              className={`text-xs px-3 py-1.5 rounded font-medium transition-colors cursor-pointer ${
                 days === d
                   ? 'bg-cohesity-green text-white'
                   : 'bg-cohesity-gray text-cohesity-text hover:bg-cohesity-border'
               }`}
             >
-              {d}d
+              {d === 1 ? '24h' : `${d}d`}
             </button>
           ))}
         </div>
@@ -238,7 +245,7 @@ export default function DataProtectionPage() {
         </button>
 
         {loading && (
-          <span className="text-xs text-cohesity-green animate-pulse ml-2">Loading...</span>
+          <span className="flex items-center gap-1.5 text-xs text-ink-muted ml-2" role="status"><Spinner size={13} /> Loading protection data&hellip;</span>
         )}
       </div>
 

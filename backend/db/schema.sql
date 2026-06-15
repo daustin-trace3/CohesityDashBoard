@@ -71,6 +71,35 @@ CREATE TABLE IF NOT EXISTS replication_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_repl_runs_cluster_time ON replication_runs(cluster_id, start_time);
 
+-- Governance snapshots: replaced wholesale per cluster on each poll (current
+-- state, not history).
+CREATE TABLE IF NOT EXISTS policies (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  cluster_id            INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+  policy_id             TEXT,
+  name                  TEXT,
+  retention_days        INTEGER,
+  replication_targets   TEXT,   -- JSON array of target cluster names
+  archival_targets      TEXT,   -- JSON array of archival target names
+  datalock              INTEGER NOT NULL DEFAULT 0,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_policies_cluster ON policies(cluster_id);
+
+CREATE TABLE IF NOT EXISTS source_registrations (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  cluster_id            INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+  source_id             INTEGER,
+  source_name           TEXT,
+  environment           TEXT,
+  protected_count       INTEGER,
+  unprotected_count     INTEGER,
+  protected_bytes       INTEGER,
+  unprotected_bytes     INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_source_reg_cluster ON source_registrations(cluster_id);
+
 CREATE TABLE IF NOT EXISTS replication_status_cache (
   cache_key             TEXT PRIMARY KEY,
   cluster_name          TEXT NOT NULL,

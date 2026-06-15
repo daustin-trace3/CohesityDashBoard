@@ -67,6 +67,12 @@ describe('ClusterCard with historyRows prop', () => {
     // Card root has role="button" with aria-label containing '—'
     expect(screen.getByRole('button', { name: /— used/ })).toBeInTheDocument();
   });
+
+  it('renders status orb without crashing when captured_at is present', () => {
+    const rowWithTimestamp = { ...metricsRow, captured_at: '2026-06-11 10:00:00' };
+    render(<ClusterCard cluster={cluster} historyRows={[rowWithTimestamp]} />);
+    expect(screen.getByText('Test Cluster')).toBeInTheDocument();
+  });
 });
 
 describe('ClusterCard self-fetch mode (no historyRows)', () => {

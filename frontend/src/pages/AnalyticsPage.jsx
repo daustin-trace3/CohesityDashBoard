@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Activity } from 'lucide-react';
 import client from '../api/client';
 import { Bar } from 'react-chartjs-2';
+import { PageHeader, Spinner } from '../components/ui/primitives';
 
 // Helper functions
 function formatBytes(bytes) {
@@ -520,7 +522,7 @@ function SiteReplicationMesh({ flows }) {
 }
 
 export default function AnalyticsPage() {
-  const [days, setDays] = useState(7);
+  const [days, setDays] = useState(1);
   const [clusterId, setClusterId] = useState('');
   const [clusters, setClusters] = useState([]);
   const [backup, setBackup] = useState(null);
@@ -668,7 +670,12 @@ export default function AnalyticsPage() {
   const replSummary = replication?.summary || {};
 
   return (
-    <div className="p-4 space-y-6">
+    <div className="space-y-6">
+      <PageHeader
+        icon={Activity}
+        title="Analytics"
+        description="Backup job performance, SLA compliance, anomalies, and replication trends"
+      />
       {/* Filter Bar */}
       <div className="sticky top-0 z-10 bg-cohesity-black py-2 flex flex-wrap gap-3 items-center border-b border-cohesity-border">
         <select
@@ -683,17 +690,17 @@ export default function AnalyticsPage() {
         </select>
 
         <div className="flex gap-1">
-          {[7, 14, 30, 90].map(d => (
+          {[1, 7, 14, 30, 90].map(d => (
             <button
               key={d}
               onClick={() => setDays(d)}
-              className={`text-xs px-3 py-1.5 rounded font-medium transition-colors ${
+              className={`text-xs px-3 py-1.5 rounded font-medium transition-colors cursor-pointer ${
                 days === d
                   ? 'bg-cohesity-green text-white'
                   : 'bg-cohesity-gray text-cohesity-text hover:bg-cohesity-border'
               }`}
             >
-              {d}d
+              {d === 1 ? '24h' : `${d}d`}
             </button>
           ))}
         </div>
@@ -706,7 +713,7 @@ export default function AnalyticsPage() {
         </button>
 
         {loading && (
-          <span className="text-xs text-cohesity-green animate-pulse ml-2">Loading analytics...</span>
+          <span className="flex items-center gap-1.5 text-xs text-ink-muted ml-2" role="status"><Spinner size={13} /> Loading analytics&hellip;</span>
         )}
       </div>
 

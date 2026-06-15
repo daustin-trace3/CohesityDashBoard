@@ -30,7 +30,9 @@ router.get(
       if (!cluster) return res.status(404).json({ error: 'Cluster not found' });
 
       const rows = db.prepare(`
-        SELECT id, cluster_id, captured_at, total_capacity_bytes, used_bytes,
+        SELECT id, cluster_id,
+               strftime('%Y-%m-%dT%H:%M:%SZ', captured_at) as captured_at,
+               total_capacity_bytes, used_bytes,
                logical_bytes, data_reduction_ratio, software_version, node_count
         FROM metrics_history
         WHERE cluster_id = ?

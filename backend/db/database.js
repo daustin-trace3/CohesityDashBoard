@@ -28,4 +28,65 @@ try {
   // Column already exists — ignore
 }
 
+// Migration: replication_runs had no unique constraint, so every poll cycle
+// re-inserted the same copy runs (observed: ~11.6M rows, 96% duplicates).
+// Rebuild the table keeping the newest row per copy run (later polls carry the
+// final status), then enforce uniqueness. IFNULL is needed because NULLs never
+// conflict in SQLite unique indexes. Runs once; gated on the index name.
+const hasReplUniqueIndex = db
+  .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_repl_runs_unique'")
+  .get();
+if (!hasReplUniqueIndex) {
+  const started = Date.now();
+  const before = db.prepare('SELECT COUNT(*) c FROM replication_runs').get().c;
+  console.log(`[migration] Deduplicating replication_runs (${before} rows) — this runs once and may take a minute…`);
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE replication_runs_dedup (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        protection_run_id     INTEGER NOT NULL REFERENCES protection_runs(id) ON DELETE CASCADE,
+        cluster_id            INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+        target_cluster_name   TEXT,
+        target_cluster_id     INTEGER,
+        status                TEXT,
+        logical_bytes         INTEGER,
+        start_time            DATETIME,
+        end_time              DATETIME,
+        lag_seconds           INTEGER,
+        captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.exec(`
+      INSERT INTO replication_runs_dedup
+      SELECT * FROM replication_runs
+      WHERE id IN (
+        SELECT MAX(id) FROM replication_runs
+        GROUP BY protection_run_id,
+                 IFNULL(target_cluster_id, -1),
+                 IFNULL(target_cluster_name, ''),
+                 IFNULL(start_time, '')
+      )
+    `);
+    db.exec('DROP TABLE replication_runs');
+    db.exec('ALTER TABLE replication_runs_dedup RENAME TO replication_runs');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_repl_runs_cluster_time ON replication_runs(cluster_id, start_time)');
+    db.exec(`
+      CREATE UNIQUE INDEX idx_repl_runs_unique ON replication_runs(
+        protection_run_id,
+        IFNULL(target_cluster_id, -1),
+        IFNULL(target_cluster_name, ''),
+        IFNULL(start_time, '')
+      )
+    `);
+  })();
+  db.exec('PRAGMA foreign_keys = ON');
+
+  const after = db.prepare('SELECT COUNT(*) c FROM replication_runs').get().c;
+  console.log(`[migration] replication_runs deduplicated: ${before} -> ${after} rows in ${((Date.now() - started) / 1000).toFixed(1)}s. Reclaiming disk space (VACUUM)…`);
+  db.exec('VACUUM');
+  console.log('[migration] VACUUM complete.');
+}
+
 module.exports = db;

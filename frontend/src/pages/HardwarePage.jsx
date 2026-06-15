@@ -1,6 +1,8 @@
 import { useEffect, useState, useMemo } from 'react';
+import { HardDrive } from 'lucide-react';
 import client from '../api/client';
 import Pagination from '../components/Pagination';
+import { PageHeader, Spinner } from '../components/ui/primitives';
 
 function shortVersion(v) {
   if (!v || v === '—') return '—';
@@ -151,15 +153,20 @@ export default function HardwarePage() {
   return (
     <div className="flex flex-col gap-4">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-lg font-semibold text-cohesity-text">Infrastructure</h2>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {loading
-              ? `Loading — ${loadedCount} / ${clusterCount} clusters`
-              : `${nodeRows.length} nodes across ${clusterCount} cluster${clusterCount !== 1 ? 's' : ''}`}
-          </p>
-        </div>
+      <PageHeader
+        icon={HardDrive}
+        title="Infrastructure"
+        description={
+          loading
+            ? undefined
+            : `${nodeRows.length} nodes across ${clusterCount} cluster${clusterCount !== 1 ? 's' : ''}`
+        }
+      >
+        {loading && (
+          <span className="flex items-center gap-1.5 text-xs text-ink-muted" role="status">
+            <Spinner size={13} /> Loading {loadedCount} / {clusterCount} clusters&hellip;
+          </span>
+        )}
         {nodeRows.length > 0 && (
           <div className="flex gap-4 text-xs text-gray-400">
             <span className="flex items-center gap-1.5">
@@ -180,7 +187,7 @@ export default function HardwarePage() {
             )}
           </div>
         )}
-      </div>
+      </PageHeader>
 
       {/* Filter bar */}
       <div className="flex flex-wrap gap-2 items-center">

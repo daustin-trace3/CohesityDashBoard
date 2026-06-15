@@ -1,14 +1,16 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --cohesity-black: #1A1A1A;
+  --cohesity-black: #0B1015;
   --cohesity-green: #6CB33F;
-  --cohesity-green-dark: #4d8a2a;
-  --cohesity-gray: #2C2C2C;
-  --cohesity-text: #E5E5E5;
-  --cohesity-border: #3D3D3D;
+  --cohesity-green-dark: #54932D;
+  --cohesity-gray: #131B23;
+  --cohesity-text: #E8EDF2;
+  --cohesity-border: #1F2B37;
 }
 
 * {
@@ -16,7 +18,6 @@
 }
 
 /* ── Accessible focus rings ───────────────────────────────────────────────── */
-/* Remove browser default only; replace with a visible ring on keyboard nav   */
 *:focus {
   outline: none;
 }
@@ -28,33 +29,90 @@
 
 body {
   background-color: var(--cohesity-black);
+  background-image:
+    radial-gradient(1200px 500px at 80% -10%, rgba(108, 179, 63, 0.05), transparent 60%),
+    radial-gradient(900px 400px at -10% 110%, rgba(96, 165, 250, 0.04), transparent 60%);
+  background-attachment: fixed;
   color: var(--cohesity-text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
-    Ubuntu, Cantarell, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   margin: 0;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Scrollbar */
+/* Tabular figures for metric values so numbers don't jitter while updating */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Panels ──────────────────────────────────────────────────────────────── */
+@layer components {
+  .panel {
+    @apply bg-surface border border-cohesity-border rounded-xl shadow-panel;
+  }
+  .panel-hover {
+    @apply transition-all duration-200 hover:border-brand/40 hover:shadow-panel-hover;
+  }
+  .panel-title {
+    @apply text-xs font-semibold uppercase tracking-wider text-ink-muted;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium border;
+  }
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--cohesity-gray);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--cohesity-border);
-  border-radius: 3px;
+  background: #2A3845;
+  border-radius: 4px;
+  border: 2px solid var(--cohesity-black);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: #3B4D5E;
 }
 
+/* ── Skeleton shimmer ────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, #18222C 25%, #1E2A36 37%, #18222C 63%);
+  background-size: 400px 100%;
+  animation: shimmer 1.6s linear infinite;
+  border-radius: 6px;
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+/* ── Status animations ───────────────────────────────────────────────────── */
 @keyframes pulse-red {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); border-color: #ef4444; }
-  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.35); border-color: rgba(239, 68, 68, 0.6); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0); border-color: #f87171; }
+  50% { box-shadow: 0 0 0 6px rgba(248, 113, 113, 0.28); border-color: rgba(248, 113, 113, 0.6); }
 }
 
 .pulse-critical {
   animation: pulse-red 1.8s ease-in-out infinite;
+}
+
+@keyframes orb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

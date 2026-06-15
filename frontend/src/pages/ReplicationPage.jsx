@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { ArrowLeftRight } from 'lucide-react';
 import client from '../api/client';
+import { PageHeader, Spinner } from '../components/ui/primitives';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
@@ -178,7 +180,12 @@ export default function ReplicationPage() {
   };
 
   return (
-    <div className="p-4 space-y-6">
+    <div className="space-y-6">
+      <PageHeader
+        icon={ArrowLeftRight}
+        title="Replication"
+        description="Live replication task status, lag, and throughput per cluster"
+      />
       {/* Controls Row */}
       <div className="sticky top-0 z-10 bg-cohesity-black py-2 border-b border-cohesity-border">
         <div className="flex flex-wrap gap-4 items-center mb-4">
@@ -263,7 +270,7 @@ export default function ReplicationPage() {
         </div>
 
         {loading && (
-          <div className="text-xs text-cohesity-green animate-pulse">Loading replication data...</div>
+          <div className="flex items-center gap-1.5 text-xs text-ink-muted" role="status"><Spinner size={13} /> Loading replication data&hellip;</div>
         )}
       </div>
 

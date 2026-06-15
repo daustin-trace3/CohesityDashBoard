@@ -1,9 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Bell, BellOff, ArrowRight } from 'lucide-react';
 import AlertBadge from './AlertBadge';
 
 export default function NotificationBell({ count = 0, alerts = [] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     function handleClick(e) {
@@ -17,57 +20,55 @@ export default function NotificationBell({ count = 0, alerts = [] }) {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="relative p-2 rounded hover:bg-cohesity-border transition-colors"
-        aria-label="Notifications"
+        className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer"
+        aria-label={`Notifications${count > 0 ? `, ${count} unresolved` : ''}`}
+        aria-expanded={open}
       >
-        <svg
-          className="w-5 h-5 text-cohesity-text"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
-          />
-        </svg>
+        <Bell size={17} />
         {count > 0 && (
-          <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center px-0.5 font-bold">
+          <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] bg-status-crit text-white text-[10px] rounded-full flex items-center justify-center px-1 font-bold tnum shadow">
             {count > 99 ? '99+' : count}
           </span>
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 top-10 w-80 bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl z-50 overflow-hidden">
+        <div className="absolute right-0 top-11 w-[340px] panel bg-surface-raised shadow-modal z-50 overflow-hidden animate-fade-in">
           <div className="px-4 py-3 border-b border-cohesity-border flex items-center justify-between">
-            <span className="text-sm font-semibold text-cohesity-text">Recent Alerts</span>
-            <span className="text-xs text-gray-400">{count} unresolved</span>
+            <span className="text-sm font-bold text-ink">Recent Alerts</span>
+            <span className="text-[11px] text-ink-faint tnum">{count} unresolved</span>
           </div>
           <div className="max-h-80 overflow-y-auto">
             {alerts.length === 0 ? (
-              <p className="text-center text-gray-400 text-sm py-6">No active alerts</p>
+              <div className="flex flex-col items-center gap-2 py-8 text-ink-faint">
+                <BellOff size={22} />
+                <p className="text-xs">No active alerts</p>
+              </div>
             ) : (
               alerts.map((alert) => (
                 <div
                   key={alert.id}
-                  className="px-4 py-3 border-b border-cohesity-border hover:bg-cohesity-border transition-colors"
+                  className="px-4 py-3 border-b border-cohesity-border/60 hover:bg-surface-overlay/60 transition-colors"
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-medium text-gray-300 truncate max-w-[160px]">
+                  <div className="flex items-center justify-between mb-1 gap-2">
+                    <span className="text-xs font-semibold text-ink truncate">
                       {alert.cluster_name}
                     </span>
                     <AlertBadge severity={alert.severity} />
                   </div>
-                  <p className="text-xs text-gray-400 truncate">
+                  <p className="text-xs text-ink-muted truncate">
                     {alert.description || alert.alert_type || 'Alert'}
                   </p>
                 </div>
               ))
             )}
           </div>
+          <button
+            onClick={() => { setOpen(false); navigate('/alerts'); }}
+            className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-brand hover:bg-brand/10 transition-colors cursor-pointer"
+          >
+            View all alerts <ArrowRight size={13} />
+          </button>
         </div>
       )}
     </div>
