@@ -47,9 +47,9 @@ app.use(cors({
     'http://127.0.0.1:5173',
     'http://127.0.0.1:3001',
     'http://127.0.0.1:3000',
-    'http://136.63.53.121:5173',
-    'http://136.63.53.121:3001',
-    'http://136.63.53.121:3000'
+    'http://172.17.16.113:5173',
+    'http://172.17.16.113:3001',
+    'http://172.17.16.113:3000'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key']

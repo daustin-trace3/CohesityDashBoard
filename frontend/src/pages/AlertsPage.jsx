@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Bell, Download, RefreshCw, X } from 'lucide-react';
+import { Bell, Download, RefreshCw, X, Sparkles } from 'lucide-react';
 import client from '../api/client';
 import AlertBadge from '../components/AlertBadge';
+import AlertReviewModal from '../components/AlertReviewModal';
 import SkeletonTable from '../components/SkeletonTable';
 import EmptyState, { AlertEmptyIcon } from '../components/EmptyState';
 import Pagination from '../components/Pagination';
@@ -42,6 +43,9 @@ export default function AlertsPage() {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
 
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [reviewAlertItem, setReviewAlertItem] = useState(null);
+
   const [searchParams, setSearchParams] = useSearchParams();
   const [severity, setSeverity] = useState('');
   const [clusterId, setClusterId] = useState(searchParams.get('clusterId') || '');
@@ -80,6 +84,12 @@ export default function AlertsPage() {
 
   useEffect(() => {
     client.get('/clusters').then(({ data }) => setClusters(data)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    client.get('/alerts/ai/status')
+      .then(({ data }) => setAiEnabled(!!data.enabled))
+      .catch(() => setAiEnabled(false));
   }, []);
 
   useEffect(() => { loadAlerts(); }, [severity, clusterId, showDismissed]);
@@ -268,13 +278,23 @@ export default function AlertsPage() {
                       )}
                     </td>
                     <td className="py-2">
-                      {!alert.dismissed && (
-                        <button type="button" aria-label={`Dismiss alert from ${alert.cluster_name}`}
-                          onClick={() => dismiss(alert.id)}
-                          className="text-xs px-2 py-1 border border-cohesity-border rounded hover:border-red-600 hover:text-red-400 transition-colors">
-                          Dismiss
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1.5 justify-end">
+                        {aiEnabled && (
+                          <button type="button" aria-label={`AI review of alert from ${alert.cluster_name}`}
+                            onClick={() => setReviewAlertItem(alert)}
+                            className="text-xs px-2 py-1 border border-cohesity-border rounded hover:border-brand hover:text-brand transition-colors flex items-center gap-1">
+                            <Sparkles size={12} />
+                            AI Review
+                          </button>
+                        )}
+                        {!alert.dismissed && (
+                          <button type="button" aria-label={`Dismiss alert from ${alert.cluster_name}`}
+                            onClick={() => dismiss(alert.id)}
+                            className="text-xs px-2 py-1 border border-cohesity-border rounded hover:border-red-600 hover:text-red-400 transition-colors">
+                            Dismiss
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -321,6 +341,10 @@ export default function AlertsPage() {
             <X size={12} /> Clear
           </button>
         </div>
+      )}
+
+      {reviewAlertItem && (
+        <AlertReviewModal alert={reviewAlertItem} onClose={() => setReviewAlertItem(null)} />
       )}
     </div>
   );

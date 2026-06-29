@@ -39,6 +39,19 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_unique ON alerts(cluster_id, cohesity_alert_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_cluster_time ON metrics_history(cluster_id, captured_at);
 
+-- AI-generated reviews for alerts. Cached per alert so the LLM is only called
+-- when the alert content changes (content_hash) or the user forces a refresh.
+CREATE TABLE IF NOT EXISTS alert_ai_reviews (
+  alert_id      INTEGER PRIMARY KEY REFERENCES alerts(id) ON DELETE CASCADE,
+  content_hash  TEXT NOT NULL,
+  summary       TEXT,
+  root_cause    TEXT,
+  actions_json  TEXT,
+  confidence    TEXT,
+  model         TEXT,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS protection_runs (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
   cluster_id            INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,

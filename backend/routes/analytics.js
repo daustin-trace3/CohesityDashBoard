@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../db/database');
+const cacheControl = require('../middleware/cache');
 
 const router = express.Router();
 
@@ -20,7 +21,7 @@ router.get('/clusters', (req, res, next) => {
  * GET /api/analytics/protection-runs
  * Query params: clusterId (optional), days (optional, default 7, max 90)
  */
-router.get('/protection-runs', (req, res, next) => {
+router.get('/protection-runs', cacheControl(30), (req, res, next) => {
   try {
     const clusterId = req.query.clusterId ? parseInt(req.query.clusterId, 10) : null;
     const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 90);

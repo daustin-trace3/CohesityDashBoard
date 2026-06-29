@@ -2,6 +2,7 @@ const express = require('express');
 const { param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { fetchClusterInfo } = require('../services/cohesityApi');
+const cacheControl = require('../middleware/cache');
 
 const router = express.Router();
 
@@ -12,10 +13,46 @@ function validate(req, res, next) {
 }
 
 /**
+ * GET /api/metrics/history-batch?days=7
+ * Returns history for ALL clusters in a single query/response, keyed by
+ * cluster_id. Replaces the per-cluster N+1 request pattern on the dashboard.
+ */
+router.get(
+  '/history-batch',
+  cacheControl(30),
+  [query('days').optional().isInt({ min: 1, max: 365 })],
+  validate,
+  (req, res, next) => {
+    try {
+      const days = parseInt(req.query.days || '7', 10);
+
+      const rows = db.prepare(`
+        SELECT id, cluster_id,
+               strftime('%Y-%m-%dT%H:%M:%SZ', captured_at) as captured_at,
+               total_capacity_bytes, used_bytes,
+               logical_bytes, data_reduction_ratio, software_version, node_count
+        FROM metrics_history
+        WHERE captured_at >= datetime('now', ? || ' days')
+        ORDER BY cluster_id ASC, captured_at ASC
+      `).all(`-${days}`);
+
+      const byCluster = {};
+      for (const r of rows) {
+        (byCluster[r.cluster_id] ||= []).push(r);
+      }
+      res.json(byCluster);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
  * GET /api/metrics/:clusterId/history?days=7
  */
 router.get(
   '/:clusterId/history',
+  cacheControl(30),
   [
     param('clusterId').isInt({ min: 1 }),
     query('days').optional().isInt({ min: 1, max: 365 })

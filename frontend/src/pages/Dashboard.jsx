@@ -449,23 +449,22 @@ export default function Dashboard() {
 
   const loadClusters = useCallback(async () => {
     try {
-      const { data } = await client.get('/clusters');
+      // Fetch the cluster list and all 7-day history in parallel as two
+      // requests instead of one request per cluster (N+1).
+      const [clustersRes, batchRes] = await Promise.all([
+        client.get('/clusters'),
+        client.get('/metrics/history-batch?days=7'),
+      ]);
+      const data = clustersRes.data;
       setClusters(data);
-      const metricResults = await Promise.allSettled(
-        data.map(c =>
-          client.get('/metrics/' + c.id + '/history?days=7').then(r => ({
-            id: c.id,
-            rows: r.data,
-          }))
-        )
-      );
+      const batch = batchRes.data || {};
       const metricsMap = {};
       const historyMap = {};
-      for (const r of metricResults) {
-        if (r.status === 'fulfilled' && r.value.rows.length > 0) {
-          const rows = r.value.rows;
-          metricsMap[r.value.id] = rows[rows.length - 1];
-          historyMap[r.value.id] = rows;
+      for (const c of data) {
+        const rows = batch[c.id];
+        if (rows && rows.length > 0) {
+          metricsMap[c.id] = rows[rows.length - 1];
+          historyMap[c.id] = rows;
         }
       }
       setLatestMetrics(metricsMap);
