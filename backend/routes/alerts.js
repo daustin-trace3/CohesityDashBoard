@@ -1,6 +1,8 @@
 const express = require('express');
 const { param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
+const cacheControl = require('../middleware/cache');
+const { isAiEnabled, reviewAlert, getCachedReview } = require('../services/aiInsights');
 
 const router = express.Router();
 
@@ -15,6 +17,7 @@ function validate(req, res, next) {
  */
 router.get(
   '/',
+  cacheControl(20),
   [
     query('clusterId').optional().isInt({ min: 1 }),
     query('severity').optional().isIn(['critical', 'warning', 'info', '']),
@@ -80,6 +83,52 @@ router.post(
       db.prepare('UPDATE alerts SET dismissed = 1, last_updated = CURRENT_TIMESTAMP WHERE id = ?').run(id);
       res.json({ success: true });
     } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * GET /api/alerts/ai/status
+ * Whether AI review is configured on the server.
+ */
+router.get('/ai/status', (req, res) => {
+  res.json({ enabled: isAiEnabled() });
+});
+
+/**
+ * GET /api/alerts/:id/review
+ * Returns the cached AI review for an alert (null if none yet). No LLM call.
+ */
+router.get(
+  '/:id/review',
+  [param('id').isInt({ min: 1 })],
+  validate,
+  (req, res, next) => {
+    try {
+      res.json(getCachedReview(Number(req.params.id)));
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * POST /api/alerts/:id/review?force=1
+ * Generates (or returns cached) AI review for an alert.
+ */
+router.post(
+  '/:id/review',
+  [param('id').isInt({ min: 1 })],
+  validate,
+  async (req, res, next) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const review = await reviewAlert(Number(req.params.id), { force });
+      if (review === null) return res.status(404).json({ error: 'Alert not found' });
+      res.json(review);
+    } catch (err) {
+      if (err.status) return res.status(err.status).json({ error: err.message });
       next(err);
     }
   }

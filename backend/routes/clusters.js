@@ -4,6 +4,7 @@ const db = require('../db/database');
 const { encrypt, decrypt } = require('../services/encryption');
 const { invalidateSession } = require('../services/cohesityApi');
 const { scheduleCluster, cancelCluster } = require('../services/poller');
+const cacheControl = require('../middleware/cache');
 
 const router = express.Router();
 
@@ -32,7 +33,7 @@ function isBlockedVip(vip) {
  * GET /api/clusters
  * List all clusters, omitting encrypted credentials.
  */
-router.get('/', (req, res, next) => {
+router.get('/', cacheControl(30), (req, res, next) => {
   try {
     const clusters = db.prepare(`
       SELECT id, name, connection_type, vip, auth_type,
