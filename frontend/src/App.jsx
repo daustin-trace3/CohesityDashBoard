@@ -12,6 +12,7 @@ import AnalyticsPage from './pages/AnalyticsPage';
 import ReportingPage from './pages/ReportingPage';
 import ReplicationPage from './pages/ReplicationPage';
 import GovernancePage from './pages/GovernancePage';
+import SettingsPage from './pages/SettingsPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/ui/Toaster';
 import GlobalLoadingBar from './components/ui/GlobalLoadingBar';
@@ -50,6 +51,7 @@ export default function App() {
                 <Route path="analytics"       element={withBoundary(<AnalyticsPage />)} />
                 <Route path="governance"      element={withBoundary(<GovernancePage />)} />
                 <Route path="reporting"       element={withBoundary(<ReportingPage />)} />
+                <Route path="settings"        element={withBoundary(<SettingsPage />)} />
               </Route>
             </Routes>
           </BrowserRouter>

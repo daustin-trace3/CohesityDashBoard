@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import { Badge, Spinner } from './ui/primitives';
+import ClusterAIModal from './ClusterAIModal';
 
 const SEVERITY = {
   critical: { icon: AlertOctagon, color: 'text-status-crit', bg: 'bg-status-crit/10 border-status-crit/30', label: 'Critical' },
@@ -46,16 +47,18 @@ function insightRoute(insight) {
   }
 }
 
-function InsightRow({ insight }) {
+function InsightRow({ insight, onAskAi }) {
   const sev = SEVERITY[insight.severity] || SEVERITY.info;
   const SevIcon = sev.icon;
   const CatIcon = CATEGORY_ICON[insight.category] || Info;
   const navigate = useNavigate();
   const route = insightRoute(insight);
-  const Tag = route ? 'button' : 'div';
   return (
-    <Tag
+    <div
       onClick={route ? () => navigate(route) : undefined}
+      role={route ? 'button' : undefined}
+      tabIndex={route ? 0 : undefined}
+      onKeyDown={route ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(route); } } : undefined}
       aria-label={route ? `${insight.title} — open details` : undefined}
       className={`group rounded-lg border px-3.5 py-3 flex gap-3 animate-fade-in text-left w-full ${sev.bg} ${
         route ? 'cursor-pointer transition-all duration-150 hover:brightness-125 hover:border-opacity-60' : ''
@@ -69,6 +72,15 @@ function InsightRow({ insight }) {
             <CatIcon size={10} />
             {insight.category}
           </Badge>
+          {insight.clusterId != null && onAskAi && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onAskAi(insight); }}
+              aria-label={`Ask AI to analyze alerts on ${insight.clusterName}`}
+              className="flex items-center gap-1 text-[11px] text-brand border border-brand/30 bg-brand/5 rounded-md px-1.5 py-0.5 hover:bg-brand/10 hover:border-brand/60 transition-colors cursor-pointer"
+            >
+              <Sparkles size={11} /> Ask AI
+            </button>
+          )}
         </div>
         {insight.detail && (
           <p className="text-xs text-ink-muted mt-1 leading-relaxed">{insight.detail}</p>
@@ -83,17 +95,18 @@ function InsightRow({ insight }) {
       {route && (
         <ChevronRight size={16} className="text-ink-faint group-hover:text-ink self-center flex-shrink-0 transition-colors" />
       )}
-    </Tag>
+    </div>
   );
 }
 
 const COLLAPSED_COUNT = 4;
 
-export default function InsightsPanel() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+export default function InsightsPanel({ initialData = null }) {
+  const [data, setData] = useState(initialData);
+  const [loading, setLoading] = useState(!initialData);
   const [error, setError] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [aiCluster, setAiCluster] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -108,10 +121,21 @@ export default function InsightsPanel() {
     }
   }, []);
 
+  // Adopt cached insights from the dashboard snapshot when they arrive, so the
+  // panel renders instantly without its own round-trip.
   useEffect(() => {
-    load();
+    if (initialData) {
+      setData(initialData);
+      setLoading(false);
+    }
+  }, [initialData]);
+
+  // Only fetch on mount if the parent didn't already provide cached insights.
+  useEffect(() => {
+    if (!initialData) load();
     const interval = setInterval(load, 5 * 60 * 1000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
 
   const insights = data?.insights || [];
@@ -163,7 +187,13 @@ export default function InsightsPanel() {
       ) : (
         <>
           <div className="flex flex-col gap-2">
-            {visible.map((ins, i) => <InsightRow key={`${ins.category}-${ins.clusterId ?? 'g'}-${i}`} insight={ins} />)}
+            {visible.map((ins, i) => (
+              <InsightRow
+                key={`${ins.category}-${ins.clusterId ?? 'g'}-${i}`}
+                insight={ins}
+                onAskAi={(x) => setAiCluster({ id: x.clusterId, name: x.clusterName })}
+              />
+            ))}
           </div>
           {insights.length > COLLAPSED_COUNT && (
             <button
@@ -174,6 +204,10 @@ export default function InsightsPanel() {
             </button>
           )}
         </>
+      )}
+
+      {aiCluster && (
+        <ClusterAIModal cluster={aiCluster} mode="alerts" onClose={() => setAiCluster(null)} />
       )}
     </div>
   );

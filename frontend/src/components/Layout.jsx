@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, Plus, X, ClipboardCheck,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, Plus, X, ClipboardCheck, Settings,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import client from '../api/client';
@@ -39,10 +39,16 @@ const navGroups = [
       { label: 'Hardware', route: '/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/hardware') },
     ],
   },
+  {
+    label: 'System',
+    items: [
+      { label: 'Settings', route: '/settings', icon: Settings, isActive: (p) => p.startsWith('/settings') },
+    ],
+  },
 ];
 
 function isActivePlatform(id, pathname) {
-  if (id === 'cohesity') return ['/', '/dashboard', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting'].some(r => pathname === r || pathname.startsWith(r + '/'));
+  if (id === 'cohesity') return ['/', '/dashboard', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
   if (id === 'pure') return pathname.startsWith('/pure');
   if (id === 'netapp') return pathname.startsWith('/netapp');
   return false;

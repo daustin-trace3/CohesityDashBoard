@@ -4,6 +4,7 @@ const {
   fetchClusterInfo, fetchAlerts, fetchProtectionRuns, fetchProtectionJobs,
   fetchProtectionPolicies, fetchSourceRegistrations,
 } = require('./cohesityApi');
+const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
 const logger = require('../utils/logger');
 
 // Map of clusterId -> cron task
@@ -369,6 +370,9 @@ async function pollCluster(cluster) {
     }
   } catch (err) {
     logger.error(`[Poller] Unexpected error for cluster ${cluster.id}:`, safeErrorMessage(err));
+  } finally {
+    // Rebuild the cached dashboard payload so the next page load is instant.
+    scheduleSnapshotRefresh();
   }
 }
 
@@ -417,6 +421,9 @@ function initPoller() {
     scheduleCluster(cluster);
   }
   logger.info(`[Poller] Initialized ${clusters.length} cluster(s)`);
+  // Build the dashboard snapshot from existing cached data on startup so the
+  // first page load is instant even before the next poll cycle runs.
+  refreshDashboardSnapshot();
 }
 
 /**

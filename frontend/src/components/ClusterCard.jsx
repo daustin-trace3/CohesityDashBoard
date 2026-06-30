@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import client from '../api/client';
 import HardwareModal from './HardwareModal';
+import ClusterAIModal from './ClusterAIModal';
 
 function formatTB(bytes) {
   if (bytes == null || bytes === 0) return '—';
@@ -43,12 +44,17 @@ function SparkLine({ rows, color }) {
   );
 }
 
-export default function ClusterCard({ cluster, onTagClick, selected = false, onSelect, historyRows }) {
+export default function ClusterCard({ cluster, onTagClick, selected = false, onSelect, historyRows, alertSummary: alertSummaryProp }) {
   const [metrics, setMetrics] = useState(null);
   const [sparkRows, setSparkRows] = useState([]);
-  const [alertSummary, setAlertSummary] = useState({ count: 0, level: 'none' });
+  const [alertSummary, setAlertSummary] = useState(alertSummaryProp || { count: 0, level: 'none' });
   const [hardwareOpen, setHardwareOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const [metricsError, setMetricsError] = useState(false);
+
+  useEffect(() => {
+    if (alertSummaryProp) setAlertSummary(alertSummaryProp);
+  }, [alertSummaryProp]);
 
   useEffect(() => {
     if (historyRows !== undefined) {
@@ -57,16 +63,19 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
         setMetrics(historyRows[historyRows.length - 1]);
         setSparkRows(historyRows);
       }
-      client.get(`/alerts?clusterId=${cluster.id}&resolved=0`)
-        .then(({ data: a }) => {
-          setAlertSummary({
-            count: a.length,
-            level: a.some(x => x.severity === 'critical') ? 'critical'
-                 : a.some(x => x.severity === 'warning') ? 'warning'
-                 : a.length > 0 ? 'info' : 'none',
-          });
-        })
-        .catch(() => {});
+      // Alert summary comes from the cached snapshot; only fetch if absent.
+      if (!alertSummaryProp) {
+        client.get(`/alerts?clusterId=${cluster.id}&resolved=0`)
+          .then(({ data: a }) => {
+            setAlertSummary({
+              count: a.length,
+              level: a.some(x => x.severity === 'critical') ? 'critical'
+                   : a.some(x => x.severity === 'warning') ? 'warning'
+                   : a.length > 0 ? 'info' : 'none',
+            });
+          })
+          .catch(() => {});
+      }
       return;
     }
 
@@ -248,19 +257,32 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
           {metrics?.software_version
             ? <p className="text-[11px] text-gray-500">v{metrics.software_version}</p>
             : <span />}
-          <button
-            type="button"
-            aria-label={`View hardware info for ${cluster.name}`}
-            onClick={e => { e.stopPropagation(); setHardwareOpen(true); }}
-            className="text-[11px] text-ink-faint border border-cohesity-border rounded-md px-1.5 py-0.5 hover:border-brand/50 hover:text-brand transition-colors cursor-pointer"
-          >
-            HW Info
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-label={`AI analysis for ${cluster.name}`}
+              onClick={e => { e.stopPropagation(); setAiOpen(true); }}
+              className="flex items-center gap-1 text-[11px] text-brand border border-brand/30 bg-brand/5 rounded-md px-1.5 py-0.5 hover:border-brand/60 hover:bg-brand/10 transition-colors cursor-pointer"
+            >
+              ✨ AI
+            </button>
+            <button
+              type="button"
+              aria-label={`View hardware info for ${cluster.name}`}
+              onClick={e => { e.stopPropagation(); setHardwareOpen(true); }}
+              className="text-[11px] text-ink-faint border border-cohesity-border rounded-md px-1.5 py-0.5 hover:border-brand/50 hover:text-brand transition-colors cursor-pointer"
+            >
+              HW Info
+            </button>
+          </div>
         </div>
       </div>
 
       {hardwareOpen && (
         <HardwareModal cluster={cluster} onClose={() => setHardwareOpen(false)} />
+      )}
+      {aiOpen && (
+        <ClusterAIModal cluster={cluster} mode="system" onClose={() => setAiOpen(false)} />
       )}
     </>
   );

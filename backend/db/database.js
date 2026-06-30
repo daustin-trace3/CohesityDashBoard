@@ -28,6 +28,28 @@ try {
   // Column already exists — ignore
 }
 
+// Migration: llm_insights gained a `mode` column + composite primary key.
+// The cached LLM text is disposable, so an older single-mode table is just
+// dropped and recreated by the schema above.
+try {
+  const hasMode = db.prepare("PRAGMA table_info(llm_insights)").all().some(c => c.name === 'mode');
+  if (!hasMode) {
+    db.exec('DROP TABLE IF EXISTS llm_insights');
+    db.exec(`
+      CREATE TABLE llm_insights (
+        cluster_id   INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+        mode         TEXT NOT NULL DEFAULT 'system',
+        model        TEXT,
+        analysis     TEXT NOT NULL,
+        generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (cluster_id, mode)
+      )
+    `);
+  }
+} catch {
+  // Table does not exist yet — schema.sql will create the current shape.
+}
+
 // Migration: replication_runs had no unique constraint, so every poll cycle
 // re-inserted the same copy runs (observed: ~11.6M rows, 96% duplicates).
 // Rebuild the table keeping the newest row per copy run (later polls carry the

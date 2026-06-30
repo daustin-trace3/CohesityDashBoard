@@ -112,3 +112,31 @@ CREATE TABLE IF NOT EXISTS replication_status_cache (
   updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_repl_cache_cluster_filter ON replication_status_cache(cluster_name, status_filter);
+
+-- Pre-computed dashboard payload, rebuilt after each poll so the dashboard
+-- renders the last pull instantly instead of fanning out per-cluster requests.
+CREATE TABLE IF NOT EXISTS snapshot_cache (
+  cache_key             TEXT PRIMARY KEY,
+  payload_json          TEXT NOT NULL,
+  updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- On-demand LLM-generated per-cluster analysis (GitHub Models). One cached
+-- result per cluster per mode ('alerts' = alert-focused, 'system' = capacity/
+-- sources/job health). Re-running a mode replaces its row.
+CREATE TABLE IF NOT EXISTS llm_insights (
+  cluster_id            INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+  mode                  TEXT NOT NULL DEFAULT 'system',
+  model                 TEXT,
+  analysis              TEXT NOT NULL,
+  generated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (cluster_id, mode)
+);
+
+-- Simple key/value app settings (e.g. operator AI context). Editable at runtime
+-- from the UI, no restart required.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key                   TEXT PRIMARY KEY,
+  value                 TEXT,
+  updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

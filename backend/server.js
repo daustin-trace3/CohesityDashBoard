@@ -19,6 +19,8 @@ const analyticsRouter = require('./routes/analytics');
 const replicationRouter = require('./routes/replication');
 const insightsRouter = require('./routes/insights');
 const governanceRouter = require('./routes/governance');
+const dashboardRouter = require('./routes/dashboard');
+const settingsRouter = require('./routes/settings');
 const requireApiKey = require('./middleware/auth');
 const errorHandler = require('./middleware/errorHandler');
 const { initPoller } = require('./services/poller');
@@ -82,6 +84,8 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/replication', replicationRouter);
 app.use('/api/insights', insightsRouter);
 app.use('/api/governance', governanceRouter);
+app.use('/api/dashboard', dashboardRouter);
+app.use('/api/settings', settingsRouter);
 
 // Health check — verifies DB connectivity
 app.get('/health', (req, res) => {

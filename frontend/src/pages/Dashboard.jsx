@@ -303,12 +303,19 @@ function AlertDetailModal({ alert, onClose }) {
   );
 }
 
-function RecentAlertsPanel() {
+function RecentAlertsPanel({ initialAlerts }) {
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
+    // Prefer the cached snapshot alerts; only fetch if none were provided.
+    if (initialAlerts !== undefined && initialAlerts !== null) {
+      const sorted = [...initialAlerts].sort((a, b) => new Date(getAlertTimestamp(b) || 0) - new Date(getAlertTimestamp(a) || 0));
+      setAlerts(sorted.slice(0, 10));
+      setLoading(false);
+      return;
+    }
     client.get('/alerts?dismissed=0&resolved=0&severity=critical')
       .then(r => {
         const sorted = [...r.data].sort((a, b) => new Date(getAlertTimestamp(b) || 0) - new Date(getAlertTimestamp(a) || 0));
@@ -316,7 +323,7 @@ function RecentAlertsPanel() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [initialAlerts]);
 
   const fmtTime = (ts) => {
     if (!ts) return '—';
@@ -440,6 +447,9 @@ export default function Dashboard() {
   const [activeAlertCount, setActiveAlertCount] = useState(null);
   const [criticalAlertCount, setCriticalAlertCount] = useState(0);
   const [protectionSummary, setProtectionSummary] = useState(null);
+  const [alertSummaryMap, setAlertSummaryMap] = useState({});
+  const [recentCriticalAlerts, setRecentCriticalAlerts] = useState(null);
+  const [insightsData, setInsightsData] = useState(null);
 
   const trendChartRef = useRef(null);
   const trendResizeRef = useRef(null);
@@ -447,29 +457,29 @@ export default function Dashboard() {
   const { search, setSearch } = useSearch();
   const { toast } = useToast();
 
+  // Single cached snapshot, pre-computed by the poller, replaces the previous
+  // per-cluster request fan-out so the dashboard renders the last pull instantly.
   const loadClusters = useCallback(async () => {
     try {
-      const { data } = await client.get('/clusters');
-      setClusters(data);
-      const metricResults = await Promise.allSettled(
-        data.map(c =>
-          client.get('/metrics/' + c.id + '/history?days=7').then(r => ({
-            id: c.id,
-            rows: r.data,
-          }))
-        )
-      );
+      const { data } = await client.get('/dashboard/snapshot');
+      setClusters(data.clusters || []);
+
       const metricsMap = {};
       const historyMap = {};
-      for (const r of metricResults) {
-        if (r.status === 'fulfilled' && r.value.rows.length > 0) {
-          const rows = r.value.rows;
-          metricsMap[r.value.id] = rows[rows.length - 1];
-          historyMap[r.value.id] = rows;
+      for (const [id, rows] of Object.entries(data.metricsHistory || {})) {
+        if (rows.length > 0) {
+          metricsMap[id] = rows[rows.length - 1];
+          historyMap[id] = rows;
         }
       }
       setLatestMetrics(metricsMap);
       setClusterHistory(historyMap);
+      setAlertSummaryMap(data.alertSummary || {});
+      setActiveAlertCount(data.activeAlertCount ?? null);
+      setCriticalAlertCount(data.criticalAlertCount ?? 0);
+      setProtectionSummary(data.protectionSummary ?? null);
+      setRecentCriticalAlerts(data.recentCriticalAlerts || []);
+      setInsightsData(data.insights ?? null);
     } catch {
       // ignore
     } finally {
@@ -478,19 +488,6 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { loadClusters(); }, [loadClusters]);
-
-  // KPI extras: active alerts + 7-day protection success rate
-  useEffect(() => {
-    client.get('/alerts?dismissed=0&resolved=0')
-      .then(r => {
-        setActiveAlertCount(r.data.length);
-        setCriticalAlertCount(r.data.filter(a => a.severity === 'critical').length);
-      })
-      .catch(() => setActiveAlertCount(null));
-    client.get('/analytics/protection-runs?days=7')
-      .then(r => setProtectionSummary(r.data.summary))
-      .catch(() => setProtectionSummary(null));
-  }, []);
 
   useEffect(() => {
     if (!criticalOnly || clusters.length === 0) return;
@@ -663,7 +660,7 @@ export default function Dashboard() {
       </div>
 
       {/* Row 1: Intelligent insights */}
-      <InsightsPanel />
+      <InsightsPanel initialData={insightsData} />
 
       {/* Row 2: filter bar */}
       <div className="panel px-3.5 py-2.5 flex flex-wrap items-center gap-2 text-xs">
@@ -1129,6 +1126,7 @@ export default function Dashboard() {
                       key={c.id}
                       cluster={c}
                       historyRows={clusterHistory[c.id]}
+                      alertSummary={alertSummaryMap[c.id] || { count: 0, level: 'none' }}
                       selected={selectedClusterIds.has(c.id)}
                       onSelect={toggleSelect}
                       onTagClick={setTagFilter}
@@ -1156,7 +1154,7 @@ export default function Dashboard() {
         <ClusterHealthPanel clusters={clusters} latestMetrics={latestMetrics} />
         <TopClustersBar chartData={chartData} />
         <StorageDistributionTable sortedFiltered={sortedFiltered} latestMetrics={latestMetrics} />
-        <RecentAlertsPanel />
+        <RecentAlertsPanel initialAlerts={recentCriticalAlerts} />
       </div>
     </div>
   );
