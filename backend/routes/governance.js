@@ -44,10 +44,13 @@ router.get('/', (req, res, next) => {
       };
     });
 
-    // Retention drift: same policy name on multiple clusters with different retention
+    // Retention drift: same policy name on multiple clusters with different retention.
+    // Cohesity's canned built-in policies are skipped — operators can't align them.
+    const BUILTIN_POLICY_NAMES = new Set(['protect once']);
     const byName = new Map();
     for (const p of policies) {
       if (!p.name) continue;
+      if (BUILTIN_POLICY_NAMES.has(p.name.trim().toLowerCase())) continue;
       if (!byName.has(p.name)) byName.set(p.name, []);
       byName.get(p.name).push(p);
     }

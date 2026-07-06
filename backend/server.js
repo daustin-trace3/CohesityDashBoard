@@ -21,9 +21,12 @@ const insightsRouter = require('./routes/insights');
 const governanceRouter = require('./routes/governance');
 const dashboardRouter = require('./routes/dashboard');
 const settingsRouter = require('./routes/settings');
+const advisorRouter = require('./routes/advisor');
+const licensingRouter = require('./routes/licensing');
 const requireApiKey = require('./middleware/auth');
 const errorHandler = require('./middleware/errorHandler');
 const { initPoller } = require('./services/poller');
+const { initLicensing } = require('./services/licensing');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -86,6 +89,8 @@ app.use('/api/insights', insightsRouter);
 app.use('/api/governance', governanceRouter);
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/advisor', advisorRouter);
+app.use('/api/licensing', licensingRouter);
 
 // Health check — verifies DB connectivity
 app.get('/health', (req, res) => {
@@ -127,6 +132,7 @@ if (!process.env.HELIOS_API_KEY) {
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
   initPoller();
+  initLicensing();
 });
 
 module.exports = app;

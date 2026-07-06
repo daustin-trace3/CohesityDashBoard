@@ -23,18 +23,18 @@ const logger = require('../utils/logger');
  * GitHub Models option; override AI_MODEL once you confirm availability.
  */
 
-const TOKEN = process.env.GITHUB_MODELS_TOKEN || process.env.AI_TOKEN || '';
-const MODEL = process.env.AI_MODEL || 'openai/gpt-4o-mini';
-const BASE_URL = (process.env.AI_BASE_URL || 'https://models.github.ai/inference').replace(/\/$/, '');
+// Shared provider config so alert reviews use the same provider/model as the
+// cluster analysis (OpenAI gpt-5.4 when OPENAI_TOKEN is set).
+const { ENDPOINT, API_TOKEN, MODEL, isConfigured } = require('./llmProvider');
 
 const httpClient = axios.create({
-  baseURL: BASE_URL,
+  baseURL: ENDPOINT,
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 });
 
 function isAiEnabled() {
-  return TOKEN.length > 0;
+  return isConfigured();
 }
 
 /**
@@ -189,11 +189,12 @@ async function reviewAlert(alertId, { force = false } = {}) {
       {
         model: MODEL,
         messages,
-        temperature: 0.2,
-        max_tokens: 600,
+        // No temperature/max_tokens: the GPT-5 family rejects a custom
+        // temperature and uses max_completion_tokens, not max_tokens. Omitting
+        // both keeps this payload valid across providers/models.
         response_format: { type: 'json_object' },
       },
-      { headers: { Authorization: `Bearer ${TOKEN}` } }
+      { headers: { Authorization: `Bearer ${API_TOKEN}` } }
     );
     content = data?.choices?.[0]?.message?.content;
   } catch (apiErr) {

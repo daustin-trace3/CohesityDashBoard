@@ -153,3 +153,82 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value                 TEXT,
   updated_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Fleet-wide (estate-level) AI Advisor reports, cached per report type
+-- ('capacity', 'dr_readiness'). Re-running a report replaces its row.
+CREATE TABLE IF NOT EXISTS ai_reports (
+  report_key            TEXT PRIMARY KEY,
+  model                 TEXT,
+  content               TEXT NOT NULL,
+  generated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Cohesity licensing / capacity-consumption snapshot. Front-end TB under
+-- management (the FETB licensing basis) pulled fleet-wide from the Helios
+-- reporting service (storage-consumption-cluster), replaced wholesale on each
+-- refresh — current state, not history.
+CREATE TABLE IF NOT EXISTS license_usage (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  system_id             TEXT,
+  system_name           TEXT,
+  front_end_bytes       INTEGER,   -- dataIngestedRetainedBytes (FETB basis)
+  physical_bytes        INTEGER,   -- scResiliencyBytes (physical stored)
+  capacity_bytes        INTEGER,   -- totalCapacityBytes (raw cluster capacity)
+  usage_percent         REAL,
+  data_reduction        REAL,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Consumed front-end (FETB) split by Cohesity license type, derived from the
+-- Helios storage-consumption-group report: replica (targetRole != Primary),
+-- SmartFiles (environment kView), DataProtect (everything else). Replaced
+-- wholesale on each refresh.
+CREATE TABLE IF NOT EXISTS license_type_usage (
+  license_type          TEXT PRIMARY KEY,   -- 'dataProtect' | 'replica' | 'smartFiles'
+  front_end_bytes       INTEGER NOT NULL DEFAULT 0,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-system consumption split by what the data IS: locally backed-up data,
+-- data replicated in from other clusters, data living in Views/shares, and
+-- backups of Views. Pulled per cluster from the v1 stats/consumers API via
+-- Helios passthrough. Replaced wholesale on each refresh.
+-- Cohesity's own per-cluster license meters (public/licenseUsage API, GiB per
+-- feature). This is the same accounting the Cohesity licensing portal reads,
+-- so the license cards track official usage. Replaced wholesale each refresh.
+CREATE TABLE IF NOT EXISTS license_meter_usage (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  system_id             TEXT,
+  system_name           TEXT,
+  feature               TEXT NOT NULL,      -- e.g. dataProtect, dataProtectReplica, externalViews
+  usage_gib             REAL NOT NULL DEFAULT 0,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-view detail behind the views split: which views on each system are
+-- replicated in (read-only) vs actively receiving data (writable), with
+-- creation date and sizes. Replaced wholesale on each refresh.
+CREATE TABLE IF NOT EXISTS license_view_detail (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  system_id             TEXT,
+  system_name           TEXT,
+  view_name             TEXT NOT NULL,
+  is_read_only          INTEGER NOT NULL DEFAULT 0,
+  created_ms            INTEGER,
+  physical_bytes        INTEGER,
+  logical_bytes         INTEGER,
+  data_written_bytes    INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_view_detail_system ON license_view_detail(system_id);
+
+CREATE TABLE IF NOT EXISTS consumption_breakdown (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  system_id             TEXT,
+  system_name           TEXT,
+  category              TEXT NOT NULL,      -- 'backup' | 'replication' | 'views' | 'viewBackups'
+  consumers             INTEGER,            -- number of jobs/views contributing
+  physical_bytes        INTEGER,            -- storageConsumedBytes (on-disk)
+  logical_bytes         INTEGER,            -- totalLogicalUsageBytes (front-end logical)
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

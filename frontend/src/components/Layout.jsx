@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, Plus, X, ClipboardCheck, Settings,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import client from '../api/client';
@@ -19,9 +19,11 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Global Overview', route: '/dashboard', icon: LayoutDashboard, isActive: (p) => p === '/' || p.startsWith('/dashboard') },
+      { label: 'AI Advisor', route: '/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/ai-advisor') },
       { label: 'Alerts', route: '/alerts', icon: Bell, isActive: (p) => p.startsWith('/alerts'), showAlertCount: true },
       { label: 'Analytics', route: '/analytics', icon: Activity, isActive: (p) => p.startsWith('/analytics') },
       { label: 'Reporting', route: '/reporting', icon: FileText, isActive: (p) => p.startsWith('/reporting') },
+      { label: 'Licensing', route: '/licensing', icon: BadgeCheck, isActive: (p) => p.startsWith('/licensing') },
     ],
   },
   {
@@ -48,7 +50,7 @@ const navGroups = [
 ];
 
 function isActivePlatform(id, pathname) {
-  if (id === 'cohesity') return ['/', '/dashboard', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
+  if (id === 'cohesity') return ['/', '/dashboard', '/ai-advisor', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting', '/licensing', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
   if (id === 'pure') return pathname.startsWith('/pure');
   if (id === 'netapp') return pathname.startsWith('/netapp');
   return false;
@@ -77,6 +79,8 @@ export default function Layout() {
   const [clusterCount, setClusterCount] = useState(0);
   const [apiOnline, setApiOnline] = useState(true);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
+  // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
+  const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
 
   const { search, setSearch } = useSearch();
   const navigate = useNavigate();
@@ -111,6 +115,20 @@ export default function Layout() {
     load();
     const interval = setInterval(load, 60000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const loadPlatforms = () => client.get('/settings')
+      .then(r => setEnabledPlatformIds([
+        'cohesity',
+        ...(r.data.platformPureEnabled ? ['pure'] : []),
+        ...(r.data.platformNetappEnabled ? ['netapp'] : []),
+      ]))
+      .catch(() => {});
+    loadPlatforms();
+    // SettingsPage fires this after saving so the tabs update without a reload.
+    window.addEventListener('platforms-changed', loadPlatforms);
+    return () => window.removeEventListener('platforms-changed', loadPlatforms);
   }, []);
 
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
@@ -227,30 +245,29 @@ export default function Layout() {
           <NotificationBell count={alertCount} alerts={alerts.slice(0, 10)} />
         </header>
 
-        {/* Vendor platform tabs */}
-        <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Platform</span>
-          <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1">
-            {platforms.map(p => {
-              const active = isActivePlatform(p.id, pathname);
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => navigate(p.route)}
-                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                    active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-                  }`}
-                >
-                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: p.color, boxShadow: active ? `0 0 6px ${p.color}99` : 'none' }} />
-                  {p.label}
-                </button>
-              );
-            })}
+        {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}
+        {enabledPlatformIds.length > 1 && (
+          <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Platform</span>
+            <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1">
+              {platforms.filter(p => enabledPlatformIds.includes(p.id)).map(p => {
+                const active = isActivePlatform(p.id, pathname);
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => navigate(p.route)}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
+                      active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: p.color, boxShadow: active ? `0 0 6px ${p.color}99` : 'none' }} />
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-cohesity-border text-ink-faint hover:border-ink-faint hover:text-ink-muted text-[12px] transition-colors cursor-pointer">
-            <Plus size={13} /> Add Platform
-          </button>
-        </div>
+        )}
 
         {/* Page content */}
         <main className="px-5 py-4 flex-1 overflow-auto">

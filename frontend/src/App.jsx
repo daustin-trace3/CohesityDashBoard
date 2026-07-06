@@ -10,9 +10,11 @@ import NetAppPage from './pages/NetAppPage';
 import DataProtectionPage from './pages/DataProtectionPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import ReportingPage from './pages/ReportingPage';
+import LicensingPage from './pages/LicensingPage';
 import ReplicationPage from './pages/ReplicationPage';
 import GovernancePage from './pages/GovernancePage';
 import SettingsPage from './pages/SettingsPage';
+import AIAdvisorPage from './pages/AIAdvisorPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/ui/Toaster';
 import GlobalLoadingBar from './components/ui/GlobalLoadingBar';
@@ -51,6 +53,8 @@ export default function App() {
                 <Route path="analytics"       element={withBoundary(<AnalyticsPage />)} />
                 <Route path="governance"      element={withBoundary(<GovernancePage />)} />
                 <Route path="reporting"       element={withBoundary(<ReportingPage />)} />
+                <Route path="licensing"       element={withBoundary(<LicensingPage />)} />
+                <Route path="ai-advisor"      element={withBoundary(<AIAdvisorPage />)} />
                 <Route path="settings"        element={withBoundary(<SettingsPage />)} />
               </Route>
             </Routes>

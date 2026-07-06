@@ -26,6 +26,8 @@ export default function GovernancePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [policyFilter, setPolicyFilter] = useState('all'); // all | flagged
+  const [policyPage, setPolicyPage] = useState(0);
+  const [policyPageSize, setPolicyPageSize] = useState(25); // number | 'all'
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -42,6 +44,9 @@ export default function GovernancePage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Reset to the first page when the filter or page size changes.
+  useEffect(() => { setPolicyPage(0); }, [policyFilter, policyPageSize]);
+
   const summary = data?.summary;
   const policies = data?.policies || [];
   const retentionDrift = data?.retentionDrift || [];
@@ -52,6 +57,16 @@ export default function GovernancePage() {
   const visiblePolicies = policyFilter === 'flagged'
     ? policies.filter(p => p.noOffsiteCopy || driftNames.has(p.name))
     : policies;
+
+  // Policy Audit pagination
+  const policyTotal = visiblePolicies.length;
+  const policySizeNum = policyPageSize === 'all' ? (policyTotal || 1) : policyPageSize;
+  const policyTotalPages = Math.max(1, Math.ceil(policyTotal / policySizeNum));
+  const policySafePage = Math.min(policyPage, policyTotalPages - 1);
+  const policyPageRows = policyPageSize === 'all'
+    ? visiblePolicies
+    : visiblePolicies.slice(policySafePage * policySizeNum, (policySafePage + 1) * policySizeNum);
+  const policyNavBtn = 'text-xs px-2 py-1 rounded-md border border-cohesity-border text-ink-muted hover:border-brand/50 hover:text-brand disabled:opacity-30 disabled:cursor-default transition-colors cursor-pointer';
 
   const hasAnyData = policies.length > 0 || sources.length > 0;
 
@@ -156,16 +171,28 @@ export default function GovernancePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visiblePolicies.map((p, i) => (
+                  {policyPageRows.map((p, i) => (
                     <tr key={`${p.clusterId}-${p.policyId}-${i}`} className="border-b border-cohesity-border/60 hover:bg-surface-overlay/50 transition-colors">
                       <td className="py-2 pr-4 text-ink font-medium max-w-[220px] truncate" title={p.name}>{p.name || '—'}</td>
                       <td className="py-2 pr-4">{p.clusterName}</td>
                       <td className="py-2 pr-4 text-right tnum">{fmtRetention(p.retentionDays)}</td>
-                      <td className="py-2 pr-4 max-w-[180px] truncate" title={p.replicationTargets.join(', ')}>
-                        {p.replicationTargets.length > 0 ? p.replicationTargets.join(', ') : <span className="text-ink-faint">None</span>}
+                      <td className="py-2 pr-4">
+                        {p.replicationTargets.length > 0 ? (
+                          <div className="flex items-center gap-1 flex-wrap max-w-[240px]">
+                            {[...new Set(p.replicationTargets)].map(t => (
+                              <span key={t} className="inline-flex items-center px-1.5 py-0.5 rounded bg-surface-overlay border border-cohesity-border text-[11px] text-ink whitespace-nowrap">{t}</span>
+                            ))}
+                          </div>
+                        ) : <span className="text-ink-faint">None</span>}
                       </td>
-                      <td className="py-2 pr-4 max-w-[180px] truncate" title={p.archivalTargets.join(', ')}>
-                        {p.archivalTargets.length > 0 ? p.archivalTargets.join(', ') : <span className="text-ink-faint">None</span>}
+                      <td className="py-2 pr-4">
+                        {p.archivalTargets.length > 0 ? (
+                          <div className="flex items-center gap-1 flex-wrap max-w-[240px]">
+                            {[...new Set(p.archivalTargets)].map(t => (
+                              <span key={t} className="inline-flex items-center px-1.5 py-0.5 rounded bg-surface-overlay border border-cohesity-border text-[11px] text-ink whitespace-nowrap">{t}</span>
+                            ))}
+                          </div>
+                        ) : <span className="text-ink-faint">None</span>}
                       </td>
                       <td className="py-2 pr-4 text-center">
                         {p.dataLock ? <Lock size={13} className="text-status-ok inline" aria-label="DataLock enabled" /> : <span className="text-ink-faint">—</span>}
@@ -179,12 +206,45 @@ export default function GovernancePage() {
                       </td>
                     </tr>
                   ))}
-                  {visiblePolicies.length === 0 && (
+                  {policyTotal === 0 && (
                     <tr><td colSpan={7} className="text-center py-6 text-ink-faint">No policies {policyFilter === 'flagged' ? 'flagged' : 'collected'}</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
+
+            {policyTotal > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-cohesity-border mt-2">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="policy-page-size" className="text-xs text-ink-faint">Rows per page:</label>
+                  <select
+                    id="policy-page-size"
+                    value={String(policyPageSize)}
+                    onChange={e => setPolicyPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                    className="bg-surface-overlay border border-cohesity-border text-xs text-ink rounded-lg px-2 py-1 focus:border-brand/60 cursor-pointer"
+                  >
+                    {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+                    <option value="all">All</option>
+                  </select>
+                </div>
+                {policyPageSize === 'all' ? (
+                  <span className="text-xs text-ink-faint tnum">All {policyTotal}</span>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-ink-faint tnum">
+                      {policySafePage * policySizeNum + 1}–{Math.min((policySafePage + 1) * policySizeNum, policyTotal)} of {policyTotal}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setPolicyPage(0)} disabled={policySafePage === 0} aria-label="First page" className={policyNavBtn}>«</button>
+                      <button onClick={() => setPolicyPage(p => Math.max(0, p - 1))} disabled={policySafePage === 0} aria-label="Previous page" className={policyNavBtn}>‹</button>
+                      <span className="text-xs text-ink-faint px-1 tnum">{policySafePage + 1} / {policyTotalPages}</span>
+                      <button onClick={() => setPolicyPage(p => Math.min(policyTotalPages - 1, p + 1))} disabled={policySafePage >= policyTotalPages - 1} aria-label="Next page" className={policyNavBtn}>›</button>
+                      <button onClick={() => setPolicyPage(policyTotalPages - 1)} disabled={policySafePage >= policyTotalPages - 1} aria-label="Last page" className={policyNavBtn}>»</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </Panel>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">

@@ -73,7 +73,11 @@ router.post(
       res.json(result);
     } catch (err) {
       if (err.code === 'LLM_NOT_CONFIGURED') {
-        return res.status(503).json({ error: 'AI analysis is not configured. Set GITHUB_MODELS_TOKEN in the server environment.' });
+        return res.status(503).json({ error: 'AI analysis is not configured. Set OPENAI_TOKEN (or GITHUB_MODELS_TOKEN) in the server environment.' });
+      }
+      if (err.code === 'LLM_RATE_LIMITED') {
+        if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+        return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
       }
       if (err.code === 'CLUSTER_NOT_FOUND') {
         return res.status(404).json({ error: 'Cluster not found.' });

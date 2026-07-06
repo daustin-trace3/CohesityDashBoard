@@ -1,53 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Sparkles, RefreshCw } from 'lucide-react';
 import client from '../api/client';
-
-// Minimal, safe markdown rendering for the model's response (no raw HTML).
-// Handles headings (#/##/###), bullet lists (-/*), and inline **bold**.
-function renderInline(text, keyPrefix) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
-  return parts.map((p, i) => {
-    if (p.startsWith('**') && p.endsWith('**')) {
-      return <strong key={`${keyPrefix}-${i}`} className="text-ink font-semibold">{p.slice(2, -2)}</strong>;
-    }
-    return <span key={`${keyPrefix}-${i}`}>{p}</span>;
-  });
-}
-
-function Markdown({ text }) {
-  const lines = text.split('\n');
-  const blocks = [];
-  let list = [];
-  const flushList = () => {
-    if (list.length > 0) {
-      blocks.push(
-        <ul key={`ul-${blocks.length}`} className="list-disc pl-5 my-1.5 space-y-1">
-          {list.map((item, i) => <li key={i}>{renderInline(item, `li-${blocks.length}-${i}`)}</li>)}
-        </ul>
-      );
-      list = [];
-    }
-  };
-
-  lines.forEach((raw, idx) => {
-    const line = raw.trimEnd();
-    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
-    const heading = line.match(/^(#{1,3})\s+(.*)$/);
-    if (bullet) {
-      list.push(bullet[1]);
-    } else if (heading) {
-      flushList();
-      blocks.push(<p key={`h-${idx}`} className="text-ink font-semibold mt-3 mb-1">{renderInline(heading[2], `h-${idx}`)}</p>);
-    } else if (line.trim() === '') {
-      flushList();
-    } else {
-      flushList();
-      blocks.push(<p key={`p-${idx}`} className="my-1.5 leading-relaxed">{renderInline(line, `p-${idx}`)}</p>);
-    }
-  });
-  flushList();
-  return <div className="text-xs text-ink-muted">{blocks}</div>;
-}
+import Markdown from './Markdown';
 
 export default function ClusterAIModal({ cluster, onClose, mode = 'system' }) {
   const [enabled, setEnabled] = useState(true);
