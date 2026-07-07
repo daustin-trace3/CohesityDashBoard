@@ -399,6 +399,128 @@ router.get('/arrays/:id/hosts', [param('id').isInt()], validate, cacheControl(30
   }
 });
 
+/* ── Volume analytics (perf + growth) ────────────────────────────────────── */
+
+// GET /api/pure/volumes/performance — latest per-volume perf+space across arrays
+router.get('/volumes/performance', cacheControl(30), (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT h.*, a.name AS array_name
+      FROM pure_volume_history h
+      JOIN pure_arrays a ON a.id = h.array_id
+      JOIN (
+        SELECT array_id, volume_name, MAX(captured_at) AS mx
+        FROM pure_volume_history GROUP BY array_id, volume_name
+      ) latest
+        ON latest.array_id = h.array_id AND latest.volume_name = h.volume_name AND latest.mx = h.captured_at
+      ORDER BY h.used_bytes DESC
+    `).all();
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/pure/arrays/:id/volumes/growth?days=30 — per-volume growth over window
+router.get(
+  '/arrays/:id/volumes/growth',
+  [param('id').isInt(), query('days').optional().isInt({ min: 1, max: 90 })],
+  validate,
+  cacheControl(60),
+  (req, res, next) => {
+    try {
+      const days = Number(req.query.days) || 30;
+      const rows = db.prepare(`
+        WITH win AS (
+          SELECT * FROM pure_volume_history
+          WHERE array_id = ? AND captured_at >= datetime('now', ?)
+        ),
+        bounds AS (
+          SELECT volume_name, MIN(captured_at) AS first_at, MAX(captured_at) AS last_at
+          FROM win GROUP BY volume_name
+        )
+        SELECT b.volume_name,
+               f.used_bytes AS first_used, l.used_bytes AS last_used,
+               (l.used_bytes - f.used_bytes) AS growth_bytes,
+               l.provisioned_bytes, l.data_reduction, b.first_at, b.last_at
+        FROM bounds b
+        JOIN win f ON f.volume_name = b.volume_name AND f.captured_at = b.first_at
+        JOIN win l ON l.volume_name = b.volume_name AND l.captured_at = b.last_at
+        ORDER BY growth_bytes DESC
+      `).all(req.params.id, `-${days} days`);
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/* ── Replication & data protection ───────────────────────────────────────── */
+
+// GET /api/pure/replication — replication partners across all arrays
+router.get('/replication', cacheControl(30), (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT c.*, a.name AS array_name
+      FROM pure_array_connections c
+      JOIN pure_arrays a ON a.id = c.array_id
+      ORDER BY a.name, c.remote_name
+    `).all();
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/pure/protection-groups — protection groups across all arrays
+router.get('/protection-groups', cacheControl(30), (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT g.*, a.name AS array_name
+      FROM pure_protection_groups g
+      JOIN pure_arrays a ON a.id = g.array_id
+      ORDER BY a.name, g.name
+    `).all();
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ── Hardware inventory & compliance ─────────────────────────────────────── */
+
+// GET /api/pure/arrays/:id/hardware — components, drives, controllers for one array
+router.get('/arrays/:id/hardware', [param('id').isInt()], validate, cacheControl(60), (req, res, next) => {
+  try {
+    const id = req.params.id;
+    res.json({
+      hardware: db.prepare('SELECT * FROM pure_hardware WHERE array_id = ? ORDER BY name').all(id),
+      drives: db.prepare('SELECT * FROM pure_drives WHERE array_id = ? ORDER BY name').all(id),
+      controllers: db.prepare('SELECT * FROM pure_controllers WHERE array_id = ? ORDER BY name').all(id),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/pure/compliance — certificates + controller versions across arrays
+router.get('/compliance', cacheControl(60), (req, res, next) => {
+  try {
+    const arrays = db.prepare('SELECT id, name FROM pure_arrays ORDER BY name').all();
+    const certStmt = db.prepare('SELECT * FROM pure_certificates WHERE array_id = ? ORDER BY name');
+    const ctrlStmt = db.prepare('SELECT DISTINCT version FROM pure_controllers WHERE array_id = ? AND version IS NOT NULL');
+    const payload = arrays.map((a) => ({
+      id: a.id,
+      name: a.name,
+      certificates: certStmt.all(a.id),
+      versions: ctrlStmt.all(a.id).map((r) => r.version),
+    }));
+    res.json(payload);
+  } catch (err) {
+    next(err);
+  }
+});
+
 function describeApiError(err) {
   if (err?.response) {
     const status = err.response.status;

@@ -239,6 +239,48 @@ async function fetchHosts(array) {
   return data.items || [];
 }
 
+/** Per-volume real-time performance (IOPS/latency/bandwidth). */
+async function fetchVolumesPerformance(array) {
+  const data = await apiGet(array, '/volumes/performance', { limit: 5000 });
+  return data.items || [];
+}
+
+/** Replication partners (array-connections). */
+async function fetchArrayConnections(array) {
+  const data = await apiGet(array, '/array-connections', { limit: 1000 });
+  return data.items || [];
+}
+
+/** Protection groups (snapshot/replication policy). */
+async function fetchProtectionGroups(array) {
+  const data = await apiGet(array, '/protection-groups', { limit: 2000, destroyed: false });
+  return data.items || [];
+}
+
+/** Hardware components (controllers, fans, PSUs, bays, temps). */
+async function fetchHardware(array) {
+  const data = await apiGet(array, '/hardware', { limit: 5000 });
+  return data.items || [];
+}
+
+/** Physical drives inventory. */
+async function fetchDrives(array) {
+  const data = await apiGet(array, '/drives', { limit: 5000 });
+  return data.items || [];
+}
+
+/** Controllers (model, mode, Purity version, status). */
+async function fetchControllers(array) {
+  const data = await apiGet(array, '/controllers', { limit: 100 });
+  return data.items || [];
+}
+
+/** SSL certificates (subject, key size, validity window). */
+async function fetchCertificates(array) {
+  const data = await apiGet(array, '/certificates', { limit: 100 });
+  return data.items || [];
+}
+
 /**
  * Validate connectivity + credentials. Returns a small summary on success.
  * Accepts a full array row (with encrypted_credentials) OR a transient object
@@ -293,6 +335,13 @@ module.exports = {
   fetchAlerts,
   fetchVolumes,
   fetchHosts,
+  fetchVolumesPerformance,
+  fetchArrayConnections,
+  fetchProtectionGroups,
+  fetchHardware,
+  fetchDrives,
+  fetchControllers,
+  fetchCertificates,
   testConnection,
   invalidate,
 };

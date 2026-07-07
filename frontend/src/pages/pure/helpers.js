@@ -46,3 +46,27 @@ export function usedPct(latest) {
   if (!latest || !latest.capacity_bytes) return 0;
   return Math.min(100, Math.round((latest.used_bytes / latest.capacity_bytes) * 100));
 }
+
+export function fmtIops(v) {
+  if (v == null || isNaN(v)) return '—';
+  return Math.round(v).toLocaleString();
+}
+
+export function fmtDateMs(ms) {
+  if (!ms) return '—';
+  return new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+/** Days until a millisecond timestamp (negative = already past). */
+export function daysUntilMs(ms) {
+  if (!ms) return null;
+  return Math.round((ms - Date.now()) / 86400000);
+}
+
+export function statusTone(status) {
+  const s = String(status || '').toLowerCase();
+  if (['ok', 'healthy', 'ready', 'connected', 'online'].includes(s)) return 'ok';
+  if (['degraded', 'unhealthy', 'warning', 'connecting'].includes(s)) return 'warn';
+  if (['critical', 'failed', 'unused', 'disconnected', 'error'].includes(s)) return 'crit';
+  return 'neutral';
+}

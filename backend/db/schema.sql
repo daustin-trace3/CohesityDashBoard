@@ -232,3 +232,200 @@ CREATE TABLE IF NOT EXISTS consumption_breakdown (
   logical_bytes         INTEGER,            -- totalLogicalUsageBytes (front-end logical)
   captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Pure Storage FlashArray tables. Registered arrays + polled telemetry.
+   Time-series tables (pure_metrics_history, pure_volume_history) accumulate;
+   current-state tables are replaced wholesale each poll.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+CREATE TABLE IF NOT EXISTS pure_arrays (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  name                     TEXT NOT NULL UNIQUE,
+  mgmt_host                TEXT NOT NULL,
+  client_id                TEXT NOT NULL,
+  key_id                   TEXT NOT NULL,
+  username                 TEXT NOT NULL,
+  issuer                   TEXT,
+  encrypted_credentials    TEXT NOT NULL,
+  polling_interval_minutes INTEGER NOT NULL DEFAULT 15,
+  ssl_verify               INTEGER NOT NULL DEFAULT 0,
+  auth_method              TEXT NOT NULL DEFAULT 'client',
+  created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pure_metrics_history (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  capacity_bytes        INTEGER,
+  used_bytes            INTEGER,
+  data_reduction        REAL,
+  total_reduction       REAL,
+  shared_bytes          INTEGER,
+  snapshots_bytes       INTEGER,
+  system_bytes          INTEGER,
+  volume_count          INTEGER,
+  read_iops             REAL,
+  write_iops            REAL,
+  read_bw_bytes         INTEGER,
+  write_bw_bytes        INTEGER,
+  read_latency_us       REAL,
+  write_latency_us      REAL,
+  queue_depth           REAL,
+  purity_version        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pure_metrics_array_time ON pure_metrics_history(array_id, captured_at);
+
+CREATE TABLE IF NOT EXISTS pure_volumes (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  provisioned_bytes     INTEGER,
+  used_bytes            INTEGER,
+  data_reduction        REAL,
+  snapshots_bytes       INTEGER,
+  destroyed             INTEGER NOT NULL DEFAULT 0,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pure_alerts (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  pure_alert_id         TEXT NOT NULL,
+  severity              TEXT,
+  category              TEXT,
+  component_type        TEXT,
+  component_name        TEXT,
+  summary               TEXT,
+  state                 TEXT,
+  flagged               INTEGER NOT NULL DEFAULT 0,
+  created_at_ms         INTEGER,
+  updated_at_ms         INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+-- NOTE: the (array_id, pure_alert_id) UNIQUE index the alert upsert relies on is
+-- created by a guarded, dedup-first migration in database.js so instances that
+-- already collected alert rows don't fail on a duplicate during index creation.
+
+CREATE TABLE IF NOT EXISTS pure_hosts (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  connection_count      INTEGER,
+  personality           TEXT,
+  protocol              TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-volume time-series: space + performance sampled each poll. Powers hot-
+-- volume and top-grower analytics. Pruned to 90 days.
+CREATE TABLE IF NOT EXISTS pure_volume_history (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  volume_name           TEXT NOT NULL,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  provisioned_bytes     INTEGER,
+  used_bytes            INTEGER,
+  data_reduction        REAL,
+  snapshots_bytes       INTEGER,
+  read_iops             REAL,
+  write_iops            REAL,
+  read_latency_us       REAL,
+  write_latency_us      REAL,
+  read_bw_bytes         INTEGER,
+  write_bw_bytes        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pure_vol_hist_array_time ON pure_volume_history(array_id, captured_at);
+CREATE INDEX IF NOT EXISTS idx_pure_vol_hist_name ON pure_volume_history(array_id, volume_name, captured_at);
+
+-- Replication partners (array-connections). Current-state, replaced each poll.
+CREATE TABLE IF NOT EXISTS pure_array_connections (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  remote_name           TEXT,
+  status                TEXT,
+  type                  TEXT,               -- sync-replication | async-replication
+  version               TEXT,
+  transport             TEXT,               -- ip | fc
+  mgmt_address          TEXT,
+  replication_addresses TEXT,               -- comma-joined
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Protection groups (snapshot/replication policy). Current-state, replaced each poll.
+CREATE TABLE IF NOT EXISTS pure_protection_groups (
+  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id                  INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                      TEXT NOT NULL,
+  source_name               TEXT,
+  is_local                  INTEGER NOT NULL DEFAULT 1,
+  volume_count              INTEGER,
+  host_count                INTEGER,
+  target_count              INTEGER,
+  snapshot_enabled          INTEGER,
+  snapshot_frequency_ms     INTEGER,
+  replication_enabled       INTEGER,
+  replication_frequency_ms  INTEGER,
+  source_retention_days     INTEGER,
+  target_retention_days     INTEGER,
+  snapshots_bytes           INTEGER,
+  destroyed                 INTEGER NOT NULL DEFAULT 0,
+  captured_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Hardware components. Current-state, replaced each poll.
+CREATE TABLE IF NOT EXISTS pure_hardware (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  type                  TEXT,
+  model                 TEXT,
+  status                TEXT,
+  serial                TEXT,
+  slot                  INTEGER,
+  speed                 INTEGER,
+  temperature           REAL,
+  voltage               REAL,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Physical drives. Current-state, replaced each poll.
+CREATE TABLE IF NOT EXISTS pure_drives (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  type                  TEXT,
+  protocol              TEXT,
+  status                TEXT,
+  capacity_bytes        INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Controllers. Current-state, replaced each poll.
+CREATE TABLE IF NOT EXISTS pure_controllers (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  model                 TEXT,
+  status                TEXT,
+  mode                  TEXT,
+  version               TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- SSL certificates. Current-state, replaced each poll.
+CREATE TABLE IF NOT EXISTS pure_certificates (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  status                TEXT,
+  common_name           TEXT,
+  issued_to             TEXT,
+  issued_by             TEXT,
+  key_size              INTEGER,
+  valid_from_ms         INTEGER,
+  valid_to_ms           INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

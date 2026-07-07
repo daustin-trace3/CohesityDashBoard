@@ -5,7 +5,13 @@ import Dashboard from './pages/Dashboard';
 import AlertsPage from './pages/AlertsPage';
 import HardwarePage from './pages/HardwarePage';
 import ClusterManagement from './pages/ClusterManagement';
-import PureStoragePage from './pages/PureStoragePage';
+import PureOverviewPage from './pages/pure/PureOverviewPage';
+import PureCapacityPage from './pages/pure/PureCapacityPage';
+import PureVolumesPage from './pages/pure/PureVolumesPage';
+import PureReplicationPage from './pages/pure/PureReplicationPage';
+import PureHardwarePage from './pages/pure/PureHardwarePage';
+import PureAlertsPage from './pages/pure/PureAlertsPage';
+import PureSettingsPage from './pages/pure/PureSettingsPage';
 import NetAppPage from './pages/NetAppPage';
 import DataProtectionPage from './pages/DataProtectionPage';
 import AnalyticsPage from './pages/AnalyticsPage';
@@ -48,7 +54,13 @@ export default function App() {
                 <Route path="alerts"          element={withBoundary(<AlertsPage />)} />
                 <Route path="hardware"        element={withBoundary(<HardwarePage />)} />
                 <Route path="clusters"        element={withBoundary(<ClusterManagement />)} />
-                <Route path="pure"            element={withBoundary(<PureStoragePage />)} />
+                <Route path="pure"            element={withBoundary(<PureOverviewPage />)} />
+                <Route path="pure/capacity"   element={withBoundary(<PureCapacityPage />)} />
+                <Route path="pure/volumes"    element={withBoundary(<PureVolumesPage />)} />
+                <Route path="pure/replication" element={withBoundary(<PureReplicationPage />)} />
+                <Route path="pure/hardware"   element={withBoundary(<PureHardwarePage />)} />
+                <Route path="pure/alerts"     element={withBoundary(<PureAlertsPage />)} />
+                <Route path="pure/settings"   element={withBoundary(<PureSettingsPage />)} />
                 <Route path="netapp"          element={withBoundary(<NetAppPage />)} />
                 <Route path="data-protection" element={withBoundary(<DataProtectionPage />)} />
                 <Route path="replication"     element={withBoundary(<ReplicationPage />)} />

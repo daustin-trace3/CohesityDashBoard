@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import client from '../api/client';
@@ -45,6 +45,22 @@ const navGroups = [
     label: 'System',
     items: [
       { label: 'Settings', route: '/settings', icon: Settings, isActive: (p) => p.startsWith('/settings') },
+    ],
+  },
+];
+
+// Pure Storage sidebar — shown when the Pure platform is active.
+const pureNavGroups = [
+  {
+    label: 'Pure Storage',
+    items: [
+      { label: 'Overview', route: '/pure', icon: Gauge, isActive: (p) => p === '/pure' },
+      { label: 'Capacity', route: '/pure/capacity', icon: Database, isActive: (p) => p.startsWith('/pure/capacity') },
+      { label: 'Volumes', route: '/pure/volumes', icon: Layers, isActive: (p) => p.startsWith('/pure/volumes') },
+      { label: 'Replication', route: '/pure/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/pure/replication') },
+      { label: 'Hardware', route: '/pure/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/pure/hardware') },
+      { label: 'Alerts', route: '/pure/alerts', icon: Bell, isActive: (p) => p.startsWith('/pure/alerts') },
+      { label: 'Settings', route: '/pure/settings', icon: Settings, isActive: (p) => p.startsWith('/pure/settings') },
     ],
   },
 ];
@@ -133,6 +149,9 @@ export default function Layout() {
 
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
+  // Swap the sidebar menu to match the active vendor platform.
+  const activeNavGroups = pathname.startsWith('/pure') ? pureNavGroups : navGroups;
+
   return (
     <div className="h-screen flex flex-row bg-transparent overflow-hidden">
       {/* Sidebar */}
@@ -140,7 +159,7 @@ export default function Layout() {
         <BrandMark collapsed={collapsed} />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
-          {navGroups.map(group => (
+          {activeNavGroups.map(group => (
             <div key={group.label}>
               {!collapsed && (
                 <p className="px-4 mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-ink-faint select-none">{group.label}</p>

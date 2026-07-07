@@ -111,4 +111,33 @@ if (!hasReplUniqueIndex) {
   console.log('[migration] VACUUM complete.');
 }
 
+// Migration: older Pure installs may predate the `auth_method` column on
+// pure_arrays (added after the table was first shipped). Additive + guarded.
+try {
+  db.exec("ALTER TABLE pure_arrays ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'client'");
+} catch {
+  // Column already exists (or table not present yet) — ignore.
+}
+
+// Migration: ensure the (array_id, pure_alert_id) uniqueness the alert upsert
+// (INSERT ... ON CONFLICT) depends on. Dedup any rows collected before the
+// index existed, then create it. Guarded so it runs at most once and never
+// crashes startup on a populated instance.
+try {
+  const hasAlertTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pure_alerts'")
+    .get();
+  const hasAlertIndex = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_pure_alerts_unique'")
+    .get();
+  if (hasAlertTable && !hasAlertIndex) {
+    db.exec(
+      'DELETE FROM pure_alerts WHERE id NOT IN (SELECT MAX(id) FROM pure_alerts GROUP BY array_id, pure_alert_id)'
+    );
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_pure_alerts_unique ON pure_alerts(array_id, pure_alert_id)');
+  }
+} catch (err) {
+  console.error('[migration] pure_alerts unique index migration failed:', err.message);
+}
+
 module.exports = db;
