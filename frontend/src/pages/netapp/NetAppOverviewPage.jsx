@@ -1,20 +1,14 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import {
-  ResponsiveContainer, AreaChart, Area, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-} from 'recharts';
 import { Gauge, RefreshCw, Database, Activity, Timer, AlertTriangle, TrendingUp, Layers } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, LoadingPanel } from '../../components/ui/primitives';
+import TrendChart from '../../components/TrendChart';
 import { BRAND, fmtBytes, fmtNum, fmtLatency, fmtRatio } from './helpers';
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];
 const READ_COLOR = '#0067C5';
 const WRITE_COLOR = '#f59e0b';
-const AXIS = '#9ca3af';
-const GRID = '#3D3D3D';
-const TT = { background: '#2C2C2C', border: '1px solid #3D3D3D', color: '#E5E5E5', fontSize: 12 };
 const MS_PER_DAY = 86400000;
 const toTB = (b) => (b != null ? +(b / 1e12).toFixed(3) : null);
 const toMs = (us) => (us != null ? +(us / 1000).toFixed(2) : null);
@@ -220,43 +214,42 @@ export default function NetAppOverviewPage() {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               {chartCard('Capacity (TB)', (
-                <ResponsiveContainer width="100%" height={200}>
-                  <AreaChart data={series} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={GRID} /><XAxis dataKey="time" tick={{ fill: AXIS, fontSize: 10 }} /><YAxis tick={{ fill: AXIS, fontSize: 10 }} />
-                    <Tooltip contentStyle={TT} formatter={(v, n) => [`${v} TB`, n]} /><Legend wrapperStyle={{ fontSize: 11, color: AXIS }} />
-                    <Area type="monotone" dataKey="totalTB" name="Total" stroke="#6b7280" fill="#6b728022" strokeWidth={2} />
-                    <Area type="monotone" dataKey="usedTB" name="Used" stroke={BRAND} fill={`${BRAND}22`} strokeWidth={2} />
-                  </AreaChart>
-                </ResponsiveContainer>
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[
+                    { label: 'Total', data: series.map((s) => s.totalTB), color: '#6b7280' },
+                    { label: 'Used', data: series.map((s) => s.usedTB), color: BRAND, fill: true },
+                  ]}
+                  unit=" TB"
+                />
               ))}
               {chartCard('Storage Efficiency (x : 1)', (
-                <ResponsiveContainer width="100%" height={200}>
-                  <LineChart data={series} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={GRID} /><XAxis dataKey="time" tick={{ fill: AXIS, fontSize: 10 }} /><YAxis tick={{ fill: AXIS, fontSize: 10 }} />
-                    <Tooltip contentStyle={TT} formatter={(v, n) => [`${v} : 1`, n]} /><Legend wrapperStyle={{ fontSize: 11, color: AXIS }} />
-                    <Line type="monotone" dataKey="eff" name="Efficiency" stroke={BRAND} strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[{ label: 'Efficiency', data: series.map((s) => s.eff), color: BRAND }]}
+                  unit=" : 1"
+                />
               ))}
               {chartCard('IOPS', (
-                <ResponsiveContainer width="100%" height={200}>
-                  <LineChart data={series} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={GRID} /><XAxis dataKey="time" tick={{ fill: AXIS, fontSize: 10 }} /><YAxis tick={{ fill: AXIS, fontSize: 10 }} tickFormatter={(v) => fmtNum(v)} />
-                    <Tooltip contentStyle={TT} formatter={(v, n) => [`${fmtNum(v)} IOPS`, n]} /><Legend wrapperStyle={{ fontSize: 11, color: AXIS }} />
-                    <Line type="monotone" dataKey="readIops" name="Read" stroke={READ_COLOR} strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="writeIops" name="Write" stroke={WRITE_COLOR} strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[
+                    { label: 'Read', data: series.map((s) => s.readIops), color: READ_COLOR },
+                    { label: 'Write', data: series.map((s) => s.writeIops), color: WRITE_COLOR },
+                  ]}
+                  format={(v) => fmtNum(v)}
+                  unit=" IOPS"
+                />
               ))}
               {chartCard('Latency (ms)', (
-                <ResponsiveContainer width="100%" height={200}>
-                  <LineChart data={series} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={GRID} /><XAxis dataKey="time" tick={{ fill: AXIS, fontSize: 10 }} /><YAxis tick={{ fill: AXIS, fontSize: 10 }} />
-                    <Tooltip contentStyle={TT} formatter={(v, n) => [`${v} ms`, n]} /><Legend wrapperStyle={{ fontSize: 11, color: AXIS }} />
-                    <Line type="monotone" dataKey="readMs" name="Read" stroke={READ_COLOR} strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="writeMs" name="Write" stroke={WRITE_COLOR} strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[
+                    { label: 'Read', data: series.map((s) => s.readMs), color: READ_COLOR },
+                    { label: 'Write', data: series.map((s) => s.writeMs), color: WRITE_COLOR },
+                  ]}
+                  unit=" ms"
+                />
               ))}
             </div>
           )}
