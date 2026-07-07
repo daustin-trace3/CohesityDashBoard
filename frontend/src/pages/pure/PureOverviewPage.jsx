@@ -66,6 +66,7 @@ export default function PureOverviewPage() {
   const [days, setDays] = useState(30);
   const [history, setHistory] = useState(null);
   const [growers, setGrowers] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadOverview = useCallback(() => {
     return client
@@ -85,6 +86,33 @@ export default function PureOverviewPage() {
   }, [toast]);
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
+
+  // Live refresh: poll every array now, then reload fresh (cache-busted) data.
+  const hardRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const list = arrays && arrays.length ? arrays : ((await client.get('/pure/overview')).data || []);
+      await Promise.allSettled(list.map((a) => client.post(`/pure/arrays/${a.id}/poll`)));
+      const bust = `_=${Date.now()}`;
+      const { data } = await client.get(`/pure/overview?${bust}`);
+      setArrays(data);
+      const sel = (selectedId && data.some((a) => a.id === selectedId)) ? selectedId : (data.find((a) => a.latest) || data[0])?.id ?? null;
+      setSelectedId(sel);
+      if (sel) {
+        const [h, g] = await Promise.allSettled([
+          client.get(`/pure/arrays/${sel}/metrics/history?days=${days}&${bust}`),
+          client.get(`/pure/arrays/${sel}/volumes/growth?days=${days}&${bust}`),
+        ]);
+        if (h.status === 'fulfilled') setHistory(h.value.data);
+        if (g.status === 'fulfilled') setGrowers(g.value.data);
+      }
+      toast({ type: 'success', title: 'Data refreshed', message: 'Pulled fresh telemetry from all arrays.' });
+    } catch {
+      toast({ type: 'error', title: 'Refresh failed', message: 'Could not pull fresh data from the array(s).' });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
     if (!selectedId) { setHistory(null); return; }
@@ -179,10 +207,11 @@ export default function PureOverviewPage() {
     <div className="animate-fade-in">
       <PageHeader icon={Gauge} title="Pure Overview" description="Fleet health, capacity trends, and forecasts across all FlashArrays">
         <button
-          onClick={loadOverview}
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors"
+          onClick={hardRefresh}
+          disabled={refreshing}
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50"
         >
-          <RefreshCw size={15} /> Refresh
+          <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh'}
         </button>
       </PageHeader>
 

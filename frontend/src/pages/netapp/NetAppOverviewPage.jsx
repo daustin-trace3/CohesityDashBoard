@@ -50,6 +50,7 @@ export default function NetAppOverviewPage() {
   const [selectedId, setSelectedId] = useState(null);
   const [days, setDays] = useState(30);
   const [history, setHistory] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadOverview = useCallback(() => {
     return client.get('/netapp/overview')
@@ -59,6 +60,29 @@ export default function NetAppOverviewPage() {
       })
       .catch(() => { setArrays([]); toast({ type: 'error', title: 'Failed to load NetApp overview' }); });
   }, [toast]);
+
+  // Live refresh: poll every cluster now, then reload fresh (cache-busted) data.
+  const hardRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const list = arrays && arrays.length ? arrays : ((await client.get('/netapp/overview')).data || []);
+      await Promise.allSettled(list.map((a) => client.post(`/netapp/arrays/${a.id}/poll`)));
+      const bust = `_=${Date.now()}`;
+      const { data } = await client.get(`/netapp/overview?${bust}`);
+      setArrays(data);
+      const sel = (selectedId && data.some((a) => a.id === selectedId)) ? selectedId : (data.find((a) => a.latest) || data[0])?.id ?? null;
+      setSelectedId(sel);
+      if (sel) {
+        const h = await client.get(`/netapp/arrays/${sel}/metrics/history?days=${days}&${bust}`);
+        setHistory(h.data);
+      }
+      toast({ type: 'success', title: 'Data refreshed', message: 'Pulled fresh telemetry from all clusters.' });
+    } catch {
+      toast({ type: 'error', title: 'Refresh failed', message: 'Could not pull fresh data from the cluster(s).' });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
 
@@ -123,8 +147,8 @@ export default function NetAppOverviewPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Gauge} title="NetApp Overview" description="Fleet capacity, efficiency, performance and forecasts across all ONTAP clusters">
-        <button onClick={loadOverview} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
+        <button onClick={hardRefresh} disabled={refreshing} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
+          <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh'}
         </button>
       </PageHeader>
 
