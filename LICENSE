@@ -1,21 +1,31 @@
-MIT License
+# Commercial Use License Agreement
 
-Copyright (c) 2026 Douglas Austin
+Copyright (c) 2026 Douglas Austin daustin@backup-guy.com
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+## 1. Definitions
+* "Software" refers to the source code, documentation, and artifacts contained in this repository.
+* "You" or "Licensee" refers to the individual or organization utilizing this Software.
+* "Licensor" refers to the copyright holder specified above.
+* "Commercial Use" means any use of the Software by a business, corporation, or individual to generate revenue, facilitate commercial transactions, or support a for-profit enterprise.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+## 2. Grant of License
+Subject to the terms of this License, Licensor grants You a worldwide, non-exclusive, non-transferable, royalty-free license to:
+* Download and view the source code.
+* Use, modify, and run the Software strictly for personal, educational, or evaluation purposes.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+## 3. Commercial Use Restrictions
+You are strictly prohibited from using this Software for Commercial Use unless You have obtained a separate, written commercial license agreement and paid the required fees to the Licensor. 
+
+Prohibited commercial activities include, but are not limited to:
+* Running the Software to power a production environment or commercial service.
+* Bundling or embedding the Software inside a commercial product.
+* Selling, renting, or leasing the Software or any modifications of it.
+
+## 4. Modifications and Redistribution
+You may modify the Software for non-commercial evaluation purposes. However, You may not redistribute the Software or its modifications to third parties without the express written consent of the Licensor. Any permitted redistribution must retain this original LICENSE file.
+
+## 5. Termination
+This license terminates automatically if You breach any of its terms. Upon termination, You must immediately stop using and destroy all copies of the Software in your possession.
+
+## 6. Disclaimer of Warranty
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

@@ -23,10 +23,13 @@ const dashboardRouter = require('./routes/dashboard');
 const settingsRouter = require('./routes/settings');
 const advisorRouter = require('./routes/advisor');
 const licensingRouter = require('./routes/licensing');
+const licenseRouter = require('./routes/license');
 const requireApiKey = require('./middleware/auth');
+const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const { initPoller } = require('./services/poller');
 const { initLicensing } = require('./services/licensing');
+const { initLicense, getLicenseStatus } = require('./services/license');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -75,7 +78,11 @@ app.use(express.json({ limit: '1mb' }));
 // API key authentication for all /api/ routes
 app.use('/api', requireApiKey);
 
+// Product license gate — blocks everything except /api/license/* when unlicensed
+app.use('/api', requireLicense);
+
 // Routes
+app.use('/api/license', licenseRouter);
 app.use('/api/clusters', clustersRouter);
 app.use('/api/metrics', metricsRouter);
 app.use('/api/alerts', alertsRouter);
@@ -128,11 +135,15 @@ if (!process.env.DASHBOARD_API_KEY) {
 if (!process.env.HELIOS_API_KEY) {
   logger.warn('HELIOS_API_KEY is not set — Helios discovery will be unavailable.');
 }
+if (getLicenseStatus().state === 'missing') {
+  logger.error('[Fatal] LICENSE_KEY is not set — the dashboard is locked until a license is configured.');
+}
 
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
   initPoller();
   initLicensing();
+  initLicense();
 });
 
 module.exports = app;

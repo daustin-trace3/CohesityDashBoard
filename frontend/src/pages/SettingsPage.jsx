@@ -1,9 +1,18 @@
 import { useEffect, useState } from 'react';
-import { Sparkles, Save, BadgeCheck, Layers } from 'lucide-react';
+import { Sparkles, Save, BadgeCheck, Layers, KeyRound } from 'lucide-react';
 import client from '../api/client';
+import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 
+const TABS = [
+  { key: 'ai', label: 'AI Analysis', icon: Sparkles },
+  { key: 'entitlement', label: 'Licensing', icon: BadgeCheck },
+  { key: 'platforms', label: 'Platforms', icon: Layers },
+  { key: 'license', label: 'Product License', icon: KeyRound },
+];
+
 export default function SettingsPage() {
+  const [tab, setTab] = useState('ai');
   const [estateContext, setEstateContext] = useState('');
   const [flagUnprotected, setFlagUnprotected] = useState(false);
   const [aiEnabled, setAiEnabled] = useState(true);
@@ -14,6 +23,7 @@ export default function SettingsPage() {
   const [licenseEdition, setLicenseEdition] = useState('');
   const [pureEnabled, setPureEnabled] = useState(false);
   const [netappEnabled, setNetappEnabled] = useState(false);
+  const [license, setLicense] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
@@ -22,7 +32,9 @@ export default function SettingsPage() {
     Promise.allSettled([
       client.get('/settings'),
       client.get('/insights/ai/config'),
-    ]).then(([s, c]) => {
+      client.get('/license/status'),
+    ]).then(([s, c, l]) => {
+      if (l.status === 'fulfilled') setLicense(l.value.data);
       if (s.status === 'fulfilled') {
         const d = s.value.data;
         setEstateContext(d.llmEstateContext || '');
@@ -71,7 +83,24 @@ export default function SettingsPage() {
         <p className="text-xs text-ink-muted mt-0.5">Global configuration for the dashboard. Applies across the whole estate.</p>
       </div>
 
+      {/* Section tabs */}
+      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
+        {TABS.map(t => {
+          const Icon = t.icon;
+          const active = tab === t.key;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
+                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
+              }`}>
+              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* AI Analysis section */}
+      {tab === 'ai' && (
       <div className="panel p-4">
         <div className="flex items-center gap-2 mb-1">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
@@ -144,8 +173,44 @@ export default function SettingsPage() {
           </div>
         )}
       </div>
+      )}
+
+      {/* Product license section — status only, key is never displayed */}
+      {tab === 'license' && !license && (
+        <div className="panel p-4">
+          <p className="text-xs text-ink-faint">License status is unavailable right now.</p>
+        </div>
+      )}
+      {tab === 'license' && license && (
+        <div className="panel p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
+              <KeyRound size={14} className="text-brand" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-ink">Product License</p>
+              <p className="text-[11px] text-ink-muted">This installation's license status. Renewals apply automatically once payment is processed.</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+            <Badge tone={license.state === 'valid' ? 'ok' : license.state === 'grace' ? 'warn' : 'crit'}>
+              {license.state === 'valid' ? 'Valid' : license.state === 'grace' ? 'Expired — grace period' : 'Not licensed'}
+            </Badge>
+            {license.customer && (
+              <span className="text-xs text-ink-muted">Licensed to <span className="text-ink font-semibold">{license.customer}</span></span>
+            )}
+            {license.effectiveExpiry && (
+              <span className="text-xs text-ink-muted">Expires <span className="text-ink font-semibold tnum">{license.effectiveExpiry}</span>
+                {license.state === 'valid' && license.daysLeft != null && <span className="text-ink-faint"> · {license.daysLeft} days left</span>}
+                {license.state === 'grace' && license.graceDaysLeft != null && <span className="text-status-crit font-semibold"> · locks in {license.graceDaysLeft} day{license.graceDaysLeft === 1 ? '' : 's'}</span>}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Platforms section */}
+      {tab === 'platforms' && (
       <div className="panel p-4">
         <div className="flex items-center gap-2 mb-1">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
@@ -193,8 +258,10 @@ export default function SettingsPage() {
           </div>
         )}
       </div>
+      )}
 
       {/* Licensing section */}
+      {tab === 'entitlement' && (
       <div className="panel p-4">
         <div className="flex items-center gap-2 mb-1">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
@@ -264,6 +331,7 @@ export default function SettingsPage() {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

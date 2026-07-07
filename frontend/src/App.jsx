@@ -16,6 +16,7 @@ import GovernancePage from './pages/GovernancePage';
 import SettingsPage from './pages/SettingsPage';
 import AIAdvisorPage from './pages/AIAdvisorPage';
 import ErrorBoundary from './components/ErrorBoundary';
+import LicenseGate from './components/LicenseGate';
 import { ToastProvider } from './components/ui/Toaster';
 import GlobalLoadingBar from './components/ui/GlobalLoadingBar';
 import { SearchContext, PlatformContext, useSearch, usePlatform } from './context';
@@ -38,6 +39,7 @@ export default function App() {
       <SearchContext.Provider value={{ search, setSearch }}>
         <ToastProvider>
           <GlobalLoadingBar />
+          <LicenseGate>
           <BrowserRouter>
             <Routes>
               <Route path="/" element={<Layout />}>
@@ -59,6 +61,7 @@ export default function App() {
               </Route>
             </Routes>
           </BrowserRouter>
+          </LicenseGate>
         </ToastProvider>
       </SearchContext.Provider>
     </PlatformContext.Provider>
