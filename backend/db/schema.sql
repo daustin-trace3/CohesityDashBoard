@@ -429,3 +429,126 @@ CREATE TABLE IF NOT EXISTS pure_certificates (
   valid_to_ms           INTEGER,
   captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+/* ══════════════════════════════════════════════════════════════════════════
+   NetApp ONTAP tables. Registered clusters + polled telemetry, mirroring the
+   Pure layout. Time-series accumulates (pruned 90 days); current-state tables
+   are replaced wholesale each poll.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+CREATE TABLE IF NOT EXISTS netapp_arrays (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  name                     TEXT NOT NULL UNIQUE,
+  mgmt_host                TEXT NOT NULL,
+  username                 TEXT NOT NULL,
+  encrypted_credentials    TEXT NOT NULL,     -- AES-GCM JSON of { password }
+  polling_interval_minutes INTEGER NOT NULL DEFAULT 15,
+  ssl_verify               INTEGER NOT NULL DEFAULT 0,
+  created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Cluster-level capacity + performance time-series.
+CREATE TABLE IF NOT EXISTS netapp_metrics_history (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  total_bytes           INTEGER,
+  used_bytes            INTEGER,
+  available_bytes       INTEGER,
+  physical_used_bytes   INTEGER,
+  logical_used_bytes    INTEGER,
+  efficiency_ratio      REAL,
+  volume_count          INTEGER,
+  aggregate_count       INTEGER,
+  read_iops             REAL,
+  write_iops            REAL,
+  read_throughput_bytes INTEGER,
+  write_throughput_bytes INTEGER,
+  read_latency_us       REAL,
+  write_latency_us      REAL,
+  ontap_version         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_netapp_metrics_array_time ON netapp_metrics_history(array_id, captured_at);
+
+-- Aggregates (current-state).
+CREATE TABLE IF NOT EXISTS netapp_aggregates (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  uuid                  TEXT,
+  name                  TEXT,
+  node_name             TEXT,
+  state                 TEXT,
+  size_bytes            INTEGER,
+  used_bytes            INTEGER,
+  available_bytes       INTEGER,
+  used_percent          REAL,
+  physical_used_bytes   INTEGER,
+  efficiency_ratio      REAL,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Volumes (current-state).
+CREATE TABLE IF NOT EXISTS netapp_volumes (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  uuid                  TEXT,
+  name                  TEXT,
+  svm_name              TEXT,
+  aggregate_name        TEXT,
+  state                 TEXT,
+  size_bytes            INTEGER,
+  used_bytes            INTEGER,
+  available_bytes       INTEGER,
+  used_percent          REAL,
+  physical_used_bytes   INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Storage VMs (current-state).
+CREATE TABLE IF NOT EXISTS netapp_svms (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  uuid                  TEXT,
+  name                  TEXT,
+  state                 TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Nodes (current-state).
+CREATE TABLE IF NOT EXISTS netapp_nodes (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  uuid                  TEXT,
+  name                  TEXT,
+  model                 TEXT,
+  serial_number         TEXT,
+  state                 TEXT,
+  version               TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Disks (current-state).
+CREATE TABLE IF NOT EXISTS netapp_disks (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  model                 TEXT,
+  vendor                TEXT,
+  type                  TEXT,
+  state                 TEXT,
+  size_bytes            INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Health/EMS alerts (current-state).
+CREATE TABLE IF NOT EXISTS netapp_alerts (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  alert_key             TEXT,
+  severity              TEXT,
+  node_name             TEXT,
+  source                TEXT,
+  message               TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

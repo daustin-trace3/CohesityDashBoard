@@ -276,6 +276,30 @@ async function fetchSourceRegistrations(cluster) {
   });
 }
 
+/**
+ * Resolve (close out) one or more alerts on a cluster. Uses the v1 public
+ * alertResolutions endpoint, which moves the alerts to kResolved. Works for
+ * both direct and Helios-connected clusters via the authenticated client.
+ * @param {object} cluster  cluster row
+ * @param {string[]} alertIdList  Cohesity alert ids (cohesity_alert_id)
+ * @param {string} resolutionDetails  free-text note stored on the resolution
+ */
+async function resolveAlerts(cluster, alertIdList, resolutionText = 'Resolved from Cohesity Dashboard') {
+  const client = await getAuthenticatedClient(cluster);
+  const text = String(resolutionText || 'Resolved from Cohesity Dashboard').slice(0, 1000);
+  // The v1 public API expects `resolutionDetails` as an OBJECT with a short
+  // summary plus longer details — a bare string is rejected with
+  // "Error while parsing request body: invalid input parameters".
+  const { data } = await client.post('/irisservices/api/v1/public/alertResolutions', {
+    resolutionDetails: {
+      resolutionSummary: text.slice(0, 128),
+      resolutionDetails: text,
+    },
+    alertIdList: alertIdList.map(String),
+  });
+  return data;
+}
+
 module.exports = {
   getAuthenticatedClient,
   invalidateSession,
@@ -285,6 +309,7 @@ module.exports = {
   fetchNodes,
   fetchNodesV2,
   fetchAlerts,
+  resolveAlerts,
   fetchClusterStatus,
   fetchChassis,
   fetchProtectionRuns,

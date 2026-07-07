@@ -12,7 +12,12 @@ import PureReplicationPage from './pages/pure/PureReplicationPage';
 import PureHardwarePage from './pages/pure/PureHardwarePage';
 import PureAlertsPage from './pages/pure/PureAlertsPage';
 import PureSettingsPage from './pages/pure/PureSettingsPage';
-import NetAppPage from './pages/NetAppPage';
+import NetAppOverviewPage from './pages/netapp/NetAppOverviewPage';
+import NetAppCapacityPage from './pages/netapp/NetAppCapacityPage';
+import NetAppVolumesPage from './pages/netapp/NetAppVolumesPage';
+import NetAppAlertsPage from './pages/netapp/NetAppAlertsPage';
+import NetAppHardwarePage from './pages/netapp/NetAppHardwarePage';
+import NetAppSettingsPage from './pages/netapp/NetAppSettingsPage';
 import DataProtectionPage from './pages/DataProtectionPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import ReportingPage from './pages/ReportingPage';
@@ -61,7 +66,12 @@ export default function App() {
                 <Route path="pure/hardware"   element={withBoundary(<PureHardwarePage />)} />
                 <Route path="pure/alerts"     element={withBoundary(<PureAlertsPage />)} />
                 <Route path="pure/settings"   element={withBoundary(<PureSettingsPage />)} />
-                <Route path="netapp"          element={withBoundary(<NetAppPage />)} />
+                <Route path="netapp"          element={withBoundary(<NetAppOverviewPage />)} />
+                <Route path="netapp/capacity" element={withBoundary(<NetAppCapacityPage />)} />
+                <Route path="netapp/volumes"  element={withBoundary(<NetAppVolumesPage />)} />
+                <Route path="netapp/alerts"   element={withBoundary(<NetAppAlertsPage />)} />
+                <Route path="netapp/hardware" element={withBoundary(<NetAppHardwarePage />)} />
+                <Route path="netapp/settings" element={withBoundary(<NetAppSettingsPage />)} />
                 <Route path="data-protection" element={withBoundary(<DataProtectionPage />)} />
                 <Route path="replication"     element={withBoundary(<ReplicationPage />)} />
                 <Route path="analytics"       element={withBoundary(<AnalyticsPage />)} />

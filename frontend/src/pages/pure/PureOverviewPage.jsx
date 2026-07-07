@@ -315,7 +315,7 @@ export default function PureOverviewPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke={GRID} />
                     <XAxis dataKey="time" tick={{ fill: AXIS, fontSize: 10 }} />
                     <YAxis tick={{ fill: AXIS, fontSize: 10 }} tickFormatter={(v) => `${v}`} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => [`${v} TB`]} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v, n) => [`${v} TB`, n]} />
                     <Legend wrapperStyle={{ fontSize: 11, color: AXIS }} />
                     <Area type="monotone" dataKey="capacityTB" name="Capacity" stroke="#6b7280" fill="#6b728022" strokeWidth={2} />
                     <Area type="monotone" dataKey="usedTB" name="Used" stroke={BRAND} fill={`${BRAND}22`} strokeWidth={2} />
@@ -328,7 +328,7 @@ export default function PureOverviewPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke={GRID} />
                     <XAxis dataKey="time" tick={{ fill: AXIS, fontSize: 10 }} />
                     <YAxis tick={{ fill: AXIS, fontSize: 10 }} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => [`${v} : 1`]} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v, n) => [`${v} : 1`, n]} />
                     <Legend wrapperStyle={{ fontSize: 11, color: AXIS }} />
                     <Line type="monotone" dataKey="drr" name="Data Reduction" stroke={BRAND} strokeWidth={2} dot={false} />
                     <Line type="monotone" dataKey="totalRatio" name="Total Reduction" stroke={WRITE_COLOR} strokeWidth={2} dot={false} />
@@ -341,7 +341,7 @@ export default function PureOverviewPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke={GRID} />
                     <XAxis dataKey="time" tick={{ fill: AXIS, fontSize: 10 }} />
                     <YAxis tick={{ fill: AXIS, fontSize: 10 }} tickFormatter={(v) => fmtNum(v)} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => [fmtNum(v)]} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v, n) => [`${fmtNum(v)} IOPS`, n]} />
                     <Legend wrapperStyle={{ fontSize: 11, color: AXIS }} />
                     <Line type="monotone" dataKey="readIops" name="Read" stroke={READ_COLOR} strokeWidth={2} dot={false} />
                     <Line type="monotone" dataKey="writeIops" name="Write" stroke={WRITE_COLOR} strokeWidth={2} dot={false} />
@@ -354,7 +354,7 @@ export default function PureOverviewPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke={GRID} />
                     <XAxis dataKey="time" tick={{ fill: AXIS, fontSize: 10 }} />
                     <YAxis tick={{ fill: AXIS, fontSize: 10 }} tickFormatter={(v) => `${v}`} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => [`${v} ms`]} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v, n) => [`${v} ms`, n]} />
                     <Legend wrapperStyle={{ fontSize: 11, color: AXIS }} />
                     <Line type="monotone" dataKey="readMs" name="Read" stroke={READ_COLOR} strokeWidth={2} dot={false} />
                     <Line type="monotone" dataKey="writeMs" name="Write" stroke={WRITE_COLOR} strokeWidth={2} dot={false} />

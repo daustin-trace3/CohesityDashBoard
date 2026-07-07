@@ -49,18 +49,59 @@ const navGroups = [
   },
 ];
 
-// Pure Storage sidebar — shown when the Pure platform is active.
+// Pure Storage sidebar — shown when the Pure platform is active. Grouped into
+// sections that mirror the Cohesity menu.
 const pureNavGroups = [
   {
-    label: 'Pure Storage',
+    label: 'Monitor',
     items: [
       { label: 'Overview', route: '/pure', icon: Gauge, isActive: (p) => p === '/pure' },
       { label: 'Capacity', route: '/pure/capacity', icon: Database, isActive: (p) => p.startsWith('/pure/capacity') },
       { label: 'Volumes', route: '/pure/volumes', icon: Layers, isActive: (p) => p.startsWith('/pure/volumes') },
-      { label: 'Replication', route: '/pure/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/pure/replication') },
-      { label: 'Hardware', route: '/pure/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/pure/hardware') },
       { label: 'Alerts', route: '/pure/alerts', icon: Bell, isActive: (p) => p.startsWith('/pure/alerts') },
+    ],
+  },
+  {
+    label: 'Protect',
+    items: [
+      { label: 'Replication', route: '/pure/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/pure/replication') },
+    ],
+  },
+  {
+    label: 'Infrastructure',
+    items: [
+      { label: 'Hardware', route: '/pure/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/pure/hardware') },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
       { label: 'Settings', route: '/pure/settings', icon: Settings, isActive: (p) => p.startsWith('/pure/settings') },
+    ],
+  },
+];
+
+// NetApp ONTAP sidebar — shown when the NetApp platform is active.
+const netappNavGroups = [
+  {
+    label: 'Monitor',
+    items: [
+      { label: 'Overview', route: '/netapp', icon: Gauge, isActive: (p) => p === '/netapp' },
+      { label: 'Capacity', route: '/netapp/capacity', icon: Database, isActive: (p) => p.startsWith('/netapp/capacity') },
+      { label: 'Volumes', route: '/netapp/volumes', icon: Layers, isActive: (p) => p.startsWith('/netapp/volumes') },
+      { label: 'Alerts', route: '/netapp/alerts', icon: Bell, isActive: (p) => p.startsWith('/netapp/alerts') },
+    ],
+  },
+  {
+    label: 'Infrastructure',
+    items: [
+      { label: 'Hardware', route: '/netapp/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/netapp/hardware') },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { label: 'Settings', route: '/netapp/settings', icon: Settings, isActive: (p) => p.startsWith('/netapp/settings') },
     ],
   },
 ];
@@ -97,11 +138,20 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
   // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
   const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
+  // Vendor-platform fleet summary, loaded only while a platform (Pure/NetApp) is active.
+  const [platformCount, setPlatformCount] = useState(0);
+  const [platformAlerts, setPlatformAlerts] = useState(0);
+  const [platformHealthy, setPlatformHealthy] = useState(0);
 
   const { search, setSearch } = useSearch();
   const navigate = useNavigate();
   const location = useLocation();
   const pathname = location.pathname;
+  const isPure = pathname.startsWith('/pure');
+  const isNetapp = pathname.startsWith('/netapp');
+  const isPlatform = isPure || isNetapp;
+  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : null;
+  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : '';
 
   const toggleCollapsed = () => {
     setCollapsed(c => {
@@ -133,6 +183,32 @@ export default function Layout() {
     return () => clearInterval(interval);
   }, []);
 
+  // Vendor-platform fleet summary (count + open alerts + health) — only while a
+  // platform is active. Pure and NetApp share the same overview shape.
+  useEffect(() => {
+    if (!platformKey) return undefined;
+    let cancelled = false;
+    const loadPlatform = () => client.get(`/${platformKey}/overview`)
+      .then(r => {
+        if (cancelled) return;
+        const rows = r.data || [];
+        setPlatformCount(rows.length);
+        setPlatformAlerts(rows.reduce((s, a) => s + (a.open_alerts || 0), 0));
+        const now = Date.now();
+        const healthy = rows.filter(a => {
+          if (!a.latest || !a.latest.captured_at) return false;
+          const ms = new Date(String(a.latest.captured_at).replace(' ', 'T') + 'Z').getTime();
+          const thresholdMin = (a.polling_interval_minutes || 15) * 2 + 5;
+          return Number.isFinite(ms) && (now - ms) <= thresholdMin * 60000;
+        }).length;
+        setPlatformHealthy(healthy);
+      })
+      .catch(() => {});
+    loadPlatform();
+    const id = setInterval(loadPlatform, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [platformKey]);
+
   useEffect(() => {
     const loadPlatforms = () => client.get('/settings')
       .then(r => setEnabledPlatformIds([
@@ -150,7 +226,19 @@ export default function Layout() {
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
   // Swap the sidebar menu to match the active vendor platform.
-  const activeNavGroups = pathname.startsWith('/pure') ? pureNavGroups : navGroups;
+  const activeNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : navGroups;
+
+  // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
+  const noun = isNetapp ? 'cluster' : 'array';
+  const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
+  const footerOk = isPlatform ? platformAllOk : apiOnline;
+  const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
+  const footerDot = footerOk ? 'bg-status-ok shadow-glow-green' : footerPartial ? 'bg-status-warn' : 'bg-status-crit';
+  const footerHeadline = isPlatform
+    ? (platformCount === 0 ? `No ${noun}s connected`
+      : platformAllOk ? `All ${noun}s operational`
+      : `${platformHealthy} of ${platformCount} operational`)
+    : (apiOnline ? 'All systems operational' : 'API unreachable');
 
   return (
     <div className="h-screen flex flex-row bg-transparent overflow-hidden">
@@ -203,10 +291,14 @@ export default function Layout() {
         <div className="border-t border-cohesity-border p-2 flex flex-col gap-1.5">
           {!collapsed && (
             <div className="px-2 py-1.5 flex items-center gap-2">
-              <span className={`inline-block h-2 w-2 rounded-full flex-shrink-0 ${apiOnline ? 'bg-status-ok shadow-glow-green' : 'bg-status-crit'}`} style={{ animation: apiOnline ? 'orb-pulse 2.5s ease-in-out infinite' : 'none' }} />
+              <span className={`inline-block h-2 w-2 rounded-full flex-shrink-0 ${footerDot}`} style={{ animation: footerOk ? 'orb-pulse 2.5s ease-in-out infinite' : 'none' }} />
               <div className="leading-tight min-w-0">
-                <p className="text-[11px] font-medium text-ink truncate">{apiOnline ? 'All systems operational' : 'API unreachable'}</p>
-                <p className="text-[10px] text-ink-faint tnum">{clusterCount} cluster{clusterCount !== 1 ? 's' : ''} monitored</p>
+                <p className="text-[11px] font-medium text-ink truncate">{footerHeadline}</p>
+                <p className="text-[10px] text-ink-faint tnum">
+                  {isPlatform
+                    ? `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''} monitored`
+                    : `${clusterCount} cluster${clusterCount !== 1 ? 's' : ''} monitored`}
+                </p>
               </div>
             </div>
           )}
@@ -224,19 +316,33 @@ export default function Layout() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <header className="h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-3 px-4">
-          <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block">Global Cluster Dashboard</h1>
+          <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block">{isPure ? 'Pure Storage Dashboard' : isNetapp ? 'NetApp Dashboard' : 'Global Cluster Dashboard'}</h1>
           <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum">
-            <Server size={11} className="text-brand" />
-            {clusterCount} Cohesity Cluster{clusterCount !== 1 ? 's' : ''}
+            {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
+            {isPlatform
+              ? `${platformCount} ${platformLabel}${platformCount !== 1 ? 's' : ''}`
+              : `${clusterCount} Cohesity Cluster${clusterCount !== 1 ? 's' : ''}`}
           </span>
-          {criticalCount > 0 && (
-            <button
-              onClick={() => navigate('/alerts')}
-              className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum"
-            >
-              <Bell size={11} />
-              {criticalCount} critical
-            </button>
+          {isPlatform ? (
+            platformAlerts > 0 && (
+              <button
+                onClick={() => navigate(`/${platformKey}/alerts`)}
+                className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum"
+              >
+                <Bell size={11} />
+                {platformAlerts} alert{platformAlerts !== 1 ? 's' : ''}
+              </button>
+            )
+          ) : (
+            criticalCount > 0 && (
+              <button
+                onClick={() => navigate('/alerts')}
+                className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum"
+              >
+                <Bell size={11} />
+                {criticalCount} critical
+              </button>
+            )
           )}
 
           {/* Global search */}

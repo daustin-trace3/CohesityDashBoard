@@ -39,6 +39,9 @@ export default function AlertsPage() {
   const { toast } = useToast();
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkDismissConfirm, setBulkDismissConfirm] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [resolveTarget, setResolveTarget] = useState(null); // { type:'single', id } | { type:'bulk', ids }
+  const [resolveNote, setResolveNote] = useState('');
 
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
@@ -50,6 +53,7 @@ export default function AlertsPage() {
   const [severity, setSeverity] = useState('');
   const [clusterId, setClusterId] = useState(searchParams.get('clusterId') || '');
   const [showDismissed, setShowDismissed] = useState(false);
+  const [showResolved, setShowResolved] = useState(false);
 
   // Keep the cluster filter in sync with the URL so insight cards and other
   // pages can deep-link to /alerts?clusterId=N.
@@ -73,6 +77,8 @@ export default function AlertsPage() {
     if (severity) params.set('severity', severity);
     if (clusterId) params.set('clusterId', clusterId);
     if (showDismissed) params.set('dismissed', '1');
+    // Hide resolved alerts unless the operator opts in.
+    params.set('resolved', showResolved ? '1' : '0');
     setLoading(true);
     setPage(0);
     client
@@ -92,7 +98,7 @@ export default function AlertsPage() {
       .catch(() => setAiEnabled(false));
   }, []);
 
-  useEffect(() => { loadAlerts(); }, [severity, clusterId, showDismissed]);
+  useEffect(() => { loadAlerts(); }, [severity, clusterId, showDismissed, showResolved]);
 
   const toggleSelect = (id) => setSelectedIds(prev => {
     const next = new Set(prev);
@@ -124,6 +130,57 @@ export default function AlertsPage() {
     } catch {
       showToast('Failed to dismiss alert', 'error');
     }
+  };
+
+  // Resolve closes the alert(s) upstream on the cluster. Cohesity requires a
+  // resolution note; the modal lets the operator supply one (or we send a
+  // default if left blank).
+  const openResolveSingle = (id) => { setResolveTarget({ type: 'single', id }); setResolveNote(''); };
+  const openResolveBulk = () => { setResolveTarget({ type: 'bulk', ids: [...selectedIds] }); setResolveNote(''); };
+  const closeResolve = () => { if (!bulkBusy) { setResolveTarget(null); setResolveNote(''); } };
+
+  const resolveSingle = async (id, note) => {
+    setBulkBusy(true);
+    try {
+      await client.post(`/alerts/${id}/resolve`, note ? { details: note } : {});
+      setAlerts(prev => showResolved
+        ? prev.map(a => (a.id === id ? { ...a, resolved: 1 } : a))
+        : prev.filter(a => a.id !== id));
+      setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n; });
+      showToast('Alert resolved on cluster');
+      setResolveTarget(null); setResolveNote('');
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Failed to resolve alert', 'error');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const resolveBulk = async (ids, note) => {
+    setBulkBusy(true);
+    try {
+      const { data } = await client.post('/alerts/resolve', { ids, ...(note ? { details: note } : {}) });
+      const resolvedSet = new Set(data.resolved || []);
+      setAlerts(prev => showResolved
+        ? prev.map(a => (resolvedSet.has(a.id) ? { ...a, resolved: 1 } : a))
+        : prev.filter(a => !resolvedSet.has(a.id)));
+      setSelectedIds(new Set());
+      const failedN = (data.failed || []).length;
+      if (failedN === 0) showToast(`${resolvedSet.size} alert(s) resolved`);
+      else showToast(`${resolvedSet.size} resolved, ${failedN} failed (check permissions)`, 'error');
+      setResolveTarget(null); setResolveNote('');
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Bulk resolve failed', 'error');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const confirmResolve = () => {
+    if (!resolveTarget) return;
+    const note = resolveNote.trim();
+    if (resolveTarget.type === 'single') resolveSingle(resolveTarget.id, note);
+    else resolveBulk(resolveTarget.ids, note);
   };
 
   const handlePageSize = (s) => { setPageSize(s); setPage(0); };
@@ -193,6 +250,12 @@ export default function AlertsPage() {
           <input type="checkbox" checked={showDismissed} onChange={e => setShowDismissed(e.target.checked)}
             className="accent-cohesity-green" />
           Show Dismissed
+        </label>
+
+        <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
+          <input type="checkbox" checked={showResolved} onChange={e => setShowResolved(e.target.checked)}
+            className="accent-cohesity-green" />
+          Show Resolved
         </label>
 
         <span className="text-xs text-gray-500 ml-auto">
@@ -287,6 +350,13 @@ export default function AlertsPage() {
                             AI Review
                           </button>
                         )}
+                        {!alert.dismissed && !alert.resolved && (
+                          <button type="button" aria-label={`Resolve alert from ${alert.cluster_name} on cluster`}
+                            onClick={() => openResolveSingle(alert.id)}
+                            className="text-xs px-2 py-1 border border-cohesity-border rounded hover:border-cohesity-green hover:text-cohesity-green transition-colors">
+                            Resolve
+                          </button>
+                        )}
                         {!alert.dismissed && (
                           <button type="button" aria-label={`Dismiss alert from ${alert.cluster_name}`}
                             onClick={() => dismiss(alert.id)}
@@ -330,10 +400,16 @@ export default function AlertsPage() {
               </button>
             </>
           ) : (
-            <button onClick={() => setBulkDismissConfirm(true)}
-              className="text-xs px-3 py-1.5 border border-red-800 rounded text-red-400 hover:border-red-500 hover:bg-red-900 hover:bg-opacity-30 transition-colors">
-              Dismiss Selected
-            </button>
+            <>
+              <button onClick={openResolveBulk}
+                className="text-xs px-3 py-1.5 border border-cohesity-green/50 rounded text-cohesity-green hover:bg-cohesity-green/20 transition-colors">
+                Resolve Selected
+              </button>
+              <button onClick={() => setBulkDismissConfirm(true)}
+                className="text-xs px-3 py-1.5 border border-red-800 rounded text-red-400 hover:border-red-500 hover:bg-red-900 hover:bg-opacity-30 transition-colors">
+                Dismiss Selected
+              </button>
+            </>
           )}
           <button onClick={() => { setSelectedIds(new Set()); setBulkDismissConfirm(false); }}
             aria-label="Clear selection"
@@ -345,6 +421,34 @@ export default function AlertsPage() {
 
       {reviewAlertItem && (
         <AlertReviewModal alert={reviewAlertItem} onClose={() => setReviewAlertItem(null)} />
+      )}
+
+      {resolveTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={closeResolve}>
+          <div className="panel w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+            <h2 className="text-sm font-bold text-ink mb-1">
+              Resolve {resolveTarget.type === 'bulk' ? `${resolveTarget.ids.length} alert(s)` : 'alert'} on cluster
+            </h2>
+            <p className="text-[11px] text-ink-muted mb-3">
+              This closes the alert{resolveTarget.type === 'bulk' ? 's' : ''} in Cohesity. A resolution note is sent with the request.
+            </p>
+            <label htmlFor="resolve-note" className="block text-[11px] font-semibold uppercase tracking-wider text-ink-faint mb-1">Resolution note</label>
+            <textarea id="resolve-note" rows={3} value={resolveNote} onChange={e => setResolveNote(e.target.value)}
+              maxLength={500} placeholder="Resolved from Cohesity Dashboard"
+              className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none resize-y" />
+            <p className="text-[10px] text-ink-faint mt-1">Optional — a default note is sent if left blank.</p>
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button onClick={closeResolve} disabled={bulkBusy}
+                className="text-xs px-3 py-1.5 border border-cohesity-border rounded-lg text-ink-muted hover:text-ink transition-colors disabled:opacity-50">
+                Cancel
+              </button>
+              <button onClick={confirmResolve} disabled={bulkBusy}
+                className="text-xs px-3 py-1.5 bg-cohesity-green/20 border border-cohesity-green/50 rounded-lg text-cohesity-green hover:bg-cohesity-green/30 transition-colors disabled:opacity-50">
+                {bulkBusy ? 'Resolving…' : 'Resolve'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
