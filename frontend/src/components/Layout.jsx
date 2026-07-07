@@ -121,17 +121,17 @@ function isActivePlatform(id, pathname) {
   return false;
 }
 
-function BrandMark({ collapsed }) {
+function BrandMark({ collapsed, label = 'Cohesity', accent }) {
   return (
     <div className={`flex items-center gap-2.5 px-4 h-14 border-b border-cohesity-border flex-shrink-0 ${collapsed ? 'justify-center px-0' : ''}`}>
       <div className="relative flex items-center justify-center flex-shrink-0">
-        <Hexagon size={26} className="text-brand" strokeWidth={1.75} />
-        <ShieldCheck size={12} className="text-brand absolute" strokeWidth={2.5} />
+        <Hexagon size={26} className="text-brand" strokeWidth={1.75} style={accent ? { color: accent } : undefined} />
+        <ShieldCheck size={12} className="text-brand absolute" strokeWidth={2.5} style={accent ? { color: accent } : undefined} />
       </div>
       {!collapsed && (
         <div className="leading-tight min-w-0">
-          <p className="text-[13px] font-bold text-ink tracking-tight truncate">Cohesity</p>
-          <p className="text-[10px] font-semibold text-brand uppercase tracking-[0.14em]">Command Center</p>
+          <p className="text-[13px] font-bold text-ink tracking-tight truncate">{label}</p>
+          <p className="text-[10px] font-semibold text-brand uppercase tracking-[0.14em]" style={accent ? { color: accent } : undefined}>Command Center</p>
         </div>
       )}
     </div>
@@ -150,6 +150,7 @@ export default function Layout() {
   const [platformCount, setPlatformCount] = useState(0);
   const [platformAlerts, setPlatformAlerts] = useState(0);
   const [platformHealthy, setPlatformHealthy] = useState(0);
+  const [platformAlertList, setPlatformAlertList] = useState([]);
 
   const { search, setSearch } = useSearch();
   const navigate = useNavigate();
@@ -194,8 +195,20 @@ export default function Layout() {
   // Vendor-platform fleet summary (count + open alerts + health) — only while a
   // platform is active. Pure and NetApp share the same overview shape.
   useEffect(() => {
-    if (!platformKey) return undefined;
+    if (!platformKey) { setPlatformAlertList([]); return undefined; }
     let cancelled = false;
+    const loadAlertList = () => client.get(`/${platformKey}/alerts`)
+      .then(r => {
+        if (cancelled) return;
+        const rows = (r.data || []).filter(a => !a.resolved && a.state !== 'closed' && a.state !== 'resolved');
+        setPlatformAlertList(rows.map(a => ({
+          id: a.id,
+          cluster_name: a.array_name || a.cluster_name || '—',
+          severity: a.severity,
+          description: a.summary || a.message || a.description || a.alert_type || 'Alert',
+        })));
+      })
+      .catch(() => { if (!cancelled) setPlatformAlertList([]); });
     const loadPlatform = () => client.get(`/${platformKey}/overview`)
       .then(r => {
         if (cancelled) return;
@@ -213,7 +226,8 @@ export default function Layout() {
       })
       .catch(() => {});
     loadPlatform();
-    const id = setInterval(loadPlatform, 60000);
+    loadAlertList();
+    const id = setInterval(() => { loadPlatform(); loadAlertList(); }, 60000);
     return () => { cancelled = true; clearInterval(id); };
   }, [platformKey]);
 
@@ -252,7 +266,11 @@ export default function Layout() {
     <div className="h-screen flex flex-row bg-transparent overflow-hidden">
       {/* Sidebar */}
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
-        <BrandMark collapsed={collapsed} />
+        <BrandMark
+          collapsed={collapsed}
+          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : 'Cohesity'}
+          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : undefined}
+        />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
           {activeNavGroups.map(group => (
@@ -323,7 +341,7 @@ export default function Layout() {
       {/* Main column */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-3 px-4">
+        <header className="relative z-30 h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-3 px-4">
           <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block">{isPure ? 'Pure Storage Dashboard' : isNetapp ? 'NetApp Dashboard' : 'Global Cluster Dashboard'}</h1>
           <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum">
             {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
@@ -375,7 +393,11 @@ export default function Layout() {
             )}
           </div>
 
-          <NotificationBell count={alertCount} alerts={alerts.slice(0, 10)} />
+          <NotificationBell
+            count={isPlatform ? platformAlerts : alertCount}
+            alerts={isPlatform ? platformAlertList.slice(0, 10) : alerts.slice(0, 10)}
+            viewAllRoute={isPlatform ? `/${platformKey}/alerts` : '/alerts'}
+          />
         </header>
 
         {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}
