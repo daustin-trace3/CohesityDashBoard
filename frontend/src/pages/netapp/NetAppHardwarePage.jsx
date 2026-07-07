@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { HardDrive, RefreshCw, Cpu, CircuitBoard, Server } from 'lucide-react';
 import client from '../../api/client';
+import useDnsResolve from '../../api/useDnsResolve';
+import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
 import { BRAND, fmtBytes, fmtNum, statusTone } from './helpers';
@@ -10,6 +12,7 @@ export default function NetAppHardwarePage() {
   const [arrays, setArrays] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [hw, setHw] = useState(null);
+  const [lifs, setLifs] = useState(null);
 
   const loadArrays = useCallback(() => client.get('/netapp/arrays')
     .then(({ data }) => { setArrays(data); setSelectedId((cur) => (cur && data.some((x) => x.id === cur) ? cur : data[0]?.id ?? null)); })
@@ -18,12 +21,15 @@ export default function NetAppHardwarePage() {
   useEffect(() => { loadArrays(); }, [loadArrays]);
 
   useEffect(() => {
-    if (!selectedId) { setHw(null); return; }
+    if (!selectedId) { setHw(null); setLifs(null); return; }
     let cancelled = false;
-    setHw(null);
+    setHw(null); setLifs(null);
     client.get(`/netapp/arrays/${selectedId}/hardware`)
       .then(({ data }) => { if (!cancelled) setHw(data); })
       .catch(() => { if (!cancelled) setHw({ nodes: [], disks: [], svms: [] }); });
+    client.get(`/netapp/arrays/${selectedId}/network`)
+      .then(({ data }) => { if (!cancelled) setLifs(data); })
+      .catch(() => { if (!cancelled) setLifs([]); });
     return () => { cancelled = true; };
   }, [selectedId]);
 
@@ -31,6 +37,7 @@ export default function NetAppHardwarePage() {
   const disks = hw?.disks || [];
   const svms = hw?.svms || [];
   const diskCapacity = disks.reduce((s, d) => s + (d.size_bytes || 0), 0);
+  const lifDns = useDnsResolve((lifs || []).map((l) => l.address).filter(Boolean));
 
   return (
     <div className="animate-fade-in">
@@ -132,6 +139,37 @@ export default function NetAppHardwarePage() {
                     </table>
                   </div>
                 </div>
+              </div>
+
+              {/* LIFs */}
+              <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+                <p className="text-sm font-semibold text-ink mb-3">Logical Interfaces (LIFs) {lifs ? `(${lifs.length})` : ''}</p>
+                {lifs == null ? (
+                  <LoadingPanel label="Loading LIFs…" height={100} />
+                ) : lifs.length === 0 ? (
+                  <div className="text-sm text-ink-muted py-4 text-center">No LIF data.</div>
+                ) : (
+                  <div className="overflow-x-auto max-h-[48vh] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                        <th className="py-2 pr-3">Name</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Address</th><th className="py-2 pr-3">Node</th><th className="py-2 pr-3">Port</th><th className="py-2 pr-3">Home</th><th className="py-2 pr-3">State</th>
+                      </tr></thead>
+                      <tbody>
+                        {lifs.map((l) => (
+                          <tr key={l.id} className="border-b border-cohesity-border/50">
+                            <td className="py-2 pr-3 text-ink">{l.name}</td>
+                            <td className="py-2 pr-3 text-ink-muted">{l.svm_name || '—'}</td>
+                            <td className="py-2 pr-3">{l.address ? <IpWithHost ip={l.address} dns={lifDns} /> : <span className="text-ink-faint">—</span>}</td>
+                            <td className="py-2 pr-3 text-ink-muted">{l.node_name || '—'}</td>
+                            <td className="py-2 pr-3 text-ink-muted">{l.port_name || '—'}</td>
+                            <td className="py-2 pr-3"><Badge tone={l.is_home ? 'ok' : 'warn'}>{l.is_home ? 'home' : 'roamed'}</Badge></td>
+                            <td className="py-2 pr-3"><Badge tone={statusTone(l.state)}>{l.state || 'unknown'}</Badge></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </>
           )}

@@ -26,6 +26,7 @@ const licensingRouter = require('./routes/licensing');
 const licenseRouter = require('./routes/license');
 const pureRouter = require('./routes/pure');
 const netappRouter = require('./routes/netapp');
+const dnsRouter = require('./routes/dns');
 const requireApiKey = require('./middleware/auth');
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
@@ -104,6 +105,7 @@ app.use('/api/advisor', advisorRouter);
 app.use('/api/licensing', licensingRouter);
 app.use('/api/pure', pureRouter);
 app.use('/api/netapp', netappRouter);
+app.use('/api/dns', dnsRouter);
 
 // Health check — verifies DB connectivity
 app.get('/health', (req, res) => {

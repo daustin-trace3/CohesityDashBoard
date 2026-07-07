@@ -521,6 +521,46 @@ router.get('/compliance', cacheControl(60), (req, res, next) => {
   }
 });
 
+/* ── Connectivity & DR topology ──────────────────────────────────────────── */
+
+// GET /api/pure/arrays/:id/network — interfaces + ports for one array
+router.get('/arrays/:id/network', [param('id').isInt()], validate, cacheControl(60), (req, res, next) => {
+  try {
+    const id = req.params.id;
+    res.json({
+      interfaces: db.prepare('SELECT * FROM pure_network_interfaces WHERE array_id = ? ORDER BY name').all(id),
+      ports: db.prepare('SELECT * FROM pure_ports WHERE array_id = ? ORDER BY name').all(id),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/pure/arrays/:id/connections — volume-to-host LUN mappings
+router.get('/arrays/:id/connections', [param('id').isInt()], validate, cacheControl(60), (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT * FROM pure_connections WHERE array_id = ?
+      ORDER BY host_name, volume_name
+    `).all(req.params.id);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/pure/pods — ActiveCluster pods across all arrays
+router.get('/pods', cacheControl(30), (req, res, next) => {
+  try {
+    res.json(db.prepare(`
+      SELECT p.*, a.name AS array_name FROM pure_pods p
+      JOIN pure_arrays a ON a.id = p.array_id ORDER BY a.name, p.name
+    `).all());
+  } catch (err) {
+    next(err);
+  }
+});
+
 function describeApiError(err) {
   if (err?.response) {
     const status = err.response.status;

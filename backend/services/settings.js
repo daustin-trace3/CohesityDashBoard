@@ -10,6 +10,7 @@ const DEFAULTS = {
   license_edition: '',
   platform_pure_enabled: '0',
   platform_netapp_enabled: '0',
+  dns_server: '',
 };
 
 function getSetting(key) {
@@ -54,6 +55,7 @@ function getPlatformSettings() {
   return {
     platformPureEnabled: getSetting('platform_pure_enabled') === '1',
     platformNetappEnabled: getSetting('platform_netapp_enabled') === '1',
+    dnsServer: getSetting('dns_server') || '',
   };
 }
 

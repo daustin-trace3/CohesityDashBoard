@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { ArrowLeftRight, RefreshCw, ShieldCheck, Link2 } from 'lucide-react';
+import { ArrowLeftRight, RefreshCw, ShieldCheck, Link2, Boxes } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
@@ -18,14 +18,17 @@ export default function PureReplicationPage() {
   const { toast } = useToast();
   const [conns, setConns] = useState(null);
   const [pgs, setPgs] = useState(null);
+  const [pods, setPods] = useState(null);
 
   const load = useCallback(() => {
     return Promise.allSettled([
       client.get('/pure/replication'),
       client.get('/pure/protection-groups'),
-    ]).then(([c, p]) => {
+      client.get('/pure/pods'),
+    ]).then(([c, p, d]) => {
       setConns(c.status === 'fulfilled' ? c.value.data : []);
       setPgs(p.status === 'fulfilled' ? p.value.data : []);
+      setPods(d.status === 'fulfilled' ? d.value.data : []);
       if (c.status === 'rejected' || p.status === 'rejected') {
         toast({ type: 'error', title: 'Failed to load some replication data' });
       }
@@ -55,6 +58,36 @@ export default function PureReplicationPage() {
         <StatCard icon={ArrowLeftRight} label="Async" value={async_} />
         <StatCard icon={ShieldCheck} label="Protection Groups" value={fmtNum((pgs || []).length)} sub={`${replicatingPgs} replicating`} />
       </div>
+
+      {/* ActiveCluster pods */}
+      {(pods == null || pods.length > 0) && (
+        <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <div className="flex items-center gap-2 mb-3"><Boxes size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">ActiveCluster Pods</p></div>
+          {pods == null ? (
+            <LoadingPanel label="Loading pods…" height={100} />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                  <th className="py-2 pr-3">Pod</th><th className="py-2 pr-3">Array</th><th className="py-2 pr-3">Promotion</th><th className="py-2 pr-3">Mediator</th><th className="py-2 pr-3">Members</th><th className="py-2 pr-3 text-right">Physical</th>
+                </tr></thead>
+                <tbody>
+                  {pods.map((p) => (
+                    <tr key={p.id} className="border-b border-cohesity-border/50">
+                      <td className="py-2 pr-3 text-ink">{p.name}</td>
+                      <td className="py-2 pr-3 text-ink-muted">{p.array_name}</td>
+                      <td className="py-2 pr-3"><Badge tone={p.promotion_status === 'promoted' ? 'ok' : 'neutral'}>{p.promotion_status || '—'}</Badge></td>
+                      <td className="py-2 pr-3 text-ink-muted">{p.mediator || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px]">{p.member_arrays || '—'}</td>
+                      <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(p.total_physical_bytes)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Replication partners */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>

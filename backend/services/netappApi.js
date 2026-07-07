@@ -113,6 +113,71 @@ async function fetchEmsAlerts(array) {
   }
 }
 
+/** SnapMirror relationships (DR replication). */
+async function fetchSnapmirror(array) {
+  try {
+    const data = await apiGet(array, '/api/snapmirror/relationships', {
+      fields: 'source,destination,state,healthy,lag_time,transfer',
+      max_records: 2000,
+    });
+    return records(data);
+  } catch {
+    return [];
+  }
+}
+
+/** Logical interfaces (LIFs). */
+async function fetchLifs(array) {
+  try {
+    const data = await apiGet(array, '/api/network/ip/interfaces', {
+      fields: 'name,svm,ip,enabled,state,services,location',
+      max_records: 2000,
+    });
+    return records(data);
+  } catch {
+    return [];
+  }
+}
+
+/** Quota reports (capacity governance). */
+async function fetchQuotas(array) {
+  try {
+    const data = await apiGet(array, '/api/storage/quota/reports', {
+      fields: 'svm,volume,qtree,type,space,files',
+      max_records: 5000,
+    });
+    return records(data);
+  } catch {
+    return [];
+  }
+}
+
+/** Live NFS connected clients (client-to-volume map). */
+async function fetchNfsClients(array) {
+  try {
+    const data = await apiGet(array, '/api/protocols/nfs/connected-clients', {
+      fields: 'client_ip,server_ip,node,svm,volume,protocol',
+      max_records: 5000,
+    });
+    return records(data);
+  } catch {
+    return [];
+  }
+}
+
+/** NFS export policies (with rules describing permitted clients). */
+async function fetchExportPolicies(array) {
+  try {
+    const data = await apiGet(array, '/api/protocols/nfs/export-policies', {
+      fields: 'name,svm,rules',
+      max_records: 2000,
+    });
+    return records(data);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Validate connectivity + credentials. Accepts a stored array row OR a transient
  * object carrying a raw `password` (pre-save test flow).
@@ -141,6 +206,11 @@ module.exports = {
   fetchClusterMetrics,
   fetchHealthAlerts,
   fetchEmsAlerts,
+  fetchSnapmirror,
+  fetchLifs,
+  fetchQuotas,
+  fetchNfsClients,
+  fetchExportPolicies,
   testConnection,
   invalidate,
 };

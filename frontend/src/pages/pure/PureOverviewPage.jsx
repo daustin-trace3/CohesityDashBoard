@@ -169,6 +169,10 @@ export default function PureOverviewPage() {
       writeMs: toMs(r.write_latency_us),
       readMBs: toMBs(r.read_bw_bytes),
       writeMBs: toMBs(r.write_bw_bytes),
+      queueDepth: r.queue_depth != null ? +r.queue_depth.toFixed(1) : null,
+      snapshotsTB: toTB(r.snapshots_bytes),
+      systemTB: toTB(r.system_bytes),
+      sharedTB: toTB(r.shared_bytes),
     }));
   }, [history]);
 
@@ -371,6 +375,35 @@ export default function PureOverviewPage() {
                     { label: 'Write', data: series.map((s) => s.writeMs), color: WRITE_COLOR },
                   ]}
                   unit=" ms"
+                />
+              ))}
+              {chartCard('Bandwidth (MB/s)', (
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[
+                    { label: 'Read', data: series.map((s) => s.readMBs), color: READ_COLOR },
+                    { label: 'Write', data: series.map((s) => s.writeMBs), color: WRITE_COLOR },
+                  ]}
+                  format={(v) => fmtNum(v)}
+                  unit=" MB/s"
+                />
+              ))}
+              {chartCard('Queue Depth', (
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[{ label: 'Queue Depth', data: series.map((s) => s.queueDepth), color: BRAND }]}
+                />
+              ))}
+              {chartCard('Capacity Composition (TB)', (
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[
+                    { label: 'Used', data: series.map((s) => s.usedTB), color: BRAND, fill: true },
+                    { label: 'Snapshots', data: series.map((s) => s.snapshotsTB), color: '#a855f7', fill: true },
+                    { label: 'System', data: series.map((s) => s.systemTB), color: '#6b7280', fill: true },
+                  ]}
+                  unit=" TB"
+                  stacked
                 />
               ))}
             </div>

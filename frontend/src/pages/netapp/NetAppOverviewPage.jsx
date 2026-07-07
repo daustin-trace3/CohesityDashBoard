@@ -12,6 +12,7 @@ const WRITE_COLOR = '#f59e0b';
 const MS_PER_DAY = 86400000;
 const toTB = (b) => (b != null ? +(b / 1e12).toFixed(3) : null);
 const toMs = (us) => (us != null ? +(us / 1000).toFixed(2) : null);
+const toMBs = (b) => (b != null ? +(b / 1e6).toFixed(1) : null);
 
 function linearFit(points) {
   const n = points.length;
@@ -118,6 +119,8 @@ export default function NetAppOverviewPage() {
     readIops: r.read_iops != null ? Math.round(r.read_iops) : null,
     writeIops: r.write_iops != null ? Math.round(r.write_iops) : null,
     readMs: toMs(r.read_latency_us), writeMs: toMs(r.write_latency_us),
+    readMBs: toMBs(r.read_throughput_bytes), writeMBs: toMBs(r.write_throughput_bytes),
+    physicalTB: toTB(r.physical_used_bytes), logicalTB: toTB(r.logical_used_bytes),
   })), [history]);
 
   const forecast = useMemo(() => {
@@ -249,6 +252,27 @@ export default function NetAppOverviewPage() {
                     { label: 'Write', data: series.map((s) => s.writeMs), color: WRITE_COLOR },
                   ]}
                   unit=" ms"
+                />
+              ))}
+              {chartCard('Throughput (MB/s)', (
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[
+                    { label: 'Read', data: series.map((s) => s.readMBs), color: READ_COLOR },
+                    { label: 'Write', data: series.map((s) => s.writeMBs), color: WRITE_COLOR },
+                  ]}
+                  format={(v) => fmtNum(v)}
+                  unit=" MB/s"
+                />
+              ))}
+              {chartCard('Effective vs Physical (TB)', (
+                <TrendChart
+                  labels={series.map((s) => s.time)}
+                  datasets={[
+                    { label: 'Logical (effective)', data: series.map((s) => s.logicalTB), color: BRAND },
+                    { label: 'Physical (on disk)', data: series.map((s) => s.physicalTB), color: '#6b7280' },
+                  ]}
+                  unit=" TB"
                 />
               ))}
             </div>

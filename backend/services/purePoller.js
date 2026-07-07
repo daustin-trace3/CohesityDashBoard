@@ -4,6 +4,7 @@ const {
   fetchArrayInfo, fetchAlerts, fetchVolumes, fetchHosts,
   fetchVolumesPerformance, fetchArrayConnections, fetchProtectionGroups,
   fetchHardware, fetchDrives, fetchControllers, fetchCertificates,
+  fetchNetworkInterfaces, fetchPorts, fetchConnections, fetchPods,
 } = require('./pureApi');
 const logger = require('../utils/logger');
 
@@ -319,6 +320,60 @@ const replaceCertificates = db.transaction((arrayId, items) => {
   }
 });
 
+const replaceNetworkInterfaces = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM pure_network_interfaces WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO pure_network_interfaces
+      (array_id, name, interface_type, enabled, speed_bps, services, address, netmask, gateway, mac_address, vlan, wwn)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const n of items) {
+    const eth = n.eth || {};
+    const fc = n.fc || {};
+    stmt.run(
+      arrayId, n.name || null, n.interface_type || null, n.enabled ? 1 : 0, num(n.speed),
+      Array.isArray(n.services) ? n.services.join(', ') : null,
+      eth.address || null, eth.netmask || null, eth.gateway || null, eth.mac_address || null, num(eth.vlan), fc.wwn || null
+    );
+  }
+});
+
+const replacePorts = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM pure_ports WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare('INSERT INTO pure_ports (array_id, name, wwn, iqn, nqn) VALUES (?, ?, ?, ?, ?)');
+  for (const p of items) stmt.run(arrayId, p.name || null, p.wwn || null, p.iqn || null, p.nqn || null);
+});
+
+const replaceConnections = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM pure_connections WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO pure_connections (array_id, host_name, host_group_name, volume_name, lun)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const c of items) {
+    stmt.run(arrayId, c.host?.name || null, c.host_group?.name || null, c.volume?.name || null, num(c.lun));
+  }
+});
+
+const replacePods = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM pure_pods WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO pure_pods
+      (array_id, name, promotion_status, mediator, array_count, link_source_count, link_target_count,
+       member_arrays, total_physical_bytes, data_reduction)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const p of items) {
+    const space = p.space || {};
+    const members = Array.isArray(p.arrays) ? p.arrays.map((a) => `${a.name}(${a.status || '?'})`).join(', ') : null;
+    stmt.run(
+      arrayId, p.name || null, p.promotion_status || null, p.mediator || null,
+      num(p.array_count), num(p.link_source_count), num(p.link_target_count),
+      members, num(space.total_physical), num(space.data_reduction)
+    );
+  }
+});
+
 /** Poll a single Pure array: capacity, performance, alerts, volumes, hosts,
  *  plus per-volume perf history, replication, protection, and hardware. */
 async function pollArray(array) {
@@ -326,6 +381,7 @@ async function pollArray(array) {
     const [
       infoResult, alertResult, volumeResult, hostResult, volPerfResult,
       connResult, pgResult, hwResult, driveResult, ctrlResult, certResult,
+      netResult, portResult, connsResult, podResult,
     ] = await Promise.allSettled([
       fetchArrayInfo(array),
       fetchAlerts(array),
@@ -338,6 +394,10 @@ async function pollArray(array) {
       fetchDrives(array),
       fetchControllers(array),
       fetchCertificates(array),
+      fetchNetworkInterfaces(array),
+      fetchPorts(array),
+      fetchConnections(array),
+      fetchPods(array),
     ]);
 
     let volumeCount = null;
@@ -404,6 +464,10 @@ async function pollArray(array) {
       [driveResult, replaceDrives, 'drives'],
       [ctrlResult, replaceControllers, 'controllers'],
       [certResult, replaceCertificates, 'certificates'],
+      [netResult, replaceNetworkInterfaces, 'network-interfaces'],
+      [portResult, replacePorts, 'ports'],
+      [connsResult, replaceConnections, 'connections'],
+      [podResult, replacePods, 'pods'],
     ];
     for (const [result, store, label] of currentState) {
       if (result.status === 'fulfilled') {

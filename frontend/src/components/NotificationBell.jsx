@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Bell, BellOff, ArrowRight } from 'lucide-react';
 import AlertBadge from './AlertBadge';
 
-export default function NotificationBell({ count = 0, alerts = [] }) {
+export default function NotificationBell({ count = 0, alerts = [], viewAllRoute = '/alerts' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const navigate = useNavigate();
@@ -64,7 +64,7 @@ export default function NotificationBell({ count = 0, alerts = [] }) {
             )}
           </div>
           <button
-            onClick={() => { setOpen(false); navigate('/alerts'); }}
+            onClick={() => { setOpen(false); navigate(viewAllRoute); }}
             className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-brand hover:bg-brand/10 transition-colors cursor-pointer"
           >
             View all alerts <ArrowRight size={13} />

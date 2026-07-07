@@ -26,7 +26,7 @@ const CHART = {
  * @param {string} unit      suffix shown in the tooltip (e.g. ' TB', ' ms')
  * @param {(v:number)=>string} format  optional value formatter (axis + tooltip)
  */
-export default function TrendChart({ labels, datasets, unit = '', height = 200, format }) {
+export default function TrendChart({ labels, datasets, unit = '', height = 200, format, stacked = false }) {
   const fmt = format || ((v) => `${v}`);
 
   const data = useMemo(() => ({
@@ -58,10 +58,10 @@ export default function TrendChart({ labels, datasets, unit = '', height = 200, 
       },
     },
     scales: {
-      x: { ticks: { color: CHART.tick, font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { color: CHART.grid } },
-      y: { ticks: { color: CHART.tick, font: { size: 10 }, callback: (v) => fmt(v) }, grid: { color: CHART.grid }, beginAtZero: false },
+      x: { stacked, ticks: { color: CHART.tick, font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { color: CHART.grid } },
+      y: { stacked, ticks: { color: CHART.tick, font: { size: 10 }, callback: (v) => fmt(v) }, grid: { color: CHART.grid }, beginAtZero: false },
     },
-  }), [unit, fmt]);
+  }), [unit, fmt, stacked]);
 
   return <div style={{ height }}><Line data={data} options={options} /></div>;
 }

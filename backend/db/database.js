@@ -119,6 +119,10 @@ try {
   // Column already exists (or table not present yet) — ignore.
 }
 
+// Migration: pure_network_interfaces gained netmask/gateway columns. Guarded.
+try { db.exec('ALTER TABLE pure_network_interfaces ADD COLUMN netmask TEXT'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE pure_network_interfaces ADD COLUMN gateway TEXT'); } catch { /* exists */ }
+
 // Migration: ensure the (array_id, pure_alert_id) uniqueness the alert upsert
 // (INSERT ... ON CONFLICT) depends on. Dedup any rows collected before the
 // index existed, then create it. Guarded so it runs at most once and never

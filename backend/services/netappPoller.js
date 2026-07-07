@@ -3,10 +3,20 @@ const db = require('../db/database');
 const {
   fetchCluster, fetchNodes, fetchAggregates, fetchVolumes, fetchSvms,
   fetchDisks, fetchClusterMetrics, fetchHealthAlerts, fetchEmsAlerts,
+  fetchSnapmirror, fetchLifs, fetchQuotas, fetchNfsClients, fetchExportPolicies,
 } = require('./netappApi');
 const logger = require('../utils/logger');
 
 const scheduledTasks = new Map(); // arrayId -> cron task
+
+/** Parse an ISO-8601 duration (e.g. "PT11H43M59S") into seconds. */
+function isoDurationToSeconds(s) {
+  if (!s || typeof s !== 'string') return null;
+  const m = s.match(/^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!m) return null;
+  const [, d, h, min, sec] = m.map((x) => (x ? Number(x) : 0));
+  return (d * 86400) + (h * 3600) + (min * 60) + sec;
+}
 
 // Retention: prune NetApp metrics older than 90 days, daily at 02:20.
 cron.schedule('20 2 * * *', () => {
@@ -125,15 +135,106 @@ const replaceAlerts = db.transaction((arrayId, healthAlerts, emsAlerts) => {
   }
 });
 
+const replaceSnapmirror = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM netapp_snapmirror WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO netapp_snapmirror
+      (array_id, uuid, source_path, source_cluster, destination_path, destination_cluster,
+       state, healthy, lag_seconds, transfer_state, last_transfer_bytes, last_transfer_end)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const r of items) {
+    const t = r.transfer || {};
+    stmt.run(
+      arrayId, r.uuid || null,
+      r.source?.path || null, r.source?.cluster?.name || null,
+      r.destination?.path || null, r.destination?.cluster?.name || null,
+      r.state || null, r.healthy ? 1 : 0, isoDurationToSeconds(r.lag_time),
+      t.state || null, num(t.bytes_transferred), t.end_time || null
+    );
+  }
+});
+
+const replaceLifs = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM netapp_lifs WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO netapp_lifs
+      (array_id, uuid, name, svm_name, address, netmask, enabled, state, services, node_name, port_name, is_home, failover)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const l of items) {
+    const loc = l.location || {};
+    stmt.run(
+      arrayId, l.uuid || null, l.name || null, l.svm?.name || null,
+      l.ip?.address || null, l.ip?.netmask != null ? String(l.ip.netmask) : null,
+      l.enabled ? 1 : 0, l.state || null,
+      Array.isArray(l.services) ? l.services.join(', ') : null,
+      loc.node?.name || null, loc.port?.name || null, loc.is_home ? 1 : 0, loc.failover || null
+    );
+  }
+});
+
+const replaceQuotas = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM netapp_quotas WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO netapp_quotas
+      (array_id, svm_name, volume_name, qtree_name, type, space_used_bytes, space_hard_limit_bytes, files_used)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const q of items) {
+    const space = q.space || {};
+    stmt.run(
+      arrayId, q.svm?.name || null, q.volume?.name || null, q.qtree?.name || null, q.type || null,
+      num(space.used?.total), num(space.hard_limit), num(q.files?.used?.total)
+    );
+  }
+});
+
+const replaceNfsClients = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM netapp_nfs_clients WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO netapp_nfs_clients (array_id, client_ip, server_ip, svm_name, node_name, volume_name, protocol)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const c of items) {
+    stmt.run(arrayId, c.client_ip || null, c.server_ip || null, c.svm?.name || null,
+      c.node?.name || null, c.volume?.name || null, c.protocol || null);
+  }
+});
+
+const replaceExportRules = db.transaction((arrayId, policies) => {
+  db.prepare('DELETE FROM netapp_export_rules WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO netapp_export_rules
+      (array_id, policy_name, svm_name, rule_index, clients, protocols, ro_rule, rw_rule, superuser)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const p of policies) {
+    for (const r of p.rules || []) {
+      stmt.run(
+        arrayId, p.name || null, p.svm?.name || null, num(r.index),
+        Array.isArray(r.clients) ? r.clients.map((c) => c.match).filter(Boolean).join(', ') : null,
+        Array.isArray(r.protocols) ? r.protocols.join(', ') : null,
+        Array.isArray(r.ro_rule) ? r.ro_rule.join(', ') : null,
+        Array.isArray(r.rw_rule) ? r.rw_rule.join(', ') : null,
+        Array.isArray(r.superuser) ? r.superuser.join(', ') : null
+      );
+    }
+  }
+});
+
 /** Poll a single NetApp cluster: capacity, performance, inventory, alerts. */
 async function pollArray(array) {
   try {
     const [
       clusterR, nodesR, aggR, volR, svmR, diskR, metricsR, healthR, emsR,
+      smR, lifR, quotaR, nfsR, exportR,
     ] = await Promise.allSettled([
       fetchCluster(array), fetchNodes(array), fetchAggregates(array), fetchVolumes(array),
       fetchSvms(array), fetchDisks(array), fetchClusterMetrics(array),
       fetchHealthAlerts(array), fetchEmsAlerts(array),
+      fetchSnapmirror(array), fetchLifs(array), fetchQuotas(array),
+      fetchNfsClients(array), fetchExportPolicies(array),
     ]);
 
     const aggregates = aggR.status === 'fulfilled' ? aggR.value : [];
@@ -171,6 +272,11 @@ async function pollArray(array) {
       [svmR, () => replaceSvms(array.id, svmR.value || []), 'svms'],
       [nodesR, () => replaceNodes(array.id, nodesR.value || []), 'nodes'],
       [diskR, () => replaceDisks(array.id, diskR.value || []), 'disks'],
+      [smR, () => replaceSnapmirror(array.id, smR.value || []), 'snapmirror'],
+      [lifR, () => replaceLifs(array.id, lifR.value || []), 'lifs'],
+      [quotaR, () => replaceQuotas(array.id, quotaR.value || []), 'quotas'],
+      [nfsR, () => replaceNfsClients(array.id, nfsR.value || []), 'nfs-clients'],
+      [exportR, () => replaceExportRules(array.id, exportR.value || []), 'export-policies'],
     ];
     for (const [result, store, label] of stores) {
       if (result.status === 'fulfilled') {

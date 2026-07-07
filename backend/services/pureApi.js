@@ -281,6 +281,30 @@ async function fetchCertificates(array) {
   return data.items || [];
 }
 
+/** Network interfaces (eth/fc, virtual + physical). */
+async function fetchNetworkInterfaces(array) {
+  const data = await apiGet(array, '/network-interfaces', { limit: 1000 });
+  return data.items || [];
+}
+
+/** Physical ports (FC WWN / iSCSI IQN / NVMe NQN). */
+async function fetchPorts(array) {
+  const data = await apiGet(array, '/ports', { limit: 1000 });
+  return data.items || [];
+}
+
+/** Volume-to-host LUN connections. */
+async function fetchConnections(array) {
+  const data = await apiGet(array, '/connections', { limit: 5000 });
+  return data.items || [];
+}
+
+/** Pods (ActiveCluster stretched storage / DR). */
+async function fetchPods(array) {
+  const data = await apiGet(array, '/pods', { limit: 1000, destroyed: false });
+  return data.items || [];
+}
+
 /**
  * Validate connectivity + credentials. Returns a small summary on success.
  * Accepts a full array row (with encrypted_credentials) OR a transient object
@@ -342,6 +366,10 @@ module.exports = {
   fetchDrives,
   fetchControllers,
   fetchCertificates,
+  fetchNetworkInterfaces,
+  fetchPorts,
+  fetchConnections,
+  fetchPods,
   testConnection,
   invalidate,
 };

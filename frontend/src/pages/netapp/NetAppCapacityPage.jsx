@@ -8,10 +8,12 @@ import { BRAND, fmtBytes, fmtRatio, statusTone } from './helpers';
 export default function NetAppCapacityPage() {
   const { toast } = useToast();
   const [aggs, setAggs] = useState(null);
+  const [quotas, setQuotas] = useState(null);
 
-  const load = useCallback(() => client.get('/netapp/aggregates')
-    .then(({ data }) => setAggs(data))
-    .catch(() => { setAggs([]); toast({ type: 'error', title: 'Failed to load aggregates' }); }), [toast]);
+  const load = useCallback(() => {
+    client.get('/netapp/aggregates').then(({ data }) => setAggs(data)).catch(() => { setAggs([]); toast({ type: 'error', title: 'Failed to load aggregates' }); });
+    client.get('/netapp/quotas').then(({ data }) => setQuotas(data)).catch(() => setQuotas([]));
+  }, [toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -79,6 +81,31 @@ export default function NetAppCapacityPage() {
           </div>
         )}
       </div>
+
+      {quotas && quotas.length > 0 && (
+        <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <p className="text-sm font-semibold text-ink mb-3">Quota Reports ({quotas.length})</p>
+          <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">Qtree</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3 text-right">Used</th><th className="py-2 pr-3 text-right">Hard Limit</th>
+              </tr></thead>
+              <tbody>
+                {quotas.map((q) => (
+                  <tr key={q.id} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink-muted">{q.svm_name || '—'}</td>
+                    <td className="py-2 pr-3 text-ink">{q.volume_name || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{q.qtree_name || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{q.type || '—'}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(q.space_used_bytes)}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(q.space_hard_limit_bytes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

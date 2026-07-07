@@ -247,4 +247,51 @@ router.get('/arrays/:id/hardware', [param('id').isInt()], validate, cacheControl
   } catch (err) { next(err); }
 });
 
+// SnapMirror relationships (DR replication) across all clusters.
+router.get('/replication', cacheControl(30), (req, res, next) => {
+  try {
+    res.json(db.prepare(`
+      SELECT s.*, a.name AS array_name FROM netapp_snapmirror s
+      JOIN netapp_arrays a ON a.id = s.array_id
+      ORDER BY s.healthy ASC, s.lag_seconds DESC
+    `).all());
+  } catch (err) { next(err); }
+});
+
+// Logical interfaces (LIFs) for one cluster.
+router.get('/arrays/:id/network', [param('id').isInt()], validate, cacheControl(60), (req, res, next) => {
+  try {
+    res.json(db.prepare('SELECT * FROM netapp_lifs WHERE array_id = ? ORDER BY svm_name, name').all(req.params.id));
+  } catch (err) { next(err); }
+});
+
+// Quota reports across all clusters.
+router.get('/quotas', cacheControl(60), (req, res, next) => {
+  try {
+    res.json(db.prepare(`
+      SELECT q.*, a.name AS array_name FROM netapp_quotas q
+      JOIN netapp_arrays a ON a.id = q.array_id
+      ORDER BY q.space_used_bytes DESC
+    `).all());
+  } catch (err) { next(err); }
+});
+
+// NFS connected clients + export-policy rules across all clusters.
+router.get('/nfs', cacheControl(30), (req, res, next) => {
+  try {
+    res.json({
+      clients: db.prepare(`
+        SELECT c.*, a.name AS array_name FROM netapp_nfs_clients c
+        JOIN netapp_arrays a ON a.id = c.array_id
+        ORDER BY c.client_ip
+      `).all(),
+      exportRules: db.prepare(`
+        SELECT r.*, a.name AS array_name FROM netapp_export_rules r
+        JOIN netapp_arrays a ON a.id = r.array_id
+        ORDER BY r.svm_name, r.policy_name, r.rule_index
+      `).all(),
+    });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

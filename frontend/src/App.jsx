@@ -11,10 +11,13 @@ import PureVolumesPage from './pages/pure/PureVolumesPage';
 import PureReplicationPage from './pages/pure/PureReplicationPage';
 import PureHardwarePage from './pages/pure/PureHardwarePage';
 import PureAlertsPage from './pages/pure/PureAlertsPage';
+import PureConnectivityPage from './pages/pure/PureConnectivityPage';
 import PureSettingsPage from './pages/pure/PureSettingsPage';
 import NetAppOverviewPage from './pages/netapp/NetAppOverviewPage';
 import NetAppCapacityPage from './pages/netapp/NetAppCapacityPage';
 import NetAppVolumesPage from './pages/netapp/NetAppVolumesPage';
+import NetAppNfsPage from './pages/netapp/NetAppNfsPage';
+import NetAppReplicationPage from './pages/netapp/NetAppReplicationPage';
 import NetAppAlertsPage from './pages/netapp/NetAppAlertsPage';
 import NetAppHardwarePage from './pages/netapp/NetAppHardwarePage';
 import NetAppSettingsPage from './pages/netapp/NetAppSettingsPage';
@@ -64,11 +67,14 @@ export default function App() {
                 <Route path="pure/volumes"    element={withBoundary(<PureVolumesPage />)} />
                 <Route path="pure/replication" element={withBoundary(<PureReplicationPage />)} />
                 <Route path="pure/hardware"   element={withBoundary(<PureHardwarePage />)} />
+                <Route path="pure/connectivity" element={withBoundary(<PureConnectivityPage />)} />
                 <Route path="pure/alerts"     element={withBoundary(<PureAlertsPage />)} />
                 <Route path="pure/settings"   element={withBoundary(<PureSettingsPage />)} />
                 <Route path="netapp"          element={withBoundary(<NetAppOverviewPage />)} />
                 <Route path="netapp/capacity" element={withBoundary(<NetAppCapacityPage />)} />
                 <Route path="netapp/volumes"  element={withBoundary(<NetAppVolumesPage />)} />
+                <Route path="netapp/nfs"      element={withBoundary(<NetAppNfsPage />)} />
+                <Route path="netapp/replication" element={withBoundary(<NetAppReplicationPage />)} />
                 <Route path="netapp/alerts"   element={withBoundary(<NetAppAlertsPage />)} />
                 <Route path="netapp/hardware" element={withBoundary(<NetAppHardwarePage />)} />
                 <Route path="netapp/settings" element={withBoundary(<NetAppSettingsPage />)} />

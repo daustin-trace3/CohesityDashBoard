@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const [licenseEdition, setLicenseEdition] = useState('');
   const [pureEnabled, setPureEnabled] = useState(false);
   const [netappEnabled, setNetappEnabled] = useState(false);
+  const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -47,6 +48,7 @@ export default function SettingsPage() {
         setLicenseEdition(d.licenseEdition || '');
         setPureEnabled(!!d.platformPureEnabled);
         setNetappEnabled(!!d.platformNetappEnabled);
+        setDnsServer(d.dnsServer || '');
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
     }).finally(() => setLoading(false));
@@ -65,6 +67,7 @@ export default function SettingsPage() {
         licenseEdition,
         platformPureEnabled: pureEnabled,
         platformNetappEnabled: netappEnabled,
+        dnsServer,
       });
       // Tell the layout to re-read platform visibility without a full reload.
       window.dispatchEvent(new Event('platforms-changed'));
@@ -245,6 +248,16 @@ export default function SettingsPage() {
                 Show the NetApp platform tab. Leave off until the NetApp integration is configured.
               </span>
             </label>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <label htmlFor="dns-server" className="block text-xs font-semibold text-ink mb-1 mt-2">DNS resolver <span className="text-ink-faint font-normal">(optional)</span></label>
+              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
+                DNS server IP (or hostname) used to reverse-resolve IP addresses to names across the dashboard — e.g. NFS client IPs. Leave blank to disable hostname lookups.
+              </p>
+              <input id="dns-server" type="text" value={dnsServer} onChange={e => setDnsServer(e.target.value)}
+                placeholder="e.g. 172.17.0.10"
+                className="w-full max-w-xs bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none tnum" />
+            </div>
 
             <div className="flex items-center gap-2 pt-1">
               <button

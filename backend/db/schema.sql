@@ -552,3 +552,140 @@ CREATE TABLE IF NOT EXISTS netapp_alerts (
   message               TEXT,
   captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+/* ── Connectivity / topology / DR (Pure + NetApp), current-state ─────────── */
+
+-- Pure network interfaces (eth/fc virtual + physical).
+CREATE TABLE IF NOT EXISTS pure_network_interfaces (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  interface_type        TEXT,
+  enabled               INTEGER,
+  speed_bps             INTEGER,
+  services              TEXT,   -- comma-joined
+  address               TEXT,
+  netmask               TEXT,
+  gateway               TEXT,
+  mac_address           TEXT,
+  vlan                  INTEGER,
+  wwn                   TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Pure physical ports (FC WWN / iSCSI IQN / NVMe NQN).
+CREATE TABLE IF NOT EXISTS pure_ports (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  wwn                   TEXT,
+  iqn                   TEXT,
+  nqn                   TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Pure volume-to-host LUN connections.
+CREATE TABLE IF NOT EXISTS pure_connections (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  host_name             TEXT,
+  host_group_name       TEXT,
+  volume_name           TEXT,
+  lun                   INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Pure pods (ActiveCluster stretched storage / DR).
+CREATE TABLE IF NOT EXISTS pure_pods (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES pure_arrays(id) ON DELETE CASCADE,
+  name                  TEXT,
+  promotion_status      TEXT,
+  mediator              TEXT,
+  array_count           INTEGER,
+  link_source_count     INTEGER,
+  link_target_count     INTEGER,
+  member_arrays         TEXT,   -- "name(status)" joined
+  total_physical_bytes  INTEGER,
+  data_reduction        REAL,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NetApp SnapMirror relationships (DR replication).
+CREATE TABLE IF NOT EXISTS netapp_snapmirror (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  uuid                  TEXT,
+  source_path           TEXT,
+  source_cluster        TEXT,
+  destination_path      TEXT,
+  destination_cluster   TEXT,
+  state                 TEXT,
+  healthy               INTEGER,
+  lag_seconds           INTEGER,
+  transfer_state        TEXT,
+  last_transfer_bytes   INTEGER,
+  last_transfer_end     TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NetApp logical interfaces (LIFs).
+CREATE TABLE IF NOT EXISTS netapp_lifs (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  uuid                  TEXT,
+  name                  TEXT,
+  svm_name              TEXT,
+  address               TEXT,
+  netmask               TEXT,
+  enabled               INTEGER,
+  state                 TEXT,
+  services              TEXT,   -- comma-joined
+  node_name             TEXT,
+  port_name             TEXT,
+  is_home               INTEGER,
+  failover              TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NetApp quota reports (capacity governance).
+CREATE TABLE IF NOT EXISTS netapp_quotas (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  svm_name              TEXT,
+  volume_name           TEXT,
+  qtree_name            TEXT,
+  type                  TEXT,
+  space_used_bytes      INTEGER,
+  space_hard_limit_bytes INTEGER,
+  files_used            INTEGER,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NetApp NFS connected clients (live client-to-volume map).
+CREATE TABLE IF NOT EXISTS netapp_nfs_clients (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  client_ip             TEXT,
+  server_ip             TEXT,
+  svm_name              TEXT,
+  node_name             TEXT,
+  volume_name           TEXT,
+  protocol              TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NetApp NFS export-policy rules (flattened; which clients are permitted).
+CREATE TABLE IF NOT EXISTS netapp_export_rules (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  policy_name           TEXT,
+  svm_name              TEXT,
+  rule_index            INTEGER,
+  clients               TEXT,   -- comma-joined match strings
+  protocols             TEXT,   -- comma-joined
+  ro_rule               TEXT,
+  rw_rule               TEXT,
+  superuser             TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
