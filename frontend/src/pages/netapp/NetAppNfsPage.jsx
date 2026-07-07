@@ -26,8 +26,13 @@ export default function NetAppNfsPage() {
   const ipList = useMemo(() => {
     const s = new Set();
     for (const c of clients) { if (c.client_ip) s.add(c.client_ip); if (c.server_ip) s.add(c.server_ip); }
+    for (const r of rules) {
+      for (const spec of String(r.clients || '').split(',').map((x) => x.trim())) {
+        if (/^\d{1,3}(\.\d{1,3}){3}$/.test(spec)) s.add(spec);
+      }
+    }
     return [...s];
-  }, [clients]);
+  }, [clients, rules]);
   const dns = useDnsResolve(ipList);
 
   // Group connected clients by volume for a drill-down summary.
@@ -47,6 +52,25 @@ export default function NetAppNfsPage() {
       }))
       .sort((a, b) => b.uniqueIps - a.uniqueIps);
   }, [clients]);
+
+  // Group export-policy rules by policy (≈ volume) so a policy that permits
+  // several clients — across multiple rules or a comma-separated rule — shows a
+  // single clickable count that opens the full permitted-client list.
+  const [modalPolicy, setModalPolicy] = useState(null);
+  const byPolicy = useMemo(() => {
+    const groups = new Map();
+    for (const r of rules) {
+      const key = `${r.array_name}|${r.svm_name}|${r.policy_name}`;
+      if (!groups.has(key)) groups.set(key, { key, policy_name: r.policy_name, svm_name: r.svm_name, array_name: r.array_name, entries: [] });
+      const specs = String(r.clients || '').split(',').map((s) => s.trim()).filter(Boolean);
+      for (const spec of specs) {
+        groups.get(key).entries.push({ client: spec, ro: r.ro_rule, rw: r.rw_rule, superuser: r.superuser, protocols: r.protocols, rule_index: r.rule_index });
+      }
+    }
+    return [...groups.values()]
+      .map((g) => ({ ...g, count: g.entries.length, volume: g.policy_name.replace(/^ep_/, '') }))
+      .sort((a, b) => b.count - a.count);
+  }, [rules]);
 
   return (
     <div className="animate-fade-in">
@@ -130,6 +154,41 @@ export default function NetAppNfsPage() {
 
       {/* Export policy rules */}
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-1">Permitted Clients by Export Policy</p>
+        <p className="text-[11px] text-ink-faint mb-3">Click a client count to see every host permitted by that policy.</p>
+        {data == null ? (
+          <LoadingPanel label="Loading export rules…" height={120} />
+        ) : byPolicy.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No export policy rules found.</div>
+        ) : (
+          <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Export Policy</th><th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3 text-right">Clients</th>
+              </tr></thead>
+              <tbody>
+                {byPolicy.map((g) => (
+                  <tr key={g.key} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink">{g.policy_name}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{g.volume || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{g.svm_name || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{g.array_name}</td>
+                    <td className="py-2 pr-3 text-right">
+                      <button onClick={() => setModalPolicy(g)}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold tnum border border-brand/30 text-brand hover:bg-brand/10 transition-colors cursor-pointer">
+                        {g.count} <Users size={11} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Raw export policy rules */}
+      <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Export Policy Rules</p>
         {data == null ? (
           <LoadingPanel label="Loading export rules…" height={120} />
@@ -182,6 +241,37 @@ export default function NetAppNfsPage() {
                       <td className="py-2 pr-3"><Badge tone="info">{c.protocol || '—'}</Badge></td>
                       <td className="py-2 pr-3 text-ink-muted">{c.node_name || '—'}</td>
                       <td className="py-2 pr-3"><IpWithHost ip={c.server_ip} dns={dns} muted /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+      {modalPolicy && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setModalPolicy(null)}>
+          <div className="panel w-full max-w-xl p-5 max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-ink truncate">Clients permitted by {modalPolicy.policy_name}</h2>
+                <p className="text-[11px] text-ink-muted">{modalPolicy.svm_name} · {modalPolicy.array_name} · {modalPolicy.count} client{modalPolicy.count === 1 ? '' : 's'}</p>
+              </div>
+              <button onClick={() => setModalPolicy(null)} aria-label="Close" className="text-ink-faint hover:text-ink flex-shrink-0"><X size={16} /></button>
+            </div>
+            <div className="overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                  <th className="py-2 pr-3">Client</th><th className="py-2 pr-3">Protocols</th><th className="py-2 pr-3">RO</th><th className="py-2 pr-3">RW</th><th className="py-2 pr-3">Superuser</th>
+                </tr></thead>
+                <tbody>
+                  {modalPolicy.entries.map((e, i) => (
+                    <tr key={`${e.client}-${i}`} className="border-b border-cohesity-border/50">
+                      <td className="py-2 pr-3">{/^\d{1,3}(\.\d{1,3}){3}$/.test(e.client) ? <IpWithHost ip={e.client} dns={dns} /> : <span className="text-ink">{e.client}</span>}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px]">{e.protocols || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px]">{e.ro || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px]">{e.rw || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px]">{e.superuser || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
