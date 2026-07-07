@@ -24,10 +24,12 @@ const settingsRouter = require('./routes/settings');
 const advisorRouter = require('./routes/advisor');
 const licensingRouter = require('./routes/licensing');
 const licenseRouter = require('./routes/license');
+const pureRouter = require('./routes/pure');
 const requireApiKey = require('./middleware/auth');
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const { initPoller } = require('./services/poller');
+const { initPurePoller } = require('./services/purePoller');
 const { initLicensing } = require('./services/licensing');
 const { initLicense, getLicenseStatus } = require('./services/license');
 
@@ -98,6 +100,7 @@ app.use('/api/dashboard', dashboardRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/advisor', advisorRouter);
 app.use('/api/licensing', licensingRouter);
+app.use('/api/pure', pureRouter);
 
 // Health check — verifies DB connectivity
 app.get('/health', (req, res) => {
@@ -142,6 +145,7 @@ if (getLicenseStatus().state === 'missing') {
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
   initPoller();
+  initPurePoller();
   initLicensing();
   initLicense();
 });

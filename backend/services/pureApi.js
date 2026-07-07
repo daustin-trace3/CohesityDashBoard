@@ -90,7 +90,7 @@ async function getAccessToken(array, { force = false } = {}) {
   const host = normalizeHost(array.mgmt_host);
 
   const body = new URLSearchParams({
-    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
     subject_token: assertion,
     subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
   });
