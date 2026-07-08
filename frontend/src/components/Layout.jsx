@@ -1,10 +1,13 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
   Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
+import { SyncStatusChip, LastUpdated } from './ui/primitives';
+import { subscribeNetworkActivity } from '../api/client';
+import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { useSearch } from '../context';
 
@@ -152,6 +155,10 @@ export default function Layout() {
   const [platformHealthy, setPlatformHealthy] = useState(0);
   const [platformAlertList, setPlatformAlertList] = useState([]);
 
+  const [networkSyncing, setNetworkSyncing] = useState(false);
+  const networkSyncTimer = useRef(null);
+  const { status: pollerStatus, anySyncing, anyStale, anyError, newestCapture } = usePollerStatus();
+
   const { search, setSearch } = useSearch();
   const navigate = useNavigate();
   const location = useLocation();
@@ -268,6 +275,18 @@ export default function Layout() {
     return () => window.removeEventListener('platforms-changed', loadPlatforms);
   }, []);
 
+  useEffect(() => {
+    return subscribeNetworkActivity((count) => {
+      const busy = count > 0;
+      if (busy) {
+        clearTimeout(networkSyncTimer.current);
+        setNetworkSyncing(true);
+      } else {
+        networkSyncTimer.current = setTimeout(() => setNetworkSyncing(false), 400);
+      }
+    });
+  }, []);
+
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
   // Swap the sidebar menu to match the active vendor platform.
@@ -348,6 +367,7 @@ export default function Layout() {
                     ? `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''} monitored`
                     : `${clusterCount} cluster${clusterCount !== 1 ? 's' : ''} monitored`}
                 </p>
+                {newestCapture && <LastUpdated date={newestCapture} prefix="Data" />}
               </div>
             </div>
           )}
@@ -364,38 +384,49 @@ export default function Layout() {
       {/* Main column */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="relative z-30 h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-3 px-4">
-          <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : 'Global Cluster Dashboard'}</h1>
-          <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum">
-            {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
-            {isPlatform
-              ? `${platformCount} ${platformLabel}${platformCount !== 1 ? 's' : ''}`
-              : `${clusterCount} Cohesity Cluster${clusterCount !== 1 ? 's' : ''}`}
-          </span>
-          {isPlatform ? (
-            platformAlerts > 0 && (
-              <button
-                onClick={() => navigate(`/${platformKey}/alerts`)}
-                className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum"
-              >
-                <Bell size={11} />
-                {platformAlerts} alert{platformAlerts !== 1 ? 's' : ''}
-              </button>
-            )
-          ) : (
-            criticalCount > 0 && (
-              <button
-                onClick={() => navigate('/alerts')}
-                className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum"
-              >
-                <Bell size={11} />
-                {criticalCount} critical
-              </button>
-            )
-          )}
+        <header className="relative z-30 h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-2 px-4">
+          {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
+          <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : 'Global Cluster Dashboard'}</h1>
+            <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
+              {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
+              {isPlatform
+                ? `${platformCount} ${platformLabel}${platformCount !== 1 ? 's' : ''}`
+                : `${clusterCount} Cohesity Cluster${clusterCount !== 1 ? 's' : ''}`}
+            </span>
+            {isPlatform ? (
+              platformAlerts > 0 && (
+                <button
+                  onClick={() => navigate(`/${platformKey}/alerts`)}
+                  className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
+                >
+                  <Bell size={11} />
+                  {platformAlerts} alert{platformAlerts !== 1 ? 's' : ''}
+                </button>
+              )
+            ) : (
+              criticalCount > 0 && (
+                <button
+                  onClick={() => navigate('/alerts')}
+                  className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
+                >
+                  <Bell size={11} />
+                  {criticalCount} critical
+                </button>
+              )
+            )}
+            {/* Poller / network sync status — hidden until poller data or network activity exists */}
+            {(pollerStatus || networkSyncing) && (
+              <span className="hidden sm:inline-flex flex-shrink-0">
+                <SyncStatusChip
+                  state={networkSyncing || anySyncing ? 'syncing' : anyError ? 'error' : anyStale ? 'stale' : 'live'}
+                />
+              </span>
+            )}
+          </div>
 
-          {/* Global search */}
-          <div className="relative ml-auto w-56 lg:w-72">
+          {/* Global search — pushes right controls to the far end */}
+          <div className="relative ml-auto w-48 lg:w-64 xl:w-72 flex-shrink-0">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
             <input
               type="search"
@@ -416,18 +447,20 @@ export default function Layout() {
             )}
           </div>
 
-          <NotificationBell
-            count={isPlatform ? platformAlerts : alertCount}
-            alerts={isPlatform ? platformAlertList.slice(0, 10) : alerts.slice(0, 10)}
-            viewAllRoute={isPlatform ? `/${platformKey}/alerts` : '/alerts'}
-          />
+          <div className="flex-shrink-0">
+            <NotificationBell
+              count={isPlatform ? platformAlerts : alertCount}
+              alerts={isPlatform ? platformAlertList.slice(0, 10) : alerts.slice(0, 10)}
+              viewAllRoute={isPlatform ? `/${platformKey}/alerts` : '/alerts'}
+            />
+          </div>
 
           {/* Global settings — estate-wide admin (AI keys, platforms, product license) */}
           <button
             onClick={() => navigate('/admin')}
             title="Global settings"
             aria-label="Global settings"
-            className={`flex items-center justify-center h-8 w-8 rounded-lg border transition-colors cursor-pointer ${
+            className={`flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-lg border transition-colors cursor-pointer ${
               pathname.startsWith('/admin')
                 ? 'bg-brand/10 border-brand/30 text-brand'
                 : 'border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40'

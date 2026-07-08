@@ -106,6 +106,13 @@ body {
   50% { opacity: 0.4; }
 }
 
+/* ── Stagger rows ────────────────────────────────────────────────────────── */
+/* Set style={{'--stagger-i': index}} on each child to stagger fade-in. */
+.stagger-rows > * {
+  animation: fade-in 220ms ease-out both;
+  animation-delay: calc(var(--stagger-i, 0) * 20ms);
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -115,4 +122,14 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  /* Named keyframe animations used by this app */
+  .skeleton,
+  .animate-shimmer { animation: none !important; }
+  .animate-fade-in { animation: none !important; opacity: 1 !important; transform: none !important; }
+  .animate-slide-in-right { animation: none !important; opacity: 1 !important; transform: none !important; }
+  .animate-loading-bar { animation: none !important; }
+  .stagger-rows > * { animation: none !important; }
+  [style*="orb-pulse"],
+  [style*="pulse-critical"] { animation: none !important; }
+  .pulse-critical { animation: none !important; }
 }

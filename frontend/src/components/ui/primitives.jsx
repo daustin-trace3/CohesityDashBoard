@@ -1,4 +1,5 @@
-import { Loader2, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Loader2, TrendingUp, TrendingDown, Minus, RefreshCw } from 'lucide-react';
 
 /* ── PageHeader ──────────────────────────────────────────────────────────── */
 export function PageHeader({ icon: Icon, title, description, children }) {
@@ -106,5 +107,99 @@ export function Panel({ title, icon: Icon, actions, children, className = '', bo
       )}
       <div className={bodyClassName}>{children}</div>
     </div>
+  );
+}
+
+/* ── Time helpers ────────────────────────────────────────────────────────── */
+export function timeAgo(date) {
+  if (!date) return null;
+  const secs = Math.round((Date.now() - new Date(date).getTime()) / 1000);
+  if (secs < 10) return 'just now';
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
+export function humanizeMinutes(min) {
+  if (min == null || !Number.isFinite(min)) return '—';
+  if (min < 60) return `${Math.round(min)}m`;
+  const hrs = Math.round(min / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return `${Math.round(hrs / 24)}d`;
+}
+
+/* ── LastUpdated ─────────────────────────────────────────────────────────── */
+// Shared 30-second tick shared across all mounted LastUpdated instances.
+let _tickListeners = new Set();
+let _tickTimer = null;
+function _registerTick(fn) {
+  if (_tickListeners.size === 0) {
+    _tickTimer = setInterval(() => _tickListeners.forEach(f => f()), 30_000);
+  }
+  _tickListeners.add(fn);
+  return () => {
+    _tickListeners.delete(fn);
+    if (_tickListeners.size === 0) { clearInterval(_tickTimer); _tickTimer = null; }
+  };
+}
+
+export function LastUpdated({ date, prefix = 'Updated' }) {
+  const [, tick] = useState(0);
+
+  useEffect(() => {
+    if (!date) return;
+    return _registerTick(() => tick(n => n + 1));
+  }, [date]);
+
+  if (!date) return null;
+  const label = timeAgo(date);
+  if (!label) return null;
+
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] text-ink-faint tnum">
+      {prefix && <span>{prefix}</span>}
+      <span>{label}</span>
+    </span>
+  );
+}
+
+/* ── SyncStatusChip ──────────────────────────────────────────────────────── */
+const SYNC_TONE = {
+  syncing: 'bg-brand/10 text-brand border-brand/25',
+  live:    'bg-status-ok/10 text-status-ok border-status-ok/25',
+  stale:   'bg-status-warn/10 text-status-warn border-status-warn/25',
+  error:   'bg-status-crit/10 text-status-crit border-status-crit/25',
+};
+
+export function SyncStatusChip({ state = 'live', label }) {
+  const tone = SYNC_TONE[state] || SYNC_TONE.live;
+  const text = label ?? { syncing: 'Syncing', live: 'Live', stale: 'Stale', error: 'Error' }[state] ?? state;
+
+  return (
+    <span className={`chip ${tone}`}>
+      {state === 'syncing' && <Loader2 size={10} className="animate-spin flex-shrink-0" />}
+      {state === 'live' && (
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-status-ok flex-shrink-0" style={{ animation: 'orb-pulse 2.5s ease-in-out infinite' }} />
+      )}
+      {text}
+    </span>
+  );
+}
+
+/* ── RefreshButton ───────────────────────────────────────────────────────── */
+export function RefreshButton({ onClick, refreshing, label = 'Refresh', size }) {
+  const iconSize = size === 'sm' ? 13 : 15;
+  return (
+    <button
+      onClick={onClick}
+      disabled={refreshing}
+      className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50"
+    >
+      <RefreshCw size={iconSize} className={refreshing ? 'animate-spin' : ''} />
+      {refreshing ? 'Refreshing…' : label}
+    </button>
   );
 }

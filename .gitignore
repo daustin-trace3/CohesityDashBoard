@@ -16,3 +16,4 @@ yarn-error.log*
 .agents/
 .agent*
 .env.local
+.gstack/
