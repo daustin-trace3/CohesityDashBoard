@@ -2,6 +2,8 @@ const db = require('../db/database');
 const { fmtBytes, FAILURE_STATUSES, computeInsights } = require('./insights');
 const { getSetting } = require('./settings');
 const { chatCompletion, MODEL, isConfigured } = require('./llmProvider');
+const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
+const { recordExchange, attachResponse } = require('./aiAudit');
 const logger = require('../utils/logger');
 
 const REPORTS = [
@@ -448,25 +450,40 @@ async function generateReport(reportKey) {
   if (!spec) { const e = new Error('Unknown report.'); e.code = 'BAD_REPORT'; throw e; }
   if (!isConfigured()) { const e = new Error('LLM not configured.'); e.code = 'LLM_NOT_CONFIGURED'; throw e; }
 
-  const context = spec.gather();
-  let system = spec.system;
+  // Anonymize all identifiable data (names, hosts, IPs) before it leaves the
+  // box; tokens in the response are mapped back to real names below.
+  const anon = createAnonymizer();
+  const context = anon.anonymize(spec.gather());
+  let system = spec.system + PROMPT_NOTE;
   const ec = estateContext();
-  if (ec) system += ' Operator context describing what is NORMAL for this estate — treat as authoritative and do NOT flag anything it says is expected: ' + ec;
+  if (ec) system += ' Operator context describing what is NORMAL for this estate — treat as authoritative and do NOT flag anything it says is expected: ' + anon.anonymize(ec);
 
   const userPrompt =
     `Estate data (JSON):\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\nProduce the ${spec.noun}.`;
 
+  const messages = [
+    { role: 'system', content: system },
+    { role: 'user', content: userPrompt },
+  ];
+  const auditId = recordExchange({
+    feature: 'AI Advisor',
+    label: spec.noun,
+    model: MODEL,
+    messages,
+    mappings: anon.mappings(),
+  });
+
   let content;
   try {
-    content = await chatCompletion([
-      { role: 'system', content: system },
-      { role: 'user', content: userPrompt },
-    ]);
+    content = await chatCompletion(messages);
   } catch (e) {
     logger.error(`[Advisor] ${reportKey} generation failed:`, e.code || '', e.detail || e.message);
     throw e;
   }
   if (!content) { const e = new Error('LLM returned an empty response.'); e.code = 'LLM_EMPTY'; throw e; }
+
+  attachResponse(auditId, content);
+  content = anon.restore(content);
 
   const generatedAt = new Date().toISOString();
   db.prepare(`

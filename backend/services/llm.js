@@ -3,6 +3,8 @@ const db = require('../db/database');
 const { FAILURE_STATUSES, fmtBytes } = require('./insights');
 const { getSetting } = require('./settings');
 const { PROVIDER, ENDPOINT, API_TOKEN, MODEL } = require('./llmProvider');
+const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
+const { recordExchange, attachResponse } = require('./aiAudit');
 const logger = require('../utils/logger');
 
 const MODES = ['alerts', 'system'];
@@ -210,18 +212,35 @@ async function analyzeClusterWithLLM(clusterId, mode = 'system') {
     ? gatherAlertsContext(clusterId, cluster)
     : gatherSystemContext(clusterId, cluster, { flagUnprotected });
 
-  const userPrompt =
-    `Cluster monitoring data (JSON):\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\n` +
-    `Produce the ${mode === 'alerts' ? 'alert triage' : 'system'} review for cluster "${cluster.name}".`;
+  // Anonymize all identifiable data (names, hosts, IPs) before it leaves the
+  // box; tokens in the response are mapped back to real names below.
+  const anon = createAnonymizer();
+  const safeContext = anon.anonymize(context);
 
-  let systemContent = SYSTEM_PROMPTS[mode];
+  const userPrompt =
+    `Cluster monitoring data (JSON):\n\`\`\`json\n${JSON.stringify(safeContext, null, 2)}\n\`\`\`\n\n` +
+    `Produce the ${mode === 'alerts' ? 'alert triage' : 'system'} review for cluster "${anon.anonymize(cluster.name)}".`;
+
+  let systemContent = SYSTEM_PROMPTS[mode] + PROMPT_NOTE;
   if (mode === 'system') {
     systemContent += flagUnprotected ? COVERAGE_IN_SCOPE : COVERAGE_OUT_OF_SCOPE;
   }
   const estateContext = resolveEstateContext();
   if (estateContext) {
-    systemContent += ' Operator context describing what is NORMAL for this estate — treat as authoritative and do NOT flag anything it says is expected: ' + estateContext;
+    systemContent += ' Operator context describing what is NORMAL for this estate — treat as authoritative and do NOT flag anything it says is expected: ' + anon.anonymize(estateContext);
   }
+
+  const messages = [
+    { role: 'system', content: systemContent },
+    { role: 'user', content: userPrompt },
+  ];
+  const auditId = recordExchange({
+    feature: 'Cluster Analysis',
+    label: `${cluster.name} · ${mode}`,
+    model: MODEL,
+    messages,
+    mappings: anon.mappings(),
+  });
 
   let analysis;
   try {
@@ -229,10 +248,7 @@ async function analyzeClusterWithLLM(clusterId, mode = 'system') {
       `${ENDPOINT}/chat/completions`,
       {
         model: MODEL,
-        messages: [
-          { role: 'system', content: systemContent },
-          { role: 'user', content: userPrompt },
-        ],
+        messages,
       },
       {
         headers: {
@@ -268,6 +284,10 @@ async function analyzeClusterWithLLM(clusterId, mode = 'system') {
     err.code = 'LLM_EMPTY';
     throw err;
   }
+
+  // Map anonymous tokens back to real names before caching/returning.
+  attachResponse(auditId, analysis);
+  analysis = anon.restore(analysis);
 
   const generatedAt = new Date().toISOString();
   db.prepare(`

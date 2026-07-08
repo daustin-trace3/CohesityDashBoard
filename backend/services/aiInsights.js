@@ -26,6 +26,8 @@ const logger = require('../utils/logger');
 // Shared provider config so alert reviews use the same provider/model as the
 // cluster analysis (OpenAI gpt-5.4 when OPENAI_TOKEN is set).
 const { ENDPOINT, API_TOKEN, MODEL, isConfigured } = require('./llmProvider');
+const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
+const { recordExchange, attachResponse } = require('./aiAudit');
 
 const httpClient = axios.create({
   baseURL: ENDPOINT,
@@ -80,7 +82,7 @@ function getCachedReview(alertId) {
  * it is passed strictly as data inside a JSON object and the system prompt
  * forbids treating its contents as instructions (prompt-injection defense).
  */
-function buildMessages(alert, context) {
+function buildMessages(alert, context, anon) {
   const system =
     'You are a senior Cohesity backup and storage infrastructure engineer. ' +
     'You review a single monitoring alert and produce a concise, actionable assessment for an operations team. ' +
@@ -90,7 +92,8 @@ function buildMessages(alert, context) {
     '"root_cause": string (most likely cause), ' +
     '"recommended_actions": string[] (2-4 concrete, ordered steps), ' +
     '"confidence": "high" | "medium" | "low"}. ' +
-    'Be specific to Cohesity (clusters, nodes, protection jobs, snapshots, replication). Do not invent data not provided.';
+    'Be specific to Cohesity (clusters, nodes, protection jobs, snapshots, replication). Do not invent data not provided.' +
+    PROMPT_NOTE;
 
   const alertData = {
     cluster: context.clusterName,
@@ -105,7 +108,7 @@ function buildMessages(alert, context) {
 
   const user =
     'Review this Cohesity alert and respond with the JSON object only:\n' +
-    JSON.stringify(alertData);
+    JSON.stringify(anon.anonymize(alertData));
 
   return [
     { role: 'system', content: system },
@@ -176,10 +179,21 @@ async function reviewAlert(alertId, { force = false } = {}) {
     )
     .get(alert.cluster_id);
 
+  // Anonymize all identifiable data (names, hosts, IPs) before it leaves the
+  // box; tokens in the response are mapped back to real names below.
+  const anon = createAnonymizer();
   const messages = buildMessages(alert, {
     clusterName: alert.cluster_name,
     activeCriticals: counts?.criticals || 0,
     activeWarnings: counts?.warnings || 0,
+  }, anon);
+
+  const auditId = recordExchange({
+    feature: 'Alert Review',
+    label: `${alert.cluster_name} · alert #${alertId}`,
+    model: MODEL,
+    messages,
+    mappings: anon.mappings(),
   });
 
   let content;
@@ -208,6 +222,8 @@ async function reviewAlert(alertId, { force = false } = {}) {
     throw err;
   }
 
+  attachResponse(auditId, content);
+
   const parsed = parseModelJson(content);
   if (!parsed) {
     const err = new Error('AI response could not be parsed.');
@@ -216,7 +232,7 @@ async function reviewAlert(alertId, { force = false } = {}) {
   }
 
   const actions = Array.isArray(parsed.recommended_actions)
-    ? parsed.recommended_actions.filter((a) => typeof a === 'string').slice(0, 6)
+    ? parsed.recommended_actions.filter((a) => typeof a === 'string').slice(0, 6).map((a) => anon.restore(a))
     : [];
   const confidence = ['high', 'medium', 'low'].includes(parsed.confidence)
     ? parsed.confidence
@@ -236,8 +252,8 @@ async function reviewAlert(alertId, { force = false } = {}) {
   ).run(
     alertId,
     hash,
-    parsed.summary || null,
-    parsed.root_cause || null,
+    parsed.summary ? anon.restore(parsed.summary) : null,
+    parsed.root_cause ? anon.restore(parsed.root_cause) : null,
     JSON.stringify(actions),
     confidence,
     MODEL

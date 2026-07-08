@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import AdvisorReportModal from '../components/AdvisorReportModal';
+import AiPrivacyModal from '../components/AiPrivacyModal';
 
 const TABS = [
   { slug: 'executive-digest', label: 'Executive Digest', icon: Newspaper,
@@ -99,6 +100,7 @@ function ReportTile({ tab, state, onOpen, onRun }) {
 export default function AIAdvisorPage() {
   const [states, setStates] = useState({}); // slug -> { enabled, report }
   const [open, setOpen] = useState(null);   // { slug, autoRun }
+  const [privacyOpen, setPrivacyOpen] = useState(false);
 
   const loadOne = useCallback(async (slug) => {
     try {
@@ -115,14 +117,23 @@ export default function AIAdvisorPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2.5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-          <Sparkles size={16} className="text-brand" />
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
+            <Sparkles size={16} className="text-brand" />
+          </div>
+          <div>
+            <h1 className="text-lg font-bold text-ink">AI Advisor</h1>
+            <p className="text-xs text-ink-muted">Estate-wide AI analyses. Reports run only when you ask — open the last run or generate a fresh one. Cached results are flagged stale after 24h.</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-lg font-bold text-ink">AI Advisor</h1>
-          <p className="text-xs text-ink-muted">Estate-wide AI analyses. Reports run only when you ask — open the last run or generate a fresh one. Cached results are flagged stale after 24h.</p>
-        </div>
+        <button
+          onClick={() => setPrivacyOpen(true)}
+          title="See exactly what each AI request sent — all names anonymized — and the local mapping that never left this server"
+          className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 border border-cohesity-border text-ink rounded-lg hover:border-brand/50 hover:text-brand transition-colors cursor-pointer"
+        >
+          <ShieldCheck size={13} /> Privacy Inspector
+        </button>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -147,6 +158,8 @@ export default function AIAdvisorPage() {
           onUpdated={(data) => setStates(s => ({ ...s, [openTab.slug]: { enabled: true, report: data } }))}
         />
       )}
+
+      {privacyOpen && <AiPrivacyModal onClose={() => setPrivacyOpen(false)} />}
     </div>
   );
 }
