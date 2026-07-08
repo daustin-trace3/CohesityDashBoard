@@ -25,6 +25,8 @@ export default function SettingsPage() {
   const [netappEnabled, setNetappEnabled] = useState(false);
   const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
+  const [licenseKeyInput, setLicenseKeyInput] = useState('');
+  const [activating, setActivating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
@@ -76,6 +78,26 @@ export default function SettingsPage() {
       toast({ type: 'error', title: 'Save failed', message: 'Could not save settings. Try again.' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const activateLicense = async () => {
+    const key = licenseKeyInput.trim();
+    if (!key) return;
+    setActivating(true);
+    try {
+      const { data } = await client.post('/license/activate', { key });
+      setLicense(data);
+      setLicenseKeyInput('');
+      toast({
+        type: 'success',
+        title: 'License updated',
+        message: data.effectiveExpiry ? `Valid through ${data.effectiveExpiry}.` : 'License applied.',
+      });
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not apply license', message: err?.response?.data?.error || 'Invalid or expired key.' });
+    } finally {
+      setActivating(false);
     }
   };
 
@@ -208,6 +230,38 @@ export default function SettingsPage() {
                 {license.state === 'grace' && license.graceDaysLeft != null && <span className="text-status-crit font-semibold"> · locks in {license.graceDaysLeft} day{license.graceDaysLeft === 1 ? '' : 's'}</span>}
               </span>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Update license key — paste a new CDBL key (e.g. a multi-year renewal) */}
+      {tab === 'license' && (
+        <div className="panel p-4 mt-4">
+          <div className="flex items-center gap-2 mb-1">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
+              <KeyRound size={14} className="text-brand" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-ink">Update license key</p>
+              <p className="text-[11px] text-ink-muted">Paste a new product license key (starts with <code>CDBL-</code>) to replace the current one — e.g. a multi-year renewal.</p>
+            </div>
+          </div>
+          <textarea
+            value={licenseKeyInput}
+            onChange={(e) => setLicenseKeyInput(e.target.value)}
+            rows={3}
+            placeholder="CDBL-…"
+            spellCheck={false}
+            className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-[11px] font-mono text-ink focus:border-brand/60 outline-none mt-3"
+          />
+          <div className="flex items-center gap-2 mt-3">
+            <button
+              onClick={activateLicense}
+              disabled={activating || !licenseKeyInput.trim()}
+              className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              <KeyRound size={13} /> {activating ? 'Applying…' : 'Apply license key'}
+            </button>
           </div>
         </div>
       )}

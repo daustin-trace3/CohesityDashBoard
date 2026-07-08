@@ -1,9 +1,10 @@
 const express = require('express');
-const { body, param, query, validationResult } = require('express-validator');
+const { param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
+const { getSetting, setSetting } = require('../services/settings');
 const netappApi = require('../services/netappApi');
-const { scheduleArray, cancelArray, triggerPoll } = require('../services/netappPoller');
+const { syncAndPollAll, triggerPoll, reschedule } = require('../services/netappPoller');
 const cacheControl = require('../middleware/cache');
 
 const router = express.Router();
@@ -24,152 +25,91 @@ function isBlockedHost(host) {
   return blocked.some((p) => p.test(h));
 }
 
-function publicArray(row) {
+// Read-only view of a discovered cluster.
+function publicCluster(row) {
   return {
     id: row.id,
     name: row.name,
-    mgmt_host: row.mgmt_host,
-    username: row.username,
+    version: row.version,
+    management_ip: row.management_ip,
+    cluster_uuid: row.cluster_uuid,
+    source: row.source,
     polling_interval_minutes: row.polling_interval_minutes,
-    ssl_verify: row.ssl_verify,
-    created_at: row.created_at,
     updated_at: row.updated_at,
   };
 }
 
-const arrayValidators = [
-  body('name').trim().notEmpty().withMessage('name is required').isLength({ max: 253 }),
-  body('mgmt_host').trim().notEmpty().withMessage('mgmt_host is required')
-    .custom((v) => !isBlockedHost(v)).withMessage('mgmt_host is not allowed'),
-  body('username').trim().notEmpty().withMessage('username is required'),
-  body('polling_interval_minutes').optional().isInt({ min: 5, max: 1440 })
-    .withMessage('polling_interval_minutes must be 5-1440'),
-  body('ssl_verify').optional().isBoolean().withMessage('ssl_verify must be boolean'),
-];
+/* ── AIQUM connection + discovered clusters ──────────────────────────────── */
 
-function buildCredentials(body) {
-  return encrypt(JSON.stringify({ password: String(body.password) }));
-}
-
-function describeApiError(err) {
-  if (err?.response) {
-    const status = err.response.status;
-    const detail = err.response.data?.error?.message || '';
-    if (status === 401 || status === 403) return `Authentication failed (HTTP ${status})${detail ? `: ${detail}` : ''}`;
-    return `Cluster returned HTTP ${status}${detail ? `: ${detail}` : ''}`;
-  }
-  if (err?.code === 'NETAPP_NO_PASSWORD') return 'No password provided';
-  if (err?.code) return `Network error: ${err.code}`;
-  return err?.message || 'Connection failed';
-}
-
-/* ── Arrays CRUD ─────────────────────────────────────────────────────────── */
-
+// Clusters currently managed by AIQUM (populated by the poller's discovery).
 router.get('/arrays', cacheControl(15), (req, res, next) => {
   try {
-    res.json(db.prepare('SELECT * FROM netapp_arrays ORDER BY name ASC').all().map(publicArray));
+    res.json(db.prepare('SELECT * FROM netapp_arrays ORDER BY name ASC').all().map(publicCluster));
   } catch (err) { next(err); }
 });
 
-// Non-secret defaults from env to prefill the Add form.
-router.get('/defaults', (req, res) => {
-  res.json({ username: process.env.NETAPP_USER_ACCOUNT || '' });
+// AIQUM connection status + config (no secrets returned).
+router.get('/aiqum', (req, res) => {
+  const cfg = netappApi.getAiqumConfig();
+  res.json({
+    configured: netappApi.aiqumConfigured(),
+    host: cfg.host || '',
+    username: cfg.username || '',
+    hasPassword: !!cfg.password,
+    hostSource: getSetting('netapp_aiqum_host') ? 'settings' : (process.env.NETAPP_AIQUM_HOST ? 'env' : 'none'),
+    passSource: getSetting('netapp_aiqum_pass') ? 'settings' : (process.env.NETAPP_AIQUM_PW ? 'env' : 'none'),
+    pollIntervalMin: Number(getSetting('netapp_poll_interval_min')) || 15,
+    clusterCount: db.prepare("SELECT COUNT(*) AS n FROM netapp_arrays WHERE source = 'aiqum'").get().n,
+  });
 });
 
-// Validate credentials without persisting.
-router.post(
-  '/arrays/test',
-  [
-    body('mgmt_host').trim().notEmpty().custom((v) => !isBlockedHost(v)).withMessage('mgmt_host is not allowed'),
-    body('username').trim().notEmpty(),
-    body('password').notEmpty().withMessage('password is required'),
-    body('ssl_verify').optional().isBoolean(),
-  ],
-  validate,
-  async (req, res) => {
-    try {
-      const result = await netappApi.testConnection({
-        mgmt_host: req.body.mgmt_host,
-        username: req.body.username,
-        password: req.body.password,
-        ssl_verify: req.body.ssl_verify ? 1 : 0,
-      });
-      res.json(result);
-    } catch (err) {
-      res.status(400).json({ ok: false, error: describeApiError(err) });
-    }
-  }
-);
-
-// Register a new cluster.
-router.post('/arrays', arrayValidators, validate, (req, res, next) => {
-  if (!req.body.password) return res.status(400).json({ error: 'password is required' });
+// Save AIQUM connection config (password encrypted at rest) + poll interval.
+router.put('/aiqum', (req, res, next) => {
   try {
-    const info = db.prepare(`
-      INSERT INTO netapp_arrays (name, mgmt_host, username, encrypted_credentials, polling_interval_minutes, ssl_verify)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      req.body.name,
-      netappApi.normalizeHost(req.body.mgmt_host),
-      req.body.username,
-      buildCredentials(req.body),
-      req.body.polling_interval_minutes || 15,
-      req.body.ssl_verify ? 1 : 0
-    );
-    const row = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(info.lastInsertRowid);
-    scheduleArray(row);
-    res.status(201).json(publicArray(row));
-  } catch (err) {
-    if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      return res.status(409).json({ error: 'An array with that name already exists' });
+    const { host, username, password, pollIntervalMin } = req.body || {};
+    if (host != null) {
+      const h = String(host).trim();
+      if (h && isBlockedHost(h)) return res.status(400).json({ error: 'host is not allowed' });
+      setSetting('netapp_aiqum_host', h);
     }
-    next(err);
-  }
-});
-
-// Update a cluster (password optional; kept if blank).
-router.put('/arrays/:id', [param('id').isInt(), ...arrayValidators], validate, (req, res, next) => {
-  try {
-    const existing = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(req.params.id);
-    if (!existing) return res.status(404).json({ error: 'Array not found' });
-    const encrypted = req.body.password ? buildCredentials(req.body) : existing.encrypted_credentials;
-    db.prepare(`
-      UPDATE netapp_arrays SET name = ?, mgmt_host = ?, username = ?, encrypted_credentials = ?,
-        polling_interval_minutes = ?, ssl_verify = ?, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(
-      req.body.name,
-      netappApi.normalizeHost(req.body.mgmt_host),
-      req.body.username,
-      encrypted,
-      req.body.polling_interval_minutes || existing.polling_interval_minutes,
-      req.body.ssl_verify ? 1 : 0,
-      req.params.id
-    );
-    const row = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(req.params.id);
-    scheduleArray(row);
-    res.json(publicArray(row));
-  } catch (err) {
-    if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      return res.status(409).json({ error: 'An array with that name already exists' });
+    if (username != null) setSetting('netapp_aiqum_user', String(username).trim());
+    if (password) setSetting('netapp_aiqum_pass', encrypt(String(password)));
+    if (pollIntervalMin != null) {
+      const n = Math.min(1440, Math.max(5, Number(pollIntervalMin) || 15));
+      setSetting('netapp_poll_interval_min', String(n));
     }
-    next(err);
-  }
-});
-
-router.delete('/arrays/:id', [param('id').isInt()], validate, (req, res, next) => {
-  try {
-    const info = db.prepare('DELETE FROM netapp_arrays WHERE id = ?').run(req.params.id);
-    if (info.changes === 0) return res.status(404).json({ error: 'Array not found' });
-    cancelArray(Number(req.params.id));
+    reschedule();
     res.json({ success: true });
   } catch (err) { next(err); }
 });
 
+// Validate AIQUM connectivity (uses posted creds, falling back to stored).
+router.post('/aiqum/test', async (req, res) => {
+  try {
+    const cfg = netappApi.getAiqumConfig();
+    const b = req.body || {};
+    const override = {
+      host: b.host || cfg.host,
+      username: b.username || cfg.username,
+      password: b.password || cfg.password,
+    };
+    res.json(await netappApi.testAiqum(override));
+  } catch (err) {
+    const status = err.response && err.response.status;
+    res.status(200).json({ ok: false, error: status ? `HTTP ${status}` : (err.message || 'Connection failed') });
+  }
+});
+
+// Trigger a discovery + poll of all clusters now.
+router.post('/poll', async (req, res, next) => {
+  try { await syncAndPollAll(); res.json({ success: true }); } catch (err) { next(err); }
+});
+
+// Poll a single already-discovered cluster now.
 router.post('/arrays/:id/poll', [param('id').isInt()], validate, async (req, res, next) => {
   try {
     const array = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(req.params.id);
-    if (!array) return res.status(404).json({ error: 'Array not found' });
+    if (!array) return res.status(404).json({ error: 'Cluster not found' });
     await triggerPoll(array.id);
     res.json({ success: true });
   } catch (err) { next(err); }
@@ -186,7 +126,7 @@ router.get('/overview', cacheControl(15), (req, res, next) => {
     const volStmt = db.prepare('SELECT COUNT(*) AS n FROM netapp_volumes WHERE array_id = ?');
     const aggStmt = db.prepare('SELECT COUNT(*) AS n FROM netapp_aggregates WHERE array_id = ?');
     res.json(arrays.map((a) => ({
-      ...publicArray(a),
+      ...publicCluster(a),
       latest: latestStmt.get(a.id) || null,
       open_alerts: alertStmt.get(a.id).n,
       volume_count: volStmt.get(a.id).n,

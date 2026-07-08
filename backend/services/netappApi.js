@@ -1,9 +1,14 @@
 const axios = require('axios');
 const https = require('https');
+const { getSetting } = require('./settings');
 const { decrypt } = require('./encryption');
 
-// NetApp ONTAP REST client (basic auth over HTTPS to the cluster mgmt LIF).
-// No token exchange is needed — credentials are sent per request.
+// NetApp data is collected through Active IQ Unified Manager (AIQUM)'s API
+// Gateway, which proxies ONTAP REST calls to each managed cluster using ONE
+// AIQUM credential (no per-cluster registration).
+//   Gateway URL: <aiqum>/api/gateways/{cluster_uuid}/<ontap-path>
+// where <ontap-path> is the ONTAP REST path with the leading `/api` removed
+// (so our fetcher path `/api/storage/volumes` -> `.../gateways/<uuid>/storage/volumes`).
 
 /** Normalize a host into an https origin with no trailing slash. */
 function normalizeHost(host) {
@@ -12,36 +17,74 @@ function normalizeHost(host) {
   return h;
 }
 
-function getPassword(array) {
-  const creds = JSON.parse(decrypt(array.encrypted_credentials));
-  if (!creds.password) {
-    const err = new Error('No password stored for this NetApp cluster');
-    err.code = 'NETAPP_NO_PASSWORD';
-    throw err;
-  }
-  return creds.password;
+/** AIQUM connection config: DB settings first, else .env fallback. */
+function getAiqumConfig() {
+  const host = getSetting('netapp_aiqum_host') || process.env.NETAPP_AIQUM_HOST || '';
+  const username = getSetting('netapp_aiqum_user') || process.env.NETAPP_AIQUM_USER || '';
+  let password = '';
+  const stored = getSetting('netapp_aiqum_pass');
+  if (stored) { try { password = decrypt(stored); } catch { password = ''; } }
+  if (!password) password = process.env.NETAPP_AIQUM_PW || '';
+  return { host: host ? normalizeHost(host) : '', username, password };
 }
 
-/** Build an authenticated axios client for the cluster. */
-function clientFor(array, passwordOverride) {
-  const password = passwordOverride != null ? passwordOverride : getPassword(array);
+function aiqumConfigured() {
+  const c = getAiqumConfig();
+  return !!(c.host && c.username && c.password);
+}
+
+/** Axios client pointed at AIQUM (basic auth, self-signed cert tolerated). */
+function aiqumClient(cfgOverride) {
+  const c = cfgOverride && cfgOverride.host
+    ? { host: normalizeHost(cfgOverride.host), username: cfgOverride.username, password: cfgOverride.password }
+    : getAiqumConfig();
+  if (!c.host || !c.username || !c.password) {
+    const err = new Error('AIQUM is not configured (host/user/password)');
+    err.code = 'AIQUM_NOT_CONFIGURED';
+    throw err;
+  }
   return axios.create({
-    baseURL: normalizeHost(array.mgmt_host),
-    httpsAgent: new https.Agent({ rejectUnauthorized: !!array.ssl_verify }),
-    timeout: 30000,
-    auth: { username: array.username, password },
+    baseURL: c.host,
+    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    timeout: 60000,
+    auth: { username: c.username, password: c.password },
     headers: { accept: 'application/json' },
   });
 }
 
-/** Authenticated GET against the ONTAP REST API. */
-async function apiGet(array, path, params, passwordOverride) {
-  const client = clientFor(array, passwordOverride);
-  const { data } = await client.get(path, { params });
+/**
+ * Authenticated GET against a managed cluster's ONTAP REST API, proxied through
+ * the AIQUM gateway. `array` must carry `cluster_uuid`.
+ */
+async function apiGet(array, path, params) {
+  if (!array || !array.cluster_uuid) {
+    const err = new Error('Cluster has no AIQUM uuid'); err.code = 'NETAPP_NO_UUID'; throw err;
+  }
+  const client = aiqumClient();
+  const ontapPath = String(path).replace(/^\/api/, '');
+  const { data } = await client.get(`/api/gateways/${array.cluster_uuid}${ontapPath}`, { params });
   return data;
 }
 
 const records = (data) => (data && data.records) || [];
+
+/** Clusters managed by AIQUM (discovery). */
+async function fetchManagedClusters(cfgOverride) {
+  const client = aiqumClient(cfgOverride);
+  const { data } = await client.get('/api/datacenter/cluster/clusters', { params: { max_records: 1000 } });
+  return (data.records || []).map((c) => ({
+    uuid: c.uuid,
+    name: c.name,
+    version: (c.version && c.version.full) || null,
+    management_ip: c.management_ip || null,
+  }));
+}
+
+/** Validate AIQUM connectivity + credentials (used by the Settings test button). */
+async function testAiqum(cfgOverride) {
+  const clusters = await fetchManagedClusters(cfgOverride);
+  return { ok: true, clusterCount: clusters.length, clusters: clusters.map((c) => c.name) };
+}
 
 // ── High-level fetchers ──────────────────────────────────────────────────────
 
@@ -209,8 +252,7 @@ async function fetchCifsShares(array) {
  * object carrying a raw `password` (pre-save test flow).
  */
 async function testConnection(array) {
-  const password = array.password != null ? array.password : undefined;
-  const cluster = await apiGet(array, '/api/cluster', { fields: 'name,version' }, password);
+  const cluster = await apiGet(array, '/api/cluster', { fields: 'name,version' });
   return {
     ok: true,
     clusterName: cluster.name || null,
@@ -222,6 +264,10 @@ function invalidate() { /* no session cache for basic auth */ }
 
 module.exports = {
   normalizeHost,
+  getAiqumConfig,
+  aiqumConfigured,
+  fetchManagedClusters,
+  testAiqum,
   apiGet,
   fetchCluster,
   fetchNodes,

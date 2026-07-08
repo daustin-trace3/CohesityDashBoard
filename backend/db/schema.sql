@@ -444,6 +444,10 @@ CREATE TABLE IF NOT EXISTS netapp_arrays (
   encrypted_credentials    TEXT NOT NULL,     -- AES-GCM JSON of { password }
   polling_interval_minutes INTEGER NOT NULL DEFAULT 15,
   ssl_verify               INTEGER NOT NULL DEFAULT 0,
+  cluster_uuid             TEXT,              -- AIQUM gateway cluster uuid (source='aiqum')
+  management_ip            TEXT,
+  version                  TEXT,
+  source                   TEXT NOT NULL DEFAULT 'direct',  -- 'aiqum' | 'direct'
   created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
 );

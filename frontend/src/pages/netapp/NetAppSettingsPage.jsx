@@ -1,182 +1,184 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, RefreshCw, Save, Clock, HardDrive, Play, Plus, Trash2, PlugZap } from 'lucide-react';
+import { Settings, RefreshCw, Save, PlugZap, Play, Server, Clock, Cloud } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge } from '../../components/ui/primitives';
 import { BRAND } from './helpers';
 
-const MIN = 5;
-const MAX = 1440;
-const blankForm = { name: '', mgmt_host: '', username: '', password: '', ssl_verify: false, polling_interval_minutes: 15 };
+const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
+
+function Field({ label, hint, children }) {
+  return (
+    <div>
+      <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-faint mb-1">{label}</label>
+      {children}
+      {hint && <p className="text-[11px] text-ink-faint mt-1">{hint}</p>}
+    </div>
+  );
+}
+
+function shortVersion(v) {
+  const m = String(v || '').match(/(\d+\.\d+\.\d+\S*)/);
+  return m ? m[1] : (v || '—');
+}
 
 export default function NetAppSettingsPage() {
   const { toast } = useToast();
-  const [arrays, setArrays] = useState(null);
-  const [intervals, setIntervals] = useState({});
-  const [savingId, setSavingId] = useState(null);
-  const [pollingId, setPollingId] = useState(null);
-  const [deletingId, setDeletingId] = useState(null);
-
-  const [form, setForm] = useState(blankForm);
+  const [cfg, setCfg] = useState(null);
+  const [clusters, setClusters] = useState(null);
+  const [host, setHost] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [interval, setIntervalMin] = useState(15);
+  const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [adding, setAdding] = useState(false);
+  const [polling, setPolling] = useState(false);
+  const [pollingId, setPollingId] = useState(null);
   const [testResult, setTestResult] = useState(null);
 
-  const load = useCallback(() => Promise.allSettled([client.get('/netapp/arrays'), client.get('/netapp/defaults')]).then(([a, d]) => {
-    const list = a.status === 'fulfilled' ? a.value.data : [];
-    setArrays(list);
-    setIntervals(Object.fromEntries(list.map((x) => [x.id, String(x.polling_interval_minutes ?? 15)])));
-    if (d.status === 'fulfilled' && d.value.data.username) setForm((f) => (f.username ? f : { ...f, username: d.value.data.username }));
-    if (a.status === 'rejected') toast({ type: 'error', title: 'Failed to load NetApp clusters' });
+  const load = useCallback(() => Promise.allSettled([
+    client.get('/netapp/aiqum'),
+    client.get('/netapp/arrays'),
+  ]).then(([c, a]) => {
+    if (c.status === 'fulfilled') {
+      setCfg(c.value.data);
+      setHost(c.value.data.host || '');
+      setUsername(c.value.data.username || '');
+      setIntervalMin(c.value.data.pollIntervalMin || 15);
+    } else { setCfg({ configured: false }); toast({ type: 'error', title: 'Failed to load AIQUM config' }); }
+    setClusters(a.status === 'fulfilled' ? a.value.data : []);
   }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
-  const saveInterval = async (array) => {
-    const raw = Number(intervals[array.id]);
-    if (!Number.isFinite(raw) || raw < MIN || raw > MAX) { toast({ type: 'error', title: 'Invalid interval', message: `Enter ${MIN}-${MAX} minutes.` }); return; }
-    setSavingId(array.id);
+  const save = async () => {
+    setSaving(true);
     try {
-      await client.put(`/netapp/arrays/${array.id}`, {
-        name: array.name, mgmt_host: array.mgmt_host, username: array.username,
-        ssl_verify: !!array.ssl_verify, polling_interval_minutes: raw,
-      });
-      toast({ type: 'success', title: 'Polling interval updated', message: `${array.name} now polls every ${raw} min.` });
+      const patch = { host, username, pollIntervalMin: Number(interval) };
+      if (password) patch.password = password;
+      await client.put('/netapp/aiqum', patch);
+      setPassword('');
+      toast({ type: 'success', title: 'AIQUM settings saved' });
       load();
     } catch (err) {
-      toast({ type: 'error', title: 'Update failed', message: err?.response?.data?.error || 'Could not update.' });
-    } finally { setSavingId(null); }
-  };
-
-  const pollNow = async (array) => {
-    setPollingId(array.id);
-    try { await client.post(`/netapp/arrays/${array.id}/poll`); toast({ type: 'success', title: 'Poll triggered', message: `Collecting from ${array.name}.` }); }
-    catch (err) { toast({ type: 'error', title: 'Poll failed', message: err?.response?.data?.error || 'Poll failed.' }); }
-    finally { setPollingId(null); }
-  };
-
-  const removeArray = async (array) => {
-    setDeletingId(array.id);
-    try { await client.delete(`/netapp/arrays/${array.id}`); toast({ type: 'success', title: 'Cluster removed', message: array.name }); load(); }
-    catch (err) { toast({ type: 'error', title: 'Delete failed', message: err?.response?.data?.error || 'Could not delete.' }); }
-    finally { setDeletingId(null); }
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Could not save.' });
+    } finally { setSaving(false); }
   };
 
   const testConn = async () => {
     setTesting(true); setTestResult(null);
     try {
-      const { data } = await client.post('/netapp/arrays/test', {
-        mgmt_host: form.mgmt_host, username: form.username, password: form.password, ssl_verify: form.ssl_verify,
-      });
-      setTestResult({ ok: true, msg: `${data.clusterName} · ${(data.ontapVersion || '').replace('NetApp Release ', '')}` });
+      const { data } = await client.post('/netapp/aiqum/test', { host, username, password: password || undefined });
+      setTestResult(data.ok ? { ok: true, msg: `Connected · ${data.clusterCount} clusters managed (${(data.clusters || []).join(', ')})` } : { ok: false, msg: data.error });
     } catch (err) {
       setTestResult({ ok: false, msg: err?.response?.data?.error || 'Connection failed' });
     } finally { setTesting(false); }
   };
 
-  const addCluster = async () => {
-    setAdding(true);
-    try {
-      await client.post('/netapp/arrays', { ...form, polling_interval_minutes: Number(form.polling_interval_minutes) || 15 });
-      toast({ type: 'success', title: 'Cluster added', message: form.name });
-      setForm({ ...blankForm, username: form.username });
-      setTestResult(null);
-      load();
-    } catch (err) {
-      toast({ type: 'error', title: 'Add failed', message: err?.response?.data?.error || err?.response?.data?.errors?.[0]?.msg || 'Could not add cluster.' });
-    } finally { setAdding(false); }
+  const pollAll = async () => {
+    setPolling(true);
+    try { await client.post('/netapp/poll'); toast({ type: 'success', title: 'Discovery + poll triggered' }); setTimeout(load, 1500); }
+    catch (err) { toast({ type: 'error', title: 'Poll failed', message: err?.response?.data?.error || 'Poll failed.' }); }
+    finally { setPolling(false); }
   };
 
-  const canAdd = form.name && form.mgmt_host && form.username && form.password;
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+  const pollOne = async (c) => {
+    setPollingId(c.id);
+    try { await client.post(`/netapp/arrays/${c.id}/poll`); toast({ type: 'success', title: 'Poll triggered', message: c.name }); }
+    catch (err) { toast({ type: 'error', title: 'Poll failed', message: err?.response?.data?.error || 'Poll failed.' }); }
+    finally { setPollingId(null); }
+  };
+
+  if (cfg == null) {
+    return (
+      <div className="animate-fade-in max-w-3xl">
+        <PageHeader icon={Settings} title="NetApp Settings" description="Active IQ Unified Manager connection" />
+        <LoadingPanel label="Loading settings…" height={160} />
+      </div>
+    );
+  }
 
   return (
     <div className="animate-fade-in max-w-3xl">
-      <PageHeader icon={Settings} title="NetApp Settings" description="Register ONTAP clusters and configure polling">
+      <PageHeader icon={Settings} title="NetApp Settings" description="Collect all clusters through Active IQ Unified Manager (AIQUM)">
         <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
           <RefreshCw size={15} /> Refresh
         </button>
       </PageHeader>
 
-      {/* Add cluster */}
+      {/* Connection status */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <div className="flex items-center gap-2 mb-3"><Plus size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Add ONTAP Cluster</p></div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Field label="Display name"><input value={form.name} onChange={set('name')} placeholder="nasft1" className={inp} /></Field>
-          <Field label="Management host"><input value={form.mgmt_host} onChange={set('mgmt_host')} placeholder="nasft1.example.com" className={inp} /></Field>
-          <Field label="Username"><input value={form.username} onChange={set('username')} placeholder="admin" className={inp} /></Field>
-          <Field label="Password"><input type="password" value={form.password} onChange={set('password')} placeholder="••••••••" className={inp} autoComplete="new-password" /></Field>
-          <Field label="Polling interval (min)"><input type="number" min={MIN} max={MAX} step="5" value={form.polling_interval_minutes} onChange={set('polling_interval_minutes')} className={inp} /></Field>
-          <label className="flex items-center gap-2 text-xs text-ink-muted cursor-pointer mt-6 select-none">
-            <input type="checkbox" checked={form.ssl_verify} onChange={set('ssl_verify')} className="accent-brand cursor-pointer" /> Verify SSL certificate
-          </label>
+        <div className="flex items-center gap-2 mb-3"><Cloud size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Active IQ Unified Manager</p></div>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm mb-3">
+          <span className="flex items-center gap-2">Status: {cfg.configured ? <Badge tone="ok">Connected</Badge> : <Badge tone="crit">Not configured</Badge>}</span>
+          <span className="text-ink-muted">Clusters managed: <span className="text-ink tnum">{cfg.clusterCount ?? 0}</span></span>
+          <span className="text-ink-muted">Config source: <span className="text-ink">{cfg.hostSource}</span></span>
         </div>
-        {testResult && (
-          <p className={`text-[11px] mt-2 ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>{testResult.ok ? '✓ ' : '✗ '}{testResult.msg}</p>
-        )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="AIQUM host" hint="Base URL of the Unified Manager appliance.">
+            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="https://aiqum.example.com" className={inp} spellCheck={false} />
+          </Field>
+          <Field label="Username" hint="AIQUM account (Operator/read-only is sufficient).">
+            <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="operator" className={inp} spellCheck={false} />
+          </Field>
+          <Field label="Password" hint={`Stored encrypted. ${cfg.hasPassword ? 'A password is on file — leave blank to keep it.' : 'Required.'}`}>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={cfg.hasPassword ? '•••••• (unchanged)' : '••••••'} className={inp} autoComplete="new-password" />
+          </Field>
+          <Field label="Poll interval (min)" hint="How often to discover clusters and collect data.">
+            <div className="flex items-center gap-2"><Clock size={14} className="text-ink-faint" /><input type="number" min={5} max={1440} value={interval} onChange={(e) => setIntervalMin(e.target.value)} className={inp} /></div>
+          </Field>
+        </div>
+        {testResult && <p className={`text-[12px] mt-2 ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>{testResult.ok ? '✓ ' : '✗ '}{testResult.msg}</p>}
         <div className="flex items-center gap-2 mt-3">
-          <button onClick={testConn} disabled={testing || !form.mgmt_host || !form.username || !form.password}
+          <button onClick={testConn} disabled={testing || !host || !username}
             className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
             <PlugZap size={13} /> {testing ? 'Testing…' : 'Test connection'}
           </button>
-          <button onClick={addCluster} disabled={adding || !canAdd}
+          <button onClick={save} disabled={saving || !host || !username}
             className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40">
-            <Save size={13} /> {adding ? 'Adding…' : 'Add cluster'}
+            <Save size={13} /> {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button onClick={pollAll} disabled={polling || !cfg.configured}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 ml-auto">
+            <Play size={13} /> {polling ? 'Collecting…' : 'Discover + poll now'}
           </button>
         </div>
       </div>
 
-      {/* Registered clusters */}
-      {arrays == null ? (
-        <LoadingPanel label="Loading clusters…" />
-      ) : arrays.length === 0 ? (
-        <div className="panel p-6 text-center text-sm text-ink-muted" style={{ borderTop: `3px solid ${BRAND}` }}>No clusters registered yet.</div>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {arrays.map((a) => {
-            const edited = String(a.polling_interval_minutes ?? 15) !== String(intervals[a.id] ?? '');
-            return (
-              <div key={a.id} className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg border flex-shrink-0" style={{ backgroundColor: `${BRAND}15`, borderColor: `${BRAND}40` }}><HardDrive size={16} style={{ color: BRAND }} /></div>
-                    <div className="min-w-0"><p className="text-sm font-bold text-ink truncate">{a.name}</p><p className="text-[11px] text-ink-faint truncate">{a.mgmt_host} · {a.username}</p></div>
-                  </div>
-                  <Badge tone="neutral">ONTAP</Badge>
-                </div>
-                <div className="flex flex-wrap items-end gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-faint mb-1"><Clock size={11} className="inline mr-1 -mt-0.5" />Interval (min)</label>
-                    <input type="number" min={MIN} max={MAX} step="5" value={intervals[a.id] ?? ''} onChange={(e) => setIntervals((m) => ({ ...m, [a.id]: e.target.value }))} className="w-28 bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none tnum" />
-                  </div>
-                  <button onClick={() => saveInterval(a)} disabled={savingId === a.id || !edited}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40">
-                    <Save size={13} /> {savingId === a.id ? 'Saving…' : 'Save'}
-                  </button>
-                  <button onClick={() => pollNow(a)} disabled={pollingId === a.id}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-                    <Play size={13} /> {pollingId === a.id ? 'Polling…' : 'Poll now'}
-                  </button>
-                  <button onClick={() => removeArray(a)} disabled={deletingId === a.id}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-red-800 text-red-400 rounded-lg hover:border-red-500 transition-colors disabled:opacity-50 ml-auto">
-                    <Trash2 size={13} /> {deletingId === a.id ? 'Removing…' : 'Remove'}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
-function Field({ label, children }) {
-  return (
-    <div>
-      <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-faint mb-1">{label}</label>
-      {children}
+      {/* Managed clusters (read-only, discovered from AIQUM) */}
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <div className="flex items-center gap-2 mb-3"><Server size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Managed Clusters</p></div>
+        {clusters == null ? (
+          <LoadingPanel label="Loading clusters…" height={100} />
+        ) : clusters.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No clusters discovered yet. Save a valid AIQUM connection, then “Discover + poll now”.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3">ONTAP</th><th className="py-2 pr-3">Management IP</th><th className="py-2 pr-3">Source</th><th className="py-2 pr-3"></th>
+              </tr></thead>
+              <tbody>
+                {clusters.map((c) => (
+                  <tr key={c.id} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink font-medium">{c.name}</td>
+                    <td className="py-2 pr-3 text-ink-muted tnum">{shortVersion(c.version)}</td>
+                    <td className="py-2 pr-3 text-ink-muted tnum">{c.management_ip || '—'}</td>
+                    <td className="py-2 pr-3"><Badge tone="info">{c.source === 'aiqum' ? 'AIQUM gateway' : c.source}</Badge></td>
+                    <td className="py-2 pr-3 text-right">
+                      <button onClick={() => pollOne(c)} disabled={pollingId === c.id}
+                        className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
+                        <Play size={12} /> {pollingId === c.id ? 'Polling…' : 'Poll'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-[11px] text-ink-faint mt-3">Clusters are discovered automatically from AIQUM — there is no per-cluster registration. Removing a cluster from AIQUM removes it here on the next poll.</p>
+      </div>
     </div>
   );
 }

@@ -123,6 +123,12 @@ try {
 try { db.exec('ALTER TABLE pure_network_interfaces ADD COLUMN netmask TEXT'); } catch { /* exists */ }
 try { db.exec('ALTER TABLE pure_network_interfaces ADD COLUMN gateway TEXT'); } catch { /* exists */ }
 
+// Migration: netapp_arrays gained AIQUM discovery columns. Guarded.
+try { db.exec('ALTER TABLE netapp_arrays ADD COLUMN cluster_uuid TEXT'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE netapp_arrays ADD COLUMN management_ip TEXT'); } catch { /* exists */ }
+try { db.exec('ALTER TABLE netapp_arrays ADD COLUMN version TEXT'); } catch { /* exists */ }
+try { db.exec("ALTER TABLE netapp_arrays ADD COLUMN source TEXT NOT NULL DEFAULT 'direct'"); } catch { /* exists */ }
+
 // Migration: ensure the (array_id, pure_alert_id) uniqueness the alert upsert
 // (INSERT ... ON CONFLICT) depends on. Dedup any rows collected before the
 // index existed, then create it. Guarded so it runs at most once and never
