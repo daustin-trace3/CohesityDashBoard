@@ -3,6 +3,7 @@ import { HardDrive } from 'lucide-react';
 import client from '../api/client';
 import Pagination from '../components/Pagination';
 import { PageHeader, Spinner } from '../components/ui/primitives';
+import { useToast } from '../components/ui/Toaster';
 
 function shortVersion(v) {
   if (!v || v === '—') return '—';
@@ -46,6 +47,7 @@ function SortTh({ label, field, sortField, sortDir, onSort }) {
 }
 
 export default function HardwarePage() {
+  const { toast } = useToast();
   const [nodeRows, setNodeRows] = useState([]);
   const [clusterCount, setClusterCount] = useState(0);
   const [loadedCount, setLoadedCount] = useState(0);
@@ -96,7 +98,12 @@ export default function HardwarePage() {
       );
       if (!cancelled) setLoading(false);
     };
-    load().catch(() => { if (!cancelled) setLoading(false); });
+    load().catch((err) => {
+      if (!cancelled) {
+        setLoading(false);
+        toast({ type: 'error', title: 'Hardware data load failed', message: err?.message || 'Could not load node data' });
+      }
+    });
     return () => { cancelled = true; };
   }, []);
 

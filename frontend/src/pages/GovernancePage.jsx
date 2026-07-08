@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ClipboardCheck, FileCheck, ShieldOff, Layers, RefreshCw, Lock, CloudOff, GitCompareArrows,
+  ClipboardCheck, FileCheck, ShieldOff, Layers, Lock, CloudOff, GitCompareArrows,
 } from 'lucide-react';
 import client from '../api/client';
-import { PageHeader, Panel, Badge, StatCard, LoadingPanel } from '../components/ui/primitives';
+import { PageHeader, Panel, Badge, StatCard, LoadingPanel, LastUpdated, RefreshButton } from '../components/ui/primitives';
+import { useToast } from '../components/ui/Toaster';
 
 function fmtBytes(b) {
   if (b == null || b === 0) return '—';
@@ -22,9 +23,11 @@ function fmtRetention(days) {
 }
 
 export default function GovernancePage() {
+  const { toast } = useToast();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
   const [policyFilter, setPolicyFilter] = useState('all'); // all | flagged
   const [policyPage, setPolicyPage] = useState(0);
   const [policyPageSize, setPolicyPageSize] = useState(25); // number | 'all'
@@ -35,12 +38,14 @@ export default function GovernancePage() {
     try {
       const { data } = await client.get('/governance');
       setData(data);
-    } catch {
+      setLastRefreshed(new Date());
+    } catch (err) {
       setError(true);
+      toast({ type: 'error', title: 'Governance fetch failed', message: err?.message || 'Could not load governance data' });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -77,13 +82,8 @@ export default function GovernancePage() {
         title="Governance & Audit"
         description="Policy compliance, unprotected sources, and software version drift across the estate"
       >
-        <button
-          onClick={load}
-          disabled={loading}
-          className="text-xs px-3 py-1.5 border border-cohesity-border rounded-lg text-ink-muted hover:border-brand/50 hover:text-brand transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-        >
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
-        </button>
+        <RefreshButton onClick={load} refreshing={loading} label="Refresh" />
+        <LastUpdated date={lastRefreshed} prefix="Last refreshed" />
       </PageHeader>
 
       {loading && !data ? (

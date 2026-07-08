@@ -2,7 +2,9 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import client from '../api/client';
 import { Bar } from 'react-chartjs-2';
-import { PageHeader, Spinner } from '../components/ui/primitives';
+import { PageHeader, Spinner, StatCard, LastUpdated, RefreshButton } from '../components/ui/primitives';
+import { useToast } from '../components/ui/Toaster';
+import SkeletonTable from '../components/SkeletonTable';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
@@ -71,15 +73,6 @@ const CHART_DEFAULTS = {
   }
 };
 
-function StatCard({ label, value, valueClass = 'text-cohesity-text' }) {
-  return (
-    <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-      <p className="text-xs text-gray-400 mb-1">{label}</p>
-      <p className={`text-2xl font-bold ${valueClass}`}>{value}</p>
-    </div>
-  );
-}
-
 function SectionHeading({ children }) {
   return (
     <h2 className="text-sm font-semibold text-cohesity-text uppercase tracking-wider mb-3 mt-1">
@@ -89,11 +82,13 @@ function SectionHeading({ children }) {
 }
 
 export default function DataProtectionPage() {
+  const { toast } = useToast();
   const [days, setDays] = useState(7);
   const [clusterId, setClusterId] = useState('');
   const [clusters, setClusters] = useState([]);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
   const [riskFilter, setRiskFilter] = useState('all');
   const [jobSort, setJobSort] = useState('riskScore');
   const [jobSortDir, setJobSortDir] = useState('desc');
@@ -105,12 +100,14 @@ export default function DataProtectionPage() {
       if (clusterId) params.clusterId = clusterId;
       const res = await client.get('/analytics/protection-runs', { params });
       setData(res.data);
-    } catch {
-      // ignore
+      setLastRefreshed(new Date());
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Request failed';
+      toast({ type: 'error', title: 'Data protection fetch failed', message: msg });
     } finally {
       setLoading(false);
     }
-  }, [days, clusterId]);
+  }, [days, clusterId, toast]);
 
   useEffect(() => {
     client.get('/analytics/clusters')
@@ -237,13 +234,8 @@ export default function DataProtectionPage() {
           ))}
         </div>
 
-        <button
-          onClick={fetchData}
-          className="text-xs px-3 py-1.5 rounded bg-cohesity-green hover:bg-cohesity-green-dark text-white font-medium transition-colors"
-        >
-          Refresh
-        </button>
-
+        <RefreshButton onClick={fetchData} refreshing={loading} label="Refresh" size="sm" />
+        <LastUpdated date={lastRefreshed} prefix="Last refreshed" />
         {loading && (
           <span className="flex items-center gap-1.5 text-xs text-ink-muted ml-2" role="status"><Spinner size={13} /> Loading protection data&hellip;</span>
         )}
@@ -275,17 +267,23 @@ export default function DataProtectionPage() {
         <SectionHeading>Protection Job Health</SectionHeading>
 
         {/* Summary stat cards */}
+        {loading && !data ? (
+          <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 mb-4">
+            {[...Array(5)].map((_, i) => <div key={i} className="panel px-4 py-3.5"><div className="skeleton h-6 w-20 mt-1" /></div>)}
+          </div>
+        ) : (
         <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 mb-4">
           <StatCard label="Protection Runs" value={summary.total ?? '—'} />
           <StatCard
             label="Success Rate"
             value={summary.successRate != null ? `${summary.successRate}%` : '—'}
-            valueClass={summary.successRate != null ? successColor(summary.successRate) : 'text-cohesity-text'}
+            tone={summary.successRate == null ? 'default' : summary.successRate >= 90 ? 'ok' : summary.successRate >= 70 ? 'warn' : 'crit'}
           />
-          <StatCard label="Failed Runs" value={summary.failure ?? '—'} valueClass="text-red-400" />
-          <StatCard label="At-Risk Jobs" value={atRiskJobCount} valueClass={atRiskJobCount > 0 ? 'text-red-400' : 'text-green-400'} />
-          <StatCard label="No Success 24h" value={noSuccessCount} valueClass={noSuccessCount > 0 ? 'text-yellow-400' : 'text-green-400'} />
+          <StatCard label="Failed Runs" value={summary.failure ?? '—'} tone={(summary.failure ?? 0) > 0 ? 'crit' : 'ok'} />
+          <StatCard label="At-Risk Jobs" value={atRiskJobCount} tone={atRiskJobCount > 0 ? 'crit' : 'ok'} />
+          <StatCard label="No Success 24h" value={noSuccessCount} tone={noSuccessCount > 0 ? 'warn' : 'ok'} />
         </div>
+        )}
 
         {summary.total === 0 ? (
           <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-6 text-center text-xs text-gray-400">
@@ -322,11 +320,11 @@ export default function DataProtectionPage() {
               <div className="space-y-3 mb-4">
                 <SectionHeading>SLA Compliance</SectionHeading>
                 <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 mb-3">
-                  <StatCard label="Compliant Jobs" value={data.slaSummary.compliantJobs ?? '—'} valueClass="text-green-400" />
-                  <StatCard label="Nearing Breach" value={data.slaSummary.nearingBreachJobs ?? '—'} valueClass="text-yellow-400" />
-                  <StatCard label="Breached Jobs" value={data.slaSummary.breachedJobs ?? '—'} valueClass="text-red-400" />
+                  <StatCard label="Compliant Jobs" value={data.slaSummary.compliantJobs ?? '—'} tone="ok" />
+                  <StatCard label="Nearing Breach" value={data.slaSummary.nearingBreachJobs ?? '—'} tone="warn" />
+                  <StatCard label="Breached Jobs" value={data.slaSummary.breachedJobs ?? '—'} tone="crit" />
                   <StatCard label="Total Jobs" value={data.slaSummary.totalJobs ?? '—'} />
-                  <StatCard label="Compliance Rate" value={data.slaSummary.complianceRate != null ? `${data.slaSummary.complianceRate}%` : '—'} valueClass="text-cohesity-green" />
+                  <StatCard label="Compliance Rate" value={data.slaSummary.complianceRate != null ? `${data.slaSummary.complianceRate}%` : '—'} tone="brand" />
                 </div>
                 {data.slaRiskJobs && data.slaRiskJobs.length > 0 && (
                   <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
@@ -373,10 +371,10 @@ export default function DataProtectionPage() {
               <div className="space-y-3 mb-4">
                 <SectionHeading>Failure Streak Intelligence</SectionHeading>
                 <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-                  <StatCard label="Jobs with 2+ Failures" value={data.streakSummary.jobsWith2PlusFailures ?? '—'} valueClass="text-yellow-400" />
-                  <StatCard label="Jobs with 3+ Failures" value={data.streakSummary.jobsWith3PlusFailures ?? '—'} valueClass="text-orange-400" />
-                  <StatCard label="Jobs with 5+ Failures" value={data.streakSummary.jobsWith5PlusFailures ?? '—'} valueClass="text-red-400" />
-                  <StatCard label="Max Consecutive Failures" value={data.streakSummary.maxConsecutiveFailures ?? '—'} valueClass="text-red-400" />
+                  <StatCard label="Jobs with 2+ Failures" value={data.streakSummary.jobsWith2PlusFailures ?? '—'} tone="warn" />
+                  <StatCard label="Jobs with 3+ Failures" value={data.streakSummary.jobsWith3PlusFailures ?? '—'} tone="warn" />
+                  <StatCard label="Jobs with 5+ Failures" value={data.streakSummary.jobsWith5PlusFailures ?? '—'} tone="crit" />
+                  <StatCard label="Max Consecutive Failures" value={data.streakSummary.maxConsecutiveFailures ?? '—'} tone="crit" />
                 </div>
               </div>
             )}
@@ -386,9 +384,9 @@ export default function DataProtectionPage() {
               <div className="space-y-3 mb-4">
                 <SectionHeading>Anomaly and Forecast</SectionHeading>
                 <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-3">
-                  <StatCard label="Forecast Trend" value={data.failureForecast.trend?.toUpperCase() ?? '—'} valueClass={data.failureForecast.trend === 'up' ? 'text-red-400' : data.failureForecast.trend === 'down' ? 'text-green-400' : 'text-gray-400'} />
+                  <StatCard label="Forecast Trend" value={data.failureForecast.trend?.toUpperCase() ?? '—'} tone={data.failureForecast.trend === 'up' ? 'crit' : data.failureForecast.trend === 'down' ? 'ok' : 'default'} />
                   <StatCard label="Slope/Day" value={data.failureForecast.slopePerDay ?? '—'} />
-                  <StatCard label="Projected Next 7d" value={data.failureForecast.projectedFailuresNext7d ?? '—'} valueClass="text-yellow-400" />
+                  <StatCard label="Projected Next 7d" value={data.failureForecast.projectedFailuresNext7d ?? '—'} tone="warn" />
                   <StatCard label="Avg Daily Failures" value={data.failureForecast.avgDailyFailures ?? '—'} />
                 </div>
                 {data.runtimeAnomalies && data.runtimeAnomalies.length > 0 && (
@@ -432,10 +430,10 @@ export default function DataProtectionPage() {
               <div className="space-y-3 mb-4">
                 <SectionHeading>Alert Correlation</SectionHeading>
                 <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 mb-3">
-                  <StatCard label="Correlated Failed Runs" value={data.alertCorrelation.correlatedFailedRuns ?? '—'} />
+                  <StatCard label="Correlated Failed Runs" value={data.alertCorrelation.correlatedFailedRuns ?? '—'} tone="warn" />
                   <StatCard label="Total Failed Runs" value={data.alertCorrelation.totalFailedRuns ?? '—'} />
                   <StatCard label="Correlation Rate" value={data.alertCorrelation.correlationRate != null ? `${data.alertCorrelation.correlationRate}%` : '—'} />
-                  <StatCard label="Alert Types" value={data.alertCorrelation.topAlertTypes?.length ?? 0} />
+                  <StatCard label="Alert Types" value={data.alertCorrelation.topAlertTypes?.length ?? 0} tone="info" />
                 </div>
                 {data.alertCorrelation.topAlertTypes && data.alertCorrelation.topAlertTypes.length > 0 && (
                   <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">

@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Activity } from 'lucide-react';
 import client from '../api/client';
 import { Bar } from 'react-chartjs-2';
-import { PageHeader, Spinner } from '../components/ui/primitives';
+import { PageHeader, Spinner, StatCard, LastUpdated, RefreshButton } from '../components/ui/primitives';
+import { useToast } from '../components/ui/Toaster';
 
 // Helper functions
 function formatBytes(bytes) {
@@ -59,15 +60,6 @@ const CHART_DEFAULTS = {
     }
   }
 };
-
-function StatCard({ label, value, valueClass = 'text-cohesity-text' }) {
-  return (
-    <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-      <p className="text-xs text-gray-400 mb-1">{label}</p>
-      <p className={`text-2xl font-bold ${valueClass}`}>{value}</p>
-    </div>
-  );
-}
 
 function SectionHeading({ children }) {
   return (
@@ -522,12 +514,14 @@ function SiteReplicationMesh({ flows }) {
 }
 
 export default function AnalyticsPage() {
+  const { toast } = useToast();
   const [days, setDays] = useState(1);
   const [clusterId, setClusterId] = useState('');
   const [clusters, setClusters] = useState([]);
   const [backup, setBackup] = useState(null);
   const [replication, setReplication] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
   const [clusterSort, setClusterSort] = useState('total');
   const [clusterSortDir, setClusterSortDir] = useState('desc');
   const [replSort, setReplSort] = useState('totalBytesTransferred');
@@ -544,12 +538,14 @@ export default function AnalyticsPage() {
       ]);
       setBackup(bRes.data);
       setReplication(rRes.data);
-    } catch {
-      // ignore
+      setLastRefreshed(new Date());
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Request failed';
+      toast({ type: 'error', title: 'Analytics fetch failed', message: msg });
     } finally {
       setLoading(false);
     }
-  }, [days, clusterId]);
+  }, [days, clusterId, toast]);
 
   useEffect(() => {
     client.get('/analytics/clusters')
@@ -705,13 +701,8 @@ export default function AnalyticsPage() {
           ))}
         </div>
 
-        <button
-          onClick={fetchAll}
-          className="text-xs px-3 py-1.5 rounded bg-cohesity-green hover:bg-cohesity-green-dark text-white font-medium transition-colors"
-        >
-          Refresh
-        </button>
-
+        <RefreshButton onClick={fetchAll} refreshing={loading} label="Refresh" size="sm" />
+        <LastUpdated date={lastRefreshed} prefix="Last refreshed" />
         {loading && (
           <span className="flex items-center gap-1.5 text-xs text-ink-muted ml-2" role="status"><Spinner size={13} /> Loading analytics&hellip;</span>
         )}
@@ -727,10 +718,10 @@ export default function AnalyticsPage() {
           <StatCard
             label="Success Rate"
             value={backupSummary.successRate != null ? `${backupSummary.successRate}%` : '—'}
-            valueClass={backupSummary.successRate != null ? successColor(backupSummary.successRate) : 'text-cohesity-text'}
+            tone={backupSummary.successRate == null ? 'default' : backupSummary.successRate >= 90 ? 'ok' : backupSummary.successRate >= 70 ? 'warn' : 'crit'}
           />
-          <StatCard label="Failed Runs" value={backupSummary.failure ?? '—'} valueClass="text-red-400" />
-          <StatCard label="Warning Runs" value={backupSummary.warning ?? '—'} valueClass="text-yellow-400" />
+          <StatCard label="Failed Runs" value={backupSummary.failure ?? '—'} tone={(backupSummary.failure ?? 0) > 0 ? 'crit' : 'ok'} />
+          <StatCard label="Warning Runs" value={backupSummary.warning ?? '—'} tone={(backupSummary.warning ?? 0) > 0 ? 'warn' : 'default'} />
         </div>
 
         {backupSummary.total === 0 ? (
@@ -824,9 +815,9 @@ export default function AnalyticsPage() {
           <StatCard
             label="Success Rate"
             value={replSummary.successRate != null ? `${replSummary.successRate}%` : '—'}
-            valueClass={replSummary.successRate != null ? successColor(replSummary.successRate) : 'text-cohesity-text'}
+            tone={replSummary.successRate == null ? 'default' : replSummary.successRate >= 90 ? 'ok' : replSummary.successRate >= 70 ? 'warn' : 'crit'}
           />
-          <StatCard label="Data Transferred" value={formatBytes(replSummary.totalBytesTransferred)} />
+          <StatCard label="Data Transferred" value={formatBytes(replSummary.totalBytesTransferred)} tone="brand" />
         </div>
 
         {replSummary.total === 0 ? (

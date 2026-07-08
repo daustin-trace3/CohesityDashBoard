@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { ArrowLeftRight } from 'lucide-react';
 import client from '../api/client';
-import { PageHeader, Spinner } from '../components/ui/primitives';
+import { PageHeader, Spinner, StatCard, LastUpdated, RefreshButton, humanizeMinutes } from '../components/ui/primitives';
+import { useToast } from '../components/ui/Toaster';
+import SkeletonTable from '../components/SkeletonTable';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
@@ -37,16 +39,8 @@ function getProgressClass(percent) {
   return 'bg-red-400';
 }
 
-function StatCard({ label, value, valueClass = 'text-cohesity-text' }) {
-  return (
-    <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-      <p className="text-xs text-gray-400 mb-1">{label}</p>
-      <p className={`text-2xl font-bold ${valueClass}`}>{value}</p>
-    </div>
-  );
-}
-
 export default function ReplicationPage() {
+  const { toast } = useToast();
   const [clusters, setClusters] = useState([]);
   const [selectedCluster, setSelectedCluster] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -93,7 +87,9 @@ export default function ReplicationPage() {
       setData(res.data);
       setLastRefreshed(new Date());
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Request failed');
+      const msg = err.response?.data?.error || err.message || 'Request failed';
+      setError(msg);
+      toast({ type: 'error', title: 'Replication fetch failed', message: msg });
     } finally {
       setLoading(false);
     }
@@ -168,15 +164,6 @@ export default function ReplicationPage() {
       setSortBy(col);
       setSortDir('desc');
     }
-  };
-
-  const formatRefreshedTime = () => {
-    if (!lastRefreshed) return 'Never';
-    const now = new Date();
-    const diff = Math.floor((now - lastRefreshed) / 1000);
-    if (diff < 60) return `${diff}s ago`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    return `${Math.floor(diff / 3600)}h ago`;
   };
 
   return (
@@ -255,18 +242,10 @@ export default function ReplicationPage() {
           </div>
 
           {/* Manual Refresh */}
-          <button
-            onClick={fetchReplicationData}
-            disabled={loading}
-            className="text-xs px-3 py-1.5 rounded bg-cohesity-green hover:bg-green-600 text-white font-medium transition-colors disabled:opacity-50"
-          >
-            Refresh
-          </button>
+          <RefreshButton onClick={fetchReplicationData} refreshing={loading} label="Refresh" size="sm" />
 
           {/* Last Refreshed */}
-          <div className="text-xs text-gray-400">
-            Last refreshed: {formatRefreshedTime()}
-          </div>
+          <LastUpdated date={lastRefreshed} prefix="Last refreshed" />
         </div>
 
         {loading && (
@@ -284,24 +263,26 @@ export default function ReplicationPage() {
         <div className="bg-blue-900/30 border border-blue-700 text-blue-400 rounded-lg px-4 py-3 text-sm flex items-center gap-2">
           <svg className="animate-spin h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
           Scanning all protection groups for replication data. This may take a few minutes on first load.
-          {data?.cacheAgeSeconds != null && ` Data is ${Math.round(data.cacheAgeSeconds / 60)} min old.`}
+          {data?.cacheAgeSeconds != null && ` Data is ${humanizeMinutes(Math.round(data.cacheAgeSeconds / 60))} old.`}
         </div>
       )}
 
       {/* Summary KPI Cards */}
       <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
         <StatCard label="Total Replications" value={totalCount} />
-        <StatCard label="Active" value={activeCount} valueClass="text-blue-400" />
-        <StatCard label="Completed" value={completedCount} valueClass="text-green-400" />
-        <StatCard label="Failed" value={failedCount} valueClass="text-red-400" />
+        <StatCard label="Active" value={activeCount} tone="info" />
+        <StatCard label="Completed" value={completedCount} tone="ok" />
+        <StatCard label="Failed" value={failedCount} tone={failedCount > 0 ? 'crit' : 'default'} />
         <StatCard label="Groups Scanned" value={groupsScanned} />
       </div>
 
       {/* Replication Table */}
       <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
         <p className="text-xs font-semibold text-cohesity-text mb-3">Replication Status</p>
-        
-        {totalCount === 0 ? (
+
+        {loading && !data ? (
+          <SkeletonTable rows={6} colWidths={['w-32', 'w-28', 'w-16', 'w-28', 'w-20', 'w-20', 'w-24', 'w-16']} />
+        ) : totalCount === 0 ? (
           <div className="text-center py-8 text-xs text-gray-400">
             {data?.scanning ? 'Scan in progress — data will appear shortly. Use the refresh button to check.' : 'No replication data found for the selected filters.'}
           </div>

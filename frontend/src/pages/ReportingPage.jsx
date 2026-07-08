@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
-  FileText, Printer, Download, Database, Server, Bell, ShieldCheck, RefreshCw,
+  FileText, Printer, Download, Database, Server, Bell, ShieldCheck,
 } from 'lucide-react';
 import client from '../api/client';
-import { PageHeader, Panel, Badge, StatCard, LoadingPanel } from '../components/ui/primitives';
+import { PageHeader, Panel, Badge, StatCard, LoadingPanel, LastUpdated, RefreshButton } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 
 function fmtBytes(b) {
@@ -95,10 +95,8 @@ export default function ReportingPage() {
         title="Executive Report"
         description={generatedAt ? `Estate summary generated ${generatedAt.toLocaleString()}` : 'Estate-wide summary across capacity, alerts, and data protection'}
       >
-        <button onClick={load} disabled={loading}
-          className="text-xs px-3 py-1.5 border border-cohesity-border rounded-lg text-ink-muted hover:border-brand/50 hover:text-brand transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50">
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Regenerate
-        </button>
+        <RefreshButton onClick={load} refreshing={loading} label="Regenerate" />
+        <LastUpdated date={generatedAt} prefix="Generated" />
         <button onClick={exportCsv} disabled={loading || clusters.length === 0}
           className="text-xs px-3 py-1.5 border border-cohesity-border rounded-lg text-ink-muted hover:border-brand/50 hover:text-brand transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50">
           <Download size={13} /> Export CSV
