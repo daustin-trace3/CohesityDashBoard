@@ -1,6 +1,7 @@
 const express = require('express');
 const { getAiSettings, getLicenseSettings, getPlatformSettings, setSetting, secretSource } = require('../services/settings');
 const { encrypt } = require('../services/encryption');
+const { listModels } = require('../services/llmProvider');
 
 const router = express.Router();
 
@@ -18,6 +19,20 @@ function credentialStatus() {
   for (const [name, c] of Object.entries(CREDENTIALS)) out[name] = secretSource(c.key, c.env);
   return out;
 }
+
+/** GET /api/settings/llm-models — chat models available from the active AI
+ *  provider, for the default-model picker. */
+router.get('/llm-models', async (req, res) => {
+  try {
+    res.json(await listModels());
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI is not configured — add a token first.' });
+    }
+    const status = err.response?.status;
+    res.status(502).json({ error: `Could not list models from the AI provider${status ? ` (HTTP ${status})` : ''}.` });
+  }
+});
 
 /** GET /api/settings/credentials — source of each secret, never the value. */
 router.get('/credentials', (req, res) => {
@@ -65,6 +80,13 @@ router.put('/', (req, res, next) => {
     }
     if (llmFlagUnprotected !== undefined) {
       setSetting('llm_flag_unprotected', llmFlagUnprotected ? '1' : '0');
+    }
+    if (req.body?.llmModel !== undefined) {
+      setSetting('llm_model', String(req.body.llmModel).trim().slice(0, 120));
+    }
+    if (req.body?.llmAnalysisTtlHours !== undefined) {
+      const n = Number(req.body.llmAnalysisTtlHours);
+      setSetting('llm_analysis_ttl_hours', n >= 1 && n <= 720 ? String(Math.round(n)) : '');
     }
     // Entitlements are decimal TB; the *_tib keys are legacy storage names.
     if (licenseEntitledDataProtectTb !== undefined) {

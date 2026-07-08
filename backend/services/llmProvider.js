@@ -9,25 +9,59 @@
 // (saved from the Settings → Credentials UI) take priority over .env, and a
 // token saved in the UI takes effect immediately without a restart.
 const axios = require('axios');
-const { getSecretSetting } = require('./settings');
+const { getSetting, getSecretSetting } = require('./settings');
 
 function resolveProvider() {
   const openaiToken = (
     getSecretSetting('openai_token', 'OPENAI_TOKEN') || process.env.OPENAI_API_KEY || ''
   ).trim();
   const useOpenAI = openaiToken.length > 0;
+  // Provider defaults: OpenAI (pay-per-use) → gpt-5.4. GitHub Models free
+  // tier → gpt-4o-mini, since the GPT-5 tier there has a strict daily cap.
+  const defaultModel = useOpenAI
+    ? (process.env.OPENAI_MODEL || 'gpt-5.4')
+    : (process.env.GITHUB_MODELS_MODEL || process.env.AI_MODEL || 'openai/gpt-4o-mini');
   return {
     provider: useOpenAI ? 'openai' : 'github-models',
     endpoint: useOpenAI
       ? (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1')
       : (process.env.GITHUB_MODELS_ENDPOINT || 'https://models.github.ai/inference'),
     apiToken: useOpenAI ? openaiToken : getSecretSetting('github_models_token', 'GITHUB_MODELS_TOKEN'),
-    // OpenAI (pay-per-use) → gpt-5.4. GitHub Models free tier → gpt-4o-mini,
-    // since the GPT-5 tier there has a strict daily cap.
-    model: useOpenAI
-      ? (process.env.OPENAI_MODEL || 'gpt-5.4')
-      : (process.env.GITHUB_MODELS_MODEL || process.env.AI_MODEL || 'openai/gpt-4o-mini'),
+    // The UI-selected model (Global Settings → AI) wins over env/provider defaults.
+    model: (getSetting('llm_model') || '').trim() || defaultModel,
+    defaultModel,
   };
+}
+
+// Model ids that can't do chat completions — filtered out of the picker.
+const NON_CHAT_RE = /(embed|whisper|tts|audio|realtime|transcribe|image|dall-e|moderation|search|similarity|edit-|instruct|davinci|babbage|curie|ada)/i;
+
+/**
+ * List chat-capable models from the active provider so the UI can offer a
+ * picker. OpenAI-compatible endpoints expose GET /models; GitHub Models
+ * publishes its catalog separately.
+ */
+async function listModels() {
+  const { provider, endpoint, apiToken, model, defaultModel } = resolveProvider();
+  if (!apiToken) {
+    const err = new Error('LLM is not configured.');
+    err.code = 'LLM_NOT_CONFIGURED';
+    throw err;
+  }
+  const url = provider === 'github-models'
+    ? 'https://models.github.ai/catalog/models'
+    : `${endpoint}/models`;
+  const resp = await axios.get(url, {
+    headers: { Authorization: `Bearer ${apiToken}`, Accept: 'application/json' },
+    timeout: 20000,
+  });
+  const raw = Array.isArray(resp.data) ? resp.data : (resp.data?.data || []);
+  const ids = raw
+    .map((m) => m.id || m.name)
+    .filter(Boolean)
+    .filter((id) => !NON_CHAT_RE.test(id))
+    .sort();
+  return { provider, models: [...new Set(ids)], current: model, default: defaultModel };
 }
 
 function isConfigured() {
@@ -76,4 +110,4 @@ async function chatCompletion(messages, { responseFormat, timeout = 90000 } = {}
   }
 }
 
-module.exports = { resolveProvider, isConfigured, chatCompletion };
+module.exports = { resolveProvider, isConfigured, chatCompletion, listModels };

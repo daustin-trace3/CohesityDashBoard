@@ -10,9 +10,9 @@ const logger = require('../utils/logger');
 const MODES = ['alerts', 'system'];
 
 // A cached analysis older than this is flagged stale (still shown, but the UI
-// prompts a re-run). Override with LLM_ANALYSIS_TTL_HOURS.
-const ANALYSIS_TTL_HOURS = Number(process.env.LLM_ANALYSIS_TTL_HOURS) || 24;
-const ANALYSIS_TTL_MS = ANALYSIS_TTL_HOURS * 60 * 60 * 1000;
+// prompts a re-run). Configurable at runtime (Global Settings → AI), with
+// LLM_ANALYSIS_TTL_HOURS as the env fallback — resolved per call.
+const { getAnalysisTtlHours } = require('./settings');
 
 // Env fallback for operator estate context; the UI setting (app_settings) takes
 // precedence when set. Resolved at analysis time via resolveEstateContext().
@@ -300,7 +300,7 @@ async function analyzeClusterWithLLM(clusterId, mode = 'system') {
       generated_at = excluded.generated_at
   `).run(Number(clusterId), mode, MODEL, analysis, generatedAt);
 
-  return { clusterId: Number(clusterId), mode, model: MODEL, analysis, generatedAt, stale: false, ttlHours: ANALYSIS_TTL_HOURS };
+  return { clusterId: Number(clusterId), mode, model: MODEL, analysis, generatedAt, stale: false, ttlHours: getAnalysisTtlHours() };
 }
 
 function getCachedClusterAnalysis(clusterId, mode = 'system') {
@@ -309,9 +309,10 @@ function getCachedClusterAnalysis(clusterId, mode = 'system') {
     'SELECT cluster_id AS clusterId, mode, model, analysis, generated_at AS generatedAt FROM llm_insights WHERE cluster_id = ? AND mode = ?'
   ).get(Number(clusterId), mode);
   if (!row) return null;
+  const ttlHours = getAnalysisTtlHours();
   const ageMs = Date.now() - new Date(row.generatedAt).getTime();
-  row.stale = ageMs > ANALYSIS_TTL_MS;
-  row.ttlHours = ANALYSIS_TTL_HOURS;
+  row.stale = ageMs > ttlHours * 60 * 60 * 1000;
+  row.ttlHours = ttlHours;
   return row;
 }
 

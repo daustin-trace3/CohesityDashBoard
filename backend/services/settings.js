@@ -4,6 +4,8 @@ const { decrypt } = require('./encryption');
 const DEFAULTS = {
   llm_estate_context: '',
   llm_flag_unprotected: '0',
+  llm_model: '',
+  llm_analysis_ttl_hours: '',
   license_entitled_dataprotect_tib: '0',
   license_entitled_replica_tib: '0',
   license_entitled_smartfiles_tib: '0',
@@ -58,7 +60,16 @@ function getAiSettings() {
   return {
     llmEstateContext: getSetting('llm_estate_context') || '',
     llmFlagUnprotected: getSetting('llm_flag_unprotected') === '1',
+    llmModel: getSetting('llm_model') || '',
+    llmAnalysisTtlHours: getAnalysisTtlHours(),
   };
+}
+
+/** Cached-analysis staleness window: DB setting → env → 24h. */
+function getAnalysisTtlHours() {
+  const stored = Number(getSetting('llm_analysis_ttl_hours'));
+  if (stored >= 1 && stored <= 720) return stored;
+  return Number(process.env.LLM_ANALYSIS_TTL_HOURS) || 24;
 }
 
 /** Per-license-type entitlement the operator enters manually. Values are
@@ -88,5 +99,5 @@ function getPlatformSettings() {
 
 module.exports = {
   getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
-  getAiSettings, getLicenseSettings, getPlatformSettings,
+  getAnalysisTtlHours, getAiSettings, getLicenseSettings, getPlatformSettings,
 };

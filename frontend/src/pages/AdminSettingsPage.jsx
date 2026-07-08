@@ -29,6 +29,10 @@ export default function AdminSettingsPage() {
   const [tab, setTab] = useState('ai');
   const [estateContext, setEstateContext] = useState('');
   const [flagUnprotected, setFlagUnprotected] = useState(false);
+  const [llmModel, setLlmModel] = useState('');
+  const [ttlHours, setTtlHours] = useState(24);
+  const [modelList, setModelList] = useState(null);   // { provider, models, default } | null
+  const [modelsError, setModelsError] = useState(null);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [pureEnabled, setPureEnabled] = useState(false);
   const [netappEnabled, setNetappEnabled] = useState(false);
@@ -56,12 +60,18 @@ export default function AdminSettingsPage() {
         const d = s.value.data;
         setEstateContext(d.llmEstateContext || '');
         setFlagUnprotected(!!d.llmFlagUnprotected);
+        setLlmModel(d.llmModel || '');
+        setTtlHours(d.llmAnalysisTtlHours || 24);
         setPureEnabled(!!d.platformPureEnabled);
         setNetappEnabled(!!d.platformNetappEnabled);
         setDnsServer(d.dnsServer || '');
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
     }).finally(() => setLoading(false));
+
+    client.get('/settings/llm-models')
+      .then(({ data }) => setModelList(data))
+      .catch((err) => setModelsError(err?.response?.data?.error || 'Could not load the model list from the AI provider.'));
   }, []);
 
   const save = async () => {
@@ -70,6 +80,8 @@ export default function AdminSettingsPage() {
       await client.put('/settings', {
         llmEstateContext: estateContext,
         llmFlagUnprotected: flagUnprotected,
+        llmModel,
+        llmAnalysisTtlHours: Number(ttlHours) || 24,
         platformPureEnabled: pureEnabled,
         platformNetappEnabled: netappEnabled,
         dnsServer,
@@ -251,6 +263,45 @@ export default function AdminSettingsPage() {
           <p className="text-gray-400 text-sm mt-4">Loading…</p>
         ) : (
           <div className="flex flex-col gap-5 mt-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="llm-model" className="block text-xs font-semibold text-ink mb-1">
+                  Default AI model {modelList?.provider && <span className="text-ink-faint font-normal">({modelList.provider})</span>}
+                </label>
+                <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">
+                  Model used for all AI analyses. Applies to the next run — no restart.
+                </p>
+                {modelList ? (
+                  <select
+                    id="llm-model"
+                    value={llmModel}
+                    onChange={e => setLlmModel(e.target.value)}
+                    className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
+                  >
+                    <option value="">Provider default ({modelList.default})</option>
+                    {modelList.models.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                ) : modelsError ? (
+                  <p className="text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5">{modelsError}</p>
+                ) : (
+                  <p className="text-[11px] text-ink-faint">Loading models…</p>
+                )}
+              </div>
+              <div>
+                <label htmlFor="ttl-hours" className="block text-xs font-semibold text-ink mb-1">Analysis freshness window (hours)</label>
+                <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">
+                  Cached AI analyses older than this are flagged stale and the UI prompts a re-run. 1–720 hours.
+                </p>
+                <input
+                  id="ttl-hours"
+                  type="number" min="1" max="720" step="1"
+                  value={ttlHours}
+                  onChange={e => setTtlHours(e.target.value)}
+                  className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum"
+                />
+              </div>
+            </div>
+
             <div>
               <label htmlFor="estate-context" className="block text-xs font-semibold text-ink mb-1">
                 Operator context — what's normal for your estate

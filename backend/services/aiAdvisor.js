@@ -27,8 +27,8 @@ function latestPerCluster() {
 function clusterNameMap() {
   return new Map(db.prepare('SELECT id, name FROM clusters').all().map(c => [c.id, c.name]));
 }
-const TTL_HOURS = Number(process.env.LLM_ANALYSIS_TTL_HOURS) || 24;
-const TTL_MS = TTL_HOURS * 60 * 60 * 1000;
+// Staleness window is runtime-configurable (Global Settings → AI).
+const { getAnalysisTtlHours } = require('./settings');
 
 function parseUtcMs(ts) {
   if (!ts) return 0;
@@ -493,7 +493,7 @@ async function generateReport(reportKey) {
     ON CONFLICT(report_key) DO UPDATE SET model = excluded.model, content = excluded.content, generated_at = excluded.generated_at
   `).run(reportKey, MODEL, content, generatedAt);
 
-  return { reportKey, model: MODEL, content, generatedAt, stale: false, ttlHours: TTL_HOURS };
+  return { reportKey, model: MODEL, content, generatedAt, stale: false, ttlHours: getAnalysisTtlHours() };
 }
 
 function getCachedReport(reportKey) {
@@ -501,8 +501,9 @@ function getCachedReport(reportKey) {
     'SELECT report_key AS reportKey, model, content, generated_at AS generatedAt FROM ai_reports WHERE report_key = ?'
   ).get(reportKey);
   if (!row) return null;
-  row.stale = (Date.now() - new Date(row.generatedAt).getTime()) > TTL_MS;
-  row.ttlHours = TTL_HOURS;
+  const ttlHours = getAnalysisTtlHours();
+  row.stale = (Date.now() - new Date(row.generatedAt).getTime()) > ttlHours * 60 * 60 * 1000;
+  row.ttlHours = ttlHours;
   return row;
 }
 
