@@ -73,7 +73,7 @@ router.post(
       res.json(result);
     } catch (err) {
       if (err.code === 'LLM_NOT_CONFIGURED') {
-        return res.status(503).json({ error: 'AI analysis is not configured. Set OPENAI_TOKEN (or GITHUB_MODELS_TOKEN) in the server environment.' });
+        return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
       }
       if (err.code === 'LLM_RATE_LIMITED') {
         if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));

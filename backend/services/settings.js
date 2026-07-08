@@ -1,4 +1,5 @@
 const db = require('../db/database');
+const { decrypt } = require('./encryption');
 
 const DEFAULTS = {
   llm_estate_context: '',
@@ -24,6 +25,32 @@ function setSetting(key, value) {
     VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(key, value == null ? '' : String(value));
+}
+
+/**
+ * Resolve a secret: encrypted app_settings value first, then the env var.
+ * Same precedence the AIQUM and Pure1 credentials already use.
+ */
+function getSecretSetting(key, envVar) {
+  const stored = getSetting(key);
+  if (stored) {
+    try {
+      const v = decrypt(stored);
+      if (v) return v;
+    } catch { /* bad/re-keyed ciphertext — fall through to env */ }
+  }
+  return (envVar && process.env[envVar]) || '';
+}
+
+/** Where a secret comes from, for UI status (never the value itself). */
+function secretSource(key, envVar) {
+  if (getSetting(key)) return 'settings';
+  if (envVar && process.env[envVar]) return 'env';
+  return 'none';
+}
+
+function getHeliosApiKey() {
+  return getSecretSetting('helios_api_key', 'HELIOS_API_KEY');
 }
 
 /** Settings the UI reads/writes, in a typed shape. */
@@ -59,4 +86,7 @@ function getPlatformSettings() {
   };
 }
 
-module.exports = { getSetting, setSetting, getAiSettings, getLicenseSettings, getPlatformSettings };
+module.exports = {
+  getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
+  getAiSettings, getLicenseSettings, getPlatformSettings,
+};

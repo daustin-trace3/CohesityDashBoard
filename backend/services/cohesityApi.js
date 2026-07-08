@@ -1,6 +1,7 @@
 const axios = require('axios');
 const https = require('https');
 const { decrypt } = require('./encryption');
+const { getHeliosApiKey } = require('./settings');
 
 // In-memory session cache for userpass auth: clusterId -> { token, tokenType, expiresAt }
 const sessionCache = new Map();
@@ -24,7 +25,7 @@ async function getAuthenticatedClient(cluster) {
   const credentials = JSON.parse(decrypt(cluster.encrypted_credentials));
 
   if (cluster.connection_type === 'helios') {
-    const apiKey = credentials.apiKey || process.env.HELIOS_API_KEY;
+    const apiKey = credentials.apiKey || getHeliosApiKey();
     const client = buildAxiosInstance('https://helios.cohesity.com', true); // Helios uses a valid CA cert
     client.defaults.headers.common['apiKey'] = apiKey;
     // cluster.vip stores the Helios numeric cluster ID for this cluster

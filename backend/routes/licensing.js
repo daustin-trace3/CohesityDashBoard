@@ -28,7 +28,7 @@ router.post('/refresh', async (req, res, next) => {
     const result = await refreshLicensing();
     if (!result.ok) {
       const error = result.reason === 'no_key'
-        ? 'Licensing data is unavailable — HELIOS_API_KEY is not configured.'
+        ? 'Licensing data is unavailable — the Helios API key is not configured (Settings → Credentials).'
         : 'Licensing refresh failed — Helios returned no data. Previous figures kept.';
       return res.status(503).json({ error });
     }

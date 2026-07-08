@@ -1,7 +1,46 @@
 const express = require('express');
-const { getAiSettings, getLicenseSettings, getPlatformSettings, setSetting } = require('../services/settings');
+const { getAiSettings, getLicenseSettings, getPlatformSettings, setSetting, secretSource } = require('../services/settings');
+const { encrypt } = require('../services/encryption');
 
 const router = express.Router();
+
+// Secrets managed on Settings → Credentials. Values are stored AES-256-GCM
+// encrypted in app_settings and are NEVER returned by any endpoint — the UI
+// only sees where each one comes from ('settings' | 'env' | 'none').
+const CREDENTIALS = {
+  heliosApiKey: { key: 'helios_api_key', env: 'HELIOS_API_KEY' },
+  openaiToken: { key: 'openai_token', env: 'OPENAI_TOKEN' },
+  githubModelsToken: { key: 'github_models_token', env: 'GITHUB_MODELS_TOKEN' },
+};
+
+function credentialStatus() {
+  const out = {};
+  for (const [name, c] of Object.entries(CREDENTIALS)) out[name] = secretSource(c.key, c.env);
+  return out;
+}
+
+/** GET /api/settings/credentials — source of each secret, never the value. */
+router.get('/credentials', (req, res) => {
+  res.json(credentialStatus());
+});
+
+/** PUT /api/settings/credentials — save (encrypt) or clear platform secrets.
+ *  Body: { heliosApiKey?, openaiToken?, githubModelsToken? } — a non-empty
+ *  string saves it encrypted; an empty string clears the stored value (the
+ *  .env fallback, if any, then applies again). Omitted fields are untouched. */
+router.put('/credentials', (req, res, next) => {
+  try {
+    const body = req.body || {};
+    for (const [name, c] of Object.entries(CREDENTIALS)) {
+      if (body[name] === undefined) continue;
+      const value = String(body[name]).trim();
+      setSetting(c.key, value ? encrypt(value) : '');
+    }
+    res.json(credentialStatus());
+  } catch (err) {
+    next(err);
+  }
+});
 
 /** GET /api/settings — current AI + licensing settings. */
 router.get('/', (req, res, next) => {

@@ -1,32 +1,30 @@
 import { useEffect, useState } from 'react';
-import { Sparkles, Save, BadgeCheck, Layers, KeyRound } from 'lucide-react';
+import { Save, BadgeCheck, Lock, Server } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 
 const TABS = [
-  { key: 'ai', label: 'AI Analysis', icon: Sparkles },
   { key: 'entitlement', label: 'Licensing', icon: BadgeCheck },
-  { key: 'platforms', label: 'Platforms', icon: Layers },
-  { key: 'license', label: 'Product License', icon: KeyRound },
+  { key: 'credentials', label: 'Credentials', icon: Lock },
 ];
 
+function SourceBadge({ source }) {
+  if (source === 'settings') return <Badge tone="ok">Stored encrypted</Badge>;
+  if (source === 'env') return <Badge tone="warn">From .env (plain text)</Badge>;
+  return <Badge tone="crit">Not set</Badge>;
+}
+
 export default function SettingsPage() {
-  const [tab, setTab] = useState('ai');
-  const [estateContext, setEstateContext] = useState('');
-  const [flagUnprotected, setFlagUnprotected] = useState(false);
-  const [aiEnabled, setAiEnabled] = useState(true);
+  const [tab, setTab] = useState('entitlement');
   const [dpTib, setDpTib] = useState('');
   const [replicaTib, setReplicaTib] = useState('');
   const [smartFilesTib, setSmartFilesTib] = useState('');
   const [licenseExpiry, setLicenseExpiry] = useState('');
   const [licenseEdition, setLicenseEdition] = useState('');
-  const [pureEnabled, setPureEnabled] = useState(false);
-  const [netappEnabled, setNetappEnabled] = useState(false);
-  const [dnsServer, setDnsServer] = useState('');
-  const [license, setLicense] = useState(null);
-  const [licenseKeyInput, setLicenseKeyInput] = useState('');
-  const [activating, setActivating] = useState(false);
+  const [credSources, setCredSources] = useState({});
+  const [heliosKeyInput, setHeliosKeyInput] = useState('');
+  const [savingCreds, setSavingCreds] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
@@ -34,25 +32,18 @@ export default function SettingsPage() {
   useEffect(() => {
     Promise.allSettled([
       client.get('/settings'),
-      client.get('/insights/ai/config'),
-      client.get('/license/status'),
-    ]).then(([s, c, l]) => {
-      if (l.status === 'fulfilled') setLicense(l.value.data);
+      client.get('/settings/credentials'),
+    ]).then(([s, cr]) => {
+      if (cr.status === 'fulfilled') setCredSources(cr.value.data);
       if (s.status === 'fulfilled') {
         const d = s.value.data;
-        setEstateContext(d.llmEstateContext || '');
-        setFlagUnprotected(!!d.llmFlagUnprotected);
         const e = d.entitled || {};
         setDpTib(e.dataProtect ? String(e.dataProtect) : '');
         setReplicaTib(e.replica ? String(e.replica) : '');
         setSmartFilesTib(e.smartFiles ? String(e.smartFiles) : '');
         setLicenseExpiry(d.licenseExpiry || '');
         setLicenseEdition(d.licenseEdition || '');
-        setPureEnabled(!!d.platformPureEnabled);
-        setNetappEnabled(!!d.platformNetappEnabled);
-        setDnsServer(d.dnsServer || '');
       }
-      if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -60,20 +51,13 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       await client.put('/settings', {
-        llmEstateContext: estateContext,
-        llmFlagUnprotected: flagUnprotected,
         licenseEntitledDataProtectTb: Number(dpTib) || 0,
         licenseEntitledReplicaTb: Number(replicaTib) || 0,
         licenseEntitledSmartFilesTb: Number(smartFilesTib) || 0,
         licenseExpiry,
         licenseEdition,
-        platformPureEnabled: pureEnabled,
-        platformNetappEnabled: netappEnabled,
-        dnsServer,
       });
-      // Tell the layout to re-read platform visibility without a full reload.
-      window.dispatchEvent(new Event('platforms-changed'));
-      toast({ type: 'success', title: 'Settings saved', message: 'AI context, licensing, and platform settings updated.' });
+      toast({ type: 'success', title: 'Settings saved', message: 'Cohesity licensing entitlement updated.' });
     } catch {
       toast({ type: 'error', title: 'Save failed', message: 'Could not save settings. Try again.' });
     } finally {
@@ -81,31 +65,45 @@ export default function SettingsPage() {
     }
   };
 
-  const activateLicense = async () => {
-    const key = licenseKeyInput.trim();
-    if (!key) return;
-    setActivating(true);
+  const saveHeliosKey = async () => {
+    const v = heliosKeyInput.trim();
+    if (!v) return;
+    setSavingCreds(true);
     try {
-      const { data } = await client.post('/license/activate', { key });
-      setLicense(data);
-      setLicenseKeyInput('');
-      toast({
-        type: 'success',
-        title: 'License updated',
-        message: data.effectiveExpiry ? `Valid through ${data.effectiveExpiry}.` : 'License applied.',
-      });
-    } catch (err) {
-      toast({ type: 'error', title: 'Could not apply license', message: err?.response?.data?.error || 'Invalid or expired key.' });
+      const { data } = await client.put('/settings/credentials', { heliosApiKey: v });
+      setCredSources(data);
+      setHeliosKeyInput('');
+      toast({ type: 'success', title: 'Helios API key saved', message: 'Stored encrypted. Applied immediately — no restart needed.' });
+    } catch {
+      toast({ type: 'error', title: 'Save failed', message: 'Could not save the key. Try again.' });
     } finally {
-      setActivating(false);
+      setSavingCreds(false);
+    }
+  };
+
+  const clearHeliosKey = async () => {
+    setSavingCreds(true);
+    try {
+      const { data } = await client.put('/settings/credentials', { heliosApiKey: '' });
+      setCredSources(data);
+      toast({ type: 'success', title: 'Stored key cleared', message: 'The .env value (if any) applies again.' });
+    } catch {
+      toast({ type: 'error', title: 'Clear failed', message: 'Could not clear the key. Try again.' });
+    } finally {
+      setSavingCreds(false);
     }
   };
 
   return (
     <div className="flex flex-col gap-4 max-w-3xl">
-      <div>
-        <h1 className="text-lg font-bold text-ink">Settings</h1>
-        <p className="text-xs text-ink-muted mt-0.5">Global configuration for the dashboard. Applies across the whole estate.</p>
+      <div className="flex items-center gap-2.5">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
+          <Server size={16} className="text-brand" />
+        </div>
+        <div>
+          <h1 className="text-lg font-bold text-ink">Cohesity Settings</h1>
+          <p className="text-xs text-ink-muted mt-0.5">Cohesity-specific configuration. Global settings (AI keys, platforms, product license) are under the gear icon in the top bar.</p>
+        </div>
       </div>
 
       {/* Section tabs */}
@@ -124,160 +122,19 @@ export default function SettingsPage() {
         })}
       </div>
 
-      {/* AI Analysis section */}
-      {tab === 'ai' && (
+      {/* Credentials — Helios API key (write-only) */}
+      {tab === 'credentials' && (
       <div className="panel p-4">
         <div className="flex items-center gap-2 mb-1">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-            <Sparkles size={14} className="text-brand" />
+            <Lock size={14} className="text-brand" />
           </div>
           <div>
-            <p className="text-sm font-bold text-ink">AI Analysis</p>
+            <p className="text-sm font-bold text-ink">Cohesity Helios API key</p>
             <p className="text-[11px] text-ink-muted">
-              Controls the on-demand AI analyses — both the cluster-card <span className="text-ink">System Analysis</span> and the
-              Intelligent Insights <span className="text-ink">Ask AI</span> (alerts).
-            </p>
-          </div>
-        </div>
-
-        {!aiEnabled && (
-          <p className="mt-3 text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5">
-            AI analysis is not configured on the server (no <code className="text-brand">GITHUB_MODELS_TOKEN</code>). These settings
-            are saved but have no effect until a token is set.
-          </p>
-        )}
-
-        {loading ? (
-          <p className="text-gray-400 text-sm mt-4">Loading…</p>
-        ) : (
-          <div className="flex flex-col gap-5 mt-4">
-            <div>
-              <label htmlFor="estate-context" className="block text-xs font-semibold text-ink mb-1">
-                Operator context — what's normal for your estate
-              </label>
-              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
-                Injected into <span className="text-ink">every</span> AI analysis as authoritative context, so the model doesn't
-                flag normal patterns. Applies immediately to the next run — no restart. Example: explain that objects unprotected
-                on one cluster are protected on another, or describe what tagged target/archive clusters do.
-              </p>
-              <textarea
-                id="estate-context"
-                value={estateContext}
-                onChange={e => setEstateContext(e.target.value)}
-                rows={6}
-                maxLength={4000}
-                placeholder='e.g. Objects shown as unprotected on a cluster are typically protected on another Cohesity cluster — this is normal and not a risk. Clusters tagged "target" or "archive" are replication/archive destinations where thousands of unprotected sources are expected.'
-                className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none resize-y"
-              />
-              <p className="text-[10px] text-ink-faint mt-1 text-right tnum">{estateContext.length}/4000</p>
-            </div>
-
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={flagUnprotected}
-                onChange={e => setFlagUnprotected(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer"
-              />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">Include protection coverage in System Analysis</span><br />
-                Off by default. When off, the System Analysis ignores unprotected objects entirely and focuses on what the cluster
-                is actively doing (capacity, backup jobs, replication). Turn on only if you want the AI to assess coverage gaps.
-              </span>
-            </label>
-
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                onClick={save}
-                disabled={saving}
-                className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
-              >
-                <Save size={13} /> {saving ? 'Saving…' : 'Save settings'}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-      )}
-
-      {/* Product license section — status only, key is never displayed */}
-      {tab === 'license' && !license && (
-        <div className="panel p-4">
-          <p className="text-xs text-ink-faint">License status is unavailable right now.</p>
-        </div>
-      )}
-      {tab === 'license' && license && (
-        <div className="panel p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-              <KeyRound size={14} className="text-brand" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-ink">Product License</p>
-              <p className="text-[11px] text-ink-muted">This installation's license status. Renewals apply automatically once payment is processed.</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-            <Badge tone={license.state === 'valid' ? 'ok' : license.state === 'grace' ? 'warn' : 'crit'}>
-              {license.state === 'valid' ? 'Valid' : license.state === 'grace' ? 'Expired — grace period' : 'Not licensed'}
-            </Badge>
-            {license.customer && (
-              <span className="text-xs text-ink-muted">Licensed to <span className="text-ink font-semibold">{license.customer}</span></span>
-            )}
-            {license.effectiveExpiry && (
-              <span className="text-xs text-ink-muted">Expires <span className="text-ink font-semibold tnum">{license.effectiveExpiry}</span>
-                {license.state === 'valid' && license.daysLeft != null && <span className="text-ink-faint"> · {license.daysLeft} days left</span>}
-                {license.state === 'grace' && license.graceDaysLeft != null && <span className="text-status-crit font-semibold"> · locks in {license.graceDaysLeft} day{license.graceDaysLeft === 1 ? '' : 's'}</span>}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Update license key — paste a new CDBL key (e.g. a multi-year renewal) */}
-      {tab === 'license' && (
-        <div className="panel p-4 mt-4">
-          <div className="flex items-center gap-2 mb-1">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-              <KeyRound size={14} className="text-brand" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-ink">Update license key</p>
-              <p className="text-[11px] text-ink-muted">Paste a new product license key (starts with <code>CDBL-</code>) to replace the current one — e.g. a multi-year renewal.</p>
-            </div>
-          </div>
-          <textarea
-            value={licenseKeyInput}
-            onChange={(e) => setLicenseKeyInput(e.target.value)}
-            rows={3}
-            placeholder="CDBL-…"
-            spellCheck={false}
-            className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-[11px] font-mono text-ink focus:border-brand/60 outline-none mt-3"
-          />
-          <div className="flex items-center gap-2 mt-3">
-            <button
-              onClick={activateLicense}
-              disabled={activating || !licenseKeyInput.trim()}
-              className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              <KeyRound size={13} /> {activating ? 'Applying…' : 'Apply license key'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Platforms section */}
-      {tab === 'platforms' && (
-      <div className="panel p-4">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-            <Layers size={14} className="text-brand" />
-          </div>
-          <div>
-            <p className="text-sm font-bold text-ink">Platforms</p>
-            <p className="text-[11px] text-ink-muted">
-              Vendor tabs shown at the top of the dashboard. Cohesity is always on; enable the others once their
-              integrations are configured. With only Cohesity enabled, the platform bar is hidden.
+              Used for Helios cluster discovery, licensing reports, and any Helios-connected cluster without its own key.
+              Stored <span className="text-ink">AES-256-GCM encrypted</span> in the local database, never displayed again,
+              and applied immediately. A stored key overrides <code>.env</code>.
             </p>
           </div>
         </div>
@@ -286,40 +143,34 @@ export default function SettingsPage() {
           <p className="text-gray-400 text-sm mt-4">Loading…</p>
         ) : (
           <div className="flex flex-col gap-3 mt-4">
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={pureEnabled} onChange={e => setPureEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">Pure Storage</span><br />
-                Show the Pure Storage platform tab. Leave off until the Pure integration is configured.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={netappEnabled} onChange={e => setNetappEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">NetApp</span><br />
-                Show the NetApp platform tab. Leave off until the NetApp integration is configured.
-              </span>
-            </label>
-
-            <div className="pt-2 border-t border-cohesity-border/60">
-              <label htmlFor="dns-server" className="block text-xs font-semibold text-ink mb-1 mt-2">DNS resolver <span className="text-ink-faint font-normal">(optional)</span></label>
-              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
-                DNS server IP (or hostname) used to reverse-resolve IP addresses to names across the dashboard — e.g. NFS client IPs. Leave blank to disable hostname lookups.
-              </p>
-              <input id="dns-server" type="text" value={dnsServer} onChange={e => setDnsServer(e.target.value)}
-                placeholder="e.g. 172.17.0.10"
-                className="w-full max-w-xs bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none tnum" />
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <span className="text-xs font-semibold text-ink">Status</span>
+              <SourceBadge source={credSources.heliosApiKey || 'none'} />
+              {credSources.heliosApiKey === 'settings' && (
+                <button
+                  onClick={clearHeliosKey}
+                  disabled={savingCreds}
+                  className="text-[10px] text-ink-faint hover:text-status-crit underline underline-offset-2 transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  Clear stored value
+                </button>
+              )}
             </div>
-
+            <input
+              type="password"
+              autoComplete="off"
+              value={heliosKeyInput}
+              onChange={e => setHeliosKeyInput(e.target.value)}
+              placeholder={credSources.heliosApiKey === 'settings' ? '•••••••• (stored — enter a new value to replace)' : 'Paste Helios API key to store encrypted'}
+              className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs font-mono text-ink focus:border-brand/60 outline-none"
+            />
             <div className="flex items-center gap-2 pt-1">
               <button
-                onClick={save}
-                disabled={saving}
+                onClick={saveHeliosKey}
+                disabled={savingCreds || !heliosKeyInput.trim()}
                 className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
               >
-                <Save size={13} /> {saving ? 'Saving…' : 'Save settings'}
+                <Save size={13} /> {savingCreds ? 'Saving…' : 'Save key'}
               </button>
             </div>
           </div>
@@ -327,7 +178,7 @@ export default function SettingsPage() {
       </div>
       )}
 
-      {/* Licensing section */}
+      {/* Licensing entitlement */}
       {tab === 'entitlement' && (
       <div className="panel p-4">
         <div className="flex items-center gap-2 mb-1">

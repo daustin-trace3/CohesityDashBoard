@@ -24,16 +24,11 @@ const logger = require('../utils/logger');
  */
 
 // Shared provider config so alert reviews use the same provider/model as the
-// cluster analysis (OpenAI gpt-5.4 when OPENAI_TOKEN is set).
-const { ENDPOINT, API_TOKEN, MODEL, isConfigured } = require('./llmProvider');
+// cluster analysis (OpenAI gpt-5.4 when an OpenAI token is set). Resolved
+// lazily per request so credentials saved in Settings apply without restart.
+const { resolveProvider, isConfigured } = require('./llmProvider');
 const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
-
-const httpClient = axios.create({
-  baseURL: ENDPOINT,
-  timeout: 30000,
-  headers: { 'Content-Type': 'application/json' },
-});
 
 function isAiEnabled() {
   return isConfigured();
@@ -43,13 +38,13 @@ function isAiEnabled() {
  * Stable hash of the alert fields that influence the review. If any change, the
  * cached review is regenerated; otherwise it is reused.
  */
-function hashAlert(alert) {
+function hashAlert(alert, model) {
   const payload = [
     alert.severity,
     alert.alert_type,
     alert.description,
     alert.resolved,
-    MODEL,
+    model,
   ].join('|');
   return crypto.createHash('sha256').update(payload).digest('hex');
 }
@@ -152,7 +147,8 @@ async function reviewAlert(alertId, { force = false } = {}) {
     .get(alertId);
   if (!alert) return null;
 
-  const hash = hashAlert(alert);
+  const { endpoint: ENDPOINT, apiToken: API_TOKEN, model: MODEL } = resolveProvider();
+  const hash = hashAlert(alert, MODEL);
 
   if (!force) {
     const cached = db
@@ -198,8 +194,8 @@ async function reviewAlert(alertId, { force = false } = {}) {
 
   let content;
   try {
-    const { data } = await httpClient.post(
-      '/chat/completions',
+    const { data } = await axios.post(
+      `${ENDPOINT}/chat/completions`,
       {
         model: MODEL,
         messages,
@@ -208,7 +204,10 @@ async function reviewAlert(alertId, { force = false } = {}) {
         // both keeps this payload valid across providers/models.
         response_format: { type: 'json_object' },
       },
-      { headers: { Authorization: `Bearer ${API_TOKEN}` } }
+      {
+        headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
+        timeout: 30000,
+      }
     );
     content = data?.choices?.[0]?.message?.content;
   } catch (apiErr) {

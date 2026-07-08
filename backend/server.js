@@ -144,8 +144,8 @@ try {
 if (!process.env.DASHBOARD_API_KEY) {
   logger.error('[Fatal] DASHBOARD_API_KEY is not set — all API requests will fail.');
 }
-if (!process.env.HELIOS_API_KEY) {
-  logger.warn('HELIOS_API_KEY is not set — Helios discovery will be unavailable.');
+if (!require('./services/settings').getHeliosApiKey()) {
+  logger.warn('Helios API key is not configured (Settings → Credentials or HELIOS_API_KEY) — Helios discovery will be unavailable.');
 }
 if (getLicenseStatus().state === 'missing') {
   logger.error('[Fatal] LICENSE_KEY is not set — the dashboard is locked until a license is configured.');

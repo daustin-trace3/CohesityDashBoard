@@ -1,5 +1,6 @@
 const express = require('express');
 const { heliosAllClusters } = require('../services/helios');
+const { getHeliosApiKey } = require('../services/settings');
 
 const router = express.Router();
 
@@ -10,9 +11,9 @@ const router = express.Router();
  */
 router.get('/clusters', async (req, res, next) => {
   try {
-    const apiKey = process.env.HELIOS_API_KEY;
+    const apiKey = getHeliosApiKey();
     if (!apiKey || apiKey === 'your_helios_api_key_here' || apiKey.length < 20) {
-      return res.status(400).json({ error: 'HELIOS_API_KEY is not configured in .env' });
+      return res.status(400).json({ error: 'Helios API key is not configured (Settings → Credentials, or HELIOS_API_KEY in .env).' });
     }
     const clusters = await heliosAllClusters(apiKey);
     // Return only safe fields — no credentials

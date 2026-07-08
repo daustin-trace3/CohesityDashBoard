@@ -2,7 +2,7 @@ const axios = require('axios');
 const db = require('../db/database');
 const { FAILURE_STATUSES, fmtBytes } = require('./insights');
 const { getSetting } = require('./settings');
-const { PROVIDER, ENDPOINT, API_TOKEN, MODEL } = require('./llmProvider');
+const { resolveProvider, isConfigured: providerConfigured } = require('./llmProvider');
 const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
 const logger = require('../utils/logger');
@@ -27,7 +27,7 @@ function flagUnprotectedEnabled() {
 }
 
 function isConfigured() {
-  return Boolean(API_TOKEN);
+  return providerConfigured();
 }
 
 // ── Context builders (all read from the local SQLite cache, no live calls) ──
@@ -194,10 +194,11 @@ async function analyzeClusterWithLLM(clusterId, mode = 'system') {
   if (!MODES.includes(mode)) mode = 'system';
 
   if (!isConfigured()) {
-    const err = new Error('GITHUB_MODELS_TOKEN is not configured.');
+    const err = new Error('No AI provider token is configured (Settings → Credentials, or OPENAI_TOKEN / GITHUB_MODELS_TOKEN in .env).');
     err.code = 'LLM_NOT_CONFIGURED';
     throw err;
   }
+  const { provider: PROVIDER, endpoint: ENDPOINT, apiToken: API_TOKEN, model: MODEL } = resolveProvider();
 
   const cluster = clusterRow(clusterId);
   if (!cluster) {

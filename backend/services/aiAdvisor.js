@@ -1,7 +1,7 @@
 const db = require('../db/database');
 const { fmtBytes, FAILURE_STATUSES, computeInsights } = require('./insights');
 const { getSetting } = require('./settings');
-const { chatCompletion, MODEL, isConfigured } = require('./llmProvider');
+const { chatCompletion, resolveProvider, isConfigured } = require('./llmProvider');
 const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
 const logger = require('../utils/logger');
@@ -449,6 +449,7 @@ async function generateReport(reportKey) {
   const spec = PROMPTS[reportKey];
   if (!spec) { const e = new Error('Unknown report.'); e.code = 'BAD_REPORT'; throw e; }
   if (!isConfigured()) { const e = new Error('LLM not configured.'); e.code = 'LLM_NOT_CONFIGURED'; throw e; }
+  const { model: MODEL } = resolveProvider();
 
   // Anonymize all identifiable data (names, hosts, IPs) before it leaves the
   // box; tokens in the response are mapped back to real names below.

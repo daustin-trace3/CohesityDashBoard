@@ -421,6 +421,20 @@ export default function Layout() {
             alerts={isPlatform ? platformAlertList.slice(0, 10) : alerts.slice(0, 10)}
             viewAllRoute={isPlatform ? `/${platformKey}/alerts` : '/alerts'}
           />
+
+          {/* Global settings — estate-wide admin (AI keys, platforms, product license) */}
+          <button
+            onClick={() => navigate('/admin')}
+            title="Global settings"
+            aria-label="Global settings"
+            className={`flex items-center justify-center h-8 w-8 rounded-lg border transition-colors cursor-pointer ${
+              pathname.startsWith('/admin')
+                ? 'bg-brand/10 border-brand/30 text-brand'
+                : 'border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40'
+            }`}
+          >
+            <Settings size={15} />
+          </button>
         </header>
 
         {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}

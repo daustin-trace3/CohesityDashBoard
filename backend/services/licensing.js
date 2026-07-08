@@ -294,9 +294,9 @@ const replaceTypeUsage = db.transaction((buckets) => {
  * Refresh both the per-system snapshot and the per-license-type split from Helios.
  */
 async function refreshLicensing() {
-  const apiKey = process.env.HELIOS_API_KEY;
+  const apiKey = require('./settings').getHeliosApiKey();
   if (!apiKey || apiKey.length < 20) {
-    logger.warn('[Licensing] HELIOS_API_KEY not configured — skipping licensing refresh.');
+    logger.warn('[Licensing] Helios API key not configured — skipping licensing refresh.');
     return { ok: false, reason: 'no_key' };
   }
   const client = buildHeliosClient(apiKey);
