@@ -50,6 +50,7 @@ const PERF_METRICS = [
 let tokenCache = null; // { token, expiresAt }
 let overviewCache = null; // { data, fetchedAt }
 let alertsCache = null;   // { data, fetchedAt }
+let enrichmentCache = null; // { data, fetchedAt }
 
 function base64url(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
@@ -110,6 +111,7 @@ function invalidate() {
   tokenCache = null;
   overviewCache = null;
   alertsCache = null;
+  enrichmentCache = null;
 }
 
 /** Build the RS256-signed JWT assertion (no kid; iss/iat/exp only). */
@@ -182,14 +184,14 @@ const quoteList = (arr) => arr.map((v) => `'${v}'`).join(',');
 /** All arrays in the Pure1 fleet. */
 async function fetchArrays() {
   const out = [];
-  let token = null;
-  do {
-    const params = { limit: 1000 };
-    if (token) params.continuation_token = token;
-    const data = await apiGet('/arrays', params);
-    out.push(...(data.items || []));
-    token = data.continuation_token || null;
-  } while (token);
+  let offset = 0;
+  for (;;) {
+    const data = await apiGet('/arrays', { limit: 1000, offset });
+    const items = data.items || [];
+    out.push(...items);
+    if (items.length < 1000) break;
+    offset += 1000;
+  }
   return out;
 }
 
@@ -277,13 +279,96 @@ async function fetchOpenAlerts(limit = 200) {
   }));
 }
 
+/** User-defined array tags from Pure1, grouped by array id. */
+async function fetchTags() {
+  const items = [];
+  let offset = 0;
+  for (;;) {
+    const data = await apiGet('/arrays/tags', { limit: 1000, offset });
+    const page = data.items || [];
+    items.push(...page);
+    if (page.length < 1000) break;
+    offset += 1000;
+  }
+  const map = new Map();
+  for (const t of items) {
+    const id = t.resource && t.resource.id;
+    if (!id) continue;
+    if (!map.has(id)) map.set(id, []);
+    map.get(id).push({ key: t.key, value: t.value, namespace: t.namespace });
+  }
+  return map;
+}
+
+// Statuses that mean "fine" (empty slots / not-installed are not faults).
+const HEALTHY_STATUSES = new Set(['ok', 'healthy', 'not_installed', 'unused', 'unknown', 'normal', '']);
+
+/**
+ * Fleet-wide health rollup + provisioned totals + serials.
+ * One paginated pass each over hardware, drives and volumes, grouped by array.
+ * Returns { [arrayId]: { health, unhealthy, provisioned, chassisSerial, controllerSerials } }.
+ */
+async function fetchEnrichment() {
+  const [hardware, drives, volumes] = await Promise.all([
+    fetchAllForArray('/hardware', null),
+    fetchAllForArray('/drives', null),
+    fetchAllForArray('/volumes', null),
+  ]);
+  const arrId = (item) => item.arrays && item.arrays[0] && item.arrays[0].id;
+  const byArray = new Map();
+  const ensure = (id) => { if (!byArray.has(id)) byArray.set(id, { statuses: [], provisioned: 0, chassisSerial: null, controllers: [] }); return byArray.get(id); };
+  for (const h of hardware) {
+    const id = arrId(h); if (!id) continue;
+    const e = ensure(id);
+    e.statuses.push(h.status);
+    const type = String(h.type || '').toLowerCase();
+    if (h.serial) {
+      if (type === 'chassis' && !e.chassisSerial) e.chassisSerial = h.serial;
+      else if (type === 'controller') e.controllers.push({ name: h.name, serial: h.serial });
+    }
+  }
+  for (const d of drives) { const id = arrId(d); if (id) ensure(id).statuses.push(d.status); }
+  for (const v of volumes) { if (v.destroyed || v.eradicated) continue; const id = arrId(v); if (id) ensure(id).provisioned += (v.provisioned || 0); }
+
+  const out = {};
+  for (const [id, info] of byArray) {
+    let health = 'ok';
+    let unhealthy = 0;
+    for (const s of info.statuses) {
+      const v = String(s || '').toLowerCase();
+      if (HEALTHY_STATUSES.has(v)) continue;
+      unhealthy += 1;
+      if (['critical', 'failed', 'unhealthy', 'fault', 'error'].includes(v)) health = 'crit';
+      else if (health !== 'crit') health = 'warn';
+    }
+    const controllerSerials = info.controllers
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+      .map((c) => c.serial);
+    out[id] = { health, unhealthy, provisioned: info.provisioned, chassisSerial: info.chassisSerial, controllerSerials };
+  }
+  return out;
+}
+
+/** Cached fleet enrichment (health + provisioned). */
+async function getEnrichment({ force = false } = {}) {
+  if (!force && enrichmentCache && (Date.now() - enrichmentCache.fetchedAt) < cacheTtlMs()) {
+    return enrichmentCache.data;
+  }
+  const data = await fetchEnrichment();
+  enrichmentCache = { data, fetchedAt: Date.now() };
+  return data;
+}
+
 /** Merged fleet overview (arrays + latest capacity), cached per settings TTL. */
 async function getOverview({ force = false } = {}) {
   if (!force && overviewCache && (Date.now() - overviewCache.fetchedAt) < cacheTtlMs()) {
     return overviewCache.data;
   }
   const arrays = await fetchArrays();
-  const capacity = await fetchLatestCapacity(arrays.map((a) => a.id));
+  const [capacity, tagMap] = await Promise.all([
+    fetchLatestCapacity(arrays.map((a) => a.id)),
+    fetchTags().catch(() => new Map()),
+  ]);
   const rows = arrays.map((a) => {
     const cap = capacity.get(a.id) || {};
     const total = cap.total || 0;
@@ -299,10 +384,12 @@ async function getOverview({ force = false } = {}) {
       used,
       pctUsed: total > 0 ? (used / total) * 100 : null,
       dataReduction: cap.dataReduction || null,
+      effectiveUsed: cap.dataReduction ? used * cap.dataReduction : null,
       volumeSpace: cap.volumeSpace || 0,
       snapshotSpace: cap.snapshotSpace || 0,
       sharedSpace: cap.sharedSpace || 0,
       capturedAt: cap.capturedAt || null,
+      tags: tagMap.get(a.id) || [],
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
   overviewCache = { data: rows, fetchedAt: Date.now() };
@@ -401,18 +488,19 @@ async function testConnection() {
 
 // ── Per-array resources ──────────────────────────────────────────────────────
 
-/** Page through a list endpoint filtered to one array. */
+/** Page through a list endpoint (optionally filtered to one array). */
 async function fetchAllForArray(pathStr, arrayId, extraParams = {}) {
   const out = [];
-  let token = null;
-  do {
-    const params = { limit: 1000, ...extraParams };
+  let offset = 0;
+  for (;;) {
+    const params = { limit: 1000, offset, ...extraParams };
     if (arrayId) params.filter = `arrays[any].id='${arrayId}'`;
-    if (token) params.continuation_token = token;
     const data = await apiGet(pathStr, params);
-    out.push(...(data.items || []));
-    token = data.continuation_token || null;
-  } while (token);
+    const items = data.items || [];
+    out.push(...items);
+    if (items.length < 1000) break;
+    offset += 1000;
+  }
   return out;
 }
 
@@ -556,4 +644,5 @@ module.exports = {
   testConnection,
   invalidate,
   getDisplayPrefs,
+  getEnrichment,
 };

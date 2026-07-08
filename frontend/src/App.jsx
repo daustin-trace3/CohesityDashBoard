@@ -13,6 +13,7 @@ import PureReplicationPage from './pages/pure/PureReplicationPage';
 import PureHardwarePage from './pages/pure/PureHardwarePage';
 import PureConnectivityPage from './pages/pure/PureConnectivityPage';
 import PureSettingsPage from './pages/pure/PureSettingsPage';
+import PureEstatePage from './pages/pure/PureEstatePage';
 import NetAppOverviewPage from './pages/netapp/NetAppOverviewPage';
 import NetAppCapacityPage from './pages/netapp/NetAppCapacityPage';
 import NetAppVolumesPage from './pages/netapp/NetAppVolumesPage';
@@ -64,6 +65,7 @@ export default function App() {
                 <Route path="hardware"        element={withBoundary(<HardwarePage />)} />
                 <Route path="clusters"        element={withBoundary(<ClusterManagement />)} />
                 <Route path="pure"            element={withBoundary(<Pure1FleetPage />)} />
+                <Route path="pure/estate"     element={withBoundary(<PureEstatePage />)} />
                 <Route path="pure/fleet"      element={<Navigate to="/pure" replace />} />
                 <Route path="pure/capacity"   element={withBoundary(<PureCapacityPage />)} />
                 <Route path="pure/volumes"    element={withBoundary(<PureVolumesPage />)} />

@@ -60,6 +60,15 @@ router.get('/alerts', cacheControl(120), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Fleet health rollup + provisioned totals (health dots, over-subscription).
+router.get('/enrichment', cacheControl(120), async (req, res, next) => {
+  try {
+    if (!pure1Api.isConfigured()) return res.json({});
+    const force = req.query.refresh === '1';
+    res.json(await pure1Api.getEnrichment({ force }));
+  } catch (err) { next(err); }
+});
+
 // ── Per-array drill-downs (arrayId is the Pure1 array UUID) ──────────────────
 
 function requireArrayId(req, res) {

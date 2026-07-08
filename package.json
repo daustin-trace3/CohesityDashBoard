@@ -2,6 +2,10 @@
   "name": "cohesity-dashboard",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=18",
+    "npm": ">=9"
+  },
   "scripts": {
     "dev": "concurrently \"npm start --prefix backend\" \"npm run dev --prefix frontend\"",
     "build": "npm run build --prefix frontend",

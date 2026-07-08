@@ -1,0 +1,13 @@
+# Python dependencies for pure_token_factory.py
+# (Pure Storage's Pure1 REST API access-token generator).
+#
+# NOTE: The CohesityDashboard application itself runs on Node.js, not Python —
+# see the deployment notes below. This file only covers the optional standalone
+# Pure1 token helper script.
+#
+# Install with:  pip3 install -r requirements.txt
+
+paramiko>=2.7,<4        # RSA private-key loading/parsing
+requests>=2.25          # HTTP calls to the Pure1 token endpoint
+PyJWT>=2.0,<3           # builds/signs the RS256 JWT assertion
+cryptography>=3.4       # required by paramiko/PyJWT for RSA signing
