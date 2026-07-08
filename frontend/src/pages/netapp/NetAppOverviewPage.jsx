@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Gauge, RefreshCw, Database, Activity, Timer, AlertTriangle, TrendingUp, Layers } from 'lucide-react';
+import { Gauge, Database, Activity, Timer, AlertTriangle, TrendingUp, Layers } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import TrendChart from '../../components/TrendChart';
 import { BRAND, fmtBytes, fmtNum, fmtLatency, fmtRatio } from './helpers';
 
@@ -46,6 +46,7 @@ export default function NetAppOverviewPage() {
   const [days, setDays] = useState(30);
   const [history, setHistory] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const loadOverview = useCallback(() => {
     return client.get('/netapp/overview')
@@ -71,6 +72,7 @@ export default function NetAppOverviewPage() {
         const h = await client.get(`/netapp/arrays/${sel}/metrics/history?days=${days}&${bust}`);
         setHistory(h.data);
       }
+      setLastRefreshed(new Date());
       toast({ type: 'success', title: 'Data refreshed', message: 'Pulled fresh telemetry from all clusters.' });
     } catch {
       toast({ type: 'error', title: 'Refresh failed', message: 'Could not pull fresh data from the cluster(s).' });
@@ -144,9 +146,8 @@ export default function NetAppOverviewPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Gauge} title="NetApp Overview" description="Fleet capacity, efficiency, performance and forecasts across all ONTAP clusters">
-        <button onClick={hardRefresh} disabled={refreshing} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-          <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={hardRefresh} refreshing={refreshing} />
       </PageHeader>
 
       {arrays == null ? (

@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
-import { ArrowLeftRight, RefreshCw, ShieldCheck, HeartPulse } from 'lucide-react';
+import { ArrowLeftRight, ShieldCheck, HeartPulse } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtBytes, fmtNum } from './helpers';
 
 function fmtLag(sec) {
@@ -16,9 +16,10 @@ function fmtLag(sec) {
 export default function NetAppReplicationPage() {
   const { toast } = useToast();
   const [rels, setRels] = useState(null);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/netapp/replication')
-    .then(({ data }) => setRels(data))
+    .then(({ data }) => { setRels(data); setLastRefreshed(new Date()); })
     .catch(() => { setRels([]); toast({ type: 'error', title: 'Failed to load SnapMirror relationships' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -30,9 +31,8 @@ export default function NetAppReplicationPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={ArrowLeftRight} title="NetApp Replication (SnapMirror)" description="SnapMirror DR relationships, health and lag across all ONTAP clusters">
-        <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} />
       </PageHeader>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">

@@ -1,17 +1,18 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Layers, RefreshCw, Search } from 'lucide-react';
+import { Layers, Search } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtBytes, fmtNum, statusTone } from './helpers';
 
 export default function NetAppVolumesPage() {
   const { toast } = useToast();
   const [volumes, setVolumes] = useState(null);
   const [q, setQ] = useState('');
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/netapp/volumes')
-    .then(({ data }) => setVolumes(data))
+    .then(({ data }) => { setVolumes(data); setLastRefreshed(new Date()); })
     .catch(() => { setVolumes([]); toast({ type: 'error', title: 'Failed to load volumes' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -28,9 +29,8 @@ export default function NetAppVolumesPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Layers} title="NetApp Volumes" description="FlexVols across all ONTAP clusters">
-        <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} />
       </PageHeader>
 
       <div className="grid grid-cols-3 gap-3 mb-4">

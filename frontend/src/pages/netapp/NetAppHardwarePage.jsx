@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
-import { HardDrive, RefreshCw, Cpu, CircuitBoard, Server } from 'lucide-react';
+import { HardDrive, Cpu, CircuitBoard, Server } from 'lucide-react';
 import client from '../../api/client';
 import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtBytes, fmtNum, statusTone } from './helpers';
 
 export default function NetAppHardwarePage() {
@@ -13,9 +13,10 @@ export default function NetAppHardwarePage() {
   const [selectedId, setSelectedId] = useState(null);
   const [hw, setHw] = useState(null);
   const [lifs, setLifs] = useState(null);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const loadArrays = useCallback(() => client.get('/netapp/arrays')
-    .then(({ data }) => { setArrays(data); setSelectedId((cur) => (cur && data.some((x) => x.id === cur) ? cur : data[0]?.id ?? null)); })
+    .then(({ data }) => { setArrays(data); setSelectedId((cur) => (cur && data.some((x) => x.id === cur) ? cur : data[0]?.id ?? null)); setLastRefreshed(new Date()); })
     .catch(() => { setArrays([]); toast({ type: 'error', title: 'Failed to load clusters' }); }), [toast]);
 
   useEffect(() => { loadArrays(); }, [loadArrays]);
@@ -42,9 +43,8 @@ export default function NetAppHardwarePage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={HardDrive} title="NetApp Hardware" description="Nodes, disks and storage VMs">
-        <button onClick={loadArrays} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={loadArrays} />
       </PageHeader>
 
       {arrays == null ? (

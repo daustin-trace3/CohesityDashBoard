@@ -1,16 +1,17 @@
 import { useEffect, useState, useCallback } from 'react';
-import { AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
+import { AlertTriangle, CheckCircle2 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, timeAgo, severityTone } from './helpers';
 
 export default function NetAppAlertsPage() {
   const { toast } = useToast();
   const [alerts, setAlerts] = useState(null);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/netapp/alerts')
-    .then(({ data }) => setAlerts(data))
+    .then(({ data }) => { setAlerts(data); setLastRefreshed(new Date()); })
     .catch(() => { setAlerts([]); toast({ type: 'error', title: 'Failed to load NetApp alerts' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -24,9 +25,8 @@ export default function NetAppAlertsPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={AlertTriangle} title="NetApp Alerts" description="Health alerts and EMS events across all ONTAP clusters">
-        <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} />
       </PageHeader>
 
       <div className="grid grid-cols-3 gap-3 mb-4">

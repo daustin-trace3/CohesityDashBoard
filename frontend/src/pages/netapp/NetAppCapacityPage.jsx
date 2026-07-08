@@ -1,18 +1,25 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Database, RefreshCw, HardDrive } from 'lucide-react';
+import { Database, HardDrive } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtBytes, fmtRatio, statusTone } from './helpers';
 
 export default function NetAppCapacityPage() {
   const { toast } = useToast();
   const [aggs, setAggs] = useState(null);
   const [quotas, setQuotas] = useState(null);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => {
-    client.get('/netapp/aggregates').then(({ data }) => setAggs(data)).catch(() => { setAggs([]); toast({ type: 'error', title: 'Failed to load aggregates' }); });
-    client.get('/netapp/quotas').then(({ data }) => setQuotas(data)).catch(() => setQuotas([]));
+    Promise.allSettled([
+      client.get('/netapp/aggregates'),
+      client.get('/netapp/quotas'),
+    ]).then(([a, q]) => {
+      if (a.status === 'fulfilled') { setAggs(a.value.data); setLastRefreshed(new Date()); }
+      else { setAggs([]); toast({ type: 'error', title: 'Failed to load aggregates' }); }
+      setQuotas(q.status === 'fulfilled' ? q.value.data : []);
+    });
   }, [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -25,9 +32,8 @@ export default function NetAppCapacityPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Database} title="NetApp Capacity" description="Aggregate capacity and efficiency across all ONTAP clusters">
-        <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} />
       </PageHeader>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">

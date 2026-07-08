@@ -1,18 +1,19 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Share2, RefreshCw, Users, ShieldCheck, X } from 'lucide-react';
+import { Share2, Users, ShieldCheck, X } from 'lucide-react';
 import client from '../../api/client';
 import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtNum } from './helpers';
 
 export default function NetAppNfsPage() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/netapp/nfs')
-    .then(({ data }) => setData(data))
+    .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
     .catch(() => { setData({ clients: [], exportRules: [] }); toast({ type: 'error', title: 'Failed to load NFS data' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -75,9 +76,8 @@ export default function NetAppNfsPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Share2} title="NetApp NFS" description="Live NFS client-to-volume map and export-policy access rules">
-        <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} />
       </PageHeader>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">

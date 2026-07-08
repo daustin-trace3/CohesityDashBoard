@@ -1,10 +1,10 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { FolderTree, RefreshCw, Users, MonitorSmartphone, HardDrive, FileText, X } from 'lucide-react';
+import { FolderTree, Users, MonitorSmartphone, HardDrive, FileText, X } from 'lucide-react';
 import client from '../../api/client';
 import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtNum } from './helpers';
 
 // Turn an ISO8601 duration (e.g. P20DT20H20M48S) into a compact human string.
@@ -24,9 +24,10 @@ function fmtDuration(iso) {
 export default function NetAppCifsPage() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/netapp/cifs')
-    .then(({ data }) => setData(data))
+    .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
     .catch(() => { setData({ sessions: [], shares: [] }); toast({ type: 'error', title: 'Failed to load CIFS data' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -80,9 +81,8 @@ export default function NetAppCifsPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={FolderTree} title="NetApp SMB / CIFS" description="Live SMB session-to-volume map and configured CIFS shares">
-        <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} />
       </PageHeader>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">

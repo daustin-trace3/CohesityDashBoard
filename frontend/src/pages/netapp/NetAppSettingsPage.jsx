@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, RefreshCw, Save, PlugZap, Play, Server, Clock, Cloud } from 'lucide-react';
+import { Settings, Save, PlugZap, Play, Server, Clock, Cloud } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, LoadingPanel, Badge } from '../../components/ui/primitives';
+import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
 import { BRAND } from './helpers';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
@@ -103,9 +103,7 @@ export default function NetAppSettingsPage() {
   return (
     <div className="animate-fade-in max-w-3xl">
       <PageHeader icon={Settings} title="NetApp Settings" description="Collect all clusters through Active IQ Unified Manager (AIQUM)">
-        <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
-          <RefreshCw size={15} /> Refresh
-        </button>
+        <RefreshButton onClick={load} />
       </PageHeader>
 
       {/* Connection status */}
