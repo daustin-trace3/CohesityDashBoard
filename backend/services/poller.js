@@ -285,14 +285,65 @@ function safeErrorMessage(err) {
   return 'Unknown error';
 }
 
+// Protection-run fetch sizing. The first poll of a cluster backfills 90 days;
+// after that, each poll only asks for runs since the last stored run (with an
+// overlap), so requests stay small instead of re-pulling the whole window.
+const BACKFILL_DAYS = 90;
+const NUM_RUNS_BACKFILL = 2000;
+const NUM_RUNS_INCREMENTAL = 500;
+const INCREMENTAL_OVERLAP_MS = 6 * 60 * 60 * 1000; // re-fetch recent runs whose status may have changed
+// A run stuck in kRunning/kAccepted (e.g. from a period when the cluster was
+// erroring) must not pin the fetch window in the past forever — stop chasing
+// its final status after this long.
+const OPEN_RUN_MAX_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+// Some clusters 500 on any runs query wider than ~a week (server-side timeout
+// on their end). When the normal fetch fails, retry once at this window and
+// remember the cluster so later polls skip the failing large query. In-memory:
+// a restart re-attempts the full window in case the cluster was fixed.
+const FALLBACK_WINDOW_DAYS = 7;
+const smallWindowClusters = new Set();
+
+/**
+ * Fetch window for a cluster's protection runs: from the newest stored run
+ * minus an overlap — pushed back to the oldest run still in flight so its
+ * final status is always picked up. Empty table → full 90-day backfill.
+ */
+function runsFetchWindow(clusterId) {
+  if (smallWindowClusters.has(clusterId)) {
+    return {
+      sinceUsecs: (Date.now() - FALLBACK_WINDOW_DAYS * 24 * 60 * 60 * 1000) * 1000,
+      numRuns: NUM_RUNS_INCREMENTAL,
+      incremental: true,
+    };
+  }
+  const backfillMs = Date.now() - BACKFILL_DAYS * 24 * 60 * 60 * 1000;
+  const row = db.prepare(`
+    SELECT MAX(start_time) AS newest,
+           MIN(CASE WHEN status IN ('kRunning', 'kAccepted') THEN start_time END) AS oldestOpen
+    FROM protection_runs WHERE cluster_id = ?
+  `).get(clusterId);
+  if (!row?.newest) {
+    return { sinceUsecs: backfillMs * 1000, numRuns: NUM_RUNS_BACKFILL, incremental: false };
+  }
+  let sinceMs = new Date(row.newest).getTime() - INCREMENTAL_OVERLAP_MS;
+  if (row.oldestOpen) {
+    let openMs = new Date(row.oldestOpen).getTime() - 60 * 1000;
+    const openFloor = Date.now() - OPEN_RUN_MAX_LOOKBACK_MS;
+    if (openMs < openFloor) openMs = openFloor;
+    if (openMs < sinceMs) sinceMs = openMs;
+  }
+  if (sinceMs < backfillMs) sinceMs = backfillMs;
+  return { sinceUsecs: Math.floor(sinceMs) * 1000, numRuns: NUM_RUNS_INCREMENTAL, incremental: true };
+}
+
 async function pollCluster(cluster) {
   pollerStatus.markStart('cohesity', cluster.id);
   try {
-    const ninetyDaysAgo = (Date.now() - 90 * 24 * 60 * 60 * 1000) * 1000; // usecs
+    const window = runsFetchWindow(cluster.id);
     const [clusterInfo, alertData, protectionData, policyData, sourceData] = await Promise.allSettled([
       fetchClusterInfo(cluster),
       fetchAlerts(cluster),
-      fetchProtectionRuns(cluster, 10000, ninetyDaysAgo),
+      fetchProtectionRuns(cluster, window.numRuns, window.sinceUsecs),
       fetchProtectionPolicies(cluster),
       fetchSourceRegistrations(cluster)
     ]);
@@ -329,45 +380,69 @@ async function pollCluster(cluster) {
       logger.error(`[Poller] Source registrations fetch failed for cluster ${cluster.id}:`, safeErrorMessage(sourceData.reason));
     }
 
-    if (protectionData.status === 'fulfilled') {
+    // If the normal fetch failed (some clusters 500 on wide windows), retry
+    // once with a small window and pin this cluster to it for future polls.
+    let protRuns = protectionData.status === 'fulfilled' ? protectionData.value : null;
+    let usedFallback = false;
+    if (protRuns === null && !smallWindowClusters.has(cluster.id)) {
+      logger.warn(`[Poller] Protection runs fetch failed for cluster ${cluster.id} (${safeErrorMessage(protectionData.reason)}) — retrying with ${FALLBACK_WINDOW_DAYS}-day window`);
       try {
-        upsertProtectionRuns(cluster, protectionData.value);
+        protRuns = await fetchProtectionRuns(cluster, NUM_RUNS_INCREMENTAL, (Date.now() - FALLBACK_WINDOW_DAYS * 24 * 60 * 60 * 1000) * 1000);
+        smallWindowClusters.add(cluster.id);
+        usedFallback = true;
+        logger.info(`[Poller] Cluster ${cluster.id} pinned to ${FALLBACK_WINDOW_DAYS}-day runs window (wide queries return HTTP 500 on this cluster)`);
+      } catch (err) {
+        logger.error(`[Poller] Fallback runs fetch also failed for cluster ${cluster.id}:`, safeErrorMessage(err));
+      }
+    }
+
+    if (protRuns !== null) {
+      try {
+        upsertProtectionRuns(cluster, protRuns);
       } catch (err) {
         logger.error(`[Poller] Protection runs upsert failed for cluster ${cluster.id}:`, err.message);
       }
 
-      const seenJobIds = new Set(protectionData.value.map(r => r.jobId).filter(Boolean));
+      // Phase 2 (per-job catch-up) only matters on the initial backfill, where
+      // the run-count cap can hide low-frequency jobs. On incremental polls a
+      // job's new runs always fall inside the fetch window, and its history is
+      // already in the DB — re-sweeping every idle job would just hammer the
+      // cluster with the exact large queries the incremental window avoids.
+      if (!window.incremental && !usedFallback) {
+        const seenJobIds = new Set(protRuns.map(r => r.jobId).filter(Boolean));
 
-      let allJobs = [];
-      try {
-        allJobs = await fetchProtectionJobs(cluster);
-      } catch (err) {
-        logger.error(`[Poller] Phase 2 jobs list fetch failed for cluster ${cluster.id}:`, safeErrorMessage(err));
-      }
+        let allJobs = [];
+        try {
+          allJobs = await fetchProtectionJobs(cluster);
+        } catch (err) {
+          logger.error(`[Poller] Phase 2 jobs list fetch failed for cluster ${cluster.id}:`, safeErrorMessage(err));
+        }
 
-      if (allJobs.length > 0) {
-        const missedJobs = allJobs.filter(job => !seenJobIds.has(job.id)).slice(0, 200);
-        if (missedJobs.length > 0) {
-          logger.info(`[Poller] Phase 2: fetching ${missedJobs.length} missed job(s) for cluster ${cluster.id}`);
-          for (const job of missedJobs) {
-            let runs;
-            try {
-              runs = await fetchProtectionRuns(cluster, 100, ninetyDaysAgo, null, job.id);
-            } catch (err) {
-              logger.error(`[Poller] Phase 2 fetch failed for job ${job.id} on cluster ${cluster.id}:`, safeErrorMessage(err));
-              continue;
-            }
-            if (runs && runs.length > 0) {
+        if (allJobs.length > 0) {
+          const missedJobs = allJobs.filter(job => !seenJobIds.has(job.id)).slice(0, 200);
+          if (missedJobs.length > 0) {
+            logger.info(`[Poller] Phase 2: fetching ${missedJobs.length} missed job(s) for cluster ${cluster.id}`);
+            for (const job of missedJobs) {
+              let runs;
               try {
-                upsertProtectionRuns(cluster, runs);
+                runs = await fetchProtectionRuns(cluster, 100, window.sinceUsecs, null, job.id);
               } catch (err) {
-                logger.error(`[Poller] Phase 2 upsert failed for job ${job.id} on cluster ${cluster.id}:`, err.message);
+                logger.error(`[Poller] Phase 2 fetch failed for job ${job.id} on cluster ${cluster.id}:`, safeErrorMessage(err));
+                continue;
+              }
+              if (runs && runs.length > 0) {
+                try {
+                  upsertProtectionRuns(cluster, runs);
+                } catch (err) {
+                  logger.error(`[Poller] Phase 2 upsert failed for job ${job.id} on cluster ${cluster.id}:`, err.message);
+                }
               }
             }
           }
         }
       }
-    } else {
+    } else if (protectionData.status !== 'fulfilled' && smallWindowClusters.has(cluster.id)) {
+      // Pinned cluster failed even at the small window — already at minimum.
       logger.error(`[Poller] Protection runs fetch failed for cluster ${cluster.id}:`, safeErrorMessage(protectionData.reason));
     }
     pollerStatus.markEnd('cohesity', cluster.id, 'success');

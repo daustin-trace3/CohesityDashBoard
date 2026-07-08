@@ -157,7 +157,6 @@ export default function Layout() {
 
   const [networkSyncing, setNetworkSyncing] = useState(false);
   const networkSyncTimer = useRef(null);
-  const { status: pollerStatus, anySyncing, anyStale, anyError, newestCapture } = usePollerStatus();
 
   const { search, setSearch } = useSearch();
   const navigate = useNavigate();
@@ -168,6 +167,10 @@ export default function Layout() {
   const isPlatform = isPure || isNetapp;
   const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : null;
   const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : '';
+
+  // Sync chip is scoped to the platform being viewed (Pure pages show Pure
+  // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
+  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(platformKey || 'cohesity');
 
   const toggleCollapsed = () => {
     setCollapsed(c => {
@@ -415,8 +418,9 @@ export default function Layout() {
                 </button>
               )
             )}
-            {/* Poller / network sync status — hidden until poller data or network activity exists */}
-            {(pollerStatus || networkSyncing) && (
+            {/* Poller / network sync status — scoped to the active platform;
+                hidden when that platform has nothing registered */}
+            {((pollerStatus && hasEntities) || networkSyncing) && (
               <span className="hidden sm:inline-flex flex-shrink-0">
                 <SyncStatusChip
                   state={networkSyncing || anySyncing ? 'syncing' : anyError ? 'error' : anyStale ? 'stale' : 'live'}

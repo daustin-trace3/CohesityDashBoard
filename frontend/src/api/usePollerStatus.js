@@ -3,32 +3,37 @@ import client from './client';
 
 const POLL_INTERVAL_MS = 30_000;
 
-function rollup(status) {
-  if (!status) return { anySyncing: false, anyStale: false, anyError: false, newestCapture: null };
+/**
+ * Roll up freshness for ONE platform ('cohesity' | 'pure' | 'netapp'), so the
+ * header chip reflects the platform being viewed. Licensing (a Helios/Cohesity
+ * concern) only participates in the cohesity rollup. `hasEntities` lets the
+ * chip hide entirely on a platform with nothing registered yet.
+ */
+function rollup(status, platform = 'cohesity') {
+  if (!status) return { anySyncing: false, anyStale: false, anyError: false, hasEntities: false, newestCapture: null };
 
   let anySyncing = false;
   let anyStale = false;
   let anyError = false;
+  let hasEntities = false;
   let newestCapture = null;
 
-  for (const key of ['cohesity', 'pure', 'netapp']) {
-    const p = status[key];
-    if (!p || !p.enabled) continue;
-    if (p.entities) {
-      for (const e of p.entities) {
-        if (e.isSyncing) anySyncing = true;
-        if (e.isStale) anyStale = true;
-        if (e.lastPollStatus === 'error') anyError = true;
-        if (e.lastDataCapture) {
-          const t = new Date(e.lastDataCapture).getTime();
-          if (!newestCapture || t > newestCapture) newestCapture = t;
-        }
+  const p = status[platform];
+  if (p && p.enabled && p.entities) {
+    for (const e of p.entities) {
+      hasEntities = true;
+      if (e.isSyncing) anySyncing = true;
+      if (e.isStale) anyStale = true;
+      if (e.lastPollStatus === 'error') anyError = true;
+      if (e.lastDataCapture) {
+        const t = new Date(e.lastDataCapture).getTime();
+        if (!newestCapture || t > newestCapture) newestCapture = t;
       }
     }
   }
 
   const lic = status.licensing;
-  if (lic && lic.enabled) {
+  if (platform === 'cohesity' && lic && lic.enabled) {
     if (lic.isSyncing) anySyncing = true;
     if (lic.isStale) anyStale = true;
     if (lic.failedSources?.length) anyError = true;
@@ -38,10 +43,10 @@ function rollup(status) {
     }
   }
 
-  return { anySyncing, anyStale, anyError, newestCapture: newestCapture ? new Date(newestCapture) : null };
+  return { anySyncing, anyStale, anyError, hasEntities, newestCapture: newestCapture ? new Date(newestCapture) : null };
 }
 
-export function usePollerStatus() {
+export function usePollerStatus(platform = 'cohesity') {
   const [status, setStatus] = useState(null);
   const timerRef = useRef(null);
 
@@ -73,5 +78,5 @@ export function usePollerStatus() {
     };
   }, []);
 
-  return { status, ...rollup(status) };
+  return { status, ...rollup(status, platform) };
 }
