@@ -134,9 +134,10 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
           selected
             ? 'bg-brand/10 border-brand'
             : isPulsing
-              ? 'bg-surface border-status-crit pulse-critical'
-              : 'bg-surface border-cohesity-border hover:border-brand/50 hover:shadow-panel-hover'
+              ? 'bg-surface border-status-crit'
+              : 'bg-surface border-cohesity-border transition-colors hover:border-brand/50 hover:shadow-panel-hover'
         }`}
+        style={isPulsing ? { animation: 'pulse-critical 1.8s ease-in-out infinite' } : {}}
         onClick={() => onSelect && onSelect(cluster.id)}
       >
         {/* Name + alert badge */}

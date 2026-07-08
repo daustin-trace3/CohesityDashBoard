@@ -7,8 +7,12 @@ const SEVERITY_MAP = {
 export default function AlertBadge({ severity }) {
   const s = (severity || 'info').toLowerCase();
   const cls = SEVERITY_MAP[s] || SEVERITY_MAP.info;
+  const isCritical = s === 'critical';
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${cls}`}>
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${cls}`}
+      style={isCritical ? { animation: 'pulse-critical 1.8s ease-in-out infinite' } : {}}
+    >
       {s.charAt(0).toUpperCase() + s.slice(1)}
     </span>
   );

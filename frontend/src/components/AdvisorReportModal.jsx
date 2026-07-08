@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { Sparkles, RefreshCw } from 'lucide-react';
 import client from '../api/client';
 import Markdown from './Markdown';
+import { LoadingPanel } from './ui/primitives';
 
 function fmtTime(ts) {
   if (!ts) return '';
@@ -39,10 +40,11 @@ export default function AdvisorReportModal({ tab, initialReport, enabled, autoRu
 
   return (
     <div
-      className="fixed inset-0 bg-black bg-opacity-70 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-cohesity-gray border border-cohesity-border rounded-lg w-full max-w-3xl max-h-[88vh] flex flex-col shadow-xl">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div className="relative bg-cohesity-gray border border-cohesity-border rounded-lg w-full max-w-3xl max-h-[88vh] flex flex-col shadow-xl animate-fade-in">
         <div className="flex items-center justify-between px-6 py-4 border-b border-cohesity-border flex-shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
@@ -73,9 +75,7 @@ export default function AdvisorReportModal({ tab, initialReport, enabled, autoRu
               <code className="text-brand"> GITHUB_MODELS_TOKEN</code>) and restart.
             </p>
           ) : running ? (
-            <div className="flex items-center gap-2.5 py-12 justify-center text-ink-muted text-xs" role="status">
-              <RefreshCw size={16} className="animate-spin" /> Analyzing the estate…
-            </div>
+            <LoadingPanel label="Analyzing the estate…" height={180} />
           ) : report?.content ? (
             <>
               {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
