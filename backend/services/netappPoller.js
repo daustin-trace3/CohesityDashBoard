@@ -4,6 +4,7 @@ const {
   fetchCluster, fetchNodes, fetchAggregates, fetchVolumes, fetchSvms,
   fetchDisks, fetchClusterMetrics, fetchHealthAlerts, fetchEmsAlerts,
   fetchSnapmirror, fetchLifs, fetchQuotas, fetchNfsClients, fetchExportPolicies,
+  fetchCifsSessions, fetchCifsShares,
 } = require('./netappApi');
 const logger = require('../utils/logger');
 
@@ -223,18 +224,56 @@ const replaceExportRules = db.transaction((arrayId, policies) => {
   }
 });
 
+const replaceCifsSessions = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM netapp_cifs_sessions WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO netapp_cifs_sessions
+      (array_id, client_ip, server_ip, svm_name, node_name, volume_name, smb_user, mapped_unix_user,
+       protocol, authentication, smb_encryption, smb_signing, open_shares, open_files,
+       connected_duration, idle_duration)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const s of items) {
+    // A session can access several volumes — store one row per volume so the
+    // client-to-volume drill-down mirrors the NFS view. Sessions with no open
+    // volume still get a single row (volume null).
+    const vols = Array.isArray(s.volumes) && s.volumes.length ? s.volumes : [null];
+    for (const v of vols) {
+      stmt.run(
+        arrayId, s.client_ip || null, s.server_ip || null, s.svm?.name || null, s.node?.name || null,
+        (v && v.name) || null, s.user || null, s.mapped_unix_user || null,
+        s.protocol || null, s.authentication || null, s.smb_encryption || null,
+        s.smb_signing ? 1 : 0, num(s.open_shares), num(s.open_files),
+        s.connected_duration || null, s.idle_duration || null
+      );
+    }
+  }
+});
+
+const replaceCifsShares = db.transaction((arrayId, items) => {
+  db.prepare('DELETE FROM netapp_cifs_shares WHERE array_id = ?').run(arrayId);
+  const stmt = db.prepare(`
+    INSERT INTO netapp_cifs_shares (array_id, share_name, path, svm_name, volume_name)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const s of items) {
+    stmt.run(arrayId, s.name || null, s.path || null, s.svm?.name || null, s.volume?.name || null);
+  }
+});
+
 /** Poll a single NetApp cluster: capacity, performance, inventory, alerts. */
 async function pollArray(array) {
   try {
     const [
       clusterR, nodesR, aggR, volR, svmR, diskR, metricsR, healthR, emsR,
-      smR, lifR, quotaR, nfsR, exportR,
+      smR, lifR, quotaR, nfsR, exportR, cifsR, cifsShareR,
     ] = await Promise.allSettled([
       fetchCluster(array), fetchNodes(array), fetchAggregates(array), fetchVolumes(array),
       fetchSvms(array), fetchDisks(array), fetchClusterMetrics(array),
       fetchHealthAlerts(array), fetchEmsAlerts(array),
       fetchSnapmirror(array), fetchLifs(array), fetchQuotas(array),
       fetchNfsClients(array), fetchExportPolicies(array),
+      fetchCifsSessions(array), fetchCifsShares(array),
     ]);
 
     const aggregates = aggR.status === 'fulfilled' ? aggR.value : [];
@@ -277,6 +316,8 @@ async function pollArray(array) {
       [quotaR, () => replaceQuotas(array.id, quotaR.value || []), 'quotas'],
       [nfsR, () => replaceNfsClients(array.id, nfsR.value || []), 'nfs-clients'],
       [exportR, () => replaceExportRules(array.id, exportR.value || []), 'export-policies'],
+      [cifsR, () => replaceCifsSessions(array.id, cifsR.value || []), 'cifs-sessions'],
+      [cifsShareR, () => replaceCifsShares(array.id, cifsShareR.value || []), 'cifs-shares'],
     ];
     for (const [result, store, label] of stores) {
       if (result.status === 'fulfilled') {

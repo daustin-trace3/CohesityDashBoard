@@ -17,6 +17,7 @@ import NetAppOverviewPage from './pages/netapp/NetAppOverviewPage';
 import NetAppCapacityPage from './pages/netapp/NetAppCapacityPage';
 import NetAppVolumesPage from './pages/netapp/NetAppVolumesPage';
 import NetAppNfsPage from './pages/netapp/NetAppNfsPage';
+import NetAppCifsPage from './pages/netapp/NetAppCifsPage';
 import NetAppReplicationPage from './pages/netapp/NetAppReplicationPage';
 import NetAppAlertsPage from './pages/netapp/NetAppAlertsPage';
 import NetAppHardwarePage from './pages/netapp/NetAppHardwarePage';
@@ -74,6 +75,7 @@ export default function App() {
                 <Route path="netapp/capacity" element={withBoundary(<NetAppCapacityPage />)} />
                 <Route path="netapp/volumes"  element={withBoundary(<NetAppVolumesPage />)} />
                 <Route path="netapp/nfs"      element={withBoundary(<NetAppNfsPage />)} />
+                <Route path="netapp/cifs"     element={withBoundary(<NetAppCifsPage />)} />
                 <Route path="netapp/replication" element={withBoundary(<NetAppReplicationPage />)} />
                 <Route path="netapp/alerts"   element={withBoundary(<NetAppAlertsPage />)} />
                 <Route path="netapp/hardware" element={withBoundary(<NetAppHardwarePage />)} />

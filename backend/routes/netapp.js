@@ -294,4 +294,21 @@ router.get('/nfs', cacheControl(30), (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.get('/cifs', cacheControl(30), (req, res, next) => {
+  try {
+    res.json({
+      sessions: db.prepare(`
+        SELECT s.*, a.name AS array_name FROM netapp_cifs_sessions s
+        JOIN netapp_arrays a ON a.id = s.array_id
+        ORDER BY s.client_ip
+      `).all(),
+      shares: db.prepare(`
+        SELECT sh.*, a.name AS array_name FROM netapp_cifs_shares sh
+        JOIN netapp_arrays a ON a.id = sh.array_id
+        ORDER BY sh.svm_name, sh.share_name
+      `).all(),
+    });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

@@ -689,3 +689,37 @@ CREATE TABLE IF NOT EXISTS netapp_export_rules (
   superuser             TEXT,
   captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- NetApp CIFS/SMB active sessions (live client-to-volume map). One row per
+-- session/volume pair (a session can touch several volumes).
+CREATE TABLE IF NOT EXISTS netapp_cifs_sessions (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  client_ip             TEXT,
+  server_ip             TEXT,
+  svm_name              TEXT,
+  node_name             TEXT,
+  volume_name           TEXT,
+  smb_user              TEXT,
+  mapped_unix_user      TEXT,
+  protocol              TEXT,   -- e.g. smb3_1
+  authentication        TEXT,   -- e.g. kerberos / ntlmv2
+  smb_encryption        TEXT,
+  smb_signing           INTEGER,
+  open_shares           INTEGER,
+  open_files            INTEGER,
+  connected_duration    TEXT,   -- ISO8601 duration string
+  idle_duration         TEXT,   -- ISO8601 duration string
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NetApp CIFS/SMB shares (share -> volume mapping).
+CREATE TABLE IF NOT EXISTS netapp_cifs_shares (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_id              INTEGER NOT NULL REFERENCES netapp_arrays(id) ON DELETE CASCADE,
+  share_name            TEXT,
+  path                  TEXT,
+  svm_name              TEXT,
+  volume_name           TEXT,
+  captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

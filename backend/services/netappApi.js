@@ -178,6 +178,32 @@ async function fetchExportPolicies(array) {
   }
 }
 
+/** Active CIFS/SMB sessions (live client-to-volume map). */
+async function fetchCifsSessions(array) {
+  try {
+    const data = await apiGet(array, '/api/protocols/cifs/sessions', {
+      fields: 'client_ip,server_ip,node,svm,volumes,user,mapped_unix_user,protocol,authentication,smb_encryption,smb_signing,open_shares,open_files,connected_duration,idle_duration',
+      max_records: 5000,
+    });
+    return records(data);
+  } catch {
+    return [];
+  }
+}
+
+/** CIFS/SMB shares (share -> volume mapping). */
+async function fetchCifsShares(array) {
+  try {
+    const data = await apiGet(array, '/api/protocols/cifs/shares', {
+      fields: 'name,path,svm,volume',
+      max_records: 2000,
+    });
+    return records(data);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Validate connectivity + credentials. Accepts a stored array row OR a transient
  * object carrying a raw `password` (pre-save test flow).
@@ -211,6 +237,8 @@ module.exports = {
   fetchQuotas,
   fetchNfsClients,
   fetchExportPolicies,
+  fetchCifsSessions,
+  fetchCifsShares,
   testConnection,
   invalidate,
 };
