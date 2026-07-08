@@ -436,7 +436,8 @@ function getConfig() {
   return {
     configured: isConfigured(),
     appIdSet: !!appId,
-    appId, // app IDs are identifiers, not secrets; shown so the operator can verify
+    // Full app id is never returned — the masked form is enough to verify
+    // which key is in use without exposing it.
     appIdMasked: maskAppId(appId),
     appIdSource: getSetting('pure1_app_id') ? 'settings' : (process.env.PURE1_APIKEY ? 'env' : 'none'),
     hasPrivateKey: hasPrivateKey(),

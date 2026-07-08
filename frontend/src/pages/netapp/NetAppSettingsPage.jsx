@@ -43,7 +43,8 @@ export default function NetAppSettingsPage() {
     if (c.status === 'fulfilled') {
       setCfg(c.value.data);
       setHost(c.value.data.host || '');
-      setUsername(c.value.data.username || '');
+      // Username is write-only: the server reports presence, never the value.
+      setUsername('');
       setIntervalMin(c.value.data.pollIntervalMin || 15);
     } else { setCfg({ configured: false }); toast({ type: 'error', title: 'Failed to load AIQUM config' }); }
     setClusters(a.status === 'fulfilled' ? a.value.data : []);
@@ -54,7 +55,8 @@ export default function NetAppSettingsPage() {
   const save = async () => {
     setSaving(true);
     try {
-      const patch = { host, username, pollIntervalMin: Number(interval) };
+      const patch = { host, pollIntervalMin: Number(interval) };
+      if (username.trim()) patch.username = username.trim();
       if (password) patch.password = password;
       await client.put('/netapp/aiqum', patch);
       setPassword('');
@@ -68,7 +70,7 @@ export default function NetAppSettingsPage() {
   const testConn = async () => {
     setTesting(true); setTestResult(null);
     try {
-      const { data } = await client.post('/netapp/aiqum/test', { host, username, password: password || undefined });
+      const { data } = await client.post('/netapp/aiqum/test', { host, username: username.trim() || undefined, password: password || undefined });
       setTestResult(data.ok ? { ok: true, msg: `Connected · ${data.clusterCount} clusters managed (${(data.clusters || []).join(', ')})` } : { ok: false, msg: data.error });
     } catch (err) {
       setTestResult({ ok: false, msg: err?.response?.data?.error || 'Connection failed' });
@@ -118,8 +120,8 @@ export default function NetAppSettingsPage() {
           <Field label="AIQUM host" hint="Base URL of the Unified Manager appliance.">
             <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="https://aiqum.example.com" className={inp} spellCheck={false} />
           </Field>
-          <Field label="Username" hint="AIQUM account (Operator/read-only is sufficient).">
-            <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="operator" className={inp} spellCheck={false} />
+          <Field label="Username" hint={`AIQUM account (Operator/read-only is sufficient). ${cfg.hasUsername ? 'A username is on file — leave blank to keep it.' : 'Required.'}`}>
+            <input type="password" value={username} onChange={(e) => setUsername(e.target.value)} placeholder={cfg.hasUsername ? '•••••• (unchanged)' : 'operator'} className={inp} autoComplete="off" spellCheck={false} />
           </Field>
           <Field label="Password" hint={`Stored encrypted. ${cfg.hasPassword ? 'A password is on file — leave blank to keep it.' : 'Required.'}`}>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={cfg.hasPassword ? '•••••• (unchanged)' : '••••••'} className={inp} autoComplete="new-password" />
@@ -130,11 +132,11 @@ export default function NetAppSettingsPage() {
         </div>
         {testResult && <p className={`text-[12px] mt-2 ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>{testResult.ok ? '✓ ' : '✗ '}{testResult.msg}</p>}
         <div className="flex items-center gap-2 mt-3">
-          <button onClick={testConn} disabled={testing || !host || !username}
+          <button onClick={testConn} disabled={testing || !host || (!username.trim() && !cfg.hasUsername)}
             className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
             <PlugZap size={13} /> {testing ? 'Testing…' : 'Test connection'}
           </button>
-          <button onClick={save} disabled={saving || !host || !username}
+          <button onClick={save} disabled={saving || !host || (!username.trim() && !cfg.hasUsername)}
             className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40">
             <Save size={13} /> {saving ? 'Saving…' : 'Save'}
           </button>

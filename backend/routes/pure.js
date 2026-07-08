@@ -34,9 +34,10 @@ function publicArray(row) {
     name: row.name,
     mgmt_host: row.mgmt_host,
     auth_method: row.auth_method || 'client',
-    client_id: row.client_id,
-    key_id: row.key_id,
-    username: row.username,
+    // Credential identifiers are never returned — presence only.
+    has_client_id: !!row.client_id,
+    has_key_id: !!row.key_id,
+    has_username: !!row.username,
     issuer: row.issuer,
     polling_interval_minutes: row.polling_interval_minutes,
     ssl_verify: row.ssl_verify,
@@ -104,12 +105,13 @@ router.get('/arrays', cacheControl(15), (req, res, next) => {
   }
 });
 
-// GET /api/pure/defaults — non-secret defaults from env to prefill the Add form
+// GET /api/pure/defaults — whether env defaults exist for the Add form.
+// Values are never returned; the backend applies them server-side if needed.
 router.get('/defaults', (req, res) => {
   res.json({
-    client_id: process.env.PURE_ARRAY_CLIENT_ID || '',
-    key_id: process.env.PURE_ARRAY_KEY_ID || '',
-    username: process.env.PURE_ARRAY_USER || '',
+    has_client_id: !!process.env.PURE_ARRAY_CLIENT_ID,
+    has_key_id: !!process.env.PURE_ARRAY_KEY_ID,
+    has_username: !!process.env.PURE_ARRAY_USER,
   });
 });
 

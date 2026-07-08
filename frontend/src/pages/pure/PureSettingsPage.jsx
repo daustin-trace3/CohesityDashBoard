@@ -35,7 +35,8 @@ export default function PureSettingsPage() {
   const load = useCallback(() => client.get('/pure1/settings')
     .then(({ data }) => {
       setCfg(data);
-      setAppId(data.appId || '');
+      // App ID is write-only: the server returns only a masked form.
+      setAppId('');
       setTtl(data.cacheTtlMin || 10);
       setWarnPct(data.warnPct || 75);
       setCritPct(data.critPct || 90);
@@ -49,7 +50,7 @@ export default function PureSettingsPage() {
     setSavingCreds(true);
     try {
       const patch = {};
-      if (appId.trim() && appId.trim() !== (cfg?.appId || '')) patch.appId = appId.trim();
+      if (appId.trim()) patch.appId = appId.trim();
       if (privateKey.trim()) patch.privateKey = privateKey.trim();
       if (Object.keys(patch).length === 0) { toast({ type: 'info', title: 'Nothing to save' }); return; }
       const { data } = await client.put('/pure1/settings', patch);
@@ -127,8 +128,8 @@ export default function PureSettingsPage() {
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <div className="flex items-center gap-2 mb-3"><KeyRound size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Pure1 Credentials</p></div>
         <div className="grid grid-cols-1 gap-3">
-          <Field label="Application ID (API key)" hint="From Pure1 Manage → Administration → API Registrations (e.g. pure1:apikey:…).">
-            <input value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="pure1:apikey:…" className={inp} spellCheck={false} />
+          <Field label="Application ID (API key)" hint={`From Pure1 Manage → Administration → API Registrations. ${cfg.appIdSet ? `On file: ${cfg.appIdMasked} — enter a new value to replace it.` : ''}`}>
+            <input value={appId} onChange={(e) => setAppId(e.target.value)} placeholder={cfg.appIdSet ? `${cfg.appIdMasked} (stored — enter new to replace)` : 'pure1:apikey:…'} className={inp} autoComplete="off" spellCheck={false} />
           </Field>
           <Field label="Private key (PEM)" hint={`Stored encrypted. Current source: ${cfg.keySource}. Paste a new key only to replace it.`}>
             <textarea value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} rows={4}

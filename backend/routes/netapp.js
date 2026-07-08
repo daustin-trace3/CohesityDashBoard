@@ -54,7 +54,8 @@ router.get('/aiqum', (req, res) => {
   res.json({
     configured: netappApi.aiqumConfigured(),
     host: cfg.host || '',
-    username: cfg.username || '',
+    // Username and password values are never returned — presence only.
+    hasUsername: !!cfg.username,
     hasPassword: !!cfg.password,
     hostSource: getSetting('netapp_aiqum_host') ? 'settings' : (process.env.NETAPP_AIQUM_HOST ? 'env' : 'none'),
     passSource: getSetting('netapp_aiqum_pass') ? 'settings' : (process.env.NETAPP_AIQUM_PW ? 'env' : 'none'),
