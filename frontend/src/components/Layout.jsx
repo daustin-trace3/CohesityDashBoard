@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import client from '../api/client';
@@ -10,7 +10,7 @@ import { useSearch } from '../context';
 
 const platforms = [
   { id: 'cohesity', label: 'Cohesity', route: '/dashboard', color: '#6CB33F' },
-  { id: 'pure',     label: 'Pure Storage', route: '/pure',  color: '#FF6B00' },
+  { id: 'pure',     label: 'Pure', route: '/pure',  color: '#FF6B00' },
   { id: 'netapp',   label: 'NetApp',    route: '/netapp',   color: '#0067C5' },
 ];
 
@@ -55,7 +55,7 @@ const pureNavGroups = [
   {
     label: 'Monitor',
     items: [
-      { label: 'Overview', route: '/pure', icon: Gauge, isActive: (p) => p === '/pure' },
+      { label: 'Overview', route: '/pure', icon: Cloud, isActive: (p) => p === '/pure' },
       { label: 'Capacity', route: '/pure/capacity', icon: Database, isActive: (p) => p.startsWith('/pure/capacity') },
       { label: 'Volumes', route: '/pure/volumes', icon: Layers, isActive: (p) => p.startsWith('/pure/volumes') },
       { label: 'Alerts', route: '/pure/alerts', icon: Bell, isActive: (p) => p.startsWith('/pure/alerts') },
@@ -194,36 +194,59 @@ export default function Layout() {
   }, []);
 
   // Vendor-platform fleet summary (count + open alerts + health) — only while a
-  // platform is active. Pure and NetApp share the same overview shape.
+  // platform is active. Pure is backed by the Pure1 cloud fleet; NetApp uses its
+  // per-cluster overview.
   useEffect(() => {
     if (!platformKey) { setPlatformAlertList([]); return undefined; }
     let cancelled = false;
-    const loadAlertList = () => client.get(`/${platformKey}/alerts`)
+    const pureFleet = platformKey === 'pure';
+    const overviewUrl = pureFleet ? '/pure1/overview' : `/${platformKey}/overview`;
+    const alertsUrl = pureFleet ? '/pure1/alerts' : `/${platformKey}/alerts`;
+
+    const loadAlertList = () => client.get(alertsUrl)
       .then(r => {
         if (cancelled) return;
-        const rows = (r.data || []).filter(a => !a.resolved && a.state !== 'closed' && a.state !== 'resolved');
-        setPlatformAlertList(rows.map(a => ({
-          id: a.id,
-          cluster_name: a.array_name || a.cluster_name || '—',
-          severity: a.severity,
-          description: a.summary || a.message || a.description || a.alert_type || 'Alert',
-        })));
+        if (pureFleet) {
+          const open = (r.data || []).filter(a => String(a.severity || '').toLowerCase() !== 'hidden');
+          setPlatformAlertList(open.map(a => ({
+            id: a.id,
+            cluster_name: a.arrayName || '—',
+            severity: a.severity,
+            description: a.summary || 'Alert',
+          })));
+          setPlatformAlerts(open.length);
+        } else {
+          const rows = (r.data || []).filter(a => !a.resolved && a.state !== 'closed' && a.state !== 'resolved');
+          setPlatformAlertList(rows.map(a => ({
+            id: a.id,
+            cluster_name: a.array_name || a.cluster_name || '—',
+            severity: a.severity,
+            description: a.summary || a.message || a.description || a.alert_type || 'Alert',
+          })));
+        }
       })
       .catch(() => { if (!cancelled) setPlatformAlertList([]); });
-    const loadPlatform = () => client.get(`/${platformKey}/overview`)
+    const loadPlatform = () => client.get(overviewUrl)
       .then(r => {
         if (cancelled) return;
         const rows = r.data || [];
         setPlatformCount(rows.length);
-        setPlatformAlerts(rows.reduce((s, a) => s + (a.open_alerts || 0), 0));
         const now = Date.now();
-        const healthy = rows.filter(a => {
-          if (!a.latest || !a.latest.captured_at) return false;
-          const ms = new Date(String(a.latest.captured_at).replace(' ', 'T') + 'Z').getTime();
-          const thresholdMin = (a.polling_interval_minutes || 15) * 2 + 5;
-          return Number.isFinite(ms) && (now - ms) <= thresholdMin * 60000;
-        }).length;
-        setPlatformHealthy(healthy);
+        if (pureFleet) {
+          // Pure1 capacity metrics update daily; treat arrays reporting within
+          // ~3 days as operational. Alert count is set from the alerts fetch.
+          const healthy = rows.filter(a => a.capturedAt && (now - a.capturedAt) <= 3 * 86400000).length;
+          setPlatformHealthy(healthy);
+        } else {
+          setPlatformAlerts(rows.reduce((s, a) => s + (a.open_alerts || 0), 0));
+          const healthy = rows.filter(a => {
+            if (!a.latest || !a.latest.captured_at) return false;
+            const ms = new Date(String(a.latest.captured_at).replace(' ', 'T') + 'Z').getTime();
+            const thresholdMin = (a.polling_interval_minutes || 15) * 2 + 5;
+            return Number.isFinite(ms) && (now - ms) <= thresholdMin * 60000;
+          }).length;
+          setPlatformHealthy(healthy);
+        }
       })
       .catch(() => {});
     loadPlatform();
@@ -343,7 +366,7 @@ export default function Layout() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <header className="relative z-30 h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-3 px-4">
-          <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block">{isPure ? 'Pure Storage Dashboard' : isNetapp ? 'NetApp Dashboard' : 'Global Cluster Dashboard'}</h1>
+          <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : 'Global Cluster Dashboard'}</h1>
           <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum">
             {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
             {isPlatform

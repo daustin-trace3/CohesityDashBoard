@@ -1,0 +1,24 @@
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+const p1 = require('./services/pure1Api');
+(async () => {
+  const arrays = await p1.fetchArrays();
+  const one = arrays[0];
+  console.log('array:', one.name, one.id);
+  const vols = await p1.fetchVolumes(one.id);
+  console.log('\nvolumes:', vols.length, 'first:', JSON.stringify(vols[0]));
+  const hw = await p1.fetchHardware(one.id);
+  console.log('\nhardware: controllers=', hw.controllers.length, 'components=', hw.components.length, 'drives=', hw.drives.length);
+  console.log('  controller[0]:', JSON.stringify(hw.controllers[0]));
+  console.log('  drive[0]:', JSON.stringify(hw.drives[0]));
+  const conn = await p1.fetchConnectivity(one.id);
+  console.log('\nconnectivity: interfaces=', conn.interfaces.length, 'ports=', conn.ports.length);
+  console.log('  iface w/ ip:', JSON.stringify(conn.interfaces.find(i => i.address) || conn.interfaces[0]));
+  console.log('  port[0]:', JSON.stringify(conn.ports[0]));
+  const pods = await p1.fetchPods();
+  console.log('\npods:', pods.length, 'multi-array pods:', pods.filter(p => p.arrays.length > 1).length);
+  console.log('  pod[0]:', JSON.stringify(pods[0]));
+  const cap = await p1.fetchCapacityHistory(one.id, 30);
+  console.log('\ncap history: metrics=', Object.keys(cap.series), 'total pts=', (cap.series.array_total_capacity||[]).length, 'last=', JSON.stringify((cap.series.array_total_capacity||[]).slice(-1)));
+  const perf = await p1.fetchPerformanceHistory(one.id, 1);
+  console.log('perf history: metrics=', Object.keys(perf.series), 'read_iops pts=', (perf.series.array_read_iops||[]).length, 'last=', JSON.stringify((perf.series.array_read_iops||[]).slice(-1)));
+})().then(() => process.exit(0)).catch(e => { console.error('ERR', e.response && e.response.status, JSON.stringify(e.response && e.response.data) || e.message); process.exit(1); });

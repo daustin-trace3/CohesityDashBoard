@@ -1,172 +1,97 @@
-import { useEffect, useState, useCallback } from 'react';
-import { ArrowLeftRight, RefreshCw, ShieldCheck, Link2, Boxes } from 'lucide-react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { ArrowLeftRight, RefreshCw, Search, Boxes, Layers } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
-import { BRAND, fmtBytes, fmtNum, statusTone } from './helpers';
+import { BRAND, fmtNum } from './helpers';
 
-function freq(ms) {
-  if (!ms) return '—';
-  const s = ms / 1000;
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.round(s / 60)}m`;
-  if (s < 86400) return `${Math.round(s / 3600)}h`;
-  return `${Math.round(s / 86400)}d`;
+function statusTone(s) {
+  const v = String(s || '').toLowerCase();
+  if (v === 'online') return 'ok';
+  if (v === 'unknown' || v === 'unhealthy' || v === 'offline') return 'crit';
+  return 'neutral';
 }
 
 export default function PureReplicationPage() {
   const { toast } = useToast();
-  const [conns, setConns] = useState(null);
-  const [pgs, setPgs] = useState(null);
   const [pods, setPods] = useState(null);
+  const [q, setQ] = useState('');
+  const [stretchedOnly, setStretchedOnly] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   const load = useCallback(() => {
-    return Promise.allSettled([
-      client.get('/pure/replication'),
-      client.get('/pure/protection-groups'),
-      client.get('/pure/pods'),
-    ]).then(([c, p, d]) => {
-      setConns(c.status === 'fulfilled' ? c.value.data : []);
-      setPgs(p.status === 'fulfilled' ? p.value.data : []);
-      setPods(d.status === 'fulfilled' ? d.value.data : []);
-      if (c.status === 'rejected' || p.status === 'rejected') {
-        toast({ type: 'error', title: 'Failed to load some replication data' });
-      }
-    });
+    setLoading(true);
+    return client.get('/pure1/pods')
+      .then(({ data }) => setPods(data || []))
+      .catch(() => { setPods([]); toast({ type: 'error', title: 'Failed to load pods' }); })
+      .finally(() => setLoading(false));
   }, [toast]);
 
   useEffect(() => { load(); }, [load]);
 
-  const sync = (conns || []).filter((c) => String(c.type || '').includes('sync')).length;
-  const async_ = (conns || []).filter((c) => String(c.type || '').includes('async')).length;
-  const replicatingPgs = (pgs || []).filter((p) => p.replication_enabled).length;
+  const stretched = useMemo(() => (pods || []).filter((p) => p.arrays.length > 1), [pods]);
+  const filtered = useMemo(() => {
+    const n = q.trim().toLowerCase();
+    let list = stretchedOnly ? stretched : (pods || []);
+    if (n) list = list.filter((p) => p.name.toLowerCase().includes(n) || p.arrays.some((a) => String(a.name).toLowerCase().includes(n)));
+    return [...list].sort((a, b) => b.arrays.length - a.arrays.length || a.name.localeCompare(b.name));
+  }, [pods, stretched, stretchedOnly, q]);
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={ArrowLeftRight} title="Pure Replication & DR" description="Replication partners and protection group policies across all FlashArrays">
-        <button
-          onClick={load}
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors"
-        >
-          <RefreshCw size={15} /> Refresh
+      <PageHeader icon={ArrowLeftRight} title="Pure Replication" description="ActiveCluster pods and replication topology from Pure Storage">
+        <button onClick={load} disabled={loading}
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
+          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
         </button>
       </PageHeader>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-        <StatCard icon={Link2} label="Replication Partners" value={fmtNum((conns || []).length)} tone="brand" />
-        <StatCard icon={ArrowLeftRight} label="Sync" value={sync} />
-        <StatCard icon={ArrowLeftRight} label="Async" value={async_} />
-        <StatCard icon={ShieldCheck} label="Protection Groups" value={fmtNum((pgs || []).length)} sub={`${replicatingPgs} replicating`} />
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+        <StatCard icon={Boxes} label="Total Pods" value={fmtNum((pods || []).length)} tone="brand" />
+        <StatCard icon={Layers} label="Stretched (multi-array)" value={fmtNum(stretched.length)} />
+        <StatCard icon={ArrowLeftRight} label="Replicating Arrays" value={fmtNum(new Set(stretched.flatMap((p) => p.arrays.map((a) => a.id))).size)} />
       </div>
 
-      {/* ActiveCluster pods */}
-      {(pods == null || pods.length > 0) && (
-        <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-          <div className="flex items-center gap-2 mb-3"><Boxes size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">ActiveCluster Pods</p></div>
-          {pods == null ? (
-            <LoadingPanel label="Loading pods…" height={100} />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                  <th className="py-2 pr-3">Pod</th><th className="py-2 pr-3">Array</th><th className="py-2 pr-3">Promotion</th><th className="py-2 pr-3">Mediator</th><th className="py-2 pr-3">Members</th><th className="py-2 pr-3 text-right">Physical</th>
-                </tr></thead>
-                <tbody>
-                  {pods.map((p) => (
-                    <tr key={p.id} className="border-b border-cohesity-border/50">
-                      <td className="py-2 pr-3 text-ink">{p.name}</td>
-                      <td className="py-2 pr-3 text-ink-muted">{p.array_name}</td>
-                      <td className="py-2 pr-3"><Badge tone={p.promotion_status === 'promoted' ? 'ok' : 'neutral'}>{p.promotion_status || '—'}</Badge></td>
-                      <td className="py-2 pr-3 text-ink-muted">{p.mediator || '—'}</td>
-                      <td className="py-2 pr-3 text-ink-muted text-[11px]">{p.member_arrays || '—'}</td>
-                      <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(p.total_physical_bytes)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Replication partners */}
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">Replication Partners</p>
-        {conns == null ? (
-          <LoadingPanel label="Loading partners…" height={120} />
-        ) : conns.length === 0 ? (
-          <div className="text-sm text-ink-muted py-6 text-center">No replication partners configured.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                  <th className="py-2 pr-3">Array</th>
-                  <th className="py-2 pr-3">Partner</th>
-                  <th className="py-2 pr-3">Type</th>
-                  <th className="py-2 pr-3">Transport</th>
-                  <th className="py-2 pr-3">Purity</th>
-                  <th className="py-2 pr-3">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {conns.map((c) => (
-                  <tr key={c.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink">{c.array_name}</td>
-                    <td className="py-2 pr-3 text-ink-muted">{c.remote_name}</td>
-                    <td className="py-2 pr-3 text-ink-muted">{c.type || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-muted uppercase">{c.transport || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-muted tnum">{c.version || '—'}</td>
-                    <td className="py-2 pr-3"><Badge tone={statusTone(c.status)}>{c.status || 'unknown'}</Badge></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Protection groups */}
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">Protection Groups</p>
-        {pgs == null ? (
-          <LoadingPanel label="Loading protection groups…" height={120} />
-        ) : pgs.length === 0 ? (
-          <div className="text-sm text-ink-muted py-6 text-center">No protection groups found.</div>
+        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+          <p className="text-sm font-semibold text-ink">Pods {pods ? `(${filtered.length})` : ''}</p>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-[12px] text-ink-muted cursor-pointer select-none">
+              <input type="checkbox" checked={stretchedOnly} onChange={(e) => setStretchedOnly(e.target.checked)} className="accent-brand" />
+              Stretched only
+            </label>
+            <div className="relative w-56 max-w-full">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by pod or array…"
+                className="w-full bg-surface border border-cohesity-border text-[13px] text-ink rounded-lg pl-9 pr-3 py-1.5 placeholder-ink-faint focus:border-brand/60" />
+            </div>
+          </div>
+        </div>
+        {pods == null ? (
+          <LoadingPanel label="Loading pods…" height={160} />
+        ) : filtered.length === 0 ? (
+          <div className="text-sm text-ink-muted py-8 text-center">No pods match.</div>
         ) : (
-          <div className="overflow-x-auto max-h-[55vh] overflow-y-auto">
+          <div className="overflow-x-auto max-h-[62vh] overflow-y-auto">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-surface">
-                <tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                  <th className="py-2 pr-3">Group</th>
-                  <th className="py-2 pr-3">Array</th>
-                  <th className="py-2 pr-3 text-right">Volumes</th>
-                  <th className="py-2 pr-3">Snapshot</th>
-                  <th className="py-2 pr-3">Replication</th>
-                  <th className="py-2 pr-3 text-right">Retention</th>
-                  <th className="py-2 pr-3 text-right">Snap Space</th>
-                </tr>
-              </thead>
+              <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Pod</th><th className="py-2 pr-3">Mediator</th><th className="py-2 pr-3">Member Arrays</th>
+              </tr></thead>
               <tbody>
-                {pgs.map((p) => (
-                  <tr key={p.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink truncate max-w-[240px]">{p.name}</td>
-                    <td className="py-2 pr-3 text-ink-muted">{p.array_name}</td>
-                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(p.volume_count)}</td>
+                {filtered.map((p) => (
+                  <tr key={p.id} className="border-b border-cohesity-border/50 align-top">
+                    <td className="py-2 pr-3 text-ink font-medium">{p.name}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{p.mediator || '—'}</td>
                     <td className="py-2 pr-3">
-                      {p.snapshot_enabled
-                        ? <Badge tone="ok">every {freq(p.snapshot_frequency_ms)}</Badge>
-                        : <span className="text-ink-faint">off</span>}
+                      <div className="flex flex-wrap gap-1.5">
+                        {p.arrays.map((a) => (
+                          <span key={a.id} className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-cohesity-border bg-surface text-[12px]">
+                            <span className="text-ink">{a.name}</span>
+                            {a.status && <Badge tone={statusTone(a.status)}>{a.status}</Badge>}
+                          </span>
+                        ))}
+                      </div>
                     </td>
-                    <td className="py-2 pr-3">
-                      {p.replication_enabled
-                        ? <Badge tone="brand">every {freq(p.replication_frequency_ms)}</Badge>
-                        : <span className="text-ink-faint">off</span>}
-                    </td>
-                    <td className="py-2 pr-3 text-right tnum text-ink-muted">
-                      {p.source_retention_days != null ? `${p.source_retention_days}d` : '—'}
-                    </td>
-                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(p.snapshots_bytes)}</td>
                   </tr>
                 ))}
               </tbody>

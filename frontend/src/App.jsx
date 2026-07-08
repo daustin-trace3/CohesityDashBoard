@@ -5,12 +5,12 @@ import Dashboard from './pages/Dashboard';
 import AlertsPage from './pages/AlertsPage';
 import HardwarePage from './pages/HardwarePage';
 import ClusterManagement from './pages/ClusterManagement';
-import PureOverviewPage from './pages/pure/PureOverviewPage';
+import PureAlertsPage from './pages/pure/PureAlertsPage';
+import Pure1FleetPage from './pages/pure/Pure1FleetPage';
 import PureCapacityPage from './pages/pure/PureCapacityPage';
 import PureVolumesPage from './pages/pure/PureVolumesPage';
 import PureReplicationPage from './pages/pure/PureReplicationPage';
 import PureHardwarePage from './pages/pure/PureHardwarePage';
-import PureAlertsPage from './pages/pure/PureAlertsPage';
 import PureConnectivityPage from './pages/pure/PureConnectivityPage';
 import PureSettingsPage from './pages/pure/PureSettingsPage';
 import NetAppOverviewPage from './pages/netapp/NetAppOverviewPage';
@@ -63,7 +63,8 @@ export default function App() {
                 <Route path="alerts"          element={withBoundary(<AlertsPage />)} />
                 <Route path="hardware"        element={withBoundary(<HardwarePage />)} />
                 <Route path="clusters"        element={withBoundary(<ClusterManagement />)} />
-                <Route path="pure"            element={withBoundary(<PureOverviewPage />)} />
+                <Route path="pure"            element={withBoundary(<Pure1FleetPage />)} />
+                <Route path="pure/fleet"      element={<Navigate to="/pure" replace />} />
                 <Route path="pure/capacity"   element={withBoundary(<PureCapacityPage />)} />
                 <Route path="pure/volumes"    element={withBoundary(<PureVolumesPage />)} />
                 <Route path="pure/replication" element={withBoundary(<PureReplicationPage />)} />

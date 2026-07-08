@@ -1,154 +1,184 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, RefreshCw, Save, Clock, HardDrive, Play } from 'lucide-react';
+import { Settings, RefreshCw, Save, PlugZap, KeyRound, Copy, Check, Cloud, Clock, Gauge } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge } from '../../components/ui/primitives';
-import { BRAND } from './helpers';
+import { BRAND, timeAgo } from './helpers';
 
-const MIN_INTERVAL = 5;
-const MAX_INTERVAL = 1440;
+const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
+
+function Field({ label, hint, children }) {
+  return (
+    <div>
+      <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-faint mb-1">{label}</label>
+      {children}
+      {hint && <p className="text-[11px] text-ink-faint mt-1">{hint}</p>}
+    </div>
+  );
+}
 
 export default function PureSettingsPage() {
   const { toast } = useToast();
-  const [arrays, setArrays] = useState(null);
-  const [intervals, setIntervals] = useState({}); // id -> string value being edited
-  const [savingId, setSavingId] = useState(null);
-  const [pollingId, setPollingId] = useState(null);
+  const [cfg, setCfg] = useState(null);
+  const [appId, setAppId] = useState('');
+  const [privateKey, setPrivateKey] = useState('');
+  const [ttl, setTtl] = useState(10);
+  const [warnPct, setWarnPct] = useState(75);
+  const [critPct, setCritPct] = useState(90);
+  const [showHidden, setShowHidden] = useState(false);
+  const [savingCreds, setSavingCreds] = useState(false);
+  const [savingPrefs, setSavingPrefs] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [copied, setCopied] = useState(false);
 
-  const load = useCallback(() => {
-    return client
-      .get('/pure/arrays')
-      .then(({ data }) => {
-        setArrays(data);
-        setIntervals(Object.fromEntries(data.map((a) => [a.id, String(a.polling_interval_minutes ?? 15)])));
-      })
-      .catch(() => {
-        setArrays([]);
-        toast({ type: 'error', title: 'Failed to load Pure arrays' });
-      });
-  }, [toast]);
+  const load = useCallback(() => client.get('/pure1/settings')
+    .then(({ data }) => {
+      setCfg(data);
+      setAppId(data.appId || '');
+      setTtl(data.cacheTtlMin || 10);
+      setWarnPct(data.warnPct || 75);
+      setCritPct(data.critPct || 90);
+      setShowHidden(!!data.showHiddenAlerts);
+    })
+    .catch(() => { setCfg({ configured: false }); toast({ type: 'error', title: 'Failed to load Pure settings' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
-  const save = async (array) => {
-    const raw = Number(intervals[array.id]);
-    if (!Number.isFinite(raw) || raw < MIN_INTERVAL || raw > MAX_INTERVAL) {
-      toast({ type: 'error', title: 'Invalid interval', message: `Enter a value between ${MIN_INTERVAL} and ${MAX_INTERVAL} minutes.` });
-      return;
-    }
-    setSavingId(array.id);
+  const saveCreds = async () => {
+    setSavingCreds(true);
     try {
-      // Re-send the array's existing fields; secrets left blank are preserved server-side.
-      await client.put(`/pure/arrays/${array.id}`, {
-        name: array.name,
-        mgmt_host: array.mgmt_host,
-        auth_method: array.auth_method || 'client',
-        client_id: array.client_id || '',
-        key_id: array.key_id || '',
-        username: array.username || '',
-        issuer: array.issuer || '',
-        ssl_verify: !!array.ssl_verify,
-        polling_interval_minutes: raw,
-      });
-      toast({ type: 'success', title: 'Polling interval updated', message: `${array.name} now polls every ${raw} min.` });
-      load();
+      const patch = {};
+      if (appId.trim() && appId.trim() !== (cfg?.appId || '')) patch.appId = appId.trim();
+      if (privateKey.trim()) patch.privateKey = privateKey.trim();
+      if (Object.keys(patch).length === 0) { toast({ type: 'info', title: 'Nothing to save' }); return; }
+      const { data } = await client.put('/pure1/settings', patch);
+      setCfg(data); setPrivateKey('');
+      toast({ type: 'success', title: 'Credentials saved' });
     } catch (err) {
-      const msg = err?.response?.data?.error || 'Could not update the array.';
-      toast({ type: 'error', title: 'Update failed', message: msg });
-    } finally {
-      setSavingId(null);
-    }
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Could not save.' });
+    } finally { setSavingCreds(false); }
   };
 
-  const pollNow = async (array) => {
-    setPollingId(array.id);
+  const savePrefs = async () => {
+    setSavingPrefs(true);
     try {
-      await client.post(`/pure/arrays/${array.id}/poll`);
-      toast({ type: 'success', title: 'Poll triggered', message: `Collecting fresh data from ${array.name}.` });
+      const { data } = await client.put('/pure1/settings', {
+        cacheTtlMin: Number(ttl), warnPct: Number(warnPct), critPct: Number(critPct), showHiddenAlerts: showHidden,
+      });
+      setCfg(data);
+      toast({ type: 'success', title: 'Preferences saved' });
     } catch (err) {
-      const msg = err?.response?.data?.error || 'Poll failed.';
-      toast({ type: 'error', title: 'Poll failed', message: msg });
-    } finally {
-      setPollingId(null);
-    }
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Could not save.' });
+    } finally { setSavingPrefs(false); }
   };
+
+  const testConn = async () => {
+    setTesting(true); setTestResult(null);
+    try {
+      const { data } = await client.post('/pure1/test');
+      setTestResult(data.ok ? { ok: true, msg: `Connected · ${data.arrayCount} arrays visible` } : { ok: false, msg: data.error });
+    } catch (err) {
+      setTestResult({ ok: false, msg: err?.response?.data?.error || 'Connection failed' });
+    } finally { setTesting(false); }
+  };
+
+  const copyPublicKey = () => {
+    if (!cfg?.publicKey) return;
+    navigator.clipboard.writeText(cfg.publicKey).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+  };
+
+  if (cfg == null) {
+    return (
+      <div className="animate-fade-in max-w-3xl">
+        <PageHeader icon={Settings} title="Pure Settings" description="Pure1 credentials and preferences" />
+        <LoadingPanel label="Loading settings…" height={160} />
+      </div>
+    );
+  }
 
   return (
     <div className="animate-fade-in max-w-3xl">
-      <PageHeader icon={Settings} title="Pure Settings" description="Configure polling and connection details for each FlashArray">
-        <button
-          onClick={load}
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors"
-        >
+      <PageHeader icon={Settings} title="Pure Settings" description="Pure1 cloud credentials and display preferences">
+        <button onClick={load} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
           <RefreshCw size={15} /> Refresh
         </button>
       </PageHeader>
 
-      {arrays == null ? (
-        <LoadingPanel label="Loading Pure arrays…" />
-      ) : arrays.length === 0 ? (
-        <div className="panel p-8 text-center text-sm text-ink-muted" style={{ borderTop: `3px solid ${BRAND}` }}>
-          No Pure arrays registered yet.
+      {/* Connection status */}
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <div className="flex items-center gap-2 mb-3"><Cloud size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Connection</p></div>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+          <span className="flex items-center gap-2">Status: {cfg.configured ? <Badge tone="ok">Configured</Badge> : <Badge tone="crit">Not configured</Badge>}</span>
+          <span className="text-ink-muted">Key source: <span className="text-ink">{cfg.keySource}</span></span>
+          <span className="text-ink-muted">App ID source: <span className="text-ink">{cfg.appIdSource}</span></span>
+          <span className="text-ink-muted">Last data refresh: <span className="text-ink">{cfg.lastRefresh?.overview ? timeAgo(cfg.lastRefresh.overview) : '—'}</span></span>
         </div>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {arrays.map((a) => {
-            const edited = String(a.polling_interval_minutes ?? 15) !== String(intervals[a.id] ?? '');
-            return (
-              <div key={a.id} className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg border flex-shrink-0" style={{ backgroundColor: `${BRAND}15`, borderColor: `${BRAND}40` }}>
-                      <HardDrive size={16} style={{ color: BRAND }} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-ink truncate">{a.name}</p>
-                      <p className="text-[11px] text-ink-faint truncate">{a.mgmt_host}</p>
-                    </div>
-                  </div>
-                  <Badge tone="neutral">{a.auth_method === 'token' ? 'API token' : 'API client'}</Badge>
-                </div>
+        <div className="flex items-center gap-2 mt-3">
+          <button onClick={testConn} disabled={testing || !cfg.configured}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
+            <PlugZap size={13} /> {testing ? 'Testing…' : 'Test connection'}
+          </button>
+          {testResult && <span className={`text-[12px] ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>{testResult.ok ? '✓ ' : '✗ '}{testResult.msg}</span>}
+        </div>
+      </div>
 
-                <div className="flex flex-wrap items-end gap-3">
-                  <div>
-                    <label htmlFor={`interval-${a.id}`} className="block text-[11px] font-semibold uppercase tracking-wider text-ink-faint mb-1">
-                      <Clock size={11} className="inline mr-1 -mt-0.5" />Polling interval (minutes)
-                    </label>
-                    <input
-                      id={`interval-${a.id}`}
-                      type="number"
-                      min={MIN_INTERVAL}
-                      max={MAX_INTERVAL}
-                      step="5"
-                      value={intervals[a.id] ?? ''}
-                      onChange={(e) => setIntervals((m) => ({ ...m, [a.id]: e.target.value }))}
-                      className="w-32 bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none tnum"
-                    />
-                  </div>
-                  <button
-                    onClick={() => save(a)}
-                    disabled={savingId === a.id || !edited}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    <Save size={13} /> {savingId === a.id ? 'Saving…' : 'Save'}
-                  </button>
-                  <button
-                    onClick={() => pollNow(a)}
-                    disabled={pollingId === a.id}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer"
-                  >
-                    <Play size={13} /> {pollingId === a.id ? 'Polling…' : 'Poll now'}
-                  </button>
-                </div>
-
-                <p className="text-[11px] text-ink-faint mt-2">
-                  Allowed range {MIN_INTERVAL}–{MAX_INTERVAL} minutes. Changes reschedule polling immediately; the next sample lands at the following interval tick.
-                </p>
+      {/* Credentials */}
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <div className="flex items-center gap-2 mb-3"><KeyRound size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Pure1 Credentials</p></div>
+        <div className="grid grid-cols-1 gap-3">
+          <Field label="Application ID (API key)" hint="From Pure1 Manage → Administration → API Registrations (e.g. pure1:apikey:…).">
+            <input value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="pure1:apikey:…" className={inp} spellCheck={false} />
+          </Field>
+          <Field label="Private key (PEM)" hint={`Stored encrypted. Current source: ${cfg.keySource}. Paste a new key only to replace it.`}>
+            <textarea value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} rows={4}
+              placeholder={cfg.hasPrivateKey ? '•••••• key on file — paste to replace' : '-----BEGIN PRIVATE KEY-----'}
+              className={`${inp} font-mono text-[11px]`} spellCheck={false} />
+          </Field>
+          {cfg.publicKey && (
+            <Field label="Public key to register in Pure1" hint="Upload this to the Pure1 API registration that issued your Application ID (role: Pure1 Viewer).">
+              <div className="relative">
+                <textarea value={cfg.publicKey} readOnly rows={4} className={`${inp} font-mono text-[11px] pr-10`} />
+                <button onClick={copyPublicKey} title="Copy" className="absolute top-2 right-2 text-ink-faint hover:text-ink">
+                  {copied ? <Check size={14} className="text-status-ok" /> : <Copy size={14} />}
+                </button>
               </div>
-            );
-          })}
+            </Field>
+          )}
         </div>
-      )}
+        <div className="flex items-center gap-2 mt-3">
+          <button onClick={saveCreds} disabled={savingCreds}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40">
+            <Save size={13} /> {savingCreds ? 'Saving…' : 'Save credentials'}
+          </button>
+        </div>
+      </div>
+
+      {/* Data & display preferences */}
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <div className="flex items-center gap-2 mb-3"><Gauge size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Data &amp; Display</p></div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <Field label="Refresh interval (min)" hint="How long fleet data is cached before re-fetching.">
+            <div className="flex items-center gap-2"><Clock size={14} className="text-ink-faint" /><input type="number" min={1} max={120} value={ttl} onChange={(e) => setTtl(e.target.value)} className={inp} /></div>
+          </Field>
+          <Field label="Capacity warning %" hint="Amber bar at/above this % full.">
+            <input type="number" min={1} max={100} value={warnPct} onChange={(e) => setWarnPct(e.target.value)} className={inp} />
+          </Field>
+          <Field label="Capacity critical %" hint="Red bar at/above this % full.">
+            <input type="number" min={1} max={100} value={critPct} onChange={(e) => setCritPct(e.target.value)} className={inp} />
+          </Field>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-ink-muted cursor-pointer mt-3 select-none">
+          <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} className="accent-brand cursor-pointer" />
+          Show hidden-severity alerts (Pure1 flags low-signal events as “hidden”)
+        </label>
+        <div className="flex items-center gap-2 mt-3">
+          <button onClick={savePrefs} disabled={savingPrefs}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40">
+            <Save size={13} /> {savingPrefs ? 'Saving…' : 'Save preferences'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

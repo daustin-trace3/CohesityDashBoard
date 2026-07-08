@@ -1,105 +1,136 @@
-import { useEffect, useState, useCallback } from 'react';
-import { Database, RefreshCw, HardDrive, Layers } from 'lucide-react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Database, RefreshCw, HardDrive, Gauge } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, LoadingPanel } from '../../components/ui/primitives';
-import { BRAND, fmtBytes, fmtRatio, usedPct } from './helpers';
+import TrendChart from '../../components/TrendChart';
+import { BRAND, fmtBytes, fmtRatio } from './helpers';
+import { usePure1Arrays, ArraySelect } from './usePure1Arrays';
+
+const USED_PARTS = ['array_volume_space', 'array_shared_space', 'array_snapshot_space', 'array_system_space', 'array_replication_space'];
 
 export default function PureCapacityPage() {
   const { toast } = useToast();
-  const [arrays, setArrays] = useState(null);
+  const { arrays, arrayId, setArrayId } = usePure1Arrays();
+  const [days, setDays] = useState(30);
+  const [hist, setHist] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const load = useCallback(() => {
-    return client
-      .get('/pure/overview')
-      .then(({ data }) => setArrays(data))
-      .catch(() => {
-        setArrays([]);
-        toast({ type: 'error', title: 'Failed to load capacity data' });
-      });
-  }, [toast]);
+    if (!arrayId) return undefined;
+    setLoading(true);
+    return client.get(`/pure1/capacity/history?arrayId=${arrayId}&days=${days}`)
+      .then(({ data }) => setHist(data))
+      .catch(() => { setHist({ series: {} }); toast({ type: 'error', title: 'Failed to load capacity history' }); })
+      .finally(() => setLoading(false));
+  }, [arrayId, days, toast]);
 
   useEffect(() => { load(); }, [load]);
 
-  const withMetrics = (arrays || []).filter((a) => a.latest);
-  const totals = withMetrics.reduce(
-    (acc, a) => {
-      acc.capacity += a.latest.capacity_bytes || 0;
-      acc.used += a.latest.used_bytes || 0;
-      acc.snapshots += a.latest.snapshots_bytes || 0;
-      return acc;
-    },
-    { capacity: 0, used: 0, snapshots: 0 }
-  );
-  const totalPct = totals.capacity ? Math.round((totals.used / totals.capacity) * 100) : 0;
+  // Merge the daily metric series into aligned rows keyed by timestamp.
+  const rows = useMemo(() => {
+    const series = (hist && hist.series) || {};
+    const totals = series.array_total_capacity || [];
+    const byTs = (name) => {
+      const m = new Map();
+      for (const [ts, v] of (series[name] || [])) m.set(ts, v);
+      return m;
+    };
+    const maps = Object.fromEntries([...USED_PARTS, 'array_data_reduction'].map((n) => [n, byTs(n)]));
+    return totals.map(([ts, total]) => {
+      const used = USED_PARTS.reduce((s, n) => s + (maps[n].get(ts) || 0), 0);
+      return { ts, total, used, dr: maps.array_data_reduction.get(ts) || null };
+    });
+  }, [hist]);
+
+  const latest = rows[rows.length - 1] || null;
+  const labels = useMemo(() => rows.map((r) => new Date(r.ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })), [rows]);
+
+  const composition = useMemo(() => {
+    const series = (hist && hist.series) || {};
+    const lastOf = (n) => { const arr = series[n] || []; return arr.length ? arr[arr.length - 1][1] : 0; };
+    return [
+      { label: 'Volumes', value: lastOf('array_volume_space'), color: BRAND },
+      { label: 'Shared / dedup', value: lastOf('array_shared_space'), color: '#0EA5E9' },
+      { label: 'Snapshots', value: lastOf('array_snapshot_space'), color: '#8B5CF6' },
+      { label: 'System', value: lastOf('array_system_space'), color: '#64748B' },
+      { label: 'Replication', value: lastOf('array_replication_space'), color: '#22C55E' },
+    ].filter((c) => c.value > 0);
+  }, [hist]);
+
+  const compTotal = composition.reduce((s, c) => s + c.value, 0) || 1;
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Database} title="Pure Capacity" description="Capacity and data reduction across all FlashArrays">
-        <button
-          onClick={load}
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors"
-        >
-          <RefreshCw size={15} /> Refresh
-        </button>
+      <PageHeader icon={Database} title="Pure Capacity" description="Capacity, data reduction and growth from Pure Storage">
+        <div className="flex items-center gap-2">
+          <ArraySelect arrays={arrays} value={arrayId} onChange={setArrayId} />
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}
+            className="bg-surface border border-cohesity-border text-[13px] text-ink rounded-lg px-3 py-1.5 focus:border-brand/60">
+            <option value={7}>7 days</option>
+            <option value={30}>30 days</option>
+            <option value={90}>90 days</option>
+          </select>
+          <button onClick={load} disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
+          </button>
+        </div>
       </PageHeader>
 
-      {arrays == null ? (
-        <LoadingPanel label="Loading capacity…" />
-      ) : withMetrics.length === 0 ? (
-        <div className="panel p-8 text-center text-sm text-ink-muted" style={{ borderTop: `3px solid ${BRAND}` }}>
-          No capacity data collected yet. Add an array on the Overview page and poll it.
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            <StatCard icon={Database} label="Total Capacity" value={fmtBytes(totals.capacity)} tone="brand" />
-            <StatCard icon={Database} label="Total Used" value={fmtBytes(totals.used)} sub={`${totalPct}% full`} />
-            <StatCard icon={Layers} label="Snapshots" value={fmtBytes(totals.snapshots)} />
-            <StatCard icon={HardDrive} label="Arrays" value={withMetrics.length} />
-          </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <StatCard icon={Database} label="Total Capacity" value={fmtBytes(latest?.total)} tone="brand" />
+        <StatCard icon={HardDrive} label="Used" value={fmtBytes(latest?.used)}
+          sub={latest && latest.total ? `${((latest.used / latest.total) * 100).toFixed(1)}% full` : undefined} />
+        <StatCard icon={HardDrive} label="Free" value={fmtBytes(latest ? Math.max(0, latest.total - latest.used) : null)} />
+        <StatCard icon={Gauge} label="Data Reduction" value={fmtRatio(latest?.dr)} />
+      </div>
 
-          <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                    <th className="py-2 pr-3">Array</th>
-                    <th className="py-2 pr-3 w-[220px]">Utilization</th>
-                    <th className="py-2 pr-3 text-right">Used</th>
-                    <th className="py-2 pr-3 text-right">Capacity</th>
-                    <th className="py-2 pr-3 text-right">Data Reduction</th>
-                    <th className="py-2 pr-3 text-right">Snapshots</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {withMetrics.map((a) => {
-                    const pct = usedPct(a.latest);
-                    const barColor = pct >= 90 ? '#f87171' : pct >= 75 ? '#fbbf24' : BRAND;
-                    return (
-                      <tr key={a.id} className="border-b border-cohesity-border/50">
-                        <td className="py-2 pr-3 text-ink font-medium">{a.name}</td>
-                        <td className="py-2 pr-3">
-                          <div className="flex items-center gap-2">
-                            <div className="h-2 flex-1 rounded-full bg-surface-overlay overflow-hidden">
-                              <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: barColor }} />
-                            </div>
-                            <span className="text-[11px] tnum text-ink-muted w-9 text-right">{pct}%</span>
-                          </div>
-                        </td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(a.latest.used_bytes)}</td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(a.latest.capacity_bytes)}</td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtRatio(a.latest.data_reduction)}</td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(a.latest.snapshots_bytes)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-3">Capacity Trend ({days} days)</p>
+        {hist == null || loading ? (
+          <LoadingPanel label="Loading capacity history…" height={240} />
+        ) : rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-10 text-center">No capacity history for this array.</div>
+        ) : (
+          <TrendChart
+            labels={labels}
+            unit=""
+            height={260}
+            format={(v) => fmtBytes(v)}
+            datasets={[
+              { label: 'Total', data: rows.map((r) => r.total), color: '#64748B' },
+              { label: 'Used', data: rows.map((r) => r.used), color: BRAND, fill: true },
+            ]}
+          />
+        )}
+      </div>
+
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-3">Capacity Composition</p>
+        {composition.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No composition data.</div>
+        ) : (
+          <>
+            <div className="flex h-3 rounded-full overflow-hidden mb-3">
+              {composition.map((c) => (
+                <div key={c.label} style={{ width: `${(c.value / compTotal) * 100}%`, background: c.color }} title={`${c.label}: ${fmtBytes(c.value)}`} />
+              ))}
             </div>
-          </div>
-        </>
-      )}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {composition.map((c) => (
+                <div key={c.label} className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: c.color }} />
+                  <div className="min-w-0">
+                    <p className="text-[11px] text-ink-faint truncate">{c.label}</p>
+                    <p className="text-sm text-ink tnum">{fmtBytes(c.value)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

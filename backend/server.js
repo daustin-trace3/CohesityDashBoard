@@ -26,6 +26,7 @@ const aiAuditRouter = require('./routes/aiAudit');
 const licensingRouter = require('./routes/licensing');
 const licenseRouter = require('./routes/license');
 const pureRouter = require('./routes/pure');
+const pure1Router = require('./routes/pure1');
 const netappRouter = require('./routes/netapp');
 const dnsRouter = require('./routes/dns');
 const requireApiKey = require('./middleware/auth');
@@ -106,6 +107,7 @@ app.use('/api/advisor', advisorRouter);
 app.use('/api/ai-audit', aiAuditRouter);
 app.use('/api/licensing', licensingRouter);
 app.use('/api/pure', pureRouter);
+app.use('/api/pure1', pure1Router);
 app.use('/api/netapp', netappRouter);
 app.use('/api/dns', dnsRouter);
 
