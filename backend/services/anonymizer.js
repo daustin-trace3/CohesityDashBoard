@@ -20,7 +20,17 @@ const db = require('../db/database');
 const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b/g;
 const IPV6_RE = /\b(?:[A-Fa-f0-9]{0,4}:){2,7}[A-Fa-f0-9]{1,4}\b/g;
 const FQDN_RE = /\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})?\.)+[A-Za-z]{2,24}\b/g;
-const TOKEN_RE = /\b(CLUSTER|JOB|POLICY|SOURCE|HOST|IP)-(\d+)\b/gi;
+const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}\b/g;
+const DOMAIN_USER_RE = /\b[A-Za-z][A-Za-z0-9_-]{1,15}\\[A-Za-z][A-Za-z0-9._-]+\b/g;
+const UNC_RE = /\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9$._-]+/g;
+const MAC_RE = /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g;
+// Protected object/VM names named inline in Cohesity messages ("Restore for
+// object symantecmanagementplatform_cpz in job ..."). Only tokenize candidates
+// that look like machine names (contain a digit, dot, hyphen or underscore) so
+// plain English after the keyword ("object could not ...") passes through.
+const OBJECT_RE = /\b(object|entity|VM|volume|datastore|database|view|share|job|task)\s+['"[]?([A-Za-z0-9][A-Za-z0-9._-]{2,62})/gi;
+const TOKEN_RE = /\b(CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT)-(\d+)\b/gi;
+const TOKEN_RE_TEST = /^(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT)-\d+$/i;
 
 // Keys whose values are version strings — exempt from IP/FQDN scrubbing so
 // "7.0.1.100" is not mistaken for an IPv4 address (dictionary still applies).
@@ -55,6 +65,7 @@ function loadDictionary() {
     add(db.prepare("SELECT DISTINCT job_name AS name FROM protection_runs WHERE job_name IS NOT NULL AND job_name != ''").all(), 'JOB');
     add(db.prepare("SELECT DISTINCT name FROM policies WHERE name IS NOT NULL AND name != ''").all(), 'POLICY');
     add(db.prepare("SELECT DISTINCT source_name AS name FROM source_registrations WHERE source_name IS NOT NULL AND source_name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT DISTINCT view_name AS name FROM license_view_detail WHERE view_name IS NOT NULL AND view_name != ''").all(), 'VIEW');
     for (const r of db.prepare("SELECT DISTINCT vip AS name FROM clusters WHERE vip IS NOT NULL AND vip != ''").all()) {
       const vip = String(r.name).trim();
       if (vip.length >= 3) entries.push([vip, isIpv4(vip) ? 'IP' : 'HOST']);
@@ -76,7 +87,7 @@ function loadDictionary() {
 
 // Appended to every AI system prompt so the model preserves tokens verbatim.
 const PROMPT_NOTE =
-  ' NOTE: identifiable names in the data (servers, clusters, jobs, policies, sources, hostnames, IP addresses) ' +
+  ' NOTE: identifiable names in the data (servers, clusters, jobs, policies, sources, views/shares, user accounts, hostnames, IP addresses) ' +
   'have been replaced with anonymous tokens such as CLUSTER-1, JOB-2, HOST-3 or IP-4. Refer to each entity ONLY ' +
   'by its exact token, verbatim and unaltered, so it can be mapped back to the real name locally. ' +
   'Never guess or invent the real names behind the tokens.';
@@ -119,6 +130,10 @@ function createAnonymizer() {
       out = out.replace(nameRe, (m) => token(categoryOf.get(m.toLowerCase()) || 'HOST', m));
     }
     if (key && VERSION_KEY_RE.test(key)) return out;
+    out = out.replace(UNC_RE, (m) => token('HOST', m));
+    out = out.replace(EMAIL_RE, (m) => token('USER', m));
+    out = out.replace(DOMAIN_USER_RE, (m) => token('USER', m));
+    out = out.replace(MAC_RE, (m) => token('MAC', m));
     out = out.replace(IPV4_RE, (m) => token('IP', m));
     out = out.replace(IPV6_RE, (m) => {
       // Reject time-of-day lookalikes (12:30:44): a real IPv6 has a hex
@@ -130,6 +145,11 @@ function createAnonymizer() {
       const labels = m.split('.');
       if (labels.length === 2 && FILE_EXTS.has(labels[labels.length - 1].toLowerCase())) return m;
       return token('HOST', m);
+    });
+    out = out.replace(OBJECT_RE, (kw, _keyword, name) => {
+      if (!/[\d._-]/.test(name)) return kw;   // plain English, not a machine name
+      if (TOKEN_RE_TEST.test(name)) return kw; // already tokenized by an earlier pass
+      return kw.replace(name, token('OBJECT', name));
     });
     return out;
   }

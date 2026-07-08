@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { ShieldCheck, RefreshCw, Send, KeyRound } from 'lucide-react';
 import client from '../api/client';
 
-const TOKEN_RE = /(\b(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP)-\d+\b)/g;
+const TOKEN_RE = /(\b(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT)-\d+\b)/g;
 
 function fmtTime(ts) {
   if (!ts) return '';
