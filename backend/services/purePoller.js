@@ -7,6 +7,7 @@ const {
   fetchNetworkInterfaces, fetchPorts, fetchConnections, fetchPods,
 } = require('./pureApi');
 const logger = require('../utils/logger');
+const pollerStatus = require('./pollerStatus');
 
 // arrayId -> cron task
 const scheduledTasks = new Map();
@@ -377,6 +378,7 @@ const replacePods = db.transaction((arrayId, items) => {
 /** Poll a single Pure array: capacity, performance, alerts, volumes, hosts,
  *  plus per-volume perf history, replication, protection, and hardware. */
 async function pollArray(array) {
+  pollerStatus.markStart('pure', array.id);
   try {
     const [
       infoResult, alertResult, volumeResult, hostResult, volPerfResult,
@@ -480,8 +482,10 @@ async function pollArray(array) {
         logger.error(`[PurePoller] ${label} fetch failed for array ${array.id}:`, safeErrorMessage(result.reason));
       }
     }
+    pollerStatus.markEnd('pure', array.id, 'success');
   } catch (err) {
     logger.error(`[PurePoller] Unexpected error for array ${array.id}:`, safeErrorMessage(err));
+    pollerStatus.markEnd('pure', array.id, 'error');
   }
 }
 

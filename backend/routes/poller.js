@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/database');
 const { pollCluster } = require('../services/poller');
 const { listProtectionGroupsV2, getProtectionGroupRunsV2 } = require('../services/cohesityApi');
+const pollerStatus = require('../services/pollerStatus');
 const router = express.Router();
 
 router.post('/trigger/:clusterId', (req, res, next) => {
@@ -11,6 +12,109 @@ router.post('/trigger/:clusterId', (req, res, next) => {
     if (!cluster) return res.status(404).json({ error: 'Cluster not found.' });
     pollCluster(cluster).catch(() => {}); // fire and forget
     res.json({ message: 'Poll triggered.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/status', (req, res, next) => {
+  try {
+    const now = Date.now();
+
+    // Helper: compute ageMinutes from a captured_at UTC string (no timezone suffix).
+    function ageMinutes(capturedAt) {
+      if (!capturedAt) return null;
+      const ms = new Date(capturedAt + 'Z').getTime();
+      if (isNaN(ms)) return null;
+      return Math.round((now - ms) / 60000);
+    }
+
+    // Helper: build entity array from a table.
+    function buildEntities(rows, metricsQuery, type) {
+      return rows.map(row => {
+        const metricsRow = db.prepare(metricsQuery).get(row.id);
+        const lastDataCapture = metricsRow
+          ? strftime(metricsRow.captured_at)
+          : null;
+        const age = ageMinutes(metricsRow ? metricsRow.captured_at : null);
+        const interval = Math.max(5, row.polling_interval_minutes || 15);
+        const state = pollerStatus.getState(type, row.id);
+        return {
+          id: row.id,
+          name: row.name,
+          intervalMinutes: interval,
+          isSyncing: state.isSyncing,
+          lastPollStart: state.lastPollStart,
+          lastPollEnd: state.lastPollEnd,
+          lastPollStatus: state.lastPollStatus,
+          lastDataCapture,
+          ageMinutes: age,
+          isStale: age !== null ? age > interval * 2 + 5 : false,
+        };
+      });
+    }
+
+    // Attach Z suffix to bare UTC strings from SQLite.
+    function strftime(val) {
+      if (!val) return null;
+      return val.endsWith('Z') ? val : val + 'Z';
+    }
+
+    // Cohesity clusters
+    const clusters = db.prepare('SELECT id, name, polling_interval_minutes FROM clusters').all();
+    const cohesityEntities = buildEntities(
+      clusters,
+      'SELECT captured_at FROM metrics_history WHERE cluster_id = ? ORDER BY captured_at DESC LIMIT 1',
+      'cohesity'
+    );
+
+    // Pure arrays
+    const pureArrays = db.prepare('SELECT id, name, polling_interval_minutes FROM pure_arrays').all();
+    const pureEntities = buildEntities(
+      pureArrays,
+      'SELECT captured_at FROM pure_metrics_history WHERE array_id = ? ORDER BY captured_at DESC LIMIT 1',
+      'pure'
+    );
+
+    // NetApp arrays
+    const netappArrays = db.prepare('SELECT id, name, polling_interval_minutes FROM netapp_arrays').all();
+    const netappEntities = buildEntities(
+      netappArrays,
+      'SELECT captured_at FROM netapp_metrics_history WHERE array_id = ? ORDER BY captured_at DESC LIMIT 1',
+      'netapp'
+    );
+
+    // Licensing (global, no per-entity structure)
+    const licenseRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM license_usage').get();
+    const licenseCapture = licenseRow ? licenseRow.captured_at : null;
+    const licenseAge = ageMinutes(licenseCapture);
+    const licensingState = pollerStatus.getState('licensing', 0);
+    // Licensing interval is 60 min (hardcoded in initLicensing hourly cron).
+    const licensingInterval = 60;
+
+    res.json({
+      cohesity: {
+        enabled: clusters.length > 0,
+        entities: cohesityEntities,
+      },
+      pure: {
+        enabled: pureArrays.length > 0,
+        entities: pureEntities,
+      },
+      netapp: {
+        enabled: netappArrays.length > 0,
+        entities: netappEntities,
+      },
+      licensing: {
+        enabled: true,
+        isSyncing: licensingState.isSyncing,
+        lastRefreshEnd: licensingState.lastPollEnd,
+        lastDataCapture: strftime(licenseCapture),
+        ageMinutes: licenseAge,
+        isStale: licenseAge !== null ? licenseAge > licensingInterval * 2 + 5 : false,
+        failedSources: [],
+      },
+    });
   } catch (err) {
     next(err);
   }

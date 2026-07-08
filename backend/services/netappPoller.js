@@ -9,6 +9,7 @@ const {
 } = require('./netappApi');
 const { getSetting } = require('./settings');
 const logger = require('../utils/logger');
+const pollerStatus = require('./pollerStatus');
 
 function pollIntervalMin() {
   return Math.min(1440, Math.max(5, Number(getSetting('netapp_poll_interval_min')) || 15));
@@ -269,6 +270,7 @@ const replaceCifsShares = db.transaction((arrayId, items) => {
 
 /** Poll a single NetApp cluster: capacity, performance, inventory, alerts. */
 async function pollArray(array) {
+  pollerStatus.markStart('netapp', array.id);
   try {
     const [
       clusterR, nodesR, aggR, volR, svmR, diskR, metricsR, healthR, emsR,
@@ -340,8 +342,10 @@ async function pollArray(array) {
     } catch (err) {
       logger.error(`[NetAppPoller] Alerts store failed for array ${array.id}:`, err.message);
     }
+    pollerStatus.markEnd('netapp', array.id, 'success');
   } catch (err) {
     logger.error(`[NetAppPoller] Unexpected error for array ${array.id}:`, safeErrorMessage(err));
+    pollerStatus.markEnd('netapp', array.id, 'error');
   }
 }
 

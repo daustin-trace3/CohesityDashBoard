@@ -4,6 +4,7 @@ const db = require('../db/database');
 const { buildHeliosClient } = require('./helios');
 const { getLicenseSettings } = require('./settings');
 const logger = require('../utils/logger');
+const pollerStatus = require('./pollerStatus');
 
 // Per-cluster capacity source (fast, ~28 rows). Front-end/physical/capacity per system.
 const CLUSTER_REPORT = 'storage-consumption-cluster';
@@ -294,9 +295,11 @@ const replaceTypeUsage = db.transaction((buckets) => {
  * Refresh both the per-system snapshot and the per-license-type split from Helios.
  */
 async function refreshLicensing() {
+  pollerStatus.markStart('licensing', 0);
   const apiKey = require('./settings').getHeliosApiKey();
   if (!apiKey || apiKey.length < 20) {
     logger.warn('[Licensing] Helios API key not configured — skipping licensing refresh.');
+    pollerStatus.markEnd('licensing', 0, 'error');
     return { ok: false, reason: 'no_key' };
   }
   const client = buildHeliosClient(apiKey);
@@ -335,9 +338,13 @@ async function refreshLicensing() {
       logger.warn(`[Licensing] Refresh leg '${legs[i].label}' failed — previous data kept: ${r.reason?.message || r.reason}`);
     }
   });
-  if (failed.length === legs.length) return { ok: false, reason: 'all_failed', failed };
+  if (failed.length === legs.length) {
+    pollerStatus.markEnd('licensing', 0, 'error');
+    return { ok: false, reason: 'all_failed', failed };
+  }
   logger.info(`[Licensing] Refreshed ${legs.length - failed.length}/${legs.length} sources; ` +
     results.map((r, i) => `${legs[i].label}: ${r.status === 'fulfilled' ? r.value : 'FAILED'}`).join('; '));
+  pollerStatus.markEnd('licensing', 0, 'success');
   return { ok: true, failed };
 }
 

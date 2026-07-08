@@ -6,6 +6,7 @@ const {
 } = require('./cohesityApi');
 const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
 const logger = require('../utils/logger');
+const pollerStatus = require('./pollerStatus');
 
 // Map of clusterId -> cron task
 const scheduledTasks = new Map();
@@ -285,6 +286,7 @@ function safeErrorMessage(err) {
 }
 
 async function pollCluster(cluster) {
+  pollerStatus.markStart('cohesity', cluster.id);
   try {
     const ninetyDaysAgo = (Date.now() - 90 * 24 * 60 * 60 * 1000) * 1000; // usecs
     const [clusterInfo, alertData, protectionData, policyData, sourceData] = await Promise.allSettled([
@@ -368,8 +370,10 @@ async function pollCluster(cluster) {
     } else {
       logger.error(`[Poller] Protection runs fetch failed for cluster ${cluster.id}:`, safeErrorMessage(protectionData.reason));
     }
+    pollerStatus.markEnd('cohesity', cluster.id, 'success');
   } catch (err) {
     logger.error(`[Poller] Unexpected error for cluster ${cluster.id}:`, safeErrorMessage(err));
+    pollerStatus.markEnd('cohesity', cluster.id, 'error');
   } finally {
     // Rebuild the cached dashboard payload so the next page load is instant.
     scheduleSnapshotRefresh();
