@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Cloud, RefreshCw, Server, Database, HardDrive, AlertTriangle, Search, ExternalLink, X } from 'lucide-react';
+import { Cloud, Server, Database, HardDrive, AlertTriangle, Search, ExternalLink, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import TrendChart from '../../components/TrendChart';
 import { BRAND, fmtBytes, fmtNum, fmtRatio, timeAgo, severityTone } from './helpers';
 
@@ -51,6 +51,7 @@ export default function Pure1FleetPage() {
   const [pageSize, setPageSize] = useState(10);
   const [page, setPage] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
   const [selected, setSelected] = useState(null);
   const [cap, setCap] = useState(null);
   const [perf, setPerf] = useState(null);
@@ -77,6 +78,7 @@ export default function Pure1FleetPage() {
     setRefreshing(true);
     await load(true);
     setRefreshing(false);
+    setLastRefreshed(new Date());
     toast({ type: 'success', title: 'Pure data refreshed' });
   };
 
@@ -221,10 +223,8 @@ export default function Pure1FleetPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Cloud} title="Pure Overview" description="Live view of every Pure array">
-        <button onClick={hardRefresh} disabled={refreshing}
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-          <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={hardRefresh} refreshing={refreshing} />
       </PageHeader>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">

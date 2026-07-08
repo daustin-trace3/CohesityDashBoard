@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Network, RefreshCw, Cable, Radio } from 'lucide-react';
+import { Network, Cable, Radio } from 'lucide-react';
 import client from '../../api/client';
 import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtNum } from './helpers';
 import { usePure1Arrays, ArraySelect } from './usePure1Arrays';
 
@@ -20,12 +20,13 @@ export default function PureConnectivityPage() {
   const { arrays, arrayId, setArrayId } = usePure1Arrays();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => {
     if (!arrayId) return undefined;
     setLoading(true);
     return client.get(`/pure1/connectivity?arrayId=${arrayId}`)
-      .then(({ data }) => setData(data))
+      .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
       .catch(() => { setData({ interfaces: [], ports: [] }); toast({ type: 'error', title: 'Failed to load connectivity' }); })
       .finally(() => setLoading(false));
   }, [arrayId, toast]);
@@ -43,10 +44,8 @@ export default function PureConnectivityPage() {
       <PageHeader icon={Network} title="Pure Connectivity" description="Network interfaces and ports from Pure Storage">
         <div className="flex items-center gap-2">
           <ArraySelect arrays={arrays} value={arrayId} onChange={setArrayId} />
-          <button onClick={load} disabled={loading}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
-          </button>
+          <LastUpdated date={lastRefreshed} prefix="Updated" />
+          <RefreshButton onClick={load} refreshing={loading} />
         </div>
       </PageHeader>
 

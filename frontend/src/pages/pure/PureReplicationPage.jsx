@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { ArrowLeftRight, RefreshCw, Search, Boxes, Layers } from 'lucide-react';
+import { ArrowLeftRight, Search, Boxes, Layers } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtNum } from './helpers';
 
 function statusTone(s) {
@@ -18,11 +18,12 @@ export default function PureReplicationPage() {
   const [q, setQ] = useState('');
   const [stretchedOnly, setStretchedOnly] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => {
     setLoading(true);
     return client.get('/pure1/pods')
-      .then(({ data }) => setPods(data || []))
+      .then(({ data }) => { setPods(data || []); setLastRefreshed(new Date()); })
       .catch(() => { setPods([]); toast({ type: 'error', title: 'Failed to load pods' }); })
       .finally(() => setLoading(false));
   }, [toast]);
@@ -40,10 +41,8 @@ export default function PureReplicationPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={ArrowLeftRight} title="Pure Replication" description="ActiveCluster pods and replication topology from Pure Storage">
-        <button onClick={load} disabled={loading}
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
-        </button>
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} refreshing={loading} />
       </PageHeader>
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">

@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { LayoutList, RefreshCw, Search, Download } from 'lucide-react';
+import { LayoutList, Search, Download } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtBytes, fmtNum, fmtRatio, severityTone } from './helpers';
 
 const HEALTH = {
@@ -52,6 +52,7 @@ export default function PureEstatePage() {
   const [statusFilter, setStatusFilter] = useState('');
   const [sort, setSort] = useState({ key: 'name', dir: 1 });
   const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback((force = false) => {
     const suffix = force ? '?refresh=1' : '';
@@ -70,7 +71,13 @@ export default function PureEstatePage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const hardRefresh = async () => { setRefreshing(true); await load(true); setRefreshing(false); };
+  const hardRefresh = async () => {
+    setRefreshing(true);
+    await load(true);
+    setRefreshing(false);
+    setLastRefreshed(new Date());
+    toast({ type: 'success', title: 'Estate data refreshed' });
+  };
 
   const alertsByArray = useMemo(() => {
     const rank = (s) => ({ critical: 3, warning: 2 }[String(s || '').toLowerCase()] || 1);
@@ -163,14 +170,12 @@ export default function PureEstatePage() {
     <div className="animate-fade-in">
       <PageHeader icon={LayoutList} title="Pure Estate Overview" description="Every Pure array — serials, versions, capacity, health — on one filterable page">
         <div className="flex items-center gap-2">
+          <LastUpdated date={lastRefreshed} prefix="Updated" />
           <button onClick={exportCsv} disabled={filtered.length === 0}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
             <Download size={15} /> Export CSV
           </button>
-          <button onClick={hardRefresh} disabled={refreshing}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-            <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} /> Refresh
-          </button>
+          <RefreshButton onClick={hardRefresh} refreshing={refreshing} />
         </div>
       </PageHeader>
 

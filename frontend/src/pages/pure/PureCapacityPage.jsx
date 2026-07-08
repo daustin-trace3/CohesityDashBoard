@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Database, RefreshCw, HardDrive, Gauge } from 'lucide-react';
+import { Database, HardDrive, Gauge } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import TrendChart from '../../components/TrendChart';
 import { BRAND, fmtBytes, fmtRatio } from './helpers';
 import { usePure1Arrays, ArraySelect } from './usePure1Arrays';
@@ -15,12 +15,13 @@ export default function PureCapacityPage() {
   const [days, setDays] = useState(30);
   const [hist, setHist] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => {
     if (!arrayId) return undefined;
     setLoading(true);
     return client.get(`/pure1/capacity/history?arrayId=${arrayId}&days=${days}`)
-      .then(({ data }) => setHist(data))
+      .then(({ data }) => { setHist(data); setLastRefreshed(new Date()); })
       .catch(() => { setHist({ series: {} }); toast({ type: 'error', title: 'Failed to load capacity history' }); })
       .finally(() => setLoading(false));
   }, [arrayId, days, toast]);
@@ -71,10 +72,8 @@ export default function PureCapacityPage() {
             <option value={30}>30 days</option>
             <option value={90}>90 days</option>
           </select>
-          <button onClick={load} disabled={loading}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
-          </button>
+          <LastUpdated date={lastRefreshed} prefix="Updated" />
+          <RefreshButton onClick={load} refreshing={loading} />
         </div>
       </PageHeader>
 

@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Layers, RefreshCw, Search, Activity, Timer, Gauge } from 'lucide-react';
+import { Layers, Search, Activity, Timer, Gauge } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import TrendChart from '../../components/TrendChart';
 import { BRAND, fmtBytes, fmtNum, fmtDateMs } from './helpers';
 import { usePure1Arrays, ArraySelect } from './usePure1Arrays';
@@ -18,6 +18,7 @@ export default function PureVolumesPage() {
   const [perf, setPerf] = useState(null);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => {
     if (!arrayId) return undefined;
@@ -29,6 +30,7 @@ export default function PureVolumesPage() {
       setVols(v.status === 'fulfilled' ? v.value.data : []);
       setPerf(p.status === 'fulfilled' ? p.value.data : { series: {} });
       if (v.status === 'rejected') toast({ type: 'error', title: 'Failed to load volumes' });
+      else setLastRefreshed(new Date());
     }).finally(() => setLoading(false));
   }, [arrayId, days, toast]);
 
@@ -59,10 +61,8 @@ export default function PureVolumesPage() {
             <option value={7}>7 days</option>
             <option value={30}>30 days</option>
           </select>
-          <button onClick={load} disabled={loading}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Refresh
-          </button>
+          <LastUpdated date={lastRefreshed} prefix="Updated" />
+          <RefreshButton onClick={load} refreshing={loading} />
         </div>
       </PageHeader>
 
