@@ -8,13 +8,26 @@
  * characterized separately in license-gate.test.js.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+import { createRequire } from 'module';
 import request from 'supertest';
+
+// Loaded via createRequire (not dynamic import) so registry.js and app.js's
+// own `require('./core/registry')` resolve to the SAME module instance —
+// see the equivalent note in tests/pollerFramework.test.js.
+const require = createRequire(import.meta.url);
 
 const API_KEY = 'test-api-key';
 let app;
 
-beforeAll(async () => {
-  const { createApp } = await import('../app.js');
+beforeAll(() => {
+  const registry = require('../core/registry');
+  const pureManifest = require('../platforms/pure');
+  const netappManifest = require('../platforms/netapp');
+  registry.init();
+  registry.registerPlugin(pureManifest);
+  registry.registerPlugin(netappManifest);
+
+  const { createApp } = require('../app');
   app = createApp({ licenseGate: (req, res, next) => next() });
 });
 

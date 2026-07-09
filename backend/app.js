@@ -22,9 +22,7 @@ const advisorRouter = require('./routes/advisor');
 const aiAuditRouter = require('./routes/aiAudit');
 const licensingRouter = require('./routes/licensing');
 const licenseRouter = require('./routes/license');
-const pureRouter = require('./routes/pure');
 const pure1Router = require('./routes/pure1');
-const netappRouter = require('./routes/netapp');
 const dnsRouter = require('./routes/dns');
 const registry = require('./core/registry');
 const requireApiKey = require('./middleware/auth');
@@ -104,9 +102,11 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/advisor', advisorRouter);
   app.use('/api/ai-audit', aiAuditRouter);
   app.use('/api/licensing', licensingRouter);
-  app.use('/api/pure', pureRouter);
+  // Seam: Pure1 cloud stays a static mount — the dispatcher only serves
+  // /api/<pluginId>/*, and pure1 is a second mount alongside the 'pure'
+  // plugin's own /api/pure/*. Folds in once its frontend paths migrate
+  // under /pure in a later WP.
   app.use('/api/pure1', pure1Router);
-  app.use('/api/netapp', netappRouter);
   app.use('/api/dns', dnsRouter);
 
   // Plugin dispatcher — resolves the registry at request time. Falls through

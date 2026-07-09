@@ -513,4 +513,8 @@ async function triggerPoll(arrayId) {
   await pollArray(array);
 }
 
-module.exports = { initPurePoller, scheduleArray, cancelArray, pollArray, triggerPoll };
+function stopAll() {
+  purePollerHandle.stopAll();
+}
+
+module.exports = { initPurePoller, scheduleArray, cancelArray, pollArray, triggerPoll, stopAll, purePollerHandle };

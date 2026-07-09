@@ -3,7 +3,17 @@ const db = require('../db/database');
 const { pollCluster } = require('../services/poller');
 const { listProtectionGroupsV2, getProtectionGroupRunsV2 } = require('../services/cohesityApi');
 const pollerStatus = require('../services/pollerStatus');
+const registry = require('../core/registry');
 const router = express.Router();
+
+// Per-plugin metrics-history table + array-key column, for the lastCapture
+// lookup in each entity's status row. Pure/NetApp today; any future platform
+// plugin with a metrics_history table + statusTables[0] as its arrays table
+// can add an entry here.
+const PLATFORM_METRICS_HISTORY = {
+  pure: { arraysTable: 'pure_arrays', metricsTable: 'pure_metrics_history', arrayIdColumn: 'array_id' },
+  netapp: { arraysTable: 'netapp_arrays', metricsTable: 'netapp_metrics_history', arrayIdColumn: 'array_id' },
+};
 
 router.post('/trigger/:clusterId', (req, res, next) => {
   try {
@@ -68,21 +78,23 @@ router.get('/status', (req, res, next) => {
       'cohesity'
     );
 
-    // Pure arrays
-    const pureArrays = db.prepare('SELECT id, name, polling_interval_minutes FROM pure_arrays').all();
-    const pureEntities = buildEntities(
-      pureArrays,
-      'SELECT captured_at FROM pure_metrics_history WHERE array_id = ? ORDER BY captured_at DESC LIMIT 1',
-      'pure'
-    );
-
-    // NetApp arrays
-    const netappArrays = db.prepare('SELECT id, name, polling_interval_minutes FROM netapp_arrays').all();
-    const netappEntities = buildEntities(
-      netappArrays,
-      'SELECT captured_at FROM netapp_metrics_history WHERE array_id = ? ORDER BY captured_at DESC LIMIT 1',
-      'netapp'
-    );
+    // Registry-driven platform plugins (pure, netapp): entities + enabled
+    // state derive from the registry; the metrics-history table for the
+    // lastCapture lookup comes from PLATFORM_METRICS_HISTORY above.
+    const platformSections = {};
+    for (const [pluginId, cfg] of Object.entries(PLATFORM_METRICS_HISTORY)) {
+      const plugin = registry.getPlugin(pluginId);
+      const arrays = db.prepare(`SELECT id, name, polling_interval_minutes FROM ${cfg.arraysTable}`).all();
+      const entities = buildEntities(
+        arrays,
+        `SELECT captured_at FROM ${cfg.metricsTable} WHERE ${cfg.arrayIdColumn} = ? ORDER BY captured_at DESC LIMIT 1`,
+        pluginId
+      );
+      platformSections[pluginId] = {
+        enabled: plugin ? plugin.enabled : false,
+        entities,
+      };
+    }
 
     // Licensing (global, no per-entity structure)
     const licenseRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM license_usage').get();
@@ -97,14 +109,8 @@ router.get('/status', (req, res, next) => {
         enabled: clusters.length > 0,
         entities: cohesityEntities,
       },
-      pure: {
-        enabled: pureArrays.length > 0,
-        entities: pureEntities,
-      },
-      netapp: {
-        enabled: netappArrays.length > 0,
-        entities: netappEntities,
-      },
+      pure: platformSections.pure,
+      netapp: platformSections.netapp,
       licensing: {
         enabled: true,
         isSyncing: licensingState.isSyncing,

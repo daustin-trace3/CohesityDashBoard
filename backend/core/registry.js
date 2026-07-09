@@ -135,6 +135,12 @@ function getPlugin(id) {
   return entry ? toPublic(entry) : undefined;
 }
 
+/** The raw poller handle returned by manifest.createPoller (may be null/undefined). */
+function getPollerHandle(id) {
+  const entry = plugins.get(id);
+  return entry ? entry.poller : undefined;
+}
+
 function listPlugins() {
   return Array.from(plugins.values()).map(toPublic);
 }
@@ -169,6 +175,7 @@ module.exports = {
   init,
   registerPlugin,
   getPlugin,
+  getPollerHandle,
   listPlugins,
   setEnabled,
   dispatch,

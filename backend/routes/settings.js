@@ -2,8 +2,27 @@ const express = require('express');
 const { getAiSettings, getLicenseSettings, getPlatformSettings, setSetting, secretSource } = require('../services/settings');
 const { encrypt } = require('../services/encryption');
 const { listModels } = require('../services/llmProvider');
+const registry = require('../core/registry');
 
 const router = express.Router();
+
+/** Apply an enable-flag toggle to the registry + (re)start/stop its poller.
+ *  No-throw: the registry may not have the plugin registered (e.g. tests). */
+function applyPlatformEnabled(pluginId, enabled) {
+  try {
+    const changed = registry.setEnabled(pluginId, enabled);
+    if (!changed) return;
+    const handle = registry.getPollerHandle(pluginId);
+    if (!handle) return;
+    if (enabled) {
+      if (typeof handle.init === 'function') handle.init();
+    } else if (typeof handle.stopAll === 'function') {
+      handle.stopAll();
+    }
+  } catch (err) {
+    // Never let a poller start/stop failure break the settings save.
+  }
+}
 
 // Secrets managed on Settings → Credentials. Values are stored AES-256-GCM
 // encrypted in app_settings and are NEVER returned by any endpoint — the UI
@@ -106,9 +125,11 @@ router.put('/', (req, res, next) => {
     }
     if (platformPureEnabled !== undefined) {
       setSetting('platform_pure_enabled', platformPureEnabled ? '1' : '0');
+      applyPlatformEnabled('pure', !!platformPureEnabled);
     }
     if (platformNetappEnabled !== undefined) {
       setSetting('platform_netapp_enabled', platformNetappEnabled ? '1' : '0');
+      applyPlatformEnabled('netapp', !!platformNetappEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));

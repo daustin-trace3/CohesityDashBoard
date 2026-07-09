@@ -4,12 +4,22 @@ const logger = require('./utils/logger');
 const registry = require('./core/registry');
 const { createApp } = require('./app');
 const { initPoller } = require('./services/poller');
-const { initPurePoller } = require('./services/purePoller');
-const { initNetAppPoller } = require('./services/netappPoller');
 const { initLicensing } = require('./services/licensing');
 const { initLicense, getLicenseStatus } = require('./services/license');
+const { getPlatformSettings } = require('./services/settings');
+const pureManifest = require('./platforms/pure');
+const netappManifest = require('./platforms/netapp');
 
 registry.init();
+
+// Register platform plugins, then apply their enable flags (app_settings
+// remains the source of truth in Phase 1 — see contract C4).
+const { platformPureEnabled, platformNetappEnabled } = getPlatformSettings();
+registry.registerPlugin(pureManifest);
+registry.setEnabled('pure', platformPureEnabled);
+registry.registerPlugin(netappManifest);
+registry.setEnabled('netapp', platformNetappEnabled);
+
 const app = createApp();
 const PORT = process.env.PORT || 3001;
 
@@ -36,8 +46,13 @@ if (require.main === module) {
   app.listen(PORT, '0.0.0.0', () => {
     logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
     initPoller();
-    initPurePoller();
-    initNetAppPoller();
+    // Start pollers only for enabled, actively-registered plugins (Cohesity's
+    // poller above is not registry-managed in Phase 1 and always starts).
+    for (const entry of registry.listPlugins()) {
+      if (!entry.enabled || entry.status !== 'active') continue;
+      const handle = registry.getPollerHandle(entry.id);
+      if (handle && typeof handle.init === 'function') handle.init();
+    }
     initLicensing();
     initLicense();
   });

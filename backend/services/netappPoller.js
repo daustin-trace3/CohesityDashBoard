@@ -453,7 +453,15 @@ async function triggerPoll(arrayId) {
   await pollArray(array);
 }
 
+function stopAll() {
+  directPoller.stopAll();
+  if (aiqumTask.isRunning()) {
+    aiqumTask.stop();
+  }
+}
+
 module.exports = {
   initNetAppPoller, reschedule, syncClusters, syncAndPollAll, pollArray, triggerPoll,
-  scheduleArray, cancelArray,
+  scheduleArray, cancelArray, stopAll,
+  directPoller, aiqumTask,
 };
