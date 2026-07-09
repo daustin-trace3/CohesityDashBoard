@@ -1,8 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList,
+  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -10,118 +9,17 @@ import { subscribeNetworkActivity } from '../api/client';
 import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { useSearch } from '../context';
+import { platforms as registryPlatforms, getPlatform } from '../platforms/registry';
 
-const platforms = [
-  { id: 'cohesity', label: 'Cohesity', route: '/dashboard', color: '#6CB33F' },
-  { id: 'pure',     label: 'Pure', route: '/pure',  color: '#FF6B00' },
-  { id: 'netapp',   label: 'NetApp',    route: '/netapp',   color: '#0067C5' },
-];
+const platforms = registryPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color }));
 
-const navGroups = [
-  {
-    label: 'Monitor',
-    items: [
-      { label: 'Global Overview', route: '/dashboard', icon: LayoutDashboard, isActive: (p) => p === '/' || p.startsWith('/dashboard') },
-      { label: 'AI Advisor', route: '/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/ai-advisor') },
-      { label: 'Alerts', route: '/alerts', icon: Bell, isActive: (p) => p.startsWith('/alerts'), showAlertCount: true },
-      { label: 'Analytics', route: '/analytics', icon: Activity, isActive: (p) => p.startsWith('/analytics') },
-      { label: 'Reporting', route: '/reporting', icon: FileText, isActive: (p) => p.startsWith('/reporting') },
-      { label: 'Licensing', route: '/licensing', icon: BadgeCheck, isActive: (p) => p.startsWith('/licensing') },
-    ],
-  },
-  {
-    label: 'Protect',
-    items: [
-      { label: 'Data Protection', route: '/data-protection', icon: ShieldCheck, isActive: (p) => p.startsWith('/data-protection') },
-      { label: 'Replication', route: '/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/replication') },
-      { label: 'Governance', route: '/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/governance') },
-    ],
-  },
-  {
-    label: 'Infrastructure',
-    items: [
-      { label: 'Clusters', route: '/clusters', icon: Server, isActive: (p) => p.startsWith('/clusters') },
-      { label: 'Hardware', route: '/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/hardware') },
-    ],
-  },
-  {
-    label: 'System',
-    items: [
-      { label: 'Settings', route: '/settings', icon: Settings, isActive: (p) => p.startsWith('/settings') },
-    ],
-  },
-];
-
-// Pure Storage sidebar — shown when the Pure platform is active. Grouped into
-// sections that mirror the Cohesity menu.
-const pureNavGroups = [
-  {
-    label: 'Monitor',
-    items: [
-      { label: 'Overview', route: '/pure', icon: Cloud, isActive: (p) => p === '/pure' },      { label: 'Estate', route: '/pure/estate', icon: LayoutList, isActive: (p) => p.startsWith('/pure/estate') },      { label: 'Capacity', route: '/pure/capacity', icon: Database, isActive: (p) => p.startsWith('/pure/capacity') },
-      { label: 'Volumes', route: '/pure/volumes', icon: Layers, isActive: (p) => p.startsWith('/pure/volumes') },
-      { label: 'Alerts', route: '/pure/alerts', icon: Bell, isActive: (p) => p.startsWith('/pure/alerts') },
-    ],
-  },
-  {
-    label: 'Protect',
-    items: [
-      { label: 'Replication', route: '/pure/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/pure/replication') },
-    ],
-  },
-  {
-    label: 'Infrastructure',
-    items: [
-      { label: 'Hardware', route: '/pure/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/pure/hardware') },
-      { label: 'Connectivity', route: '/pure/connectivity', icon: Network, isActive: (p) => p.startsWith('/pure/connectivity') },
-    ],
-  },
-  {
-    label: 'System',
-    items: [
-      { label: 'Settings', route: '/pure/settings', icon: Settings, isActive: (p) => p.startsWith('/pure/settings') },
-    ],
-  },
-];
-
-// NetApp ONTAP sidebar — shown when the NetApp platform is active.
-const netappNavGroups = [
-  {
-    label: 'Monitor',
-    items: [
-      { label: 'Overview', route: '/netapp', icon: Gauge, isActive: (p) => p === '/netapp' },
-      { label: 'Capacity', route: '/netapp/capacity', icon: Database, isActive: (p) => p.startsWith('/netapp/capacity') },
-      { label: 'Volumes', route: '/netapp/volumes', icon: Layers, isActive: (p) => p.startsWith('/netapp/volumes') },
-      { label: 'NFS', route: '/netapp/nfs', icon: Network, isActive: (p) => p.startsWith('/netapp/nfs') },
-      { label: 'SMB / CIFS', route: '/netapp/cifs', icon: FolderTree, isActive: (p) => p.startsWith('/netapp/cifs') },
-      { label: 'Alerts', route: '/netapp/alerts', icon: Bell, isActive: (p) => p.startsWith('/netapp/alerts') },
-    ],
-  },
-  {
-    label: 'Protect',
-    items: [
-      { label: 'Replication', route: '/netapp/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/netapp/replication') },
-    ],
-  },
-  {
-    label: 'Infrastructure',
-    items: [
-      { label: 'Hardware', route: '/netapp/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/netapp/hardware') },
-    ],
-  },
-  {
-    label: 'System',
-    items: [
-      { label: 'Settings', route: '/netapp/settings', icon: Settings, isActive: (p) => p.startsWith('/netapp/settings') },
-    ],
-  },
-];
+const navGroups = getPlatform('cohesity').navGroups;
+const pureNavGroups = getPlatform('pure').navGroups;
+const netappNavGroups = getPlatform('netapp').navGroups;
 
 function isActivePlatform(id, pathname) {
-  if (id === 'cohesity') return ['/', '/dashboard', '/ai-advisor', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting', '/licensing', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
-  if (id === 'pure') return pathname.startsWith('/pure');
-  if (id === 'netapp') return pathname.startsWith('/netapp');
-  return false;
+  const platform = getPlatform(id);
+  return platform ? platform.isActive(pathname) : false;
 }
 
 function BrandMark({ collapsed, label = 'Cohesity', accent }) {
