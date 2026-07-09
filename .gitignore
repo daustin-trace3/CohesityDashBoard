@@ -18,3 +18,4 @@ yarn-error.log*
 .agent*
 .env.local
 .gstack/
+*.iccplugin
