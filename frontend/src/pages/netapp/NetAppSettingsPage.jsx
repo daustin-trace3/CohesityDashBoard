@@ -187,7 +187,7 @@ export default function NetAppSettingsPage() {
         <RefreshButton onClick={load} />
       </PageHeader>
 
-      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start mb-4">
+      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 w-fit mb-4">
         {TABS.map((t) => {
           const Icon = t.icon;
           const active = tab === t.key;

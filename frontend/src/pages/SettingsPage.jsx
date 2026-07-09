@@ -136,6 +136,10 @@ export default function SettingsPage() {
               Stored <span className="text-ink">AES-256-GCM encrypted</span> in the local database, never displayed again,
               and applied immediately. A stored key overrides <code>.env</code>.
             </p>
+            <p className="text-[11px] text-ink-faint mt-1">
+              Connecting a cluster directly (no Helios)? Each cluster carries its own credentials — add it under{' '}
+              <span className="text-ink">Clusters → Add Cluster → Connection Type: Direct</span> (API key or username/password).
+            </p>
           </div>
         </div>
 
