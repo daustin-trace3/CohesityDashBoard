@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Bell, Download, RefreshCw, X, Sparkles } from 'lucide-react';
+import { Bell, Download, RefreshCw, X, Sparkles, ChevronUp, ChevronDown } from 'lucide-react';
 import client from '../api/client';
 import AlertBadge from '../components/AlertBadge';
 import AlertReviewModal from '../components/AlertReviewModal';
@@ -31,6 +31,37 @@ function exportAlertsCSV(alerts) {
   URL.revokeObjectURL(url);
 }
 
+// Status column sorts by lifecycle order rather than alphabetically.
+const statusRank = (a) => (a.dismissed ? 2 : a.resolved ? 1 : 0);
+
+const SORTERS = {
+  alert_type: (a, b) => String(a.alert_type || '').localeCompare(String(b.alert_type || ''), undefined, { sensitivity: 'base' }),
+  description: (a, b) => String(a.description || '').localeCompare(String(b.description || ''), undefined, { sensitivity: 'base' }),
+  first_seen: (a, b) => (a.first_seen ? new Date(a.first_seen).getTime() : 0) - (b.first_seen ? new Date(b.first_seen).getTime() : 0),
+  status: (a, b) => statusRank(a) - statusRank(b),
+};
+
+function SortableTh({ label, sortKey, sort, onSort, className = '' }) {
+  const active = sort.key === sortKey;
+  const Arrow = sort.dir === 'asc' ? ChevronUp : ChevronDown;
+  return (
+    <th
+      className={`pb-2 pr-4 ${className}`}
+      aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`flex items-center gap-1 cursor-pointer select-none hover:text-cohesity-text transition-colors ${active ? 'text-cohesity-text' : ''}`}
+        aria-label={`Sort by ${label}`}
+      >
+        {label}
+        {active && <Arrow size={12} className="text-cohesity-green" />}
+      </button>
+    </th>
+  );
+}
+
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState([]);
   const [clusters, setClusters] = useState([]);
@@ -45,6 +76,15 @@ export default function AlertsPage() {
 
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
+
+  // Newest alerts on top by default; column headers toggle key/direction.
+  const [sort, setSort] = useState({ key: 'first_seen', dir: 'desc' });
+  const handleSort = (key) => {
+    setSort(prev => prev.key === key
+      ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: key === 'first_seen' ? 'desc' : 'asc' });
+    setPage(0);
+  };
 
   const [aiEnabled, setAiEnabled] = useState(false);
   const [reviewAlertItem, setReviewAlertItem] = useState(null);
@@ -189,11 +229,18 @@ export default function AlertsPage() {
     tableTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
+  const sortedAlerts = useMemo(() => {
+    const cmp = SORTERS[sort.key] || SORTERS.first_seen;
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    // Stable tiebreak on id so equal rows don't jump between renders.
+    return [...alerts].sort((a, b) => (cmp(a, b) || a.id - b.id) * dir);
+  }, [alerts, sort]);
+
   const totalPages = Math.max(1, Math.ceil(alerts.length / pageSize));
   const safePage = Math.min(page, totalPages - 1);
   const pageItems = useMemo(
-    () => alerts.slice(safePage * pageSize, (safePage + 1) * pageSize),
-    [alerts, safePage, pageSize]
+    () => sortedAlerts.slice(safePage * pageSize, (safePage + 1) * pageSize),
+    [sortedAlerts, safePage, pageSize]
   );
 
   const dismissableAlerts = pageItems.filter(a => !a.dismissed);
@@ -209,7 +256,7 @@ export default function AlertsPage() {
       >
         {alerts.length > 0 && !loading && (
           <button
-            onClick={() => exportAlertsCSV(alerts)}
+            onClick={() => exportAlertsCSV(sortedAlerts)}
             aria-label="Export alerts to CSV"
             className="text-xs px-3 py-1.5 border border-cohesity-border rounded-lg text-ink-muted hover:border-brand/50 hover:text-brand transition-colors flex items-center gap-1.5 cursor-pointer"
           >
@@ -302,10 +349,10 @@ export default function AlertsPage() {
                   </th>
                   <th className="pb-2 pr-4">Cluster</th>
                   <th className="pb-2 pr-4">Severity</th>
-                  <th className="pb-2 pr-4">Type</th>
-                  <th className="pb-2 pr-4 max-w-xs">Description</th>
-                  <th className="pb-2 pr-4">First Seen</th>
-                  <th className="pb-2 pr-4">Status</th>
+                  <SortableTh label="Type" sortKey="alert_type" sort={sort} onSort={handleSort} />
+                  <SortableTh label="Description" sortKey="description" sort={sort} onSort={handleSort} className="max-w-xs" />
+                  <SortableTh label="First Seen" sortKey="first_seen" sort={sort} onSort={handleSort} />
+                  <SortableTh label="Status" sortKey="status" sort={sort} onSort={handleSort} />
                   <th className="pb-2"></th>
                 </tr>
               </thead>
