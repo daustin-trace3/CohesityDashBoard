@@ -13,9 +13,11 @@ import AdminSettingsPage from './pages/AdminSettingsPage';
 import AIAdvisorPage from './pages/AIAdvisorPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import LicenseGate from './components/LicenseGate';
+import LoginPage from './pages/LoginPage';
 import { ToastProvider } from './components/ui/Toaster';
 import GlobalLoadingBar from './components/ui/GlobalLoadingBar';
 import { SearchContext, PlatformContext, useSearch, usePlatform } from './context';
+import { AuthProvider } from './auth/AuthContext';
 
 // Re-export for backwards compatibility with existing imports.
 export { SearchContext, PlatformContext, useSearch, usePlatform };
@@ -35,10 +37,12 @@ export default function App() {
       <SearchContext.Provider value={{ search, setSearch }}>
         <ToastProvider>
           <GlobalLoadingBar />
-          <LicenseGate>
           <BrowserRouter>
+          <AuthProvider>
+          <LicenseGate>
             <Suspense fallback={null}>
             <Routes>
+              <Route path="/login" element={<LoginPage />} />
               <Route path="/" element={<Layout />}>
                 <Route index element={<Navigate to="/dashboard" replace />} />
                 {platforms.flatMap(platform => platform.routes.map(r => (
@@ -60,8 +64,9 @@ export default function App() {
               </Route>
             </Routes>
             </Suspense>
-          </BrowserRouter>
           </LicenseGate>
+          </AuthProvider>
+          </BrowserRouter>
         </ToastProvider>
       </SearchContext.Provider>
     </PlatformContext.Provider>
