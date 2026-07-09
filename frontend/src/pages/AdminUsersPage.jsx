@@ -1,0 +1,659 @@
+import { useEffect, useState, useCallback } from 'react';
+import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power } from 'lucide-react';
+import client from '../api/client';
+import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
+import { useToast } from '../components/ui/Toaster';
+import { useAuth } from '../auth/AuthContext';
+
+const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
+const NAMESPACES = ['cohesity', 'pure', 'netapp', 'admin', '*'];
+const LEVELS = ['view', 'manage', '*'];
+
+const TABS = [
+  { key: 'users', label: 'Users', icon: Users },
+  { key: 'groups', label: 'Groups', icon: Shield },
+  { key: 'service-accounts', label: 'Service Accounts', icon: KeyRound },
+];
+
+function errorMessage(err, fallback) {
+  return err?.response?.data?.error || fallback;
+}
+
+/* ── Modal shell ─────────────────────────────────────────────────────────── */
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div className={`relative bg-cohesity-gray border border-cohesity-border rounded-lg w-full ${wide ? 'max-w-2xl' : 'max-w-md'} max-h-[90vh] flex flex-col shadow-xl animate-fade-in`}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-cohesity-border flex-shrink-0">
+          <p className="text-sm font-bold text-ink">{title}</p>
+          <button onClick={onClose} aria-label="Close" className="text-ink-faint hover:text-ink cursor-pointer">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Permission string builder row: namespace / section / level → ns:section:level ── */
+function PermissionBuilder({ onAdd }) {
+  const [namespace, setNamespace] = useState('cohesity');
+  const [section, setSection] = useState('*');
+  const [level, setLevel] = useState('view');
+
+  const add = () => {
+    const sec = (section || '*').trim() || '*';
+    onAdd(`${namespace}:${sec}:${level}`);
+    setSection('*');
+  };
+
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <select value={namespace} onChange={e => setNamespace(e.target.value)} className={`${inputClass} w-auto`}>
+        {NAMESPACES.map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+      <span className="text-ink-faint text-xs">:</span>
+      <input value={section} onChange={e => setSection(e.target.value)} placeholder="*" className={`${inputClass} w-24`} />
+      <span className="text-ink-faint text-xs">:</span>
+      <select value={level} onChange={e => setLevel(e.target.value)} className={`${inputClass} w-auto`}>
+        {LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
+      </select>
+      <button onClick={add} type="button"
+        className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
+        <Plus size={12} /> Add
+      </button>
+    </div>
+  );
+}
+
+function PermissionChip({ perm, onRemove }) {
+  return (
+    <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted font-mono">
+      {perm}
+      {onRemove && (
+        <button onClick={onRemove} aria-label={`Remove ${perm}`} className="ml-1 text-ink-faint hover:text-status-crit cursor-pointer">
+          <X size={10} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/* ── Users tab ───────────────────────────────────────────────────────────── */
+function UserModal({ user, groups, onClose, onSaved }) {
+  const isEdit = !!user;
+  const { toast } = useToast();
+  const [username, setUsername] = useState(user?.username || '');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState(user?.displayName || '');
+  const [isActive, setIsActive] = useState(user?.isActive !== false);
+  const [groupIds, setGroupIds] = useState(() => {
+    if (!user) return [];
+    const names = new Set(user.groups || []);
+    return groups.filter(g => names.has(g.name)).map(g => g.id);
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const toggleGroup = (id) => {
+    setGroupIds(prev => prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]);
+  };
+
+  const save = async () => {
+    setError(null);
+    setSaving(true);
+    try {
+      if (isEdit) {
+        const payload = { displayName, isActive, groupIds };
+        if (password) payload.password = password;
+        await client.put(`/users/${user.id}`, payload);
+      } else {
+        await client.post('/users', { username, password, displayName, groupIds });
+      }
+      toast({ type: 'success', title: isEdit ? 'User updated' : 'User created' });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err, 'Could not save the user.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={isEdit ? `Edit ${user.username}` : 'Create user'} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div>
+          <label className="text-xs font-semibold text-ink mb-1 block">Username</label>
+          <input value={username} onChange={e => setUsername(e.target.value)} disabled={isEdit}
+            className={`${inputClass} ${isEdit ? 'opacity-60' : ''}`} autoComplete="username" />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-ink mb-1 block">Display name</label>
+          <input value={displayName} onChange={e => setDisplayName(e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-ink mb-1 block">
+            Password {isEdit && <span className="text-ink-faint font-normal">(leave blank to keep current)</span>}
+          </label>
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} className={inputClass} autoComplete="new-password" />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-ink mb-1.5 block">Groups</label>
+          <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto border border-cohesity-border rounded-lg p-2.5">
+            {groups.length === 0 && <p className="text-[11px] text-ink-faint">No groups available.</p>}
+            {groups.map(g => (
+              <label key={g.id} className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={groupIds.includes(g.id)} onChange={() => toggleGroup(g.id)} className="accent-brand cursor-pointer" />
+                <span className="text-xs text-ink">{g.name}</span>
+                {g.isSystem && <Badge tone="neutral">system</Badge>}
+              </label>
+            ))}
+          </div>
+        </div>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" checked={isActive} onChange={e => setIsActive(e.target.checked)} className="accent-brand cursor-pointer" />
+          <span className="text-xs text-ink">Active</span>
+        </label>
+        {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
+        <button onClick={save} disabled={saving || (!isEdit && (!username || !password))}
+          className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer">
+          {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Create user'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function UsersTab() {
+  const { toast } = useToast();
+  const [users, setUsers] = useState(null);
+  const [groups, setGroups] = useState([]);
+  const [error, setError] = useState(null);
+  const [modalUser, setModalUser] = useState(undefined); // undefined = closed, null = create, obj = edit
+  const [deleteError, setDeleteError] = useState(null);
+
+  const load = useCallback(() => {
+    setError(null);
+    Promise.all([client.get('/users'), client.get('/users/groups')])
+      .then(([u, g]) => { setUsers(u.data); setGroups(g.data); })
+      .catch(err => setError(errorMessage(err, 'Could not load users.')));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const remove = async (u) => {
+    if (!window.confirm(`Delete user "${u.username}"? This cannot be undone.`)) return;
+    setDeleteError(null);
+    try {
+      await client.delete(`/users/${u.id}`);
+      toast({ type: 'success', title: 'User deleted' });
+      load();
+    } catch (err) {
+      const msg = errorMessage(err, 'Could not delete the user.');
+      if (err?.response?.status === 409) {
+        setDeleteError(msg || 'Cannot delete the last active administrator.');
+        toast({ type: 'error', title: 'Cannot delete user', message: msg });
+      } else {
+        toast({ type: 'error', title: 'Delete failed', message: msg });
+      }
+    }
+  };
+
+  if (error) return <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>;
+  if (!users) return <p className="text-xs text-ink-faint">Loading…</p>;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-ink-muted">{users.length} user{users.length !== 1 ? 's' : ''}</p>
+        <button onClick={() => setModalUser(null)}
+          className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
+          <UserPlus size={13} /> Create user
+        </button>
+      </div>
+      {deleteError && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{deleteError}</p>}
+      <div className="panel p-0 overflow-hidden">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-cohesity-border text-ink-faint text-[10px] uppercase tracking-wider">
+              <th className="text-left px-3 py-2 font-semibold">Username</th>
+              <th className="text-left px-3 py-2 font-semibold">Display name</th>
+              <th className="text-left px-3 py-2 font-semibold">Groups</th>
+              <th className="text-left px-3 py-2 font-semibold">Active</th>
+              <th className="text-left px-3 py-2 font-semibold">Last login</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {users.map(u => (
+              <tr key={u.id} className="border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50">
+                <td className="px-3 py-2 text-ink font-medium">{u.username}</td>
+                <td className="px-3 py-2 text-ink-muted">{u.displayName || '—'}</td>
+                <td className="px-3 py-2 text-ink-muted">{(u.groups || []).join(', ') || '—'}</td>
+                <td className="px-3 py-2">
+                  <Badge tone={u.isActive ? 'ok' : 'neutral'}>{u.isActive ? 'Active' : 'Disabled'}</Badge>
+                </td>
+                <td className="px-3 py-2 text-ink-faint">{u.lastLoginAt ? <LastUpdated date={u.lastLoginAt} prefix="" /> : '—'}</td>
+                <td className="px-3 py-2 text-right whitespace-nowrap">
+                  <button onClick={() => setModalUser(u)} aria-label={`Edit ${u.username}`} className="text-ink-faint hover:text-brand cursor-pointer mr-2">
+                    <Pencil size={13} />
+                  </button>
+                  <button onClick={() => remove(u)} aria-label={`Delete ${u.username}`} className="text-ink-faint hover:text-status-crit cursor-pointer">
+                    <Trash2 size={13} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {users.length === 0 && (
+              <tr><td colSpan={6} className="px-3 py-6 text-center text-ink-faint">No users yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {modalUser !== undefined && (
+        <UserModal user={modalUser} groups={groups} onClose={() => setModalUser(undefined)} onSaved={load} />
+      )}
+    </div>
+  );
+}
+
+/* ── Groups tab ──────────────────────────────────────────────────────────── */
+function CreateGroupModal({ onClose, onSaved }) {
+  const { toast } = useToast();
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const save = async () => {
+    setError(null);
+    setSaving(true);
+    try {
+      await client.post('/users/groups', { name, description });
+      toast({ type: 'success', title: 'Group created' });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err, 'Could not create the group.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Create group" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div>
+          <label className="text-xs font-semibold text-ink mb-1 block">Name</label>
+          <input value={name} onChange={e => setName(e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-ink mb-1 block">Description</label>
+          <input value={description} onChange={e => setDescription(e.target.value)} className={inputClass} />
+        </div>
+        {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
+        <button onClick={save} disabled={saving || !name.trim()}
+          className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer">
+          {saving ? 'Creating…' : 'Create group'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function GroupsTab() {
+  const { toast } = useToast();
+  const [groups, setGroups] = useState(null);
+  const [error, setError] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
+  const [grants, setGrants] = useState(null);
+  const [grantsError, setGrantsError] = useState(null);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const load = useCallback(() => {
+    setError(null);
+    client.get('/users/groups')
+      .then(({ data }) => {
+        setGroups(data);
+        if (!selectedId && data.length > 0) setSelectedId(data[0].id);
+      })
+      .catch(err => setError(errorMessage(err, 'Could not load groups.')));
+  }, [selectedId]);
+
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadGrants = useCallback((id) => {
+    if (!id) return;
+    setGrants(null);
+    setGrantsError(null);
+    client.get('/users/grants', { params: { subjectType: 'group', subjectId: id } })
+      .then(({ data }) => setGrants((data || []).map(g => (typeof g === 'string' ? g : g.permission))))
+      .catch(err => setGrantsError(errorMessage(err, 'Could not load grants.')));
+  }, []);
+
+  useEffect(() => { loadGrants(selectedId); }, [selectedId, loadGrants]);
+
+  const selected = (groups || []).find(g => g.id === selectedId);
+
+  const addGrant = async (permission) => {
+    if (!selectedId) return;
+    try {
+      await client.post('/users/grants', { subjectType: 'group', subjectId: selectedId, permission });
+      loadGrants(selectedId);
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not add grant', message: errorMessage(err, 'Invalid permission string.') });
+    }
+  };
+
+  const removeGrant = async (permission) => {
+    if (!selectedId) return;
+    try {
+      await client.delete('/users/grants', { data: { subjectType: 'group', subjectId: selectedId, permission } });
+      loadGrants(selectedId);
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not remove grant', message: errorMessage(err, '') });
+    }
+  };
+
+  const deleteGroup = async (g) => {
+    if (!window.confirm(`Delete group "${g.name}"?`)) return;
+    try {
+      await client.delete(`/users/groups/${g.id}`);
+      toast({ type: 'success', title: 'Group deleted' });
+      setSelectedId(null);
+      load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not delete group', message: errorMessage(err, 'System groups cannot be deleted.') });
+    }
+  };
+
+  if (error) return <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>;
+  if (!groups) return <p className="text-xs text-ink-faint">Loading…</p>;
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4">
+      <div className="flex flex-col gap-2">
+        <button onClick={() => setShowCreate(true)}
+          className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer self-start">
+          <Plus size={13} /> New group
+        </button>
+        <div className="panel p-1 flex flex-col gap-0.5">
+          {groups.map(g => (
+            <button key={g.id} onClick={() => setSelectedId(g.id)}
+              className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left text-xs transition-colors cursor-pointer ${
+                selectedId === g.id ? 'bg-brand/10 text-brand' : 'text-ink-muted hover:bg-surface-overlay hover:text-ink'
+              }`}>
+              <span className="truncate">{g.name}</span>
+              {g.isSystem === 1 || g.isSystem === true ? <Badge tone="neutral">system</Badge> : null}
+            </button>
+          ))}
+          {groups.length === 0 && <p className="text-[11px] text-ink-faint px-2.5 py-2">No groups yet.</p>}
+        </div>
+      </div>
+
+      <div className="panel p-4">
+        {!selected ? (
+          <p className="text-xs text-ink-faint">Select a group to manage its grants.</p>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-bold text-ink flex items-center gap-2">
+                  {selected.name}
+                  {(selected.isSystem === 1 || selected.isSystem === true) && <Badge tone="neutral">system — rename/delete disabled</Badge>}
+                </p>
+                {selected.description && <p className="text-[11px] text-ink-muted mt-0.5">{selected.description}</p>}
+              </div>
+              {!(selected.isSystem === 1 || selected.isSystem === true) && (
+                <button onClick={() => deleteGroup(selected)}
+                  className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 text-status-crit border border-status-crit/30 rounded-lg hover:bg-status-crit/10 transition-colors cursor-pointer">
+                  <Trash2 size={12} /> Delete group
+                </button>
+              )}
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-ink mb-2">Grants</p>
+              {grantsError && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2 mb-2">{grantsError}</p>}
+              {grants === null ? (
+                <p className="text-[11px] text-ink-faint">Loading…</p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {grants.length === 0 && <p className="text-[11px] text-ink-faint">No grants yet.</p>}
+                  {grants.map(p => <PermissionChip key={p} perm={p} onRemove={() => removeGrant(p)} />)}
+                </div>
+              )}
+              <PermissionBuilder onAdd={addGrant} />
+            </div>
+          </div>
+        )}
+      </div>
+      {showCreate && <CreateGroupModal onClose={() => setShowCreate(false)} onSaved={load} />}
+    </div>
+  );
+}
+
+/* ── Service Accounts tab ────────────────────────────────────────────────── */
+function CreateServiceAccountModal({ onClose, onSaved }) {
+  const { toast } = useToast();
+  const [name, setName] = useState('');
+  const [permissions, setPermissions] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [issuedKey, setIssuedKey] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const addPermission = (p) => setPermissions(prev => prev.includes(p) ? prev : [...prev, p]);
+  const removePermission = (p) => setPermissions(prev => prev.filter(x => x !== p));
+
+  const save = async () => {
+    setError(null);
+    setSaving(true);
+    try {
+      const { data } = await client.post('/users/service-accounts', { name, permissions });
+      setIssuedKey(data.key || data.fullKey || null);
+      toast({ type: 'success', title: 'Service account created' });
+      onSaved();
+    } catch (err) {
+      setError(errorMessage(err, 'Could not create the service account.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const copyKey = () => {
+    if (!issuedKey) return;
+    navigator.clipboard?.writeText(issuedKey).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  if (issuedKey) {
+    return (
+      <Modal title="Service account created" onClose={onClose}>
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-status-warn bg-status-warn/10 border border-status-warn/30 rounded-lg px-3 py-2">
+            Store this key now — it will not be shown again.
+          </p>
+          <div className="flex items-center gap-2 bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2">
+            <code className="text-xs font-mono text-ink break-all flex-1">{issuedKey}</code>
+            <button onClick={copyKey} aria-label="Copy key" className="text-ink-faint hover:text-brand cursor-pointer flex-shrink-0">
+              {copied ? <Check size={14} className="text-status-ok" /> : <Copy size={14} />}
+            </button>
+          </div>
+          <button onClick={onClose}
+            className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
+            Done
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title="Create service account" onClose={onClose} wide>
+      <div className="flex flex-col gap-3">
+        <div>
+          <label className="text-xs font-semibold text-ink mb-1 block">Name</label>
+          <input value={name} onChange={e => setName(e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-ink mb-1.5 block">Permissions</label>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {permissions.length === 0 && <p className="text-[11px] text-ink-faint">No permissions added yet.</p>}
+            {permissions.map(p => <PermissionChip key={p} perm={p} onRemove={() => removePermission(p)} />)}
+          </div>
+          <PermissionBuilder onAdd={addPermission} />
+        </div>
+        {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
+        <button onClick={save} disabled={saving || !name.trim() || permissions.length === 0}
+          className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer">
+          {saving ? 'Creating…' : 'Create service account'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function ServiceAccountsTab() {
+  const { toast } = useToast();
+  const [accounts, setAccounts] = useState(null);
+  const [error, setError] = useState(null);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const load = useCallback(() => {
+    setError(null);
+    client.get('/users/service-accounts')
+      .then(({ data }) => setAccounts(data))
+      .catch(err => setError(errorMessage(err, 'Could not load service accounts.')));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const toggleActive = async (a) => {
+    try {
+      await client.put(`/users/service-accounts/${a.id}`, { isActive: !a.isActive });
+      load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not update service account', message: errorMessage(err, '') });
+    }
+  };
+
+  const revoke = async (a) => {
+    if (!window.confirm(`Revoke service account "${a.name}"? This cannot be undone.`)) return;
+    try {
+      await client.delete(`/users/service-accounts/${a.id}`);
+      toast({ type: 'success', title: 'Service account revoked' });
+      load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not revoke service account', message: errorMessage(err, '') });
+    }
+  };
+
+  if (error) return <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>;
+  if (!accounts) return <p className="text-xs text-ink-faint">Loading…</p>;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-ink-muted">{accounts.length} service account{accounts.length !== 1 ? 's' : ''}</p>
+        <button onClick={() => setShowCreate(true)}
+          className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
+          <Plus size={13} /> Create service account
+        </button>
+      </div>
+      <div className="panel p-0 overflow-hidden">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-cohesity-border text-ink-faint text-[10px] uppercase tracking-wider">
+              <th className="text-left px-3 py-2 font-semibold">Name</th>
+              <th className="text-left px-3 py-2 font-semibold">Key prefix</th>
+              <th className="text-left px-3 py-2 font-semibold">Permissions</th>
+              <th className="text-left px-3 py-2 font-semibold">Active</th>
+              <th className="text-left px-3 py-2 font-semibold">Last used</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map(a => (
+              <tr key={a.id} className="border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50">
+                <td className="px-3 py-2 text-ink font-medium">{a.name}</td>
+                <td className="px-3 py-2 text-ink-muted font-mono">{a.keyPrefix}…</td>
+                <td className="px-3 py-2 text-ink-muted">
+                  <div className="flex flex-wrap gap-1">
+                    {(a.permissions || []).map(p => <PermissionChip key={p} perm={p} />)}
+                  </div>
+                </td>
+                <td className="px-3 py-2">
+                  <button onClick={() => toggleActive(a)}
+                    className={`inline-flex items-center gap-1 chip cursor-pointer ${a.isActive ? 'bg-status-ok/10 text-status-ok border-status-ok/25' : 'bg-surface-overlay text-ink-muted border-cohesity-border'}`}>
+                    <Power size={10} /> {a.isActive ? 'Active' : 'Disabled'}
+                  </button>
+                </td>
+                <td className="px-3 py-2 text-ink-faint">{a.lastUsedAt ? <LastUpdated date={a.lastUsedAt} prefix="" /> : 'Never'}</td>
+                <td className="px-3 py-2 text-right">
+                  <button onClick={() => revoke(a)} aria-label={`Revoke ${a.name}`} className="text-ink-faint hover:text-status-crit cursor-pointer">
+                    <Trash2 size={13} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {accounts.length === 0 && (
+              <tr><td colSpan={6} className="px-3 py-6 text-center text-ink-faint">No service accounts yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {showCreate && <CreateServiceAccountModal onClose={() => setShowCreate(false)} onSaved={load} />}
+    </div>
+  );
+}
+
+/* ── Page ────────────────────────────────────────────────────────────────── */
+export default function AdminUsersPage() {
+  const { hasPermission, loading: authLoading } = useAuth();
+  const [tab, setTab] = useState('users');
+
+  if (authLoading) return <p className="text-xs text-ink-faint">Loading…</p>;
+
+  if (!hasPermission('admin:users:view')) {
+    return (
+      <div className="panel p-4 max-w-lg">
+        <p className="text-sm font-bold text-ink">Access denied</p>
+        <p className="text-xs text-ink-muted mt-1">You don't have permission to view Users & Access.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <PageHeader icon={Users} title="Users & Access" description="Manage user accounts, groups, permission grants, and service accounts." />
+
+      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
+        {TABS.map(t => {
+          const Icon = t.icon;
+          const active = tab === t.key;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
+                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
+              }`}>
+              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === 'users' && <UsersTab />}
+      {tab === 'groups' && <GroupsTab />}
+      {tab === 'service-accounts' && <ServiceAccountsTab />}
+    </div>
+  );
+}

@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings,
+  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings, Users,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -10,6 +10,7 @@ import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { useSearch } from '../context';
 import { platforms as registryPlatforms, getPlatform } from '../platforms/registry';
+import { useAuth } from '../auth/AuthContext';
 
 const platforms = registryPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color }));
 
@@ -20,6 +21,15 @@ const netappNavGroups = getPlatform('netapp').navGroups;
 function isActivePlatform(id, pathname) {
   const platform = getPlatform(id);
   return platform ? platform.isActive(pathname) : false;
+}
+
+// Permission required to see a given nav item. Explicit per-item overrides
+// (Settings, the injected Users & Access entry) take precedence; everything
+// else falls back to the active platform's own view permission.
+function requiredNavPermission(platformId, item) {
+  if (item.permission) return item.permission;
+  if (platformId === 'cohesity' && item.route === '/settings') return 'admin:settings:view';
+  return `${platformId}:*:view`;
 }
 
 function BrandMark({ collapsed, label = 'Cohesity', accent }) {
@@ -65,6 +75,9 @@ export default function Layout() {
   const isPlatform = isPure || isNetapp;
   const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : null;
   const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : '';
+  const navPlatformKey = platformKey || 'cohesity';
+
+  const { hasPermission, loading: authLoading } = useAuth();
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
@@ -191,7 +204,35 @@ export default function Layout() {
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
   // Swap the sidebar menu to match the active vendor platform.
-  const activeNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : navGroups;
+  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : navGroups;
+
+  // Inject the "Users & Access" entry under System (Cohesity only) without
+  // mutating the shared registry module, then hide items the user lacks
+  // permission for. While auth is still loading, show everything (no flicker-hide).
+  const activeNavGroups = baseNavGroups
+    .map(group => {
+      if (navPlatformKey === 'cohesity' && group.label === 'System' && !group.items.some(i => i.route === '/admin/users')) {
+        return {
+          ...group,
+          items: [
+            ...group.items,
+            {
+              label: 'Users & Access',
+              route: '/admin/users',
+              icon: Users,
+              isActive: (p) => p.startsWith('/admin/users'),
+              permission: 'admin:users:view',
+            },
+          ],
+        };
+      }
+      return group;
+    })
+    .map(group => ({
+      ...group,
+      items: group.items.filter(item => authLoading || hasPermission(requiredNavPermission(navPlatformKey, item))),
+    }))
+    .filter(group => group.items.length > 0);
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
   const noun = isNetapp ? 'cluster' : 'array';
@@ -358,18 +399,20 @@ export default function Layout() {
           </div>
 
           {/* Global settings — estate-wide admin (AI keys, platforms, product license) */}
-          <button
-            onClick={() => navigate('/admin')}
-            title="Global settings"
-            aria-label="Global settings"
-            className={`flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-lg border transition-colors cursor-pointer ${
-              pathname.startsWith('/admin')
-                ? 'bg-brand/10 border-brand/30 text-brand'
-                : 'border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40'
-            }`}
-          >
-            <Settings size={15} />
-          </button>
+          {(authLoading || hasPermission('admin:settings:view')) && (
+            <button
+              onClick={() => navigate('/admin')}
+              title="Global settings"
+              aria-label="Global settings"
+              className={`flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-lg border transition-colors cursor-pointer ${
+                pathname.startsWith('/admin')
+                  ? 'bg-brand/10 border-brand/30 text-brand'
+                  : 'border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40'
+              }`}
+            >
+              <Settings size={15} />
+            </button>
+          )}
         </header>
 
         {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}
@@ -377,7 +420,7 @@ export default function Layout() {
           <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Platform</span>
             <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1">
-              {platforms.filter(p => enabledPlatformIds.includes(p.id)).map(p => {
+              {platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`))).map(p => {
                 const active = isActivePlatform(p.id, pathname);
                 return (
                   <button

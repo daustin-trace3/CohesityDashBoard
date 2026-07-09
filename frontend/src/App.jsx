@@ -10,6 +10,7 @@ import ReplicationPage from './pages/ReplicationPage';
 import GovernancePage from './pages/GovernancePage';
 import SettingsPage from './pages/SettingsPage';
 import AdminSettingsPage from './pages/AdminSettingsPage';
+import AdminUsersPage from './pages/AdminUsersPage';
 import AIAdvisorPage from './pages/AIAdvisorPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import LicenseGate from './components/LicenseGate';
@@ -61,6 +62,7 @@ export default function App() {
                 <Route path="ai-advisor"      element={withBoundary(<AIAdvisorPage />)} />
                 <Route path="settings"        element={withBoundary(<SettingsPage />)} />
                 <Route path="admin"           element={withBoundary(<AdminSettingsPage />)} />
+                <Route path="admin/users"     element={withBoundary(<AdminUsersPage />)} />
               </Route>
             </Routes>
             </Suspense>
