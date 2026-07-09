@@ -1,6 +1,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const logger = require('./utils/logger');
+const registry = require('./core/registry');
 const { createApp } = require('./app');
 const { initPoller } = require('./services/poller');
 const { initPurePoller } = require('./services/purePoller');
@@ -8,6 +9,7 @@ const { initNetAppPoller } = require('./services/netappPoller');
 const { initLicensing } = require('./services/licensing');
 const { initLicense, getLicenseStatus } = require('./services/license');
 
+registry.init();
 const app = createApp();
 const PORT = process.env.PORT || 3001;
 

@@ -26,6 +26,7 @@ const pureRouter = require('./routes/pure');
 const pure1Router = require('./routes/pure1');
 const netappRouter = require('./routes/netapp');
 const dnsRouter = require('./routes/dns');
+const registry = require('./core/registry');
 const requireApiKey = require('./middleware/auth');
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
@@ -107,6 +108,11 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/pure1', pure1Router);
   app.use('/api/netapp', netappRouter);
   app.use('/api/dns', dnsRouter);
+
+  // Plugin dispatcher — resolves the registry at request time. Falls through
+  // to the static routes above (which still win while the registry is empty)
+  // via next() for any pluginId the registry doesn't know about.
+  app.use('/api/:pluginId', registry.dispatch);
 
   // Health check — verifies DB connectivity
   app.get('/health', (req, res) => {
