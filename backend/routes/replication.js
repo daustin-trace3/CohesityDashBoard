@@ -2,6 +2,7 @@ const express = require('express');
 const { query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { listProtectionGroupsV2, getProtectionGroupRunsV2, getAuthenticatedClient } = require('../services/cohesityApi');
+const { isDemo } = require('../services/demoMode');
 
 const router = express.Router();
 
@@ -209,7 +210,25 @@ router.get(
 
     // Try to read from DB cache first (authoritative source)
     const dbCached = readCacheFromDb(cacheKey);
-    
+
+    // Demo mode: serve whatever cache row exists (however stale) and never
+    // kick off a live background scan.
+    if (isDemo()) {
+      if (dbCached && dbCached.payload && dbCached.payload.replications) {
+        const age = Math.round((now - dbCached.updatedAt) / 1000);
+        return res.json({ ...dbCached.payload, scanning: false, cacheAgeSeconds: age });
+      }
+      return res.json({
+        sourceCluster: clusterName,
+        generatedAt: new Date().toISOString(),
+        totalGroupsScanned: 0,
+        groupsWithActiveReplication: 0,
+        replications: [],
+        scanning: false,
+        cacheAgeSeconds: null
+      });
+    }
+
     // Determine if cache is expired
     const dbCacheExpired = !dbCached || (now - dbCached.updatedAt > CACHE_TTL_MS);
     

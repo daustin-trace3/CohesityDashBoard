@@ -5,6 +5,8 @@ const axios = require('axios');
 const logger = require('../utils/logger');
 const { getSetting, setSetting } = require('./settings');
 const { encrypt, decrypt } = require('./encryption');
+const { isDemo } = require('./demoMode');
+const demoFixtures = require('../demo/pure1Fixtures');
 
 // Pure1 cloud REST client (fleet-wide, read-only).
 //
@@ -93,6 +95,7 @@ function cacheTtlMs() {
 
 /** True when Pure1 is configured (app id present + a private key available). */
 function isConfigured() {
+  if (isDemo()) return true;
   return !!getAppId() && hasPrivateKey();
 }
 
@@ -351,6 +354,7 @@ async function fetchEnrichment() {
 
 /** Cached fleet enrichment (health + provisioned). */
 async function getEnrichment({ force = false } = {}) {
+  if (isDemo()) return demoFixtures.getEnrichment();
   if (!force && enrichmentCache && (Date.now() - enrichmentCache.fetchedAt) < cacheTtlMs()) {
     return enrichmentCache.data;
   }
@@ -361,6 +365,7 @@ async function getEnrichment({ force = false } = {}) {
 
 /** Merged fleet overview (arrays + latest capacity), cached per settings TTL. */
 async function getOverview({ force = false } = {}) {
+  if (isDemo()) return demoFixtures.getOverview();
   if (!force && overviewCache && (Date.now() - overviewCache.fetchedAt) < cacheTtlMs()) {
     return overviewCache.data;
   }
@@ -398,6 +403,7 @@ async function getOverview({ force = false } = {}) {
 
 /** Open fleet alerts, cached per settings TTL. */
 async function getAlerts({ force = false } = {}) {
+  if (isDemo()) return demoFixtures.getAlerts();
   if (!force && alertsCache && (Date.now() - alertsCache.fetchedAt) < cacheTtlMs()) {
     return alertsCache.data;
   }
@@ -507,6 +513,7 @@ async function fetchAllForArray(pathStr, arrayId, extraParams = {}) {
 
 /** Volumes on an array (newest first, tombstones excluded). */
 async function fetchVolumes(arrayId) {
+  if (isDemo()) return demoFixtures.fetchVolumes(arrayId);
   const items = await fetchAllForArray('/volumes', arrayId);
   return items
     .filter((v) => !v.destroyed && !v.eradicated)
@@ -524,6 +531,7 @@ async function fetchVolumes(arrayId) {
 
 /** Stretched pods across the fleet (ActiveCluster replication topology). */
 async function fetchPods() {
+  if (isDemo()) return demoFixtures.fetchPods();
   const items = await fetchAllForArray('/pods', null);
   return items.map((p) => ({
     id: p.id,
@@ -537,6 +545,7 @@ async function fetchPods() {
 
 /** Hardware components + controllers + drives for one array. */
 async function fetchHardware(arrayId) {
+  if (isDemo()) return demoFixtures.fetchHardware(arrayId);
   const [hardware, controllers, drives] = await Promise.all([
     fetchAllForArray('/hardware', arrayId),
     fetchAllForArray('/controllers', arrayId),
@@ -565,6 +574,7 @@ async function fetchHardware(arrayId) {
 
 /** Network interfaces + ports for one array. */
 async function fetchConnectivity(arrayId) {
+  if (isDemo()) return demoFixtures.fetchConnectivity(arrayId);
   const [nics, ports] = await Promise.all([
     fetchAllForArray('/network-interfaces', arrayId),
     fetchAllForArray('/ports', arrayId),
@@ -616,12 +626,14 @@ async function fetchMetricsHistory(arrayId, names, { days = 30, resolution } = {
 
 /** Capacity trend for one array (daily). */
 async function fetchCapacityHistory(arrayId, days = 30) {
+  if (isDemo()) return demoFixtures.fetchCapacityHistory(arrayId, days);
   const { series, ...meta } = await fetchMetricsHistory(arrayId, CAPACITY_METRICS, { days, resolution: 86400000 });
   return { ...meta, series };
 }
 
 /** Performance trend for one array (iops/latency/bandwidth). */
 async function fetchPerformanceHistory(arrayId, days = 1) {
+  if (isDemo()) return demoFixtures.fetchPerformanceHistory(arrayId, days);
   return fetchMetricsHistory(arrayId, PERF_METRICS, { days });
 }
 

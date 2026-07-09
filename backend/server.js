@@ -9,6 +9,7 @@ const { initAlertNotifier } = require('./services/alertNotifier');
 const { initLicensing } = require('./services/licensing');
 const { initLicense, getLicenseStatus } = require('./services/license');
 const { getPlatformSettings } = require('./services/settings');
+const { isDemo } = require('./services/demoMode');
 const authService = require('./services/authService');
 const pureManifest = require('./platforms/pure');
 const netappManifest = require('./platforms/netapp');
@@ -63,16 +64,20 @@ if (getLicenseStatus().state === 'missing') {
 if (require.main === module) {
   app.listen(PORT, '0.0.0.0', () => {
     logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
-    initPoller();
-    initAlertNotifier();
-    // Start pollers only for enabled, actively-registered plugins (Cohesity's
-    // poller above is not registry-managed in Phase 1 and always starts).
-    for (const entry of registry.listPlugins()) {
-      if (!entry.enabled || entry.status !== 'active') continue;
-      const handle = registry.getPollerHandle(entry.id);
-      if (handle && typeof handle.init === 'function') handle.init();
+    if (isDemo()) {
+      logger.info('[Demo] Demo mode — pollers disabled');
+    } else {
+      initPoller();
+      initAlertNotifier();
+      // Start pollers only for enabled, actively-registered plugins (Cohesity's
+      // poller above is not registry-managed in Phase 1 and always starts).
+      for (const entry of registry.listPlugins()) {
+        if (!entry.enabled || entry.status !== 'active') continue;
+        const handle = registry.getPollerHandle(entry.id);
+        if (handle && typeof handle.init === 'function') handle.init();
+      }
+      initLicensing();
     }
-    initLicensing();
     initLicense();
   });
 }

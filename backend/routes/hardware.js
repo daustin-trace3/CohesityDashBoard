@@ -2,6 +2,8 @@ const express = require('express');
 const { param, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { fetchNodes, fetchNodesV2, fetchChassis } = require('../services/cohesityApi');
+const { isDemo } = require('../services/demoMode');
+const demoHardware = require('../demo/cohesityHardwareFixtures');
 
 const router = express.Router();
 
@@ -23,6 +25,10 @@ router.get(
     try {
       const cluster = db.prepare('SELECT * FROM clusters WHERE id = ?').get(req.params.clusterId);
       if (!cluster) return res.status(404).json({ error: 'Cluster not found' });
+
+      if (isDemo()) {
+        return res.json(demoHardware.getHardwareForCluster(cluster.id, cluster.name));
+      }
 
       const [nodesResult, chassisResult, nodesV2Result] = await Promise.allSettled([
         fetchNodes(cluster),
