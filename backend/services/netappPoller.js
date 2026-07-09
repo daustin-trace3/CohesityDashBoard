@@ -382,9 +382,10 @@ async function syncClusters() {
           .run(c.name, host, c.uuid, c.management_ip, c.version, pollIntervalMin());
       }
     }
-    // Drop clusters AIQUM no longer manages, plus any legacy direct registrations.
+    // Drop only AIQUM-managed clusters no longer reported by AIQUM. Direct
+    // (manually registered) clusters are never touched by this sync.
     for (const r of db.prepare('SELECT id, cluster_uuid, source FROM netapp_arrays').all()) {
-      if (r.source !== 'aiqum' || !keep.has(r.cluster_uuid)) {
+      if (r.source === 'aiqum' && !keep.has(r.cluster_uuid)) {
         db.prepare('DELETE FROM netapp_arrays WHERE id = ?').run(r.id);
       }
     }
@@ -417,21 +418,53 @@ function reschedule() {
   logger.info(`[NetAppPoller] Scheduled AIQUM sync + poll every ${min} min`);
 }
 
-function initNetAppPoller() {
-  if (!aiqumConfigured()) {
-    logger.info('[NetAppPoller] AIQUM not configured; poller idle');
-    return;
+/** Cancel a direct cluster's own per-array polling schedule. */
+function cancelArray(arrayId) {
+  const existing = scheduledTasks.get(arrayId);
+  if (existing) {
+    existing.stop();
+    scheduledTasks.delete(arrayId);
   }
-  reschedule();
-  // Kick off an initial discovery + poll shortly after startup (non-blocking).
-  setTimeout(() => { syncAndPollAll().catch((e) => logger.error('[NetAppPoller] initial poll failed:', safeErrorMessage(e))); }, 4000);
 }
 
-/** Poll one already-discovered cluster now. */
+/** Schedule (or reschedule) a direct cluster's own polling cron. */
+function scheduleArray(array) {
+  cancelArray(array.id);
+  const task = cron.schedule(buildCronExpression(array.polling_interval_minutes), () => {
+    pollArray(array);
+  });
+  scheduledTasks.set(array.id, task);
+  logger.info(`[NetAppPoller] Scheduled direct cluster ${array.id} (${array.name}) every ${Math.max(5, array.polling_interval_minutes || 15)} min`);
+}
+
+function initNetAppPoller() {
+  let aiqumClusterCount = 0;
+  if (aiqumConfigured()) {
+    reschedule();
+    // Kick off an initial discovery + poll shortly after startup (non-blocking).
+    setTimeout(() => { syncAndPollAll().catch((e) => logger.error('[NetAppPoller] initial poll failed:', safeErrorMessage(e))); }, 4000);
+    aiqumClusterCount = db.prepare("SELECT COUNT(*) AS n FROM netapp_arrays WHERE source = 'aiqum'").get().n;
+  }
+
+  let directArrays = [];
+  try {
+    directArrays = db.prepare("SELECT * FROM netapp_arrays WHERE source = 'direct'").all();
+  } catch (err) {
+    logger.error('[NetAppPoller] Failed to load direct clusters:', err.message);
+  }
+  for (const array of directArrays) scheduleArray(array);
+
+  logger.info(`[NetAppPoller] Initialized ${aiqumClusterCount} AIQUM cluster(s), ${directArrays.length} direct cluster(s)`);
+}
+
+/** Poll one already-discovered/registered cluster now (AIQUM-managed or direct). */
 async function triggerPoll(arrayId) {
   const array = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(arrayId);
   if (!array) throw new Error(`NetApp cluster ${arrayId} not found`);
   await pollArray(array);
 }
 
-module.exports = { initNetAppPoller, reschedule, syncClusters, syncAndPollAll, pollArray, triggerPoll };
+module.exports = {
+  initNetAppPoller, reschedule, syncClusters, syncAndPollAll, pollArray, triggerPoll,
+  scheduleArray, cancelArray,
+};

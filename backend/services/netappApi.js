@@ -17,6 +17,28 @@ function normalizeHost(host) {
   return h;
 }
 
+function getPassword(array) {
+  const creds = JSON.parse(decrypt(array.encrypted_credentials));
+  if (!creds.password) {
+    const err = new Error('No password stored for this NetApp cluster');
+    err.code = 'NETAPP_NO_PASSWORD';
+    throw err;
+  }
+  return creds.password;
+}
+
+/** Build an authenticated axios client for a direct-managed cluster. */
+function clientFor(array, passwordOverride) {
+  const password = passwordOverride != null ? passwordOverride : getPassword(array);
+  return axios.create({
+    baseURL: normalizeHost(array.mgmt_host),
+    httpsAgent: new https.Agent({ rejectUnauthorized: !!array.ssl_verify }),
+    timeout: 30000,
+    auth: { username: array.username, password },
+    headers: { accept: 'application/json' },
+  });
+}
+
 /** AIQUM connection config: DB settings first, else .env fallback. */
 function getAiqumConfig() {
   const host = getSetting('netapp_aiqum_host') || process.env.NETAPP_AIQUM_HOST || '';
@@ -53,16 +75,22 @@ function aiqumClient(cfgOverride) {
 }
 
 /**
- * Authenticated GET against a managed cluster's ONTAP REST API, proxied through
- * the AIQUM gateway. `array` must carry `cluster_uuid`.
+ * Authenticated GET against a cluster's ONTAP REST API. AIQUM-managed clusters
+ * (source='aiqum' or carrying a cluster_uuid) go through the AIQUM gateway;
+ * everything else is a direct cluster connection (basic auth, per-array creds).
  */
-async function apiGet(array, path, params) {
-  if (!array || !array.cluster_uuid) {
-    const err = new Error('Cluster has no AIQUM uuid'); err.code = 'NETAPP_NO_UUID'; throw err;
+async function apiGet(array, path, params, passwordOverride) {
+  if (array && (array.source === 'aiqum' || array.cluster_uuid)) {
+    if (!array.cluster_uuid) {
+      const err = new Error('Cluster has no AIQUM uuid'); err.code = 'NETAPP_NO_UUID'; throw err;
+    }
+    const client = aiqumClient();
+    const ontapPath = String(path).replace(/^\/api/, '');
+    const { data } = await client.get(`/api/gateways/${array.cluster_uuid}${ontapPath}`, { params });
+    return data;
   }
-  const client = aiqumClient();
-  const ontapPath = String(path).replace(/^\/api/, '');
-  const { data } = await client.get(`/api/gateways/${array.cluster_uuid}${ontapPath}`, { params });
+  const client = clientFor(array, passwordOverride);
+  const { data } = await client.get(path, { params });
   return data;
 }
 
@@ -248,15 +276,18 @@ async function fetchCifsShares(array) {
 }
 
 /**
- * Validate connectivity + credentials. Accepts a stored array row OR a transient
- * object carrying a raw `password` (pre-save test flow).
+ * Validate direct-cluster connectivity + credentials. Accepts a transient
+ * object carrying a raw `password` (pre-save test flow) OR a stored array row
+ * (encrypted_credentials, password omitted) whose password is decrypted here.
  */
-async function testConnection(array) {
-  const cluster = await apiGet(array, '/api/cluster', { fields: 'name,version' });
+async function testDirectConnection(array) {
+  const password = array.password != null ? array.password : getPassword(array);
+  const client = clientFor(array, password);
+  const { data } = await client.get('/api/cluster', { params: { fields: 'name,version' } });
   return {
     ok: true,
-    clusterName: cluster.name || null,
-    ontapVersion: (cluster.version && cluster.version.full) || null,
+    name: data.name || null,
+    version: (data.version && data.version.full) || null,
   };
 }
 
@@ -264,6 +295,7 @@ function invalidate() { /* no session cache for basic auth */ }
 
 module.exports = {
   normalizeHost,
+  getPassword,
   getAiqumConfig,
   aiqumConfigured,
   fetchManagedClusters,
@@ -285,6 +317,6 @@ module.exports = {
   fetchExportPolicies,
   fetchCifsSessions,
   fetchCifsShares,
-  testConnection,
+  testDirectConnection,
   invalidate,
 };

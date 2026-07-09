@@ -1,10 +1,10 @@
 const express = require('express');
-const { param, query, validationResult } = require('express-validator');
+const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const { getSetting, setSetting } = require('../services/settings');
 const netappApi = require('../services/netappApi');
-const { syncAndPollAll, triggerPoll, reschedule } = require('../services/netappPoller');
+const { syncAndPollAll, triggerPoll, reschedule, scheduleArray, cancelArray } = require('../services/netappPoller');
 const cacheControl = require('../middleware/cache');
 
 const router = express.Router();
@@ -25,18 +25,61 @@ function isBlockedHost(host) {
   return blocked.some((p) => p.test(h));
 }
 
-// Read-only view of a discovered cluster.
+// Read-only view of a cluster (AIQUM-managed or direct). Credential values —
+// including usernames — are never returned; presence only.
 function publicCluster(row) {
   return {
     id: row.id,
     name: row.name,
+    mgmt_host: row.mgmt_host,
+    has_username: !!row.username,
     version: row.version,
     management_ip: row.management_ip,
     cluster_uuid: row.cluster_uuid,
     source: row.source,
+    ssl_verify: row.ssl_verify,
     polling_interval_minutes: row.polling_interval_minutes,
+    created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+const directArrayValidators = [
+  body('name').trim().notEmpty().withMessage('name is required').isLength({ max: 253 }),
+  body('mgmt_host').trim().notEmpty().withMessage('mgmt_host is required')
+    .custom((v) => !isBlockedHost(v)).withMessage('mgmt_host is not allowed'),
+  body('username').trim().notEmpty().withMessage('username is required'),
+  body('polling_interval_minutes').optional().isInt({ min: 5, max: 1440 })
+    .withMessage('polling_interval_minutes must be 5-1440'),
+  body('ssl_verify').optional().isBoolean().withMessage('ssl_verify must be boolean'),
+];
+
+// PUT variant: username is write-only in the UI, so edits may omit it (blank
+// keeps the stored value, same as password).
+const directArrayUpdateValidators = [
+  body('name').trim().notEmpty().withMessage('name is required').isLength({ max: 253 }),
+  body('mgmt_host').trim().notEmpty().withMessage('mgmt_host is required')
+    .custom((v) => !isBlockedHost(v)).withMessage('mgmt_host is not allowed'),
+  body('username').optional({ nullable: true }).trim(),
+  body('polling_interval_minutes').optional().isInt({ min: 5, max: 1440 })
+    .withMessage('polling_interval_minutes must be 5-1440'),
+  body('ssl_verify').optional().isBoolean().withMessage('ssl_verify must be boolean'),
+];
+
+function buildDirectCredentials(reqBody) {
+  return encrypt(JSON.stringify({ password: String(reqBody.password) }));
+}
+
+function describeApiError(err) {
+  if (err?.response) {
+    const status = err.response.status;
+    const detail = err.response.data?.error?.message || '';
+    if (status === 401 || status === 403) return `Authentication failed (HTTP ${status})${detail ? `: ${detail}` : ''}`;
+    return `Cluster returned HTTP ${status}${detail ? `: ${detail}` : ''}`;
+  }
+  if (err?.code === 'NETAPP_NO_PASSWORD') return 'No password provided';
+  if (err?.code) return `Network error: ${err.code}`;
+  return err?.message || 'Connection failed';
 }
 
 /* ── AIQUM connection + discovered clusters ──────────────────────────────── */
@@ -101,7 +144,127 @@ router.post('/aiqum/test', async (req, res) => {
   }
 });
 
-// Trigger a discovery + poll of all clusters now.
+/* ── Direct clusters CRUD (coexist with AIQUM-managed rows) ─────────────── */
+
+// Validate connectivity for a direct cluster, without persisting. If `id` is
+// given and password is blank, tests the stored credentials for that row.
+router.post(
+  '/arrays/test',
+  [
+    body('mgmt_host').trim().notEmpty().custom((v) => !isBlockedHost(v)).withMessage('mgmt_host is not allowed'),
+    body('username').optional({ nullable: true }).trim(),
+    body('password').optional({ nullable: true }),
+    body('ssl_verify').optional().isBoolean(),
+    body('id').optional().isInt(),
+  ],
+  validate,
+  async (req, res) => {
+    try {
+      // Username/password are write-only in the UI, so an edit-mode test may
+      // leave either blank — fall back to the stored row when an id is given.
+      let stored = null;
+      if (req.body.id) {
+        stored = db.prepare("SELECT * FROM netapp_arrays WHERE id = ? AND source = 'direct'").get(req.body.id);
+        if (!stored && (!req.body.password || !req.body.username)) {
+          return res.status(200).json({ ok: false, error: 'Cluster not found' });
+        }
+      }
+      const username = (req.body.username || '').trim() || stored?.username;
+      if (!username) return res.status(200).json({ ok: false, error: 'No username provided' });
+      if (!req.body.password && !stored) {
+        return res.status(200).json({ ok: false, error: 'No password provided' });
+      }
+      const result = await netappApi.testDirectConnection({
+        mgmt_host: req.body.mgmt_host,
+        username,
+        password: req.body.password || undefined,
+        encrypted_credentials: req.body.password ? undefined : stored?.encrypted_credentials,
+        ssl_verify: req.body.ssl_verify ? 1 : 0,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(200).json({ ok: false, error: describeApiError(err) });
+    }
+  }
+);
+
+// Register a new direct cluster.
+router.post('/arrays', directArrayValidators, validate, (req, res, next) => {
+  if (!req.body.password) return res.status(400).json({ error: 'password is required' });
+  try {
+    const info = db.prepare(`
+      INSERT INTO netapp_arrays (name, mgmt_host, username, encrypted_credentials, polling_interval_minutes, ssl_verify, source)
+      VALUES (?, ?, ?, ?, ?, ?, 'direct')
+    `).run(
+      req.body.name,
+      netappApi.normalizeHost(req.body.mgmt_host),
+      req.body.username,
+      buildDirectCredentials(req.body),
+      req.body.polling_interval_minutes || 15,
+      req.body.ssl_verify ? 1 : 0
+    );
+    const row = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(info.lastInsertRowid);
+    scheduleArray(row);
+    // Kick off an immediate first poll so data appears without waiting.
+    triggerPoll(row.id).catch(() => {});
+    res.status(201).json(publicCluster(row));
+  } catch (err) {
+    if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'A cluster with that name already exists' });
+    }
+    next(err);
+  }
+});
+
+// Update a direct cluster (password optional; kept if blank). AIQUM-managed
+// rows are read-only here — they are updated automatically by discovery.
+router.put('/arrays/:id', [param('id').isInt(), ...directArrayUpdateValidators], validate, (req, res, next) => {
+  try {
+    const existing = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Cluster not found' });
+    if (existing.source === 'aiqum') {
+      return res.status(403).json({ error: 'AIQUM-managed clusters are updated automatically' });
+    }
+    const encrypted = req.body.password ? buildDirectCredentials(req.body) : existing.encrypted_credentials;
+    db.prepare(`
+      UPDATE netapp_arrays SET name = ?, mgmt_host = ?, username = ?, encrypted_credentials = ?,
+        polling_interval_minutes = ?, ssl_verify = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      req.body.name,
+      netappApi.normalizeHost(req.body.mgmt_host),
+      (req.body.username || '').trim() || existing.username,
+      encrypted,
+      req.body.polling_interval_minutes || existing.polling_interval_minutes,
+      req.body.ssl_verify ? 1 : 0,
+      req.params.id
+    );
+    const row = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(req.params.id);
+    scheduleArray(row);
+    res.json(publicCluster(row));
+  } catch (err) {
+    if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'A cluster with that name already exists' });
+    }
+    next(err);
+  }
+});
+
+// Delete a direct cluster. AIQUM-managed rows are removed by discovery only.
+router.delete('/arrays/:id', [param('id').isInt()], validate, (req, res, next) => {
+  try {
+    const existing = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Cluster not found' });
+    if (existing.source === 'aiqum') {
+      return res.status(403).json({ error: 'AIQUM-managed clusters cannot be deleted here' });
+    }
+    db.prepare('DELETE FROM netapp_arrays WHERE id = ?').run(req.params.id);
+    cancelArray(Number(req.params.id));
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// Trigger a discovery + poll of all AIQUM-managed clusters now.
 router.post('/poll', async (req, res, next) => {
   try { await syncAndPollAll(); res.json({ success: true }); } catch (err) { next(err); }
 });
