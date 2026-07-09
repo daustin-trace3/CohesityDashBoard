@@ -2,7 +2,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'cohesity.db');
+const DB_PATH = process.env.DASHBOARD_DB_PATH || path.join(__dirname, '..', 'data', 'cohesity.db');
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 
 // Ensure data directory exists
