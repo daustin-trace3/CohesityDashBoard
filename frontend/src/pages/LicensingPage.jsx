@@ -187,6 +187,7 @@ function ViewDetailPanel({ systems, explorer, excludedViews, onToggleView }) {
   );
   const [systemId, setSystemId] = useState(withViews[0]?.systemId || '');
   const [rows, setRows] = useState(null);
+  const [filter, setFilter] = useState('');
   const [sort, toggleSort] = useTableSort('physicalBytes');
 
   useEffect(() => {
@@ -206,26 +207,64 @@ function ViewDetailPanel({ systems, explorer, excludedViews, onToggleView }) {
     dataWrittenBytes: r => r.dataWrittenBytes || 0,
     logicalBytes: r => r.logicalBytes || 0,
   };
-  const shown = sortRows((rows || []).filter(r => r.physicalBytes > 0), sort, VIEW_COLS);
+  const kw = filter.trim().toLowerCase();
+  const shown = sortRows(
+    (rows || []).filter(r => r.physicalBytes > 0 && (!kw || r.viewName.toLowerCase().includes(kw))),
+    sort, VIEW_COLS
+  );
+
+  // Select/deselect-all applies to the rows visible in THIS card (current
+  // system + keyword filter), so a keyword can scope a bulk include/exclude.
+  const allShownIncluded = shown.length > 0 && shown.every(r => !excludedViews.has(`${systemId}|${r.viewName}`));
+  const bulkToggleShown = () => {
+    for (const r of shown) {
+      const isExcluded = excludedViews.has(`${systemId}|${r.viewName}`);
+      if (allShownIncluded ? !isExcluded : isExcluded) onToggleView(systemId, r);
+    }
+  };
 
   return (
     <Panel title="View Detail — Replicated vs Receiving Backups" icon={FolderTree}
       actions={
-        <select value={systemId} onChange={e => setSystemId(e.target.value)}
-          className="bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer">
-          {withViews.map(s => <option key={s.systemId} value={s.systemId}>{s.systemName || s.systemId}</option>)}
-        </select>
+        <div className="flex items-center gap-2">
+          <input
+            type="search"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="Filter view names…"
+            className="bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1 text-xs text-ink placeholder-ink-faint focus:border-brand/60 outline-none w-40"
+          />
+          <select value={systemId} onChange={e => setSystemId(e.target.value)}
+            className="bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer">
+            {withViews.map(s => <option key={s.systemId} value={s.systemId}>{s.systemName || s.systemId}</option>)}
+          </select>
+        </div>
       }>
       {rows == null ? (
         <LoadingPanel label="Loading views…" height={120} />
       ) : shown.length === 0 ? (
-        <p className="text-xs text-ink-faint py-4 text-center">No views with data on this system.</p>
+        <p className="text-xs text-ink-faint py-4 text-center">
+          {kw ? <>No views matching "{filter.trim()}" on this system.</> : 'No views with data on this system.'}
+        </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-ink-muted">
             <thead>
               <tr className="text-ink-faint border-b border-cohesity-border text-left">
-                {explorer && <th className="py-2 pr-3 font-semibold" title="Unchecked views are removed from the simulated totals">Incl.</th>}
+                {explorer && (
+                  <th className="py-2 pr-3 font-semibold" title="Unchecked views are removed from the simulated totals">
+                    <span className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={allShownIncluded}
+                        onChange={bulkToggleShown}
+                        title={allShownIncluded ? 'Deselect all views shown below' : 'Select all views shown below'}
+                        className="accent-brand cursor-pointer"
+                      />
+                      Incl.
+                    </span>
+                  </th>
+                )}
                 <SortTh label="View" colKey="viewName" sort={sort} onSort={toggleSort} align="left" />
                 <SortTh label="License Attribution" colKey="attribution" sort={sort} onSort={toggleSort} align="left" />
                 <SortTh label="Created" colKey="createdMs" sort={sort} onSort={toggleSort} align="left" />
