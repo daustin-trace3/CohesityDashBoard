@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ArrowLeft } from 'lucide-react';
+import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
+import AdminNav from '../components/AdminNav';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
 const NAMESPACES = ['cohesity', 'pure', 'netapp', 'admin', '*'];
@@ -629,7 +629,6 @@ function ServiceAccountsTab() {
 
 /* ── Page ────────────────────────────────────────────────────────────────── */
 export default function AdminUsersPage() {
-  const navigate = useNavigate();
   const { hasPermission, loading: authLoading } = useAuth();
   const [tab, setTab] = useState('users');
 
@@ -646,32 +645,31 @@ export default function AdminUsersPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <button
-        onClick={() => navigate('/admin')}
-        className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint hover:text-ink transition-colors cursor-pointer self-start"
-      >
-        <ArrowLeft size={12} /> Back to Global Settings
-      </button>
       <PageHeader icon={Users} title="Users & Access" description="Manage user accounts, groups, permission grants, and service accounts." />
 
-      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
-        {TABS.map(t => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-              }`}>
-              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <div className="flex flex-col md:flex-row gap-5 items-start">
+        <AdminNav />
+        <div className="flex flex-col gap-4 flex-1 min-w-0">
+          <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
+            {TABS.map(t => {
+              const Icon = t.icon;
+              const active = tab === t.key;
+              return (
+                <button key={t.key} onClick={() => setTab(t.key)}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
+                    active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
+                  }`}>
+                  <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
+                </button>
+              );
+            })}
+          </div>
 
-      {tab === 'users' && <UsersTab />}
-      {tab === 'groups' && <GroupsTab />}
-      {tab === 'service-accounts' && <ServiceAccountsTab />}
+          {tab === 'users' && <UsersTab />}
+          {tab === 'groups' && <GroupsTab />}
+          {tab === 'service-accounts' && <ServiceAccountsTab />}
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,19 +1,14 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Sparkles, Save, Layers, KeyRound, Settings, Users, Puzzle, Mail } from 'lucide-react';
+import { useParams } from 'react-router-dom';
+import { Sparkles, Save, Layers, KeyRound, Settings, Mail } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
-import { useAuth } from '../auth/AuthContext';
+import AdminNav from '../components/AdminNav';
 
-const TABS = [
-  { key: 'ai', label: 'AI Analysis & Keys', icon: Sparkles },
-  { key: 'platforms', label: 'Platforms', icon: Layers },
-  { key: 'license', label: 'Product License', icon: KeyRound },
-  { key: 'notifications', label: 'Alert Notifications', icon: Mail },
-  { key: 'users', label: 'Users & Access', icon: Users, route: '/admin/users', permission: 'admin:users:view' },
-  { key: 'plugins', label: 'Plugins', icon: Puzzle, route: '/admin/plugins', permission: 'admin:plugins:view' },
-];
+// Sections rendered by this page; Users & Access and Plugins are their own
+// routed pages sharing the same AdminNav shell.
+const LOCAL_SECTIONS = ['ai', 'platforms', 'license', 'notifications'];
 
 const NOTIFY_PLATFORMS = [
   { key: 'cohesity', label: 'Cohesity' },
@@ -37,9 +32,8 @@ function SourceBadge({ source }) {
 }
 
 export default function AdminSettingsPage() {
-  const navigate = useNavigate();
-  const { hasPermission, loading: authLoading } = useAuth();
-  const [tab, setTab] = useState('ai');
+  const { section } = useParams();
+  const tab = LOCAL_SECTIONS.includes(section) ? section : 'ai';
   const [estateContext, setEstateContext] = useState('');
   const [flagUnprotected, setFlagUnprotected] = useState(false);
   const [llmModel, setLlmModel] = useState('');
@@ -222,7 +216,7 @@ export default function AdminSettingsPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4 max-w-3xl">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2.5">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
           <Settings size={16} className="text-brand" />
@@ -233,21 +227,9 @@ export default function AdminSettingsPage() {
         </div>
       </div>
 
-      {/* Section tabs */}
-      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
-        {TABS.filter(t => !t.permission || authLoading || hasPermission(t.permission)).map(t => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => t.route ? navigate(t.route) : setTab(t.key)}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-              }`}>
-              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <div className="flex flex-col md:flex-row gap-5 items-start">
+        <AdminNav />
+        <div className="flex flex-col gap-4 max-w-3xl flex-1 min-w-0">
 
       {/* AI Analysis & Keys */}
       {tab === 'ai' && (
@@ -770,6 +752,8 @@ export default function AdminSettingsPage() {
       )}
       </>
       )}
+        </div>
+      </div>
     </div>
   );
 }

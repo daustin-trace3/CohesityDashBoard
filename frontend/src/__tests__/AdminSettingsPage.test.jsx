@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import AdminSettingsPage from '../pages/AdminSettingsPage';
 
@@ -27,10 +27,13 @@ const notifySettings = {
   reminderHours: 24,
 };
 
-function renderPage() {
+function renderPage(initialPath = '/admin') {
   return render(
-    <MemoryRouter>
-      <AdminSettingsPage />
+    <MemoryRouter initialEntries={[initialPath]}>
+      <Routes>
+        <Route path="/admin" element={<AdminSettingsPage />} />
+        <Route path="/admin/:section" element={<AdminSettingsPage />} />
+      </Routes>
     </MemoryRouter>
   );
 }

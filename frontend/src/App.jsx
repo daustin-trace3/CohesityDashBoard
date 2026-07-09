@@ -61,6 +61,7 @@ function AppRoutes() {
           <Route path="admin"           element={withBoundary(<AdminSettingsPage />)} />
           <Route path="admin/users"     element={withBoundary(<AdminUsersPage />)} />
           <Route path="admin/plugins"   element={withBoundary(<AdminPluginsPage />)} />
+          <Route path="admin/:section"  element={withBoundary(<AdminSettingsPage />)} />
         </Route>
       </Routes>
     </Suspense>

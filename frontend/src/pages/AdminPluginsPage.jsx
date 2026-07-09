@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Puzzle, ArrowLeft, Upload, Trash2, Power, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { Puzzle, Upload, Trash2, Power, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import AdminNav from '../components/AdminNav';
 import client from '../api/client';
 import { PageHeader, Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -80,7 +80,6 @@ function UninstallModal({ plugin, onClose, onConfirm }) {
 }
 
 export default function AdminPluginsPage() {
-  const navigate = useNavigate();
   const { hasPermission, loading: authLoading } = useAuth();
   const { toast } = useToast();
   const [plugins, setPlugins] = useState(null);
@@ -170,17 +169,15 @@ export default function AdminPluginsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <button
-        onClick={() => navigate('/admin')}
-        className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint hover:text-ink transition-colors cursor-pointer self-start"
-      >
-        <ArrowLeft size={12} /> Back to Global Settings
-      </button>
       <PageHeader
         icon={Puzzle}
         title="Plugins"
         description="Built-in and installed platform plugins. Installed plugins add data protection platforms without a code deploy."
       />
+
+      <div className="flex flex-col md:flex-row gap-5 items-start">
+        <AdminNav />
+        <div className="flex flex-col gap-4 flex-1 min-w-0">
 
       {restartNeeded && (
         <p className="text-xs text-status-warn bg-status-warn/10 border border-status-warn/30 rounded-lg px-3 py-2">
@@ -312,6 +309,8 @@ export default function AdminPluginsPage() {
           onConfirm={(purgeData) => uninstall(uninstallTarget, purgeData)}
         />
       )}
+        </div>
+      </div>
     </div>
   );
 }
