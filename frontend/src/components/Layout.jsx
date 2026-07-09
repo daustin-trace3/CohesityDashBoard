@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings,
+  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings, LogOut,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -77,7 +77,7 @@ export default function Layout() {
   const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : '';
   const navPlatformKey = platformKey || 'cohesity';
 
-  const { hasPermission, loading: authLoading } = useAuth();
+  const { user, logout, hasPermission, loading: authLoading } = useAuth();
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
@@ -393,6 +393,26 @@ export default function Layout() {
             >
               <Settings size={15} />
             </button>
+          )}
+
+          {/* Signed-in user + sign out */}
+          {user && (
+            <div className="flex items-center gap-2 flex-shrink-0 pl-3 ml-1 border-l border-cohesity-border">
+              <span
+                className="text-xs text-ink-muted max-w-[120px] truncate hidden sm:block"
+                title={user.displayName || user.username}
+              >
+                {user.displayName || user.username}
+              </span>
+              <button
+                onClick={logout}
+                title="Sign out"
+                aria-label="Sign out"
+                className="flex items-center justify-center h-8 w-8 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer"
+              >
+                <LogOut size={15} />
+              </button>
+            </div>
           )}
         </header>
 
