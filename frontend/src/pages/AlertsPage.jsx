@@ -481,7 +481,7 @@ export default function AlertsPage() {
             </p>
             <label htmlFor="resolve-note" className="block text-[11px] font-semibold uppercase tracking-wider text-ink-faint mb-1">Resolution note</label>
             <textarea id="resolve-note" rows={3} value={resolveNote} onChange={e => setResolveNote(e.target.value)}
-              maxLength={500} placeholder="Resolved from Cohesity Dashboard"
+              maxLength={500} placeholder="Resolved from ICC"
               className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none resize-y" />
             <p className="text-[10px] text-ink-faint mt-1">Optional — a default note is sent if left blank.</p>
             <div className="flex items-center justify-end gap-2 mt-4">

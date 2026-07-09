@@ -118,7 +118,7 @@ router.post(
       const cluster = db.prepare('SELECT * FROM clusters WHERE id = ?').get(alert.cluster_id);
       if (!cluster) return res.status(404).json({ error: 'Cluster not found' });
 
-      const details = req.body?.details || 'Resolved from Cohesity Dashboard';
+      const details = req.body?.details || 'Resolved from ICC';
       try {
         await cohesityApi.resolveAlerts(cluster, [alert.cohesity_alert_id], details);
       } catch (err) {
@@ -145,7 +145,7 @@ router.post(
     try {
       const ids = req.body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
       if (!ids.length) return res.status(400).json({ error: 'ids must be a non-empty array of alert ids' });
-      const details = req.body?.details || 'Resolved from Cohesity Dashboard';
+      const details = req.body?.details || 'Resolved from ICC';
 
       const placeholders = ids.map(() => '?').join(',');
       const rows = db.prepare(`SELECT * FROM alerts WHERE id IN (${placeholders})`).all(...ids);

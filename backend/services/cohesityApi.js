@@ -341,9 +341,9 @@ async function fetchSourceRegistrations(cluster) {
  * @param {string[]} alertIdList  Cohesity alert ids (cohesity_alert_id)
  * @param {string} resolutionDetails  free-text note stored on the resolution
  */
-async function resolveAlerts(cluster, alertIdList, resolutionText = 'Resolved from Cohesity Dashboard') {
+async function resolveAlerts(cluster, alertIdList, resolutionText = 'Resolved from ICC') {
   const client = await getAuthenticatedClient(cluster);
-  const text = String(resolutionText || 'Resolved from Cohesity Dashboard').slice(0, 1000);
+  const text = String(resolutionText || 'Resolved from ICC').slice(0, 1000);
   // The v1 public API expects `resolutionDetails` as an OBJECT with a short
   // summary plus longer details — a bare string is rejected with
   // "Error while parsing request body: invalid input parameters".

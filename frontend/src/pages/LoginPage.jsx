@@ -88,7 +88,7 @@ export default function LoginPage() {
             <ShieldCheck size={16} className="text-brand absolute" strokeWidth={2.5} />
           </div>
           <div>
-            <p className="text-sm font-bold text-ink">Cohesity Command Center</p>
+            <p className="text-sm font-bold text-ink">Infrastructure Command Center</p>
             <p className="text-[11px] text-ink-muted">{needsSetup ? 'First-run setup' : 'Sign in'}</p>
           </div>
         </div>
