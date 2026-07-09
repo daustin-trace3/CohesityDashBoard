@@ -26,6 +26,7 @@ const pure1Router = require('./routes/pure1');
 const dnsRouter = require('./routes/dns');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
+const pluginsRouter = require('./routes/plugins');
 const registry = require('./core/registry');
 const authenticate = require('./middleware/authenticate');
 const csrf = require('./middleware/csrf');
@@ -151,6 +152,10 @@ function createApp({ licenseGate = requireLicense } = {}) {
     settingsRouter
   );
   app.use('/api/ai-audit', requirePermission(() => 'admin:ai-audit:view'), aiAuditRouter);
+  // Plugins router applies permissions per-route itself (admin:plugins:view|
+  // manage for most routes, the plugin's own namespace for bundle.js, no
+  // gate for frontend-manifest) — no blanket guard here.
+  app.use('/api/plugins', pluginsRouter);
   // Seam: Pure1 cloud stays a static mount — the dispatcher only serves
   // /api/<pluginId>/*, and pure1 is a second mount alongside the 'pure'
   // plugin's own /api/pure/*. Folds in once its frontend paths migrate

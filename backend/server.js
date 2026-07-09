@@ -2,6 +2,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 
 const logger = require('./utils/logger');
 const registry = require('./core/registry');
+const pluginBoot = require('./services/pluginBoot');
 const { createApp } = require('./app');
 const { initPoller } = require('./services/poller');
 const { initLicensing } = require('./services/licensing');
@@ -17,15 +18,24 @@ const netappManifest = require('./platforms/netapp');
 // here is a cheap idempotent no-op that makes the boot sequence explicit.
 authService.pruneExpired();
 
+// Swap in any staged plugin upgrades / process pending removals BEFORE any
+// plugin backend is require()'d (contract C9.3).
+pluginBoot.runBootSwap();
+
 registry.init();
 
 // Register platform plugins, then apply their enable flags (app_settings
-// remains the source of truth in Phase 1 — see contract C4).
+// remains the source of truth in Phase 1 — see contract C4). Entitlement
+// (C9.5) gates enabling regardless of the stored flag.
 const { platformPureEnabled, platformNetappEnabled } = getPlatformSettings();
 registry.registerPlugin(pureManifest);
-registry.setEnabled('pure', platformPureEnabled);
+registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
 registry.registerPlugin(netappManifest);
-registry.setEnabled('netapp', platformNetappEnabled);
+registry.setEnabled('netapp', platformNetappEnabled && registry.isEntitled('netapp'));
+
+// Scan and register any installed (non-built-in) plugins left in plugins/
+// after the boot swap above.
+pluginBoot.scanAndRegisterInstalled();
 
 const app = createApp();
 const PORT = process.env.PORT || 3001;

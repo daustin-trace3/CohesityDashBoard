@@ -17,6 +17,32 @@ const plugins = new Map(); // id -> { manifest, router, status, error, enabled }
 
 let coreApiRef = null;
 let initialized = false;
+let isEntitledOverride = null;
+
+/** Default entitlement check (contract C9.5): cohesity is always entitled;
+ *  otherwise ask services/license.getEntitlements() (lazily required — that
+ *  module is built in a parallel work package and may not exist yet). */
+function defaultIsEntitled(id) {
+  if (id === 'cohesity') return true;
+  let getEntitlements;
+  try {
+    ({ getEntitlements } = require('../services/license'));
+  } catch {
+    getEntitlements = null;
+  }
+  const ent = (typeof getEntitlements === 'function' ? getEntitlements() : null) || { all: true };
+  return !!(ent.all || (Array.isArray(ent.platforms) && ent.platforms.includes(id)));
+}
+
+/** Test-only: override the isEntitled check with a fn(id) => bool. Pass a
+ *  falsy value to restore the default. */
+function setIsEntitledFn(fn) {
+  isEntitledOverride = typeof fn === 'function' ? fn : null;
+}
+
+function isEntitled(id) {
+  return (isEntitledOverride || defaultIsEntitled)(id);
+}
 
 function init(overrides = {}) {
   if (initialized) return coreApiRef;
@@ -127,6 +153,9 @@ function toPublic(entry) {
     status: entry.status,
     error: entry.error,
     enabled: entry.enabled,
+    entitled: isEntitled(entry.id),
+    version: entry.manifest.version || null,
+    color: entry.manifest.color || null,
   };
 }
 
@@ -145,9 +174,12 @@ function listPlugins() {
   return Array.from(plugins.values()).map(toPublic);
 }
 
+/** Refused (returns false, no state change) when turning ON a plugin that
+ *  isn't entitled (contract C9.5). Disabling is always allowed. */
 function setEnabled(id, enabled) {
   const entry = plugins.get(id);
   if (!entry) return false;
+  if (enabled && !isEntitled(id)) return false;
   entry.enabled = !!enabled;
   upsertPluginRow(entry);
   return true;
@@ -167,6 +199,7 @@ function _reset() {
   plugins.clear();
   coreApiRef = null;
   initialized = false;
+  isEntitledOverride = null;
 }
 
 module.exports = {
@@ -178,6 +211,8 @@ module.exports = {
   getPollerHandle,
   listPlugins,
   setEnabled,
+  isEntitled,
+  setIsEntitledFn,
   dispatch,
   _reset,
 };
