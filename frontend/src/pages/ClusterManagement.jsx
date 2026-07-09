@@ -23,6 +23,8 @@ function ClusterForm({ initial, onSubmit, onBulkSubmit, onCancel }) {
   const [domain, setDomain] = useState(initial?.credentials?.domain || 'local');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
   const [heliosClusters, setHeliosClusters] = useState([]);
   const [discoverLoading, setDiscoverLoading] = useState(false);
   const [discoverError, setDiscoverError] = useState(null);
@@ -73,23 +75,21 @@ function ClusterForm({ initial, onSubmit, onBulkSubmit, onCancel }) {
     }
   };
 
+  const buildCredentials = () => {
+    if (form.connection_type === 'helios') {
+      // Only include apiKey if the user actually typed one; otherwise backend uses HELIOS_API_KEY from .env
+      return apiKey ? { apiKey } : {};
+    } else if (form.auth_type === 'apikey') {
+      return { apiKey };
+    }
+    return { username, password, domain };
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
 
-    let credentials;
-    if (form.connection_type === 'helios') {
-      // Only include apiKey if the user actually typed one; otherwise backend uses HELIOS_API_KEY from .env
-      credentials = apiKey ? { apiKey } : {};
-    } else if (form.auth_type === 'apikey') {
-      credentials = { apiKey };
-    } else {
-      credentials = { username, password, domain };
-    }
-
-    if (form.connection_type === 'helios') {
-      // Helios always uses apikey
-    }
+    const credentials = buildCredentials();
 
     setSubmitting(true);
     try {
@@ -98,6 +98,33 @@ function ClusterForm({ initial, onSubmit, onBulkSubmit, onCancel }) {
       setError(err.response?.data?.error || err.response?.data?.errors?.[0]?.msg || err.message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const canTest = form.connection_type === 'helios'
+    ? !!String(form.vip || '').trim()
+    : !!String(form.vip || '').trim() &&
+      (form.auth_type === 'apikey' ? !!apiKey : !!(username && password));
+
+  const handleTestConnection = async () => {
+    setTestResult(null);
+    setTesting(true);
+    try {
+      const { data } = await client.post('/clusters/test', {
+        connection_type: form.connection_type,
+        vip: form.vip,
+        auth_type: form.auth_type,
+        credentials: buildCredentials(),
+        ssl_verify: form.ssl_verify
+      });
+      setTestResult(data);
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        error: err.response?.data?.error || err.response?.data?.errors?.[0]?.msg || err.message
+      });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -271,6 +298,10 @@ function ClusterForm({ initial, onSubmit, onBulkSubmit, onCancel }) {
             autoComplete="new-password"
             className="w-full bg-cohesity-black border border-cohesity-border rounded px-3 py-2 text-sm text-cohesity-text focus:outline-none focus:border-cohesity-green"
           />
+          <p className="text-[11px] text-ink-faint mt-1">
+            Requires a Helios API key: sign in at helios.cohesity.com → Settings → Access Management → API Keys (the key is shown only once).{' '}
+            <a href="https://developers.cohesity.com/" target="_blank" rel="noreferrer" className="underline">Cohesity developer docs</a>
+          </p>
         </div>
       )}
       {form.connection_type !== 'helios' && form.auth_type === 'apikey' && (
@@ -284,6 +315,10 @@ function ClusterForm({ initial, onSubmit, onBulkSubmit, onCancel }) {
             autoComplete="new-password"
             className="w-full bg-cohesity-black border border-cohesity-border rounded px-3 py-2 text-sm text-cohesity-text focus:outline-none focus:border-cohesity-green"
           />
+          <p className="text-[11px] text-ink-faint mt-1">
+            Requires an API key created on the cluster: Cohesity UI → Settings → Access Management → API Keys. A read-only role is sufficient for monitoring.{' '}
+            <a href="https://developers.cohesity.com/v1-cluster-7.3.1/docs/getting-started" target="_blank" rel="noreferrer" className="underline">Getting started with the Cohesity API</a>
+          </p>
         </div>
       )}
 
@@ -319,6 +354,9 @@ function ClusterForm({ initial, onSubmit, onBulkSubmit, onCancel }) {
               className="w-full bg-cohesity-black border border-cohesity-border rounded px-3 py-2 text-sm text-cohesity-text focus:outline-none focus:border-cohesity-green"
             />
           </div>
+          <p className="text-[11px] text-ink-faint">
+            Local or AD cluster account with at least a Viewer role. Domain is 'local' for cluster-local users; use your AD domain otherwise.
+          </p>
         </>
       )}
 
@@ -392,7 +430,23 @@ function ClusterForm({ initial, onSubmit, onBulkSubmit, onCancel }) {
         <span className="text-gray-300">Verify SSL Certificate</span>
       </label>
 
+      {testResult && (
+        <div className={`text-xs rounded p-2 border ${testResult.ok ? 'text-cohesity-green border-cohesity-green bg-cohesity-green bg-opacity-10' : 'text-red-400 border-red-700 bg-red-900 bg-opacity-20'}`}>
+          {testResult.ok
+            ? `✓ Connected — ${testResult.clusterName || 'cluster'} (${testResult.softwareVersion || 'unknown version'})`
+            : `✗ ${testResult.error}`}
+        </div>
+      )}
+
       <div className="flex gap-3 pt-2">
+        <button
+          type="button"
+          disabled={!canTest || testing}
+          onClick={handleTestConnection}
+          className="px-4 py-2 bg-cohesity-black border border-cohesity-border rounded text-sm hover:border-cohesity-green hover:text-cohesity-green transition-colors disabled:opacity-50"
+        >
+          {testing ? 'Testing...' : 'Test connection'}
+        </button>
         {form.connection_type === 'helios' && selectedHeliosClusters.length > 1 && (
           <button
             type="button"

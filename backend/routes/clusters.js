@@ -2,7 +2,7 @@ const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt, decrypt } = require('../services/encryption');
-const { invalidateSession } = require('../services/cohesityApi');
+const { invalidateSession, testClusterConnection } = require('../services/cohesityApi');
 const { scheduleCluster, cancelCluster } = require('../services/poller');
 const cacheControl = require('../middleware/cache');
 
@@ -178,6 +178,100 @@ router.post(
         return res.status(409).json({ error: 'A cluster with that name already exists' });
       }
       next(err);
+    }
+  }
+);
+
+/**
+ * POST /api/clusters/test
+ * Test a cluster connection using the supplied (not-yet-saved) config.
+ * Always responds 200 with { ok, ... } except for validation failures (400).
+ */
+router.post(
+  '/test',
+  [
+    body('connection_type')
+      .isIn(['helios', 'direct'])
+      .withMessage('connection_type must be helios or direct'),
+    body('auth_type')
+      .isIn(['userpass', 'apikey'])
+      .withMessage('auth_type must be userpass or apikey'),
+    body('credentials').isObject().withMessage('credentials must be an object'),
+    body('credentials').custom((creds, { req }) => {
+      const authType = req.body.auth_type;
+      const connType = req.body.connection_type;
+      if (connType === 'helios') {
+        // apiKey is optional for Helios — falls back to HELIOS_API_KEY env var when blank/absent
+        if (creds.apiKey !== undefined && creds.apiKey !== '' &&
+            (typeof creds.apiKey !== 'string' || creds.apiKey.length > 512)) {
+          throw new Error('credentials.apiKey must be a string (max 512 chars)');
+        }
+      } else if (authType === 'apikey') {
+        if (!creds.apiKey || typeof creds.apiKey !== 'string' || creds.apiKey.length > 512) {
+          throw new Error('credentials.apiKey is required (max 512 chars)');
+        }
+      } else if (authType === 'userpass') {
+        if (!creds.username || typeof creds.username !== 'string' || creds.username.length > 256) {
+          throw new Error('credentials.username must be a string (max 256 chars)');
+        }
+        if (!creds.password || typeof creds.password !== 'string' || creds.password.length > 1024) {
+          throw new Error('credentials.password must be a string (max 1024 chars)');
+        }
+        const allowedKeys = new Set(['username', 'password', 'domain']);
+        for (const key of Object.keys(creds)) {
+          if (!allowedKeys.has(key)) throw new Error(`credentials: unexpected key '${key}'`);
+        }
+      }
+      return true;
+    }),
+    body('vip')
+      .if(body('connection_type').equals('direct'))
+      .trim()
+      .notEmpty().withMessage('VIP/hostname is required for direct connections')
+      .matches(/^[a-zA-Z0-9._-]+$/).withMessage('VIP contains invalid characters')
+      .isLength({ max: 253 }).withMessage('VIP too long')
+      .custom(val => {
+        if (isBlockedVip(val)) throw new Error('VIP address not allowed');
+        return true;
+      }),
+    body('vip')
+      .if(body('connection_type').equals('helios'))
+      .trim()
+      .notEmpty().withMessage('Helios cluster ID is required')
+      .matches(/^\d+$/).withMessage('Helios cluster ID must be numeric')
+      .isLength({ max: 20 }).withMessage('Helios cluster ID too long'),
+    body('ssl_verify').optional().isBoolean()
+  ],
+  validate,
+  async (req, res) => {
+    const { connection_type, vip, auth_type, credentials, ssl_verify = false } = req.body;
+
+    if (connection_type === 'direct' && vip && isBlockedVip(vip)) {
+      return res.status(400).json({ error: 'Invalid VIP address.' });
+    }
+
+    try {
+      const result = await testClusterConnection({
+        connection_type,
+        vip,
+        auth_type,
+        credentials,
+        ssl_verify
+      });
+      return res.json(result);
+    } catch (err) {
+      const status = err.response?.status;
+      let message = 'Connection failed.';
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        message = 'Connection timed out.';
+      } else if (status === 401 || status === 403) {
+        message = 'Authentication failed. Check credentials.';
+      } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'EHOSTUNREACH') {
+        message = 'Cluster unreachable. Check the VIP/hostname.';
+      } else if (status) {
+        message = `Cluster returned an error (HTTP ${status}).`;
+      }
+      return res.json({ ok: false, error: message });
     }
   }
 );

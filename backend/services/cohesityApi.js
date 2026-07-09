@@ -88,6 +88,62 @@ function invalidateSession(clusterId) {
   sessionCache.delete(clusterId);
 }
 
+const TEST_CONNECTION_TIMEOUT_MS = 15000;
+
+/**
+ * Test a cluster connection using plaintext credentials supplied directly
+ * (no encrypt/decrypt round-trip, no session cache reads/writes). Used by
+ * the "Test connection" flow before a cluster is saved.
+ * config: { connection_type, vip, auth_type, credentials, ssl_verify }
+ * Returns { ok: true, clusterName, softwareVersion } on success; throws on failure.
+ */
+async function testClusterConnection(config) {
+  const { connection_type, vip, auth_type, credentials = {}, ssl_verify } = config;
+  let client;
+
+  if (connection_type === 'helios') {
+    const apiKey = credentials.apiKey || getHeliosApiKey();
+    const agent = new https.Agent({ rejectUnauthorized: true });
+    client = axios.create({
+      baseURL: 'https://helios.cohesity.com',
+      httpsAgent: agent,
+      timeout: TEST_CONNECTION_TIMEOUT_MS
+    });
+    client.defaults.headers.common['apiKey'] = apiKey;
+    if (vip) {
+      client.defaults.headers.common['accessClusterId'] = String(vip);
+    }
+  } else {
+    const baseURL = `https://${vip}`;
+    const agent = new https.Agent({ rejectUnauthorized: !!ssl_verify });
+
+    if (auth_type === 'apikey') {
+      client = axios.create({ baseURL, httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS });
+      client.defaults.headers.common['apiKey'] = credentials.apiKey;
+    } else {
+      const loginResp = await axios.post(
+        `${baseURL}/login`,
+        {
+          domain: credentials.domain || 'local',
+          username: credentials.username,
+          password: credentials.password
+        },
+        { httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS }
+      );
+      const { accessToken, tokenType } = loginResp.data;
+      client = axios.create({ baseURL, httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS });
+      client.defaults.headers.common['Authorization'] = `${tokenType} ${accessToken}`;
+    }
+  }
+
+  const { data } = await client.get('/irisservices/api/v1/public/cluster?fetchStats=true');
+  return {
+    ok: true,
+    clusterName: data.name || null,
+    softwareVersion: data.clusterSoftwareVersion || data.softwareVersion || null
+  };
+}
+
 /**
  * Fetch cluster info (v1 public/cluster endpoint).
  */
@@ -304,6 +360,7 @@ async function resolveAlerts(cluster, alertIdList, resolutionText = 'Resolved fr
 module.exports = {
   getAuthenticatedClient,
   invalidateSession,
+  testClusterConnection,
   fetchProtectionPolicies,
   fetchSourceRegistrations,
   fetchClusterInfo,
