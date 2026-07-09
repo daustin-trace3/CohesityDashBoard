@@ -112,7 +112,7 @@ export default function InsightsPanel({ initialData = null }) {
     setLoading(true);
     setError(false);
     try {
-      const { data } = await client.get('/insights');
+      const { data } = await client.get('/cohesity/insights');
       setData(data);
     } catch {
       setError(true);

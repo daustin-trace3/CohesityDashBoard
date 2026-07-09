@@ -34,7 +34,7 @@ function HeliosClusterEditForm({ initial, onSaved, onCancel }) {
     };
     if (apiKey) payload.credentials = { apiKey };
     try {
-      await client.put(`/clusters/${initial.id}`, payload);
+      await client.put(`/cohesity/clusters/${initial.id}`, payload);
       onSaved();
     } catch (err) {
       setError(err.response?.data?.error || err.response?.data?.errors?.[0]?.msg || 'Save failed.');
@@ -224,7 +224,7 @@ export default function ClusterManagement() {
 
   const loadClusters = () => {
     client
-      .get('/clusters')
+      .get('/cohesity/clusters')
       .then(({ data }) => setClusters(data))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -234,7 +234,7 @@ export default function ClusterManagement() {
 
   const handleDelete = async (id) => {
     try {
-      await client.delete(`/clusters/${id}`);
+      await client.delete(`/cohesity/clusters/${id}`);
       showToast('Cluster deleted');
       setClusters((prev) => prev.filter((c) => c.id !== id));
     } catch {
@@ -246,7 +246,7 @@ export default function ClusterManagement() {
 
   const handleBulkReplaceTags = async (newTags) => {
     const tagStr = newTags.join(', ');
-    await Promise.allSettled([...selectedIds].map(id => client.put(`/clusters/${id}`, { tags: tagStr })));
+    await Promise.allSettled([...selectedIds].map(id => client.put(`/cohesity/clusters/${id}`, { tags: tagStr })));
     showToast(`Tags updated on ${selectedIds.size} cluster(s)`);
     setSelectedIds(new Set());
     setBulkModal(null);
@@ -258,7 +258,7 @@ export default function ClusterManagement() {
       const cluster = clusters.find(c => c.id === id);
       const existing = (cluster?.tags || '').split(',').map(t => t.trim()).filter(Boolean);
       const merged = [...new Set([...existing, ...newTags])];
-      return client.put(`/clusters/${id}`, { tags: merged.join(', ') });
+      return client.put(`/cohesity/clusters/${id}`, { tags: merged.join(', ') });
     }));
     showToast(`Tags appended to ${selectedIds.size} cluster(s)`);
     setSelectedIds(new Set());
@@ -268,7 +268,7 @@ export default function ClusterManagement() {
 
   const handleBulkCredentials = async (apiKey) => {
     const applicable = clusters.filter(c => selectedIds.has(c.id) && c.auth_type === 'apikey');
-    await Promise.allSettled(applicable.map(c => client.put(`/clusters/${c.id}`, { credentials: { apiKey } })));
+    await Promise.allSettled(applicable.map(c => client.put(`/cohesity/clusters/${c.id}`, { credentials: { apiKey } })));
     showToast(`Credentials updated on ${applicable.length} cluster(s)`);
     setSelectedIds(new Set());
     setBulkModal(null);
@@ -276,7 +276,7 @@ export default function ClusterManagement() {
   };
 
   const handleBulkDelete = async () => {
-    await Promise.allSettled([...selectedIds].map(id => client.delete(`/clusters/${id}`)));
+    await Promise.allSettled([...selectedIds].map(id => client.delete(`/cohesity/clusters/${id}`)));
     showToast(`Deleted ${selectedIds.size} cluster(s)`);
     setSelectedIds(new Set());
     setBulkConfirmDelete(false);
@@ -636,7 +636,7 @@ export default function ClusterManagement() {
                     setImportLoading(true);
                     try {
                       const text = await importFile.text();
-                      const { data } = await client.post(`/import/history${importOverwrite ? '?overwrite=true' : ''}`, text, {
+                      const { data } = await client.post(`/cohesity/import/history${importOverwrite ? '?overwrite=true' : ''}`, text, {
                         headers: { 'Content-Type': 'text/csv' }
                       });
                       setImportResult(data);

@@ -316,7 +316,7 @@ function RecentAlertsPanel({ initialAlerts }) {
       setLoading(false);
       return;
     }
-    client.get('/alerts?dismissed=0&resolved=0&severity=critical')
+    client.get('/cohesity/alerts?dismissed=0&resolved=0&severity=critical')
       .then(r => {
         const sorted = [...r.data].sort((a, b) => new Date(getAlertTimestamp(b) || 0) - new Date(getAlertTimestamp(a) || 0));
         setAlerts(sorted.slice(0, 10));
@@ -461,7 +461,7 @@ export default function Dashboard() {
   // per-cluster request fan-out so the dashboard renders the last pull instantly.
   const loadClusters = useCallback(async () => {
     try {
-      const { data } = await client.get('/dashboard/snapshot');
+      const { data } = await client.get('/cohesity/dashboard/snapshot');
       setClusters(data.clusters || []);
 
       const metricsMap = {};
@@ -493,7 +493,7 @@ export default function Dashboard() {
     if (!criticalOnly || clusters.length === 0) return;
     Promise.allSettled(
       clusters.map(c =>
-        client.get('/alerts?clusterId=' + c.id + '&severity=critical&resolved=0')
+        client.get('/cohesity/alerts?clusterId=' + c.id + '&severity=critical&resolved=0')
           .then(r => ({ id: c.id, hasCritical: r.data.length > 0 }))
       )
     ).then(results => {
@@ -572,7 +572,7 @@ export default function Dashboard() {
     setTrendLoading(true);
     Promise.allSettled(
       ids.map(id =>
-        client.get(`/metrics/${id}/history?days=${trendDays}`)
+        client.get(`/cohesity/metrics/${id}/history?days=${trendDays}`)
           .then(r => ({ id, rows: r.data }))
       )
     ).then(results => {

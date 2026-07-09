@@ -533,8 +533,8 @@ export default function AnalyticsPage() {
       const params = { days };
       if (clusterId) params.clusterId = clusterId;
       const [bRes, rRes] = await Promise.all([
-        client.get('/analytics/protection-runs', { params }),
-        client.get('/analytics/replication', { params }),
+        client.get('/cohesity/analytics/protection-runs', { params }),
+        client.get('/cohesity/analytics/replication', { params }),
       ]);
       setBackup(bRes.data);
       setReplication(rRes.data);
@@ -548,7 +548,7 @@ export default function AnalyticsPage() {
   }, [days, clusterId, toast]);
 
   useEffect(() => {
-    client.get('/analytics/clusters')
+    client.get('/cohesity/analytics/clusters')
       .then(r => setClusters(r.data || []))
       .catch(() => {});
   }, []);

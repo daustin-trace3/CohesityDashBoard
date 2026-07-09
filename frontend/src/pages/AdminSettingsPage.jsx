@@ -50,7 +50,7 @@ export default function AdminSettingsPage() {
   useEffect(() => {
     Promise.allSettled([
       client.get('/settings'),
-      client.get('/insights/ai/config'),
+      client.get('/cohesity/insights/ai/config'),
       client.get('/license/status'),
       client.get('/settings/credentials'),
     ]).then(([s, c, l, cr]) => {

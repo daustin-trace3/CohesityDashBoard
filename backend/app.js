@@ -28,6 +28,7 @@ const registry = require('./core/registry');
 const requireApiKey = require('./middleware/auth');
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
+const deprecated = require('./middleware/deprecatedAlias');
 
 /**
  * Builds the Express app. `licenseGate` is injectable so tests can exercise
@@ -86,22 +87,41 @@ function createApp({ licenseGate = requireLicense } = {}) {
 
   // Routes
   app.use('/api/license', licenseRouter);
-  app.use('/api/clusters', clustersRouter);
-  app.use('/api/metrics', metricsRouter);
-  app.use('/api/alerts', alertsRouter);
-  app.use('/api/hardware', hardwareRouter);
+
+  // Cohesity routes — mounted under /api/cohesity/* (WP4). New mounts first,
+  // then deprecated aliases at the old unprefixed paths for back-compat with
+  // existing customer automation; both must keep working.
+  app.use('/api/cohesity/clusters', clustersRouter);
+  app.use('/api/cohesity/metrics', metricsRouter);
+  app.use('/api/cohesity/alerts', alertsRouter);
+  app.use('/api/cohesity/hardware', hardwareRouter);
+  app.use('/api/cohesity/helios', heliosRouter);
+  app.use('/api/cohesity/import', importRouter);
+  app.use('/api/cohesity/analytics', analyticsRouter);
+  app.use('/api/cohesity/replication', replicationRouter);
+  app.use('/api/cohesity/insights', insightsRouter);
+  app.use('/api/cohesity/governance', governanceRouter);
+  app.use('/api/cohesity/dashboard', dashboardRouter);
+  app.use('/api/cohesity/advisor', advisorRouter);
+  app.use('/api/cohesity/licensing', licensingRouter);
+
+  app.use('/api/clusters', deprecated('/api/clusters', '/api/cohesity/clusters'), clustersRouter);
+  app.use('/api/metrics', deprecated('/api/metrics', '/api/cohesity/metrics'), metricsRouter);
+  app.use('/api/alerts', deprecated('/api/alerts', '/api/cohesity/alerts'), alertsRouter);
+  app.use('/api/hardware', deprecated('/api/hardware', '/api/cohesity/hardware'), hardwareRouter);
+  app.use('/api/helios', deprecated('/api/helios', '/api/cohesity/helios'), heliosRouter);
+  app.use('/api/import', deprecated('/api/import', '/api/cohesity/import'), importRouter);
+  app.use('/api/analytics', deprecated('/api/analytics', '/api/cohesity/analytics'), analyticsRouter);
+  app.use('/api/replication', deprecated('/api/replication', '/api/cohesity/replication'), replicationRouter);
+  app.use('/api/insights', deprecated('/api/insights', '/api/cohesity/insights'), insightsRouter);
+  app.use('/api/governance', deprecated('/api/governance', '/api/cohesity/governance'), governanceRouter);
+  app.use('/api/dashboard', deprecated('/api/dashboard', '/api/cohesity/dashboard'), dashboardRouter);
+  app.use('/api/advisor', deprecated('/api/advisor', '/api/cohesity/advisor'), advisorRouter);
+  app.use('/api/licensing', deprecated('/api/licensing', '/api/cohesity/licensing'), licensingRouter);
+
   app.use('/api/poller', pollerRouter);
-  app.use('/api/helios', heliosRouter);
-  app.use('/api/import', importRouter);
-  app.use('/api/analytics', analyticsRouter);
-  app.use('/api/replication', replicationRouter);
-  app.use('/api/insights', insightsRouter);
-  app.use('/api/governance', governanceRouter);
-  app.use('/api/dashboard', dashboardRouter);
   app.use('/api/settings', settingsRouter);
-  app.use('/api/advisor', advisorRouter);
   app.use('/api/ai-audit', aiAuditRouter);
-  app.use('/api/licensing', licensingRouter);
   // Seam: Pure1 cloud stays a static mount — the dispatcher only serves
   // /api/<pluginId>/*, and pure1 is a second mount alongside the 'pure'
   // plugin's own /api/pure/*. Folds in once its frontend paths migrate

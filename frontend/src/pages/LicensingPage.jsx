@@ -193,7 +193,7 @@ function ViewDetailPanel({ systems, explorer, excludedViews, onToggleView }) {
   useEffect(() => {
     if (!systemId) return;
     setRows(null);
-    client.get(`/licensing/views/${systemId}`)
+    client.get(`/cohesity/licensing/views/${systemId}`)
       .then(r => setRows(r.data))
       .catch(() => setRows([]));
   }, [systemId]);
@@ -549,7 +549,7 @@ export default function LicensingPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await client.get('/licensing');
+      const { data } = await client.get('/cohesity/licensing');
       setData(data);
     } catch {
       setData(null);
@@ -566,7 +566,7 @@ export default function LicensingPage() {
       // The per-type pull hits a heavier Helios report; allow well beyond the default timeout.
       // Body must be {} not null: axios serializes null to a literal "null" body,
       // which Express's strict JSON parser rejects with a 400.
-      const { data } = await client.post('/licensing/refresh', {}, { timeout: 200000 });
+      const { data } = await client.post('/cohesity/licensing/refresh', {}, { timeout: 200000 });
       setData(data);
       const failed = data.refreshFailedSources || [];
       if (failed.length > 0) {
@@ -630,7 +630,7 @@ export default function LicensingPage() {
         (s.categories.views?.physicalBytes || 0) + (s.categories.viewsReplicated?.physicalBytes || 0) > 0
       );
       const detailResults = await Promise.allSettled(
-        withViews.map(s => client.get(`/licensing/views/${s.systemId}`).then(r => ({ system: s, views: r.data })))
+        withViews.map(s => client.get(`/cohesity/licensing/views/${s.systemId}`).then(r => ({ system: s, views: r.data })))
       );
       rows.push('VIEW DETAIL');
       rows.push('System,View,License Attribution,Created,Physical TB,Data Written TB,Logical TB');

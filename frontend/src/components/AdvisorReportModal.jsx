@@ -19,7 +19,7 @@ export default function AdvisorReportModal({ tab, initialReport, enabled, autoRu
     setRunning(true);
     setError(null);
     try {
-      const { data } = await client.post(`/advisor/${tab.slug}`);
+      const { data } = await client.post(`/cohesity/advisor/${tab.slug}`);
       setReport(data);
       onUpdated?.(data);
     } catch (e) {

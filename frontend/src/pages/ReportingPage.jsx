@@ -29,10 +29,10 @@ export default function ReportingPage() {
     const toastId = toast({ type: 'loading', title: 'Generating report', message: 'Collecting estate-wide data…' });
     try {
       const [clRes, alRes, prRes, insRes] = await Promise.allSettled([
-        client.get('/clusters'),
-        client.get('/alerts?dismissed=0&resolved=0'),
-        client.get('/analytics/protection-runs?days=30'),
-        client.get('/insights'),
+        client.get('/cohesity/clusters'),
+        client.get('/cohesity/alerts?dismissed=0&resolved=0'),
+        client.get('/cohesity/analytics/protection-runs?days=30'),
+        client.get('/cohesity/insights'),
       ]);
       const cls = clRes.status === 'fulfilled' ? clRes.value.data : [];
       setClusters(cls);
@@ -41,7 +41,7 @@ export default function ReportingPage() {
       setInsights(insRes.status === 'fulfilled' ? insRes.value.data.insights : []);
 
       const metricResults = await Promise.allSettled(
-        cls.map(c => client.get(`/metrics/${c.id}/history?days=1`).then(r => ({ id: c.id, rows: r.data })))
+        cls.map(c => client.get(`/cohesity/metrics/${c.id}/history?days=1`).then(r => ({ id: c.id, rows: r.data })))
       );
       const map = {};
       for (const r of metricResults) {

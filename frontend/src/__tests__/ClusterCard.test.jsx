@@ -88,6 +88,6 @@ describe('ClusterCard self-fetch mode (no historyRows)', () => {
   it('fetches metrics history from API', async () => {
     client.get.mockResolvedValue({ data: [metricsRow] });
     render(<ClusterCard cluster={cluster} />);
-    await waitFor(() => expect(client.get).toHaveBeenCalledWith('/metrics/1/history?days=7'));
+    await waitFor(() => expect(client.get).toHaveBeenCalledWith('/cohesity/metrics/1/history?days=7'));
   });
 });

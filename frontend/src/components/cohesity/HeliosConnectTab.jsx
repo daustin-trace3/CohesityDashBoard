@@ -37,7 +37,7 @@ export default function HeliosConnectTab() {
 
   const loadClusters = () => {
     setClustersLoading(true);
-    client.get('/clusters')
+    client.get('/cohesity/clusters')
       .then(({ data }) => setRegisteredClusters(data.filter(c => c.connection_type === 'helios')))
       .catch(() => {})
       .finally(() => setClustersLoading(false));
@@ -78,7 +78,7 @@ export default function HeliosConnectTab() {
     setDiscoverLoading(true);
     setDiscoverError(null);
     try {
-      const { data } = await client.get('/helios/clusters');
+      const { data } = await client.get('/cohesity/helios/clusters');
       setHeliosClusters(data);
       setSelected([]);
     } catch (err) {
@@ -103,7 +103,7 @@ export default function HeliosConnectTab() {
       const info = heliosClusters.find(c => String(c.clusterId) === clusterId);
       const name = info?.name || clusterId;
       try {
-        await client.post('/clusters', {
+        await client.post('/cohesity/clusters', {
           name,
           connection_type: 'helios',
           vip: String(clusterId),

@@ -73,7 +73,7 @@ export default function HardwareModal({ cluster, onClose }) {
 
   useEffect(() => {
     client
-      .get(`/hardware/${cluster.id}`)
+      .get(`/cohesity/hardware/${cluster.id}`)
       .then(({ data }) => {
         const nodeList = Array.isArray(data) ? data : (data.nodes || []);
         const chassisList = Array.isArray(data) ? [] : (data.chassis || []);

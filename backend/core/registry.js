@@ -8,7 +8,7 @@ const RESERVED_IDS = new Set([
   'license', 'licensing', 'settings', 'poller', 'dns', 'import', 'insights',
   'advisor', 'ai-audit', 'analytics', 'governance', 'dashboard', 'helios',
   'alerts', 'metrics', 'hardware', 'clusters', 'replication', 'plugins',
-  'auth', 'users',
+  'auth', 'users', 'cohesity',
 ]);
 
 const ID_PATTERN = /^[a-z0-9-]+$/;

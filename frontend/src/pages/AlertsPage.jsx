@@ -82,18 +82,18 @@ export default function AlertsPage() {
     setLoading(true);
     setPage(0);
     client
-      .get(`/alerts?${params}`)
+      .get(`/cohesity/alerts?${params}`)
       .then(({ data }) => { setAlerts(data); setSelectedIds(new Set()); })
       .catch((err) => setError(err.response?.data?.error || err.message))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => {
-    client.get('/clusters').then(({ data }) => setClusters(data)).catch(() => {});
+    client.get('/cohesity/clusters').then(({ data }) => setClusters(data)).catch(() => {});
   }, []);
 
   useEffect(() => {
-    client.get('/alerts/ai/status')
+    client.get('/cohesity/alerts/ai/status')
       .then(({ data }) => setAiEnabled(!!data.enabled))
       .catch(() => setAiEnabled(false));
   }, []);
@@ -108,7 +108,7 @@ export default function AlertsPage() {
 
   const handleBulkDismiss = async () => {
     const ids = [...selectedIds];
-    const results = await Promise.allSettled(ids.map(id => client.post(`/alerts/${id}/dismiss`)));
+    const results = await Promise.allSettled(ids.map(id => client.post(`/cohesity/alerts/${id}/dismiss`)));
     const succeeded = ids.filter((_, i) => results[i].status === 'fulfilled');
     const failed = ids.length - succeeded.length;
     setAlerts(prev => prev.filter(a => !succeeded.includes(a.id)));
@@ -124,7 +124,7 @@ export default function AlertsPage() {
 
   const dismiss = async (id) => {
     try {
-      await client.post(`/alerts/${id}/dismiss`);
+      await client.post(`/cohesity/alerts/${id}/dismiss`);
       setAlerts(prev => prev.filter(a => a.id !== id));
       showToast('Alert dismissed');
     } catch {
@@ -142,7 +142,7 @@ export default function AlertsPage() {
   const resolveSingle = async (id, note) => {
     setBulkBusy(true);
     try {
-      await client.post(`/alerts/${id}/resolve`, note ? { details: note } : {});
+      await client.post(`/cohesity/alerts/${id}/resolve`, note ? { details: note } : {});
       setAlerts(prev => showResolved
         ? prev.map(a => (a.id === id ? { ...a, resolved: 1 } : a))
         : prev.filter(a => a.id !== id));
@@ -159,7 +159,7 @@ export default function AlertsPage() {
   const resolveBulk = async (ids, note) => {
     setBulkBusy(true);
     try {
-      const { data } = await client.post('/alerts/resolve', { ids, ...(note ? { details: note } : {}) });
+      const { data } = await client.post('/cohesity/alerts/resolve', { ids, ...(note ? { details: note } : {}) });
       const resolvedSet = new Set(data.resolved || []);
       setAlerts(prev => showResolved
         ? prev.map(a => (resolvedSet.has(a.id) ? { ...a, resolved: 1 } : a))

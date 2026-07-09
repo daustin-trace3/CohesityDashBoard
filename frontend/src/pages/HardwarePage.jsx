@@ -66,7 +66,7 @@ export default function HardwarePage() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const { data: clusters } = await client.get('/clusters');
+      const { data: clusters } = await client.get('/cohesity/clusters');
       if (cancelled) return;
       setClusterCount(clusters.length);
       setNodeRows([]);
@@ -74,7 +74,7 @@ export default function HardwarePage() {
 
       await Promise.allSettled(
         clusters.map(cluster =>
-          client.get(`/hardware/${cluster.id}`)
+          client.get(`/cohesity/hardware/${cluster.id}`)
             .then(({ data }) => {
               if (cancelled) return;
               const nodeList = Array.isArray(data) ? data : (data.nodes || []);

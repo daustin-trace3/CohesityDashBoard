@@ -80,8 +80,8 @@ export default function Layout() {
   useEffect(() => {
     const load = async () => {
       const [alertResp, clusterResp] = await Promise.allSettled([
-        client.get('/alerts?dismissed=0&resolved=0'),
-        client.get('/clusters')
+        client.get('/cohesity/alerts?dismissed=0&resolved=0'),
+        client.get('/cohesity/clusters')
       ]);
       if (alertResp.status === 'fulfilled') {
         setAlerts(alertResp.value.data);

@@ -65,7 +65,7 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
       }
       // Alert summary comes from the cached snapshot; only fetch if absent.
       if (!alertSummaryProp) {
-        client.get(`/alerts?clusterId=${cluster.id}&resolved=0`)
+        client.get(`/cohesity/alerts?clusterId=${cluster.id}&resolved=0`)
           .then(({ data: a }) => {
             setAlertSummary({
               count: a.length,
@@ -81,8 +81,8 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
 
     const load = async () => {
       const [metricsResp, alertsResp] = await Promise.allSettled([
-        client.get(`/metrics/${cluster.id}/history?days=7`),
-        client.get(`/alerts?clusterId=${cluster.id}&resolved=0`),
+        client.get(`/cohesity/metrics/${cluster.id}/history?days=7`),
+        client.get(`/cohesity/alerts?clusterId=${cluster.id}&resolved=0`),
       ]);
       if (metricsResp.status === 'fulfilled' && metricsResp.value.data.length > 0) {
         const rows = metricsResp.value.data;

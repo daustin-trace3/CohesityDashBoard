@@ -98,7 +98,7 @@ export default function DataProtectionPage() {
     try {
       const params = { days };
       if (clusterId) params.clusterId = clusterId;
-      const res = await client.get('/analytics/protection-runs', { params });
+      const res = await client.get('/cohesity/analytics/protection-runs', { params });
       setData(res.data);
       setLastRefreshed(new Date());
     } catch (err) {
@@ -110,7 +110,7 @@ export default function DataProtectionPage() {
   }, [days, clusterId, toast]);
 
   useEffect(() => {
-    client.get('/analytics/clusters')
+    client.get('/cohesity/analytics/clusters')
       .then(r => setClusters(r.data || []))
       .catch(() => {});
   }, []);

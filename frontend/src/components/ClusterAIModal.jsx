@@ -17,7 +17,7 @@ export default function ClusterAIModal({ cluster, onClose, mode = 'system' }) {
     : "this cluster's capacity, sources, and backup-job health";
 
   useEffect(() => {
-    client.get(`/insights/ai/${cluster.id}?mode=${mode}`)
+    client.get(`/cohesity/insights/ai/${cluster.id}?mode=${mode}`)
       .then(({ data }) => {
         setEnabled(data.enabled);
         setAnalysis(data.analysis || null);
@@ -30,7 +30,7 @@ export default function ClusterAIModal({ cluster, onClose, mode = 'system' }) {
     setRunning(true);
     setError(null);
     try {
-      const { data } = await client.post(`/insights/ai/${cluster.id}?mode=${mode}`);
+      const { data } = await client.post(`/cohesity/insights/ai/${cluster.id}?mode=${mode}`);
       setAnalysis(data);
       setEnabled(true);
     } catch (e) {

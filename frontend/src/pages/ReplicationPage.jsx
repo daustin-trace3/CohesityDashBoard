@@ -57,7 +57,7 @@ export default function ReplicationPage() {
   useEffect(() => {
     const fetchClusters = async () => {
       try {
-        const res = await client.get('/clusters');
+        const res = await client.get('/cohesity/clusters');
         const cohesityClusters = res.data || [];
         setClusters(cohesityClusters);
         if (cohesityClusters.length > 0) {
@@ -83,7 +83,7 @@ export default function ReplicationPage() {
         days: daysFilter,
         numRunsPerGroup: 20,
       };
-      const res = await client.get('/replication/status', { params, timeout: 300000 });
+      const res = await client.get('/cohesity/replication/status', { params, timeout: 300000 });
       setData(res.data);
       setLastRefreshed(new Date());
     } catch (err) {

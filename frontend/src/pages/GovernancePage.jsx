@@ -36,7 +36,7 @@ export default function GovernancePage() {
     setLoading(true);
     setError(false);
     try {
-      const { data } = await client.get('/governance');
+      const { data } = await client.get('/cohesity/governance');
       setData(data);
       setLastRefreshed(new Date());
     } catch (err) {

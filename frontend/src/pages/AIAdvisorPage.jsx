@@ -104,7 +104,7 @@ export default function AIAdvisorPage() {
 
   const loadOne = useCallback(async (slug) => {
     try {
-      const { data } = await client.get(`/advisor/${slug}`);
+      const { data } = await client.get(`/cohesity/advisor/${slug}`);
       setStates(s => ({ ...s, [slug]: { enabled: data.enabled, report: data.report || null } }));
     } catch {
       setStates(s => ({ ...s, [slug]: { enabled: true, report: null } }));

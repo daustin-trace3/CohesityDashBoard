@@ -20,7 +20,7 @@ export default function AlertReviewModal({ alert, onClose }) {
     setError(null);
     try {
       const { data } = await client.post(
-        `/alerts/${alert.id}/review${force ? '?force=1' : ''}`
+        `/cohesity/alerts/${alert.id}/review${force ? '?force=1' : ''}`
       );
       setReview(data);
     } catch (err) {

@@ -74,11 +74,11 @@ export function DirectClusterForm({ initial, onSaved, onCancel }) {
     try {
       if (isEdit) {
         if (credentials !== undefined) payload.credentials = credentials;
-        await client.put(`/clusters/${initial.id}`, payload);
+        await client.put(`/cohesity/clusters/${initial.id}`, payload);
       } else {
         payload.connection_type = 'direct';
         payload.credentials = credentials || {};
-        await client.post('/clusters', payload);
+        await client.post('/cohesity/clusters', payload);
       }
       onSaved();
     } catch (err) {
@@ -92,7 +92,7 @@ export function DirectClusterForm({ initial, onSaved, onCancel }) {
     setTesting(true);
     setTestResult(null);
     try {
-      const { data } = await client.post('/clusters/test', {
+      const { data } = await client.post('/cohesity/clusters/test', {
         connection_type: 'direct',
         vip: vip.trim(),
         auth_type: authType,
@@ -250,7 +250,7 @@ export default function DirectClustersTab() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   const load = () => {
-    client.get('/clusters')
+    client.get('/cohesity/clusters')
       .then(({ data }) => setClusters(data.filter(c => c.connection_type === 'direct')))
       .catch(() => setClusters([]));
   };
@@ -261,7 +261,7 @@ export default function DirectClustersTab() {
     if (!window.confirm('Removing a cluster deletes its collected history.')) return;
     setDeleteConfirm(row.id);
     try {
-      await client.delete(`/clusters/${row.id}`);
+      await client.delete(`/cohesity/clusters/${row.id}`);
       toast({ type: 'success', title: 'Cluster removed', message: row.name });
       load();
     } catch (err) {
