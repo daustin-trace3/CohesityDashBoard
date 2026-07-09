@@ -54,20 +54,30 @@ function PermissionBuilder({ onAdd }) {
   };
 
   return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      <select value={namespace} onChange={e => setNamespace(e.target.value)} className={`${inputClass} w-auto`}>
-        {NAMESPACES.map(n => <option key={n} value={n}>{n}</option>)}
-      </select>
-      <span className="text-ink-faint text-xs">:</span>
-      <input value={section} onChange={e => setSection(e.target.value)} placeholder="*" className={`${inputClass} w-24`} />
-      <span className="text-ink-faint text-xs">:</span>
-      <select value={level} onChange={e => setLevel(e.target.value)} className={`${inputClass} w-auto`}>
-        {LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
-      </select>
-      <button onClick={add} type="button"
-        className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
-        <Plus size={12} /> Add
-      </button>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-end gap-1.5 flex-wrap">
+        <div>
+          <label className="text-[10px] font-medium text-ink-faint uppercase tracking-wider mb-0.5 block">Platform</label>
+          <select value={namespace} onChange={e => setNamespace(e.target.value)} className={`${inputClass} w-auto`}>
+            {NAMESPACES.map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] font-medium text-ink-faint uppercase tracking-wider mb-0.5 block">Section</label>
+          <input value={section} onChange={e => setSection(e.target.value)} placeholder="*" title="Section within the platform (e.g. alerts, settings). Use * for all sections." className={`${inputClass} w-24`} />
+        </div>
+        <div>
+          <label className="text-[10px] font-medium text-ink-faint uppercase tracking-wider mb-0.5 block">Access level</label>
+          <select value={level} onChange={e => setLevel(e.target.value)} className={`${inputClass} w-auto`}>
+            {LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
+        <button onClick={add} type="button"
+          className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
+          <Plus size={12} /> Add
+        </button>
+      </div>
+      <p className="text-[10px] text-ink-faint">Section scopes the grant within a platform (e.g. alerts, settings) — use * for all. Manage includes view.</p>
     </div>
   );
 }
