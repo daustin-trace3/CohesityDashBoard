@@ -7,10 +7,7 @@ const {
   fetchNetworkInterfaces, fetchPorts, fetchConnections, fetchPods,
 } = require('./pureApi');
 const logger = require('../utils/logger');
-const pollerStatus = require('./pollerStatus');
-
-// arrayId -> cron task
-const scheduledTasks = new Map();
+const { createPoller } = require('../core/pollerFramework');
 
 // Retention: prune Pure metrics older than 90 days, daily at 02:10.
 cron.schedule('10 2 * * *', () => {
@@ -377,10 +374,8 @@ const replacePods = db.transaction((arrayId, items) => {
 
 /** Poll a single Pure array: capacity, performance, alerts, volumes, hosts,
  *  plus per-volume perf history, replication, protection, and hardware. */
-async function pollArray(array) {
-  pollerStatus.markStart('pure', array.id);
-  try {
-    const [
+async function doPollArray(array) {
+  const [
       infoResult, alertResult, volumeResult, hostResult, volPerfResult,
       connResult, pgResult, hwResult, driveResult, ctrlResult, certResult,
       netResult, portResult, connsResult, podResult,
@@ -482,46 +477,33 @@ async function pollArray(array) {
         logger.error(`[PurePoller] ${label} fetch failed for array ${array.id}:`, safeErrorMessage(result.reason));
       }
     }
-    pollerStatus.markEnd('pure', array.id, 'success');
-  } catch (err) {
-    logger.error(`[PurePoller] Unexpected error for array ${array.id}:`, safeErrorMessage(err));
-    pollerStatus.markEnd('pure', array.id, 'error');
-  }
 }
 
-function buildCronExpression(intervalMinutes) {
-  const interval = Math.max(5, intervalMinutes || 15);
-  return `*/${interval} * * * *`;
+const purePollerHandle = createPoller({
+  id: 'pure',
+  loadSources: () => db.prepare('SELECT * FROM pure_arrays').all(),
+  intervalMinutes: (array) => array.polling_interval_minutes,
+  poll: doPollArray,
+});
+
+/**
+ * Poll a single Pure array (markStart/markEnd + error isolation via the
+ * shared poller framework).
+ */
+async function pollArray(array) {
+  await purePollerHandle.trigger(array);
 }
 
 function cancelArray(arrayId) {
-  const existing = scheduledTasks.get(arrayId);
-  if (existing) {
-    existing.stop();
-    scheduledTasks.delete(arrayId);
-  }
+  purePollerHandle.cancel(arrayId);
 }
 
 function scheduleArray(array) {
-  cancelArray(array.id);
-  const task = cron.schedule(buildCronExpression(array.polling_interval_minutes), () => {
-    pollArray(array);
-  });
-  scheduledTasks.set(array.id, task);
-  logger.info(`[PurePoller] Scheduled array ${array.id} (${array.name}) every ${Math.max(5, array.polling_interval_minutes || 15)} min`);
+  purePollerHandle.schedule(array);
 }
 
 function initPurePoller() {
-  let arrays = [];
-  try {
-    arrays = db.prepare('SELECT * FROM pure_arrays').all();
-  } catch (err) {
-    logger.error('[PurePoller] Failed to load arrays:', err.message);
-    return;
-  }
-  for (const array of arrays) {
-    scheduleArray(array);
-  }
+  const arrays = purePollerHandle.init();
   logger.info(`[PurePoller] Initialized ${arrays.length} Pure array(s)`);
 }
 

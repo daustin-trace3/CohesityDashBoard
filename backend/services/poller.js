@@ -6,10 +6,7 @@ const {
 } = require('./cohesityApi');
 const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
 const logger = require('../utils/logger');
-const pollerStatus = require('./pollerStatus');
-
-// Map of clusterId -> cron task
-const scheduledTasks = new Map();
+const { createPoller } = require('../core/pollerFramework');
 
 // Retention: delete metrics older than 90 days — runs daily at 02:00
 cron.schedule('0 2 * * *', () => {
@@ -336,8 +333,7 @@ function runsFetchWindow(clusterId) {
   return { sinceUsecs: Math.floor(sinceMs) * 1000, numRuns: NUM_RUNS_INCREMENTAL, incremental: true };
 }
 
-async function pollCluster(cluster) {
-  pollerStatus.markStart('cohesity', cluster.id);
+async function doPollCluster(cluster) {
   try {
     const window = runsFetchWindow(cluster.id);
     const [clusterInfo, alertData, protectionData, policyData, sourceData] = await Promise.allSettled([
@@ -445,60 +441,46 @@ async function pollCluster(cluster) {
       // Pinned cluster failed even at the small window — already at minimum.
       logger.error(`[Poller] Protection runs fetch failed for cluster ${cluster.id}:`, safeErrorMessage(protectionData.reason));
     }
-    pollerStatus.markEnd('cohesity', cluster.id, 'success');
-  } catch (err) {
-    logger.error(`[Poller] Unexpected error for cluster ${cluster.id}:`, safeErrorMessage(err));
-    pollerStatus.markEnd('cohesity', cluster.id, 'error');
   } finally {
     // Rebuild the cached dashboard payload so the next page load is instant.
     scheduleSnapshotRefresh();
   }
 }
 
-/**
- * Build a cron expression from polling interval in minutes (minimum 5).
- */
-function buildCronExpression(intervalMinutes) {
-  const interval = Math.max(5, intervalMinutes);
-  // Run every N minutes starting from minute 0
-  return `*/${interval} * * * *`;
-}
+const cohesityPoller = createPoller({
+  id: 'cohesity',
+  loadSources: () => db.prepare('SELECT * FROM clusters').all(),
+  intervalMinutes: (cluster) => cluster.polling_interval_minutes,
+  poll: doPollCluster,
+});
 
 /**
  * Schedule a polling task for a cluster.
  */
 function scheduleCluster(cluster) {
-  // Cancel any existing task
-  cancelCluster(cluster.id);
-
-  const expression = buildCronExpression(cluster.polling_interval_minutes);
-  const task = cron.schedule(expression, () => {
-    pollCluster(cluster);
-  });
-
-  scheduledTasks.set(cluster.id, task);
-  logger.info(`[Poller] Scheduled cluster ${cluster.id} (${cluster.name}) every ${cluster.polling_interval_minutes} min`);
+  cohesityPoller.schedule(cluster);
 }
 
 /**
  * Cancel and remove a scheduled task for a cluster.
  */
 function cancelCluster(clusterId) {
-  const existing = scheduledTasks.get(clusterId);
-  if (existing) {
-    existing.stop();
-    scheduledTasks.delete(clusterId);
-  }
+  cohesityPoller.cancel(clusterId);
+}
+
+/**
+ * Poll a single cluster (markStart/markEnd + error isolation via the
+ * shared poller framework).
+ */
+async function pollCluster(cluster) {
+  await cohesityPoller.trigger(cluster);
 }
 
 /**
  * Initialize all scheduled pollers from the database.
  */
 function initPoller() {
-  const clusters = db.prepare('SELECT * FROM clusters').all();
-  for (const cluster of clusters) {
-    scheduleCluster(cluster);
-  }
+  const clusters = cohesityPoller.init();
   logger.info(`[Poller] Initialized ${clusters.length} cluster(s)`);
   // Build the dashboard snapshot from existing cached data on startup so the
   // first page load is instant even before the next poll cycle runs.

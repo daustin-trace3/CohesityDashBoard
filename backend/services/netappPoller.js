@@ -9,13 +9,11 @@ const {
 } = require('./netappApi');
 const { getSetting } = require('./settings');
 const logger = require('../utils/logger');
-const pollerStatus = require('./pollerStatus');
+const { createPoller, createGlobalTask } = require('../core/pollerFramework');
 
 function pollIntervalMin() {
   return Math.min(1440, Math.max(5, Number(getSetting('netapp_poll_interval_min')) || 15));
 }
-
-const scheduledTasks = new Map(); // arrayId -> cron task
 
 /** Parse an ISO-8601 duration (e.g. "PT11H43M59S") into seconds. */
 function isoDurationToSeconds(s) {
@@ -269,10 +267,8 @@ const replaceCifsShares = db.transaction((arrayId, items) => {
 });
 
 /** Poll a single NetApp cluster: capacity, performance, inventory, alerts. */
-async function pollArray(array) {
-  pollerStatus.markStart('netapp', array.id);
-  try {
-    const [
+async function doPollArray(array) {
+  const [
       clusterR, nodesR, aggR, volR, svmR, diskR, metricsR, healthR, emsR,
       smR, lifR, quotaR, nfsR, exportR, cifsR, cifsShareR,
     ] = await Promise.allSettled([
@@ -342,16 +338,6 @@ async function pollArray(array) {
     } catch (err) {
       logger.error(`[NetAppPoller] Alerts store failed for array ${array.id}:`, err.message);
     }
-    pollerStatus.markEnd('netapp', array.id, 'success');
-  } catch (err) {
-    logger.error(`[NetAppPoller] Unexpected error for array ${array.id}:`, safeErrorMessage(err));
-    pollerStatus.markEnd('netapp', array.id, 'error');
-  }
-}
-
-function buildCronExpression(intervalMinutes) {
-  const interval = Math.max(5, intervalMinutes || 15);
-  return `*/${interval} * * * *`;
 }
 
 /**
@@ -394,6 +380,21 @@ async function syncClusters() {
   return db.prepare("SELECT * FROM netapp_arrays WHERE source = 'aiqum' ORDER BY name").all();
 }
 
+const directPoller = createPoller({
+  id: 'netapp',
+  loadSources: () => db.prepare("SELECT * FROM netapp_arrays WHERE source = 'direct'").all(),
+  intervalMinutes: (array) => array.polling_interval_minutes,
+  poll: doPollArray,
+});
+
+/**
+ * Poll a single NetApp cluster (AIQUM-managed or direct) — markStart/markEnd
+ * + error isolation via the shared poller framework.
+ */
+async function pollArray(array) {
+  await directPoller.trigger(array);
+}
+
 /** Reconcile clusters from AIQUM, then poll each through the gateway. */
 async function syncAndPollAll() {
   let clusters = [];
@@ -408,33 +409,27 @@ async function syncAndPollAll() {
   }
 }
 
-let globalTask = null;
+const aiqumTask = createGlobalTask({
+  id: 'netapp',
+  sourceId: 0,
+  intervalMinutes: pollIntervalMin,
+  run: syncAndPollAll,
+});
 
 /** (Re)schedule the single global AIQUM sync+poll cron at the configured interval. */
 function reschedule() {
-  if (globalTask) { globalTask.stop(); globalTask = null; }
-  const min = pollIntervalMin();
-  globalTask = cron.schedule(buildCronExpression(min), () => { syncAndPollAll(); });
-  logger.info(`[NetAppPoller] Scheduled AIQUM sync + poll every ${min} min`);
+  aiqumTask.reschedule();
+  logger.info(`[NetAppPoller] Scheduled AIQUM sync + poll every ${pollIntervalMin()} min`);
 }
 
 /** Cancel a direct cluster's own per-array polling schedule. */
 function cancelArray(arrayId) {
-  const existing = scheduledTasks.get(arrayId);
-  if (existing) {
-    existing.stop();
-    scheduledTasks.delete(arrayId);
-  }
+  directPoller.cancel(arrayId);
 }
 
 /** Schedule (or reschedule) a direct cluster's own polling cron. */
 function scheduleArray(array) {
-  cancelArray(array.id);
-  const task = cron.schedule(buildCronExpression(array.polling_interval_minutes), () => {
-    pollArray(array);
-  });
-  scheduledTasks.set(array.id, task);
-  logger.info(`[NetAppPoller] Scheduled direct cluster ${array.id} (${array.name}) every ${Math.max(5, array.polling_interval_minutes || 15)} min`);
+  directPoller.schedule(array);
 }
 
 function initNetAppPoller() {
@@ -446,13 +441,7 @@ function initNetAppPoller() {
     aiqumClusterCount = db.prepare("SELECT COUNT(*) AS n FROM netapp_arrays WHERE source = 'aiqum'").get().n;
   }
 
-  let directArrays = [];
-  try {
-    directArrays = db.prepare("SELECT * FROM netapp_arrays WHERE source = 'direct'").all();
-  } catch (err) {
-    logger.error('[NetAppPoller] Failed to load direct clusters:', err.message);
-  }
-  for (const array of directArrays) scheduleArray(array);
+  const directArrays = directPoller.init();
 
   logger.info(`[NetAppPoller] Initialized ${aiqumClusterCount} AIQUM cluster(s), ${directArrays.length} direct cluster(s)`);
 }
