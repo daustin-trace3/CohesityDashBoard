@@ -1,13 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, Save, PlugZap, KeyRound, Copy, Check, Cloud, Clock, Gauge } from 'lucide-react';
+import { Settings, Save, PlugZap, KeyRound, Copy, Check, Cloud, Clock, Gauge, Server } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
 import { BRAND, timeAgo } from './helpers';
+import PureDirectArraysTab from './PureDirectArraysTab';
 
-const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
+export const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
-function Field({ label, hint, children }) {
+export function Field({ label, hint, children }) {
   return (
     <div>
       <label className="block text-[11px] font-semibold uppercase tracking-wider text-ink-faint mb-1">{label}</label>
@@ -17,7 +18,35 @@ function Field({ label, hint, children }) {
   );
 }
 
+const TABS = [
+  { key: 'saas', label: 'Pure1 (SaaS)', icon: Cloud },
+  { key: 'direct', label: 'Direct Arrays', icon: Server },
+];
+
 export default function PureSettingsPage() {
+  const [tab, setTab] = useState('saas');
+  return (
+    <div className="animate-fade-in">
+      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start w-fit mb-4">
+        {TABS.map(t => {
+          const Icon = t.icon;
+          const active = tab === t.key;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
+                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
+              }`}>
+              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
+            </button>
+          );
+        })}
+      </div>
+      {tab === 'saas' ? <Pure1SaaSTab /> : <PureDirectArraysTab />}
+    </div>
+  );
+}
+
+function Pure1SaaSTab() {
   const { toast } = useToast();
   const [cfg, setCfg] = useState(null);
   const [appId, setAppId] = useState('');
