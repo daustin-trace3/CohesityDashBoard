@@ -9,19 +9,11 @@ import { subscribeNetworkActivity } from '../api/client';
 import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { useSearch } from '../context';
-import { platforms as registryPlatforms, getPlatform } from '../platforms/registry';
+import { platforms as builtinPlatforms } from '../platforms/registry';
+import { usePlatforms } from '../platforms/PlatformsContext';
 import { useAuth } from '../auth/AuthContext';
 
-const platforms = registryPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color }));
-
-const navGroups = getPlatform('cohesity').navGroups;
-const pureNavGroups = getPlatform('pure').navGroups;
-const netappNavGroups = getPlatform('netapp').navGroups;
-
-function isActivePlatform(id, pathname) {
-  const platform = getPlatform(id);
-  return platform ? platform.isActive(pathname) : false;
-}
+const builtinIds = builtinPlatforms.map(p => p.id);
 
 // Permission required to see a given nav item. Explicit per-item overrides
 // (Settings) take precedence; everything else falls back to the active
@@ -75,7 +67,23 @@ export default function Layout() {
   const isPlatform = isPure || isNetapp;
   const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : null;
   const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : '';
-  const navPlatformKey = platformKey || 'cohesity';
+
+  const { platforms: allPlatforms } = usePlatforms();
+  const getPlatform = (id) => allPlatforms.find(p => p.id === id);
+  const platforms = allPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color }));
+  const navGroups = getPlatform('cohesity')?.navGroups || [];
+  const pureNavGroups = getPlatform('pure')?.navGroups || [];
+  const netappNavGroups = getPlatform('netapp')?.navGroups || [];
+  const isActivePlatform = (id, pathname) => {
+    const platform = getPlatform(id);
+    return platform ? platform.isActive(pathname) : false;
+  };
+  // Non-built-in (installed plugin) platform whose routes match the current
+  // path, so plugin nav/branding shows up without special-casing each plugin.
+  const activePluginPlatform = !isPlatform
+    ? allPlatforms.find(p => !builtinIds.includes(p.id) && p.isActive(pathname))
+    : null;
+  const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
 
   const { user, logout, hasPermission, loading: authLoading } = useAuth();
 
@@ -181,13 +189,14 @@ export default function Layout() {
         'cohesity',
         ...(r.data.platformPureEnabled ? ['pure'] : []),
         ...(r.data.platformNetappEnabled ? ['netapp'] : []),
+        ...allPlatforms.filter(p => !builtinIds.includes(p.id)).map(p => p.id),
       ]))
       .catch(() => {});
     loadPlatforms();
     // SettingsPage fires this after saving so the tabs update without a reload.
     window.addEventListener('platforms-changed', loadPlatforms);
     return () => window.removeEventListener('platforms-changed', loadPlatforms);
-  }, []);
+  }, [allPlatforms]);
 
   useEffect(() => {
     return subscribeNetworkActivity((count) => {
@@ -204,7 +213,8 @@ export default function Layout() {
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
   // Swap the sidebar menu to match the active vendor platform.
-  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : navGroups;
+  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups
+    : activePluginPlatform ? activePluginPlatform.navGroups : navGroups;
 
   // Hide items the user lacks permission for. While auth is still loading,
   // show everything (no flicker-hide).
@@ -233,8 +243,8 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : undefined}
+          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
+          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : activePluginPlatform ? activePluginPlatform.color : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, Save, Layers, KeyRound, Settings, Users } from 'lucide-react';
+import { Sparkles, Save, Layers, KeyRound, Settings, Users, Puzzle } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -11,6 +11,7 @@ const TABS = [
   { key: 'platforms', label: 'Platforms', icon: Layers },
   { key: 'license', label: 'Product License', icon: KeyRound },
   { key: 'users', label: 'Users & Access', icon: Users, route: '/admin/users', permission: 'admin:users:view' },
+  { key: 'plugins', label: 'Plugins', icon: Puzzle, route: '/admin/plugins', permission: 'admin:plugins:view' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,
