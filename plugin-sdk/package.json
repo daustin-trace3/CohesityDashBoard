@@ -1,0 +1,15 @@
+{
+  "name": "icc-plugin-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Build tooling for ICC (CohesityDashBoard) installable platform plugins",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "pack": "node pack.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "yazl": "^2.5.1"
+  }
+}
