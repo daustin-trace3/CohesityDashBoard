@@ -1,50 +1,36 @@
 import { useEffect, useState } from 'react';
-import { Save, BadgeCheck, Lock, Server } from 'lucide-react';
+import { Save, BadgeCheck, Cloud, Server } from 'lucide-react';
 import client from '../api/client';
-import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
+import HeliosConnectTab from '../components/cohesity/HeliosConnectTab';
+import DirectClustersTab from '../components/cohesity/DirectClustersTab';
 
 const TABS = [
+  { key: 'helios', label: 'Helios (SaaS)', icon: Cloud },
+  { key: 'direct', label: 'Direct Clusters', icon: Server },
   { key: 'entitlement', label: 'Licensing', icon: BadgeCheck },
-  { key: 'credentials', label: 'Credentials', icon: Lock },
 ];
 
-function SourceBadge({ source }) {
-  if (source === 'settings') return <Badge tone="ok">Stored encrypted</Badge>;
-  if (source === 'env') return <Badge tone="warn">From .env (plain text)</Badge>;
-  return <Badge tone="crit">Not set</Badge>;
-}
-
 export default function SettingsPage() {
-  const [tab, setTab] = useState('entitlement');
+  const [tab, setTab] = useState('helios');
   const [dpTib, setDpTib] = useState('');
   const [replicaTib, setReplicaTib] = useState('');
   const [smartFilesTib, setSmartFilesTib] = useState('');
   const [licenseExpiry, setLicenseExpiry] = useState('');
   const [licenseEdition, setLicenseEdition] = useState('');
-  const [credSources, setCredSources] = useState({});
-  const [heliosKeyInput, setHeliosKeyInput] = useState('');
-  const [savingCreds, setSavingCreds] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
-    Promise.allSettled([
-      client.get('/settings'),
-      client.get('/settings/credentials'),
-    ]).then(([s, cr]) => {
-      if (cr.status === 'fulfilled') setCredSources(cr.value.data);
-      if (s.status === 'fulfilled') {
-        const d = s.value.data;
-        const e = d.entitled || {};
-        setDpTib(e.dataProtect ? String(e.dataProtect) : '');
-        setReplicaTib(e.replica ? String(e.replica) : '');
-        setSmartFilesTib(e.smartFiles ? String(e.smartFiles) : '');
-        setLicenseExpiry(d.licenseExpiry || '');
-        setLicenseEdition(d.licenseEdition || '');
-      }
-    }).finally(() => setLoading(false));
+    client.get('/settings').then(({ data: d }) => {
+      const e = d.entitled || {};
+      setDpTib(e.dataProtect ? String(e.dataProtect) : '');
+      setReplicaTib(e.replica ? String(e.replica) : '');
+      setSmartFilesTib(e.smartFiles ? String(e.smartFiles) : '');
+      setLicenseExpiry(d.licenseExpiry || '');
+      setLicenseEdition(d.licenseEdition || '');
+    }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
   const save = async () => {
@@ -62,35 +48,6 @@ export default function SettingsPage() {
       toast({ type: 'error', title: 'Save failed', message: 'Could not save settings. Try again.' });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const saveHeliosKey = async () => {
-    const v = heliosKeyInput.trim();
-    if (!v) return;
-    setSavingCreds(true);
-    try {
-      const { data } = await client.put('/settings/credentials', { heliosApiKey: v });
-      setCredSources(data);
-      setHeliosKeyInput('');
-      toast({ type: 'success', title: 'Helios API key saved', message: 'Stored encrypted. Applied immediately — no restart needed.' });
-    } catch {
-      toast({ type: 'error', title: 'Save failed', message: 'Could not save the key. Try again.' });
-    } finally {
-      setSavingCreds(false);
-    }
-  };
-
-  const clearHeliosKey = async () => {
-    setSavingCreds(true);
-    try {
-      const { data } = await client.put('/settings/credentials', { heliosApiKey: '' });
-      setCredSources(data);
-      toast({ type: 'success', title: 'Stored key cleared', message: 'The .env value (if any) applies again.' });
-    } catch {
-      toast({ type: 'error', title: 'Clear failed', message: 'Could not clear the key. Try again.' });
-    } finally {
-      setSavingCreds(false);
     }
   };
 
@@ -122,65 +79,11 @@ export default function SettingsPage() {
         })}
       </div>
 
-      {/* Credentials — Helios API key (write-only) */}
-      {tab === 'credentials' && (
-      <div className="panel p-4">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
-            <Lock size={14} className="text-brand" />
-          </div>
-          <div>
-            <p className="text-sm font-bold text-ink">Cohesity Helios API key</p>
-            <p className="text-[11px] text-ink-muted">
-              Used for Helios cluster discovery, licensing reports, and any Helios-connected cluster without its own key.
-              Stored <span className="text-ink">AES-256-GCM encrypted</span> in the local database, never displayed again,
-              and applied immediately. A stored key overrides <code>.env</code>.
-            </p>
-            <p className="text-[11px] text-ink-faint mt-1">
-              Connecting a cluster directly (no Helios)? Each cluster carries its own credentials — add it under{' '}
-              <span className="text-ink">Clusters → Add Cluster → Connection Type: Direct</span> (API key or username/password).
-            </p>
-          </div>
-        </div>
+      {/* Helios (SaaS) */}
+      {tab === 'helios' && <HeliosConnectTab />}
 
-        {loading ? (
-          <p className="text-gray-400 text-sm mt-4">Loading…</p>
-        ) : (
-          <div className="flex flex-col gap-3 mt-4">
-            <div className="flex items-center gap-2.5 flex-wrap">
-              <span className="text-xs font-semibold text-ink">Status</span>
-              <SourceBadge source={credSources.heliosApiKey || 'none'} />
-              {credSources.heliosApiKey === 'settings' && (
-                <button
-                  onClick={clearHeliosKey}
-                  disabled={savingCreds}
-                  className="text-[10px] text-ink-faint hover:text-status-crit underline underline-offset-2 transition-colors disabled:opacity-50 cursor-pointer"
-                >
-                  Clear stored value
-                </button>
-              )}
-            </div>
-            <input
-              type="password"
-              autoComplete="off"
-              value={heliosKeyInput}
-              onChange={e => setHeliosKeyInput(e.target.value)}
-              placeholder={credSources.heliosApiKey === 'settings' ? '•••••••• (stored — enter a new value to replace)' : 'Paste Helios API key to store encrypted'}
-              className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs font-mono text-ink focus:border-brand/60 outline-none"
-            />
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                onClick={saveHeliosKey}
-                disabled={savingCreds || !heliosKeyInput.trim()}
-                className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
-              >
-                <Save size={13} /> {savingCreds ? 'Saving…' : 'Save key'}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-      )}
+      {/* Direct Clusters */}
+      {tab === 'direct' && <DirectClustersTab />}
 
       {/* Licensing entitlement */}
       {tab === 'entitlement' && (
