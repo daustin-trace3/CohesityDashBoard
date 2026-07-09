@@ -13,9 +13,9 @@ const navGroups = [
   {
     label: 'Monitor',
     items: [
-      { label: 'Global Overview', route: '/dashboard', icon: LayoutDashboard, isActive: (p) => p === '/' || p.startsWith('/dashboard') },
+      { label: 'Global Overview', route: '/cohesity', icon: LayoutDashboard, isActive: (p) => p === '/' || p === '/cohesity' },
       { label: 'AI Advisor', route: '/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/ai-advisor') },
-      { label: 'Alerts', route: '/alerts', icon: Bell, isActive: (p) => p.startsWith('/alerts'), showAlertCount: true },
+      { label: 'Alerts', route: '/cohesity/alerts', icon: Bell, isActive: (p) => p.startsWith('/cohesity/alerts'), showAlertCount: true },
       { label: 'Analytics', route: '/analytics', icon: Activity, isActive: (p) => p.startsWith('/analytics') },
       { label: 'Reporting', route: '/reporting', icon: FileText, isActive: (p) => p.startsWith('/reporting') },
       { label: 'Licensing', route: '/licensing', icon: BadgeCheck, isActive: (p) => p.startsWith('/licensing') },
@@ -32,8 +32,8 @@ const navGroups = [
   {
     label: 'Infrastructure',
     items: [
-      { label: 'Clusters', route: '/clusters', icon: Server, isActive: (p) => p.startsWith('/clusters') },
-      { label: 'Hardware', route: '/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/hardware') },
+      { label: 'Clusters', route: '/cohesity/clusters', icon: Server, isActive: (p) => p.startsWith('/cohesity/clusters') },
+      { label: 'Hardware', route: '/cohesity/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/cohesity/hardware') },
     ],
   },
   {
@@ -45,22 +45,23 @@ const navGroups = [
 ];
 
 function isActive(pathname) {
-  return ['/', '/dashboard', '/ai-advisor', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting', '/licensing', '/settings']
+  if (pathname.startsWith('/cohesity')) return true;
+  return ['/', '/ai-advisor', '/analytics', '/reporting', '/licensing', '/data-protection', '/replication', '/governance', '/settings']
     .some(r => pathname === r || pathname.startsWith(r + '/'));
 }
 
 export default {
   id: 'cohesity',
   label: 'Cohesity',
-  switcherRoute: '/dashboard',
+  switcherRoute: '/cohesity',
   color: '#6CB33F',
-  basePath: '/dashboard',
+  basePath: '/cohesity',
   isActive,
   navGroups,
   routes: [
-    { path: 'dashboard', Component: Dashboard },
-    { path: 'alerts', Component: AlertsPage },
-    { path: 'hardware', Component: HardwarePage },
-    { path: 'clusters', Component: ClusterManagement },
+    { path: 'cohesity', Component: Dashboard },
+    { path: 'cohesity/alerts', Component: AlertsPage },
+    { path: 'cohesity/hardware', Component: HardwarePage },
+    { path: 'cohesity/clusters', Component: ClusterManagement },
   ],
 };

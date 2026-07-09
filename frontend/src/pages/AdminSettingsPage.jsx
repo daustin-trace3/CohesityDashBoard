@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Sparkles, Save, Layers, KeyRound, Settings } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Sparkles, Save, Layers, KeyRound, Settings, Users } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
+import { useAuth } from '../auth/AuthContext';
 
 const TABS = [
   { key: 'ai', label: 'AI Analysis & Keys', icon: Sparkles },
   { key: 'platforms', label: 'Platforms', icon: Layers },
   { key: 'license', label: 'Product License', icon: KeyRound },
+  { key: 'users', label: 'Users & Access', icon: Users, route: '/admin/users', permission: 'admin:users:view' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,
@@ -26,6 +29,8 @@ function SourceBadge({ source }) {
 }
 
 export default function AdminSettingsPage() {
+  const navigate = useNavigate();
+  const { hasPermission, loading: authLoading } = useAuth();
   const [tab, setTab] = useState('ai');
   const [estateContext, setEstateContext] = useState('');
   const [flagUnprotected, setFlagUnprotected] = useState(false);
@@ -163,11 +168,11 @@ export default function AdminSettingsPage() {
 
       {/* Section tabs */}
       <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
-        {TABS.map(t => {
+        {TABS.filter(t => !t.permission || authLoading || hasPermission(t.permission)).map(t => {
           const Icon = t.icon;
           const active = tab === t.key;
           return (
-            <button key={t.key} onClick={() => setTab(t.key)}
+            <button key={t.key} onClick={() => t.route ? navigate(t.route) : setTab(t.key)}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
                 active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
               }`}>

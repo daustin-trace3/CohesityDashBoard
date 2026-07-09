@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Bell, BellOff, ArrowRight } from 'lucide-react';
 import AlertBadge from './AlertBadge';
 
-export default function NotificationBell({ count = 0, alerts = [], viewAllRoute = '/alerts' }) {
+export default function NotificationBell({ count = 0, alerts = [], viewAllRoute = '/cohesity/alerts' }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const navigate = useNavigate();

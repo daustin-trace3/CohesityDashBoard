@@ -45,7 +45,11 @@ export default function App() {
             <Routes>
               <Route path="/login" element={<LoginPage />} />
               <Route path="/" element={<Layout />}>
-                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route index element={<Navigate to="/cohesity" replace />} />
+                <Route path="dashboard" element={<Navigate to="/cohesity" replace />} />
+                <Route path="alerts" element={<Navigate to="/cohesity/alerts" replace />} />
+                <Route path="hardware" element={<Navigate to="/cohesity/hardware" replace />} />
+                <Route path="clusters" element={<Navigate to="/cohesity/clusters" replace />} />
                 {platforms.flatMap(platform => platform.routes.map(r => (
                   <Route
                     key={r.path}

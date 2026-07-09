@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings, Users,
+  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -24,8 +24,8 @@ function isActivePlatform(id, pathname) {
 }
 
 // Permission required to see a given nav item. Explicit per-item overrides
-// (Settings, the injected Users & Access entry) take precedence; everything
-// else falls back to the active platform's own view permission.
+// (Settings) take precedence; everything else falls back to the active
+// platform's own view permission.
 function requiredNavPermission(platformId, item) {
   if (item.permission) return item.permission;
   if (platformId === 'cohesity' && item.route === '/settings') return 'admin:settings:view';
@@ -206,28 +206,9 @@ export default function Layout() {
   // Swap the sidebar menu to match the active vendor platform.
   const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : navGroups;
 
-  // Inject the "Users & Access" entry under System (Cohesity only) without
-  // mutating the shared registry module, then hide items the user lacks
-  // permission for. While auth is still loading, show everything (no flicker-hide).
+  // Hide items the user lacks permission for. While auth is still loading,
+  // show everything (no flicker-hide).
   const activeNavGroups = baseNavGroups
-    .map(group => {
-      if (navPlatformKey === 'cohesity' && group.label === 'System' && !group.items.some(i => i.route === '/admin/users')) {
-        return {
-          ...group,
-          items: [
-            ...group.items,
-            {
-              label: 'Users & Access',
-              route: '/admin/users',
-              icon: Users,
-              isActive: (p) => p.startsWith('/admin/users'),
-              permission: 'admin:users:view',
-            },
-          ],
-        };
-      }
-      return group;
-    })
     .map(group => ({
       ...group,
       items: group.items.filter(item => authLoading || hasPermission(requiredNavPermission(navPlatformKey, item))),
@@ -349,7 +330,7 @@ export default function Layout() {
             ) : (
               criticalCount > 0 && (
                 <button
-                  onClick={() => navigate('/alerts')}
+                  onClick={() => navigate('/cohesity/alerts')}
                   className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
                 >
                   <Bell size={11} />
@@ -394,7 +375,7 @@ export default function Layout() {
             <NotificationBell
               count={isPlatform ? platformAlerts : alertCount}
               alerts={isPlatform ? platformAlertList.slice(0, 10) : alerts.slice(0, 10)}
-              viewAllRoute={isPlatform ? `/${platformKey}/alerts` : '/alerts'}
+              viewAllRoute={isPlatform ? `/${platformKey}/alerts` : '/cohesity/alerts'}
             />
           </div>
 

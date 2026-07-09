@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ArrowLeft } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -618,6 +619,7 @@ function ServiceAccountsTab() {
 
 /* ── Page ────────────────────────────────────────────────────────────────── */
 export default function AdminUsersPage() {
+  const navigate = useNavigate();
   const { hasPermission, loading: authLoading } = useAuth();
   const [tab, setTab] = useState('users');
 
@@ -634,6 +636,12 @@ export default function AdminUsersPage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <button
+        onClick={() => navigate('/admin')}
+        className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint hover:text-ink transition-colors cursor-pointer self-start"
+      >
+        <ArrowLeft size={12} /> Back to Global Settings
+      </button>
       <PageHeader icon={Users} title="Users & Access" description="Manage user accounts, groups, permission grants, and service accounts." />
 
       <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">

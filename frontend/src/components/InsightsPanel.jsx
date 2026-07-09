@@ -31,7 +31,7 @@ const CATEGORY_ICON = {
 function insightRoute(insight) {
   switch (insight.category) {
     case 'alerts':
-      return insight.clusterId != null ? `/alerts?clusterId=${insight.clusterId}` : '/alerts';
+      return insight.clusterId != null ? `/cohesity/alerts?clusterId=${insight.clusterId}` : '/cohesity/alerts';
     case 'protection':
       return '/data-protection';
     case 'replication':
@@ -41,7 +41,7 @@ function insightRoute(insight) {
     case 'capacity':
     case 'availability':
     case 'efficiency':
-      return '/clusters';
+      return '/cohesity/clusters';
     default:
       return null;
   }
