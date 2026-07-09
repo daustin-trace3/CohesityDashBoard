@@ -5,6 +5,7 @@ const registry = require('./core/registry');
 const pluginBoot = require('./services/pluginBoot');
 const { createApp } = require('./app');
 const { initPoller } = require('./services/poller');
+const { initAlertNotifier } = require('./services/alertNotifier');
 const { initLicensing } = require('./services/licensing');
 const { initLicense, getLicenseStatus } = require('./services/license');
 const { getPlatformSettings } = require('./services/settings');
@@ -63,6 +64,7 @@ if (require.main === module) {
   app.listen(PORT, '0.0.0.0', () => {
     logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
     initPoller();
+    initAlertNotifier();
     // Start pollers only for enabled, actively-registered plugins (Cohesity's
     // poller above is not registry-managed in Phase 1 and always starts).
     for (const entry of registry.listPlugins()) {

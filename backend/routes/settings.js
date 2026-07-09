@@ -1,10 +1,15 @@
 const express = require('express');
-const { getAiSettings, getLicenseSettings, getPlatformSettings, setSetting, secretSource } = require('../services/settings');
+const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, setSetting, secretSource } = require('../services/settings');
 const { encrypt } = require('../services/encryption');
 const { listModels } = require('../services/llmProvider');
+const alertNotifier = require('../services/alertNotifier');
 const registry = require('../core/registry');
 
 const router = express.Router();
+
+const ENCRYPTION_VALUES = new Set(['none', 'starttls', 'tls']);
+const AUTH_METHOD_VALUES = new Set(['none', 'login']);
+const SEVERITY_VALUES = new Set(['info', 'warning', 'critical']);
 
 /** Apply an enable-flag toggle to the registry + (re)start/stop its poller.
  *  No-throw: the registry may not have the plugin registered (e.g. tests). */
@@ -137,6 +142,89 @@ router.put('/', (req, res, next) => {
     res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings() });
   } catch (err) {
     next(err);
+  }
+});
+
+/** GET /api/settings/notifications — SMTP + alert-email config. Password is
+ *  never returned, only smtpPasswordSet. */
+router.get('/notifications', (req, res, next) => {
+  try {
+    res.json(getNotificationSettings());
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PUT /api/settings/notifications — same write-only-secret convention as
+ *  /credentials: smtpPassword non-empty saves encrypted, '' clears, omitted
+ *  is untouched. */
+router.put('/notifications', (req, res, next) => {
+  try {
+    const body = req.body || {};
+
+    if (body.smtpPort !== undefined) {
+      const port = Number(body.smtpPort);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return res.status(400).json({ error: 'smtpPort must be an integer between 1 and 65535' });
+      }
+    }
+    if (body.smtpEncryption !== undefined && !ENCRYPTION_VALUES.has(body.smtpEncryption)) {
+      return res.status(400).json({ error: "smtpEncryption must be one of 'none', 'starttls', 'tls'" });
+    }
+    if (body.smtpAuthMethod !== undefined && !AUTH_METHOD_VALUES.has(body.smtpAuthMethod)) {
+      return res.status(400).json({ error: "smtpAuthMethod must be one of 'none', 'login'" });
+    }
+    if (body.alertMinSeverity !== undefined && !SEVERITY_VALUES.has(body.alertMinSeverity)) {
+      return res.status(400).json({ error: "alertMinSeverity must be one of 'info', 'warning', 'critical'" });
+    }
+    if (body.reminderHours !== undefined) {
+      const hours = Number(body.reminderHours);
+      if (!Number.isInteger(hours) || hours < 0 || hours > 168) {
+        return res.status(400).json({ error: 'reminderHours must be an integer between 0 and 168' });
+      }
+    }
+
+    if (body.smtpEnabled !== undefined) setSetting('smtp_enabled', body.smtpEnabled ? '1' : '0');
+    if (body.smtpHost !== undefined) setSetting('smtp_host', String(body.smtpHost).trim().slice(0, 253));
+    if (body.smtpPort !== undefined) setSetting('smtp_port', String(Math.round(Number(body.smtpPort))));
+    if (body.smtpEncryption !== undefined) setSetting('smtp_encryption', body.smtpEncryption);
+    if (body.smtpAuthMethod !== undefined) setSetting('smtp_auth_method', body.smtpAuthMethod);
+    if (body.smtpUsername !== undefined) setSetting('smtp_username', String(body.smtpUsername).trim().slice(0, 253));
+    if (body.smtpPassword !== undefined) {
+      const value = String(body.smtpPassword);
+      setSetting('smtp_password', value ? encrypt(value) : '');
+    }
+    if (body.smtpFrom !== undefined) setSetting('smtp_from', String(body.smtpFrom).trim().slice(0, 253));
+    if (body.smtpRecipients !== undefined) setSetting('smtp_recipients', String(body.smtpRecipients).trim().slice(0, 2000));
+    if (body.alertMinSeverity !== undefined) setSetting('alert_email_min_severity', body.alertMinSeverity);
+    if (body.alertPlatforms !== undefined) {
+      const current = getNotificationSettings().alertPlatforms;
+      const merged = {
+        cohesity: body.alertPlatforms.cohesity !== undefined ? !!body.alertPlatforms.cohesity : current.cohesity,
+        pure: body.alertPlatforms.pure !== undefined ? !!body.alertPlatforms.pure : current.pure,
+        netapp: body.alertPlatforms.netapp !== undefined ? !!body.alertPlatforms.netapp : current.netapp,
+      };
+      setSetting('alert_email_platforms', JSON.stringify(merged));
+    }
+    if (body.reminderHours !== undefined) setSetting('alert_email_reminder_hours', String(Math.round(Number(body.reminderHours))));
+
+    res.json(getNotificationSettings());
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/settings/notifications/test — send a test email using the
+ *  saved SMTP config, without waiting for the cron cycle. */
+router.post('/notifications/test', async (req, res) => {
+  try {
+    await alertNotifier.sendTestEmail();
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === 'SMTP_NOT_CONFIGURED') {
+      return res.status(400).json({ error: err.message });
+    }
+    res.status(502).json({ error: err.message });
   }
 });
 

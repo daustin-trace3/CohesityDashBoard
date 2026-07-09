@@ -119,4 +119,25 @@ module.exports = [
       }
     },
   },
+
+  // SMTP alert notifications (contract C10.3): tracks which active alerts
+  // have already been emailed, and when, so we send once per new alert plus
+  // periodic reminders instead of re-sending every poll.
+  {
+    version: 3,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS alert_notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          notify_count INTEGER NOT NULL DEFAULT 1,
+          first_notified_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_notified_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(source, source_key)
+        );
+      `);
+    },
+  },
 ];

@@ -178,7 +178,7 @@ function normalizeSchema(db) {
 // comparisons below and asserted to exist separately instead.
 const NEW_TABLES = [
   'plugins', 'users', 'groups', 'user_groups', 'role_grants',
-  'auth_sessions', 'service_accounts',
+  'auth_sessions', 'service_accounts', 'alert_notifications',
 ];
 
 describe('runMigrations', () => {

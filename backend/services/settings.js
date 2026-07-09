@@ -14,6 +14,18 @@ const DEFAULTS = {
   platform_pure_enabled: '0',
   platform_netapp_enabled: '0',
   dns_server: '',
+  smtp_enabled: '0',
+  smtp_host: '',
+  smtp_port: '587',
+  smtp_encryption: 'starttls',
+  smtp_auth_method: 'login',
+  smtp_username: '',
+  smtp_password: '',
+  smtp_from: '',
+  smtp_recipients: '',
+  alert_email_min_severity: 'warning',
+  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true}',
+  alert_email_reminder_hours: '24',
 };
 
 function getSetting(key) {
@@ -97,7 +109,48 @@ function getPlatformSettings() {
   };
 }
 
+/** SMTP alert-notification settings in a typed shape (contract C10.1/C10.2).
+ *  smtpPassword itself is never included — only whether one is set. */
+function getNotificationSettings() {
+  let alertPlatforms;
+  try {
+    alertPlatforms = JSON.parse(getSetting('alert_email_platforms'));
+  } catch {
+    alertPlatforms = { cohesity: true, pure: true, netapp: true };
+  }
+  return {
+    smtpEnabled: getSetting('smtp_enabled') === '1',
+    smtpHost: getSetting('smtp_host') || '',
+    smtpPort: Number(getSetting('smtp_port')) || 587,
+    smtpEncryption: getSetting('smtp_encryption') || 'starttls',
+    smtpAuthMethod: getSetting('smtp_auth_method') || 'login',
+    smtpUsername: getSetting('smtp_username') || '',
+    smtpPasswordSet: !!getSetting('smtp_password'),
+    smtpFrom: getSetting('smtp_from') || '',
+    smtpRecipients: getSetting('smtp_recipients') || '',
+    alertMinSeverity: getSetting('alert_email_min_severity') || 'warning',
+    alertPlatforms: {
+      cohesity: alertPlatforms?.cohesity !== false,
+      pure: alertPlatforms?.pure !== false,
+      netapp: alertPlatforms?.netapp !== false,
+    },
+    reminderHours: Number(getSetting('alert_email_reminder_hours')) || 0,
+  };
+}
+
+/** Decrypted SMTP password, or '' if none stored. */
+function getSmtpPassword() {
+  const stored = getSetting('smtp_password');
+  if (!stored) return '';
+  try {
+    return decrypt(stored) || '';
+  } catch {
+    return '';
+  }
+}
+
 module.exports = {
   getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
   getAnalysisTtlHours, getAiSettings, getLicenseSettings, getPlatformSettings,
+  getNotificationSettings, getSmtpPassword,
 };

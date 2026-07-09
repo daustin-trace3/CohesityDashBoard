@@ -19,3 +19,8 @@
 ## Core migration follow-through
 - **What:** After Phase 1 lands, delete the legacy guarded ALTER-TABLE block in backend/db/database.js once all installs have crossed the versioned-migration boundary.
 - **Context:** Core unifies onto versioned migrations in Phase 1 (decision 7A); the legacy block stays temporarily for pre-upgrade DBs.
+
+## OAuth2 / XOAUTH2 SMTP auth
+- **What:** Support OAuth2/XOAUTH2 as an SMTP auth method alongside the current none/login options in alert notifications.
+- **Why:** Some mail providers (Gmail, Microsoft 365) are deprecating basic username/password auth in favor of OAuth2 tokens.
+- **Context (added 2026-07-09, WP14):** smtp_auth_method setting currently only supports "none" | "login"; OAuth2 needs a token-refresh flow this WP was not scoped to build.
