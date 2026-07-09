@@ -153,6 +153,39 @@ async function checkRenewal({ force = false } = {}) {
   }
 }
 
+/**
+ * Pure entitlement resolution from already-verified key/extension payloads.
+ * `ent` (array of platform ids) on a payload limits entitlement to those
+ * platforms; absent/empty means "all platforms". A present, non-empty `ent`
+ * on the extension replaces the key's; an extension with no/empty `ent`
+ * leaves the key's entitlement standing.
+ */
+function entitlementsFromPayloads(keyPayload, extPayload) {
+  const keyEnt = Array.isArray(keyPayload?.ent) && keyPayload.ent.length ? keyPayload.ent : null;
+  const extEnt = Array.isArray(extPayload?.ent) && extPayload.ent.length ? extPayload.ent : null;
+
+  const effective = extEnt || keyEnt;
+  if (!effective) return { all: true };
+  return { all: false, platforms: effective };
+}
+
+/** Entitlements for the currently configured license key + cached extension. */
+function getEntitlements() {
+  const keyStr = process.env.LICENSE_KEY || '';
+  if (!keyStr.trim()) return { all: true };
+
+  const key = verifySigned(keyStr);
+  if (!key || key.type !== 'CDBL') return { all: true };
+
+  let extPayload = null;
+  const ext = verifySigned(getSetting(EXT_SETTING_KEY) || '');
+  if (ext && ext.type === 'CDBX' && ext.payload.id === key.payload.id) {
+    extPayload = ext.payload;
+  }
+
+  return entitlementsFromPayloads(key.payload, extPayload);
+}
+
 /** Startup + daily renewal polling. */
 function initLicense() {
   const s = getLicenseStatus();
@@ -166,4 +199,4 @@ function initLicense() {
   checkRenewal().then(r => { if (r.renewed) logger.info('[License] Renewed automatically via renewal server.'); });
 }
 
-module.exports = { getLicenseStatus, applyExtension, activateKey, checkRenewal, initLicense };
+module.exports = { getLicenseStatus, applyExtension, activateKey, checkRenewal, initLicense, entitlementsFromPayloads, getEntitlements };
