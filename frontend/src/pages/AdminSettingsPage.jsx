@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, Save, Layers, KeyRound, Settings, Users, Puzzle } from 'lucide-react';
+import { Sparkles, Save, Layers, KeyRound, Settings, Users, Puzzle, Mail } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -10,8 +10,15 @@ const TABS = [
   { key: 'ai', label: 'AI Analysis & Keys', icon: Sparkles },
   { key: 'platforms', label: 'Platforms', icon: Layers },
   { key: 'license', label: 'Product License', icon: KeyRound },
+  { key: 'notifications', label: 'Alert Notifications', icon: Mail },
   { key: 'users', label: 'Users & Access', icon: Users, route: '/admin/users', permission: 'admin:users:view' },
   { key: 'plugins', label: 'Plugins', icon: Puzzle, route: '/admin/plugins', permission: 'admin:plugins:view' },
+];
+
+const NOTIFY_PLATFORMS = [
+  { key: 'cohesity', label: 'Cohesity' },
+  { key: 'pure', label: 'Pure Storage' },
+  { key: 'netapp', label: 'NetApp' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,
@@ -52,6 +59,13 @@ export default function AdminSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
+
+  const [notify, setNotify] = useState(null);
+  const [notifyLoading, setNotifyLoading] = useState(false);
+  const [notifyPassword, setNotifyPassword] = useState('');
+  const [notifyPasswordCleared, setNotifyPasswordCleared] = useState(false);
+  const [savingNotify, setSavingNotify] = useState(false);
+  const [testingNotify, setTestingNotify] = useState(false);
 
   useEffect(() => {
     Promise.allSettled([
@@ -152,6 +166,58 @@ export default function AdminSettingsPage() {
       toast({ type: 'error', title: 'Could not apply license', message: err?.response?.data?.error || 'Invalid or expired key.' });
     } finally {
       setActivating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (tab !== 'notifications' || notify) return;
+    setNotifyLoading(true);
+    client.get('/settings/notifications')
+      .then(({ data }) => setNotify(data))
+      .catch(() => toast({ type: 'error', title: 'Could not load', message: 'Could not load notification settings.' }))
+      .finally(() => setNotifyLoading(false));
+  }, [tab, notify, toast]);
+
+  const saveNotify = async () => {
+    if (!notify) return;
+    setSavingNotify(true);
+    try {
+      const payload = {
+        smtpEnabled: notify.smtpEnabled,
+        smtpHost: notify.smtpHost,
+        smtpPort: Number(notify.smtpPort) || 587,
+        smtpEncryption: notify.smtpEncryption,
+        smtpAuthMethod: notify.smtpAuthMethod,
+        smtpUsername: notify.smtpUsername,
+        smtpFrom: notify.smtpFrom,
+        smtpRecipients: notify.smtpRecipients,
+        alertMinSeverity: notify.alertMinSeverity,
+        alertPlatforms: notify.alertPlatforms,
+        reminderHours: Number(notify.reminderHours) || 0,
+      };
+      if (notifyPassword) payload.smtpPassword = notifyPassword;
+      else if (notifyPasswordCleared) payload.smtpPassword = '';
+      const { data } = await client.put('/settings/notifications', payload);
+      setNotify(data);
+      setNotifyPassword('');
+      setNotifyPasswordCleared(false);
+      toast({ type: 'success', title: 'Settings saved', message: 'Alert notification settings updated.' });
+    } catch (err) {
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Could not save notification settings. Try again.' });
+    } finally {
+      setSavingNotify(false);
+    }
+  };
+
+  const sendTestNotify = async () => {
+    setTestingNotify(true);
+    try {
+      await client.post('/settings/notifications/test');
+      toast({ type: 'success', title: 'Test email sent', message: 'Check the configured recipients.' });
+    } catch (err) {
+      toast({ type: 'error', title: 'Test email failed', message: err?.response?.data?.error || 'Could not send the test email.' });
+    } finally {
+      setTestingNotify(false);
     }
   };
 
@@ -482,6 +548,227 @@ export default function AdminSettingsPage() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Alert Notifications */}
+      {tab === 'notifications' && (
+      <>
+      <div className="panel p-4">
+        <div className="flex items-center gap-2 mb-1">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
+            <Mail size={14} className="text-brand" />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-ink">SMTP Server</p>
+            <p className="text-[11px] text-ink-muted">Email delivery settings used to send alert notifications.</p>
+          </div>
+        </div>
+
+        {notifyLoading || !notify ? (
+          <p className="text-gray-400 text-sm mt-4">Loading…</p>
+        ) : (
+          <div className="flex flex-col gap-4 mt-4">
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={notify.smtpEnabled}
+                onChange={e => setNotify(s => ({ ...s, smtpEnabled: e.target.checked }))}
+                className="accent-brand mt-0.5 cursor-pointer"
+              />
+              <span className="text-xs text-ink-muted leading-relaxed">
+                <span className="font-semibold text-ink">Enable SMTP email notifications</span>
+              </span>
+            </label>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="smtp-host" className="block text-xs font-semibold text-ink mb-1">Host</label>
+                <input
+                  id="smtp-host"
+                  type="text"
+                  value={notify.smtpHost}
+                  onChange={e => setNotify(s => ({ ...s, smtpHost: e.target.value }))}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none"
+                />
+              </div>
+              <div>
+                <label htmlFor="smtp-port" className="block text-xs font-semibold text-ink mb-1">Port</label>
+                <input
+                  id="smtp-port"
+                  type="number" min="1" max="65535" step="1"
+                  value={notify.smtpPort}
+                  onChange={e => setNotify(s => ({ ...s, smtpPort: e.target.value }))}
+                  className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum"
+                />
+              </div>
+              <div>
+                <label htmlFor="smtp-encryption" className="block text-xs font-semibold text-ink mb-1">Encryption</label>
+                <select
+                  id="smtp-encryption"
+                  value={notify.smtpEncryption}
+                  onChange={e => setNotify(s => ({ ...s, smtpEncryption: e.target.value }))}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
+                >
+                  <option value="none">None</option>
+                  <option value="starttls">STARTTLS</option>
+                  <option value="tls">SSL/TLS</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="smtp-auth-method" className="block text-xs font-semibold text-ink mb-1">Auth method</label>
+                <select
+                  id="smtp-auth-method"
+                  value={notify.smtpAuthMethod}
+                  onChange={e => setNotify(s => ({ ...s, smtpAuthMethod: e.target.value }))}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
+                >
+                  <option value="none">None</option>
+                  <option value="login">Username &amp; password</option>
+                </select>
+              </div>
+            </div>
+
+            {notify.smtpAuthMethod !== 'none' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="smtp-username" className="block text-xs font-semibold text-ink mb-1">Username</label>
+                  <input
+                    id="smtp-username"
+                    type="text"
+                    autoComplete="off"
+                    value={notify.smtpUsername}
+                    onChange={e => setNotify(s => ({ ...s, smtpUsername: e.target.value }))}
+                    className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none"
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2.5 mb-1 flex-wrap">
+                    <label htmlFor="smtp-password" className="text-xs font-semibold text-ink">Password</label>
+                    {notify.smtpPasswordSet && !notifyPasswordCleared && (
+                      <button
+                        onClick={() => { setNotifyPasswordCleared(true); setNotifyPassword(''); }}
+                        className="text-[10px] text-ink-faint hover:text-status-crit underline underline-offset-2 transition-colors cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    id="smtp-password"
+                    type="password"
+                    autoComplete="off"
+                    value={notifyPassword}
+                    onChange={e => { setNotifyPassword(e.target.value); setNotifyPasswordCleared(false); }}
+                    placeholder={notify.smtpPasswordSet && !notifyPasswordCleared ? 'unchanged — leave blank to keep' : ''}
+                    className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs font-mono text-ink focus:border-brand/60 outline-none"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="smtp-from" className="block text-xs font-semibold text-ink mb-1">From address</label>
+                <input
+                  id="smtp-from"
+                  type="text"
+                  value={notify.smtpFrom}
+                  onChange={e => setNotify(s => ({ ...s, smtpFrom: e.target.value }))}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none"
+                />
+              </div>
+              <div>
+                <label htmlFor="smtp-recipients" className="block text-xs font-semibold text-ink mb-1">Recipients</label>
+                <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">Comma-separated email addresses</p>
+                <input
+                  id="smtp-recipients"
+                  type="text"
+                  value={notify.smtpRecipients}
+                  onChange={e => setNotify(s => ({ ...s, smtpRecipients: e.target.value }))}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {!notifyLoading && notify && (
+      <div className="panel p-4">
+        <div className="flex items-center gap-2 mb-1">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
+            <Mail size={14} className="text-brand" />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-ink">Alert Filtering</p>
+            <p className="text-[11px] text-ink-muted">Which alerts trigger an email.</p>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-4 mt-4">
+          <div>
+            <label htmlFor="alert-min-severity" className="block text-xs font-semibold text-ink mb-1">Minimum severity</label>
+            <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">Alerts below this severity are not emailed</p>
+            <select
+              id="alert-min-severity"
+              value={notify.alertMinSeverity}
+              onChange={e => setNotify(s => ({ ...s, alertMinSeverity: e.target.value }))}
+              className="w-full max-w-xs bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
+            >
+              <option value="info">Info and above</option>
+              <option value="warning">Warning and above</option>
+              <option value="critical">Critical only</option>
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            {NOTIFY_PLATFORMS.map(p => (
+              <label key={p.key} className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={!!notify.alertPlatforms?.[p.key]}
+                  onChange={e => setNotify(s => ({ ...s, alertPlatforms: { ...s.alertPlatforms, [p.key]: e.target.checked } }))}
+                  className="accent-brand mt-0.5 cursor-pointer"
+                />
+                <span className="text-xs text-ink-muted leading-relaxed">
+                  <span className="font-semibold text-ink">{p.label}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          <div>
+            <label htmlFor="reminder-hours" className="block text-xs font-semibold text-ink mb-1">Reminder interval (hours)</label>
+            <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">Unresolved alerts re-notify at this interval — 0 disables reminders</p>
+            <input
+              id="reminder-hours"
+              type="number" min="0" max="168" step="1"
+              value={notify.reminderHours}
+              onChange={e => setNotify(s => ({ ...s, reminderHours: e.target.value }))}
+              className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={sendTestNotify}
+              disabled={testingNotify}
+              className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-surface-overlay border border-cohesity-border text-ink rounded-lg hover:bg-surface transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              <Mail size={13} /> {testingNotify ? 'Sending…' : 'Send test email'}
+            </button>
+            <button
+              onClick={saveNotify}
+              disabled={savingNotify}
+              className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              <Save size={13} /> {savingNotify ? 'Saving…' : 'Save settings'}
+            </button>
+          </div>
+        </div>
+      </div>
+      )}
+      </>
       )}
     </div>
   );
