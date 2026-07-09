@@ -231,6 +231,7 @@ export default function NetAppOverviewPage() {
                 <TrendChart
                   labels={series.map((s) => s.time)}
                   datasets={[{ label: 'Efficiency', data: series.map((s) => s.eff), color: BRAND }]}
+                  format={(v) => Number(v).toFixed(1)}
                   unit=" : 1"
                 />
               ))}
