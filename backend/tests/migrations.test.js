@@ -172,6 +172,15 @@ function normalizeSchema(db) {
     }));
 }
 
+// Tables introduced by the ICC refactor (plugins, contract C4) and by WP7a's
+// auth+RBAC migration (contract C8.1) never existed on the legacy schema.sql
+// + inline-migration path, so they're excluded from the legacy-equivalence
+// comparisons below and asserted to exist separately instead.
+const NEW_TABLES = [
+  'plugins', 'users', 'groups', 'user_groups', 'role_grants',
+  'auth_sessions', 'service_accounts',
+];
+
 describe('runMigrations', () => {
   it('applies steps once and records them; re-running is a no-op', () => {
     const db = new Database(':memory:');
@@ -225,13 +234,12 @@ describe('runMigrations', () => {
     const legacyDb = buildLegacyDb();
     const newDb = buildNewDb();
 
-    // `plugins` is a genuinely new table introduced by this refactor
-    // (contract C4) and never existed on the legacy path, so it's excluded
-    // from the equivalence comparison and asserted separately below.
     const legacySchema = normalizeSchema(legacyDb);
-    const newSchema = normalizeSchema(newDb).filter((r) => r.name !== 'plugins');
+    const newSchema = normalizeSchema(newDb).filter((r) => !NEW_TABLES.includes(r.name));
     expect(newSchema).toEqual(legacySchema);
-    expect(normalizeSchema(newDb).some((r) => r.name === 'plugins')).toBe(true);
+    for (const name of NEW_TABLES) {
+      expect(normalizeSchema(newDb).some((r) => r.name === name)).toBe(true);
+    }
 
     legacyDb.close();
     newDb.close();
@@ -239,10 +247,7 @@ describe('runMigrations', () => {
 
   it('running the new runner against a DB already built via the legacy path completes without error and leaves every pre-existing table/index unchanged', () => {
     const db = buildLegacyDb();
-    // `plugins` is a genuinely new table introduced by this refactor (contract
-    // C4) — it never existed on the legacy path, so it's excluded from the
-    // "unchanged" comparison and asserted separately below instead.
-    const before = normalizeSchema(db).filter((r) => r.name !== 'plugins');
+    const before = normalizeSchema(db).filter((r) => !NEW_TABLES.includes(r.name));
 
     expect(() => {
       runMigrations(db, 'core', coreMigrations);
@@ -252,8 +257,10 @@ describe('runMigrations', () => {
     }).not.toThrow();
 
     const after = normalizeSchema(db);
-    expect(after.filter((r) => r.name !== 'plugins')).toEqual(before);
-    expect(after.some((r) => r.name === 'plugins')).toBe(true);
+    expect(after.filter((r) => !NEW_TABLES.includes(r.name))).toEqual(before);
+    for (const name of NEW_TABLES) {
+      expect(after.some((r) => r.name === name)).toBe(true);
+    }
 
     db.close();
   });

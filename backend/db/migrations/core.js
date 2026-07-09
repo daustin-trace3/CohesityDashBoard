@@ -24,4 +24,99 @@ module.exports = [
       `);
     },
   },
+
+  // Auth + RBAC (contract C8.1): users/groups/grants/sessions/service accounts,
+  // seeded with the three system groups and their default grants. No seed
+  // user — the first-run wizard creates the first admin via a claim token.
+  {
+    version: 2,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS users (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          username        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          password_hash   TEXT NOT NULL,
+          display_name    TEXT,
+          auth_provider   TEXT NOT NULL DEFAULT 'local',
+          is_active       INTEGER NOT NULL DEFAULT 1,
+          created_at      TEXT NOT NULL,
+          updated_at      TEXT NOT NULL,
+          last_login_at   TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS groups (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          name            TEXT NOT NULL UNIQUE,
+          description     TEXT,
+          is_system       INTEGER NOT NULL DEFAULT 0,
+          created_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS user_groups (
+          user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          group_id        INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+          PRIMARY KEY (user_id, group_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS role_grants (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_type    TEXT NOT NULL CHECK(subject_type IN ('user','group')),
+          subject_id      INTEGER NOT NULL,
+          permission      TEXT NOT NULL,
+          created_at      TEXT NOT NULL,
+          UNIQUE(subject_type, subject_id, permission)
+        );
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+          id              TEXT PRIMARY KEY,
+          user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          csrf_token      TEXT NOT NULL,
+          created_at      TEXT NOT NULL,
+          expires_at      TEXT NOT NULL,
+          last_seen_at    TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS service_accounts (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          name            TEXT NOT NULL UNIQUE,
+          key_hash        TEXT NOT NULL,
+          key_prefix      TEXT NOT NULL,
+          permissions     TEXT NOT NULL,
+          is_active       INTEGER NOT NULL DEFAULT 1,
+          created_at      TEXT NOT NULL,
+          last_used_at    TEXT
+        );
+      `);
+
+      const now = new Date().toISOString();
+
+      const insertGroup = db.prepare(
+        'INSERT OR IGNORE INTO groups (name, description, is_system, created_at) VALUES (?, ?, 1, ?)'
+      );
+      const seedGroups = {
+        Admin: 'Full access to every platform and admin function.',
+        Operator: 'Manage access to platform data (no admin functions).',
+        Viewer: 'Read-only access to platform data.',
+      };
+      for (const [name, description] of Object.entries(seedGroups)) {
+        insertGroup.run(name, description, now);
+      }
+
+      const getGroupId = db.prepare('SELECT id FROM groups WHERE name = ?');
+      const insertGrant = db.prepare(
+        'INSERT OR IGNORE INTO role_grants (subject_type, subject_id, permission, created_at) VALUES (?, ?, ?, ?)'
+      );
+      const seedGrants = {
+        Admin: ['*:*:*'],
+        Operator: ['cohesity:*:*', 'pure:*:*', 'netapp:*:*'],
+        Viewer: ['cohesity:*:view', 'pure:*:view', 'netapp:*:view'],
+      };
+      for (const [groupName, permissions] of Object.entries(seedGrants)) {
+        const groupId = getGroupId.get(groupName).id;
+        for (const permission of permissions) {
+          insertGrant.run('group', groupId, permission, now);
+        }
+      }
+    },
+  },
 ];
