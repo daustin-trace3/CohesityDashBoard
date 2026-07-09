@@ -24,11 +24,20 @@ const licensingRouter = require('./routes/licensing');
 const licenseRouter = require('./routes/license');
 const pure1Router = require('./routes/pure1');
 const dnsRouter = require('./routes/dns');
+const authRouter = require('./routes/auth');
+const usersRouter = require('./routes/users');
 const registry = require('./core/registry');
-const requireApiKey = require('./middleware/auth');
+const authenticate = require('./middleware/authenticate');
+const csrf = require('./middleware/csrf');
+const { requirePermission, platformPermission } = require('./middleware/requirePermission');
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const deprecated = require('./middleware/deprecatedAlias');
+
+/** cohesity:<name>:view|manage — same permission for a mount and its deprecated alias (contract C8.6). */
+function cohesityPermission(name) {
+  return (req) => `cohesity:${name}:${req.method === 'GET' ? 'view' : 'manage'}`;
+}
 
 /**
  * Builds the Express app. `licenseGate` is injectable so tests can exercise
@@ -79,60 +88,85 @@ function createApp({ licenseGate = requireLicense } = {}) {
 
   app.use(express.json({ limit: '1mb' }));
 
-  // API key authentication for all /api/ routes
-  app.use('/api', requireApiKey);
+  // Authentication (contract C8.5): session cookie, env API key, or a scoped
+  // service-account key. Replaces the old blanket x-api-key check. /api/auth/*
+  // and (mostly) /api/license/* are exempt — see middleware/authenticate.js.
+  app.use('/api', authenticate);
+  app.use('/api', csrf);
 
   // Product license gate — blocks everything except /api/license/* when unlicensed
   app.use('/api', licenseGate);
 
   // Routes
+  app.use('/api/auth', authRouter);
   app.use('/api/license', licenseRouter);
+  app.use(
+    '/api/users',
+    requirePermission((req) => `admin:users:${req.method === 'GET' ? 'view' : 'manage'}`),
+    usersRouter
+  );
 
   // Cohesity routes — mounted under /api/cohesity/* (WP4). New mounts first,
   // then deprecated aliases at the old unprefixed paths for back-compat with
-  // existing customer automation; both must keep working.
-  app.use('/api/cohesity/clusters', clustersRouter);
-  app.use('/api/cohesity/metrics', metricsRouter);
-  app.use('/api/cohesity/alerts', alertsRouter);
-  app.use('/api/cohesity/hardware', hardwareRouter);
-  app.use('/api/cohesity/helios', heliosRouter);
-  app.use('/api/cohesity/import', importRouter);
-  app.use('/api/cohesity/analytics', analyticsRouter);
-  app.use('/api/cohesity/replication', replicationRouter);
-  app.use('/api/cohesity/insights', insightsRouter);
-  app.use('/api/cohesity/governance', governanceRouter);
-  app.use('/api/cohesity/dashboard', dashboardRouter);
-  app.use('/api/cohesity/advisor', advisorRouter);
-  app.use('/api/cohesity/licensing', licensingRouter);
+  // existing customer automation; both must keep working. Each mount and its
+  // alias require the SAME cohesity:<name>:view|manage permission (C8.6).
+  app.use('/api/cohesity/clusters', requirePermission(cohesityPermission('clusters')), clustersRouter);
+  app.use('/api/cohesity/metrics', requirePermission(cohesityPermission('metrics')), metricsRouter);
+  app.use('/api/cohesity/alerts', requirePermission(cohesityPermission('alerts')), alertsRouter);
+  app.use('/api/cohesity/hardware', requirePermission(cohesityPermission('hardware')), hardwareRouter);
+  app.use('/api/cohesity/helios', requirePermission(cohesityPermission('helios')), heliosRouter);
+  app.use('/api/cohesity/import', requirePermission(cohesityPermission('import')), importRouter);
+  app.use('/api/cohesity/analytics', requirePermission(cohesityPermission('analytics')), analyticsRouter);
+  app.use('/api/cohesity/replication', requirePermission(cohesityPermission('replication')), replicationRouter);
+  app.use('/api/cohesity/insights', requirePermission(cohesityPermission('insights')), insightsRouter);
+  app.use('/api/cohesity/governance', requirePermission(cohesityPermission('governance')), governanceRouter);
+  app.use('/api/cohesity/dashboard', requirePermission(cohesityPermission('dashboard')), dashboardRouter);
+  app.use('/api/cohesity/advisor', requirePermission(cohesityPermission('advisor')), advisorRouter);
+  app.use('/api/cohesity/licensing', requirePermission(cohesityPermission('licensing')), licensingRouter);
 
-  app.use('/api/clusters', deprecated('/api/clusters', '/api/cohesity/clusters'), clustersRouter);
-  app.use('/api/metrics', deprecated('/api/metrics', '/api/cohesity/metrics'), metricsRouter);
-  app.use('/api/alerts', deprecated('/api/alerts', '/api/cohesity/alerts'), alertsRouter);
-  app.use('/api/hardware', deprecated('/api/hardware', '/api/cohesity/hardware'), hardwareRouter);
-  app.use('/api/helios', deprecated('/api/helios', '/api/cohesity/helios'), heliosRouter);
-  app.use('/api/import', deprecated('/api/import', '/api/cohesity/import'), importRouter);
-  app.use('/api/analytics', deprecated('/api/analytics', '/api/cohesity/analytics'), analyticsRouter);
-  app.use('/api/replication', deprecated('/api/replication', '/api/cohesity/replication'), replicationRouter);
-  app.use('/api/insights', deprecated('/api/insights', '/api/cohesity/insights'), insightsRouter);
-  app.use('/api/governance', deprecated('/api/governance', '/api/cohesity/governance'), governanceRouter);
-  app.use('/api/dashboard', deprecated('/api/dashboard', '/api/cohesity/dashboard'), dashboardRouter);
-  app.use('/api/advisor', deprecated('/api/advisor', '/api/cohesity/advisor'), advisorRouter);
-  app.use('/api/licensing', deprecated('/api/licensing', '/api/cohesity/licensing'), licensingRouter);
+  app.use('/api/clusters', deprecated('/api/clusters', '/api/cohesity/clusters'), requirePermission(cohesityPermission('clusters')), clustersRouter);
+  app.use('/api/metrics', deprecated('/api/metrics', '/api/cohesity/metrics'), requirePermission(cohesityPermission('metrics')), metricsRouter);
+  app.use('/api/alerts', deprecated('/api/alerts', '/api/cohesity/alerts'), requirePermission(cohesityPermission('alerts')), alertsRouter);
+  app.use('/api/hardware', deprecated('/api/hardware', '/api/cohesity/hardware'), requirePermission(cohesityPermission('hardware')), hardwareRouter);
+  app.use('/api/helios', deprecated('/api/helios', '/api/cohesity/helios'), requirePermission(cohesityPermission('helios')), heliosRouter);
+  app.use('/api/import', deprecated('/api/import', '/api/cohesity/import'), requirePermission(cohesityPermission('import')), importRouter);
+  app.use('/api/analytics', deprecated('/api/analytics', '/api/cohesity/analytics'), requirePermission(cohesityPermission('analytics')), analyticsRouter);
+  app.use('/api/replication', deprecated('/api/replication', '/api/cohesity/replication'), requirePermission(cohesityPermission('replication')), replicationRouter);
+  app.use('/api/insights', deprecated('/api/insights', '/api/cohesity/insights'), requirePermission(cohesityPermission('insights')), insightsRouter);
+  app.use('/api/governance', deprecated('/api/governance', '/api/cohesity/governance'), requirePermission(cohesityPermission('governance')), governanceRouter);
+  app.use('/api/dashboard', deprecated('/api/dashboard', '/api/cohesity/dashboard'), requirePermission(cohesityPermission('dashboard')), dashboardRouter);
+  app.use('/api/advisor', deprecated('/api/advisor', '/api/cohesity/advisor'), requirePermission(cohesityPermission('advisor')), advisorRouter);
+  app.use('/api/licensing', deprecated('/api/licensing', '/api/cohesity/licensing'), requirePermission(cohesityPermission('licensing')), licensingRouter);
 
-  app.use('/api/poller', pollerRouter);
-  app.use('/api/settings', settingsRouter);
-  app.use('/api/ai-audit', aiAuditRouter);
+  // /api/poller/status is reachable to any authenticated caller; every other
+  // poller endpoint (manual trigger) requires cohesity:poller:manage.
+  app.use('/api/poller', (req, res, next) => {
+    if (req.path === '/status') return next();
+    return requirePermission(() => 'cohesity:poller:manage')(req, res, next);
+  }, pollerRouter);
+
+  app.use(
+    '/api/settings',
+    requirePermission((req) => `admin:settings:${req.method === 'GET' ? 'view' : 'manage'}`),
+    settingsRouter
+  );
+  app.use('/api/ai-audit', requirePermission(() => 'admin:ai-audit:view'), aiAuditRouter);
   // Seam: Pure1 cloud stays a static mount — the dispatcher only serves
   // /api/<pluginId>/*, and pure1 is a second mount alongside the 'pure'
   // plugin's own /api/pure/*. Folds in once its frontend paths migrate
   // under /pure in a later WP.
-  app.use('/api/pure1', pure1Router);
+  app.use('/api/pure1', requirePermission(platformPermission('pure')), pure1Router);
+  // /api/dns is reachable to any authenticated caller (no permission gate).
   app.use('/api/dns', dnsRouter);
 
   // Plugin dispatcher — resolves the registry at request time. Falls through
   // to the static routes above (which still win while the registry is empty)
   // via next() for any pluginId the registry doesn't know about.
-  app.use('/api/:pluginId', registry.dispatch);
+  app.use(
+    '/api/:pluginId',
+    requirePermission(platformPermission((req) => req.params.pluginId)),
+    registry.dispatch
+  );
 
   // Health check — verifies DB connectivity
   app.get('/health', (req, res) => {

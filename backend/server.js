@@ -7,8 +7,15 @@ const { initPoller } = require('./services/poller');
 const { initLicensing } = require('./services/licensing');
 const { initLicense, getLicenseStatus } = require('./services/license');
 const { getPlatformSettings } = require('./services/settings');
+const authService = require('./services/authService');
 const pureManifest = require('./platforms/pure');
 const netappManifest = require('./platforms/netapp');
+
+// Auth boot work (contract C8.3): prune stale sessions and (re-)check the
+// first-run claim token. authService already runs this once at module load
+// (imported transitively via ./app -> routes/auth.js), but calling it again
+// here is a cheap idempotent no-op that makes the boot sequence explicit.
+authService.pruneExpired();
 
 registry.init();
 

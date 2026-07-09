@@ -38,8 +38,12 @@ describe('license gate with no license configured', () => {
     expect(res.body.state).toBe('missing');
   });
 
-  it('still requires the api key even when unlicensed → 401', async () => {
+  // C8.5: /api/license/* is auth-EXEMPT (activation must work pre-auth on a
+  // fresh, unlicensed install) — GET /api/license/status is now reachable
+  // without an x-api-key. Only intentional behavior change in WP7b.
+  it('is reachable without an api key when unlicensed', async () => {
     const res = await request(app).get('/api/license/status');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('missing');
   });
 });
