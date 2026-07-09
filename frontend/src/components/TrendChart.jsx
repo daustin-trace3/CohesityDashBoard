@@ -26,8 +26,18 @@ const CHART = {
  * @param {string} unit      suffix shown in the tooltip (e.g. ' TB', ' ms')
  * @param {(v:number)=>string} format  optional value formatter (axis + tooltip)
  */
+// Default tick/tooltip formatter: trims floating-point tails (2.3000000000004
+// -> 2.3) that appear when chart.js picks fractional tick steps. One decimal
+// for most values, two below 1 so tight ranges (e.g. sub-ms latency) keep
+// distinct tick labels.
+const roundTick = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return `${v}`;
+  return `${parseFloat(n.toFixed(Math.abs(n) < 1 ? 2 : 1))}`;
+};
+
 export default function TrendChart({ labels, datasets, unit = '', height = 200, format, stacked = false }) {
-  const fmt = format || ((v) => `${v}`);
+  const fmt = format || roundTick;
 
   const data = useMemo(() => ({
     labels,

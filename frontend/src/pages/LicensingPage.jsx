@@ -353,7 +353,7 @@ function BreakdownSection({ breakdown, sim, explorer, excludedSystems, excludedC
       },
     },
     scales: {
-      x: { stacked: true, ticks: { color: '#E5E5E5', font: { size: 10 }, callback: (v) => v + ' TB' }, grid: { color: 'rgba(255,255,255,0.1)' } },
+      x: { stacked: true, ticks: { color: '#E5E5E5', font: { size: 10 }, callback: (v) => parseFloat(Number(v).toFixed(1)) + ' TB' }, grid: { color: 'rgba(255,255,255,0.1)' } },
       y: { stacked: true, ticks: { color: '#E5E5E5', font: { size: 10 } }, grid: { display: false } },
     },
   };

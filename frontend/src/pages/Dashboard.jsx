@@ -174,7 +174,7 @@ function TopClustersBar({ chartData }) {
     scales: {
       x: {
         max: 100,
-        ticks: { color: CHART.tick, font: { size: 10 }, callback: v => v + '%' },
+        ticks: { color: CHART.tick, font: { size: 10 }, callback: v => parseFloat(Number(v).toFixed(1)) + '%' },
         grid: { color: CHART.grid },
       },
       y: {
@@ -944,7 +944,7 @@ export default function Dashboard() {
                   y: {
                     min: yMin,
                     max: yMax,
-                    ticks: { color: CHART.tick, font: { size: 10 }, callback: v => v + ' ' + yUnit.label },
+                    ticks: { color: CHART.tick, font: { size: 10 }, callback: v => parseFloat(Number(v).toFixed(1)) + ' ' + yUnit.label },
                     title: { display: true, text: `Used (${yUnit.label})`, color: CHART.tick, font: { size: 10 } },
                     grid: { color: CHART.grid },
                   }

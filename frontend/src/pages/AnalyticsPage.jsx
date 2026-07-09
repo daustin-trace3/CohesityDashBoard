@@ -624,7 +624,8 @@ export default function AnalyticsPage() {
           callback: v => {
             if (v >= 1e12) return (v / 1e12).toFixed(1) + ' TB';
             if (v >= 1e9) return (v / 1e9).toFixed(1) + ' GB';
-            return v;
+            if (v >= 1e6) return (v / 1e6).toFixed(1) + ' MB';
+            return parseFloat(Number(v).toFixed(1));
           }
         },
         grid: { color: 'rgba(255,255,255,0.1)' }
