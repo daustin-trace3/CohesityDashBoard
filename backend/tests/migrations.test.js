@@ -182,6 +182,11 @@ const NEW_TABLES = [
   'cohesity_views',
 ];
 
+// Indexes added on legacy tables by post-refactor migrations (no legacy
+// schema.sql equivalent) — excluded from equivalence like NEW_TABLES.
+const NEW_INDEXES = ['idx_prot_runs_start_time'];
+const isNewObject = (r) => NEW_TABLES.includes(r.tbl_name) || NEW_INDEXES.includes(r.name);
+
 describe('runMigrations', () => {
   it('applies steps once and records them; re-running is a no-op', () => {
     const db = new Database(':memory:');
@@ -236,7 +241,7 @@ describe('runMigrations', () => {
     const newDb = buildNewDb();
 
     const legacySchema = normalizeSchema(legacyDb);
-    const newSchema = normalizeSchema(newDb).filter((r) => !NEW_TABLES.includes(r.tbl_name));
+    const newSchema = normalizeSchema(newDb).filter((r) => !isNewObject(r));
     expect(newSchema).toEqual(legacySchema);
     for (const name of NEW_TABLES) {
       expect(normalizeSchema(newDb).some((r) => r.name === name)).toBe(true);
@@ -248,7 +253,7 @@ describe('runMigrations', () => {
 
   it('running the new runner against a DB already built via the legacy path completes without error and leaves every pre-existing table/index unchanged', () => {
     const db = buildLegacyDb();
-    const before = normalizeSchema(db).filter((r) => !NEW_TABLES.includes(r.tbl_name));
+    const before = normalizeSchema(db).filter((r) => !isNewObject(r));
 
     expect(() => {
       runMigrations(db, 'core', coreMigrations);
@@ -258,7 +263,7 @@ describe('runMigrations', () => {
     }).not.toThrow();
 
     const after = normalizeSchema(db);
-    expect(after.filter((r) => !NEW_TABLES.includes(r.tbl_name))).toEqual(before);
+    expect(after.filter((r) => !isNewObject(r))).toEqual(before);
     for (const name of NEW_TABLES) {
       expect(after.some((r) => r.name === name)).toBe(true);
     }

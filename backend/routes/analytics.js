@@ -439,32 +439,59 @@ router.get('/protection-runs', cacheControl(30), (req, res, next) => {
       topAlertTypes: []
     };
 
-    const failedRunsInRange = db.prepare(`
-      SELECT
-        pr.cluster_id AS clusterId,
-        pr.start_time,
-        a.alert_type AS alertType,
-        a.last_updated
+    // The naive SQL formulation (LEFT JOIN alerts ON same cluster within a
+    // ±2h window) explodes to hundreds of thousands of row pairs and
+    // dominates this endpoint's latency. Fetch both sides once and window-
+    // match in JS against per-cluster time-sorted alerts instead.
+    const failedRunsRows = db.prepare(`
+      SELECT pr.cluster_id AS clusterId, pr.start_time
       FROM protection_runs pr
-      LEFT JOIN alerts a ON pr.cluster_id = a.cluster_id
-        AND a.last_updated >= datetime(pr.start_time, '-2 hours')
-        AND a.last_updated <= datetime(pr.start_time, '+2 hours')
       WHERE pr.start_time >= datetime('now', '-' || ? || ' days')
         AND pr.status IN ('kFailure', 'kFailed', 'kError', 'kCanceled', 'kCancelled')
         ${clusterFilter}
     `).all(...baseParams);
 
+    // Mixed stored formats (ISO-8601 Z and SQLite 'YYYY-MM-DD HH:MM:SS');
+    // SQLite's datetime() treats both as UTC, so parse both as UTC here too.
+    const utcMs = (s) => Date.parse(s.includes('T') ? s : s.replace(' ', 'T') + 'Z');
+
+    const alertsByCluster = new Map();
+    for (const a of db.prepare('SELECT cluster_id AS clusterId, alert_type AS alertType, last_updated FROM alerts').all()) {
+      const t = utcMs(a.last_updated);
+      if (Number.isNaN(t)) continue;
+      if (!alertsByCluster.has(a.clusterId)) alertsByCluster.set(a.clusterId, []);
+      alertsByCluster.get(a.clusterId).push({ t, alertType: a.alertType });
+    }
+    for (const list of alertsByCluster.values()) list.sort((x, y) => x.t - y.t);
+
+    const TWO_HOURS = 2 * 3600 * 1000;
     const failedRunsSet = new Set();
     const correlatedSet = new Set();
     const alertTypeMap = {};
 
-    for (const row of failedRunsInRange) {
+    for (const row of failedRunsRows) {
       const runKey = `${row.clusterId}|${row.start_time}`;
       failedRunsSet.add(runKey);
 
-      if (row.alertType) {
+      const list = alertsByCluster.get(row.clusterId);
+      if (!list) continue;
+      const t = utcMs(row.start_time);
+      if (Number.isNaN(t)) continue;
+      // Binary search for the first alert at or after (t - 2h), then walk
+      // forward through the window. Window edges are floored to whole
+      // seconds and counting stays per run-alert pair, matching the old
+      // JOIN's datetime() semantics exactly.
+      const loBound = Math.floor((t - TWO_HOURS) / 1000) * 1000;
+      const hiBound = Math.floor((t + TWO_HOURS) / 1000) * 1000;
+      let lo = 0, hi = list.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (list[mid].t < loBound) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < list.length && list[i].t <= hiBound; i++) {
         correlatedSet.add(runKey);
-        alertTypeMap[row.alertType] = (alertTypeMap[row.alertType] || 0) + 1;
+        alertTypeMap[list[i].alertType] = (alertTypeMap[list[i].alertType] || 0) + 1;
       }
     }
 

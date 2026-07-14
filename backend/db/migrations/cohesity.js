@@ -347,4 +347,13 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 6,
+    up(db) {
+      // The analytics endpoints filter protection_runs by time window across
+      // ALL clusters; the existing (cluster_id, start_time) index can't serve
+      // that, forcing full scans of an 800k+-row table per query.
+      db.exec('CREATE INDEX IF NOT EXISTS idx_prot_runs_start_time ON protection_runs(start_time)');
+    },
+  },
 ];
