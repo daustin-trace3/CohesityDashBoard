@@ -16,6 +16,9 @@ const db = new Database(DB_PATH);
 // Enable WAL mode and foreign keys via exec
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
+// Two processes (API + poller) share this file — wait out the other
+// process's write transactions instead of failing with SQLITE_BUSY.
+db.pragma('busy_timeout = 5000');
 
 // Run schema migrations
 const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');

@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "poller": "node pollerProcess.js"
   },
   "dependencies": {
     "axios": "^1.7.2",
