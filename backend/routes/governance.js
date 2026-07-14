@@ -120,6 +120,31 @@ router.get('/', (req, res, next) => {
       isOutlier: !!(r.software_version && dominantVersion && r.software_version !== dominantVersion),
     }));
 
+    // ── Views audit ────────────────────────────────────────────────────────
+    // Writable views only: read-only views are replicas whose protection,
+    // replication, and DataLock are governed at the source cluster.
+    const auditViews = db.prepare(`
+      SELECT system_id AS systemId, system_name AS systemName, name, category,
+             protocols, protected, replicated_out AS replicatedOut,
+             datalock_mode AS datalockMode, consumed_bytes AS consumedBytes,
+             created_ms AS createdMs, captured_at AS capturedAt
+      FROM cohesity_views
+      WHERE is_read_only = 0
+      ORDER BY system_name, name
+    `).all().map(v => ({
+      ...v,
+      noBackup: !v.protected,
+      noReplication: !v.replicatedOut,
+      noDatalock: !v.datalockMode,
+    }));
+    const viewsAudit = {
+      totalWritable: auditViews.length,
+      noBackupCount: auditViews.filter(v => v.noBackup).length,
+      noReplicationCount: auditViews.filter(v => v.noReplication).length,
+      noDatalockCount: auditViews.filter(v => v.noDatalock).length,
+      views: auditViews.filter(v => v.noBackup || v.noReplication || v.noDatalock),
+    };
+
     res.json({
       generatedAt: new Date().toISOString(),
       summary: {
@@ -135,6 +160,7 @@ router.get('/', (req, res, next) => {
       retentionDrift,
       sources,
       versions,
+      viewsAudit,
     });
   } catch (err) {
     next(err);
