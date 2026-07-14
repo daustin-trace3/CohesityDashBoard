@@ -7,6 +7,7 @@ const { createApp } = require('./app');
 const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
 const { initLicensing } = require('./services/licensing');
+const { initViews } = require('./services/views');
 const { initLicense, getLicenseStatus } = require('./services/license');
 const { getPlatformSettings } = require('./services/settings');
 const { isDemo } = require('./services/demoMode');
@@ -77,6 +78,7 @@ if (require.main === module) {
         if (handle && typeof handle.init === 'function') handle.init();
       }
       initLicensing();
+      initViews();
     }
     initLicense();
   });

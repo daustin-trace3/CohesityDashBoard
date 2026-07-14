@@ -179,6 +179,7 @@ function normalizeSchema(db) {
 const NEW_TABLES = [
   'plugins', 'users', 'groups', 'user_groups', 'role_grants',
   'auth_sessions', 'service_accounts', 'alert_notifications',
+  'cohesity_views',
 ];
 
 describe('runMigrations', () => {
@@ -235,7 +236,7 @@ describe('runMigrations', () => {
     const newDb = buildNewDb();
 
     const legacySchema = normalizeSchema(legacyDb);
-    const newSchema = normalizeSchema(newDb).filter((r) => !NEW_TABLES.includes(r.name));
+    const newSchema = normalizeSchema(newDb).filter((r) => !NEW_TABLES.includes(r.tbl_name));
     expect(newSchema).toEqual(legacySchema);
     for (const name of NEW_TABLES) {
       expect(normalizeSchema(newDb).some((r) => r.name === name)).toBe(true);
@@ -247,7 +248,7 @@ describe('runMigrations', () => {
 
   it('running the new runner against a DB already built via the legacy path completes without error and leaves every pre-existing table/index unchanged', () => {
     const db = buildLegacyDb();
-    const before = normalizeSchema(db).filter((r) => !NEW_TABLES.includes(r.name));
+    const before = normalizeSchema(db).filter((r) => !NEW_TABLES.includes(r.tbl_name));
 
     expect(() => {
       runMigrations(db, 'core', coreMigrations);
@@ -257,7 +258,7 @@ describe('runMigrations', () => {
     }).not.toThrow();
 
     const after = normalizeSchema(db);
-    expect(after.filter((r) => !NEW_TABLES.includes(r.name))).toEqual(before);
+    expect(after.filter((r) => !NEW_TABLES.includes(r.tbl_name))).toEqual(before);
     for (const name of NEW_TABLES) {
       expect(after.some((r) => r.name === name)).toBe(true);
     }

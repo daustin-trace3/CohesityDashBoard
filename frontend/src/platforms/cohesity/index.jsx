@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck,
+  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen,
 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('../../pages/Dashboard'));
@@ -26,6 +26,7 @@ const navGroups = [
     items: [
       { label: 'Data Protection', route: '/data-protection', icon: ShieldCheck, isActive: (p) => p.startsWith('/data-protection') },
       { label: 'Replication', route: '/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/replication') },
+      { label: 'Views', route: '/views', icon: FolderOpen, isActive: (p) => p.startsWith('/views') },
       { label: 'Governance', route: '/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/governance') },
     ],
   },
@@ -46,7 +47,7 @@ const navGroups = [
 
 function isActive(pathname) {
   if (pathname.startsWith('/cohesity')) return true;
-  return ['/', '/ai-advisor', '/analytics', '/reporting', '/licensing', '/data-protection', '/replication', '/governance', '/settings']
+  return ['/', '/ai-advisor', '/analytics', '/reporting', '/licensing', '/data-protection', '/replication', '/views', '/governance', '/settings']
     .some(r => pathname === r || pathname.startsWith(r + '/'));
 }
 

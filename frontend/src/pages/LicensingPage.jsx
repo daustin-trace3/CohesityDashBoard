@@ -177,6 +177,13 @@ function LicenseTypeCard({ type }) {
           </div>
         </div>
       </div>
+      {type.key === 'smartFiles' && (
+        <p className="text-[11px] text-ink-faint leading-snug -mt-1">
+          Per-view inventory (backup, replication, DataLock) is on the{' '}
+          <Link to="/views" className="text-brand hover:underline">Views page</Link> — its writable-views consumed
+          figure matches the Views (SmartFiles) column of the breakdown below on a physical on-disk basis.
+        </p>
+      )}
     </div>
   );
 }
@@ -303,7 +310,9 @@ function ViewDetailPanel({ systems, explorer, excludedViews, onToggleView }) {
       )}
       <p className="text-[11px] text-ink-faint mt-3">
         Read-only views were replicated in from another cluster and count toward Replica licensing. Writable views are
-        actively receiving data (NAS shares or backup-into-view targets) and count toward SmartFiles.
+        actively receiving data (NAS shares or backup-into-view targets) and count toward SmartFiles. The full estate-wide
+        inventory, including protection and DataLock status, is on the{' '}
+        <Link to="/views" className="text-brand hover:underline">Views page</Link>.
       </p>
     </Panel>
   );
