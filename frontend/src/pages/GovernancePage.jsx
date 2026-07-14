@@ -14,6 +14,14 @@ function fmtBytes(b) {
   return (b / 1e6).toFixed(1) + ' MB';
 }
 
+const GOV_TABS = [
+  { key: 'policies', label: 'Policy Audit', icon: FileCheck },
+  { key: 'views', label: 'Views Audit', icon: FolderOpen },
+  { key: 'drift', label: 'Retention Drift', icon: GitCompareArrows },
+  { key: 'versions', label: 'Software Versions', icon: Layers },
+  { key: 'sources', label: 'Source Coverage', icon: ShieldOff },
+];
+
 const AUDIT_FILTERS = [
   { key: 'all', label: 'All flagged' },
   { key: 'noBackup', label: 'No Backup' },
@@ -172,6 +180,7 @@ export default function GovernancePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [tab, setTab] = useState('policies');
   const [policyFilter, setPolicyFilter] = useState('all'); // all | flagged
   const [policyPage, setPolicyPage] = useState(0);
   const [policyPageSize, setPolicyPageSize] = useState(25); // number | 'all'
@@ -255,6 +264,7 @@ export default function GovernancePage() {
               value={summary.policyCount}
               sub={`${summary.retentionDriftCount} with retention drift`}
               tone="brand"
+              onClick={() => setTab('policies')}
             />
             <StatCard
               icon={CloudOff}
@@ -262,6 +272,7 @@ export default function GovernancePage() {
               value={summary.noOffsiteCopyCount}
               sub={summary.noOffsiteCopyCount > 0 ? '3-2-1 rule violations' : 'All policies compliant'}
               tone={summary.noOffsiteCopyCount > 0 ? 'warn' : 'ok'}
+              onClick={() => setTab('policies')}
             />
             <StatCard
               icon={ShieldOff}
@@ -269,6 +280,7 @@ export default function GovernancePage() {
               value={summary.totalUnprotected}
               sub={`${summary.totalProtected} protected`}
               tone={summary.totalUnprotected > 0 ? 'warn' : 'ok'}
+              onClick={() => setTab('sources')}
             />
             <StatCard
               icon={Layers}
@@ -276,10 +288,28 @@ export default function GovernancePage() {
               value={summary.versionSpread}
               sub={summary.dominantVersion ? `Dominant: ${String(summary.dominantVersion).split('_')[0]}` : 'No version data'}
               tone={summary.versionSpread > 1 ? 'info' : 'ok'}
+              onClick={() => setTab('versions')}
             />
           </div>
 
+          {/* Section tabs */}
+          <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start flex-wrap">
+            {GOV_TABS.map(t => {
+              const Icon = t.icon;
+              const active = tab === t.key;
+              return (
+                <button key={t.key} onClick={() => setTab(t.key)}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
+                    active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
+                  }`}>
+                  <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
+                </button>
+              );
+            })}
+          </div>
+
           {/* Policy audit */}
+          {tab === 'policies' && (
           <Panel
             title="Policy Audit"
             icon={FileCheck}
@@ -390,12 +420,13 @@ export default function GovernancePage() {
               </div>
             )}
           </Panel>
+          )}
 
           {/* Views audit */}
-          <ViewsAuditPanel audit={data?.viewsAudit} />
+          {tab === 'views' && <ViewsAuditPanel audit={data?.viewsAudit} />}
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {/* Retention drift detail */}
+          {/* Retention drift detail */}
+          {tab === 'drift' && (
             <Panel title="Retention Drift" icon={GitCompareArrows}>
               {retentionDrift.length === 0 ? (
                 <p className="text-xs text-status-ok py-4 text-center">No retention drift detected — same-named policies agree across clusters.</p>
@@ -416,8 +447,10 @@ export default function GovernancePage() {
                 </div>
               )}
             </Panel>
+          )}
 
-            {/* Version drift */}
+          {/* Version drift */}
+          {tab === 'versions' && (
             <Panel title="Software Versions" icon={Layers}>
               {versions.length === 0 ? (
                 <p className="text-xs text-ink-faint py-4 text-center">No version data collected yet.</p>
@@ -439,9 +472,10 @@ export default function GovernancePage() {
                 </div>
               )}
             </Panel>
-          </div>
+          )}
 
           {/* Unprotected sources */}
+          {tab === 'sources' && (
           <Panel title="Source Protection Coverage" icon={ShieldOff}>
             <div className="overflow-x-auto">
               <table className="w-full text-xs text-ink-muted">
@@ -493,6 +527,7 @@ export default function GovernancePage() {
               </table>
             </div>
           </Panel>
+          )}
         </>
       )}
     </div>
