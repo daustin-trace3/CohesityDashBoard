@@ -802,3 +802,7 @@ CREATE TABLE IF NOT EXISTS cohesity_views (
   captured_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_cohesity_views_system ON cohesity_views(system_id);
+
+-- Analytics endpoints filter protection_runs by time window across ALL
+-- clusters; (cluster_id, start_time) can't serve that — avoid full scans.
+CREATE INDEX IF NOT EXISTS idx_prot_runs_start_time ON protection_runs(start_time);
