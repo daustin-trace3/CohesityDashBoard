@@ -431,6 +431,52 @@ CREATE TABLE IF NOT EXISTS pure_certificates (
 );
 
 /* ══════════════════════════════════════════════════════════════════════════
+   Pure1 cloud (SaaS) fleet telemetry. Unlike the direct FlashArray tables
+   above (keyed by pure_arrays.id), Pure1 arrays are keyed by their Pure1 array
+   UUID (a string). pure1_arrays holds the latest snapshot per array (upserted
+   each poll) so the overview/dashboard can render instantly from the DB;
+   pure1_capacity_history accumulates one capacity sample per Pure1 datapoint so
+   long-term capacity trending survives restarts and spans arbitrary windows.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+CREATE TABLE IF NOT EXISTS pure1_arrays (
+  array_uuid        TEXT PRIMARY KEY,
+  name              TEXT,
+  fqdn              TEXT,
+  model             TEXT,
+  os                TEXT,
+  version           TEXT,
+  total_bytes       INTEGER,
+  used_bytes        INTEGER,
+  volume_space      INTEGER,
+  shared_space      INTEGER,
+  snapshot_space    INTEGER,
+  system_space      INTEGER,
+  replication_space INTEGER,
+  data_reduction    REAL,
+  tags_json         TEXT,
+  captured_at_ms    INTEGER,               -- Pure1 datapoint timestamp (ms)
+  updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pure1_capacity_history (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  array_uuid        TEXT NOT NULL,
+  captured_at_ms    INTEGER NOT NULL,      -- Pure1 datapoint timestamp (ms); dedupe key
+  captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  total_bytes       INTEGER,
+  used_bytes        INTEGER,
+  volume_space      INTEGER,
+  shared_space      INTEGER,
+  snapshot_space    INTEGER,
+  system_space      INTEGER,
+  replication_space INTEGER,
+  data_reduction    REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pure1_cap_hist_uniq ON pure1_capacity_history(array_uuid, captured_at_ms);
+CREATE INDEX IF NOT EXISTS idx_pure1_cap_hist_array_time ON pure1_capacity_history(array_uuid, captured_at_ms);
+
+/* ══════════════════════════════════════════════════════════════════════════
    NetApp ONTAP tables. Registered clusters + polled telemetry, mirroring the
    Pure layout. Time-series accumulates (pruned 90 days); current-state tables
    are replaced wholesale each poll.

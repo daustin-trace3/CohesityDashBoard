@@ -27,6 +27,7 @@ const KEY_PATH = path.join(__dirname, '..', 'data', 'dashboard_private.pem');
 const DEFAULT_CACHE_TTL_MIN = 10;
 const DEFAULT_WARN_PCT = 75;
 const DEFAULT_CRIT_PCT = 90;
+const DEFAULT_POLL_INTERVAL_MIN = 60;
 
 const CAPACITY_METRICS = [
   'array_total_capacity',
@@ -89,6 +90,11 @@ function keySource() {
 function cacheTtlMs() {
   const min = Number(getSetting('pure1_cache_ttl_min')) || DEFAULT_CACHE_TTL_MIN;
   return Math.max(1, min) * 60 * 1000;
+}
+
+/** Background poll interval (minutes) for persisting fleet telemetry. */
+function getPollIntervalMin() {
+  return Math.min(1440, Math.max(15, Number(getSetting('pure1_poll_interval_min')) || DEFAULT_POLL_INTERVAL_MIN));
 }
 
 /** True when Pure1 is configured (app id present + a private key available). */
@@ -396,6 +402,40 @@ async function getOverview({ force = false } = {}) {
   return rows;
 }
 
+/**
+ * Full fleet snapshot for persistence (poller). Like getOverview but always
+ * live and carrying every capacity part (incl. system/replication space) so the
+ * stored copy is complete. Not cached — the poller controls cadence.
+ */
+async function getFleetSnapshot() {
+  const arrays = await fetchArrays();
+  const [capacity, tagMap] = await Promise.all([
+    fetchLatestCapacity(arrays.map((a) => a.id)),
+    fetchTags().catch(() => new Map()),
+  ]);
+  return arrays.map((a) => {
+    const cap = capacity.get(a.id) || {};
+    return {
+      id: a.id,
+      name: a.name,
+      fqdn: a.fqdn,
+      model: a.model,
+      os: a.os,
+      version: a.version,
+      total: cap.total || 0,
+      used: cap.used || 0,
+      volumeSpace: cap.volumeSpace || 0,
+      sharedSpace: cap.sharedSpace || 0,
+      snapshotSpace: cap.snapshotSpace || 0,
+      systemSpace: cap.systemSpace || 0,
+      replicationSpace: cap.replicationSpace || 0,
+      dataReduction: cap.dataReduction || null,
+      capturedAt: cap.capturedAt || null,
+      tags: tagMap.get(a.id) || [],
+    };
+  });
+}
+
 /** Open fleet alerts, cached per settings TTL. */
 async function getAlerts({ force = false } = {}) {
   if (!force && alertsCache && (Date.now() - alertsCache.fetchedAt) < cacheTtlMs()) {
@@ -444,6 +484,7 @@ function getConfig() {
     keySource: keySource(),
     publicKey: getPublicKey(),
     cacheTtlMin: Number(getSetting('pure1_cache_ttl_min')) || DEFAULT_CACHE_TTL_MIN,
+    pollIntervalMin: getPollIntervalMin(),
     warnPct: Number(getSetting('pure1_warn_pct')) || DEFAULT_WARN_PCT,
     critPct: Number(getSetting('pure1_crit_pct')) || DEFAULT_CRIT_PCT,
     showHiddenAlerts: getSetting('pure1_show_hidden_alerts') === '1',
@@ -468,6 +509,10 @@ function setConfig(patch = {}) {
   if (patch.cacheTtlMin != null) {
     const n = Math.min(120, Math.max(1, Number(patch.cacheTtlMin) || DEFAULT_CACHE_TTL_MIN));
     setSetting('pure1_cache_ttl_min', String(n));
+  }
+  if (patch.pollIntervalMin != null) {
+    const n = Math.min(1440, Math.max(15, Number(patch.pollIntervalMin) || DEFAULT_POLL_INTERVAL_MIN));
+    setSetting('pure1_poll_interval_min', String(n));
   }
   if (patch.warnPct != null) setSetting('pure1_warn_pct', String(Math.min(100, Math.max(1, Number(patch.warnPct) || DEFAULT_WARN_PCT))));
   if (patch.critPct != null) setSetting('pure1_crit_pct', String(Math.min(100, Math.max(1, Number(patch.critPct) || DEFAULT_CRIT_PCT))));
@@ -632,6 +677,8 @@ module.exports = {
   fetchLatestCapacity,
   fetchOpenAlerts,
   getOverview,
+  getFleetSnapshot,
+  getPollIntervalMin,
   getAlerts,
   lastRefresh,
   fetchVolumes,

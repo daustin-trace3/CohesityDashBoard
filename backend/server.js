@@ -34,6 +34,7 @@ const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const { initPoller } = require('./services/poller');
 const { initPurePoller } = require('./services/purePoller');
+const { initPure1Poller } = require('./services/pure1Poller');
 const { initNetAppPoller } = require('./services/netappPoller');
 const { initLicensing } = require('./services/licensing');
 const { initLicense, getLicenseStatus } = require('./services/license');
@@ -155,6 +156,7 @@ app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
   initPoller();
   initPurePoller();
+  initPure1Poller();
   initNetAppPoller();
   initLicensing();
   initLicense();

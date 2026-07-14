@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, Save, PlugZap, KeyRound, Copy, Check, Cloud, Clock, Gauge, Server } from 'lucide-react';
+import { Settings, Save, PlugZap, KeyRound, Copy, Check, Cloud, Clock, Gauge, Server, Database, DownloadCloud } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
@@ -52,26 +52,39 @@ function Pure1SaaSTab() {
   const [appId, setAppId] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [ttl, setTtl] = useState(10);
+  const [pollInterval, setPollInterval] = useState(60);
   const [warnPct, setWarnPct] = useState(75);
   const [critPct, setCritPct] = useState(90);
   const [showHidden, setShowHidden] = useState(false);
   const [savingCreds, setSavingCreds] = useState(false);
   const [savingPrefs, setSavingPrefs] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [polling, setPolling] = useState(false);
+  const [status, setStatus] = useState(null);
   const [testResult, setTestResult] = useState(null);
   const [copied, setCopied] = useState(false);
 
-  const load = useCallback(() => client.get('/pure1/settings')
-    .then(({ data }) => {
-      setCfg(data);
-      // App ID is write-only: the server returns only a masked form.
-      setAppId('');
-      setTtl(data.cacheTtlMin || 10);
-      setWarnPct(data.warnPct || 75);
-      setCritPct(data.critPct || 90);
-      setShowHidden(!!data.showHiddenAlerts);
-    })
-    .catch(() => { setCfg({ configured: false }); toast({ type: 'error', title: 'Failed to load Pure settings' }); }), [toast]);
+  const load = useCallback(() => Promise.allSettled([
+    client.get('/pure1/settings'),
+    client.get('/pure1/status'),
+  ])
+    .then(([cfgRes, statusRes]) => {
+      if (cfgRes.status === 'fulfilled') {
+        const data = cfgRes.value.data;
+        setCfg(data);
+        // App ID is write-only: the server returns only a masked form.
+        setAppId('');
+        setTtl(data.cacheTtlMin || 10);
+        setPollInterval(data.pollIntervalMin || 60);
+        setWarnPct(data.warnPct || 75);
+        setCritPct(data.critPct || 90);
+        setShowHidden(!!data.showHiddenAlerts);
+      } else {
+        setCfg({ configured: false });
+        toast({ type: 'error', title: 'Failed to load Pure settings' });
+      }
+      if (statusRes.status === 'fulfilled') setStatus(statusRes.value.data);
+    }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -94,13 +107,29 @@ function Pure1SaaSTab() {
     setSavingPrefs(true);
     try {
       const { data } = await client.put('/pure1/settings', {
-        cacheTtlMin: Number(ttl), warnPct: Number(warnPct), critPct: Number(critPct), showHiddenAlerts: showHidden,
+        cacheTtlMin: Number(ttl), pollIntervalMin: Number(pollInterval),
+        warnPct: Number(warnPct), critPct: Number(critPct), showHiddenAlerts: showHidden,
       });
       setCfg(data);
       toast({ type: 'success', title: 'Preferences saved' });
     } catch (err) {
       toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Could not save.' });
     } finally { setSavingPrefs(false); }
+  };
+
+  const pollNow = async () => {
+    setPolling(true);
+    try {
+      const { data } = await client.post('/pure1/poll');
+      if (data.ok) {
+        toast({ type: 'success', title: 'Poll complete', message: `Stored data for ${data.arrayCount} array(s)` });
+      } else {
+        toast({ type: 'error', title: 'Poll failed', message: data.error || 'Could not poll Pure1.' });
+      }
+      await load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Poll failed', message: err?.response?.data?.error || 'Could not poll Pure1.' });
+    } finally { setPolling(false); }
   };
 
   const testConn = async () => {
@@ -179,6 +208,37 @@ function Pure1SaaSTab() {
             className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40">
             <Save size={13} /> {savingCreds ? 'Saving…' : 'Save credentials'}
           </button>
+        </div>
+      </div>
+
+      {/* Data collection (polling) */}
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <div className="flex items-center gap-2 mb-3"><Database size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Data Collection</p></div>
+        <p className="text-[12px] text-ink-muted mb-3">
+          The dashboard periodically polls Pure1 and stores the results locally, so trending and dashboard views read from the
+          database instead of hitting Pure1 on every request. Capacity history accumulates over time for long-term trends.
+        </p>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm mb-3">
+          <span className="text-ink-muted">Last poll: <span className="text-ink">{status?.lastPoll?.at ? timeAgo(status.lastPoll.at) : '—'}</span></span>
+          {status?.lastPoll && (
+            <span className="text-ink-muted">
+              Result: {status.lastPoll.ok
+                ? <Badge tone="ok">{status.lastPoll.arrayCount} arrays stored</Badge>
+                : <Badge tone="crit">Failed</Badge>}
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <Field label="Poll interval (min)" hint="How often fleet telemetry is collected and stored (15–1440).">
+            <div className="flex items-center gap-2"><Clock size={14} className="text-ink-faint" /><input type="number" min={15} max={1440} value={pollInterval} onChange={(e) => setPollInterval(e.target.value)} className={inp} /></div>
+          </Field>
+        </div>
+        <div className="flex items-center gap-2 mt-3">
+          <button onClick={pollNow} disabled={polling || !cfg.configured}
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
+            <DownloadCloud size={13} /> {polling ? 'Polling…' : 'Poll now'}
+          </button>
+          <span className="text-[11px] text-ink-faint">Interval changes apply after saving preferences below.</span>
         </div>
       </div>
 
