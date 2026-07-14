@@ -67,7 +67,10 @@ if (require.main === module) {
     logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
     if (isDemo()) {
       logger.info('[Demo] Demo mode — pollers disabled');
-    } else {
+    } else if (process.env.RUN_POLLERS_INLINE === 'true') {
+      // Legacy single-process mode: pollers share the API event loop, so
+      // heavy poll cycles can stall API responses. Prefer the separate
+      // poller process (backend/pollerProcess.js).
       initPoller();
       initAlertNotifier();
       // Start pollers only for enabled, actively-registered plugins (Cohesity's
@@ -79,6 +82,8 @@ if (require.main === module) {
       }
       initLicensing();
       initViews();
+    } else {
+      logger.info('[Boot] Pollers run in the separate poller process (backend/pollerProcess.js, pm2: cohesity-poller). Set RUN_POLLERS_INLINE=true to run them in this process.');
     }
     initLicense();
   });

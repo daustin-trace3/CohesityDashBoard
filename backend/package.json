@@ -6,7 +6,8 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "poller": "node pollerProcess.js"
   },
   "dependencies": {
     "argon2": "^0.44.0",

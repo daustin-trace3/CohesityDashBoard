@@ -19,5 +19,24 @@ module.exports = {
       out_file: './logs/out.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
     },
+    {
+      // Scheduled data collectors live in their own process so heavy poll
+      // cycles (synchronous better-sqlite3 transactions, large JSON parses)
+      // never stall API responses. Shares the SQLite DB via WAL.
+      name: 'cohesity-poller',
+      script: './backend/pollerProcess.js',
+      cwd: __dirname,
+      exec_mode: 'fork',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '512M',
+      env: {
+        NODE_ENV: 'production',
+      },
+      error_file: './logs/poller-error.log',
+      out_file: './logs/poller-out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+    },
   ],
 };
