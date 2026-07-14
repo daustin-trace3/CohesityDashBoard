@@ -92,6 +92,12 @@ router.get('/status', (req, res, next) => {
     // Licensing interval is 60 min (hardcoded in initLicensing hourly cron).
     const licensingInterval = 60;
 
+    // Views inventory (global, hourly cron in initViews)
+    const viewsRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM cohesity_views').get();
+    const viewsCapture = viewsRow ? viewsRow.captured_at : null;
+    const viewsAge = ageMinutes(viewsCapture);
+    const viewsState = pollerStatus.getState('views', 0);
+
     res.json({
       cohesity: {
         enabled: clusters.length > 0,
@@ -113,6 +119,14 @@ router.get('/status', (req, res, next) => {
         ageMinutes: licenseAge,
         isStale: licenseAge !== null ? licenseAge > licensingInterval * 2 + 5 : false,
         failedSources: [],
+      },
+      views: {
+        enabled: true,
+        isSyncing: viewsState.isSyncing,
+        lastRefreshEnd: viewsState.lastPollEnd,
+        lastDataCapture: strftime(viewsCapture),
+        ageMinutes: viewsAge,
+        isStale: viewsAge !== null ? viewsAge > licensingInterval * 2 + 5 : false,
       },
     });
   } catch (err) {

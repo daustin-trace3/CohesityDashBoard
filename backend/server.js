@@ -24,6 +24,7 @@ const settingsRouter = require('./routes/settings');
 const advisorRouter = require('./routes/advisor');
 const aiAuditRouter = require('./routes/aiAudit');
 const licensingRouter = require('./routes/licensing');
+const viewsRouter = require('./routes/views');
 const licenseRouter = require('./routes/license');
 const pureRouter = require('./routes/pure');
 const pure1Router = require('./routes/pure1');
@@ -37,6 +38,7 @@ const { initPurePoller } = require('./services/purePoller');
 const { initPure1Poller } = require('./services/pure1Poller');
 const { initNetAppPoller } = require('./services/netappPoller');
 const { initLicensing } = require('./services/licensing');
+const { initViews } = require('./services/views');
 const { initLicense, getLicenseStatus } = require('./services/license');
 
 const app = express();
@@ -107,6 +109,7 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/advisor', advisorRouter);
 app.use('/api/ai-audit', aiAuditRouter);
 app.use('/api/licensing', licensingRouter);
+app.use('/api/views', viewsRouter);
 app.use('/api/pure', pureRouter);
 app.use('/api/pure1', pure1Router);
 app.use('/api/netapp', netappRouter);
@@ -159,6 +162,7 @@ app.listen(PORT, '0.0.0.0', () => {
   initPure1Poller();
   initNetAppPoller();
   initLicensing();
+  initViews();
   initLicense();
 });
 

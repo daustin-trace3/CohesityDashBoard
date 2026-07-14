@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -34,6 +34,7 @@ const navGroups = [
     items: [
       { label: 'Data Protection', route: '/data-protection', icon: ShieldCheck, isActive: (p) => p.startsWith('/data-protection') },
       { label: 'Replication', route: '/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/replication') },
+      { label: 'Views', route: '/views', icon: FolderOpen, isActive: (p) => p.startsWith('/views') },
       { label: 'Governance', route: '/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/governance') },
     ],
   },
@@ -118,7 +119,7 @@ const netappNavGroups = [
 ];
 
 function isActivePlatform(id, pathname) {
-  if (id === 'cohesity') return ['/', '/dashboard', '/ai-advisor', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/analytics', '/reporting', '/licensing', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
+  if (id === 'cohesity') return ['/', '/dashboard', '/ai-advisor', '/alerts', '/clusters', '/hardware', '/data-protection', '/replication', '/views', '/analytics', '/reporting', '/licensing', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
   if (id === 'pure') return pathname.startsWith('/pure');
   if (id === 'netapp') return pathname.startsWith('/netapp');
   return false;

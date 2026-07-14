@@ -773,3 +773,32 @@ CREATE TABLE IF NOT EXISTS netapp_cifs_shares (
   volume_name           TEXT,
   captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Cohesity Views inventory: per Helios cluster, replaced wholesale each
+-- refresh (current state, not history). See services/views.js.
+CREATE TABLE IF NOT EXISTS cohesity_views (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  system_id           TEXT NOT NULL,
+  system_name         TEXT,
+  view_id             INTEGER,
+  name                TEXT NOT NULL,
+  category            TEXT,
+  storage_domain      TEXT,
+  protocols           TEXT,
+  is_read_only        INTEGER NOT NULL DEFAULT 0,
+  protected           INTEGER NOT NULL DEFAULT 0,
+  protection_groups   TEXT,
+  replicated_out      INTEGER NOT NULL DEFAULT 0,
+  last_backup_status  TEXT,
+  last_backup_ms      INTEGER,
+  datalock_mode       TEXT,
+  datalock_retention_ms INTEGER,
+  logical_bytes       INTEGER,
+  consumed_bytes      INTEGER,
+  data_in_bytes       INTEGER,
+  data_written_bytes  INTEGER,
+  file_count          INTEGER,
+  created_ms          INTEGER,
+  captured_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_cohesity_views_system ON cohesity_views(system_id);
