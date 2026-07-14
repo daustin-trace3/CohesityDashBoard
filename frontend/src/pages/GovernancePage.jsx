@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ClipboardCheck, FileCheck, ShieldOff, Layers, Lock, CloudOff, GitCompareArrows,
+  ClipboardCheck, FileCheck, ShieldOff, Layers, Lock, CloudOff, GitCompareArrows, FolderOpen, Download,
 } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Panel, Badge, StatCard, LoadingPanel, LastUpdated, RefreshButton } from '../components/ui/primitives';
@@ -12,6 +12,150 @@ function fmtBytes(b) {
   if (b >= 1e12) return (b / 1e12).toFixed(2) + ' TB';
   if (b >= 1e9)  return (b / 1e9).toFixed(2) + ' GB';
   return (b / 1e6).toFixed(1) + ' MB';
+}
+
+const AUDIT_FILTERS = [
+  { key: 'all', label: 'All flagged' },
+  { key: 'noBackup', label: 'No Backup' },
+  { key: 'noReplication', label: 'No Replication' },
+  { key: 'noDatalock', label: 'No DataLock' },
+];
+
+function ViewsAuditPanel({ audit }) {
+  const [filter, setFilter] = useState('all');
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [filter]);
+
+  if (!audit) return null;
+  const flagged = audit.views || [];
+  const counts = {
+    all: flagged.length,
+    noBackup: audit.noBackupCount,
+    noReplication: audit.noReplicationCount,
+    noDatalock: audit.noDatalockCount,
+  };
+  const visible = filter === 'all' ? flagged : flagged.filter(v => v[filter]);
+
+  const PAGE_SIZE = 25;
+  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageRows = visible.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  const navBtn = 'text-xs px-2 py-1 rounded-md border border-cohesity-border text-ink-muted hover:border-brand/50 hover:text-brand disabled:opacity-30 disabled:cursor-default transition-colors cursor-pointer';
+
+  const exportCsv = () => {
+    const esc = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
+    const rows = [
+      ['View', 'Cluster', 'Category', 'Protocols', 'Backup', 'Replication', 'DataLock', 'Consumed (TB)', 'Created'].join(','),
+      ...visible.map(v => [
+        esc(v.name), esc(v.systemName), esc(v.category || ''), esc(v.protocols || ''),
+        v.noBackup ? 'MISSING' : 'Yes',
+        v.noReplication ? 'MISSING' : 'Yes',
+        v.noDatalock ? 'MISSING' : v.datalockMode,
+        ((v.consumedBytes || 0) / 1e12).toFixed(3),
+        v.createdMs ? new Date(v.createdMs).toISOString().slice(0, 10) : '',
+      ].join(',')),
+    ];
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `views-audit-${filter}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const statusCell = (missing, okLabel) => missing
+    ? <Badge tone="crit">Missing</Badge>
+    : <Badge tone="ok">{okLabel}</Badge>;
+
+  return (
+    <Panel
+      title={`Views Audit (${flagged.length} of ${audit.totalWritable} writable views flagged)`}
+      icon={FolderOpen}
+      actions={
+        <div className="flex items-center gap-1 flex-wrap">
+          {AUDIT_FILTERS.map(f => (
+            <button
+              key={f.key}
+              onClick={() => setFilter(f.key)}
+              className={`text-[11px] px-2.5 py-1 rounded-md border transition-colors cursor-pointer ${
+                filter === f.key
+                  ? 'bg-brand text-cohesity-black border-brand font-semibold'
+                  : 'border-cohesity-border text-ink-muted hover:border-brand/50'
+              }`}
+            >
+              {f.label} ({counts[f.key]})
+            </button>
+          ))}
+          <button
+            onClick={exportCsv}
+            disabled={visible.length === 0}
+            className="text-[11px] px-2.5 py-1 rounded-md border border-cohesity-border text-ink-muted hover:border-brand/50 hover:text-brand disabled:opacity-30 transition-colors cursor-pointer inline-flex items-center gap-1"
+          >
+            <Download size={12} /> Export CSV
+          </button>
+        </div>
+      }
+    >
+      {audit.totalWritable === 0 ? (
+        <p className="text-xs text-ink-muted py-4 text-center">
+          No view inventory collected yet — views are polled hourly (see the Views page).
+        </p>
+      ) : flagged.length === 0 ? (
+        <p className="text-xs text-status-ok py-4 text-center">
+          All writable views have backup, replication, and DataLock configured.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-ink-muted">
+            <thead>
+              <tr className="text-ink-faint border-b border-cohesity-border text-left">
+                <th className="py-2 pr-4 font-semibold">View</th>
+                <th className="py-2 pr-4 font-semibold">Cluster</th>
+                <th className="py-2 pr-4 font-semibold">Category</th>
+                <th className="py-2 pr-4 font-semibold">Backup</th>
+                <th className="py-2 pr-4 font-semibold">Replication</th>
+                <th className="py-2 pr-4 font-semibold">DataLock</th>
+                <th className="py-2 pr-4 font-semibold text-right">Consumed</th>
+                <th className="py-2 font-semibold text-right">Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.map((v, i) => (
+                <tr key={`${v.systemId}-${v.name}-${i}`} className="border-b border-cohesity-border/60 hover:bg-surface-overlay/50 transition-colors">
+                  <td className="py-2 pr-4 text-ink font-medium max-w-[220px] truncate" title={v.name}>{v.name}</td>
+                  <td className="py-2 pr-4">{v.systemName || v.systemId}</td>
+                  <td className="py-2 pr-4">{v.category || '—'}</td>
+                  <td className="py-2 pr-4">{statusCell(v.noBackup, 'Yes')}</td>
+                  <td className="py-2 pr-4">{statusCell(v.noReplication, 'Yes')}</td>
+                  <td className="py-2 pr-4">
+                    {v.noDatalock
+                      ? <Badge tone="crit">Missing</Badge>
+                      : <span className="inline-flex items-center gap-1 text-brand"><Lock size={12} />{v.datalockMode}</span>}
+                  </td>
+                  <td className="py-2 pr-4 text-right tnum">{fmtBytes(v.consumedBytes)}</td>
+                  <td className="py-2 text-right tnum">{v.createdMs ? new Date(v.createdMs).toLocaleDateString() : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex items-center justify-between mt-3">
+            <p className="text-[11px] text-ink-faint">
+              Writable views only — read-only replicas are governed at their source cluster.
+            </p>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage(0)} disabled={safePage === 0} aria-label="First page" className={navBtn}>«</button>
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={safePage === 0} aria-label="Previous page" className={navBtn}>‹</button>
+                <span className="text-xs text-ink-faint px-1 tnum">{safePage + 1} / {totalPages}</span>
+                <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={safePage >= totalPages - 1} aria-label="Next page" className={navBtn}>›</button>
+                <button onClick={() => setPage(totalPages - 1)} disabled={safePage >= totalPages - 1} aria-label="Last page" className={navBtn}>»</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
 }
 
 function fmtRetention(days) {
@@ -80,7 +224,7 @@ export default function GovernancePage() {
       <PageHeader
         icon={ClipboardCheck}
         title="Governance & Audit"
-        description="Policy compliance, unprotected sources, and software version drift across the estate"
+        description="Policy compliance, unprotected sources, views audit, and software version drift across the estate"
       >
         <RefreshButton onClick={load} refreshing={loading} label="Refresh" />
         <LastUpdated date={lastRefreshed} prefix="Last refreshed" />
@@ -246,6 +390,9 @@ export default function GovernancePage() {
               </div>
             )}
           </Panel>
+
+          {/* Views audit */}
+          <ViewsAuditPanel audit={data?.viewsAudit} />
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             {/* Retention drift detail */}
