@@ -763,6 +763,14 @@ export default function LicensingPage() {
             {(sim?.types || data.types).map(t => <LicenseTypeCard key={t.key} type={t} />)}
           </div>
 
+          <p className="text-[11px] text-ink-faint leading-snug -mt-1">
+            These cards read Cohesity's own license meter — the billing figure. Cohesity re-baselines
+            it on its own schedule, typically 24–48 h behind changes (longer after deleting DataLocked
+            views, whose data is held until retention expires). The consumption breakdown below is
+            physical on-disk usage and follows this dashboard's hourly refresh, so it reflects
+            additions and deletions much sooner.
+          </p>
+
           <BreakdownSection breakdown={data.breakdown} sim={sim} explorer={explorer}
             excludedSystems={excludedSystems} excludedCategories={excludedCategories}
             onToggleSystem={toggleSystem} onToggleCategory={toggleCategory} />
