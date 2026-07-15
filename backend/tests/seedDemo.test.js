@@ -63,6 +63,18 @@ describe('seedDemo.js', () => {
     expect(row).toBeTruthy();
   });
 
+  it('seeds 30 cohesity_views matching license_view_detail names', () => {
+    const views = db.prepare('SELECT COUNT(*) c FROM cohesity_views').get();
+    expect(views.c).toBe(30);
+    const orphans = db.prepare(`
+      SELECT COUNT(*) c FROM cohesity_views v
+      WHERE NOT EXISTS (SELECT 1 FROM license_view_detail d WHERE d.view_name = v.name)
+    `).get();
+    expect(orphans.c).toBe(0);
+    const flagged = db.prepare('SELECT COUNT(*) c FROM cohesity_views WHERE is_read_only = 0 AND (protected = 0 OR replicated_out = 0 OR datalock_mode IS NULL)').get();
+    expect(flagged.c).toBeGreaterThan(0);
+  });
+
   it('seeds a protection_run with status kSuccess', () => {
     const row = db.prepare("SELECT id FROM protection_runs WHERE status = 'kSuccess' LIMIT 1").get();
     expect(row).toBeTruthy();

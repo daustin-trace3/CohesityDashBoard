@@ -90,6 +90,14 @@ function seedCohesity(db, { now, encrypt }) {
     INSERT INTO consumption_breakdown (system_id, system_name, category, consumers, physical_bytes, logical_bytes, captured_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertCohesityView = db.prepare(`
+    INSERT INTO cohesity_views
+      (system_id, system_name, view_id, name, category, storage_domain, protocols,
+       is_read_only, protected, protection_groups, replicated_out,
+       last_backup_status, last_backup_ms, datalock_mode, datalock_retention_ms,
+       logical_bytes, consumed_bytes, data_in_bytes, data_written_bytes, file_count, created_ms, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
   const insertReplCache = db.prepare(`
     INSERT INTO replication_status_cache (cache_key, cluster_name, status_filter, days, num_runs_per_group, payload_json, scanning, error, updated_at)
     VALUES (?, ?, 'all', 7, 20, ?, 0, NULL, ?)
@@ -384,15 +392,47 @@ function seedCohesity(db, { now, encrypt }) {
       const physicalBytes = Math.round(randFloat(rng, 1, 100, 2) * GIB);
       const logicalBytes = Math.round(physicalBytes * randFloat(rng, 1.5, 3, 2));
       const isReadOnly = chance(rng, 0.3) ? 1 : 0;
+      const viewName = `${cluster.name}-view-${i}`;
+      const createdMs = now - randInt(rng, 1, 300) * 86400000;
       insertViewDetail.run(
         String(cluster.id),
         cluster.name,
-        `${cluster.name}-view-${i}`,
+        viewName,
         isReadOnly,
-        now - randInt(rng, 1, 300) * 86400000,
+        createdMs,
         physicalBytes,
         logicalBytes,
         Math.round(logicalBytes * 0.5),
+        nowIso
+      );
+      // Same view in the Views inventory (Views page + governance audit),
+      // with a mix of protection states so every audit tab has rows.
+      // Read-only views are inbound replicas: never protected/locked locally.
+      const isProtected = !isReadOnly && chance(rng, 0.7) ? 1 : 0;
+      const replicatedOut = isProtected && chance(rng, 0.6) ? 1 : 0;
+      const hasDatalock = !isReadOnly && chance(rng, 0.5);
+      insertCohesityView.run(
+        String(cluster.id),
+        cluster.name,
+        1000 + viewCount,
+        viewName,
+        chance(rng, 0.6) ? 'BackupTarget' : 'FileServices',
+        hasDatalock ? 'DefaultDataLockDomain' : 'DefaultStorageDomain',
+        chance(rng, 0.5) ? 'SMB' : 'NFS,SMB',
+        isReadOnly,
+        isProtected,
+        isProtected ? JSON.stringify([`${cluster.name}_CView-${String(i + 1).padStart(3, '0')}`]) : null,
+        replicatedOut,
+        isProtected ? (chance(rng, 0.9) ? 'Succeeded' : 'Failed') : null,
+        isProtected ? now - randInt(rng, 1, 24) * 3600000 : null,
+        hasDatalock ? (chance(rng, 0.8) ? 'Enterprise' : 'Compliance') : null,
+        hasDatalock ? randInt(rng, 7, 90) * 86400000 : null,
+        logicalBytes,
+        physicalBytes,
+        logicalBytes,
+        Math.round(logicalBytes * 0.5),
+        randInt(rng, 100, 50000),
+        createdMs,
         nowIso
       );
       viewCount++;

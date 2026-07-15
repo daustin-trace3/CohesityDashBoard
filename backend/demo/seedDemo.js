@@ -47,7 +47,7 @@ const SEEDED_TABLES = [
   // core
   'user_groups', 'users', 'app_settings',
   // cohesity
-  'replication_status_cache', 'consumption_breakdown', 'license_view_detail',
+  'replication_status_cache', 'consumption_breakdown', 'license_view_detail', 'cohesity_views',
   'license_meter_usage', 'license_type_usage', 'license_usage',
   'source_registrations', 'policies', 'replication_runs', 'protection_runs',
   'alerts', 'metrics_history', 'clusters',
