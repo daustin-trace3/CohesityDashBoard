@@ -288,8 +288,10 @@ function seedCohesity(db, { now, encrypt }) {
       const tier = TIERS[i % TIERS.length];
       const name = i < TIERS.length ? tier.name : `${tier.name}-${Math.floor(i / TIERS.length) + 1}`;
       const hasTarget = !!cluster.drTarget && !chance(rng, 0.2);
+      // Array of plain cluster-name strings — the shape the real poller
+      // stores and the Governance page renders (objects crash React #31).
       const replicationTargets = hasTarget
-        ? JSON.stringify([{ clusterName: cluster.drTarget }])
+        ? JSON.stringify([cluster.drTarget])
         : '[]';
       const datalock = chance(rng, 0.2) ? 1 : 0;
       insertPolicy.run(cluster.id, `policy-${cluster.id}-${i}`, name, tier.retention, replicationTargets, datalock, nowIso);

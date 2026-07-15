@@ -75,6 +75,14 @@ describe('seedDemo.js', () => {
     expect(flagged.c).toBeGreaterThan(0);
   });
 
+  it('seeds policy replication_targets as arrays of strings', () => {
+    const rows = db.prepare("SELECT replication_targets FROM policies WHERE replication_targets != '[]'").all();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) {
+      for (const t of JSON.parse(r.replication_targets)) expect(typeof t).toBe('string');
+    }
+  });
+
   it('seeds a protection_run with status kSuccess', () => {
     const row = db.prepare("SELECT id FROM protection_runs WHERE status = 'kSuccess' LIMIT 1").get();
     expect(row).toBeTruthy();
