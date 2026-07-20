@@ -5,7 +5,17 @@ import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
+
+// ISO8601 duration → total seconds, for sorting duration columns.
+function isoSecs(iso) {
+  if (!iso || typeof iso !== 'string') return null;
+  const m = iso.match(/P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/);
+  if (!m) return null;
+  const [, d, h, mi, s] = m;
+  return (+d || 0) * 86400 + (+h || 0) * 3600 + (+mi || 0) * 60 + (+s || 0);
+}
 
 // Turn an ISO8601 duration (e.g. P20DT20H20M48S) into a compact human string.
 function fmtDuration(iso) {
@@ -78,6 +88,23 @@ export default function NetAppCifsPage() {
       .sort((a, b) => b.uniqueIps - a.uniqueIps);
   }, [shares, sessions]);
 
+  const volCtl = useTableControls(byVolume, {
+    searchKeys: ['volume_name', 'svm_name', 'array_name', 'users'],
+    defaultSortKey: 'uniqueIps', defaultSortDir: 'desc',
+  });
+  const byShareCtl = useTableControls(byShare, {
+    searchKeys: ['share_name', 'volume_name', 'svm_name', 'array_name'],
+    defaultSortKey: 'uniqueIps', defaultSortDir: 'desc',
+  });
+  const sessionCtl = useTableControls(sessions, {
+    searchKeys: ['client_ip', 'smb_user', 'volume_name', 'svm_name', 'array_name'],
+    sortValues: { connected_duration: (s) => isoSecs(s.connected_duration), idle_duration: (s) => isoSecs(s.idle_duration) },
+  });
+  const shareCtl = useTableControls(shares, {
+    searchKeys: ['share_name', 'path', 'volume_name', 'svm_name', 'array_name'],
+    defaultSortKey: 'share_name',
+  });
+
   return (
     <div className="animate-fade-in">
       <PageHeader icon={FolderTree} title="NetApp SMB / CIFS" description="Live SMB session-to-volume map and configured CIFS shares">
@@ -96,18 +123,26 @@ export default function NetAppCifsPage() {
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1">SMB Clients by Volume</p>
         <p className="text-[11px] text-ink-faint mb-3">Hosts currently mapped to each CIFS volume. Click a count to see the full client list.</p>
+        <TableControls ctl={volCtl} rows={byVolume} searchPlaceholder="Filter by volume, SVM, cluster or user…"
+          filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (
           <LoadingPanel label="Loading…" height={100} />
         ) : byVolume.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No active SMB sessions.</div>
+        ) : volCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No volumes match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[40vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3">Users</th><th className="py-2 pr-3 text-right">Clients</th>
+                <SortTh k="volume_name" label="Volume" ctl={volCtl} />
+                <SortTh k="svm_name" label="SVM" ctl={volCtl} />
+                <SortTh k="array_name" label="Cluster" ctl={volCtl} />
+                <SortTh k="users" label="Users" ctl={volCtl} />
+                <SortTh k="uniqueIps" label="Clients" ctl={volCtl} align="right" />
               </tr></thead>
               <tbody>
-                {byVolume.map((g) => (
+                {volCtl.rows.map((g) => (
                   <tr key={g.key} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{g.volume_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{g.svm_name || '—'}</td>
@@ -131,18 +166,26 @@ export default function NetAppCifsPage() {
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1">Clients Mounting Each Share</p>
         <p className="text-[11px] text-ink-faint mb-3">Shares with a live client session. Resolved via the volume each session is using — when a volume hosts several shares, its clients appear under each. Click a count for the host list.</p>
+        <TableControls ctl={byShareCtl} rows={byShare} searchPlaceholder="Filter by share, volume, SVM or cluster…"
+          filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (
           <LoadingPanel label="Loading…" height={100} />
         ) : byShare.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No shares currently have an active client session.</div>
+        ) : byShareCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No shares match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[40vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Share</th><th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3 text-right">Clients</th>
+                <SortTh k="share_name" label="Share" ctl={byShareCtl} />
+                <SortTh k="volume_name" label="Volume" ctl={byShareCtl} />
+                <SortTh k="svm_name" label="SVM" ctl={byShareCtl} />
+                <SortTh k="array_name" label="Cluster" ctl={byShareCtl} />
+                <SortTh k="uniqueIps" label="Clients" ctl={byShareCtl} align="right" />
               </tr></thead>
               <tbody>
-                {byShare.map((sh) => (
+                {byShareCtl.rows.map((sh) => (
                   <tr key={sh.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{sh.share_name}</td>
                     <td className="py-2 pr-3 text-ink-muted">{sh.volume_name || '—'}</td>
@@ -165,18 +208,31 @@ export default function NetAppCifsPage() {
       {/* Active sessions */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Active SMB Sessions</p>
+        <TableControls ctl={sessionCtl} rows={sessions} searchPlaceholder="Filter by IP, user, volume or SVM…"
+          filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }, { k: 'protocol', label: 'Protocols' }]} />
         {data == null ? (
           <LoadingPanel label="Loading sessions…" height={120} />
         ) : sessions.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No active SMB sessions.</div>
+        ) : sessionCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No sessions match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[45vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Client IP</th><th className="py-2 pr-3">User</th><th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Protocol</th><th className="py-2 pr-3">Auth</th><th className="py-2 pr-3 text-right">Files</th><th className="py-2 pr-3">Connected</th><th className="py-2 pr-3">Idle</th><th className="py-2 pr-3">Cluster</th>
+                <SortTh k="client_ip" label="Client IP" ctl={sessionCtl} />
+                <SortTh k="smb_user" label="User" ctl={sessionCtl} />
+                <SortTh k="volume_name" label="Volume" ctl={sessionCtl} />
+                <SortTh k="svm_name" label="SVM" ctl={sessionCtl} />
+                <SortTh k="protocol" label="Protocol" ctl={sessionCtl} />
+                <SortTh k="authentication" label="Auth" ctl={sessionCtl} />
+                <SortTh k="open_files" label="Files" ctl={sessionCtl} align="right" />
+                <SortTh k="connected_duration" label="Connected" ctl={sessionCtl} />
+                <SortTh k="idle_duration" label="Idle" ctl={sessionCtl} />
+                <SortTh k="array_name" label="Cluster" ctl={sessionCtl} />
               </tr></thead>
               <tbody>
-                {sessions.map((s) => (
+                {sessionCtl.rows.map((s) => (
                   <tr key={s.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3"><IpWithHost ip={s.client_ip} dns={dns} /></td>
                     <td className="py-2 pr-3 text-ink-muted">{s.smb_user || '—'}</td>
@@ -199,18 +255,26 @@ export default function NetAppCifsPage() {
       {/* CIFS shares */}
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">CIFS Shares</p>
+        <TableControls ctl={shareCtl} rows={shares} searchPlaceholder="Filter by share, path, volume or SVM…"
+          filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (
           <LoadingPanel label="Loading shares…" height={120} />
         ) : shares.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No CIFS shares found.</div>
+        ) : shareCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No shares match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Share</th><th className="py-2 pr-3">Path</th><th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Cluster</th>
+                <SortTh k="share_name" label="Share" ctl={shareCtl} />
+                <SortTh k="path" label="Path" ctl={shareCtl} />
+                <SortTh k="volume_name" label="Volume" ctl={shareCtl} />
+                <SortTh k="svm_name" label="SVM" ctl={shareCtl} />
+                <SortTh k="array_name" label="Cluster" ctl={shareCtl} />
               </tr></thead>
               <tbody>
-                {shares.map((sh) => (
+                {shareCtl.rows.map((sh) => (
                   <tr key={sh.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{sh.share_name}</td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] font-mono">{sh.path || '—'}</td>

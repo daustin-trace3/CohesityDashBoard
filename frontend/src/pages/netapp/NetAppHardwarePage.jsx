@@ -5,6 +5,7 @@ import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
 import { BRAND, fmtBytes, fmtNum, statusTone } from './helpers';
 
 export default function NetAppHardwarePage() {
@@ -39,6 +40,9 @@ export default function NetAppHardwarePage() {
   const svms = hw?.svms || [];
   const diskCapacity = disks.reduce((s, d) => s + (d.size_bytes || 0), 0);
   const lifDns = useDnsResolve((lifs || []).map((l) => l.address).filter(Boolean));
+
+  const diskCtl = useTableControls(disks, { searchKeys: ['name', 'type', 'model'], defaultSortKey: 'name' });
+  const lifCtl = useTableControls(lifs, { searchKeys: ['name', 'svm_name', 'address', 'node_name', 'port_name'], defaultSortKey: 'name' });
 
   return (
     <div className="animate-fade-in">
@@ -101,13 +105,19 @@ export default function NetAppHardwarePage() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
                   <p className="text-sm font-semibold text-ink mb-3">Disks ({disks.length})</p>
+                  <TableControls ctl={diskCtl} rows={disks} searchPlaceholder="Filter by name, type or model…"
+                    filters={[{ k: 'type', label: 'Types' }, { k: 'state', label: 'States' }]} />
                   <div className="overflow-x-auto max-h-[48vh] overflow-y-auto">
                     <table className="w-full text-sm">
                       <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                        <th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Model</th><th className="py-2 pr-3 text-right">Size</th><th className="py-2 pr-3">State</th>
+                        <SortTh k="name" label="Name" ctl={diskCtl} />
+                        <SortTh k="type" label="Type" ctl={diskCtl} />
+                        <SortTh k="model" label="Model" ctl={diskCtl} />
+                        <SortTh k="size_bytes" label="Size" ctl={diskCtl} align="right" />
+                        <SortTh k="state" label="State" ctl={diskCtl} />
                       </tr></thead>
                       <tbody>
-                        {disks.map((d) => (
+                        {diskCtl.rows.map((d) => (
                           <tr key={d.id} className="border-b border-cohesity-border/50">
                             <td className="py-2 pr-3 text-ink">{d.name}</td>
                             <td className="py-2 pr-3 text-ink-muted">{d.type || '—'}</td>
@@ -149,13 +159,22 @@ export default function NetAppHardwarePage() {
                 ) : lifs.length === 0 ? (
                   <div className="text-sm text-ink-muted py-4 text-center">No LIF data.</div>
                 ) : (
+                  <>
+                  <TableControls ctl={lifCtl} rows={lifs} searchPlaceholder="Filter by name, SVM, address or node…"
+                    filters={[{ k: 'svm_name', label: 'SVMs' }, { k: 'node_name', label: 'Nodes' }]} />
                   <div className="overflow-x-auto max-h-[48vh] overflow-y-auto">
                     <table className="w-full text-sm">
                       <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                        <th className="py-2 pr-3">Name</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Address</th><th className="py-2 pr-3">Node</th><th className="py-2 pr-3">Port</th><th className="py-2 pr-3">Home</th><th className="py-2 pr-3">State</th>
+                        <SortTh k="name" label="Name" ctl={lifCtl} />
+                        <SortTh k="svm_name" label="SVM" ctl={lifCtl} />
+                        <SortTh k="address" label="Address" ctl={lifCtl} />
+                        <SortTh k="node_name" label="Node" ctl={lifCtl} />
+                        <SortTh k="port_name" label="Port" ctl={lifCtl} />
+                        <SortTh k="is_home" label="Home" ctl={lifCtl} />
+                        <SortTh k="state" label="State" ctl={lifCtl} />
                       </tr></thead>
                       <tbody>
-                        {lifs.map((l) => (
+                        {lifCtl.rows.map((l) => (
                           <tr key={l.id} className="border-b border-cohesity-border/50">
                             <td className="py-2 pr-3 text-ink">{l.name}</td>
                             <td className="py-2 pr-3 text-ink-muted">{l.svm_name || '—'}</td>
@@ -169,6 +188,7 @@ export default function NetAppHardwarePage() {
                       </tbody>
                     </table>
                   </div>
+                  </>
                 )}
               </div>
             </>

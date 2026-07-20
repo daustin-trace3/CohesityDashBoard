@@ -1,14 +1,14 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Layers, Search } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import { Layers } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
 import { BRAND, fmtBytes, fmtNum, statusTone } from './helpers';
 
 export default function NetAppVolumesPage() {
   const { toast } = useToast();
   const [volumes, setVolumes] = useState(null);
-  const [q, setQ] = useState('');
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/netapp/volumes')
@@ -17,12 +17,10 @@ export default function NetAppVolumesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const filtered = useMemo(() => {
-    const list = volumes || [];
-    const term = q.trim().toLowerCase();
-    if (!term) return list;
-    return list.filter((v) => v.name?.toLowerCase().includes(term) || v.svm_name?.toLowerCase().includes(term) || v.array_name?.toLowerCase().includes(term));
-  }, [volumes, q]);
+  const ctl = useTableControls(volumes, {
+    searchKeys: ['name', 'svm_name', 'array_name', 'aggregate_name'],
+    defaultSortKey: 'name',
+  });
 
   const totals = (volumes || []).reduce((a, v) => { a.size += v.size_bytes || 0; a.used += v.used_bytes || 0; return a; }, { size: 0, used: 0 });
 
@@ -40,26 +38,31 @@ export default function NetAppVolumesPage() {
       </div>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <div className="relative mb-3 max-w-xs">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by volume, SVM or cluster…"
-            className="w-full bg-surface-overlay border border-cohesity-border rounded-lg pl-9 pr-3 py-2 text-sm text-ink focus:border-brand/60 outline-none" />
-        </div>
+        <TableControls ctl={ctl} rows={volumes} searchPlaceholder="Filter by volume, SVM, cluster or aggregate…"
+          filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }, { k: 'state', label: 'States' }]} />
         {volumes == null ? (
           <LoadingPanel label="Loading volumes…" height={160} />
-        ) : filtered.length === 0 ? (
-          <div className="text-sm text-ink-muted py-8 text-center">{(volumes || []).length === 0 ? 'No volume data collected yet.' : 'No volumes match your filter.'}</div>
+        ) : volumes.length === 0 ? (
+          <div className="text-sm text-ink-muted py-8 text-center">No volume data collected yet.</div>
+        ) : ctl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-8 text-center">No volumes match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[62vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface">
                 <tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                  <th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3">Aggregate</th>
-                  <th className="py-2 pr-3 text-right">Used</th><th className="py-2 pr-3 text-right">Size</th><th className="py-2 pr-3 text-right">Used %</th><th className="py-2 pr-3">State</th>
+                  <SortTh k="name" label="Volume" ctl={ctl} />
+                  <SortTh k="svm_name" label="SVM" ctl={ctl} />
+                  <SortTh k="array_name" label="Cluster" ctl={ctl} />
+                  <SortTh k="aggregate_name" label="Aggregate" ctl={ctl} />
+                  <SortTh k="used_bytes" label="Used" ctl={ctl} align="right" />
+                  <SortTh k="size_bytes" label="Size" ctl={ctl} align="right" />
+                  <SortTh k="used_percent" label="Used %" ctl={ctl} align="right" />
+                  <SortTh k="state" label="State" ctl={ctl} />
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((v) => (
+                {ctl.rows.map((v) => (
                   <tr key={v.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink truncate max-w-[220px]">{v.name}</td>
                     <td className="py-2 pr-3 text-ink-muted">{v.svm_name || '—'}</td>

@@ -5,6 +5,7 @@ import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
 
 export default function NetAppNfsPage() {
@@ -73,6 +74,21 @@ export default function NetAppNfsPage() {
       .sort((a, b) => b.count - a.count);
   }, [rules]);
 
+  const volCtl = useTableControls(byVolume, {
+    searchKeys: ['volume_name', 'svm_name', 'array_name', 'protocols'],
+    defaultSortKey: 'uniqueIps', defaultSortDir: 'desc',
+  });
+  const clientCtl = useTableControls(clients, {
+    searchKeys: ['client_ip', 'svm_name', 'volume_name', 'node_name', 'server_ip', 'array_name'],
+  });
+  const policyCtl = useTableControls(byPolicy, {
+    searchKeys: ['policy_name', 'volume', 'svm_name', 'array_name'],
+    defaultSortKey: 'count', defaultSortDir: 'desc',
+  });
+  const ruleCtl = useTableControls(rules, {
+    searchKeys: ['policy_name', 'svm_name', 'clients', 'protocols'],
+  });
+
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Share2} title="NetApp NFS" description="Live NFS client-to-volume map and export-policy access rules">
@@ -90,18 +106,26 @@ export default function NetAppNfsPage() {
       {/* Clients grouped by volume (click a count for the full list) */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">NFS Clients by Volume</p>
+        <TableControls ctl={volCtl} rows={byVolume} searchPlaceholder="Filter by volume, SVM or cluster…"
+          filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (
           <LoadingPanel label="Loading…" height={100} />
         ) : byVolume.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No NFS clients currently connected.</div>
+        ) : volCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No volumes match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[40vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3">Protocols</th><th className="py-2 pr-3 text-right">Clients</th>
+                <SortTh k="volume_name" label="Volume" ctl={volCtl} />
+                <SortTh k="svm_name" label="SVM" ctl={volCtl} />
+                <SortTh k="array_name" label="Cluster" ctl={volCtl} />
+                <SortTh k="protocols" label="Protocols" ctl={volCtl} />
+                <SortTh k="uniqueIps" label="Clients" ctl={volCtl} align="right" />
               </tr></thead>
               <tbody>
-                {byVolume.map((g) => (
+                {volCtl.rows.map((g) => (
                   <tr key={g.key} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{g.volume_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{g.svm_name || '—'}</td>
@@ -124,18 +148,28 @@ export default function NetAppNfsPage() {
       {/* Connected clients */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Connected NFS Clients</p>
+        <TableControls ctl={clientCtl} rows={clients} searchPlaceholder="Filter by IP, volume, SVM or node…"
+          filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }, { k: 'protocol', label: 'Protocols' }]} />
         {data == null ? (
           <LoadingPanel label="Loading clients…" height={120} />
         ) : clients.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No NFS clients currently connected.</div>
+        ) : clientCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No clients match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[45vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Client IP</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">Node</th><th className="py-2 pr-3">Protocol</th><th className="py-2 pr-3">Server IP</th><th className="py-2 pr-3">Cluster</th>
+                <SortTh k="client_ip" label="Client IP" ctl={clientCtl} />
+                <SortTh k="svm_name" label="SVM" ctl={clientCtl} />
+                <SortTh k="volume_name" label="Volume" ctl={clientCtl} />
+                <SortTh k="node_name" label="Node" ctl={clientCtl} />
+                <SortTh k="protocol" label="Protocol" ctl={clientCtl} />
+                <SortTh k="server_ip" label="Server IP" ctl={clientCtl} />
+                <SortTh k="array_name" label="Cluster" ctl={clientCtl} />
               </tr></thead>
               <tbody>
-                {clients.map((c) => (
+                {clientCtl.rows.map((c) => (
                   <tr key={c.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3"><IpWithHost ip={c.client_ip} dns={dns} /></td>
                     <td className="py-2 pr-3 text-ink-muted">{c.svm_name || '—'}</td>
@@ -156,18 +190,26 @@ export default function NetAppNfsPage() {
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1">Permitted Clients by Export Policy</p>
         <p className="text-[11px] text-ink-faint mb-3">Click a client count to see every host permitted by that policy.</p>
+        <TableControls ctl={policyCtl} rows={byPolicy} searchPlaceholder="Filter by policy, volume, SVM or cluster…"
+          filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (
           <LoadingPanel label="Loading export rules…" height={120} />
         ) : byPolicy.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No export policy rules found.</div>
+        ) : policyCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No policies match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Export Policy</th><th className="py-2 pr-3">Volume</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3 text-right">Clients</th>
+                <SortTh k="policy_name" label="Export Policy" ctl={policyCtl} />
+                <SortTh k="volume" label="Volume" ctl={policyCtl} />
+                <SortTh k="svm_name" label="SVM" ctl={policyCtl} />
+                <SortTh k="array_name" label="Cluster" ctl={policyCtl} />
+                <SortTh k="count" label="Clients" ctl={policyCtl} align="right" />
               </tr></thead>
               <tbody>
-                {byPolicy.map((g) => (
+                {policyCtl.rows.map((g) => (
                   <tr key={g.key} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{g.policy_name}</td>
                     <td className="py-2 pr-3 text-ink-muted">{g.volume || '—'}</td>
@@ -190,18 +232,29 @@ export default function NetAppNfsPage() {
       {/* Raw export policy rules */}
       <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Export Policy Rules</p>
+        <TableControls ctl={ruleCtl} rows={rules} searchPlaceholder="Filter by policy, SVM or client…"
+          filters={[{ k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (
           <LoadingPanel label="Loading export rules…" height={120} />
         ) : rules.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No export policy rules found.</div>
+        ) : ruleCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No rules match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Policy</th><th className="py-2 pr-3">SVM</th><th className="py-2 pr-3 text-right">#</th><th className="py-2 pr-3">Clients</th><th className="py-2 pr-3">Protocols</th><th className="py-2 pr-3">RO</th><th className="py-2 pr-3">RW</th><th className="py-2 pr-3">Superuser</th>
+                <SortTh k="policy_name" label="Policy" ctl={ruleCtl} />
+                <SortTh k="svm_name" label="SVM" ctl={ruleCtl} />
+                <SortTh k="rule_index" label="#" ctl={ruleCtl} align="right" />
+                <SortTh k="clients" label="Clients" ctl={ruleCtl} />
+                <SortTh k="protocols" label="Protocols" ctl={ruleCtl} />
+                <SortTh k="ro_rule" label="RO" ctl={ruleCtl} />
+                <SortTh k="rw_rule" label="RW" ctl={ruleCtl} />
+                <SortTh k="superuser" label="Superuser" ctl={ruleCtl} />
               </tr></thead>
               <tbody>
-                {rules.map((r) => (
+                {ruleCtl.rows.map((r) => (
                   <tr key={r.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{r.policy_name}</td>
                     <td className="py-2 pr-3 text-ink-muted">{r.svm_name || '—'}</td>
