@@ -3,6 +3,7 @@ import { ArrowLeftRight, Globe2, ShieldCheck, ChevronDown, ChevronUp } from 'luc
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { fmtNum, fmtRpo, healthTone } from './helpers';
 
 // Lane color follows the worst VPG health on the flow.
@@ -29,6 +30,49 @@ function FlowWire({ color, degraded }) {
         </circle>
       ))}
     </svg>
+  );
+}
+
+// Expanded VPG list for one lane — its own table-controls instance so search,
+// sort and paging stay independent per lane (lanes can hold hundreds of VPGs).
+function FlowVpgTable({ vpgs }) {
+  const ctl = useTableControls(vpgs, {
+    searchKeys: ['name', 'status', 'health'],
+    defaultSortKey: 'actual_rpo', defaultSortDir: 'desc',
+    paginate: true, defaultPageSize: 10,
+  });
+  return (
+    <div className="mt-3 pt-3 border-t border-cohesity-border/60 overflow-x-auto">
+      <TableControls ctl={ctl} rows={vpgs} searchPlaceholder="Filter by VPG, status or health…"
+        filters={[{ k: 'health', label: 'Health' }, { k: 'status', label: 'Statuses' }]} />
+      {ctl.rows.length === 0 ? (
+        <div className="text-sm text-ink-muted py-4 text-center">No VPGs match your filters.</div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+            <SortTh k="name" label="VPG" ctl={ctl} />
+            <SortTh k="health" label="Health" ctl={ctl} />
+            <SortTh k="status" label="Status" ctl={ctl} />
+            <SortTh k="vms_count" label="VMs" ctl={ctl} align="right" />
+            <SortTh k="actual_rpo" label="Actual RPO" ctl={ctl} align="right" />
+            <SortTh k="configured_rpo" label="SLA RPO" ctl={ctl} align="right" />
+          </tr></thead>
+          <tbody>
+            {ctl.pageRows.map((v) => (
+              <tr key={v.name} className="border-b border-cohesity-border/40">
+                <td className="py-1.5 pr-3 text-ink">{v.name}</td>
+                <td className="py-1.5 pr-3"><Badge tone={healthTone(v.health)}>{v.health || '—'}</Badge></td>
+                <td className="py-1.5 pr-3 text-ink-muted text-[11px]">{v.status || '—'}</td>
+                <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{fmtNum(v.vms_count)}</td>
+                <td className={`py-1.5 pr-3 text-right tnum ${v.configured_rpo && v.actual_rpo > v.configured_rpo ? 'text-status-crit font-semibold' : 'text-ink'}`}>{fmtRpo(v.actual_rpo)}</td>
+                <td className="py-1.5 pr-3 text-right tnum text-ink-faint">{fmtRpo(v.configured_rpo)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <TablePager ctl={ctl} sizes={[10, 25, 50, 'all']} />
+    </div>
   );
 }
 
@@ -112,32 +156,7 @@ export default function ZertoReplicationPage() {
                     {f.error > 0 && <Badge tone="crit">{f.error} error</Badge>}
                   </div>
                 </button>
-                {open && (
-                  <div className="mt-3 pt-3 border-t border-cohesity-border/60 overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                        <th className="py-1.5 pr-3">VPG</th>
-                        <th className="py-1.5 pr-3">Health</th>
-                        <th className="py-1.5 pr-3">Status</th>
-                        <th className="py-1.5 pr-3 text-right">VMs</th>
-                        <th className="py-1.5 pr-3 text-right">Actual RPO</th>
-                        <th className="py-1.5 pr-3 text-right">SLA RPO</th>
-                      </tr></thead>
-                      <tbody>
-                        {f.vpgs.map((v) => (
-                          <tr key={v.name} className="border-b border-cohesity-border/40">
-                            <td className="py-1.5 pr-3 text-ink">{v.name}</td>
-                            <td className="py-1.5 pr-3"><Badge tone={healthTone(v.health)}>{v.health || '—'}</Badge></td>
-                            <td className="py-1.5 pr-3 text-ink-muted text-[11px]">{v.status || '—'}</td>
-                            <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{fmtNum(v.vms_count)}</td>
-                            <td className={`py-1.5 pr-3 text-right tnum ${v.configured_rpo && v.actual_rpo > v.configured_rpo ? 'text-status-crit font-semibold' : 'text-ink'}`}>{fmtRpo(v.actual_rpo)}</td>
-                            <td className="py-1.5 pr-3 text-right tnum text-ink-faint">{fmtRpo(v.configured_rpo)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {open && <FlowVpgTable vpgs={f.vpgs} />}
               </div>
             );
           })}

@@ -117,10 +117,11 @@ const PAGE_SIZES = [25, 50, 100, 'all'];
 const pagerBtn = 'text-xs px-2 py-1 rounded-md border border-cohesity-border text-ink-muted hover:border-brand/50 hover:text-brand disabled:opacity-30 disabled:cursor-default transition-colors cursor-pointer';
 
 // Footer bar for a paginated table: page-size dropdown + range + prev/next.
-// Hidden while the filtered set fits in the smallest page size.
-export function TablePager({ ctl }) {
+// Hidden while the filtered set fits in the smallest page size. Pass `sizes`
+// to offer different steps (e.g. [10, 25, 50, 'all'] for nested tables).
+export function TablePager({ ctl, sizes = PAGE_SIZES }) {
   const total = ctl.rows.length;
-  if (!ctl.paginate || total <= PAGE_SIZES[0]) return null;
+  if (!ctl.paginate || total <= sizes[0]) return null;
   const all = ctl.pageSize === 'all';
   const start = all ? 1 : ctl.page * ctl.pageSize + 1;
   const end = all ? total : Math.min((ctl.page + 1) * ctl.pageSize, total);
@@ -131,7 +132,7 @@ export function TablePager({ ctl }) {
         <select value={String(ctl.pageSize)}
           onChange={(e) => ctl.setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value))}
           className="bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer">
-          {PAGE_SIZES.map((s) => <option key={s} value={String(s)}>{s === 'all' ? 'All' : s}</option>)}
+          {sizes.map((s) => <option key={s} value={String(s)}>{s === 'all' ? 'All' : s}</option>)}
         </select>
       </label>
       <div className="flex items-center gap-3">
