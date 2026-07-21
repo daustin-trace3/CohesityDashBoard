@@ -1,16 +1,16 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Layers, Boxes, Database, HardDrive, Server } from 'lucide-react';
-import { Line, Doughnut } from 'react-chartjs-2';
+import { Line, Bar } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement,
-  ArcElement, Tooltip, Legend,
+  BarElement, Tooltip, Legend,
 } from 'chart.js';
 import client from '../api/client';
 import { useToast } from '../components/ui/Toaster';
 import { PageHeader, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../components/ui/tableTools';
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend);
 
 const TB = 1e12;
 const fmtTB = (b) => b == null ? '—' : `${(b / TB).toLocaleString(undefined, { maximumFractionDigits: 1 })} TB`;
@@ -126,15 +126,20 @@ export default function WorkloadsPage() {
     };
   }, [trend, trendMetric, metricDef]);
 
-  const doughnut = useMemo(() => ({
-    labels: envs,
-    datasets: [{
-      data: estate.map(e => (e.protected_bytes || 0) / TB),
-      backgroundColor: envs.map(e => envColor(envs, e)),
-      borderColor: '#1A1A1A',
-      borderWidth: 2,
-    }],
-  }), [estate, envs]);
+  // Horizontal bar: one row per workload, largest first — readable however
+  // many workload types the estate has (a doughnut wasn't, past a handful).
+  const shareBar = useMemo(() => {
+    const sorted = [...estate].sort((a, b) => (b.protected_bytes || 0) - (a.protected_bytes || 0));
+    return {
+      labels: sorted.map(e => e.environment),
+      datasets: [{
+        data: sorted.map(e => (e.protected_bytes || 0) / TB),
+        backgroundColor: sorted.map(e => envColor(envs, e.environment)),
+        borderRadius: 3,
+        barThickness: 14,
+      }],
+    };
+  }, [estate, envs]);
 
   const chartOpts = {
     responsive: true, maintainAspectRatio: false, animation: false,
@@ -211,14 +216,19 @@ export default function WorkloadsPage() {
           )}
         </div>
         <div className="panel p-4">
-          <p className="text-sm font-semibold text-ink mb-3">Protected TB Share</p>
+          <p className="text-sm font-semibold text-ink mb-3">Protected TB by Workload</p>
           {estate.length === 0 ? (
             <div className="text-sm text-ink-muted py-6 text-center">—</div>
           ) : (
-            <div className="h-52"><Doughnut data={doughnut} options={{
-              responsive: true, maintainAspectRatio: false, animation: false,
-              plugins: { legend: { position: 'bottom', labels: { color: '#E5E5E5', boxWidth: 10, font: { size: 10 } } },
-                tooltip: { callbacks: { label: (c) => `${c.label}: ${Number(c.parsed).toLocaleString(undefined, { maximumFractionDigits: 1 })} TB` } } },
+            <div style={{ height: Math.max(180, estate.length * 26 + 60) }}><Bar data={shareBar} options={{
+              indexAxis: 'y', responsive: true, maintainAspectRatio: false, animation: false,
+              plugins: { legend: { display: false },
+                tooltip: { callbacks: { label: (c) => `${Number(c.parsed.x).toLocaleString(undefined, { maximumFractionDigits: 1 })} TB` } } },
+              scales: {
+                x: { ticks: { color: '#E5E5E5', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.1)' },
+                  title: { display: true, text: 'Protected TB', color: '#E5E5E5', font: { size: 10 } } },
+                y: { ticks: { color: '#E5E5E5', font: { size: 11 } }, grid: { display: false } },
+              },
             }} /></div>
           )}
         </div>
