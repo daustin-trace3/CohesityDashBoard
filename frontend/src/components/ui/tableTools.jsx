@@ -1,14 +1,18 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Search, ChevronUp, ChevronDown } from 'lucide-react';
 
 // Client-side search + dropdown filters + column sort for a table.
 // `searchKeys` are the row fields matched by the search box; `sortValues` maps a
 // column key to a getter when the raw field isn't directly comparable (e.g. ISO durations).
-export function useTableControls(rows, { searchKeys = [], defaultSortKey = null, defaultSortDir = 'asc', sortValues = {} } = {}) {
+// Pass `paginate: true` to slice the result into pages — render `ctl.pageRows`
+// instead of `ctl.rows` and drop a <TablePager ctl={ctl} /> under the table.
+export function useTableControls(rows, { searchKeys = [], defaultSortKey = null, defaultSortDir = 'asc', sortValues = {}, paginate = false, defaultPageSize = 25 } = {}) {
   const [q, setQ] = useState('');
   const [filters, setFilters] = useState({});
   const [sortKey, setSortKey] = useState(defaultSortKey);
   const [sortDir, setSortDir] = useState(defaultSortDir);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(defaultPageSize); // number | 'all'
 
   const out = useMemo(() => {
     let list = rows || [];
@@ -40,7 +44,20 @@ export function useTableControls(rows, { searchKeys = [], defaultSortKey = null,
   };
   const setFilter = (key, value) => setFilters((f) => ({ ...f, [key]: value }));
 
-  return { rows: out, q, setQ, filters, setFilter, sortKey, sortDir, toggleSort };
+  // Back to page 1 whenever the visible set changes shape.
+  useEffect(() => { setPage(0); }, [q, filters, sortKey, sortDir, pageSize]);
+
+  const pageCount = paginate && pageSize !== 'all' ? Math.max(1, Math.ceil(out.length / pageSize)) : 1;
+  const safePage = Math.min(page, pageCount - 1);
+  const pageRows = useMemo(
+    () => (!paginate || pageSize === 'all') ? out : out.slice(safePage * pageSize, (safePage + 1) * pageSize),
+    [out, paginate, pageSize, safePage]
+  );
+
+  return {
+    rows: out, q, setQ, filters, setFilter, sortKey, sortDir, toggleSort,
+    paginate, pageRows, page: safePage, setPage, pageSize, setPageSize, pageCount,
+  };
 }
 
 // Clickable column header. Use inside the existing <tr> in place of a plain <th>.
@@ -92,6 +109,43 @@ export function TableControls({ ctl, rows, searchPlaceholder, filters = [] }) {
       <span className="text-[11px] text-ink-faint tnum ml-auto">
         {ctl.rows.length === total ? `${total} rows` : `${ctl.rows.length} of ${total} rows`}
       </span>
+    </div>
+  );
+}
+
+const PAGE_SIZES = [25, 50, 100, 'all'];
+const pagerBtn = 'text-xs px-2 py-1 rounded-md border border-cohesity-border text-ink-muted hover:border-brand/50 hover:text-brand disabled:opacity-30 disabled:cursor-default transition-colors cursor-pointer';
+
+// Footer bar for a paginated table: page-size dropdown + range + prev/next.
+// Hidden while the filtered set fits in the smallest page size.
+export function TablePager({ ctl }) {
+  const total = ctl.rows.length;
+  if (!ctl.paginate || total <= PAGE_SIZES[0]) return null;
+  const all = ctl.pageSize === 'all';
+  const start = all ? 1 : ctl.page * ctl.pageSize + 1;
+  const end = all ? total : Math.min((ctl.page + 1) * ctl.pageSize, total);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 pt-3 mt-1 border-t border-cohesity-border">
+      <label className="flex items-center gap-2 text-xs text-ink-faint">
+        Rows per page
+        <select value={String(ctl.pageSize)}
+          onChange={(e) => ctl.setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+          className="bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer">
+          {PAGE_SIZES.map((s) => <option key={s} value={String(s)}>{s === 'all' ? 'All' : s}</option>)}
+        </select>
+      </label>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-ink-faint tnum">{start}–{end} of {total}</span>
+        {!all && ctl.pageCount > 1 && (
+          <div className="flex items-center gap-1">
+            <button onClick={() => ctl.setPage(0)} disabled={ctl.page === 0} aria-label="First page" className={pagerBtn}>«</button>
+            <button onClick={() => ctl.setPage(ctl.page - 1)} disabled={ctl.page === 0} aria-label="Previous page" className={pagerBtn}>‹</button>
+            <span className="text-xs text-ink-faint px-1 tnum">{ctl.page + 1} / {ctl.pageCount}</span>
+            <button onClick={() => ctl.setPage(ctl.page + 1)} disabled={ctl.page >= ctl.pageCount - 1} aria-label="Next page" className={pagerBtn}>›</button>
+            <button onClick={() => ctl.setPage(ctl.pageCount - 1)} disabled={ctl.page >= ctl.pageCount - 1} aria-label="Last page" className={pagerBtn}>»</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
