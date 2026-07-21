@@ -29,6 +29,10 @@ router.get('/overview', (req, res, next) => {
       snapshot: latestSnapshot(),
       vpgHealth,
       alertSeverity,
+      vraCount: db.prepare('SELECT COUNT(*) AS n FROM zerto_vras').get().n,
+      zorgCount: db.prepare("SELECT COUNT(DISTINCT zorg_name) AS n FROM zerto_vpgs WHERE zorg_name IS NOT NULL AND zorg_name != ''").get().n,
+      rpoBreaches: db.prepare('SELECT COUNT(*) AS n FROM zerto_vpgs WHERE configured_rpo > 0 AND actual_rpo > configured_rpo').get().n,
+      journalBreaches: db.prepare('SELECT COUNT(*) AS n FROM zerto_vpgs WHERE configured_journal_history > 0 AND actual_journal_history < configured_journal_history').get().n,
       worstRpoVpgs: db.prepare(`
         SELECT name, actual_rpo, configured_rpo, protected_site, recovery_site, health
         FROM zerto_vpgs WHERE actual_rpo IS NOT NULL
