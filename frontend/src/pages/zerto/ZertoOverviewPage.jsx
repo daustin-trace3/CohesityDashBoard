@@ -1,14 +1,14 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Gauge, Globe2, ShieldCheck, MonitorSmartphone, Bell } from 'lucide-react';
+import { Gauge, Globe2, ShieldCheck, MonitorSmartphone, Bell, AlertTriangle, HardDrive, Boxes, History } from 'lucide-react';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend,
 } from 'chart.js';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { BRAND, fmtNum, fmtRpo, healthTone } from './helpers';
+import { BRAND, fmtNum, fmtMb, fmtRpo, healthTone } from './helpers';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
 
@@ -20,6 +20,7 @@ const TREND_METRICS = [
 
 export default function ZertoOverviewPage() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [trend, setTrend] = useState(null);
   const [trendMetric, setTrendMetric] = useState('vpgs');
@@ -52,6 +53,9 @@ export default function ZertoOverviewPage() {
 
   const snap = data?.snapshot;
   const healthOf = (h) => (data?.vpgHealth || []).find(x => x.health === h)?.count || 0;
+  const sevOf = (s) => (data?.alertSeverity || []).find(x => x.severity === s)?.count || 0;
+  const alertErrors = sevOf('Error');
+  const alertWarnings = sevOf('Warning');
 
   const trendChart = useMemo(() => {
     if (!trend) return null;
@@ -99,12 +103,33 @@ export default function ZertoOverviewPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
-        <StatCard icon={Globe2} label="Sites" value={fmtNum(snap?.sites_count)} tone="brand" />
-        <StatCard icon={ShieldCheck} label="VPGs" value={fmtNum(snap?.vpgs_count)} />
-        <StatCard icon={ShieldCheck} label="Healthy VPGs" value={fmtNum(snap?.healthy_vpgs)} tone={snap && snap.healthy_vpgs === snap.vpgs_count ? 'ok' : 'warn'} />
-        <StatCard icon={MonitorSmartphone} label="Protected VMs" value={fmtNum(snap?.vms_count)} />
-        <StatCard icon={Bell} label="Active Alerts" value={fmtNum(snap?.alerts_count)} tone={snap?.alerts_count ? 'warn' : 'ok'} />
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
+        <StatCard icon={Globe2} label="Sites" value={snap ? `${fmtNum(snap.connected_sites_count)} / ${fmtNum(snap.sites_count)}` : '—'} sub="connected to Analytics" tone="brand"
+          onClick={() => navigate('/zerto/sites')} />
+        <StatCard icon={ShieldCheck} label="VPGs" value={fmtNum(snap?.vpgs_count)} sub={data?.zorgCount ? `across ${fmtNum(data.zorgCount)} ZORG${data.zorgCount === 1 ? '' : 's'}` : undefined}
+          onClick={() => navigate('/zerto/vpgs')} />
+        <StatCard icon={ShieldCheck} label="Healthy VPGs" value={fmtNum(snap?.healthy_vpgs)} tone={snap && snap.healthy_vpgs === snap.vpgs_count ? 'ok' : 'warn'}
+          sub={snap && snap.healthy_vpgs !== snap.vpgs_count ? `${fmtNum((snap.vpgs_count || 0) - (snap.healthy_vpgs || 0))} degraded` : 'all healthy'}
+          onClick={() => navigate('/zerto/vpgs')} />
+        <StatCard icon={MonitorSmartphone} label="Protected VMs" value={fmtNum(snap?.vms_count)} onClick={() => navigate('/zerto/vms')} />
+        <StatCard icon={Bell} label="Active Alerts" value={fmtNum(snap?.alerts_count)}
+          tone={alertErrors ? 'crit' : snap?.alerts_count ? 'warn' : 'ok'}
+          sub={snap?.alerts_count ? `${fmtNum(alertErrors)} error${alertErrors === 1 ? '' : 's'} · ${fmtNum(alertWarnings)} warning${alertWarnings === 1 ? '' : 's'}` : 'none'}
+          onClick={() => navigate('/zerto/alerts')} />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <StatCard icon={AlertTriangle} label="RPO SLA Breaches" value={fmtNum(data?.rpoBreaches)}
+          tone={data?.rpoBreaches ? 'crit' : 'ok'} sub="VPGs over their configured RPO"
+          onClick={() => navigate('/zerto/vpgs')} />
+        <StatCard icon={History} label="Journal Breaches" value={fmtNum(data?.journalBreaches)}
+          tone={data?.journalBreaches ? 'warn' : 'ok'} sub="VPGs under configured journal history"
+          onClick={() => navigate('/zerto/vpgs')} />
+        <StatCard icon={HardDrive} label="Protected Storage" value={fmtMb(snap?.used_storage_mb)}
+          sub={snap?.provisioned_storage_mb ? `of ${fmtMb(snap.provisioned_storage_mb)} provisioned` : undefined}
+          onClick={() => navigate('/zerto/vms')} />
+        <StatCard icon={Boxes} label="VRA Appliances" value={fmtNum(data?.vraCount)} sub="virtual replication appliances"
+          onClick={() => navigate('/zerto/sites')} />
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4 mb-4">
