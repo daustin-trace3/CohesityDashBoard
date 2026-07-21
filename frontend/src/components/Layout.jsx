@@ -10,6 +10,7 @@ import { subscribeNetworkActivity } from '../api/client';
 import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { useSearch } from '../context';
+import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
 
 const platforms = [
   { id: 'cohesity', label: 'Cohesity', route: '/dashboard', color: '#6CB33F' },
@@ -184,6 +185,13 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
   // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
   const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
+  const [switcherMode, setSwitcherMode] = useState(getSwitcherMode);
+
+  useEffect(() => {
+    const onModeChange = () => setSwitcherMode(getSwitcherMode());
+    window.addEventListener('switcher-mode-changed', onModeChange);
+    return () => window.removeEventListener('switcher-mode-changed', onModeChange);
+  }, []);
   // Vendor-platform fleet summary, loaded only while a platform (Pure/NetApp) is active.
   const [platformCount, setPlatformCount] = useState(0);
   const [platformAlerts, setPlatformAlerts] = useState(0);
@@ -346,6 +354,11 @@ export default function Layout() {
   // Swap the sidebar menu to match the active vendor platform.
   const activeNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : navGroups;
 
+  const visiblePlatforms = platforms.filter(p => enabledPlatformIds.includes(p.id));
+  const currentPlatformId = platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity';
+  const gotoPlatform = (p) => navigate(p.route);
+  const multiPlatform = visiblePlatforms.length > 1;
+
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
   const noun = isNetapp ? 'cluster' : isZerto ? 'site' : 'array';
   const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
@@ -360,6 +373,10 @@ export default function Layout() {
 
   return (
     <div className="h-screen flex flex-row bg-transparent overflow-hidden">
+      {/* Experimental switcher style: far-left platform icon rail */}
+      {multiPlatform && switcherMode === 'rail' && (
+        <PlatformRail platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+      )}
       {/* Sidebar */}
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
@@ -439,6 +456,13 @@ export default function Layout() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <header className="relative z-30 h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-2 px-4">
+          {/* Experimental switcher styles: dropdown / grid launcher in the top bar */}
+          {multiPlatform && switcherMode === 'dropdown' && (
+            <PlatformDropdown platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+          )}
+          {multiPlatform && switcherMode === 'grid' && (
+            <PlatformGrid platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+          )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
             <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : 'Global Cluster Dashboard'}</h1>
@@ -526,7 +550,7 @@ export default function Layout() {
         </header>
 
         {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}
-        {enabledPlatformIds.length > 1 && (
+        {multiPlatform && switcherMode === 'tabs' && (
           <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Platform</span>
             <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1">
