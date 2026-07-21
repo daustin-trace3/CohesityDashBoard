@@ -74,9 +74,10 @@ export default function Layout() {
   const isPure = pathname.startsWith('/pure');
   const isNetapp = pathname.startsWith('/netapp');
   const isZerto = pathname.startsWith('/zerto');
-  const isPlatform = isPure || isNetapp || isZerto;
-  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : null;
-  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : '';
+  const isVcenter = pathname.startsWith('/vcenter');
+  const isPlatform = isPure || isNetapp || isZerto || isVcenter;
+  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : null;
+  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : '';
 
   const { platforms: allPlatforms } = usePlatforms();
   const getPlatform = (id) => allPlatforms.find(p => p.id === id);
@@ -85,6 +86,7 @@ export default function Layout() {
   const pureNavGroups = getPlatform('pure')?.navGroups || [];
   const netappNavGroups = getPlatform('netapp')?.navGroups || [];
   const zertoNavGroups = getPlatform('zerto')?.navGroups || [];
+  const vcenterNavGroups = getPlatform('vcenter')?.navGroups || [];
   const isActivePlatform = (id, pathname) => {
     const platform = getPlatform(id);
     return platform ? platform.isActive(pathname) : false;
@@ -146,15 +148,26 @@ export default function Layout() {
     let cancelled = false;
     const pureFleet = platformKey === 'pure';
     const zerto = platformKey === 'zerto';
-    // Zerto's "entities" are sites; its overview endpoint is an account rollup
-    // object, so the entity list comes from /zerto/sites instead.
-    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : `/${platformKey}/overview`;
-    const alertsUrl = pureFleet ? '/pure1/alerts' : `/${platformKey}/alerts`;
+    const vcenter = platformKey === 'vcenter';
+    // Zerto's "entities" are sites; vCenter's are ESX hosts. Both platforms'
+    // overview endpoints are rollup objects, so entity lists come from their
+    // inventory endpoints; vCenter's "alerts" are its computed issues.
+    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : `/${platformKey}/overview`;
+    const alertsUrl = pureFleet ? '/pure1/alerts' : vcenter ? '/vcenter/overview' : `/${platformKey}/alerts`;
 
     const loadAlertList = () => client.get(alertsUrl)
       .then(r => {
         if (cancelled) return;
-        if (zerto) {
+        if (vcenter) {
+          const rows = (r.data?.issues || []).filter(i => i.severity !== 'info');
+          setPlatformAlertList(rows.map((i, idx) => ({
+            id: idx,
+            cluster_name: i.vcenter || '—',
+            severity: i.severity === 'critical' ? 'critical' : 'warning',
+            description: i.message,
+          })));
+          setPlatformAlerts(rows.length);
+        } else if (zerto) {
           const rows = r.data || [];
           setPlatformAlertList(rows.map(a => ({
             id: a.alert_identifier,
@@ -191,6 +204,8 @@ export default function Layout() {
         const now = Date.now();
         if (zerto) {
           setPlatformHealthy(rows.filter(s => s.connection_status === 'Connected').length);
+        } else if (vcenter) {
+          setPlatformHealthy(rows.filter(h => h.connection_state === 'CONNECTED').length);
         } else if (pureFleet) {
           // Pure1 capacity metrics update daily; treat arrays reporting within
           // ~3 days as operational. Alert count is set from the alerts fetch.
@@ -221,6 +236,7 @@ export default function Layout() {
         ...(r.data.platformPureEnabled ? ['pure'] : []),
         ...(r.data.platformNetappEnabled ? ['netapp'] : []),
         ...(r.data.platformZertoEnabled ? ['zerto'] : []),
+        ...(r.data.platformVcenterEnabled ? ['vcenter'] : []),
         ...allPlatforms.filter(p => !builtinIds.includes(p.id)).map(p => p.id),
       ]))
       .catch(() => {});
@@ -245,7 +261,7 @@ export default function Layout() {
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
   // Swap the sidebar menu to match the active vendor platform.
-  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups
+  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups
     : activePluginPlatform ? activePluginPlatform.navGroups : navGroups;
 
   // Hide items the user lacks permission for. While auth is still loading,
@@ -261,7 +277,7 @@ export default function Layout() {
     .filter(group => group.items.length > 0);
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
-  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : 'array';
+  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : 'array';
   const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
   const footerOk = isPlatform ? platformAllOk : apiOnline;
   const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
@@ -282,8 +298,8 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : activePluginPlatform ? activePluginPlatform.color : undefined}
+          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
+          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : activePluginPlatform ? activePluginPlatform.color : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
@@ -366,7 +382,7 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : 'Global Cluster Dashboard'}</h1>
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform

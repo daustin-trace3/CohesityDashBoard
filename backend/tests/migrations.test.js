@@ -16,6 +16,7 @@ import cohesityMigrations from '../db/migrations/cohesity.js';
 import pureMigrations from '../db/migrations/pure.js';
 import netappMigrations from '../db/migrations/netapp.js';
 import zertoMigrations from '../db/migrations/zerto.js';
+import vcenterMigrations from '../db/migrations/vcenter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -148,6 +149,7 @@ function buildNewDb() {
   runMigrations(db, 'pure', pureMigrations);
   runMigrations(db, 'netapp', netappMigrations);
   runMigrations(db, 'zerto', zertoMigrations);
+  runMigrations(db, 'vcenter', vcenterMigrations);
   return db;
 }
 
@@ -183,6 +185,7 @@ const NEW_TABLES = [
   'auth_sessions', 'service_accounts', 'alert_notifications',
   'cohesity_views', 'workload_history',
   'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras',
+  'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy
@@ -264,6 +267,7 @@ describe('runMigrations', () => {
       runMigrations(db, 'pure', pureMigrations);
       runMigrations(db, 'netapp', netappMigrations);
       runMigrations(db, 'zerto', zertoMigrations);
+      runMigrations(db, 'vcenter', vcenterMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

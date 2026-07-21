@@ -14,6 +14,7 @@ const router = express.Router();
 const PLATFORM_METRICS_HISTORY = {
   pure: { arraysTable: 'pure_arrays', metricsTable: 'pure_metrics_history', arrayIdColumn: 'array_id' },
   netapp: { arraysTable: 'netapp_arrays', metricsTable: 'netapp_metrics_history', arrayIdColumn: 'array_id' },
+  vcenter: { arraysTable: 'vcenter_vcenters', metricsTable: 'vcenter_metrics_history', arrayIdColumn: 'vcenter_id' },
 };
 
 router.post('/trigger/:clusterId', (req, res, next) => {
@@ -126,6 +127,7 @@ router.get('/status', (req, res, next) => {
       },
       pure: platformSections.pure,
       netapp: platformSections.netapp,
+      vcenter: platformSections.vcenter,
       licensing: {
         enabled: true,
         isSyncing: licensingState.isSyncing,

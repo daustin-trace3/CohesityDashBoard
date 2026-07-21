@@ -18,6 +18,7 @@ const { isDemo } = require('./services/demoMode');
 const pureManifest = require('./platforms/pure');
 const netappManifest = require('./platforms/netapp');
 const zertoManifest = require('./platforms/zerto');
+const vcenterManifest = require('./platforms/vcenter');
 
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
@@ -28,13 +29,15 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
   registry.setEnabled('netapp', platformNetappEnabled && registry.isEntitled('netapp'));
   registry.registerPlugin(zertoManifest);
   registry.setEnabled('zerto', platformZertoEnabled && registry.isEntitled('zerto'));
+  registry.registerPlugin(vcenterManifest);
+  registry.setEnabled('vcenter', platformVcenterEnabled && registry.isEntitled('vcenter'));
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();
