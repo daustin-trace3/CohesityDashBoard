@@ -94,12 +94,56 @@ function envelope(body) {
 </soapenv:Envelope>`;
 }
 
+// SOAP namespace version, negotiated from the server's own handshake document
+// (GET /sdk/vimServiceVersions.xml, unauthenticated) instead of hardcoded — a
+// 7.x vCenter faults on a newer urn:vim25 version. Cached per host.
+const vimVersions = new Map(); // vc.host -> '8.0.3.0' etc.
+async function soapVersion(vc) {
+  if (vimVersions.has(vc.host)) return vimVersions.get(vc.host);
+  let version = '6.5'; // safe floor: every supported vCenter accepts it
+  try {
+    const { data } = await baseClient(vc).get('/sdk/vimServiceVersions.xml');
+    const parsed = xmlParser.parse(data);
+    const namespaces = asArray(parsed?.namespaces?.namespace);
+    const vim25 = namespaces.find(n => String(flat(n.name)) === 'urn:vim25');
+    if (vim25?.version != null) version = String(flat(vim25.version));
+  } catch (err) {
+    logger.debug(`[vcenterApi] version handshake failed for ${vc.host} (using urn:vim25/${version}): ${err.message}`);
+  }
+  vimVersions.set(vc.host, version);
+  return version;
+}
+
+// vSphere returns SOAP faults WITH HTTP 500 — parse the fault body out of the
+// axios error so callers see "ServerFaultCode: ..." instead of "HTTP 500".
+function soapFaultMessage(err) {
+  const raw = err?.response?.data;
+  if (!raw || typeof raw !== 'string') return null;
+  try {
+    const fault = xmlParser.parse(raw)?.Envelope?.Body?.Fault;
+    if (!fault) return null;
+    const code = flat(fault.faultcode);
+    const str = flat(fault.faultstring);
+    const detailType = fault.detail && typeof fault.detail === 'object'
+      ? Object.keys(fault.detail).find(k => !k.startsWith('@_')) : null;
+    return `SOAP fault${code ? ` [${code}]` : ''}: ${str || detailType || 'unknown'}`;
+  } catch { return null; }
+}
+
 async function soapCall(vc, body, cookie = null) {
-  const { data, headers } = await baseClient(vc, {
-    'Content-Type': 'text/xml; charset=utf-8',
-    SOAPAction: 'urn:vim25/8.0.0.0',
-    ...(cookie ? { Cookie: cookie } : {}),
-  }).post('/sdk', envelope(body));
+  const version = await soapVersion(vc);
+  let data, headers;
+  try {
+    ({ data, headers } = await baseClient(vc, {
+      'Content-Type': 'text/xml; charset=utf-8',
+      SOAPAction: `urn:vim25/${version}`,
+      ...(cookie ? { Cookie: cookie } : {}),
+    }).post('/sdk', envelope(body)));
+  } catch (err) {
+    const fault = soapFaultMessage(err);
+    if (fault) throw new Error(fault);
+    throw err;
+  }
   const parsed = xmlParser.parse(data);
   const respBody = parsed?.Envelope?.Body;
   if (respBody?.Fault) {
@@ -196,7 +240,7 @@ const SSH_SERVICE_KEYS = new Set(['TSM-SSH', 'ssh']);
  * references are orphans; their chain size includes companion -flat/-ctk/...
  * files. Requires the Datastore.Browse privilege — wholly best-effort.
  */
-async function collectOrphans(vc, cookie, datastores, referencedPaths) {
+async function collectOrphans(vc, cookie, sc, datastores, referencedPaths) {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const allFiles = []; // { path, size, modified, datastoreName }
   for (const ds of datastores) {
@@ -222,7 +266,7 @@ async function collectOrphans(vc, cookie, datastores, referencedPaths) {
       let info = null;
       for (let tries = 0; tries < 40; tries++) {
         const poll = await soapCall(vc, `
-          <vim25:RetrievePropertiesEx><vim25:_this type="PropertyCollector">propertyCollector</vim25:_this>
+          <vim25:RetrievePropertiesEx><vim25:_this type="PropertyCollector">${esc(sc.propertyCollector)}</vim25:_this>
             <vim25:specSet>
               <vim25:propSet><vim25:type>Task</vim25:type><vim25:pathSet>info</vim25:pathSet></vim25:propSet>
               <vim25:objectSet><vim25:obj type="Task">${esc(taskMoref)}</vim25:obj></vim25:objectSet>
@@ -274,23 +318,46 @@ async function collectOrphans(vc, cookie, datastores, referencedPaths) {
  * and every VM guest. One login; RetrievePropertiesEx pages are drained via
  * ContinueRetrievePropertiesEx (large VM counts return a continuation token).
  */
-async function fetchInventorySoap(vc) {
+/**
+ * ServiceContent handshake: RetrieveServiceContent needs no auth and is the
+ * authoritative source for every manager moref (sessionManager, root folder,
+ * property collector, view/event managers) — never hardcode those IDs.
+ */
+async function getServiceContent(vc) {
+  const sc = await soapCall(vc, '<vim25:RetrieveServiceContent><vim25:_this type="ServiceInstance">ServiceInstance</vim25:_this></vim25:RetrieveServiceContent>');
+  const rv = sc.body?.RetrieveServiceContentResponse?.returnval;
+  if (!rv) throw new Error('RetrieveServiceContent returned no service content');
+  const aboutRaw = rv.about || {};
+  return {
+    sessionManager: flat(rv.sessionManager) != null ? String(flat(rv.sessionManager)) : 'SessionManager',
+    propertyCollector: flat(rv.propertyCollector) != null ? String(flat(rv.propertyCollector)) : 'propertyCollector',
+    viewManager: flat(rv.viewManager) != null ? String(flat(rv.viewManager)) : 'ViewManager',
+    rootFolder: flat(rv.rootFolder) != null ? String(flat(rv.rootFolder)) : 'group-d1',
+    eventManager: flat(rv.eventManager) != null ? String(flat(rv.eventManager)) : 'EventManager',
+    about: { fullName: flat(aboutRaw.fullName), version: flat(aboutRaw.version), build: flat(aboutRaw.build) },
+  };
+}
+
+async function soapLogin(vc, sc) {
   const { password } = creds(vc);
   const login = await soapCall(vc, `
-    <vim25:Login><vim25:_this type="SessionManager">SessionManager</vim25:_this>
+    <vim25:Login><vim25:_this type="SessionManager">${esc(sc.sessionManager)}</vim25:_this>
       <vim25:userName>${esc(vc.username)}</vim25:userName>
       <vim25:password>${esc(password)}</vim25:password>
     </vim25:Login>`);
-  const cookie = login.setCookie;
-  if (!cookie) throw new Error('SOAP login returned no session cookie');
+  if (!login.setCookie) throw new Error('SOAP login returned no session cookie');
+  return login.setCookie;
+}
+
+async function fetchInventorySoap(vc) {
+  const sc = await getServiceContent(vc);
+  const cookie = await soapLogin(vc, sc);
   try {
-    const sc = await soapCall(vc, '<vim25:RetrieveServiceContent><vim25:_this type="ServiceInstance">ServiceInstance</vim25:_this></vim25:RetrieveServiceContent>', cookie);
-    const aboutRaw = sc.body?.RetrieveServiceContentResponse?.returnval?.about || {};
-    const about = { fullName: flat(aboutRaw.fullName), version: flat(aboutRaw.version), build: flat(aboutRaw.build) };
+    const about = sc.about;
 
     const cv = await soapCall(vc, `
-      <vim25:CreateContainerView><vim25:_this type="ViewManager">ViewManager</vim25:_this>
-        <vim25:container type="Folder">group-d1</vim25:container>
+      <vim25:CreateContainerView><vim25:_this type="ViewManager">${esc(sc.viewManager)}</vim25:_this>
+        <vim25:container type="Folder">${esc(sc.rootFolder)}</vim25:container>
         <vim25:type>HostSystem</vim25:type>
         <vim25:type>VirtualMachine</vim25:type>
         <vim25:type>Datastore</vim25:type>
@@ -306,7 +373,7 @@ async function fetchInventorySoap(vc) {
             ${paths.map(p => `<vim25:pathSet>${p}</vim25:pathSet>`).join('')}
           </vim25:propSet>`;
     const rp = await soapCall(vc, `
-      <vim25:RetrievePropertiesEx><vim25:_this type="PropertyCollector">propertyCollector</vim25:_this>
+      <vim25:RetrievePropertiesEx><vim25:_this type="PropertyCollector">${esc(sc.propertyCollector)}</vim25:_this>
         <vim25:specSet>
           ${propSetXml('HostSystem', HOST_PROPS)}
           ${propSetXml('VirtualMachine', VM_PROPS)}
@@ -331,7 +398,7 @@ async function fetchInventorySoap(vc) {
     let objects = asArray(result?.objects);
     while (result?.token != null && String(result.token) !== '') {
       const cont = await soapCall(vc, `
-        <vim25:ContinueRetrievePropertiesEx><vim25:_this type="PropertyCollector">propertyCollector</vim25:_this>
+        <vim25:ContinueRetrievePropertiesEx><vim25:_this type="PropertyCollector">${esc(sc.propertyCollector)}</vim25:_this>
           <vim25:token>${esc(flat(result.token))}</vim25:token>
         </vim25:ContinueRetrievePropertiesEx>`, cookie);
       result = cont.body?.ContinueRetrievePropertiesExResponse?.returnval;
@@ -428,14 +495,14 @@ async function fetchInventorySoap(vc) {
         name: String(d.name ?? ''), browser: d.browser != null ? String(flat(d.browser)) : null,
         accessible: String(flat(d['summary.accessible'])) !== 'false',
       })).filter(d => d.name);
-      orphans = await collectOrphans(vc, cookie, datastores, referencedPaths);
+      orphans = await collectOrphans(vc, cookie, sc, datastores, referencedPaths);
     } catch (err) {
       logger.debug(`[vcenterApi] orphan sweep failed for ${vc.name}: ${err.message}`);
     }
 
     return { about, hostsByName, vms, networks, orphans };
   } finally {
-    soapCall(vc, '<vim25:Logout><vim25:_this type="SessionManager">SessionManager</vim25:_this></vim25:Logout>', cookie)
+    soapCall(vc, '<vim25:Logout><vim25:_this type="SessionManager">${esc(sc.sessionManager)}</vim25:_this></vim25:Logout>', cookie)
       .catch(() => {});
   }
 }
@@ -456,18 +523,12 @@ const INFO_EVENT_TYPES = [
  * each returns up to vCenter's ~1000-event cap for the window.
  */
 async function fetchEvents(vc, sinceIso) {
-  const { password } = creds(vc);
-  const login = await soapCall(vc, `
-    <vim25:Login><vim25:_this type="SessionManager">SessionManager</vim25:_this>
-      <vim25:userName>${esc(vc.username)}</vim25:userName>
-      <vim25:password>${esc(password)}</vim25:password>
-    </vim25:Login>`);
-  const cookie = login.setCookie;
-  if (!cookie) throw new Error('SOAP login returned no session cookie');
+  const sc = await getServiceContent(vc);
+  const cookie = await soapLogin(vc, sc);
   try {
     const query = async (filterXml) => {
       const r = await soapCall(vc, `
-        <vim25:QueryEvents><vim25:_this type="EventManager">EventManager</vim25:_this>
+        <vim25:QueryEvents><vim25:_this type="EventManager">${esc(sc.eventManager)}</vim25:_this>
           <vim25:filter>
             <vim25:time><vim25:beginTime>${esc(sinceIso)}</vim25:beginTime></vim25:time>
             ${filterXml}
@@ -500,7 +561,7 @@ async function fetchEvents(vc, sinceIso) {
     }
     return events;
   } finally {
-    soapCall(vc, '<vim25:Logout><vim25:_this type="SessionManager">SessionManager</vim25:_this></vim25:Logout>', cookie)
+    soapCall(vc, '<vim25:Logout><vim25:_this type="SessionManager">${esc(sc.sessionManager)}</vim25:_this></vim25:Logout>', cookie)
       .catch(() => {});
   }
 }
