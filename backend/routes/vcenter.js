@@ -159,13 +159,14 @@ router.get('/overview', (req, res, next) => {
       FROM vcenter_datastores
     `).get();
     // Overcommit convention: allocations count powered-on VMs only.
+    // Match both casings — REST stores POWERED_ON, older SOAP rows poweredOn.
     const vmAgg = db.prepare(`
       SELECT
-        SUM(CASE WHEN power_state = 'POWERED_ON' THEN 1 ELSE 0 END) AS powered_on,
-        SUM(CASE WHEN power_state = 'POWERED_OFF' THEN 1 ELSE 0 END) AS powered_off,
-        SUM(CASE WHEN power_state = 'SUSPENDED' THEN 1 ELSE 0 END) AS suspended,
-        SUM(CASE WHEN power_state = 'POWERED_ON' THEN COALESCE(cpu_count, 0) ELSE 0 END) AS vcpus_on,
-        SUM(CASE WHEN power_state = 'POWERED_ON' THEN COALESCE(memory_mb, 0) ELSE 0 END) AS mem_mb_on
+        SUM(CASE WHEN power_state IN ('POWERED_ON', 'poweredOn') THEN 1 ELSE 0 END) AS powered_on,
+        SUM(CASE WHEN power_state IN ('POWERED_OFF', 'poweredOff') THEN 1 ELSE 0 END) AS powered_off,
+        SUM(CASE WHEN power_state IN ('SUSPENDED', 'suspended') THEN 1 ELSE 0 END) AS suspended,
+        SUM(CASE WHEN power_state IN ('POWERED_ON', 'poweredOn') THEN COALESCE(cpu_count, 0) ELSE 0 END) AS vcpus_on,
+        SUM(CASE WHEN power_state IN ('POWERED_ON', 'poweredOn') THEN COALESCE(memory_mb, 0) ELSE 0 END) AS mem_mb_on
       FROM vcenter_vms
     `).get();
     const orphanAgg = db.prepare(
