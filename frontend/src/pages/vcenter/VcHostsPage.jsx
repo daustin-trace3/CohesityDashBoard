@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Server } from 'lucide-react';
+import { Server, Boxes, ChevronDown, ChevronUp, Cpu } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -8,13 +8,91 @@ import { BRAND, fmtNum, fmtBytes, hostStateTone, hostStateLabel } from './helper
 
 const pct = (used, cap) => (cap > 0 && used != null ? (used / cap) * 100 : null);
 
+/**
+ * Fleet rollup: each vCenter (with its product version/build) expandable to
+ * its ESXi hosts with ESX version + BIOS + hardware identity.
+ */
+function FleetRollup({ vcs, hosts }) {
+  const [open, setOpen] = useState(() => new Set());
+  const toggle = (id) => setOpen(s => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  return (
+    <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Boxes size={15} className="text-brand" /> Fleet Rollup</p>
+      <p className="text-[11px] text-ink-faint mb-3">Each vCenter with its product version — expand for the ESXi hosts on it, with ESX build, BIOS and hardware.</p>
+      <div className="flex flex-col gap-2">
+        {vcs.map((vc) => {
+          const vcHosts = hosts.filter(h => h.vcenter_id === vc.id);
+          const isOpen = open.has(vc.id);
+          return (
+            <div key={vc.id} className="bg-surface-overlay rounded-lg">
+              <button onClick={() => toggle(vc.id)} className="w-full flex items-center gap-3 px-3 py-2.5 cursor-pointer text-left">
+                <Badge tone={vc.lastPollStatus === 'error' ? 'crit' : vc.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
+                  {vc.lastPollStatus === 'error' ? 'DOWN' : 'UP'}
+                </Badge>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-ink truncate">{vc.name}</p>
+                  <p className="text-[11px] text-ink-faint truncate">
+                    {vc.productName || 'vCenter'}{vc.version ? ` · v${vc.version}` : ''}{vc.build ? ` build ${vc.build}` : ''}
+                  </p>
+                </div>
+                <span className="text-[11px] text-ink-faint tnum flex-shrink-0">{vcHosts.length} host{vcHosts.length === 1 ? '' : 's'}</span>
+                <span className="text-ink-faint flex-shrink-0">{isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</span>
+              </button>
+              {isOpen && (
+                <div className="px-3 pb-3 overflow-x-auto">
+                  {vcHosts.length === 0 ? (
+                    <p className="text-xs text-ink-muted py-2">No hosts collected yet.</p>
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead><tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                        <th className="py-1.5 pr-3">Host</th>
+                        <th className="py-1.5 pr-3">State</th>
+                        <th className="py-1.5 pr-3">ESX Version</th>
+                        <th className="py-1.5 pr-3">BIOS</th>
+                        <th className="py-1.5 pr-3">Hardware</th>
+                        <th className="py-1.5 pr-3 text-right">VMs</th>
+                      </tr></thead>
+                      <tbody>
+                        {vcHosts.map((h) => (
+                          <tr key={h.id} className="border-b border-cohesity-border/40">
+                            <td className="py-1.5 pr-3 text-ink">{h.name || '—'}</td>
+                            <td className="py-1.5 pr-3"><Badge tone={hostStateTone(h)}>{hostStateLabel(h)}</Badge></td>
+                            <td className="py-1.5 pr-3 text-ink-muted tnum text-[11px]">{h.esx_version ? `${h.esx_version}${h.esx_build ? ` (${h.esx_build})` : ''}` : '—'}</td>
+                            <td className="py-1.5 pr-3 text-ink-muted tnum text-[11px]">
+                              <span className="inline-flex items-center gap-1"><Cpu size={11} className="text-ink-faint" />{h.bios_version || '—'}</span>
+                              {h.bios_release_date && <span className="text-ink-faint ml-1">({String(h.bios_release_date).slice(0, 10)})</span>}
+                            </td>
+                            <td className="py-1.5 pr-3 text-ink-muted text-[11px] max-w-[220px] truncate" title={`${h.vendor || ''} ${h.model || ''}`}>{[h.vendor, h.model].filter(Boolean).join(' ') || '—'}</td>
+                            <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{fmtNum(h.vm_count)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function VcHostsPage() {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
+  const [vcs, setVcs] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
-  const load = useCallback(() => client.get('/vcenter/hosts')
-    .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
+  const load = useCallback(() => Promise.all([
+    client.get('/vcenter/hosts').then(({ data }) => setRows(data)),
+    client.get('/vcenter/vcenters').then(({ data }) => setVcs(data)).catch(() => setVcs([])),
+  ]).then(() => setLastRefreshed(new Date()))
     .catch(() => { setRows([]); toast({ type: 'error', title: 'Failed to load hosts' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -38,7 +116,10 @@ export default function VcHostsPage() {
         <RefreshButton onClick={load} />
       </PageHeader>
 
+      {(vcs || []).length > 0 && <FleetRollup vcs={vcs} hosts={rows || []} />}
+
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-3">All Hosts</p>
         <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by host, cluster or vCenter…"
           filters={[{ k: 'vcenter_name', label: 'vCenters' }, { k: 'cluster_name', label: 'Clusters' }, { k: 'state', label: 'States' }]} />
         {rows == null ? (
@@ -55,6 +136,7 @@ export default function VcHostsPage() {
                 <SortTh k="state" label="State" ctl={ctl} />
                 <SortTh k="cluster_name" label="Cluster" ctl={ctl} />
                 <SortTh k="vcenter_name" label="vCenter" ctl={ctl} />
+                <SortTh k="esx_version" label="ESX Ver" ctl={ctl} />
                 <SortTh k="vm_count" label="VMs" ctl={ctl} align="right" />
                 <SortTh k="cpu_pct" label="CPU" ctl={ctl} align="right" />
                 <SortTh k="mem_pct" label="Memory" ctl={ctl} align="right" />
@@ -67,6 +149,7 @@ export default function VcHostsPage() {
                     <td className="py-2 pr-3"><Badge tone={hostStateTone(h)}>{h.state}</Badge></td>
                     <td className="py-2 pr-3 text-ink-muted">{h.cluster_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{h.vcenter_name}</td>
+                    <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{h.esx_version || '—'}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink">{fmtNum(h.vm_count)}</td>
                     <td className={`py-2 pr-3 text-right tnum ${h.cpu_pct > 80 ? 'text-status-warn font-semibold' : 'text-ink-muted'}`}>{h.cpu_pct != null ? `${h.cpu_pct.toFixed(0)}%` : '—'}</td>
                     <td className={`py-2 pr-3 text-right tnum ${h.mem_pct > 80 ? 'text-status-warn font-semibold' : 'text-ink-muted'}`}>{h.mem_pct != null ? `${h.mem_pct.toFixed(0)}%` : '—'}</td>

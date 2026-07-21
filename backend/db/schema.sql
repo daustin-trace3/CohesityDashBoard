@@ -944,6 +944,9 @@ CREATE TABLE IF NOT EXISTS vcenter_vcenters (
   last_poll_status         TEXT,
   last_poll_error          TEXT,
   last_poll_at             DATETIME,
+  version                  TEXT,
+  build                    TEXT,
+  product_name             TEXT,
   created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -962,6 +965,12 @@ CREATE TABLE IF NOT EXISTS vcenter_hosts (
   cpu_mhz_used      INTEGER,
   mem_bytes_capacity INTEGER,
   mem_bytes_used    INTEGER,
+  esx_version       TEXT,
+  esx_build         TEXT,
+  bios_version      TEXT,
+  bios_release_date TEXT,
+  vendor            TEXT,
+  model             TEXT,
   captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_vcenter_hosts_vc ON vcenter_hosts(vcenter_id);
@@ -1020,3 +1029,21 @@ CREATE TABLE IF NOT EXISTS vcenter_metrics_history (
   datastore_free_bytes     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_vcenter_metrics_vc ON vcenter_metrics_history(vcenter_id, captured_at);
+
+CREATE TABLE IF NOT EXISTS vcenter_vms (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  vcenter_id    INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+  vm_id         TEXT,
+  name          TEXT,
+  host_name     TEXT,
+  cluster_name  TEXT,
+  power_state   TEXT,
+  guest_os      TEXT,
+  cpu_count     INTEGER,
+  memory_mb     INTEGER,
+  ip_address    TEXT,
+  tools_status  TEXT,
+  hw_version    TEXT,
+  captured_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vcenter_vms_vc ON vcenter_vms(vcenter_id);

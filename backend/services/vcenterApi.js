@@ -110,10 +110,37 @@ async function soapCall(vc, body, cookie = null) {
 
 const asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
 
-/** Pull HostSystem runtime + quickstats for every host, keyed by host name. */
-async function fetchHostRuntimeSoap(vc) {
+const HOST_PROPS = [
+  'name', 'runtime.inMaintenanceMode', 'runtime.connectionState',
+  'summary.quickStats.overallCpuUsage', 'summary.quickStats.overallMemoryUsage',
+  'summary.hardware.cpuMhz', 'summary.hardware.numCpuCores', 'summary.hardware.memorySize',
+  'config.product.version', 'config.product.build',
+  'hardware.biosInfo.biosVersion', 'hardware.biosInfo.releaseDate',
+  'hardware.systemInfo.vendor', 'hardware.systemInfo.model',
+];
+const VM_PROPS = [
+  'name', 'runtime.powerState', 'runtime.host', 'config.guestFullName', 'config.version',
+  'summary.config.numCpu', 'summary.config.memorySizeMB',
+  'guest.ipAddress', 'guest.toolsRunningStatus',
+];
+
+const flat = (v) => (v && typeof v === 'object' && '#text' in v) ? v['#text'] : v;
+
+function objectsToProps(objects) {
+  return objects.map(obj => {
+    const props = { _moref: flat(obj.obj), _type: obj.obj?.['@_type'] };
+    for (const p of asArray(obj.propSet)) props[p.name] = flat(p.val);
+    return props;
+  });
+}
+
+/**
+ * Full SOAP inventory sweep: vCenter about info, per-host runtime/version/BIOS,
+ * and every VM guest. One login; RetrievePropertiesEx pages are drained via
+ * ContinueRetrievePropertiesEx (large VM counts return a continuation token).
+ */
+async function fetchInventorySoap(vc) {
   const { password } = creds(vc);
-  // 1. Login (SessionManager) — session rides on the vmware_soap_session cookie.
   const login = await soapCall(vc, `
     <vim25:Login><vim25:_this type="SessionManager">SessionManager</vim25:_this>
       <vim25:userName>${esc(vc.username)}</vim25:userName>
@@ -122,30 +149,29 @@ async function fetchHostRuntimeSoap(vc) {
   const cookie = login.setCookie;
   if (!cookie) throw new Error('SOAP login returned no session cookie');
   try {
-    // 2. ContainerView over all HostSystems from the root folder.
+    const sc = await soapCall(vc, '<vim25:RetrieveServiceContent><vim25:_this type="ServiceInstance">ServiceInstance</vim25:_this></vim25:RetrieveServiceContent>', cookie);
+    const aboutRaw = sc.body?.RetrieveServiceContentResponse?.returnval?.about || {};
+    const about = { fullName: flat(aboutRaw.fullName), version: flat(aboutRaw.version), build: flat(aboutRaw.build) };
+
     const cv = await soapCall(vc, `
       <vim25:CreateContainerView><vim25:_this type="ViewManager">ViewManager</vim25:_this>
         <vim25:container type="Folder">group-d1</vim25:container>
         <vim25:type>HostSystem</vim25:type>
+        <vim25:type>VirtualMachine</vim25:type>
         <vim25:recursive>true</vim25:recursive>
       </vim25:CreateContainerView>`, cookie);
-    const viewId = cv.body?.CreateContainerViewResponse?.returnval?.['#text']
-      ?? cv.body?.CreateContainerViewResponse?.returnval;
-    // 3. Retrieve name + runtime + quickstats + hardware for every host in the view.
+    const viewId = flat(cv.body?.CreateContainerViewResponse?.returnval);
+
+    const propSetXml = (type, paths) => `
+          <vim25:propSet>
+            <vim25:type>${type}</vim25:type>
+            ${paths.map(p => `<vim25:pathSet>${p}</vim25:pathSet>`).join('')}
+          </vim25:propSet>`;
     const rp = await soapCall(vc, `
       <vim25:RetrievePropertiesEx><vim25:_this type="PropertyCollector">propertyCollector</vim25:_this>
         <vim25:specSet>
-          <vim25:propSet>
-            <vim25:type>HostSystem</vim25:type>
-            <vim25:pathSet>name</vim25:pathSet>
-            <vim25:pathSet>runtime.inMaintenanceMode</vim25:pathSet>
-            <vim25:pathSet>runtime.connectionState</vim25:pathSet>
-            <vim25:pathSet>summary.quickStats.overallCpuUsage</vim25:pathSet>
-            <vim25:pathSet>summary.quickStats.overallMemoryUsage</vim25:pathSet>
-            <vim25:pathSet>summary.hardware.cpuMhz</vim25:pathSet>
-            <vim25:pathSet>summary.hardware.numCpuCores</vim25:pathSet>
-            <vim25:pathSet>summary.hardware.memorySize</vim25:pathSet>
-          </vim25:propSet>
+          ${propSetXml('HostSystem', HOST_PROPS)}
+          ${propSetXml('VirtualMachine', VM_PROPS)}
           <vim25:objectSet>
             <vim25:obj type="ContainerView">${esc(viewId)}</vim25:obj>
             <vim25:skip>true</vim25:skip>
@@ -159,28 +185,59 @@ async function fetchHostRuntimeSoap(vc) {
         </vim25:specSet>
         <vim25:options/>
       </vim25:RetrievePropertiesEx>`, cookie);
-    const objects = asArray(rp.body?.RetrievePropertiesExResponse?.returnval?.objects);
-    const byName = new Map();
-    for (const obj of objects) {
-      const props = {};
-      for (const p of asArray(obj.propSet)) {
-        const v = p.val;
-        props[p.name] = (v && typeof v === 'object' && '#text' in v) ? v['#text'] : v;
-      }
+
+    let result = rp.body?.RetrievePropertiesExResponse?.returnval;
+    let objects = asArray(result?.objects);
+    while (result?.token != null && String(result.token) !== '') {
+      const cont = await soapCall(vc, `
+        <vim25:ContinueRetrievePropertiesEx><vim25:_this type="PropertyCollector">propertyCollector</vim25:_this>
+          <vim25:token>${esc(flat(result.token))}</vim25:token>
+        </vim25:ContinueRetrievePropertiesEx>`, cookie);
+      result = cont.body?.ContinueRetrievePropertiesExResponse?.returnval;
+      objects = objects.concat(asArray(result?.objects));
+    }
+
+    const rows = objectsToProps(objects);
+    const hostRows = rows.filter(r => r._type === 'HostSystem' || r['runtime.inMaintenanceMode'] !== undefined);
+    const vmRows = rows.filter(r => r._type === 'VirtualMachine' || r['runtime.powerState'] !== undefined);
+
+    const hostsByName = new Map();
+    const hostNameByMoref = new Map();
+    for (const props of hostRows) {
+      if (props.name == null) continue;
       const cores = Number(props['summary.hardware.numCpuCores']) || 0;
       const mhz = Number(props['summary.hardware.cpuMhz']) || 0;
-      if (props.name != null) {
-        byName.set(String(props.name), {
-          inMaintenance: String(props['runtime.inMaintenanceMode']) === 'true' ? 1 : 0,
-          cpuMhzCapacity: cores * mhz || null,
-          cpuMhzUsed: props['summary.quickStats.overallCpuUsage'] != null ? Number(props['summary.quickStats.overallCpuUsage']) : null,
-          memBytesCapacity: props['summary.hardware.memorySize'] != null ? Number(props['summary.hardware.memorySize']) : null,
-          // quickStats memory usage is MB
-          memBytesUsed: props['summary.quickStats.overallMemoryUsage'] != null ? Number(props['summary.quickStats.overallMemoryUsage']) * 1024 * 1024 : null,
-        });
-      }
+      hostNameByMoref.set(String(props._moref), String(props.name));
+      hostsByName.set(String(props.name), {
+        inMaintenance: String(props['runtime.inMaintenanceMode']) === 'true' ? 1 : 0,
+        cpuMhzCapacity: cores * mhz || null,
+        cpuMhzUsed: props['summary.quickStats.overallCpuUsage'] != null ? Number(props['summary.quickStats.overallCpuUsage']) : null,
+        memBytesCapacity: props['summary.hardware.memorySize'] != null ? Number(props['summary.hardware.memorySize']) : null,
+        // quickStats memory usage is MB
+        memBytesUsed: props['summary.quickStats.overallMemoryUsage'] != null ? Number(props['summary.quickStats.overallMemoryUsage']) * 1024 * 1024 : null,
+        esxVersion: props['config.product.version'] ?? null,
+        esxBuild: props['config.product.build'] ?? null,
+        biosVersion: props['hardware.biosInfo.biosVersion'] ?? null,
+        biosReleaseDate: props['hardware.biosInfo.releaseDate'] ?? null,
+        vendor: props['hardware.systemInfo.vendor'] ?? null,
+        model: props['hardware.systemInfo.model'] ?? null,
+      });
     }
-    return byName;
+
+    const vms = vmRows.filter(v => v.name != null).map(v => ({
+      vmId: String(v._moref || ''),
+      name: String(v.name),
+      hostName: hostNameByMoref.get(String(v['runtime.host'])) || null,
+      powerState: v['runtime.powerState'] ?? null,
+      guestOs: v['config.guestFullName'] ?? null,
+      cpuCount: v['summary.config.numCpu'] != null ? Number(v['summary.config.numCpu']) : null,
+      memoryMb: v['summary.config.memorySizeMB'] != null ? Number(v['summary.config.memorySizeMB']) : null,
+      ipAddress: v['guest.ipAddress'] ?? null,
+      toolsStatus: v['guest.toolsRunningStatus'] ?? null,
+      hwVersion: v['config.version'] ?? null,
+    }));
+
+    return { about, hostsByName, vms };
   } finally {
     soapCall(vc, '<vim25:Logout><vim25:_this type="SessionManager">SessionManager</vim25:_this></vim25:Logout>', cookie)
       .catch(() => {});
@@ -210,5 +267,5 @@ async function testConnection(vcLike) {
 module.exports = {
   getSession, invalidateSession, vGet, unwrap,
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
-  fetchHostRuntimeSoap, testConnection,
+  fetchInventorySoap, testConnection,
 };

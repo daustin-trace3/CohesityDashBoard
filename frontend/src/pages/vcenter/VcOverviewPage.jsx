@@ -1,15 +1,26 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Gauge, Server, MonitorSmartphone, Database, ShieldAlert, Boxes } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
+import { Line, Bar } from 'react-chartjs-2';
+import {
+  Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement,
+  BarElement, Tooltip, Legend,
+} from 'chart.js';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtNum, fmtBytes, severityTone } from './helpers';
 
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend);
+
+const VC_COLORS = ['#0091DA', '#6CB33F', '#D4A24E', '#C75D5D', '#9B6CD4', '#4ED4B8', '#D46CB3', '#8FA3B0'];
+
 export default function VcOverviewPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
+  const [trend, setTrend] = useState(null);
+  const [trendDays, setTrendDays] = useState(30);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/vcenter/overview')
@@ -17,6 +28,54 @@ export default function VcOverviewPage() {
     .catch(() => { setData({ vcenters: [], hosts: {}, datastores: {}, issues: [] }); toast({ type: 'error', title: 'Failed to load vCenter overview' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    client.get(`/vcenter/trends?days=${trendDays}`).then(({ data }) => setTrend(data)).catch(() => setTrend([]));
+  }, [trendDays]);
+
+  // VM guest count per vCenter over time — daily last snapshot per vCenter.
+  const vmTrend = useMemo(() => {
+    if (!trend) return null;
+    const byDay = new Map(); // day -> vcenter_name -> vms_total (last wins, rows are time-ordered)
+    for (const t of trend) {
+      const day = String(t.captured_at).slice(0, 10);
+      if (!byDay.has(day)) byDay.set(day, new Map());
+      byDay.get(day).set(t.vcenter_name, t.vms_total);
+    }
+    const days = [...byDay.keys()].sort();
+    const names = [...new Set(trend.map(t => t.vcenter_name))].sort();
+    return {
+      labels: days,
+      datasets: names.map((name, i) => ({
+        label: name,
+        data: days.map(d => byDay.get(d).get(name) ?? null),
+        borderColor: VC_COLORS[i % VC_COLORS.length],
+        backgroundColor: VC_COLORS[i % VC_COLORS.length],
+        pointRadius: days.length > 45 ? 0 : 2,
+        borderWidth: 2, tension: 0.25, spanGaps: true,
+      })),
+    };
+  }, [trend]);
+
+  const osBar = useMemo(() => {
+    const top = (data?.osBreakdown || []).slice(0, 12);
+    return {
+      labels: top.map(o => o.guest_os),
+      datasets: [{
+        data: top.map(o => o.count),
+        backgroundColor: top.map((_, i) => VC_COLORS[i % VC_COLORS.length]),
+        borderRadius: 3, barThickness: 12,
+      }],
+    };
+  }, [data]);
+
+  const chartOpts = {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { labels: { color: '#E5E5E5', boxWidth: 12, font: { size: 11 } } } },
+    scales: {
+      x: { ticks: { color: '#E5E5E5', maxTicksLimit: 10, font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.1)' } },
+      y: { ticks: { color: '#E5E5E5', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.1)' } },
+    },
+  };
 
   const vcs = data?.vcenters || [];
   const hosts = data?.hosts || {};
@@ -49,8 +108,8 @@ export default function VcOverviewPage() {
           sub={hosts.maintenance ? `up · ${fmtNum(hosts.maintenance)} in maintenance` : 'up'}
           tone={hosts.total && hosts.connected < hosts.total ? 'warn' : 'ok'}
           onClick={() => navigate('/vcenter/hosts')} />
-        <StatCard icon={MonitorSmartphone} label="VMs" value={fmtNum(hosts.vms)} sub="across all hosts"
-          onClick={() => navigate('/vcenter/hosts')} />
+        <StatCard icon={MonitorSmartphone} label="VMs" value={fmtNum(data?.vmCount ?? hosts.vms)} sub="across all hosts"
+          onClick={() => navigate('/vcenter/inventory')} />
         <StatCard icon={Database} label="Datastore Usage" value={dsUsedPct != null ? `${dsUsedPct.toFixed(1)}%` : '—'}
           sub={ds.capacity ? `${fmtBytes(ds.capacity - ds.free)} of ${fmtBytes(ds.capacity)}` : undefined}
           tone={dsUsedPct > 80 ? 'crit' : dsUsedPct > 70 ? 'warn' : 'default'}
@@ -58,6 +117,48 @@ export default function VcOverviewPage() {
         <StatCard icon={ShieldAlert} label="Issues" value={fmtNum(issues.length)}
           sub={issues.length ? `${critCount} critical` : 'all clear'}
           tone={critCount ? 'crit' : issues.length ? 'warn' : 'ok'} />
+      </div>
+
+      {/* Trends */}
+      <div className="grid lg:grid-cols-3 gap-4 mb-4">
+        <div className="panel p-4 lg:col-span-2" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <p className="text-sm font-semibold text-ink mr-auto">VM Guests per vCenter</p>
+            <select value={trendDays} onChange={(e) => setTrendDays(Number(e.target.value))}
+              className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-sm text-ink focus:border-brand/60 outline-none cursor-pointer">
+              <option value={7}>7 days</option>
+              <option value={30}>30 days</option>
+              <option value={90}>90 days</option>
+              <option value={365}>1 year</option>
+            </select>
+          </div>
+          {trend == null ? (
+            <LoadingPanel label="Loading trend…" height={200} />
+          ) : vmTrend.labels.length === 0 ? (
+            <div className="text-sm text-ink-muted py-8 text-center">No trend data yet — snapshots accumulate as vCenters poll.</div>
+          ) : (
+            <div className="h-60"><Line data={vmTrend} options={chartOpts} /></div>
+          )}
+        </div>
+        <div className="panel p-4">
+          <p className="text-sm font-semibold text-ink mb-3">VMs by Guest OS</p>
+          {data == null ? (
+            <LoadingPanel label="Loading…" height={200} />
+          ) : (data.osBreakdown || []).length === 0 ? (
+            <div className="text-sm text-ink-muted py-8 text-center">No guest OS data yet.</div>
+          ) : (
+            <div style={{ height: Math.max(200, Math.min(12, data.osBreakdown.length) * 24 + 60) }}>
+              <Bar data={osBar} options={{
+                ...chartOpts, indexAxis: 'y',
+                plugins: { legend: { display: false } },
+                scales: {
+                  x: { ticks: { color: '#E5E5E5', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                  y: { ticks: { color: '#E5E5E5', font: { size: 9 }, callback(value) { const l = this.getLabelForValue(value); return l.length > 26 ? `${l.slice(0, 25)}…` : l; } }, grid: { display: false } },
+                },
+              }} />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Per-vCenter status */}
@@ -74,7 +175,7 @@ export default function VcOverviewPage() {
                 <div key={v.id} className="flex items-center justify-between bg-surface-overlay rounded-lg px-3 py-2">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-ink truncate">{v.name}</p>
-                    <p className="text-[11px] text-ink-faint truncate">{v.host}</p>
+                    <p className="text-[11px] text-ink-faint truncate">{v.host}{v.version ? ` · v${v.version}${v.build ? ` build ${v.build}` : ''}` : ''}</p>
                   </div>
                   <Badge tone={v.lastPollStatus === 'error' ? 'crit' : v.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
                     {v.lastPollStatus === 'error' ? 'Unreachable' : v.lastPollStatus === 'success' ? 'Up' : 'Pending'}

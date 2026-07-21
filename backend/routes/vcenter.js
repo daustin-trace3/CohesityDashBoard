@@ -25,6 +25,7 @@ const publicVc = (row) => ({
   id: row.id, name: row.name, host: row.host, username: row.username,
   sslVerify: !!row.ssl_verify, pollingIntervalMinutes: row.polling_interval_minutes,
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
+  version: row.version, build: row.build, productName: row.product_name,
 });
 
 /** GET /api/vcenter/vcenters — registered vCenters (never the credentials). */
@@ -221,9 +222,24 @@ router.get('/overview', (req, res, next) => {
       hosts: hostAgg,
       datastores: dsAgg,
       clusterCount: db.prepare('SELECT COUNT(*) AS n FROM vcenter_clusters').get().n,
+      vmCount: db.prepare('SELECT COUNT(*) AS n FROM vcenter_vms').get().n,
+      osBreakdown: db.prepare(`
+        SELECT COALESCE(guest_os, 'Unknown') AS guest_os, COUNT(*) AS count
+        FROM vcenter_vms GROUP BY COALESCE(guest_os, 'Unknown') ORDER BY count DESC
+      `).all(),
       issues: computeIssues(),
       thresholds: { dsUsedWarnPct: DS_USED_WARN_PCT, clusterFreeWarnPct: CLUSTER_FREE_WARN_PCT, certWarnDays: CERT_WARN_DAYS },
     });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/vms — VM guest inventory across all vCenters. */
+router.get('/vms', (req, res, next) => {
+  try {
+    res.json(db.prepare(`
+      SELECT m.*, v.name AS vcenter_name FROM vcenter_vms m
+      JOIN vcenter_vcenters v ON v.id = m.vcenter_id ORDER BY v.name, m.name
+    `).all());
   } catch (err) { next(err); }
 });
 

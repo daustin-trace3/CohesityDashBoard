@@ -32,6 +32,7 @@ import ZertoVmsPage from './pages/zerto/ZertoVmsPage';
 import ZertoSettingsPage from './pages/zerto/ZertoSettingsPage';
 import VcOverviewPage from './pages/vcenter/VcOverviewPage';
 import VcHostsPage from './pages/vcenter/VcHostsPage';
+import VcInventoryPage from './pages/vcenter/VcInventoryPage';
 import VcDatastoresPage from './pages/vcenter/VcDatastoresPage';
 import VcSettingsPage from './pages/vcenter/VcSettingsPage';
 import DataProtectionPage from './pages/DataProtectionPage';
@@ -106,6 +107,7 @@ export default function App() {
                 <Route path="zerto/settings"  element={withBoundary(<ZertoSettingsPage />)} />
                 <Route path="vcenter"            element={withBoundary(<VcOverviewPage />)} />
                 <Route path="vcenter/hosts"      element={withBoundary(<VcHostsPage />)} />
+                <Route path="vcenter/inventory"  element={withBoundary(<VcInventoryPage />)} />
                 <Route path="vcenter/datastores" element={withBoundary(<VcDatastoresPage />)} />
                 <Route path="vcenter/settings"   element={withBoundary(<VcSettingsPage />)} />
                 <Route path="data-protection" element={withBoundary(<DataProtectionPage />)} />
