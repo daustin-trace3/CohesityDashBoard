@@ -30,6 +30,16 @@ function rollup(status, platform = 'cohesity') {
         if (!newestCapture || t > newestCapture) newestCapture = t;
       }
     }
+  } else if (p && p.enabled) {
+    // Account-global sections (e.g. zerto) have no per-entity structure.
+    hasEntities = !!p.lastDataCapture;
+    if (p.isSyncing) anySyncing = true;
+    if (p.isStale) anyStale = true;
+    if (p.failedSources?.length) anyError = true;
+    if (p.lastDataCapture) {
+      const t = new Date(p.lastDataCapture).getTime();
+      if (!newestCapture || t > newestCapture) newestCapture = t;
+    }
   }
 
   const lic = status.licensing;
