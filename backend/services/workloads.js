@@ -85,6 +85,24 @@ const insertWorkloadSnapshot = db.transaction((clusterId, rows) => {
     stmt.run(clusterId, r.environment, r.protectedCount, r.unprotectedCount,
       r.protectedBytes, r.jobCount, r.logicalBytes, r.physicalBytes);
   }
+  // Views (SmartFiles) never appear in the protection-source or job-consumer
+  // APIs — they're cluster-native file services, not registered sources. Derive
+  // them from the Views inventory (cohesity_views, refreshed hourly by the
+  // views service) instead of another per-cluster API call. Protected bytes =
+  // logical size of views with backup protection; job_count is N/A.
+  const v = db.prepare(`
+    SELECT COUNT(*) AS total,
+           COALESCE(SUM(v.protected), 0) AS prot,
+           COALESCE(SUM(CASE WHEN v.protected = 1 THEN v.logical_bytes END), 0) AS prot_logical,
+           COALESCE(SUM(v.logical_bytes), 0) AS logical,
+           COALESCE(SUM(v.consumed_bytes), 0) AS physical
+    FROM cohesity_views v
+    JOIN clusters c ON c.name = v.system_name
+    WHERE c.id = ?
+  `).get(clusterId);
+  if (v.total > 0) {
+    stmt.run(clusterId, 'Views', v.prot, v.total - v.prot, v.prot_logical, null, v.logical, v.physical);
+  }
 });
 
 async function refreshWorkloadsForCluster(cluster) {
