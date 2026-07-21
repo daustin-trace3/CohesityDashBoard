@@ -5,6 +5,7 @@ const {
   fetchProtectionPolicies, fetchSourceRegistrations,
 } = require('./cohesityApi');
 const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
+const { fetchWorkloads, insertWorkloadSnapshot } = require('./workloads');
 const logger = require('../utils/logger');
 const { createPoller } = require('../core/pollerFramework');
 
@@ -19,6 +20,17 @@ cron.schedule('0 2 * * *', () => {
     }
   } catch (err) {
     logger.error('[Retention] Failed to prune metrics_history:', err.message);
+  }
+  // Workload trend snapshots keep 2 years of daily history.
+  try {
+    const result = db.prepare(
+      "DELETE FROM workload_history WHERE captured_at < datetime('now', '-730 days')"
+    ).run();
+    if (result.changes > 0) {
+      logger.info(`[Retention] Pruned ${result.changes} old workload row(s)`);
+    }
+  } catch (err) {
+    logger.error('[Retention] Failed to prune workload_history:', err.message);
   }
 });
 
@@ -336,12 +348,13 @@ function runsFetchWindow(clusterId) {
 async function doPollCluster(cluster) {
   try {
     const window = runsFetchWindow(cluster.id);
-    const [clusterInfo, alertData, protectionData, policyData, sourceData] = await Promise.allSettled([
+    const [clusterInfo, alertData, protectionData, policyData, sourceData, workloadData] = await Promise.allSettled([
       fetchClusterInfo(cluster),
       fetchAlerts(cluster),
       fetchProtectionRuns(cluster, window.numRuns, window.sinceUsecs),
       fetchProtectionPolicies(cluster),
-      fetchSourceRegistrations(cluster)
+      fetchSourceRegistrations(cluster),
+      fetchWorkloads(cluster)
     ]);
 
     if (clusterInfo.status === 'fulfilled') {
@@ -374,6 +387,16 @@ async function doPollCluster(cluster) {
       }
     } else {
       logger.error(`[Poller] Source registrations fetch failed for cluster ${cluster.id}:`, safeErrorMessage(sourceData.reason));
+    }
+
+    if (workloadData.status === 'fulfilled') {
+      try {
+        insertWorkloadSnapshot(cluster.id, workloadData.value);
+      } catch (err) {
+        logger.error(`[Poller] Workload snapshot failed for cluster ${cluster.id}:`, err.message);
+      }
+    } else {
+      logger.error(`[Poller] Workload fetch failed for cluster ${cluster.id}:`, safeErrorMessage(workloadData.reason));
     }
 
     // If the normal fetch failed (some clusters 500 on wide windows), retry

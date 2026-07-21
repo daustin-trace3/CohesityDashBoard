@@ -356,4 +356,30 @@ module.exports = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_prot_runs_start_time ON protection_runs(start_time)');
     },
   },
+  {
+    version: 7,
+    up(db) {
+      // Per-cluster, per-workload (environment) protection snapshot appended on
+      // every poll: protected object counts + front-end protected bytes from
+      // protectionSources/registrationInfo statsByEnv, and per-job logical /
+      // physical consumption from stats/consumers joined to the jobs list.
+      // Accumulates as a time series for trending; pruned by the retention cron.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS workload_history (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          cluster_id        INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+          environment       TEXT NOT NULL,
+          protected_count   INTEGER,
+          unprotected_count INTEGER,
+          protected_bytes   INTEGER,
+          job_count         INTEGER,
+          logical_bytes     INTEGER,
+          physical_bytes    INTEGER,
+          captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_workload_hist_cluster ON workload_history(cluster_id, environment, captured_at);
+        CREATE INDEX IF NOT EXISTS idx_workload_hist_time ON workload_history(captured_at);
+      `);
+    },
+  },
 ];

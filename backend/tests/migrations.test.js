@@ -179,7 +179,7 @@ function normalizeSchema(db) {
 const NEW_TABLES = [
   'plugins', 'users', 'groups', 'user_groups', 'role_grants',
   'auth_sessions', 'service_accounts', 'alert_notifications',
-  'cohesity_views',
+  'cohesity_views', 'workload_history',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy

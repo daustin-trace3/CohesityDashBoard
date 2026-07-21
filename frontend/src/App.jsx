@@ -6,6 +6,7 @@ import AnalyticsPage from './pages/AnalyticsPage';
 import ReportingPage from './pages/ReportingPage';
 import LicensingPage from './pages/LicensingPage';
 import ViewsPage from './pages/ViewsPage';
+import WorkloadsPage from './pages/WorkloadsPage';
 import ReplicationPage from './pages/ReplicationPage';
 import GovernancePage from './pages/GovernancePage';
 import SettingsPage from './pages/SettingsPage';
@@ -54,6 +55,7 @@ function AppRoutes() {
           <Route path="data-protection" element={withBoundary(<DataProtectionPage />)} />
           <Route path="replication"     element={withBoundary(<ReplicationPage />)} />
           <Route path="views"           element={withBoundary(<ViewsPage />)} />
+          <Route path="workloads"       element={withBoundary(<WorkloadsPage />)} />
           <Route path="analytics"       element={withBoundary(<AnalyticsPage />)} />
           <Route path="governance"      element={withBoundary(<GovernancePage />)} />
           <Route path="reporting"       element={withBoundary(<ReportingPage />)} />

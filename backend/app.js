@@ -22,6 +22,7 @@ const advisorRouter = require('./routes/advisor');
 const aiAuditRouter = require('./routes/aiAudit');
 const licensingRouter = require('./routes/licensing');
 const viewsRouter = require('./routes/views');
+const workloadsRouter = require('./routes/workloads');
 const licenseRouter = require('./routes/license');
 const pure1Router = require('./routes/pure1');
 const dnsRouter = require('./routes/dns');
@@ -126,6 +127,7 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/cohesity/advisor', requirePermission(cohesityPermission('advisor')), advisorRouter);
   app.use('/api/cohesity/licensing', requirePermission(cohesityPermission('licensing')), licensingRouter);
   app.use('/api/cohesity/views', requirePermission(cohesityPermission('views')), viewsRouter);
+  app.use('/api/cohesity/workloads', requirePermission(cohesityPermission('workloads')), workloadsRouter);
 
   app.use('/api/clusters', deprecated('/api/clusters', '/api/cohesity/clusters'), requirePermission(cohesityPermission('clusters')), clustersRouter);
   app.use('/api/metrics', deprecated('/api/metrics', '/api/cohesity/metrics'), requirePermission(cohesityPermission('metrics')), metricsRouter);
