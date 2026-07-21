@@ -13,6 +13,7 @@ import { platforms as builtinPlatforms } from '../platforms/registry';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import { useAuth } from '../auth/AuthContext';
 import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
+import { useAiEnabled } from '../api/useAiEnabled';
 
 const builtinIds = builtinPlatforms.map(p => p.id);
 
@@ -96,6 +97,7 @@ export default function Layout() {
   const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
 
   const { user, logout, hasPermission, loading: authLoading } = useAuth();
+  const aiEnabled = useAiEnabled();
 
   const visiblePlatforms = platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)));
   const currentPlatformId = platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity';
@@ -247,11 +249,14 @@ export default function Layout() {
     : activePluginPlatform ? activePluginPlatform.navGroups : navGroups;
 
   // Hide items the user lacks permission for. While auth is still loading,
-  // show everything (no flicker-hide).
+  // show everything (no flicker-hide). AI-dependent items (requiresAi) stay
+  // hidden until an AI provider token is configured.
   const activeNavGroups = baseNavGroups
     .map(group => ({
       ...group,
-      items: group.items.filter(item => authLoading || hasPermission(requiredNavPermission(navPlatformKey, item))),
+      items: group.items.filter(item =>
+        (!item.requiresAi || aiEnabled)
+        && (authLoading || hasPermission(requiredNavPermission(navPlatformKey, item)))),
     }))
     .filter(group => group.items.length > 0);
 

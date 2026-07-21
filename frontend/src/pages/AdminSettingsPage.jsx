@@ -125,6 +125,8 @@ export default function AdminSettingsPage() {
     try {
       const { data } = await client.put('/settings/credentials', payload);
       setCredSources(data);
+      // AI-gated surfaces (nav item, Ask AI buttons) re-check live.
+      window.dispatchEvent(new Event('ai-status-changed'));
       setCredInputs({});
       setAiEnabled(true);
       toast({ type: 'success', title: 'AI keys saved', message: 'Stored encrypted. Applied immediately — no restart needed.' });
