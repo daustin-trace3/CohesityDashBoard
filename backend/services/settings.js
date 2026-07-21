@@ -13,6 +13,8 @@ const DEFAULTS = {
   license_edition: '',
   platform_pure_enabled: '0',
   platform_netapp_enabled: '0',
+  platform_zerto_enabled: '0',
+  zerto_poll_interval_minutes: '15',
   dns_server: '',
 };
 
@@ -93,6 +95,7 @@ function getPlatformSettings() {
   return {
     platformPureEnabled: getSetting('platform_pure_enabled') === '1',
     platformNetappEnabled: getSetting('platform_netapp_enabled') === '1',
+    platformZertoEnabled: getSetting('platform_zerto_enabled') === '1',
     dnsServer: getSetting('dns_server') || '',
   };
 }

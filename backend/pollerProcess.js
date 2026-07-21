@@ -11,6 +11,7 @@ const { initPoller } = require('./services/poller');
 const { initPurePoller } = require('./services/purePoller');
 const { initPure1Poller } = require('./services/pure1Poller');
 const { initNetAppPoller } = require('./services/netappPoller');
+const { initZertoPoller } = require('./services/zertoPoller');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 
@@ -18,9 +19,10 @@ initPoller();
 initPurePoller();
 initPure1Poller();
 initNetAppPoller();
+initZertoPoller();
 initLicensing();
 initViews();
-logger.info('[Poller process] All pollers scheduled (Cohesity, Pure, Pure1, NetApp, licensing, views).');
+logger.info('[Poller process] All pollers scheduled (Cohesity, Pure, Pure1, NetApp, Zerto, licensing, views).');
 
 process.on('unhandledRejection', (err) => {
   logger.error(`[Poller process] Unhandled rejection: ${err?.message || err}`);

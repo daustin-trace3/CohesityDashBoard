@@ -36,6 +36,7 @@ export default function AdminSettingsPage() {
   const [aiEnabled, setAiEnabled] = useState(true);
   const [pureEnabled, setPureEnabled] = useState(false);
   const [netappEnabled, setNetappEnabled] = useState(false);
+  const [zertoEnabled, setZertoEnabled] = useState(false);
   const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
   const [licenseKeyInput, setLicenseKeyInput] = useState('');
@@ -64,6 +65,7 @@ export default function AdminSettingsPage() {
         setTtlHours(d.llmAnalysisTtlHours || 24);
         setPureEnabled(!!d.platformPureEnabled);
         setNetappEnabled(!!d.platformNetappEnabled);
+        setZertoEnabled(!!d.platformZertoEnabled);
         setDnsServer(d.dnsServer || '');
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
@@ -84,6 +86,7 @@ export default function AdminSettingsPage() {
         llmAnalysisTtlHours: Number(ttlHours) || 24,
         platformPureEnabled: pureEnabled,
         platformNetappEnabled: netappEnabled,
+        platformZertoEnabled: zertoEnabled,
         dnsServer,
       });
       window.dispatchEvent(new Event('platforms-changed'));
@@ -386,6 +389,14 @@ export default function AdminSettingsPage() {
               <span className="text-xs text-ink-muted leading-relaxed">
                 <span className="font-semibold text-ink">NetApp</span><br />
                 Show the NetApp platform tab. Leave off until the NetApp integration is configured.
+              </span>
+            </label>
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input type="checkbox" checked={zertoEnabled} onChange={e => setZertoEnabled(e.target.checked)}
+                className="accent-brand mt-0.5 cursor-pointer" />
+              <span className="text-xs text-ink-muted leading-relaxed">
+                <span className="font-semibold text-ink">Zerto</span><br />
+                Show the Zerto platform tab. Leave off until the Zerto Analytics credentials are configured.
               </span>
             </label>
 

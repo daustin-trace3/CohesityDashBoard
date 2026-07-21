@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen, Globe2, MonitorSmartphone,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -15,6 +15,7 @@ const platforms = [
   { id: 'cohesity', label: 'Cohesity', route: '/dashboard', color: '#6CB33F' },
   { id: 'pure',     label: 'Pure', route: '/pure',  color: '#FF6B00' },
   { id: 'netapp',   label: 'NetApp',    route: '/netapp',   color: '#0067C5' },
+  { id: 'zerto',    label: 'Zerto',     route: '/zerto',    color: '#EE3124' },
 ];
 
 const navGroups = [
@@ -119,10 +120,41 @@ const netappNavGroups = [
   },
 ];
 
+// Zerto sidebar — shown when the Zerto platform is active.
+const zertoNavGroups = [
+  {
+    label: 'Monitor',
+    items: [
+      { label: 'Overview', route: '/zerto', icon: Gauge, isActive: (p) => p === '/zerto' },
+      { label: 'Alerts', route: '/zerto/alerts', icon: Bell, isActive: (p) => p.startsWith('/zerto/alerts') },
+    ],
+  },
+  {
+    label: 'Protect',
+    items: [
+      { label: 'VPGs', route: '/zerto/vpgs', icon: ShieldCheck, isActive: (p) => p.startsWith('/zerto/vpgs') },
+      { label: 'Protected VMs', route: '/zerto/vms', icon: MonitorSmartphone, isActive: (p) => p.startsWith('/zerto/vms') },
+    ],
+  },
+  {
+    label: 'Infrastructure',
+    items: [
+      { label: 'Sites', route: '/zerto/sites', icon: Globe2, isActive: (p) => p.startsWith('/zerto/sites') },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { label: 'Settings', route: '/zerto/settings', icon: Settings, isActive: (p) => p.startsWith('/zerto/settings') },
+    ],
+  },
+];
+
 function isActivePlatform(id, pathname) {
   if (id === 'cohesity') return ['/', '/dashboard', '/ai-advisor', '/alerts', '/clusters', '/hardware', '/data-protection', '/workloads', '/replication', '/views', '/analytics', '/reporting', '/licensing', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
   if (id === 'pure') return pathname.startsWith('/pure');
   if (id === 'netapp') return pathname.startsWith('/netapp');
+  if (id === 'zerto') return pathname.startsWith('/zerto');
   return false;
 }
 
@@ -166,9 +198,10 @@ export default function Layout() {
   const pathname = location.pathname;
   const isPure = pathname.startsWith('/pure');
   const isNetapp = pathname.startsWith('/netapp');
-  const isPlatform = isPure || isNetapp;
-  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : null;
-  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : '';
+  const isZerto = pathname.startsWith('/zerto');
+  const isPlatform = isPure || isNetapp || isZerto;
+  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : null;
+  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : '';
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
@@ -211,13 +244,25 @@ export default function Layout() {
     if (!platformKey) { setPlatformAlertList([]); return undefined; }
     let cancelled = false;
     const pureFleet = platformKey === 'pure';
-    const overviewUrl = pureFleet ? '/pure1/overview' : `/${platformKey}/overview`;
+    const zerto = platformKey === 'zerto';
+    // Zerto's "entities" are sites; its overview endpoint is an account rollup
+    // object, so the entity list comes from /zerto/sites instead.
+    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : `/${platformKey}/overview`;
     const alertsUrl = pureFleet ? '/pure1/alerts' : `/${platformKey}/alerts`;
 
     const loadAlertList = () => client.get(alertsUrl)
       .then(r => {
         if (cancelled) return;
-        if (pureFleet) {
+        if (zerto) {
+          const rows = r.data || [];
+          setPlatformAlertList(rows.map(a => ({
+            id: a.alert_identifier,
+            cluster_name: a.site_name || '—',
+            severity: a.severity === 'Error' ? 'critical' : 'warning',
+            description: a.description || a.alert_type || 'Alert',
+          })));
+          setPlatformAlerts(rows.length);
+        } else if (pureFleet) {
           const open = (r.data || []).filter(a => String(a.severity || '').toLowerCase() !== 'hidden');
           setPlatformAlertList(open.map(a => ({
             id: a.id,
@@ -243,7 +288,9 @@ export default function Layout() {
         const rows = r.data || [];
         setPlatformCount(rows.length);
         const now = Date.now();
-        if (pureFleet) {
+        if (zerto) {
+          setPlatformHealthy(rows.filter(s => s.connection_status === 'Connected').length);
+        } else if (pureFleet) {
           // Pure1 capacity metrics update daily; treat arrays reporting within
           // ~3 days as operational. Alert count is set from the alerts fetch.
           const healthy = rows.filter(a => a.capturedAt && (now - a.capturedAt) <= 3 * 86400000).length;
@@ -272,6 +319,7 @@ export default function Layout() {
         'cohesity',
         ...(r.data.platformPureEnabled ? ['pure'] : []),
         ...(r.data.platformNetappEnabled ? ['netapp'] : []),
+        ...(r.data.platformZertoEnabled ? ['zerto'] : []),
       ]))
       .catch(() => {});
     loadPlatforms();
@@ -295,10 +343,10 @@ export default function Layout() {
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
   // Swap the sidebar menu to match the active vendor platform.
-  const activeNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : navGroups;
+  const activeNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : navGroups;
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
-  const noun = isNetapp ? 'cluster' : 'array';
+  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : 'array';
   const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
   const footerOk = isPlatform ? platformAllOk : apiOnline;
   const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
@@ -315,8 +363,8 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : undefined}
+          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : 'Cohesity'}
+          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
@@ -392,7 +440,7 @@ export default function Layout() {
         <header className="relative z-30 h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-2 px-4">
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : 'Global Cluster Dashboard'}</h1>
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform

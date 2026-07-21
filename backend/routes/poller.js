@@ -3,6 +3,7 @@ const db = require('../db/database');
 const { pollCluster } = require('../services/poller');
 const { listProtectionGroupsV2, getProtectionGroupRunsV2 } = require('../services/cohesityApi');
 const pollerStatus = require('../services/pollerStatus');
+const { getSetting } = require('../services/settings');
 const router = express.Router();
 
 router.post('/trigger/:clusterId', (req, res, next) => {
@@ -128,6 +129,23 @@ router.get('/status', (req, res, next) => {
         ageMinutes: viewsAge,
         isStale: viewsAge !== null ? viewsAge > licensingInterval * 2 + 5 : false,
       },
+      zerto: (() => {
+        // Account-global SaaS task — no per-entity structure.
+        const zertoRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM zerto_metrics_history').get();
+        const zertoCapture = zertoRow ? zertoRow.captured_at : null;
+        const zertoAge = ageMinutes(zertoCapture);
+        const zertoState = pollerStatus.getState('zerto', 0);
+        const zertoInterval = Number(getSetting('zerto_poll_interval_minutes')) || 15;
+        return {
+          enabled: getSetting('platform_zerto_enabled') === '1',
+          isSyncing: zertoState.isSyncing,
+          lastRefreshEnd: zertoState.lastPollEnd,
+          lastDataCapture: strftime(zertoCapture),
+          ageMinutes: zertoAge,
+          isStale: zertoAge !== null ? zertoAge > zertoInterval * 2 + 5 : false,
+          failedSources: [],
+        };
+      })(),
     });
   } catch (err) {
     next(err);
