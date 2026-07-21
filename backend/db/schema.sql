@@ -971,6 +971,11 @@ CREATE TABLE IF NOT EXISTS vcenter_hosts (
   bios_release_date TEXT,
   vendor            TEXT,
   model             TEXT,
+  cpu_cores         INTEGER,
+  ntp_servers       TEXT,
+  dns_servers       TEXT,
+  ssh_enabled       INTEGER,
+  uptime_seconds    INTEGER,
   captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_vcenter_hosts_vc ON vcenter_hosts(vcenter_id);
@@ -1044,6 +1049,39 @@ CREATE TABLE IF NOT EXISTS vcenter_vms (
   ip_address    TEXT,
   tools_status  TEXT,
   hw_version    TEXT,
+  tools_version TEXT,
+  tools_version_status TEXT,
   captured_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_vcenter_vms_vc ON vcenter_vms(vcenter_id);
+
+CREATE TABLE IF NOT EXISTS vcenter_networks (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  vcenter_id   INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+  host_name    TEXT,
+  kind         TEXT NOT NULL,
+  name         TEXT,
+  switch_name  TEXT,
+  vlan_id      INTEGER,
+  speed_mbps   INTEGER,
+  mac          TEXT,
+  ip_address   TEXT,
+  netmask      TEXT,
+  mtu          INTEGER,
+  uplinks      TEXT,
+  port_count   INTEGER,
+  extra        TEXT,
+  captured_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vcenter_networks_vc ON vcenter_networks(vcenter_id, kind);
+
+CREATE TABLE IF NOT EXISTS vcenter_orphaned_vmdks (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  vcenter_id     INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+  datastore_name TEXT,
+  path           TEXT,
+  size_bytes     INTEGER,
+  modified_at    TEXT,
+  captured_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vcenter_orphans_vc ON vcenter_orphaned_vmdks(vcenter_id);

@@ -113,16 +113,25 @@ const asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
 const HOST_PROPS = [
   'name', 'runtime.inMaintenanceMode', 'runtime.connectionState',
   'summary.quickStats.overallCpuUsage', 'summary.quickStats.overallMemoryUsage',
+  'summary.quickStats.uptime',
   'summary.hardware.cpuMhz', 'summary.hardware.numCpuCores', 'summary.hardware.memorySize',
   'config.product.version', 'config.product.build',
   'hardware.biosInfo.biosVersion', 'hardware.biosInfo.releaseDate',
   'hardware.systemInfo.vendor', 'hardware.systemInfo.model',
+  // Governance + network config (drift detection, Network page)
+  'config.dateTimeInfo.ntpConfig.server', 'config.network.dnsConfig.address',
+  'config.service.service',
+  'config.network.pnic', 'config.network.vswitch', 'config.network.portgroup', 'config.network.vnic',
 ];
 const VM_PROPS = [
   'name', 'runtime.powerState', 'runtime.host', 'config.guestFullName', 'config.version',
   'summary.config.numCpu', 'summary.config.memorySizeMB',
   'guest.ipAddress', 'guest.toolsRunningStatus',
+  'guest.toolsVersion', 'guest.toolsVersionStatus2',
+  'layoutEx.file', // every file backing the VM — feeds the orphaned-VMDK diff
 ];
+const DVS_PROPS = ['name', 'summary.portCount', 'summary.uuid'];
+const DVPG_PROPS = ['name', 'config.distributedVirtualSwitch', 'config.defaultPortConfig'];
 
 const flat = (v) => (v && typeof v === 'object' && '#text' in v) ? v['#text'] : v;
 
@@ -132,6 +141,132 @@ function objectsToProps(objects) {
     for (const p of asArray(obj.propSet)) props[p.name] = flat(p.val);
     return props;
   });
+}
+
+// vim25 array-of-X properties parse as { X: [...] } (or a single object).
+const vimArray = (val, elementName) => asArray(val?.[elementName] ?? (elementName ? undefined : val));
+// ArrayOfString parses as { string: [...] } — used by NTP/DNS server lists.
+const stringList = (val) => asArray(val?.string ?? val).map(flat).filter(v => v != null).map(String);
+const num = (v) => { const n = Number(flat(v)); return Number.isFinite(n) ? n : null; };
+
+/** Host networking structures → typed rows for vcenter_networks. */
+function parseHostNetworks(hostName, props) {
+  const rows = [];
+  for (const p of vimArray(props['config.network.pnic'], 'PhysicalNic')) {
+    rows.push({
+      hostName, kind: 'pnic', name: flat(p.device) ?? null, switchName: null,
+      speedMbps: num(p.linkSpeed?.speedMb), mac: flat(p.mac) ?? null,
+      extra: { driver: flat(p.driver) ?? null, linkUp: p.linkSpeed != null },
+    });
+  }
+  // vswitch pnic/portgroup members are opaque keys ("key-vim.host.PhysicalNic-vmnic0");
+  // strip the key prefix so uplinks read as device names.
+  const keyLeaf = (k) => String(flat(k) ?? '').split('-').pop();
+  for (const s of vimArray(props['config.network.vswitch'], 'HostVirtualSwitch')) {
+    rows.push({
+      hostName, kind: 'vswitch', name: flat(s.name) ?? null, switchName: null,
+      mtu: num(s.mtu ?? s.spec?.mtu), portCount: num(s.numPorts),
+      uplinks: asArray(s.pnic).map(keyLeaf).filter(Boolean),
+    });
+  }
+  for (const g of vimArray(props['config.network.portgroup'], 'HostPortGroup')) {
+    rows.push({
+      hostName, kind: 'portgroup', name: flat(g.spec?.name) ?? null,
+      switchName: flat(g.spec?.vswitchName) ?? null, vlanId: num(g.spec?.vlanId),
+    });
+  }
+  for (const v of vimArray(props['config.network.vnic'], 'HostVirtualNic')) {
+    rows.push({
+      hostName, kind: 'vmkernel', name: flat(v.device) ?? null,
+      switchName: flat(v.portgroup) ?? flat(v.spec?.portgroup) ?? null,
+      ipAddress: flat(v.spec?.ip?.ipAddress) ?? null, netmask: flat(v.spec?.ip?.subnetMask) ?? null,
+      mac: flat(v.spec?.mac) ?? null, mtu: num(v.spec?.mtu),
+      extra: { dhcp: String(flat(v.spec?.ip?.dhcp)) === 'true' },
+    });
+  }
+  return rows;
+}
+
+const SSH_SERVICE_KEYS = new Set(['TSM-SSH', 'ssh']);
+
+/**
+ * Orphaned-VMDK sweep: browse every accessible datastore for *.vmdk files
+ * (SearchDatastoreSubFolders_Task, polled to completion) and diff against the
+ * set of files referenced by any VM's layoutEx. Descriptor files that no VM
+ * references are orphans; their chain size includes companion -flat/-ctk/...
+ * files. Requires the Datastore.Browse privilege — wholly best-effort.
+ */
+async function collectOrphans(vc, cookie, datastores, referencedPaths) {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const allFiles = []; // { path, size, modified, datastoreName }
+  for (const ds of datastores) {
+    if (!ds.browser || ds.accessible === false) continue;
+    try {
+      const task = await soapCall(vc, `
+        <vim25:SearchDatastoreSubFolders_Task>
+          <vim25:_this type="HostDatastoreBrowser">${esc(ds.browser)}</vim25:_this>
+          <vim25:datastorePath>[${esc(ds.name)}]</vim25:datastorePath>
+          <vim25:searchSpec>
+            <vim25:details>
+              <vim25:fileType>true</vim25:fileType>
+              <vim25:fileSize>true</vim25:fileSize>
+              <vim25:modification>true</vim25:modification>
+              <vim25:fileOwner>false</vim25:fileOwner>
+            </vim25:details>
+            <vim25:matchPattern>*.vmdk</vim25:matchPattern>
+          </vim25:searchSpec>
+        </vim25:SearchDatastoreSubFolders_Task>`, cookie);
+      const taskMoref = flat(task.body?.SearchDatastoreSubFolders_TaskResponse?.returnval);
+      if (!taskMoref) continue;
+
+      let info = null;
+      for (let tries = 0; tries < 40; tries++) {
+        const poll = await soapCall(vc, `
+          <vim25:RetrievePropertiesEx><vim25:_this type="PropertyCollector">propertyCollector</vim25:_this>
+            <vim25:specSet>
+              <vim25:propSet><vim25:type>Task</vim25:type><vim25:pathSet>info</vim25:pathSet></vim25:propSet>
+              <vim25:objectSet><vim25:obj type="Task">${esc(taskMoref)}</vim25:obj></vim25:objectSet>
+            </vim25:specSet>
+            <vim25:options/>
+          </vim25:RetrievePropertiesEx>`, cookie);
+        const objs = asArray(poll.body?.RetrievePropertiesExResponse?.returnval?.objects);
+        info = asArray(objs[0]?.propSet).find(p => p.name === 'info')?.val || null;
+        const state = String(flat(info?.state) || '');
+        if (state === 'success' || state === 'error') break;
+        await sleep(1500);
+      }
+      if (String(flat(info?.state)) !== 'success') continue;
+
+      for (const res of vimArray(info.result, 'HostDatastoreBrowserSearchResults')) {
+        const folder = String(flat(res.folderPath) || '');
+        const prefix = folder.endsWith('/') || folder.endsWith(' ') ? folder : `${folder}/`;
+        for (const f of asArray(res.file)) {
+          const p = flat(f.path);
+          if (!p) continue;
+          allFiles.push({
+            path: `${prefix}${p}`, size: num(f.fileSize) || 0,
+            modified: flat(f.modification) ?? null, datastoreName: ds.name,
+          });
+        }
+      }
+    } catch (err) {
+      logger.debug(`[vcenterApi] datastore browse failed for ${ds.name}: ${err.message}`);
+    }
+  }
+
+  const isCompanion = (p) => /-(flat|delta|ctk|sesparse|rdmp?)\.vmdk$/i.test(p);
+  const orphans = [];
+  for (const f of allFiles) {
+    if (isCompanion(f.path) || referencedPaths.has(f.path)) continue;
+    const base = f.path.replace(/\.vmdk$/i, '');
+    const chain = allFiles.filter(o => o.path === f.path || (isCompanion(o.path) && o.path.startsWith(`${base}-`)));
+    orphans.push({
+      datastoreName: f.datastoreName, path: f.path,
+      sizeBytes: chain.reduce((n, o) => n + (o.size || 0), 0),
+      modifiedAt: f.modified,
+    });
+  }
+  return orphans;
 }
 
 /**
@@ -158,6 +293,9 @@ async function fetchInventorySoap(vc) {
         <vim25:container type="Folder">group-d1</vim25:container>
         <vim25:type>HostSystem</vim25:type>
         <vim25:type>VirtualMachine</vim25:type>
+        <vim25:type>Datastore</vim25:type>
+        <vim25:type>DistributedVirtualSwitch</vim25:type>
+        <vim25:type>DistributedVirtualPortgroup</vim25:type>
         <vim25:recursive>true</vim25:recursive>
       </vim25:CreateContainerView>`, cookie);
     const viewId = flat(cv.body?.CreateContainerViewResponse?.returnval);
@@ -172,6 +310,9 @@ async function fetchInventorySoap(vc) {
         <vim25:specSet>
           ${propSetXml('HostSystem', HOST_PROPS)}
           ${propSetXml('VirtualMachine', VM_PROPS)}
+          ${propSetXml('Datastore', ['name', 'browser', 'summary.accessible'])}
+          ${propSetXml('DistributedVirtualSwitch', DVS_PROPS)}
+          ${propSetXml('DistributedVirtualPortgroup', DVPG_PROPS)}
           <vim25:objectSet>
             <vim25:obj type="ContainerView">${esc(viewId)}</vim25:obj>
             <vim25:skip>true</vim25:skip>
@@ -200,44 +341,99 @@ async function fetchInventorySoap(vc) {
     const rows = objectsToProps(objects);
     const hostRows = rows.filter(r => r._type === 'HostSystem' || r['runtime.inMaintenanceMode'] !== undefined);
     const vmRows = rows.filter(r => r._type === 'VirtualMachine' || r['runtime.powerState'] !== undefined);
+    const dsRows = rows.filter(r => r._type === 'Datastore');
+    const dvsRows = rows.filter(r => r._type === 'DistributedVirtualSwitch' || r._type === 'VmwareDistributedVirtualSwitch');
+    const dvpgRows = rows.filter(r => r._type === 'DistributedVirtualPortgroup');
 
     const hostsByName = new Map();
     const hostNameByMoref = new Map();
+    const networks = [];
     for (const props of hostRows) {
       if (props.name == null) continue;
       const cores = Number(props['summary.hardware.numCpuCores']) || 0;
       const mhz = Number(props['summary.hardware.cpuMhz']) || 0;
+      const services = vimArray(props['config.service.service'], 'HostService');
+      const ssh = services.find(s => SSH_SERVICE_KEYS.has(String(flat(s.key))));
       hostNameByMoref.set(String(props._moref), String(props.name));
       hostsByName.set(String(props.name), {
         inMaintenance: String(props['runtime.inMaintenanceMode']) === 'true' ? 1 : 0,
         cpuMhzCapacity: cores * mhz || null,
+        cpuCores: cores || null,
         cpuMhzUsed: props['summary.quickStats.overallCpuUsage'] != null ? Number(props['summary.quickStats.overallCpuUsage']) : null,
         memBytesCapacity: props['summary.hardware.memorySize'] != null ? Number(props['summary.hardware.memorySize']) : null,
         // quickStats memory usage is MB
         memBytesUsed: props['summary.quickStats.overallMemoryUsage'] != null ? Number(props['summary.quickStats.overallMemoryUsage']) * 1024 * 1024 : null,
+        uptimeSeconds: num(props['summary.quickStats.uptime']),
         esxVersion: props['config.product.version'] ?? null,
         esxBuild: props['config.product.build'] ?? null,
         biosVersion: props['hardware.biosInfo.biosVersion'] ?? null,
         biosReleaseDate: props['hardware.biosInfo.releaseDate'] ?? null,
         vendor: props['hardware.systemInfo.vendor'] ?? null,
         model: props['hardware.systemInfo.model'] ?? null,
+        ntpServers: stringList(props['config.dateTimeInfo.ntpConfig.server']),
+        dnsServers: stringList(props['config.network.dnsConfig.address']),
+        sshEnabled: ssh ? (String(flat(ssh.running)) === 'true' ? 1 : 0) : null,
+      });
+      networks.push(...parseHostNetworks(String(props.name), props));
+    }
+
+    // Distributed switches + portgroups are vCenter-scope rows (host_name NULL).
+    const dvsNameByMoref = new Map();
+    for (const d of dvsRows) {
+      if (d.name == null) continue;
+      dvsNameByMoref.set(String(d._moref), String(d.name));
+      networks.push({
+        hostName: null, kind: 'dvswitch', name: String(d.name),
+        portCount: num(d['summary.portCount']),
+        extra: { uuid: flat(d['summary.uuid']) ?? null },
+      });
+    }
+    for (const g of dvpgRows) {
+      if (g.name == null) continue;
+      const portCfg = g['config.defaultPortConfig'];
+      networks.push({
+        hostName: null, kind: 'dvportgroup', name: String(g.name),
+        switchName: dvsNameByMoref.get(String(flat(g['config.distributedVirtualSwitch']))) ?? null,
+        vlanId: num(portCfg?.vlan?.vlanId),
       });
     }
 
-    const vms = vmRows.filter(v => v.name != null).map(v => ({
-      vmId: String(v._moref || ''),
-      name: String(v.name),
-      hostName: hostNameByMoref.get(String(v['runtime.host'])) || null,
-      powerState: v['runtime.powerState'] ?? null,
-      guestOs: v['config.guestFullName'] ?? null,
-      cpuCount: v['summary.config.numCpu'] != null ? Number(v['summary.config.numCpu']) : null,
-      memoryMb: v['summary.config.memorySizeMB'] != null ? Number(v['summary.config.memorySizeMB']) : null,
-      ipAddress: v['guest.ipAddress'] ?? null,
-      toolsStatus: v['guest.toolsRunningStatus'] ?? null,
-      hwVersion: v['config.version'] ?? null,
-    }));
+    const referencedPaths = new Set();
+    const vms = vmRows.filter(v => v.name != null).map(v => {
+      for (const f of vimArray(v['layoutEx.file'], 'VirtualMachineFileLayoutExFileInfo')) {
+        const p = flat(f.name);
+        if (p) referencedPaths.add(String(p));
+      }
+      return {
+        vmId: String(v._moref || ''),
+        name: String(v.name),
+        hostName: hostNameByMoref.get(String(v['runtime.host'])) || null,
+        powerState: v['runtime.powerState'] ?? null,
+        guestOs: v['config.guestFullName'] ?? null,
+        cpuCount: v['summary.config.numCpu'] != null ? Number(v['summary.config.numCpu']) : null,
+        memoryMb: v['summary.config.memorySizeMB'] != null ? Number(v['summary.config.memorySizeMB']) : null,
+        ipAddress: v['guest.ipAddress'] ?? null,
+        toolsStatus: v['guest.toolsRunningStatus'] ?? null,
+        toolsVersion: v['guest.toolsVersion'] != null ? String(flat(v['guest.toolsVersion'])) : null,
+        toolsVersionStatus: v['guest.toolsVersionStatus2'] ?? null,
+        hwVersion: v['config.version'] ?? null,
+      };
+    });
 
-    return { about, hostsByName, vms };
+    // Orphan sweep uses the same session; failures leave orphans = null so the
+    // poller can tell "sweep unavailable" apart from "no orphans found".
+    let orphans = null;
+    try {
+      const datastores = dsRows.map(d => ({
+        name: String(d.name ?? ''), browser: d.browser != null ? String(flat(d.browser)) : null,
+        accessible: String(flat(d['summary.accessible'])) !== 'false',
+      })).filter(d => d.name);
+      orphans = await collectOrphans(vc, cookie, datastores, referencedPaths);
+    } catch (err) {
+      logger.debug(`[vcenterApi] orphan sweep failed for ${vc.name}: ${err.message}`);
+    }
+
+    return { about, hostsByName, vms, networks, orphans };
   } finally {
     soapCall(vc, '<vim25:Logout><vim25:_this type="SessionManager">SessionManager</vim25:_this></vim25:Logout>', cookie)
       .catch(() => {});

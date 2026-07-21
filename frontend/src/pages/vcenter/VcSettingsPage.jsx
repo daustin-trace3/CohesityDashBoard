@@ -159,9 +159,9 @@ export default function VcSettingsPage() {
               <tbody>
                 {vcs.map((v) => (
                   <tr key={v.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink">{v.name}</td>
-                    <td className="py-2 pr-3 text-ink-muted tnum">{v.host}</td>
-                    <td className="py-2 pr-3 text-ink-muted">{v.username}</td>
+                    <td className="py-2 pr-3 text-ink whitespace-nowrap">{v.name}</td>
+                    <td className="py-2 pr-3 text-ink-muted tnum whitespace-nowrap">{v.host}</td>
+                    <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{v.username}</td>
                     <td className="py-2 pr-3">
                       <Badge tone={v.lastPollStatus === 'error' ? 'crit' : v.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
                         {v.lastPollStatus === 'error' ? 'Unreachable' : v.lastPollStatus === 'success' ? 'Up' : 'Pending'}

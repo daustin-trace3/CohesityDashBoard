@@ -70,15 +70,20 @@ async function collect(vc) {
     const r = soap?.hostsByName.get(row.name);
     row.inMaintenance = r ? r.inMaintenance : null;
     row.cpuMhzCapacity = r?.cpuMhzCapacity ?? null;
+    row.cpuCores = r?.cpuCores ?? null;
     row.cpuMhzUsed = r?.cpuMhzUsed ?? null;
     row.memBytesCapacity = r?.memBytesCapacity ?? null;
     row.memBytesUsed = r?.memBytesUsed ?? null;
+    row.uptimeSeconds = r?.uptimeSeconds ?? null;
     row.esxVersion = r?.esxVersion ?? null;
     row.esxBuild = r?.esxBuild ?? null;
     row.biosVersion = r?.biosVersion ?? null;
     row.biosReleaseDate = r?.biosReleaseDate ?? null;
     row.vendor = r?.vendor ?? null;
     row.model = r?.model ?? null;
+    row.ntpServers = r?.ntpServers ?? null;
+    row.dnsServers = r?.dnsServers ?? null;
+    row.sshEnabled = r?.sshEnabled ?? null;
   }
 
   const datastores = await fetchDatastores(vc);
@@ -90,10 +95,15 @@ async function collect(vc) {
     logger.debug(`[VcPoller] TLS cert fetch failed for ${vc.name} (needs cert-management privilege): ${safeMsg(err)}`);
   }
 
-  return { clusters, hosts: [...hostRows.values()], datastores, cert, vms, about: soap?.about || null };
+  return {
+    clusters, hosts: [...hostRows.values()], datastores, cert, vms,
+    about: soap?.about || null,
+    networks: soap?.networks || null,
+    orphans: soap?.orphans ?? null, // null = sweep unavailable, [] = swept clean
+  };
 }
 
-const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, about }) => {
+const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, about, networks, orphans }) => {
   if (about) {
     db.prepare(`
       UPDATE vcenter_vcenters SET version = ?, build = ?, product_name = ? WHERE id = ?
@@ -105,27 +115,64 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
     INSERT INTO vcenter_hosts (vcenter_id, host_id, name, cluster_name, connection_state,
       power_state, in_maintenance, vm_count, cpu_mhz_capacity, cpu_mhz_used,
       mem_bytes_capacity, mem_bytes_used, esx_version, esx_build, bios_version,
-      bios_release_date, vendor, model)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      bios_release_date, vendor, model, cpu_cores, ntp_servers, dns_servers,
+      ssh_enabled, uptime_seconds)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const h of hosts) {
     hostStmt.run(vcId, h.host, h.name || null, h.clusterName, h.connection_state || null,
       h.power_state || null, h.inMaintenance, h.vmCount, h.cpuMhzCapacity, h.cpuMhzUsed,
       h.memBytesCapacity, h.memBytesUsed, h.esxVersion, h.esxBuild, h.biosVersion,
-      h.biosReleaseDate, h.vendor, h.model);
+      h.biosReleaseDate, h.vendor, h.model, h.cpuCores,
+      h.ntpServers ? JSON.stringify(h.ntpServers) : null,
+      h.dnsServers ? JSON.stringify(h.dnsServers) : null,
+      h.sshEnabled, h.uptimeSeconds);
   }
 
   db.prepare('DELETE FROM vcenter_vms WHERE vcenter_id = ?').run(vcId);
   const vmStmt = db.prepare(`
     INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, cluster_name, power_state,
-      guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version,
+      tools_version, tools_version_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const clusterByHost = new Map(hosts.map(h => [h.name, h.clusterName]));
   for (const v of (vms || [])) {
     vmStmt.run(vcId, v.vmId || null, v.name || null, v.hostName,
       clusterByHost.get(v.hostName) ?? null, v.powerState,
-      v.guestOs, v.cpuCount, v.memoryMb, v.ipAddress, v.toolsStatus, v.hwVersion);
+      v.guestOs, v.cpuCount, v.memoryMb, v.ipAddress, v.toolsStatus, v.hwVersion,
+      v.toolsVersion ?? null, v.toolsVersionStatus ?? null);
+  }
+
+  // Networking rows are wholesale-replaced only when SOAP produced them —
+  // a SOAP outage keeps the last good inventory instead of blanking the page.
+  if (networks) {
+    db.prepare('DELETE FROM vcenter_networks WHERE vcenter_id = ?').run(vcId);
+    const netStmt = db.prepare(`
+      INSERT INTO vcenter_networks (vcenter_id, host_name, kind, name, switch_name,
+        vlan_id, speed_mbps, mac, ip_address, netmask, mtu, uplinks, port_count, extra)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const n of networks) {
+      netStmt.run(vcId, n.hostName ?? null, n.kind, n.name ?? null, n.switchName ?? null,
+        n.vlanId ?? null, n.speedMbps ?? null, n.mac ?? null, n.ipAddress ?? null,
+        n.netmask ?? null, n.mtu ?? null,
+        n.uplinks ? JSON.stringify(n.uplinks) : null, n.portCount ?? null,
+        n.extra ? JSON.stringify(n.extra) : null);
+    }
+  }
+
+  // orphans === null means the sweep couldn't run (privilege/SOAP) — keep the
+  // previous results; an empty array is a real "no orphans" and clears them.
+  if (orphans) {
+    db.prepare('DELETE FROM vcenter_orphaned_vmdks WHERE vcenter_id = ?').run(vcId);
+    const orphanStmt = db.prepare(`
+      INSERT INTO vcenter_orphaned_vmdks (vcenter_id, datastore_name, path, size_bytes, modified_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const o of orphans) {
+      orphanStmt.run(vcId, o.datastoreName ?? null, o.path, o.sizeBytes ?? null, o.modifiedAt ?? null);
+    }
   }
 
   db.prepare('DELETE FROM vcenter_clusters WHERE vcenter_id = ?').run(vcId);

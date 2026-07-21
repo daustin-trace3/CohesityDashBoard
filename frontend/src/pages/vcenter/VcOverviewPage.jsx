@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Gauge, Server, MonitorSmartphone, Database, ShieldAlert, Boxes } from 'lucide-react';
+import { Gauge, Server, MonitorSmartphone, Database, ShieldAlert, Boxes, Play, Power, HardDrive, Wrench, Cpu, MemoryStick } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Line, Bar } from 'react-chartjs-2';
 import {
@@ -81,8 +81,27 @@ export default function VcOverviewPage() {
   const hosts = data?.hosts || {};
   const ds = data?.datastores || {};
   const issues = data?.issues || [];
+  const vm = data?.vmStats || {};
+  const cap = data?.capacity || {};
+  const orphans = data?.orphans || {};
+  const density = data?.density || [];
   const dsUsedPct = ds.capacity > 0 ? ((ds.capacity - ds.free) / ds.capacity) * 100 : null;
   const critCount = issues.filter(i => i.severity === 'critical').length;
+  const avgDensity = density.length ? density.reduce((n, h) => n + (h.vm_count || 0), 0) / density.length : null;
+
+  const densityBar = useMemo(() => {
+    const top = density.slice(0, 30);
+    return {
+      labels: top.map(h => h.name),
+      datasets: [{
+        data: top.map(h => h.vm_count),
+        backgroundColor: top.map(h => (h.vm_count > (avgDensity || 0) * 1.5 ? '#D4A24E' : BRAND)),
+        borderRadius: 3,
+      }],
+    };
+  }, [density, avgDensity]);
+
+  const ratio = (r) => (r == null ? '—' : `${r.toFixed(2)}:1`);
 
   return (
     <div className="animate-fade-in">
@@ -117,6 +136,59 @@ export default function VcOverviewPage() {
         <StatCard icon={ShieldAlert} label="Issues" value={fmtNum(issues.length)}
           sub={issues.length ? `${critCount} critical` : 'all clear'}
           tone={critCount ? 'crit' : issues.length ? 'warn' : 'ok'} />
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <StatCard icon={Play} label="Running VMs" value={fmtNum(vm.powered_on)} tone="ok"
+          sub={vm.suspended ? `${fmtNum(vm.suspended)} suspended` : 'powered on'}
+          onClick={() => navigate('/vcenter/inventory')} />
+        <StatCard icon={Power} label="Powered Off" value={fmtNum(vm.powered_off)}
+          sub="VM guests" onClick={() => navigate('/vcenter/inventory')} />
+        <StatCard icon={HardDrive} label="Orphaned VMDKs" value={orphans.count ? fmtBytes(orphans.bytes) : orphans.count === 0 ? '0' : '—'}
+          sub={orphans.count ? `${fmtNum(orphans.count)} disk(s) unattached` : orphans.count === 0 ? 'none found' : 'needs datastore-browse privilege'}
+          tone={orphans.bytes > 0 ? 'warn' : 'default'}
+          onClick={() => navigate('/vcenter/governance')} />
+        <StatCard icon={Wrench} label="Outdated VMware Tools" value={fmtNum(vm.tools_outdated)}
+          sub="VMs needing a Tools upgrade" tone={vm.tools_outdated ? 'warn' : 'ok'}
+          onClick={() => navigate('/vcenter/governance')} />
+      </div>
+
+      {/* Compute capacity & overcommit */}
+      <div className="grid md:grid-cols-2 gap-4 mb-4">
+        <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Cpu size={15} className="text-brand" /> CPU Capacity</p>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div>
+              <p className="text-xl font-bold text-ink tnum">{fmtNum(cap.cpu_cores)}</p>
+              <p className="text-[11px] text-ink-faint">physical cores</p>
+            </div>
+            <div>
+              <p className="text-xl font-bold text-ink tnum">{fmtNum(cap.vcpus_allocated)}</p>
+              <p className="text-[11px] text-ink-faint">vCPUs allocated (running)</p>
+            </div>
+            <div>
+              <p className={`text-xl font-bold tnum ${cap.cpu_overcommit > 4 ? 'text-status-warn' : 'text-ink'}`}>{ratio(cap.cpu_overcommit)}</p>
+              <p className="text-[11px] text-ink-faint">vCPU : pCore overcommit</p>
+            </div>
+          </div>
+        </div>
+        <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><MemoryStick size={15} className="text-brand" /> Memory Capacity</p>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <div>
+              <p className="text-xl font-bold text-ink tnum">{fmtBytes(cap.mem_bytes_total)}</p>
+              <p className="text-[11px] text-ink-faint">physical memory</p>
+            </div>
+            <div>
+              <p className="text-xl font-bold text-ink tnum">{fmtBytes(cap.vm_mem_bytes_allocated)}</p>
+              <p className="text-[11px] text-ink-faint">allocated to running VMs</p>
+            </div>
+            <div>
+              <p className={`text-xl font-bold tnum ${cap.mem_overcommit > 1.5 ? 'text-status-warn' : 'text-ink'}`}>{ratio(cap.mem_overcommit)}</p>
+              <p className="text-[11px] text-ink-faint">allocated : physical overcommit</p>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Trends */}
@@ -159,6 +231,34 @@ export default function VcOverviewPage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* ESXi host density */}
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <p className="text-sm font-semibold text-ink mr-auto flex items-center gap-2"><Server size={15} className="text-brand" /> ESXi Host Density</p>
+          {avgDensity != null && (
+            <span className="text-[11px] text-ink-faint tnum">
+              avg {avgDensity.toFixed(1)} VMs/host{density.length > 30 ? ` · top 30 of ${density.length} hosts` : ''} · amber = 1.5× above average
+            </span>
+          )}
+        </div>
+        {data == null ? (
+          <LoadingPanel label="Loading…" height={180} />
+        ) : density.length === 0 ? (
+          <div className="text-sm text-ink-muted py-8 text-center">No per-host VM counts yet.</div>
+        ) : (
+          <div className="h-52">
+            <Bar data={densityBar} options={{
+              ...chartOpts,
+              plugins: { legend: { display: false } },
+              scales: {
+                x: { ticks: { color: '#E5E5E5', font: { size: 9 }, maxRotation: 60, minRotation: 40, callback(value) { const l = this.getLabelForValue(value); return l.length > 22 ? `${l.slice(0, 21)}…` : l; } }, grid: { display: false } },
+                y: { ticks: { color: '#E5E5E5', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.1)' }, title: { display: true, text: 'VMs', color: '#8FA3B0', font: { size: 10 } } },
+              },
+            }} />
+          </div>
+        )}
       </div>
 
       {/* Per-vCenter status */}
