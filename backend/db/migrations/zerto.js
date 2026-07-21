@@ -88,4 +88,24 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 2,
+    up(db) {
+      // VRA appliances per site, from /v2/monitoring/sites?format=topology.
+      // Replaced wholesale each poll alongside the other current-state tables.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS zerto_vras (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          site_identifier TEXT NOT NULL,
+          site_name       TEXT,
+          name            TEXT,
+          version         TEXT,
+          status          TEXT,
+          progress        INTEGER,
+          captured_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_zerto_vras_site ON zerto_vras(site_identifier);
+      `);
+    },
+  },
 ];

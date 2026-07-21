@@ -182,7 +182,7 @@ const NEW_TABLES = [
   'plugins', 'users', 'groups', 'user_groups', 'role_grants',
   'auth_sessions', 'service_accounts', 'alert_notifications',
   'cohesity_views', 'workload_history',
-  'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history',
+  'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy

@@ -62,6 +62,50 @@ router.get('/alerts', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** GET /api/zerto/vras — VRA appliances per site (from the topology feed). */
+router.get('/vras', (req, res, next) => {
+  try {
+    res.json(db.prepare('SELECT * FROM zerto_vras ORDER BY site_name, name').all());
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/zerto/replication — replication flows between site pairs, derived
+ * from the stored VPGs: one flow per (protected_site → recovery_site) with a
+ * health rollup and its VPG list, ready for the flow-map visualization.
+ */
+router.get('/replication', (req, res, next) => {
+  try {
+    const vpgs = db.prepare('SELECT * FROM zerto_vpgs ORDER BY name').all();
+    const flows = new Map();
+    for (const v of vpgs) {
+      const from = v.protected_site || '(unknown)';
+      const to = v.recovery_site || '(unknown)';
+      const key = `${from}|${to}`;
+      if (!flows.has(key)) {
+        flows.set(key, {
+          from, to,
+          fromType: v.protected_site_type, toType: v.recovery_site_type,
+          vpgCount: 0, vmCount: 0, healthy: 0, warning: 0, error: 0,
+          worstRpo: null, vpgs: [],
+        });
+      }
+      const f = flows.get(key);
+      f.vpgCount += 1;
+      f.vmCount += v.vms_count || 0;
+      if (v.health === 'Healthy') f.healthy += 1;
+      else if (v.health === 'Error') f.error += 1;
+      else f.warning += 1;
+      if (v.actual_rpo != null && (f.worstRpo == null || v.actual_rpo > f.worstRpo)) f.worstRpo = v.actual_rpo;
+      f.vpgs.push({
+        name: v.name, health: v.health, status: v.status,
+        actual_rpo: v.actual_rpo, configured_rpo: v.configured_rpo, vms_count: v.vms_count,
+      });
+    }
+    res.json([...flows.values()].sort((a, b) => b.vpgCount - a.vpgCount));
+  } catch (err) { next(err); }
+});
+
 /** GET /api/zerto/vms — protected VMs. */
 router.get('/vms', (req, res, next) => {
   try {

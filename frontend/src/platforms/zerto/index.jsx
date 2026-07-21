@@ -1,11 +1,12 @@
 import { lazy } from 'react';
-import { Gauge, ShieldCheck, Globe2, Bell, MonitorSmartphone, Settings } from 'lucide-react';
+import { Gauge, ShieldCheck, Globe2, Bell, MonitorSmartphone, Settings, ArrowLeftRight } from 'lucide-react';
 
 const ZertoOverviewPage = lazy(() => import('../../pages/zerto/ZertoOverviewPage'));
 const ZertoVpgsPage = lazy(() => import('../../pages/zerto/ZertoVpgsPage'));
 const ZertoSitesPage = lazy(() => import('../../pages/zerto/ZertoSitesPage'));
 const ZertoAlertsPage = lazy(() => import('../../pages/zerto/ZertoAlertsPage'));
 const ZertoVmsPage = lazy(() => import('../../pages/zerto/ZertoVmsPage'));
+const ZertoReplicationPage = lazy(() => import('../../pages/zerto/ZertoReplicationPage'));
 const ZertoSettingsPage = lazy(() => import('../../pages/zerto/ZertoSettingsPage'));
 
 // Zerto sidebar — shown when the Zerto platform is active.
@@ -21,6 +22,7 @@ const navGroups = [
     label: 'Protect',
     items: [
       { label: 'VPGs', route: '/zerto/vpgs', icon: ShieldCheck, isActive: (p) => p.startsWith('/zerto/vpgs') },
+      { label: 'Replication', route: '/zerto/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/zerto/replication') },
       { label: 'Protected VMs', route: '/zerto/vms', icon: MonitorSmartphone, isActive: (p) => p.startsWith('/zerto/vms') },
     ],
   },
@@ -53,6 +55,7 @@ export default {
   routes: [
     { path: 'zerto', Component: ZertoOverviewPage },
     { path: 'zerto/vpgs', Component: ZertoVpgsPage },
+    { path: 'zerto/replication', Component: ZertoReplicationPage },
     { path: 'zerto/sites', Component: ZertoSitesPage },
     { path: 'zerto/alerts', Component: ZertoAlertsPage },
     { path: 'zerto/vms', Component: ZertoVmsPage },
