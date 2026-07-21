@@ -5,6 +5,7 @@ import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import AdminNav from '../components/AdminNav';
+import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
 
 // Sections rendered by this page; Users & Access and Plugins are their own
 // routed pages sharing the same AdminNav shell.
@@ -44,6 +45,7 @@ export default function AdminSettingsPage() {
   const [pureEnabled, setPureEnabled] = useState(false);
   const [netappEnabled, setNetappEnabled] = useState(false);
   const [zertoEnabled, setZertoEnabled] = useState(false);
+  const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
   const [licenseKeyInput, setLicenseKeyInput] = useState('');
@@ -453,6 +455,28 @@ export default function AdminSettingsPage() {
                 Show the Zerto platform tab. Leave off until the Zerto Analytics credentials are configured.
               </span>
             </label>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <p className="text-xs font-semibold text-ink mb-1 mt-2">Platform switcher style</p>
+              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
+                How the platform selector is presented — trial the styles and we'll keep the winner.
+                Applies immediately, saved per browser.
+              </p>
+              <div className="flex flex-col gap-1.5">
+                {SWITCHER_MODES.map(m => (
+                  <label key={m.id} className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input type="radio" name="switcher-mode" className="accent-brand cursor-pointer"
+                      checked={switcherMode === m.id}
+                      onChange={() => {
+                        localStorage.setItem('platform-switcher-mode', m.id);
+                        setSwitcherModeState(m.id);
+                        window.dispatchEvent(new Event('switcher-mode-changed'));
+                      }} />
+                    <span className="text-xs text-ink-muted">{m.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
 
             <div className="pt-2 border-t border-cohesity-border/60">
               <label htmlFor="dns-server" className="block text-xs font-semibold text-ink mb-1 mt-2">DNS resolver <span className="text-ink-faint font-normal">(optional)</span></label>

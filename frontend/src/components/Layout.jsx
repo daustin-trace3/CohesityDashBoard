@@ -12,6 +12,7 @@ import { useSearch } from '../context';
 import { platforms as builtinPlatforms } from '../platforms/registry';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import { useAuth } from '../auth/AuthContext';
+import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
 
 const builtinIds = builtinPlatforms.map(p => p.id);
 
@@ -49,6 +50,13 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
   // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
   const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
+  const [switcherMode, setSwitcherMode] = useState(getSwitcherMode);
+
+  useEffect(() => {
+    const onModeChange = () => setSwitcherMode(getSwitcherMode());
+    window.addEventListener('switcher-mode-changed', onModeChange);
+    return () => window.removeEventListener('switcher-mode-changed', onModeChange);
+  }, []);
   // Vendor-platform fleet summary, loaded only while a platform (Pure/NetApp) is active.
   const [platformCount, setPlatformCount] = useState(0);
   const [platformAlerts, setPlatformAlerts] = useState(0);
@@ -88,6 +96,11 @@ export default function Layout() {
   const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
 
   const { user, logout, hasPermission, loading: authLoading } = useAuth();
+
+  const visiblePlatforms = platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)));
+  const currentPlatformId = platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity';
+  const gotoPlatform = (p) => navigate(p.route);
+  const multiPlatform = visiblePlatforms.length > 1;
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
@@ -256,6 +269,10 @@ export default function Layout() {
 
   return (
     <div className="h-screen flex flex-row bg-transparent overflow-hidden">
+      {/* Experimental switcher style: far-left platform icon rail */}
+      {multiPlatform && switcherMode === 'rail' && (
+        <PlatformRail platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+      )}
       {/* Sidebar */}
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
@@ -335,6 +352,13 @@ export default function Layout() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <header className="relative z-30 h-14 bg-surface-base/70 backdrop-blur border-b border-cohesity-border flex-shrink-0 flex items-center gap-2 px-4">
+          {/* Experimental switcher styles: dropdown / grid launcher in the top bar */}
+          {multiPlatform && switcherMode === 'dropdown' && (
+            <PlatformDropdown platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+          )}
+          {multiPlatform && switcherMode === 'grid' && (
+            <PlatformGrid platforms={visiblePlatforms} currentId={currentPlatformId} onSelect={gotoPlatform} status={pollerStatus} />
+          )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
             <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : 'Global Cluster Dashboard'}</h1>
@@ -444,11 +468,11 @@ export default function Layout() {
         </header>
 
         {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}
-        {enabledPlatformIds.length > 1 && (
+        {multiPlatform && switcherMode === 'tabs' && (
           <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Platform</span>
             <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1">
-              {platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`))).map(p => {
+              {visiblePlatforms.map(p => {
                 const active = isActivePlatform(p.id, pathname);
                 return (
                   <button
