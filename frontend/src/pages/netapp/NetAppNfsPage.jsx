@@ -5,7 +5,7 @@ import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
+import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
 
 export default function NetAppNfsPage() {
@@ -77,16 +77,20 @@ export default function NetAppNfsPage() {
   const volCtl = useTableControls(byVolume, {
     searchKeys: ['volume_name', 'svm_name', 'array_name', 'protocols'],
     defaultSortKey: 'uniqueIps', defaultSortDir: 'desc',
+    paginate: true,
   });
   const clientCtl = useTableControls(clients, {
     searchKeys: ['client_ip', 'svm_name', 'volume_name', 'node_name', 'server_ip', 'array_name'],
+    paginate: true,
   });
   const policyCtl = useTableControls(byPolicy, {
     searchKeys: ['policy_name', 'volume', 'svm_name', 'array_name'],
     defaultSortKey: 'count', defaultSortDir: 'desc',
+    paginate: true,
   });
   const ruleCtl = useTableControls(rules, {
     searchKeys: ['policy_name', 'svm_name', 'clients', 'protocols'],
+    paginate: true,
   });
 
   return (
@@ -125,7 +129,7 @@ export default function NetAppNfsPage() {
                 <SortTh k="uniqueIps" label="Clients" ctl={volCtl} align="right" />
               </tr></thead>
               <tbody>
-                {volCtl.rows.map((g) => (
+                {volCtl.pageRows.map((g) => (
                   <tr key={g.key} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{g.volume_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{g.svm_name || '—'}</td>
@@ -143,6 +147,7 @@ export default function NetAppNfsPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={volCtl} />
       </div>
 
       {/* Connected clients */}
@@ -169,7 +174,7 @@ export default function NetAppNfsPage() {
                 <SortTh k="array_name" label="Cluster" ctl={clientCtl} />
               </tr></thead>
               <tbody>
-                {clientCtl.rows.map((c) => (
+                {clientCtl.pageRows.map((c) => (
                   <tr key={c.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3"><IpWithHost ip={c.client_ip} dns={dns} /></td>
                     <td className="py-2 pr-3 text-ink-muted">{c.svm_name || '—'}</td>
@@ -184,6 +189,7 @@ export default function NetAppNfsPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={clientCtl} />
       </div>
 
       {/* Export policy rules */}
@@ -209,7 +215,7 @@ export default function NetAppNfsPage() {
                 <SortTh k="count" label="Clients" ctl={policyCtl} align="right" />
               </tr></thead>
               <tbody>
-                {policyCtl.rows.map((g) => (
+                {policyCtl.pageRows.map((g) => (
                   <tr key={g.key} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{g.policy_name}</td>
                     <td className="py-2 pr-3 text-ink-muted">{g.volume || '—'}</td>
@@ -227,6 +233,7 @@ export default function NetAppNfsPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={policyCtl} />
       </div>
 
       {/* Raw export policy rules */}
@@ -270,6 +277,7 @@ export default function NetAppNfsPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={ruleCtl} />
       </div>
 
       {modalVolume && (

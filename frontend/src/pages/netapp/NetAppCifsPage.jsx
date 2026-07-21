@@ -5,7 +5,7 @@ import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
+import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
 
 // ISO8601 duration → total seconds, for sorting duration columns.
@@ -91,18 +91,22 @@ export default function NetAppCifsPage() {
   const volCtl = useTableControls(byVolume, {
     searchKeys: ['volume_name', 'svm_name', 'array_name', 'users'],
     defaultSortKey: 'uniqueIps', defaultSortDir: 'desc',
+    paginate: true,
   });
   const byShareCtl = useTableControls(byShare, {
     searchKeys: ['share_name', 'volume_name', 'svm_name', 'array_name'],
     defaultSortKey: 'uniqueIps', defaultSortDir: 'desc',
+    paginate: true,
   });
   const sessionCtl = useTableControls(sessions, {
     searchKeys: ['client_ip', 'smb_user', 'volume_name', 'svm_name', 'array_name'],
     sortValues: { connected_duration: (s) => isoSecs(s.connected_duration), idle_duration: (s) => isoSecs(s.idle_duration) },
+    paginate: true,
   });
   const shareCtl = useTableControls(shares, {
     searchKeys: ['share_name', 'path', 'volume_name', 'svm_name', 'array_name'],
     defaultSortKey: 'share_name',
+    paginate: true,
   });
 
   return (
@@ -142,7 +146,7 @@ export default function NetAppCifsPage() {
                 <SortTh k="uniqueIps" label="Clients" ctl={volCtl} align="right" />
               </tr></thead>
               <tbody>
-                {volCtl.rows.map((g) => (
+                {volCtl.pageRows.map((g) => (
                   <tr key={g.key} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{g.volume_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{g.svm_name || '—'}</td>
@@ -160,6 +164,7 @@ export default function NetAppCifsPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={volCtl} />
       </div>
 
       {/* Clients mounting each share */}
@@ -185,7 +190,7 @@ export default function NetAppCifsPage() {
                 <SortTh k="uniqueIps" label="Clients" ctl={byShareCtl} align="right" />
               </tr></thead>
               <tbody>
-                {byShareCtl.rows.map((sh) => (
+                {byShareCtl.pageRows.map((sh) => (
                   <tr key={sh.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{sh.share_name}</td>
                     <td className="py-2 pr-3 text-ink-muted">{sh.volume_name || '—'}</td>
@@ -203,6 +208,7 @@ export default function NetAppCifsPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={byShareCtl} />
       </div>
 
       {/* Active sessions */}
@@ -232,7 +238,7 @@ export default function NetAppCifsPage() {
                 <SortTh k="array_name" label="Cluster" ctl={sessionCtl} />
               </tr></thead>
               <tbody>
-                {sessionCtl.rows.map((s) => (
+                {sessionCtl.pageRows.map((s) => (
                   <tr key={s.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3"><IpWithHost ip={s.client_ip} dns={dns} /></td>
                     <td className="py-2 pr-3 text-ink-muted">{s.smb_user || '—'}</td>
@@ -250,6 +256,7 @@ export default function NetAppCifsPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={sessionCtl} />
       </div>
 
       {/* CIFS shares */}
@@ -274,7 +281,7 @@ export default function NetAppCifsPage() {
                 <SortTh k="array_name" label="Cluster" ctl={shareCtl} />
               </tr></thead>
               <tbody>
-                {shareCtl.rows.map((sh) => (
+                {shareCtl.pageRows.map((sh) => (
                   <tr key={sh.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{sh.share_name}</td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] font-mono">{sh.path || '—'}</td>
@@ -287,6 +294,7 @@ export default function NetAppCifsPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={shareCtl} />
       </div>
 
       {modalVolume && (
