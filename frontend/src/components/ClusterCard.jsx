@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import client from '../api/client';
 import HardwareModal from './HardwareModal';
 import ClusterAIModal from './ClusterAIModal';
+import { useAiEnabled } from '../api/useAiEnabled';
 
 function formatTB(bytes) {
   if (bytes == null || bytes === 0) return '—';
@@ -50,6 +51,7 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
   const [alertSummary, setAlertSummary] = useState(alertSummaryProp || { count: 0, level: 'none' });
   const [hardwareOpen, setHardwareOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const aiEnabled = useAiEnabled();
   const [metricsError, setMetricsError] = useState(false);
 
   useEffect(() => {
@@ -259,14 +261,16 @@ export default function ClusterCard({ cluster, onTagClick, selected = false, onS
             ? <p className="text-[11px] text-gray-500">v{metrics.software_version}</p>
             : <span />}
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              aria-label={`AI analysis for ${cluster.name}`}
-              onClick={e => { e.stopPropagation(); setAiOpen(true); }}
-              className="flex items-center gap-1 text-[11px] text-brand border border-brand/30 bg-brand/5 rounded-md px-1.5 py-0.5 hover:border-brand/60 hover:bg-brand/10 transition-colors cursor-pointer"
-            >
-              ✨ AI
-            </button>
+            {aiEnabled && (
+              <button
+                type="button"
+                aria-label={`AI analysis for ${cluster.name}`}
+                onClick={e => { e.stopPropagation(); setAiOpen(true); }}
+                className="flex items-center gap-1 text-[11px] text-brand border border-brand/30 bg-brand/5 rounded-md px-1.5 py-0.5 hover:border-brand/60 hover:bg-brand/10 transition-colors cursor-pointer"
+              >
+                ✨ AI
+              </button>
+            )}
             <button
               type="button"
               aria-label={`View hardware info for ${cluster.name}`}

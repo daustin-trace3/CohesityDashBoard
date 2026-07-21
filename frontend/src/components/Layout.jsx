@@ -11,6 +11,7 @@ import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { useSearch } from '../context';
 import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
+import { useAiEnabled } from '../api/useAiEnabled';
 
 const platforms = [
   { id: 'cohesity', label: 'Cohesity', route: '/dashboard', color: '#6CB33F' },
@@ -24,7 +25,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Global Overview', route: '/dashboard', icon: LayoutDashboard, isActive: (p) => p === '/' || p.startsWith('/dashboard') },
-      { label: 'AI Advisor', route: '/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/ai-advisor') },
+      { label: 'AI Advisor', route: '/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/ai-advisor'), requiresAi: true },
       { label: 'Alerts', route: '/alerts', icon: Bell, isActive: (p) => p.startsWith('/alerts'), showAlertCount: true },
       { label: 'Analytics', route: '/analytics', icon: Activity, isActive: (p) => p.startsWith('/analytics') },
       { label: 'Reporting', route: '/reporting', icon: FileText, isActive: (p) => p.startsWith('/reporting') },
@@ -192,6 +193,8 @@ export default function Layout() {
     window.addEventListener('switcher-mode-changed', onModeChange);
     return () => window.removeEventListener('switcher-mode-changed', onModeChange);
   }, []);
+
+  const aiEnabled = useAiEnabled();
   // Vendor-platform fleet summary, loaded only while a platform (Pure/NetApp) is active.
   const [platformCount, setPlatformCount] = useState(0);
   const [platformAlerts, setPlatformAlerts] = useState(0);
@@ -351,8 +354,12 @@ export default function Layout() {
 
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
-  // Swap the sidebar menu to match the active vendor platform.
-  const activeNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : navGroups;
+  // Swap the sidebar menu to match the active vendor platform. AI-dependent
+  // items (requiresAi) stay hidden until an AI provider token is configured.
+  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : navGroups;
+  const activeNavGroups = baseNavGroups
+    .map(group => ({ ...group, items: group.items.filter(item => !item.requiresAi || aiEnabled) }))
+    .filter(group => group.items.length > 0);
 
   const visiblePlatforms = platforms.filter(p => enabledPlatformIds.includes(p.id));
   const currentPlatformId = platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity';

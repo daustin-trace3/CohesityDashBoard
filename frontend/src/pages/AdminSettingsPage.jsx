@@ -113,6 +113,7 @@ export default function AdminSettingsPage() {
       setCredSources(data);
       setCredInputs({});
       setAiEnabled(true);
+      window.dispatchEvent(new Event('ai-status-changed'));
       toast({ type: 'success', title: 'AI keys saved', message: 'Stored encrypted. Applied immediately — no restart needed.' });
     } catch {
       toast({ type: 'error', title: 'Save failed', message: 'Could not save AI keys. Try again.' });
@@ -126,6 +127,7 @@ export default function AdminSettingsPage() {
     try {
       const { data } = await client.put('/settings/credentials', { [name]: '' });
       setCredSources(data);
+      window.dispatchEvent(new Event('ai-status-changed'));
       toast({ type: 'success', title: 'Stored key cleared', message: 'The .env value (if any) applies again.' });
     } catch {
       toast({ type: 'error', title: 'Clear failed', message: 'Could not clear the key. Try again.' });

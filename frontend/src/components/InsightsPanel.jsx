@@ -7,6 +7,7 @@ import {
 import client from '../api/client';
 import { Badge, Spinner } from './ui/primitives';
 import ClusterAIModal from './ClusterAIModal';
+import { useAiEnabled } from '../api/useAiEnabled';
 
 const SEVERITY = {
   critical: { icon: AlertOctagon, color: 'text-status-crit', bg: 'bg-status-crit/10 border-status-crit/30', label: 'Critical' },
@@ -107,6 +108,7 @@ export default function InsightsPanel({ initialData = null }) {
   const [error, setError] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [aiCluster, setAiCluster] = useState(null);
+  const aiEnabled = useAiEnabled();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -191,7 +193,7 @@ export default function InsightsPanel({ initialData = null }) {
               <InsightRow
                 key={`${ins.category}-${ins.clusterId ?? 'g'}-${i}`}
                 insight={ins}
-                onAskAi={(x) => setAiCluster({ id: x.clusterId, name: x.clusterName })}
+                onAskAi={aiEnabled ? (x) => setAiCluster({ id: x.clusterId, name: x.clusterName }) : undefined}
               />
             ))}
           </div>
