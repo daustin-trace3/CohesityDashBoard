@@ -86,6 +86,10 @@ export default function WorkloadsPage() {
     physical: t.physical + (e.physical_bytes || 0),
   }), { objects: 0, protected: 0, logical: 0, physical: 0 }), [estate]);
 
+  const estateCtl = useTableControls(estate, {
+    defaultSortKey: 'protected_bytes', defaultSortDir: 'desc',
+    sortValues: { reduction: (e) => (e.logical_bytes > 0 && e.physical_bytes > 0) ? e.logical_bytes / e.physical_bytes : null },
+  });
   const clusterCtl = useTableControls(rows, {
     searchKeys: ['cluster_name', 'environment'],
     defaultSortKey: 'protected_bytes', defaultSortDir: 'desc',
@@ -176,17 +180,17 @@ export default function WorkloadsPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                  <th className="py-2 pr-3">Workload</th>
-                  <th className="py-2 pr-3 text-right">Clusters</th>
-                  <th className="py-2 pr-3 text-right">Objects</th>
-                  <th className="py-2 pr-3 text-right">Unprotected</th>
-                  <th className="py-2 pr-3 text-right">Protected</th>
-                  <th className="py-2 pr-3 text-right">Logical</th>
-                  <th className="py-2 pr-3 text-right">Physical</th>
-                  <th className="py-2 pr-3 text-right">Reduction</th>
+                  <SortTh k="environment" label="Workload" ctl={estateCtl} />
+                  <SortTh k="clusters" label="Clusters" ctl={estateCtl} align="right" />
+                  <SortTh k="protected_count" label="Objects" ctl={estateCtl} align="right" />
+                  <SortTh k="unprotected_count" label="Unprotected" ctl={estateCtl} align="right" />
+                  <SortTh k="protected_bytes" label="Protected" ctl={estateCtl} align="right" />
+                  <SortTh k="logical_bytes" label="Logical" ctl={estateCtl} align="right" />
+                  <SortTh k="physical_bytes" label="Physical" ctl={estateCtl} align="right" />
+                  <SortTh k="reduction" label="Reduction" ctl={estateCtl} align="right" />
                 </tr></thead>
                 <tbody>
-                  {estate.map((e) => (
+                  {estateCtl.rows.map((e) => (
                     <tr key={e.environment} className="border-b border-cohesity-border/50">
                       <td className="py-2 pr-3 text-ink">
                         <span className="inline-block w-2 h-2 rounded-full mr-2" style={{ backgroundColor: envColor(envs, e.environment) }} />
