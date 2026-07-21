@@ -86,7 +86,7 @@ export default function VcSettingsPage() {
   const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && form.password;
 
   return (
-    <div className="animate-fade-in">
+    <div className="animate-fade-in max-w-3xl">
       <PageHeader icon={Settings} title="vCenter Settings" description="Register vCenter servers — each is polled directly with its own credentials" />
 
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -95,7 +95,7 @@ export default function VcSettingsPage() {
           A read-only vCenter account is sufficient for inventory; certificate details additionally need the
           certificate-management view privilege. The password is encrypted at rest.
         </p>
-        <div className="grid md:grid-cols-3 gap-3 mb-3">
+        <div className="grid md:grid-cols-2 gap-3 mb-3">
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Display name</label>
             <input value={form.name} onChange={set('name')} placeholder="Prod vCenter" className={inp} spellCheck={false} />
