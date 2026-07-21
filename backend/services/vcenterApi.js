@@ -124,9 +124,19 @@ function soapFaultMessage(err) {
     if (!fault) return null;
     const code = flat(fault.faultcode);
     const str = flat(fault.faultstring);
-    const detailType = fault.detail && typeof fault.detail === 'object'
-      ? Object.keys(fault.detail).find(k => !k.startsWith('@_')) : null;
-    return `SOAP fault${code ? ` [${code}]` : ''}: ${str || detailType || 'unknown'}`;
+    let detailType = null;
+    let detailName = null;
+    if (fault.detail && typeof fault.detail === 'object') {
+      detailType = Object.keys(fault.detail).find(k => !k.startsWith('@_')) || null;
+      // Typed faults carry specifics (InvalidProperty -> the offending path).
+      const inner = detailType ? fault.detail[detailType] : null;
+      if (inner && typeof inner === 'object') {
+        detailName = flat(inner.name) ?? flat(inner.property) ?? flat(inner.argument) ?? null;
+      }
+    }
+    const parts = [str || detailType || 'unknown'];
+    if (detailName) parts.push(`(${detailName})`);
+    return `SOAP fault${code ? ` [${code}]` : ''}: ${parts.join(' ')}`;
   } catch { return null; }
 }
 
@@ -174,7 +184,9 @@ const VM_PROPS = [
   'guest.toolsVersion', 'guest.toolsVersionStatus2',
   'layoutEx.file', // every file backing the VM — feeds the orphaned-VMDK diff
 ];
-const DVS_PROPS = ['name', 'summary.portCount', 'summary.uuid'];
+// NB: DVSSummary's port total is `numPorts` — requesting `summary.portCount`
+// faults the WHOLE RetrievePropertiesEx call with InvalidProperty.
+const DVS_PROPS = ['name', 'summary.numPorts', 'summary.uuid'];
 const DVPG_PROPS = ['name', 'config.distributedVirtualSwitch', 'config.defaultPortConfig'];
 
 const flat = (v) => (v && typeof v === 'object' && '#text' in v) ? v['#text'] : v;
@@ -451,7 +463,7 @@ async function fetchInventorySoap(vc) {
       dvsNameByMoref.set(String(d._moref), String(d.name));
       networks.push({
         hostName: null, kind: 'dvswitch', name: String(d.name),
-        portCount: num(d['summary.portCount']),
+        portCount: num(d['summary.numPorts']),
         extra: { uuid: flat(d['summary.uuid']) ?? null },
       });
     }
