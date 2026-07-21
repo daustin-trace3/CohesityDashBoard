@@ -9,7 +9,7 @@ const cron = require('node-cron');
 const pollerStatus = require('./pollerStatus');
 const { getSetting } = require('./settings');
 const {
-  zertoConfigured, fetchSites, fetchVpgs, fetchAlerts, fetchProtectedVms,
+  zertoConfigured, fetchSites, fetchSitesTopology, fetchVpgs, fetchAlerts, fetchProtectedVms,
 } = require('./zertoApi');
 const logger = require('../utils/logger');
 
@@ -99,6 +99,20 @@ const replaceVms = db.transaction((vms) => {
   }
 });
 
+const replaceVras = db.transaction((topology) => {
+  db.prepare('DELETE FROM zerto_vras').run();
+  const stmt = db.prepare(`
+    INSERT INTO zerto_vras (site_identifier, site_name, name, version, status, progress)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const site of topology) {
+    for (const vra of (site.vras || [])) {
+      stmt.run(site.identifier || null, site.name || null, vra.name || null,
+        vra.version || null, vra.status || null, vra.progress ?? null);
+    }
+  }
+});
+
 function appendSnapshot({ sites, vpgData, alerts, vms }) {
   const vpgs = vpgData.vpgs || [];
   const rpoVals = vpgs.map(v => v.actualRpo).filter(v => typeof v === 'number' && v >= 0);
@@ -128,13 +142,15 @@ async function refreshAll() {
     logger.debug('[ZertoPoller] Skipping poll — credentials not configured');
     return;
   }
-  const [sites, vpgData, alerts, vms] = await Promise.all([
+  const [sites, vpgData, alerts, vms, topology] = await Promise.all([
     fetchSites(), fetchVpgs(), fetchAlerts(), fetchProtectedVms(),
+    fetchSitesTopology().catch(() => []),
   ]);
   replaceSites(sites);
   replaceVpgs(vpgData.vpgs || []);
   replaceAlerts(alerts);
   replaceVms(vms);
+  replaceVras(topology);
   appendSnapshot({ sites, vpgData, alerts, vms });
   logger.info(`[ZertoPoller] Refreshed ${sites.length} site(s), ${(vpgData.vpgs || []).length} VPG(s), ${alerts.length} alert(s), ${vms.length} VM(s)`);
 }

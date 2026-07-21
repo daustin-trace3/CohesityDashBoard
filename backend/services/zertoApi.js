@@ -84,6 +84,9 @@ const fetchAccountStats = () => zGet('/v2/monitoring/');
 /** All sites (siteDetails[]): name, type, version, zvmIp, connectionStatus... */
 const fetchSites = async () => (await zGet('/v2/monitoring/sites')) || [];
 
+/** Sites topology (siteTopology[]): adds per-site vras[] + directed site links. */
+const fetchSitesTopology = async () => (await zGet('/v2/monitoring/sites', { format: 'topology' })) || [];
+
 /** All VPGs: { vpgs: [...], healthyVpgsCount, warnedVpgsCount, erroneousVpgsCount }. */
 const fetchVpgs = async () => (await zGet('/v2/monitoring/vpgs')) || { vpgs: [] };
 
@@ -123,6 +126,6 @@ async function testConnection(candidate = null) {
 
 module.exports = {
   getZertoConfig, zertoConfigured, zGet, invalidateToken,
-  fetchAccountStats, fetchSites, fetchVpgs, fetchAlerts, fetchProtectedVms,
+  fetchAccountStats, fetchSites, fetchSitesTopology, fetchVpgs, fetchAlerts, fetchProtectedVms,
   testConnection,
 };

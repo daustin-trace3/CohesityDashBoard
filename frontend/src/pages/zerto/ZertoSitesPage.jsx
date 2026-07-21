@@ -1,23 +1,38 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Globe2 } from 'lucide-react';
+import { Globe2, Boxes } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
 import { BRAND, connTone, fmtWhen, parseJsonList } from './helpers';
 
+function vraTone(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'installed') return 'ok';
+  if (s.includes('fail') || s.includes('error')) return 'crit';
+  return 'warn';
+}
+
 export default function ZertoSitesPage() {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
+  const [vras, setVras] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
-  const load = useCallback(() => client.get('/zerto/sites')
-    .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
+  const load = useCallback(() => Promise.all([
+    client.get('/zerto/sites').then(({ data }) => setRows(data)),
+    client.get('/zerto/vras').then(({ data }) => setVras(data)).catch(() => setVras([])),
+  ]).then(() => setLastRefreshed(new Date()))
     .catch(() => { setRows([]); toast({ type: 'error', title: 'Failed to load sites' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
   const list = rows || [];
+  const vraList = vras || [];
+  const vraCtl = useTableControls(vraList, {
+    searchKeys: ['site_name', 'name', 'version', 'status'],
+    defaultSortKey: 'site_name', defaultSortDir: 'asc',
+  });
   const ctl = useTableControls(list, {
     searchKeys: ['name', 'site_type', 'zvm_ip', 'version'],
     defaultSortKey: 'name', defaultSortDir: 'asc',
@@ -25,12 +40,13 @@ export default function ZertoSitesPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Globe2} title="Zerto Sites" description="ZVM sites reporting to Zerto Analytics">
+      <PageHeader icon={Globe2} title="Zerto Sites & Appliances" description="ZVM sites reporting to Zerto Analytics, and the VRA appliances at each site">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
 
-      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-3">ZVM Sites</p>
         <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by site, type or ZVM IP…"
           filters={[{ k: 'site_type', label: 'Types' }, { k: 'connection_status', label: 'Statuses' }]} />
         {rows == null ? (
@@ -61,6 +77,47 @@ export default function ZertoSitesPage() {
                     <td className="py-2 pr-3"><Badge tone={connTone(s.connection_status)}>{s.connection_status || '—'}</Badge></td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] tnum">{fmtWhen(s.last_connection_time)}</td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[200px] truncate">{parseJsonList(s.zorgs).join(', ') || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* VRA appliances per site (from the topology feed) */}
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Boxes size={15} className="text-brand" /> VRA Appliances</p>
+        <p className="text-[11px] text-ink-faint mb-3">Virtual Replication Appliances reported by each site's ZVM.</p>
+        <TableControls ctl={vraCtl} rows={vraList} searchPlaceholder="Filter by site, VRA, version or status…"
+          filters={[{ k: 'site_name', label: 'Sites' }, { k: 'status', label: 'Statuses' }, { k: 'version', label: 'Versions' }]} />
+        {vras == null ? (
+          <LoadingPanel label="Loading VRAs…" height={100} />
+        ) : vraList.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No VRA data yet — it appears after the next poll cycle.</div>
+        ) : vraCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No VRAs match your filters.</div>
+        ) : (
+          <div className="overflow-x-auto max-h-[45vh] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <SortTh k="site_name" label="Site" ctl={vraCtl} />
+                <SortTh k="name" label="VRA" ctl={vraCtl} />
+                <SortTh k="version" label="Version" ctl={vraCtl} />
+                <SortTh k="status" label="Status" ctl={vraCtl} />
+              </tr></thead>
+              <tbody>
+                {vraCtl.rows.map((v) => (
+                  <tr key={v.id} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink-muted">{v.site_name || '—'}</td>
+                    <td className="py-2 pr-3 text-ink">{v.name || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted tnum">{v.version || '—'}</td>
+                    <td className="py-2 pr-3">
+                      <Badge tone={vraTone(v.status)}>{v.status || '—'}</Badge>
+                      {v.progress != null && v.progress > 0 && v.progress < 100 && (
+                        <span className="text-[11px] text-ink-faint tnum ml-2">{v.progress}%</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

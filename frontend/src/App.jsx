@@ -25,6 +25,7 @@ import NetAppHardwarePage from './pages/netapp/NetAppHardwarePage';
 import NetAppSettingsPage from './pages/netapp/NetAppSettingsPage';
 import ZertoOverviewPage from './pages/zerto/ZertoOverviewPage';
 import ZertoVpgsPage from './pages/zerto/ZertoVpgsPage';
+import ZertoReplicationPage from './pages/zerto/ZertoReplicationPage';
 import ZertoSitesPage from './pages/zerto/ZertoSitesPage';
 import ZertoAlertsPage from './pages/zerto/ZertoAlertsPage';
 import ZertoVmsPage from './pages/zerto/ZertoVmsPage';
@@ -94,6 +95,7 @@ export default function App() {
                 <Route path="netapp/settings" element={withBoundary(<NetAppSettingsPage />)} />
                 <Route path="zerto"           element={withBoundary(<ZertoOverviewPage />)} />
                 <Route path="zerto/vpgs"      element={withBoundary(<ZertoVpgsPage />)} />
+                <Route path="zerto/replication" element={withBoundary(<ZertoReplicationPage />)} />
                 <Route path="zerto/sites"     element={withBoundary(<ZertoSitesPage />)} />
                 <Route path="zerto/alerts"    element={withBoundary(<ZertoAlertsPage />)} />
                 <Route path="zerto/vms"       element={withBoundary(<ZertoVmsPage />)} />
