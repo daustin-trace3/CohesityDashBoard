@@ -189,6 +189,7 @@ export default function Layout() {
         'cohesity',
         ...(r.data.platformPureEnabled ? ['pure'] : []),
         ...(r.data.platformNetappEnabled ? ['netapp'] : []),
+        ...(r.data.platformZertoEnabled ? ['zerto'] : []),
         ...allPlatforms.filter(p => !builtinIds.includes(p.id)).map(p => p.id),
       ]))
       .catch(() => {});

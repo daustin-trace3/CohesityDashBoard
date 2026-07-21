@@ -17,6 +17,7 @@ const { getPlatformSettings } = require('./services/settings');
 const { isDemo } = require('./services/demoMode');
 const pureManifest = require('./platforms/pure');
 const netappManifest = require('./platforms/netapp');
+const zertoManifest = require('./platforms/zerto');
 
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
@@ -27,11 +28,13 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
   registry.setEnabled('netapp', platformNetappEnabled && registry.isEntitled('netapp'));
+  registry.registerPlugin(zertoManifest);
+  registry.setEnabled('zerto', platformZertoEnabled && registry.isEntitled('zerto'));
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();

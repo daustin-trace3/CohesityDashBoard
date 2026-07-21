@@ -6,6 +6,7 @@ const coreMigrations = require('./migrations/core');
 const cohesityMigrations = require('./migrations/cohesity');
 const pureMigrations = require('./migrations/pure');
 const netappMigrations = require('./migrations/netapp');
+const zertoMigrations = require('./migrations/zerto');
 
 const DB_PATH = process.env.DASHBOARD_DB_PATH || path.join(__dirname, '..', 'data', 'cohesity.db');
 
@@ -30,5 +31,6 @@ runMigrations(db, 'core', coreMigrations);
 runMigrations(db, 'cohesity', cohesityMigrations);
 runMigrations(db, 'pure', pureMigrations);
 runMigrations(db, 'netapp', netappMigrations);
+runMigrations(db, 'zerto', zertoMigrations);
 
 module.exports = db;

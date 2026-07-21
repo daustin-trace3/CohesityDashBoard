@@ -14,6 +14,7 @@ const { isDemo } = require('./services/demoMode');
 const authService = require('./services/authService');
 const pureManifest = require('./platforms/pure');
 const netappManifest = require('./platforms/netapp');
+const zertoManifest = require('./platforms/zerto');
 
 // Auth boot work (contract C8.3): prune stale sessions and (re-)check the
 // first-run claim token. authService already runs this once at module load
@@ -30,11 +31,13 @@ registry.init();
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
 // (C9.5) gates enabling regardless of the stored flag.
-const { platformPureEnabled, platformNetappEnabled } = getPlatformSettings();
+const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled } = getPlatformSettings();
 registry.registerPlugin(pureManifest);
 registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
 registry.registerPlugin(netappManifest);
 registry.setEnabled('netapp', platformNetappEnabled && registry.isEntitled('netapp'));
+registry.registerPlugin(zertoManifest);
+registry.setEnabled('zerto', platformZertoEnabled && registry.isEntitled('zerto'));
 
 // Scan and register any installed (non-built-in) plugins left in plugins/
 // after the boot swap above.

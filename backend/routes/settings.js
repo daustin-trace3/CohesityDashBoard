@@ -97,7 +97,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformPureEnabled, platformNetappEnabled, dnsServer,
+      platformPureEnabled, platformNetappEnabled, platformZertoEnabled, dnsServer,
     } = req.body || {};
     if (llmEstateContext !== undefined) {
       setSetting('llm_estate_context', String(llmEstateContext).slice(0, 4000));
@@ -135,6 +135,10 @@ router.put('/', (req, res, next) => {
     if (platformNetappEnabled !== undefined) {
       setSetting('platform_netapp_enabled', platformNetappEnabled ? '1' : '0');
       applyPlatformEnabled('netapp', !!platformNetappEnabled);
+    }
+    if (platformZertoEnabled !== undefined) {
+      setSetting('platform_zerto_enabled', platformZertoEnabled ? '1' : '0');
+      applyPlatformEnabled('zerto', !!platformZertoEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));

@@ -4,6 +4,7 @@ const { pollCluster } = require('../services/poller');
 const { listProtectionGroupsV2, getProtectionGroupRunsV2 } = require('../services/cohesityApi');
 const pollerStatus = require('../services/pollerStatus');
 const registry = require('../core/registry');
+const { getSetting } = require('../services/settings');
 const router = express.Router();
 
 // Per-plugin metrics-history table + array-key column, for the lastCapture
@@ -110,6 +111,14 @@ router.get('/status', (req, res, next) => {
     const viewsAge = ageMinutes(viewsCapture);
     const viewsState = pollerStatus.getState('views', 0);
 
+    // Zerto (account-global SaaS task — no per-entity structure)
+    const zertoPlugin = registry.getPlugin('zerto');
+    const zertoRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM zerto_metrics_history').get();
+    const zertoCapture = zertoRow ? zertoRow.captured_at : null;
+    const zertoAge = ageMinutes(zertoCapture);
+    const zertoState = pollerStatus.getState('zerto', 0);
+    const zertoInterval = Number(getSetting('zerto_poll_interval_minutes')) || 15;
+
     res.json({
       cohesity: {
         enabled: clusters.length > 0,
@@ -133,6 +142,15 @@ router.get('/status', (req, res, next) => {
         lastDataCapture: strftime(viewsCapture),
         ageMinutes: viewsAge,
         isStale: viewsAge !== null ? viewsAge > licensingInterval * 2 + 5 : false,
+      },
+      zerto: {
+        enabled: zertoPlugin ? zertoPlugin.enabled : false,
+        isSyncing: zertoState.isSyncing,
+        lastRefreshEnd: zertoState.lastPollEnd,
+        lastDataCapture: strftime(zertoCapture),
+        ageMinutes: zertoAge,
+        isStale: zertoAge !== null ? zertoAge > zertoInterval * 2 + 5 : false,
+        failedSources: [],
       },
     });
   } catch (err) {
