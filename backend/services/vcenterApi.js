@@ -256,6 +256,14 @@ const DVPG_PROPS = ['name', 'config.distributedVirtualSwitch', 'config.defaultPo
 
 const flat = (v) => (v && typeof v === 'object' && '#text' in v) ? v['#text'] : v;
 
+// SOAP reports vim25 enums (poweredOn); REST reports POWERED_ON. Store the
+// REST style so SQL aggregations (overview power split, overcommit) match.
+const POWER_STATES = { poweredOn: 'POWERED_ON', poweredOff: 'POWERED_OFF', suspended: 'SUSPENDED' };
+const normalizePowerState = (v) => {
+  const s = flat(v);
+  return s == null ? null : (POWER_STATES[String(s)] || String(s));
+};
+
 function objectsToProps(objects) {
   return objects.map(obj => {
     const props = { _moref: flat(obj.obj), _type: obj.obj?.['@_type'] };
@@ -580,7 +588,7 @@ async function fetchInventorySoap(vc) {
         vmId: String(v._moref || ''),
         name: String(v.name),
         hostName: hostNameByMoref.get(String(v['runtime.host'])) || null,
-        powerState: v['runtime.powerState'] ?? null,
+        powerState: normalizePowerState(v['runtime.powerState']),
         guestOs: v['config.guestFullName'] ?? null,
         cpuCount: v['summary.config.numCpu'] != null ? Number(v['summary.config.numCpu']) : null,
         memoryMb: v['summary.config.memorySizeMB'] != null ? Number(v['summary.config.memorySizeMB']) : null,
