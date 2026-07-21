@@ -38,6 +38,7 @@ export default function AdminSettingsPage() {
   const [pureEnabled, setPureEnabled] = useState(false);
   const [netappEnabled, setNetappEnabled] = useState(false);
   const [zertoEnabled, setZertoEnabled] = useState(false);
+  const [vcenterEnabled, setVcenterEnabled] = useState(false);
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
@@ -68,6 +69,7 @@ export default function AdminSettingsPage() {
         setPureEnabled(!!d.platformPureEnabled);
         setNetappEnabled(!!d.platformNetappEnabled);
         setZertoEnabled(!!d.platformZertoEnabled);
+        setVcenterEnabled(!!d.platformVcenterEnabled);
         setDnsServer(d.dnsServer || '');
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
@@ -89,6 +91,7 @@ export default function AdminSettingsPage() {
         platformPureEnabled: pureEnabled,
         platformNetappEnabled: netappEnabled,
         platformZertoEnabled: zertoEnabled,
+        platformVcenterEnabled: vcenterEnabled,
         dnsServer,
       });
       window.dispatchEvent(new Event('platforms-changed'));
@@ -401,6 +404,14 @@ export default function AdminSettingsPage() {
               <span className="text-xs text-ink-muted leading-relaxed">
                 <span className="font-semibold text-ink">Zerto</span><br />
                 Show the Zerto platform tab. Leave off until the Zerto Analytics credentials are configured.
+              </span>
+            </label>
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input type="checkbox" checked={vcenterEnabled} onChange={e => setVcenterEnabled(e.target.checked)}
+                className="accent-brand mt-0.5 cursor-pointer" />
+              <span className="text-xs text-ink-muted leading-relaxed">
+                <span className="font-semibold text-ink">VMware vCenter</span><br />
+                Show the vCenter platform tab. Register vCenters on its Settings page after enabling.
               </span>
             </label>
 

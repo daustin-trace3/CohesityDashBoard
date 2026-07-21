@@ -30,6 +30,10 @@ import ZertoSitesPage from './pages/zerto/ZertoSitesPage';
 import ZertoAlertsPage from './pages/zerto/ZertoAlertsPage';
 import ZertoVmsPage from './pages/zerto/ZertoVmsPage';
 import ZertoSettingsPage from './pages/zerto/ZertoSettingsPage';
+import VcOverviewPage from './pages/vcenter/VcOverviewPage';
+import VcHostsPage from './pages/vcenter/VcHostsPage';
+import VcDatastoresPage from './pages/vcenter/VcDatastoresPage';
+import VcSettingsPage from './pages/vcenter/VcSettingsPage';
 import DataProtectionPage from './pages/DataProtectionPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import ReportingPage from './pages/ReportingPage';
@@ -100,6 +104,10 @@ export default function App() {
                 <Route path="zerto/alerts"    element={withBoundary(<ZertoAlertsPage />)} />
                 <Route path="zerto/vms"       element={withBoundary(<ZertoVmsPage />)} />
                 <Route path="zerto/settings"  element={withBoundary(<ZertoSettingsPage />)} />
+                <Route path="vcenter"            element={withBoundary(<VcOverviewPage />)} />
+                <Route path="vcenter/hosts"      element={withBoundary(<VcHostsPage />)} />
+                <Route path="vcenter/datastores" element={withBoundary(<VcDatastoresPage />)} />
+                <Route path="vcenter/settings"   element={withBoundary(<VcSettingsPage />)} />
                 <Route path="data-protection" element={withBoundary(<DataProtectionPage />)} />
                 <Route path="replication"     element={withBoundary(<ReplicationPage />)} />
                 <Route path="views"           element={withBoundary(<ViewsPage />)} />

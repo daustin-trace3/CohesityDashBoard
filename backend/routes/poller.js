@@ -77,6 +77,14 @@ router.get('/status', (req, res, next) => {
       'pure'
     );
 
+    // vCenters
+    const vcenterRows = db.prepare('SELECT id, name, polling_interval_minutes FROM vcenter_vcenters').all();
+    const vcenterEntities = buildEntities(
+      vcenterRows,
+      'SELECT captured_at FROM vcenter_metrics_history WHERE vcenter_id = ? ORDER BY captured_at DESC LIMIT 1',
+      'vcenter'
+    );
+
     // NetApp arrays
     const netappArrays = db.prepare('SELECT id, name, polling_interval_minutes FROM netapp_arrays').all();
     const netappEntities = buildEntities(
@@ -111,6 +119,10 @@ router.get('/status', (req, res, next) => {
       netapp: {
         enabled: netappArrays.length > 0,
         entities: netappEntities,
+      },
+      vcenter: {
+        enabled: vcenterRows.length > 0,
+        entities: vcenterEntities,
       },
       licensing: {
         enabled: true,

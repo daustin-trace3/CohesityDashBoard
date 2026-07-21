@@ -31,6 +31,7 @@ const pureRouter = require('./routes/pure');
 const pure1Router = require('./routes/pure1');
 const netappRouter = require('./routes/netapp');
 const zertoRouter = require('./routes/zerto');
+const vcenterRouter = require('./routes/vcenter');
 const dnsRouter = require('./routes/dns');
 const requireApiKey = require('./middleware/auth');
 const requireLicense = require('./middleware/license');
@@ -40,6 +41,7 @@ const { initPurePoller } = require('./services/purePoller');
 const { initPure1Poller } = require('./services/pure1Poller');
 const { initNetAppPoller } = require('./services/netappPoller');
 const { initZertoPoller } = require('./services/zertoPoller');
+const { initVcenterPoller } = require('./services/vcenterPoller');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initLicense, getLicenseStatus } = require('./services/license');
@@ -118,6 +120,7 @@ app.use('/api/pure', pureRouter);
 app.use('/api/pure1', pure1Router);
 app.use('/api/netapp', netappRouter);
 app.use('/api/zerto', zertoRouter);
+app.use('/api/vcenter', vcenterRouter);
 app.use('/api/dns', dnsRouter);
 
 // Health check — verifies DB connectivity
@@ -171,6 +174,7 @@ app.listen(PORT, '0.0.0.0', () => {
     initPure1Poller();
     initNetAppPoller();
     initZertoPoller();
+    initVcenterPoller();
     initLicensing();
     initViews();
   } else {
