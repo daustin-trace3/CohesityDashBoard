@@ -35,6 +35,7 @@ import VcHostsPage from './pages/vcenter/VcHostsPage';
 import VcInventoryPage from './pages/vcenter/VcInventoryPage';
 import VcDatastoresPage from './pages/vcenter/VcDatastoresPage';
 import VcNetworkPage from './pages/vcenter/VcNetworkPage';
+import VcEventsPage from './pages/vcenter/VcEventsPage';
 import VcGovernancePage from './pages/vcenter/VcGovernancePage';
 import VcSettingsPage from './pages/vcenter/VcSettingsPage';
 import DataProtectionPage from './pages/DataProtectionPage';
@@ -112,6 +113,7 @@ export default function App() {
                 <Route path="vcenter/inventory"  element={withBoundary(<VcInventoryPage />)} />
                 <Route path="vcenter/datastores" element={withBoundary(<VcDatastoresPage />)} />
                 <Route path="vcenter/network"    element={withBoundary(<VcNetworkPage />)} />
+                <Route path="vcenter/events"     element={withBoundary(<VcEventsPage />)} />
                 <Route path="vcenter/governance" element={withBoundary(<VcGovernancePage />)} />
                 <Route path="vcenter/settings"   element={withBoundary(<VcSettingsPage />)} />
                 <Route path="data-protection" element={withBoundary(<DataProtectionPage />)} />

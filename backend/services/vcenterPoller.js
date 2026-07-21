@@ -9,8 +9,9 @@ const cron = require('node-cron');
 const pollerStatus = require('./pollerStatus');
 const {
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
-  fetchInventorySoap,
+  fetchInventorySoap, fetchEvents,
 } = require('./vcenterApi');
+const { reconcileIssueHistory } = require('./vcenterIssues');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e));
@@ -223,6 +224,35 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
   db.prepare("DELETE FROM vcenter_metrics_history WHERE captured_at < datetime('now', '-365 days')").run();
 });
 
+// Native vSphere events, appended incrementally: query from the newest stored
+// event (small overlap; the unique (vcenter_id, event_key) index dedupes) or
+// 48h back on the first pull. Best-effort — an events failure never fails the poll.
+const storeEvents = db.transaction((vcId, events) => {
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO vcenter_events (vcenter_id, event_key, event_type, severity, message, username, entity_name, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let inserted = 0;
+  for (const e of events) {
+    inserted += stmt.run(vcId, e.eventKey, e.eventType, e.severity, e.message, e.username, e.entityName, e.createdAt).changes;
+  }
+  db.prepare("DELETE FROM vcenter_events WHERE created_at < datetime('now', '-30 days')").run();
+  return inserted;
+});
+
+async function collectEvents(vc) {
+  try {
+    const latest = db.prepare('SELECT MAX(created_at) AS t FROM vcenter_events WHERE vcenter_id = ?').get(vc.id).t;
+    const since = latest
+      ? new Date(new Date(latest).getTime() - 5 * 60000).toISOString()
+      : new Date(Date.now() - 48 * 3600000).toISOString();
+    const inserted = storeEvents(vc.id, await fetchEvents(vc, since));
+    if (inserted) logger.debug(`[VcPoller] ${vc.name}: ${inserted} new event(s)`);
+  } catch (err) {
+    logger.debug(`[VcPoller] event fetch failed for ${vc.name}: ${safeMsg(err)}`);
+  }
+}
+
 async function pollVcenter(vc) {
   try {
     const data = await collect(vc);
@@ -231,6 +261,7 @@ async function pollVcenter(vc) {
       UPDATE vcenter_vcenters SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?
     `).run(vc.id);
+    await collectEvents(vc);
     logger.info(`[VcPoller] ${vc.name}: ${data.hosts.length} host(s), ${data.clusters.length} cluster(s), ${data.datastores.length} datastore(s), ${(data.vms || []).length} VM(s)`);
   } catch (err) {
     db.prepare(`
@@ -238,6 +269,12 @@ async function pollVcenter(vc) {
         last_poll_at = datetime('now') WHERE id = ?
     `).run(safeMsg(err), vc.id);
     throw err;
+  } finally {
+    // Runs on success AND failure so "vCenter unreachable" opens/resolves in
+    // the issue timeline as soon as the poll outcome is recorded.
+    try { reconcileIssueHistory(); } catch (err) {
+      logger.warn(`[VcPoller] issue-history reconcile failed: ${err.message}`);
+    }
   }
 }
 

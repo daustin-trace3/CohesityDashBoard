@@ -1085,3 +1085,34 @@ CREATE TABLE IF NOT EXISTS vcenter_orphaned_vmdks (
   captured_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_vcenter_orphans_vc ON vcenter_orphaned_vmdks(vcenter_id);
+
+CREATE TABLE IF NOT EXISTS vcenter_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  vcenter_id   INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+  event_key    INTEGER NOT NULL,
+  event_type   TEXT,
+  severity     TEXT,
+  message      TEXT,
+  username     TEXT,
+  entity_name  TEXT,
+  created_at   TEXT,
+  captured_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vcenter_events_key ON vcenter_events(vcenter_id, event_key);
+CREATE INDEX IF NOT EXISTS idx_vcenter_events_time ON vcenter_events(created_at);
+
+CREATE TABLE IF NOT EXISTS vcenter_issue_history (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_key   TEXT NOT NULL,
+  vcenter     TEXT,
+  severity    TEXT,
+  type        TEXT,
+  target      TEXT,
+  message     TEXT,
+  status      TEXT NOT NULL DEFAULT 'open',
+  first_seen  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_vcenter_issue_hist_key ON vcenter_issue_history(issue_key, status);
+CREATE INDEX IF NOT EXISTS idx_vcenter_issue_hist_seen ON vcenter_issue_history(last_seen);

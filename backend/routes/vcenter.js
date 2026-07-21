@@ -6,20 +6,14 @@ const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
-const { getSetting, setSetting } = require('../services/settings');
+const { setSetting } = require('../services/settings');
 const vcenterApi = require('../services/vcenterApi');
 const { vcenterPoller } = require('../services/vcenterPoller');
+const {
+  DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues,
+} = require('../services/vcenterIssues');
 
 const router = express.Router();
-
-const DS_USED_WARN_PCT = 80;
-const CLUSTER_FREE_WARN_PCT = 20;
-// Cert warning window is operator-configurable (vCenter Settings page);
-// critical stays at 14 days, clamped down if the warning window is shorter.
-function certWarnDays() {
-  const n = Number(getSetting('vcenter_cert_warn_days'));
-  return Number.isFinite(n) && n >= 1 && n <= 365 ? Math.round(n) : 60;
-}
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
@@ -143,73 +137,6 @@ router.post('/vcenters/:id/refresh', [param('id').isInt().toInt()], validate, as
 
 const dsUsedPct = (d) => (d.capacity_bytes > 0 ? (1 - d.free_bytes / d.capacity_bytes) * 100 : null);
 
-function computeIssues() {
-  const issues = [];
-  for (const vc of db.prepare('SELECT * FROM vcenter_vcenters').all()) {
-    if (vc.last_poll_status === 'error') {
-      issues.push({ severity: 'critical', type: 'vcenter-unreachable', vcenter: vc.name,
-        message: `vCenter ${vc.name} is unreachable: ${vc.last_poll_error || 'poll failed'}` });
-    }
-  }
-  const hosts = db.prepare(`
-    SELECT h.*, v.name AS vcenter_name FROM vcenter_hosts h JOIN vcenter_vcenters v ON v.id = h.vcenter_id
-  `).all();
-  for (const h of hosts) {
-    if (h.connection_state && h.connection_state !== 'CONNECTED') {
-      issues.push({ severity: 'critical', type: 'host-down', vcenter: h.vcenter_name,
-        message: `Host ${h.name} is ${String(h.connection_state).toLowerCase().replace(/_/g, ' ')}` });
-    } else if (h.in_maintenance === 1) {
-      issues.push({ severity: 'info', type: 'host-maintenance', vcenter: h.vcenter_name,
-        message: `Host ${h.name} is in maintenance mode` });
-    }
-  }
-  const datastores = db.prepare(`
-    SELECT d.*, v.name AS vcenter_name FROM vcenter_datastores d JOIN vcenter_vcenters v ON v.id = d.vcenter_id
-  `).all();
-  for (const d of datastores) {
-    const used = dsUsedPct(d);
-    if (used != null && used > DS_USED_WARN_PCT) {
-      issues.push({ severity: used > 90 ? 'critical' : 'warning', type: 'datastore-usage', vcenter: d.vcenter_name,
-        message: `Datastore ${d.name} is ${used.toFixed(1)}% full` });
-    }
-  }
-  const clusters = db.prepare(`
-    SELECT c.*, v.name AS vcenter_name FROM vcenter_clusters c JOIN vcenter_vcenters v ON v.id = c.vcenter_id
-  `).all();
-  for (const c of clusters) {
-    for (const [label, cap, used] of [
-      ['CPU', c.cpu_mhz_capacity, c.cpu_mhz_used],
-      ['memory', c.mem_bytes_capacity, c.mem_bytes_used],
-    ]) {
-      if (cap > 0 && used != null) {
-        const freePct = (1 - used / cap) * 100;
-        if (freePct < CLUSTER_FREE_WARN_PCT) {
-          issues.push({ severity: freePct < 10 ? 'critical' : 'warning', type: 'cluster-capacity', vcenter: c.vcenter_name,
-            message: `Cluster ${c.name} has ${freePct.toFixed(1)}% ${label} headroom left` });
-        }
-      }
-    }
-  }
-  const certWarn = certWarnDays();
-  const certCrit = Math.min(14, certWarn);
-  for (const cert of db.prepare(`
-    SELECT c.*, v.name AS vcenter_name FROM vcenter_certs c JOIN vcenter_vcenters v ON v.id = c.vcenter_id
-  `).all()) {
-    if (!cert.valid_to) continue;
-    const days = (new Date(cert.valid_to).getTime() - Date.now()) / 86400000;
-    if (Number.isFinite(days) && days < certWarn) {
-      issues.push({
-        severity: days < certCrit ? 'critical' : 'warning', type: 'cert-expiry', vcenter: cert.vcenter_name,
-        message: days < 0
-          ? `vCenter ${cert.vcenter_name} TLS certificate EXPIRED ${Math.abs(Math.round(days))} day(s) ago`
-          : `vCenter ${cert.vcenter_name} TLS certificate expires in ${Math.round(days)} day(s)`,
-      });
-    }
-  }
-  const order = { critical: 0, warning: 1, info: 2 };
-  return issues.sort((a, b) => order[a.severity] - order[b.severity]);
-}
-
 // VMware Tools upgrade-needed statuses (guest.toolsVersionStatus2 values).
 const TOOLS_OUTDATED = ['guestToolsNeedUpgrade', 'guestToolsTooOld', 'guestToolsBlacklisted', 'guestToolsSupportedOld'];
 const toolsOutdatedIn = `tools_version_status IN (${TOOLS_OUTDATED.map(() => '?').join(', ')})`;
@@ -276,6 +203,31 @@ router.get('/overview', (req, res, next) => {
       issues: computeIssues(),
       thresholds: { dsUsedWarnPct: DS_USED_WARN_PCT, clusterFreeWarnPct: CLUSTER_FREE_WARN_PCT, certWarnDays: certWarnDays() },
     });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/events?days= — native vSphere events (poll-collected). */
+router.get('/events', (req, res, next) => {
+  try {
+    const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
+    res.json(db.prepare(`
+      SELECT e.*, v.name AS vcenter_name FROM vcenter_events e
+      JOIN vcenter_vcenters v ON v.id = e.vcenter_id
+      WHERE e.created_at >= datetime('now', ?)
+      ORDER BY e.created_at DESC LIMIT 5000
+    `).all(`-${days} days`));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/issue-history?days= — detected-issue lifecycle (open first). */
+router.get('/issue-history', (req, res, next) => {
+  try {
+    const days = Math.min(90, Math.max(1, Number(req.query.days) || 30));
+    res.json(db.prepare(`
+      SELECT * FROM vcenter_issue_history
+      WHERE status = 'open' OR last_seen >= datetime('now', ?)
+      ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, last_seen DESC
+    `).all(`-${days} days`));
   } catch (err) { next(err); }
 });
 
