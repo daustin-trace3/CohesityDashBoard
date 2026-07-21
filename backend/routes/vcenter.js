@@ -6,6 +6,7 @@ const express = require('express');
 const { body, param, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
+const { getSetting, setSetting } = require('../services/settings');
 const vcenterApi = require('../services/vcenterApi');
 const { vcenterPoller } = require('../services/vcenterPoller');
 
@@ -13,7 +14,12 @@ const router = express.Router();
 
 const DS_USED_WARN_PCT = 80;
 const CLUSTER_FREE_WARN_PCT = 20;
-const CERT_WARN_DAYS = 60;
+// Cert warning window is operator-configurable (vCenter Settings page);
+// critical stays at 14 days, clamped down if the warning window is shorter.
+function certWarnDays() {
+  const n = Number(getSetting('vcenter_cert_warn_days'));
+  return Number.isFinite(n) && n >= 1 && n <= 365 ? Math.round(n) : 60;
+}
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
@@ -184,14 +190,16 @@ function computeIssues() {
       }
     }
   }
+  const certWarn = certWarnDays();
+  const certCrit = Math.min(14, certWarn);
   for (const cert of db.prepare(`
     SELECT c.*, v.name AS vcenter_name FROM vcenter_certs c JOIN vcenter_vcenters v ON v.id = c.vcenter_id
   `).all()) {
     if (!cert.valid_to) continue;
     const days = (new Date(cert.valid_to).getTime() - Date.now()) / 86400000;
-    if (Number.isFinite(days) && days < CERT_WARN_DAYS) {
+    if (Number.isFinite(days) && days < certWarn) {
       issues.push({
-        severity: days < 14 ? 'critical' : 'warning', type: 'cert-expiry', vcenter: cert.vcenter_name,
+        severity: days < certCrit ? 'critical' : 'warning', type: 'cert-expiry', vcenter: cert.vcenter_name,
         message: days < 0
           ? `vCenter ${cert.vcenter_name} TLS certificate EXPIRED ${Math.abs(Math.round(days))} day(s) ago`
           : `vCenter ${cert.vcenter_name} TLS certificate expires in ${Math.round(days)} day(s)`,
@@ -266,8 +274,25 @@ router.get('/overview', (req, res, next) => {
         FROM vcenter_vms GROUP BY COALESCE(guest_os, 'Unknown') ORDER BY count DESC
       `).all(),
       issues: computeIssues(),
-      thresholds: { dsUsedWarnPct: DS_USED_WARN_PCT, clusterFreeWarnPct: CLUSTER_FREE_WARN_PCT, certWarnDays: CERT_WARN_DAYS },
+      thresholds: { dsUsedWarnPct: DS_USED_WARN_PCT, clusterFreeWarnPct: CLUSTER_FREE_WARN_PCT, certWarnDays: certWarnDays() },
     });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/config — platform-level settings (alert thresholds). */
+router.get('/config', (req, res, next) => {
+  try {
+    res.json({ certWarnDays: certWarnDays() });
+  } catch (err) { next(err); }
+});
+
+/** PUT /api/vcenter/config — save alert thresholds. */
+router.put('/config', [
+  body('certWarnDays').isInt({ min: 1, max: 365 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    setSetting('vcenter_cert_warn_days', String(req.body.certWarnDays));
+    res.json({ saved: true, certWarnDays: certWarnDays() });
   } catch (err) { next(err); }
 });
 

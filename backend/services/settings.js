@@ -16,6 +16,7 @@ const DEFAULTS = {
   platform_zerto_enabled: '0',
   platform_vcenter_enabled: '0',
   zerto_poll_interval_minutes: '15',
+  vcenter_cert_warn_days: '60',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',
