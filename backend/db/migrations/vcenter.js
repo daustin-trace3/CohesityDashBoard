@@ -134,4 +134,53 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 3,
+    up(db) {
+      // Governance + network expansion: VMware Tools versioning on VMs, host
+      // config used for drift detection (cores, NTP/DNS, SSH service, uptime),
+      // host/dvs networking inventory (one typed-superset table), and the
+      // orphaned-VMDK sweep results. All SOAP-sourced — NULL without SOAP.
+      db.exec(`
+        ALTER TABLE vcenter_vms ADD COLUMN tools_version TEXT;
+        ALTER TABLE vcenter_vms ADD COLUMN tools_version_status TEXT;
+        ALTER TABLE vcenter_hosts ADD COLUMN cpu_cores INTEGER;
+        ALTER TABLE vcenter_hosts ADD COLUMN ntp_servers TEXT;
+        ALTER TABLE vcenter_hosts ADD COLUMN dns_servers TEXT;
+        ALTER TABLE vcenter_hosts ADD COLUMN ssh_enabled INTEGER;
+        ALTER TABLE vcenter_hosts ADD COLUMN uptime_seconds INTEGER;
+
+        CREATE TABLE IF NOT EXISTS vcenter_networks (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id   INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          host_name    TEXT,              -- NULL for vCenter-scope rows (dvswitch/dvportgroup)
+          kind         TEXT NOT NULL,     -- pnic | vswitch | portgroup | vmkernel | dvswitch | dvportgroup
+          name         TEXT,
+          switch_name  TEXT,              -- owning vswitch/dvs for portgroups/pnics
+          vlan_id      INTEGER,
+          speed_mbps   INTEGER,
+          mac          TEXT,
+          ip_address   TEXT,
+          netmask      TEXT,
+          mtu          INTEGER,
+          uplinks      TEXT,              -- JSON array of uplink device names
+          port_count   INTEGER,
+          extra        TEXT,              -- JSON: driver, dhcp, vlan trunk ranges, ...
+          captured_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_networks_vc ON vcenter_networks(vcenter_id, kind);
+
+        CREATE TABLE IF NOT EXISTS vcenter_orphaned_vmdks (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id     INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          datastore_name TEXT,
+          path           TEXT,            -- "[datastore] folder/disk.vmdk"
+          size_bytes     INTEGER,
+          modified_at    TEXT,
+          captured_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_orphans_vc ON vcenter_orphaned_vmdks(vcenter_id);
+      `);
+    },
+  },
 ];

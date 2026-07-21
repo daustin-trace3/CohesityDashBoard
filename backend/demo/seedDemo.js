@@ -64,7 +64,8 @@ const SEEDED_TABLES = [
   'zerto_vras', 'zerto_vms', 'zerto_alerts', 'zerto_vpgs', 'zerto_sites', 'zerto_metrics_history',
   // vcenter (children before the parent so FK deletes stay explicit)
   'vcenter_vms', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores',
-  'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vcenters',
+  'vcenter_certs', 'vcenter_metrics_history', 'vcenter_networks',
+  'vcenter_orphaned_vmdks', 'vcenter_vcenters',
 ];
 
 function wipeSeededTables(database) {

@@ -151,4 +151,19 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vcenters WHERE version IS NULL').get().c).toBe(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_metrics_history').get().c).toBe(8 * 31);
   });
+
+  it('seeds vcenter governance + network data', () => {
+    // Networking inventory: pnics/vswitches/portgroups per host, DVS per vCenter.
+    for (const kind of ['pnic', 'vswitch', 'portgroup', 'vmkernel', 'dvswitch', 'dvportgroup']) {
+      expect(db.prepare('SELECT COUNT(*) c FROM vcenter_networks WHERE kind = ?').get(kind).c).toBeGreaterThan(0);
+    }
+    // Drift seeds: NTP, ESX build and SSH deviations exist within clusters.
+    expect(db.prepare("SELECT COUNT(DISTINCT ntp_servers) c FROM vcenter_hosts WHERE ntp_servers IS NOT NULL").get().c).toBeGreaterThan(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE ssh_enabled = 1').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE cpu_cores IS NULL').get().c).toBe(0);
+    // Outdated VMware Tools VMs + orphaned VMDKs feed the Governance page.
+    expect(db.prepare("SELECT COUNT(*) c FROM vcenter_vms WHERE tools_version_status = 'guestToolsNeedUpgrade'").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vms WHERE tools_version IS NULL').get().c).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_orphaned_vmdks').get().c).toBeGreaterThan(3);
+  });
 });

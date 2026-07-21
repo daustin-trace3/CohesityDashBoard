@@ -23,6 +23,9 @@ const HARDWARE = [
   { vendor: 'Cisco Systems Inc', model: 'UCSC-C240-M7SX', bios: 'C240M7.4.3.4a', biosDate: '2025-08-22' },
   { vendor: 'Lenovo', model: 'ThinkSystem SR650 V3', bios: 'ESE122N-3.22', biosDate: '2025-10-12' },
 ];
+const NTP_BASELINE = ['0.pool.ntp.icc.demo', '1.pool.ntp.icc.demo'];
+const DNS_BASELINE = ['10.0.10.53', '10.0.11.53'];
+const TOOLS_VERSIONS = { current: '12352', old: ['11365', '11269', '10346'] };
 const GUEST_OS = [
   'Microsoft Windows Server 2022 (64-bit)',
   'Microsoft Windows Server 2019 (64-bit)',
@@ -53,8 +56,18 @@ function seedVcenter(db, { now, encrypt }) {
     INSERT INTO vcenter_hosts (vcenter_id, host_id, name, cluster_name, connection_state,
       power_state, in_maintenance, vm_count, cpu_mhz_capacity, cpu_mhz_used,
       mem_bytes_capacity, mem_bytes_used, esx_version, esx_build, bios_version,
-      bios_release_date, vendor, model, captured_at)
-    VALUES (?, ?, ?, ?, ?, 'POWERED_ON', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      bios_release_date, vendor, model, cpu_cores, ntp_servers, dns_servers,
+      ssh_enabled, uptime_seconds, captured_at)
+    VALUES (?, ?, ?, ?, ?, 'POWERED_ON', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertNetwork = db.prepare(`
+    INSERT INTO vcenter_networks (vcenter_id, host_name, kind, name, switch_name, vlan_id,
+      speed_mbps, mac, ip_address, netmask, mtu, uplinks, port_count, extra, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertOrphan = db.prepare(`
+    INSERT INTO vcenter_orphaned_vmdks (vcenter_id, datastore_name, path, size_bytes, modified_at, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   const insertCluster = db.prepare(`
     INSERT INTO vcenter_clusters (vcenter_id, cluster_id, name, drs_enabled, ha_enabled,
@@ -72,8 +85,9 @@ function seedVcenter(db, { now, encrypt }) {
   `);
   const insertVm = db.prepare(`
     INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, cluster_name, power_state,
-      guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version,
+      tools_version, tools_version_status, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSnap = db.prepare(`
     INSERT INTO vcenter_metrics_history (vcenter_id, captured_at, hosts_total, hosts_connected,
@@ -82,7 +96,8 @@ function seedVcenter(db, { now, encrypt }) {
   `);
 
   const GIB = 1024 ** 3;
-  let hostTotal = 0, vmTotal = 0, dsTotal = 0, clusterTotal = 0;
+  const role4 = (rng) => pick(rng, VM_ROLES);
+  let hostTotal = 0, vmTotal = 0, dsTotal = 0, clusterTotal = 0, orphanTotal = 0;
 
   SITES.forEach((site, vcIdx) => {
     const vcName = `${site}-vc-prd-01`;
@@ -131,11 +146,37 @@ function seedVcenter(db, { now, encrypt }) {
         const memUsed = down ? null : Math.round(memCap * usedFrac);
         const hostVms = down || maintenance ? (down ? 0 : randInt(rng, 2, 5)) : randInt(rng, 10, 22);
 
+        // Deliberate cluster drift (Governance page): one dal host on stale
+        // NTP, one chi host on an older ESX build + BIOS, one fra host with
+        // SSH left enabled against a disabled baseline.
+        const ntpDrift = site === 'dal' && c === 1 && h === 2;
+        const buildDrift = site === 'chi' && c === 1 && h === 3;
+        const sshDrift = site === 'fra' && c === 2 && h === 1;
+        const hostEsx = buildDrift ? ESX_VERSIONS[2] : esx;
         insertHost.run(vcId, `host-${vcIdx}${c}${h}`, hostName, clusterName,
           down ? 'NOT_RESPONDING' : 'CONNECTED', maintenance ? 1 : 0, hostVms,
           cpuCap, cpuUsed, memCap, memUsed,
-          esx.version, esx.build, hw.bios, hw.biosDate, hw.vendor, hw.model, nowIso);
+          hostEsx.version, hostEsx.build,
+          buildDrift ? '2.1.8' : hw.bios, hw.biosDate, hw.vendor, hw.model,
+          48, JSON.stringify(ntpDrift ? ['10.9.9.9'] : NTP_BASELINE), JSON.stringify(DNS_BASELINE),
+          sshDrift ? 1 : 0, down ? null : randInt(rng, 5, 400) * 86400, nowIso);
         hostTotal++;
+
+        // Host networking: 4 pnics, vSwitch0, standard portgroups, vmk0/vmk1.
+        for (let p = 0; p < 4; p++) {
+          insertNetwork.run(vcId, hostName, 'pnic', `vmnic${p}`, null, null,
+            p < 2 ? 25000 : 10000, `00:50:56:${String(vcIdx).padStart(2, '0')}:${String(c * 10 + h).padStart(2, '0')}:${String(p).padStart(2, '0')}`,
+            null, null, null, null, null,
+            JSON.stringify({ driver: p < 2 ? 'i40en' : 'ixgben', linkUp: !down }), nowIso);
+        }
+        insertNetwork.run(vcId, hostName, 'vswitch', 'vSwitch0', null, null, null, null, null, null,
+          1500, JSON.stringify(['vmnic2', 'vmnic3']), 128, null, nowIso);
+        insertNetwork.run(vcId, hostName, 'portgroup', 'Management Network', 'vSwitch0', 0, null, null, null, null, null, null, null, null, nowIso);
+        insertNetwork.run(vcId, hostName, 'portgroup', 'vMotion', 'vSwitch0', 1160 + vcIdx, null, null, null, null, null, null, null, null, nowIso);
+        insertNetwork.run(vcId, hostName, 'vmkernel', 'vmk0', 'Management Network', null, null, null,
+          `10.${100 + vcIdx}.${c * 10 + h}.5`, '255.255.255.0', 1500, null, null, JSON.stringify({ dhcp: false }), nowIso);
+        insertNetwork.run(vcId, hostName, 'vmkernel', 'vmk1', 'vMotion', null, null, null,
+          `10.${140 + vcIdx}.${c * 10 + h}.5`, '255.255.255.0', 9000, null, null, JSON.stringify({ dhcp: false }), nowIso);
         vcHosts.push({ down, maintenance });
         clCpuCap += cpuCap; clCpuUsed += cpuUsed || 0;
         clMemCap += memCap; clMemUsed += memUsed || 0;
@@ -145,13 +186,18 @@ function seedVcenter(db, { now, encrypt }) {
           const role = pick(rng, VM_ROLES);
           const poweredOn = chance(rng, 0.9);
           const guestOs = pick(rng, GUEST_OS);
+          // ~8% of VMs run outdated Tools so Governance has action items.
+          const outdated = chance(rng, 0.08);
           insertVm.run(vcId, `vm-${vcIdx}${c}${h}-${v}`,
             `${site}-${role}-${String(c).padStart(2, '0')}${String(h)}${String(v).padStart(2, '0')}`,
             hostName, clusterName, poweredOn ? 'POWERED_ON' : 'POWERED_OFF',
             guestOs, pick(rng, [2, 2, 4, 4, 8, 16]), pick(rng, [4, 8, 8, 16, 32, 64]) * 1024,
             poweredOn ? `10.${100 + vcIdx}.${c * 10 + h}.${v + 10}` : null,
             poweredOn ? 'guestToolsRunning' : 'guestToolsNotRunning',
-            'vmx-20', nowIso);
+            'vmx-20',
+            outdated ? pick(rng, TOOLS_VERSIONS.old) : TOOLS_VERSIONS.current,
+            outdated ? 'guestToolsNeedUpgrade' : (chance(rng, 0.05) ? 'guestToolsUnmanaged' : 'guestToolsCurrent'),
+            nowIso);
           vmTotal++;
         }
       }
@@ -177,6 +223,26 @@ function seedVcenter(db, { now, encrypt }) {
       dsTotal++;
     }
 
+    // Distributed switch + portgroups (vCenter-wide rows, host_name NULL).
+    insertNetwork.run(vcId, null, 'dvswitch', `${site}-dvs-01`, null, null, null, null, null, null,
+      null, JSON.stringify(['vmnic0', 'vmnic1']), 512, JSON.stringify({ uuid: `50 2f ${vcIdx}0 de mo` }), nowIso);
+    [['dvpg-prod', 100], ['dvpg-db', 110], ['dvpg-web', 120], ['dvpg-dmz', 200], ['dvpg-backup', 310]].forEach(([pg, vlan]) => {
+      insertNetwork.run(vcId, null, 'dvportgroup', `${pg}-${vlan}`, `${site}-dvs-01`, vlan,
+        null, null, null, null, null, null, null, null, nowIso);
+    });
+
+    // Orphaned VMDKs on a few sites so the card and Governance table have data.
+    if (['nyc', 'sgp', 'chi'].includes(site)) {
+      const orphanCount = randInt(rng, 2, 4);
+      for (let o = 1; o <= orphanCount; o++) {
+        insertOrphan.run(vcId, `${site}-ds-vmfs-01`,
+          `[${site}-ds-vmfs-01] decommissioned/${site}-old-${role4(rng)}-${String(o).padStart(2, '0')}.vmdk`,
+          randInt(rng, 20, 500) * GIB,
+          new Date(now - randInt(rng, 60, 500) * 86400000).toISOString(), nowIso);
+        orphanTotal++;
+      }
+    }
+
     // 30 days of daily snapshots; VM counts climb ~8% into today's total.
     const hostsConn = vcHosts.filter(x => !x.down).length;
     const hostsMaint = vcHosts.filter(x => x.maintenance).length;
@@ -189,7 +255,7 @@ function seedVcenter(db, { now, encrypt }) {
     }
   });
 
-  return { vcenters: SITES.length, clusters: clusterTotal, hosts: hostTotal, vms: vmTotal, datastores: dsTotal };
+  return { vcenters: SITES.length, clusters: clusterTotal, hosts: hostTotal, vms: vmTotal, datastores: dsTotal, orphans: orphanTotal };
 }
 
 module.exports = { seedVcenter };

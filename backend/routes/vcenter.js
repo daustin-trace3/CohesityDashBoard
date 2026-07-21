@@ -202,6 +202,10 @@ function computeIssues() {
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);
 }
 
+// VMware Tools upgrade-needed statuses (guest.toolsVersionStatus2 values).
+const TOOLS_OUTDATED = ['guestToolsNeedUpgrade', 'guestToolsTooOld', 'guestToolsBlacklisted', 'guestToolsSupportedOld'];
+const toolsOutdatedIn = `tools_version_status IN (${TOOLS_OUTDATED.map(() => '?').join(', ')})`;
+
 /** GET /api/vcenter/overview — fleet rollup + computed issues. */
 router.get('/overview', (req, res, next) => {
   try {
@@ -210,25 +214,165 @@ router.get('/overview', (req, res, next) => {
       SELECT COUNT(*) AS total,
         SUM(CASE WHEN connection_state = 'CONNECTED' THEN 1 ELSE 0 END) AS connected,
         SUM(CASE WHEN in_maintenance = 1 THEN 1 ELSE 0 END) AS maintenance,
-        SUM(COALESCE(vm_count, 0)) AS vms
+        SUM(COALESCE(vm_count, 0)) AS vms,
+        SUM(cpu_cores) AS cpu_cores,
+        SUM(mem_bytes_capacity) AS mem_bytes_total
       FROM vcenter_hosts
     `).get();
     const dsAgg = db.prepare(`
       SELECT COUNT(*) AS total, SUM(capacity_bytes) AS capacity, SUM(free_bytes) AS free
       FROM vcenter_datastores
     `).get();
+    // Overcommit convention: allocations count powered-on VMs only.
+    const vmAgg = db.prepare(`
+      SELECT
+        SUM(CASE WHEN power_state = 'POWERED_ON' THEN 1 ELSE 0 END) AS powered_on,
+        SUM(CASE WHEN power_state = 'POWERED_OFF' THEN 1 ELSE 0 END) AS powered_off,
+        SUM(CASE WHEN power_state = 'SUSPENDED' THEN 1 ELSE 0 END) AS suspended,
+        SUM(CASE WHEN power_state = 'POWERED_ON' THEN COALESCE(cpu_count, 0) ELSE 0 END) AS vcpus_on,
+        SUM(CASE WHEN power_state = 'POWERED_ON' THEN COALESCE(memory_mb, 0) ELSE 0 END) AS mem_mb_on
+      FROM vcenter_vms
+    `).get();
+    const orphanAgg = db.prepare(
+      'SELECT COUNT(*) AS count, SUM(size_bytes) AS bytes FROM vcenter_orphaned_vmdks'
+    ).get();
+    const toolsOutdated = db.prepare(
+      `SELECT COUNT(*) AS n FROM vcenter_vms WHERE ${toolsOutdatedIn}`
+    ).get(...TOOLS_OUTDATED).n;
     res.json({
       vcenters: vcs.map(publicVc),
       hosts: hostAgg,
       datastores: dsAgg,
       clusterCount: db.prepare('SELECT COUNT(*) AS n FROM vcenter_clusters').get().n,
       vmCount: db.prepare('SELECT COUNT(*) AS n FROM vcenter_vms').get().n,
+      vmStats: { ...vmAgg, tools_outdated: toolsOutdated },
+      capacity: {
+        cpu_cores: hostAgg.cpu_cores,
+        vcpus_allocated: vmAgg.vcpus_on,
+        cpu_overcommit: hostAgg.cpu_cores > 0 ? vmAgg.vcpus_on / hostAgg.cpu_cores : null,
+        mem_bytes_total: hostAgg.mem_bytes_total,
+        vm_mem_bytes_allocated: (vmAgg.mem_mb_on || 0) * 1024 * 1024,
+        mem_overcommit: hostAgg.mem_bytes_total > 0
+          ? ((vmAgg.mem_mb_on || 0) * 1024 * 1024) / hostAgg.mem_bytes_total : null,
+      },
+      orphans: orphanAgg,
+      density: db.prepare(`
+        SELECT h.name, h.cluster_name, h.vm_count, v.name AS vcenter_name
+        FROM vcenter_hosts h JOIN vcenter_vcenters v ON v.id = h.vcenter_id
+        WHERE h.vm_count IS NOT NULL ORDER BY h.vm_count DESC
+      `).all(),
       osBreakdown: db.prepare(`
         SELECT COALESCE(guest_os, 'Unknown') AS guest_os, COUNT(*) AS count
         FROM vcenter_vms GROUP BY COALESCE(guest_os, 'Unknown') ORDER BY count DESC
       `).all(),
       issues: computeIssues(),
       thresholds: { dsUsedWarnPct: DS_USED_WARN_PCT, clusterFreeWarnPct: CLUSTER_FREE_WARN_PCT, certWarnDays: CERT_WARN_DAYS },
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/network — physical + logical networking inventory. */
+router.get('/network', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT n.*, v.name AS vcenter_name FROM vcenter_networks n
+      JOIN vcenter_vcenters v ON v.id = n.vcenter_id ORDER BY v.name, n.host_name, n.name
+    `).all().map(r => ({
+      ...r,
+      uplinks: r.uplinks ? JSON.parse(r.uplinks) : null,
+      extra: r.extra ? JSON.parse(r.extra) : null,
+    }));
+    const byKind = (kind) => rows.filter(r => r.kind === kind);
+    res.json({
+      pnics: byKind('pnic'),
+      vswitches: byKind('vswitch'),
+      portgroups: byKind('portgroup'),
+      vmkernels: byKind('vmkernel'),
+      dvswitches: byKind('dvswitch'),
+      dvportgroups: byKind('dvportgroup'),
+    });
+  } catch (err) { next(err); }
+});
+
+// Host config fields compared for drift; NTP/DNS lists compare order-insensitively.
+const DRIFT_FIELDS = [
+  { key: 'esx_build', label: 'ESX build', value: (h) => h.esx_build != null ? `${h.esx_version || ''} (${h.esx_build})` : null },
+  { key: 'bios_version', label: 'BIOS version', value: (h) => h.bios_version },
+  { key: 'ntp_servers', label: 'NTP servers', value: (h) => sortedList(h.ntp_servers) },
+  { key: 'dns_servers', label: 'DNS servers', value: (h) => sortedList(h.dns_servers) },
+  { key: 'ssh_enabled', label: 'SSH service', value: (h) => h.ssh_enabled == null ? null : (h.ssh_enabled ? 'enabled' : 'disabled') },
+];
+
+function sortedList(json) {
+  if (!json) return null;
+  try {
+    const arr = JSON.parse(json);
+    return Array.isArray(arr) && arr.length ? [...arr].sort().join(', ') : null;
+  } catch { return null; }
+}
+
+/**
+ * Configuration drift: within each cluster (2+ hosts), the majority value per
+ * field is the baseline; hosts that deviate are drift items. Fields without
+ * SOAP data (all NULL) are skipped rather than reported.
+ */
+function computeDrift() {
+  const hosts = db.prepare(`
+    SELECT h.*, v.name AS vcenter_name FROM vcenter_hosts h
+    JOIN vcenter_vcenters v ON v.id = h.vcenter_id
+    WHERE h.cluster_name IS NOT NULL
+  `).all();
+  const byCluster = new Map();
+  for (const h of hosts) {
+    const key = `${h.vcenter_id}|${h.cluster_name}`;
+    if (!byCluster.has(key)) byCluster.set(key, []);
+    byCluster.get(key).push(h);
+  }
+  const drift = [];
+  for (const members of byCluster.values()) {
+    if (members.length < 2) continue;
+    for (const field of DRIFT_FIELDS) {
+      const values = members.map(h => ({ host: h, value: field.value(h) })).filter(x => x.value != null);
+      if (values.length < 2) continue;
+      const counts = new Map();
+      for (const x of values) counts.set(x.value, (counts.get(x.value) || 0) + 1);
+      if (counts.size < 2) continue;
+      const [expected, expectedCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+      for (const x of values) {
+        if (x.value === expected) continue;
+        drift.push({
+          vcenter: x.host.vcenter_name, cluster: x.host.cluster_name, host: x.host.name,
+          field: field.label, value: x.value, expected,
+          baseline_hosts: expectedCount, cluster_hosts: members.length,
+        });
+      }
+    }
+  }
+  return drift;
+}
+
+/** GET /api/vcenter/governance — config drift, outdated VMware Tools, orphaned VMDKs. */
+router.get('/governance', (req, res, next) => {
+  try {
+    const outdatedTools = db.prepare(`
+      SELECT m.name, m.host_name, m.cluster_name, m.power_state, m.guest_os,
+             m.tools_version, m.tools_version_status, v.name AS vcenter_name
+      FROM vcenter_vms m JOIN vcenter_vcenters v ON v.id = m.vcenter_id
+      WHERE ${toolsOutdatedIn} ORDER BY v.name, m.name
+    `).all(...TOOLS_OUTDATED);
+    const orphans = db.prepare(`
+      SELECT o.*, v.name AS vcenter_name FROM vcenter_orphaned_vmdks o
+      JOIN vcenter_vcenters v ON v.id = o.vcenter_id ORDER BY o.size_bytes DESC
+    `).all();
+    res.json({
+      drift: computeDrift(),
+      outdatedTools,
+      orphans,
+      orphanBytes: orphans.reduce((n, o) => n + (o.size_bytes || 0), 0),
+      // SOAP-sourced fields all NULL means the data isn't available (yet).
+      driftDataAvailable: db.prepare(
+        'SELECT COUNT(*) AS n FROM vcenter_hosts WHERE ntp_servers IS NOT NULL OR esx_build IS NOT NULL'
+      ).get().n > 0,
     });
   } catch (err) { next(err); }
 });

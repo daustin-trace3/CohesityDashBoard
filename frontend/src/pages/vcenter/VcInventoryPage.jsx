@@ -11,6 +11,8 @@ const powerTone = (p) => p === 'POWERED_ON' || p === 'poweredOn' ? 'ok'
 const powerLabel = (p) => String(p || '—').replace(/^POWERED_|^powered/i, '').replace(/^_/, '').toUpperCase() || '—';
 const toolsTone = (t) => t === 'guestToolsRunning' ? 'ok' : t === 'guestToolsNotRunning' ? 'warn' : 'neutral';
 const toolsLabel = (t) => t ? String(t).replace(/^guestTools/, '') : '—';
+const OUTDATED_TOOLS = new Set(['guestToolsNeedUpgrade', 'guestToolsTooOld', 'guestToolsBlacklisted', 'guestToolsSupportedOld']);
+const toolsVerLabel = (s) => s ? String(s).replace(/^guestTools/, '') : null;
 const fmtMem = (mb) => mb == null ? '—' : mb >= 1024 ? `${(mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB` : `${mb} MB`;
 
 export default function VcInventoryPage() {
@@ -24,9 +26,16 @@ export default function VcInventoryPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const list = (rows || []).map(v => ({ ...v, power: powerLabel(v.power_state) }));
+  const list = (rows || []).map(v => ({
+    ...v,
+    power: powerLabel(v.power_state),
+    tools_state: v.tools_version_status == null ? 'Unknown'
+      : OUTDATED_TOOLS.has(v.tools_version_status) ? 'Outdated'
+        : v.tools_version_status === 'guestToolsCurrent' ? 'Current'
+          : toolsVerLabel(v.tools_version_status),
+  }));
   const ctl = useTableControls(list, {
-    searchKeys: ['name', 'guest_os', 'host_name', 'cluster_name', 'vcenter_name', 'ip_address'],
+    searchKeys: ['name', 'guest_os', 'host_name', 'cluster_name', 'vcenter_name', 'ip_address', 'tools_version'],
     defaultSortKey: 'name', defaultSortDir: 'asc',
     paginate: true,
   });
@@ -45,6 +54,7 @@ export default function VcInventoryPage() {
             { k: 'cluster_name', label: 'Clusters' },
             { k: 'power', label: 'Power states' },
             { k: 'guest_os', label: 'Guest OS' },
+            { k: 'tools_state', label: 'Tools states' },
           ]} />
         {rows == null ? (
           <LoadingPanel label="Loading VM inventory…" height={160} />
@@ -66,6 +76,7 @@ export default function VcInventoryPage() {
                 <SortTh k="memory_mb" label="Memory" ctl={ctl} align="right" />
                 <SortTh k="ip_address" label="IP" ctl={ctl} />
                 <SortTh k="tools_status" label="Tools" ctl={ctl} />
+                <SortTh k="tools_version" label="Tools Ver" ctl={ctl} />
                 <SortTh k="hw_version" label="HW" ctl={ctl} />
               </tr></thead>
               <tbody>
@@ -81,6 +92,11 @@ export default function VcInventoryPage() {
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtMem(v.memory_mb)}</td>
                     <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{v.ip_address || '—'}</td>
                     <td className="py-2 pr-3"><Badge tone={toolsTone(v.tools_status)}>{toolsLabel(v.tools_status)}</Badge></td>
+                    <td className="py-2 pr-3 text-[11px] tnum whitespace-nowrap">
+                      <span className={v.tools_state === 'Outdated' ? 'text-status-warn font-semibold' : 'text-ink-muted'}>
+                        {v.tools_version || '—'}{v.tools_state === 'Outdated' ? ' ⚠' : ''}
+                      </span>
+                    </td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{v.hw_version ? String(v.hw_version).replace('vmx-', 'v') : '—'}</td>
                   </tr>
                 ))}

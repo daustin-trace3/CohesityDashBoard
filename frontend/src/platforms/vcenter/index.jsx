@@ -1,10 +1,12 @@
 import { lazy } from 'react';
-import { Gauge, Server, Database, Settings, MonitorSmartphone } from 'lucide-react';
+import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck } from 'lucide-react';
 
 const VcOverviewPage = lazy(() => import('../../pages/vcenter/VcOverviewPage'));
 const VcHostsPage = lazy(() => import('../../pages/vcenter/VcHostsPage'));
 const VcDatastoresPage = lazy(() => import('../../pages/vcenter/VcDatastoresPage'));
 const VcInventoryPage = lazy(() => import('../../pages/vcenter/VcInventoryPage'));
+const VcNetworkPage = lazy(() => import('../../pages/vcenter/VcNetworkPage'));
+const VcGovernancePage = lazy(() => import('../../pages/vcenter/VcGovernancePage'));
 const VcSettingsPage = lazy(() => import('../../pages/vcenter/VcSettingsPage'));
 
 // VMware vCenter sidebar — shown when the vCenter platform is active.
@@ -16,6 +18,8 @@ const navGroups = [
       { label: 'ESX Hosts', route: '/vcenter/hosts', icon: Server, isActive: (p) => p.startsWith('/vcenter/hosts') },
       { label: 'VM Inventory', route: '/vcenter/inventory', icon: MonitorSmartphone, isActive: (p) => p.startsWith('/vcenter/inventory') },
       { label: 'Datastores', route: '/vcenter/datastores', icon: Database, isActive: (p) => p.startsWith('/vcenter/datastores') },
+      { label: 'Network', route: '/vcenter/network', icon: Network, isActive: (p) => p.startsWith('/vcenter/network') },
+      { label: 'Governance', route: '/vcenter/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/vcenter/governance') },
     ],
   },
   {
@@ -43,6 +47,8 @@ export default {
     { path: 'vcenter/hosts', Component: VcHostsPage },
     { path: 'vcenter/inventory', Component: VcInventoryPage },
     { path: 'vcenter/datastores', Component: VcDatastoresPage },
+    { path: 'vcenter/network', Component: VcNetworkPage },
+    { path: 'vcenter/governance', Component: VcGovernancePage },
     { path: 'vcenter/settings', Component: VcSettingsPage },
   ],
 };
