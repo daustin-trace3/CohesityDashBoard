@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
@@ -15,12 +15,32 @@ export default function VcSettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [refreshingId, setRefreshingId] = useState(null);
+  const [certWarnDays, setCertWarnDays] = useState('');
+  const [savingConfig, setSavingConfig] = useState(false);
 
   const loadVcs = () => client.get('/vcenter/vcenters')
     .then(({ data }) => setVcs(data))
     .catch(() => setVcs([]));
 
-  useEffect(() => { loadVcs(); }, []);
+  useEffect(() => {
+    loadVcs();
+    client.get('/vcenter/config')
+      .then(({ data }) => setCertWarnDays(String(data.certWarnDays)))
+      .catch(() => setCertWarnDays('60'));
+  }, []);
+
+  const saveConfig = async () => {
+    setSavingConfig(true);
+    try {
+      const { data } = await client.put('/vcenter/config', { certWarnDays: Number(certWarnDays) });
+      setCertWarnDays(String(data.certWarnDays));
+      toast({ type: 'success', title: 'Thresholds saved', message: `Certificate warnings now start ${data.certWarnDays} days before expiry.` });
+    } catch (err) {
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Enter a value between 1 and 365 days.' });
+    } finally {
+      setSavingConfig(false);
+    }
+  };
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
 
@@ -136,6 +156,24 @@ export default function VcSettingsPage() {
               {testResult.ok ? `Connected — ${testResult.hosts} host(s) visible` : testResult.error}
             </span>
           )}
+        </div>
+      </div>
+
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
+        <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
+          How far ahead of a vCenter TLS certificate's expiry the Overview raises a warning. Expiry within 14 days (or past due) is always critical.
+        </p>
+        <div className="flex items-end gap-3">
+          <div className="w-56">
+            <label className="block text-xs font-semibold text-ink mb-1">Certificate warning (days before expiry)</label>
+            <input type="number" min={1} max={365} value={certWarnDays}
+              onChange={(e) => setCertWarnDays(e.target.value)} className={inp} />
+          </div>
+          <button onClick={saveConfig} disabled={savingConfig || !certWarnDays || Number(certWarnDays) < 1 || Number(certWarnDays) > 365}
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
+            {savingConfig ? 'Saving…' : 'Save'}
+          </button>
         </div>
       </div>
 
