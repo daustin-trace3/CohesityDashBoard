@@ -1051,6 +1051,13 @@ CREATE TABLE IF NOT EXISTS vcenter_vms (
   hw_version    TEXT,
   tools_version TEXT,
   tools_version_status TEXT,
+  networks      TEXT,
+  datastores    TEXT,
+  tags          TEXT,
+  guest_nics    TEXT,
+  uptime_seconds INTEGER,
+  storage_committed_bytes INTEGER,
+  annotation    TEXT,
   captured_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_vcenter_vms_vc ON vcenter_vms(vcenter_id);

@@ -5,6 +5,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
+import { VmListModal, VmDetailModal } from './VmModals';
 
 const fmtSpeed = (mbps) => mbps == null ? '—' : mbps >= 1000 ? `${mbps / 1000} Gbps` : `${mbps} Mbps`;
 
@@ -108,7 +109,7 @@ function SwitchSection({ vswitches, dvswitches }) {
   );
 }
 
-function PortgroupSection({ portgroups, dvportgroups }) {
+function PortgroupSection({ portgroups, dvportgroups, onShowVms }) {
   const rows = [
     ...dvportgroups.map(g => ({ ...g, scope: 'Distributed' })),
     ...portgroups.map(g => ({ ...g, scope: 'Standard' })),
@@ -133,6 +134,7 @@ function PortgroupSection({ portgroups, dvportgroups }) {
               <SortTh k="name" label="Port Group" ctl={ctl} />
               <SortTh k="scope" label="Type" ctl={ctl} />
               <SortTh k="vlan_id" label="VLAN" ctl={ctl} align="right" />
+              <SortTh k="vm_count" label="VMs" ctl={ctl} align="right" />
               <SortTh k="switch_name" label="Switch" ctl={ctl} />
               <SortTh k="host_name" label="Host" ctl={ctl} />
               <SortTh k="vcenter_name" label="vCenter" ctl={ctl} />
@@ -140,9 +142,12 @@ function PortgroupSection({ portgroups, dvportgroups }) {
             <tbody>
               {ctl.pageRows.map((r) => (
                 <tr key={r.id} className="border-b border-cohesity-border/50">
-                  <td className="py-2 pr-3 text-ink">{r.name || '—'}</td>
+                  <td className="py-2 pr-3">
+                    <button onClick={() => onShowVms(r)} className="text-brand hover:underline cursor-pointer text-left">{r.name || '—'}</button>
+                  </td>
                   <td className="py-2 pr-3"><Badge tone={r.scope === 'Distributed' ? 'info' : 'neutral'}>{r.scope}</Badge></td>
                   <td className="py-2 pr-3 text-right tnum text-ink-muted">{r.vlan_id ?? '—'}</td>
+                  <td className="py-2 pr-3 text-right tnum text-ink">{fmtNum(r.vm_count)}</td>
                   <td className="py-2 pr-3 text-ink-muted">{r.switch_name || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{r.host_name || 'vCenter-wide'}</td>
                   <td className="py-2 pr-3 text-ink-muted">{r.vcenter_name}</td>
@@ -210,6 +215,8 @@ export default function VcNetworkPage() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [vmModal, setVmModal] = useState(null);   // { title, subtitle, filter }
+  const [detailVmId, setDetailVmId] = useState(null);
 
   const load = useCallback(() => client.get('/vcenter/network')
     .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
@@ -236,10 +243,21 @@ export default function VcNetworkPage() {
         <>
           <PnicSection rows={data.pnics || []} />
           <SwitchSection vswitches={data.vswitches || []} dvswitches={data.dvswitches || []} />
-          <PortgroupSection portgroups={data.portgroups || []} dvportgroups={data.dvportgroups || []} />
+          <PortgroupSection portgroups={data.portgroups || []} dvportgroups={data.dvportgroups || []}
+            onShowVms={(pg) => setVmModal({
+              title: `VMs on ${pg.name}`,
+              subtitle: `${pg.scope} port group${pg.vlan_id != null ? ` · VLAN ${pg.vlan_id}` : ''} · ${pg.vcenter_name}`,
+              filter: { network: pg.name, vcenterId: pg.vcenter_id },
+            })} />
           <VmkernelSection rows={data.vmkernels || []} />
         </>
       )}
+
+      {vmModal && (
+        <VmListModal {...vmModal} onClose={() => setVmModal(null)}
+          onSelectVm={(v) => setDetailVmId(v.id)} />
+      )}
+      {detailVmId != null && <VmDetailModal vmId={detailVmId} onClose={() => setDetailVmId(null)} />}
     </div>
   );
 }

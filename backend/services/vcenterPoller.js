@@ -9,7 +9,7 @@ const cron = require('node-cron');
 const pollerStatus = require('./pollerStatus');
 const {
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
-  fetchInventorySoap, fetchEvents,
+  fetchInventorySoap, fetchEvents, fetchVmTags,
 } = require('./vcenterApi');
 const { reconcileIssueHistory } = require('./vcenterIssues');
 const logger = require('../utils/logger');
@@ -87,6 +87,17 @@ async function collect(vc) {
     row.sshEnabled = r?.sshEnabled ?? null;
   }
 
+  // vSphere Tags (REST batch) — best-effort; works with or without SOAP since
+  // both paths populate vmId.
+  if (vms.length) {
+    try {
+      const tagMap = await fetchVmTags(vc, vms.map(v => v.vmId).filter(Boolean));
+      for (const v of vms) v.tags = tagMap.get(v.vmId) || [];
+    } catch (err) {
+      logger.debug(`[VcPoller] tag fetch failed for ${vc.name}: ${safeMsg(err)}`);
+    }
+  }
+
   const datastores = await fetchDatastores(vc);
 
   let cert = null;
@@ -134,15 +145,21 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
   const vmStmt = db.prepare(`
     INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, cluster_name, power_state,
       guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version,
-      tools_version, tools_version_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      tools_version, tools_version_status, networks, datastores, tags, guest_nics,
+      uptime_seconds, storage_committed_bytes, annotation)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const clusterByHost = new Map(hosts.map(h => [h.name, h.clusterName]));
   for (const v of (vms || [])) {
     vmStmt.run(vcId, v.vmId || null, v.name || null, v.hostName,
       clusterByHost.get(v.hostName) ?? null, v.powerState,
       v.guestOs, v.cpuCount, v.memoryMb, v.ipAddress, v.toolsStatus, v.hwVersion,
-      v.toolsVersion ?? null, v.toolsVersionStatus ?? null);
+      v.toolsVersion ?? null, v.toolsVersionStatus ?? null,
+      v.networks?.length ? JSON.stringify(v.networks) : null,
+      v.datastores?.length ? JSON.stringify(v.datastores) : null,
+      v.tags?.length ? JSON.stringify(v.tags) : null,
+      v.guestNics?.length ? JSON.stringify(v.guestNics) : null,
+      v.uptimeSeconds ?? null, v.storageCommittedBytes ?? null, v.annotation ?? null);
   }
 
   // Networking rows are wholesale-replaced only when SOAP produced them —

@@ -5,6 +5,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum, fmtBytes, fmtPct, usageTone } from './helpers';
+import { VmListModal, VmDetailModal } from './VmModals';
 
 function UsageBar({ pct }) {
   if (pct == null) return <span className="text-ink-faint">—</span>;
@@ -24,6 +25,8 @@ export default function VcDatastoresPage() {
   const [rows, setRows] = useState(null);
   const [clusters, setClusters] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [vmModal, setVmModal] = useState(null);
+  const [detailVmId, setDetailVmId] = useState(null);
 
   const load = useCallback(() => Promise.all([
     client.get('/vcenter/datastores').then(({ data }) => setRows(data)),
@@ -74,6 +77,7 @@ export default function VcDatastoresPage() {
                 <SortTh k="name" label="Datastore" ctl={ctl} />
                 <SortTh k="ds_type" label="Type" ctl={ctl} />
                 <SortTh k="vcenter_name" label="vCenter" ctl={ctl} />
+                <SortTh k="vm_count" label="VMs" ctl={ctl} align="right" />
                 <SortTh k="capacity_bytes" label="Capacity" ctl={ctl} align="right" />
                 <SortTh k="free_bytes" label="Free" ctl={ctl} align="right" />
                 <SortTh k="used_pct" label="Used" ctl={ctl} align="right" />
@@ -81,9 +85,17 @@ export default function VcDatastoresPage() {
               <tbody>
                 {ctl.pageRows.map((d) => (
                   <tr key={`${d.vcenter_id}|${d.datastore_id}`} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink">{d.name || '—'}</td>
+                    <td className="py-2 pr-3">
+                      <button onClick={() => setVmModal({
+                        title: `VMs on ${d.name}`,
+                        subtitle: `${d.ds_type || 'Datastore'} · ${d.vcenter_name}`,
+                        icon: Database,
+                        filter: { datastore: d.name, vcenterId: d.vcenter_id },
+                      })} className="text-brand hover:underline cursor-pointer text-left">{d.name || '—'}</button>
+                    </td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px]">{d.ds_type || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{d.vcenter_name}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink">{fmtNum(d.vm_count)}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(d.capacity_bytes)}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(d.free_bytes)}</td>
                     <td className="py-2 pr-3"><UsageBar pct={d.used_pct} /></td>
@@ -137,6 +149,12 @@ export default function VcDatastoresPage() {
           </div>
         )}
       </div>
+
+      {vmModal && (
+        <VmListModal {...vmModal} onClose={() => setVmModal(null)}
+          onSelectVm={(v) => setDetailVmId(v.id)} />
+      )}
+      {detailVmId != null && <VmDetailModal vmId={detailVmId} onClose={() => setDetailVmId(null)} />}
     </div>
   );
 }
