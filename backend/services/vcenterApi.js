@@ -379,50 +379,57 @@ async function fetchInventorySoap(vc) {
       </vim25:CreateContainerView>`, cookie);
     const viewId = flat(cv.body?.CreateContainerViewResponse?.returnval);
 
-    const propSetXml = (type, paths) => `
-          <vim25:propSet>
-            <vim25:type>${type}</vim25:type>
-            ${paths.map(p => `<vim25:pathSet>${p}</vim25:pathSet>`).join('')}
-          </vim25:propSet>`;
-    const rp = await soapCall(vc, `
-      <vim25:RetrievePropertiesEx><vim25:_this type="PropertyCollector">${esc(sc.propertyCollector)}</vim25:_this>
-        <vim25:specSet>
-          ${propSetXml('HostSystem', HOST_PROPS)}
-          ${propSetXml('VirtualMachine', VM_PROPS)}
-          ${propSetXml('Datastore', ['name', 'browser', 'summary.accessible'])}
-          ${propSetXml('DistributedVirtualSwitch', DVS_PROPS)}
-          ${propSetXml('DistributedVirtualPortgroup', DVPG_PROPS)}
-          <vim25:objectSet>
-            <vim25:obj type="ContainerView">${esc(viewId)}</vim25:obj>
-            <vim25:skip>true</vim25:skip>
-            <vim25:selectSet xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="vim25:TraversalSpec">
-              <vim25:name>view</vim25:name>
-              <vim25:type>ContainerView</vim25:type>
-              <vim25:path>view</vim25:path>
-              <vim25:skip>false</vim25:skip>
-            </vim25:selectSet>
-          </vim25:objectSet>
-        </vim25:specSet>
-        <vim25:options/>
-      </vim25:RetrievePropertiesEx>`, cookie);
+    // One RetrievePropertiesEx PER TYPE: an InvalidProperty fault aborts the
+    // whole request it is in, so isolating the types means a bad path in the
+    // DVS/portgroup/datastore extras can never blank hosts, VMs, CPU/memory
+    // or guest detail. Hosts + VMs are required; the rest degrade gracefully.
+    const retrieveType = async (type, paths) => {
+      const rp = await soapCall(vc, `
+        <vim25:RetrievePropertiesEx><vim25:_this type="PropertyCollector">${esc(sc.propertyCollector)}</vim25:_this>
+          <vim25:specSet>
+            <vim25:propSet>
+              <vim25:type>${type}</vim25:type>
+              ${paths.map(p => `<vim25:pathSet>${p}</vim25:pathSet>`).join('')}
+            </vim25:propSet>
+            <vim25:objectSet>
+              <vim25:obj type="ContainerView">${esc(viewId)}</vim25:obj>
+              <vim25:skip>true</vim25:skip>
+              <vim25:selectSet xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="vim25:TraversalSpec">
+                <vim25:name>view</vim25:name>
+                <vim25:type>ContainerView</vim25:type>
+                <vim25:path>view</vim25:path>
+                <vim25:skip>false</vim25:skip>
+              </vim25:selectSet>
+            </vim25:objectSet>
+          </vim25:specSet>
+          <vim25:options/>
+        </vim25:RetrievePropertiesEx>`, cookie);
+      let result = rp.body?.RetrievePropertiesExResponse?.returnval;
+      let objects = asArray(result?.objects);
+      while (result?.token != null && String(result.token) !== '') {
+        const cont = await soapCall(vc, `
+          <vim25:ContinueRetrievePropertiesEx><vim25:_this type="PropertyCollector">${esc(sc.propertyCollector)}</vim25:_this>
+            <vim25:token>${esc(flat(result.token))}</vim25:token>
+          </vim25:ContinueRetrievePropertiesEx>`, cookie);
+        result = cont.body?.ContinueRetrievePropertiesExResponse?.returnval;
+        objects = objects.concat(asArray(result?.objects));
+      }
+      return objectsToProps(objects);
+    };
+    const retrieveOptional = async (type, paths) => {
+      try {
+        return await retrieveType(type, paths);
+      } catch (err) {
+        logger.warn(`[vcenterApi] ${vc.name}: ${type} retrieval failed (skipping): ${err.message}`);
+        return [];
+      }
+    };
 
-    let result = rp.body?.RetrievePropertiesExResponse?.returnval;
-    let objects = asArray(result?.objects);
-    while (result?.token != null && String(result.token) !== '') {
-      const cont = await soapCall(vc, `
-        <vim25:ContinueRetrievePropertiesEx><vim25:_this type="PropertyCollector">${esc(sc.propertyCollector)}</vim25:_this>
-          <vim25:token>${esc(flat(result.token))}</vim25:token>
-        </vim25:ContinueRetrievePropertiesEx>`, cookie);
-      result = cont.body?.ContinueRetrievePropertiesExResponse?.returnval;
-      objects = objects.concat(asArray(result?.objects));
-    }
-
-    const rows = objectsToProps(objects);
-    const hostRows = rows.filter(r => r._type === 'HostSystem' || r['runtime.inMaintenanceMode'] !== undefined);
-    const vmRows = rows.filter(r => r._type === 'VirtualMachine' || r['runtime.powerState'] !== undefined);
-    const dsRows = rows.filter(r => r._type === 'Datastore');
-    const dvsRows = rows.filter(r => r._type === 'DistributedVirtualSwitch' || r._type === 'VmwareDistributedVirtualSwitch');
-    const dvpgRows = rows.filter(r => r._type === 'DistributedVirtualPortgroup');
+    const hostRows = await retrieveType('HostSystem', HOST_PROPS);
+    const vmRows = await retrieveType('VirtualMachine', VM_PROPS);
+    const dsRows = await retrieveOptional('Datastore', ['name', 'browser', 'summary.accessible']);
+    const dvsRows = await retrieveOptional('DistributedVirtualSwitch', DVS_PROPS);
+    const dvpgRows = await retrieveOptional('DistributedVirtualPortgroup', DVPG_PROPS);
 
     const hostsByName = new Map();
     const hostNameByMoref = new Map();
