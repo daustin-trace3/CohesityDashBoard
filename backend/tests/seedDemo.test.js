@@ -96,11 +96,59 @@ describe('seedDemo.js', () => {
 
   it('seeds platform flags as string "1"', () => {
     const rows = db.prepare(
-      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled')"
+      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled')"
     ).all();
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(4);
     for (const row of rows) {
       expect(row.value).toBe('1');
     }
+  });
+
+  it('seeds daily workload_history with shared per-cluster timestamps and a Views env', () => {
+    const rows = db.prepare('SELECT COUNT(*) c FROM workload_history').get();
+    expect(rows.c).toBeGreaterThan(5000);
+    // getWorkloads() joins on the exact MAX(captured_at) per cluster — every
+    // environment of a cluster's latest batch must share one timestamp.
+    const latest = db.prepare(`
+      SELECT COUNT(DISTINCT environment) c FROM workload_history w
+      JOIN (SELECT cluster_id, MAX(captured_at) latest FROM workload_history GROUP BY cluster_id) t
+        ON t.cluster_id = w.cluster_id AND w.captured_at = t.latest
+      WHERE w.cluster_id = (SELECT MIN(id) FROM clusters)
+    `).get();
+    expect(latest.c).toBeGreaterThanOrEqual(2);
+    const views = db.prepare("SELECT job_count FROM workload_history WHERE environment = 'Views' LIMIT 1").get();
+    expect(views).toBeTruthy();
+    expect(views.job_count).toBeNull();
+  });
+
+  it('seeds zerto inventory with valid enums and breaches', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM zerto_sites').get().c).toBe(6);
+    expect(db.prepare('SELECT COUNT(*) c FROM zerto_vras').get().c).toBeGreaterThan(10);
+    expect(db.prepare('SELECT COUNT(*) c FROM zerto_vpgs').get().c).toBeGreaterThan(30);
+    for (const r of db.prepare('SELECT DISTINCT health FROM zerto_vpgs').all()) {
+      expect(['Healthy', 'Warning', 'Error']).toContain(r.health);
+    }
+    for (const r of db.prepare('SELECT DISTINCT severity FROM zerto_alerts').all()) {
+      expect(['Error', 'Warning']).toContain(r.severity);
+    }
+    // VM membership matches the VPG vms_count sums, and RPO breaches exist.
+    const vpgVms = db.prepare('SELECT SUM(vms_count) s FROM zerto_vpgs').get().s;
+    expect(db.prepare('SELECT COUNT(*) c FROM zerto_vms').get().c).toBe(vpgVms);
+    expect(db.prepare('SELECT COUNT(*) c FROM zerto_vpgs WHERE actual_rpo > configured_rpo').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM zerto_metrics_history').get().c).toBeGreaterThan(100);
+  });
+
+  it('seeds vcenter inventory that trips every computed-issue rule', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vcenters').get().c).toBe(8);
+    expect(db.prepare("SELECT COUNT(*) c FROM vcenter_vcenters WHERE last_poll_status = 'error'").get().c).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM vcenter_hosts WHERE connection_state != 'CONNECTED'").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE in_maintenance = 1').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_datastores WHERE free_bytes < capacity_bytes * 0.2').get().c).toBeGreaterThan(0);
+    // vm rows match the per-host counts, and version/BIOS columns are filled.
+    const hostVms = db.prepare('SELECT SUM(vm_count) s FROM vcenter_hosts').get().s;
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vms').get().c).toBe(hostVms);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE esx_version IS NULL OR bios_version IS NULL').get().c).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vcenters WHERE version IS NULL').get().c).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_metrics_history').get().c).toBe(8 * 31);
   });
 });

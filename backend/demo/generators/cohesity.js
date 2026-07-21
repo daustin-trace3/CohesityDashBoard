@@ -441,6 +441,68 @@ function seedCohesity(db, { now, encrypt }) {
     }
   }
 
+  // ── Workload history: 60 days of daily per-environment snapshots ────────
+  // Shapes match services/workloads.js: env names have the 'k' prefix already
+  // stripped, all of a cluster's rows for a day share one captured_at (the
+  // getWorkloads query joins on the exact latest timestamp per cluster), and
+  // the Views row is derived from the seeded cohesity_views with job_count NULL.
+  const insertWorkload = db.prepare(`
+    INSERT INTO workload_history
+      (cluster_id, environment, protected_count, unprotected_count, protected_bytes,
+       job_count, logical_bytes, physical_bytes, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const WORKLOAD_ENVS = ['VMware', 'Physical', 'SQL', 'Oracle', 'NetApp', 'GenericNas', 'Exchange'];
+  const TB = 1e12;
+  let workloadRows = 0;
+  const WORKLOAD_DAYS = 60;
+  for (const cluster of clusters) {
+    const rng = rngFor(`${cluster.name}-workloads`);
+    // VMware + Physical everywhere, plus 2-4 of the rest per cluster.
+    const envs = WORKLOAD_ENVS.filter((e, i) => i < 2 || chance(rng, 0.55));
+    const baseByEnv = envs.map((environment, i) => ({
+      environment,
+      protectedCount: i === 0 ? randInt(rng, 120, 600) : randInt(rng, 8, 150),
+      unprotectedCount: randInt(rng, 0, 25),
+      protectedTb: i === 0 ? randFloat(rng, 30, 150, 2) : randFloat(rng, 2, 60, 2),
+      jobCount: randInt(rng, 2, 14),
+      reduction: randFloat(rng, 2.4, 4.2, 2),
+      growth: randFloat(rng, 0.03, 0.14, 3), // fraction grown over the window
+    }));
+    const viewStats = db.prepare(`
+      SELECT COUNT(*) AS total,
+             COALESCE(SUM(protected), 0) AS prot,
+             COALESCE(SUM(CASE WHEN protected = 1 THEN logical_bytes END), 0) AS prot_logical,
+             COALESCE(SUM(logical_bytes), 0) AS logical,
+             COALESCE(SUM(consumed_bytes), 0) AS physical
+      FROM cohesity_views WHERE system_name = ?
+    `).get(cluster.name);
+
+    for (let d = WORKLOAD_DAYS; d >= 0; d--) {
+      const capturedAt = new Date(now - d * 86400000).toISOString();
+      const progress = (WORKLOAD_DAYS - d) / WORKLOAD_DAYS;
+      for (const base of baseByEnv) {
+        const scale = 1 - base.growth + base.growth * progress;
+        const protectedBytes = Math.round(base.protectedTb * TB * scale);
+        const logicalBytes = Math.round(protectedBytes * randFloat(rng, 1.05, 1.3, 2));
+        insertWorkload.run(
+          cluster.id, base.environment,
+          Math.round(base.protectedCount * scale), base.unprotectedCount,
+          protectedBytes, base.jobCount, logicalBytes,
+          Math.round(logicalBytes / base.reduction), capturedAt
+        );
+        workloadRows++;
+      }
+      if (viewStats.total > 0) {
+        insertWorkload.run(
+          cluster.id, 'Views', viewStats.prot, viewStats.total - viewStats.prot,
+          viewStats.prot_logical, null, viewStats.logical, viewStats.physical, capturedAt
+        );
+        workloadRows++;
+      }
+    }
+  }
+
   // ── Replication status cache: seed the default key for every cluster ───
   for (const cluster of clusters) {
     const replList = replicationsByCluster.get(cluster.name) || [];
@@ -464,6 +526,7 @@ function seedCohesity(db, { now, encrypt }) {
     policies: policyCount,
     sourceRegistrations: sourceCount,
     licenseViews: viewCount,
+    workloadRows,
   };
 }
 

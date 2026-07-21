@@ -42,6 +42,8 @@ const { seedCore } = require('./generators/core');
 const { seedCohesity } = require('./generators/cohesity');
 const { seedNetapp } = require('./generators/netapp');
 const { seedPure } = require('./generators/pure');
+const { seedZerto } = require('./generators/zerto');
+const { seedVcenter } = require('./generators/vcenter');
 
 const SEEDED_TABLES = [
   // core
@@ -50,7 +52,7 @@ const SEEDED_TABLES = [
   'replication_status_cache', 'consumption_breakdown', 'license_view_detail', 'cohesity_views',
   'license_meter_usage', 'license_type_usage', 'license_usage',
   'source_registrations', 'policies', 'replication_runs', 'protection_runs',
-  'alerts', 'metrics_history', 'clusters',
+  'alerts', 'metrics_history', 'workload_history', 'clusters',
   // netapp
   'netapp_cifs_shares', 'netapp_cifs_sessions', 'netapp_export_rules',
   'netapp_nfs_clients', 'netapp_quotas', 'netapp_lifs', 'netapp_snapmirror',
@@ -58,6 +60,11 @@ const SEEDED_TABLES = [
   'netapp_volumes', 'netapp_aggregates', 'netapp_metrics_history', 'netapp_arrays',
   // pure
   'pure_arrays',
+  // zerto
+  'zerto_vras', 'zerto_vms', 'zerto_alerts', 'zerto_vpgs', 'zerto_sites', 'zerto_metrics_history',
+  // vcenter (children before the parent so FK deletes stay explicit)
+  'vcenter_vms', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores',
+  'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vcenters',
 ];
 
 function wipeSeededTables(database) {
@@ -84,6 +91,8 @@ async function main() {
   const cohesityResult = db.transaction(() => seedCohesity(db, { now, encrypt }))();
   const netappResult = db.transaction(() => seedNetapp(db, { now, encrypt }))();
   const pureResult = db.transaction(() => seedPure(db, { now, encrypt }))();
+  const zertoResult = db.transaction(() => seedZerto(db, { now, encrypt }))();
+  const vcenterResult = db.transaction(() => seedVcenter(db, { now, encrypt }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -94,10 +103,13 @@ async function main() {
     ['policies', cohesityResult.policies],
     ['source_registrations', cohesityResult.sourceRegistrations],
     ['license_view_detail', cohesityResult.licenseViews],
+    ['workload_history', cohesityResult.workloadRows],
     ['netapp_arrays', netappResult.arrays],
     ['metrics_history (netapp)', netappResult.metrics],
     ['netapp_snapmirror', netappResult.snapmirror],
     ['pure_arrays', pureResult.arrays],
+    ['zerto sites/vras/vpgs/vms', `${zertoResult.sites}/${zertoResult.vras}/${zertoResult.vpgs}/${zertoResult.vms}`],
+    ['vcenters/hosts/vms', `${vcenterResult.vcenters}/${vcenterResult.hosts}/${vcenterResult.vms}`],
     ['users', 1],
   ];
 
