@@ -86,8 +86,9 @@ function seedVcenter(db, { now, encrypt }) {
   const insertVm = db.prepare(`
     INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, cluster_name, power_state,
       guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version,
-      tools_version, tools_version_status, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      tools_version, tools_version_status, networks, datastores, tags, guest_nics,
+      uptime_seconds, storage_committed_bytes, annotation, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSnap = db.prepare(`
     INSERT INTO vcenter_metrics_history (vcenter_id, captured_at, hosts_total, hosts_connected,
@@ -188,15 +189,33 @@ function seedVcenter(db, { now, encrypt }) {
           const guestOs = pick(rng, GUEST_OS);
           // ~8% of VMs run outdated Tools so Governance has action items.
           const outdated = chance(rng, 0.08);
+          const ip = poweredOn ? `10.${100 + vcIdx}.${c * 10 + h}.${v + 10}` : null;
+          // Role-based portgroup membership (names match the seeded dvportgroups)
+          // + 1-2 vmfs datastores that always exist for this vCenter.
+          const vmNetworks = [role === 'db' ? 'dvpg-db-110' : role === 'web' ? 'dvpg-web-120' : 'dvpg-prod-100'];
+          if (chance(rng, 0.25)) vmNetworks.push('dvpg-backup-310');
+          const vmDatastores = [`${site}-ds-vmfs-${String(1 + (v % 3)).padStart(2, '0')}`];
+          if (chance(rng, 0.3)) vmDatastores.push(`${site}-ds-vmfs-${String(1 + ((v + 1) % 3)).padStart(2, '0')}`);
+          const vmTags = [
+            chance(rng, 0.8) ? 'Environment: Production' : 'Environment: Dev',
+            `App: ${role.toUpperCase()}`,
+          ];
+          if (chance(rng, 0.5)) vmTags.push('Backup: Protected');
+          const mac = `00:50:56:${String(80 + vcIdx).padStart(2, '0')}:${String(c * 10 + h).padStart(2, '0')}:${String(v).padStart(2, '0')}`;
           insertVm.run(vcId, `vm-${vcIdx}${c}${h}-${v}`,
             `${site}-${role}-${String(c).padStart(2, '0')}${String(h)}${String(v).padStart(2, '0')}`,
             hostName, clusterName, poweredOn ? 'POWERED_ON' : 'POWERED_OFF',
             guestOs, pick(rng, [2, 2, 4, 4, 8, 16]), pick(rng, [4, 8, 8, 16, 32, 64]) * 1024,
-            poweredOn ? `10.${100 + vcIdx}.${c * 10 + h}.${v + 10}` : null,
+            ip,
             poweredOn ? 'guestToolsRunning' : 'guestToolsNotRunning',
             'vmx-20',
             outdated ? pick(rng, TOOLS_VERSIONS.old) : TOOLS_VERSIONS.current,
             outdated ? 'guestToolsNeedUpgrade' : (chance(rng, 0.05) ? 'guestToolsUnmanaged' : 'guestToolsCurrent'),
+            JSON.stringify(vmNetworks), JSON.stringify(vmDatastores), JSON.stringify(vmTags),
+            JSON.stringify([{ network: vmNetworks[0], mac, connected: poweredOn, ips: ip ? [ip] : [] }]),
+            poweredOn ? randInt(rng, 3600, 300 * 86400) : null,
+            randInt(rng, 20, 800) * GIB,
+            chance(rng, 0.15) ? 'Provisioned by the ICC pipeline — contact platform-eng before resizing.' : null,
             nowIso);
           vmTotal++;
         }

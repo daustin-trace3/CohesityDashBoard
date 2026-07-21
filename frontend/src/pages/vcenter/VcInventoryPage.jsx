@@ -5,6 +5,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
+import { VmDetailModal } from './VmModals';
 
 const powerTone = (p) => p === 'POWERED_ON' || p === 'poweredOn' ? 'ok'
   : p === 'POWERED_OFF' || p === 'poweredOff' ? 'neutral' : 'warn';
@@ -19,6 +20,7 @@ export default function VcInventoryPage() {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [detailVmId, setDetailVmId] = useState(null);
 
   const load = useCallback(() => client.get('/vcenter/vms')
     .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
@@ -82,7 +84,9 @@ export default function VcInventoryPage() {
               <tbody>
                 {ctl.pageRows.map((v) => (
                   <tr key={`${v.vcenter_id}|${v.vm_id || v.id}`} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink">{v.name || '—'}</td>
+                    <td className="py-2 pr-3">
+                      <button onClick={() => setDetailVmId(v.id)} className="text-brand hover:underline cursor-pointer text-left">{v.name || '—'}</button>
+                    </td>
                     <td className="py-2 pr-3"><Badge tone={powerTone(v.power_state)}>{v.power}</Badge></td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[200px] truncate" title={v.guest_os || ''}>{v.guest_os || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{v.host_name || '—'}</td>
@@ -106,6 +110,8 @@ export default function VcInventoryPage() {
         )}
         <TablePager ctl={ctl} />
       </div>
+
+      {detailVmId != null && <VmDetailModal vmId={detailVmId} onClose={() => setDetailVmId(null)} />}
     </div>
   );
 }

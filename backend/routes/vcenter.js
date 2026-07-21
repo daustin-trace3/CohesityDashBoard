@@ -259,14 +259,22 @@ router.get('/network', (req, res, next) => {
       uplinks: r.uplinks ? JSON.parse(r.uplinks) : null,
       extra: r.extra ? JSON.parse(r.extra) : null,
     }));
+    // VMs attached per network name (per vCenter), from the VM json arrays.
+    const vmCounts = new Map();
+    for (const r of db.prepare(`
+      SELECT m.vcenter_id, je.value AS name, COUNT(*) AS n
+      FROM vcenter_vms m, json_each(COALESCE(m.networks, '[]')) je
+      GROUP BY m.vcenter_id, je.value
+    `).all()) vmCounts.set(`${r.vcenter_id}|${r.name}`, r.n);
+    const withVmCount = (r) => ({ ...r, vm_count: vmCounts.get(`${r.vcenter_id}|${r.name}`) ?? 0 });
     const byKind = (kind) => rows.filter(r => r.kind === kind);
     res.json({
       pnics: byKind('pnic'),
       vswitches: byKind('vswitch'),
-      portgroups: byKind('portgroup'),
+      portgroups: byKind('portgroup').map(withVmCount),
       vmkernels: byKind('vmkernel'),
       dvswitches: byKind('dvswitch'),
-      dvportgroups: byKind('dvportgroup'),
+      dvportgroups: byKind('dvportgroup').map(withVmCount),
     });
   } catch (err) { next(err); }
 });
@@ -354,13 +362,58 @@ router.get('/governance', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/vcenter/vms — VM guest inventory across all vCenters. */
+/**
+ * GET /api/vcenter/vms — VM guest inventory across all vCenters.
+ * Optional ?network= / ?datastore= (+ ?vcenterId=) filter by membership in the
+ * JSON name arrays — used by the portgroup/datastore drill-down modals.
+ */
 router.get('/vms', (req, res, next) => {
   try {
+    const clauses = [];
+    const params = [];
+    if (req.query.network) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(COALESCE(m.networks, '[]')) je WHERE je.value = ?)");
+      params.push(String(req.query.network));
+    }
+    if (req.query.datastore) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(COALESCE(m.datastores, '[]')) jd WHERE jd.value = ?)");
+      params.push(String(req.query.datastore));
+    }
+    if (req.query.vcenterId) {
+      clauses.push('m.vcenter_id = ?');
+      params.push(Number(req.query.vcenterId));
+    }
     res.json(db.prepare(`
       SELECT m.*, v.name AS vcenter_name FROM vcenter_vms m
-      JOIN vcenter_vcenters v ON v.id = m.vcenter_id ORDER BY v.name, m.name
-    `).all());
+      JOIN vcenter_vcenters v ON v.id = m.vcenter_id
+      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      ORDER BY v.name, m.name
+    `).all(...params));
+  } catch (err) { next(err); }
+});
+
+const parseJson = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+
+/** GET /api/vcenter/vms/:id — full detail for one VM + its recent events. */
+router.get('/vms/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const vm = db.prepare(`
+      SELECT m.*, v.name AS vcenter_name FROM vcenter_vms m
+      JOIN vcenter_vcenters v ON v.id = m.vcenter_id WHERE m.id = ?
+    `).get(req.params.id);
+    if (!vm) return res.status(404).json({ error: 'VM not found.' });
+    res.json({
+      ...vm,
+      networks: parseJson(vm.networks) || [],
+      datastores: parseJson(vm.datastores) || [],
+      tags: parseJson(vm.tags) || [],
+      guest_nics: parseJson(vm.guest_nics) || [],
+      events: db.prepare(`
+        SELECT * FROM vcenter_events
+        WHERE vcenter_id = ? AND entity_name = ?
+        ORDER BY created_at DESC LIMIT 50
+      `).all(vm.vcenter_id, vm.name),
+    });
   } catch (err) { next(err); }
 });
 
@@ -384,13 +437,22 @@ router.get('/clusters', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/vcenter/datastores — datastores with usage. */
+/** GET /api/vcenter/datastores — datastores with usage + attached-VM counts. */
 router.get('/datastores', (req, res, next) => {
   try {
+    const vmCounts = new Map();
+    for (const r of db.prepare(`
+      SELECT m.vcenter_id, jd.value AS name, COUNT(*) AS n
+      FROM vcenter_vms m, json_each(COALESCE(m.datastores, '[]')) jd
+      GROUP BY m.vcenter_id, jd.value
+    `).all()) vmCounts.set(`${r.vcenter_id}|${r.name}`, r.n);
     res.json(db.prepare(`
       SELECT d.*, v.name AS vcenter_name FROM vcenter_datastores d
       JOIN vcenter_vcenters v ON v.id = d.vcenter_id ORDER BY v.name, d.name
-    `).all().map(d => ({ ...d, used_pct: dsUsedPct(d) })));
+    `).all().map(d => ({
+      ...d, used_pct: dsUsedPct(d),
+      vm_count: vmCounts.get(`${d.vcenter_id}|${d.name}`) ?? 0,
+    })));
   } catch (err) { next(err); }
 });
 

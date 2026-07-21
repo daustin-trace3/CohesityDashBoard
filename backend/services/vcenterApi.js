@@ -75,6 +75,68 @@ const fetchHosts = async (vc, clusterId = null) =>
 const fetchDatastores = async (vc) => unwrap(await vGet(vc, '/api/vcenter/datastore'));
 const fetchVmsForHost = async (vc, hostId) => unwrap(await vGet(vc, '/api/vcenter/vm', { hosts: hostId }));
 
+async function vPost(vc, path, body, params = {}) {
+  let token = await getSession(vc);
+  const doPost = (t) => baseClient(vc, { 'vmware-api-session-id': t }).post(path, body, { params });
+  try {
+    const { data } = await doPost(token);
+    return data;
+  } catch (err) {
+    if (err.response?.status === 401) {
+      token = await getSession(vc, true);
+      const { data } = await doPost(token);
+      return data;
+    }
+    throw err;
+  }
+}
+
+/**
+ * vSphere Tags per VM via the cis tagging API: one batched
+ * list-attached-tags-on-objects call per 500 VMs, tag ids resolved to
+ * "Category: Name" once each. Returns Map(vmId -> [tagName...]). Best-effort —
+ * callers treat a throw as "tags unavailable".
+ */
+async function fetchVmTags(vc, vmIds) {
+  const byVm = new Map();
+  const tagIds = new Set();
+  for (let i = 0; i < vmIds.length; i += 500) {
+    const chunk = vmIds.slice(i, i + 500);
+    const data = await vPost(vc, '/api/cis/tagging/tag-association', {
+      object_ids: chunk.map(id => ({ id, type: 'VirtualMachine' })),
+    }, { action: 'list-attached-tags-on-objects' });
+    for (const row of unwrap(data)) {
+      const vmId = row.object_id?.id;
+      const ids = row.tag_ids || [];
+      if (!vmId || !ids.length) continue;
+      byVm.set(vmId, ids);
+      for (const t of ids) tagIds.add(t);
+    }
+  }
+  const tagNames = new Map();
+  const catNames = new Map();
+  for (const id of tagIds) {
+    try {
+      const tag = await vGet(vc, `/api/cis/tagging/tag/${encodeURIComponent(id)}`);
+      const t = tag?.value ?? tag;
+      let cat = null;
+      if (t?.category_id && !catNames.has(t.category_id)) {
+        try {
+          const c = await vGet(vc, `/api/cis/tagging/category/${encodeURIComponent(t.category_id)}`);
+          catNames.set(t.category_id, (c?.value ?? c)?.name ?? null);
+        } catch { catNames.set(t.category_id, null); }
+      }
+      cat = t?.category_id ? catNames.get(t.category_id) : null;
+      tagNames.set(id, t?.name ? (cat ? `${cat}: ${t.name}` : t.name) : null);
+    } catch { tagNames.set(id, null); }
+  }
+  const out = new Map();
+  for (const [vmId, ids] of byVm) {
+    out.set(vmId, ids.map(id => tagNames.get(id)).filter(Boolean));
+  }
+  return out;
+}
+
 /** vCenter machine TLS certificate (needs cert-management privilege; best-effort). */
 async function fetchTlsCert(vc) {
   const d = await vGet(vc, '/api/vcenter/certificate-management/vcenter/tls');
@@ -183,6 +245,9 @@ const VM_PROPS = [
   'guest.ipAddress', 'guest.toolsRunningStatus',
   'guest.toolsVersion', 'guest.toolsVersionStatus2',
   'layoutEx.file', // every file backing the VM — feeds the orphaned-VMDK diff
+  // Associations + detail (VM detail modal, portgroup/datastore VM counts)
+  'network', 'datastore', 'guest.net',
+  'summary.quickStats.uptimeSeconds', 'summary.storage.committed', 'config.annotation',
 ];
 // NB: DVSSummary's port total is `numPorts` — requesting `summary.portCount`
 // faults the WHOLE RetrievePropertiesEx call with InvalidProperty.
@@ -373,6 +438,7 @@ async function fetchInventorySoap(vc) {
         <vim25:type>HostSystem</vim25:type>
         <vim25:type>VirtualMachine</vim25:type>
         <vim25:type>Datastore</vim25:type>
+        <vim25:type>Network</vim25:type>
         <vim25:type>DistributedVirtualSwitch</vim25:type>
         <vim25:type>DistributedVirtualPortgroup</vim25:type>
         <vim25:recursive>true</vim25:recursive>
@@ -428,8 +494,21 @@ async function fetchInventorySoap(vc) {
     const hostRows = await retrieveType('HostSystem', HOST_PROPS);
     const vmRows = await retrieveType('VirtualMachine', VM_PROPS);
     const dsRows = await retrieveOptional('Datastore', ['name', 'browser', 'summary.accessible']);
+    // The Network container type covers DVPortgroups too — the name map below
+    // resolves VM `network` morefs of either flavor.
+    const netRows = await retrieveOptional('Network', ['name']);
     const dvsRows = await retrieveOptional('DistributedVirtualSwitch', DVS_PROPS);
     const dvpgRows = await retrieveOptional('DistributedVirtualPortgroup', DVPG_PROPS);
+
+    const networkNameByMoref = new Map();
+    for (const r of [...netRows, ...dvpgRows]) {
+      if (r.name != null) networkNameByMoref.set(String(r._moref), String(r.name));
+    }
+    const dsNameByMoref = new Map();
+    for (const r of dsRows) {
+      if (r.name != null) dsNameByMoref.set(String(r._moref), String(r.name));
+    }
+    const morefList = (val) => vimArray(val, 'ManagedObjectReference').map(flat).filter(v => v != null).map(String);
 
     const hostsByName = new Map();
     const hostNameByMoref = new Map();
@@ -490,6 +569,13 @@ async function fetchInventorySoap(vc) {
         const p = flat(f.name);
         if (p) referencedPaths.add(String(p));
       }
+      const networkMorefs = morefList(v['network']);
+      const guestNics = vimArray(v['guest.net'], 'GuestNicInfo').map(n => ({
+        network: flat(n.network) != null ? String(flat(n.network)) : null,
+        mac: flat(n.macAddress) != null ? String(flat(n.macAddress)) : null,
+        connected: String(flat(n.connected)) === 'true',
+        ips: stringList(n.ipAddress),
+      }));
       return {
         vmId: String(v._moref || ''),
         name: String(v.name),
@@ -503,6 +589,12 @@ async function fetchInventorySoap(vc) {
         toolsVersion: v['guest.toolsVersion'] != null ? String(flat(v['guest.toolsVersion'])) : null,
         toolsVersionStatus: v['guest.toolsVersionStatus2'] ?? null,
         hwVersion: v['config.version'] ?? null,
+        networks: [...new Set(networkMorefs.map(m => networkNameByMoref.get(m)).filter(Boolean))],
+        datastores: [...new Set(morefList(v['datastore']).map(m => dsNameByMoref.get(m)).filter(Boolean))],
+        guestNics,
+        uptimeSeconds: num(v['summary.quickStats.uptimeSeconds']),
+        storageCommittedBytes: num(v['summary.storage.committed']),
+        annotation: flat(v['config.annotation']) != null ? String(flat(v['config.annotation'])).slice(0, 2000) : null,
       };
     });
 
@@ -608,5 +700,5 @@ async function testConnection(vcLike) {
 module.exports = {
   getSession, invalidateSession, vGet, unwrap,
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
-  fetchInventorySoap, fetchEvents, testConnection,
+  fetchInventorySoap, fetchEvents, fetchVmTags, testConnection,
 };

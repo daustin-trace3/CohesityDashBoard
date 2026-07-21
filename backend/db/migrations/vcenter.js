@@ -223,4 +223,21 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 5,
+    up(db) {
+      // Per-VM associations for the drill-downs: networks/datastores/tags as
+      // JSON name arrays (queried with json_each for portgroup/datastore VM
+      // counts), guest NIC detail, uptime, committed storage, notes.
+      db.exec(`
+        ALTER TABLE vcenter_vms ADD COLUMN networks TEXT;
+        ALTER TABLE vcenter_vms ADD COLUMN datastores TEXT;
+        ALTER TABLE vcenter_vms ADD COLUMN tags TEXT;
+        ALTER TABLE vcenter_vms ADD COLUMN guest_nics TEXT;
+        ALTER TABLE vcenter_vms ADD COLUMN uptime_seconds INTEGER;
+        ALTER TABLE vcenter_vms ADD COLUMN storage_committed_bytes INTEGER;
+        ALTER TABLE vcenter_vms ADD COLUMN annotation TEXT;
+      `);
+    },
+  },
 ];
