@@ -8,8 +8,11 @@ import {
 } from 'chart.js';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import { BRAND, fmtNum, fmtBytes, severityTone } from './helpers';
+
+// last_poll_at is SQLite datetime('now') — UTC without a zone marker.
+const asDate = (v) => (v ? new Date(String(v).includes('T') ? v : `${String(v).replace(' ', 'T')}Z`) : null);
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend);
 
@@ -278,9 +281,16 @@ export default function VcOverviewPage() {
                     <p className="text-sm font-medium text-ink truncate">{v.name}</p>
                     <p className="text-[11px] text-ink-faint truncate">{v.host}{v.version ? ` · v${v.version}${v.build ? ` build ${v.build}` : ''}` : ''}</p>
                   </div>
-                  <Badge tone={v.lastPollStatus === 'error' ? 'crit' : v.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
-                    {v.lastPollStatus === 'error' ? 'Unreachable' : v.lastPollStatus === 'success' ? 'Up' : 'Pending'}
-                  </Badge>
+                  <div className="flex flex-col items-end gap-0.5 shrink-0">
+                    <Badge tone={v.lastPollStatus === 'error' ? 'crit' : v.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
+                      {v.lastPollStatus === 'error' ? 'Unreachable' : v.lastPollStatus === 'success' ? 'Up' : 'Pending'}
+                    </Badge>
+                    {v.lastPollAt && (
+                      <span className="text-[10px] text-ink-faint whitespace-nowrap" title={asDate(v.lastPollAt).toLocaleString()}>
+                        contacted {timeAgo(asDate(v.lastPollAt))}
+                      </span>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
