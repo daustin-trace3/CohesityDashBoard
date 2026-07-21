@@ -65,7 +65,7 @@ const SEEDED_TABLES = [
   // vcenter (children before the parent so FK deletes stay explicit)
   'vcenter_vms', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores',
   'vcenter_certs', 'vcenter_metrics_history', 'vcenter_networks',
-  'vcenter_orphaned_vmdks', 'vcenter_vcenters',
+  'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history', 'vcenter_vcenters',
 ];
 
 function wipeSeededTables(database) {

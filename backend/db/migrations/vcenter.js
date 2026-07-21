@@ -183,4 +183,44 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 4,
+    up(db) {
+      // Events page: native vSphere events (EventManager QueryEvents, appended
+      // per poll and deduped on the vCenter event key) and the lifecycle
+      // history of our computed issues (opened/resolved with durations).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vcenter_events (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id   INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          event_key    INTEGER NOT NULL,   -- vCenter's own event key (unique per vCenter)
+          event_type   TEXT,               -- vim event class, e.g. VmMigratedEvent
+          severity     TEXT,               -- error | warning | info (from the query category)
+          message      TEXT,
+          username     TEXT,
+          entity_name  TEXT,               -- vm/host/cluster the event is about
+          created_at   TEXT,               -- event time from vCenter
+          captured_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_vcenter_events_key ON vcenter_events(vcenter_id, event_key);
+        CREATE INDEX IF NOT EXISTS idx_vcenter_events_time ON vcenter_events(created_at);
+
+        CREATE TABLE IF NOT EXISTS vcenter_issue_history (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          issue_key   TEXT NOT NULL,       -- type|vcenter|target (stable across polls)
+          vcenter     TEXT,
+          severity    TEXT,
+          type        TEXT,
+          target      TEXT,
+          message     TEXT,                -- latest message text
+          status      TEXT NOT NULL DEFAULT 'open',  -- open | resolved
+          first_seen  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_seen   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          resolved_at DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_issue_hist_key ON vcenter_issue_history(issue_key, status);
+        CREATE INDEX IF NOT EXISTS idx_vcenter_issue_hist_seen ON vcenter_issue_history(last_seen);
+      `);
+    },
+  },
 ];

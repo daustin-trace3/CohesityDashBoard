@@ -255,7 +255,100 @@ function seedVcenter(db, { now, encrypt }) {
     }
   });
 
-  return { vcenters: SITES.length, clusters: clusterTotal, hosts: hostTotal, vms: vmTotal, datastores: dsTotal, orphans: orphanTotal };
+  // ── Native vSphere events: ~50 per vCenter over the last 48h ────────────
+  const insertEvent = db.prepare(`
+    INSERT OR IGNORE INTO vcenter_events (vcenter_id, event_key, event_type, severity, message, username, entity_name, created_at, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let eventTotal = 0;
+  let eventKey = 100000;
+  for (const vc of db.prepare('SELECT * FROM vcenter_vcenters').all()) {
+    const rng = rngFor(`${vc.name}-events`);
+    const vms = db.prepare('SELECT name, host_name FROM vcenter_vms WHERE vcenter_id = ?').all(vc.id);
+    const hosts = db.prepare('SELECT name FROM vcenter_hosts WHERE vcenter_id = ?').all(vc.id).map(h => h.name);
+    const unreachable = vc.last_poll_status === 'error';
+    const count = randInt(rng, 40, 60);
+    for (let i = 0; i < count; i++) {
+      const at = new Date(now - randInt(rng, 2, 48 * 60) * 60000).toISOString();
+      const vm = pick(rng, vms);
+      const otherHost = pick(rng, hosts);
+      const roll = rng();
+      let type, severity, message, entity, user = null;
+      if (unreachable && roll < 0.25) {
+        type = 'HostConnectionLostEvent'; severity = 'error'; entity = pick(rng, hosts);
+        message = `Connection to host ${entity} lost — cannot synchronize host state`;
+      } else if (roll < 0.06) {
+        type = 'VmFailedMigrateEvent'; severity = 'error'; entity = vm.name;
+        message = `Cannot migrate ${vm.name} from ${vm.host_name} to ${otherHost}: insufficient resources`;
+      } else if (roll < 0.16) {
+        type = 'HostCnxFailedTimeoutEvent'; severity = 'warning'; entity = pick(rng, hosts);
+        message = `Host ${entity} heartbeat delayed — connection retried successfully`;
+      } else if (roll < 0.5) {
+        type = chance(rng, 0.6) ? 'DrsVmMigratedEvent' : 'VmMigratedEvent'; severity = 'info'; entity = vm.name;
+        user = type === 'VmMigratedEvent' ? 'ICC\\vsphere.admin' : null;
+        message = `Migration of virtual machine ${vm.name} from ${vm.host_name} to ${otherHost} completed`;
+      } else if (roll < 0.7) {
+        const on = chance(rng, 0.6);
+        type = on ? 'VmPoweredOnEvent' : 'VmPoweredOffEvent'; severity = 'info'; entity = vm.name;
+        user = 'ICC\\vsphere.admin';
+        message = `${vm.name} on host ${vm.host_name} is powered ${on ? 'on' : 'off'}`;
+      } else if (roll < 0.82) {
+        type = chance(rng, 0.5) ? 'VmCreatedEvent' : 'VmRemovedEvent'; severity = 'info'; entity = vm.name;
+        user = 'ICC\\provisioning.svc';
+        message = type === 'VmCreatedEvent'
+          ? `Created virtual machine ${vm.name} on ${vm.host_name}`
+          : `Removed virtual machine ${vm.name} from ${vm.host_name}`;
+      } else {
+        const entering = chance(rng, 0.5);
+        type = entering ? 'EnteredMaintenanceModeEvent' : 'ExitMaintenanceModeEvent'; severity = 'info';
+        entity = pick(rng, hosts); user = 'ICC\\vsphere.admin';
+        message = `Host ${entity} has ${entering ? 'entered' : 'exited'} maintenance mode`;
+      }
+      insertEvent.run(vc.id, eventKey++, type, severity, message, user, entity, at, nowIso);
+      eventTotal++;
+    }
+  }
+
+  // ── Issue lifecycle history ─────────────────────────────────────────────
+  // Open rows come from the REAL reconcile against the just-seeded inventory
+  // (keys guaranteed to match computeIssues), then get backdated for realism;
+  // a few resolved incidents are added by hand.
+  const { reconcileIssueHistory } = require('../../services/vcenterIssues');
+  reconcileIssueHistory();
+  const histRng = rngFor('vcenter-issue-history');
+  for (const row of db.prepare("SELECT id FROM vcenter_issue_history WHERE status = 'open'").all()) {
+    const ageMin = randInt(histRng, 3 * 60, 6 * 24 * 60); // opened 3h–6d ago
+    db.prepare(`
+      UPDATE vcenter_issue_history SET first_seen = datetime('now', ?), last_seen = datetime('now', '-4 minutes') WHERE id = ?
+    `).run(`-${ageMin} minutes`, row.id);
+  }
+  const insertResolved = db.prepare(`
+    INSERT INTO vcenter_issue_history (issue_key, vcenter, severity, type, target, message, status, first_seen, last_seen, resolved_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'resolved', datetime('now', ?), datetime('now', ?), datetime('now', ?))
+  `);
+  const RESOLVED = [
+    ['host-down|lon-vc-prd-01|lon-esx-0202.icc.demo', 'lon-vc-prd-01', 'critical', 'host-down', 'lon-esx-0202.icc.demo',
+      'Host lon-esx-0202.icc.demo is not responding', 9 * 24 * 60, 51],
+    ['vcenter-unreachable|syd-vc-prd-01|syd-vc-prd-01', 'syd-vc-prd-01', 'critical', 'vcenter-unreachable', 'syd-vc-prd-01',
+      'vCenter syd-vc-prd-01 is unreachable: connect ETIMEDOUT', 6 * 24 * 60, 2 * 60 + 12],
+    ['datastore-usage|nyc-vc-prd-01|nyc-ds-vmfs-02', 'nyc-vc-prd-01', 'warning', 'datastore-usage', 'nyc-ds-vmfs-02',
+      'Datastore nyc-ds-vmfs-02 is 84.2% full', 14 * 24 * 60, 3 * 24 * 60],
+    ['cluster-capacity|dal-vc-prd-01|dal-cl-01:memory', 'dal-vc-prd-01', 'warning', 'cluster-capacity', 'dal-cl-01:memory',
+      'Cluster dal-cl-01 has 17.8% memory headroom left', 11 * 24 * 60, 26 * 60],
+    ['host-maintenance|fra-vc-prd-01|fra-esx-0104.icc.demo', 'fra-vc-prd-01', 'info', 'host-maintenance', 'fra-esx-0104.icc.demo',
+      'Host fra-esx-0104.icc.demo is in maintenance mode', 4 * 24 * 60, 5 * 60 + 40],
+  ];
+  for (const [key, vcName, sev, type, target, msg, openedMinAgo, durationMin] of RESOLVED) {
+    const resolvedMinAgo = openedMinAgo - durationMin;
+    insertResolved.run(key, vcName, sev, type, target, msg,
+      `-${openedMinAgo} minutes`, `-${resolvedMinAgo} minutes`, `-${resolvedMinAgo} minutes`);
+  }
+
+  return {
+    vcenters: SITES.length, clusters: clusterTotal, hosts: hostTotal, vms: vmTotal,
+    datastores: dsTotal, orphans: orphanTotal, events: eventTotal,
+    issueHistory: db.prepare('SELECT COUNT(*) n FROM vcenter_issue_history').get().n,
+  };
 }
 
 module.exports = { seedVcenter };

@@ -135,7 +135,8 @@ export default function VcOverviewPage() {
           onClick={() => navigate('/vcenter/datastores')} />
         <StatCard icon={ShieldAlert} label="Issues" value={fmtNum(issues.length)}
           sub={issues.length ? `${critCount} critical` : 'all clear'}
-          tone={critCount ? 'crit' : issues.length ? 'warn' : 'ok'} />
+          tone={critCount ? 'crit' : issues.length ? 'warn' : 'ok'}
+          onClick={() => navigate('/vcenter/events')} />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">

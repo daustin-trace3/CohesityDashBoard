@@ -166,4 +166,18 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vms WHERE tools_version IS NULL').get().c).toBe(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_orphaned_vmdks').get().c).toBeGreaterThan(3);
   });
+
+  it('seeds vcenter events and a consistent issue timeline', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_events').get().c).toBeGreaterThan(300);
+    for (const sev of ['error', 'warning', 'info']) {
+      expect(db.prepare('SELECT COUNT(*) c FROM vcenter_events WHERE severity = ?').get(sev).c).toBeGreaterThan(0);
+    }
+    // Open issue rows are produced by the real reconcile, so their keys must
+    // round-trip: a second reconcile changes nothing.
+    const open = db.prepare("SELECT COUNT(*) c FROM vcenter_issue_history WHERE status = 'open'").get().c;
+    expect(open).toBeGreaterThan(4);
+    const resolved = db.prepare("SELECT COUNT(*) c FROM vcenter_issue_history WHERE status = 'resolved' AND resolved_at IS NOT NULL").get().c;
+    expect(resolved).toBe(5);
+    expect(db.prepare("SELECT COUNT(*) c FROM vcenter_issue_history WHERE status = 'open' AND first_seen >= last_seen").get().c).toBe(0);
+  });
 });

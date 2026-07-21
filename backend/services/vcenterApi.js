@@ -440,6 +440,71 @@ async function fetchInventorySoap(vc) {
   }
 }
 
+// Curated info-category event classes worth keeping (the full info stream on
+// a busy vCenter is thousands of task/alarm rows a day).
+const INFO_EVENT_TYPES = [
+  'VmMigratedEvent', 'DrsVmMigratedEvent', 'VmRelocatedEvent', 'VmClonedEvent',
+  'VmCreatedEvent', 'VmRemovedEvent', 'VmPoweredOnEvent', 'VmPoweredOffEvent', 'VmSuspendedEvent',
+  'HostConnectedEvent', 'HostDisconnectedEvent',
+  'EnteredMaintenanceModeEvent', 'ExitMaintenanceModeEvent',
+];
+
+/**
+ * Native vSphere events since `sinceIso`: everything in the error and warning
+ * categories plus a curated set of info events (migrations, power ops, host
+ * connectivity, maintenance). Three QueryEvents calls in one SOAP session;
+ * each returns up to vCenter's ~1000-event cap for the window.
+ */
+async function fetchEvents(vc, sinceIso) {
+  const { password } = creds(vc);
+  const login = await soapCall(vc, `
+    <vim25:Login><vim25:_this type="SessionManager">SessionManager</vim25:_this>
+      <vim25:userName>${esc(vc.username)}</vim25:userName>
+      <vim25:password>${esc(password)}</vim25:password>
+    </vim25:Login>`);
+  const cookie = login.setCookie;
+  if (!cookie) throw new Error('SOAP login returned no session cookie');
+  try {
+    const query = async (filterXml) => {
+      const r = await soapCall(vc, `
+        <vim25:QueryEvents><vim25:_this type="EventManager">EventManager</vim25:_this>
+          <vim25:filter>
+            <vim25:time><vim25:beginTime>${esc(sinceIso)}</vim25:beginTime></vim25:time>
+            ${filterXml}
+          </vim25:filter>
+        </vim25:QueryEvents>`, cookie);
+      return asArray(r.body?.QueryEventsResponse?.returnval);
+    };
+
+    const batches = [
+      { severity: 'error', rows: await query('<vim25:category>error</vim25:category>') },
+      { severity: 'warning', rows: await query('<vim25:category>warning</vim25:category>') },
+      { severity: 'info', rows: await query(INFO_EVENT_TYPES.map(t => `<vim25:eventTypeId>${t}</vim25:eventTypeId>`).join('')) },
+    ];
+
+    const events = [];
+    for (const { severity, rows } of batches) {
+      for (const e of rows) {
+        const key = num(e.key);
+        if (key == null) continue;
+        events.push({
+          eventKey: key,
+          eventType: e['@_type'] || e['@_xsi:type'] || null,
+          severity,
+          message: flat(e.fullFormattedMessage) != null ? String(flat(e.fullFormattedMessage)) : null,
+          username: flat(e.userName) ? String(flat(e.userName)) : null,
+          entityName: flat(e.vm?.name) ?? flat(e.host?.name) ?? flat(e.computeResource?.name) ?? flat(e.datacenter?.name) ?? null,
+          createdAt: flat(e.createdTime) != null ? String(flat(e.createdTime)) : null,
+        });
+      }
+    }
+    return events;
+  } finally {
+    soapCall(vc, '<vim25:Logout><vim25:_this type="SessionManager">SessionManager</vim25:_this></vim25:Logout>', cookie)
+      .catch(() => {});
+  }
+}
+
 /** Validate a vCenter (saved row or unsaved candidate). Never throws. */
 async function testConnection(vcLike) {
   try {
@@ -463,5 +528,5 @@ async function testConnection(vcLike) {
 module.exports = {
   getSession, invalidateSession, vGet, unwrap,
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
-  fetchInventorySoap, testConnection,
+  fetchInventorySoap, fetchEvents, testConnection,
 };
