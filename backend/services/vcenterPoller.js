@@ -8,7 +8,7 @@ const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const {
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
-  fetchHostRuntimeSoap,
+  fetchInventorySoap,
 } = require('./vcenterApi');
 const logger = require('../utils/logger');
 
@@ -29,30 +29,55 @@ async function collect(vc) {
     if (!hostRows.has(h.host)) hostRows.set(h.host, { ...h, clusterName: null, clusterId: null });
   }
 
-  // Per-host VM counts (one filtered /vm call per host).
-  for (const row of hostRows.values()) {
-    try {
-      row.vmCount = (await fetchVmsForHost(vc, row.host)).length;
-    } catch (err) {
-      logger.debug(`[VcPoller] VM count failed for host ${row.name}: ${safeMsg(err)}`);
-      row.vmCount = null;
+  // SOAP inventory sweep: vCenter about, host runtime/version/BIOS, VM guests.
+  // When it works it also supplies VM counts, so the per-host REST /vm calls
+  // are only the fallback path.
+  let soap = null;
+  try {
+    soap = await fetchInventorySoap(vc);
+  } catch (err) {
+    logger.warn(`[VcPoller] SOAP inventory failed for ${vc.name} (maintenance/usage/BIOS/VM-guest detail unavailable): ${safeMsg(err)}`);
+  }
+
+  let vms = soap ? soap.vms : [];
+  if (soap) {
+    const vmCountByHost = new Map();
+    for (const v of soap.vms) {
+      if (v.hostName) vmCountByHost.set(v.hostName, (vmCountByHost.get(v.hostName) || 0) + 1);
+    }
+    for (const row of hostRows.values()) row.vmCount = vmCountByHost.get(row.name) ?? 0;
+  } else {
+    // REST fallback: per-host VM lists (basic fields only).
+    for (const row of hostRows.values()) {
+      try {
+        const hostVms = await fetchVmsForHost(vc, row.host);
+        row.vmCount = hostVms.length;
+        vms = vms.concat(hostVms.map(v => ({
+          vmId: v.vm, name: v.name, hostName: row.name,
+          powerState: v.power_state ?? null, guestOs: null,
+          cpuCount: v.cpu_count ?? null, memoryMb: v.memory_size_MiB ?? null,
+          ipAddress: null, toolsStatus: null, hwVersion: null,
+        })));
+      } catch (err) {
+        logger.debug(`[VcPoller] VM list failed for host ${row.name}: ${safeMsg(err)}`);
+        row.vmCount = null;
+      }
     }
   }
 
-  // SOAP enrichment: maintenance mode + quickstats, joined by host name.
-  let runtime = new Map();
-  try {
-    runtime = await fetchHostRuntimeSoap(vc);
-  } catch (err) {
-    logger.warn(`[VcPoller] SOAP enrichment failed for ${vc.name} (maintenance/usage columns stay empty): ${safeMsg(err)}`);
-  }
   for (const row of hostRows.values()) {
-    const r = runtime.get(row.name);
+    const r = soap?.hostsByName.get(row.name);
     row.inMaintenance = r ? r.inMaintenance : null;
     row.cpuMhzCapacity = r?.cpuMhzCapacity ?? null;
     row.cpuMhzUsed = r?.cpuMhzUsed ?? null;
     row.memBytesCapacity = r?.memBytesCapacity ?? null;
     row.memBytesUsed = r?.memBytesUsed ?? null;
+    row.esxVersion = r?.esxVersion ?? null;
+    row.esxBuild = r?.esxBuild ?? null;
+    row.biosVersion = r?.biosVersion ?? null;
+    row.biosReleaseDate = r?.biosReleaseDate ?? null;
+    row.vendor = r?.vendor ?? null;
+    row.model = r?.model ?? null;
   }
 
   const datastores = await fetchDatastores(vc);
@@ -64,21 +89,42 @@ async function collect(vc) {
     logger.debug(`[VcPoller] TLS cert fetch failed for ${vc.name} (needs cert-management privilege): ${safeMsg(err)}`);
   }
 
-  return { clusters, hosts: [...hostRows.values()], datastores, cert };
+  return { clusters, hosts: [...hostRows.values()], datastores, cert, vms, about: soap?.about || null };
 }
 
-const store = db.transaction((vcId, { clusters, hosts, datastores, cert }) => {
+const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, about }) => {
+  if (about) {
+    db.prepare(`
+      UPDATE vcenter_vcenters SET version = ?, build = ?, product_name = ? WHERE id = ?
+    `).run(about.version || null, about.build || null, about.fullName || null, vcId);
+  }
+
   db.prepare('DELETE FROM vcenter_hosts WHERE vcenter_id = ?').run(vcId);
   const hostStmt = db.prepare(`
     INSERT INTO vcenter_hosts (vcenter_id, host_id, name, cluster_name, connection_state,
       power_state, in_maintenance, vm_count, cpu_mhz_capacity, cpu_mhz_used,
-      mem_bytes_capacity, mem_bytes_used)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      mem_bytes_capacity, mem_bytes_used, esx_version, esx_build, bios_version,
+      bios_release_date, vendor, model)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const h of hosts) {
     hostStmt.run(vcId, h.host, h.name || null, h.clusterName, h.connection_state || null,
       h.power_state || null, h.inMaintenance, h.vmCount, h.cpuMhzCapacity, h.cpuMhzUsed,
-      h.memBytesCapacity, h.memBytesUsed);
+      h.memBytesCapacity, h.memBytesUsed, h.esxVersion, h.esxBuild, h.biosVersion,
+      h.biosReleaseDate, h.vendor, h.model);
+  }
+
+  db.prepare('DELETE FROM vcenter_vms WHERE vcenter_id = ?').run(vcId);
+  const vmStmt = db.prepare(`
+    INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, cluster_name, power_state,
+      guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const clusterByHost = new Map(hosts.map(h => [h.name, h.clusterName]));
+  for (const v of (vms || [])) {
+    vmStmt.run(vcId, v.vmId || null, v.name || null, v.hostName,
+      clusterByHost.get(v.hostName) ?? null, v.powerState,
+      v.guestOs, v.cpuCount, v.memoryMb, v.ipAddress, v.toolsStatus, v.hwVersion);
   }
 
   db.prepare('DELETE FROM vcenter_clusters WHERE vcenter_id = ?').run(vcId);
@@ -137,7 +183,7 @@ async function pollVcenter(vc) {
       UPDATE vcenter_vcenters SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?
     `).run(vc.id);
-    logger.info(`[VcPoller] ${vc.name}: ${data.hosts.length} host(s), ${data.clusters.length} cluster(s), ${data.datastores.length} datastore(s)`);
+    logger.info(`[VcPoller] ${vc.name}: ${data.hosts.length} host(s), ${data.clusters.length} cluster(s), ${data.datastores.length} datastore(s), ${(data.vms || []).length} VM(s)`);
   } catch (err) {
     db.prepare(`
       UPDATE vcenter_vcenters SET last_poll_status = 'error', last_poll_error = ?,

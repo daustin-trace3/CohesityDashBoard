@@ -185,7 +185,7 @@ const NEW_TABLES = [
   'auth_sessions', 'service_accounts', 'alert_notifications',
   'cohesity_views', 'workload_history',
   'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras',
-  'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history',
+  'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vms',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy
