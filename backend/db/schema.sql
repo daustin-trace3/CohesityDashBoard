@@ -806,3 +806,23 @@ CREATE INDEX IF NOT EXISTS idx_cohesity_views_system ON cohesity_views(system_id
 -- Analytics endpoints filter protection_runs by time window across ALL
 -- clusters; (cluster_id, start_time) can't serve that — avoid full scans.
 CREATE INDEX IF NOT EXISTS idx_prot_runs_start_time ON protection_runs(start_time);
+
+-- Per-cluster, per-workload (environment) protection snapshot appended by the
+-- poller: protected object counts + front-end protected bytes from
+-- protectionSources/registrationInfo statsByEnv, and per-job logical /
+-- physical consumption from stats/consumers joined to the jobs list.
+-- One batch per cluster per day; pruned by the retention cron (730 days).
+CREATE TABLE IF NOT EXISTS workload_history (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  cluster_id        INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+  environment       TEXT NOT NULL,
+  protected_count   INTEGER,
+  unprotected_count INTEGER,
+  protected_bytes   INTEGER,
+  job_count         INTEGER,
+  logical_bytes     INTEGER,
+  physical_bytes    INTEGER,
+  captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_workload_hist_cluster ON workload_history(cluster_id, environment, captured_at);
+CREATE INDEX IF NOT EXISTS idx_workload_hist_time ON workload_history(captured_at);
