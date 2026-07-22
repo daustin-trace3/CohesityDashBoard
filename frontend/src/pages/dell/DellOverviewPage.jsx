@@ -44,7 +44,7 @@ export default function DellOverviewPage() {
   const hasPower = (cap.power_w || 0) > 0 || (data?.powerTrend?.length || 0) > 0;
   const hasTemp = util?.temp_max != null;
   const hasUtil = util?.cpu_avg != null || (data?.topUtil || []).length > 0;
-  const opsCols = { 2: 'lg:grid-cols-2', 3: 'lg:grid-cols-3', 4: 'lg:grid-cols-4' }[2 + (hasUtil ? 1 : 0) + (hasTemp ? 1 : 0)];
+  const monCols = { 1: 'lg:grid-cols-1', 2: 'lg:grid-cols-2', 3: 'lg:grid-cols-3', 4: 'lg:grid-cols-4' }[(hasUtil ? 2 : 0) + (hasPower ? 1 : 0) + (hasTemp ? 1 : 0)] || '';
   const chartCols = { 1: '', 2: 'lg:grid-cols-2', 3: 'lg:grid-cols-3' }[1 + (hasPower ? 1 : 0) + (hasUtil ? 1 : 0)];
 
   const healthDonut = {
@@ -125,33 +125,44 @@ export default function DellOverviewPage() {
           tone={(data?.warranty?.expired || 0) > 0 ? 'crit' : (data?.warranty?.expiring || 0) > 0 ? 'warn' : 'ok'} />
       </div>
 
-      <div className={`grid sm:grid-cols-2 ${hasPower ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3 mb-4`}>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
         <StatCard icon={Cpu} label="CPU Capacity" value={fmtNum(cap.cores)}
           sub={`cores · ${fmtNum(cap.sockets)} sockets`} tone="default" />
         <StatCard icon={MemoryStick} label="Total Memory" value={fmtBytes(cap.memory_bytes)}
           sub="installed DIMMs" tone="default" />
         <StatCard icon={HardDrive} label="Raw Disk" value={fmtBytes(cap.disk_bytes)}
           sub={diskMedia.length ? diskMedia.map((m) => `${m.media} ${m.count}`).join(' · ') : 'per-drive inventory'} tone="default" />
-        {hasPower && (
-          <StatCard icon={Zap} label="Power Draw" value={cap.power_w != null && cap.power_w > 0 ? `${fmtNum(Math.round(cap.power_w))} W` : '—'}
-            sub="instant fleet draw" tone="default" />
-        )}
       </div>
 
-      <div className={`grid sm:grid-cols-2 ${opsCols} gap-3 mb-4`}>
+      {(hasUtil || hasPower || hasTemp) && (
+        <div className={`grid sm:grid-cols-2 ${monCols} gap-3 mb-4`}>
+          {hasUtil && (
+            <StatCard icon={Cpu} label="CPU Utilization" value={util?.cpu_avg != null ? `${util.cpu_avg.toFixed(0)}%` : '—'}
+              sub={`fleet average · ${fmtNum(util?.metered)} metered server(s)`}
+              tone={util?.cpu_avg != null && util.cpu_avg > 75 ? 'warn' : 'default'} />
+          )}
+          {hasUtil && (
+            <StatCard icon={MemoryStick} label="Memory Utilization" value={util?.mem_avg != null ? `${util.mem_avg.toFixed(0)}%` : '—'}
+              sub="fleet average, Power Manager"
+              tone={util?.mem_avg != null && util.mem_avg > 85 ? 'warn' : 'default'} />
+          )}
+          {hasPower && (
+            <StatCard icon={Zap} label="Power Draw" value={cap.power_w != null && cap.power_w > 0 ? `${fmtNum(Math.round(cap.power_w))} W` : '—'}
+              sub="instant fleet draw" tone="default" />
+          )}
+          {hasTemp && (
+            <StatCard icon={Thermometer} label="Thermal" value={util?.temp_max != null ? `${util.temp_max.toFixed(1)} °C` : '—'}
+              sub={`hottest inlet · ${util?.temp_avg != null ? `${util.temp_avg.toFixed(1)} °C avg` : '—'}`}
+              tone={util?.temp_max != null && util.temp_max > 27 ? 'warn' : 'default'} />
+          )}
+        </div>
+      )}
+
+      <div className="grid sm:grid-cols-2 gap-3 mb-4">
         <StatCard icon={AlertTriangle} label="Critical Alerts (7d)" value={fmtNum(data?.alerts7d?.critical)}
           sub={`${(data?.alerts7d?.critical || 0) > (data?.alerts7d?.critical_prev || 0) ? '▲' : (data?.alerts7d?.critical || 0) < (data?.alerts7d?.critical_prev || 0) ? '▼' : '—'} vs ${fmtNum(data?.alerts7d?.critical_prev)} prior week · ${fmtNum(data?.alerts7d?.warning)} warnings`}
           tone={(data?.alerts7d?.critical || 0) > 0 ? 'crit' : 'ok'} />
-        {hasUtil && (
-          <StatCard icon={Gauge} label="Fleet Utilization" value={util?.cpu_avg != null ? `${util.cpu_avg.toFixed(0)}% CPU` : '—'}
-            sub={util?.cpu_avg != null ? `${util.mem_avg != null ? `${util.mem_avg.toFixed(0)}% memory · ` : ''}avg of ${fmtNum(util.metered)} metered server(s)` : '—'}
-            tone={util?.cpu_avg != null && util.cpu_avg > 75 ? 'warn' : 'default'} />
-        )}
-        {hasTemp && (
-          <StatCard icon={Thermometer} label="Thermal" value={util?.temp_max != null ? `${util.temp_max.toFixed(1)} °C` : '—'}
-            sub={util?.temp_max != null ? `hottest inlet · ${util.temp_avg != null ? `${util.temp_avg.toFixed(1)} °C avg` : ''}` : '—'}
-            tone={util?.temp_max != null && util.temp_max > 27 ? 'warn' : 'default'} />
-        )}
+
         <StatCard icon={Unplug} label="Disconnected" value={fmtNum(dev.disconnected)}
           sub="devices unreachable from OME" tone={(dev.disconnected || 0) > 0 ? 'crit' : 'ok'} />
       </div>

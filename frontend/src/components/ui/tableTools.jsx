@@ -64,7 +64,7 @@ export function useTableControls(rows, { searchKeys = [], defaultSortKey = null,
 export function SortTh({ k, label, ctl, align = 'left', className = '' }) {
   const active = ctl.sortKey === k;
   return (
-    <th className={`py-2 pr-3 ${align === 'right' ? 'text-right' : 'text-left'} ${className}`}>
+    <th className={`py-2 pr-3 ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'} ${className}`}>
       <button onClick={() => ctl.toggleSort(k)}
         className={`inline-flex items-center gap-1 uppercase tracking-wide cursor-pointer transition-colors hover:text-ink ${active ? 'text-ink' : ''}`}>
         {label}{active && (ctl.sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
