@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Gauge, Server, ShieldAlert, Boxes, AlertTriangle, HardDrive, Cpu, MemoryStick, Zap, BadgeCheck } from 'lucide-react';
+import { Gauge, Server, ShieldAlert, Boxes, AlertTriangle, HardDrive, Cpu, MemoryStick, Zap, BadgeCheck, Thermometer, Unplug } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Bar, Doughnut } from 'react-chartjs-2';
 import {
@@ -34,6 +34,7 @@ export default function DellOverviewPage() {
   const models = data?.modelBreakdown || [];
   const types = data?.typeBreakdown || [];
   const diskMedia = data?.diskMedia || [];
+  const util = data?.utilization;
 
   const healthDonut = {
     labels: ['OK', 'Warning', 'Critical', 'Unknown'],
@@ -51,7 +52,7 @@ export default function DellOverviewPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Gauge} title="Dell OME Overview" description="PowerEdge fleet health, capacity and lifecycle across all registered OpenManage Enterprise instances">
+      <PageHeader icon={Gauge} title="Dell Overview" description="PowerEdge fleet health, capacity and lifecycle across all registered OpenManage Enterprise instances">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -59,7 +60,7 @@ export default function DellOverviewPage() {
       {data != null && instances.length === 0 && (
         <div className="panel p-4 mb-4 text-sm text-ink-muted">
           No OME instances registered yet. Add one under{' '}
-          <Link to="/ome/settings" className="text-brand hover:underline">Settings</Link>.
+          <Link to="/dell/settings" className="text-brand hover:underline">Settings</Link>.
         </div>
       )}
 
@@ -68,8 +69,9 @@ export default function DellOverviewPage() {
           sub="reachable" tone={instances.some(o => o.lastPollStatus === 'error') ? 'crit' : 'brand'} />
         <StatCard icon={Server} label="Devices" value={fmtNum(dev.total)}
           sub={`${fmtNum(dev.powered_on)} powered on`} tone="default" />
-        <StatCard icon={AlertTriangle} label="Health Alerts" value={fmtNum((dev.warning || 0) + (dev.critical || 0))}
-          sub={`${fmtNum(dev.critical)} critical devices`} tone={(dev.critical || 0) > 0 ? 'crit' : (dev.warning || 0) > 0 ? 'warn' : 'ok'} />
+        <StatCard icon={AlertTriangle} label="Failing Components" value={fmtNum(data?.failingComponents)}
+          sub={`across ${fmtNum((dev.warning || 0) + (dev.critical || 0))} unhealthy device(s)`}
+          tone={(dev.critical || 0) > 0 ? 'crit' : (data?.failingComponents || 0) > 0 ? 'warn' : 'ok'} />
         <StatCard icon={BadgeCheck} label="Warranty" value={fmtNum(data?.warranty?.expiring)}
           sub={`expiring ≤${data?.warranty?.warnDays ?? 90}d · ${fmtNum(data?.warranty?.expired)} expired`}
           tone={(data?.warranty?.expired || 0) > 0 ? 'crit' : (data?.warranty?.expiring || 0) > 0 ? 'warn' : 'ok'} />
@@ -86,6 +88,20 @@ export default function DellOverviewPage() {
           sub={cap.power_w != null && cap.power_w > 0 ? 'instant, Power Manager' : 'needs Power Manager plugin'} tone="default" />
       </div>
 
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        <StatCard icon={AlertTriangle} label="Critical Alerts (7d)" value={fmtNum(data?.alerts7d?.critical)}
+          sub={`${(data?.alerts7d?.critical || 0) > (data?.alerts7d?.critical_prev || 0) ? '▲' : (data?.alerts7d?.critical || 0) < (data?.alerts7d?.critical_prev || 0) ? '▼' : '—'} vs ${fmtNum(data?.alerts7d?.critical_prev)} prior week · ${fmtNum(data?.alerts7d?.warning)} warnings`}
+          tone={(data?.alerts7d?.critical || 0) > 0 ? 'crit' : 'ok'} />
+        <StatCard icon={Gauge} label="Fleet Utilization" value={util?.cpu_avg != null ? `${util.cpu_avg.toFixed(0)}% CPU` : '—'}
+          sub={util?.cpu_avg != null ? `${util.mem_avg != null ? `${util.mem_avg.toFixed(0)}% memory · ` : ''}avg of ${fmtNum(util.metered)} metered server(s)` : 'needs Power Manager plugin'}
+          tone={util?.cpu_avg != null && util.cpu_avg > 75 ? 'warn' : 'default'} />
+        <StatCard icon={Thermometer} label="Thermal" value={util?.temp_max != null ? `${util.temp_max.toFixed(1)} °C` : '—'}
+          sub={util?.temp_max != null ? `hottest inlet · ${util.temp_avg != null ? `${util.temp_avg.toFixed(1)} °C avg` : ''}` : 'needs Power Manager plugin'}
+          tone={util?.temp_max != null && util.temp_max > 27 ? 'warn' : 'default'} />
+        <StatCard icon={Unplug} label="Disconnected" value={fmtNum(dev.disconnected)}
+          sub="devices unreachable from OME" tone={(dev.disconnected || 0) > 0 ? 'crit' : 'ok'} />
+      </div>
+
       <div className="grid lg:grid-cols-3 gap-4 mb-4">
         <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-3">Device Health</p>
@@ -97,9 +113,6 @@ export default function DellOverviewPage() {
               }} />
             </div>
           )}
-          <div className="mt-2 text-[11px] text-ink-faint">
-            {fmtNum(dev.disconnected)} device(s) disconnected from OME
-          </div>
         </div>
 
         <div className="panel p-4 lg:col-span-2" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -176,15 +189,6 @@ export default function DellOverviewPage() {
         </div>
       </div>
 
-      <div className="grid sm:grid-cols-3 gap-3">
-        <StatCard icon={AlertTriangle} label="Critical Alerts (7d)" value={fmtNum(data?.alerts7d?.critical)}
-          sub={`${fmtNum(data?.alerts7d?.warning)} warnings`} tone={(data?.alerts7d?.critical || 0) > 0 ? 'crit' : 'ok'} />
-        <StatCard icon={HardDrive} label="Failing Components" value={fmtNum(data?.failingComponents)}
-          sub="disks, DIMMs, PSUs, NICs not OK" tone={(data?.failingComponents || 0) > 0 ? 'warn' : 'ok'} />
-        <StatCard icon={BadgeCheck} label="Firmware Drift" value={fmtNum(data?.firmware?.noncompliant)}
-          sub={data?.firmware?.total ? `of ${fmtNum(data.firmware.total)} baseline checks` : 'no baselines defined'}
-          tone={(data?.firmware?.noncompliant || 0) > 0 ? 'warn' : 'ok'} />
-      </div>
     </div>
   );
 }
