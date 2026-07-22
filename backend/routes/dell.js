@@ -328,16 +328,101 @@ router.get('/devices/:id', [param('id').isInt().toInt()], validate, (req, res, n
   } catch (err) { next(err); }
 });
 
-/** GET /api/dell/alerts?days=7 — alert feed across instances. */
+/** GET /api/dell/alerts?days=7 — alert feed across instances. device_row_id
+ *  resolves the alerting device to its inventory row for the detail modal. */
 router.get('/alerts', [query('days').optional().isInt({ min: 1, max: 90 }).toInt()], validate, (req, res, next) => {
   try {
     const days = req.query.days || 7;
     res.json(db.prepare(`
-      SELECT a.*, o.name AS ome_name FROM dell_alerts a
+      SELECT a.*, o.name AS ome_name, d.id AS device_row_id
+      FROM dell_alerts a
       JOIN dell_ome_instances o ON o.id = a.ome_id
+      LEFT JOIN dell_devices d ON d.ome_id = a.ome_id
+        AND (d.service_tag = a.service_tag OR d.name = a.device_name)
       WHERE a.created_at >= datetime('now', ?)
       ORDER BY a.created_at DESC LIMIT 5000
     `).all(`-${days} days`));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/dell/export?include=cpu,memory,network&deviceId= — CSV inventory
+ *  export. Base columns (always): device identity, IP, health and support
+ *  contract; optional component groups summarized one row per device. */
+router.get('/export', [
+  query('include').optional().isString().trim(),
+  query('deviceId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const include = new Set(String(req.query.include || '').split(',').map((s) => s.trim()).filter(Boolean));
+    const devices = db.prepare(`
+      SELECT d.*, o.name AS ome_name FROM dell_devices d
+      JOIN dell_ome_instances o ON o.id = d.ome_id
+      ${req.query.deviceId ? 'WHERE d.id = ?' : ''} ORDER BY d.name
+    `).all(...(req.query.deviceId ? [req.query.deviceId] : []));
+    if (req.query.deviceId && devices.length === 0) return res.status(404).json({ error: 'Device not found.' });
+
+    const compRows = db.prepare('SELECT * FROM dell_components').all();
+    const compsByDevice = new Map();
+    for (const c of compRows) {
+      const key = `${c.ome_id}|${c.device_id}`;
+      if (!compsByDevice.has(key)) compsByDevice.set(key, []);
+      compsByDevice.get(key).push(c);
+    }
+    const warRows = db.prepare('SELECT * FROM dell_warranties').all();
+    const warByTag = new Map();
+    for (const w of warRows) {
+      // Keep the longest-running contract per service tag.
+      const prev = warByTag.get(w.service_tag);
+      if (!prev || (w.days_remaining ?? -1) > (prev.days_remaining ?? -1)) warByTag.set(w.service_tag, w);
+    }
+
+    const gb = (b) => (b != null ? (b / 1024 ** 3).toFixed(0) : '');
+    const header = ['Device Name', 'Service Tag', 'Model', 'Type', 'IP Address', 'Health', 'Power State', 'OME Instance',
+      'Support Level', 'Support End', 'Support Days Left'];
+    if (include.has('cpu')) header.push('CPU Sockets', 'CPU Cores', 'CPU Models');
+    if (include.has('memory')) header.push('Memory (GB)', 'DIMM Count', 'DIMM Detail');
+    if (include.has('network')) header.push('NIC Count', 'NICs', 'MAC Addresses');
+
+    const esc = (v) => {
+      const s = v == null ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [header.map(esc).join(',')];
+    for (const d of devices) {
+      const comps = compsByDevice.get(`${d.ome_id}|${d.device_id}`) || [];
+      const war = warByTag.get(d.service_tag);
+      const row = [d.name, d.service_tag, d.model, d.device_type, d.ip_address, d.health, d.power_state, d.ome_name,
+        war?.service_level ?? '', war?.end_date ? String(war.end_date).slice(0, 10) : '',
+        war?.days_remaining ?? ''];
+      if (include.has('cpu')) {
+        const cpus = comps.filter((c) => c.kind === 'processor');
+        row.push(d.cpu_count ?? (cpus.length || ''),
+          d.core_count ?? '',
+          [...new Set(cpus.map((c) => c.name).filter(Boolean))].join('; '));
+      }
+      if (include.has('memory')) {
+        const dimms = comps.filter((c) => c.kind === 'memory');
+        row.push(gb(d.memory_bytes), dimms.length || '',
+          [...new Set(dimms.map((c) => `${gb(c.size_bytes)}GB ${c.speed || ''}`.trim()))].join('; '));
+      }
+      if (include.has('network')) {
+        const nics = comps.filter((c) => c.kind === 'nic');
+        const macs = [];
+        for (const n of nics) {
+          try {
+            for (const p of (JSON.parse(n.extra || '{}').ports || [])) macs.push(...(p.macs || []));
+          } catch { /* extra not JSON */ }
+        }
+        row.push(nics.length || '',
+          [...new Set(nics.map((c) => c.description || c.name).filter(Boolean))].join('; '),
+          macs.join('; '));
+      }
+      lines.push(row.map(esc).join(','));
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="dell-inventory-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(lines.join('\r\n'));
   } catch (err) { next(err); }
 });
 
