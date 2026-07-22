@@ -1,4 +1,4 @@
-// Dell OME routes. Mounted by the plugin dispatcher at /api/ome — paths are
+// Dell OME routes. Mounted by the plugin dispatcher at /api/dell — paths are
 // relative. Registration CRUD stores the password AES-encrypted; data
 // endpoints serve the polled ome_* tables plus computed issues (instance
 // unreachable, critical/warning devices, failing components, warranty
@@ -31,14 +31,14 @@ function warrantyWarnDays() {
   return Number.isFinite(n) ? Math.min(365, Math.max(1, n)) : 90;
 }
 
-/** GET /api/ome/instances — registered OME appliances (never the credentials). */
+/** GET /api/dell/instances — registered OME appliances (never the credentials). */
 router.get('/instances', (req, res, next) => {
   try {
     res.json(db.prepare('SELECT * FROM dell_ome_instances ORDER BY name').all().map(publicOme));
   } catch (err) { next(err); }
 });
 
-/** POST /api/ome/instances — register an OME appliance. */
+/** POST /api/dell/instances — register an OME appliance. */
 router.post('/instances', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
   body('host').isString().trim().notEmpty().isLength({ max: 253 }),
@@ -63,7 +63,7 @@ router.post('/instances', [
   } catch (err) { next(err); }
 });
 
-/** PUT /api/ome/instances/:id — update (password optional; blank keeps stored). */
+/** PUT /api/dell/instances/:id — update (password optional; blank keeps stored). */
 router.put('/instances/:id', [
   param('id').isInt().toInt(),
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
@@ -96,7 +96,7 @@ router.put('/instances/:id', [
   } catch (err) { next(err); }
 });
 
-/** DELETE /api/ome/instances/:id — unregister (CASCADE clears inventory). */
+/** DELETE /api/dell/instances/:id — unregister (CASCADE clears inventory). */
 router.delete('/instances/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM dell_ome_instances WHERE id = ?').get(req.params.id);
@@ -108,7 +108,7 @@ router.delete('/instances/:id', [param('id').isInt().toInt()], validate, (req, r
   } catch (err) { next(err); }
 });
 
-/** POST /api/ome/instances/test — validate saved or candidate credentials. */
+/** POST /api/dell/instances/test — validate saved or candidate credentials. */
 router.post('/instances/test', [
   body('host').isString().trim().notEmpty(),
   body('username').isString().trim().notEmpty(),
@@ -126,7 +126,7 @@ router.post('/instances/test', [
   res.status(result.ok ? 200 : 502).json(result);
 });
 
-/** POST /api/ome/instances/:id/refresh — poll this instance now. */
+/** POST /api/dell/instances/:id/refresh — poll this instance now. */
 router.post('/instances/:id/refresh', [param('id').isInt().toInt()], validate, async (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM dell_ome_instances WHERE id = ?').get(req.params.id);
@@ -181,7 +181,7 @@ function computeIssues() {
   return issues.sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3));
 }
 
-/** GET /api/ome/overview — fleet rollup + computed issues. */
+/** GET /api/dell/overview — fleet rollup + computed issues. */
 router.get('/overview', (req, res, next) => {
   try {
     const instances = db.prepare('SELECT * FROM dell_ome_instances ORDER BY name').all();
@@ -248,7 +248,7 @@ router.get('/overview', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/ome/devices — inventory list (optional ?omeId=&type=&health=). */
+/** GET /api/dell/devices — inventory list (optional ?omeId=&type=&health=). */
 router.get('/devices', [
   query('omeId').optional().isInt().toInt(),
   query('type').optional().isString().trim(),
@@ -268,7 +268,7 @@ router.get('/devices', [
   } catch (err) { next(err); }
 });
 
-/** GET /api/ome/devices/:id — one device + components + recent alerts. */
+/** GET /api/dell/devices/:id — one device + components + recent alerts. */
 router.get('/devices/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
   try {
     const dev = db.prepare(`
@@ -293,7 +293,7 @@ router.get('/devices/:id', [param('id').isInt().toInt()], validate, (req, res, n
   } catch (err) { next(err); }
 });
 
-/** GET /api/ome/alerts?days=7 — alert feed across instances. */
+/** GET /api/dell/alerts?days=7 — alert feed across instances. */
 router.get('/alerts', [query('days').optional().isInt({ min: 1, max: 90 }).toInt()], validate, (req, res, next) => {
   try {
     const days = req.query.days || 7;
@@ -306,17 +306,20 @@ router.get('/alerts', [query('days').optional().isInt({ min: 1, max: 90 }).toInt
   } catch (err) { next(err); }
 });
 
-/** GET /api/ome/warranty — warranty rows across instances. */
+/** GET /api/dell/warranty — warranty rows across instances + the warn window. */
 router.get('/warranty', (req, res, next) => {
   try {
-    res.json(db.prepare(`
-      SELECT w.*, o.name AS ome_name FROM dell_warranties w
-      JOIN dell_ome_instances o ON o.id = w.ome_id ORDER BY w.days_remaining
-    `).all());
+    res.json({
+      warnDays: warrantyWarnDays(),
+      rows: db.prepare(`
+        SELECT w.*, o.name AS ome_name FROM dell_warranties w
+        JOIN dell_ome_instances o ON o.id = w.ome_id ORDER BY w.days_remaining
+      `).all(),
+    });
   } catch (err) { next(err); }
 });
 
-/** GET /api/ome/firmware — baseline compliance rows across instances. */
+/** GET /api/dell/firmware — baseline compliance rows across instances. */
 router.get('/firmware', (req, res, next) => {
   try {
     res.json(db.prepare(`
@@ -327,7 +330,7 @@ router.get('/firmware', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/ome/governance — failing components, warranty, firmware, unmanaged. */
+/** GET /api/dell/governance — failing components, warranty, firmware, unmanaged. */
 router.get('/governance', (req, res, next) => {
   try {
     const failing = db.prepare(`
@@ -359,7 +362,7 @@ router.get('/governance', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/ome/trends?days=30 — per-instance metric snapshots. */
+/** GET /api/dell/trends?days=30 — per-instance metric snapshots. */
 router.get('/trends', [query('days').optional().isInt({ min: 1, max: 365 }).toInt()], validate, (req, res, next) => {
   try {
     const days = req.query.days || 30;
@@ -372,7 +375,7 @@ router.get('/trends', [query('days').optional().isInt({ min: 1, max: 365 }).toIn
   } catch (err) { next(err); }
 });
 
-/** GET/PUT /api/ome/config — alert thresholds (warranty warn window). */
+/** GET/PUT /api/dell/config — alert thresholds (warranty warn window). */
 router.get('/config', (req, res) => {
   res.json({ warrantyWarnDays: warrantyWarnDays() });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { ClipboardCheck, HardDrive, BadgeCheck, Layers, Unplug } from 'lucide-react';
+import { Wrench, HardDrive, Layers, Unplug } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -43,55 +43,6 @@ function FailingSection({ rows }) {
                     <td className="py-2 pr-3 text-ink-faint tnum text-[11px]">{c.serial || '—'}</td>
                     <td className="py-2 pr-3"><Badge tone={healthTone(c.status)}>{c.status}</Badge></td>
                     <td className="py-2 pr-3 text-ink-muted">{c.ome_name}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <TablePager ctl={ctl} />
-        </>
-      )}
-    </div>
-  );
-}
-
-function WarrantySection({ rows, warnDays }) {
-  const ctl = useTableControls(rows, {
-    searchKeys: ['service_tag', 'device_model', 'service_level', 'ome_name'],
-    defaultSortKey: 'days_remaining', defaultSortDir: 'asc',
-    paginate: true,
-  });
-  return (
-    <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-      <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BadgeCheck size={15} className="text-brand" /> Warranty Expiry</p>
-      <p className="text-[11px] text-ink-faint mb-3">Support contracts within {warnDays} days of expiry (threshold configurable under Settings). Feed for refresh planning.</p>
-      {rows.length === 0 ? (
-        <div className="text-sm text-status-ok py-4 text-center">No warranties inside the warning window.</div>
-      ) : (
-        <>
-          <TableControls ctl={ctl} rows={rows} searchPlaceholder="Filter by service tag, model, service level…"
-            filters={[{ k: 'ome_name', label: 'OME instances' }, { k: 'device_model', label: 'Models' }]} />
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <SortTh k="service_tag" label="Service Tag" ctl={ctl} />
-                <SortTh k="device_model" label="Model" ctl={ctl} />
-                <SortTh k="service_level" label="Service Level" ctl={ctl} />
-                <SortTh k="end_date" label="Ends" ctl={ctl} />
-                <SortTh k="days_remaining" label="Days Left" ctl={ctl} align="right" />
-                <SortTh k="ome_name" label="OME" ctl={ctl} />
-              </tr></thead>
-              <tbody>
-                {ctl.pageRows.map((w) => (
-                  <tr key={w.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink tnum">{w.service_tag || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-muted">{w.device_model || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-muted text-xs max-w-[260px] truncate" title={w.service_level || ''}>{w.service_level || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{w.end_date ? String(w.end_date).slice(0, 10) : '—'}</td>
-                    <td className={`py-2 pr-3 text-right tnum font-semibold ${w.days_remaining <= 0 ? 'text-status-crit' : w.days_remaining <= 30 ? 'text-status-warn' : 'text-ink'}`}>
-                      {w.days_remaining <= 0 ? 'expired' : fmtNum(w.days_remaining)}
-                    </td>
-                    <td className="py-2 pr-3 text-ink-muted">{w.ome_name}</td>
                   </tr>
                 ))}
               </tbody>
@@ -149,30 +100,29 @@ function FirmwareSection({ rows }) {
   );
 }
 
-export default function DellGovernancePage() {
+export default function DellHardwarePage() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/dell/governance')
     .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
-    .catch(() => { setData({ failing: [], warranty: [], firmware: [], disconnected: [] }); toast({ type: 'error', title: 'Failed to load governance data' }); }), [toast]);
+    .catch(() => { setData({ failing: [], firmware: [], disconnected: [] }); toast({ type: 'error', title: 'Failed to load hardware health data' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={ClipboardCheck} title="Governance" description="Failing hardware, warranty runway, firmware drift and unmanaged devices across the Dell estate">
+      <PageHeader icon={Wrench} title="Hardware" description="Failing components, firmware drift and disconnected devices across the Dell estate">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
 
       {data == null ? (
-        <LoadingPanel label="Loading governance data…" height={200} />
+        <LoadingPanel label="Loading hardware health…" height={200} />
       ) : (
         <>
           <FailingSection rows={data.failing || []} />
-          <WarrantySection rows={data.warranty || []} warnDays={data.warrantyWarnDays ?? 90} />
           <FirmwareSection rows={data.firmware || []} />
 
           <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
