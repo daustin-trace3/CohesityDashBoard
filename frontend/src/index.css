@@ -113,6 +113,18 @@ body {
   animation-delay: calc(var(--stagger-i, 0) * 20ms);
 }
 
+/* ── Zerto replication lane packets ──────────────────────────────────────── */
+@keyframes zerto-flow {
+  from { left: -30px; }
+  to { left: 100%; }
+}
+.zerto-packet {
+  left: -30px;
+  animation-name: zerto-flow;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -128,6 +140,7 @@ body {
   .animate-fade-in { animation: none !important; opacity: 1 !important; transform: none !important; }
   .animate-slide-in-right { animation: none !important; opacity: 1 !important; transform: none !important; }
   .animate-loading-bar { animation: none !important; }
+  .zerto-packet { animation: none !important; opacity: 0 !important; }
   .stagger-rows > * { animation: none !important; }
   [style*="orb-pulse"],
   [style*="pulse-critical"] { animation: none !important; }

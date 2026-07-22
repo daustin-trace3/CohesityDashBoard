@@ -15,21 +15,29 @@ function flowColor(f) {
 
 /**
  * Animated replication lane: protected site → recovery site with data
- * "packets" travelling along the wire (SVG SMIL animateMotion — no JS timers).
+ * "packets" travelling along the wire. Plain CSS keyframes on DOM elements —
+ * the previous SVG SMIL + preserveAspectRatio="none" version left paint-trail
+ * artifacts (a thin solid line) behind the moving packets in Chromium.
  * Packet speed slows as the flow degrades, echoing a struggling link.
  */
 function FlowWire({ color, degraded }) {
-  const dur = degraded ? '3.6s' : '1.8s';
+  const dur = degraded ? 3.6 : 1.8;
   return (
-    <svg viewBox="0 0 200 24" className="w-full h-6" preserveAspectRatio="none" aria-hidden="true">
-      <line x1="4" y1="12" x2="188" y2="12" stroke={color} strokeOpacity="0.25" strokeWidth="2" strokeDasharray="6 5" />
-      <polygon points="188,6 198,12 188,18" fill={color} fillOpacity="0.8" />
+    <div className="relative w-full h-6 overflow-hidden" aria-hidden="true">
+      <div className="absolute top-1/2 -translate-y-1/2 border-t-2 border-dashed"
+        style={{ left: 4, right: 14, borderColor: color, opacity: 0.25 }} />
+      <div className="absolute right-0 top-1/2 -translate-y-1/2 w-0 h-0"
+        style={{ borderTop: '6px solid transparent', borderBottom: '6px solid transparent', borderLeft: `10px solid ${color}`, opacity: 0.8 }} />
       {[0, 1, 2].map((i) => (
-        <circle key={i} r="3" fill={color}>
-          <animateMotion dur={dur} begin={`${(i * (degraded ? 1.2 : 0.6)).toFixed(1)}s`} repeatCount="indefinite" path="M 4 12 L 186 12" />
-        </circle>
+        <div key={i} className="absolute top-1/2 rounded-full zerto-packet"
+          style={{
+            width: 26, height: 6, marginTop: -3, backgroundColor: color,
+            animationDuration: `${dur}s`,
+            // Negative delay: lanes are mid-flight on first paint.
+            animationDelay: `${(-i * dur / 3).toFixed(2)}s`,
+          }} />
       ))}
-    </svg>
+    </div>
   );
 }
 
