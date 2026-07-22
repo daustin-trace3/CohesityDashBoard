@@ -176,7 +176,7 @@ const SIZE_UNITS = { b: 1, bytes: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb:
 const parseSize = (v) => {
   if (v == null) return null;
   if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v) : null;
-  const m = String(v).trim().match(/^([\d.]+)\s*(bytes|b|kb|mb|gb|tb|pb)?$/i);
+  const m = String(v).replace(/,/g, '').trim().match(/^([\d.]+)\s*(bytes|b|kb|mb|gb|tb|pb)?$/i);
   if (!m) return null;
   const n = parseFloat(m[1]);
   return Number.isFinite(n) ? Math.round(n * SIZE_UNITS[(m[2] || 'bytes').toLowerCase()]) : null;
@@ -204,7 +204,9 @@ function parseInventory(deviceId, sections) {
       for (const p of items) {
         comps.push({
           deviceId, kind: 'processor',
-          name: p.BrandName || p.ModelName || null, description: p.ModelName || null,
+          // ModelName carries the full CPU string ("Intel(R) Xeon(R) Gold 6252
+          // CPU @ 2.10GHz"); BrandName is just the vendor ("Intel").
+          name: p.ModelName || p.BrandName || null, description: p.BrandName || null,
           status: compHealth(p.Status), model: p.ModelName || null, serial: null,
           slot: p.SlotNumber || null, sizeBytes: null,
           speed: p.MaxSpeed ? `${p.MaxSpeed} MHz` : null,
@@ -232,7 +234,11 @@ function parseInventory(deviceId, sections) {
           name: d.ModelNumber || d.SerialNumber || null, description: d.Description || null,
           status: compHealth(d.StatusString ?? d.Status), model: d.ModelNumber || null,
           serial: d.SerialNumber || null, slot: d.SlotNumber != null ? String(d.SlotNumber) : null,
-          sizeBytes: parseSize(d.Size),
+          // Size is usually a unit string; some releases leave it empty on RAID
+          // members and only report used+free raid space.
+          sizeBytes: parseSize(d.Size)
+            ?? (parseSize(d.UsedRaidDiskSpace) != null || parseSize(d.FreeDiskSpace) != null
+              ? (parseSize(d.UsedRaidDiskSpace) || 0) + (parseSize(d.FreeDiskSpace) || 0) : null),
           speed: d.BusType || null,
           extra: {
             mediaType: d.MediaType || null, busType: d.BusType || null,
