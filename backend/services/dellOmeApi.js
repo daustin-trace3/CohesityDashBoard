@@ -171,15 +171,18 @@ async function fetchDevices(ome, typeMap) {
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 
-// OME sizes arrive either as plain byte counts or unit strings ("745.21 GB").
+// OME sizes arrive as unit strings ("745.21 GB") or bare numbers whose unit
+// depends on the section — LIVE-CONFIRMED: serverArrayDisks / virtual-disk
+// Size is a bare GB string ("223"); serverMemoryDevices Size is bare MB.
+// Callers pass bareUnit for the section's implicit unit.
 const SIZE_UNITS = { b: 1, bytes: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4, pb: 1024 ** 5 };
-const parseSize = (v) => {
+const parseSize = (v, bareUnit = 'bytes') => {
   if (v == null) return null;
-  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v) : null;
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * SIZE_UNITS[bareUnit]) : null;
   const m = String(v).replace(/,/g, '').trim().match(/^([\d.]+)\s*(bytes|b|kb|mb|gb|tb|pb)?$/i);
   if (!m) return null;
   const n = parseFloat(m[1]);
-  return Number.isFinite(n) ? Math.round(n * SIZE_UNITS[(m[2] || 'bytes').toLowerCase()]) : null;
+  return Number.isFinite(n) ? Math.round(n * SIZE_UNITS[(m[2] || bareUnit).toLowerCase()]) : null;
 };
 const compHealth = (v) => {
   if (v == null) return null;
@@ -234,11 +237,10 @@ function parseInventory(deviceId, sections) {
           name: d.ModelNumber || d.SerialNumber || null, description: d.Description || null,
           status: compHealth(d.StatusString ?? d.Status), model: d.ModelNumber || null,
           serial: d.SerialNumber || null, slot: d.SlotNumber != null ? String(d.SlotNumber) : null,
-          // Size is usually a unit string; RAID members on some releases leave
-          // it empty and report capacity via used+free raid space instead.
-          sizeBytes: parseSize(d.Size) ?? parseSize(d.Capacity) ?? parseSize(d.DiskCapacity)
-            ?? (parseSize(d.UsedRaidDiskSpace) != null || parseSize(d.FreeDiskSpace) != null
-              ? (parseSize(d.UsedRaidDiskSpace) || 0) + (parseSize(d.FreeDiskSpace) || 0) : null),
+          // Bare numbers are GB (live-confirmed: Size "223" = 223 GB SSD).
+          sizeBytes: parseSize(d.Size, 'gb') ?? parseSize(d.Capacity, 'gb') ?? parseSize(d.DiskCapacity, 'gb')
+            ?? (parseSize(d.UsedRaidDiskSpace, 'gb') != null || parseSize(d.FreeDiskSpace, 'gb') != null
+              ? (parseSize(d.UsedRaidDiskSpace, 'gb') || 0) + (parseSize(d.FreeDiskSpace, 'gb') || 0) : null),
           speed: d.BusType || null,
           extra: {
             mediaType: d.MediaType || null, busType: d.BusType || null,
@@ -246,6 +248,7 @@ function parseInventory(deviceId, sections) {
             usedRaid: d.UsedRaidDiskSpace ?? null, freeSpace: d.FreeDiskSpace ?? null,
             predictiveFailure: d.PredictiveFailureState ?? null,
             raidStatus: d.RaidStatus ?? null,
+            endurance: d.RemainingReadWriteEndurance != null ? num(d.RemainingReadWriteEndurance) : null,
             channel: d.Channel ?? null, diskId: d.Id ?? d.DiskNumber ?? null,
           },
         });
@@ -272,7 +275,7 @@ function parseInventory(deviceId, sections) {
             description: v.RaidType || v.Layout || null,
             status: compHealth(v.State ?? v.Status), model: null, serial: null,
             slot: v.TargetId != null ? String(v.TargetId) : null,
-            sizeBytes: parseSize(v.Size), speed: v.RaidType || v.Layout || null,
+            sizeBytes: parseSize(v.Size, 'gb'), speed: v.RaidType || v.Layout || null,
             extra: {
               controller: c.Name || null, state: v.State ?? null, mediaType: v.MediaType ?? null,
               readPolicy: v.ReadPolicy ?? null, writePolicy: v.WritePolicy ?? null,
@@ -280,6 +283,18 @@ function parseInventory(deviceId, sections) {
             },
           });
         }
+      }
+    } else if (type === 'serverFcCards') {
+      for (const f of items) {
+        comps.push({
+          deviceId, kind: 'fc',
+          name: f.DeviceName || f.DeviceDescription || null, description: f.DeviceDescription || null,
+          status: null, // LinkStatus Down is normal for unused ports — not a health signal
+          model: null, serial: f.Wwpn || null, slot: f.Fqdd || null, sizeBytes: null,
+          speed: f.PortSpeed ? `${Math.round(num(f.PortSpeed) / 1000)} Gb` : null,
+          extra: { vendor: f.VendorName || null, wwn: f.Wwn || null, wwpn: f.Wwpn || null,
+            port: f.PortNumber ?? null, linkStatus: f.LinkStatus ?? null },
+        });
       }
     } else if (type === 'serverNetworkInterfaces') {
       for (const n of items) {
