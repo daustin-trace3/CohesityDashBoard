@@ -170,6 +170,17 @@ async function fetchDevices(ome, typeMap) {
 // ── Per-device hardware inventory ───────────────────────────────────────────
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+
+// OME sizes arrive either as plain byte counts or unit strings ("745.21 GB").
+const SIZE_UNITS = { b: 1, bytes: 1, kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4, pb: 1024 ** 5 };
+const parseSize = (v) => {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v) : null;
+  const m = String(v).trim().match(/^([\d.]+)\s*(bytes|b|kb|mb|gb|tb|pb)?$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  return Number.isFinite(n) ? Math.round(n * SIZE_UNITS[(m[2] || 'bytes').toLowerCase()]) : null;
+};
 const compHealth = (v) => {
   if (v == null) return null;
   const s = String(v).toLowerCase();
@@ -207,7 +218,9 @@ function parseInventory(deviceId, sections) {
           name: m.Name || m.DeviceLocator || null, description: m.DeviceDescription || null,
           status: compHealth(m.Status), model: m.PartNumber || null, serial: m.SerialNumber || null,
           slot: m.DeviceLocator || m.BankName || null,
-          sizeBytes: m.Size != null ? num(m.Size) * 1024 * 1024 : null, // Size is MB
+          // Bare integer = MB (documented); unit strings appear on some releases.
+          sizeBytes: typeof m.Size === 'string' && /[a-z]/i.test(m.Size) ? parseSize(m.Size)
+            : (num(m.Size) != null ? num(m.Size) * 1024 * 1024 : null),
           speed: m.Speed ? `${m.Speed} MHz` : null,
           extra: { type: m.TypeDetails || null, manufacturer: m.Manufacturer || null },
         });
@@ -219,7 +232,7 @@ function parseInventory(deviceId, sections) {
           name: d.ModelNumber || d.SerialNumber || null, description: d.Description || null,
           status: compHealth(d.StatusString ?? d.Status), model: d.ModelNumber || null,
           serial: d.SerialNumber || null, slot: d.SlotNumber != null ? String(d.SlotNumber) : null,
-          sizeBytes: d.Size != null ? num(String(d.Size).replace(/[^\d.]/g, '')) : null,
+          sizeBytes: parseSize(d.Size),
           speed: d.BusType || null,
           extra: {
             mediaType: d.MediaType || null, busType: d.BusType || null,
