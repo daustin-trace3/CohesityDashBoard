@@ -241,7 +241,7 @@ export default function DellOverviewPage() {
           <p className="text-sm font-semibold text-ink mb-1">Busiest Servers</p>
           <p className="text-[11px] text-ink-faint mb-3">Top 10 by most-constrained resource — toggle a legend metric to re-rank. Rebalance or right-size candidates.</p>
           {data == null ? <LoadingPanel label="Loading…" height={170} /> : topUtil.length === 0 ? (
-            <div className="text-sm text-ink-muted py-8 text-center">No utilization data — needs the Power Manager plugin.</div>
+            <div className="text-sm text-ink-muted py-8 text-center">No utilization data — needs Power Manager or vCenter-matched ESXi hosts.</div>
           ) : (
             <div className="h-[190px]">
               <Bar data={utilBar} options={{

@@ -295,11 +295,29 @@ router.get('/overview', (req, res, next) => {
     // Top candidates by most-constrained resource; the frontend re-sorts to
     // the visible metric(s) when the chart legend is toggled, so return more
     // than the 10 it displays.
-    const topUtil = db.prepare(`
+    let topUtil = db.prepare(`
       SELECT name, cpu_util_pct, mem_util_pct FROM dell_devices
       WHERE cpu_util_pct IS NOT NULL OR mem_util_pct IS NOT NULL
       ORDER BY MAX(COALESCE(cpu_util_pct, 0), COALESCE(mem_util_pct, 0)) DESC LIMIT 30
     `).all();
+    // Same vCenter stand-in as the fleet tiles, but per device (see above).
+    if (!topUtil.length) {
+      try {
+        topUtil = db.prepare(`
+          SELECT * FROM (
+            SELECT d.name,
+              (CAST(h.cpu_mhz_used AS REAL) / h.cpu_mhz_capacity) * 100 AS cpu_util_pct,
+              (CAST(h.mem_bytes_used AS REAL) / h.mem_bytes_capacity) * 100 AS mem_util_pct
+            FROM dell_components c
+            JOIN dell_devices d ON d.ome_id = c.ome_id AND d.device_id = c.device_id
+            JOIN vcenter_hosts h ON LOWER(h.name) = LOWER(json_extract(c.extra, '$.hostname'))
+            WHERE c.kind = 'os'
+              AND h.cpu_mhz_used IS NOT NULL AND h.cpu_mhz_capacity > 0
+              AND h.mem_bytes_used IS NOT NULL AND h.mem_bytes_capacity > 0
+          ) ORDER BY MAX(COALESCE(cpu_util_pct, 0), COALESCE(mem_util_pct, 0)) DESC LIMIT 30
+        `).all();
+      } catch { /* vCenter tables unavailable */ }
+    }
     const warnDays = warrantyWarnDays();
     // Per service tag, judged by the best agreement (see computeIssues note).
     const warrantyAgg = db.prepare(`
