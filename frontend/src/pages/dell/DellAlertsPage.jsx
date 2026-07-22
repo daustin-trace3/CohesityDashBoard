@@ -24,7 +24,7 @@ export default function DellAlertsPage() {
 
   const list = rows || [];
   const ctl = useTableControls(list, {
-    searchKeys: ['message', 'device_name', 'service_tag', 'category', 'subcategory', 'ome_name'],
+    searchKeys: ['message', 'message_id', 'device_name', 'service_tag', 'category', 'subcategory', 'ome_name'],
     defaultSortKey: 'created_at', defaultSortDir: 'desc',
     paginate: true,
   });
@@ -62,18 +62,19 @@ export default function DellAlertsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <SortTh k="created_at" label="When" ctl={ctl} />
                 <SortTh k="severity" label="Severity" ctl={ctl} />
-                <SortTh k="device_name" label="Device" ctl={ctl} />
+                <SortTh k="created_at" label="Time" ctl={ctl} />
+                <SortTh k="device_name" label="Source" ctl={ctl} />
                 <SortTh k="category" label="Category" ctl={ctl} />
+                <SortTh k="message_id" label="Message ID" ctl={ctl} />
                 <th className="py-2 pr-3">Message</th>
                 <SortTh k="ome_name" label="OME" ctl={ctl} />
               </tr></thead>
               <tbody>
                 {ctl.pageRows.map((a) => (
                   <tr key={`${a.ome_id}|${a.alert_id}`} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(a.created_at)}</td>
                     <td className="py-2 pr-3"><Badge tone={severityTone(a.severity)}>{a.severity}</Badge></td>
+                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(a.created_at)}</td>
                     <td className="py-2 pr-3 whitespace-nowrap">
                       {a.device_row_id != null ? (
                         <button onClick={() => setDetailId(a.device_row_id)} className="text-brand hover:underline cursor-pointer">{a.device_name || a.service_tag}</button>
@@ -82,6 +83,7 @@ export default function DellAlertsPage() {
                       )}
                     </td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] whitespace-nowrap">{a.category || '—'}{a.subcategory ? ` · ${a.subcategory}` : ''}</td>
+                    <td className="py-2 pr-3 text-ink-faint tnum text-[11px] whitespace-nowrap">{a.message_id || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted text-xs max-w-[420px]">{a.message || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{a.ome_name}</td>
                   </tr>

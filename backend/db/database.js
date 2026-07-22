@@ -132,6 +132,9 @@ try { db.exec('ALTER TABLE netapp_arrays ADD COLUMN management_ip TEXT'); } catc
 try { db.exec('ALTER TABLE netapp_arrays ADD COLUMN version TEXT'); } catch { /* exists */ }
 try { db.exec("ALTER TABLE netapp_arrays ADD COLUMN source TEXT NOT NULL DEFAULT 'direct'"); } catch { /* exists */ }
 
+// Migration: dell_alerts gained the OME Message ID column. Guarded.
+try { db.exec('ALTER TABLE dell_alerts ADD COLUMN message_id TEXT'); } catch { /* exists */ }
+
 // Migration: ensure the (array_id, pure_alert_id) uniqueness the alert upsert
 // (INSERT ... ON CONFLICT) depends on. Dedup any rows collected before the
 // index existed, then create it. Guarded so it runs at most once and never

@@ -6,6 +6,7 @@
 //
 //   node backend/scripts/dellProbe.js            # first server device
 //   node backend/scripts/dellProbe.js 10123      # specific OME device id
+//   node backend/scripts/dellProbe.js alerts     # raw AlertService listing → dell-alerts-probe.json
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const fs = require('fs');
@@ -16,6 +17,14 @@ const api = require('../services/dellOmeApi');
   const ome = db.prepare('SELECT * FROM dell_ome_instances ORDER BY id').get();
   if (!ome) { console.error('No OME instance registered.'); process.exit(1); }
   const devArg = process.argv[2];
+  if (devArg === 'alerts') {
+    console.log(`Probing AlertService on ${ome.name}…`);
+    const out = await api.probeAlerts(ome);
+    const file = path.join(process.cwd(), 'dell-alerts-probe.json');
+    fs.writeFileSync(file, JSON.stringify(out, null, 2));
+    console.log(`Wrote ${file}`);
+    process.exit(0);
+  }
   const dev = devArg
     ? db.prepare('SELECT device_id, name FROM dell_devices WHERE device_id = ?').get(Number(devArg))
     : db.prepare("SELECT device_id, name FROM dell_devices WHERE ome_id = ? AND device_type LIKE '%server%' ORDER BY name LIMIT 1").get(ome.id)

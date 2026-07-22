@@ -373,24 +373,56 @@ async function fetchDeviceInventory(ome, deviceId) {
  * the flaky TimeStamp $filter (broken on several OME builds) is avoided.
  */
 async function fetchAlerts(ome, maxPages = 4) {
-  const rows = [];
-  let next = '/api/AlertService/Alerts?$top=500&$orderby=TimeStamp desc';
-  for (let page = 0; next && page < maxPages; page++) {
-    const data = await oGet(ome, next);
-    rows.push(...(data?.value || []));
-    next = data?.['@odata.nextLink'] || null;
+  const fetchPages = async (start) => {
+    const rows = [];
+    let next = start;
+    for (let page = 0; next && page < maxPages; page++) {
+      const data = await oGet(ome, next);
+      rows.push(...(data?.value || []));
+      next = data?.['@odata.nextLink'] || null;
+    }
+    return rows;
+  };
+  let raw;
+  try {
+    raw = await fetchPages('/api/AlertService/Alerts?$top=500&$orderby=TimeStamp desc');
+  } catch {
+    // Several OME builds reject TimeStamp in $orderby (same builds break the
+    // $filter) — retry unordered rather than silently returning no alerts.
+    raw = await fetchPages('/api/AlertService/Alerts?$top=500');
   }
-  return rows.map((a) => ({
+  return raw.map((a) => ({
     alertId: a.Id,
     severity: ALERT_SEVERITY_MAP[a.SeverityType] || (a.SeverityName ? String(a.SeverityName).toLowerCase() : 'unknown'),
     status: a.StatusName ? String(a.StatusName).toLowerCase() : (a.StatusType != null ? String(a.StatusType) : null),
     category: a.CategoryName || null,
     subcategory: a.SubCategoryName || null,
+    messageId: a.AlertMessageId || a.MessageId || null,
     message: a.Message || null,
     deviceName: a.AlertDeviceName || null,
     serviceTag: a.AlertDeviceIdentifier || null,
     createdAt: a.TimeStamp || null,
   }));
+}
+
+/** Raw alert diagnostic: tries the ordered and unordered listings, returns
+ *  each attempt's outcome and the first raw alert so the parser can be
+ *  matched to the appliance's actual field names. */
+async function probeAlerts(ome) {
+  const out = {};
+  const attempts = [
+    ['ordered', '/api/AlertService/Alerts?$top=3&$orderby=TimeStamp desc'],
+    ['plain', '/api/AlertService/Alerts?$top=3'],
+  ];
+  for (const [key, url] of attempts) {
+    try {
+      const data = await oGet(ome, url);
+      out[key] = { returned: (data?.value || []).length, count: data?.['@odata.count'] ?? null, first: (data?.value || [])[0] || null };
+    } catch (err) {
+      out[key] = { error: err.message };
+    }
+  }
+  return out;
 }
 
 // ── Warranty ────────────────────────────────────────────────────────────────
@@ -538,6 +570,6 @@ async function testConnection(candidate) {
 
 module.exports = {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
-  summarizeComponents, fetchAlerts, fetchWarranties, fetchFirmwareCompliance,
+  summarizeComponents, fetchAlerts, probeAlerts, fetchWarranties, fetchFirmwareCompliance,
   fetchDeviceMetrics, fetchDevicePowerThermal, probeInventory, testConnection, invalidateSession,
 };

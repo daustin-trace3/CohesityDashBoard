@@ -1198,6 +1198,7 @@ CREATE TABLE IF NOT EXISTS dell_ome_instances (
           status       TEXT,                       -- acknowledged | not-acknowledged
           category     TEXT,
           subcategory  TEXT,
+          message_id   TEXT,
           message      TEXT,
           device_name  TEXT,
           service_tag  TEXT,
