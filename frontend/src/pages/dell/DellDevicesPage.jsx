@@ -125,9 +125,9 @@ export function DeviceDetailModal({ deviceId, onClose }) {
             <Fact label="Sockets / Cores" value={dev.cpu_count != null ? `${fmtNum(dev.cpu_count)} / ${fmtNum(dev.core_count)}` : null} />
             <Fact label="Memory" value={dev.memory_bytes != null ? fmtBytes(dev.memory_bytes) : null} />
             <Fact label="Raw Disk" value={dev.disk_bytes != null ? fmtBytes(dev.disk_bytes) : null} />
-            <Fact label="Power Draw" value={dev.power_w != null ? `${fmtNum(Math.round(dev.power_w))} W` : null} />
-            <Fact label="Inlet Temp" value={dev.inlet_temp_c != null ? `${dev.inlet_temp_c.toFixed(1)} °C` : null} />
-            <Fact label="CPU / Mem Util" value={dev.cpu_util_pct != null ? `${dev.cpu_util_pct.toFixed(0)}% / ${dev.mem_util_pct != null ? dev.mem_util_pct.toFixed(0) : '—'}%` : null} />
+            {dev.power_w != null && <Fact label="Power Draw" value={`${fmtNum(Math.round(dev.power_w))} W`} />}
+            {dev.inlet_temp_c != null && <Fact label="Inlet Temp" value={`${dev.inlet_temp_c.toFixed(1)} °C`} />}
+            {dev.cpu_util_pct != null && <Fact label="CPU / Mem Util" value={`${dev.cpu_util_pct.toFixed(0)}% / ${dev.mem_util_pct != null ? dev.mem_util_pct.toFixed(0) : '—'}%`} />}
           </div>
 
           {(dev.warranty || []).length > 0 && (
@@ -257,6 +257,9 @@ export default function DellDevicesPage() {
   useEffect(() => { load(); }, [load]);
 
   const list = rows || [];
+  // Power Manager is licensed per OME — hide the Watts column entirely when
+  // nothing in the estate is metered.
+  const hasPm = list.some((d) => d.power_w != null);
   const ctl = useTableControls(list, {
     searchKeys: ['name', 'service_tag', 'model', 'device_type', 'ip_address', 'ome_name', 'chassis_service_tag'],
     defaultSortKey: 'name', defaultSortDir: 'asc',
@@ -301,7 +304,7 @@ export default function DellDevicesPage() {
                 <SortTh k="power_state" label="Power" ctl={ctl} />
                 <SortTh k="core_count" label="Cores" ctl={ctl} align="right" />
                 <SortTh k="memory_bytes" label="Memory" ctl={ctl} align="right" />
-                <SortTh k="power_w" label="Watts" ctl={ctl} align="right" />
+                {hasPm && <SortTh k="power_w" label="Watts" ctl={ctl} align="right" />}
                 <SortTh k="ip_address" label="IP" ctl={ctl} />
                 <SortTh k="ome_name" label="OME" ctl={ctl} />
               </tr></thead>
@@ -318,7 +321,7 @@ export default function DellDevicesPage() {
                     <td className="py-2 pr-3"><Badge tone={d.power_state === 'on' ? 'ok' : 'neutral'}>{(d.power_state || '—').toUpperCase()}</Badge></td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(d.core_count)}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{d.memory_bytes ? fmtBytes(d.memory_bytes) : '—'}</td>
-                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{d.power_w != null ? fmtNum(Math.round(d.power_w)) : '—'}</td>
+                    {hasPm && <td className="py-2 pr-3 text-right tnum text-ink-muted">{d.power_w != null ? fmtNum(Math.round(d.power_w)) : '—'}</td>}
                     <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{d.ip_address || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{d.ome_name}</td>
                   </tr>
