@@ -34,6 +34,7 @@ const zertoRouter = require('./routes/zerto');
 const vcenterRouter = require('./routes/vcenter');
 const dellRouter = require('./routes/dell');
 const dnsRouter = require('./routes/dns');
+const opsRouter = require('./routes/ops');
 const requireApiKey = require('./middleware/auth');
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
@@ -125,6 +126,7 @@ app.use('/api/zerto', zertoRouter);
 app.use('/api/vcenter', vcenterRouter);
 app.use('/api/dell', dellRouter);
 app.use('/api/dns', dnsRouter);
+app.use('/api/ops', opsRouter);
 
 // Health check — verifies DB connectivity
 app.get('/health', (req, res) => {

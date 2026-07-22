@@ -146,3 +146,13 @@ body {
   [style*="pulse-critical"] { animation: none !important; }
   .pulse-critical { animation: none !important; }
 }
+
+/* Ops Monitor TV mode — the page container itself goes fullscreen, so it
+   needs its own background and scroll; zoom bumps everything for distance
+   viewing on a wall monitor. */
+.ops-root:fullscreen {
+  background: #141414;
+  padding: 1.75rem 2rem;
+  overflow-y: auto;
+  zoom: 1.15;
+}

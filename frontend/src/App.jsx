@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
+import OpsMonitorPage from './pages/ops/OpsMonitorPage';
 import AlertsPage from './pages/AlertsPage';
 import HardwarePage from './pages/HardwarePage';
 import ClusterManagement from './pages/ClusterManagement';
@@ -83,7 +84,8 @@ export default function App() {
           <BrowserRouter>
             <Routes>
               <Route path="/" element={<Layout />}>
-                <Route index element={<Navigate to="/dashboard" replace />} />
+                <Route index element={<Navigate to="/ops" replace />} />
+                <Route path="ops"             element={withBoundary(<OpsMonitorPage />)} />
                 <Route path="dashboard"       element={withBoundary(<Dashboard />)} />
                 <Route path="alerts"          element={withBoundary(<AlertsPage />)} />
                 <Route path="hardware"        element={withBoundary(<HardwarePage />)} />

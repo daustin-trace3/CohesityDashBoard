@@ -13,6 +13,16 @@ import { useSearch } from '../context';
 import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
 import { useAiEnabled } from '../api/useAiEnabled';
 
+// Cross-platform Ops Monitor — a pseudo-platform entry so every switcher
+// style (tabs/dropdown/rail/grid) offers a way back to the landing page.
+const OPS_ENTRY = { id: 'ops', label: 'Ops', route: '/ops', color: '#8FA3B0' };
+const opsNavGroups = [{
+  label: 'Estate',
+  items: [
+    { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p.startsWith('/ops') },
+  ],
+}];
+
 const platforms = [
   { id: 'cohesity', label: 'Cohesity', route: '/dashboard', color: '#6CB33F' },
   { id: 'pure',     label: 'Pure', route: '/pure',  color: '#FF6B00' },
@@ -216,6 +226,7 @@ const dellNavGroups = [
 ];
 
 function isActivePlatform(id, pathname) {
+  if (id === 'ops') return pathname.startsWith('/ops');
   if (id === 'cohesity') return ['/', '/dashboard', '/ai-advisor', '/alerts', '/clusters', '/hardware', '/data-protection', '/workloads', '/replication', '/views', '/analytics', '/reporting', '/licensing', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
   if (id === 'pure') return pathname.startsWith('/pure');
   if (id === 'netapp') return pathname.startsWith('/netapp');
@@ -276,6 +287,7 @@ export default function Layout() {
   const isZerto = pathname.startsWith('/zerto');
   const isVcenter = pathname.startsWith('/vcenter');
   const isDell = pathname.startsWith('/dell');
+  const isOps = pathname.startsWith('/ops');
   const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell;
   const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : null;
   const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : '';
@@ -439,13 +451,13 @@ export default function Layout() {
 
   // Swap the sidebar menu to match the active vendor platform. AI-dependent
   // items (requiresAi) stay hidden until an AI provider token is configured.
-  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : navGroups;
+  const baseNavGroups = isOps ? opsNavGroups : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : navGroups;
   const activeNavGroups = baseNavGroups
     .map(group => ({ ...group, items: group.items.filter(item => !item.requiresAi || aiEnabled) }))
     .filter(group => group.items.length > 0);
 
-  const visiblePlatforms = platforms.filter(p => enabledPlatformIds.includes(p.id));
-  const currentPlatformId = platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity';
+  const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id))];
+  const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity');
   const gotoPlatform = (p) => navigate(p.route);
   const multiPlatform = visiblePlatforms.length > 1;
 
@@ -471,7 +483,7 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : 'Cohesity'}
+          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : 'Cohesity'}
           accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : undefined}
         />
 
@@ -555,7 +567,7 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : 'Global Cluster Dashboard'}</h1>
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform

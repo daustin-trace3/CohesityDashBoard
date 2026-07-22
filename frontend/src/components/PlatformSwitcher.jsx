@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, LayoutGrid, Check, Hexagon, ShieldCheck } from 'lucide-react';
+import { ChevronDown, LayoutGrid, Check, Hexagon, ShieldCheck, Activity } from 'lucide-react';
 import dellLogo from '../assets/platform-logos/dell.svg';
 import vcenterLogo from '../assets/platform-logos/vcenter.svg';
 import netappLogo from '../assets/platform-logos/netapp.svg';
@@ -56,6 +56,9 @@ const monogram = (label) => label.slice(0, 2);
 const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
+  if (platform.id === 'ops') {
+    return <Activity size={size} strokeWidth={2} style={{ color: platform.color }} />;
+  }
   if (platform.id === 'cohesity') {
     return (
       <span className="relative flex items-center justify-center" style={{ width: size, height: size }}>
