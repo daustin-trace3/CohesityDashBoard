@@ -12,7 +12,7 @@ const TONES = {
   stale: '#8FA3B0',
 };
 
-const fmt = (v) => (v == null ? '—' : Number(v).toLocaleString());
+const fmt = (v) => (v == null ? '—' : typeof v === 'string' ? v : Number(v).toLocaleString());
 
 // Per-platform data freshness from the /poller/status payload. Stale data
 // silently lying is the worst failure mode on a wall monitor, so staleness

@@ -63,23 +63,57 @@ function cohesitySummary() {
   };
 }
 
-function pureSummary() {
-  const arrays = count('SELECT COUNT(*) c FROM pure_arrays');
+async function pureSummary() {
+  // The Pure platform's primary source is the Pure1 SaaS fleet (cached in
+  // pure1Api per its TTL — no extra cloud calls per page load); the direct
+  // pure_* tables only cover locally registered arrays and are the fallback.
+  const pure1 = require('../services/pure1Api');
+  const directArrays = count('SELECT COUNT(*) c FROM pure_arrays');
   const volumes = countSafe('SELECT COUNT(*) c FROM pure_volumes');
   const hosts = countSafe('SELECT COUNT(*) c FROM pure_hosts');
-  const sev = {};
-  for (const r of all("SELECT severity, COUNT(*) c FROM pure_alerts WHERE state IS NULL OR state = 'open' GROUP BY severity")) {
-    sev[String(r.severity || '').toLowerCase()] = num(r.c);
-  }
   const exceptions = [];
-  if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical alert${sev.critical === 1 ? '' : 's'}`, '/pure/alerts'));
-  if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} open warning${sev.warning === 1 ? '' : 's'}`, '/pure/alerts'));
+  let arrays = directArrays;
+  let headline = null;
+  if (pure1.isConfigured()) {
+    try {
+      const [fleet, alerts] = await Promise.all([pure1.getOverview(), pure1.getAlerts()]);
+      arrays = Math.max(fleet.length, directArrays);
+      const sev = { critical: 0, warning: 0 };
+      for (const a of alerts || []) {
+        const s = String(a.severity || '').toLowerCase();
+        if (s === 'critical') sev.critical += 1;
+        else if (s === 'warning') sev.warning += 1;
+      }
+      if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical alert${sev.critical === 1 ? '' : 's'}`, '/pure/alerts'));
+      if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} open warning${sev.warning === 1 ? '' : 's'}`, '/pure/alerts'));
+      const now = Date.now();
+      const notReporting = fleet.filter((a) => !a.capturedAt || (now - a.capturedAt) > 3 * 86400000).length;
+      if (notReporting) exceptions.push(exception('warning', notReporting, `${fnum(notReporting)} array${notReporting === 1 ? '' : 's'} not reporting to Pure1`, '/pure'));
+      const nearFull = fleet.filter((a) => a.pctUsed != null && a.pctUsed >= 90).length;
+      if (nearFull) exceptions.push(exception('warning', nearFull, `${fnum(nearFull)} array${nearFull === 1 ? '' : 's'} ≥ 90% used`, '/pure/capacity'));
+      const total = fleet.reduce((s, a) => s + (a.total || 0), 0);
+      const used = fleet.reduce((s, a) => s + (a.used || 0), 0);
+      headline = [
+        { label: 'Arrays', value: arrays },
+        { label: 'Capacity Used', value: total > 0 ? `${Math.round((used / total) * 100)}%` : '—' },
+      ];
+    } catch { /* Pure1 unreachable — fall back to the direct tables below */ }
+  }
+  if (!headline) {
+    const sev = {};
+    for (const r of all("SELECT severity, COUNT(*) c FROM pure_alerts WHERE state IS NULL OR state = 'open' GROUP BY severity")) {
+      sev[String(r.severity || '').toLowerCase()] = num(r.c);
+    }
+    if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical alert${sev.critical === 1 ? '' : 's'}`, '/pure/alerts'));
+    if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} open warning${sev.warning === 1 ? '' : 's'}`, '/pure/alerts'));
+    headline = [
+      { label: 'Arrays', value: directArrays },
+      { label: 'Volumes', value: volumes },
+    ];
+  }
   return {
     objects: arrays + volumes + hosts,
-    headline: [
-      { label: 'Arrays', value: arrays },
-      { label: 'Volumes', value: volumes },
-    ],
+    headline,
     exceptions,
     spark: null,
   };
@@ -211,7 +245,7 @@ const PLATFORMS = [
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };
 
-router.get('/summary', (req, res) => {
+router.get('/summary', async (req, res) => {
   const cards = [];
   for (const p of PLATFORMS) {
     // Cohesity is always-on (enabled iff clusters exist — its summarizer
@@ -219,7 +253,7 @@ router.get('/summary', (req, res) => {
     if (p.id !== 'cohesity' && registry.getPlugin(p.id)?.enabled !== true) continue;
     const base = { id: p.id, label: p.label, color: p.color, route: p.route };
     try {
-      const s = p.fn();
+      const s = await p.fn();
       if (!s) continue;
       const health = s.exceptions.some((e) => e.severity === 'critical') ? 'critical'
         : s.exceptions.some((e) => e.severity === 'warning') ? 'warning' : 'ok';
