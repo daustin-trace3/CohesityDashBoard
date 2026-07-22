@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen, Globe2, MonitorSmartphone, History, AlertTriangle,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen, Globe2, MonitorSmartphone, History, AlertTriangle, Wrench,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -198,12 +198,13 @@ const dellNavGroups = [
     label: 'Infrastructure',
     items: [
       { label: 'Devices', route: '/dell/devices', icon: Server, isActive: (p) => p.startsWith('/dell/devices') },
+      { label: 'Hardware', route: '/dell/hardware', icon: Wrench, isActive: (p) => p.startsWith('/dell/hardware') },
     ],
   },
   {
     label: 'Audit',
     items: [
-      { label: 'Governance', route: '/dell/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/dell/governance') },
+      { label: 'Support', route: '/dell/support', icon: BadgeCheck, isActive: (p) => p.startsWith('/dell/support') },
     ],
   },
   {

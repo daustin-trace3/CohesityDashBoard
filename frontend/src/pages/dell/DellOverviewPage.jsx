@@ -164,7 +164,7 @@ export default function DellOverviewPage() {
           ) : (
             <div className="flex flex-col gap-1.5 max-h-[300px] overflow-y-auto pr-1">
               {issues.slice(0, 60).map((i, idx) => (
-                <button key={idx} onClick={() => navigate('/dell/governance')}
+                <button key={idx} onClick={() => navigate('/dell/hardware')}
                   className="flex items-start gap-2 text-left bg-surface-overlay rounded-lg px-3 py-2 hover:bg-surface-overlay/70 cursor-pointer">
                   <Badge tone={severityTone(i.severity)}>{i.severity}</Badge>
                   <span className="text-xs text-ink-muted leading-relaxed min-w-0">{i.message}<span className="text-ink-faint"> · {i.ome}</span></span>
