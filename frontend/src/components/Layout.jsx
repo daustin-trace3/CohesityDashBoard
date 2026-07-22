@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen, Globe2, MonitorSmartphone, History,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen, Globe2, MonitorSmartphone, History, AlertTriangle,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -19,6 +19,7 @@ const platforms = [
   { id: 'netapp',   label: 'NetApp',    route: '/netapp',   color: '#0067C5' },
   { id: 'zerto',    label: 'Zerto',     route: '/zerto',    color: '#EE3124' },
   { id: 'vcenter',  label: 'vCenter',   route: '/vcenter',  color: '#0091DA' },
+  { id: 'dell',     label: 'Dell',      route: '/dell',     color: '#007DB8' },
 ];
 
 const navGroups = [
@@ -185,6 +186,33 @@ const vcenterNavGroups = [
     ],
   },
 ];
+const dellNavGroups = [
+  {
+    label: 'Monitor',
+    items: [
+      { label: 'Overview', route: '/dell', icon: Gauge, isActive: (p) => p === '/dell' },
+      { label: 'Alerts', route: '/dell/alerts', icon: AlertTriangle, isActive: (p) => p.startsWith('/dell/alerts') },
+    ],
+  },
+  {
+    label: 'Infrastructure',
+    items: [
+      { label: 'Devices', route: '/dell/devices', icon: Server, isActive: (p) => p.startsWith('/dell/devices') },
+    ],
+  },
+  {
+    label: 'Audit',
+    items: [
+      { label: 'Governance', route: '/dell/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/dell/governance') },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { label: 'Settings', route: '/dell/settings', icon: Settings, isActive: (p) => p.startsWith('/dell/settings') },
+    ],
+  },
+];
 
 function isActivePlatform(id, pathname) {
   if (id === 'cohesity') return ['/', '/dashboard', '/ai-advisor', '/alerts', '/clusters', '/hardware', '/data-protection', '/workloads', '/replication', '/views', '/analytics', '/reporting', '/licensing', '/settings'].some(r => pathname === r || pathname.startsWith(r + '/'));
@@ -246,9 +274,10 @@ export default function Layout() {
   const isNetapp = pathname.startsWith('/netapp');
   const isZerto = pathname.startsWith('/zerto');
   const isVcenter = pathname.startsWith('/vcenter');
-  const isPlatform = isPure || isNetapp || isZerto || isVcenter;
-  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : null;
-  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : '';
+  const isDell = pathname.startsWith('/dell');
+  const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell;
+  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : null;
+  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : '';
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
@@ -293,20 +322,21 @@ export default function Layout() {
     const pureFleet = platformKey === 'pure';
     const zerto = platformKey === 'zerto';
     const vcenter = platformKey === 'vcenter';
+    const dell = platformKey === 'dell';
     // Zerto's "entities" are sites; vCenter's are ESX hosts. Both platforms'
     // overview endpoints are rollup objects, so entity lists come from their
     // inventory endpoints; vCenter's "alerts" are its computed issues.
-    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : `/${platformKey}/overview`;
-    const alertsUrl = pureFleet ? '/pure1/alerts' : vcenter ? '/vcenter/overview' : `/${platformKey}/alerts`;
+    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : dell ? '/dell/devices' : `/${platformKey}/overview`;
+    const alertsUrl = pureFleet ? '/pure1/alerts' : (vcenter || dell) ? `/${platformKey}/overview` : `/${platformKey}/alerts`;
 
     const loadAlertList = () => client.get(alertsUrl)
       .then(r => {
         if (cancelled) return;
-        if (vcenter) {
+        if (vcenter || dell) {
           const rows = (r.data?.issues || []).filter(i => i.severity !== 'info');
           setPlatformAlertList(rows.map((i, idx) => ({
             id: idx,
-            cluster_name: i.vcenter || '—',
+            cluster_name: i.vcenter || i.ome || '—',
             severity: i.severity === 'critical' ? 'critical' : 'warning',
             description: i.message,
           })));
@@ -350,6 +380,8 @@ export default function Layout() {
           setPlatformHealthy(rows.filter(s => s.connection_status === 'Connected').length);
         } else if (vcenter) {
           setPlatformHealthy(rows.filter(h => h.connection_state === 'CONNECTED').length);
+        } else if (dell) {
+          setPlatformHealthy(rows.filter(d => d.connection_state !== 0).length);
         } else if (pureFleet) {
           // Pure1 capacity metrics update daily; treat arrays reporting within
           // ~3 days as operational. Alert count is set from the alerts fetch.
@@ -381,6 +413,7 @@ export default function Layout() {
         ...(r.data.platformNetappEnabled ? ['netapp'] : []),
         ...(r.data.platformZertoEnabled ? ['zerto'] : []),
         ...(r.data.platformVcenterEnabled ? ['vcenter'] : []),
+        ...(r.data.platformDellEnabled ? ['dell'] : []),
       ]))
       .catch(() => {});
     loadPlatforms();
@@ -405,7 +438,7 @@ export default function Layout() {
 
   // Swap the sidebar menu to match the active vendor platform. AI-dependent
   // items (requiresAi) stay hidden until an AI provider token is configured.
-  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : navGroups;
+  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : navGroups;
   const activeNavGroups = baseNavGroups
     .map(group => ({ ...group, items: group.items.filter(item => !item.requiresAi || aiEnabled) }))
     .filter(group => group.items.length > 0);
@@ -416,7 +449,7 @@ export default function Layout() {
   const multiPlatform = visiblePlatforms.length > 1;
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
-  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : 'array';
+  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : 'array';
   const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
   const footerOk = isPlatform ? platformAllOk : apiOnline;
   const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
@@ -437,8 +470,8 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : undefined}
+          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : 'Cohesity'}
+          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
@@ -521,7 +554,7 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : 'Global Cluster Dashboard'}</h1>
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform

@@ -79,6 +79,12 @@ router.get('/status', (req, res, next) => {
 
     // vCenters
     const vcenterRows = db.prepare('SELECT id, name, polling_interval_minutes FROM vcenter_vcenters').all();
+    const dellRows = db.prepare('SELECT id, name, polling_interval_minutes FROM dell_ome_instances').all();
+    const dellEntities = buildEntities(
+      dellRows,
+      'SELECT captured_at FROM dell_metrics_history WHERE ome_id = ? ORDER BY captured_at DESC LIMIT 1',
+      'dell'
+    );
     const vcenterEntities = buildEntities(
       vcenterRows,
       'SELECT captured_at FROM vcenter_metrics_history WHERE vcenter_id = ? ORDER BY captured_at DESC LIMIT 1',
@@ -123,6 +129,10 @@ router.get('/status', (req, res, next) => {
       vcenter: {
         enabled: vcenterRows.length > 0,
         entities: vcenterEntities,
+      },
+      dell: {
+        enabled: dellRows.length > 0,
+        entities: dellEntities,
       },
       licensing: {
         enabled: true,

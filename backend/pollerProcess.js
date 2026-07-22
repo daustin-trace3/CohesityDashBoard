@@ -13,6 +13,7 @@ const { initPure1Poller } = require('./services/pure1Poller');
 const { initNetAppPoller } = require('./services/netappPoller');
 const { initZertoPoller } = require('./services/zertoPoller');
 const { initVcenterPoller } = require('./services/vcenterPoller');
+const { initDellPoller } = require('./services/dellPoller');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 
@@ -22,6 +23,7 @@ initPure1Poller();
 initNetAppPoller();
 initZertoPoller();
 initVcenterPoller();
+initDellPoller();
 initLicensing();
 initViews();
 logger.info('[Poller process] All pollers scheduled (Cohesity, Pure, Pure1, NetApp, Zerto, licensing, views).');

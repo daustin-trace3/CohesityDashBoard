@@ -38,6 +38,11 @@ import VcNetworkPage from './pages/vcenter/VcNetworkPage';
 import VcEventsPage from './pages/vcenter/VcEventsPage';
 import VcGovernancePage from './pages/vcenter/VcGovernancePage';
 import VcSettingsPage from './pages/vcenter/VcSettingsPage';
+import DellOverviewPage from './pages/dell/DellOverviewPage';
+import DellDevicesPage from './pages/dell/DellDevicesPage';
+import DellAlertsPage from './pages/dell/DellAlertsPage';
+import DellGovernancePage from './pages/dell/DellGovernancePage';
+import DellSettingsPage from './pages/dell/DellSettingsPage';
 import DataProtectionPage from './pages/DataProtectionPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import ReportingPage from './pages/ReportingPage';
@@ -116,6 +121,11 @@ export default function App() {
                 <Route path="vcenter/events"     element={withBoundary(<VcEventsPage />)} />
                 <Route path="vcenter/governance" element={withBoundary(<VcGovernancePage />)} />
                 <Route path="vcenter/settings"   element={withBoundary(<VcSettingsPage />)} />
+                <Route path="dell"            element={withBoundary(<DellOverviewPage />)} />
+                <Route path="dell/devices"    element={withBoundary(<DellDevicesPage />)} />
+                <Route path="dell/alerts"     element={withBoundary(<DellAlertsPage />)} />
+                <Route path="dell/governance" element={withBoundary(<DellGovernancePage />)} />
+                <Route path="dell/settings"   element={withBoundary(<DellSettingsPage />)} />
                 <Route path="data-protection" element={withBoundary(<DataProtectionPage />)} />
                 <Route path="replication"     element={withBoundary(<ReplicationPage />)} />
                 <Route path="views"           element={withBoundary(<ViewsPage />)} />
