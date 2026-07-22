@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database } from 'lucide-react';
+import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database, Cable } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
@@ -49,6 +49,7 @@ const KIND_META = {
   vdisk: { label: 'Virtual Disks', icon: Database },
   disk: { label: 'Physical Disks', icon: HardDrive },
   nic: { label: 'Network Interfaces', icon: Network },
+  fc: { label: 'Fibre Channel', icon: Cable },
   psu: { label: 'Power Supplies', icon: Plug },
   os: { label: 'Operating System', icon: MonitorSmartphone },
 };
@@ -79,6 +80,8 @@ function ComponentSection({ kind, rows }) {
                   {kind === 'processor' && c.extra?.cores ? ` · ${c.extra.cores}c` : ''}
                   {kind === 'disk' && c.extra?.mediaType ? ` · ${c.extra.mediaType}` : ''}
                   {kind === 'disk' && c.extra?.raidStatus ? ` · ${c.extra.raidStatus}` : ''}
+                  {kind === 'disk' && c.extra?.endurance != null ? ` · ${c.extra.endurance}% endurance` : ''}
+                  {kind === 'fc' && c.extra?.linkStatus ? ` · link ${c.extra.linkStatus}` : ''}
                   {kind === 'vdisk' && c.extra?.controller ? ` · on ${c.extra.controller}` : ''}
                   {kind === 'raid' && c.extra?.firmware ? ` · fw ${c.extra.firmware}` : ''}
                 </td>
@@ -151,7 +154,7 @@ export function DeviceDetailModal({ deviceId, onClose }) {
             </div>
           )}
 
-          {['processor', 'memory', 'raid', 'vdisk', 'disk', 'nic', 'psu', 'os'].map((k) => (
+          {['processor', 'memory', 'raid', 'vdisk', 'disk', 'nic', 'fc', 'psu', 'os'].map((k) => (
             <ComponentSection key={k} kind={k} rows={byKind(k)} />
           ))}
 
