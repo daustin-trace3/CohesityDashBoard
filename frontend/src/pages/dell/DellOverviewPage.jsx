@@ -37,6 +37,10 @@ export default function DellOverviewPage() {
   const types = data?.typeBreakdown || [];
   const diskMedia = data?.diskMedia || [];
   const util = data?.utilization;
+  // Power Manager is an OME add-on license — when NO instance has it, hide
+  // every metric it feeds instead of showing "needs plugin" placeholders.
+  // A single metered instance (mixed fleet) keeps everything visible.
+  const hasPm = (util?.metered || 0) > 0 || (data?.powerTrend?.length || 0) > 0 || (cap.power_w || 0) > 0;
 
   const healthDonut = {
     labels: ['OK', 'Warning', 'Critical', 'Unknown'],
@@ -116,27 +120,33 @@ export default function DellOverviewPage() {
           tone={(data?.warranty?.expired || 0) > 0 ? 'crit' : (data?.warranty?.expiring || 0) > 0 ? 'warn' : 'ok'} />
       </div>
 
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div className={`grid sm:grid-cols-2 ${hasPm ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3 mb-4`}>
         <StatCard icon={Cpu} label="CPU Capacity" value={fmtNum(cap.cores)}
           sub={`cores · ${fmtNum(cap.sockets)} sockets`} tone="default" />
         <StatCard icon={MemoryStick} label="Total Memory" value={fmtBytes(cap.memory_bytes)}
           sub="installed DIMMs" tone="default" />
         <StatCard icon={HardDrive} label="Raw Disk" value={fmtBytes(cap.disk_bytes)}
           sub={diskMedia.length ? diskMedia.map((m) => `${m.media} ${m.count}`).join(' · ') : 'per-drive inventory'} tone="default" />
-        <StatCard icon={Zap} label="Power Draw" value={cap.power_w != null && cap.power_w > 0 ? `${fmtNum(Math.round(cap.power_w))} W` : '—'}
-          sub={cap.power_w != null && cap.power_w > 0 ? 'instant, Power Manager' : 'needs Power Manager plugin'} tone="default" />
+        {hasPm && (
+          <StatCard icon={Zap} label="Power Draw" value={cap.power_w != null && cap.power_w > 0 ? `${fmtNum(Math.round(cap.power_w))} W` : '—'}
+            sub="instant, Power Manager" tone="default" />
+        )}
       </div>
 
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div className={`grid sm:grid-cols-2 ${hasPm ? 'lg:grid-cols-4' : ''} gap-3 mb-4`}>
         <StatCard icon={AlertTriangle} label="Critical Alerts (7d)" value={fmtNum(data?.alerts7d?.critical)}
           sub={`${(data?.alerts7d?.critical || 0) > (data?.alerts7d?.critical_prev || 0) ? '▲' : (data?.alerts7d?.critical || 0) < (data?.alerts7d?.critical_prev || 0) ? '▼' : '—'} vs ${fmtNum(data?.alerts7d?.critical_prev)} prior week · ${fmtNum(data?.alerts7d?.warning)} warnings`}
           tone={(data?.alerts7d?.critical || 0) > 0 ? 'crit' : 'ok'} />
-        <StatCard icon={Gauge} label="Fleet Utilization" value={util?.cpu_avg != null ? `${util.cpu_avg.toFixed(0)}% CPU` : '—'}
-          sub={util?.cpu_avg != null ? `${util.mem_avg != null ? `${util.mem_avg.toFixed(0)}% memory · ` : ''}avg of ${fmtNum(util.metered)} metered server(s)` : 'needs Power Manager plugin'}
-          tone={util?.cpu_avg != null && util.cpu_avg > 75 ? 'warn' : 'default'} />
-        <StatCard icon={Thermometer} label="Thermal" value={util?.temp_max != null ? `${util.temp_max.toFixed(1)} °C` : '—'}
-          sub={util?.temp_max != null ? `hottest inlet · ${util.temp_avg != null ? `${util.temp_avg.toFixed(1)} °C avg` : ''}` : 'needs Power Manager plugin'}
-          tone={util?.temp_max != null && util.temp_max > 27 ? 'warn' : 'default'} />
+        {hasPm && (
+          <StatCard icon={Gauge} label="Fleet Utilization" value={util?.cpu_avg != null ? `${util.cpu_avg.toFixed(0)}% CPU` : '—'}
+            sub={util?.cpu_avg != null ? `${util.mem_avg != null ? `${util.mem_avg.toFixed(0)}% memory · ` : ''}avg of ${fmtNum(util.metered)} metered server(s)` : '—'}
+            tone={util?.cpu_avg != null && util.cpu_avg > 75 ? 'warn' : 'default'} />
+        )}
+        {hasPm && (
+          <StatCard icon={Thermometer} label="Thermal" value={util?.temp_max != null ? `${util.temp_max.toFixed(1)} °C` : '—'}
+            sub={util?.temp_max != null ? `hottest inlet · ${util.temp_avg != null ? `${util.temp_avg.toFixed(1)} °C avg` : ''}` : '—'}
+            tone={util?.temp_max != null && util.temp_max > 27 ? 'warn' : 'default'} />
+        )}
         <StatCard icon={Unplug} label="Disconnected" value={fmtNum(dev.disconnected)}
           sub="devices unreachable from OME" tone={(dev.disconnected || 0) > 0 ? 'crit' : 'ok'} />
       </div>
@@ -173,7 +183,7 @@ export default function DellOverviewPage() {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-4 mb-4">
+      <div className={`grid ${hasPm ? 'lg:grid-cols-3' : ''} gap-4 mb-4`}>
         <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-1">Alert Volume (14d)</p>
           <p className="text-[11px] text-ink-faint mb-3">Daily alerts by severity — a rising red band means the estate is getting noisier.</p>
@@ -190,6 +200,7 @@ export default function DellOverviewPage() {
           )}
         </div>
 
+        {hasPm && (
         <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-1">Power Draw Trend (30d)</p>
           <p className="text-[11px] text-ink-faint mb-3">Fleet watts per OME instance from Power Manager — creep here is new load or failing cooling.</p>
@@ -205,7 +216,9 @@ export default function DellOverviewPage() {
             </div>
           )}
         </div>
+        )}
 
+        {hasPm && (
         <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-1">Busiest Servers</p>
           <p className="text-[11px] text-ink-faint mb-3">Top 10 by most-constrained resource — toggle a legend metric to re-rank. Rebalance or right-size candidates.</p>
@@ -228,6 +241,7 @@ export default function DellOverviewPage() {
             </div>
           )}
         </div>
+        )}
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4 mb-4">
