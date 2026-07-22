@@ -18,10 +18,23 @@ function flowColor(f) {
  * "packets" travelling along the wire. Plain CSS keyframes on DOM elements —
  * the previous SVG SMIL + preserveAspectRatio="none" version left paint-trail
  * artifacts (a thin solid line) behind the moving packets in Chromium.
- * Packet speed slows as the flow degrades, echoing a struggling link.
+ * Packet speed reflects flow health — healthy lanes hum, warning lanes drag,
+ * error lanes crawl — and each lane gets a deterministic per-lane jitter so
+ * the page doesn't move in lockstep.
  */
-function FlowWire({ color, degraded }) {
-  const dur = degraded ? 3.6 : 1.8;
+const SEVERITY_DUR = { ok: 1.8, warn: 4.2, error: 7.5 };
+
+// Small stable hash → 0..1, so a lane's rhythm survives re-renders/refreshes.
+function laneJitter(seed) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = ((h << 5) - h + seed.charCodeAt(i)) | 0;
+  return (h >>> 0) / 4294967295;
+}
+
+function FlowWire({ color, severity, seed }) {
+  const j = laneJitter(seed || '');
+  const dur = (SEVERITY_DUR[severity] || SEVERITY_DUR.ok) * (0.85 + j * 0.3);
+  const phase = j * dur; // desync: each lane starts at a different point in the cycle
   return (
     <div className="relative w-full h-6 overflow-hidden" aria-hidden="true">
       <div className="absolute top-1/2 -translate-y-1/2 border-t-2 border-dashed"
@@ -32,9 +45,10 @@ function FlowWire({ color, degraded }) {
         <div key={i} className="absolute top-1/2 rounded-full zerto-packet"
           style={{
             width: 26, height: 6, marginTop: -3, backgroundColor: color,
-            animationDuration: `${dur}s`,
-            // Negative delay: lanes are mid-flight on first paint.
-            animationDelay: `${(-i * dur / 3).toFixed(2)}s`,
+            animationDuration: `${dur.toFixed(2)}s`,
+            // Negative delay: lanes are mid-flight on first paint, offset by
+            // the per-lane phase so rows never pulse in sync.
+            animationDelay: `${(-(i * dur / 3) - phase).toFixed(2)}s`,
           }} />
       ))}
     </div>
@@ -141,14 +155,14 @@ export default function ZertoReplicationPage() {
             const key = `${f.from}|${f.to}`;
             const color = flowColor(f);
             const open = openKeys.has(key);
-            const degraded = f.error > 0 || f.warning > 0;
+            const severity = f.error > 0 ? 'error' : f.warning > 0 ? 'warn' : 'ok';
             return (
               <div key={key} className="panel p-4" style={{ borderLeft: `3px solid ${color}` }}>
                 <button onClick={() => toggle(key)} className="w-full cursor-pointer text-left">
                   <div className="flex items-center gap-4">
                     <SiteBox name={f.from} type={f.fromType} side="left" />
                     <div className="flex-1 min-w-0">
-                      <FlowWire color={color} degraded={degraded} />
+                      <FlowWire color={color} severity={severity} seed={key} />
                       <div className="flex items-center justify-center gap-3 text-[11px] text-ink-faint mt-1">
                         <span className="tnum"><ShieldCheck size={11} className="inline mr-1" style={{ color }} />{f.vpgCount} VPG{f.vpgCount === 1 ? '' : 's'}</span>
                         <span className="tnum">{fmtNum(f.vmCount)} VMs</span>
