@@ -164,10 +164,14 @@ function computeIssues() {
   for (const c of badComps) {
     issues.push({ severity: c.status === 'critical' ? 'critical' : 'warning', type: 'component', ome: c.ome_name, message: `${c.device_name}: ${c.kind} ${c.name || ''} is ${c.status}`.trim() });
   }
+  // A service tag with multiple agreements is judged by its BEST one — an
+  // expired base warranty under an active renewal is not an issue.
   const expiring = db.prepare(`
-    SELECT w.service_tag, w.device_model, w.days_remaining, o.name AS ome_name
+    SELECT w.service_tag, w.device_model, MAX(w.days_remaining) AS days_remaining, o.name AS ome_name
     FROM dell_warranties w JOIN dell_ome_instances o ON o.id = w.ome_id
-    WHERE w.days_remaining IS NOT NULL AND w.days_remaining <= ? ORDER BY w.days_remaining LIMIT 200
+    WHERE w.days_remaining IS NOT NULL
+    GROUP BY w.ome_id, w.service_tag
+    HAVING MAX(w.days_remaining) <= ? ORDER BY days_remaining LIMIT 200
   `).all(warnDays);
   for (const w of expiring) {
     issues.push({
@@ -258,11 +262,12 @@ router.get('/overview', (req, res, next) => {
       ORDER BY MAX(COALESCE(cpu_util_pct, 0), COALESCE(mem_util_pct, 0)) DESC LIMIT 30
     `).all();
     const warnDays = warrantyWarnDays();
+    // Per service tag, judged by the best agreement (see computeIssues note).
     const warrantyAgg = db.prepare(`
       SELECT COUNT(*) AS total,
-        SUM(CASE WHEN days_remaining IS NOT NULL AND days_remaining <= 0 THEN 1 ELSE 0 END) AS expired,
-        SUM(CASE WHEN days_remaining > 0 AND days_remaining <= ? THEN 1 ELSE 0 END) AS expiring
-      FROM dell_warranties
+        SUM(CASE WHEN best IS NOT NULL AND best <= 0 THEN 1 ELSE 0 END) AS expired,
+        SUM(CASE WHEN best > 0 AND best <= ? THEN 1 ELSE 0 END) AS expiring
+      FROM (SELECT MAX(days_remaining) AS best FROM dell_warranties GROUP BY ome_id, service_tag)
     `).get(warnDays);
     const firmwareAgg = db.prepare(`
       SELECT COUNT(*) AS total,
@@ -430,13 +435,18 @@ router.get('/export', [
   } catch (err) { next(err); }
 });
 
-/** GET /api/dell/warranty — warranty rows across instances + the warn window. */
+/** GET /api/dell/warranty — warranty rows across instances + the warn window.
+ *  best_days_remaining is the tag's best agreement, so an expired contract
+ *  under an active renewal classifies as covered, not expired. */
 router.get('/warranty', (req, res, next) => {
   try {
     res.json({
       warnDays: warrantyWarnDays(),
       rows: db.prepare(`
-        SELECT w.*, o.name AS ome_name FROM dell_warranties w
+        SELECT w.*, o.name AS ome_name,
+          (SELECT MAX(w2.days_remaining) FROM dell_warranties w2
+           WHERE w2.ome_id = w.ome_id AND w2.service_tag = w.service_tag) AS best_days_remaining
+        FROM dell_warranties w
         JOIN dell_ome_instances o ON o.id = w.ome_id ORDER BY w.days_remaining
       `).all(),
     });

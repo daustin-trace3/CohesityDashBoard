@@ -160,6 +160,14 @@ describe('seedDemo.js', () => {
     expect(db.prepare("SELECT COUNT(*) c FROM dell_components WHERE status IN ('critical','warning')").get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM dell_warranties WHERE days_remaining <= 0').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM dell_warranties WHERE days_remaining > 0 AND days_remaining <= 90').get().c).toBeGreaterThan(0);
+    // Multi-agreement tags: an expired base warranty under an active renewal
+    // (tag must classify as covered), and tags whose BEST contract is expired.
+    expect(db.prepare(`SELECT COUNT(*) c FROM (
+      SELECT service_tag FROM dell_warranties GROUP BY ome_id, service_tag
+      HAVING MIN(days_remaining) <= 0 AND MAX(days_remaining) > 90)`).get().c).toBeGreaterThan(0);
+    expect(db.prepare(`SELECT COUNT(*) c FROM (
+      SELECT service_tag FROM dell_warranties GROUP BY ome_id, service_tag
+      HAVING MAX(days_remaining) <= 0)`).get().c).toBeGreaterThan(0);
     expect(db.prepare("SELECT COUNT(*) c FROM dell_firmware_compliance WHERE status = 'noncompliant'").get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM dell_alerts').get().c).toBeGreaterThan(50);
     // Power Manager metrics on DC1 only — DC2 shows the plugin-absent experience.

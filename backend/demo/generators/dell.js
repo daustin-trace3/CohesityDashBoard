@@ -175,6 +175,18 @@ function seedDell(db, { now, encrypt }) {
         start.toISOString().slice(0, 10), end.toISOString().slice(0, 10), daysLeft);
       totals.warranties += 1;
 
+      // Multiple agreements: about half the expired/expiring tags carry an
+      // ACTIVE ProSupport renewal on top of the lapsed base warranty — the tag
+      // must classify by its best contract, not the worst.
+      if (daysLeft <= 85 && chance(rng, 0.5)) {
+        const renewDays = randInt(rng, 150, 700);
+        const rEnd = new Date(Date.now() + renewDays * 86400000);
+        const rStart = new Date(rEnd.getTime() - 2 * 365 * 86400000);
+        warStmt.run(omeId, deviceId, tag, m.model, 'Server', 'ProSupport Plus Renewal',
+          rStart.toISOString().slice(0, 10), rEnd.toISOString().slice(0, 10), renewDays);
+        totals.warranties += 1;
+      }
+
       // Firmware baseline: aging/EOL gear drifts more.
       const drifted = m.gen === 'current' ? chance(rng, 0.08) : chance(rng, 0.45);
       fwStmt.run(omeId, 1, `${inst.name} Production Baseline`, deviceId, tag, m.model,
