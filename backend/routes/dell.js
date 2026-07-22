@@ -220,6 +220,19 @@ router.get('/overview', (req, res, next) => {
         SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) AS warning
       FROM dell_alerts WHERE created_at >= datetime('now', '-7 days')
     `).get();
+    // Prior week's criticals, for the at-a-glance trend arrow.
+    const alertPrev = db.prepare(`
+      SELECT SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical
+      FROM dell_alerts
+      WHERE created_at >= datetime('now', '-14 days') AND created_at < datetime('now', '-7 days')
+    `).get();
+    // Power Manager fleet rollups — NULL columns simply drop out of the AVG/MAX.
+    const utilization = db.prepare(`
+      SELECT AVG(cpu_util_pct) AS cpu_avg, AVG(mem_util_pct) AS mem_avg,
+        MAX(inlet_temp_c) AS temp_max, AVG(inlet_temp_c) AS temp_avg,
+        COUNT(cpu_util_pct) AS metered
+      FROM dell_devices
+    `).get();
     const warnDays = warrantyWarnDays();
     const warrantyAgg = db.prepare(`
       SELECT COUNT(*) AS total,
@@ -239,7 +252,8 @@ router.get('/overview', (req, res, next) => {
       instances: instances.map(publicOme),
       devices: devAgg,
       typeBreakdown, modelBreakdown, capacity, diskMedia,
-      alerts7d: alertAgg,
+      alerts7d: { ...alertAgg, critical_prev: alertPrev.critical || 0 },
+      utilization,
       warranty: { ...warrantyAgg, warnDays },
       firmware: firmwareAgg,
       failingComponents,
