@@ -249,9 +249,13 @@ router.get('/overview', (req, res, next) => {
       WHERE m.captured_at >= datetime('now', '-30 days') AND m.power_w_total IS NOT NULL
       GROUP BY o.name, day ORDER BY day
     `).all();
+    // Top candidates by most-constrained resource; the frontend re-sorts to
+    // the visible metric(s) when the chart legend is toggled, so return more
+    // than the 10 it displays.
     const topUtil = db.prepare(`
       SELECT name, cpu_util_pct, mem_util_pct FROM dell_devices
-      WHERE cpu_util_pct IS NOT NULL ORDER BY cpu_util_pct DESC LIMIT 10
+      WHERE cpu_util_pct IS NOT NULL OR mem_util_pct IS NOT NULL
+      ORDER BY MAX(COALESCE(cpu_util_pct, 0), COALESCE(mem_util_pct, 0)) DESC LIMIT 30
     `).all();
     const warnDays = warrantyWarnDays();
     const warrantyAgg = db.prepare(`
