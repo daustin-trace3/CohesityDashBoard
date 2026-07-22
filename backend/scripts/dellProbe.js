@@ -20,6 +20,12 @@ const api = require('../services/dellOmeApi');
   if (devArg === 'alerts') {
     console.log(`Probing AlertService on ${ome.name}…`);
     const out = await api.probeAlerts(ome);
+    // What actually landed locally — separates "API broken" from "no poll yet".
+    try {
+      out.storedLocally = db.prepare(
+        'SELECT COUNT(*) c, MIN(created_at) oldest, MAX(created_at) newest FROM dell_alerts WHERE ome_id = ?'
+      ).get(ome.id);
+    } catch (e) { out.storedLocally = { error: e.message }; }
     const file = path.join(process.cwd(), 'dell-alerts-probe.json');
     fs.writeFileSync(file, JSON.stringify(out, null, 2));
     console.log(`Wrote ${file}`);
