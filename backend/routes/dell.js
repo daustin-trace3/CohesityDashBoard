@@ -443,11 +443,13 @@ router.get('/warranty', (req, res, next) => {
     res.json({
       warnDays: warrantyWarnDays(),
       rows: db.prepare(`
-        SELECT w.*, o.name AS ome_name,
+        SELECT w.*, o.name AS ome_name, d.name AS device_name,
           (SELECT MAX(w2.days_remaining) FROM dell_warranties w2
            WHERE w2.ome_id = w.ome_id AND w2.service_tag = w.service_tag) AS best_days_remaining
         FROM dell_warranties w
-        JOIN dell_ome_instances o ON o.id = w.ome_id ORDER BY w.days_remaining
+        JOIN dell_ome_instances o ON o.id = w.ome_id
+        LEFT JOIN dell_devices d ON d.ome_id = w.ome_id AND d.service_tag = w.service_tag
+        ORDER BY w.days_remaining
       `).all(),
     });
   } catch (err) { next(err); }

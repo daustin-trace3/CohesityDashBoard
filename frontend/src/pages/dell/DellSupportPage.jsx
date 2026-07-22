@@ -74,7 +74,7 @@ export default function DellSupportPage() {
   );
 
   const ctl = useTableControls(filtered, {
-    searchKeys: ['service_tag', 'device_model', 'service_level', 'ome_name'],
+    searchKeys: ['device_name', 'service_tag', 'device_model', 'service_level', 'ome_name'],
     defaultSortKey: 'days_remaining', defaultSortDir: 'asc',
     paginate: true,
   });
@@ -116,6 +116,7 @@ export default function DellSupportPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <SortTh k="device_name" label="Hostname" ctl={ctl} />
                 <SortTh k="service_tag" label="Service Tag" ctl={ctl} />
                 <SortTh k="device_model" label="Model" ctl={ctl} />
                 <SortTh k="service_level" label="Service Level" ctl={ctl} />
@@ -127,7 +128,8 @@ export default function DellSupportPage() {
               <tbody>
                 {ctl.pageRows.map((w) => (
                   <tr key={w.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink tnum">{w.service_tag || '—'}</td>
+                    <td className="py-2 pr-3 text-ink max-w-[220px] truncate" title={w.device_name || ''}>{w.device_name || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted tnum">{w.service_tag || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{w.device_model || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted text-xs max-w-[280px] truncate" title={w.service_level || ''}>{w.service_level || '—'}</td>
                     <td className="py-2 pr-3 text-ink-faint tnum text-[11px]">{w.start_date ? String(w.start_date).slice(0, 10) : '—'}</td>
