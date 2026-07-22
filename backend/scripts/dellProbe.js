@@ -18,7 +18,8 @@ const api = require('../services/dellOmeApi');
   const devArg = process.argv[2];
   const dev = devArg
     ? db.prepare('SELECT device_id, name FROM dell_devices WHERE device_id = ?').get(Number(devArg))
-    : db.prepare("SELECT device_id, name FROM dell_devices WHERE ome_id = ? AND device_type = 'Server' ORDER BY name LIMIT 1").get(ome.id);
+    : db.prepare("SELECT device_id, name FROM dell_devices WHERE ome_id = ? AND device_type LIKE '%server%' ORDER BY name LIMIT 1").get(ome.id)
+      || db.prepare('SELECT device_id, name FROM dell_devices WHERE ome_id = ? ORDER BY name LIMIT 1').get(ome.id);
   if (!dev) { console.error('No server device found — has a poll completed?'); process.exit(1); }
   console.log(`Probing ${dev.name} (device ${dev.device_id}) on ${ome.name}…`);
   const out = await api.probeInventory(ome, dev.device_id);
