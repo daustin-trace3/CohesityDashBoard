@@ -121,7 +121,7 @@ export default function DellSupportPage() {
                 <SortTh k="service_level" label="Service Level" ctl={ctl} />
                 <SortTh k="start_date" label="Starts" ctl={ctl} />
                 <SortTh k="end_date" label="Ends" ctl={ctl} />
-                <SortTh k="days_remaining" label="Days Left" ctl={ctl} align="right" />
+                <SortTh k="days_remaining" label="Days Left" ctl={ctl} align="center" />
                 <SortTh k="ome_name" label="OME" ctl={ctl} />
               </tr></thead>
               <tbody>
@@ -132,7 +132,7 @@ export default function DellSupportPage() {
                     <td className="py-2 pr-3 text-ink-muted text-xs max-w-[280px] truncate" title={w.service_level || ''}>{w.service_level || '—'}</td>
                     <td className="py-2 pr-3 text-ink-faint tnum text-[11px]">{w.start_date ? String(w.start_date).slice(0, 10) : '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{w.end_date ? String(w.end_date).slice(0, 10) : '—'}</td>
-                    <td className={`py-2 pr-3 text-right tnum font-semibold ${w.days_remaining == null ? 'text-ink-faint' : w.days_remaining <= 0 ? 'text-status-crit' : w.days_remaining <= warnDays ? 'text-status-warn' : 'text-ink'}`}>
+                    <td className={`py-2 pr-3 text-center tnum font-semibold ${w.days_remaining == null ? 'text-ink-faint' : w.days_remaining <= 0 ? 'text-status-crit' : w.days_remaining <= warnDays ? 'text-status-warn' : 'text-ink'}`}>
                       {w.days_remaining == null ? '—' : w.days_remaining <= 0 ? 'expired' : fmtNum(w.days_remaining)}
                     </td>
                     <td className="py-2 pr-3 text-ink-muted">{w.ome_name}</td>
