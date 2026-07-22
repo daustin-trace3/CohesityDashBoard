@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, LayoutGrid, Check } from 'lucide-react';
+import { ChevronDown, LayoutGrid, Check, Hexagon, ShieldCheck } from 'lucide-react';
+import dellLogo from '../assets/platform-logos/dell.svg';
+import vcenterLogo from '../assets/platform-logos/vcenter.svg';
+import netappLogo from '../assets/platform-logos/netapp.svg';
+import pureLogo from '../assets/platform-logos/pure.svg';
 
 // Three experimental platform-switcher styles (dropdown | rail | grid), trialed
 // side-by-side against the original tab row. The active style is a per-browser
@@ -45,6 +49,25 @@ function useClickOutside(onClose) {
 }
 
 const monogram = (label) => label.slice(0, 2);
+
+// Official brand marks (bundled SVGs, tinted to each platform's color).
+// Cohesity reuses the app's own hexagon+shield identity; platforms without
+// a mark (Zerto, future plugins) fall back to the monogram.
+const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo };
+
+export function PlatformLogo({ platform, size = 18 }) {
+  if (platform.id === 'cohesity') {
+    return (
+      <span className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+        <Hexagon size={size} strokeWidth={1.75} style={{ color: platform.color }} />
+        <ShieldCheck size={Math.round(size * 0.46)} className="absolute" strokeWidth={2.5} style={{ color: platform.color }} />
+      </span>
+    );
+  }
+  const src = LOGOS[platform.id];
+  if (src) return <img src={src} alt="" style={{ width: size, height: size }} draggable={false} />;
+  return <>{monogram(platform.label)}</>;
+}
 
 /* ── Style 1: compact dropdown in the top bar ──────────────────────────── */
 export function PlatformDropdown({ platforms, currentId, onSelect, status }) {
@@ -97,7 +120,7 @@ export function PlatformRail({ platforms, currentId, onSelect, status }) {
               color: p.color,
               boxShadow: active ? `inset 0 0 0 2px ${p.color}` : `inset 0 0 0 1px ${p.color}44`,
             }}>
-            {monogram(p.label)}
+            <PlatformLogo platform={p} size={18} />
             <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-cohesity-black" style={{ backgroundColor: h.tone }} />
           </button>
         );
@@ -129,7 +152,7 @@ export function PlatformGrid({ platforms, currentId, onSelect, status }) {
                   style={{ borderColor: active ? p.color : 'rgba(255,255,255,0.08)' }}>
                   <span className="flex items-center gap-2 w-full">
                     <span className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold flex-shrink-0"
-                      style={{ backgroundColor: `${p.color}22`, color: p.color }}>{monogram(p.label)}</span>
+                      style={{ backgroundColor: `${p.color}22`, color: p.color }}><PlatformLogo platform={p} size={14} /></span>
                     <span className="text-[12px] font-semibold text-ink truncate">{p.label}</span>
                   </span>
                   <span className="flex items-center gap-1.5 text-[10px] text-ink-faint">
