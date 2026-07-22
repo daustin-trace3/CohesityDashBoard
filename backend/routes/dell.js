@@ -251,6 +251,31 @@ router.get('/overview', (req, res, next) => {
         COUNT(cpu_util_pct) AS metered
       FROM dell_devices
     `).get();
+    // No Power Manager anywhere? Derive CPU/memory utilization from vCenter:
+    // Dell servers running ESXi are matched to vcenter_hosts via the OS
+    // hostname OME reports, and their quickstats stand in for the plugin.
+    if (!utilization.metered) {
+      try {
+        const vc = db.prepare(`
+          SELECT AVG(v.cpu_pct) AS cpu_avg, AVG(v.mem_pct) AS mem_avg, COUNT(*) AS metered
+          FROM (
+            SELECT (CAST(h.cpu_mhz_used AS REAL) / h.cpu_mhz_capacity) * 100 AS cpu_pct,
+                   (CAST(h.mem_bytes_used AS REAL) / h.mem_bytes_capacity) * 100 AS mem_pct
+            FROM dell_components c
+            JOIN vcenter_hosts h ON LOWER(h.name) = LOWER(json_extract(c.extra, '$.hostname'))
+            WHERE c.kind = 'os'
+              AND h.cpu_mhz_used IS NOT NULL AND h.cpu_mhz_capacity > 0
+              AND h.mem_bytes_used IS NOT NULL AND h.mem_bytes_capacity > 0
+          ) v
+        `).get();
+        if (vc?.metered) {
+          utilization.cpu_avg = vc.cpu_avg;
+          utilization.mem_avg = vc.mem_avg;
+          utilization.metered = vc.metered;
+          utilization.source = 'vcenter';
+        }
+      } catch { /* vCenter platform tables unavailable — keep PM-only view */ }
+    }
     // Ops charts: daily alert volume by severity, power trend per instance,
     // and the busiest metered servers.
     const alertsByDay = db.prepare(`

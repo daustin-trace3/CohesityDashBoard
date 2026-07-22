@@ -138,12 +138,14 @@ export default function DellOverviewPage() {
         <div className={`grid sm:grid-cols-2 ${monCols} gap-3 mb-4`}>
           {hasUtil && (
             <StatCard icon={Cpu} label="CPU Utilization" value={util?.cpu_avg != null ? `${util.cpu_avg.toFixed(0)}%` : '—'}
-              sub={`fleet average · ${fmtNum(util?.metered)} metered server(s)`}
+              sub={util?.source === 'vcenter'
+                ? `fleet average via vCenter · ${fmtNum(util?.metered)} matched ESXi host(s)`
+                : `fleet average · ${fmtNum(util?.metered)} metered server(s)`}
               tone={util?.cpu_avg != null && util.cpu_avg > 75 ? 'warn' : 'default'} />
           )}
           {hasUtil && (
             <StatCard icon={MemoryStick} label="Memory Utilization" value={util?.mem_avg != null ? `${util.mem_avg.toFixed(0)}%` : '—'}
-              sub="fleet average, Power Manager"
+              sub={util?.source === 'vcenter' ? 'fleet average via vCenter' : 'fleet average, Power Manager'}
               tone={util?.mem_avg != null && util.mem_avg > 85 ? 'warn' : 'default'} />
           )}
           {hasPower && (
