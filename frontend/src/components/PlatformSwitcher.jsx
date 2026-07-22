@@ -119,9 +119,11 @@ export function PlatformRail({ platforms, currentId, onSelect, status }) {
           <button key={p.id} onClick={() => onSelect(p)} title={`${p.label} — ${h.label}`}
             className={`relative w-9 h-9 rounded-xl flex items-center justify-center text-[11px] font-bold transition-all duration-150 cursor-pointer ${active ? 'scale-105' : 'opacity-70 hover:opacity-100'}`}
             style={{
-              backgroundColor: `${p.color}22`,
+              backgroundColor: active ? `${p.color}33` : `${p.color}22`,
               color: p.color,
-              boxShadow: active ? `inset 0 0 0 2px ${p.color}` : `inset 0 0 0 1px ${p.color}44`,
+              boxShadow: active
+                ? `inset 0 0 0 2px ${p.color}, 0 0 12px 2px ${p.color}66`
+                : `inset 0 0 0 1px ${p.color}44`,
             }}>
             <PlatformLogo platform={p} size={18} />
             <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-cohesity-black" style={{ backgroundColor: h.tone }} />
