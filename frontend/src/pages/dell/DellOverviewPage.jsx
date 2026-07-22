@@ -1,16 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Gauge, Server, ShieldAlert, Boxes, AlertTriangle, HardDrive, Cpu, MemoryStick, Zap, BadgeCheck, Thermometer, Unplug } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Bar, Doughnut } from 'react-chartjs-2';
+import { Bar, Doughnut, Line } from 'react-chartjs-2';
 import {
-  Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend,
+  Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Tooltip, Legend,
 } from 'chart.js';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import { BRAND, fmtNum, fmtBytes, severityTone, asDate } from './helpers';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Tooltip, Legend);
 
 const tickStyle = { color: '#9CA3AF', font: { size: 10 } };
 const gridStyle = { color: 'rgba(255,255,255,0.06)' };
@@ -48,6 +48,38 @@ export default function DellOverviewPage() {
   const modelBar = {
     labels: models.map((m) => m.model),
     datasets: [{ data: models.map((m) => m.count), backgroundColor: BRAND, borderRadius: 3 }],
+  };
+
+  // Ops charts: 14d alert volume (stacked by severity), 30d power trend per
+  // instance, and the ten busiest metered servers.
+  const alertDays = data?.alertsByDay || [];
+  const alertsBar = {
+    labels: alertDays.map((d) => String(d.day).slice(5)),
+    datasets: [
+      { label: 'Critical', data: alertDays.map((d) => d.critical), backgroundColor: '#C75D5D', stack: 's', borderRadius: 2 },
+      { label: 'Warning', data: alertDays.map((d) => d.warning), backgroundColor: '#D4A24E', stack: 's', borderRadius: 2 },
+      { label: 'Info', data: alertDays.map((d) => d.info), backgroundColor: '#5A6572', stack: 's', borderRadius: 2 },
+    ],
+  };
+  const trendRows = data?.powerTrend || [];
+  const trendDays = [...new Set(trendRows.map((r) => r.day))].sort();
+  const PW_COLORS = ['#007DB8', '#6CB33F', '#D4A24E', '#9B6CD4', '#4ED4B8'];
+  const powerLine = {
+    labels: trendDays.map((d) => String(d).slice(5)),
+    datasets: [...new Set(trendRows.map((r) => r.ome_name))].map((name, i) => ({
+      label: name,
+      data: trendDays.map((day) => trendRows.find((r) => r.ome_name === name && r.day === day)?.power_w ?? null),
+      borderColor: PW_COLORS[i % PW_COLORS.length], backgroundColor: PW_COLORS[i % PW_COLORS.length],
+      borderWidth: 2, pointRadius: 0, tension: 0.3, spanGaps: true,
+    })),
+  };
+  const topUtil = data?.topUtil || [];
+  const utilBar = {
+    labels: topUtil.map((d) => String(d.name || '').split('.')[0]),
+    datasets: [
+      { label: 'CPU %', data: topUtil.map((d) => d.cpu_util_pct), backgroundColor: '#007DB8', borderRadius: 2 },
+      { label: 'Memory %', data: topUtil.map((d) => d.mem_util_pct), backgroundColor: '#4ED4B8', borderRadius: 2 },
+    ],
   };
 
   return (
@@ -128,6 +160,56 @@ export default function DellOverviewPage() {
                 maintainAspectRatio: false, animation: false,
                 plugins: { legend: { display: false } },
                 scales: { x: { ticks: { ...tickStyle, maxRotation: 40, minRotation: 20 }, grid: { display: false } }, y: { ticks: tickStyle, grid: gridStyle, beginAtZero: true } },
+              }} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-3 gap-4 mb-4">
+        <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <p className="text-sm font-semibold text-ink mb-1">Alert Volume (14d)</p>
+          <p className="text-[11px] text-ink-faint mb-3">Daily alerts by severity — a rising red band means the estate is getting noisier.</p>
+          {data == null ? <LoadingPanel label="Loading…" height={170} /> : alertDays.length === 0 ? (
+            <div className="text-sm text-ink-muted py-8 text-center">No alerts in the last 14 days.</div>
+          ) : (
+            <div className="h-[190px]">
+              <Bar data={alertsBar} options={{
+                maintainAspectRatio: false, animation: false,
+                plugins: { legend: { position: 'bottom', labels: { color: '#E5E5E5', boxWidth: 10, font: { size: 10 } } } },
+                scales: { x: { stacked: true, ticks: tickStyle, grid: { display: false } }, y: { stacked: true, ticks: tickStyle, grid: gridStyle, beginAtZero: true } },
+              }} />
+            </div>
+          )}
+        </div>
+
+        <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <p className="text-sm font-semibold text-ink mb-1">Power Draw Trend (30d)</p>
+          <p className="text-[11px] text-ink-faint mb-3">Fleet watts per OME instance from Power Manager — creep here is new load or failing cooling.</p>
+          {data == null ? <LoadingPanel label="Loading…" height={170} /> : powerLine.datasets.length === 0 ? (
+            <div className="text-sm text-ink-muted py-8 text-center">No power history — needs the Power Manager plugin.</div>
+          ) : (
+            <div className="h-[190px]">
+              <Line data={powerLine} options={{
+                maintainAspectRatio: false, animation: false,
+                plugins: { legend: { position: 'bottom', labels: { color: '#E5E5E5', boxWidth: 10, font: { size: 10 } } } },
+                scales: { x: { ticks: tickStyle, grid: { display: false } }, y: { ticks: { ...tickStyle, callback: (v) => `${v} W` }, grid: gridStyle } },
+              }} />
+            </div>
+          )}
+        </div>
+
+        <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <p className="text-sm font-semibold text-ink mb-1">Busiest Servers</p>
+          <p className="text-[11px] text-ink-faint mb-3">Top 10 by CPU utilization — rebalance or right-size candidates.</p>
+          {data == null ? <LoadingPanel label="Loading…" height={170} /> : topUtil.length === 0 ? (
+            <div className="text-sm text-ink-muted py-8 text-center">No utilization data — needs the Power Manager plugin.</div>
+          ) : (
+            <div className="h-[190px]">
+              <Bar data={utilBar} options={{
+                indexAxis: 'y', maintainAspectRatio: false, animation: false,
+                plugins: { legend: { position: 'bottom', labels: { color: '#E5E5E5', boxWidth: 10, font: { size: 10 } } } },
+                scales: { x: { ticks: { ...tickStyle, callback: (v) => `${v}%` }, grid: gridStyle, max: 100, beginAtZero: true }, y: { ticks: { ...tickStyle, font: { size: 9 } }, grid: { display: false } } },
               }} />
             </div>
           )}
