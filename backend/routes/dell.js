@@ -233,6 +233,26 @@ router.get('/overview', (req, res, next) => {
         COUNT(cpu_util_pct) AS metered
       FROM dell_devices
     `).get();
+    // Ops charts: daily alert volume by severity, power trend per instance,
+    // and the busiest metered servers.
+    const alertsByDay = db.prepare(`
+      SELECT date(created_at) AS day,
+        SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical,
+        SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) AS warning,
+        SUM(CASE WHEN severity NOT IN ('critical', 'warning') THEN 1 ELSE 0 END) AS info
+      FROM dell_alerts WHERE created_at >= datetime('now', '-14 days')
+      GROUP BY day ORDER BY day
+    `).all();
+    const powerTrend = db.prepare(`
+      SELECT o.name AS ome_name, date(m.captured_at) AS day, MAX(m.power_w_total) AS power_w
+      FROM dell_metrics_history m JOIN dell_ome_instances o ON o.id = m.ome_id
+      WHERE m.captured_at >= datetime('now', '-30 days') AND m.power_w_total IS NOT NULL
+      GROUP BY o.name, day ORDER BY day
+    `).all();
+    const topUtil = db.prepare(`
+      SELECT name, cpu_util_pct, mem_util_pct FROM dell_devices
+      WHERE cpu_util_pct IS NOT NULL ORDER BY cpu_util_pct DESC LIMIT 10
+    `).all();
     const warnDays = warrantyWarnDays();
     const warrantyAgg = db.prepare(`
       SELECT COUNT(*) AS total,
@@ -254,6 +274,7 @@ router.get('/overview', (req, res, next) => {
       typeBreakdown, modelBreakdown, capacity, diskMedia,
       alerts7d: { ...alertAgg, critical_prev: alertPrev.critical || 0 },
       utilization,
+      alertsByDay, powerTrend, topUtil,
       warranty: { ...warrantyAgg, warnDays },
       firmware: firmwareAgg,
       failingComponents,
