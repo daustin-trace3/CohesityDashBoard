@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -7,7 +8,10 @@ import { useTableControls, SortTh, TableControls, TablePager } from '../../compo
 import { BRAND, fmtNum, fmtBytes, healthTone, severityTone, fmtWhen } from './helpers';
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
-  return (
+  // Portal to <body>: the page wrapper's fade-in animation leaves a transform
+  // applied (fill-mode: both), which would re-anchor position:fixed to the
+  // page div and push the modal's top off-screen on scrolled/short pages.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative panel w-full max-w-3xl max-h-[85vh] flex flex-col" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -26,7 +30,8 @@ function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
         </div>
         <div className="p-4 overflow-y-auto">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
