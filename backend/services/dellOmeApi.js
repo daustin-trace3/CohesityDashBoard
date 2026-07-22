@@ -234,9 +234,9 @@ function parseInventory(deviceId, sections) {
           name: d.ModelNumber || d.SerialNumber || null, description: d.Description || null,
           status: compHealth(d.StatusString ?? d.Status), model: d.ModelNumber || null,
           serial: d.SerialNumber || null, slot: d.SlotNumber != null ? String(d.SlotNumber) : null,
-          // Size is usually a unit string; some releases leave it empty on RAID
-          // members and only report used+free raid space.
-          sizeBytes: parseSize(d.Size)
+          // Size is usually a unit string; RAID members on some releases leave
+          // it empty and report capacity via used+free raid space instead.
+          sizeBytes: parseSize(d.Size) ?? parseSize(d.Capacity) ?? parseSize(d.DiskCapacity)
             ?? (parseSize(d.UsedRaidDiskSpace) != null || parseSize(d.FreeDiskSpace) != null
               ? (parseSize(d.UsedRaidDiskSpace) || 0) + (parseSize(d.FreeDiskSpace) || 0) : null),
           speed: d.BusType || null,
@@ -245,8 +245,41 @@ function parseInventory(deviceId, sections) {
             vendor: d.VendorName || null, enclosure: d.EnclosureId || null,
             usedRaid: d.UsedRaidDiskSpace ?? null, freeSpace: d.FreeDiskSpace ?? null,
             predictiveFailure: d.PredictiveFailureState ?? null,
+            raidStatus: d.RaidStatus ?? null,
+            channel: d.Channel ?? null, diskId: d.Id ?? d.DiskNumber ?? null,
           },
         });
+      }
+    } else if (type === 'serverRaidControllers') {
+      // Feeds the console's Devices > Hardware view: controllers with their
+      // nested virtual disks. Key names drift across releases — parse both
+      // known spellings and keep unknowns in extra for live-shape debugging.
+      for (const c of items) {
+        comps.push({
+          deviceId, kind: 'raid',
+          name: c.Name || c.DeviceDescription || null, description: c.DeviceDescription || null,
+          status: compHealth(c.StatusTypeString ?? c.Status), model: c.Name || null,
+          serial: null, slot: c.PciSlot != null ? String(c.PciSlot) : null,
+          sizeBytes: null, speed: null,
+          extra: { firmware: c.FirmwareVersion ?? null, driver: c.DriverVersion ?? null, cacheMb: num(c.CacheSizeInMb) },
+        });
+        const vds = Array.isArray(c.ServerVirtualDisks) ? c.ServerVirtualDisks
+          : Array.isArray(c.VirtualDisks) ? c.VirtualDisks : [];
+        for (const v of vds) {
+          comps.push({
+            deviceId, kind: 'vdisk',
+            name: v.Name || (v.VirtualDiskId != null ? `Virtual Disk ${v.VirtualDiskId}` : null),
+            description: v.RaidType || v.Layout || null,
+            status: compHealth(v.State ?? v.Status), model: null, serial: null,
+            slot: v.TargetId != null ? String(v.TargetId) : null,
+            sizeBytes: parseSize(v.Size), speed: v.RaidType || v.Layout || null,
+            extra: {
+              controller: c.Name || null, state: v.State ?? null, mediaType: v.MediaType ?? null,
+              readPolicy: v.ReadPolicy ?? null, writePolicy: v.WritePolicy ?? null,
+              diskIds: v.PhysicalDiskIds ?? v.Disks ?? v.ArrayDisks ?? null,
+            },
+          });
+        }
       }
     } else if (type === 'serverNetworkInterfaces') {
       for (const n of items) {

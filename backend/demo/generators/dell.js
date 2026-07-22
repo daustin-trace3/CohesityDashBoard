@@ -156,6 +156,16 @@ function seedDell(db, { now, encrypt }) {
           JSON.stringify({ mediaType: media, busType: media === 'SSD' ? 'NVMe' : 'SAS', predictiveFailure: d === badDisk ? 'Failure predicted' : null }));
         totals.components += 1;
       }
+      // RAID controller + virtual disks (console Devices > Hardware view).
+      compStmt.run(omeId, deviceId, 'raid', 'PERC H755 Front', 'PERC H755 Front', 'ok',
+        'PERC H755', null, '3', null, null,
+        JSON.stringify({ firmware: '52.26.0-5179', cacheMb: 8192 }));
+      totals.components += 1;
+      const vdData = diskCount * diskEach * (diskCount > 2 ? (diskCount - 1) / diskCount : 1);
+      compStmt.run(omeId, deviceId, 'vdisk', 'Virtual Disk 0', diskCount > 2 ? 'RAID 5' : 'RAID 1', 'ok',
+        null, null, '0', vdData, diskCount > 2 ? 'RAID 5' : 'RAID 1',
+        JSON.stringify({ controller: 'PERC H755 Front', state: 'Online', writePolicy: 'Write Back' }));
+      totals.components += 1;
       compStmt.run(omeId, deviceId, 'nic', `NIC.Integrated.1`, `Broadcom Adv. Dual 25Gb Ethernet`, 'ok',
         null, null, null, null, null,
         JSON.stringify({ vendor: 'Broadcom', ports: [{ portId: 'NIC.Integrated.1-1', linkStatus: 'Up', linkSpeed: '25 Gbps', macs: ['B4:96:91:AA:00:01'] }, { portId: 'NIC.Integrated.1-2', linkStatus: 'Up', linkSpeed: '25 Gbps', macs: ['B4:96:91:AA:00:02'] }] }));
