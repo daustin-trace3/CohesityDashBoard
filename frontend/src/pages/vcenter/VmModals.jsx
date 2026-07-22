@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X, MonitorSmartphone, Network, Database, Tag, ScrollText, Cpu, MemoryStick, HardDrive, Clock } from 'lucide-react';
 import client from '../../api/client';
 import { Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
@@ -18,7 +19,10 @@ export function fmtUptime(secs) {
 }
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children, wide = false }) {
-  return (
+  // Portal to <body> — the page wrapper's fade-in animation leaves a transform
+  // applied (fill-mode: both), which would re-anchor position:fixed to the
+  // page div and cut off the modal top on scrolled/short pages.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
       <div className={`panel w-full ${wide ? 'max-w-3xl' : 'max-w-2xl'} p-5 max-h-[85vh] flex flex-col`} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3 mb-3">
@@ -32,7 +36,8 @@ function ModalShell({ title, subtitle, icon: Icon, onClose, children, wide = fal
         </div>
         <div className="overflow-y-auto pr-1 min-h-0">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
