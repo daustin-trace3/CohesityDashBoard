@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck } from 'lucide-react';
+import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
@@ -167,11 +167,83 @@ export function DeviceDetailModal({ deviceId, onClose }) {
   );
 }
 
+const GROUPS = [
+  { key: 'cpu', label: 'CPU (sockets, cores, models)' },
+  { key: 'memory', label: 'Memory (total, DIMM detail)' },
+  { key: 'network', label: 'Network (NICs, MAC addresses)' },
+];
+
+function ExportModal({ devices, onClose }) {
+  const [deviceId, setDeviceId] = useState('all');
+  const [groups, setGroups] = useState({ cpu: true, memory: true, network: true });
+  const [exporting, setExporting] = useState(false);
+  const { toast } = useToast();
+
+  const run = async () => {
+    setExporting(true);
+    try {
+      const include = Object.keys(groups).filter((k) => groups[k]).join(',');
+      const params = { ...(include ? { include } : {}), ...(deviceId !== 'all' ? { deviceId } : {}) };
+      const { data } = await client.get('/dell/export', { params, responseType: 'blob' });
+      const url = URL.createObjectURL(data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `dell-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      onClose();
+    } catch {
+      toast({ type: 'error', title: 'Export failed' });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <ModalShell title="Export inventory" subtitle="CSV — device name, model, IP and support info are always included" icon={Download} onClose={onClose}>
+      <div className="mb-4">
+        <label className="block text-xs font-semibold text-ink mb-1">Scope</label>
+        <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)}
+          className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none cursor-pointer">
+          <option value="all">All devices ({devices.length})</option>
+          {devices.map((d) => (
+            <option key={d.id} value={d.id}>{d.name || d.service_tag}</option>
+          ))}
+        </select>
+      </div>
+      <p className="text-xs font-semibold text-ink mb-2">Include hardware detail</p>
+      <div className="flex flex-col gap-2 mb-5">
+        {GROUPS.map((g) => (
+          <label key={g.key} className="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" checked={groups[g.key]}
+              onChange={(e) => setGroups((prev) => ({ ...prev, [g.key]: e.target.checked }))}
+              className="accent-brand cursor-pointer" />
+            <span className="text-sm text-ink-muted">{g.label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button onClick={onClose}
+          className="px-4 py-2 rounded-lg text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink transition-colors cursor-pointer">
+          Cancel
+        </button>
+        <button onClick={run} disabled={exporting}
+          className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer inline-flex items-center gap-2">
+          {exporting && <Spinner size={13} />} Export CSV
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 export default function DellDevicesPage() {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [detailId, setDetailId] = useState(null);
+  const [showExport, setShowExport] = useState(false);
 
   const load = useCallback(() => client.get('/dell/devices')
     .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
@@ -190,6 +262,10 @@ export default function DellDevicesPage() {
     <div className="animate-fade-in">
       <PageHeader icon={Server} title="Devices" description="Every device managed by the registered OME instances — click a device for full hardware detail">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <button onClick={() => setShowExport(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
+          <Download size={13} /> Export
+        </button>
         <RefreshButton onClick={load} />
       </PageHeader>
 
@@ -250,6 +326,7 @@ export default function DellDevicesPage() {
       </div>
 
       {detailId != null && <DeviceDetailModal deviceId={detailId} onClose={() => setDetailId(null)} />}
+      {showExport && <ExportModal devices={list} onClose={() => setShowExport(false)} />}
     </div>
   );
 }

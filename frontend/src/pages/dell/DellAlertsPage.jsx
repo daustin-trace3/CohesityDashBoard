@@ -3,6 +3,7 @@ import { AlertTriangle } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { DeviceDetailModal } from './DellDevicesPage';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, severityTone, fmtWhen } from './helpers';
 
@@ -12,6 +13,7 @@ export default function DellAlertsPage() {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
   const [days, setDays] = useState(7);
+  const [detailId, setDetailId] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/dell/alerts', { params: { days } })
@@ -72,7 +74,13 @@ export default function DellAlertsPage() {
                   <tr key={`${a.ome_id}|${a.alert_id}`} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(a.created_at)}</td>
                     <td className="py-2 pr-3"><Badge tone={severityTone(a.severity)}>{a.severity}</Badge></td>
-                    <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{a.device_name || a.service_tag || '—'}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">
+                      {a.device_row_id != null ? (
+                        <button onClick={() => setDetailId(a.device_row_id)} className="text-brand hover:underline cursor-pointer">{a.device_name || a.service_tag}</button>
+                      ) : (
+                        <span className="text-ink-muted">{a.device_name || a.service_tag || '—'}</span>
+                      )}
+                    </td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] whitespace-nowrap">{a.category || '—'}{a.subcategory ? ` · ${a.subcategory}` : ''}</td>
                     <td className="py-2 pr-3 text-ink-muted text-xs max-w-[420px]">{a.message || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{a.ome_name}</td>
@@ -84,6 +92,8 @@ export default function DellAlertsPage() {
         )}
         <TablePager ctl={ctl} />
       </div>
+
+      {detailId != null && <DeviceDetailModal deviceId={detailId} onClose={() => setDetailId(null)} />}
     </div>
   );
 }
