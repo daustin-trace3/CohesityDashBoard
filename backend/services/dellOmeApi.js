@@ -329,10 +329,18 @@ function summarizeComponents(comps) {
   const byDevice = new Map();
   for (const c of comps) {
     let s = byDevice.get(c.deviceId);
-    if (!s) { s = { cpuCount: 0, coreCount: 0, memoryBytes: 0, diskBytes: 0 }; byDevice.set(c.deviceId, s); }
+    if (!s) { s = { cpuCount: 0, coreCount: 0, memoryBytes: 0, diskBytes: 0, vdiskBytes: 0 }; byDevice.set(c.deviceId, s); }
     if (c.kind === 'processor') { s.cpuCount += 1; s.coreCount += c.extra?.cores || 0; }
     if (c.kind === 'memory') s.memoryBytes += c.sizeBytes || 0;
     if (c.kind === 'disk') s.diskBytes += c.sizeBytes || 0;
+    if (c.kind === 'vdisk') s.vdiskBytes += c.sizeBytes || 0;
+  }
+  // Array members on some OME releases report no per-disk Size at all — fall
+  // back to the device's virtual-disk total (usable capacity; slightly under
+  // raw because of RAID overhead, but honest data instead of 0).
+  for (const s of byDevice.values()) {
+    if (!s.diskBytes && s.vdiskBytes) s.diskBytes = s.vdiskBytes;
+    delete s.vdiskBytes;
   }
   return byDevice;
 }
