@@ -35,8 +35,8 @@ function freshness(status, id) {
 function Spark({ values, color, label }) {
   if (!values || !values.some((v) => v > 0)) return null;
   const max = Math.max(...values, 1);
-  const w = 84;
-  const h = 22;
+  const w = 104;
+  const h = 28;
   const bw = w / values.length;
   return (
     <div className="flex flex-col items-end gap-0.5" title={label ? `7 days — ${label}` : undefined}>
@@ -68,42 +68,46 @@ function PlatformCard({ card, fresh, onNavigate }) {
   return (
     <button
       onClick={() => onNavigate(card.route)}
-      className="panel p-4 text-left transition-all cursor-pointer hover:-translate-y-0.5 flex flex-col gap-3"
+      className="panel p-5 text-left transition-all cursor-pointer hover:-translate-y-0.5 flex flex-col gap-4"
       style={{ borderTop: `3px solid ${card.color}`, opacity: stale ? 0.85 : 1 }}
     >
-      <div className="flex items-center gap-2.5">
-        <span className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 text-[10px] font-bold"
+      <div className="flex items-center gap-3">
+        <span className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 text-[11px] font-bold"
           style={{ backgroundColor: `${card.color}22`, color: card.color }}>
-          <PlatformLogo platform={card} size={16} />
+          <PlatformLogo platform={card} size={20} />
         </span>
-        <span className="text-sm font-semibold text-ink flex-1 truncate">{card.label}</span>
+        <span className="text-[15px] font-semibold text-ink flex-1 truncate">{card.label}</span>
         {verdict ? (
-          <span className="text-[10px] font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0"
+          <span className="text-[11px] font-bold tracking-wide px-2.5 py-1 rounded-full flex-shrink-0"
             style={{ backgroundColor: `${tone}1f`, color: tone }}>
             {verdict}
           </span>
         ) : (
-          <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: tone, boxShadow: `0 0 8px ${tone}88` }} />
+          <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: tone, boxShadow: `0 0 8px ${tone}88` }} />
         )}
       </div>
 
-      <div className="flex items-end gap-5">
+      <div className="flex items-end gap-7">
         {card.headline.map((hRow) => (
           <div key={hRow.label} className="min-w-0">
-            <p className="text-xl font-bold text-ink tnum leading-tight">{fmt(hRow.value)}</p>
-            <p className="text-[10px] uppercase tracking-wide text-ink-faint truncate">{hRow.label}</p>
+            <p className="text-3xl font-bold text-ink tnum leading-none">{fmt(hRow.value)}</p>
+            <p className="text-[11px] uppercase tracking-wide text-ink-faint truncate mt-1.5">{hRow.label}</p>
           </div>
         ))}
       </div>
 
       {card.error ? (
-        <p className="text-[12px] text-ink-faint">Summary unavailable</p>
+        <p className="text-[13px] text-ink-faint">Summary unavailable</p>
       ) : shown.length === 0 ? (
-        <p className="flex items-center gap-1.5 text-[12px]" style={{ color: TONES.ok }}>
-          <Check size={13} strokeWidth={2.5} /> healthy
-        </p>
+        card.health === 'unknown' ? (
+          <p className="text-[13px] text-ink-faint">No source connected — add one under {card.label} settings</p>
+        ) : (
+          <p className="flex items-center gap-2 text-[13px] font-medium" style={{ color: TONES.ok }}>
+            <Check size={15} strokeWidth={2.5} /> healthy
+          </p>
+        )
       ) : (
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1.5">
           {shown.map((e, i) => (
             <span
               key={i}
@@ -111,19 +115,19 @@ function PlatformCard({ card, fresh, onNavigate }) {
               tabIndex={0}
               onClick={(ev) => { ev.stopPropagation(); onNavigate(e.link); }}
               onKeyDown={(ev) => { if (ev.key === 'Enter') { ev.stopPropagation(); onNavigate(e.link); } }}
-              className="flex items-center gap-2 text-[12px] hover:underline"
+              className="flex items-center gap-2 text-[13px] hover:underline"
               style={{ color: TONES[e.severity] }}
             >
               <SevDot severity={e.severity} />
               <span className="truncate">{e.text}</span>
             </span>
           ))}
-          {hidden > 0 && <span className="text-[11px] text-ink-faint pl-4">+{hidden} more</span>}
+          {hidden > 0 && <span className="text-[12px] text-ink-faint pl-4">+{hidden} more</span>}
         </div>
       )}
 
       <div className="flex items-end justify-between mt-auto pt-1">
-        <span className="text-[10px] text-ink-faint tnum">{fmt(card.objects)} objects</span>
+        <span className="text-[11px] text-ink-faint tnum">{fmt(card.objects)} objects</span>
         <Spark values={card.spark} color={card.color} label={card.sparkLabel} />
       </div>
     </button>
