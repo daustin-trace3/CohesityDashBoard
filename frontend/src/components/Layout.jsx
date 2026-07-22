@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings, LogOut,
+  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings, LogOut, Activity,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
@@ -16,6 +16,16 @@ import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from '.
 import { useAiEnabled } from '../api/useAiEnabled';
 
 const builtinIds = builtinPlatforms.map(p => p.id);
+
+// Cross-platform Ops Monitor — a pseudo-platform entry so every switcher
+// style (tabs/dropdown/rail/grid) offers a way back to the landing page.
+const OPS_ENTRY = { id: 'ops', label: 'Ops', route: '/ops', color: '#8FA3B0' };
+const opsNavGroups = [{
+  label: 'Estate',
+  items: [
+    { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p.startsWith('/ops'), permission: 'cohesity:*:view' },
+  ],
+}];
 
 // Permission required to see a given nav item. Explicit per-item overrides
 // (Settings) take precedence; everything else falls back to the active
@@ -76,6 +86,7 @@ export default function Layout() {
   const isZerto = pathname.startsWith('/zerto');
   const isVcenter = pathname.startsWith('/vcenter');
   const isDell = pathname.startsWith('/dell');
+  const isOps = pathname.startsWith('/ops');
   const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell;
   const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : null;
   const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : '';
@@ -90,6 +101,7 @@ export default function Layout() {
   const vcenterNavGroups = getPlatform('vcenter')?.navGroups || [];
   const dellNavGroups = getPlatform('dell')?.navGroups || [];
   const isActivePlatform = (id, pathname) => {
+    if (id === 'ops') return pathname.startsWith('/ops');
     const platform = getPlatform(id);
     return platform ? platform.isActive(pathname) : false;
   };
@@ -103,8 +115,8 @@ export default function Layout() {
   const { user, logout, hasPermission, loading: authLoading } = useAuth();
   const aiEnabled = useAiEnabled();
 
-  const visiblePlatforms = platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)));
-  const currentPlatformId = platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity';
+  const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)))];
+  const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity');
   const gotoPlatform = (p) => navigate(p.route);
   const multiPlatform = visiblePlatforms.length > 1;
 
@@ -267,7 +279,8 @@ export default function Layout() {
   const criticalCount = alerts.filter(a => a.severity === 'critical').length;
 
   // Swap the sidebar menu to match the active vendor platform.
-  const baseNavGroups = isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups
+  const baseNavGroups = isOps ? opsNavGroups
+    : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups
     : activePluginPlatform ? activePluginPlatform.navGroups : navGroups;
 
   // Hide items the user lacks permission for. While auth is still loading,
@@ -304,7 +317,7 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
+          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
           accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : activePluginPlatform ? activePluginPlatform.color : undefined}
         />
 
@@ -388,7 +401,7 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : 'Global Cluster Dashboard'}</h1>
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform

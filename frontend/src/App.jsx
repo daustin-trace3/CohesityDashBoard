@@ -14,6 +14,7 @@ import AdminSettingsPage from './pages/AdminSettingsPage';
 import AdminUsersPage from './pages/AdminUsersPage';
 import AdminPluginsPage from './pages/AdminPluginsPage';
 import AIAdvisorPage from './pages/AIAdvisorPage';
+import OpsMonitorPage from './pages/ops/OpsMonitorPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import LicenseGate from './components/LicenseGate';
 import LoginPage from './pages/LoginPage';
@@ -40,7 +41,8 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<Layout />}>
-          <Route index element={<Navigate to="/cohesity" replace />} />
+          <Route index element={<Navigate to="/ops" replace />} />
+          <Route path="ops" element={withBoundary(<OpsMonitorPage />)} />
           <Route path="dashboard" element={<Navigate to="/cohesity" replace />} />
           <Route path="alerts" element={<Navigate to="/cohesity/alerts" replace />} />
           <Route path="hardware" element={<Navigate to="/cohesity/hardware" replace />} />
