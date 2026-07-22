@@ -136,6 +136,20 @@ router.post('/instances/:id/refresh', [param('id').isInt().toInt()], validate, a
   } catch (err) { next(err); }
 });
 
+/** GET /api/dell/instances/:id/inventory-probe?deviceId= — raw inventory
+ *  layout for one device (live-shape debugging: section names, counts, first
+ *  item each). Read-only against the appliance. */
+router.get('/instances/:id/inventory-probe', [
+  param('id').isInt().toInt(),
+  query('deviceId').isInt().toInt(),
+], validate, async (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM dell_ome_instances WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'OME instance not found.' });
+    res.json(await dellOmeApi.probeInventory(row, req.query.deviceId));
+  } catch (err) { next(err); }
+});
+
 // ── Data endpoints ───────────────────────────────────────────────────────────
 
 function computeIssues() {
