@@ -16,13 +16,13 @@ const MODELS = [
 ];
 
 const ALERT_TEMPLATES = [
-  { severity: 'critical', category: 'System Health', subcategory: 'Storage', msg: (d, rng) => `Fault detected on physical disk in slot ${randInt(rng, 0, 11)} of ${d}` },
-  { severity: 'critical', category: 'System Health', subcategory: 'Power', msg: (d) => `Power supply redundancy is lost on ${d}` },
-  { severity: 'warning', category: 'System Health', subcategory: 'Temperature', msg: (d) => `System inlet temperature is above the warning threshold on ${d}` },
-  { severity: 'warning', category: 'System Health', subcategory: 'Memory', msg: (d, rng) => `Correctable memory error rate exceeded on DIMM ${pick(rng, ['A1', 'A5', 'B2', 'B7'])} of ${d}` },
-  { severity: 'warning', category: 'Configuration', subcategory: 'Firmware', msg: (d) => `Firmware on ${d} does not match the assigned baseline` },
-  { severity: 'info', category: 'Audit', subcategory: 'Devices', msg: (d) => `Inventory refresh completed for ${d}` },
-  { severity: 'info', category: 'Configuration', subcategory: 'Discovery', msg: (d) => `Discovery task found device ${d}` },
+  { severity: 'critical', category: 'System Health', subcategory: 'Storage', msgId: 'PDR16', msg: (d, rng) => `Fault detected on physical disk in slot ${randInt(rng, 0, 11)} of ${d}` },
+  { severity: 'critical', category: 'System Health', subcategory: 'Power', msgId: 'PSU0076', msg: (d) => `Power supply redundancy is lost on ${d}` },
+  { severity: 'warning', category: 'System Health', subcategory: 'Temperature', msgId: 'TMP0120', msg: (d) => `System inlet temperature is above the warning threshold on ${d}` },
+  { severity: 'warning', category: 'System Health', subcategory: 'Memory', msgId: 'MEM0701', msg: (d, rng) => `Correctable memory error rate exceeded on DIMM ${pick(rng, ['A1', 'A5', 'B2', 'B7'])} of ${d}` },
+  { severity: 'warning', category: 'Configuration', subcategory: 'Firmware', msgId: 'CDEV4004', msg: (d) => `Firmware on ${d} does not match the assigned baseline` },
+  { severity: 'info', category: 'Audit', subcategory: 'Devices', msgId: 'CDEV6130', msg: (d) => `Inventory refresh completed for ${d}` },
+  { severity: 'info', category: 'Configuration', subcategory: 'Discovery', msgId: 'CDIS0002', msg: (d) => `Discovery task found device ${d}` },
 ];
 
 const SVC_LEVELS = ['ProSupport Plus with Next Business Day Onsite', 'ProSupport with Next Business Day Onsite', 'Basic Hardware Warranty'];
@@ -58,8 +58,8 @@ function seedDell(db, { now, encrypt }) {
   `);
   const alertStmt = db.prepare(`
     INSERT OR IGNORE INTO dell_alerts (ome_id, alert_id, severity, status, category,
-      subcategory, message, device_name, service_tag, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      subcategory, message_id, message, device_name, service_tag, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const warStmt = db.prepare(`
     INSERT INTO dell_warranties (ome_id, device_id, service_tag, device_model, device_type,
@@ -226,7 +226,7 @@ function seedDell(db, { now, encrypt }) {
       const dev = pick(alertRng, serverNames);
       const minutesAgo = randInt(alertRng, 5, 14 * 24 * 60);
       alertStmt.run(omeId, alertIdSeq++, t.severity, chance(alertRng, 0.35) ? 'acknowledged' : 'not-acknowledged',
-        t.category, t.subcategory, t.msg(dev.name, alertRng), dev.name, dev.service_tag,
+        t.category, t.subcategory, t.msgId, t.msg(dev.name, alertRng), dev.name, dev.service_tag,
         new Date(Date.now() - minutesAgo * 60000).toISOString().replace('T', ' ').slice(0, 19));
       totals.alerts += 1;
     }

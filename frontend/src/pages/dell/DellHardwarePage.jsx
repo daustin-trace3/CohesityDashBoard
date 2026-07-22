@@ -77,7 +77,7 @@ function FirmwareSection({ rows }) {
                 <SortTh k="baseline_name" label="Baseline" ctl={ctl} />
                 <SortTh k="service_tag" label="Service Tag" ctl={ctl} />
                 <SortTh k="device_model" label="Model" ctl={ctl} />
-                <SortTh k="noncompliant_components" label="Components Behind" ctl={ctl} align="right" />
+                <SortTh k="noncompliant_components" label="Components Behind" ctl={ctl} align="center" />
                 <SortTh k="ome_name" label="OME" ctl={ctl} />
               </tr></thead>
               <tbody>
@@ -86,7 +86,7 @@ function FirmwareSection({ rows }) {
                     <td className="py-2 pr-3 text-ink">{f.baseline_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted tnum">{f.service_tag || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{f.device_model || '—'}</td>
-                    <td className="py-2 pr-3 text-right tnum text-status-warn font-semibold">{fmtNum(f.noncompliant_components)}</td>
+                    <td className="py-2 pr-3 text-center tnum text-status-warn font-semibold">{fmtNum(f.noncompliant_components)}</td>
                     <td className="py-2 pr-3 text-ink-muted">{f.ome_name}</td>
                   </tr>
                 ))}

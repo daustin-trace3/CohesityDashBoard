@@ -135,4 +135,11 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 2,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(dell_alerts)').all().map((c) => c.name);
+      if (!cols.includes('message_id')) db.exec('ALTER TABLE dell_alerts ADD COLUMN message_id TEXT');
+    },
+  },
 ];

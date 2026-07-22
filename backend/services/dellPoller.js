@@ -140,12 +140,12 @@ const store = db.transaction((omeId, { info, devices, components, alerts, warran
 
   const alertStmt = db.prepare(`
     INSERT OR IGNORE INTO dell_alerts (ome_id, alert_id, severity, status, category,
-      subcategory, message, device_name, service_tag, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      subcategory, message_id, message, device_name, service_tag, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const a of alerts || []) {
     alertStmt.run(omeId, a.alertId, a.severity, a.status, a.category,
-      a.subcategory, a.message, a.deviceName, a.serviceTag, a.createdAt);
+      a.subcategory, a.messageId, a.message, a.deviceName, a.serviceTag, a.createdAt);
   }
   db.prepare("DELETE FROM dell_alerts WHERE created_at < datetime('now', '-90 days')").run();
 
