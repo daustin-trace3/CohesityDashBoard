@@ -11,7 +11,7 @@ const pollerStatus = require('./pollerStatus');
 const {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, fetchWarranties, fetchFirmwareCompliance,
-  fetchDeviceMetrics,
+  fetchDeviceMetrics, fetchDevicePowerThermal,
 } = require('./dellOmeApi');
 const logger = require('../utils/logger');
 
@@ -58,18 +58,32 @@ async function collect(ome) {
   }
 
   // Power Manager instant metrics — plugin-gated; first hard failure disables
-  // the sweep for this poll.
+  // the sweep for this poll and drops to the base-OME per-device Power /
+  // Temperature endpoints (console Device > Server snapshot — no license
+  // needed, but no CPU/memory utilization either).
   let metricsAvailable = true;
+  let baseAvailable = true;
   for (const d of serverDevices.slice(0, METRICS_DEVICE_CAP)) {
-    if (!metricsAvailable) break;
-    try {
-      const m = await fetchDeviceMetrics(ome, d.deviceId);
-      const dev = devices.find((x) => x.deviceId === d.deviceId);
-      if (dev) Object.assign(dev, { powerW: m.powerW, inletTempC: m.inletTempC, cpuUtilPct: m.cpuUtilPct, memUtilPct: m.memUtilPct });
-    } catch (err) {
-      metricsAvailable = false;
-      logger.debug(`[DellPoller] ${ome.name}: Power Manager metrics unavailable (${safeMsg(err)})`);
+    const dev = devices.find((x) => x.deviceId === d.deviceId);
+    if (!dev) continue;
+    if (metricsAvailable) {
+      try {
+        const m = await fetchDeviceMetrics(ome, d.deviceId);
+        Object.assign(dev, { powerW: m.powerW, inletTempC: m.inletTempC, cpuUtilPct: m.cpuUtilPct, memUtilPct: m.memUtilPct });
+        continue;
+      } catch (err) {
+        metricsAvailable = false;
+        logger.debug(`[DellPoller] ${ome.name}: Power Manager metrics unavailable, falling back to device Power/Temperature (${safeMsg(err)})`);
+      }
     }
+    if (!baseAvailable) break;
+    const pt = await fetchDevicePowerThermal(ome, d.deviceId);
+    if (pt.powerW == null && pt.inletTempC == null && d === serverDevices[0]) {
+      // Neither endpoint answered on the first device — assume unsupported.
+      baseAvailable = false;
+      break;
+    }
+    Object.assign(dev, { powerW: pt.powerW, inletTempC: pt.inletTempC });
   }
 
   let alerts = [];
