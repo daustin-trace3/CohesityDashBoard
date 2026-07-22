@@ -478,6 +478,34 @@ async function fetchDevicePowerThermal(ome, deviceId) {
   return { powerW, inletTempC };
 }
 
+/**
+ * Live-shape diagnostic: raw inventory layout for one device — available
+ * InventoryTypes, each combined-response section with its count + first raw
+ * item, and the dedicated serverRaidControllers call (some releases omit
+ * sections from the combined response). Read-only; used by the
+ * /instances/:id/inventory-probe route when parsed data looks wrong.
+ */
+async function probeInventory(ome, deviceId) {
+  const out = { deviceId, types: null, sections: [], raidDedicated: null };
+  try {
+    const t = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/InventoryTypes`);
+    out.types = t?.InventoryTypes || t?.value || t || null;
+  } catch (err) { out.types = `unavailable: ${err.message}`; }
+  try {
+    const data = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/InventoryDetails`);
+    for (const sec of data?.value || []) {
+      const items = Array.isArray(sec?.InventoryInfo) ? sec.InventoryInfo : [];
+      out.sections.push({ type: sec?.InventoryType, count: items.length, firstItem: items[0] ?? null });
+    }
+  } catch (err) { out.sections = `unavailable: ${err.message}`; }
+  try {
+    const d = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/InventoryDetails('serverRaidControllers')`);
+    const items = Array.isArray(d?.InventoryInfo) ? d.InventoryInfo : [];
+    out.raidDedicated = { count: items.length, firstItem: items[0] ?? null };
+  } catch (err) { out.raidDedicated = `unavailable: ${err.message}`; }
+  return out;
+}
+
 // ── Connection test ─────────────────────────────────────────────────────────
 
 async function testConnection(candidate) {
@@ -496,5 +524,5 @@ async function testConnection(candidate) {
 module.exports = {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, fetchWarranties, fetchFirmwareCompliance,
-  fetchDeviceMetrics, fetchDevicePowerThermal, testConnection, invalidateSession,
+  fetchDeviceMetrics, fetchDevicePowerThermal, probeInventory, testConnection, invalidateSession,
 };
