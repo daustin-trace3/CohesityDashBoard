@@ -372,7 +372,12 @@ async function fetchDeviceInventory(ome, deviceId) {
  * store time via the unique (ome_id, alert_id) index, so overlap is free and
  * the flaky TimeStamp $filter (broken on several OME builds) is avoided.
  */
-async function fetchAlerts(ome, maxPages = 4) {
+async function fetchAlerts(ome, maxPages = 20) {
+  // Live-confirmed (Doug's probe, 2026-07-22): this build ACCEPTS
+  // $orderby=TimeStamp desc but silently ignores it — both variants return
+  // the same oldest-first listing. Ordering can't be trusted, so walk every
+  // page (cap 20×500 = 10k) instead of assuming the first pages are newest;
+  // INSERT OR IGNORE dedup makes refetching old alerts cheap.
   const fetchPages = async (start) => {
     const rows = [];
     let next = start;
@@ -387,8 +392,8 @@ async function fetchAlerts(ome, maxPages = 4) {
   try {
     raw = await fetchPages('/api/AlertService/Alerts?$top=500&$orderby=TimeStamp desc');
   } catch {
-    // Several OME builds reject TimeStamp in $orderby (same builds break the
-    // $filter) — retry unordered rather than silently returning no alerts.
+    // Some OME builds reject TimeStamp in $orderby (same family of builds
+    // breaks the $filter) — retry unordered rather than returning nothing.
     raw = await fetchPages('/api/AlertService/Alerts?$top=500');
   }
   return raw.map((a) => ({
