@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { BadgeCheck, ShieldX, ShieldAlert, Shield, ShieldCheck, FileStack } from 'lucide-react';
+import { BadgeCheck, ShieldX, ShieldAlert, Shield, ShieldCheck, FileStack, Download } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -73,6 +73,31 @@ export default function DellSupportPage() {
     [current, bucketKey, activeBucket]
   );
 
+  // CSV of every service tag's most current agreement — the table's columns.
+  const exportCsv = () => {
+    const esc = (v) => {
+      const t = v == null ? '' : String(v);
+      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const header = ['Hostname', 'Service Tag', 'Model', 'Service Level', 'Starts', 'Ends', 'Days Left', 'OME Instance'];
+    const lines = [header.join(',')];
+    for (const w of current) {
+      lines.push([w.device_name, w.service_tag, w.device_model, w.service_level,
+        w.start_date ? String(w.start_date).slice(0, 10) : '',
+        w.end_date ? String(w.end_date).slice(0, 10) : '',
+        w.days_remaining ?? '', w.ome_name].map(esc).join(','));
+    }
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dell-support-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const ctl = useTableControls(filtered, {
     searchKeys: ['device_name', 'service_tag', 'device_model', 'service_level', 'ome_name'],
     defaultSortKey: 'days_remaining', defaultSortDir: 'asc',
@@ -83,6 +108,10 @@ export default function DellSupportPage() {
     <div className="animate-fade-in">
       <PageHeader icon={BadgeCheck} title="Support" description="Warranty and support-contract runway across the Dell estate — click a tile to filter">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <button onClick={exportCsv} disabled={!current.length}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
+          <Download size={13} /> Export
+        </button>
         <RefreshButton onClick={load} />
       </PageHeader>
 
