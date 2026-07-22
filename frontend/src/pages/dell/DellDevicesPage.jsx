@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download } from 'lucide-react';
+import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
@@ -45,7 +45,9 @@ const Fact = ({ label, value }) => (
 const KIND_META = {
   processor: { label: 'Processors', icon: Cpu },
   memory: { label: 'Memory', icon: MemoryStick },
-  disk: { label: 'Disks', icon: HardDrive },
+  raid: { label: 'RAID Controllers', icon: Layers },
+  vdisk: { label: 'Virtual Disks', icon: Database },
+  disk: { label: 'Physical Disks', icon: HardDrive },
   nic: { label: 'Network Interfaces', icon: Network },
   psu: { label: 'Power Supplies', icon: Plug },
   os: { label: 'Operating System', icon: MonitorSmartphone },
@@ -76,6 +78,9 @@ function ComponentSection({ kind, rows }) {
                   {c.size_bytes ? fmtBytes(c.size_bytes) : ''}{c.size_bytes && c.speed ? ' · ' : ''}{c.speed || (c.size_bytes ? '' : '—')}
                   {kind === 'processor' && c.extra?.cores ? ` · ${c.extra.cores}c` : ''}
                   {kind === 'disk' && c.extra?.mediaType ? ` · ${c.extra.mediaType}` : ''}
+                  {kind === 'disk' && c.extra?.raidStatus ? ` · ${c.extra.raidStatus}` : ''}
+                  {kind === 'vdisk' && c.extra?.controller ? ` · on ${c.extra.controller}` : ''}
+                  {kind === 'raid' && c.extra?.firmware ? ` · fw ${c.extra.firmware}` : ''}
                 </td>
                 <td className="py-1.5 pr-3 text-ink-faint tnum">{c.serial || '—'}</td>
                 <td className="py-1.5 pr-3">{c.status ? <Badge tone={healthTone(c.status)}>{c.status}</Badge> : <span className="text-ink-faint">—</span>}</td>
@@ -146,7 +151,7 @@ export function DeviceDetailModal({ deviceId, onClose }) {
             </div>
           )}
 
-          {['processor', 'memory', 'disk', 'nic', 'psu', 'os'].map((k) => (
+          {['processor', 'memory', 'raid', 'vdisk', 'disk', 'nic', 'psu', 'os'].map((k) => (
             <ComponentSection key={k} kind={k} rows={byKind(k)} />
           ))}
 
