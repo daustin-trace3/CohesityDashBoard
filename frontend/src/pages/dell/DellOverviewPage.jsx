@@ -20,6 +20,8 @@ export default function DellOverviewPage() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  // Busiest Servers legend toggles — ranking follows whichever metrics are shown.
+  const [utilShow, setUtilShow] = useState({ cpu: true, mem: true });
 
   const load = useCallback(() => client.get('/dell/overview')
     .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
@@ -73,12 +75,17 @@ export default function DellOverviewPage() {
       borderWidth: 2, pointRadius: 0, tension: 0.3, spanGaps: true,
     })),
   };
-  const topUtil = data?.topUtil || [];
+  // Rank by the visible metric; with both shown, by the most constrained
+  // resource (max of the two) so a memory-bound box isn't buried by its idle CPU.
+  const utilRank = (d) => (utilShow.cpu && utilShow.mem
+    ? Math.max(d.cpu_util_pct ?? 0, d.mem_util_pct ?? 0)
+    : utilShow.cpu ? (d.cpu_util_pct ?? 0) : (d.mem_util_pct ?? 0));
+  const topUtil = [...(data?.topUtil || [])].sort((a, b) => utilRank(b) - utilRank(a)).slice(0, 10);
   const utilBar = {
     labels: topUtil.map((d) => String(d.name || '').split('.')[0]),
     datasets: [
-      { label: 'CPU %', data: topUtil.map((d) => d.cpu_util_pct), backgroundColor: '#007DB8', borderRadius: 2 },
-      { label: 'Memory %', data: topUtil.map((d) => d.mem_util_pct), backgroundColor: '#4ED4B8', borderRadius: 2 },
+      { label: 'CPU %', data: topUtil.map((d) => d.cpu_util_pct), backgroundColor: '#007DB8', borderRadius: 2, hidden: !utilShow.cpu },
+      { label: 'Memory %', data: topUtil.map((d) => d.mem_util_pct), backgroundColor: '#4ED4B8', borderRadius: 2, hidden: !utilShow.mem },
     ],
   };
 
@@ -201,14 +208,21 @@ export default function DellOverviewPage() {
 
         <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-1">Busiest Servers</p>
-          <p className="text-[11px] text-ink-faint mb-3">Top 10 by CPU utilization — rebalance or right-size candidates.</p>
+          <p className="text-[11px] text-ink-faint mb-3">Top 10 by most-constrained resource — toggle a legend metric to re-rank. Rebalance or right-size candidates.</p>
           {data == null ? <LoadingPanel label="Loading…" height={170} /> : topUtil.length === 0 ? (
             <div className="text-sm text-ink-muted py-8 text-center">No utilization data — needs the Power Manager plugin.</div>
           ) : (
             <div className="h-[190px]">
               <Bar data={utilBar} options={{
                 indexAxis: 'y', maintainAspectRatio: false, animation: false,
-                plugins: { legend: { position: 'bottom', labels: { color: '#E5E5E5', boxWidth: 10, font: { size: 10 } } } },
+                plugins: { legend: { position: 'bottom', labels: { color: '#E5E5E5', boxWidth: 10, font: { size: 10 } },
+                  onClick: (e, item) => {
+                    const key = item.text.startsWith('CPU') ? 'cpu' : 'mem';
+                    setUtilShow((prev) => {
+                      const next = { ...prev, [key]: !prev[key] };
+                      return next.cpu || next.mem ? next : prev; // never hide both
+                    });
+                  } } },
                 scales: { x: { ticks: { ...tickStyle, callback: (v) => `${v}%` }, grid: gridStyle, max: 100, beginAtZero: true }, y: { ticks: { ...tickStyle, font: { size: 9 } }, grid: { display: false } } },
               }} />
             </div>
