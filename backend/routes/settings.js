@@ -97,7 +97,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, dnsServer,
+      platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, dnsServer,
     } = req.body || {};
     if (llmEstateContext !== undefined) {
       setSetting('llm_estate_context', String(llmEstateContext).slice(0, 4000));
@@ -143,6 +143,10 @@ router.put('/', (req, res, next) => {
     if (platformVcenterEnabled !== undefined) {
       setSetting('platform_vcenter_enabled', platformVcenterEnabled ? '1' : '0');
       applyPlatformEnabled('vcenter', !!platformVcenterEnabled);
+    }
+    if (platformDellEnabled !== undefined) {
+      setSetting('platform_dell_enabled', platformDellEnabled ? '1' : '0');
+      applyPlatformEnabled('dell', !!platformDellEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));

@@ -17,6 +17,7 @@ import pureMigrations from '../db/migrations/pure.js';
 import netappMigrations from '../db/migrations/netapp.js';
 import zertoMigrations from '../db/migrations/zerto.js';
 import vcenterMigrations from '../db/migrations/vcenter.js';
+import dellMigrations from '../db/migrations/dell.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -150,6 +151,7 @@ function buildNewDb() {
   runMigrations(db, 'netapp', netappMigrations);
   runMigrations(db, 'zerto', zertoMigrations);
   runMigrations(db, 'vcenter', vcenterMigrations);
+  runMigrations(db, 'dell', dellMigrations);
   return db;
 }
 
@@ -187,6 +189,8 @@ const NEW_TABLES = [
   'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras',
   'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vms',
   'vcenter_networks', 'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history',
+  'dell_ome_instances', 'dell_devices', 'dell_components', 'dell_alerts',
+  'dell_warranties', 'dell_firmware_compliance', 'dell_metrics_history',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy
@@ -269,6 +273,8 @@ describe('runMigrations', () => {
       runMigrations(db, 'netapp', netappMigrations);
       runMigrations(db, 'zerto', zertoMigrations);
       runMigrations(db, 'vcenter', vcenterMigrations);
+      runMigrations(db, 'dell', dellMigrations);
+  runMigrations(db, 'dell', dellMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

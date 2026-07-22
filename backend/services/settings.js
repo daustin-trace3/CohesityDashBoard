@@ -15,6 +15,8 @@ const DEFAULTS = {
   platform_netapp_enabled: '0',
   platform_zerto_enabled: '0',
   platform_vcenter_enabled: '0',
+  platform_dell_enabled: '0',
+  dell_warranty_warn_days: '90',
   zerto_poll_interval_minutes: '15',
   vcenter_cert_warn_days: '60',
   dns_server: '',
@@ -111,6 +113,7 @@ function getPlatformSettings() {
     platformNetappEnabled: getSetting('platform_netapp_enabled') === '1',
     platformZertoEnabled: getSetting('platform_zerto_enabled') === '1',
     platformVcenterEnabled: getSetting('platform_vcenter_enabled') === '1',
+    platformDellEnabled: getSetting('platform_dell_enabled') === '1',
     dnsServer: getSetting('dns_server') || '',
   };
 }

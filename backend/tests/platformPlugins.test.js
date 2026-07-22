@@ -22,6 +22,7 @@ const registry = require('../core/registry');
 const pureManifest = require('../platforms/pure');
 const netappManifest = require('../platforms/netapp');
 const zertoManifest = require('../platforms/zerto');
+const dellManifest = require('../platforms/dell');
 const { createApp } = require('../app');
 
 const API_KEY = 'test-api-key';
@@ -33,6 +34,7 @@ beforeEach(() => {
   registry.registerPlugin(pureManifest);
   registry.registerPlugin(netappManifest);
   registry.registerPlugin(zertoManifest);
+  registry.registerPlugin(dellManifest);
   app = createApp({ licenseGate: (req, res, next) => next() });
 });
 
@@ -103,6 +105,34 @@ describe('platform plugin manifests (pure, netapp)', () => {
 
     registry.setEnabled('zerto', true);
     const enabledRes = await get('/api/zerto/sites');
+    expect(enabledRes.status).toBe(200);
+  });
+
+  it('dell: dispatcher 200, disabled -> 404 platform_disabled, /status dell section', async () => {
+    const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
+
+    const instancesRes = await get('/api/dell/instances');
+    expect(instancesRes.status).toBe(200);
+    expect(instancesRes.body).toEqual([]);
+
+    const overviewRes = await get('/api/dell/overview');
+    expect(overviewRes.status).toBe(200);
+    expect(Array.isArray(overviewRes.body.instances)).toBe(true);
+    expect(Array.isArray(overviewRes.body.issues)).toBe(true);
+    expect(overviewRes.body.warranty.warnDays).toBeTypeOf('number');
+
+    registry.setEnabled('dell', false);
+    const disabledRes = await get('/api/dell/instances');
+    expect(disabledRes.status).toBe(404);
+    expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
+
+    const statusRes = await get('/api/poller/status');
+    expect(statusRes.status).toBe(200);
+    expect(statusRes.body.dell).toBeTypeOf('object');
+    expect(statusRes.body.dell.enabled).toBe(false);
+
+    registry.setEnabled('dell', true);
+    const enabledRes = await get('/api/dell/instances');
     expect(enabledRes.status).toBe(200);
   });
 

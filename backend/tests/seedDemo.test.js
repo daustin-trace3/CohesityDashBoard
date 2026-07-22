@@ -96,9 +96,9 @@ describe('seedDemo.js', () => {
 
   it('seeds platform flags as string "1"', () => {
     const rows = db.prepare(
-      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled')"
+      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled')"
     ).all();
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
     for (const row of rows) {
       expect(row.value).toBe('1');
     }
@@ -150,6 +150,23 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE esx_version IS NULL OR bios_version IS NULL').get().c).toBe(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vcenters WHERE version IS NULL').get().c).toBe(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_metrics_history').get().c).toBe(8 * 31);
+  });
+
+  it('seeds the dell platform with devices, failing parts, warranty runway and firmware drift', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_ome_instances').get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_devices').get().c).toBeGreaterThan(100);
+    expect(db.prepare("SELECT COUNT(*) c FROM dell_components WHERE kind = 'disk'").get().c).toBeGreaterThan(300);
+    // Governance feeds: at least one failing component, expiring + expired warranties, firmware drift.
+    expect(db.prepare("SELECT COUNT(*) c FROM dell_components WHERE status IN ('critical','warning')").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_warranties WHERE days_remaining <= 0').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_warranties WHERE days_remaining > 0 AND days_remaining <= 90').get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM dell_firmware_compliance WHERE status = 'noncompliant'").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_alerts').get().c).toBeGreaterThan(50);
+    // Power Manager metrics on DC1 only — DC2 shows the plugin-absent experience.
+    const pm = db.prepare(`SELECT o.name, COUNT(d.power_w) n FROM dell_devices d JOIN dell_ome_instances o ON o.id = d.ome_id GROUP BY o.name`).all();
+    expect(pm.find((r) => r.name === 'DC1 OME').n).toBeGreaterThan(0);
+    expect(pm.find((r) => r.name === 'DC2 OME').n).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_metrics_history').get().c).toBe(2 * 31);
   });
 
   it('seeds vcenter governance + network data', () => {

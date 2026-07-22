@@ -16,6 +16,7 @@ const pureManifest = require('./platforms/pure');
 const netappManifest = require('./platforms/netapp');
 const zertoManifest = require('./platforms/zerto');
 const vcenterManifest = require('./platforms/vcenter');
+const dellManifest = require('./platforms/dell');
 
 // Auth boot work (contract C8.3): prune stale sessions and (re-)check the
 // first-run claim token. authService already runs this once at module load
@@ -32,7 +33,7 @@ registry.init();
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
 // (C9.5) gates enabling regardless of the stored flag.
-const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled } = getPlatformSettings();
+const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled } = getPlatformSettings();
 registry.registerPlugin(pureManifest);
 registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
 registry.registerPlugin(netappManifest);
@@ -41,6 +42,8 @@ registry.registerPlugin(zertoManifest);
 registry.setEnabled('zerto', platformZertoEnabled && registry.isEntitled('zerto'));
 registry.registerPlugin(vcenterManifest);
 registry.setEnabled('vcenter', platformVcenterEnabled && registry.isEntitled('vcenter'));
+registry.registerPlugin(dellManifest);
+registry.setEnabled('dell', platformDellEnabled && registry.isEntitled('dell'));
 
 // Scan and register any installed (non-built-in) plugins left in plugins/
 // after the boot swap above.
