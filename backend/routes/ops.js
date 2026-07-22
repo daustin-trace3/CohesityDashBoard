@@ -262,8 +262,11 @@ router.get('/summary', async (req, res) => {
     try {
       const s = await p.fn();
       if (!s) continue;
+      // Zero objects with nothing wrong means no source is connected yet —
+      // report 'unknown' (NO DATA) rather than a hollow green.
       const health = s.exceptions.some((e) => e.severity === 'critical') ? 'critical'
-        : s.exceptions.some((e) => e.severity === 'warning') ? 'warning' : 'ok';
+        : s.exceptions.some((e) => e.severity === 'warning') ? 'warning'
+        : num(s.objects) === 0 ? 'unknown' : 'ok';
       cards.push({ ...base, ...s, health });
     } catch (err) {
       cards.push({ ...base, health: 'unknown', objects: 0, headline: [], exceptions: [], spark: null, error: true });
