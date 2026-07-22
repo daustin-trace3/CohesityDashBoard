@@ -2,16 +2,16 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { BadgeCheck, ShieldX, ShieldAlert, Shield, ShieldCheck, FileStack } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { PageHeader, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
 
-// Tile buckets — predicates over a service tag's BEST agreement, so a tag
-// with an expired base warranty under an active renewal counts as covered.
-// `warn` upper bound comes from the configurable warranty threshold.
+// Tile buckets — predicates over a service tag's CURRENT (best) agreement.
+// The table shows one row per tag; older/expired agreements stay visible in
+// the device detail popup. `warn` comes from the configurable threshold.
 const BUCKETS = (warnDays) => ([
-  { key: 'all', label: 'Total Contracts', icon: FileStack, tone: 'brand', match: () => true,
-    sub: 'all warranty records' },
+  { key: 'all', label: 'Service Tags', icon: FileStack, tone: 'brand', match: () => true,
+    sub: 'devices with warranty records' },
   { key: 'expired', label: 'Expired', icon: ShieldX, tone: 'crit',
     match: (d) => d != null && d <= 0, sub: 'tags with no active support' },
   { key: 'warn', label: `Expiring ≤ ${warnDays}d`, icon: ShieldAlert, tone: 'warn',
@@ -22,11 +22,6 @@ const BUCKETS = (warnDays) => ([
     match: (d) => d != null && d > 365, sub: 'covered beyond a year' },
 ]);
 
-// Tag-level coverage from the best agreement — shown per row so an expired
-// contract under an active renewal reads as covered.
-const coverage = (best, warnDays) => (best == null ? { label: '—', tone: 'neutral' }
-  : best <= 0 ? { label: 'Expired', tone: 'crit' }
-    : best <= warnDays ? { label: 'Expiring', tone: 'warn' } : { label: 'Covered', tone: 'ok' });
 
 function Tile({ bucket, count, active, onClick }) {
   const Icon = bucket.icon;
@@ -62,14 +57,21 @@ export default function DellSupportPage() {
   const rows = data?.rows || [];
   const buckets = useMemo(() => BUCKETS(warnDays), [warnDays]);
   const activeBucket = buckets.find((b) => b.key === bucketKey) || buckets[0];
-  const bestOf = (w) => w.best_days_remaining ?? w.days_remaining;
-  // Filter/count by the TAG's best agreement; the table then lists every
-  // contract belonging to the tags in the bucket.
+  // One row per service tag: its current (best) agreement. Superseded and
+  // expired agreements remain visible in the device detail popup.
+  const current = useMemo(() => {
+    const byTag = new Map();
+    for (const w of rows) {
+      const k = `${w.ome_id}|${w.service_tag}`;
+      const prev = byTag.get(k);
+      if (!prev || (w.days_remaining ?? -Infinity) > (prev.days_remaining ?? -Infinity)) byTag.set(k, w);
+    }
+    return [...byTag.values()];
+  }, [rows]);
   const filtered = useMemo(
-    () => (bucketKey === 'all' ? rows : rows.filter((w) => activeBucket.match(bestOf(w)))),
-    [rows, bucketKey, activeBucket]
+    () => (bucketKey === 'all' ? current : current.filter((w) => activeBucket.match(w.days_remaining))),
+    [current, bucketKey, activeBucket]
   );
-  const tagCount = (b) => new Set(rows.filter((w) => b.match(bestOf(w))).map((w) => `${w.ome_id}|${w.service_tag}`)).size;
 
   const ctl = useTableControls(filtered, {
     searchKeys: ['service_tag', 'device_model', 'service_level', 'ome_name'],
@@ -87,7 +89,7 @@ export default function DellSupportPage() {
       <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
         {buckets.map((b) => (
           <Tile key={b.key} bucket={b}
-            count={b.key === 'all' ? rows.length : tagCount(b)}
+            count={b.key === 'all' ? current.length : current.filter((w) => b.match(w.days_remaining)).length}
             active={bucketKey === b.key}
             onClick={() => setBucketKey(bucketKey === b.key ? 'all' : b.key)} />
         ))}
@@ -95,8 +97,8 @@ export default function DellSupportPage() {
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">
-          {activeBucket.key === 'all' ? 'All Contracts' : activeBucket.label}
-          <span className="text-ink-faint font-normal"> · {fmtNum(filtered.length)} record(s)</span>
+          {activeBucket.key === 'all' ? 'Current Agreements' : activeBucket.label}
+          <span className="text-ink-faint font-normal"> · {fmtNum(filtered.length)} service tag(s) · superseded agreements show in the device detail</span>
         </p>
         <TableControls ctl={ctl} rows={filtered} searchPlaceholder="Filter by service tag, model, service level…"
           filters={[
@@ -120,7 +122,6 @@ export default function DellSupportPage() {
                 <SortTh k="start_date" label="Starts" ctl={ctl} />
                 <SortTh k="end_date" label="Ends" ctl={ctl} />
                 <SortTh k="days_remaining" label="Days Left" ctl={ctl} align="right" />
-                <SortTh k="best_days_remaining" label="Coverage" ctl={ctl} />
                 <SortTh k="ome_name" label="OME" ctl={ctl} />
               </tr></thead>
               <tbody>
@@ -134,7 +135,6 @@ export default function DellSupportPage() {
                     <td className={`py-2 pr-3 text-right tnum font-semibold ${w.days_remaining == null ? 'text-ink-faint' : w.days_remaining <= 0 ? 'text-status-crit' : w.days_remaining <= warnDays ? 'text-status-warn' : 'text-ink'}`}>
                       {w.days_remaining == null ? '—' : w.days_remaining <= 0 ? 'expired' : fmtNum(w.days_remaining)}
                     </td>
-                    <td className="py-2 pr-3">{(() => { const c = coverage(bestOf(w), warnDays); return <Badge tone={c.tone}>{c.label}</Badge>; })()}</td>
                     <td className="py-2 pr-3 text-ink-muted">{w.ome_name}</td>
                   </tr>
                 ))}

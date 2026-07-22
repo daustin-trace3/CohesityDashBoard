@@ -106,7 +106,10 @@ function seedDell(db, { now, encrypt }) {
       const memBytes = m.memGb * 1024 ** 3;
       const diskCount = randInt(rng, 4, 12);
       const diskEach = pick(rng, [960e9, 1.92e12, 3.84e12, 7.68e12]);
-      const hasPm = inst.powerManager && !powerOff && !disconnected;
+      // Base OME exposes power/thermal per device; CPU/memory utilization
+      // additionally needs the Power Manager plugin (DC1 only).
+      const metered = !powerOff && !disconnected;
+      const hasPm = inst.powerManager && metered;
 
       devStmt.run(omeId, deviceId, tag, name, m.model, 'Server',
         null, health, health === 'ok' ? 1000 : health === 'warning' ? 3000 : 4000,
@@ -115,8 +118,8 @@ function seedDell(db, { now, encrypt }) {
         `10.${inst.name.includes('DC1') ? 40 : 41}.${randInt(rng, 1, 8)}.${randInt(rng, 10, 250)}`,
         `iDRAC ${pick(rng, ['7.10.30.00', '7.00.60.00', '6.10.80.00'])}`,
         m.sockets, cores, memBytes, diskCount * diskEach,
-        hasPm ? randInt(rng, 220, 640) : null,
-        hasPm ? randFloat(rng, 18, 27) : null,
+        metered ? randInt(rng, 220, 640) : null,
+        metered ? randFloat(rng, 18, 27) : null,
         hasPm ? randFloat(rng, 4, 78) : null,
         hasPm ? randFloat(rng, 20, 85) : null,
         nowIso);

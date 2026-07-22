@@ -170,10 +170,12 @@ describe('seedDemo.js', () => {
       HAVING MAX(days_remaining) <= 0)`).get().c).toBeGreaterThan(0);
     expect(db.prepare("SELECT COUNT(*) c FROM dell_firmware_compliance WHERE status = 'noncompliant'").get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM dell_alerts').get().c).toBeGreaterThan(50);
-    // Power Manager metrics on DC1 only — DC2 shows the plugin-absent experience.
-    const pm = db.prepare(`SELECT o.name, COUNT(d.power_w) n FROM dell_devices d JOIN dell_ome_instances o ON o.id = d.ome_id GROUP BY o.name`).all();
-    expect(pm.find((r) => r.name === 'DC1 OME').n).toBeGreaterThan(0);
-    expect(pm.find((r) => r.name === 'DC2 OME').n).toBe(0);
+    // Base power/thermal everywhere; CPU/mem utilization (Power Manager) on DC1 only.
+    const pm = db.prepare(`SELECT o.name, COUNT(d.power_w) pw, COUNT(d.cpu_util_pct) util
+      FROM dell_devices d JOIN dell_ome_instances o ON o.id = d.ome_id GROUP BY o.name`).all();
+    expect(pm.find((r) => r.name === 'DC1 OME').util).toBeGreaterThan(0);
+    expect(pm.find((r) => r.name === 'DC2 OME').util).toBe(0);
+    expect(pm.find((r) => r.name === 'DC2 OME').pw).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM dell_metrics_history').get().c).toBe(2 * 31);
   });
 

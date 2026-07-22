@@ -391,6 +391,33 @@ async function fetchDeviceMetrics(ome, deviceId) {
   };
 }
 
+/**
+ * Base-OME power/thermal snapshot (NO Power Manager license needed — this is
+ * what the console shows under Device > Server). Field names vary slightly
+ * across OME releases, so parse tolerantly. Utilization is NOT here — that
+ * genuinely needs the Power Manager plugin.
+ */
+async function fetchDevicePowerThermal(ome, deviceId) {
+  const firstNum = (obj, keys) => {
+    for (const k of keys) {
+      const v = num(obj?.[k]);
+      if (v != null) return v;
+    }
+    return null;
+  };
+  let powerW = null;
+  let inletTempC = null;
+  try {
+    const p = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/Power`);
+    powerW = firstNum(p, ['power', 'Power', 'instantaneousPower', 'InstantaneousPower', 'instantPower']);
+  } catch { /* endpoint absent on this device/OME release */ }
+  try {
+    const t = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/Temperature`);
+    inletTempC = firstNum(t, ['instantaneousTemperature', 'InstantaneousTemperature', 'temperature', 'Temperature', 'avgTemperature']);
+  } catch { /* endpoint absent */ }
+  return { powerW, inletTempC };
+}
+
 // ── Connection test ─────────────────────────────────────────────────────────
 
 async function testConnection(candidate) {
@@ -409,5 +436,5 @@ async function testConnection(candidate) {
 module.exports = {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, fetchWarranties, fetchFirmwareCompliance,
-  fetchDeviceMetrics, testConnection, invalidateSession,
+  fetchDeviceMetrics, fetchDevicePowerThermal, testConnection, invalidateSession,
 };
