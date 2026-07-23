@@ -11,7 +11,8 @@ const validate = (req, res, next) => {
   next();
 };
 
-/** GET /api/gflags — current gflag state across all direct clusters. */
+/** GET /api/gflags — current gflag state across all clusters
+ *  (direct or Helios-proxied — Helios passes the v1 gflag call through). */
 router.get('/', (req, res, next) => {
   try {
     res.json(getGflags());
@@ -37,9 +38,8 @@ router.post('/refresh', [
 ], validate, async (req, res, next) => {
   try {
     if (req.query.clusterId) {
-      const cluster = db.prepare("SELECT * FROM clusters WHERE id = ? AND connection_type = 'direct'")
-        .get(req.query.clusterId);
-      if (!cluster) return res.status(404).json({ error: 'Direct-connected cluster not found.' });
+      const cluster = db.prepare('SELECT * FROM clusters WHERE id = ?').get(req.query.clusterId);
+      if (!cluster) return res.status(404).json({ error: 'Cluster not found.' });
       const result = await refreshGflags(cluster);
       return res.json({ results: [{ clusterId: cluster.id, name: cluster.name, ...result }] });
     }
