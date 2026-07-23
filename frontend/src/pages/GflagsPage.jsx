@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Flag, ChevronDown, ChevronRight, Download, History, ListTree } from 'lucide-react';
+import { Flag, ChevronDown, ChevronRight, Download, History, ListTree, Columns3 } from 'lucide-react';
 import client from '../api/client';
 import {
   PageHeader, Panel, Badge, LoadingPanel, RefreshButton, SyncStatusChip, LastUpdated,
@@ -23,6 +23,10 @@ function fmtTs(ts) {
 }
 
 const CHANGE_TONE = { added: 'ok', modified: 'warn', removed: 'neutral' };
+
+// Display-only: Cohesity service names come through as kBridge/kMagneto — drop
+// the Hungarian k. Raw names stay in the DB and exports (support needs exact).
+const serviceLabel = (s) => String(s || '').replace(/^k(?=[A-Z])/, '');
 
 function ServiceGroup({ service, flags, defaultOpen }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -83,7 +87,7 @@ function CurrentTab({ data, clusterId }) {
   const groups = useMemo(() => {
     const map = new Map();
     for (const f of flags) {
-      const key = clusterId ? f.serviceName : `${f.clusterName} · ${f.serviceName}`;
+      const key = clusterId ? serviceLabel(f.serviceName) : `${f.clusterName} · ${serviceLabel(f.serviceName)}`;
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(f);
     }
@@ -146,7 +150,12 @@ function ChangesTab({ clusterId }) {
       .catch(() => setChanges([]));
   }, [clusterId, days]);
 
-  const ctl = useTableControls(changes || [], {
+  const rows = useMemo(
+    () => (changes || []).map((c) => ({ ...c, serviceName: serviceLabel(c.serviceName) })),
+    [changes]
+  );
+
+  const ctl = useTableControls(rows, {
     searchKeys: ['flagName', 'serviceName', 'clusterName', 'sourceReason', 'oldValue', 'newValue'],
     defaultSortKey: 'detectedAt',
     defaultSortDir: 'desc',
@@ -164,7 +173,7 @@ function ChangesTab({ clusterId }) {
           {DAY_CHOICES.map((d) => <option key={d.v} value={d.v}>{d.label}</option>)}
         </select>
       }>
-      <TableControls ctl={ctl} rows={changes} searchPlaceholder="Search flag, reason, value…"
+      <TableControls ctl={ctl} rows={rows} searchPlaceholder="Search flag, reason, value…"
         filters={[{ k: 'clusterName', label: 'clusters' }, { k: 'serviceName', label: 'services' }, { k: 'changeType', label: 'change types' }]} />
       {ctl.rows.length === 0 ? (
         <p className="text-sm text-ink-muted py-6 text-center">No gflag changes recorded in this window.</p>
@@ -209,6 +218,142 @@ function ChangesTab({ clusterId }) {
         </div>
       )}
     </Panel>
+  );
+}
+
+const clusterSelectCls = 'bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-sm text-ink focus:border-brand/60 outline-none cursor-pointer';
+
+function CompareTab({ data }) {
+  const clusters = data?.clusters || [];
+  const [primary, setPrimary] = useState(clusters[0]?.id || 0);
+  const [others, setOthers] = useState([0, 0]); // up to two comparison clusters; 0 = none
+  const [diffOnly, setDiffOnly] = useState(true);
+  const [q, setQ] = useState('');
+
+  // Dedupe in case a comparison pick later becomes the primary.
+  const selected = [...new Set([primary, ...others].filter(Boolean))];
+  const selectedNames = selected.map((id) => clusters.find((c) => c.id === id)?.name || `#${id}`);
+
+  const rows = useMemo(() => {
+    if (selected.length < 2) return [];
+    const byCluster = new Map(selected.map((id) => [id, new Map()]));
+    for (const f of data?.gflags || []) {
+      const m = byCluster.get(f.clusterId);
+      if (m) m.set(`${f.serviceName} ${f.flagName}`, f);
+    }
+    // Union of flags set on ANY selected cluster.
+    const keys = new Map();
+    for (const m of byCluster.values()) {
+      for (const [k, f] of m) if (!keys.has(k)) keys.set(k, f);
+    }
+    const out = [];
+    for (const [k, sample] of keys) {
+      const values = selected.map((id) => byCluster.get(id).get(k)?.flagValue);
+      const present = values.filter((v) => v !== undefined);
+      const same = present.length === selected.length && present.every((v) => v === present[0]);
+      out.push({
+        key: k,
+        service: sample.serviceName,
+        flag: sample.flagName,
+        reason: sample.reason,
+        values,
+        same,
+      });
+    }
+    const term = q.trim().toLowerCase();
+    return out
+      .filter((r) => !diffOnly || !r.same)
+      .filter((r) => !term
+        || r.flag.toLowerCase().includes(term)
+        || String(r.reason || '').toLowerCase().includes(term)
+        || r.service.toLowerCase().includes(term))
+      .sort((a, b) => (a.same === b.same ? (a.service + a.flag).localeCompare(b.service + b.flag) : a.same ? 1 : -1));
+  }, [data, selected.join(','), diffOnly, q]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const diffCount = useMemo(() => rows.filter((r) => !r.same).length, [rows]);
+
+  const setOther = (idx, val) => setOthers((o) => o.map((v, i) => (i === idx ? val : v)));
+  const otherOptions = (idx) => clusters.filter(
+    (c) => c.id !== primary && c.id !== others[(idx + 1) % 2]
+  );
+
+  return (
+    <div className="space-y-3">
+      <Panel title="Cluster comparison" icon={Columns3}>
+        <div className="flex flex-wrap items-center gap-2 mb-1">
+          <label className="text-xs text-ink-faint">Primary</label>
+          <select value={primary} onChange={(e) => setPrimary(Number(e.target.value))} className={clusterSelectCls}>
+            {clusters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <label className="text-xs text-ink-faint ml-2">Compare with</label>
+          {[0, 1].map((idx) => (
+            <select key={idx} value={others[idx]} onChange={(e) => setOther(idx, Number(e.target.value))} className={clusterSelectCls}>
+              <option value={0}>{idx === 0 ? 'Select cluster…' : 'Add another…'}</option>
+              {otherOptions(idx).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          ))}
+          <label className="ml-auto flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer select-none">
+            <input type="checkbox" checked={diffOnly} onChange={(e) => setDiffOnly(e.target.checked)} className="accent-[#6CB33F]" />
+            Differences only
+          </label>
+        </div>
+        {selected.length < 2 ? (
+          <p className="text-sm text-ink-muted py-6 text-center">Pick at least one cluster to compare against the primary.</p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search flag, service, or reason…"
+                className="w-full max-w-xs bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-1.5 text-sm text-ink focus:border-brand/60 outline-none"
+              />
+              <span className="text-[11px] text-ink-faint tnum ml-auto">
+                {rows.length} flag{rows.length === 1 ? '' : 's'}{diffOnly ? ' differing' : ` (${diffCount} differing)`}
+              </span>
+            </div>
+            {rows.length === 0 ? (
+              <p className="text-sm text-ink-muted py-6 text-center">
+                {diffOnly ? 'No differences between the selected clusters.' : 'No flags set on the selected clusters.'}
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-[11px] text-ink-faint uppercase tracking-wide border-b border-cohesity-border">
+                      <th className="text-left py-2 pr-3">Service</th>
+                      <th className="text-left py-2 pr-3">Flag</th>
+                      {selectedNames.map((n, i) => (
+                        <th key={i} className="text-left py-2 pr-3">
+                          {n}{i === 0 && <span className="normal-case text-ink-faint font-normal ml-1">(primary)</span>}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => (
+                      <tr key={r.key} className="border-b border-cohesity-border/50 last:border-0 align-top">
+                        <td className="py-2 pr-3 font-mono text-xs text-ink-muted whitespace-nowrap">{serviceLabel(r.service)}</td>
+                        <td className="py-2 pr-3 font-mono text-xs text-ink break-all" title={r.reason || undefined}>{r.flag}</td>
+                        {r.values.map((v, i) => (
+                          <td key={i} className={`py-2 pr-3 font-mono text-xs break-all ${
+                            v === undefined ? 'text-ink-faint italic'
+                              : r.same ? 'text-ink'
+                              : v === r.values[0] ? 'text-ink' : 'text-status-warn'
+                          }`}>
+                            {v === undefined ? 'not set' : (v ?? '—')}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </Panel>
+    </div>
   );
 }
 
@@ -323,10 +468,11 @@ export default function GflagsPage() {
           <div className="flex items-center gap-2 mb-4">
             {tabBtn('current', 'Current Flags', ListTree)}
             {tabBtn('changes', 'Changes', History)}
+            {tabBtn('compare', 'Compare', Columns3)}
           </div>
-          {tab === 'current'
-            ? <CurrentTab data={data} clusterId={clusterId} />
-            : <ChangesTab clusterId={clusterId} />}
+          {tab === 'current' && <CurrentTab data={data} clusterId={clusterId} />}
+          {tab === 'changes' && <ChangesTab clusterId={clusterId} />}
+          {tab === 'compare' && <CompareTab data={data} />}
         </>
       )}
     </div>
