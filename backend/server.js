@@ -8,6 +8,7 @@ const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
+const { initGflags } = require('./services/gflags');
 const { initLicense, getLicenseStatus } = require('./services/license');
 const { getPlatformSettings } = require('./services/settings');
 const { isDemo } = require('./services/demoMode');
@@ -91,6 +92,7 @@ if (require.main === module) {
       }
       initLicensing();
       initViews();
+      initGflags();
     } else {
       logger.info('[Boot] Pollers run in the separate poller process (backend/pollerProcess.js, pm2: cohesity-poller). Set RUN_POLLERS_INLINE=true to run them in this process.');
     }

@@ -357,6 +357,17 @@ async function resolveAlerts(cluster, alertIdList, resolutionText = 'Resolved fr
   return data;
 }
 
+/**
+ * Fetch configured gflags from a direct-connected cluster. Private v1 API —
+ * not available via Helios; returns only flags explicitly set on the cluster
+ * (deviations from default), grouped by service.
+ */
+async function fetchGflags(cluster) {
+  const client = await getAuthenticatedClient(cluster);
+  const { data } = await client.get('/irisservices/api/v1/clusters/gflag');
+  return data;
+}
+
 module.exports = {
   getAuthenticatedClient,
   invalidateSession,
@@ -368,6 +379,7 @@ module.exports = {
   fetchNodesV2,
   fetchAlerts,
   resolveAlerts,
+  fetchGflags,
   fetchClusterStatus,
   fetchChassis,
   fetchProtectionRuns,

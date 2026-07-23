@@ -1,13 +1,14 @@
 import { lazy } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen, Layers,
+  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen, Layers, Flag,
 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('../../pages/Dashboard'));
 const AlertsPage = lazy(() => import('../../pages/AlertsPage'));
 const HardwarePage = lazy(() => import('../../pages/HardwarePage'));
 const ClusterManagement = lazy(() => import('../../pages/ClusterManagement'));
+const GflagsPage = lazy(() => import('../../pages/GflagsPage'));
 
 const navGroups = [
   {
@@ -36,6 +37,7 @@ const navGroups = [
     items: [
       { label: 'Clusters', route: '/cohesity/clusters', icon: Server, isActive: (p) => p.startsWith('/cohesity/clusters') },
       { label: 'Hardware', route: '/cohesity/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/cohesity/hardware') },
+      { label: 'GFlags', route: '/cohesity/gflags', icon: Flag, isActive: (p) => p.startsWith('/cohesity/gflags') },
     ],
   },
   {
@@ -65,5 +67,6 @@ export default {
     { path: 'cohesity/alerts', Component: AlertsPage },
     { path: 'cohesity/hardware', Component: HardwarePage },
     { path: 'cohesity/clusters', Component: ClusterManagement },
+    { path: 'cohesity/gflags', Component: GflagsPage },
   ],
 };

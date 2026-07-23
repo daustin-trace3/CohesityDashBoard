@@ -382,4 +382,40 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 8,
+    up(db) {
+      // Gflags set on direct-connected clusters (private v1 API). cluster_gflags
+      // holds current state (replaced wholesale per poll); gflag_changes is an
+      // append-only audit of diffs between polls, kept forever — its whole
+      // purpose is answering "when did this flag change" arbitrarily far back.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cluster_gflags (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          cluster_id        INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+          service_name      TEXT NOT NULL,
+          flag_name         TEXT NOT NULL,
+          flag_value        TEXT,
+          reason            TEXT,
+          source_timestamp  INTEGER,
+          captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cluster_gflags_key ON cluster_gflags(cluster_id, service_name, flag_name);
+        CREATE TABLE IF NOT EXISTS gflag_changes (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          cluster_id        INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+          service_name      TEXT NOT NULL,
+          flag_name         TEXT NOT NULL,
+          old_value         TEXT,
+          new_value         TEXT,
+          change_type       TEXT NOT NULL CHECK(change_type IN ('added','removed','modified')),
+          source_reason     TEXT,
+          source_timestamp  INTEGER,
+          detected_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_gflag_changes_cluster ON gflag_changes(cluster_id, detected_at);
+        CREATE INDEX IF NOT EXISTS idx_gflag_changes_flag ON gflag_changes(flag_name);
+      `);
+    },
+  },
 ];
