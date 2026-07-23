@@ -10,6 +10,7 @@ const pollerStatus = require('./pollerStatus');
 const { getSetting } = require('./settings');
 const {
   zertoConfigured, fetchSites, fetchSitesTopology, fetchVpgs, fetchAlerts, fetchProtectedVms,
+  fetchLicenses,
 } = require('./zertoApi');
 const logger = require('../utils/logger');
 
@@ -113,6 +114,26 @@ const replaceVras = db.transaction((topology) => {
   }
 });
 
+const replaceLicenses = db.transaction((licenses) => {
+  db.prepare('DELETE FROM zerto_licenses').run();
+  const stmt = db.prepare(`
+    INSERT INTO zerto_licenses (license_key, license_package, available_vms,
+      used_vms, is_shared, expiration_date, alerts, site_usage)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const l of licenses) {
+    if (!l.licenseKey) continue;
+    stmt.run(
+      l.licenseKey, l.licensePackage || null,
+      l.availableVMsCount ?? null, l.licenseUsage?.usedVMsCount ?? null,
+      l.licenseUsage?.isShared ? 1 : 0,
+      l.expirationDate || null,
+      JSON.stringify(l.alerts || []),
+      JSON.stringify(l.siteUsage || [])
+    );
+  }
+});
+
 function appendSnapshot({ sites, vpgData, alerts, vms }) {
   const vpgs = vpgData.vpgs || [];
   const rpoVals = vpgs.map(v => v.actualRpo).filter(v => typeof v === 'number' && v >= 0);
@@ -142,15 +163,17 @@ async function refreshAll() {
     logger.debug('[ZertoPoller] Skipping poll — credentials not configured');
     return;
   }
-  const [sites, vpgData, alerts, vms, topology] = await Promise.all([
+  const [sites, vpgData, alerts, vms, topology, licenses] = await Promise.all([
     fetchSites(), fetchVpgs(), fetchAlerts(), fetchProtectedVms(),
     fetchSitesTopology().catch(() => []),
+    fetchLicenses().catch(() => null), // v3 endpoint — keep previous rows if it fails
   ]);
   replaceSites(sites);
   replaceVpgs(vpgData.vpgs || []);
   replaceAlerts(alerts);
   replaceVms(vms);
   replaceVras(topology);
+  if (licenses) replaceLicenses(licenses);
   appendSnapshot({ sites, vpgData, alerts, vms });
   logger.info(`[ZertoPoller] Refreshed ${sites.length} site(s), ${(vpgData.vpgs || []).length} VPG(s), ${alerts.length} alert(s), ${vms.length} VM(s)`);
 }

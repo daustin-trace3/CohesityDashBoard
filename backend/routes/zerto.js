@@ -66,6 +66,25 @@ router.get('/alerts', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** GET /api/zerto/licenses — license entitlement/consumption from /v3/licenses,
+ *  with the per-site usage breakdown parsed out of the stored JSON. */
+router.get('/licenses', (req, res, next) => {
+  try {
+    const rows = db.prepare('SELECT * FROM zerto_licenses ORDER BY license_key').all();
+    res.json(rows.map((r) => ({
+      licenseKey: r.license_key,
+      licensePackage: r.license_package,
+      availableVms: r.available_vms,
+      usedVms: r.used_vms,
+      isShared: !!r.is_shared,
+      expirationDate: r.expiration_date,
+      alerts: JSON.parse(r.alerts || '[]'),
+      siteUsage: JSON.parse(r.site_usage || '[]'),
+      updatedAt: r.updated_at,
+    })));
+  } catch (err) { next(err); }
+});
+
 /** GET /api/zerto/vras — VRA appliances per site (from the topology feed). */
 router.get('/vras', (req, res, next) => {
   try {

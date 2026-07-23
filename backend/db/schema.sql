@@ -1281,3 +1281,18 @@ CREATE TABLE IF NOT EXISTS gflag_changes (
 );
 CREATE INDEX IF NOT EXISTS idx_gflag_changes_cluster ON gflag_changes(cluster_id, detected_at);
 CREATE INDEX IF NOT EXISTS idx_gflag_changes_flag ON gflag_changes(flag_name);
+
+-- Zerto licenses from /v3/licenses (consumption = protected-VM count).
+-- Replaced wholesale each poll; site_usage holds the per-site breakdown JSON.
+CREATE TABLE IF NOT EXISTS zerto_licenses (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  license_key      TEXT NOT NULL UNIQUE,
+  license_package  TEXT,
+  available_vms    INTEGER,
+  used_vms         INTEGER,
+  is_shared        INTEGER,
+  expiration_date  TEXT,
+  alerts           TEXT,
+  site_usage       TEXT,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

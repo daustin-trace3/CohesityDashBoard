@@ -156,6 +156,7 @@ const zertoNavGroups = [
     label: 'Infrastructure',
     items: [
       { label: 'Sites', route: '/zerto/sites', icon: Globe2, isActive: (p) => p.startsWith('/zerto/sites') },
+      { label: 'Licensing', route: '/zerto/licensing', icon: BadgeCheck, isActive: (p) => p.startsWith('/zerto/licensing') },
     ],
   },
   {
