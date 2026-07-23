@@ -108,4 +108,26 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 3,
+    up(db) {
+      // Zerto licenses from /v3/licenses (consumption = protected-VM count).
+      // Replaced wholesale each poll; site_usage holds the per-site breakdown
+      // JSON [{siteIdentifier, siteName, packageUsedVMsCount}].
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS zerto_licenses (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          license_key      TEXT NOT NULL UNIQUE,
+          license_package  TEXT,
+          available_vms    INTEGER,
+          used_vms         INTEGER,
+          is_shared        INTEGER,
+          expiration_date  TEXT,
+          alerts           TEXT,
+          site_usage       TEXT,
+          updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    },
+  },
 ];

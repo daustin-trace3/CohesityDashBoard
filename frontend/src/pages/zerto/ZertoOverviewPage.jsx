@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Gauge, Globe2, ShieldCheck, MonitorSmartphone, Bell, AlertTriangle, HardDrive, Boxes, History } from 'lucide-react';
+import { Gauge, Globe2, ShieldCheck, MonitorSmartphone, Bell, AlertTriangle, HardDrive, Boxes, History, BadgeCheck } from 'lucide-react';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend,
@@ -27,12 +27,16 @@ export default function ZertoOverviewPage() {
   const [trendDays, setTrendDays] = useState(30);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [licenses, setLicenses] = useState(null);
 
   const load = useCallback(() => client.get('/zerto/overview')
     .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
     .catch(() => { setData({ snapshot: null, vpgHealth: [], alertSeverity: [], worstRpoVpgs: [] }); toast({ type: 'error', title: 'Failed to load Zerto overview' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    client.get('/zerto/licenses').then(({ data }) => setLicenses(Array.isArray(data) ? data : [])).catch(() => setLicenses([]));
+  }, [lastRefreshed]);
   useEffect(() => {
     client.get(`/zerto/trends?days=${trendDays}`).then(({ data }) => setTrend(data)).catch(() => setTrend([]));
   }, [trendDays]);
@@ -52,6 +56,13 @@ export default function ZertoOverviewPage() {
   };
 
   const snap = data?.snapshot;
+  const lic = useMemo(() => {
+    if (!licenses?.length) return null;
+    const used = licenses.reduce((s, l) => s + (l.usedVms || 0), 0);
+    const available = licenses.reduce((s, l) => s + (l.availableVms || 0), 0);
+    const pct = available ? Math.round((used / available) * 100) : null;
+    return { used, available, pct };
+  }, [licenses]);
   const healthOf = (h) => (data?.vpgHealth || []).find(x => x.health === h)?.count || 0;
   const sevOf = (s) => (data?.alertSeverity || []).find(x => x.severity === s)?.count || 0;
   const alertErrors = sevOf('Error');
@@ -118,7 +129,11 @@ export default function ZertoOverviewPage() {
           onClick={() => navigate('/zerto/alerts')} />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+        <StatCard icon={BadgeCheck} label="License" value={lic ? `${fmtNum(lic.used)} / ${fmtNum(lic.available)}` : '—'}
+          tone={lic?.pct == null ? 'default' : lic.pct >= 95 ? 'crit' : lic.pct >= 80 ? 'warn' : 'ok'}
+          sub={lic?.pct != null ? `${lic.pct}% of licensed VMs used` : 'protected-VM entitlement'}
+          onClick={() => navigate('/zerto/licensing')} />
         <StatCard icon={AlertTriangle} label="RPO SLA Breaches" value={fmtNum(data?.rpoBreaches)}
           tone={data?.rpoBreaches ? 'crit' : 'ok'} sub="VPGs over their configured RPO"
           onClick={() => navigate('/zerto/vpgs')} />

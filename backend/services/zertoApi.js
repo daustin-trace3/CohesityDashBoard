@@ -96,6 +96,9 @@ const fetchAlerts = async () => (await zGet('/v2/monitoring/alerts')) || [];
 /** All protected VMs: identifier, name, provisioned/usedStorageMb, vpgs[], zorg. */
 const fetchProtectedVms = async () => (await zGet('/v2/monitoring/protected-vms')) || [];
 
+// v3, not v2 — /v2/licenses reports usedVMsCount 0 and no site breakdown.
+const fetchLicenses = async () => (await zGet('/v3/licenses')) || [];
+
 /**
  * Validate credentials (optionally an unsaved candidate set) by authenticating
  * and pulling the site list. Returns { ok, sites?, error? } — never throws.
@@ -127,5 +130,6 @@ async function testConnection(candidate = null) {
 module.exports = {
   getZertoConfig, zertoConfigured, zGet, invalidateToken,
   fetchAccountStats, fetchSites, fetchSitesTopology, fetchVpgs, fetchAlerts, fetchProtectedVms,
+  fetchLicenses,
   testConnection,
 };
