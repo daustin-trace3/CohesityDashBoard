@@ -142,7 +142,7 @@ function ChangesTab({ clusterId }) {
     if (clusterId) params.clusterId = clusterId;
     if (days) params.days = days;
     client.get('/cohesity/gflags/changes', { params })
-      .then(({ data }) => setChanges(data.changes))
+      .then(({ data }) => setChanges(Array.isArray(data?.changes) ? data.changes : []))
       .catch(() => setChanges([]));
   }, [clusterId, days]);
 
@@ -220,7 +220,9 @@ export default function GflagsPage() {
   const { toast } = useToast();
 
   const load = useCallback(() => client.get('/cohesity/gflags')
-    .then(({ data }) => setData(data))
+    // A stale backend without this route serves the SPA shell with a 200 —
+    // accept only the expected shape so that renders as empty, not a crash.
+    .then(({ data }) => setData(Array.isArray(data?.clusters) ? data : { clusters: [], gflags: [] }))
     .catch(() => setData({ clusters: [], gflags: [] })), []);
 
   useEffect(() => { load(); }, [load]);
