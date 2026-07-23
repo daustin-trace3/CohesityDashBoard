@@ -97,8 +97,24 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, dnsServer,
     } = req.body || {};
+
+    // Guard: never let the last platform be turned off, or the app has no tabs.
+    // Resolve each platform's post-save state (incoming value if present, else stored).
+    const current = getPlatformSettings();
+    const resolve = (incoming, key) => (incoming !== undefined ? !!incoming : current[key]);
+    const anyEnabled = [
+      resolve(platformCohesityEnabled, 'platformCohesityEnabled'),
+      resolve(platformPureEnabled, 'platformPureEnabled'),
+      resolve(platformNetappEnabled, 'platformNetappEnabled'),
+      resolve(platformZertoEnabled, 'platformZertoEnabled'),
+      resolve(platformVcenterEnabled, 'platformVcenterEnabled'),
+      resolve(platformDellEnabled, 'platformDellEnabled'),
+    ].some(Boolean);
+    if (!anyEnabled) {
+      return res.status(400).json({ error: 'At least one platform must remain enabled.' });
+    }
     if (llmEstateContext !== undefined) {
       setSetting('llm_estate_context', String(llmEstateContext).slice(0, 4000));
     }
@@ -127,6 +143,10 @@ router.put('/', (req, res, next) => {
     }
     if (licenseEdition !== undefined) {
       setSetting('license_edition', String(licenseEdition).slice(0, 80));
+    }
+    if (platformCohesityEnabled !== undefined) {
+      setSetting('platform_cohesity_enabled', platformCohesityEnabled ? '1' : '0');
+      applyPlatformEnabled('cohesity', !!platformCohesityEnabled);
     }
     if (platformPureEnabled !== undefined) {
       setSetting('platform_pure_enabled', platformPureEnabled ? '1' : '0');

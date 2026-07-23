@@ -11,6 +11,7 @@ const DEFAULTS = {
   license_entitled_smartfiles_tib: '0',
   license_expiry: '',
   license_edition: '',
+  platform_cohesity_enabled: '1',
   platform_pure_enabled: '0',
   platform_netapp_enabled: '0',
   platform_zerto_enabled: '0',
@@ -105,10 +106,11 @@ function getLicenseSettings() {
   };
 }
 
-/** Which vendor platform tabs are shown in the UI. Cohesity is always on;
- *  Pure/NetApp are hidden until their integrations are configured. */
+/** Which vendor platform tabs are shown in the UI. Cohesity defaults on but can
+ *  be disabled; Pure/NetApp are hidden until their integrations are configured. */
 function getPlatformSettings() {
   return {
+    platformCohesityEnabled: getSetting('platform_cohesity_enabled') !== '0',
     platformPureEnabled: getSetting('platform_pure_enabled') === '1',
     platformNetappEnabled: getSetting('platform_netapp_enabled') === '1',
     platformZertoEnabled: getSetting('platform_zerto_enabled') === '1',

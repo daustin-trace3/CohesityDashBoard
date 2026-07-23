@@ -249,7 +249,7 @@ export default function Layout() {
   useEffect(() => {
     const loadPlatforms = () => client.get('/settings')
       .then(r => setEnabledPlatformIds([
-        'cohesity',
+        ...(r.data.platformCohesityEnabled !== false ? ['cohesity'] : []),
         ...(r.data.platformPureEnabled ? ['pure'] : []),
         ...(r.data.platformNetappEnabled ? ['netapp'] : []),
         ...(r.data.platformZertoEnabled ? ['zerto'] : []),

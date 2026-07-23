@@ -42,6 +42,7 @@ export default function AdminSettingsPage() {
   const [modelList, setModelList] = useState(null);   // { provider, models, default } | null
   const [modelsError, setModelsError] = useState(null);
   const [aiEnabled, setAiEnabled] = useState(true);
+  const [cohesityEnabled, setCohesityEnabled] = useState(true);
   const [pureEnabled, setPureEnabled] = useState(false);
   const [netappEnabled, setNetappEnabled] = useState(false);
   const [zertoEnabled, setZertoEnabled] = useState(false);
@@ -81,6 +82,7 @@ export default function AdminSettingsPage() {
         setFlagUnprotected(!!d.llmFlagUnprotected);
         setLlmModel(d.llmModel || '');
         setTtlHours(d.llmAnalysisTtlHours || 24);
+        setCohesityEnabled(d.platformCohesityEnabled !== false);
         setPureEnabled(!!d.platformPureEnabled);
         setNetappEnabled(!!d.platformNetappEnabled);
         setZertoEnabled(!!d.platformZertoEnabled);
@@ -104,6 +106,7 @@ export default function AdminSettingsPage() {
         llmFlagUnprotected: flagUnprotected,
         llmModel,
         llmAnalysisTtlHours: Number(ttlHours) || 24,
+        platformCohesityEnabled: cohesityEnabled,
         platformPureEnabled: pureEnabled,
         platformNetappEnabled: netappEnabled,
         platformZertoEnabled: zertoEnabled,
@@ -113,8 +116,8 @@ export default function AdminSettingsPage() {
       });
       window.dispatchEvent(new Event('platforms-changed'));
       toast({ type: 'success', title: 'Settings saved', message: 'Global settings updated.' });
-    } catch {
-      toast({ type: 'error', title: 'Save failed', message: 'Could not save settings. Try again.' });
+    } catch (e) {
+      toast({ type: 'error', title: 'Save failed', message: e?.response?.data?.error || 'Could not save settings. Try again.' });
     } finally {
       setSaving(false);
     }
@@ -430,8 +433,8 @@ export default function AdminSettingsPage() {
           <div>
             <p className="text-sm font-bold text-ink">Platforms</p>
             <p className="text-[11px] text-ink-muted">
-              Vendor tabs shown at the top of the dashboard. Cohesity is always on; enable the others once their
-              integrations are configured. With only Cohesity enabled, the platform bar is hidden.
+              Vendor tabs shown at the top of the dashboard. Enable each platform once its integration is
+              configured. At least one platform must stay enabled; with only one, the platform bar is hidden.
             </p>
           </div>
         </div>
@@ -440,6 +443,15 @@ export default function AdminSettingsPage() {
           <p className="text-gray-400 text-sm mt-4">Loading…</p>
         ) : (
           <div className="flex flex-col gap-3 mt-4">
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input type="checkbox" checked={cohesityEnabled} onChange={e => setCohesityEnabled(e.target.checked)}
+                className="accent-brand mt-0.5 cursor-pointer" />
+              <span className="text-xs text-ink-muted leading-relaxed">
+                <span className="font-semibold text-ink">Cohesity</span><br />
+                Show the Cohesity platform tab. Disable only if this deployment monitors other platforms
+                (e.g. Pure and NetApp) without Cohesity.
+              </span>
+            </label>
             <label className="flex items-start gap-2.5 cursor-pointer select-none">
               <input type="checkbox" checked={pureEnabled} onChange={e => setPureEnabled(e.target.checked)}
                 className="accent-brand mt-0.5 cursor-pointer" />
