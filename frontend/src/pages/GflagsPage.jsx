@@ -285,7 +285,7 @@ export default function GflagsPage() {
       <PageHeader
         icon={Flag}
         title="GFlags"
-        description="Gflags explicitly set on direct-connected clusters (advanced/unsupported API, read-only). Polled daily — use Refresh for a live pull."
+        description="Gflags explicitly set on your clusters (advanced/unsupported API, read-only). Polled daily — use Refresh for a live pull."
       >
         {data.clusters.length > 0 && <SyncStatusChip state={chipState} />}
         <LastUpdated date={newestEnd} />
@@ -294,7 +294,7 @@ export default function GflagsPage() {
           onChange={(e) => setClusterId(Number(e.target.value))}
           className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-2 text-sm text-ink focus:border-brand/60 outline-none cursor-pointer"
         >
-          <option value={0}>All direct clusters</option>
+          <option value={0}>All clusters</option>
           {data.clusters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         {clusterId > 0 && (
@@ -315,7 +315,7 @@ export default function GflagsPage() {
       {data.clusters.length === 0 ? (
         <Panel>
           <p className="text-sm text-ink-muted py-6 text-center">
-            No direct-connected clusters. Gflags are only readable over a direct cluster connection — Helios does not expose them.
+            No clusters registered yet — add a Helios or direct connection on the Clusters page.
           </p>
         </Panel>
       ) : (

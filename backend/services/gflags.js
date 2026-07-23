@@ -94,13 +94,16 @@ async function refreshGflags(cluster) {
   }
 }
 
-function directClusters() {
-  return db.prepare("SELECT * FROM clusters WHERE connection_type = 'direct'").all();
+// Works for direct connections AND Helios-connected clusters — Helios proxies
+// the private v1 gflag endpoint via the accessClusterId header (verified live
+// 2026-07-22 against asx1bkagcl-az).
+function gflagClusters() {
+  return db.prepare('SELECT * FROM clusters').all();
 }
 
 async function refreshAllGflags() {
   const results = [];
-  for (const cluster of directClusters()) {
+  for (const cluster of gflagClusters()) {
     try {
       results.push({ clusterId: cluster.id, name: cluster.name, ...(await refreshGflags(cluster)) });
     } catch (err) {
@@ -119,7 +122,7 @@ function getGflags() {
     FROM cluster_gflags g JOIN clusters c ON c.id = g.cluster_id
     ORDER BY c.name, g.service_name, g.flag_name
   `).all();
-  const clusters = directClusters().map((c) => ({
+  const clusters = gflagClusters().map((c) => ({
     id: c.id,
     name: c.name,
     status: pollerStatus.getState(POLLER_TYPE, c.id),
@@ -152,13 +155,13 @@ function initGflags() {
   cron.schedule('30 3 * * *', () => {
     refreshAllGflags().catch((err) => logger.error('[Gflags] Daily refresh failed:', err.message));
   });
-  const unseeded = directClusters().filter(
+  const unseeded = gflagClusters().filter(
     (c) => !db.prepare('SELECT 1 FROM cluster_gflags WHERE cluster_id = ? LIMIT 1').get(c.id)
   );
   if (unseeded.length > 0) {
     refreshAllGflags().catch((err) => logger.error('[Gflags] Initial refresh failed:', err.message));
   }
-  logger.info(`[Gflags] Daily gflag poll scheduled (${directClusters().length} direct cluster(s))`);
+  logger.info(`[Gflags] Daily gflag poll scheduled (${gflagClusters().length} cluster(s))`);
 }
 
 module.exports = { refreshGflags, refreshAllGflags, getGflags, getGflagChanges, initGflags };
