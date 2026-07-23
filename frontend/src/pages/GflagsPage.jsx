@@ -367,7 +367,9 @@ export default function GflagsPage() {
   const load = useCallback(() => client.get('/cohesity/gflags')
     // A stale backend without this route serves the SPA shell with a 200 —
     // accept only the expected shape so that renders as empty, not a crash.
-    .then(({ data }) => setData(Array.isArray(data?.clusters) ? data : { clusters: [], gflags: [] }))
+    .then(({ data }) => setData(Array.isArray(data?.clusters)
+      ? { ...data, clusters: [...data.clusters].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true, sensitivity: 'base' })) }
+      : { clusters: [], gflags: [] }))
     .catch(() => setData({ clusters: [], gflags: [] })), []);
 
   useEffect(() => { load(); }, [load]);
