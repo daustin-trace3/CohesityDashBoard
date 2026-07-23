@@ -26,6 +26,7 @@ const aiAuditRouter = require('./routes/aiAudit');
 const licensingRouter = require('./routes/licensing');
 const viewsRouter = require('./routes/views');
 const workloadsRouter = require('./routes/workloads');
+const gflagsRouter = require('./routes/gflags');
 const licenseRouter = require('./routes/license');
 const pureRouter = require('./routes/pure');
 const pure1Router = require('./routes/pure1');
@@ -47,6 +48,7 @@ const { initVcenterPoller } = require('./services/vcenterPoller');
 const { initDellPoller } = require('./services/dellPoller');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
+const { initGflags } = require('./services/gflags');
 const { initLicense, getLicenseStatus } = require('./services/license');
 
 const app = express();
@@ -119,6 +121,7 @@ app.use('/api/ai-audit', aiAuditRouter);
 app.use('/api/licensing', licensingRouter);
 app.use('/api/views', viewsRouter);
 app.use('/api/workloads', workloadsRouter);
+app.use('/api/gflags', gflagsRouter);
 app.use('/api/pure', pureRouter);
 app.use('/api/pure1', pure1Router);
 app.use('/api/netapp', netappRouter);
@@ -183,6 +186,7 @@ app.listen(PORT, '0.0.0.0', () => {
     initDellPoller();
     initLicensing();
     initViews();
+    initGflags();
   } else {
     logger.info('[Boot] Pollers run in the separate poller process (backend/pollerProcess.js, pm2: cohesity-poller). Set RUN_POLLERS_INLINE=true to run them in this process.');
   }

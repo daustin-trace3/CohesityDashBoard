@@ -6,6 +6,7 @@ import OpsMonitorPage from './pages/ops/OpsMonitorPage';
 import AlertsPage from './pages/AlertsPage';
 import HardwarePage from './pages/HardwarePage';
 import ClusterManagement from './pages/ClusterManagement';
+import GflagsPage from './pages/GflagsPage';
 import PureAlertsPage from './pages/pure/PureAlertsPage';
 import Pure1FleetPage from './pages/pure/Pure1FleetPage';
 import PureCapacityPage from './pages/pure/PureCapacityPage';
@@ -90,6 +91,7 @@ export default function App() {
                 <Route path="alerts"          element={withBoundary(<AlertsPage />)} />
                 <Route path="hardware"        element={withBoundary(<HardwarePage />)} />
                 <Route path="clusters"        element={withBoundary(<ClusterManagement />)} />
+                <Route path="gflags"          element={withBoundary(<GflagsPage />)} />
                 <Route path="pure"            element={withBoundary(<Pure1FleetPage />)} />
                 <Route path="pure/estate"     element={withBoundary(<PureEstatePage />)} />
                 <Route path="pure/fleet"      element={<Navigate to="/pure" replace />} />

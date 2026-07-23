@@ -47,6 +47,8 @@ function cohesitySummary() {
   if (failed24) exceptions.push(exception('critical', failed24, `${fnum(failed24)} protection run${failed24 === 1 ? '' : 's'} failed (24h)`, '/data-protection'));
   if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical alert${sev.critical === 1 ? '' : 's'}`, '/alerts'));
   if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} warning alert${sev.warning === 1 ? '' : 's'}`, '/alerts'));
+  const gflagChanges = countSafe("SELECT COUNT(*) c FROM gflag_changes WHERE detected_at >= datetime('now','-1 day')");
+  if (gflagChanges) exceptions.push(exception('warning', gflagChanges, `${fnum(gflagChanges)} gflag change${gflagChanges === 1 ? '' : 's'} detected (24h)`, '/gflags'));
   return {
     objects: clusters + jobs,
     headline: [

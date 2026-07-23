@@ -16,6 +16,7 @@ const { initVcenterPoller } = require('./services/vcenterPoller');
 const { initDellPoller } = require('./services/dellPoller');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
+const { initGflags } = require('./services/gflags');
 
 initPoller();
 initPurePoller();
@@ -26,7 +27,8 @@ initVcenterPoller();
 initDellPoller();
 initLicensing();
 initViews();
-logger.info('[Poller process] All pollers scheduled (Cohesity, Pure, Pure1, NetApp, Zerto, licensing, views).');
+initGflags();
+logger.info('[Poller process] All pollers scheduled (Cohesity, Pure, Pure1, NetApp, Zerto, licensing, views, gflags).');
 
 process.on('unhandledRejection', (err) => {
   logger.error(`[Poller process] Unhandled rejection: ${err?.message || err}`);
