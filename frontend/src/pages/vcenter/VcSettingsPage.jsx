@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
@@ -15,6 +15,7 @@ export default function VcSettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [refreshingId, setRefreshingId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
   const [certWarnDays, setCertWarnDays] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
 
@@ -60,20 +61,46 @@ export default function VcSettingsPage() {
     }
   };
 
+  const blankForm = () => {
+    setForm({ name: '', host: '', username: '', password: '', sslVerify: false, pollingIntervalMinutes: 15 });
+    setTestResult(null);
+  };
+
+  const startEdit = (vc) => {
+    setEditingId(vc.id);
+    setForm({
+      name: vc.name, host: vc.host, username: vc.username, password: '',
+      sslVerify: !!vc.sslVerify, pollingIntervalMinutes: vc.pollingIntervalMinutes || 15,
+    });
+    setTestResult(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelEdit = () => { setEditingId(null); blankForm(); };
+
   const add = async () => {
     setSaving(true);
     try {
-      await client.post('/vcenter/vcenters', {
+      const body = {
         name: form.name.trim(), host: form.host.trim(), username: form.username.trim(),
-        password: form.password, sslVerify: form.sslVerify,
+        sslVerify: form.sslVerify,
         pollingIntervalMinutes: Number(form.pollingIntervalMinutes) || 15,
-      });
-      setForm({ name: '', host: '', username: '', password: '', sslVerify: false, pollingIntervalMinutes: 15 });
-      setTestResult(null);
+      };
+      if (editingId) {
+        // Blank password = keep the stored one (omit from the PUT body).
+        if (form.password) body.password = form.password;
+        await client.put(`/vcenter/vcenters/${editingId}`, body);
+        toast({ type: 'success', title: 'vCenter updated', message: form.password ? 'Credentials replaced — next poll uses them.' : 'Saved. Stored password unchanged.' });
+      } else {
+        body.password = form.password;
+        await client.post('/vcenter/vcenters', body);
+        toast({ type: 'success', title: 'vCenter registered', message: 'First poll started — data appears shortly.' });
+      }
+      setEditingId(null);
+      blankForm();
       await loadVcs();
-      toast({ type: 'success', title: 'vCenter registered', message: 'First poll started — data appears shortly.' });
     } catch (err) {
-      toast({ type: 'error', title: 'Registration failed', message: err?.response?.data?.error });
+      toast({ type: 'error', title: editingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error });
     } finally {
       setSaving(false);
     }
@@ -103,14 +130,14 @@ export default function VcSettingsPage() {
     }
   };
 
-  const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && form.password;
+  const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && (editingId || form.password);
 
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in max-w-5xl">
       <PageHeader icon={Settings} title="vCenter Settings" description="Register vCenter servers — each is polled directly with its own credentials" />
 
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> Add a vCenter</p>
+        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'vCenter'}` : 'Add a vCenter'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           A read-only vCenter account is sufficient for inventory; certificate details additionally need the
           certificate-management view privilege. The password is encrypted at rest.
@@ -133,8 +160,8 @@ export default function VcSettingsPage() {
             <input value={form.username} onChange={set('username')} placeholder="monitor@vsphere.local" className={inp} spellCheck={false} />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Password</label>
-            <input type="password" value={form.password} onChange={set('password')} className={inp} />
+            <label className="block text-xs font-semibold text-ink mb-1">Password{editingId ? <span className="font-normal text-ink-faint"> — stored, leave blank to keep</span> : ''}</label>
+            <input type="password" value={form.password} onChange={set('password')} placeholder={editingId ? '•••••• (stored)' : ''} className={inp} />
           </div>
           <label className="flex items-end gap-2 pb-2 cursor-pointer select-none">
             <input type="checkbox" checked={form.sslVerify} onChange={set('sslVerify')} className="accent-brand cursor-pointer" />
@@ -144,8 +171,14 @@ export default function VcSettingsPage() {
         <div className="flex items-center gap-2">
           <button onClick={add} disabled={saving || !canSubmit}
             className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
-            {saving ? 'Adding…' : 'Add vCenter'}
+            {saving ? 'Saving…' : editingId ? 'Save changes' : 'Add vCenter'}
           </button>
+          {editingId && (
+            <button onClick={cancelEdit}
+              className="px-4 py-2 rounded-lg text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink transition-colors cursor-pointer">
+              Cancel
+            </button>
+          )}
           <button onClick={test} disabled={testing || !form.host.trim() || !form.username.trim()}
             className="px-4 py-2 rounded-lg text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer inline-flex items-center gap-2">
             {testing && <Spinner size={13} />} Test connection
@@ -211,6 +244,10 @@ export default function VcSettingsPage() {
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(v.lastPollAt)}</td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center justify-end gap-1.5">
+                        <button onClick={() => startEdit(v)} title="Edit connection / update credentials" aria-label={`Edit ${v.name}`}
+                          className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
+                          <Pencil size={13} />
+                        </button>
                         <button onClick={() => refresh(v)} disabled={refreshingId === v.id} title="Poll now" aria-label={`Poll ${v.name} now`}
                           className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
                           <RefreshCw size={13} className={refreshingId === v.id ? 'animate-spin' : ''} />
