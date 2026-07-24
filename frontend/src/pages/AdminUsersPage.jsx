@@ -848,7 +848,7 @@ function AuthModePanel() {
 }
 
 /* ── Page ────────────────────────────────────────────────────────────────── */
-export default function AdminUsersPage() {
+export default function AdminUsersPage({ embedded = false }) {
   const { hasPermission, loading: authLoading } = useAuth();
   const [tab, setTab] = useState('users');
 
@@ -865,7 +865,7 @@ export default function AdminUsersPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <PageHeader icon={Users} title="Users & Access" description="Manage user accounts, groups, permission grants, and service accounts." />
+      {!embedded && <PageHeader icon={Users} title="Users & Access" description="Manage user accounts, groups, permission grants, and service accounts." />}
 
       <div className="flex flex-col md:flex-row gap-5 items-start">
         <div className="flex flex-col gap-4 flex-1 min-w-0">

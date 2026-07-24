@@ -67,7 +67,6 @@ const navGroups = [
     label: 'System',
     items: [
       { label: 'Settings', route: '/settings', icon: Settings, isActive: (p) => p.startsWith('/settings') },
-      { label: 'Users & Access', route: '/access', icon: ShieldCheck, isActive: (p) => p.startsWith('/access') },
     ],
   },
 ];

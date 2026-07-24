@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Sparkles, Save, Layers, KeyRound, Settings } from 'lucide-react';
+import { Sparkles, Save, Layers, KeyRound, Settings, Users } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
+import AdminUsersPage from './AdminUsersPage';
 
 const TABS = [
   { key: 'ai', label: 'AI Analysis & Keys', icon: Sparkles },
   { key: 'platforms', label: 'Platforms', icon: Layers },
   { key: 'license', label: 'Product License', icon: KeyRound },
+  { key: 'access', label: 'Users & Access', icon: Users },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,
@@ -536,6 +538,8 @@ export default function AdminSettingsPage() {
           </div>
         </div>
       )}
+
+      {tab === 'access' && <AdminUsersPage embedded />}
     </div>
   );
 }
