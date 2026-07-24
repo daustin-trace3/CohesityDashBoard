@@ -1,13 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power } from 'lucide-react';
+import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
+import { usePlatforms } from '../platforms/PlatformsContext';
 import AdminNav from '../components/AdminNav';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
-const NAMESPACES = ['cohesity', 'pure', 'netapp', 'zerto', 'vcenter', 'dell', 'admin', '*'];
 const LEVELS = ['view', 'manage', '*'];
 
 const TABS = [
@@ -41,8 +41,118 @@ function Modal({ title, onClose, children, wide }) {
   );
 }
 
+/* ── Platform access matrix: one row per platform, None/View/Manage.
+ *    Writes plain `<ns>:*:<level>` grants — same storage, friendlier editing.
+ *    Rows come from the platform registry so new platforms appear on their own. ── */
+const MATRIX_LEVELS = [
+  { key: 'none', label: 'None' },
+  { key: 'view', label: 'View' },
+  { key: 'manage', label: 'Manage' },
+];
+
+// `<ns>:*:*` counts as manage for display — level '*' and 'manage' are
+// equivalent for everything the app enforces (view/manage only).
+function directLevel(grants, ns) {
+  if (grants.some(p => p === `${ns}:*:*` || p === `${ns}:*:manage`)) return 'manage';
+  if (grants.some(p => p === `${ns}:*:view`)) return 'view';
+  return 'none';
+}
+
+function PlatformAccessEditor({ grants, onAdd, onRemove }) {
+  const { platforms } = usePlatforms();
+  const [busy, setBusy] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const rows = [
+    { ns: '*', label: 'All platforms', hint: 'includes future platforms and administration' },
+    ...platforms.map(p => ({ ns: p.id, label: p.label, color: p.color })),
+    { ns: 'admin', label: 'Administration', hint: 'settings, users, plugins, licensing' },
+  ];
+  const globalLvl = directLevel(grants, '*');
+
+  // Grants the matrix can't express (section-scoped or unknown namespaces)
+  // live in the Advanced section as removable chips.
+  const matrixPerms = new Set(rows.flatMap(r => LEVELS.map(l => `${r.ns}:*:${l}`)));
+  const advancedGrants = grants.filter(p => !matrixPerms.has(p));
+
+  const setLevel = async (ns, level) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      for (const lvl of LEVELS) {
+        const perm = `${ns}:*:${lvl}`;
+        if (grants.includes(perm) && perm !== `${ns}:*:${level}`) await onRemove(perm);
+      }
+      if (level !== 'none' && !grants.includes(`${ns}:*:${level}`)) await onAdd(`${ns}:*:${level}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="border border-cohesity-border rounded-lg overflow-hidden">
+        {rows.map((r, i) => {
+          const direct = directLevel(grants, r.ns);
+          const isGlobalRow = r.ns === '*';
+          // A platform row is covered by the all-platforms grant even at None.
+          const inherited = !isGlobalRow && direct === 'none' && globalLvl !== 'none' ? globalLvl : null;
+          const effective = inherited || direct;
+          return (
+            <div key={r.ns}
+              className={`flex items-center justify-between gap-3 px-3 py-2 ${i > 0 ? 'border-t border-cohesity-border' : ''} ${isGlobalRow ? 'bg-surface-overlay' : ''}`}>
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-ink flex items-center gap-2">
+                  {r.color && <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: r.color }} />}
+                  {r.label}
+                  {inherited && <span className="text-[10px] font-normal text-ink-faint">via all-platforms</span>}
+                </p>
+                {r.hint && <p className="text-[10px] text-ink-faint mt-0.5">{r.hint}</p>}
+              </div>
+              <div className="flex rounded-lg border border-cohesity-border overflow-hidden flex-shrink-0">
+                {MATRIX_LEVELS.map(l => {
+                  const active = effective === l.key;
+                  const fromInherit = active && inherited;
+                  return (
+                    <button key={l.key} type="button" disabled={busy}
+                      onClick={() => setLevel(r.ns, l.key)}
+                      className={`px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-50 ${
+                        active
+                          ? fromInherit ? 'bg-brand/5 text-brand/70' : 'bg-brand/15 text-brand'
+                          : 'text-ink-faint hover:text-ink hover:bg-surface-overlay'
+                      }`}>
+                      {l.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div>
+        <button type="button" onClick={() => setShowAdvanced(o => !o)}
+          className="flex items-center gap-1 text-[11px] font-medium text-ink-faint hover:text-ink transition-colors cursor-pointer">
+          {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          Advanced: section-scoped grants{advancedGrants.length > 0 ? ` (${advancedGrants.length})` : ''}
+        </button>
+        {showAdvanced && (
+          <div className="mt-2 flex flex-col gap-2">
+            <div className="flex flex-wrap gap-1.5">
+              {advancedGrants.length === 0 && <p className="text-[11px] text-ink-faint">No section-scoped grants.</p>}
+              {advancedGrants.map(p => <PermissionChip key={p} perm={p} onRemove={() => onRemove(p)} />)}
+            </div>
+            <PermissionBuilder onAdd={onAdd} namespaces={rows.map(r => r.ns)} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Permission string builder row: namespace / section / level → ns:section:level ── */
-function PermissionBuilder({ onAdd }) {
+function PermissionBuilder({ onAdd, namespaces }) {
   const [namespace, setNamespace] = useState('cohesity');
   const [section, setSection] = useState('*');
   const [level, setLevel] = useState('view');
@@ -59,7 +169,7 @@ function PermissionBuilder({ onAdd }) {
         <div>
           <label className="text-[10px] font-medium text-ink-faint uppercase tracking-wider mb-0.5 block">Platform</label>
           <select value={namespace} onChange={e => setNamespace(e.target.value)} className={`${inputClass} w-auto`}>
-            {NAMESPACES.map(n => <option key={n} value={n}>{n}</option>)}
+            {namespaces.map(n => <option key={n} value={n}>{n === '*' ? '* (all)' : n}</option>)}
           </select>
         </div>
         <div>
@@ -77,7 +187,7 @@ function PermissionBuilder({ onAdd }) {
           <Plus size={12} /> Add
         </button>
       </div>
-      <p className="text-[10px] text-ink-faint">Section scopes the grant within a platform (e.g. alerts, settings) — use * for all. Manage includes view.</p>
+      <p className="text-[10px] text-ink-faint">Section is the API area within a platform (e.g. clusters, alerts, settings) — use * for all. Manage includes view.</p>
     </div>
   );
 }
@@ -435,12 +545,8 @@ function GroupsTab() {
               {grants === null ? (
                 <p className="text-[11px] text-ink-faint">Loading…</p>
               ) : (
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {grants.length === 0 && <p className="text-[11px] text-ink-faint">No grants yet.</p>}
-                  {grants.map(p => <PermissionChip key={p} perm={p} onRemove={() => removeGrant(p)} />)}
-                </div>
+                <PlatformAccessEditor grants={grants} onAdd={addGrant} onRemove={removeGrant} />
               )}
-              <PermissionBuilder onAdd={addGrant} />
             </div>
           </div>
         )}
@@ -517,11 +623,7 @@ function CreateServiceAccountModal({ onClose, onSaved }) {
         </div>
         <div>
           <label className="text-xs font-semibold text-ink mb-1.5 block">Permissions</label>
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            {permissions.length === 0 && <p className="text-[11px] text-ink-faint">No permissions added yet.</p>}
-            {permissions.map(p => <PermissionChip key={p} perm={p} onRemove={() => removePermission(p)} />)}
-          </div>
-          <PermissionBuilder onAdd={addPermission} />
+          <PlatformAccessEditor grants={permissions} onAdd={addPermission} onRemove={removePermission} />
         </div>
         {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
         <button onClick={save} disabled={saving || !name.trim() || permissions.length === 0}
