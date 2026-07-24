@@ -118,7 +118,9 @@ function PlatformAccessEditor({ grants, onAdd, onRemove }) {
                       onClick={() => setLevel(r.ns, l.key)}
                       className={`px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-50 ${
                         active
-                          ? fromInherit ? 'bg-brand/5 text-brand/70' : 'bg-brand/15 text-brand'
+                          ? l.key === 'none'
+                            ? 'bg-surface-overlay text-ink'
+                            : fromInherit ? 'bg-brand/5 text-brand/70' : 'bg-brand/15 text-brand'
                           : 'text-ink-faint hover:text-ink hover:bg-surface-overlay'
                       }`}>
                       {l.label}
