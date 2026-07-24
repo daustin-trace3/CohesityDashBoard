@@ -31,7 +31,7 @@ const DEFAULTS = {
   smtp_from: '',
   smtp_recipients: '',
   alert_email_min_severity: 'warning',
-  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true}',
+  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true}',
   alert_email_reminder_hours: '24',
 };
 
@@ -123,11 +123,14 @@ function getPlatformSettings() {
 /** SMTP alert-notification settings in a typed shape (contract C10.1/C10.2).
  *  smtpPassword itself is never included — only whether one is set. */
 function getNotificationSettings() {
+  // Merge over defaults so platforms added after a DB stored its JSON come
+  // through enabled instead of silently missing (collector gate reads keys).
+  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true };
   let alertPlatforms;
   try {
-    alertPlatforms = JSON.parse(getSetting('alert_email_platforms'));
+    alertPlatforms = { ...platformDefaults, ...JSON.parse(getSetting('alert_email_platforms')) };
   } catch {
-    alertPlatforms = { cohesity: true, pure: true, netapp: true };
+    alertPlatforms = { ...platformDefaults };
   }
   return {
     smtpEnabled: getSetting('smtp_enabled') === '1',
@@ -140,11 +143,9 @@ function getNotificationSettings() {
     smtpFrom: getSetting('smtp_from') || '',
     smtpRecipients: getSetting('smtp_recipients') || '',
     alertMinSeverity: getSetting('alert_email_min_severity') || 'warning',
-    alertPlatforms: {
-      cohesity: alertPlatforms?.cohesity !== false,
-      pure: alertPlatforms?.pure !== false,
-      netapp: alertPlatforms?.netapp !== false,
-    },
+    alertPlatforms: Object.fromEntries(
+      Object.keys(platformDefaults).map((k) => [k, alertPlatforms[k] !== false])
+    ),
     reminderHours: Number(getSetting('alert_email_reminder_hours')) || 0,
   };
 }

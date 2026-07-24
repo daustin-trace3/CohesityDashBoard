@@ -7,7 +7,7 @@ import { useAuth } from '../auth/AuthContext';
 import AdminNav from '../components/AdminNav';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
-const NAMESPACES = ['cohesity', 'pure', 'netapp', 'admin', '*'];
+const NAMESPACES = ['cohesity', 'pure', 'netapp', 'zerto', 'vcenter', 'dell', 'admin', '*'];
 const LEVELS = ['view', 'manage', '*'];
 
 const TABS = [

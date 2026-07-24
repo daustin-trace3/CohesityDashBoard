@@ -34,7 +34,7 @@ describe('GET/PUT /api/settings/notifications', () => {
       smtpFrom: '',
       smtpRecipients: '',
       alertMinSeverity: 'warning',
-      alertPlatforms: { cohesity: true, pure: true, netapp: true },
+      alertPlatforms: { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true },
       reminderHours: 24,
     });
   });
@@ -50,7 +50,7 @@ describe('GET/PUT /api/settings/notifications', () => {
       smtpFrom: 'alerts@example.com',
       smtpRecipients: 'ops@example.com,oncall@example.com',
       alertMinSeverity: 'critical',
-      alertPlatforms: { cohesity: true, pure: false, netapp: true },
+      alertPlatforms: { cohesity: true, pure: false, netapp: true, zerto: true, vcenter: true, dell: true },
       reminderHours: 12,
     });
     expect(res.status).toBe(200);
@@ -63,7 +63,7 @@ describe('GET/PUT /api/settings/notifications', () => {
       smtpFrom: 'alerts@example.com',
       smtpRecipients: 'ops@example.com,oncall@example.com',
       alertMinSeverity: 'critical',
-      alertPlatforms: { cohesity: true, pure: false, netapp: true },
+      alertPlatforms: { cohesity: true, pure: false, netapp: true, zerto: true, vcenter: true, dell: true },
       reminderHours: 12,
     });
 

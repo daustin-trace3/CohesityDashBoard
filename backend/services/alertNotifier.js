@@ -87,10 +87,74 @@ function collectNetappAlerts() {
   });
 }
 
+/** Active Zerto alerts — zerto_alerts is wiped+reloaded every poll, but
+ *  alert_identifier is Zerto's own stable id so it survives the reload. */
+function collectZertoAlerts() {
+  const rows = db.prepare(`
+    SELECT alert_identifier AS alertId, severity, description, site_name AS siteName,
+           collection_time AS collectionTime, captured_at AS capturedAt
+    FROM zerto_alerts
+  `).all();
+  return rows.map((r) => ({
+    sourceKey: `z:${r.alertId}`,
+    severity: String(r.severity || '').toLowerCase(),
+    host: r.siteName || 'Zerto',
+    message: r.description || '',
+    firstSeen: toIso(r.collectionTime || r.capturedAt),
+    lastSeen: toIso(r.capturedAt),
+  }));
+}
+
+/** Open vCenter computed issues — reconcileIssueHistory keeps
+ *  vcenter_issue_history current with a stable issue_key per issue, and
+ *  resolving drops the row out of this query (which is what ends reminders). */
+function collectVcenterIssues() {
+  const rows = db.prepare(`
+    SELECT issue_key AS issueKey, vcenter, severity, message,
+           first_seen AS firstSeen, last_seen AS lastSeen
+    FROM vcenter_issue_history WHERE status = 'open'
+  `).all();
+  return rows.map((r) => ({
+    sourceKey: `v:${r.issueKey}`,
+    severity: String(r.severity || '').toLowerCase(),
+    host: r.vcenter,
+    message: r.message || '',
+    firstSeen: toIso(r.firstSeen),
+    lastSeen: toIso(r.lastSeen),
+  }));
+}
+
+/** Un-acknowledged Dell OME alerts. dell_alerts is append-only (90-day
+ *  retention) — acknowledging the alert in OME is what stops reminders. */
+function collectDellAlerts() {
+  const rows = db.prepare(`
+    SELECT d.ome_id AS omeId, d.alert_id AS alertId, d.severity, d.message,
+           d.device_name AS deviceName, d.service_tag AS serviceTag,
+           d.created_at AS createdAt, d.captured_at AS capturedAt, o.name AS omeName
+    FROM dell_alerts d JOIN dell_ome_instances o ON d.ome_id = o.id
+    WHERE d.status IS NULL OR d.status != 'acknowledged'
+  `).all();
+  return rows.map((r) => {
+    let severity = String(r.severity || '').toLowerCase();
+    if (severity === 'normal') severity = 'info';
+    return {
+      sourceKey: `d${r.omeId}:${r.alertId}`,
+      severity,
+      host: r.deviceName ? `${r.deviceName}${r.serviceTag ? ` (${r.serviceTag})` : ''}` : r.omeName,
+      message: r.message || '',
+      firstSeen: toIso(r.createdAt || r.capturedAt),
+      lastSeen: toIso(r.capturedAt),
+    };
+  });
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
   netapp: collectNetappAlerts,
+  zerto: collectZertoAlerts,
+  vcenter: collectVcenterIssues,
+  dell: collectDellAlerts,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({

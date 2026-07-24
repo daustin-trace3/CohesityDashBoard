@@ -69,6 +69,36 @@ function insertNetappAlert(arrayId, { alertKey, severity, message = 'netapp issu
   `).run(arrayId, alertKey, severity, nodeName, message);
 }
 
+function insertZertoAlert({ alertId, severity, description = 'zerto issue', siteName = 'site-a' }) {
+  db.prepare(`
+    INSERT INTO zerto_alerts (alert_identifier, alert_type, severity, description, site_name)
+    VALUES (?, 'VPG0014', ?, ?, ?)
+  `).run(alertId, severity, description, siteName);
+}
+
+function insertVcenterIssue({ issueKey, severity, message = 'vcenter issue', status = 'open' }) {
+  db.prepare(`
+    INSERT INTO vcenter_issue_history (issue_key, vcenter, severity, type, target, message, status)
+    VALUES (?, 'vc-01', ?, 'host-down', 'esx-01', ?, ?)
+  `).run(issueKey, severity, message, status);
+}
+
+function insertDellInstance() {
+  const name = nextName('ome');
+  const info = db.prepare(`
+    INSERT INTO dell_ome_instances (name, host, username, encrypted_credentials)
+    VALUES (?, 'host', 'user', 'x')
+  `).run(name);
+  return info.lastInsertRowid;
+}
+
+function insertDellAlert(omeId, { alertId, severity, message = 'dell issue', status = 'not-acknowledged', deviceName = 'r740-01' }) {
+  db.prepare(`
+    INSERT INTO dell_alerts (ome_id, alert_id, severity, status, message, device_name)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(omeId, alertId, severity, status, message, deviceName);
+}
+
 function configureSmtp(overrides = {}) {
   const defaults = {
     smtp_enabled: '1',
@@ -95,6 +125,9 @@ beforeEach(() => {
   db.exec('DELETE FROM alerts');
   db.exec('DELETE FROM pure_alerts');
   db.exec('DELETE FROM netapp_alerts');
+  db.exec('DELETE FROM zerto_alerts');
+  db.exec('DELETE FROM vcenter_issue_history');
+  db.exec('DELETE FROM dell_alerts');
 });
 
 afterEach(() => {
@@ -238,5 +271,45 @@ describe('alertNotifier', () => {
     }));
     await alertNotifier.run();
     expect(sent).toHaveLength(1);
+  });
+
+  it('(j) zerto alerts send and survive the wipe+reload without resending', async () => {
+    insertZertoAlert({ alertId: 'za-1', severity: 'Error', description: 'VPG rpo breached', siteName: 'nyc-zvm' });
+    configureSmtp();
+    await alertNotifier.run();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].subject).toBe('ERROR | nyc-zvm | VPG rpo breached');
+
+    db.exec('DELETE FROM zerto_alerts');
+    insertZertoAlert({ alertId: 'za-1', severity: 'Error', description: 'VPG rpo breached', siteName: 'nyc-zvm' });
+    sent.length = 0;
+    await alertNotifier.run();
+    expect(sent).toHaveLength(0);
+  });
+
+  it('(k) vcenter open issues send; resolved issues stop reminding', async () => {
+    insertVcenterIssue({ issueKey: 'host-down|vc-01|esx-01', severity: 'critical', message: 'Host esx-01 is not responding' });
+    configureSmtp({ alert_email_reminder_hours: '1' });
+    await alertNotifier.run();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].subject).toContain('vc-01');
+
+    db.prepare("UPDATE vcenter_issue_history SET status = 'resolved'").run();
+    db.prepare("UPDATE alert_notifications SET last_notified_at = datetime('now', '-2 hours')").run();
+    sent.length = 0;
+    await alertNotifier.run();
+    expect(sent).toHaveLength(0);
+  });
+
+  it('(l) dell acknowledged alerts are excluded and normal maps to info', async () => {
+    const omeId = insertDellInstance();
+    insertDellAlert(omeId, { alertId: 1, severity: 'critical', status: 'acknowledged' });
+    insertDellAlert(omeId, { alertId: 2, severity: 'normal', message: 'link restored' });
+    insertDellAlert(omeId, { alertId: 3, severity: 'critical', message: 'PSU failure', deviceName: 'r750-02' });
+
+    configureSmtp({ alert_email_min_severity: 'warning' });
+    await alertNotifier.run();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].subject).toBe('CRITICAL | r750-02 | PSU failure');
   });
 });

@@ -230,12 +230,13 @@ router.put('/notifications', (req, res, next) => {
     if (body.smtpRecipients !== undefined) setSetting('smtp_recipients', String(body.smtpRecipients).trim().slice(0, 2000));
     if (body.alertMinSeverity !== undefined) setSetting('alert_email_min_severity', body.alertMinSeverity);
     if (body.alertPlatforms !== undefined) {
+      // current always carries every known platform key (defaults-merged in
+      // getNotificationSettings), so iterate it instead of hardcoding the list.
       const current = getNotificationSettings().alertPlatforms;
-      const merged = {
-        cohesity: body.alertPlatforms.cohesity !== undefined ? !!body.alertPlatforms.cohesity : current.cohesity,
-        pure: body.alertPlatforms.pure !== undefined ? !!body.alertPlatforms.pure : current.pure,
-        netapp: body.alertPlatforms.netapp !== undefined ? !!body.alertPlatforms.netapp : current.netapp,
-      };
+      const merged = {};
+      for (const key of Object.keys(current)) {
+        merged[key] = body.alertPlatforms[key] !== undefined ? !!body.alertPlatforms[key] : current[key];
+      }
       setSetting('alert_email_platforms', JSON.stringify(merged));
     }
     if (body.reminderHours !== undefined) setSetting('alert_email_reminder_hours', String(Math.round(Number(body.reminderHours))));

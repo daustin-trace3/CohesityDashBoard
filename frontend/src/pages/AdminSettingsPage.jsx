@@ -15,6 +15,9 @@ const NOTIFY_PLATFORMS = [
   { key: 'cohesity', label: 'Cohesity' },
   { key: 'pure', label: 'Pure Storage' },
   { key: 'netapp', label: 'NetApp' },
+  { key: 'zerto', label: 'Zerto' },
+  { key: 'vcenter', label: 'VMware vCenter' },
+  { key: 'dell', label: 'Dell (OME)' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,

@@ -190,4 +190,17 @@ module.exports = [
       }
     },
   },
+  // v6 granted Dell under namespace 'ome', but the plugin id (and therefore
+  // the namespace the middleware enforces) is 'dell' — those grants matched
+  // nothing, so Operator/Viewer members couldn't see the Dell platform.
+  {
+    version: 7,
+    up(db) {
+      db.prepare(
+        "UPDATE OR IGNORE role_grants SET permission = replace(permission, 'ome:', 'dell:') WHERE permission LIKE 'ome:%'"
+      ).run();
+      // Any leftovers were duplicates of an existing dell:* grant.
+      db.prepare("DELETE FROM role_grants WHERE permission LIKE 'ome:%'").run();
+    },
+  },
 ];
