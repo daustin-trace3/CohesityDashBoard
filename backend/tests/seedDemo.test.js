@@ -138,6 +138,33 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM zerto_metrics_history').get().c).toBeGreaterThan(100);
   });
 
+  it('seeds gflags on every cluster with consistent audit history', () => {
+    // Every cluster carries the 8-flag baseline (some also have drift flags).
+    const perCluster = db.prepare('SELECT cluster_id, COUNT(*) c FROM cluster_gflags GROUP BY cluster_id').all();
+    expect(perCluster).toHaveLength(24);
+    for (const r of perCluster) expect(r.c).toBeGreaterThanOrEqual(8);
+    for (const r of db.prepare('SELECT DISTINCT change_type FROM gflag_changes').all()) {
+      expect(['added', 'modified', 'removed']).toContain(r.change_type);
+    }
+    // 'added'/'modified' events agree with current state; fresh 24h changes exist for the ops feed.
+    const stale = db.prepare(`
+      SELECT COUNT(*) c FROM (
+        SELECT h.cluster_id, h.service_name, h.flag_name, MAX(h.id) AS max_id
+        FROM gflag_changes h WHERE h.change_type IN ('added','modified') GROUP BY 1, 2, 3
+      ) latest
+      JOIN gflag_changes h ON h.id = latest.max_id
+      LEFT JOIN gflag_changes later ON later.cluster_id = latest.cluster_id
+        AND later.service_name = latest.service_name AND later.flag_name = latest.flag_name
+        AND later.change_type = 'removed' AND later.id > latest.max_id
+      LEFT JOIN cluster_gflags g ON g.cluster_id = latest.cluster_id
+        AND g.service_name = latest.service_name AND g.flag_name = latest.flag_name
+      WHERE later.id IS NULL AND (g.id IS NULL OR g.flag_value != h.new_value)
+    `).get();
+    expect(stale.c).toBe(0);
+    const fresh = db.prepare("SELECT COUNT(*) c FROM gflag_changes WHERE detected_at >= datetime('now','-1 day')").get();
+    expect(fresh.c).toBeGreaterThanOrEqual(2);
+  });
+
   it('seeds vcenter inventory that trips every computed-issue rule', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vcenters').get().c).toBe(8);
     expect(db.prepare("SELECT COUNT(*) c FROM vcenter_vcenters WHERE last_poll_status = 'error'").get().c).toBe(1);

@@ -1,6 +1,7 @@
 const express = require('express');
 const { query, validationResult } = require('express-validator');
 const db = require('../db/database');
+const { isDemo } = require('../services/demoMode');
 const { getGflags, getGflagChanges, refreshGflags, refreshAllGflags } = require('../services/gflags');
 
 const router = express.Router();
@@ -37,6 +38,20 @@ router.post('/refresh', [
   query('clusterId').optional().isInt().toInt(),
 ], validate, async (req, res, next) => {
   try {
+    if (isDemo()) {
+      // Demo clusters aren't reachable — report the seeded state as a
+      // successful no-change refresh instead of failing live calls.
+      const clusters = req.query.clusterId
+        ? db.prepare('SELECT id, name FROM clusters WHERE id = ?').all(req.query.clusterId)
+        : db.prepare('SELECT id, name FROM clusters ORDER BY name').all();
+      if (req.query.clusterId && clusters.length === 0) {
+        return res.status(404).json({ error: 'Cluster not found.' });
+      }
+      const countFlags = db.prepare('SELECT COUNT(*) AS n FROM cluster_gflags WHERE cluster_id = ?');
+      return res.json({
+        results: clusters.map((c) => ({ clusterId: c.id, name: c.name, flags: countFlags.get(c.id).n, changes: 0 })),
+      });
+    }
     if (req.query.clusterId) {
       const cluster = db.prepare('SELECT * FROM clusters WHERE id = ?').get(req.query.clusterId);
       if (!cluster) return res.status(404).json({ error: 'Cluster not found.' });

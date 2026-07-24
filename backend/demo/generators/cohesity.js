@@ -503,6 +503,105 @@ function seedCohesity(db, { now, encrypt }) {
     }
   }
 
+  // ── Gflags: fleet-wide baseline + per-cluster support-case drift + audit ──
+  // Current state in cluster_gflags must stay consistent with gflag_changes
+  // (an 'added'/'modified' event's new_value is what the cluster shows now).
+  const insertGflag = db.prepare(`
+    INSERT INTO cluster_gflags (cluster_id, service_name, flag_name, flag_value, reason, source_timestamp, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertGflagChange = db.prepare(`
+    INSERT INTO gflag_changes (cluster_id, service_name, flag_name, old_value, new_value, change_type, source_reason, source_timestamp, detected_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const GFLAG_BASELINE = [
+    ['kMagneto', 'magneto_master_snapshot_gc_delay_secs', '3600', 'FY25 baseline tuning rollout'],
+    ['kMagneto', 'magneto_gatekeeper_max_outstanding_rpcs', '256', null],
+    ['kBridge', 'bridge_apollo_compaction_min_epochs', '4', 'Support case 05512233'],
+    ['kBridge', 'bridge_max_dedup_cache_size_mb', '8192', null],
+    ['kScribe', 'scribe_flush_interval_msecs', '500', null],
+    ['kGandalf', 'gandalf_leader_lease_timeout_msecs', '10000', 'Support case 05498711'],
+    ['kIris', 'iris_session_idle_timeout_secs', '1800', 'Security baseline'],
+    ['kKeychain', 'keychain_kms_retry_limit', '5', null],
+  ];
+  const GFLAG_DRIFT = [
+    ['kMagneto', 'magneto_disable_parallel_runs', 'true', 'Support case 05633104 — job hang mitigation'],
+    ['kBridge', 'bridge_prefer_sequential_restore', 'true', 'Support case 05641220 — restore throughput'],
+    ['kScribe', 'scribe_max_commit_batch_size', '2048', 'ENG-51877 workaround'],
+    ['kYoda', 'yoda_indexing_max_parallel_files', '64', 'Support case 05659812 — indexing backlog'],
+  ];
+  const gflagKey = (service, flag) => `${service}\x00${flag}`;
+
+  let gflagCount = 0;
+  let gflagChangeCount = 0;
+  for (const cluster of clusters) {
+    const rng = rngFor(`gflags:${cluster.name}`);
+    const state = new Map();
+    for (const [service, flag, value, reason] of GFLAG_BASELINE) {
+      const setMs = now - randInt(rng, 120, 400) * 86400000;
+      state.set(gflagKey(service, flag), { service, flag, value, reason, ts: Math.floor(setMs / 1000) });
+    }
+    // ~40% of clusters carry one or two support-case drift flags — the whole
+    // point of the Compare tab is that the fleet is NOT uniform.
+    if (chance(rng, 0.4)) {
+      const count = chance(rng, 0.3) ? 2 : 1;
+      for (let i = 0; i < count; i++) {
+        const [service, flag, value, reason] = pick(rng, GFLAG_DRIFT);
+        if (state.has(gflagKey(service, flag))) continue;
+        const setMs = now - randInt(rng, 5, 75) * 86400000;
+        const ts = Math.floor(setMs / 1000);
+        state.set(gflagKey(service, flag), { service, flag, value, reason, ts });
+        insertGflagChange.run(cluster.id, service, flag, null, value, 'added', reason, ts, new Date(setMs).toISOString());
+        gflagChangeCount++;
+      }
+    }
+    // Some clusters had a baseline value retuned since the initial rollout.
+    if (chance(rng, 0.25)) {
+      const retuneMs = now - randInt(rng, 10, 60) * 86400000;
+      const ts = Math.floor(retuneMs / 1000);
+      const row = state.get(gflagKey('kScribe', 'scribe_flush_interval_msecs'));
+      insertGflagChange.run(cluster.id, 'kScribe', 'scribe_flush_interval_msecs', row.value, '250',
+        'modified', 'Support case 05661409 — scribe latency', ts, new Date(retuneMs).toISOString());
+      gflagChangeCount++;
+      Object.assign(row, { value: '250', reason: 'Support case 05661409 — scribe latency', ts });
+    }
+    // Occasional cleanup: a workaround flag reverted after the case closed.
+    if (chance(rng, 0.2)) {
+      const removedMs = now - randInt(rng, 15, 80) * 86400000;
+      insertGflagChange.run(cluster.id, 'kMagneto', 'magneto_enable_aggressive_gc', 'true', null,
+        'removed', 'Reverted — fix shipped in 7.1.2', null, new Date(removedMs).toISOString());
+      gflagChangeCount++;
+    }
+    for (const row of state.values()) {
+      insertGflag.run(cluster.id, row.service, row.flag, row.value, row.reason, row.ts, nowIso);
+      gflagCount++;
+    }
+  }
+  // Two fresh changes inside 24h so the Ops attention feed and the Changes tab
+  // both have something recent to show right after a re-seed.
+  {
+    const freshMod = clusterByName.get('nyc-coh-prd-01');
+    const modMs = now - 10 * 3600000;
+    const modTs = Math.floor(modMs / 1000);
+    db.prepare(`UPDATE cluster_gflags SET flag_value = '7200', reason = 'Support case 05712844 — GC tuning', source_timestamp = ?
+                WHERE cluster_id = ? AND flag_name = 'magneto_master_snapshot_gc_delay_secs'`).run(modTs, freshMod.id);
+    insertGflagChange.run(freshMod.id, 'kMagneto', 'magneto_master_snapshot_gc_delay_secs', '3600', '7200',
+      'modified', 'Support case 05712844 — GC tuning', modTs, new Date(modMs).toISOString());
+    gflagChangeCount++;
+
+    const freshAdd = clusterByName.get('lon-coh-dr-01');
+    const addMs = now - 5 * 3600000;
+    const addTs = Math.floor(addMs / 1000);
+    const [service, flag, value, reason] = GFLAG_DRIFT[1];
+    const displaced = db.prepare('DELETE FROM cluster_gflags WHERE cluster_id = ? AND service_name = ? AND flag_name = ?')
+      .run(freshAdd.id, service, flag).changes;
+    insertGflag.run(freshAdd.id, service, flag, value, reason, addTs, nowIso);
+    gflagCount += 1 - displaced;
+    insertGflagChange.run(freshAdd.id, service, flag, null, value, 'added', reason, addTs, new Date(addMs).toISOString());
+    gflagChangeCount++;
+  }
+
   // ── Replication status cache: seed the default key for every cluster ───
   for (const cluster of clusters) {
     const replList = replicationsByCluster.get(cluster.name) || [];
@@ -527,6 +626,8 @@ function seedCohesity(db, { now, encrypt }) {
     sourceRegistrations: sourceCount,
     licenseViews: viewCount,
     workloadRows,
+    gflags: gflagCount,
+    gflagChanges: gflagChangeCount,
   };
 }
 
