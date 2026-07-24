@@ -7,6 +7,7 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [permissions, setPermissions] = useState([]);
+  const [authEnabled, setAuthEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
 
   const loadSession = useCallback(async () => {
@@ -14,11 +15,13 @@ export function AuthProvider({ children }) {
       const { data } = await client.get('/auth/session');
       setUser(data.user);
       setPermissions(data.user?.permissions || []);
+      setAuthEnabled(data.authEnabled !== false);
       setCsrfToken(data.csrfToken);
       return data.user;
     } catch {
       setUser(null);
       setPermissions([]);
+      setAuthEnabled(true);
       setCsrfToken(null);
       return null;
     }
@@ -46,7 +49,7 @@ export function AuthProvider({ children }) {
 
   const hasPermission = useCallback((required) => checkPermission(permissions, required), [permissions]);
 
-  const value = { user, permissions, loading, login, logout, refresh: loadSession, hasPermission };
+  const value = { user, permissions, authEnabled, loading, login, logout, refresh: loadSession, hasPermission };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

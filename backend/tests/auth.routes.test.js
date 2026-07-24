@@ -37,7 +37,7 @@ describe('first-run setup + login + session + CSRF + logout', () => {
   it('GET /api/auth/setup-status → needsSetup true before any user exists', async () => {
     const res = await agent.get('/api/auth/setup-status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ needsSetup: true });
+    expect(res.body).toEqual({ needsSetup: true, authEnabled: false });
   });
 
   it('POST /api/auth/setup with a bad token → 403', async () => {
@@ -70,7 +70,7 @@ describe('first-run setup + login + session + CSRF + logout', () => {
   it('GET /api/auth/setup-status → needsSetup false once an admin exists', async () => {
     const res = await agent.get('/api/auth/setup-status');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ needsSetup: false });
+    expect(res.body).toEqual({ needsSetup: false, authEnabled: true });
   });
 
   it('POST /api/auth/login with the wrong password → 401 (generic error)', async () => {

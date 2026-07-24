@@ -29,10 +29,17 @@ export default function LoginPage() {
 
   useEffect(() => {
     client.get('/auth/setup-status')
-      .then(r => setNeedsSetup(!!r.data.needsSetup))
+      .then(r => {
+        // Open-access mode has no login — send visitors straight in.
+        if (r.data.authEnabled === false) {
+          navigate('/', { replace: true });
+          return;
+        }
+        setNeedsSetup(!!r.data.needsSetup);
+      })
       .catch(() => setNeedsSetup(false))
       .finally(() => setCheckingSetup(false));
-  }, []);
+  }, [navigate]);
 
   const handleLogin = async (e) => {
     e.preventDefault();

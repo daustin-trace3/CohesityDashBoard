@@ -495,14 +495,16 @@ export default function Layout() {
               >
                 {user.displayName || user.username}
               </span>
-              <button
-                onClick={logout}
-                title="Sign out"
-                aria-label="Sign out"
-                className="flex items-center justify-center h-8 w-8 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer"
-              >
-                <LogOut size={15} />
-              </button>
+              {user.id != null && (
+                <button
+                  onClick={logout}
+                  title="Sign out"
+                  aria-label="Sign out"
+                  className="flex items-center justify-center h-8 w-8 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer"
+                >
+                  <LogOut size={15} />
+                </button>
+              )}
             </div>
           )}
         </header>

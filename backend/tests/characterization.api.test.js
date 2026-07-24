@@ -27,6 +27,10 @@ beforeAll(() => {
   registry.registerPlugin(pureManifest);
   registry.registerPlugin(netappManifest);
 
+  // These tests characterize ENFORCED auth. With zero users the app would
+  // default to open-access mode, so pin auth on explicitly.
+  require('../services/settings').setSetting('auth_enabled', '1');
+
   const { createApp } = require('../app');
   app = createApp({ licenseGate: (req, res, next) => next() });
 });

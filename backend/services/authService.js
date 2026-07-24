@@ -130,6 +130,25 @@ function getClaimToken() {
 pruneExpired();
 bootClaimTokenCheck();
 
+/**
+ * Whether authentication is required (contract: optional-auth mode).
+ * Explicit app_settings `auth_enabled` ('0'/'1') wins; unset defaults to
+ * enabled only when users exist — a fresh install runs open-access until
+ * someone enables auth, an established install keeps requiring login.
+ */
+function authEnabled() {
+  const { getSetting } = require('./settings');
+  const v = getSetting('auth_enabled');
+  if (v === '0') return false;
+  if (v === '1') return true;
+  return userCount() > 0;
+}
+
+/** The identity every request gets while auth is disabled. */
+function anonymousAuth() {
+  return { kind: 'anonymous', name: 'open-access', grants: ['*:*:*'] };
+}
+
 module.exports = {
   hashPassword,
   verifyPassword,
@@ -138,4 +157,6 @@ module.exports = {
   destroySession,
   pruneExpired,
   getClaimToken,
+  authEnabled,
+  anonymousAuth,
 };

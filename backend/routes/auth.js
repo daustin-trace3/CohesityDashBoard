@@ -11,8 +11,10 @@ const {
   validateSession,
   destroySession,
   getClaimToken,
+  authEnabled,
 } = require('../services/authService');
-const { resolveGrants } = require('../services/rbac');
+const { resolveGrants, hasPermission } = require('../services/rbac');
+const { setSetting } = require('../services/settings');
 
 const router = express.Router();
 
@@ -60,7 +62,7 @@ function userPayload(user, grants) {
 /** GET /api/auth/setup-status */
 router.get('/setup-status', (req, res) => {
   const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-  res.json({ needsSetup: count === 0 });
+  res.json({ needsSetup: count === 0, authEnabled: authEnabled() });
 });
 
 /** POST /api/auth/setup { token, username, password } — creates the first admin. */
@@ -139,16 +141,85 @@ router.post('/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-/** GET /api/auth/session */
+/** GET /api/auth/session — in open-access mode (auth disabled) callers
+ *  without a session get a synthetic anonymous identity instead of a 401,
+ *  so the UI renders without a login. */
 router.get('/session', (req, res) => {
   const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
   const session = sessionId ? validateSession(sessionId) : null;
-  if (!session) return res.status(401).json({ error: 'unauthorized' });
+  if (!session) {
+    if (!authEnabled()) {
+      return res.json({
+        authEnabled: false,
+        user: { id: null, username: 'anonymous', displayName: 'Open access', permissions: ['*:*:*'] },
+        csrfToken: null,
+      });
+    }
+    return res.status(401).json({ error: 'unauthorized' });
+  }
 
   res.json({
+    authEnabled: authEnabled(),
     user: userPayload(session.user, session.grants),
     csrfToken: session.csrfToken,
   });
+});
+
+/** POST /api/auth/enable { username?, password? } — only callable while auth
+ *  is disabled (everyone is admin then). With no users yet it creates the
+ *  first admin and logs them in; with existing users it just flips the flag
+ *  and the caller signs in normally. */
+router.post('/enable', authLimiter, async (req, res, next) => {
+  try {
+    if (authEnabled()) return res.status(403).json({ error: 'Authentication is already enabled.' });
+
+    const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+    if (count > 0) {
+      setSetting('auth_enabled', '1');
+      return res.json({ ok: true, needsLogin: true });
+    }
+
+    const { username, password } = req.body || {};
+    const cleanUsername = String(username || '').trim();
+    if (!cleanUsername || !password) {
+      return res.status(400).json({ error: 'username and password are required to create the first admin.' });
+    }
+
+    const now = new Date().toISOString();
+    const passwordHash = await hashPassword(String(password));
+    const info = db.prepare(`
+      INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(cleanUsername, passwordHash, cleanUsername, now, now);
+
+    const adminGroup = db.prepare("SELECT id FROM groups WHERE name = 'Admin'").get();
+    if (adminGroup) {
+      db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)')
+        .run(info.lastInsertRowid, adminGroup.id);
+    }
+    setSetting('auth_enabled', '1');
+
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+    const session = createSession(user.id);
+    setSessionCookie(req, res, session.id);
+    res.json({ ok: true, user: userPayload(user, resolveGrants(db, user.id)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /api/auth/disable — requires a real admin session (this router is
+ *  auth-exempt, so the identity check is done inline). */
+router.post('/disable', (req, res) => {
+  const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
+  const session = sessionId ? validateSession(sessionId) : null;
+  if (!session) return res.status(401).json({ error: 'unauthorized' });
+  if (req.headers['x-csrf-token'] !== session.csrfToken) return res.status(403).json({ error: 'csrf' });
+  if (!hasPermission(session.grants, 'admin:users:manage')) {
+    return res.status(403).json({ error: 'forbidden', required: 'admin:users:manage' });
+  }
+  setSetting('auth_enabled', '0');
+  res.json({ ok: true });
 });
 
 module.exports = router;

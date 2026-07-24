@@ -731,6 +731,114 @@ function ServiceAccountsTab() {
   );
 }
 
+/* ── Auth mode banner: open-access vs enforced ──────────────────────────── */
+function AuthModePanel() {
+  const { authEnabled } = useAuth();
+  const { toast } = useToast();
+  const [showEnable, setShowEnable] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const openEnable = async () => {
+    try {
+      const { data } = await client.get('/auth/setup-status');
+      setNeedsSetup(!!data.needsSetup);
+      setShowEnable(true);
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not check setup state', message: errorMessage(err, '') });
+    }
+  };
+
+  const enable = async () => {
+    setError(null);
+    if (needsSetup) {
+      if (!username.trim() || !password) { setError('Username and password are required.'); return; }
+      if (password !== confirm) { setError('Passwords do not match.'); return; }
+    }
+    setBusy(true);
+    try {
+      await client.post('/auth/enable', needsSetup ? { username: username.trim(), password } : {});
+      // Full reload picks up the new session (first-admin path) or bounces
+      // through /login (existing-users path).
+      window.location.assign('/');
+    } catch (err) {
+      setError(errorMessage(err, 'Could not enable authentication.'));
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    if (!window.confirm('Disable authentication? The dashboard becomes open access for anyone who can reach it. Users, groups, and grants are kept and take effect again when re-enabled.')) return;
+    try {
+      await client.post('/auth/disable');
+      window.location.assign('/');
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not disable authentication', message: errorMessage(err, '') });
+    }
+  };
+
+  if (!authEnabled) {
+    return (
+      <>
+        <div className="flex items-center justify-between gap-3 bg-status-warn/10 border border-status-warn/30 rounded-lg px-4 py-3">
+          <div>
+            <p className="text-xs font-semibold text-status-warn">Authentication is disabled — open access</p>
+            <p className="text-[11px] text-ink-muted mt-0.5">Anyone who can reach the dashboard has full access. Users, groups, and grants below only take effect once authentication is enabled.</p>
+          </div>
+          <button onClick={openEnable}
+            className="flex-shrink-0 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
+            Enable authentication
+          </button>
+        </div>
+        {showEnable && (
+          <Modal title="Enable authentication" onClose={() => setShowEnable(false)}>
+            <div className="flex flex-col gap-3">
+              {needsSetup ? (
+                <>
+                  <p className="text-xs text-ink-muted">Create the first administrator account. You'll be signed in as this user and login will be required from now on.</p>
+                  <div>
+                    <label className="text-xs font-semibold text-ink mb-1 block">Username</label>
+                    <input value={username} onChange={e => setUsername(e.target.value)} className={inputClass} autoComplete="username" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-ink mb-1 block">Password</label>
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} className={inputClass} autoComplete="new-password" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-ink mb-1 block">Confirm password</label>
+                    <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} className={inputClass} autoComplete="new-password" />
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-ink-muted">User accounts already exist. Enabling authentication requires everyone to sign in — you'll be redirected to the login page.</p>
+              )}
+              {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
+              <button onClick={enable} disabled={busy}
+                className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer">
+                {busy ? 'Enabling…' : 'Enable authentication'}
+              </button>
+            </div>
+          </Modal>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 bg-surface border border-cohesity-border rounded-lg px-4 py-2.5">
+      <p className="text-[11px] text-ink-muted"><span className="font-semibold text-ink">Authentication is enabled.</span> Sign-in is required and the grants below are enforced.</p>
+      <button onClick={disable}
+        className="flex-shrink-0 text-[11px] font-medium px-2.5 py-1.5 text-status-warn border border-status-warn/30 rounded-lg hover:bg-status-warn/10 transition-colors cursor-pointer">
+        Disable authentication
+      </button>
+    </div>
+  );
+}
+
 /* ── Page ────────────────────────────────────────────────────────────────── */
 export default function AdminUsersPage() {
   const { hasPermission, loading: authLoading } = useAuth();
@@ -754,6 +862,7 @@ export default function AdminUsersPage() {
       <div className="flex flex-col md:flex-row gap-5 items-start">
         <AdminNav />
         <div className="flex flex-col gap-4 flex-1 min-w-0">
+          <AuthModePanel />
           <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
             {TABS.map(t => {
               const Icon = t.icon;

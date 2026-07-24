@@ -4,7 +4,7 @@
 // old blanket requireApiKey.
 const crypto = require('crypto');
 const db = require('../db/database');
-const { validateSession } = require('../services/authService');
+const { validateSession, authEnabled, anonymousAuth } = require('../services/authService');
 const { getLicenseStatus } = require('../services/license');
 const { hasPermission } = require('../services/rbac');
 
@@ -68,7 +68,7 @@ module.exports = function authenticate(req, res, next) {
     const licensed = ['valid', 'grace'].includes(getLicenseStatus().state);
     if (!mutating || !licensed) return next();
 
-    const auth = authenticateFromRequest(req);
+    const auth = authenticateFromRequest(req) || (!authEnabled() ? anonymousAuth() : null);
     if (!auth) return res.status(401).json({ error: 'unauthorized' });
     if (!hasPermission(auth.grants, 'admin:license:manage')) {
       return res.status(403).json({ error: 'forbidden', required: 'admin:license:manage' });
@@ -77,7 +77,9 @@ module.exports = function authenticate(req, res, next) {
     return next();
   }
 
-  const auth = authenticateFromRequest(req);
+  // Real identities (session cookie / api key) always win so scoped service
+  // accounts keep their scoping even while auth is disabled.
+  const auth = authenticateFromRequest(req) || (!authEnabled() ? anonymousAuth() : null);
   if (!auth) return res.status(401).json({ error: 'unauthorized' });
   req.auth = auth;
   next();
