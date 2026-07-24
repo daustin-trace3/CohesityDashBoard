@@ -1,5 +1,8 @@
 import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from './auth/AuthContext';
+import LoginPage from './pages/LoginPage';
+import AdminUsersPage from './pages/AdminUsersPage';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import OpsMonitorPage from './pages/ops/OpsMonitorPage';
@@ -82,9 +85,11 @@ export default function App() {
       <SearchContext.Provider value={{ search, setSearch }}>
         <ToastProvider>
           <GlobalLoadingBar />
-          <LicenseGate>
           <BrowserRouter>
+          <AuthProvider>
+          <LicenseGate>
             <Routes>
+              <Route path="/login" element={<LoginPage />} />
               <Route path="/" element={<Layout />}>
                 <Route index element={<Navigate to="/ops" replace />} />
                 <Route path="ops"             element={withBoundary(<OpsMonitorPage />)} />
@@ -145,10 +150,12 @@ export default function App() {
                 <Route path="ai-advisor"      element={withBoundary(<AIAdvisorPage />)} />
                 <Route path="settings"        element={withBoundary(<SettingsPage />)} />
                 <Route path="admin"           element={withBoundary(<AdminSettingsPage />)} />
+                <Route path="access"          element={withBoundary(<AdminUsersPage />)} />
               </Route>
             </Routes>
-          </BrowserRouter>
           </LicenseGate>
+          </AuthProvider>
+          </BrowserRouter>
         </ToastProvider>
       </SearchContext.Provider>
     </PlatformContext.Provider>

@@ -2,8 +2,9 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen, Globe2, MonitorSmartphone, History, AlertTriangle, Wrench, Flag,
+  Activity, FileText, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ClipboardCheck, Settings, Sparkles, BadgeCheck, Database, Layers, Gauge, Network, FolderTree, Cloud, LayoutList, FolderOpen, Globe2, MonitorSmartphone, History, AlertTriangle, Wrench, Flag, LogOut,
 } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
 import NotificationBell from './NotificationBell';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
 import { subscribeNetworkActivity } from '../api/client';
@@ -66,6 +67,7 @@ const navGroups = [
     label: 'System',
     items: [
       { label: 'Settings', route: '/settings', icon: Settings, isActive: (p) => p.startsWith('/settings') },
+      { label: 'Users & Access', route: '/access', icon: ShieldCheck, isActive: (p) => p.startsWith('/access') },
     ],
   },
 ];
@@ -283,6 +285,7 @@ export default function Layout() {
   const { search, setSearch } = useSearch();
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, logout, authEnabled } = useAuth();
   const pathname = location.pathname;
   const isPure = pathname.startsWith('/pure');
   const isNetapp = pathname.startsWith('/netapp');
@@ -651,6 +654,26 @@ export default function Layout() {
           >
             <Settings size={15} />
           </button>
+
+          {/* Signed-in user + sign out (hidden entirely in open-access mode) */}
+          {authEnabled && user && user.id != null && (
+            <div className="flex items-center gap-2 flex-shrink-0 pl-3 ml-1 border-l border-cohesity-border">
+              <span
+                className="text-xs text-ink-muted max-w-[120px] truncate hidden sm:block"
+                title={user.displayName || user.username}
+              >
+                {user.displayName || user.username}
+              </span>
+              <button
+                onClick={logout}
+                title="Sign out"
+                aria-label="Sign out"
+                className="flex items-center justify-center h-8 w-8 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer"
+              >
+                <LogOut size={15} />
+              </button>
+            </div>
+          )}
         </header>
 
         {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}

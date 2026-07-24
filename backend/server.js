@@ -36,7 +36,12 @@ const vcenterRouter = require('./routes/vcenter');
 const dellRouter = require('./routes/dell');
 const dnsRouter = require('./routes/dns');
 const opsRouter = require('./routes/ops');
-const requireApiKey = require('./middleware/auth');
+const authRouter = require('./routes/auth');
+const usersRouter = require('./routes/users');
+const authenticate = require('./middleware/authenticate');
+const csrf = require('./middleware/csrf');
+const { requirePermission, platformPermission } = require('./middleware/requirePermission');
+const { seedRbac } = require('./services/rbacSeed');
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const { initPoller } = require('./services/poller');
@@ -95,39 +100,52 @@ app.use('/api', limiter);
 
 app.use(express.json({ limit: '1mb' }));
 
-// API key authentication for all /api/ routes
-app.use('/api', requireApiKey);
+// Session/api-key/anonymous identity resolution (ported from icc-phase1).
+// With auth disabled (the default until someone enables it in Users & Access)
+// every request gets an anonymous *:*:* identity — behavior matches the old
+// blanket requireApiKey world for browsers, while x-api-key automation and
+// scoped service accounts keep working either way.
+app.use('/api', authenticate);
+app.use('/api', csrf);
 
 // Product license gate — blocks everything except /api/license/* when unlicensed
 app.use('/api', requireLicense);
 
+// Fixed-section permission: Fable-dev's flat /api/<section> mounts map to
+// `cohesity:<section>` (or admin:settings). GET = view, everything else = manage.
+const perm = (ns, section) => requirePermission(
+  (req) => `${ns}:${section}:${req.method === 'GET' ? 'view' : 'manage'}`
+);
+
 // Routes
+app.use('/api/auth', authRouter);
+app.use('/api/users', perm('admin', 'users'), usersRouter);
 app.use('/api/license', licenseRouter);
-app.use('/api/clusters', clustersRouter);
-app.use('/api/metrics', metricsRouter);
-app.use('/api/alerts', alertsRouter);
-app.use('/api/hardware', hardwareRouter);
+app.use('/api/clusters', perm('cohesity', 'clusters'), clustersRouter);
+app.use('/api/metrics', perm('cohesity', 'metrics'), metricsRouter);
+app.use('/api/alerts', perm('cohesity', 'alerts'), alertsRouter);
+app.use('/api/hardware', perm('cohesity', 'hardware'), hardwareRouter);
 app.use('/api/poller', pollerRouter);
-app.use('/api/helios', heliosRouter);
-app.use('/api/import', importRouter);
-app.use('/api/analytics', analyticsRouter);
-app.use('/api/replication', replicationRouter);
-app.use('/api/insights', insightsRouter);
-app.use('/api/governance', governanceRouter);
-app.use('/api/dashboard', dashboardRouter);
-app.use('/api/settings', settingsRouter);
-app.use('/api/advisor', advisorRouter);
-app.use('/api/ai-audit', aiAuditRouter);
-app.use('/api/licensing', licensingRouter);
-app.use('/api/views', viewsRouter);
-app.use('/api/workloads', workloadsRouter);
-app.use('/api/gflags', gflagsRouter);
-app.use('/api/pure', pureRouter);
-app.use('/api/pure1', pure1Router);
-app.use('/api/netapp', netappRouter);
-app.use('/api/zerto', zertoRouter);
-app.use('/api/vcenter', vcenterRouter);
-app.use('/api/dell', dellRouter);
+app.use('/api/helios', perm('cohesity', 'helios'), heliosRouter);
+app.use('/api/import', perm('cohesity', 'import'), importRouter);
+app.use('/api/analytics', perm('cohesity', 'analytics'), analyticsRouter);
+app.use('/api/replication', perm('cohesity', 'replication'), replicationRouter);
+app.use('/api/insights', perm('cohesity', 'insights'), insightsRouter);
+app.use('/api/governance', perm('cohesity', 'governance'), governanceRouter);
+app.use('/api/dashboard', perm('cohesity', 'dashboard'), dashboardRouter);
+app.use('/api/settings', perm('admin', 'settings'), settingsRouter);
+app.use('/api/advisor', perm('cohesity', 'advisor'), advisorRouter);
+app.use('/api/ai-audit', perm('cohesity', 'ai-audit'), aiAuditRouter);
+app.use('/api/licensing', perm('cohesity', 'licensing'), licensingRouter);
+app.use('/api/views', perm('cohesity', 'views'), viewsRouter);
+app.use('/api/workloads', perm('cohesity', 'workloads'), workloadsRouter);
+app.use('/api/gflags', perm('cohesity', 'gflags'), gflagsRouter);
+app.use('/api/pure', requirePermission(platformPermission('pure')), pureRouter);
+app.use('/api/pure1', requirePermission(platformPermission('pure')), pure1Router);
+app.use('/api/netapp', requirePermission(platformPermission('netapp')), netappRouter);
+app.use('/api/zerto', requirePermission(platformPermission('zerto')), zertoRouter);
+app.use('/api/vcenter', requirePermission(platformPermission('vcenter')), vcenterRouter);
+app.use('/api/dell', requirePermission(platformPermission('dell')), dellRouter);
 app.use('/api/dns', dnsRouter);
 app.use('/api/ops', opsRouter);
 
@@ -170,6 +188,9 @@ if (!require('./services/settings').getHeliosApiKey()) {
 if (getLicenseStatus().state === 'missing') {
   logger.error('[Fatal] LICENSE_KEY is not set — the dashboard is locked until a license is configured.');
 }
+
+// System groups + grants must exist before any grant editing; idempotent.
+seedRbac();
 
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);

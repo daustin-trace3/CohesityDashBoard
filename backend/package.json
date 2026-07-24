@@ -8,6 +8,7 @@
     "poller": "node pollerProcess.js"
   },
   "dependencies": {
+    "argon2": "^0.44.0",
     "axios": "^1.7.2",
     "better-sqlite3": "^12.9.0",
     "cors": "^2.8.5",

@@ -1296,3 +1296,59 @@ CREATE TABLE IF NOT EXISTS zerto_licenses (
   site_usage       TEXT,
   updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ── Auth + RBAC (ported from icc-phase1 core migration v1; optional-auth mode) ──
+CREATE TABLE IF NOT EXISTS users (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  username        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash   TEXT NOT NULL,
+  display_name    TEXT,
+  auth_provider   TEXT NOT NULL DEFAULT 'local',
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  last_login_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS groups (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  name            TEXT NOT NULL UNIQUE,
+  description     TEXT,
+  is_system       INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_groups (
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id        INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, group_id)
+);
+
+CREATE TABLE IF NOT EXISTS role_grants (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  subject_type    TEXT NOT NULL CHECK(subject_type IN ('user','group')),
+  subject_id      INTEGER NOT NULL,
+  permission      TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  UNIQUE(subject_type, subject_id, permission)
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id              TEXT PRIMARY KEY,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  csrf_token      TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  expires_at      TEXT NOT NULL,
+  last_seen_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS service_accounts (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  name            TEXT NOT NULL UNIQUE,
+  key_hash        TEXT NOT NULL,
+  key_prefix      TEXT NOT NULL,
+  permissions     TEXT NOT NULL,
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT NOT NULL,
+  last_used_at    TEXT
+);
