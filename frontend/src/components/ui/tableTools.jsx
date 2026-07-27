@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, ChevronUp, ChevronDown } from 'lucide-react';
+import { Search, ChevronUp, ChevronDown, Download } from 'lucide-react';
 
 // Client-side search + dropdown filters + column sort for a table.
 // `searchKeys` are the row fields matched by the search box; `sortValues` maps a
@@ -148,5 +148,35 @@ export function TablePager({ ctl, sizes = PAGE_SIZES }) {
         )}
       </div>
     </div>
+  );
+}
+
+// Per-table CSV download of the FULL dataset (ignores search/filter/paging).
+// `columns` = [{ label, get }] where `get` is a field name or (row) => value.
+export function CsvExportButton({ filename, columns, rows }) {
+  const esc = (v) => {
+    const t = v == null ? '' : String(v);
+    return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const onClick = () => {
+    const lines = [columns.map((c) => esc(c.label)).join(',')];
+    for (const r of rows || []) {
+      lines.push(columns.map((c) => esc(typeof c.get === 'function' ? c.get(r) : r[c.get])).join(','));
+    }
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${filename}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <button onClick={onClick} disabled={!rows?.length}
+      className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
+      <Download size={12} /> Export
+    </button>
   );
 }

@@ -5,7 +5,7 @@ import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
+import { useTableControls, SortTh, TableControls, TablePager, CsvExportButton } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
 
 export default function NetAppNfsPage() {
@@ -109,7 +109,14 @@ export default function NetAppNfsPage() {
 
       {/* Clients grouped by volume (click a count for the full list) */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">NFS Clients by Volume</p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-semibold text-ink">NFS Clients by Volume</p>
+          <CsvExportButton filename="netapp-nfs-clients-by-volume" rows={byVolume} columns={[
+            { label: 'Volume', get: 'volume_name' }, { label: 'SVM', get: 'svm_name' },
+            { label: 'Cluster', get: 'array_name' }, { label: 'Protocols', get: 'protocols' },
+            { label: 'Clients', get: 'uniqueIps' },
+          ]} />
+        </div>
         <TableControls ctl={volCtl} rows={byVolume} searchPlaceholder="Filter by volume, SVM or cluster…"
           filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (
@@ -152,7 +159,15 @@ export default function NetAppNfsPage() {
 
       {/* Connected clients */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">Connected NFS Clients</p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-semibold text-ink">Connected NFS Clients</p>
+          <CsvExportButton filename="netapp-nfs-clients" rows={clients} columns={[
+            { label: 'Client IP', get: 'client_ip' }, { label: 'SVM', get: 'svm_name' },
+            { label: 'Volume', get: 'volume_name' }, { label: 'Node', get: 'node_name' },
+            { label: 'Protocol', get: 'protocol' }, { label: 'Server IP', get: 'server_ip' },
+            { label: 'Cluster', get: 'array_name' },
+          ]} />
+        </div>
         <TableControls ctl={clientCtl} rows={clients} searchPlaceholder="Filter by IP, volume, SVM or node…"
           filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }, { k: 'protocol', label: 'Protocols' }]} />
         {data == null ? (
@@ -194,7 +209,15 @@ export default function NetAppNfsPage() {
 
       {/* Export policy rules */}
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-1">Permitted Clients by Export Policy</p>
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-sm font-semibold text-ink">Permitted Clients by Export Policy</p>
+          <CsvExportButton filename="netapp-nfs-policy-clients" rows={byPolicy} columns={[
+            { label: 'Export Policy', get: 'policy_name' }, { label: 'Volume', get: 'volume' },
+            { label: 'SVM', get: 'svm_name' }, { label: 'Cluster', get: 'array_name' },
+            { label: 'Clients', get: 'count' },
+            { label: 'Permitted Clients', get: (g) => g.entries.map((e) => e.client).join('; ') },
+          ]} />
+        </div>
         <p className="text-[11px] text-ink-faint mb-3">Click a client count to see every host permitted by that policy.</p>
         <TableControls ctl={policyCtl} rows={byPolicy} searchPlaceholder="Filter by policy, volume, SVM or cluster…"
           filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
@@ -238,7 +261,16 @@ export default function NetAppNfsPage() {
 
       {/* Raw export policy rules */}
       <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">Export Policy Rules</p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-semibold text-ink">Export Policy Rules</p>
+          <CsvExportButton filename="netapp-nfs-export-rules" rows={rules} columns={[
+            { label: 'Policy', get: 'policy_name' }, { label: 'SVM', get: 'svm_name' },
+            { label: 'Rule #', get: 'rule_index' }, { label: 'Clients', get: 'clients' },
+            { label: 'Protocols', get: 'protocols' }, { label: 'RO', get: 'ro_rule' },
+            { label: 'RW', get: 'rw_rule' }, { label: 'Superuser', get: 'superuser' },
+            { label: 'Cluster', get: 'array_name' },
+          ]} />
+        </div>
         <TableControls ctl={ruleCtl} rows={rules} searchPlaceholder="Filter by policy, SVM or client…"
           filters={[{ k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (

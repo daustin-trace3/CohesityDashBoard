@@ -5,7 +5,7 @@ import useDnsResolve from '../../api/useDnsResolve';
 import IpWithHost from '../../components/IpWithHost';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
+import { useTableControls, SortTh, TableControls, TablePager, CsvExportButton } from '../../components/ui/tableTools';
 import { BRAND, fmtNum } from './helpers';
 
 // ISO8601 duration → total seconds, for sorting duration columns.
@@ -125,7 +125,14 @@ export default function NetAppCifsPage() {
 
       {/* Sessions grouped by volume (click a count for the full list) */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-1">SMB Clients by Volume</p>
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-sm font-semibold text-ink">SMB Clients by Volume</p>
+          <CsvExportButton filename="netapp-smb-clients-by-volume" rows={byVolume} columns={[
+            { label: 'Volume', get: 'volume_name' }, { label: 'SVM', get: 'svm_name' },
+            { label: 'Cluster', get: 'array_name' }, { label: 'Users', get: 'users' },
+            { label: 'Clients', get: 'uniqueIps' },
+          ]} />
+        </div>
         <p className="text-[11px] text-ink-faint mb-3">Hosts currently mapped to each CIFS volume. Click a count to see the full client list.</p>
         <TableControls ctl={volCtl} rows={byVolume} searchPlaceholder="Filter by volume, SVM, cluster or user…"
           filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
@@ -169,7 +176,15 @@ export default function NetAppCifsPage() {
 
       {/* Clients mounting each share */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-1">Clients Mounting Each Share</p>
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-sm font-semibold text-ink">Clients Mounting Each Share</p>
+          <CsvExportButton filename="netapp-smb-share-clients" rows={byShare} columns={[
+            { label: 'Share', get: 'share_name' }, { label: 'Volume', get: 'volume_name' },
+            { label: 'SVM', get: 'svm_name' }, { label: 'Cluster', get: 'array_name' },
+            { label: 'Clients', get: 'uniqueIps' },
+            { label: 'Client IPs', get: (sh) => [...new Set(sh.sessions.map((s) => s.client_ip).filter(Boolean))].join('; ') },
+          ]} />
+        </div>
         <p className="text-[11px] text-ink-faint mb-3">Shares with a live client session. Resolved via the volume each session is using — when a volume hosts several shares, its clients appear under each. Click a count for the host list.</p>
         <TableControls ctl={byShareCtl} rows={byShare} searchPlaceholder="Filter by share, volume, SVM or cluster…"
           filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
@@ -213,7 +228,18 @@ export default function NetAppCifsPage() {
 
       {/* Active sessions */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">Active SMB Sessions</p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-semibold text-ink">Active SMB Sessions</p>
+          <CsvExportButton filename="netapp-smb-sessions" rows={sessions} columns={[
+            { label: 'Client IP', get: 'client_ip' }, { label: 'User', get: 'smb_user' },
+            { label: 'Volume', get: 'volume_name' }, { label: 'SVM', get: 'svm_name' },
+            { label: 'Protocol', get: 'protocol' }, { label: 'Auth', get: 'authentication' },
+            { label: 'Open Files', get: (s) => s.open_files ?? 0 },
+            { label: 'Connected', get: (s) => fmtDuration(s.connected_duration) },
+            { label: 'Idle', get: (s) => fmtDuration(s.idle_duration) },
+            { label: 'Cluster', get: 'array_name' },
+          ]} />
+        </div>
         <TableControls ctl={sessionCtl} rows={sessions} searchPlaceholder="Filter by IP, user, volume or SVM…"
           filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }, { k: 'protocol', label: 'Protocols' }]} />
         {data == null ? (
@@ -261,7 +287,14 @@ export default function NetAppCifsPage() {
 
       {/* CIFS shares */}
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">CIFS Shares</p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-semibold text-ink">CIFS Shares</p>
+          <CsvExportButton filename="netapp-cifs-shares" rows={shares} columns={[
+            { label: 'Share', get: 'share_name' }, { label: 'Path', get: 'path' },
+            { label: 'Volume', get: 'volume_name' }, { label: 'SVM', get: 'svm_name' },
+            { label: 'Cluster', get: 'array_name' },
+          ]} />
+        </div>
         <TableControls ctl={shareCtl} rows={shares} searchPlaceholder="Filter by share, path, volume or SVM…"
           filters={[{ k: 'array_name', label: 'Clusters' }, { k: 'svm_name', label: 'SVMs' }]} />
         {data == null ? (
