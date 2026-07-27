@@ -1,7 +1,9 @@
 import { lazy } from 'react';
-import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles } from 'lucide-react';
+import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck } from 'lucide-react';
 
 const VcOverviewPage = lazy(() => import('../../pages/vcenter/VcOverviewPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const VcPrivacyPage = () => <PrivacyInspectorPage platform="vcenter" />;
 const VcHostsPage = lazy(() => import('../../pages/vcenter/VcHostsPage'));
 const VcDatastoresPage = lazy(() => import('../../pages/vcenter/VcDatastoresPage'));
 const VcInventoryPage = lazy(() => import('../../pages/vcenter/VcInventoryPage'));
@@ -39,6 +41,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/vcenter/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/vcenter/privacy'), requiresAi: true },
       { label: 'Settings', route: '/vcenter/settings', icon: Settings, isActive: (p) => p.startsWith('/vcenter/settings') },
     ],
   },
@@ -65,6 +68,7 @@ export default {
     { path: 'vcenter/events', Component: VcEventsPage },
     { path: 'vcenter/governance', Component: VcGovernancePage },
     { path: 'vcenter/advisor', Component: VcAdvisorPage },
+    { path: 'vcenter/privacy', Component: VcPrivacyPage },
     { path: 'vcenter/settings', Component: VcSettingsPage },
   ],
 };

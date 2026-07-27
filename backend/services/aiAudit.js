@@ -1,48 +1,54 @@
-// In-memory audit trail of recent AI exchanges, so the UI can prove exactly
-// what left the box (the anonymized payload) versus what stayed local (the
-// token → real-name mapping). Holds the last 20 exchanges; cleared on restart.
+// Persistent audit trail of AI exchanges, so the UI can prove exactly what
+// left the box (the anonymized payload) versus what stayed local (the
+// token → real-name mapping). Rows are tagged with the owning platform and
+// retained for 30 days (pruned on insert).
 
-const MAX_ENTRIES = 20;
-const entries = [];
-let nextId = 1;
+const db = require('../db/database');
+
+const RETENTION_DAYS = 30;
 
 /**
  * Record an outbound AI request at the moment it is sent.
  * `messages` must be the exact (already anonymized) chat messages;
  * `mappings` is the local token → real-name table (never sent).
  */
-function recordExchange({ feature, label, model, messages, mappings }) {
-  const entry = {
-    id: nextId++,
-    feature,
-    label,
-    model,
-    sentAt: new Date().toISOString(),
-    messages,
-    mappings: mappings || [],
-    response: null,
-  };
-  entries.unshift(entry);
-  if (entries.length > MAX_ENTRIES) entries.pop();
-  return entry.id;
+function recordExchange({ platform = 'cohesity', feature, label, model, messages, mappings }) {
+  db.prepare(`DELETE FROM ai_audit_exchanges WHERE sent_at < datetime('now', '-${RETENTION_DAYS} days')`).run();
+  const info = db.prepare(`
+    INSERT INTO ai_audit_exchanges (platform, feature, label, model, sent_at, messages, mappings, mapped_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    platform, feature || null, label || null, model || null,
+    new Date().toISOString(),
+    JSON.stringify(messages), JSON.stringify(mappings || []), (mappings || []).length
+  );
+  return info.lastInsertRowid;
 }
 
 /** Attach the raw (still-tokenized) model response, as received. */
 function attachResponse(id, response) {
-  const entry = entries.find((e) => e.id === id);
-  if (entry) entry.response = response || null;
+  db.prepare('UPDATE ai_audit_exchanges SET response = ? WHERE id = ?').run(response || null, id);
 }
 
-function listExchanges() {
-  return entries.map(({ id, feature, label, model, sentAt, mappings, response }) => ({
-    id, feature, label, model, sentAt,
-    mappedCount: mappings.length,
-    hasResponse: response != null,
-  }));
+function listExchanges({ platform } = {}) {
+  const where = platform ? 'WHERE platform = ?' : '';
+  const rows = db.prepare(`
+    SELECT id, platform, feature, label, model, sent_at AS sentAt, mapped_count AS mappedCount,
+           response IS NOT NULL AS hasResponse
+    FROM ai_audit_exchanges ${where}
+    ORDER BY sent_at DESC, id DESC
+    LIMIT 500
+  `).all(...(platform ? [platform] : []));
+  return rows.map((r) => ({ ...r, hasResponse: !!r.hasResponse }));
 }
 
 function getExchange(id) {
-  return entries.find((e) => e.id === Number(id)) || null;
+  const row = db.prepare(`
+    SELECT id, platform, feature, label, model, sent_at AS sentAt, messages, mappings, response
+    FROM ai_audit_exchanges WHERE id = ?
+  `).get(Number(id));
+  if (!row) return null;
+  return { ...row, messages: JSON.parse(row.messages), mappings: JSON.parse(row.mappings) };
 }
 
-module.exports = { recordExchange, attachResponse, listExchanges, getExchange };
+module.exports = { recordExchange, attachResponse, listExchanges, getExchange, RETENTION_DAYS };

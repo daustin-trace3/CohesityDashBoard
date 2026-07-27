@@ -1,7 +1,9 @@
 import { lazy } from 'react';
-import { Gauge, Server, Settings, AlertTriangle, Wrench, BadgeCheck, Sparkles } from 'lucide-react';
+import { Gauge, Server, Settings, AlertTriangle, Wrench, BadgeCheck, Sparkles, ShieldCheck } from 'lucide-react';
 
 const DellOverviewPage = lazy(() => import('../../pages/dell/DellOverviewPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const DellPrivacyPage = () => <PrivacyInspectorPage platform="dell" />;
 const DellDevicesPage = lazy(() => import('../../pages/dell/DellDevicesPage'));
 const DellAlertsPage = lazy(() => import('../../pages/dell/DellAlertsPage'));
 const DellHardwarePage = lazy(() => import('../../pages/dell/DellHardwarePage'));
@@ -35,6 +37,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/dell/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/dell/privacy'), requiresAi: true },
       { label: 'Settings', route: '/dell/settings', icon: Settings, isActive: (p) => p.startsWith('/dell/settings') },
     ],
   },
@@ -59,6 +62,7 @@ export default {
     { path: 'dell/hardware', Component: DellHardwarePage },
     { path: 'dell/support', Component: DellSupportPage },
     { path: 'dell/advisor', Component: DellAdvisorPage },
+    { path: 'dell/privacy', Component: DellPrivacyPage },
     { path: 'dell/settings', Component: DellSettingsPage },
   ],
 };

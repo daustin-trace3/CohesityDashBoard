@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
-  Cloud, LayoutList, Database, Layers, Bell, ArrowLeftRight, HardDrive, Network, Settings, Sparkles,
+  Cloud, LayoutList, Database, Layers, Bell, ArrowLeftRight, HardDrive, Network, Settings, Sparkles, ShieldCheck,
 } from 'lucide-react';
 
 const PureAlertsPage = lazy(() => import('../../pages/pure/PureAlertsPage'));
@@ -14,6 +14,8 @@ const PureConnectivityPage = lazy(() => import('../../pages/pure/PureConnectivit
 const PureSettingsPage = lazy(() => import('../../pages/pure/PureSettingsPage'));
 const PureEstatePage = lazy(() => import('../../pages/pure/PureEstatePage'));
 const PureAdvisorPage = lazy(() => import('../../pages/pure/PureAdvisorPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const PurePrivacyPage = () => <PrivacyInspectorPage platform="pure" />;
 
 // Pure Storage sidebar — shown when the Pure platform is active. Grouped into
 // sections that mirror the Cohesity menu.
@@ -43,6 +45,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/pure/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/pure/privacy'), requiresAi: true },
       { label: 'Settings', route: '/pure/settings', icon: Settings, isActive: (p) => p.startsWith('/pure/settings') },
     ],
   },
@@ -71,6 +74,7 @@ export default {
     { path: 'pure/connectivity', Component: PureConnectivityPage },
     { path: 'pure/alerts', Component: PureAlertsPage },
     { path: 'pure/advisor', Component: PureAdvisorPage },
+    { path: 'pure/privacy', Component: PurePrivacyPage },
     { path: 'pure/settings', Component: PureSettingsPage },
   ],
 };

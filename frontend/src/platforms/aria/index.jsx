@@ -1,7 +1,9 @@
 import { lazy } from 'react';
-import { Gauge, Package, Activity, Server, Puzzle, CheckSquare, Settings, DiscAlbum, Sparkles } from 'lucide-react';
+import { Gauge, Package, Activity, Server, Puzzle, CheckSquare, Settings, DiscAlbum, Sparkles, ShieldCheck } from 'lucide-react';
 
 const AriaOverviewPage = lazy(() => import('../../pages/aria/AriaOverviewPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const AriaPrivacyPage = () => <PrivacyInspectorPage platform="aria" />;
 const AriaDeploymentsPage = lazy(() => import('../../pages/aria/AriaDeploymentsPage'));
 const AriaActivityPage = lazy(() => import('../../pages/aria/AriaActivityPage'));
 const AriaInfrastructurePage = lazy(() => import('../../pages/aria/AriaInfrastructurePage'));
@@ -34,6 +36,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/aria/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/aria/privacy'), requiresAi: true },
       { label: 'Settings', route: '/aria/settings', icon: Settings, isActive: (p) => p.startsWith('/aria/settings') },
     ],
   },
@@ -60,6 +63,7 @@ export default {
     { path: 'aria/approvals', Component: AriaApprovalsPage },
     { path: 'aria/images', Component: AriaImagesAuditPage },
     { path: 'aria/advisor', Component: AriaAdvisorPage },
+    { path: 'aria/privacy', Component: AriaPrivacyPage },
     { path: 'aria/settings', Component: AriaSettingsPage },
   ],
 };

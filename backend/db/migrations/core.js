@@ -219,4 +219,27 @@ module.exports = [
       }
     },
   },
+  // Persistent AI audit trail (was in-memory, last 20, cleared on restart).
+  // Rows are pruned after 30 days by services/aiAudit.js on insert.
+  {
+    version: 9,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ai_audit_exchanges (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          platform      TEXT NOT NULL DEFAULT 'cohesity',
+          feature       TEXT,
+          label         TEXT,
+          model         TEXT,
+          sent_at       TEXT NOT NULL,
+          messages      TEXT NOT NULL,
+          mappings      TEXT NOT NULL DEFAULT '[]',
+          mapped_count  INTEGER NOT NULL DEFAULT 0,
+          response      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_audit_platform_sent
+          ON ai_audit_exchanges (platform, sent_at DESC);
+      `);
+    },
+  },
 ];

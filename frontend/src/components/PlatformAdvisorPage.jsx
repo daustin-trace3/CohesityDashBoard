@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Sparkles, FileText, Clock, ShieldCheck } from 'lucide-react';
+import { Sparkles, FileText, Clock } from 'lucide-react';
 import client from '../api/client';
 import AdvisorReportModal from './AdvisorReportModal';
-import AiPrivacyModal from './AiPrivacyModal';
 import { PageHeader } from './ui/primitives';
 
 function timeAgo(ts) {
@@ -79,7 +78,6 @@ function ReportTile({ tab, state, brand, onOpen, onRun }) {
 export default function PlatformAdvisorPage({ platform, brand, title = 'AI Advisor', tabs }) {
   const [states, setStates] = useState({}); // slug -> { enabled, report }
   const [open, setOpen] = useState(null);   // { slug, autoRun }
-  const [privacyOpen, setPrivacyOpen] = useState(false);
 
   const basePath = `/${platform}/advisor`;
 
@@ -102,15 +100,7 @@ export default function PlatformAdvisorPage({ platform, brand, title = 'AI Advis
         icon={Sparkles}
         title={title}
         description="AI analyses for this platform. Reports run only when you ask — open the last run or generate a fresh one. Cached results are flagged stale after 24h."
-      >
-        <button
-          onClick={() => setPrivacyOpen(true)}
-          title="See exactly what each AI request sent — all names anonymized — and the local mapping that never left this server"
-          className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 border border-cohesity-border text-ink rounded-lg hover:border-brand/50 hover:text-brand transition-colors cursor-pointer"
-        >
-          <ShieldCheck size={13} /> Privacy Inspector
-        </button>
-      </PageHeader>
+      />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
         {tabs.map(tab => (
@@ -136,8 +126,6 @@ export default function PlatformAdvisorPage({ platform, brand, title = 'AI Advis
           onUpdated={(data) => setStates(s => ({ ...s, [openTab.slug]: { enabled: true, report: data } }))}
         />
       )}
-
-      {privacyOpen && <AiPrivacyModal onClose={() => setPrivacyOpen(false)} />}
     </div>
   );
 }

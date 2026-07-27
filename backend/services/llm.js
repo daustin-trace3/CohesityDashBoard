@@ -236,6 +236,7 @@ async function analyzeClusterWithLLM(clusterId, mode = 'system') {
     { role: 'user', content: userPrompt },
   ];
   const auditId = recordExchange({
+    platform: 'cohesity',
     feature: 'Cluster Analysis',
     label: `${cluster.name} · ${mode}`,
     model: MODEL,

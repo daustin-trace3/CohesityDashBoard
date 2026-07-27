@@ -2,6 +2,8 @@ import { lazy } from 'react';
 import { Gauge, ShieldCheck, Globe2, Bell, MonitorSmartphone, Settings, ArrowLeftRight, BadgeCheck, Sparkles } from 'lucide-react';
 
 const ZertoOverviewPage = lazy(() => import('../../pages/zerto/ZertoOverviewPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const ZertoPrivacyPage = () => <PrivacyInspectorPage platform="zerto" />;
 const ZertoVpgsPage = lazy(() => import('../../pages/zerto/ZertoVpgsPage'));
 const ZertoSitesPage = lazy(() => import('../../pages/zerto/ZertoSitesPage'));
 const ZertoAlertsPage = lazy(() => import('../../pages/zerto/ZertoAlertsPage'));
@@ -39,6 +41,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/zerto/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/zerto/privacy'), requiresAi: true },
       { label: 'Settings', route: '/zerto/settings', icon: Settings, isActive: (p) => p.startsWith('/zerto/settings') },
     ],
   },
@@ -63,6 +66,7 @@ export default {
     { path: 'zerto/sites', Component: ZertoSitesPage },
     { path: 'zerto/alerts', Component: ZertoAlertsPage },
     { path: 'zerto/vms', Component: ZertoVmsPage },
+    { path: 'zerto/privacy', Component: ZertoPrivacyPage },
     { path: 'zerto/settings', Component: ZertoSettingsPage },
     { path: 'zerto/licensing', Component: ZertoLicensingPage },
     { path: 'zerto/advisor', Component: ZertoAdvisorPage },

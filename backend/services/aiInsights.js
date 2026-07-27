@@ -185,6 +185,7 @@ async function reviewAlert(alertId, { force = false } = {}) {
   }, anon);
 
   const auditId = recordExchange({
+    platform: 'cohesity',
     feature: 'Alert Review',
     label: `${alert.cluster_name} · alert #${alertId}`,
     model: MODEL,

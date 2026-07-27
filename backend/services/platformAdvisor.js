@@ -63,6 +63,7 @@ function createPlatformAdvisor({ platform, feature, table, reports }) {
       { role: 'user', content: userPrompt },
     ];
     const auditId = recordExchange({
+      platform,
       feature,
       label: spec.noun,
       model: MODEL,

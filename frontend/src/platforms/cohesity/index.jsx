@@ -9,6 +9,8 @@ const AlertsPage = lazy(() => import('../../pages/AlertsPage'));
 const HardwarePage = lazy(() => import('../../pages/HardwarePage'));
 const ClusterManagement = lazy(() => import('../../pages/ClusterManagement'));
 const GflagsPage = lazy(() => import('../../pages/GflagsPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const CohesityPrivacyPage = () => <PrivacyInspectorPage platform="cohesity" />;
 
 const navGroups = [
   {
@@ -43,6 +45,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/cohesity/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/cohesity/privacy'), requiresAi: true },
       { label: 'Settings', route: '/settings', icon: Settings, isActive: (p) => p.startsWith('/settings') },
     ],
   },
@@ -68,5 +71,6 @@ export default {
     { path: 'cohesity/hardware', Component: HardwarePage },
     { path: 'cohesity/clusters', Component: ClusterManagement },
     { path: 'cohesity/gflags', Component: GflagsPage },
+    { path: 'cohesity/privacy', Component: CohesityPrivacyPage },
   ],
 };

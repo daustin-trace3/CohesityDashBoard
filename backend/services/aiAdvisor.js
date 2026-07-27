@@ -467,6 +467,7 @@ async function generateReport(reportKey) {
     { role: 'user', content: userPrompt },
   ];
   const auditId = recordExchange({
+    platform: 'cohesity',
     feature: 'AI Advisor',
     label: spec.noun,
     model: MODEL,

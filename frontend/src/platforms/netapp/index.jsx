@@ -1,9 +1,11 @@
 import { lazy } from 'react';
 import {
-  Gauge, Database, Layers, Network, FolderTree, Bell, ArrowLeftRight, HardDrive, Settings, Sparkles,
+  Gauge, Database, Layers, Network, FolderTree, Bell, ArrowLeftRight, HardDrive, Settings, Sparkles, ShieldCheck,
 } from 'lucide-react';
 
 const NetAppOverviewPage = lazy(() => import('../../pages/netapp/NetAppOverviewPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const NetAppPrivacyPage = () => <PrivacyInspectorPage platform="netapp" />;
 const NetAppCapacityPage = lazy(() => import('../../pages/netapp/NetAppCapacityPage'));
 const NetAppVolumesPage = lazy(() => import('../../pages/netapp/NetAppVolumesPage'));
 const NetAppNfsPage = lazy(() => import('../../pages/netapp/NetAppNfsPage'));
@@ -43,6 +45,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/netapp/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/netapp/privacy'), requiresAi: true },
       { label: 'Settings', route: '/netapp/settings', icon: Settings, isActive: (p) => p.startsWith('/netapp/settings') },
     ],
   },
@@ -70,6 +73,7 @@ export default {
     { path: 'netapp/alerts', Component: NetAppAlertsPage },
     { path: 'netapp/hardware', Component: NetAppHardwarePage },
     { path: 'netapp/advisor', Component: NetAppAdvisorPage },
+    { path: 'netapp/privacy', Component: NetAppPrivacyPage },
     { path: 'netapp/settings', Component: NetAppSettingsPage },
   ],
 };
