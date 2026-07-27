@@ -31,11 +31,12 @@ export default function NetAppVolumesPage() {
       const t = v == null ? '' : String(v);
       return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
     };
-    const header = ['Volume', 'SVM', 'Cluster', 'Aggregate', 'Used Bytes', 'Size Bytes', 'Used %', 'State'];
+    const gb = (b) => b == null ? '' : (b / 1024 ** 3).toFixed(2);
+    const header = ['Volume', 'SVM', 'Cluster', 'Aggregate', 'Used (GB)', 'Size (GB)', 'Used %', 'State'];
     const lines = [header.join(',')];
     for (const v of volumes || []) {
       lines.push([v.name, v.svm_name, v.array_name, v.aggregate_name,
-        v.used_bytes ?? '', v.size_bytes ?? '',
+        gb(v.used_bytes), gb(v.size_bytes),
         v.used_percent != null ? Math.round(v.used_percent) : '', v.state].map(esc).join(','));
     }
     const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
