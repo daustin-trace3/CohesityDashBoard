@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Panel, Badge, StatCard, LoadingPanel, LastUpdated, RefreshButton } from '../components/ui/primitives';
-import { useTableControls, SortTh, TableControls, TablePager } from '../components/ui/tableTools';
+import { useTableControls, SortTh, TableControls, TablePager, CsvExportButton } from '../components/ui/tableTools';
 import { useToast } from '../components/ui/Toaster';
 
 function fmtBytes(b) {
@@ -44,11 +44,21 @@ function AgentsPanel({ audit }) {
         <p className="text-xs text-ink-faint py-4 text-center">No agent data collected yet — agents appear after the next poll of clusters with registered physical sources.</p>
       ) : (
         <>
-          <p className="text-[11px] text-ink-muted mb-3">
-            Current version: <span className="text-ink font-semibold tnum">{String(audit.latestVersion || '—').split('_release')[0]}</span>
-            {' '}· {audit.total - audit.outdated}/{audit.total} agents current
-            {audit.outdated > 0 && <span className="text-status-warn font-semibold"> · {audit.outdated} need updating</span>}
-          </p>
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <p className="text-[11px] text-ink-muted">
+              Current version: <span className="text-ink font-semibold tnum">{String(audit.latestVersion || '—').split('_release')[0]}</span>
+              {' '}· {audit.total - audit.outdated}/{audit.total} agents current
+              {audit.outdated > 0 && <span className="text-status-warn font-semibold"> · {audit.outdated} need updating</span>}
+            </p>
+            {/* Exports the FILTERED set (Sources convention) — unfiltered = everything. */}
+            <CsvExportButton filename="cohesity-agent-versions" rows={ctl.rows} columns={[
+              { label: 'Object', get: 'name' }, { label: 'Cluster', get: 'clusterName' },
+              { label: 'OS', get: 'os' }, { label: 'Agent Version', get: 'versionShort' },
+              { label: 'Full Version', get: 'agentVersion' },
+              { label: 'Current', get: (a) => a.isCurrent ? 'yes' : 'no' },
+              { label: 'Health', get: 'agentStatus' }, { label: 'Cluster Verdict', get: 'upgradability' },
+            ]} />
+          </div>
           <TableControls ctl={ctl} rows={rows} searchPlaceholder="Filter by object, cluster, OS or version…"
             filters={[{ k: 'clusterName', label: 'Clusters' }, { k: 'versionShort', label: 'Versions' }]} />
           {ctl.rows.length === 0 ? (
