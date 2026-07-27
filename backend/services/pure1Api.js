@@ -260,6 +260,55 @@ async function fetchLatestCapacity(ids) {
 }
 
 /** Open (not-closed) fleet alerts, most severe first. */
+/** Latest per-array performance snapshot (IOPS/latency/bandwidth), same
+ * chunked /metrics/history pattern as fetchLatestCapacity. 6 metrics x 5
+ * arrays = 30 metric-resource pairs per call (cap 32). Best-effort. */
+async function fetchLatestPerformance(ids) {
+  const result = new Map();
+  const end = Date.now();
+  const start = end - 2 * 24 * 3600 * 1000;
+  const CHUNK = 5;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    let data;
+    try {
+      data = await apiGet('/metrics/history', {
+        names: quoteList(PERF_METRICS),
+        resource_ids: quoteList(chunk),
+        aggregation: quoteList(['avg']),
+        resolution: 3600000,
+        start_time: start,
+        end_time: end,
+      });
+    } catch (err) {
+      logger.error(`[Pure1] performance history chunk failed: ${err.response && err.response.status} ${err.message}`);
+      continue;
+    }
+    for (const series of data.items || []) {
+      const res = (series.resources && series.resources[0]) || {};
+      const arrId = res.id;
+      if (!arrId) continue;
+      const points = series.data || [];
+      const last = points[points.length - 1];
+      if (!last) continue;
+      const [ts, value] = last;
+      const entry = result.get(arrId) || { capturedAt: null };
+      entry.capturedAt = Math.max(entry.capturedAt || 0, ts || 0);
+      switch (series.name) {
+        case 'array_read_iops': entry.readIops = value; break;
+        case 'array_write_iops': entry.writeIops = value; break;
+        case 'array_read_latency_us': entry.readLatencyUs = value; break;
+        case 'array_write_latency_us': entry.writeLatencyUs = value; break;
+        case 'array_read_bandwidth': entry.readBw = value; break;
+        case 'array_write_bandwidth': entry.writeBw = value; break;
+        default: break;
+      }
+      result.set(arrId, entry);
+    }
+  }
+  return result;
+}
+
 async function fetchOpenAlerts(limit = 200) {
   const data = await apiGet('/alerts', {
     filter: "state='open'",
@@ -648,6 +697,7 @@ module.exports = {
   getAccessToken,
   fetchArrays,
   fetchLatestCapacity,
+  fetchLatestPerformance,
   fetchOpenAlerts,
   getOverview,
   getAlerts,

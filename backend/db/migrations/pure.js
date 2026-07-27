@@ -377,4 +377,22 @@ module.exports = [
       `);
     },
   },
+
+  // Migration: latest Pure1 per-array performance snapshot (fed by
+  // fetchLatestPerformance each poll) so the performance advisor works in
+  // Pure1-SaaS-only deployments where the direct-array history tables stay empty.
+  {
+    version: 7,
+    up(db) {
+      db.exec(`
+        ALTER TABLE pure1_arrays ADD COLUMN read_iops REAL;
+        ALTER TABLE pure1_arrays ADD COLUMN write_iops REAL;
+        ALTER TABLE pure1_arrays ADD COLUMN read_latency_us REAL;
+        ALTER TABLE pure1_arrays ADD COLUMN write_latency_us REAL;
+        ALTER TABLE pure1_arrays ADD COLUMN read_bw_bytes REAL;
+        ALTER TABLE pure1_arrays ADD COLUMN write_bw_bytes REAL;
+        ALTER TABLE pure1_arrays ADD COLUMN perf_captured_at TEXT;
+      `);
+    },
+  },
 ];

@@ -123,9 +123,43 @@ async function refreshAll() {
   }
 
   const rowsForSnapshot = rows.map((r) => ({ ...r, _health: enrichment[r.id] ? enrichment[r.id].health : null }));
+  const priorPerf = new Map(db.prepare(`
+    SELECT pure1_id, read_iops, write_iops, read_latency_us, write_latency_us,
+           read_bw_bytes, write_bw_bytes, perf_captured_at
+    FROM pure1_arrays WHERE read_iops IS NOT NULL OR perf_captured_at IS NOT NULL
+  `).all().map((r) => [r.pure1_id, r]));
   replaceArrays(rows, enrichment);
   replaceAlerts(alerts);
   appendSnapshot(rowsForSnapshot, alerts);
+
+  // Per-array performance snapshot. replaceArrays() above rebuilt the rows
+  // with null perf columns, so re-apply fresh values where the fetch worked
+  // and the pre-replace values otherwise (last-good through outages).
+  const perfStmt = db.prepare(`
+    UPDATE pure1_arrays SET read_iops = ?, write_iops = ?, read_latency_us = ?,
+      write_latency_us = ?, read_bw_bytes = ?, write_bw_bytes = ?, perf_captured_at = ?
+    WHERE pure1_id = ?
+  `);
+  let perf = new Map();
+  try {
+    perf = await pure1Api.fetchLatestPerformance(rows.map((r) => r.id).filter(Boolean));
+  } catch (err) {
+    logger.error('[Pure1Poller] Performance fetch failed, keeping last-good:', err.message);
+  }
+  for (const r of rows) {
+    if (!r.id) continue;
+    const p = perf.get(r.id);
+    const old = priorPerf.get(r.id);
+    const src = p || old;
+    if (!src) continue;
+    perfStmt.run(
+      (p ? p.readIops : old.read_iops) ?? null, (p ? p.writeIops : old.write_iops) ?? null,
+      (p ? p.readLatencyUs : old.read_latency_us) ?? null, (p ? p.writeLatencyUs : old.write_latency_us) ?? null,
+      (p ? p.readBw : old.read_bw_bytes) ?? null, (p ? p.writeBw : old.write_bw_bytes) ?? null,
+      p ? (p.capturedAt ? new Date(p.capturedAt).toISOString() : null) : old.perf_captured_at,
+      r.id
+    );
+  }
   logger.info(`[Pure1Poller] Refreshed ${rows.length} array(s), ${alerts.length} alert(s)`);
 }
 

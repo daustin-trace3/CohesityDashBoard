@@ -88,9 +88,30 @@ function gatherCapacity() {
 
 // ── performance: latest per-array metrics + volume hotspots ────────────────
 function gatherPerformance() {
+  // Pure1 SaaS fleet perf (populated by the pure1 poller since pure migration
+  // v7) is the primary source; direct-array history is the fallback/extra.
+  const pure1Perf = db.prepare(`
+    SELECT name, read_iops, write_iops, read_latency_us, write_latency_us,
+           read_bw_bytes, write_bw_bytes, perf_captured_at
+    FROM pure1_arrays
+    WHERE read_iops IS NOT NULL OR write_iops IS NOT NULL OR read_latency_us IS NOT NULL
+  `).all().map((r) => ({
+    array: r.name,
+    readIops: r.read_iops != null ? Math.round(r.read_iops) : null,
+    writeIops: r.write_iops != null ? Math.round(r.write_iops) : null,
+    readLatencyUs: r.read_latency_us != null ? Math.round(r.read_latency_us) : null,
+    writeLatencyUs: r.write_latency_us != null ? Math.round(r.write_latency_us) : null,
+    readBw: fmtBytes(r.read_bw_bytes) + '/s',
+    writeBw: fmtBytes(r.write_bw_bytes) + '/s',
+    capturedAt: r.perf_captured_at,
+  }));
+
   const arrays = db.prepare('SELECT id, name FROM pure_arrays').all();
+  if (!arrays.length && pure1Perf.length) {
+    return { generatedAt: new Date().toISOString(), arrays: pure1Perf, hotspots: [], note: 'Array-level metrics from Pure1; volume-level hotspot history requires direct array connections.' };
+  }
   if (!arrays.length) {
-    return { generatedAt: new Date().toISOString(), note: 'No direct-connect Pure arrays registered; performance history requires the direct array API (not available via Pure1 SaaS).', arrays: [], hotspots: [] };
+    return { generatedAt: new Date().toISOString(), note: 'No performance data captured yet — Pure1 poll has not run and no direct-connect arrays are registered.', arrays: [], hotspots: [] };
   }
   const latest = db.prepare(`
     SELECT m.array_id, m.captured_at, m.read_iops, m.write_iops, m.read_latency_us, m.write_latency_us, m.read_bw_bytes, m.write_bw_bytes
@@ -124,11 +145,14 @@ function gatherPerformance() {
     readLatencyUs: v.read_latency_us != null ? Math.round(v.read_latency_us) : null,
     writeLatencyUs: v.write_latency_us != null ? Math.round(v.write_latency_us) : null,
   }));
+  // Merge: direct-array metrics win per array name; Pure1 fills the rest.
+  const seen = new Set(arrayMetrics.map((a) => a.array));
+  const merged = [...arrayMetrics, ...pure1Perf.filter((p) => !seen.has(p.array))];
   return {
     generatedAt: new Date().toISOString(),
-    arrays: arrayMetrics,
+    arrays: merged,
     hotspots,
-    note: arrayMetrics.length === 0 ? 'No performance metrics captured yet for these arrays.' : undefined,
+    note: merged.length === 0 ? 'No performance metrics captured yet for these arrays.' : undefined,
   };
 }
 
@@ -187,8 +211,8 @@ module.exports = createPlatformAdvisor({
     performance: {
       system:
         'You are a senior SAN/storage performance engineer for a Pure Storage fleet. You are given the latest per-array ' +
-        'IOPS/latency/bandwidth snapshot and the top volume-level latency hotspots (may be empty in Pure1-SaaS-only ' +
-        'setups, since Pure1 does not expose direct-array performance history — say so if empty). Identify arrays or ' +
+        'IOPS/latency/bandwidth snapshot (from Pure1 fleet metrics and/or direct array connections) and the top ' +
+        'volume-level latency hotspots (volume detail requires direct connections — say so if absent). Identify arrays or ' +
         'volumes with elevated latency or saturated IOPS, and suggest likely causes and remediation. Do not invent data. ' +
         'Markdown sections: **Summary**, **Hotspots**, **Recommended actions**. Keep under ~350 words.',
       gather: gatherPerformance,
