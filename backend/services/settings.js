@@ -22,6 +22,7 @@ const DEFAULTS = {
   aria_lease_warn_days: '7',
   aria_cert_warn_days: '30',
   aria_request_fail_lookback_hours: '24',
+  platform_ariaops_enabled: '0',
   zerto_poll_interval_minutes: '15',
   pure1_poll_interval_minutes: '15',
   vcenter_cert_warn_days: '60',
@@ -122,6 +123,7 @@ function getPlatformSettings() {
     platformVcenterEnabled: getSetting('platform_vcenter_enabled') === '1',
     platformDellEnabled: getSetting('platform_dell_enabled') === '1',
     platformAriaEnabled: getSetting('platform_aria_enabled') === '1',
+    platformAriaopsEnabled: getSetting('platform_ariaops_enabled') === '1',
     dnsServer: getSetting('dns_server') || '',
   };
 }

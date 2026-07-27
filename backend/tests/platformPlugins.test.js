@@ -24,6 +24,7 @@ const netappManifest = require('../platforms/netapp');
 const zertoManifest = require('../platforms/zerto');
 const dellManifest = require('../platforms/dell');
 const ariaManifest = require('../platforms/aria');
+const ariaopsManifest = require('../platforms/ariaops');
 const { createApp } = require('../app');
 
 const API_KEY = 'test-api-key';
@@ -37,6 +38,7 @@ beforeEach(() => {
   registry.registerPlugin(zertoManifest);
   registry.registerPlugin(dellManifest);
   registry.registerPlugin(ariaManifest);
+  registry.registerPlugin(ariaopsManifest);
   app = createApp({ licenseGate: (req, res, next) => next() });
 });
 
@@ -166,6 +168,32 @@ describe('platform plugin manifests (pure, netapp)', () => {
 
     registry.setEnabled('aria', true);
     const enabledRes = await get('/api/aria/instances');
+    expect(enabledRes.status).toBe(200);
+  });
+
+  it('ariaops: dispatcher 200, disabled -> 404 platform_disabled, /status ariaops section', async () => {
+    const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
+
+    const instancesRes = await get('/api/ariaops/instances');
+    expect(instancesRes.status).toBe(200);
+    expect(instancesRes.body).toEqual([]);
+
+    const overviewRes = await get('/api/ariaops/overview');
+    expect(overviewRes.status).toBe(200);
+    expect(Array.isArray(overviewRes.body.instances)).toBe(true);
+
+    registry.setEnabled('ariaops', false);
+    const disabledRes = await get('/api/ariaops/instances');
+    expect(disabledRes.status).toBe(404);
+    expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
+
+    const statusRes = await get('/api/poller/status');
+    expect(statusRes.status).toBe(200);
+    expect(statusRes.body.ariaops).toBeTypeOf('object');
+    expect(statusRes.body.ariaops.enabled).toBe(false);
+
+    registry.setEnabled('ariaops', true);
+    const enabledRes = await get('/api/ariaops/instances');
     expect(enabledRes.status).toBe(200);
   });
 

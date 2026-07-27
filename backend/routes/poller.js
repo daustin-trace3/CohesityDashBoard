@@ -17,6 +17,7 @@ const PLATFORM_METRICS_HISTORY = {
   vcenter: { arraysTable: 'vcenter_vcenters', metricsTable: 'vcenter_metrics_history', arrayIdColumn: 'vcenter_id' },
   dell: { arraysTable: 'dell_ome_instances', metricsTable: 'dell_metrics_history', arrayIdColumn: 'ome_id' },
   aria: { arraysTable: 'aria_instances', metricsTable: 'aria_metrics_history', arrayIdColumn: 'instance_id' },
+  ariaops: { arraysTable: 'ariaops_instances', metricsTable: 'ariaops_metrics_history', arrayIdColumn: 'instance_id' },
 };
 
 router.post('/trigger/:clusterId', (req, res, next) => {
@@ -155,6 +156,7 @@ router.get('/status', (req, res, next) => {
       vcenter: platformSections.vcenter,
       dell: platformSections.dell,
       aria: platformSections.aria,
+      ariaops: platformSections.ariaops,
       licensing: {
         enabled: true,
         isSyncing: licensingState.isSyncing,

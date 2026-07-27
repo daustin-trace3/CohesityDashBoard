@@ -19,6 +19,7 @@ import zertoMigrations from '../db/migrations/zerto.js';
 import vcenterMigrations from '../db/migrations/vcenter.js';
 import dellMigrations from '../db/migrations/dell.js';
 import ariaMigrations from '../db/migrations/aria.js';
+import ariaopsMigrations from '../db/migrations/ariaops.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -154,6 +155,7 @@ function buildNewDb() {
   runMigrations(db, 'vcenter', vcenterMigrations);
   runMigrations(db, 'dell', dellMigrations);
   runMigrations(db, 'aria', ariaMigrations);
+  runMigrations(db, 'ariaops', ariaopsMigrations);
   return db;
 }
 
@@ -198,6 +200,7 @@ const NEW_TABLES = [
   'aria_projects', 'aria_catalog_sources', 'aria_runs', 'aria_approvals',
   'aria_metrics_history', 'aria_issue_history', 'aria_images',
   'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints',
+  'ariaops_instances', 'ariaops_resources', 'ariaops_alerts', 'ariaops_metrics_history',
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
   'ai_audit_exchanges',
@@ -285,6 +288,7 @@ describe('runMigrations', () => {
       runMigrations(db, 'vcenter', vcenterMigrations);
       runMigrations(db, 'dell', dellMigrations);
       runMigrations(db, 'aria', ariaMigrations);
+      runMigrations(db, 'ariaops', ariaopsMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

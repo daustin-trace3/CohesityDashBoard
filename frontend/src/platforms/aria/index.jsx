@@ -45,7 +45,8 @@ const navGroups = [
 ];
 
 function isActive(pathname) {
-  return pathname.startsWith('/aria');
+  // 'ariaops' contains 'aria' — don't let /ariaops/* match this platform.
+  return pathname === '/aria' || pathname.startsWith('/aria/');
 }
 
 export default {

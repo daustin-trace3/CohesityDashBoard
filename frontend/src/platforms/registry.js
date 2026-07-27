@@ -5,8 +5,9 @@ import zerto from './zerto/index.jsx';
 import vcenter from './vcenter/index.jsx';
 import dell from './dell/index.jsx';
 import aria from './aria/index.jsx';
+import ariaops from './ariaops/index.jsx';
 
-export const platforms = [cohesity, pure, netapp, zerto, vcenter, dell, aria];
+export const platforms = [cohesity, pure, netapp, zerto, vcenter, dell, aria, ariaops];
 
 export function getPlatform(id) {
   return platforms.find(p => p.id === id);

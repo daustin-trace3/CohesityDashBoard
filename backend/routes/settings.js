@@ -97,7 +97,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -112,6 +112,7 @@ router.put('/', (req, res, next) => {
       resolve(platformVcenterEnabled, 'platformVcenterEnabled'),
       resolve(platformDellEnabled, 'platformDellEnabled'),
       resolve(platformAriaEnabled, 'platformAriaEnabled'),
+      resolve(platformAriaopsEnabled, 'platformAriaopsEnabled'),
     ].some(Boolean);
     if (!anyEnabled) {
       return res.status(400).json({ error: 'At least one platform must remain enabled.' });
@@ -172,6 +173,10 @@ router.put('/', (req, res, next) => {
     if (platformAriaEnabled !== undefined) {
       setSetting('platform_aria_enabled', platformAriaEnabled ? '1' : '0');
       applyPlatformEnabled('aria', !!platformAriaEnabled);
+    }
+    if (platformAriaopsEnabled !== undefined) {
+      setSetting('platform_ariaops_enabled', platformAriaopsEnabled ? '1' : '0');
+      applyPlatformEnabled('ariaops', !!platformAriaopsEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));
