@@ -207,6 +207,7 @@ const NEW_TABLES = [
   // Legacy table extended by netapp migration v4 (volume detail columns) —
   // its post-migration SQL no longer matches the schema.sql original.
   'netapp_volumes',
+  'cohesity_objects',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy

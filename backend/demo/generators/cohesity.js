@@ -503,6 +503,57 @@ function seedCohesity(db, { now, encrypt }) {
     }
   }
 
+  // ── Object inventory (Sources page): per-object rows per cluster ─────────
+  const insertObject = db.prepare(`
+    INSERT INTO cohesity_objects
+      (cluster_id, object_id, global_id, name, source_name, environment, object_type,
+       os_type, protection_type, logical_bytes, is_protected, protection_groups,
+       policy_names, last_backup_status, sla_violated, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const OBJ_SHAPES = {
+    VMware: { type: 'VirtualMachine', src: (c) => `vc-${c.site}.icc.demo`, os: ['Linux', 'Windows'] },
+    Physical: { type: 'Host', src: (c, n) => n, os: ['Windows', 'Linux'] },
+    SQL: { type: 'Database', src: (c) => `${c.site}-sql-cluster`, os: ['Windows'] },
+    Oracle: { type: 'Database', src: (c) => `${c.site}-ora-rac`, os: ['Linux'] },
+    NetApp: { type: 'Volume', src: (c) => `${c.site}-ntap-01`, os: [null] },
+    GenericNas: { type: 'Share', src: (c) => `${c.site}-nas-01`, os: [null] },
+    Exchange: { type: 'Database', src: (c) => `${c.site}-exch-dag`, os: ['Windows'] },
+  };
+  let objectRows = 0;
+  for (const cluster of clusters) {
+    const rng = rngFor(`${cluster.name}-objects`);
+    const site = cluster.name.split('-')[0];
+    const envRows = db.prepare(`
+      SELECT DISTINCT environment FROM workload_history WHERE cluster_id = ? AND environment != 'Views'
+    `).all(cluster.id).map((r) => r.environment);
+    for (const environment of envRows) {
+      const shape = OBJ_SHAPES[environment] || { type: 'Object', src: () => null, os: [null] };
+      const count = environment === 'VMware' ? randInt(rng, 25, 60) : randInt(rng, 4, 18);
+      for (let i = 1; i <= count; i++) {
+        const name = environment === 'VMware' ? `${site}-vm-${String(i).padStart(3, '0')}`
+          : environment === 'Physical' ? `${site}-phys-${String(i).padStart(2, '0')}`
+            : `${site}-${environment.toLowerCase()}-${String(i).padStart(2, '0')}`;
+        const isProtected = chance(rng, 0.86);
+        const groupName = `${environment}_Protect_${1 + (i % 3)}`;
+        const failed = isProtected && chance(rng, 0.06);
+        insertObject.run(
+          cluster.id, 10000 + objectRows, `${cluster.id}:demo:${10000 + objectRows}`,
+          name, shape.src(({ site }), name), environment, shape.type,
+          pick(rng, shape.os), environment === 'Physical' ? 'Volume' : null,
+          randInt(rng, 20, 900) * 1e9,
+          isProtected ? 1 : 0,
+          isProtected ? JSON.stringify([groupName]) : null,
+          isProtected ? JSON.stringify([`${site}-${environment.toLowerCase()}-daily`]) : null,
+          isProtected ? (failed ? 'Failed' : 'Succeeded') : null,
+          isProtected ? (failed && chance(rng, 0.5) ? 1 : 0) : null,
+          new Date(now - randInt(rng, 2, 30) * 60000).toISOString()
+        );
+        objectRows++;
+      }
+    }
+  }
+
   // ── Gflags: fleet-wide baseline + per-cluster support-case drift + audit ──
   // Current state in cluster_gflags must stay consistent with gflag_changes
   // (an 'added'/'modified' event's new_value is what the cluster shows now).

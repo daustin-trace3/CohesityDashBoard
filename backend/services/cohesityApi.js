@@ -368,6 +368,23 @@ async function fetchGflags(cluster) {
   return data;
 }
 
+/**
+ * Every indexed object (protected and unprotected) via the v2 object search,
+ * paginated by cookie. Capped at 20k objects per cluster.
+ */
+async function fetchSearchObjects(cluster) {
+  const client = await getAuthenticatedClient(cluster);
+  const objects = [];
+  let cookie = null;
+  do {
+    const url = `/v2/data-protect/search/objects?count=1000${cookie ? `&paginationCookie=${encodeURIComponent(cookie)}` : ''}`;
+    const { data } = await client.get(url, { timeout: 120000 });
+    objects.push(...(data?.objects || []));
+    cookie = data?.paginationCookie || null;
+  } while (cookie && objects.length < 20000);
+  return objects;
+}
+
 module.exports = {
   getAuthenticatedClient,
   invalidateSession,
@@ -385,5 +402,6 @@ module.exports = {
   fetchProtectionRuns,
   fetchProtectionJobs,
   listProtectionGroupsV2,
-  getProtectionGroupRunsV2
+  getProtectionGroupRunsV2,
+  fetchSearchObjects
 };

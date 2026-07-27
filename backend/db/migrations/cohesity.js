@@ -418,4 +418,35 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 9,
+    up(db) {
+      // Per-object source inventory from /v2/data-protect/search/objects —
+      // every discovered object (protected or not) per cluster, replaced
+      // wholesale each poll. Feeds the Sources page.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cohesity_objects (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          cluster_id         INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+          object_id          INTEGER,
+          global_id          TEXT,
+          name               TEXT,
+          source_name        TEXT,
+          environment        TEXT,
+          object_type        TEXT,
+          os_type            TEXT,
+          protection_type    TEXT,
+          logical_bytes      INTEGER,
+          is_protected       INTEGER NOT NULL DEFAULT 0,
+          protection_groups  TEXT,
+          policy_names       TEXT,
+          last_backup_status TEXT,
+          sla_violated       INTEGER,
+          captured_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_cohesity_objects_cluster ON cohesity_objects(cluster_id);
+        CREATE INDEX IF NOT EXISTS idx_cohesity_objects_env ON cohesity_objects(environment);
+      `);
+    },
+  },
 ];

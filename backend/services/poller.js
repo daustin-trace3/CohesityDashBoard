@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const db = require('../db/database');
 const {
   fetchClusterInfo, fetchAlerts, fetchProtectionRuns, fetchProtectionJobs,
-  fetchProtectionPolicies, fetchSourceRegistrations,
+  fetchProtectionPolicies, fetchSourceRegistrations, fetchSearchObjects,
 } = require('./cohesityApi');
 const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
 const { fetchWorkloads, insertWorkloadSnapshot } = require('./workloads');
@@ -281,6 +281,42 @@ const replaceSourceRegistrations = db.transaction((clusterId, sources) => {
   }
 });
 
+// Per-object inventory from the v2 object search. A protection info entry
+// counts only when it belongs to THIS cluster's search response and is not
+// deleted; group/policy detail comes from the first live entry.
+const replaceObjects = db.transaction((clusterId, objects) => {
+  db.prepare('DELETE FROM cohesity_objects WHERE cluster_id = ?').run(clusterId);
+  const stmt = db.prepare(`
+    INSERT INTO cohesity_objects
+      (cluster_id, object_id, global_id, name, source_name, environment, object_type,
+       os_type, protection_type, logical_bytes, is_protected, protection_groups,
+       policy_names, last_backup_status, sla_violated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const env = (e) => String(e || 'Unknown').replace(/^k/, '');
+  for (const o of objects) {
+    const infos = (o.objectProtectionInfos || []).filter((i) => i && !i.isDeleted && (i.protectionGroups || []).length);
+    const groups = infos.flatMap((i) => i.protectionGroups || []);
+    stmt.run(
+      clusterId,
+      infos[0]?.objectId ?? null,
+      o.globalId || null,
+      o.name || null,
+      o.sourceInfo?.name || null,
+      env(o.environment),
+      String(o.objectType || '').replace(/^k/, '') || null,
+      String(o.osType || '').replace(/^k/, '') || null,
+      String(o.protectionType || '').replace(/^k/, '') || null,
+      o.logicalSizeBytes ?? null,
+      groups.length ? 1 : 0,
+      groups.length ? JSON.stringify(groups.map((g) => g.name).filter(Boolean)) : null,
+      groups.length ? JSON.stringify([...new Set(groups.map((g) => g.policyName).filter(Boolean))]) : null,
+      groups[0]?.lastBackupRunStatus || null,
+      groups.length ? (groups.some((g) => g.lastRunSlaViolated) ? 1 : 0) : null
+    );
+  }
+});
+
 /**
  * Poll a single cluster.
  */
@@ -348,13 +384,14 @@ function runsFetchWindow(clusterId) {
 async function doPollCluster(cluster) {
   try {
     const window = runsFetchWindow(cluster.id);
-    const [clusterInfo, alertData, protectionData, policyData, sourceData, workloadData] = await Promise.allSettled([
+    const [clusterInfo, alertData, protectionData, policyData, sourceData, workloadData, objectData] = await Promise.allSettled([
       fetchClusterInfo(cluster),
       fetchAlerts(cluster),
       fetchProtectionRuns(cluster, window.numRuns, window.sinceUsecs),
       fetchProtectionPolicies(cluster),
       fetchSourceRegistrations(cluster),
-      fetchWorkloads(cluster)
+      fetchWorkloads(cluster),
+      fetchSearchObjects(cluster)
     ]);
 
     if (clusterInfo.status === 'fulfilled') {
@@ -397,6 +434,16 @@ async function doPollCluster(cluster) {
       }
     } else {
       logger.error(`[Poller] Workload fetch failed for cluster ${cluster.id}:`, safeErrorMessage(workloadData.reason));
+    }
+
+    if (objectData.status === 'fulfilled') {
+      try {
+        replaceObjects(cluster.id, objectData.value);
+      } catch (err) {
+        logger.error(`[Poller] Object inventory snapshot failed for cluster ${cluster.id}:`, err.message);
+      }
+    } else {
+      logger.error(`[Poller] Object search fetch failed for cluster ${cluster.id}:`, safeErrorMessage(objectData.reason));
     }
 
     // If the normal fetch failed (some clusters 500 on wide windows), retry

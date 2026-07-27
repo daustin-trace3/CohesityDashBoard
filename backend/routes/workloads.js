@@ -1,5 +1,6 @@
 const express = require('express');
 const { query, validationResult } = require('express-validator');
+const db = require('../db/database');
 const { getWorkloads, getWorkloadTrends, refreshAllWorkloads } = require('../services/workloads');
 
 const router = express.Router();
@@ -27,6 +28,39 @@ router.get('/trends', [
       environment: req.query.environment || null,
       days: req.query.days ?? 90,
     }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/cohesity/workloads/sources — per-object inventory from the object
+ * search, plus a per-environment rollup for the workload-type chips.
+ */
+router.get('/sources', (req, res, next) => {
+  try {
+    const objects = db.prepare(`
+      SELECT o.*, c.name AS cluster_name
+      FROM cohesity_objects o
+      JOIN clusters c ON c.id = o.cluster_id
+      ORDER BY c.name, o.name
+    `).all().map((o) => ({
+      ...o,
+      protection_groups: o.protection_groups ? JSON.parse(o.protection_groups) : [],
+      policy_names: o.policy_names ? JSON.parse(o.policy_names) : [],
+    }));
+    const byEnv = {};
+    for (const o of objects) {
+      const e = (byEnv[o.environment] ||= { environment: o.environment, total: 0, protected: 0, logicalBytes: 0 });
+      e.total += 1;
+      if (o.is_protected) e.protected += 1;
+      e.logicalBytes += o.logical_bytes || 0;
+    }
+    res.json({
+      objects,
+      environments: Object.values(byEnv).sort((a, b) => b.total - a.total),
+      capturedAt: objects[0]?.captured_at || null,
+    });
   } catch (err) {
     next(err);
   }

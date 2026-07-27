@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen, Layers, Flag,
+  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen, Layers, Flag, Boxes,
 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('../../pages/Dashboard'));
@@ -29,6 +29,7 @@ const navGroups = [
     items: [
       { label: 'Data Protection', route: '/data-protection', icon: ShieldCheck, isActive: (p) => p.startsWith('/data-protection') },
       { label: 'Workloads', route: '/workloads', icon: Layers, isActive: (p) => p.startsWith('/workloads') },
+      { label: 'Sources', route: '/sources', icon: Boxes, isActive: (p) => p.startsWith('/sources') },
       { label: 'Replication', route: '/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/replication') },
       { label: 'Views', route: '/views', icon: FolderOpen, isActive: (p) => p.startsWith('/views') },
       { label: 'Governance', route: '/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/governance') },
@@ -53,7 +54,7 @@ const navGroups = [
 
 function isActive(pathname) {
   if (pathname.startsWith('/cohesity')) return true;
-  return ['/', '/ai-advisor', '/analytics', '/reporting', '/licensing', '/data-protection', '/workloads', '/replication', '/views', '/governance', '/settings']
+  return ['/', '/ai-advisor', '/analytics', '/reporting', '/licensing', '/data-protection', '/workloads', '/sources', '/replication', '/views', '/governance', '/settings']
     .some(r => pathname === r || pathname.startsWith(r + '/'));
 }
 
