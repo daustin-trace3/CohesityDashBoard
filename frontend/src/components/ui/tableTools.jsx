@@ -223,7 +223,14 @@ export function ColumnPicker({ columns, prefs }) {
       if (btnRef.current?.contains(e.target) || menuRef.current?.contains(e.target)) return;
       setOpen(false);
     };
-    const onScroll = () => setOpen(false);
+    // Follow the button on page scroll/resize (the menu is fixed-position);
+    // scrolls INSIDE the menu are ignored so its own scrollbar works.
+    const onScroll = (e) => {
+      if (e && menuRef.current && e.target instanceof Node && menuRef.current.contains(e.target)) return;
+      if (!btnRef.current) return;
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    };
     document.addEventListener('mousedown', onDoc);
     window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', onScroll);
