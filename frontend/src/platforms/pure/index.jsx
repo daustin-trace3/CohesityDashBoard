@@ -21,10 +21,10 @@ const navGroups = [
   {
     label: 'Monitor',
     items: [
-      { label: 'Overview', route: '/pure', icon: Cloud, isActive: (p) => p === '/pure' },      { label: 'Estate', route: '/pure/estate', icon: LayoutList, isActive: (p) => p.startsWith('/pure/estate') },      { label: 'Capacity', route: '/pure/capacity', icon: Database, isActive: (p) => p.startsWith('/pure/capacity') },
+      { label: 'Overview', route: '/pure', icon: Cloud, isActive: (p) => p === '/pure' },
+      { label: 'AI Advisor', route: '/pure/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/pure/advisor'), requiresAi: true },      { label: 'Estate', route: '/pure/estate', icon: LayoutList, isActive: (p) => p.startsWith('/pure/estate') },      { label: 'Capacity', route: '/pure/capacity', icon: Database, isActive: (p) => p.startsWith('/pure/capacity') },
       { label: 'Volumes', route: '/pure/volumes', icon: Layers, isActive: (p) => p.startsWith('/pure/volumes') },
       { label: 'Alerts', route: '/pure/alerts', icon: Bell, isActive: (p) => p.startsWith('/pure/alerts') },
-      { label: 'AI Advisor', route: '/pure/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/pure/advisor'), requiresAi: true },
     ],
   },
   {

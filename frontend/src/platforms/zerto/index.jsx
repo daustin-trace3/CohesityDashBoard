@@ -17,8 +17,8 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/zerto', icon: Gauge, isActive: (p) => p === '/zerto' },
-      { label: 'Alerts', route: '/zerto/alerts', icon: Bell, isActive: (p) => p.startsWith('/zerto/alerts') },
       { label: 'AI Advisor', route: '/zerto/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/zerto/advisor'), requiresAi: true },
+      { label: 'Alerts', route: '/zerto/alerts', icon: Bell, isActive: (p) => p.startsWith('/zerto/alerts') },
     ],
   },
   {

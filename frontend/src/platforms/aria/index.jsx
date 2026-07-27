@@ -17,12 +17,12 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/aria', icon: Gauge, isActive: (p) => p === '/aria' },
+      { label: 'AI Advisor', route: '/aria/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/aria/advisor'), requiresAi: true },
       { label: 'Deployments', route: '/aria/deployments', icon: Package, isActive: (p) => p.startsWith('/aria/deployments') },
       { label: 'Activity', route: '/aria/activity', icon: Activity, isActive: (p) => p.startsWith('/aria/activity') },
       { label: 'Infrastructure', route: '/aria/infrastructure', icon: Server, isActive: (p) => p.startsWith('/aria/infrastructure') },
       { label: 'Extensibility', route: '/aria/extensibility', icon: Puzzle, isActive: (p) => p.startsWith('/aria/extensibility') },
       { label: 'Approvals', route: '/aria/approvals', icon: CheckSquare, isActive: (p) => p.startsWith('/aria/approvals') },
-      { label: 'AI Advisor', route: '/aria/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/aria/advisor'), requiresAi: true },
     ],
   },
   {

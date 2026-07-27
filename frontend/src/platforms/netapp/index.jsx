@@ -20,12 +20,12 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/netapp', icon: Gauge, isActive: (p) => p === '/netapp' },
+      { label: 'AI Advisor', route: '/netapp/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/netapp/advisor'), requiresAi: true },
       { label: 'Capacity', route: '/netapp/capacity', icon: Database, isActive: (p) => p.startsWith('/netapp/capacity') },
       { label: 'Volumes', route: '/netapp/volumes', icon: Layers, isActive: (p) => p.startsWith('/netapp/volumes') },
       { label: 'NFS', route: '/netapp/nfs', icon: Network, isActive: (p) => p.startsWith('/netapp/nfs') },
       { label: 'SMB / CIFS', route: '/netapp/cifs', icon: FolderTree, isActive: (p) => p.startsWith('/netapp/cifs') },
       { label: 'Alerts', route: '/netapp/alerts', icon: Bell, isActive: (p) => p.startsWith('/netapp/alerts') },
-      { label: 'AI Advisor', route: '/netapp/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/netapp/advisor'), requiresAi: true },
     ],
   },
   {

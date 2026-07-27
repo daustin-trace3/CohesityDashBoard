@@ -15,8 +15,8 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/dell', icon: Gauge, isActive: (p) => p === '/dell' },
-      { label: 'Alerts', route: '/dell/alerts', icon: AlertTriangle, isActive: (p) => p.startsWith('/dell/alerts') },
       { label: 'AI Advisor', route: '/dell/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/dell/advisor'), requiresAi: true },
+      { label: 'Alerts', route: '/dell/alerts', icon: AlertTriangle, isActive: (p) => p.startsWith('/dell/alerts') },
     ],
   },
   {
