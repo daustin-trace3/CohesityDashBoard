@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Layers } from 'lucide-react';
+import { Layers, Download } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
+import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtBytes, fmtNum, statusTone } from './helpers';
 
 export default function NetAppVolumesPage() {
@@ -20,14 +20,43 @@ export default function NetAppVolumesPage() {
   const ctl = useTableControls(volumes, {
     searchKeys: ['name', 'svm_name', 'array_name', 'aggregate_name'],
     defaultSortKey: 'name',
+    paginate: true,
   });
 
   const totals = (volumes || []).reduce((a, v) => { a.size += v.size_bytes || 0; a.used += v.used_bytes || 0; return a; }, { size: 0, used: 0 });
+
+  // CSV of the ENTIRE volume list (all rows, not just the current page/filter).
+  const exportCsv = () => {
+    const esc = (v) => {
+      const t = v == null ? '' : String(v);
+      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const header = ['Volume', 'SVM', 'Cluster', 'Aggregate', 'Used Bytes', 'Size Bytes', 'Used %', 'State'];
+    const lines = [header.join(',')];
+    for (const v of volumes || []) {
+      lines.push([v.name, v.svm_name, v.array_name, v.aggregate_name,
+        v.used_bytes ?? '', v.size_bytes ?? '',
+        v.used_percent != null ? Math.round(v.used_percent) : '', v.state].map(esc).join(','));
+    }
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `netapp-volumes-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Layers} title="NetApp Volumes" description="FlexVols across all ONTAP clusters">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <button onClick={exportCsv} disabled={!(volumes || []).length}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
+          <Download size={13} /> Export
+        </button>
         <RefreshButton onClick={load} />
       </PageHeader>
 
@@ -47,7 +76,7 @@ export default function NetAppVolumesPage() {
         ) : ctl.rows.length === 0 ? (
           <div className="text-sm text-ink-muted py-8 text-center">No volumes match your filters.</div>
         ) : (
-          <div className="overflow-x-auto max-h-[62vh] overflow-y-auto">
+          <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface">
                 <tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
@@ -62,7 +91,7 @@ export default function NetAppVolumesPage() {
                 </tr>
               </thead>
               <tbody>
-                {ctl.rows.map((v) => (
+                {ctl.pageRows.map((v) => (
                   <tr key={v.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink truncate max-w-[220px]">{v.name}</td>
                     <td className="py-2 pr-3 text-ink-muted">{v.svm_name || '—'}</td>
@@ -78,6 +107,7 @@ export default function NetAppVolumesPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={ctl} />
       </div>
     </div>
   );
