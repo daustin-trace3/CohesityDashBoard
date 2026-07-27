@@ -53,7 +53,7 @@ export default function ZertoLicensingPage() {
               tone={totals.pct >= 95 ? 'crit' : totals.pct >= 80 ? 'warn' : 'ok'}
               sub={totals.pct != null ? `${totals.pct}% of entitlement` : undefined} />
             <StatCard icon={MonitorSmartphone} label="Headroom" value={fmtNum(totals.available - totals.used)}
-              sub="VMs before the license is full" />
+              sub="VMs before license limit" />
             <StatCard icon={CalendarClock} label="Support Ends" value={totals.expiry ? String(totals.expiry).slice(0, 10) : '—'}
               tone={expiryDays == null ? 'default' : expiryDays <= 30 ? 'crit' : expiryDays <= 90 ? 'warn' : 'ok'}
               sub={expiryDays != null ? `${fmtNum(expiryDays)} days remaining` : undefined} />
