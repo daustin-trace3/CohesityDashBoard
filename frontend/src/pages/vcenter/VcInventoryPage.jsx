@@ -15,6 +15,9 @@ const toolsLabel = (t) => t ? String(t).replace(/^guestTools/, '') : '—';
 const OUTDATED_TOOLS = new Set(['guestToolsNeedUpgrade', 'guestToolsTooOld', 'guestToolsBlacklisted', 'guestToolsSupportedOld']);
 const toolsVerLabel = (s) => s ? String(s).replace(/^guestTools/, '') : null;
 const fmtMem = (mb) => mb == null ? '—' : mb >= 1024 ? `${(mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB` : `${mb} MB`;
+const statusTone = (s) => s === 'green' ? 'ok' : s === 'yellow' ? 'warn' : s === 'red' ? 'crit' : 'neutral';
+const fmtPct = (p) => p == null ? '—' : `${p.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+const pctClass = (p) => p == null ? 'text-ink-faint' : p >= 90 ? 'text-status-crit font-semibold' : p >= 75 ? 'text-status-warn' : 'text-ink-muted';
 
 export default function VcInventoryPage() {
   const { toast } = useToast();
@@ -70,6 +73,9 @@ export default function VcInventoryPage() {
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
                 <SortTh k="name" label="VM" ctl={ctl} />
                 <SortTh k="power" label="Power" ctl={ctl} />
+                <SortTh k="overall_status" label="Health" ctl={ctl} />
+                <SortTh k="cpu_pct" label="CPU %" ctl={ctl} align="right" />
+                <SortTh k="mem_pct" label="Mem %" ctl={ctl} align="right" />
                 <SortTh k="guest_os" label="Guest OS" ctl={ctl} />
                 <SortTh k="host_name" label="Host" ctl={ctl} />
                 <SortTh k="cluster_name" label="Cluster" ctl={ctl} />
@@ -88,6 +94,9 @@ export default function VcInventoryPage() {
                       <button onClick={() => setDetailVmId(v.id)} className="text-brand hover:underline cursor-pointer text-left">{v.name || '—'}</button>
                     </td>
                     <td className="py-2 pr-3"><Badge tone={powerTone(v.power_state)}>{v.power}</Badge></td>
+                    <td className="py-2 pr-3"><Badge tone={statusTone(v.overall_status)}>{v.overall_status || 'unknown'}</Badge></td>
+                    <td className={`py-2 pr-3 text-right tnum ${pctClass(v.cpu_pct)}`}>{fmtPct(v.cpu_pct)}</td>
+                    <td className={`py-2 pr-3 text-right tnum ${pctClass(v.mem_pct)}`}>{fmtPct(v.mem_pct)}</td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[200px] truncate" title={v.guest_os || ''}>{v.guest_os || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{v.host_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{v.cluster_name || '—'}</td>

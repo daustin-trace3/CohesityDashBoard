@@ -384,14 +384,30 @@ router.get('/vms', (req, res, next) => {
       clauses.push('m.vcenter_id = ?');
       params.push(Number(req.query.vcenterId));
     }
-    res.json(db.prepare(`
-      SELECT m.*, v.name AS vcenter_name FROM vcenter_vms m
+    const rows = db.prepare(`
+      SELECT m.*, v.name AS vcenter_name,
+             h.cpu_mhz_capacity AS host_cpu_mhz_capacity, h.cpu_cores AS host_cpu_cores
+      FROM vcenter_vms m
       JOIN vcenter_vcenters v ON v.id = m.vcenter_id
+      LEFT JOIN vcenter_hosts h ON h.vcenter_id = m.vcenter_id AND h.name = m.host_name
       ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
       ORDER BY v.name, m.name
-    `).all(...params));
+    `).all(...params);
+    res.json(rows.map(withVmPerfPct));
   } catch (err) { next(err); }
 });
+
+// CPU % = quickstats MHz over the VM's share of host cores; memory % is
+// guest usage over configured size. Null when SOAP quickstats are absent.
+function withVmPerfPct(r) {
+  const perCore = r.host_cpu_mhz_capacity && r.host_cpu_cores ? r.host_cpu_mhz_capacity / r.host_cpu_cores : null;
+  const cpuCapacity = perCore && r.cpu_count ? perCore * r.cpu_count : null;
+  return {
+    ...r,
+    cpu_pct: r.cpu_usage_mhz != null && cpuCapacity ? Math.round((r.cpu_usage_mhz / cpuCapacity) * 1000) / 10 : null,
+    mem_pct: r.mem_usage_mb != null && r.memory_mb ? Math.round((r.mem_usage_mb / r.memory_mb) * 1000) / 10 : null,
+  };
+}
 
 const parseJson = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
 

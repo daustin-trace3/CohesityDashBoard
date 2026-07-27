@@ -285,6 +285,60 @@ router.get('/endpoints', [query('instanceId').optional().isInt().toInt()], valid
   } catch (err) { next(err); }
 });
 
+/**
+ * GET /api/aria/appliances — appliance VM performance/health, sourced from the
+ * vCenter platform's inventory (SOAP quickstats). Two sections: registered
+ * aria_instances matched to their VM (guest hostname / VM name / IP), and
+ * other Aria-suite appliance VMs found by name pattern.
+ */
+const SUITE_VM_PATTERNS = ['vra%', 'vrops%', 'vrli%', 'vrlcm%', 'vrslcm%', 'vrni%', '%vrealize%', '%aria-%'];
+
+router.get('/appliances', (req, res, next) => {
+  try {
+    const vmSelect = `
+      SELECT m.id AS vm_row_id, m.name AS vm_name, m.power_state, m.overall_status,
+             m.cpu_count, m.memory_mb, m.cpu_usage_mhz, m.mem_usage_mb, m.uptime_seconds,
+             m.guest_hostname, m.ip_address, m.host_name, m.guest_os, v.name AS vcenter_name,
+             h.cpu_mhz_capacity AS host_cpu_mhz_capacity, h.cpu_cores AS host_cpu_cores
+      FROM vcenter_vms m
+      JOIN vcenter_vcenters v ON v.id = m.vcenter_id
+      LEFT JOIN vcenter_hosts h ON h.vcenter_id = m.vcenter_id AND h.name = m.host_name`;
+    const withPct = (r) => {
+      const perCore = r.host_cpu_mhz_capacity && r.host_cpu_cores ? r.host_cpu_mhz_capacity / r.host_cpu_cores : null;
+      const cap = perCore && r.cpu_count ? perCore * r.cpu_count : null;
+      return {
+        ...r,
+        cpu_pct: r.cpu_usage_mhz != null && cap ? Math.round((r.cpu_usage_mhz / cap) * 1000) / 10 : null,
+        mem_pct: r.mem_usage_mb != null && r.memory_mb ? Math.round((r.mem_usage_mb / r.memory_mb) * 1000) / 10 : null,
+      };
+    };
+
+    const matchStmt = db.prepare(`${vmSelect}
+      WHERE lower(COALESCE(m.guest_hostname, '')) = lower(?)
+         OR lower(COALESCE(m.name, '')) = lower(?)
+         OR m.ip_address = ?
+      LIMIT 1`);
+    const instances = db.prepare('SELECT id, name, host FROM aria_instances ORDER BY name').all().map((inst) => {
+      const short = String(inst.host || '').split('.')[0];
+      const vm = matchStmt.get(inst.host || '', short, inst.host || '');
+      return { ...inst, vm: vm ? withPct(vm) : null };
+    });
+
+    const matchedIds = new Set(instances.map((i) => i.vm && i.vm.vm_row_id).filter(Boolean));
+    const suiteVms = db.prepare(`${vmSelect}
+      WHERE ${SUITE_VM_PATTERNS.map(() => 'lower(m.name) LIKE ?').join(' OR ')}
+      ORDER BY m.name`).all(...SUITE_VM_PATTERNS)
+      .filter((r) => !matchedIds.has(r.vm_row_id))
+      .map(withPct);
+
+    res.json({
+      instances,
+      suiteVms,
+      vcenterConfigured: db.prepare('SELECT COUNT(*) AS n FROM vcenter_vcenters').get().n > 0,
+    });
+  } catch (err) { next(err); }
+});
+
 /** GET /api/aria/projects?instanceId? */
 router.get('/projects', [query('instanceId').optional().isInt().toInt()], validate, (req, res, next) => {
   try {

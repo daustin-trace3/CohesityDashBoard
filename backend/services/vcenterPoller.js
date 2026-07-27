@@ -145,8 +145,9 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
     INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, cluster_name, power_state,
       guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version,
       tools_version, tools_version_status, networks, datastores, tags, guest_nics,
-      uptime_seconds, storage_committed_bytes, annotation)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      uptime_seconds, storage_committed_bytes, annotation,
+      cpu_usage_mhz, mem_usage_mb, overall_status, guest_hostname)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const clusterByHost = new Map(hosts.map(h => [h.name, h.clusterName]));
   for (const v of (vms || [])) {
@@ -158,7 +159,8 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
       v.datastores?.length ? JSON.stringify(v.datastores) : null,
       v.tags?.length ? JSON.stringify(v.tags) : null,
       v.guestNics?.length ? JSON.stringify(v.guestNics) : null,
-      v.uptimeSeconds ?? null, v.storageCommittedBytes ?? null, v.annotation ?? null);
+      v.uptimeSeconds ?? null, v.storageCommittedBytes ?? null, v.annotation ?? null,
+      v.cpuUsageMhz ?? null, v.memUsageMb ?? null, v.overallStatus ?? null, v.guestHostname ?? null);
   }
 
   // Networking rows are wholesale-replaced only when SOAP produced them —

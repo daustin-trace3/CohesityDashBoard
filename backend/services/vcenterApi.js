@@ -248,6 +248,9 @@ const VM_PROPS = [
   // Associations + detail (VM detail modal, portgroup/datastore VM counts)
   'network', 'datastore', 'guest.net',
   'summary.quickStats.uptimeSeconds', 'summary.storage.committed', 'config.annotation',
+  // Performance/health quickstats + guest hostname (Aria appliance matching)
+  'summary.quickStats.overallCpuUsage', 'summary.quickStats.guestMemoryUsage',
+  'overallStatus', 'guest.hostName',
 ];
 // NB: DVSSummary's port total is `numPorts` — requesting `summary.portCount`
 // faults the WHOLE RetrievePropertiesEx call with InvalidProperty.
@@ -603,6 +606,10 @@ async function fetchInventorySoap(vc) {
         uptimeSeconds: num(v['summary.quickStats.uptimeSeconds']),
         storageCommittedBytes: num(v['summary.storage.committed']),
         annotation: flat(v['config.annotation']) != null ? String(flat(v['config.annotation'])).slice(0, 2000) : null,
+        cpuUsageMhz: num(v['summary.quickStats.overallCpuUsage']),
+        memUsageMb: num(v['summary.quickStats.guestMemoryUsage']),
+        overallStatus: v['overallStatus'] != null ? String(flat(v['overallStatus'])) : null,
+        guestHostname: v['guest.hostName'] != null ? String(flat(v['guest.hostName'])) : null,
       };
     });
 

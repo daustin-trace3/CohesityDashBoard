@@ -255,4 +255,17 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 7,
+    up(db) {
+      // Per-VM performance/health quickstats + guest hostname (Aria appliance
+      // matching). All SOAP-sourced — NULL without SOAP.
+      db.exec(`
+        ALTER TABLE vcenter_vms ADD COLUMN cpu_usage_mhz INTEGER;
+        ALTER TABLE vcenter_vms ADD COLUMN mem_usage_mb INTEGER;
+        ALTER TABLE vcenter_vms ADD COLUMN overall_status TEXT;
+        ALTER TABLE vcenter_vms ADD COLUMN guest_hostname TEXT;
+      `);
+    },
+  },
 ];

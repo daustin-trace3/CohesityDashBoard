@@ -87,8 +87,9 @@ function seedVcenter(db, { now, encrypt }) {
     INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, cluster_name, power_state,
       guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version,
       tools_version, tools_version_status, networks, datastores, tags, guest_nics,
-      uptime_seconds, storage_committed_bytes, annotation, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      uptime_seconds, storage_committed_bytes, annotation,
+      cpu_usage_mhz, mem_usage_mb, overall_status, guest_hostname, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSnap = db.prepare(`
     INSERT INTO vcenter_metrics_history (vcenter_id, captured_at, hosts_total, hosts_connected,
@@ -202,10 +203,17 @@ function seedVcenter(db, { now, encrypt }) {
           ];
           if (chance(rng, 0.5)) vmTags.push('Backup: Protected');
           const mac = `00:50:56:${String(80 + vcIdx).padStart(2, '0')}:${String(c * 10 + h).padStart(2, '0')}:${String(v).padStart(2, '0')}`;
+          const vmName = `${site}-${role}-${String(c).padStart(2, '0')}${String(h)}${String(v).padStart(2, '0')}`;
+          const vmCpus = pick(rng, [2, 2, 4, 4, 8, 16]);
+          const vmMemMb = pick(rng, [4, 8, 8, 16, 32, 64]) * 1024;
+          // quickstats: mostly moderate load, ~4% hot VMs; per-core = 2400 MHz (host cpuCap/48)
+          const hot = poweredOn && chance(rng, 0.04);
+          const cpuPct = poweredOn ? (hot ? randInt(rng, 88, 98) : randInt(rng, 2, 60)) : null;
+          const memPct = poweredOn ? (hot ? randInt(rng, 85, 97) : randInt(rng, 20, 75)) : null;
           insertVm.run(vcId, `vm-${vcIdx}${c}${h}-${v}`,
-            `${site}-${role}-${String(c).padStart(2, '0')}${String(h)}${String(v).padStart(2, '0')}`,
+            vmName,
             hostName, clusterName, poweredOn ? 'POWERED_ON' : 'POWERED_OFF',
-            guestOs, pick(rng, [2, 2, 4, 4, 8, 16]), pick(rng, [4, 8, 8, 16, 32, 64]) * 1024,
+            guestOs, vmCpus, vmMemMb,
             ip,
             poweredOn ? 'guestToolsRunning' : 'guestToolsNotRunning',
             'vmx-20',
@@ -216,6 +224,10 @@ function seedVcenter(db, { now, encrypt }) {
             poweredOn ? randInt(rng, 3600, 300 * 86400) : null,
             randInt(rng, 20, 800) * GIB,
             chance(rng, 0.15) ? 'Provisioned by the ICC pipeline — contact platform-eng before resizing.' : null,
+            cpuPct != null ? Math.round((cpuPct / 100) * 2400 * vmCpus) : null,
+            memPct != null ? Math.round((memPct / 100) * vmMemMb) : null,
+            poweredOn ? (down ? 'gray' : hot ? 'yellow' : chance(rng, 0.02) ? 'yellow' : 'green') : 'gray',
+            poweredOn ? `${vmName}.icc.demo` : null,
             nowIso);
           vmTotal++;
         }
@@ -224,6 +236,37 @@ function seedVcenter(db, { now, encrypt }) {
         clCpuCap, clCpuUsed, clMemCap, clMemUsed, nowIso);
       clusterTotal++;
       vcVmCount += clVms;
+    }
+
+    // Aria suite appliance VMs on nyc — feed the Aria "Appliances" page:
+    // vra-prod/vra-dr match the seeded aria_instances hosts by guest hostname,
+    // the rest are found by the suite name-pattern sweep.
+    if (site === 'nyc') {
+      const suite = [
+        { name: 'vra-prod', ghost: 'vra-prod.demo.local', cpus: 12, memGb: 48, cpuPct: 35, memPct: 62, status: 'green' },
+        { name: 'vra-dr', ghost: 'vra-dr.demo.local', cpus: 12, memGb: 48, cpuPct: 12, memPct: 55, status: 'green' },
+        { name: 'vrops-nyc-01', ghost: 'vrops-nyc-01.icc.demo', cpus: 24, memGb: 128, cpuPct: 58, memPct: 71, status: 'green' },
+        { name: 'vrli-nyc-01', ghost: 'vrli-nyc-01.icc.demo', cpus: 8, memGb: 16, cpuPct: 44, memPct: 86, status: 'yellow' },
+        { name: 'vrlcm-nyc-01', ghost: 'vrlcm-nyc-01.icc.demo', cpus: 2, memGb: 6, cpuPct: 8, memPct: 40, status: 'green' },
+        { name: 'vrni-nyc-01', ghost: 'vrni-nyc-01.icc.demo', cpus: 16, memGb: 64, cpuPct: 30, memPct: 52, status: 'green' },
+      ];
+      suite.forEach((s, i) => {
+        insertVm.run(vcId, `vm-aria-${i}`, s.name, 'nyc-esx-0101.icc.demo', 'nyc-cl-01', 'POWERED_ON',
+          'VMware Photon OS (64-bit)', s.cpus, s.memGb * 1024, `10.100.5.${20 + i}`,
+          'guestToolsRunning', 'vmx-20', TOOLS_VERSIONS.current, 'guestToolsCurrent',
+          JSON.stringify(['dvpg-prod-100']), JSON.stringify(['nyc-ds-vmfs-01']), JSON.stringify(['App: ARIA']),
+          JSON.stringify([{ network: 'dvpg-prod-100', mac: `00:50:56:aa:00:0${i}`, connected: true, ips: [`10.100.5.${20 + i}`] }]),
+          randInt(rng, 20, 120) * 86400, randInt(rng, 60, 200) * GIB, null,
+          Math.round((s.cpuPct / 100) * 2400 * s.cpus), Math.round((s.memPct / 100) * s.memGb * 1024),
+          s.status, s.ghost, nowIso);
+        vmTotal++;
+      });
+      // Keep the VM-count tie (host vm_count sums must equal vcenter_vms rows).
+      db.prepare('UPDATE vcenter_hosts SET vm_count = vm_count + ? WHERE vcenter_id = ? AND name = ?')
+        .run(suite.length, vcId, 'nyc-esx-0101.icc.demo');
+      db.prepare('UPDATE vcenter_clusters SET vm_count = vm_count + ? WHERE vcenter_id = ? AND name = ?')
+        .run(suite.length, vcId, 'nyc-cl-01');
+      vcVmCount += suite.length;
     }
 
     // Datastores: 5-8 per vCenter; sgp carries the 80%/90% usage offenders.

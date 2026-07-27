@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Package, Activity, Server, Puzzle, CheckSquare, Settings, DiscAlbum, Sparkles, ShieldCheck } from 'lucide-react';
+import { Gauge, Package, Activity, Server, Puzzle, CheckSquare, Settings, DiscAlbum, Sparkles, ShieldCheck, MonitorSmartphone } from 'lucide-react';
 
 const AriaOverviewPage = lazy(() => import('../../pages/aria/AriaOverviewPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
@@ -12,6 +12,7 @@ const AriaApprovalsPage = lazy(() => import('../../pages/aria/AriaApprovalsPage'
 const AriaSettingsPage = lazy(() => import('../../pages/aria/AriaSettingsPage'));
 const AriaImagesAuditPage = lazy(() => import('../../pages/aria/AriaImagesAuditPage'));
 const AriaAdvisorPage = lazy(() => import('../../pages/aria/AriaAdvisorPage'));
+const AriaAppliancesPage = lazy(() => import('../../pages/aria/AriaAppliancesPage'));
 
 // VMware Aria Automation sidebar — shown when the Aria platform is active.
 const navGroups = [
@@ -23,6 +24,7 @@ const navGroups = [
       { label: 'Deployments', route: '/aria/deployments', icon: Package, isActive: (p) => p.startsWith('/aria/deployments') },
       { label: 'Activity', route: '/aria/activity', icon: Activity, isActive: (p) => p.startsWith('/aria/activity') },
       { label: 'Infrastructure', route: '/aria/infrastructure', icon: Server, isActive: (p) => p.startsWith('/aria/infrastructure') },
+      { label: 'Appliances', route: '/aria/appliances', icon: MonitorSmartphone, isActive: (p) => p.startsWith('/aria/appliances') },
       { label: 'Extensibility', route: '/aria/extensibility', icon: Puzzle, isActive: (p) => p.startsWith('/aria/extensibility') },
       { label: 'Approvals', route: '/aria/approvals', icon: CheckSquare, isActive: (p) => p.startsWith('/aria/approvals') },
     ],
@@ -63,6 +65,7 @@ export default {
     { path: 'aria/approvals', Component: AriaApprovalsPage },
     { path: 'aria/images', Component: AriaImagesAuditPage },
     { path: 'aria/advisor', Component: AriaAdvisorPage },
+    { path: 'aria/appliances', Component: AriaAppliancesPage },
     { path: 'aria/privacy', Component: AriaPrivacyPage },
     { path: 'aria/settings', Component: AriaSettingsPage },
   ],
