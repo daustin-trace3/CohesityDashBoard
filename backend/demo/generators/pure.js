@@ -2,7 +2,7 @@
 // list). The Pure data pages themselves are served from the in-memory
 // pure1Fixtures.js fleet — its name list is the single source of truth so
 // Settings shows exactly the arrays the fleet pages render.
-const { buildArrayNames } = require('../pure1Fixtures');
+const { buildArrayNames, getFleet, buildAlerts } = require('../pure1Fixtures');
 
 function buildArrayList() {
   return buildArrayNames().map((name) => {
@@ -33,6 +33,23 @@ function seedPure(db, { now, encrypt }) {
       nowIso
     );
   });
+
+  // Pure1 SaaS: one current-timestamp pure1_metrics_history snapshot so the
+  // demo switcher's Pure health bubble shows green (contract C11 — the
+  // page data itself flows from pure1Fixtures via the isDemo() branches in
+  // routes/pure1.js, not from this table).
+  const fleet = getFleet();
+  const alerts = buildAlerts();
+  db.prepare(`
+    INSERT INTO pure1_metrics_history (captured_at, array_count, arrays_warn, arrays_crit,
+      total_capacity_bytes, total_used_bytes, open_alerts)
+    VALUES (datetime('now'), ?, 0, 0, ?, ?, ?)
+  `).run(
+    fleet.length,
+    fleet.reduce((s, a) => s + (a.total || 0), 0),
+    fleet.reduce((s, a) => s + (a.used || 0), 0),
+    alerts.filter((a) => a.state === 'open').length
+  );
 
   return { arrays: arrayDefs.length };
 }

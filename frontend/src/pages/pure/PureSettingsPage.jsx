@@ -52,6 +52,7 @@ function Pure1SaaSTab() {
   const [appId, setAppId] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [ttl, setTtl] = useState(10);
+  const [pollInterval, setPollInterval] = useState(15);
   const [warnPct, setWarnPct] = useState(75);
   const [critPct, setCritPct] = useState(90);
   const [showHidden, setShowHidden] = useState(false);
@@ -67,6 +68,7 @@ function Pure1SaaSTab() {
       // App ID is write-only: the server returns only a masked form.
       setAppId('');
       setTtl(data.cacheTtlMin || 10);
+      setPollInterval(data.pollIntervalMinutes || 15);
       setWarnPct(data.warnPct || 75);
       setCritPct(data.critPct || 90);
       setShowHidden(!!data.showHiddenAlerts);
@@ -94,7 +96,8 @@ function Pure1SaaSTab() {
     setSavingPrefs(true);
     try {
       const { data } = await client.put('/pure1/settings', {
-        cacheTtlMin: Number(ttl), warnPct: Number(warnPct), critPct: Number(critPct), showHiddenAlerts: showHidden,
+        cacheTtlMin: Number(ttl), pollIntervalMinutes: Number(pollInterval),
+        warnPct: Number(warnPct), critPct: Number(critPct), showHiddenAlerts: showHidden,
       });
       setCfg(data);
       toast({ type: 'success', title: 'Preferences saved' });
@@ -185,9 +188,12 @@ function Pure1SaaSTab() {
       {/* Data & display preferences */}
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <div className="flex items-center gap-2 mb-3"><Gauge size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Data &amp; Display</p></div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <Field label="Refresh interval (min)" hint="How long fleet data is cached before re-fetching.">
             <div className="flex items-center gap-2"><Clock size={14} className="text-ink-faint" /><input type="number" min={1} max={120} value={ttl} onChange={(e) => setTtl(e.target.value)} className={inp} /></div>
+          </Field>
+          <Field label="Poll interval (minutes)" hint="How often the background poller refreshes Pure1 fleet data.">
+            <div className="flex items-center gap-2"><Clock size={14} className="text-ink-faint" /><input type="number" min={5} max={1440} value={pollInterval} onChange={(e) => setPollInterval(e.target.value)} className={inp} /></div>
           </Field>
           <Field label="Capacity warning %" hint="Amber bar at/above this % full.">
             <input type="number" min={1} max={100} value={warnPct} onChange={(e) => setWarnPct(e.target.value)} className={inp} />

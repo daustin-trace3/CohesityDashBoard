@@ -62,6 +62,7 @@ const SEEDED_TABLES = [
   'netapp_volumes', 'netapp_aggregates', 'netapp_metrics_history', 'netapp_arrays',
   // pure
   'pure_arrays',
+  'pure1_arrays', 'pure1_alerts', 'pure1_pods', 'pure1_metrics_history',
   // zerto
   'zerto_vras', 'zerto_vms', 'zerto_alerts', 'zerto_vpgs', 'zerto_sites', 'zerto_metrics_history',
   // vcenter (children before the parent so FK deletes stay explicit)

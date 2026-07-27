@@ -75,9 +75,14 @@ describe('platform plugin manifests (pure, netapp)', () => {
     const res = await get('/api/poller/status');
     expect(res.status).toBe(200);
 
+    // Pure has no direct arrays (pure_arrays) seeded here, so /api/poller/status
+    // falls back to the Pure1 SaaS account-global shape (no `entities` key) —
+    // same pattern as the Zerto section below.
     expect(res.body.pure).toBeTypeOf('object');
     expect(res.body.pure.enabled).toBe(true);
-    expect(Array.isArray(res.body.pure.entities)).toBe(true);
+    expect(res.body.pure.entities).toBeUndefined();
+    expect(res.body.pure).toHaveProperty('lastDataCapture');
+    expect(res.body.pure).toHaveProperty('isStale');
 
     expect(res.body.netapp).toBeTypeOf('object');
     expect(res.body.netapp.enabled).toBe(false);

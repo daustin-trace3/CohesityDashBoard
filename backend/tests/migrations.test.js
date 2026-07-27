@@ -189,6 +189,7 @@ const NEW_TABLES = [
   'auth_sessions', 'service_accounts', 'alert_notifications',
   'cohesity_views', 'workload_history', 'cluster_gflags', 'gflag_changes',
   'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras', 'zerto_licenses',
+  'pure1_arrays', 'pure1_alerts', 'pure1_pods', 'pure1_metrics_history',
   'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vms',
   'vcenter_networks', 'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history',
   'dell_ome_instances', 'dell_devices', 'dell_components', 'dell_alerts',

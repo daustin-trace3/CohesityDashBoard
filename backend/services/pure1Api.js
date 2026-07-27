@@ -29,6 +29,7 @@ const KEY_PATH = path.join(__dirname, '..', 'data', 'dashboard_private.pem');
 const DEFAULT_CACHE_TTL_MIN = 10;
 const DEFAULT_WARN_PCT = 75;
 const DEFAULT_CRIT_PCT = 90;
+const DEFAULT_POLL_INTERVAL_MIN = 15;
 
 const CAPACITY_METRICS = [
   'array_total_capacity',
@@ -453,6 +454,7 @@ function getConfig() {
     warnPct: Number(getSetting('pure1_warn_pct')) || DEFAULT_WARN_PCT,
     critPct: Number(getSetting('pure1_crit_pct')) || DEFAULT_CRIT_PCT,
     showHiddenAlerts: getSetting('pure1_show_hidden_alerts') === '1',
+    pollIntervalMinutes: Number(getSetting('pure1_poll_interval_minutes')) || DEFAULT_POLL_INTERVAL_MIN,
     lastRefresh: lastRefresh(),
   };
 }
@@ -478,6 +480,10 @@ function setConfig(patch = {}) {
   if (patch.warnPct != null) setSetting('pure1_warn_pct', String(Math.min(100, Math.max(1, Number(patch.warnPct) || DEFAULT_WARN_PCT))));
   if (patch.critPct != null) setSetting('pure1_crit_pct', String(Math.min(100, Math.max(1, Number(patch.critPct) || DEFAULT_CRIT_PCT))));
   if (patch.showHiddenAlerts != null) setSetting('pure1_show_hidden_alerts', patch.showHiddenAlerts ? '1' : '0');
+  if (patch.pollIntervalMinutes != null) {
+    const n = Math.min(1440, Math.max(5, Number(patch.pollIntervalMinutes) || DEFAULT_POLL_INTERVAL_MIN));
+    setSetting('pure1_poll_interval_minutes', String(n));
+  }
   invalidate();
   return getConfig();
 }

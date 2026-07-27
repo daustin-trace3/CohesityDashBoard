@@ -23,6 +23,7 @@ const DEFAULTS = {
   aria_cert_warn_days: '30',
   aria_request_fail_lookback_hours: '24',
   zerto_poll_interval_minutes: '15',
+  pure1_poll_interval_minutes: '15',
   vcenter_cert_warn_days: '60',
   dns_server: '',
   smtp_enabled: '0',

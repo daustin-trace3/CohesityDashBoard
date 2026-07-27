@@ -100,6 +100,29 @@ router.get('/status', (req, res, next) => {
       };
     }
 
+    // Pure: direct arrays (pure_arrays) build entities as above; SaaS-only
+    // deployments have no direct arrays, so fall back to the Pure1 account-
+    // global snapshot (mirrors the Zerto block below) instead of an empty
+    // entities:[] that the switcher reads as "no data" (grey).
+    const purePlugin = registry.getPlugin('pure');
+    let pureSection = platformSections.pure;
+    if (!pureSection.entities || pureSection.entities.length === 0) {
+      const pure1Row = db.prepare('SELECT MAX(captured_at) AS captured_at FROM pure1_metrics_history').get();
+      const pure1Capture = pure1Row ? pure1Row.captured_at : null;
+      const pure1Age = ageMinutes(pure1Capture);
+      const pure1State = pollerStatus.getState('pure1', 0);
+      const pure1Interval = Number(getSetting('pure1_poll_interval_minutes')) || 15;
+      pureSection = {
+        enabled: purePlugin ? purePlugin.enabled : false,
+        isSyncing: pure1State.isSyncing,
+        lastRefreshEnd: pure1State.lastPollEnd,
+        lastDataCapture: strftime(pure1Capture),
+        ageMinutes: pure1Age,
+        isStale: pure1Age !== null ? pure1Age > pure1Interval * 2 + 5 : false,
+        failedSources: pure1State.lastPollStatus === 'error' ? [{ name: 'Pure1' }] : [],
+      };
+    }
+
     // Licensing (global, no per-entity structure)
     const licenseRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM license_usage').get();
     const licenseCapture = licenseRow ? licenseRow.captured_at : null;
@@ -127,7 +150,7 @@ router.get('/status', (req, res, next) => {
         enabled: clusters.length > 0,
         entities: cohesityEntities,
       },
-      pure: platformSections.pure,
+      pure: pureSection,
       netapp: platformSections.netapp,
       vcenter: platformSections.vcenter,
       dell: platformSections.dell,

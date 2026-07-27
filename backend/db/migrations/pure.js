@@ -288,4 +288,78 @@ module.exports = [
       }
     },
   },
+
+  // Migration: Pure1 SaaS fleet tables. Pure1 array ids are Pure1 UUIDs
+  // (strings), not the INTEGER pure_arrays.id used by the direct-array path
+  // above, hence a separate, parallel set of tables (poller-populated, no
+  // per-source FKs — this is one account-wide fleet).
+  {
+    version: 5,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS pure1_arrays (
+          pure1_id              TEXT PRIMARY KEY,
+          name                  TEXT NOT NULL,
+          fqdn                  TEXT,
+          model                 TEXT,
+          os                    TEXT,
+          version               TEXT,
+          capacity_bytes        INTEGER,
+          used_bytes            INTEGER,
+          data_reduction        REAL,
+          effective_used_bytes  INTEGER,
+          volume_bytes          INTEGER,
+          shared_bytes          INTEGER,
+          snapshots_bytes       INTEGER,
+          provisioned_bytes     INTEGER,
+          health                TEXT,
+          health_detail         TEXT,
+          chassis_serial        TEXT,
+          controller_serials    TEXT,
+          tags                  TEXT,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS pure1_alerts (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          pure1_alert_id        TEXT UNIQUE,
+          array_name            TEXT,
+          array_fqdn            TEXT,
+          severity              TEXT,
+          category              TEXT,
+          component_type        TEXT,
+          component_name        TEXT,
+          summary               TEXT,
+          code                  INTEGER,
+          state                 TEXT,
+          flagged               INTEGER NOT NULL DEFAULT 0,
+          created_at_ms         INTEGER,
+          updated_at_ms         INTEGER,
+          knowledge_base_url    TEXT,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS pure1_pods (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          pure1_pod_id          TEXT,
+          name                  TEXT,
+          mediator              TEXT,
+          arrays                TEXT,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS pure1_metrics_history (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          array_count           INTEGER,
+          arrays_warn           INTEGER,
+          arrays_crit           INTEGER,
+          total_capacity_bytes  INTEGER,
+          total_used_bytes      INTEGER,
+          open_alerts           INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_pure1_metrics_captured ON pure1_metrics_history(captured_at);
+      `);
+    },
+  },
 ];

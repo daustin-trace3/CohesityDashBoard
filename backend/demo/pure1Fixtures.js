@@ -488,4 +488,8 @@ module.exports = {
   fetchCapacityHistory,
   fetchPerformanceHistory,
   buildArrayNames,
+  // Synchronous accessors (the async getters above wrap these with no real
+  // await) — used by demo seeding, which runs inside a synchronous db.transaction.
+  getFleet,
+  buildAlerts,
 };

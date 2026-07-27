@@ -10,6 +10,7 @@
 const pureMigrations = require('../../db/migrations/pure');
 const pureRouter = require('../../routes/pure');
 const { purePollerHandle } = require('../../services/purePoller');
+const { initPure1Poller, pure1Task } = require('../../services/pure1Poller');
 
 module.exports = {
   id: 'pure',
@@ -20,8 +21,24 @@ module.exports = {
     return pureRouter;
   },
   createPoller() {
-    // Return the full framework handle (includes taskCount, schedule, cancel, trigger, etc).
-    return purePollerHandle;
+    // Combined handle: the direct-array framework poller (per-source cron
+    // tasks) plus the Pure1 SaaS account-global task. init/stopAll drive both;
+    // schedule/cancel/trigger/taskCount delegate to the direct-array side only
+    // (Pure1 has no per-source rows to schedule against).
+    return {
+      init: () => {
+        purePollerHandle.init();
+        initPure1Poller();
+      },
+      stopAll: () => {
+        purePollerHandle.stopAll();
+        if (pure1Task.isRunning()) pure1Task.stop();
+      },
+      schedule: purePollerHandle.schedule,
+      cancel: purePollerHandle.cancel,
+      trigger: purePollerHandle.trigger,
+      taskCount: purePollerHandle.taskCount,
+    };
   },
   statusTables: ['pure_arrays'],
   settingsFields: [],
