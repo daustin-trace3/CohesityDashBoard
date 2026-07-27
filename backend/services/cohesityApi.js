@@ -376,12 +376,19 @@ async function fetchSearchObjects(cluster) {
   const client = await getAuthenticatedClient(cluster);
   const objects = [];
   let cookie = null;
+  let pages = 0;
   do {
     const url = `/v2/data-protect/search/objects?count=1000${cookie ? `&paginationCookie=${encodeURIComponent(cookie)}` : ''}`;
     const { data } = await client.get(url, { timeout: 120000 });
-    objects.push(...(data?.objects || []));
-    cookie = data?.paginationCookie || null;
-  } while (cookie && objects.length < 20000);
+    const batch = data?.objects || [];
+    objects.push(...batch);
+    const next = data?.paginationCookie || null;
+    // Progress guards: some clusters return a cookie on an empty (or final)
+    // page, or repeat the same cookie — either would loop forever without this.
+    if (!batch.length || next === cookie) break;
+    cookie = next;
+    pages += 1;
+  } while (cookie && objects.length < 20000 && pages < 25);
   return objects;
 }
 
