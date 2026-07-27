@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, BadgeCheck, Cloud, Server } from 'lucide-react';
+import { Save, BadgeCheck, Cloud, Server, RadioTower, RefreshCw } from 'lucide-react';
 import client from '../api/client';
 import { useToast } from '../components/ui/Toaster';
 import HeliosConnectTab from '../components/cohesity/HeliosConnectTab';
@@ -9,7 +9,83 @@ const TABS = [
   { key: 'helios', label: 'Helios (SaaS)', icon: Cloud },
   { key: 'direct', label: 'Direct Clusters', icon: Server },
   { key: 'entitlement', label: 'Licensing', icon: BadgeCheck },
+  { key: 'polling', label: 'Polling', icon: RadioTower },
 ];
+
+/** Manual poll triggers — whole estate or a single cluster. */
+function PollingTab() {
+  const { toast } = useToast();
+  const [clusters, setClusters] = useState(null);
+  const [busy, setBusy] = useState({}); // clusterId|'all' -> true
+
+  useEffect(() => {
+    client.get('/cohesity/clusters')
+      .then(({ data }) => setClusters(Array.isArray(data) ? data : data.clusters || []))
+      .catch(() => setClusters([]));
+  }, []);
+
+  const mark = (k, v) => setBusy((b) => ({ ...b, [k]: v }));
+  const cooldown = (k) => { mark(k, true); setTimeout(() => mark(k, false), 30000); };
+
+  const pollAll = async () => {
+    try {
+      const { data } = await client.post('/poller/trigger');
+      toast({ type: 'success', title: `Poll started on ${data.started} cluster(s)`, message: 'Clusters are polled one at a time — data lands on the pages as each finishes.' });
+      cooldown('all');
+    } catch {
+      toast({ type: 'error', title: 'Failed to start poll' });
+    }
+  };
+
+  const pollOne = async (c) => {
+    try {
+      await client.post(`/poller/trigger/${c.id}`);
+      toast({ type: 'success', title: `Poll started: ${c.name}` });
+      cooldown(c.id);
+    } catch {
+      toast({ type: 'error', title: `Failed to start poll on ${c.name}` });
+    }
+  };
+
+  return (
+    <div className="panel p-4">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <p className="text-sm font-bold text-ink">Manual Poll</p>
+          <p className="text-[11px] text-ink-muted mt-0.5 leading-relaxed max-w-md">
+            Runs the same full collection as the scheduled poller (metrics, alerts, runs, policies,
+            workloads, object inventory) outside its normal cadence. Triggered polls run in the web
+            app, so their log lines appear in the dashboard logs rather than the poller process.
+          </p>
+        </div>
+        <button onClick={pollAll} disabled={busy.all || !clusters?.length}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-brand/10 border border-brand/30 text-brand hover:bg-brand/20 transition-colors cursor-pointer disabled:opacity-50 flex-shrink-0">
+          <RefreshCw size={13} className={busy.all ? 'animate-spin' : ''} /> Poll all clusters
+        </button>
+      </div>
+      {clusters == null ? (
+        <p className="text-xs text-ink-muted py-4">Loading clusters…</p>
+      ) : clusters.length === 0 ? (
+        <p className="text-xs text-ink-muted py-4">No clusters registered.</p>
+      ) : (
+        <div className="divide-y divide-cohesity-border/50">
+          {clusters.map((c) => (
+            <div key={c.id} className="flex items-center justify-between py-2">
+              <div className="min-w-0">
+                <p className="text-sm text-ink truncate">{c.name}</p>
+                <p className="text-[11px] text-ink-faint">{c.connection_type === 'helios' ? 'Helios' : c.vip || 'direct'}</p>
+              </div>
+              <button onClick={() => pollOne(c)} disabled={!!busy[c.id]}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
+                <RefreshCw size={12} className={busy[c.id] ? 'animate-spin' : ''} /> Poll now
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function SettingsPage() {
   const [tab, setTab] = useState('helios');
@@ -84,6 +160,9 @@ export default function SettingsPage() {
 
       {/* Direct Clusters */}
       {tab === 'direct' && <DirectClustersTab />}
+
+      {/* Manual polling */}
+      {tab === 'polling' && <PollingTab />}
 
       {/* Licensing entitlement */}
       {tab === 'entitlement' && (

@@ -20,6 +20,26 @@ const PLATFORM_METRICS_HISTORY = {
   ariaops: { arraysTable: 'ariaops_instances', metricsTable: 'ariaops_metrics_history', arrayIdColumn: 'instance_id' },
 };
 
+/**
+ * POST /api/poller/trigger — full poll of EVERY cluster, sequential to avoid
+ * hammering them all at once. Fire-and-forget; data lands as each completes.
+ * Note: runs in the web process, so its log lines appear in the dashboard
+ * app's logs, not the dedicated poller process.
+ */
+router.post('/trigger', (req, res, next) => {
+  try {
+    const clusters = db.prepare('SELECT * FROM clusters').all();
+    (async () => {
+      for (const c of clusters) {
+        try { await pollCluster(c); } catch { /* pollCluster logs its own failures */ }
+      }
+    })();
+    res.json({ started: clusters.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/trigger/:clusterId', (req, res, next) => {
   try {
     const { clusterId } = req.params;
