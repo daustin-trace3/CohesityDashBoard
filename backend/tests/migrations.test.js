@@ -204,6 +204,9 @@ const NEW_TABLES = [
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
   'ai_audit_exchanges',
+  // Legacy table extended by netapp migration v4 (volume detail columns) —
+  // its post-migration SQL no longer matches the schema.sql original.
+  'netapp_volumes',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy
@@ -264,7 +267,10 @@ describe('runMigrations', () => {
     const legacyDb = buildLegacyDb();
     const newDb = buildNewDb();
 
-    const legacySchema = normalizeSchema(legacyDb);
+    // Excluded objects are filtered from BOTH sides: a NEW_TABLES entry may be
+    // a legacy table whose shape post-refactor migrations legitimately extend
+    // (e.g. netapp_volumes after netapp v4).
+    const legacySchema = normalizeSchema(legacyDb).filter((r) => !isNewObject(r));
     const newSchema = normalizeSchema(newDb).filter((r) => !isNewObject(r));
     expect(newSchema).toEqual(legacySchema);
     for (const name of NEW_TABLES) {

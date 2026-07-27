@@ -2,6 +2,7 @@ const axios = require('axios');
 const https = require('https');
 const { getSetting } = require('./settings');
 const { decrypt } = require('./encryption');
+const logger = require('../utils/logger');
 
 // NetApp data is collected through Active IQ Unified Manager (AIQUM)'s API
 // Gateway, which proxies ONTAP REST calls to each managed cluster using ONE
@@ -132,11 +133,31 @@ async function fetchAggregates(array) {
   return records(data);
 }
 
+// Extended detail first; older ONTAP versions can 400 on unknown field names
+// (e.g. anti_ransomware pre-9.10), so fall back to the basic list on error.
+const VOLUME_FIELDS_FULL = [
+  'name', 'svm', 'state', 'aggregates', 'space',
+  'type', 'style', 'comment', 'create_time', 'is_svm_root',
+  'nas.path', 'nas.security_style', 'nas.export_policy.name',
+  'snapshot_policy.name', 'guarantee.type', 'autosize.mode', 'autosize.maximum',
+  'files', 'snaplock.type', 'encryption.enabled', 'anti_ransomware.state',
+  'qos.policy.name', 'tiering.policy', 'quota.state', 'error_state.is_inconsistent',
+  'metric',
+].join(',');
+
 async function fetchVolumes(array) {
-  const data = await apiGet(array, '/api/storage/volumes', {
-    fields: 'name,svm,state,aggregates,space', max_records: 5000,
-  });
-  return records(data);
+  try {
+    const data = await apiGet(array, '/api/storage/volumes', {
+      fields: VOLUME_FIELDS_FULL, max_records: 5000,
+    });
+    return records(data);
+  } catch (err) {
+    logger.warn(`[NetAppApi] extended volume fields rejected (${err.message}) — retrying with basic set`);
+    const data = await apiGet(array, '/api/storage/volumes', {
+      fields: 'name,svm,state,aggregates,space', max_records: 5000,
+    });
+    return records(data);
+  }
 }
 
 async function fetchSvms(array) {

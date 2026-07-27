@@ -156,14 +156,26 @@ function seedNetapp(db, { now, encrypt }) {
     }
 
     // ── Volumes ────────────────────────────────────────────────────────
+    const volDetail = db.prepare(`
+      UPDATE netapp_volumes SET type = ?, style = ?, create_time = ?, is_svm_root = 0,
+        junction_path = ?, security_style = ?, export_policy = ?, snapshot_policy = ?,
+        guarantee_type = ?, autosize_mode = ?, autosize_max_bytes = ?,
+        files_used = ?, files_maximum = ?, snapshot_used_bytes = ?, snapshot_reserve_percent = ?,
+        logical_used_bytes = ?, snaplock_type = ?, encryption_enabled = ?, anti_ransomware_state = ?,
+        qos_policy = ?, tiering_policy = ?, quota_state = 'off', is_inconsistent = 0,
+        metric_iops = ?, metric_throughput_bps = ?, metric_latency_us = ?
+      WHERE uuid = ?
+    `);
     for (let i = 0; i < volumeCount; i++) {
       const sizeBytes = Math.round(randFloat(rng, 100, 5000, 2) * 1e9);
       const usedPct = randFloat(rng, 40, 85, 1);
       const usedBytes = Math.round(sizeBytes * (usedPct / 100));
+      const uuid = `vol-uuid-${arr.id}-${i}`;
+      const name = `vol_${arr.name.replace(/-/g, '_')}_${i}`;
       insertVolume.run(
         arr.id,
-        `vol-uuid-${arr.id}-${i}`,
-        `vol_${arr.name.replace(/-/g, '_')}_${i}`,
+        uuid,
+        name,
         pick(rng, SVM_NAMES),
         `aggr_${arr.name.replace(/-/g, '_')}_${i % aggregateCount}`,
         sizeBytes,
@@ -172,6 +184,26 @@ function seedNetapp(db, { now, encrypt }) {
         usedPct,
         Math.round(usedBytes * 0.9),
         nowIso
+      );
+      // ~12% mirror destinations, one WORM + one inode-pressure volume per cluster.
+      const dp = chance(rng, 0.12);
+      const filesMax = 21251126;
+      const inodeHot = i === 2;
+      volDetail.run(
+        dp ? 'dp' : 'rw', chance(rng, 0.15) ? 'flexgroup' : 'flexvol',
+        new Date(now - randInt(rng, 30, 900) * 86400000).toISOString(),
+        dp ? null : `/${name}`, dp ? null : pick(rng, ['unix', 'unix', 'ntfs']),
+        dp ? null : `ep_${name}`, dp ? 'none' : pick(rng, ['default', 'default', 'hourly-7d']),
+        chance(rng, 0.8) ? 'none' : 'volume',
+        chance(rng, 0.6) ? 'grow' : 'off', Math.round(sizeBytes * 1.2),
+        inodeHot ? Math.round(filesMax * 0.93) : randInt(rng, 50000, 4000000), filesMax,
+        Math.round(usedBytes * randFloat(rng, 0.02, 0.15, 3)), 5,
+        Math.round(usedBytes * randFloat(rng, 1.4, 2.6, 2)),
+        i === 4 ? 'enterprise' : 'non_snaplock', chance(rng, 0.5) ? 1 : 0,
+        chance(rng, 0.3) ? 'enabled' : 'disabled',
+        chance(rng, 0.2) ? 'gold-qos' : null, pick(rng, ['none', 'none', 'snapshot-only', 'auto']),
+        randInt(rng, 50, 8000), randInt(rng, 5, 400) * 1e6, randInt(rng, 200, 4000),
+        uuid
       );
     }
 

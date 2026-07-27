@@ -252,4 +252,41 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 4,
+    up(db) {
+      // Extended volume detail (identity/NAS/capacity depth/protection/ops).
+      // All nullable — availability varies by ONTAP version and the fetcher
+      // falls back to the basic field list on older clusters.
+      db.exec(`
+        ALTER TABLE netapp_volumes ADD COLUMN type TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN style TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN comment TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN create_time TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN is_svm_root INTEGER;
+        ALTER TABLE netapp_volumes ADD COLUMN junction_path TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN security_style TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN export_policy TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN snapshot_policy TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN guarantee_type TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN autosize_mode TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN autosize_max_bytes INTEGER;
+        ALTER TABLE netapp_volumes ADD COLUMN files_used INTEGER;
+        ALTER TABLE netapp_volumes ADD COLUMN files_maximum INTEGER;
+        ALTER TABLE netapp_volumes ADD COLUMN snapshot_used_bytes INTEGER;
+        ALTER TABLE netapp_volumes ADD COLUMN snapshot_reserve_percent REAL;
+        ALTER TABLE netapp_volumes ADD COLUMN logical_used_bytes INTEGER;
+        ALTER TABLE netapp_volumes ADD COLUMN snaplock_type TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN encryption_enabled INTEGER;
+        ALTER TABLE netapp_volumes ADD COLUMN anti_ransomware_state TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN qos_policy TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN tiering_policy TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN quota_state TEXT;
+        ALTER TABLE netapp_volumes ADD COLUMN is_inconsistent INTEGER;
+        ALTER TABLE netapp_volumes ADD COLUMN metric_iops REAL;
+        ALTER TABLE netapp_volumes ADD COLUMN metric_throughput_bps REAL;
+        ALTER TABLE netapp_volumes ADD COLUMN metric_latency_us REAL;
+      `);
+    },
+  },
 ];

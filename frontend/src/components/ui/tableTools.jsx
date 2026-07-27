@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Search, ChevronUp, ChevronDown, Download } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Search, ChevronUp, ChevronDown, Download, SlidersHorizontal } from 'lucide-react';
 
 // Client-side search + dropdown filters + column sort for a table.
 // `searchKeys` are the row fields matched by the search box; `sortValues` maps a
@@ -178,5 +178,54 @@ export function CsvExportButton({ filename, columns, rows }) {
       className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
       <Download size={12} /> Export
     </button>
+  );
+}
+
+// Column show/hide preference, persisted per table in localStorage.
+export function useVisibleColumns(storageKey, defaultHidden = []) {
+  const [hidden, setHidden] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey));
+      return new Set(Array.isArray(saved) ? saved : defaultHidden);
+    } catch { return new Set(defaultHidden); }
+  });
+  const toggle = (k) => setHidden((h) => {
+    const next = new Set(h);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    try { localStorage.setItem(storageKey, JSON.stringify([...next])); } catch { /* private mode */ }
+    return next;
+  });
+  return { hidden, toggle, show: (k) => !hidden.has(k) };
+}
+
+// Dropdown of checkboxes toggling column visibility. `columns` = [{ k, label, always? }].
+export function ColumnPicker({ columns, prefs }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
+        <SlidersHorizontal size={12} /> Columns
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-40 bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl p-2 w-60 max-h-80 overflow-y-auto">
+          {columns.map((c) => (
+            <label key={c.k}
+              className={`flex items-center gap-2 px-2 py-1 text-xs rounded cursor-pointer ${c.always ? 'text-ink-faint cursor-default' : 'text-ink hover:bg-brand/5'}`}>
+              <input type="checkbox" checked={c.always || prefs.show(c.k)} disabled={c.always}
+                onChange={() => prefs.toggle(c.k)} className="accent-current" />
+              {c.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

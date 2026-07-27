@@ -84,14 +84,33 @@ const replaceVolumes = db.transaction((arrayId, items) => {
   const stmt = db.prepare(`
     INSERT INTO netapp_volumes
       (array_id, uuid, name, svm_name, aggregate_name, state, size_bytes, used_bytes,
-       available_bytes, used_percent, physical_used_bytes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       available_bytes, used_percent, physical_used_bytes,
+       type, style, comment, create_time, is_svm_root, junction_path, security_style,
+       export_policy, snapshot_policy, guarantee_type, autosize_mode, autosize_max_bytes,
+       files_used, files_maximum, snapshot_used_bytes, snapshot_reserve_percent,
+       logical_used_bytes, snaplock_type, encryption_enabled, anti_ransomware_state,
+       qos_policy, tiering_policy, quota_state, is_inconsistent,
+       metric_iops, metric_throughput_bps, metric_latency_us)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const flag = (v) => v == null ? null : (v ? 1 : 0);
   for (const v of items) {
     const s = v.space || {};
+    const m = v.metric || {};
     stmt.run(arrayId, v.uuid || null, v.name || null, v.svm?.name || null,
       v.aggregates?.[0]?.name || null, v.state || null,
-      num(s.size), num(s.used), num(s.available), num(s.percent_used), num(s.physical_used));
+      num(s.size), num(s.used), num(s.available), num(s.percent_used), num(s.physical_used),
+      v.type || null, v.style || null, v.comment || null, v.create_time || null,
+      flag(v.is_svm_root), v.nas?.path || null, v.nas?.security_style || null,
+      v.nas?.export_policy?.name || null, v.snapshot_policy?.name || null,
+      v.guarantee?.type || null, v.autosize?.mode || null, num(v.autosize?.maximum),
+      num(v.files?.used), num(v.files?.maximum),
+      num(s.snapshot?.used), num(s.snapshot?.reserve_percent),
+      num(s.logical_space?.used), v.snaplock?.type || null,
+      flag(v.encryption?.enabled), v.anti_ransomware?.state || null,
+      v.qos?.policy?.name || null, v.tiering?.policy || null, v.quota?.state || null,
+      flag(v.error_state?.is_inconsistent),
+      num(m.iops?.total), num(m.throughput?.total), num(m.latency?.total));
   }
 });
 
