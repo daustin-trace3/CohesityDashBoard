@@ -148,6 +148,25 @@ function collectDellAlerts() {
   });
 }
 
+/** Open Aria Automation computed issues — reconcileIssueHistory keeps
+ *  aria_issue_history current with a stable issue_key per issue, and
+ *  resolving drops the row out of this query (which is what ends reminders). */
+function collectAriaIssues() {
+  const rows = db.prepare(`
+    SELECT issue_key AS issueKey, instance, severity, message,
+           first_seen AS firstSeen, last_seen AS lastSeen
+    FROM aria_issue_history WHERE status = 'open'
+  `).all();
+  return rows.map((r) => ({
+    sourceKey: `ar:${r.issueKey}`,
+    severity: String(r.severity || '').toLowerCase(),
+    host: r.instance,
+    message: r.message || '',
+    firstSeen: toIso(r.firstSeen),
+    lastSeen: toIso(r.lastSeen),
+  }));
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -155,6 +174,7 @@ const COLLECTORS = {
   zerto: collectZertoAlerts,
   vcenter: collectVcenterIssues,
   dell: collectDellAlerts,
+  aria: collectAriaIssues,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({

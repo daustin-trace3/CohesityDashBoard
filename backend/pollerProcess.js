@@ -20,6 +20,8 @@ const pureManifest = require('./platforms/pure');
 const netappManifest = require('./platforms/netapp');
 const zertoManifest = require('./platforms/zerto');
 const vcenterManifest = require('./platforms/vcenter');
+const dellManifest = require('./platforms/dell');
+const ariaManifest = require('./platforms/aria');
 
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
@@ -30,7 +32,7 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
@@ -39,6 +41,10 @@ if (isDemo()) {
   registry.setEnabled('zerto', platformZertoEnabled && registry.isEntitled('zerto'));
   registry.registerPlugin(vcenterManifest);
   registry.setEnabled('vcenter', platformVcenterEnabled && registry.isEntitled('vcenter'));
+  registry.registerPlugin(dellManifest);
+  registry.setEnabled('dell', platformDellEnabled && registry.isEntitled('dell'));
+  registry.registerPlugin(ariaManifest);
+  registry.setEnabled('aria', platformAriaEnabled && registry.isEntitled('aria'));
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();

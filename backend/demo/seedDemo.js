@@ -45,6 +45,7 @@ const { seedPure } = require('./generators/pure');
 const { seedZerto } = require('./generators/zerto');
 const { seedVcenter } = require('./generators/vcenter');
 const { seedDell } = require('./generators/dell');
+const { seedAria } = require('./generators/aria');
 
 const SEEDED_TABLES = [
   // core
@@ -70,6 +71,10 @@ const SEEDED_TABLES = [
   // dell (children before the parent)
   'dell_devices', 'dell_components', 'dell_alerts', 'dell_warranties',
   'dell_firmware_compliance', 'dell_metrics_history', 'dell_ome_instances',
+  // aria (children before the parent)
+  'aria_deployments', 'aria_requests', 'aria_endpoints', 'aria_projects',
+  'aria_catalog_sources', 'aria_runs', 'aria_approvals', 'aria_metrics_history',
+  'aria_issue_history', 'aria_instances',
 ];
 
 function wipeSeededTables(database) {
@@ -99,6 +104,7 @@ async function main() {
   const zertoResult = db.transaction(() => seedZerto(db, { now, encrypt }))();
   const vcenterResult = db.transaction(() => seedVcenter(db, { now, encrypt }))();
   const dellResult = db.transaction(() => seedDell(db, { now, encrypt }))();
+  const ariaResult = db.transaction(() => seedAria(db, { now, encrypt }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -117,6 +123,7 @@ async function main() {
     ['zerto sites/vras/vpgs/vms', `${zertoResult.sites}/${zertoResult.vras}/${zertoResult.vpgs}/${zertoResult.vms}`],
     ['vcenters/hosts/vms', `${vcenterResult.vcenters}/${vcenterResult.hosts}/${vcenterResult.vms}`],
     ['dell instances/devices/components', `${dellResult.instances}/${dellResult.devices}/${dellResult.components}`],
+    ['aria instances/deployments/requests', `${ariaResult.instances}/${ariaResult.deployments}/${ariaResult.requests}`],
     ['users', 1],
   ];
 

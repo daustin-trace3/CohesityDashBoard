@@ -236,6 +236,36 @@ function dellSummary() {
   };
 }
 
+function ariaSummary() {
+  const instances = count('SELECT COUNT(*) c FROM aria_instances');
+  const instErr = countSafe("SELECT COUNT(*) c FROM aria_instances WHERE last_poll_status = 'error'");
+  const deployments = countSafe('SELECT COUNT(*) c FROM aria_deployments');
+  const deploymentsFail = countSafe("SELECT COUNT(*) c FROM aria_deployments WHERE status LIKE '%FAIL%'");
+  const leaseExpiring = countSafe("SELECT COUNT(*) c FROM aria_deployments WHERE lease_expire_at IS NOT NULL AND julianday(lease_expire_at) - julianday('now') <= 7");
+  const endpoints = countSafe('SELECT COUNT(*) c FROM aria_endpoints');
+  const endpointsUnhealthy = countSafe(
+    "SELECT COUNT(*) c FROM aria_endpoints WHERE health_state IS NOT NULL AND LOWER(health_state) NOT IN ('ok','up','healthy','connected','active','available')"
+  );
+  const requests24h = countSafe("SELECT COUNT(*) c FROM aria_requests WHERE captured_at >= datetime('now','-1 day')");
+  const exceptions = [];
+  if (instErr) exceptions.push(exception('critical', instErr, `${fnum(instErr)} instance${instErr === 1 ? '' : 's'} unreachable`, '/aria'));
+  if (endpointsUnhealthy) exceptions.push(exception('critical', endpointsUnhealthy, `${fnum(endpointsUnhealthy)} endpoint${endpointsUnhealthy === 1 ? '' : 's'} unhealthy`, '/aria/infrastructure'));
+  if (deploymentsFail) exceptions.push(exception('warning', deploymentsFail, `${fnum(deploymentsFail)} deployment${deploymentsFail === 1 ? '' : 's'} failed`, '/aria/deployments'));
+  if (leaseExpiring) exceptions.push(exception('warning', leaseExpiring, `${fnum(leaseExpiring)} lease${leaseExpiring === 1 ? '' : 's'} expiring ≤ 7d`, '/aria/deployments'));
+  return {
+    objects: instances + deployments + endpoints,
+    headline: [
+      { label: 'Deployments', value: deployments },
+      { label: 'Requests 24h', value: requests24h },
+    ],
+    exceptions,
+    spark: spark7(all(
+      "SELECT date(captured_at) d, COUNT(*) c FROM aria_requests WHERE status LIKE '%FAIL%' AND captured_at >= datetime('now','-7 days') GROUP BY date(captured_at)"
+    )),
+    sparkLabel: 'failed requests / day',
+  };
+}
+
 const PLATFORMS = [
   { id: 'cohesity', label: 'Cohesity', color: '#6CB33F', route: '/cohesity', fn: cohesitySummary },
   { id: 'pure', label: 'Pure', color: '#FF6B00', route: '/pure', fn: pureSummary },
@@ -243,6 +273,7 @@ const PLATFORMS = [
   { id: 'zerto', label: 'Zerto', color: '#EE3124', route: '/zerto', fn: zertoSummary },
   { id: 'vcenter', label: 'vCenter', color: '#0091DA', route: '/vcenter', fn: vcenterSummary },
   { id: 'dell', label: 'Dell', color: '#007DB8', route: '/dell', fn: dellSummary },
+  { id: 'aria', label: 'Aria', color: '#00A2C7', route: '/aria', fn: ariaSummary },
 ];
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };

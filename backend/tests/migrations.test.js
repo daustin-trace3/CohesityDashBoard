@@ -18,6 +18,7 @@ import netappMigrations from '../db/migrations/netapp.js';
 import zertoMigrations from '../db/migrations/zerto.js';
 import vcenterMigrations from '../db/migrations/vcenter.js';
 import dellMigrations from '../db/migrations/dell.js';
+import ariaMigrations from '../db/migrations/aria.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -152,6 +153,7 @@ function buildNewDb() {
   runMigrations(db, 'zerto', zertoMigrations);
   runMigrations(db, 'vcenter', vcenterMigrations);
   runMigrations(db, 'dell', dellMigrations);
+  runMigrations(db, 'aria', ariaMigrations);
   return db;
 }
 
@@ -191,6 +193,9 @@ const NEW_TABLES = [
   'vcenter_networks', 'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history',
   'dell_ome_instances', 'dell_devices', 'dell_components', 'dell_alerts',
   'dell_warranties', 'dell_firmware_compliance', 'dell_metrics_history',
+  'aria_instances', 'aria_deployments', 'aria_requests', 'aria_endpoints',
+  'aria_projects', 'aria_catalog_sources', 'aria_runs', 'aria_approvals',
+  'aria_metrics_history', 'aria_issue_history',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy
@@ -274,7 +279,7 @@ describe('runMigrations', () => {
       runMigrations(db, 'zerto', zertoMigrations);
       runMigrations(db, 'vcenter', vcenterMigrations);
       runMigrations(db, 'dell', dellMigrations);
-  runMigrations(db, 'dell', dellMigrations);
+      runMigrations(db, 'aria', ariaMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

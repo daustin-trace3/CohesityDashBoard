@@ -18,6 +18,7 @@ const NOTIFY_PLATFORMS = [
   { key: 'zerto', label: 'Zerto' },
   { key: 'vcenter', label: 'VMware vCenter' },
   { key: 'dell', label: 'Dell (OME)' },
+  { key: 'aria', label: 'Aria Automation' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,
@@ -51,6 +52,7 @@ export default function AdminSettingsPage() {
   const [zertoEnabled, setZertoEnabled] = useState(false);
   const [vcenterEnabled, setVcenterEnabled] = useState(false);
   const [dellEnabled, setDellEnabled] = useState(false);
+  const [ariaEnabled, setAriaEnabled] = useState(false);
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
@@ -91,6 +93,7 @@ export default function AdminSettingsPage() {
         setZertoEnabled(!!d.platformZertoEnabled);
         setVcenterEnabled(!!d.platformVcenterEnabled);
         setDellEnabled(!!d.platformDellEnabled);
+        setAriaEnabled(!!d.platformAriaEnabled);
         setDnsServer(d.dnsServer || '');
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
@@ -115,6 +118,7 @@ export default function AdminSettingsPage() {
         platformZertoEnabled: zertoEnabled,
         platformVcenterEnabled: vcenterEnabled,
         platformDellEnabled: dellEnabled,
+        platformAriaEnabled: ariaEnabled,
         dnsServer,
       });
       window.dispatchEvent(new Event('platforms-changed'));
@@ -493,6 +497,14 @@ export default function AdminSettingsPage() {
               <span className="text-xs text-ink-muted leading-relaxed">
                 <span className="font-semibold text-ink">Dell OpenManage Enterprise</span><br />
                 Show the Dell OME platform tab. Register OME appliances on its Settings page after enabling.
+              </span>
+            </label>
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input type="checkbox" checked={ariaEnabled} onChange={e => setAriaEnabled(e.target.checked)}
+                className="accent-brand mt-0.5 cursor-pointer" />
+              <span className="text-xs text-ink-muted leading-relaxed">
+                <span className="font-semibold text-ink">VMware Aria Automation</span><br />
+                Show the Aria Automation platform tab. Register vRA instances on its Settings page after enabling.
               </span>
             </label>
 

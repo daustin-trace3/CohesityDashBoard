@@ -97,7 +97,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -111,6 +111,7 @@ router.put('/', (req, res, next) => {
       resolve(platformZertoEnabled, 'platformZertoEnabled'),
       resolve(platformVcenterEnabled, 'platformVcenterEnabled'),
       resolve(platformDellEnabled, 'platformDellEnabled'),
+      resolve(platformAriaEnabled, 'platformAriaEnabled'),
     ].some(Boolean);
     if (!anyEnabled) {
       return res.status(400).json({ error: 'At least one platform must remain enabled.' });
@@ -167,6 +168,10 @@ router.put('/', (req, res, next) => {
     if (platformDellEnabled !== undefined) {
       setSetting('platform_dell_enabled', platformDellEnabled ? '1' : '0');
       applyPlatformEnabled('dell', !!platformDellEnabled);
+    }
+    if (platformAriaEnabled !== undefined) {
+      setSetting('platform_aria_enabled', platformAriaEnabled ? '1' : '0');
+      applyPlatformEnabled('aria', !!platformAriaEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));

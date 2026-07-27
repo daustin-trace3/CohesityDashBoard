@@ -4,6 +4,7 @@ import dellLogo from '../assets/platform-logos/dell.svg';
 import vcenterLogo from '../assets/platform-logos/vcenter.svg';
 import netappLogo from '../assets/platform-logos/netapp.svg';
 import pureLogo from '../assets/platform-logos/pure.svg';
+import ariaLogo from '../assets/platform-logos/aria.svg';
 
 // Three experimental platform-switcher styles (dropdown | rail | grid), trialed
 // side-by-side against the original tab row. The active style is a per-browser
@@ -53,7 +54,7 @@ const monogram = (label) => label.slice(0, 2);
 // Official brand marks (bundled SVGs, tinted to each platform's color).
 // Cohesity reuses the app's own hexagon+shield identity; platforms without
 // a mark (Zerto, future plugins) fall back to the monogram.
-const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo };
+const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {

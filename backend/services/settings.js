@@ -18,6 +18,10 @@ const DEFAULTS = {
   platform_vcenter_enabled: '0',
   platform_dell_enabled: '0',
   dell_warranty_warn_days: '90',
+  platform_aria_enabled: '0',
+  aria_lease_warn_days: '7',
+  aria_cert_warn_days: '30',
+  aria_request_fail_lookback_hours: '24',
   zerto_poll_interval_minutes: '15',
   vcenter_cert_warn_days: '60',
   dns_server: '',
@@ -31,7 +35,7 @@ const DEFAULTS = {
   smtp_from: '',
   smtp_recipients: '',
   alert_email_min_severity: 'warning',
-  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true}',
+  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true}',
   alert_email_reminder_hours: '24',
 };
 
@@ -116,6 +120,7 @@ function getPlatformSettings() {
     platformZertoEnabled: getSetting('platform_zerto_enabled') === '1',
     platformVcenterEnabled: getSetting('platform_vcenter_enabled') === '1',
     platformDellEnabled: getSetting('platform_dell_enabled') === '1',
+    platformAriaEnabled: getSetting('platform_aria_enabled') === '1',
     dnsServer: getSetting('dns_server') || '',
   };
 }
@@ -125,7 +130,7 @@ function getPlatformSettings() {
 function getNotificationSettings() {
   // Merge over defaults so platforms added after a DB stored its JSON come
   // through enabled instead of silently missing (collector gate reads keys).
-  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true };
+  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true };
   let alertPlatforms;
   try {
     alertPlatforms = { ...platformDefaults, ...JSON.parse(getSetting('alert_email_platforms')) };

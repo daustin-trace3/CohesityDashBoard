@@ -16,6 +16,7 @@ const PLATFORM_METRICS_HISTORY = {
   netapp: { arraysTable: 'netapp_arrays', metricsTable: 'netapp_metrics_history', arrayIdColumn: 'array_id' },
   vcenter: { arraysTable: 'vcenter_vcenters', metricsTable: 'vcenter_metrics_history', arrayIdColumn: 'vcenter_id' },
   dell: { arraysTable: 'dell_ome_instances', metricsTable: 'dell_metrics_history', arrayIdColumn: 'ome_id' },
+  aria: { arraysTable: 'aria_instances', metricsTable: 'aria_metrics_history', arrayIdColumn: 'instance_id' },
 };
 
 router.post('/trigger/:clusterId', (req, res, next) => {
@@ -130,6 +131,7 @@ router.get('/status', (req, res, next) => {
       netapp: platformSections.netapp,
       vcenter: platformSections.vcenter,
       dell: platformSections.dell,
+      aria: platformSections.aria,
       licensing: {
         enabled: true,
         isSyncing: licensingState.isSyncing,

@@ -96,9 +96,9 @@ describe('seedDemo.js', () => {
 
   it('seeds platform flags as string "1"', () => {
     const rows = db.prepare(
-      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled')"
+      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled')"
     ).all();
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(6);
     for (const row of rows) {
       expect(row.value).toBe('1');
     }
@@ -233,5 +233,18 @@ describe('seedDemo.js', () => {
     const resolved = db.prepare("SELECT COUNT(*) c FROM vcenter_issue_history WHERE status = 'resolved' AND resolved_at IS NOT NULL").get().c;
     expect(resolved).toBe(5);
     expect(db.prepare("SELECT COUNT(*) c FROM vcenter_issue_history WHERE status = 'open' AND first_seen >= last_seen").get().c).toBe(0);
+  });
+
+  it('seeds the aria platform with instances, deployments, and computed issues', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM aria_instances').get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM aria_deployments').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aria_requests').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aria_endpoints').get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM aria_endpoints WHERE health_state = 'ERROR'").get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM aria_deployments WHERE status LIKE '%FAILED%'").get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM aria_deployments WHERE lease_expire_at IS NOT NULL AND julianday(lease_expire_at) - julianday('now') <= 7").get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM aria_catalog_sources WHERE last_import_errors IS NOT NULL").get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM aria_approvals WHERE status = 'PENDING'").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aria_issue_history').get().c).toBeGreaterThan(0);
   });
 });
