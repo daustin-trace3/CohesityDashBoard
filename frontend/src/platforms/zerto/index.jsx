@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, ShieldCheck, Globe2, Bell, MonitorSmartphone, Settings, ArrowLeftRight, BadgeCheck } from 'lucide-react';
+import { Gauge, ShieldCheck, Globe2, Bell, MonitorSmartphone, Settings, ArrowLeftRight, BadgeCheck, Sparkles } from 'lucide-react';
 
 const ZertoOverviewPage = lazy(() => import('../../pages/zerto/ZertoOverviewPage'));
 const ZertoVpgsPage = lazy(() => import('../../pages/zerto/ZertoVpgsPage'));
@@ -9,6 +9,7 @@ const ZertoVmsPage = lazy(() => import('../../pages/zerto/ZertoVmsPage'));
 const ZertoReplicationPage = lazy(() => import('../../pages/zerto/ZertoReplicationPage'));
 const ZertoSettingsPage = lazy(() => import('../../pages/zerto/ZertoSettingsPage'));
 const ZertoLicensingPage = lazy(() => import('../../pages/zerto/ZertoLicensingPage'));
+const ZertoAdvisorPage = lazy(() => import('../../pages/zerto/ZertoAdvisorPage'));
 
 // Zerto sidebar — shown when the Zerto platform is active.
 const navGroups = [
@@ -17,6 +18,7 @@ const navGroups = [
     items: [
       { label: 'Overview', route: '/zerto', icon: Gauge, isActive: (p) => p === '/zerto' },
       { label: 'Alerts', route: '/zerto/alerts', icon: Bell, isActive: (p) => p.startsWith('/zerto/alerts') },
+      { label: 'AI Advisor', route: '/zerto/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/zerto/advisor'), requiresAi: true },
     ],
   },
   {
@@ -63,5 +65,6 @@ export default {
     { path: 'zerto/vms', Component: ZertoVmsPage },
     { path: 'zerto/settings', Component: ZertoSettingsPage },
     { path: 'zerto/licensing', Component: ZertoLicensingPage },
+    { path: 'zerto/advisor', Component: ZertoAdvisorPage },
   ],
 };

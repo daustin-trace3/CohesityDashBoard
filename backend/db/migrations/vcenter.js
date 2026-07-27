@@ -240,4 +240,19 @@ module.exports = [
       `);
     },
   },
+
+  // Migration: cached AI Advisor report content, one row per report key.
+  {
+    version: 6,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vcenter_ai_reports (
+          report_key    TEXT PRIMARY KEY,
+          model         TEXT,
+          content       TEXT NOT NULL,
+          generated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    },
+  },
 ];

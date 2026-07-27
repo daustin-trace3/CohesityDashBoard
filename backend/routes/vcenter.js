@@ -12,6 +12,7 @@ const { vcenterPoller } = require('../services/vcenterPoller');
 const {
   DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues,
 } = require('../services/vcenterIssues');
+const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
 
 const router = express.Router();
 
@@ -477,6 +478,41 @@ router.get('/trends', (req, res, next) => {
       ORDER BY m.captured_at
     `).all(`-${days} days`));
   } catch (err) { next(err); }
+});
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /api/vcenter/advisor/:report — cached vCenter AI Advisor report. */
+router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!vcenterAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    res.json({ enabled: vcenterAdvisor.isConfigured(), report: vcenterAdvisor.getCachedReport(key) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/vcenter/advisor/:report — (re)generate and cache a vCenter AI Advisor report. */
+router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!vcenterAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const result = await vcenterAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

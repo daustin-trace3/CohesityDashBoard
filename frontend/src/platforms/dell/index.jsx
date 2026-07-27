@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Server, Settings, AlertTriangle, Wrench, BadgeCheck } from 'lucide-react';
+import { Gauge, Server, Settings, AlertTriangle, Wrench, BadgeCheck, Sparkles } from 'lucide-react';
 
 const DellOverviewPage = lazy(() => import('../../pages/dell/DellOverviewPage'));
 const DellDevicesPage = lazy(() => import('../../pages/dell/DellDevicesPage'));
@@ -7,6 +7,7 @@ const DellAlertsPage = lazy(() => import('../../pages/dell/DellAlertsPage'));
 const DellHardwarePage = lazy(() => import('../../pages/dell/DellHardwarePage'));
 const DellSupportPage = lazy(() => import('../../pages/dell/DellSupportPage'));
 const DellSettingsPage = lazy(() => import('../../pages/dell/DellSettingsPage'));
+const DellAdvisorPage = lazy(() => import('../../pages/dell/DellAdvisorPage'));
 
 // Dell OpenManage Enterprise sidebar — shown when the OME platform is active.
 const navGroups = [
@@ -15,6 +16,7 @@ const navGroups = [
     items: [
       { label: 'Overview', route: '/dell', icon: Gauge, isActive: (p) => p === '/dell' },
       { label: 'Alerts', route: '/dell/alerts', icon: AlertTriangle, isActive: (p) => p.startsWith('/dell/alerts') },
+      { label: 'AI Advisor', route: '/dell/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/dell/advisor'), requiresAi: true },
     ],
   },
   {
@@ -56,6 +58,7 @@ export default {
     { path: 'dell/alerts', Component: DellAlertsPage },
     { path: 'dell/hardware', Component: DellHardwarePage },
     { path: 'dell/support', Component: DellSupportPage },
+    { path: 'dell/advisor', Component: DellAdvisorPage },
     { path: 'dell/settings', Component: DellSettingsPage },
   ],
 };

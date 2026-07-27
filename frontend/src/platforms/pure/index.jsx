@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
-  Cloud, LayoutList, Database, Layers, Bell, ArrowLeftRight, HardDrive, Network, Settings,
+  Cloud, LayoutList, Database, Layers, Bell, ArrowLeftRight, HardDrive, Network, Settings, Sparkles,
 } from 'lucide-react';
 
 const PureAlertsPage = lazy(() => import('../../pages/pure/PureAlertsPage'));
@@ -13,6 +13,7 @@ const PureHardwarePage = lazy(() => import('../../pages/pure/PureHardwarePage'))
 const PureConnectivityPage = lazy(() => import('../../pages/pure/PureConnectivityPage'));
 const PureSettingsPage = lazy(() => import('../../pages/pure/PureSettingsPage'));
 const PureEstatePage = lazy(() => import('../../pages/pure/PureEstatePage'));
+const PureAdvisorPage = lazy(() => import('../../pages/pure/PureAdvisorPage'));
 
 // Pure Storage sidebar — shown when the Pure platform is active. Grouped into
 // sections that mirror the Cohesity menu.
@@ -23,6 +24,7 @@ const navGroups = [
       { label: 'Overview', route: '/pure', icon: Cloud, isActive: (p) => p === '/pure' },      { label: 'Estate', route: '/pure/estate', icon: LayoutList, isActive: (p) => p.startsWith('/pure/estate') },      { label: 'Capacity', route: '/pure/capacity', icon: Database, isActive: (p) => p.startsWith('/pure/capacity') },
       { label: 'Volumes', route: '/pure/volumes', icon: Layers, isActive: (p) => p.startsWith('/pure/volumes') },
       { label: 'Alerts', route: '/pure/alerts', icon: Bell, isActive: (p) => p.startsWith('/pure/alerts') },
+      { label: 'AI Advisor', route: '/pure/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/pure/advisor'), requiresAi: true },
     ],
   },
   {
@@ -68,6 +70,7 @@ export default {
     { path: 'pure/hardware', Component: PureHardwarePage },
     { path: 'pure/connectivity', Component: PureConnectivityPage },
     { path: 'pure/alerts', Component: PureAlertsPage },
+    { path: 'pure/advisor', Component: PureAdvisorPage },
     { path: 'pure/settings', Component: PureSettingsPage },
   ],
 };

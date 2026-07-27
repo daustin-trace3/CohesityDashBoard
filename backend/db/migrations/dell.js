@@ -142,4 +142,19 @@ module.exports = [
       if (!cols.includes('message_id')) db.exec('ALTER TABLE dell_alerts ADD COLUMN message_id TEXT');
     },
   },
+
+  // Migration: cached AI Advisor report content, one row per report key.
+  {
+    version: 3,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS dell_ai_reports (
+          report_key    TEXT PRIMARY KEY,
+          model         TEXT,
+          content       TEXT NOT NULL,
+          generated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    },
+  },
 ];

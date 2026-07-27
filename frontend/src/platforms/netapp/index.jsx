@@ -1,6 +1,6 @@
 import { lazy } from 'react';
 import {
-  Gauge, Database, Layers, Network, FolderTree, Bell, ArrowLeftRight, HardDrive, Settings,
+  Gauge, Database, Layers, Network, FolderTree, Bell, ArrowLeftRight, HardDrive, Settings, Sparkles,
 } from 'lucide-react';
 
 const NetAppOverviewPage = lazy(() => import('../../pages/netapp/NetAppOverviewPage'));
@@ -12,6 +12,7 @@ const NetAppReplicationPage = lazy(() => import('../../pages/netapp/NetAppReplic
 const NetAppAlertsPage = lazy(() => import('../../pages/netapp/NetAppAlertsPage'));
 const NetAppHardwarePage = lazy(() => import('../../pages/netapp/NetAppHardwarePage'));
 const NetAppSettingsPage = lazy(() => import('../../pages/netapp/NetAppSettingsPage'));
+const NetAppAdvisorPage = lazy(() => import('../../pages/netapp/NetAppAdvisorPage'));
 
 // NetApp ONTAP sidebar — shown when the NetApp platform is active.
 const navGroups = [
@@ -24,6 +25,7 @@ const navGroups = [
       { label: 'NFS', route: '/netapp/nfs', icon: Network, isActive: (p) => p.startsWith('/netapp/nfs') },
       { label: 'SMB / CIFS', route: '/netapp/cifs', icon: FolderTree, isActive: (p) => p.startsWith('/netapp/cifs') },
       { label: 'Alerts', route: '/netapp/alerts', icon: Bell, isActive: (p) => p.startsWith('/netapp/alerts') },
+      { label: 'AI Advisor', route: '/netapp/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/netapp/advisor'), requiresAi: true },
     ],
   },
   {
@@ -67,6 +69,7 @@ export default {
     { path: 'netapp/replication', Component: NetAppReplicationPage },
     { path: 'netapp/alerts', Component: NetAppAlertsPage },
     { path: 'netapp/hardware', Component: NetAppHardwarePage },
+    { path: 'netapp/advisor', Component: NetAppAdvisorPage },
     { path: 'netapp/settings', Component: NetAppSettingsPage },
   ],
 };

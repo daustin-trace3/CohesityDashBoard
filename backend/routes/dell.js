@@ -10,6 +10,7 @@ const { encrypt } = require('../services/encryption');
 const { getSetting, setSetting } = require('../services/settings');
 const dellOmeApi = require('../services/dellOmeApi');
 const { dellPoller } = require('../services/dellPoller');
+const dellAdvisor = require('../services/advisors/dellAdvisor');
 
 const router = express.Router();
 
@@ -579,6 +580,41 @@ router.put('/config', [
     setSetting('dell_warranty_warn_days', String(req.body.warrantyWarnDays));
     res.json({ warrantyWarnDays: warrantyWarnDays() });
   } catch (err) { next(err); }
+});
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /api/dell/advisor/:report — cached Dell AI Advisor report. */
+router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!dellAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    res.json({ enabled: dellAdvisor.isConfigured(), report: dellAdvisor.getCachedReport(key) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/dell/advisor/:report — (re)generate and cache a Dell AI Advisor report. */
+router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!dellAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const result = await dellAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

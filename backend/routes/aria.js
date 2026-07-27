@@ -14,6 +14,7 @@ const { ariaPoller } = require('../services/ariaPoller');
 const {
   leaseWarnDays, certWarnDays, requestFailLookbackHours, computeIssues,
 } = require('../services/ariaIssues');
+const ariaAdvisor = require('../services/advisors/ariaAdvisor');
 
 const router = express.Router();
 
@@ -500,6 +501,41 @@ router.put('/config', [
       requestFailLookbackHours: requestFailLookbackHours(),
     });
   } catch (err) { next(err); }
+});
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /api/aria/advisor/:report — cached Aria AI Advisor report. */
+router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!ariaAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    res.json({ enabled: ariaAdvisor.isConfigured(), report: ariaAdvisor.getCachedReport(key) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/aria/advisor/:report — (re)generate and cache an Aria AI Advisor report. */
+router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!ariaAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const result = await ariaAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

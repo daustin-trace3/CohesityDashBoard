@@ -5,6 +5,7 @@ const { encrypt } = require('../services/encryption');
 const pureApi = require('../services/pureApi');
 const { scheduleArray, cancelArray, triggerPoll } = require('../services/purePoller');
 const cacheControl = require('../middleware/cache');
+const pureAdvisor = require('../services/advisors/pureAdvisor');
 
 const router = express.Router();
 
@@ -559,6 +560,41 @@ router.get('/pods', cacheControl(30), (req, res, next) => {
       JOIN pure_arrays a ON a.id = p.array_id ORDER BY a.name, p.name
     `).all());
   } catch (err) {
+    next(err);
+  }
+});
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /api/pure/advisor/:report — cached Pure AI Advisor report. */
+router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!pureAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    res.json({ enabled: pureAdvisor.isConfigured(), report: pureAdvisor.getCachedReport(key) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/pure/advisor/:report — (re)generate and cache a Pure AI Advisor report. */
+router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!pureAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const result = await pureAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
     next(err);
   }
 });

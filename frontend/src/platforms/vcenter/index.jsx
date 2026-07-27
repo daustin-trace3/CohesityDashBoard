@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History } from 'lucide-react';
+import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles } from 'lucide-react';
 
 const VcOverviewPage = lazy(() => import('../../pages/vcenter/VcOverviewPage'));
 const VcHostsPage = lazy(() => import('../../pages/vcenter/VcHostsPage'));
@@ -9,6 +9,7 @@ const VcNetworkPage = lazy(() => import('../../pages/vcenter/VcNetworkPage'));
 const VcGovernancePage = lazy(() => import('../../pages/vcenter/VcGovernancePage'));
 const VcEventsPage = lazy(() => import('../../pages/vcenter/VcEventsPage'));
 const VcSettingsPage = lazy(() => import('../../pages/vcenter/VcSettingsPage'));
+const VcAdvisorPage = lazy(() => import('../../pages/vcenter/VcAdvisorPage'));
 
 // VMware vCenter sidebar — shown when the vCenter platform is active.
 const navGroups = [
@@ -17,6 +18,7 @@ const navGroups = [
     items: [
       { label: 'Overview', route: '/vcenter', icon: Gauge, isActive: (p) => p === '/vcenter' },
       { label: 'Events', route: '/vcenter/events', icon: History, isActive: (p) => p.startsWith('/vcenter/events') },
+      { label: 'AI Advisor', route: '/vcenter/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/vcenter/advisor'), requiresAi: true },
     ],
   },
   {
@@ -62,6 +64,7 @@ export default {
     { path: 'vcenter/network', Component: VcNetworkPage },
     { path: 'vcenter/events', Component: VcEventsPage },
     { path: 'vcenter/governance', Component: VcGovernancePage },
+    { path: 'vcenter/advisor', Component: VcAdvisorPage },
     { path: 'vcenter/settings', Component: VcSettingsPage },
   ],
 };

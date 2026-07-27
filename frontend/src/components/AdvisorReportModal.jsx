@@ -9,7 +9,7 @@ function fmtTime(ts) {
   try { return new Date(ts).toLocaleString(); } catch { return ts; }
 }
 
-export default function AdvisorReportModal({ tab, initialReport, enabled, autoRun = false, onClose, onUpdated }) {
+export default function AdvisorReportModal({ tab, initialReport, enabled, autoRun = false, basePath = '/cohesity/advisor', onClose, onUpdated }) {
   const [report, setReport] = useState(initialReport || null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState(null);
@@ -19,7 +19,7 @@ export default function AdvisorReportModal({ tab, initialReport, enabled, autoRu
     setRunning(true);
     setError(null);
     try {
-      const { data } = await client.post(`/cohesity/advisor/${tab.slug}`);
+      const { data } = await client.post(`${basePath}/${tab.slug}`);
       setReport(data);
       onUpdated?.(data);
     } catch (e) {
@@ -30,7 +30,7 @@ export default function AdvisorReportModal({ tab, initialReport, enabled, autoRu
     } finally {
       setRunning(false);
     }
-  }, [tab.slug, onUpdated]);
+  }, [tab.slug, basePath, onUpdated]);
 
   // Kick off a fresh run immediately if opened via "Run new".
   const didAuto = useRef(false);

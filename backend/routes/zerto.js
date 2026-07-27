@@ -2,14 +2,21 @@
 // all paths here are relative. Data is served from the polled zerto_* tables;
 // /account manages the SaaS credential (encrypted in app_settings).
 const express = require('express');
-const { body, query, validationResult } = require('express-validator');
+const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { getSetting, setSetting } = require('../services/settings');
 const { encrypt } = require('../services/encryption');
 const zertoApi = require('../services/zertoApi');
 const { refreshAll, zertoTask } = require('../services/zertoPoller');
+const zertoAdvisor = require('../services/advisors/zertoAdvisor');
 
 const router = express.Router();
+
+function validate(req, res, next) {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+  next();
+}
 
 function latestSnapshot() {
   return db.prepare('SELECT * FROM zerto_metrics_history ORDER BY captured_at DESC LIMIT 1').get() || null;
@@ -214,6 +221,41 @@ router.post('/refresh', async (req, res, next) => {
     await refreshAll();
     res.json({ refreshed: true, snapshot: latestSnapshot() });
   } catch (err) { next(err); }
+});
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /api/zerto/advisor/:report — cached Zerto AI Advisor report. */
+router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!zertoAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    res.json({ enabled: zertoAdvisor.isConfigured(), report: zertoAdvisor.getCachedReport(key) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/zerto/advisor/:report — (re)generate and cache a Zerto AI Advisor report. */
+router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!zertoAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const result = await zertoAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

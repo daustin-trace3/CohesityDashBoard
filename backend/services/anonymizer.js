@@ -29,8 +29,15 @@ const MAC_RE = /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g;
 // that look like machine names (contain a digit, dot, hyphen or underscore) so
 // plain English after the keyword ("object could not ...") passes through.
 const OBJECT_RE = /\b(object|entity|VM|volume|datastore|database|view|share|job|task)\s+['"[]?([A-Za-z0-9][A-Za-z0-9._-]{2,62})/gi;
-const TOKEN_RE = /\b(CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT)-(\d+)\b/gi;
-const TOKEN_RE_TEST = /^(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT)-\d+$/i;
+const TOKEN_RE = /\b(CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT|SERIAL)-(\d+)\b/gi;
+const TOKEN_RE_TEST = /^(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT|SERIAL)-\d+$/i;
+
+// Keys whose ENTIRE value is masked outright, regardless of content — these
+// are opaque identifiers (serials) or bare usernames/WWNs that the pattern
+// scrubbers below cannot recognize on their own.
+const SERIAL_KEY_RE = /serial|service_tag/i;
+const USER_KEY_RE = /^user(_?name)?$|requested_by|created_by/i;
+const WWN_KEY_RE = /wwn/i;
 
 // Keys whose values are version strings — exempt from IP/FQDN scrubbing so
 // "7.0.1.100" is not mistaken for an IPv4 address (dictionary still applies).
@@ -59,6 +66,13 @@ function loadDictionary() {
       if (name.length >= 3) entries.push([name, category]);
     }
   };
+  const addHostOrIp = (rows) => {
+    for (const r of rows) {
+      const val = String(r.name ?? '').trim();
+      if (val.length >= 3) entries.push([val, isIpv4(val) ? 'IP' : 'HOST']);
+    }
+  };
+
   try {
     add(db.prepare('SELECT name FROM clusters').all(), 'CLUSTER');
     add(db.prepare("SELECT DISTINCT target_cluster_name AS name FROM replication_runs WHERE target_cluster_name IS NOT NULL AND target_cluster_name != ''").all(), 'CLUSTER');
@@ -66,10 +80,7 @@ function loadDictionary() {
     add(db.prepare("SELECT DISTINCT name FROM policies WHERE name IS NOT NULL AND name != ''").all(), 'POLICY');
     add(db.prepare("SELECT DISTINCT source_name AS name FROM source_registrations WHERE source_name IS NOT NULL AND source_name != ''").all(), 'SOURCE');
     add(db.prepare("SELECT DISTINCT view_name AS name FROM license_view_detail WHERE view_name IS NOT NULL AND view_name != ''").all(), 'VIEW');
-    for (const r of db.prepare("SELECT DISTINCT vip AS name FROM clusters WHERE vip IS NOT NULL AND vip != ''").all()) {
-      const vip = String(r.name).trim();
-      if (vip.length >= 3) entries.push([vip, isIpv4(vip) ? 'IP' : 'HOST']);
-    }
+    addHostOrIp(db.prepare("SELECT DISTINCT vip AS name FROM clusters WHERE vip IS NOT NULL AND vip != ''").all());
     // Policy replication/archival targets are JSON arrays of names.
     for (const r of db.prepare("SELECT replication_targets, archival_targets FROM policies").all()) {
       for (const col of [r.replication_targets, r.archival_targets]) {
@@ -82,12 +93,77 @@ function loadDictionary() {
       }
     }
   } catch { /* dictionary is best-effort; pattern scrubbing still applies */ }
+
+  try {
+    add(db.prepare('SELECT name FROM pure_arrays').all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT mgmt_host AS name FROM pure_arrays WHERE mgmt_host IS NOT NULL AND mgmt_host != ''").all());
+    add(db.prepare("SELECT DISTINCT remote_name AS name FROM pure_array_connections WHERE remote_name IS NOT NULL AND remote_name != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT name FROM pure_volumes WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT name FROM pure_pods WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT name FROM pure_hosts WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT name FROM pure_protection_groups WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+    add(db.prepare("SELECT DISTINCT source_name AS name FROM pure_protection_groups WHERE source_name IS NOT NULL AND source_name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT common_name AS name FROM pure_certificates WHERE common_name IS NOT NULL AND common_name != ''").all(), 'HOST');
+    add(db.prepare("SELECT issued_to AS name FROM pure_certificates WHERE issued_to IS NOT NULL AND issued_to != ''").all(), 'HOST');
+    add(db.prepare('SELECT name FROM pure1_arrays').all(), 'CLUSTER');
+    add(db.prepare("SELECT DISTINCT array_name AS name FROM pure1_alerts WHERE array_name IS NOT NULL AND array_name != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT name FROM pure1_pods WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+  } catch { /* Pure tables not present on this instance */ }
+
+  try {
+    add(db.prepare('SELECT name FROM netapp_arrays').all(), 'CLUSTER');
+    add(db.prepare("SELECT DISTINCT source_cluster AS name FROM netapp_snapmirror WHERE source_cluster IS NOT NULL AND source_cluster != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT DISTINCT destination_cluster AS name FROM netapp_snapmirror WHERE destination_cluster IS NOT NULL AND destination_cluster != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT mgmt_host AS name FROM netapp_arrays WHERE mgmt_host IS NOT NULL AND mgmt_host != ''").all());
+    addHostOrIp(db.prepare("SELECT management_ip AS name FROM netapp_arrays WHERE management_ip IS NOT NULL AND management_ip != ''").all());
+    add(db.prepare("SELECT name FROM netapp_svms WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT name FROM netapp_volumes WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT DISTINCT aggregate_name AS name FROM netapp_volumes WHERE aggregate_name IS NOT NULL AND aggregate_name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT DISTINCT qtree_name AS name FROM netapp_quotas WHERE qtree_name IS NOT NULL AND qtree_name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT share_name AS name FROM netapp_cifs_shares WHERE share_name IS NOT NULL AND share_name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT name FROM netapp_nodes WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT name FROM netapp_lifs WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT node_name AS name FROM netapp_lifs WHERE node_name IS NOT NULL AND node_name != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT policy_name AS name FROM netapp_export_rules WHERE policy_name IS NOT NULL AND policy_name != ''").all(), 'POLICY');
+  } catch { /* NetApp tables not present on this instance */ }
+
+  try {
+    add(db.prepare("SELECT name FROM zerto_sites WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT name FROM zerto_vpgs WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+    add(db.prepare("SELECT DISTINCT name FROM zerto_vms WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM zerto_vras WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+  } catch { /* Zerto tables not present on this instance */ }
+
+  try {
+    add(db.prepare('SELECT name FROM vcenter_vcenters').all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM vcenter_vcenters WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM vcenter_clusters WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT name FROM vcenter_hosts WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT name FROM vcenter_vms WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM vcenter_datastores WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+  } catch { /* vCenter tables not present on this instance */ }
+
+  try {
+    add(db.prepare('SELECT name FROM dell_ome_instances').all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM dell_ome_instances WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM dell_devices WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+  } catch { /* Dell tables not present on this instance */ }
+
+  try {
+    add(db.prepare('SELECT name FROM aria_instances').all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM aria_instances WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM aria_deployments WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM aria_projects WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT name FROM aria_blueprints WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+    add(db.prepare("SELECT name FROM aria_endpoints WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+  } catch { /* Aria tables not present on this instance */ }
+
   return entries;
 }
 
 // Appended to every AI system prompt so the model preserves tokens verbatim.
 const PROMPT_NOTE =
-  ' NOTE: identifiable names in the data (servers, clusters, jobs, policies, sources, views/shares, user accounts, hostnames, IP addresses) ' +
+  ' NOTE: identifiable names in the data (servers, clusters, jobs, policies, sources, views/shares, user accounts, hostnames, IP addresses, serial numbers) ' +
   'have been replaced with anonymous tokens such as CLUSTER-1, JOB-2, HOST-3 or IP-4. Refer to each entity ONLY ' +
   'by its exact token, verbatim and unaltered, so it can be mapped back to the real name locally. ' +
   'Never guess or invent the real names behind the tokens.';
@@ -128,6 +204,11 @@ function createAnonymizer() {
     let out = str;
     if (nameRe) {
       out = out.replace(nameRe, (m) => token(categoryOf.get(m.toLowerCase()) || 'HOST', m));
+    }
+    if (key) {
+      if (SERIAL_KEY_RE.test(key)) return token('SERIAL', out);
+      if (WWN_KEY_RE.test(key)) return token('MAC', out);
+      if (USER_KEY_RE.test(key) && !TOKEN_RE_TEST.test(out)) return token('USER', out);
     }
     if (key && VERSION_KEY_RE.test(key)) return out;
     out = out.replace(UNC_RE, (m) => token('HOST', m));

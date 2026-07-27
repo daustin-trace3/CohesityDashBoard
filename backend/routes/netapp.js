@@ -6,6 +6,7 @@ const { getSetting, setSetting } = require('../services/settings');
 const netappApi = require('../services/netappApi');
 const { syncAndPollAll, triggerPoll, reschedule, scheduleArray, cancelArray } = require('../services/netappPoller');
 const cacheControl = require('../middleware/cache');
+const netappAdvisor = require('../services/advisors/netappAdvisor');
 
 const router = express.Router();
 
@@ -413,6 +414,41 @@ router.get('/cifs', cacheControl(30), (req, res, next) => {
       `).all(),
     });
   } catch (err) { next(err); }
+});
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /api/netapp/advisor/:report — cached NetApp AI Advisor report. */
+router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!netappAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    res.json({ enabled: netappAdvisor.isConfigured(), report: netappAdvisor.getCachedReport(key) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/netapp/advisor/:report — (re)generate and cache a NetApp AI Advisor report. */
+router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!netappAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const result = await netappAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

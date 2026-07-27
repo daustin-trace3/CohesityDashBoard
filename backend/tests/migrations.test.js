@@ -198,6 +198,8 @@ const NEW_TABLES = [
   'aria_projects', 'aria_catalog_sources', 'aria_runs', 'aria_approvals',
   'aria_metrics_history', 'aria_issue_history', 'aria_images',
   'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints',
+  'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
+  'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy
