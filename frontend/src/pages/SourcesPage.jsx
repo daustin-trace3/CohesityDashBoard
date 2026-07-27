@@ -83,13 +83,15 @@ export default function SourcesPage() {
 
   const envFilter = ctl.filters.environment || '';
 
+  // Export honors the active filters/search (ctl.rows is the filtered set,
+  // pre-pagination); with nothing filtered that IS the whole inventory.
   const exportCsv = () => {
     const esc = (val) => {
       const t = val == null ? '' : String(val);
       return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
     };
     const lines = [COLUMNS.map((c) => esc(c.csvLabel)).join(',')];
-    for (const o of list) lines.push(COLUMNS.map((c) => esc(c.csv(o))).join(','));
+    for (const o of ctl.rows) lines.push(COLUMNS.map((c) => esc(c.csv(o))).join(','));
     const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -107,7 +109,7 @@ export default function SourcesPage() {
         description="Every discovered object across the estate — click a workload tile to filter">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <ColumnPicker columns={COLUMNS} prefs={cols} />
-        <button onClick={exportCsv} disabled={!list.length}
+        <button onClick={exportCsv} disabled={!ctl.rows.length}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
           <Download size={13} /> Export
         </button>
