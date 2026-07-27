@@ -27,6 +27,7 @@ const gflagsRouter = require('./routes/gflags');
 const licenseRouter = require('./routes/license');
 const pure1Router = require('./routes/pure1');
 const dnsRouter = require('./routes/dns');
+const searchRouter = require('./routes/search');
 const opsRouter = require('./routes/ops');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
@@ -170,6 +171,8 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/pure1', requirePermission(platformPermission('pure')), pure1Router);
   // /api/dns is reachable to any authenticated caller (no permission gate).
   app.use('/api/dns', dnsRouter);
+  // Estate-wide entity search — per-category RBAC happens inside the handler.
+  app.use('/api/search', searchRouter);
   // Cross-platform ops summary (landing page) — read-only rollup, reachable
   // to any authenticated caller like /api/poller/status.
   app.use('/api/ops', opsRouter);

@@ -1,14 +1,14 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, Search, PanelLeftClose, PanelLeftOpen, Hexagon, X, ShieldCheck, Settings, LogOut, Activity,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
+import GlobalSearch from './GlobalSearch';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
 import { subscribeNetworkActivity } from '../api/client';
 import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
-import { useSearch } from '../context';
 import { platforms as builtinPlatforms } from '../platforms/registry';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import { useAuth } from '../auth/AuthContext';
@@ -77,7 +77,6 @@ export default function Layout() {
   const [networkSyncing, setNetworkSyncing] = useState(false);
   const networkSyncTimer = useRef(null);
 
-  const { search, setSearch } = useSearch();
   const navigate = useNavigate();
   const location = useLocation();
   const pathname = location.pathname;
@@ -476,27 +475,8 @@ export default function Layout() {
             )}
           </div>
 
-          {/* Global search — pushes right controls to the far end */}
-          <div className="relative ml-auto w-48 lg:w-64 xl:w-72 flex-shrink-0">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
-            <input
-              type="search"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search clusters…"
-              aria-label="Search clusters"
-              className="w-full bg-surface border border-cohesity-border text-[13px] text-ink rounded-lg pl-9 pr-8 py-1.5 placeholder-ink-faint focus:border-brand/60 transition-colors"
-            />
-            {search && (
-              <button
-                onClick={() => setSearch('')}
-                aria-label="Clear search"
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink cursor-pointer"
-              >
-                <X size={13} />
-              </button>
-            )}
-          </div>
+          {/* Global search — estate-wide entity typeahead */}
+          <GlobalSearch />
 
           <div className="flex-shrink-0">
             <NotificationBell

@@ -8,7 +8,11 @@ import { Search, ChevronUp, ChevronDown, Download, SlidersHorizontal } from 'luc
 // Pass `paginate: true` to slice the result into pages — render `ctl.pageRows`
 // instead of `ctl.rows` and drop a <TablePager ctl={ctl} /> under the table.
 export function useTableControls(rows, { searchKeys = [], defaultSortKey = null, defaultSortDir = 'asc', sortValues = {}, paginate = false, defaultPageSize = 25 } = {}) {
-  const [q, setQ] = useState('');
+  // Deep-link convention: pages opened as /route?q=<term> start filtered — the
+  // global header search navigates this way. User edits take over from there.
+  const [q, setQ] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('q') || ''; } catch { return ''; }
+  });
   const [filters, setFilters] = useState({});
   const [sortKey, setSortKey] = useState(defaultSortKey);
   const [sortDir, setSortDir] = useState(defaultSortDir);

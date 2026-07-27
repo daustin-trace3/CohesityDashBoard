@@ -1,0 +1,107 @@
+// Estate-wide entity search: one endpoint fanning out cheap LIKE queries over
+// the polled inventory tables, grouped by category. Every category is gated on
+// the caller's RBAC grant AND the platform's enabled flag; results deep-link
+// to the owning page with ?q=<name> (tables read it via useTableControls).
+const express = require('express');
+const db = require('../db/database');
+const { hasPermission } = require('../services/rbac');
+const { getSetting } = require('../services/settings');
+
+const router = express.Router();
+
+const LIMIT_PER_CATEGORY = 8;
+const escLike = (s) => String(s).replace(/[\\%_]/g, (c) => `\\${c}`);
+
+// sql gets (pattern, limit); title/subtitle drive the dropdown rows.
+const CATEGORIES = [
+  { key: 'cohesity-clusters', label: 'Clusters', platform: 'cohesity', perm: 'cohesity:clusters:view', base: '/cohesity/clusters',
+    sql: `SELECT name AS title, connection_type AS subtitle FROM clusters WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'cohesity-objects', label: 'Objects (Sources)', platform: 'cohesity', perm: 'cohesity:workloads:view', base: '/sources',
+    sql: `SELECT o.name AS title, (o.environment || ' · ' || c.name) AS subtitle
+          FROM cohesity_objects o JOIN clusters c ON c.id = o.cluster_id
+          WHERE o.name LIKE ? ESCAPE '\\' ORDER BY o.name LIMIT ?` },
+  { key: 'cohesity-views', label: 'Views', platform: 'cohesity', perm: 'cohesity:views:view', base: '/views',
+    sql: `SELECT name AS title, system_name AS subtitle FROM cohesity_views WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'cohesity-groups', label: 'Protection Groups', platform: 'cohesity', perm: 'cohesity:governance:view', base: '/governance',
+    sql: `SELECT p.name AS title, c.name AS subtitle FROM policies p JOIN clusters c ON c.id = p.cluster_id
+          WHERE p.name LIKE ? ESCAPE '\\' ORDER BY p.name LIMIT ?` },
+  { key: 'vcenter-vms', label: 'vCenter VMs', platform: 'vcenter', perm: 'vcenter:vms:view', base: '/vcenter/inventory',
+    sql: `SELECT m.name AS title, (COALESCE(m.cluster_name, '') || ' · ' || v.name) AS subtitle
+          FROM vcenter_vms m JOIN vcenter_vcenters v ON v.id = m.vcenter_id
+          WHERE m.name LIKE ? ESCAPE '\\' ORDER BY m.name LIMIT ?` },
+  { key: 'vcenter-hosts', label: 'ESX Hosts', platform: 'vcenter', perm: 'vcenter:hosts:view', base: '/vcenter/hosts',
+    sql: `SELECT name AS title, cluster_name AS subtitle FROM vcenter_hosts WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'vcenter-datastores', label: 'Datastores', platform: 'vcenter', perm: 'vcenter:datastores:view', base: '/vcenter/datastores',
+    sql: `SELECT name AS title, ds_type AS subtitle FROM vcenter_datastores WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'netapp-volumes', label: 'NetApp Volumes', platform: 'netapp', perm: 'netapp:volumes:view', base: '/netapp/volumes',
+    sql: `SELECT v.name AS title, (COALESCE(v.svm_name, '') || ' · ' || a.name) AS subtitle
+          FROM netapp_volumes v JOIN netapp_arrays a ON a.id = v.array_id
+          WHERE v.name LIKE ? ESCAPE '\\' ORDER BY v.name LIMIT ?` },
+  { key: 'netapp-shares', label: 'CIFS Shares', platform: 'netapp', perm: 'netapp:cifs:view', base: '/netapp/cifs',
+    sql: `SELECT share_name AS title, (COALESCE(svm_name, '') || ' · ' || COALESCE(volume_name, '')) AS subtitle
+          FROM netapp_cifs_shares WHERE share_name LIKE ? ESCAPE '\\' ORDER BY share_name LIMIT ?` },
+  { key: 'zerto-vpgs', label: 'Zerto VPGs', platform: 'zerto', perm: 'zerto:vpgs:view', base: '/zerto/vpgs',
+    sql: `SELECT name AS title, (COALESCE(protected_site, '') || ' → ' || COALESCE(recovery_site, '')) AS subtitle
+          FROM zerto_vpgs WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'zerto-vms', label: 'Zerto VMs', platform: 'zerto', perm: 'zerto:vms:view', base: '/zerto/vms',
+    sql: `SELECT name AS title, vpg_names AS subtitle FROM zerto_vms WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'zerto-sites', label: 'Zerto Sites', platform: 'zerto', perm: 'zerto:sites:view', base: '/zerto/sites',
+    sql: `SELECT name AS title, site_type AS subtitle FROM zerto_sites WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'pure-arrays', label: 'Pure Arrays', platform: 'pure', perm: 'pure:overview:view', base: '/pure',
+    sql: `SELECT name AS title, model AS subtitle FROM pure1_arrays WHERE name LIKE ? ESCAPE '\\'
+          UNION SELECT name AS title, mgmt_host AS subtitle FROM pure_arrays WHERE name LIKE ? ESCAPE '\\'
+          ORDER BY title LIMIT ?`, params: 2 },
+  { key: 'dell-devices', label: 'Dell Devices', platform: 'dell', perm: 'dell:devices:view', base: '/dell/devices',
+    sql: `SELECT name AS title, (COALESCE(service_tag, '') || ' · ' || COALESCE(model, '')) AS subtitle
+          FROM dell_devices WHERE name LIKE ? ESCAPE '\\' OR service_tag LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?`, params: 2 },
+  { key: 'aria-deployments', label: 'Aria Deployments', platform: 'aria', perm: 'aria:deployments:view', base: '/aria/deployments',
+    sql: `SELECT name AS title, (COALESCE(project_name, '') || ' · ' || COALESCE(status, '')) AS subtitle
+          FROM aria_deployments WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'ariaops-resources', label: 'Aria Ops Resources', platform: 'ariaops', perm: 'ariaops:resources:view', base: '/ariaops/resources',
+    sql: `SELECT name AS title, (COALESCE(kind, '') || ' · ' || COALESCE(health, '')) AS subtitle
+          FROM ariaops_resources WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+];
+
+const platformEnabled = (id) => {
+  if (id === 'cohesity') return true;
+  return String(getSetting(`platform_${id}_enabled`) ?? '0') === '1';
+};
+
+/** GET /api/search?q= — grouped estate-wide entity search (min 2 chars). */
+router.get('/', (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ results: [] });
+    const pattern = `%${escLike(q)}%`;
+    const grants = (req.auth && req.auth.grants) || [];
+
+    const results = [];
+    for (const cat of CATEGORIES) {
+      if (!platformEnabled(cat.platform)) continue;
+      if (!hasPermission(grants, cat.perm)) continue;
+      let items;
+      try {
+        const args = Array(cat.params || 1).fill(pattern);
+        items = db.prepare(cat.sql).all(...args, LIMIT_PER_CATEGORY);
+      } catch {
+        continue; // table missing (platform never migrated) — skip quietly
+      }
+      if (!items.length) continue;
+      results.push({
+        key: cat.key,
+        label: cat.label,
+        platform: cat.platform,
+        items: items.map((i) => ({
+          title: i.title,
+          subtitle: i.subtitle || null,
+          route: `${cat.base}?q=${encodeURIComponent(i.title || q)}`,
+        })),
+      });
+    }
+    res.json({ results });
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = router;
