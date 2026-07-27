@@ -209,13 +209,15 @@ export function ColumnPicker({ columns, prefs }) {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
   return (
-    <div className="relative" ref={ref}>
+    // z-50 on the anchor: the dropdown must paint over sticky table headers
+    // (position:sticky rows otherwise win against later-DOM siblings).
+    <div className="relative z-50" ref={ref}>
       <button onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
         <SlidersHorizontal size={12} /> Columns
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-40 bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl p-2 w-60 max-h-80 overflow-y-auto">
+        <div className="absolute right-0 top-full mt-1 z-50 bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl p-2 w-60 max-h-80 overflow-y-auto">
           {columns.map((c) => (
             <label key={c.k}
               className={`flex items-center gap-2 px-2 py-1 text-xs rounded cursor-pointer ${c.always ? 'text-ink-faint cursor-default' : 'text-ink hover:bg-brand/5'}`}>
