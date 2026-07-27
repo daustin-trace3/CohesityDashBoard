@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Panel, Badge, StatCard, LoadingPanel, LastUpdated, RefreshButton } from '../components/ui/primitives';
+import { useTableControls, SortTh, TableControls, TablePager } from '../components/ui/tableTools';
 import { useToast } from '../components/ui/Toaster';
 
 function fmtBytes(b) {
@@ -22,6 +23,75 @@ const GOV_TABS = [
   { key: 'agents', label: 'Agent Versions', icon: Cpu },
   { key: 'sources', label: 'Source Coverage', icon: ShieldOff },
 ];
+
+function AgentsPanel({ audit }) {
+  const rows = (audit.agents || []).map((a, i) => ({
+    ...a,
+    id: `${a.clusterName}-${a.sourceId}-${i}`,
+    versionShort: a.agentVersion ? String(a.agentVersion).split('_release')[0] : null,
+    currentSort: a.isCurrent ? 1 : 0, // sortable stand-in for the badge column
+    os: a.osName || a.hostType || null,
+  }));
+  const ctl = useTableControls(rows, {
+    searchKeys: ['name', 'clusterName', 'os', 'versionShort'],
+    defaultSortKey: 'currentSort', defaultSortDir: 'asc', // outdated first
+    paginate: true,
+  });
+
+  return (
+    <Panel title="Cohesity Agent Versions" icon={Cpu}>
+      {rows.length === 0 ? (
+        <p className="text-xs text-ink-faint py-4 text-center">No agent data collected yet — agents appear after the next poll of clusters with registered physical sources.</p>
+      ) : (
+        <>
+          <p className="text-[11px] text-ink-muted mb-3">
+            Current version: <span className="text-ink font-semibold tnum">{String(audit.latestVersion || '—').split('_release')[0]}</span>
+            {' '}· {audit.total - audit.outdated}/{audit.total} agents current
+            {audit.outdated > 0 && <span className="text-status-warn font-semibold"> · {audit.outdated} need updating</span>}
+          </p>
+          <TableControls ctl={ctl} rows={rows} searchPlaceholder="Filter by object, cluster, OS or version…"
+            filters={[{ k: 'clusterName', label: 'Clusters' }, { k: 'versionShort', label: 'Versions' }]} />
+          {ctl.rows.length === 0 ? (
+            <p className="text-xs text-ink-faint py-4 text-center">No agents match your filters.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-ink-muted">
+                <thead>
+                  <tr className="text-ink-faint border-b border-cohesity-border text-left">
+                    <SortTh k="name" label="Object" ctl={ctl} />
+                    <SortTh k="clusterName" label="Cluster" ctl={ctl} />
+                    <SortTh k="os" label="OS" ctl={ctl} />
+                    <SortTh k="currentSort" label="Agent Version" ctl={ctl} />
+                    <SortTh k="agentStatus" label="Health" ctl={ctl} />
+                    <SortTh k="upgradability" label="Cluster Verdict" ctl={ctl} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {ctl.pageRows.map((a) => (
+                    <tr key={a.id} className="border-b border-cohesity-border/60 hover:bg-surface-overlay/50 transition-colors">
+                      <td className="py-2 pr-4 text-ink font-medium max-w-[220px] truncate" title={a.name}>{a.name || '—'}</td>
+                      <td className="py-2 pr-4">{a.clusterName}</td>
+                      <td className="py-2 pr-4 max-w-[180px] truncate" title={a.os || ''}>{a.os || '—'}</td>
+                      <td className="py-2 pr-4">
+                        <Badge tone={a.isCurrent ? 'ok' : 'warn'} className="tnum">
+                          {a.versionShort || 'unknown'}
+                          {!a.isCurrent && a.versionShort ? ' — update' : ''}
+                        </Badge>
+                      </td>
+                      <td className="py-2 pr-4">{a.agentStatus || '—'}</td>
+                      <td className="py-2">{a.upgradability === 'Upgradable' ? <span className="text-status-warn">upgradable</span> : a.upgradability === 'Current' ? <span className="text-status-ok">current</span> : (a.upgradability || '—').toLowerCase()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <TablePager ctl={ctl} />
+        </>
+      )}
+    </Panel>
+  );
+}
 
 const AUDIT_FILTERS = [
   { key: 'all', label: 'All flagged' },
@@ -477,52 +547,7 @@ export default function GovernancePage() {
           )}
 
           {/* Agent versions on physical sources */}
-          {tab === 'agents' && (
-            <Panel title="Cohesity Agent Versions" icon={Cpu}>
-              {agentsAudit.agents.length === 0 ? (
-                <p className="text-xs text-ink-faint py-4 text-center">No agent data collected yet — agents appear after the next poll of clusters with registered physical sources.</p>
-              ) : (
-                <>
-                  <p className="text-[11px] text-ink-muted mb-3">
-                    Current version: <span className="text-ink font-semibold tnum">{String(agentsAudit.latestVersion || '—').split('_release')[0]}</span>
-                    {' '}· {agentsAudit.total - agentsAudit.outdated}/{agentsAudit.total} agents current
-                    {agentsAudit.outdated > 0 && <span className="text-status-warn font-semibold"> · {agentsAudit.outdated} need updating</span>}
-                  </p>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs text-ink-muted">
-                      <thead>
-                        <tr className="text-ink-faint border-b border-cohesity-border text-left">
-                          <th className="py-2 pr-4 font-semibold">Object</th>
-                          <th className="py-2 pr-4 font-semibold">Cluster</th>
-                          <th className="py-2 pr-4 font-semibold">OS</th>
-                          <th className="py-2 pr-4 font-semibold">Agent Version</th>
-                          <th className="py-2 pr-4 font-semibold">Health</th>
-                          <th className="py-2 font-semibold">Cluster Verdict</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[...agentsAudit.agents].sort((a, b) => (a.isCurrent === b.isCurrent ? 0 : a.isCurrent ? 1 : -1)).map((a, i) => (
-                          <tr key={`${a.clusterName}-${a.sourceId}-${i}`} className="border-b border-cohesity-border/60 hover:bg-surface-overlay/50 transition-colors">
-                            <td className="py-2 pr-4 text-ink font-medium max-w-[220px] truncate" title={a.name}>{a.name || '—'}</td>
-                            <td className="py-2 pr-4">{a.clusterName}</td>
-                            <td className="py-2 pr-4 max-w-[180px] truncate" title={a.osName || ''}>{a.osName || a.hostType || '—'}</td>
-                            <td className="py-2 pr-4">
-                              <Badge tone={a.isCurrent ? 'ok' : 'warn'} className="tnum">
-                                {a.agentVersion ? String(a.agentVersion).split('_release')[0] : 'unknown'}
-                                {!a.isCurrent && a.agentVersion ? ' — update' : ''}
-                              </Badge>
-                            </td>
-                            <td className="py-2 pr-4">{a.agentStatus || '—'}</td>
-                            <td className="py-2">{a.upgradability === 'Upgradable' ? <span className="text-status-warn">upgradable</span> : a.upgradability === 'Current' ? <span className="text-status-ok">current</span> : (a.upgradability || '—').toLowerCase()}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </Panel>
-          )}
+          {tab === 'agents' && <AgentsPanel audit={agentsAudit} />}
 
           {/* Unprotected sources */}
           {tab === 'sources' && (
