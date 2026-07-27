@@ -10,7 +10,7 @@ const { createPoller } = require('../core/pollerFramework');
 const {
   fetchDeployments, fetchRequests, fetchCloudAccounts, fetchIntegrations,
   fetchProjects, fetchCatalogSources, fetchFabricImages, fetchImageProfiles,
-  fetchFlavorProfiles, fetchAbxRuns, fetchPipelineExecutions,
+  fetchFlavorProfiles, fetchBlueprints, fetchAbxRuns, fetchPipelineExecutions,
   fetchApprovals, fetchAbout, fetchHealth, fetchTlsCert, getBearer,
 } = require('./ariaApi');
 const { reconcileIssueHistory } = require('./ariaIssues');
@@ -47,6 +47,7 @@ async function collect(row) {
   const fabricImages = await safe('fabric images', row, () => fetchFabricImages(row));
   const imageProfiles = await safe('image profiles', row, () => fetchImageProfiles(row));
   const flavorProfiles = await safe('flavor profiles', row, () => fetchFlavorProfiles(row));
+  const blueprints = await safe('blueprints', row, () => fetchBlueprints(row));
   const abxRuns = await safe('abx runs', row, () => fetchAbxRuns(row));
   // vRO workflow runs skipped in v1 — per-workflow enumeration is too
   // expensive to poll fleet-wide; extensibility coverage is abx + pipeline.
@@ -56,7 +57,7 @@ async function collect(row) {
   return {
     about, cert, deployments, requests, cloudAccounts, integrations,
     projects, catalogSources, fabricImages, imageProfiles, flavorProfiles,
-    abxRuns, pipelineExecutions, approvals,
+    blueprints, abxRuns, pipelineExecutions, approvals,
   };
 }
 
@@ -101,7 +102,7 @@ const store = db.transaction((instanceId, data) => {
   const {
     about, cert, deployments, requests, cloudAccounts, integrations,
     projects, catalogSources, fabricImages, imageProfiles, flavorProfiles,
-    abxRuns, pipelineExecutions, approvals,
+    blueprints, abxRuns, pipelineExecutions, approvals,
   } = data;
 
   db.prepare(`
@@ -191,15 +192,16 @@ const store = db.transaction((instanceId, data) => {
     db.prepare('DELETE FROM aria_images WHERE instance_id = ?').run(instanceId);
     const stmt = db.prepare(`
       INSERT INTO aria_images (instance_id, image_id, name, description, external_id,
-        region, os_family, is_private, custom_properties)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        region, os_family, is_private, custom_properties, created_at_src, updated_at_src)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const img of fabricImages) {
       stmt.run(instanceId, img?.id != null ? String(img.id) : null, img?.name ?? null,
         img?.description ?? null, img?.externalId ?? null,
         img?.externalRegionId ?? img?.region ?? null, img?.osFamily ?? null,
         img?.isPrivate != null ? (img.isPrivate ? 1 : 0) : null,
-        img?.customProperties ? JSON.stringify(img.customProperties) : null);
+        img?.customProperties ? JSON.stringify(img.customProperties) : null,
+        img?.createdAt ?? null, img?.updatedAt ?? null);
     }
   }
 
@@ -233,6 +235,22 @@ const store = db.transaction((instanceId, data) => {
           f?.cpuCount != null ? Number(f.cpuCount) : null,
           f?.memoryInMB != null ? Number(f.memoryInMB) : (f?.memoryMb != null ? Number(f.memoryMb) : null));
       }
+    }
+  }
+
+  if (blueprints !== null) {
+    db.prepare('DELETE FROM aria_blueprints WHERE instance_id = ?').run(instanceId);
+    const stmt = db.prepare(`
+      INSERT INTO aria_blueprints (instance_id, blueprint_id, name, project_name, status,
+        updated_at_src, image_refs)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const b of blueprints) {
+      stmt.run(instanceId, b?.id != null ? String(b.id) : null, b?.name ?? null,
+        b?.projectName ?? b?.project?.name ?? null,
+        b?.status ?? (b?.released != null ? (b.released ? 'RELEASED' : 'DRAFT') : null),
+        b?.updatedAt ?? null,
+        Array.isArray(b?.imageRefs) ? JSON.stringify(b.imageRefs) : null);
     }
   }
 

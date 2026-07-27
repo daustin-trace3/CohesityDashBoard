@@ -39,6 +39,16 @@ const IMAGE_MAPPINGS = [
   { mapping: 'rhel-9', image: 'rhel-9.3-base-tmpl', os: 'LINUX' },
   { mapping: 'win-2022', image: 'win2022-std-core-tmpl', os: 'WINDOWS' },
 ];
+// Blueprints reference image MAPPING names; 'rhel-9' is deliberately never
+// referenced and photon/win2019 have no mapping, so the Unused Images panel
+// always has content to demo.
+const BLUEPRINTS = [
+  { name: 'three-tier-web', images: ['ubuntu-22'], status: 'RELEASED' },
+  { name: 'k8s-worker-pool', images: ['ubuntu-22'], status: 'RELEASED' },
+  { name: 'sql-cluster', images: ['win-2022'], status: 'RELEASED' },
+  { name: 'legacy-batch', images: ['ubuntu-20'], status: 'DRAFT' },
+  { name: 'analytics-sandbox', images: ['ubuntu-22', 'ubuntu-20'], status: 'RELEASED' },
+];
 const FLAVOR_MAPPINGS = [
   { name: 'small', cpu: 2, memMb: 4096 },
   { name: 'medium', cpu: 4, memMb: 8192 },
@@ -98,8 +108,8 @@ function seedAria(db, { now, encrypt }) {
   `);
   const imgStmt = db.prepare(`
     INSERT INTO aria_images (instance_id, image_id, name, description, external_id,
-      region, os_family, is_private, custom_properties, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      region, os_family, is_private, custom_properties, created_at_src, updated_at_src, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const imgMapStmt = db.prepare(`
     INSERT INTO aria_image_mappings (instance_id, profile_id, profile_name, region,
@@ -110,6 +120,10 @@ function seedAria(db, { now, encrypt }) {
     INSERT INTO aria_flavor_mappings (instance_id, profile_name, region, mapping_name, cpu_count, memory_mb, captured_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
+  const bpStmt = db.prepare(`
+    INSERT INTO aria_blueprints (instance_id, blueprint_id, name, project_name, status, updated_at_src, image_refs, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
   const histStmt = db.prepare(`
     INSERT INTO aria_metrics_history (instance_id, captured_at, deployments_total, deployments_failed,
       deployments_lease_expiring, requests_24h_total, requests_24h_failed, endpoints_total,
@@ -117,7 +131,7 @@ function seedAria(db, { now, encrypt }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  let totals = { instances: 0, deployments: 0, requests: 0, endpoints: 0, projects: 0, catalogSources: 0, runs: 0, approvals: 0, images: 0, imageMappings: 0, flavors: 0 };
+  let totals = { instances: 0, deployments: 0, requests: 0, endpoints: 0, projects: 0, catalogSources: 0, runs: 0, approvals: 0, images: 0, imageMappings: 0, flavors: 0, blueprints: 0 };
   let depIdSeq = 1000;
   let reqIdSeq = 5000;
   let runIdSeq = 9000;
@@ -214,9 +228,13 @@ function seedAria(db, { now, encrypt }) {
     let imgIdSeq = 1;
     for (const region of REGIONS) {
       for (const img of FABRIC_IMAGES) {
+        // Staggered discovery dates so "which image is newer" reads clearly.
+        const discoveredDaysAgo = randInt(rng, 10, 500);
         imgStmt.run(instanceId, `img-${imgIdSeq}`, img.name, img.desc,
           `vm-template-${1000 + imgIdSeq}`, region, img.os, chance(rng, 0.3) ? 1 : 0,
-          JSON.stringify({ diskSizeGb: pick(rng, [40, 60, 80, 120]) }), nowIso);
+          JSON.stringify({ diskSizeGb: pick(rng, [40, 60, 80, 120]) }),
+          new Date(now - discoveredDaysAgo * 86400000).toISOString(),
+          new Date(now - randInt(rng, 0, 3) * 86400000).toISOString(), nowIso);
         imgIdSeq += 1;
         totals.images += 1;
       }
@@ -231,6 +249,14 @@ function seedAria(db, { now, encrypt }) {
         totals.flavors += 1;
       });
     }
+
+    // ── Blueprints referencing image mappings (rhel-9 left unused) ───────
+    BLUEPRINTS.forEach((bp, idx) => {
+      bpStmt.run(instanceId, `bp-${idx + 1}`, bp.name, pick(rng, projects), bp.status,
+        new Date(now - randInt(rng, 1, 90) * 86400000).toISOString(),
+        JSON.stringify(bp.images), nowIso);
+      totals.blueprints += 1;
+    });
 
     // ── Runs: abx + pipeline over 48h ────────────────────────────────────
     const runCount = randInt(rng, 50, 70);

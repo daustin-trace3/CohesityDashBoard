@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
-import { Server, Cable, FolderKanban, Import, DiscAlbum, Cpu } from 'lucide-react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
+import { Server, Cable, FolderKanban, Import, DiscAlbum, Cpu, X, AlertTriangle } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -156,7 +157,88 @@ function CatalogTable({ rows }) {
   );
 }
 
-function ImageMappingsTable({ rows }) {
+// Usage keyed per instance: blueprints reference mapping names; mappings
+// reference fabric image names. Modal shows the chain for a clicked item.
+function UsageModal({ item, onClose }) {
+  if (!item) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div className="bg-surface border border-cohesity-border rounded-xl shadow-panel w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-cohesity-border">
+          <div className="text-sm font-semibold text-ink">{item.title}</div>
+          <button onClick={onClose} className="text-ink-muted hover:text-ink cursor-pointer"><X size={16} /></button>
+        </div>
+        <div className="p-4 space-y-4">
+          {item.sections.map((s) => (
+            <div key={s.label}>
+              <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">{s.label}</div>
+              {s.items.length === 0 ? (
+                <div className="text-xs text-status-warn flex items-center gap-1.5"><AlertTriangle size={12} /> {s.emptyText}</div>
+              ) : (
+                <ul className="space-y-1">
+                  {s.items.map((name) => (
+                    <li key={name} className="text-xs text-ink bg-surface-overlay border border-cohesity-border rounded px-2 py-1">{name}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+          <div className="text-[11px] text-ink-faint">
+            Usage is derived from image references extracted from Cloud Assembly template YAML — catalog
+            items backed by other content types (Terraform, vRO) are not traced.
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function UnusedPanel({ usage }) {
+  const unusedMappings = (usage?.mappings || []).filter((m) => m.blueprints.length === 0);
+  const unusedImages = (usage?.fabricImages || []).filter((img) => img.blueprints.length === 0);
+  if (!usage || usage.blueprintCount === 0) return (
+    <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="text-xs font-semibold text-ink mb-1">Unused Images</div>
+      <div className="text-xs text-ink-muted">No blueprints collected yet — usage tracing appears after the first poll finds Cloud Assembly templates.</div>
+    </div>
+  );
+  if (unusedMappings.length === 0 && unusedImages.length === 0) return null;
+  return (
+    <div className="panel p-4 mb-4" style={{ borderTop: '3px solid #D4A24E' }}>
+      <div className="text-xs font-semibold text-ink mb-2 flex items-center gap-1.5">
+        <AlertTriangle size={13} className="text-status-warn" /> Unused Images
+        <span className="text-ink-faint font-normal">— not referenced by any of {fmtNum(usage.blueprintCount)} collected blueprint(s); retirement candidates</span>
+      </div>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">Mappings ({unusedMappings.length})</div>
+          {unusedMappings.length === 0 ? <div className="text-xs text-ink-muted">None — every mapping is referenced.</div> : (
+            <ul className="space-y-1">{unusedMappings.map((m, i) => (
+              <li key={`${m.instance_name}|${m.region}|${m.mapping_name}|${i}`} className="text-xs text-ink">
+                <span className="font-medium">{m.mapping_name}</span>
+                <span className="text-ink-faint"> · {m.instance_name} · {m.region || '—'}</span>
+              </li>))}
+            </ul>
+          )}
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">Fabric Images ({unusedImages.length})</div>
+          {unusedImages.length === 0 ? <div className="text-xs text-ink-muted">None — every image is reachable from a blueprint.</div> : (
+            <ul className="space-y-1">{unusedImages.map((img, i) => (
+              <li key={`${img.instance_name}|${img.region}|${img.name}|${i}`} className="text-xs text-ink">
+                <span className="font-medium">{img.name}</span>
+                <span className="text-ink-faint"> · {img.instance_name} · {img.region || '—'}{img.created_at_src ? ` · discovered ${fmtWhen(img.created_at_src)}` : ''}</span>
+              </li>))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImageMappingsTable({ rows, onShowUsage }) {
   const list = rows || [];
   const ctl = useTableControls(list, {
     searchKeys: ['mapping_name', 'image_name', 'instance_name', 'region', 'profile_name'],
@@ -183,16 +265,24 @@ function ImageMappingsTable({ rows }) {
               <SortTh k="region" label="Region" ctl={ctl} />
               <SortTh k="image_name" label="Image" ctl={ctl} />
               <SortTh k="os_family" label="OS" ctl={ctl} />
+              <SortTh k="usage_count" label="Blueprints" ctl={ctl} align="right" />
               <th className="py-2 pr-3">External ID</th>
             </tr></thead>
             <tbody>
               {ctl.pageRows.map((m, i) => (
                 <tr key={`${m.instance_name}|${m.region}|${m.mapping_name}|${i}`} className="border-b border-cohesity-border/50">
                   <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{m.instance_name}</td>
-                  <td className="py-2 pr-3 text-ink font-medium">{m.mapping_name || '—'}</td>
+                  <td className="py-2 pr-3">
+                    <button onClick={() => onShowUsage(m)} className="text-ink font-medium hover:text-brand cursor-pointer text-left" title="Show blueprint usage">{m.mapping_name || '—'}</button>
+                  </td>
                   <td className="py-2 pr-3 text-ink-muted text-[11px]">{m.region || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted max-w-[280px] truncate" title={m.image_name || ''}>{m.image_name || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted text-[11px]">{m.os_family || '—'}</td>
+                  <td className="py-2 pr-3 text-right">
+                    {m.usage_count == null ? <span className="text-ink-faint">—</span>
+                      : m.usage_count === 0 ? <Badge tone="warn">unused</Badge>
+                      : <span className="tnum text-ink-muted">{m.usage_count}</span>}
+                  </td>
                   <td className="py-2 pr-3 text-ink-faint text-[11px] max-w-[220px] truncate" title={m.image_external_id || ''}>{m.image_external_id || '—'}</td>
                 </tr>
               ))}
@@ -205,7 +295,7 @@ function ImageMappingsTable({ rows }) {
   );
 }
 
-function FabricImagesTable({ rows }) {
+function FabricImagesTable({ rows, onShowUsage }) {
   const list = rows || [];
   const ctl = useTableControls(list, {
     searchKeys: ['name', 'instance_name', 'region', 'external_id', 'os_family'],
@@ -231,7 +321,9 @@ function FabricImagesTable({ rows }) {
               <SortTh k="name" label="Name" ctl={ctl} />
               <SortTh k="region" label="Region" ctl={ctl} />
               <SortTh k="os_family" label="OS" ctl={ctl} />
+              <SortTh k="created_at_src" label="Discovered" ctl={ctl} />
               <SortTh k="is_private" label="Private" ctl={ctl} />
+              <SortTh k="usage_count" label="Blueprints" ctl={ctl} align="right" />
               <th className="py-2 pr-3">External ID</th>
               <th className="py-2 pr-3">Description</th>
             </tr></thead>
@@ -239,10 +331,18 @@ function FabricImagesTable({ rows }) {
               {ctl.pageRows.map((img, i) => (
                 <tr key={`${img.instance_name}|${img.image_id}|${i}`} className="border-b border-cohesity-border/50">
                   <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{img.instance_name}</td>
-                  <td className="py-2 pr-3 text-ink max-w-[280px] truncate" title={img.name || ''}>{img.name || '—'}</td>
+                  <td className="py-2 pr-3 max-w-[280px] truncate">
+                    <button onClick={() => onShowUsage(img)} className="text-ink hover:text-brand cursor-pointer text-left truncate" title="Show mapping and blueprint usage">{img.name || '—'}</button>
+                  </td>
                   <td className="py-2 pr-3 text-ink-muted text-[11px]">{img.region || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted text-[11px]">{img.os_family || '—'}</td>
+                  <td className="py-2 pr-3 text-ink-muted text-[11px] tnum whitespace-nowrap">{fmtWhen(img.created_at_src)}</td>
                   <td className="py-2 pr-3">{img.is_private == null ? <span className="text-ink-faint">—</span> : <Badge tone={img.is_private ? 'warn' : 'ok'}>{img.is_private ? 'private' : 'public'}</Badge>}</td>
+                  <td className="py-2 pr-3 text-right">
+                    {img.usage_count == null ? <span className="text-ink-faint">—</span>
+                      : img.usage_count === 0 ? <Badge tone="warn">unused</Badge>
+                      : <span className="tnum text-ink-muted">{img.usage_count}</span>}
+                  </td>
                   <td className="py-2 pr-3 text-ink-faint text-[11px] max-w-[200px] truncate" title={img.external_id || ''}>{img.external_id || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[260px] truncate" title={img.description || ''}>{img.description || '—'}</td>
                 </tr>
@@ -311,6 +411,8 @@ export default function AriaInfrastructurePage() {
   const [images, setImages] = useState(null);
   const [imageMappings, setImageMappings] = useState(null);
   const [flavors, setFlavors] = useState(null);
+  const [usage, setUsage] = useState(null);
+  const [usageModal, setUsageModal] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => Promise.all([
@@ -320,10 +422,46 @@ export default function AriaInfrastructurePage() {
     client.get('/aria/images').then(({ data }) => setImages(data)).catch(() => setImages([])),
     client.get('/aria/image-mappings').then(({ data }) => setImageMappings(data)).catch(() => setImageMappings([])),
     client.get('/aria/flavor-mappings').then(({ data }) => setFlavors(data)).catch(() => setFlavors([])),
+    client.get('/aria/image-usage').then(({ data }) => setUsage(data)).catch(() => setUsage(null)),
   ]).then(() => setLastRefreshed(new Date()))
     .catch(() => toast({ type: 'error', title: 'Failed to load infrastructure data' })), [toast]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Enrich mapping/image rows with blueprint usage counts (null until the
+  // usage endpoint has data, so the column shows — instead of false zeros).
+  const usageMappings = useMemo(() => {
+    if (imageMappings == null) return null;
+    if (!usage || usage.blueprintCount === 0) return imageMappings.map((m) => ({ ...m, usage_count: null }));
+    const key = (r) => `${r.instance_id}|${r.region}|${r.mapping_name}`;
+    const byKey = new Map(usage.mappings.map((m) => [key(m), m.blueprints]));
+    return imageMappings.map((m) => ({ ...m, usage_count: (byKey.get(key(m)) || []).length, _blueprints: byKey.get(key(m)) || [] }));
+  }, [imageMappings, usage]);
+  const usageImages = useMemo(() => {
+    if (images == null) return null;
+    if (!usage || usage.blueprintCount === 0) return images.map((img) => ({ ...img, usage_count: null }));
+    const key = (r) => `${r.instance_id}|${r.region}|${r.name}`;
+    const byKey = new Map(usage.fabricImages.map((f) => [key(f), f]));
+    return images.map((img) => {
+      const u = byKey.get(key(img));
+      return { ...img, usage_count: u ? u.blueprints.length : 0, _mappings: u?.mappings || [], _blueprints: u?.blueprints || [] };
+    });
+  }, [images, usage]);
+
+  const showMappingUsage = (m) => setUsageModal({
+    title: `Mapping "${m.mapping_name}" — ${m.instance_name} / ${m.region || 'no region'}`,
+    sections: [
+      { label: 'Resolves to image', items: m.image_name ? [m.image_name] : [], emptyText: 'No target image recorded.' },
+      { label: `Blueprints referencing it${m.usage_count != null ? ` (${m.usage_count})` : ''}`, items: m._blueprints || [], emptyText: 'Not referenced by any collected blueprint — retirement candidate.' },
+    ],
+  });
+  const showImageUsage = (img) => setUsageModal({
+    title: `Image "${img.name}" — ${img.instance_name} / ${img.region || 'no region'}`,
+    sections: [
+      { label: 'Mapped by', items: img._mappings || [], emptyText: 'No image mapping points at this image.' },
+      { label: `Blueprints using it${img.usage_count != null ? ` (${img.usage_count})` : ''}`, items: img._blueprints || [], emptyText: 'Not reachable from any collected blueprint — retirement candidate.' },
+    ],
+  });
 
   return (
     <div className="animate-fade-in">
@@ -350,8 +488,13 @@ export default function AriaInfrastructurePage() {
       {tab === 'endpoints' && <EndpointsTable rows={endpoints} />}
       {tab === 'projects' && <ProjectsTable rows={projects} />}
       {tab === 'catalog' && <CatalogTable rows={catalogSources} />}
-      {tab === 'images' && (<><ImageMappingsTable rows={imageMappings} /><FabricImagesTable rows={images} /></>)}
+      {tab === 'images' && (<>
+        <UnusedPanel usage={usage} />
+        <ImageMappingsTable rows={usageMappings} onShowUsage={showMappingUsage} />
+        <FabricImagesTable rows={usageImages} onShowUsage={showImageUsage} />
+      </>)}
       {tab === 'flavors' && <FlavorsTable rows={flavors} />}
+      <UsageModal item={usageModal} onClose={() => setUsageModal(null)} />
     </div>
   );
 }

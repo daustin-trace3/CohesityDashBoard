@@ -196,7 +196,7 @@ const NEW_TABLES = [
   'aria_instances', 'aria_deployments', 'aria_requests', 'aria_endpoints',
   'aria_projects', 'aria_catalog_sources', 'aria_runs', 'aria_approvals',
   'aria_metrics_history', 'aria_issue_history', 'aria_images',
-  'aria_image_mappings', 'aria_flavor_mappings',
+  'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy

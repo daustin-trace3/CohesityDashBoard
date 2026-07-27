@@ -153,6 +153,33 @@ async function fetchFabricImages(row) {
 const fetchImageProfiles = async (row) => unwrap(await aGetV(row, '/iaas/api/image-profiles'));
 const fetchFlavorProfiles = async (row) => unwrap(await aGetV(row, '/iaas/api/flavor-profiles'));
 
+/**
+ * Blueprints (Cloud Assembly templates) with their image references. The list
+ * endpoint omits YAML content, so each blueprint is fetched individually
+ * (capped at 200) and its content scanned for `image:` property values —
+ * these are image MAPPING names, the indirection blueprints use. A blueprint
+ * whose content fetch fails still appears, with refs null.
+ */
+async function fetchBlueprints(row) {
+  const list = unwrap(await aGetV(row, '/blueprint/api/blueprints', { size: 100 }));
+  const capped = list.slice(0, 200);
+  const out = [];
+  for (const b of capped) {
+    let imageRefs = null;
+    try {
+      const detail = await aGetV(row, `/blueprint/api/blueprints/${b?.id}`);
+      const content = detail?.content ?? detail?.blueprint ?? '';
+      if (typeof content === 'string' && content) {
+        const refs = new Set();
+        for (const m of content.matchAll(/^\s*image:\s*['"]?([^\s'"#]+)/gm)) refs.add(m[1]);
+        imageRefs = [...refs];
+      }
+    } catch { /* keep the blueprint row, refs unknown */ }
+    out.push({ ...b, imageRefs });
+  }
+  return out;
+}
+
 const fetchAbxRuns = async (row) => unwrap(await aGet(row, '/abx/api/resources/action-runs', { $top: 100 }));
 const fetchPipelineExecutions = async (row) => unwrap(await aGet(row, '/pipeline/api/executions', { $top: 100 }));
 const fetchApprovals = async (row) => unwrap(await aGetV(row, '/approval/api/approval-requests', { size: 100 }));
@@ -216,6 +243,6 @@ module.exports = {
   getBearer, invalidateSession, aGet, aGetV, unwrap,
   fetchDeployments, fetchRequests, fetchCloudAccounts, fetchIntegrations,
   fetchProjects, fetchCatalogSources, fetchFabricImages, fetchImageProfiles,
-  fetchFlavorProfiles, fetchAbxRuns, fetchPipelineExecutions,
+  fetchFlavorProfiles, fetchBlueprints, fetchAbxRuns, fetchPipelineExecutions,
   fetchApprovals, fetchAbout, fetchHealth, fetchTlsCert, testConnection,
 };

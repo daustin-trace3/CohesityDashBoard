@@ -217,4 +217,32 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 3,
+    up(db) {
+      // Image lifecycle + usage tracing. created_at_src/updated_at_src are the
+      // vRA record timestamps (when data collection first discovered / last
+      // re-synced the image) — NOT the template's build date on the source
+      // platform, which vRA does not expose. aria_blueprints stores each
+      // Cloud Assembly template with the image references extracted from its
+      // YAML (blueprints name image MAPPINGS, not fabric images directly).
+      db.exec(`
+        ALTER TABLE aria_images ADD COLUMN created_at_src TEXT;
+        ALTER TABLE aria_images ADD COLUMN updated_at_src TEXT;
+
+        CREATE TABLE IF NOT EXISTS aria_blueprints (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id    INTEGER NOT NULL REFERENCES aria_instances(id) ON DELETE CASCADE,
+          blueprint_id   TEXT,
+          name           TEXT,
+          project_name   TEXT,
+          status         TEXT,              -- e.g. RELEASED / DRAFT (unverified vocab)
+          updated_at_src TEXT,
+          image_refs     TEXT,              -- JSON array of image values found in the YAML
+          captured_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_aria_blueprints_instance ON aria_blueprints(instance_id);
+      `);
+    },
+  },
 ];

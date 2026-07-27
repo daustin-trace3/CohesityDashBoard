@@ -156,6 +156,7 @@ const PROBE_SECTIONS = [
   ['fabricImages', (row) => ariaApi.fetchFabricImages(row)],
   ['imageProfiles', (row) => ariaApi.fetchImageProfiles(row)],
   ['flavorProfiles', (row) => ariaApi.fetchFlavorProfiles(row)],
+  ['blueprints', (row) => ariaApi.fetchBlueprints(row)],
   ['abxRuns', (row) => ariaApi.fetchAbxRuns(row)],
   ['pipelineExecutions', (row) => ariaApi.fetchPipelineExecutions(row)],
   ['approvals', (row) => ariaApi.fetchApprovals(row)],
@@ -355,6 +356,61 @@ router.get('/flavor-mappings', [query('instanceId').optional().isInt().toInt()],
       ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
       ORDER BY i.name, f.region, f.mapping_name
     `).all(...params));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aria/blueprints?instanceId? */
+router.get('/blueprints', [query('instanceId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const clauses = [];
+    const params = [];
+    if (req.query.instanceId) { clauses.push('b.instance_id = ?'); params.push(req.query.instanceId); }
+    res.json(db.prepare(`
+      SELECT b.*, i.name AS instance_name FROM aria_blueprints b
+      JOIN aria_instances i ON i.id = b.instance_id
+      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      ORDER BY i.name, b.name
+    `).all(...params));
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/aria/image-usage — per-instance usage tracing. Blueprints reference
+ * image MAPPING names in their YAML; mappings point at fabric images. Returns:
+ *   mappings:     [{instance_name, mapping_name, region, image_name, blueprints: [names]}]
+ *   fabricImages: [{instance_name, name, region, mappings: [mapping names], blueprints: [names]}]
+ * A blueprint ref that matches a fabric image NAME directly (hardcoded image)
+ * also counts as usage of that image.
+ */
+router.get('/image-usage', (req, res, next) => {
+  try {
+    const blueprints = db.prepare(`
+      SELECT b.instance_id, b.name, b.image_refs FROM aria_blueprints b
+    `).all().map((b) => ({ ...b, refs: b.image_refs ? JSON.parse(b.image_refs) : [] }));
+    const refsFor = (instanceId, value) =>
+      blueprints.filter((b) => b.instance_id === instanceId && b.refs.includes(value)).map((b) => b.name);
+
+    const mappings = db.prepare(`
+      SELECT m.instance_id, i.name AS instance_name, m.mapping_name, m.region, m.image_name
+      FROM aria_image_mappings m JOIN aria_instances i ON i.id = m.instance_id
+    `).all().map((m) => ({ ...m, blueprints: refsFor(m.instance_id, m.mapping_name) }));
+
+    const fabricImages = db.prepare(`
+      SELECT img.instance_id, i.name AS instance_name, img.name, img.region, img.created_at_src
+      FROM aria_images img JOIN aria_instances i ON i.id = img.instance_id
+    `).all().map((img) => {
+      const viaMappings = mappings.filter((m) => m.instance_id === img.instance_id && m.image_name === img.name);
+      const direct = refsFor(img.instance_id, img.name);
+      const blueprintNames = [...new Set([...viaMappings.flatMap((m) => m.blueprints), ...direct])];
+      return {
+        instance_id: img.instance_id, instance_name: img.instance_name, name: img.name,
+        region: img.region, created_at_src: img.created_at_src,
+        mappings: [...new Set(viaMappings.map((m) => m.mapping_name))],
+        blueprints: blueprintNames,
+      };
+    });
+
+    res.json({ mappings, fabricImages, blueprintCount: blueprints.length });
   } catch (err) { next(err); }
 });
 
