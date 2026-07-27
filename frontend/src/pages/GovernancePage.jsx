@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ClipboardCheck, FileCheck, ShieldOff, Layers, Lock, CloudOff, GitCompareArrows, FolderOpen, Download,
+  ClipboardCheck, FileCheck, ShieldOff, Layers, Lock, CloudOff, GitCompareArrows, FolderOpen, Download, Cpu,
 } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Panel, Badge, StatCard, LoadingPanel, LastUpdated, RefreshButton } from '../components/ui/primitives';
@@ -19,6 +19,7 @@ const GOV_TABS = [
   { key: 'views', label: 'Views Audit', icon: FolderOpen },
   { key: 'drift', label: 'Retention Drift', icon: GitCompareArrows },
   { key: 'versions', label: 'Software Versions', icon: Layers },
+  { key: 'agents', label: 'Agent Versions', icon: Cpu },
   { key: 'sources', label: 'Source Coverage', icon: ShieldOff },
 ];
 
@@ -210,6 +211,7 @@ export default function GovernancePage() {
   const retentionDrift = data?.retentionDrift || [];
   const sources = data?.sources || [];
   const versions = data?.versions || [];
+  const agentsAudit = data?.agentsAudit || { agents: [], latestVersion: null, total: 0, outdated: 0 };
 
   const driftNames = new Set(retentionDrift.map(d => d.name));
   const visiblePolicies = policyFilter === 'flagged'
@@ -470,6 +472,54 @@ export default function GovernancePage() {
                     </div>
                   ))}
                 </div>
+              )}
+            </Panel>
+          )}
+
+          {/* Agent versions on physical sources */}
+          {tab === 'agents' && (
+            <Panel title="Cohesity Agent Versions" icon={Cpu}>
+              {agentsAudit.agents.length === 0 ? (
+                <p className="text-xs text-ink-faint py-4 text-center">No agent data collected yet — agents appear after the next poll of clusters with registered physical sources.</p>
+              ) : (
+                <>
+                  <p className="text-[11px] text-ink-muted mb-3">
+                    Current version: <span className="text-ink font-semibold tnum">{String(agentsAudit.latestVersion || '—').split('_release')[0]}</span>
+                    {' '}· {agentsAudit.total - agentsAudit.outdated}/{agentsAudit.total} agents current
+                    {agentsAudit.outdated > 0 && <span className="text-status-warn font-semibold"> · {agentsAudit.outdated} need updating</span>}
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-ink-muted">
+                      <thead>
+                        <tr className="text-ink-faint border-b border-cohesity-border text-left">
+                          <th className="py-2 pr-4 font-semibold">Object</th>
+                          <th className="py-2 pr-4 font-semibold">Cluster</th>
+                          <th className="py-2 pr-4 font-semibold">OS</th>
+                          <th className="py-2 pr-4 font-semibold">Agent Version</th>
+                          <th className="py-2 pr-4 font-semibold">Health</th>
+                          <th className="py-2 font-semibold">Cluster Verdict</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...agentsAudit.agents].sort((a, b) => (a.isCurrent === b.isCurrent ? 0 : a.isCurrent ? 1 : -1)).map((a, i) => (
+                          <tr key={`${a.clusterName}-${a.sourceId}-${i}`} className="border-b border-cohesity-border/60 hover:bg-surface-overlay/50 transition-colors">
+                            <td className="py-2 pr-4 text-ink font-medium max-w-[220px] truncate" title={a.name}>{a.name || '—'}</td>
+                            <td className="py-2 pr-4">{a.clusterName}</td>
+                            <td className="py-2 pr-4 max-w-[180px] truncate" title={a.osName || ''}>{a.osName || a.hostType || '—'}</td>
+                            <td className="py-2 pr-4">
+                              <Badge tone={a.isCurrent ? 'ok' : 'warn'} className="tnum">
+                                {a.agentVersion ? String(a.agentVersion).split('_release')[0] : 'unknown'}
+                                {!a.isCurrent && a.agentVersion ? ' — update' : ''}
+                              </Badge>
+                            </td>
+                            <td className="py-2 pr-4">{a.agentStatus || '—'}</td>
+                            <td className="py-2">{a.upgradability === 'Upgradable' ? <span className="text-status-warn">upgradable</span> : a.upgradability === 'Current' ? <span className="text-status-ok">current</span> : (a.upgradability || '—').toLowerCase()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
               )}
             </Panel>
           )}

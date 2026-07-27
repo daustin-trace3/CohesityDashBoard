@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const db = require('../db/database');
 const {
   fetchClusterInfo, fetchAlerts, fetchProtectionRuns, fetchProtectionJobs,
-  fetchProtectionPolicies, fetchSourceRegistrations, fetchSearchObjects,
+  fetchProtectionPolicies, fetchSourceRegistrations, fetchSearchObjects, fetchPhysicalAgents,
 } = require('./cohesityApi');
 const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
 const { fetchWorkloads, insertWorkloadSnapshot } = require('./workloads');
@@ -317,6 +317,20 @@ const replaceObjects = db.transaction((clusterId, objects) => {
   }
 });
 
+const replaceAgents = db.transaction((clusterId, agents) => {
+  db.prepare('DELETE FROM cohesity_agents WHERE cluster_id = ?').run(clusterId);
+  const stmt = db.prepare(`
+    INSERT INTO cohesity_agents
+      (cluster_id, source_id, name, host_type, os_name, agent_version,
+       agent_status, upgradability, upgrade_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const a of agents) {
+    stmt.run(clusterId, a.sourceId, a.name, a.hostType, a.osName,
+      a.version, a.status, a.upgradability, a.upgradeStatus);
+  }
+});
+
 /**
  * Poll a single cluster.
  */
@@ -384,14 +398,15 @@ function runsFetchWindow(clusterId) {
 async function doPollCluster(cluster) {
   try {
     const window = runsFetchWindow(cluster.id);
-    const [clusterInfo, alertData, protectionData, policyData, sourceData, workloadData, objectData] = await Promise.allSettled([
+    const [clusterInfo, alertData, protectionData, policyData, sourceData, workloadData, objectData, agentData] = await Promise.allSettled([
       fetchClusterInfo(cluster),
       fetchAlerts(cluster),
       fetchProtectionRuns(cluster, window.numRuns, window.sinceUsecs),
       fetchProtectionPolicies(cluster),
       fetchSourceRegistrations(cluster),
       fetchWorkloads(cluster),
-      fetchSearchObjects(cluster)
+      fetchSearchObjects(cluster),
+      fetchPhysicalAgents(cluster)
     ]);
 
     if (clusterInfo.status === 'fulfilled') {
@@ -444,6 +459,16 @@ async function doPollCluster(cluster) {
       }
     } else {
       logger.error(`[Poller] Object search fetch failed for cluster ${cluster.id}:`, safeErrorMessage(objectData.reason));
+    }
+
+    if (agentData.status === 'fulfilled') {
+      try {
+        replaceAgents(cluster.id, agentData.value);
+      } catch (err) {
+        logger.error(`[Poller] Agent snapshot failed for cluster ${cluster.id}:`, err.message);
+      }
+    } else {
+      logger.error(`[Poller] Agent fetch failed for cluster ${cluster.id}:`, safeErrorMessage(agentData.reason));
     }
 
     // If the normal fetch failed (some clusters 500 on wide windows), retry

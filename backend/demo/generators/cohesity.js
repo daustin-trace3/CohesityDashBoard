@@ -554,6 +554,35 @@ function seedCohesity(db, { now, encrypt }) {
     }
   }
 
+  // ── Cohesity agents on physical sources (Governance > Agent Versions) ────
+  const AGENT_VERSIONS = ['7.3.2_release-20260123_529553a9', '7.1.2_u2_release-20240925_66722648', '6.8.2_release-20240317_97f56d9a'];
+  const insertAgent = db.prepare(`
+    INSERT INTO cohesity_agents
+      (cluster_id, source_id, name, host_type, os_name, agent_version, agent_status, upgradability, upgrade_status, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Finished', ?)
+  `);
+  let agentRows = 0;
+  for (const cluster of clusters) {
+    const rng = rngFor(`${cluster.name}-agents`);
+    const physNames = db.prepare(`
+      SELECT name FROM cohesity_objects WHERE cluster_id = ? AND environment = 'Physical'
+    `).all(cluster.id).map((r) => r.name);
+    for (const name of physNames) {
+      // ~70% on the current agent, the rest lag one or two releases behind.
+      const version = chance(rng, 0.7) ? AGENT_VERSIONS[0] : pick(rng, AGENT_VERSIONS.slice(1));
+      const windows = chance(rng, 0.7);
+      insertAgent.run(
+        cluster.id, 20000 + agentRows, name,
+        windows ? 'Windows' : 'Linux',
+        windows ? 'Windows Server 2019 Standard' : 'Red Hat Enterprise Linux 8.9',
+        version, 'Healthy',
+        version === AGENT_VERSIONS[0] ? 'Current' : 'Upgradable',
+        new Date(now - randInt(rng, 2, 30) * 60000).toISOString()
+      );
+      agentRows++;
+    }
+  }
+
   // ── Gflags: fleet-wide baseline + per-cluster support-case drift + audit ──
   // Current state in cluster_gflags must stay consistent with gflag_changes
   // (an 'added'/'modified' event's new_value is what the cluster shows now).

@@ -449,4 +449,27 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 10,
+    up(db) {
+      // Cohesity agents on physical sources (v1 protectionSources kPhysical
+      // tree) — replaced wholesale per poll. Feeds Governance > Agent Versions.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cohesity_agents (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          cluster_id     INTEGER NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+          source_id      INTEGER,
+          name           TEXT,
+          host_type      TEXT,
+          os_name        TEXT,
+          agent_version  TEXT,
+          agent_status   TEXT,
+          upgradability  TEXT,
+          upgrade_status TEXT,
+          captured_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_cohesity_agents_cluster ON cohesity_agents(cluster_id);
+      `);
+    },
+  },
 ];

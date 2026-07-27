@@ -392,6 +392,41 @@ async function fetchSearchObjects(cluster) {
   return objects;
 }
 
+/**
+ * Cohesity agents on registered physical sources: walk the kPhysical
+ * protectionSources tree and flatten every host's agents[]. Verified live:
+ * agents carry version, status (kHealthy), upgradability (kCurrent/kUpgradable).
+ */
+async function fetchPhysicalAgents(cluster) {
+  const client = await getAuthenticatedClient(cluster);
+  const { data } = await client.get(
+    '/irisservices/api/v1/public/protectionSources?environments=kPhysical&allUnderHierarchy=true',
+    { timeout: 120000 }
+  );
+  const agents = [];
+  const walk = (node) => {
+    const ps = node?.protectionSource;
+    const phys = ps?.physicalProtectionSource;
+    if (phys) {
+      for (const a of (phys.agents || [])) {
+        agents.push({
+          sourceId: ps.id ?? null,
+          name: ps.name || a.name || null,
+          hostType: String(phys.hostType || '').replace(/^k/, '') || null,
+          osName: phys.osName || null,
+          version: a.version || null,
+          status: String(a.status || '').replace(/^k/, '') || null,
+          upgradability: String(a.upgradability || '').replace(/^k/, '') || null,
+          upgradeStatus: String(a.upgradeStatus || '').replace(/^k/, '') || null,
+        });
+      }
+    }
+    for (const child of (node?.nodes || [])) walk(child);
+  };
+  for (const root of (Array.isArray(data) ? data : [data])) walk(root);
+  return agents;
+}
+
 module.exports = {
   getAuthenticatedClient,
   invalidateSession,
@@ -410,5 +445,6 @@ module.exports = {
   fetchProtectionJobs,
   listProtectionGroupsV2,
   getProtectionGroupRunsV2,
-  fetchSearchObjects
+  fetchSearchObjects,
+  fetchPhysicalAgents
 };

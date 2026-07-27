@@ -145,6 +145,41 @@ router.get('/', (req, res, next) => {
       views: auditViews.filter(v => v.noBackup || v.noReplication || v.noDatalock),
     };
 
+    // ── Agent versions (physical sources) ─────────────────────────────────
+    // "Current" = the newest agent version seen anywhere in the fleet,
+    // ordered by parsed semver then embedded release date.
+    const agentRows = db.prepare(`
+      SELECT a.*, c.name AS cluster_name
+      FROM cohesity_agents a JOIN clusters c ON c.id = a.cluster_id
+      ORDER BY c.name, a.name
+    `).all();
+    const versionKey = (v) => {
+      const m = String(v || '').match(/^(\d+)\.(\d+)(?:\.(\d+))?(?:_u(\d+))?/);
+      const d = String(v || '').match(/release-(\d{8})/);
+      return [m ? +m[1] : 0, m ? +m[2] : 0, m?.[3] ? +m[3] : 0, m?.[4] ? +m[4] : 0, d ? +d[1] : 0];
+    };
+    let latestAgentVersion = null;
+    for (const r of agentRows) {
+      if (!r.agent_version) continue;
+      if (!latestAgentVersion) { latestAgentVersion = r.agent_version; continue; }
+      const a = versionKey(r.agent_version), b = versionKey(latestAgentVersion);
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] > b[i]) { latestAgentVersion = r.agent_version; break; }
+        if (a[i] < b[i]) break;
+      }
+    }
+    const agents = agentRows.map(r => ({
+      clusterName: r.cluster_name,
+      sourceId: r.source_id,
+      name: r.name,
+      hostType: r.host_type,
+      osName: r.os_name,
+      agentVersion: r.agent_version,
+      agentStatus: r.agent_status,
+      upgradability: r.upgradability,
+      isCurrent: !!(r.agent_version && latestAgentVersion && r.agent_version === latestAgentVersion),
+    }));
+
     res.json({
       generatedAt: new Date().toISOString(),
       summary: {
@@ -161,6 +196,12 @@ router.get('/', (req, res, next) => {
       sources,
       versions,
       viewsAudit,
+      agentsAudit: {
+        latestVersion: latestAgentVersion,
+        total: agents.length,
+        outdated: agents.filter(a => !a.isCurrent).length,
+        agents,
+      },
     });
   } catch (err) {
     next(err);
