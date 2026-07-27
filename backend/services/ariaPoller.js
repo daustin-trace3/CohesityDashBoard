@@ -9,7 +9,8 @@ const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const {
   fetchDeployments, fetchRequests, fetchCloudAccounts, fetchIntegrations,
-  fetchProjects, fetchCatalogSources, fetchAbxRuns, fetchPipelineExecutions,
+  fetchProjects, fetchCatalogSources, fetchFabricImages, fetchImageProfiles,
+  fetchFlavorProfiles, fetchAbxRuns, fetchPipelineExecutions,
   fetchApprovals, fetchAbout, fetchHealth, fetchTlsCert, getBearer,
 } = require('./ariaApi');
 const { reconcileIssueHistory } = require('./ariaIssues');
@@ -43,6 +44,9 @@ async function collect(row) {
   const integrations = await safe('integrations', row, () => fetchIntegrations(row));
   const projects = await safe('projects', row, () => fetchProjects(row));
   const catalogSources = await safe('catalog sources', row, () => fetchCatalogSources(row));
+  const fabricImages = await safe('fabric images', row, () => fetchFabricImages(row));
+  const imageProfiles = await safe('image profiles', row, () => fetchImageProfiles(row));
+  const flavorProfiles = await safe('flavor profiles', row, () => fetchFlavorProfiles(row));
   const abxRuns = await safe('abx runs', row, () => fetchAbxRuns(row));
   // vRO workflow runs skipped in v1 — per-workflow enumeration is too
   // expensive to poll fleet-wide; extensibility coverage is abx + pipeline.
@@ -51,9 +55,24 @@ async function collect(row) {
 
   return {
     about, cert, deployments, requests, cloudAccounts, integrations,
-    projects, catalogSources, abxRuns, pipelineExecutions, approvals,
+    projects, catalogSources, fabricImages, imageProfiles, flavorProfiles,
+    abxRuns, pipelineExecutions, approvals,
   };
 }
+
+// Image/flavor profiles carry their per-region mappings as an object keyed by
+// the logical name blueprints reference. The key ('imageMapping' vs
+// 'imageMappings', singular map vs list) is unverified — accept both.
+function mappingEntries(profile, ...keys) {
+  for (const k of keys) {
+    const m = profile?.[k];
+    if (m && typeof m === 'object' && !Array.isArray(m)) return Object.entries(m);
+  }
+  return [];
+}
+
+const profileRegion = (p) =>
+  p?.externalRegionId ?? p?.regionId ?? p?._links?.region?.href?.split('/').pop() ?? null;
 
 // Best-effort candidate fields the upstream might use for a health/status
 // string on cloud-accounts/integrations — shape is unverified, so every
@@ -81,7 +100,8 @@ function endpointDetail(e) {
 const store = db.transaction((instanceId, data) => {
   const {
     about, cert, deployments, requests, cloudAccounts, integrations,
-    projects, catalogSources, abxRuns, pipelineExecutions, approvals,
+    projects, catalogSources, fabricImages, imageProfiles, flavorProfiles,
+    abxRuns, pipelineExecutions, approvals,
   } = data;
 
   db.prepare(`
@@ -164,6 +184,55 @@ const store = db.transaction((instanceId, data) => {
         c?.itemsFound != null ? Number(c.itemsFound) : null,
         c?.lastImportStartedAt ?? null,
         errors ? (Array.isArray(errors) ? errors.join('; ') : String(errors)) : null);
+    }
+  }
+
+  if (fabricImages !== null) {
+    db.prepare('DELETE FROM aria_images WHERE instance_id = ?').run(instanceId);
+    const stmt = db.prepare(`
+      INSERT INTO aria_images (instance_id, image_id, name, description, external_id,
+        region, os_family, is_private, custom_properties)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const img of fabricImages) {
+      stmt.run(instanceId, img?.id != null ? String(img.id) : null, img?.name ?? null,
+        img?.description ?? null, img?.externalId ?? null,
+        img?.externalRegionId ?? img?.region ?? null, img?.osFamily ?? null,
+        img?.isPrivate != null ? (img.isPrivate ? 1 : 0) : null,
+        img?.customProperties ? JSON.stringify(img.customProperties) : null);
+    }
+  }
+
+  if (imageProfiles !== null) {
+    db.prepare('DELETE FROM aria_image_mappings WHERE instance_id = ?').run(instanceId);
+    const stmt = db.prepare(`
+      INSERT INTO aria_image_mappings (instance_id, profile_id, profile_name, region,
+        mapping_name, image_name, image_external_id, os_family, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const p of imageProfiles) {
+      const region = profileRegion(p);
+      for (const [mappingName, img] of mappingEntries(p, 'imageMapping', 'imageMappings')) {
+        stmt.run(instanceId, p?.id != null ? String(p.id) : null, p?.name ?? null, region,
+          mappingName, img?.name ?? null, img?.externalId ?? null, img?.osFamily ?? null,
+          img?.description ?? null);
+      }
+    }
+  }
+
+  if (flavorProfiles !== null) {
+    db.prepare('DELETE FROM aria_flavor_mappings WHERE instance_id = ?').run(instanceId);
+    const stmt = db.prepare(`
+      INSERT INTO aria_flavor_mappings (instance_id, profile_name, region, mapping_name, cpu_count, memory_mb)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const p of flavorProfiles) {
+      const region = profileRegion(p);
+      for (const [mappingName, f] of mappingEntries(p, 'flavorMapping', 'flavorMappings')) {
+        stmt.run(instanceId, p?.name ?? null, region, mappingName,
+          f?.cpuCount != null ? Number(f.cpuCount) : null,
+          f?.memoryInMB != null ? Number(f.memoryInMB) : (f?.memoryMb != null ? Number(f.memoryMb) : null));
+      }
     }
   }
 

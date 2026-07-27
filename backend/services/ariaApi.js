@@ -136,6 +136,23 @@ async function fetchCatalogSources(row) {
   }
 }
 
+/** GET /iaas/api/fabric-images — paged with $top/$skip, capped at 2000. */
+async function fetchFabricImages(row) {
+  const top = 200;
+  const cap = 2000;
+  const all = [];
+  for (let skip = 0; all.length < cap; skip += top) {
+    const data = await aGetV(row, '/iaas/api/fabric-images', { $top: top, $skip: skip });
+    const items = unwrap(data);
+    all.push(...items);
+    if (items.length < top) break;
+  }
+  return all.slice(0, cap);
+}
+
+const fetchImageProfiles = async (row) => unwrap(await aGetV(row, '/iaas/api/image-profiles'));
+const fetchFlavorProfiles = async (row) => unwrap(await aGetV(row, '/iaas/api/flavor-profiles'));
+
 const fetchAbxRuns = async (row) => unwrap(await aGet(row, '/abx/api/resources/action-runs', { $top: 100 }));
 const fetchPipelineExecutions = async (row) => unwrap(await aGet(row, '/pipeline/api/executions', { $top: 100 }));
 const fetchApprovals = async (row) => unwrap(await aGetV(row, '/approval/api/approval-requests', { size: 100 }));
@@ -198,6 +215,7 @@ async function testConnection(rowLike) {
 module.exports = {
   getBearer, invalidateSession, aGet, aGetV, unwrap,
   fetchDeployments, fetchRequests, fetchCloudAccounts, fetchIntegrations,
-  fetchProjects, fetchCatalogSources, fetchAbxRuns, fetchPipelineExecutions,
+  fetchProjects, fetchCatalogSources, fetchFabricImages, fetchImageProfiles,
+  fetchFlavorProfiles, fetchAbxRuns, fetchPipelineExecutions,
   fetchApprovals, fetchAbout, fetchHealth, fetchTlsCert, testConnection,
 };

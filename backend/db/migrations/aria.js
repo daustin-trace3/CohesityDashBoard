@@ -165,4 +165,56 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 2,
+    up(db) {
+      // VM building blocks: fabric images (raw templates/AMIs discovered per
+      // cloud-account region), image profiles (curated logical-name -> image
+      // mappings blueprints reference), and flavor mappings (t-shirt sizes).
+      // All replaced per instance each poll, same as the other inventory tables.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aria_images (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id       INTEGER NOT NULL REFERENCES aria_instances(id) ON DELETE CASCADE,
+          image_id          TEXT,
+          name              TEXT,
+          description       TEXT,
+          external_id       TEXT,              -- native template/AMI id
+          region            TEXT,
+          os_family         TEXT,              -- LINUX | WINDOWS (unverified vocab)
+          is_private        INTEGER,
+          custom_properties TEXT,              -- raw JSON
+          captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_aria_images_instance ON aria_images(instance_id);
+
+        CREATE TABLE IF NOT EXISTS aria_image_mappings (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id       INTEGER NOT NULL REFERENCES aria_instances(id) ON DELETE CASCADE,
+          profile_id        TEXT,
+          profile_name      TEXT,
+          region            TEXT,
+          mapping_name      TEXT,              -- the logical name blueprints use
+          image_name        TEXT,
+          image_external_id TEXT,
+          os_family         TEXT,
+          description       TEXT,
+          captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_aria_image_mappings_instance ON aria_image_mappings(instance_id);
+
+        CREATE TABLE IF NOT EXISTS aria_flavor_mappings (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id   INTEGER NOT NULL REFERENCES aria_instances(id) ON DELETE CASCADE,
+          profile_name  TEXT,
+          region        TEXT,
+          mapping_name  TEXT,                  -- e.g. small / medium / large
+          cpu_count     INTEGER,
+          memory_mb     INTEGER,
+          captured_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_aria_flavor_mappings_instance ON aria_flavor_mappings(instance_id);
+      `);
+    },
+  },
 ];

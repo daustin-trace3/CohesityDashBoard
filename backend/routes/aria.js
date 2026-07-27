@@ -153,6 +153,9 @@ const PROBE_SECTIONS = [
   ['integrations', (row) => ariaApi.fetchIntegrations(row)],
   ['projects', (row) => ariaApi.fetchProjects(row)],
   ['catalogSources', (row) => ariaApi.fetchCatalogSources(row)],
+  ['fabricImages', (row) => ariaApi.fetchFabricImages(row)],
+  ['imageProfiles', (row) => ariaApi.fetchImageProfiles(row)],
+  ['flavorProfiles', (row) => ariaApi.fetchFlavorProfiles(row)],
   ['abxRuns', (row) => ariaApi.fetchAbxRuns(row)],
   ['pipelineExecutions', (row) => ariaApi.fetchPipelineExecutions(row)],
   ['approvals', (row) => ariaApi.fetchApprovals(row)],
@@ -306,6 +309,51 @@ router.get('/catalog-sources', [query('instanceId').optional().isInt().toInt()],
       JOIN aria_instances i ON i.id = c.instance_id
       ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
       ORDER BY i.name, c.name
+    `).all(...params));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aria/images?instanceId? — fabric images (raw templates/AMIs). */
+router.get('/images', [query('instanceId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const clauses = [];
+    const params = [];
+    if (req.query.instanceId) { clauses.push('img.instance_id = ?'); params.push(req.query.instanceId); }
+    res.json(db.prepare(`
+      SELECT img.*, i.name AS instance_name FROM aria_images img
+      JOIN aria_instances i ON i.id = img.instance_id
+      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      ORDER BY i.name, img.region, img.name
+    `).all(...params));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aria/image-mappings?instanceId? — curated logical-name mappings. */
+router.get('/image-mappings', [query('instanceId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const clauses = [];
+    const params = [];
+    if (req.query.instanceId) { clauses.push('m.instance_id = ?'); params.push(req.query.instanceId); }
+    res.json(db.prepare(`
+      SELECT m.*, i.name AS instance_name FROM aria_image_mappings m
+      JOIN aria_instances i ON i.id = m.instance_id
+      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      ORDER BY i.name, m.region, m.mapping_name
+    `).all(...params));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aria/flavor-mappings?instanceId? */
+router.get('/flavor-mappings', [query('instanceId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const clauses = [];
+    const params = [];
+    if (req.query.instanceId) { clauses.push('f.instance_id = ?'); params.push(req.query.instanceId); }
+    res.json(db.prepare(`
+      SELECT f.*, i.name AS instance_name FROM aria_flavor_mappings f
+      JOIN aria_instances i ON i.id = f.instance_id
+      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      ORDER BY i.name, f.region, f.mapping_name
     `).all(...params));
   } catch (err) { next(err); }
 });

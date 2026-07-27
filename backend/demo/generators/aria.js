@@ -24,6 +24,27 @@ const CATALOG_SOURCES = [
   { name: 'VRO Workflows', type: 'workflow' },
   { name: 'ABX Actions Catalog', type: 'abx' },
 ];
+const REGIONS = ['Datacenter:dc-prod', 'Datacenter:dc-dr'];
+const FABRIC_IMAGES = [
+  { name: 'ubuntu-22.04-cloudimg-tmpl', os: 'LINUX', desc: 'Ubuntu 22.04 LTS cloud image' },
+  { name: 'ubuntu-20.04-cloudimg-tmpl', os: 'LINUX', desc: 'Ubuntu 20.04 LTS cloud image' },
+  { name: 'rhel-9.3-base-tmpl', os: 'LINUX', desc: 'RHEL 9.3 hardened base' },
+  { name: 'win2022-std-core-tmpl', os: 'WINDOWS', desc: 'Windows Server 2022 Standard Core' },
+  { name: 'win2019-std-tmpl', os: 'WINDOWS', desc: 'Windows Server 2019 Standard' },
+  { name: 'photon-5-minimal-tmpl', os: 'LINUX', desc: 'Photon OS 5 minimal' },
+];
+const IMAGE_MAPPINGS = [
+  { mapping: 'ubuntu-22', image: 'ubuntu-22.04-cloudimg-tmpl', os: 'LINUX' },
+  { mapping: 'ubuntu-20', image: 'ubuntu-20.04-cloudimg-tmpl', os: 'LINUX' },
+  { mapping: 'rhel-9', image: 'rhel-9.3-base-tmpl', os: 'LINUX' },
+  { mapping: 'win-2022', image: 'win2022-std-core-tmpl', os: 'WINDOWS' },
+];
+const FLAVOR_MAPPINGS = [
+  { name: 'small', cpu: 2, memMb: 4096 },
+  { name: 'medium', cpu: 4, memMb: 8192 },
+  { name: 'large', cpu: 8, memMb: 16384 },
+  { name: 'xlarge', cpu: 16, memMb: 32768 },
+];
 
 function seedAria(db, { now, encrypt }) {
   db.prepare(`
@@ -75,6 +96,20 @@ function seedAria(db, { now, encrypt }) {
     INSERT INTO aria_approvals (instance_id, approval_id, subject, requested_by, status, created_at_src, captured_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
+  const imgStmt = db.prepare(`
+    INSERT INTO aria_images (instance_id, image_id, name, description, external_id,
+      region, os_family, is_private, custom_properties, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const imgMapStmt = db.prepare(`
+    INSERT INTO aria_image_mappings (instance_id, profile_id, profile_name, region,
+      mapping_name, image_name, image_external_id, os_family, description, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const flavorStmt = db.prepare(`
+    INSERT INTO aria_flavor_mappings (instance_id, profile_name, region, mapping_name, cpu_count, memory_mb, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
   const histStmt = db.prepare(`
     INSERT INTO aria_metrics_history (instance_id, captured_at, deployments_total, deployments_failed,
       deployments_lease_expiring, requests_24h_total, requests_24h_failed, endpoints_total,
@@ -82,7 +117,7 @@ function seedAria(db, { now, encrypt }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  let totals = { instances: 0, deployments: 0, requests: 0, endpoints: 0, projects: 0, catalogSources: 0, runs: 0, approvals: 0 };
+  let totals = { instances: 0, deployments: 0, requests: 0, endpoints: 0, projects: 0, catalogSources: 0, runs: 0, approvals: 0, images: 0, imageMappings: 0, flavors: 0 };
   let depIdSeq = 1000;
   let reqIdSeq = 5000;
   let runIdSeq = 9000;
@@ -174,6 +209,28 @@ function seedAria(db, { now, encrypt }) {
         hasErrors ? 'Failed to import 3 items: authentication error against upstream registry' : null, nowIso);
       totals.catalogSources += 1;
     });
+
+    // ── Images: fabric images per region + curated mappings + flavors ────
+    let imgIdSeq = 1;
+    for (const region of REGIONS) {
+      for (const img of FABRIC_IMAGES) {
+        imgStmt.run(instanceId, `img-${imgIdSeq}`, img.name, img.desc,
+          `vm-template-${1000 + imgIdSeq}`, region, img.os, chance(rng, 0.3) ? 1 : 0,
+          JSON.stringify({ diskSizeGb: pick(rng, [40, 60, 80, 120]) }), nowIso);
+        imgIdSeq += 1;
+        totals.images += 1;
+      }
+      IMAGE_MAPPINGS.forEach((m) => {
+        imgMapStmt.run(instanceId, `imgprof-${region}`, `${region.split(':')[1]}-images`, region,
+          m.mapping, m.image, `vm-template-${1000 + FABRIC_IMAGES.findIndex((f) => f.name === m.image) + 1}`,
+          m.os, `${m.mapping} standard build`, nowIso);
+        totals.imageMappings += 1;
+      });
+      FLAVOR_MAPPINGS.forEach((f) => {
+        flavorStmt.run(instanceId, `${region.split(':')[1]}-flavors`, region, f.name, f.cpu, f.memMb, nowIso);
+        totals.flavors += 1;
+      });
+    }
 
     // ── Runs: abx + pipeline over 48h ────────────────────────────────────
     const runCount = randInt(rng, 50, 70);
