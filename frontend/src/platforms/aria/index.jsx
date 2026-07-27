@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Package, Activity, Server, Puzzle, CheckSquare, Settings } from 'lucide-react';
+import { Gauge, Package, Activity, Server, Puzzle, CheckSquare, Settings, DiscAlbum } from 'lucide-react';
 
 const AriaOverviewPage = lazy(() => import('../../pages/aria/AriaOverviewPage'));
 const AriaDeploymentsPage = lazy(() => import('../../pages/aria/AriaDeploymentsPage'));
@@ -8,6 +8,7 @@ const AriaInfrastructurePage = lazy(() => import('../../pages/aria/AriaInfrastru
 const AriaExtensibilityPage = lazy(() => import('../../pages/aria/AriaExtensibilityPage'));
 const AriaApprovalsPage = lazy(() => import('../../pages/aria/AriaApprovalsPage'));
 const AriaSettingsPage = lazy(() => import('../../pages/aria/AriaSettingsPage'));
+const AriaImagesAuditPage = lazy(() => import('../../pages/aria/AriaImagesAuditPage'));
 
 // VMware Aria Automation sidebar — shown when the Aria platform is active.
 const navGroups = [
@@ -20,6 +21,12 @@ const navGroups = [
       { label: 'Infrastructure', route: '/aria/infrastructure', icon: Server, isActive: (p) => p.startsWith('/aria/infrastructure') },
       { label: 'Extensibility', route: '/aria/extensibility', icon: Puzzle, isActive: (p) => p.startsWith('/aria/extensibility') },
       { label: 'Approvals', route: '/aria/approvals', icon: CheckSquare, isActive: (p) => p.startsWith('/aria/approvals') },
+    ],
+  },
+  {
+    label: 'Audit',
+    items: [
+      { label: 'Images', route: '/aria/images', icon: DiscAlbum, isActive: (p) => p.startsWith('/aria/images') },
     ],
   },
   {
@@ -49,6 +56,7 @@ export default {
     { path: 'aria/infrastructure', Component: AriaInfrastructurePage },
     { path: 'aria/extensibility', Component: AriaExtensibilityPage },
     { path: 'aria/approvals', Component: AriaApprovalsPage },
+    { path: 'aria/images', Component: AriaImagesAuditPage },
     { path: 'aria/settings', Component: AriaSettingsPage },
   ],
 };

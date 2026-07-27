@@ -194,50 +194,6 @@ function UsageModal({ item, onClose }) {
   );
 }
 
-function UnusedPanel({ usage }) {
-  const unusedMappings = (usage?.mappings || []).filter((m) => m.blueprints.length === 0);
-  const unusedImages = (usage?.fabricImages || []).filter((img) => img.blueprints.length === 0);
-  if (!usage || usage.blueprintCount === 0) return (
-    <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-      <div className="text-xs font-semibold text-ink mb-1">Unused Images</div>
-      <div className="text-xs text-ink-muted">No blueprints collected yet — usage tracing appears after the first poll finds Cloud Assembly templates.</div>
-    </div>
-  );
-  if (unusedMappings.length === 0 && unusedImages.length === 0) return null;
-  return (
-    <div className="panel p-4 mb-4" style={{ borderTop: '3px solid #D4A24E' }}>
-      <div className="text-xs font-semibold text-ink mb-2 flex items-center gap-1.5">
-        <AlertTriangle size={13} className="text-status-warn" /> Unused Images
-        <span className="text-ink-faint font-normal">— not referenced by any of {fmtNum(usage.blueprintCount)} collected blueprint(s); retirement candidates</span>
-      </div>
-      <div className="grid md:grid-cols-2 gap-4">
-        <div>
-          <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">Mappings ({unusedMappings.length})</div>
-          {unusedMappings.length === 0 ? <div className="text-xs text-ink-muted">None — every mapping is referenced.</div> : (
-            <ul className="space-y-1">{unusedMappings.map((m, i) => (
-              <li key={`${m.instance_name}|${m.region}|${m.mapping_name}|${i}`} className="text-xs text-ink">
-                <span className="font-medium">{m.mapping_name}</span>
-                <span className="text-ink-faint"> · {m.instance_name} · {m.region || '—'}</span>
-              </li>))}
-            </ul>
-          )}
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">Fabric Images ({unusedImages.length})</div>
-          {unusedImages.length === 0 ? <div className="text-xs text-ink-muted">None — every image is reachable from a blueprint.</div> : (
-            <ul className="space-y-1">{unusedImages.map((img, i) => (
-              <li key={`${img.instance_name}|${img.region}|${img.name}|${i}`} className="text-xs text-ink">
-                <span className="font-medium">{img.name}</span>
-                <span className="text-ink-faint"> · {img.instance_name} · {img.region || '—'}{img.created_at_src ? ` · discovered ${fmtWhen(img.created_at_src)}` : ''}</span>
-              </li>))}
-            </ul>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ImageMappingsTable({ rows, onShowUsage }) {
   const list = rows || [];
   const ctl = useTableControls(list, {
@@ -299,7 +255,7 @@ function FabricImagesTable({ rows, onShowUsage }) {
   const list = rows || [];
   const ctl = useTableControls(list, {
     searchKeys: ['name', 'instance_name', 'region', 'external_id', 'os_family'],
-    defaultSortKey: 'name', defaultSortDir: 'asc',
+    defaultSortKey: 'created_at_src', defaultSortDir: 'desc',
     paginate: true,
   });
   return (
@@ -489,7 +445,6 @@ export default function AriaInfrastructurePage() {
       {tab === 'projects' && <ProjectsTable rows={projects} />}
       {tab === 'catalog' && <CatalogTable rows={catalogSources} />}
       {tab === 'images' && (<>
-        <UnusedPanel usage={usage} />
         <ImageMappingsTable rows={usageMappings} onShowUsage={showMappingUsage} />
         <FabricImagesTable rows={usageImages} onShowUsage={showImageUsage} />
       </>)}
