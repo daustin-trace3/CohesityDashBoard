@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, ChevronUp, ChevronDown, Download, SlidersHorizontal } from 'lucide-react';
 
 // Client-side search + dropdown filters + column sort for a table.
@@ -199,25 +200,49 @@ export function useVisibleColumns(storageKey, defaultHidden = []) {
 }
 
 // Dropdown of checkboxes toggling column visibility. `columns` = [{ k, label, always? }].
+// The menu renders through a portal to <body>: PageHeader's fade-in animation
+// (`fill-mode: both`) retains a transform, creating a permanent stacking
+// context that would otherwise trap the menu below sticky table headers.
 export function ColumnPicker({ columns, prefs }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+  const menuRef = useRef(null);
+
+  const toggle = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    }
+    setOpen((o) => !o);
+  };
+
   useEffect(() => {
     if (!open) return;
-    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onDoc = (e) => {
+      if (btnRef.current?.contains(e.target) || menuRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onScroll = () => setOpen(false);
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
+    };
   }, [open]);
+
   return (
-    // z-50 on the anchor: the dropdown must paint over sticky table headers
-    // (position:sticky rows otherwise win against later-DOM siblings).
-    <div className="relative z-50" ref={ref}>
-      <button onClick={() => setOpen((o) => !o)}
+    <>
+      <button ref={btnRef} onClick={toggle}
         className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
         <SlidersHorizontal size={12} /> Columns
       </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl p-2 w-60 max-h-80 overflow-y-auto">
+      {open && pos && createPortal(
+        <div ref={menuRef} style={{ top: pos.top, right: pos.right }}
+          className="fixed z-50 bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl p-2 w-60 max-h-80 overflow-y-auto">
           {columns.map((c) => (
             <label key={c.k}
               className={`flex items-center gap-2 px-2 py-1 text-xs rounded cursor-pointer ${c.always ? 'text-ink-faint cursor-default' : 'text-ink hover:bg-brand/5'}`}>
@@ -226,8 +251,9 @@ export function ColumnPicker({ columns, prefs }) {
               {c.label}
             </label>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
-    </div>
+    </>
   );
 }
