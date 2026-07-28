@@ -363,7 +363,26 @@ router.get('/endpoints', [query('instanceId').optional().isInt().toInt()], valid
  */
 const SUITE_VM_PATTERNS = ['vra%', 'vrops%', 'vrli%', 'vrlcm%', 'vrslcm%', 'vrni%', '%vrealize%', '%aria-%'];
 
-router.get('/appliances', (req, res, next) => {
+// Registered hosts are often LB/DNS aliases, not the appliance VM's own name
+// (prod, 2026-07-28) — resolve the alias to its IPs and match VMs by address.
+const dns = require('dns');
+const dnsCache = new Map(); // host -> { ips, at }
+async function resolveHostIps(host) {
+  if (!host || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host ? [host] : [];
+  const cached = dnsCache.get(host);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.ips;
+  let ips = [];
+  try {
+    ips = await Promise.race([
+      dns.promises.resolve4(host),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('dns timeout')), 2000)),
+    ]);
+  } catch { /* unresolvable — fall back to name matching only */ }
+  dnsCache.set(host, { ips, at: Date.now() });
+  return ips;
+}
+
+router.get('/appliances', async (req, res, next) => {
   try {
     const vmSelect = `
       SELECT m.id AS vm_row_id, m.name AS vm_name, m.power_state, m.overall_status,
@@ -388,11 +407,20 @@ router.get('/appliances', (req, res, next) => {
          OR lower(COALESCE(m.name, '')) = lower(?)
          OR m.ip_address = ?
       LIMIT 1`);
-    const instances = db.prepare('SELECT id, name, host FROM aria_instances ORDER BY name').all().map((inst) => {
+    const ipStmt = db.prepare(`${vmSelect}
+      WHERE m.ip_address = ? OR COALESCE(m.guest_nics, '') LIKE ?
+      LIMIT 1`);
+    const instances = await Promise.all(db.prepare('SELECT id, name, host FROM aria_instances ORDER BY name').all().map(async (inst) => {
       const short = String(inst.host || '').split('.')[0];
-      const vm = matchStmt.get(inst.host || '', short, inst.host || '');
+      let vm = matchStmt.get(inst.host || '', short, inst.host || '');
+      if (!vm) {
+        for (const ip of await resolveHostIps(inst.host)) {
+          vm = ipStmt.get(ip, `%"${ip}"%`);
+          if (vm) break;
+        }
+      }
       return { ...inst, vm: vm ? withPct(vm) : null };
-    });
+    }));
 
     const matchedIds = new Set(instances.map((i) => i.vm && i.vm.vm_row_id).filter(Boolean));
     const suiteVms = db.prepare(`${vmSelect}
