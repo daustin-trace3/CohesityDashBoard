@@ -6,6 +6,7 @@ import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
+import ArrangeableSections from '../../components/ui/ArrangeableSections';
 import { BRAND, fmtNum, fmtWhen, asDate, severityTone, certTone } from './helpers';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend);
@@ -72,6 +73,8 @@ export default function AriaOverviewPage() {
         </div>
       )}
 
+      <ArrangeableSections storageKey="aria-overview-layout" sections={[
+        { id: 'stats', label: 'Stat cards', el: (
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <StatCard icon={Package} label="Deployments" value={fmtNum(totals.deployments)}
           sub={`${fmtNum(totals.deploymentsFailed)} failed · ${fmtNum(totals.leaseExpiring7d)} lease ≤7d`}
@@ -86,7 +89,8 @@ export default function AriaOverviewPage() {
           sub={`${fmtNum(totals.projects)} projects · ${fmtNum(totals.runs24hFailed)} failed runs`}
           tone={(totals.approvalsPending || 0) > 0 ? 'warn' : 'ok'} />
       </div>
-
+        ) },
+        { id: 'recent-vms', label: 'Recently Provisioned VMs', el: (
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> Recently Provisioned VMs</p>
         <p className="text-[11px] text-ink-faint mb-3">10 most recent successful builds — VM identity from deployment resources, owning vCenter matched from the vCenter platform inventory.</p>
@@ -125,7 +129,8 @@ export default function AriaOverviewPage() {
           </div>
         )}
       </div>
-
+        ) },
+        { id: 'inst-attn', label: 'Instances & Attention', el: (
       <div className="grid lg:grid-cols-2 gap-4 mb-4">
         <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Boxes size={15} className="text-brand" /> Aria Instances</p>
@@ -184,7 +189,8 @@ export default function AriaOverviewPage() {
           )}
         </div>
       </div>
-
+        ) },
+        { id: 'trend', label: 'Deployments & Requests trend', el: (
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><AlertTriangle size={15} className="text-brand" /> Deployments &amp; Failed Requests (7d)</p>
         <p className="text-[11px] text-ink-faint mb-3">Per-instance deployment count (solid) and failed-request count (dashed) over the trailing week.</p>
@@ -200,6 +206,8 @@ export default function AriaOverviewPage() {
           </div>
         )}
       </div>
+        ) },
+      ]} />
     </div>
   );
 }
