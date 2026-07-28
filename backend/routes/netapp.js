@@ -384,12 +384,13 @@ router.get('/quotas', cacheControl(60), (req, res, next) => {
 // NFS connected clients + export-policy rules across all clusters.
 router.get('/nfs', cacheControl(30), (req, res, next) => {
   try {
+    const ipIndex = require('../services/ipIdentity').buildIpIndex();
     res.json({
       clients: db.prepare(`
         SELECT c.*, a.name AS array_name FROM netapp_nfs_clients c
         JOIN netapp_arrays a ON a.id = c.array_id
         ORDER BY c.client_ip
-      `).all(),
+      `).all().map((c) => ({ ...c, client_name: ipIndex.get(c.client_ip)?.name ?? null })),
       exportRules: db.prepare(`
         SELECT r.*, a.name AS array_name FROM netapp_export_rules r
         JOIN netapp_arrays a ON a.id = r.array_id
@@ -401,12 +402,13 @@ router.get('/nfs', cacheControl(30), (req, res, next) => {
 
 router.get('/cifs', cacheControl(30), (req, res, next) => {
   try {
+    const ipIndex = require('../services/ipIdentity').buildIpIndex();
     res.json({
       sessions: db.prepare(`
         SELECT s.*, a.name AS array_name FROM netapp_cifs_sessions s
         JOIN netapp_arrays a ON a.id = s.array_id
         ORDER BY s.client_ip
-      `).all(),
+      `).all().map((s) => ({ ...s, client_name: ipIndex.get(s.client_ip)?.name ?? null })),
       shares: db.prepare(`
         SELECT sh.*, a.name AS array_name FROM netapp_cifs_shares sh
         JOIN netapp_arrays a ON a.id = sh.array_id

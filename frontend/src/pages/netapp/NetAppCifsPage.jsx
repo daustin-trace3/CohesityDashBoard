@@ -231,7 +231,8 @@ export default function NetAppCifsPage() {
         <div className="flex items-center justify-between mb-3">
           <p className="text-sm font-semibold text-ink">Active SMB Sessions</p>
           <CsvExportButton filename="netapp-smb-sessions" rows={sessions} columns={[
-            { label: 'Client IP', get: 'client_ip' }, { label: 'User', get: 'smb_user' },
+            { label: 'Client IP', get: 'client_ip' }, { label: 'VM', get: 'client_name' },
+            { label: 'User', get: 'smb_user' },
             { label: 'Volume', get: 'volume_name' }, { label: 'SVM', get: 'svm_name' },
             { label: 'Protocol', get: 'protocol' }, { label: 'Auth', get: 'authentication' },
             { label: 'Open Files', get: (s) => s.open_files ?? 0 },
@@ -266,7 +267,7 @@ export default function NetAppCifsPage() {
               <tbody>
                 {sessionCtl.pageRows.map((s) => (
                   <tr key={s.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3"><IpWithHost ip={s.client_ip} dns={dns} /></td>
+                    <td className="py-2 pr-3"><IpWithHost ip={s.client_ip} dns={dns} vm={s.client_name} /></td>
                     <td className="py-2 pr-3 text-ink-muted">{s.smb_user || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{s.volume_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{s.svm_name || '—'}</td>
@@ -348,7 +349,7 @@ export default function NetAppCifsPage() {
                 <tbody>
                   {modalVolume.sessions.map((s) => (
                     <tr key={s.id} className="border-b border-cohesity-border/50">
-                      <td className="py-2 pr-3"><IpWithHost ip={s.client_ip} dns={dns} /></td>
+                      <td className="py-2 pr-3"><IpWithHost ip={s.client_ip} dns={dns} vm={s.client_name} /></td>
                       <td className="py-2 pr-3 text-ink-muted">{s.smb_user || '—'}</td>
                       <td className="py-2 pr-3"><Badge tone="info">{s.protocol || '—'}</Badge></td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{s.open_files ?? 0}</td>
@@ -379,7 +380,7 @@ export default function NetAppCifsPage() {
                 <tbody>
                   {modalShare.sessions.map((s) => (
                     <tr key={s.id} className="border-b border-cohesity-border/50">
-                      <td className="py-2 pr-3"><IpWithHost ip={s.client_ip} dns={dns} /></td>
+                      <td className="py-2 pr-3"><IpWithHost ip={s.client_ip} dns={dns} vm={s.client_name} /></td>
                       <td className="py-2 pr-3 text-ink-muted">{s.smb_user || '—'}</td>
                       <td className="py-2 pr-3"><Badge tone="info">{s.protocol || '—'}</Badge></td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{s.open_files ?? 0}</td>

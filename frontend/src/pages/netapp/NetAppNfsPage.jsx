@@ -162,7 +162,8 @@ export default function NetAppNfsPage() {
         <div className="flex items-center justify-between mb-3">
           <p className="text-sm font-semibold text-ink">Connected NFS Clients</p>
           <CsvExportButton filename="netapp-nfs-clients" rows={clients} columns={[
-            { label: 'Client IP', get: 'client_ip' }, { label: 'SVM', get: 'svm_name' },
+            { label: 'Client IP', get: 'client_ip' }, { label: 'VM', get: 'client_name' },
+            { label: 'SVM', get: 'svm_name' },
             { label: 'Volume', get: 'volume_name' }, { label: 'Node', get: 'node_name' },
             { label: 'Protocol', get: 'protocol' }, { label: 'Server IP', get: 'server_ip' },
             { label: 'Cluster', get: 'array_name' },
@@ -191,7 +192,7 @@ export default function NetAppNfsPage() {
               <tbody>
                 {clientCtl.pageRows.map((c) => (
                   <tr key={c.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3"><IpWithHost ip={c.client_ip} dns={dns} /></td>
+                    <td className="py-2 pr-3"><IpWithHost ip={c.client_ip} dns={dns} vm={c.client_name} /></td>
                     <td className="py-2 pr-3 text-ink-muted">{c.svm_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{c.volume_name || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{c.node_name || '—'}</td>
@@ -330,7 +331,7 @@ export default function NetAppNfsPage() {
                 <tbody>
                   {modalVolume.clients.map((c) => (
                     <tr key={c.id} className="border-b border-cohesity-border/50">
-                      <td className="py-2 pr-3"><IpWithHost ip={c.client_ip} dns={dns} /></td>
+                      <td className="py-2 pr-3"><IpWithHost ip={c.client_ip} dns={dns} vm={c.client_name} /></td>
                       <td className="py-2 pr-3"><Badge tone="info">{c.protocol || '—'}</Badge></td>
                       <td className="py-2 pr-3 text-ink-muted">{c.node_name || '—'}</td>
                       <td className="py-2 pr-3"><IpWithHost ip={c.server_ip} dns={dns} muted /></td>
