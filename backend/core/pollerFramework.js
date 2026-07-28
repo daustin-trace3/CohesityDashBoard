@@ -19,7 +19,8 @@ function cronExpression(intervalMinutes) {
  * the `poll` callback and is untouched by this framework.
  */
 function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalMinutes = 15, cronLib = nodeCron }) {
-  const tasks = new Map(); // sourceId -> cron task
+  const tasks = new Map(); // sourceId -> { task, snapshot }
+  let reconcileTask = null;
 
   async function runWrapped(source) {
     pollerStatus.markStart(id, source.id);
@@ -35,7 +36,7 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
   function cancel(sourceId) {
     const existing = tasks.get(sourceId);
     if (existing) {
-      existing.stop();
+      existing.task.stop();
       tasks.delete(sourceId);
     }
   }
@@ -46,9 +47,43 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
     const task = cronLib.schedule(cronExpression(interval), () => {
       runWrapped(source);
     });
-    tasks.set(source.id, task);
+    tasks.set(source.id, { task, snapshot: JSON.stringify(source) });
     logger.info(`[${id}] Scheduled source ${source.id} (${source.name}) every ${interval} min`);
     return task;
+  }
+
+  // Sources registered through the WEB process never reached a long-running
+  // POLLER process (init() ran once at boot) — arrays added later sat
+  // unpolled/stale until a restart. Re-read sources every 5 minutes: new rows
+  // get scheduled AND polled immediately, changed rows rescheduled, deleted
+  // rows cancelled.
+  function reconcile() {
+    let sources = [];
+    try {
+      sources = loadSources() || [];
+    } catch (err) {
+      logger.error(`[${id}] Reconcile failed to load sources:`, err?.message || err);
+      return;
+    }
+    const seen = new Set();
+    for (const source of sources) {
+      seen.add(source.id);
+      const existing = tasks.get(source.id);
+      if (!existing) {
+        logger.info(`[${id}] Reconcile: new source ${source.id} (${source.name}) — scheduling + polling now`);
+        schedule(source);
+        runWrapped(source);
+      } else if (existing.snapshot !== JSON.stringify(source)) {
+        logger.info(`[${id}] Reconcile: source ${source.id} (${source.name}) changed — rescheduling`);
+        schedule(source);
+      }
+    }
+    for (const sourceId of [...tasks.keys()]) {
+      if (!seen.has(sourceId)) {
+        logger.info(`[${id}] Reconcile: source ${sourceId} removed — cancelling`);
+        cancel(sourceId);
+      }
+    }
   }
 
   function trigger(source) {
@@ -56,8 +91,12 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
   }
 
   function stopAll() {
-    for (const task of tasks.values()) task.stop();
+    for (const entry of tasks.values()) entry.task.stop();
     tasks.clear();
+    if (reconcileTask) {
+      reconcileTask.stop();
+      reconcileTask = null;
+    }
   }
 
   function taskCount() {
@@ -73,10 +112,11 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
       sources = [];
     }
     for (const source of sources) schedule(source);
+    if (!reconcileTask) reconcileTask = cronLib.schedule('*/5 * * * *', reconcile);
     return sources;
   }
 
-  return { init, schedule, cancel, trigger, stopAll, taskCount };
+  return { init, schedule, cancel, trigger, stopAll, taskCount, reconcile };
 }
 
 /**
