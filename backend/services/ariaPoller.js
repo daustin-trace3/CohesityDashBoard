@@ -339,7 +339,7 @@ const store = db.transaction((instanceId, data) => {
     INSERT OR IGNORE INTO aria_runs (instance_id, kind, run_id, name, status, project_name, started_at_src, message)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  if (abxRuns !== null) {
+  if (Array.isArray(abxRuns)) {
     for (const r of abxRuns) {
       runStmt.run(instanceId, 'abx', r?.id != null ? String(r.id) : null, r?.name ?? null,
         r?.runState ?? r?.state ?? null, r?.project ?? null,
@@ -347,7 +347,7 @@ const store = db.transaction((instanceId, data) => {
         r?.error ?? r?.statusMessage ?? null);
     }
   }
-  if (pipelineExecutions !== null) {
+  if (Array.isArray(pipelineExecutions)) {
     for (const r of pipelineExecutions) {
       runStmt.run(instanceId, 'pipeline', r?.id != null ? String(r.id) : null, r?.name ?? null,
         r?.status ?? null, r?.project ?? null, r?.createdAt ?? null, r?.statusMessage ?? null);

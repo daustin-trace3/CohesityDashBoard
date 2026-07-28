@@ -113,7 +113,15 @@ const aGetV = (row, path, params = {}) => aGet(row, path, { apiVersion: API_VERS
 // Response shapes are unverified — vRA typically wraps lists as
 // { content: [...] } (Spring Data) but some endpoints use { value: [...] } or
 // a bare array. Accept whichever shows up.
-const unwrap = (d) => (Array.isArray(d) ? d : (d?.content ?? d?.value ?? d?.documents ?? []));
+const unwrap = (d) => {
+  if (Array.isArray(d)) return d;
+  const inner = d?.content ?? d?.value ?? d?.documents ?? [];
+  if (Array.isArray(inner)) return inner;
+  // Code Stream returns `documents` as an OBJECT keyed by id, not an array
+  // (seen live in prod 2026-07-28: "pipelineExecutions is not iterable").
+  if (inner && typeof inner === 'object') return Object.values(inner);
+  return [];
+};
 
 /** GET /deployment/api/deployments — paged, capped at 2000 rows total. */
 async function fetchDeployments(row, cap = 2000) {
