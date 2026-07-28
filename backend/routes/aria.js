@@ -147,30 +147,38 @@ router.post('/instances/:id/refresh', [param('id').isInt().toInt()], validate, a
 // Each probe section runs the same fetcher the poller uses, live against the
 // instance, and reports the RAW first item untransformed — this is the only
 // place in the codebase that is meant to show an unmassaged upstream shape.
+// Probe fetches are CAPPED (first page / first few items) — the probe exists
+// to reveal shapes, and full fetchers against a 2000-deployment estate blow
+// past HTTP timeouts (seen live 2026-07-28).
 const PROBE_SECTIONS = [
-  ['deployments', (row) => ariaApi.fetchDeployments(row)],
-  ['deploymentResources', async (row) => ariaApi.fetchDeploymentResources(row, (await ariaApi.fetchDeployments(row)).slice(0, 3))],
+  ['deployments', (row) => ariaApi.fetchDeployments(row, 25)],
+  ['deploymentResources', async (row) => ariaApi.fetchDeploymentResources(row, await ariaApi.fetchDeployments(row, 3))],
   ['requests', (row) => ariaApi.fetchRequests(row)],
   ['cloudAccounts', (row) => ariaApi.fetchCloudAccounts(row)],
   ['integrations', (row) => ariaApi.fetchIntegrations(row)],
   ['projects', (row) => ariaApi.fetchProjects(row)],
   ['catalogSources', (row) => ariaApi.fetchCatalogSources(row)],
-  ['fabricImages', (row) => ariaApi.fetchFabricImages(row)],
+  ['fabricImages', (row) => ariaApi.fetchFabricImages(row, 200)],
   ['imageProfiles', (row) => ariaApi.fetchImageProfiles(row)],
   ['flavorProfiles', (row) => ariaApi.fetchFlavorProfiles(row)],
-  ['blueprints', (row) => ariaApi.fetchBlueprints(row)],
+  ['blueprints', (row) => ariaApi.fetchBlueprints(row, 3)],
   ['abxRuns', (row) => ariaApi.fetchAbxRuns(row)],
   ['pipelineExecutions', (row) => ariaApi.fetchPipelineExecutions(row)],
   ['approvals', (row) => ariaApi.fetchApprovals(row)],
 ];
 
-/** GET /api/aria/instances/:id/probe — raw-shape probe, read-only. */
-router.get('/instances/:id/probe', [param('id').isInt().toInt()], validate, async (req, res, next) => {
+/** GET /api/aria/instances/:id/probe?sections=a,b — raw-shape probe, read-only. */
+router.get('/instances/:id/probe', [
+  param('id').isInt().toInt(),
+  query('sections').optional().isString().matches(/^[a-zA-Z,]+$/),
+], validate, async (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM aria_instances WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Aria instance not found.' });
+    const wanted = req.query.sections ? new Set(req.query.sections.split(',')) : null;
+    const run = wanted ? PROBE_SECTIONS.filter(([n]) => wanted.has(n)) : PROBE_SECTIONS;
     const sections = {};
-    for (const [name, fn] of PROBE_SECTIONS) {
+    for (const [name, fn] of run) {
       try {
         const items = await fn(row);
         sections[name] = { ok: true, count: Array.isArray(items) ? items.length : undefined, firstItem: Array.isArray(items) ? (items[0] ?? null) : items };

@@ -116,9 +116,8 @@ const aGetV = (row, path, params = {}) => aGet(row, path, { apiVersion: API_VERS
 const unwrap = (d) => (Array.isArray(d) ? d : (d?.content ?? d?.value ?? d?.documents ?? []));
 
 /** GET /deployment/api/deployments — paged, capped at 2000 rows total. */
-async function fetchDeployments(row) {
-  const size = 200;
-  const cap = 2000;
+async function fetchDeployments(row, cap = 2000) {
+  const size = Math.min(200, cap);
   const all = [];
   for (let page = 0; all.length < cap; page++) {
     const data = await aGetV(row, '/deployment/api/deployments', { size, page });
@@ -188,9 +187,8 @@ async function fetchCatalogSources(row) {
 }
 
 /** GET /iaas/api/fabric-images — paged with $top/$skip, capped at 2000. */
-async function fetchFabricImages(row) {
-  const top = 200;
-  const cap = 2000;
+async function fetchFabricImages(row, cap = 2000) {
+  const top = Math.min(200, cap);
   const all = [];
   for (let skip = 0; all.length < cap; skip += top) {
     const data = await aGetV(row, '/iaas/api/fabric-images', { $top: top, $skip: skip });
@@ -211,9 +209,9 @@ const fetchFlavorProfiles = async (row) => unwrap(await aGetV(row, '/iaas/api/fl
  * these are image MAPPING names, the indirection blueprints use. A blueprint
  * whose content fetch fails still appears, with refs null.
  */
-async function fetchBlueprints(row) {
+async function fetchBlueprints(row, detailCap = 200) {
   const list = unwrap(await aGetV(row, '/blueprint/api/blueprints', { size: 100 }));
-  const capped = list.slice(0, 200);
+  const capped = list.slice(0, detailCap);
   const out = [];
   for (const b of capped) {
     let imageRefs = null;

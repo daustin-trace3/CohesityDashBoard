@@ -18,7 +18,7 @@ function ProbeModal({ instance, onClose }) {
   useEffect(() => {
     setResult(null);
     setError(false);
-    client.get(`/aria/instances/${instance.id}/probe`)
+    client.get(`/aria/instances/${instance.id}/probe`, { timeout: 180000 })
       .then(({ data }) => setResult(data))
       .catch(() => setError(true));
   }, [instance.id]);
