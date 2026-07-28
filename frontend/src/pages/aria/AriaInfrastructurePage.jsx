@@ -169,6 +169,28 @@ function UsageModal({ item, onClose }) {
           <button onClick={onClose} className="text-ink-muted hover:text-ink cursor-pointer"><X size={16} /></button>
         </div>
         <div className="p-4 space-y-4">
+          {item.facts && (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+              {item.facts.filter((f) => f.value != null && f.value !== '').map((f) => (
+                <div key={f.label} className="min-w-0">
+                  <div className="text-[10px] uppercase tracking-wide text-ink-faint">{f.label}</div>
+                  <div className="text-xs text-ink break-words">{f.value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {item.description && (
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">Description</div>
+              <div className="text-xs text-ink-muted whitespace-pre-wrap break-words bg-surface-overlay border border-cohesity-border rounded px-2 py-1.5">{item.description}</div>
+            </div>
+          )}
+          {item.json && (
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">Custom Properties</div>
+              <pre className="text-[11px] text-ink-muted bg-surface-overlay border border-cohesity-border rounded px-2 py-1.5 overflow-x-auto max-h-48">{item.json}</pre>
+            </div>
+          )}
           {item.sections.map((s) => (
             <div key={s.label}>
               <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">{s.label}</div>
@@ -413,6 +435,22 @@ export default function AriaInfrastructurePage() {
   });
   const showImageUsage = (img) => setUsageModal({
     title: `Image "${img.name}" — ${img.instance_name} / ${img.region || 'no region'}`,
+    facts: [
+      { label: 'Instance', value: img.instance_name },
+      { label: 'Region', value: img.region },
+      { label: 'OS Family', value: img.os_family },
+      { label: 'Visibility', value: img.is_private == null ? null : (img.is_private ? 'private' : 'public') },
+      { label: 'External ID', value: img.external_id },
+      { label: 'Image ID', value: img.image_id },
+      { label: 'Discovered', value: img.created_at_src ? fmtWhen(img.created_at_src) : null },
+      { label: 'Updated', value: img.updated_at_src ? fmtWhen(img.updated_at_src) : null },
+    ],
+    description: img.description || null,
+    json: (() => {
+      if (!img.custom_properties) return null;
+      try { return JSON.stringify(JSON.parse(img.custom_properties), null, 2); }
+      catch { return String(img.custom_properties); }
+    })(),
     sections: [
       { label: 'Mapped by', items: img._mappings || [], emptyText: 'No image mapping points at this image.' },
       { label: `Blueprints using it${img.usage_count != null ? ` (${img.usage_count})` : ''}`, items: img._blueprints || [], emptyText: 'Not reachable from any collected blueprint — retirement candidate.' },
