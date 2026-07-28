@@ -159,7 +159,10 @@ async function fetchDeploymentResources(row, deployments) {
       out.push({
         deploymentId: String(depId),
         resourceId: r.id != null ? String(r.id) : null,
-        name: r.name || props.resourceName || null,
+        // properties.resourceName is the actual machine name (vRA UI "Resource
+        // Name", e.g. w283328); r.name is the blueprint component label
+        // (Cloud_vSphere_Machine_1) — verified live 2026-07-28.
+        name: props.resourceName || props.hostName || r.name || null,
         type: r.type || null,
         state: r.state || r.syncStatus || null,
         ipAddresses: [...ips],
