@@ -82,8 +82,8 @@ export default function GlobalSearch() {
     navigate(item.route);
   };
 
-  const firstItem = results[0]?.items?.[0] || null;
   const totalHits = results.reduce((n, g) => n + g.items.length, 0);
+  const server360Route = () => `/ops/server360?name=${encodeURIComponent(search.trim())}`;
 
   return (
     <div className="relative ml-auto w-48 lg:w-64 xl:w-72 flex-shrink-0" ref={boxRef}>
@@ -93,7 +93,7 @@ export default function GlobalSearch() {
         value={search}
         onChange={e => setSearch(e.target.value)}
         onFocus={() => { if (results.length) { place(); setOpen(true); } }}
-        onKeyDown={(e) => { if (e.key === 'Enter' && firstItem) go(firstItem); }}
+        onKeyDown={(e) => { if (e.key === 'Enter' && search.trim().length >= 2) go({ route: server360Route() }); }}
         placeholder="Search estate…"
         aria-label="Search the estate"
         className="w-full bg-surface border border-cohesity-border text-[13px] text-ink rounded-lg pl-9 pr-8 py-1.5 placeholder-ink-faint focus:border-brand/60 transition-colors"
@@ -115,10 +115,11 @@ export default function GlobalSearch() {
           className="fixed z-50 bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl max-h-[70vh] overflow-y-auto">
           {/* Pinned action: open the correlated Server 360 view for the query */}
           <button
-            onClick={() => go({ route: `/ops/server360?name=${encodeURIComponent(search.trim())}` })}
-            className="w-full text-left px-3 py-2 border-b border-cohesity-border/60 hover:bg-brand/10 transition-colors cursor-pointer flex items-center gap-2">
+            onClick={() => go({ route: server360Route() })}
+            className="w-full text-left px-3 py-2 border-b border-cohesity-border/60 bg-brand/5 hover:bg-brand/15 transition-colors cursor-pointer flex items-center gap-2">
             <Crosshair size={13} className="text-brand flex-shrink-0" />
-            <span className="text-[13px] text-ink">Server 360: everything about “{search.trim()}”</span>
+            <span className="text-[13px] text-ink flex-1">Server 360: everything about “{search.trim()}”</span>
+            <kbd className="text-[10px] text-ink-faint border border-cohesity-border rounded px-1">Enter</kbd>
           </button>
           {totalHits === 0 ? (
             <p className="px-4 py-3 text-xs text-ink-muted">No entity matches across the estate.</p>
