@@ -268,10 +268,28 @@ export default function NetAppSettingsPage() {
                         <td className="py-2 pr-3 text-ink-muted tnum">{c.management_ip || '—'}</td>
                         <td className="py-2 pr-3"><Badge tone="info">{c.source === 'aiqum' ? 'AIQUM gateway' : c.source}</Badge></td>
                         <td className="py-2 pr-3 text-right">
-                          <button onClick={() => pollOne(c)} disabled={pollingId === c.id}
-                            className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
-                            <Play size={12} /> {pollingId === c.id ? 'Polling…' : 'Poll'}
-                          </button>
+                          <div className="inline-flex items-center gap-1.5">
+                            <button onClick={() => pollOne(c)} disabled={pollingId === c.id}
+                              className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
+                              <Play size={12} /> {pollingId === c.id ? 'Polling…' : 'Poll'}
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (c.source === 'direct') {
+                                  setTab('direct');
+                                  openEditDirect(c);
+                                } else {
+                                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                                  toast({
+                                    type: 'info', title: 'AIQUM-managed cluster',
+                                    message: `${c.name} is polled through the AIQUM gateway — its credentials are the AIQUM username/password in the connection form above (leave blank to keep the stored values). Updating them applies to every gateway-managed cluster.`,
+                                  });
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors">
+                              <Pencil size={12} /> Credentials
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
