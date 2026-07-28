@@ -40,8 +40,29 @@ function clientFor(array, passwordOverride) {
   });
 }
 
-/** AIQUM connection config: DB settings first, else .env fallback. */
+/** All configured AIQUM gateway rows (multi-gateway since netapp v5). */
+function aiqumInstances() {
+  try {
+    // Lazy require avoids a circular import at module load.
+    return require('../db/database').prepare('SELECT * FROM netapp_aiqum_instances ORDER BY id').all();
+  } catch { return []; }
+}
+
+/** Decrypted connection config for one gateway row. */
+function instanceConfig(row) {
+  let password = '';
+  try { password = decrypt(row.encrypted_credentials); } catch { password = ''; }
+  return { host: normalizeHost(row.host), username: row.username, password };
+}
+
+/**
+ * Legacy singleton config (app_settings / .env) — kept as the fallback when no
+ * gateway rows exist so pre-v5 deployments keep working; v5 migrates settings
+ * into a row automatically, env-only setups are seeded at poller init.
+ */
 function getAiqumConfig() {
+  const rows = aiqumInstances();
+  if (rows.length) return instanceConfig(rows[0]);
   const host = getSetting('netapp_aiqum_host') || process.env.NETAPP_AIQUM_HOST || '';
   const username = getSetting('netapp_aiqum_user') || process.env.NETAPP_AIQUM_USER || '';
   let password = '';
@@ -52,8 +73,20 @@ function getAiqumConfig() {
 }
 
 function aiqumConfigured() {
+  if (aiqumInstances().length) return true;
   const c = getAiqumConfig();
   return !!(c.host && c.username && c.password);
+}
+
+/** Gateway config for a discovered array — its own instance, else the first. */
+function configForArray(array) {
+  const rows = aiqumInstances();
+  if (array?.aiqum_instance_id != null) {
+    const own = rows.find((r) => r.id === array.aiqum_instance_id);
+    if (own) return instanceConfig(own);
+  }
+  if (rows.length) return instanceConfig(rows[0]);
+  return getAiqumConfig();
 }
 
 /** Axios client pointed at AIQUM (basic auth, self-signed cert tolerated). */
@@ -85,7 +118,7 @@ async function apiGet(array, path, params, passwordOverride) {
     if (!array.cluster_uuid) {
       const err = new Error('Cluster has no AIQUM uuid'); err.code = 'NETAPP_NO_UUID'; throw err;
     }
-    const client = aiqumClient();
+    const client = aiqumClient(configForArray(array));
     const ontapPath = String(path).replace(/^\/api/, '');
     const { data } = await client.get(`/api/gateways/${array.cluster_uuid}${ontapPath}`, { params });
     return data;
@@ -319,6 +352,8 @@ module.exports = {
   getPassword,
   getAiqumConfig,
   aiqumConfigured,
+  aiqumInstances,
+  instanceConfig,
   fetchManagedClusters,
   testAiqum,
   apiGet,

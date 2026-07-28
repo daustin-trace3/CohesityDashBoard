@@ -289,4 +289,44 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 5,
+    up(db) {
+      // Multiple AIQUM gateways: promote the singleton app_settings config to
+      // first-class rows. Discovered arrays remember their gateway.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS netapp_aiqum_instances (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          name                  TEXT,
+          host                  TEXT NOT NULL,
+          username              TEXT NOT NULL,
+          encrypted_credentials TEXT NOT NULL,
+          poll_interval_minutes INTEGER NOT NULL DEFAULT 15,
+          created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at            DATETIME
+        );
+      `);
+      const cols = db.prepare("PRAGMA table_info('netapp_arrays')").all().map((c) => c.name);
+      if (!cols.includes('aiqum_instance_id')) {
+        db.exec('ALTER TABLE netapp_arrays ADD COLUMN aiqum_instance_id INTEGER');
+      }
+      // Migrate the legacy singleton settings config into the first row (the
+      // stored password is already an encrypted blob in app_settings — same
+      // encryption service, copied as-is).
+      try {
+        const get = (k) => db.prepare('SELECT value FROM app_settings WHERE key = ?').get(k)?.value;
+        const host = get('netapp_aiqum_host');
+        const user = get('netapp_aiqum_user');
+        const pass = get('netapp_aiqum_pass');
+        const interval = Math.min(1440, Math.max(5, Number(get('netapp_poll_interval_min')) || 15));
+        if (host && user && pass && !db.prepare('SELECT id FROM netapp_aiqum_instances LIMIT 1').get()) {
+          const r = db.prepare(`
+            INSERT INTO netapp_aiqum_instances (name, host, username, encrypted_credentials, poll_interval_minutes)
+            VALUES ('AIQUM', ?, ?, ?, ?)
+          `).run(host, user, pass, interval);
+          db.prepare("UPDATE netapp_arrays SET aiqum_instance_id = ? WHERE source = 'aiqum'").run(r.lastInsertRowid);
+        }
+      } catch { /* fresh DB without app_settings yet */ }
+    },
+  },
 ];

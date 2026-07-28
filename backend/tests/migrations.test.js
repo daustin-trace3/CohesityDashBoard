@@ -204,9 +204,11 @@ const NEW_TABLES = [
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
   'ai_audit_exchanges',
-  // Legacy table extended by netapp migration v4 (volume detail columns) —
-  // its post-migration SQL no longer matches the schema.sql original.
-  'netapp_volumes',
+  'netapp_aiqum_instances',
+  // Legacy tables extended by post-refactor migrations (netapp v4 volume
+  // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
+  // post-migration SQL no longer matches the schema.sql original.
+  'netapp_volumes', 'netapp_arrays',
   'cohesity_objects', 'cohesity_agents',
 ];
 

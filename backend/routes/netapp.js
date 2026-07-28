@@ -2,9 +2,8 @@ const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
-const { getSetting, setSetting } = require('../services/settings');
 const netappApi = require('../services/netappApi');
-const { syncAndPollAll, triggerPoll, reschedule, scheduleArray, cancelArray } = require('../services/netappPoller');
+const { syncAndPollAll, syncAndPollInstance, triggerPoll, reschedule, scheduleArray, cancelArray } = require('../services/netappPoller');
 const cacheControl = require('../middleware/cache');
 const netappAdvisor = require('../services/advisors/netappAdvisor');
 
@@ -38,6 +37,7 @@ function publicCluster(row) {
     management_ip: row.management_ip,
     cluster_uuid: row.cluster_uuid,
     source: row.source,
+    aiqum_instance_id: row.aiqum_instance_id ?? null,
     ssl_verify: row.ssl_verify,
     polling_interval_minutes: row.polling_interval_minutes,
     created_at: row.created_at,
@@ -92,51 +92,122 @@ router.get('/arrays', cacheControl(15), (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// AIQUM connection status + config (no secrets returned).
+// Read-only gateway row: credential values never returned, presence only.
+function publicAiqumInstance(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    host: row.host,
+    hasUsername: !!row.username,
+    hasPassword: !!row.encrypted_credentials,
+    pollIntervalMin: row.poll_interval_minutes,
+    clusterCount: db.prepare("SELECT COUNT(*) AS n FROM netapp_arrays WHERE source = 'aiqum' AND aiqum_instance_id = ?").get(row.id).n,
+    created_at: row.created_at,
+  };
+}
+
+// AIQUM gateways + overall status. (Multi-gateway since netapp v5; the old
+// singleton settings config is migrated into the first row automatically.)
 router.get('/aiqum', (req, res) => {
-  const cfg = netappApi.getAiqumConfig();
+  const instances = db.prepare('SELECT * FROM netapp_aiqum_instances ORDER BY id').all();
   res.json({
-    configured: netappApi.aiqumConfigured(),
-    host: cfg.host || '',
-    // Username and password values are never returned — presence only.
-    hasUsername: !!cfg.username,
-    hasPassword: !!cfg.password,
-    hostSource: getSetting('netapp_aiqum_host') ? 'settings' : (process.env.NETAPP_AIQUM_HOST ? 'env' : 'none'),
-    passSource: getSetting('netapp_aiqum_pass') ? 'settings' : (process.env.NETAPP_AIQUM_PW ? 'env' : 'none'),
-    pollIntervalMin: Number(getSetting('netapp_poll_interval_min')) || 15,
+    configured: instances.length > 0,
+    instances: instances.map(publicAiqumInstance),
     clusterCount: db.prepare("SELECT COUNT(*) AS n FROM netapp_arrays WHERE source = 'aiqum'").get().n,
   });
 });
 
-// Save AIQUM connection config (password encrypted at rest) + poll interval.
-router.put('/aiqum', (req, res, next) => {
+const aiqumInstanceValidators = [
+  body('name').optional().isString().trim().isLength({ max: 120 }),
+  body('host').isString().trim().notEmpty().isLength({ max: 512 }),
+  body('username').optional().isString().trim().isLength({ max: 256 }),
+  body('password').optional().isString().isLength({ max: 1024 }),
+  body('pollIntervalMin').optional().isInt({ min: 5, max: 1440 }).toInt(),
+];
+
+// Register a new AIQUM gateway.
+router.post('/aiqum/instances', aiqumInstanceValidators, validate, (req, res, next) => {
   try {
-    const { host, username, password, pollIntervalMin } = req.body || {};
-    if (host != null) {
-      const h = String(host).trim();
-      if (h && isBlockedHost(h)) return res.status(400).json({ error: 'host is not allowed' });
-      setSetting('netapp_aiqum_host', h);
+    const { name, host, username, password, pollIntervalMin } = req.body;
+    const h = String(host).trim();
+    if (isBlockedHost(h)) return res.status(400).json({ error: 'host is not allowed' });
+    if (!username || !password) return res.status(400).json({ error: 'username and password are required' });
+    if (db.prepare('SELECT id FROM netapp_aiqum_instances WHERE LOWER(host) = LOWER(?)').get(h)) {
+      return res.status(409).json({ error: 'A gateway with that host already exists' });
     }
-    if (username != null) setSetting('netapp_aiqum_user', String(username).trim());
-    if (password) setSetting('netapp_aiqum_pass', encrypt(String(password)));
-    if (pollIntervalMin != null) {
-      const n = Math.min(1440, Math.max(5, Number(pollIntervalMin) || 15));
-      setSetting('netapp_poll_interval_min', String(n));
-    }
+    const r = db.prepare(`
+      INSERT INTO netapp_aiqum_instances (name, host, username, encrypted_credentials, poll_interval_minutes)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(name?.trim() || h, h, username.trim(), encrypt(password), pollIntervalMin || 15);
     reschedule();
+    res.status(201).json(publicAiqumInstance(db.prepare('SELECT * FROM netapp_aiqum_instances WHERE id = ?').get(r.lastInsertRowid)));
+  } catch (err) { next(err); }
+});
+
+// Update a gateway (username/password kept when blank).
+router.put('/aiqum/instances/:id', [param('id').isInt().toInt(), ...aiqumInstanceValidators], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM netapp_aiqum_instances WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Gateway not found' });
+    const { name, host, username, password, pollIntervalMin } = req.body;
+    const h = String(host).trim();
+    if (isBlockedHost(h)) return res.status(400).json({ error: 'host is not allowed' });
+    const dup = db.prepare('SELECT id FROM netapp_aiqum_instances WHERE LOWER(host) = LOWER(?) AND id != ?').get(h, row.id);
+    if (dup) return res.status(409).json({ error: 'A gateway with that host already exists' });
+    db.prepare(`
+      UPDATE netapp_aiqum_instances SET name = ?, host = ?, username = ?, encrypted_credentials = ?,
+        poll_interval_minutes = ?, updated_at = datetime('now') WHERE id = ?
+    `).run(
+      name?.trim() || row.name, h,
+      username?.trim() || row.username,
+      password ? encrypt(password) : row.encrypted_credentials,
+      pollIntervalMin || row.poll_interval_minutes, row.id
+    );
+    reschedule();
+    res.json(publicAiqumInstance(db.prepare('SELECT * FROM netapp_aiqum_instances WHERE id = ?').get(row.id)));
+  } catch (err) { next(err); }
+});
+
+// Remove a gateway and the clusters it discovered (cascade clears telemetry).
+router.delete('/aiqum/instances/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM netapp_aiqum_instances WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Gateway not found' });
+    db.transaction(() => {
+      db.prepare("DELETE FROM netapp_arrays WHERE source = 'aiqum' AND aiqum_instance_id = ?").run(row.id);
+      db.prepare('DELETE FROM netapp_aiqum_instances WHERE id = ?').run(row.id);
+    })();
+    reschedule();
+    res.json({ deleted: true });
+  } catch (err) { next(err); }
+});
+
+// Discover + poll one gateway now.
+router.post('/aiqum/instances/:id/poll', [param('id').isInt().toInt()], validate, async (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM netapp_aiqum_instances WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Gateway not found' });
+    await syncAndPollInstance(row);
     res.json({ success: true });
   } catch (err) { next(err); }
 });
 
-// Validate AIQUM connectivity (uses posted creds, falling back to stored).
+// Validate AIQUM connectivity. Accepts posted creds; `id` fills blanks from
+// that stored gateway (edit-form testing without retyping the password).
 router.post('/aiqum/test', async (req, res) => {
   try {
-    const cfg = netappApi.getAiqumConfig();
     const b = req.body || {};
+    let stored = { host: '', username: '', password: '' };
+    if (b.id) {
+      const row = db.prepare('SELECT * FROM netapp_aiqum_instances WHERE id = ?').get(Number(b.id));
+      if (row) stored = netappApi.instanceConfig(row);
+    } else {
+      stored = netappApi.getAiqumConfig();
+    }
     const override = {
-      host: b.host || cfg.host,
-      username: b.username || cfg.username,
-      password: b.password || cfg.password,
+      host: b.host || stored.host,
+      username: b.username || stored.username,
+      password: b.password || stored.password,
     };
     res.json(await netappApi.testAiqum(override));
   } catch (err) {

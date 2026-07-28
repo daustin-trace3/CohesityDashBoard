@@ -96,6 +96,14 @@ function seedNetapp(db, { now, encrypt }) {
 
   const arrayByName = new Map(arrays.map((a) => [a.name, a]));
 
+  // AIQUM gateway row (multi-gateway model since netapp v5) — aiqum-sourced
+  // demo arrays hang off it so the Settings page shows the full chain.
+  const gw = db.prepare(`
+    INSERT INTO netapp_aiqum_instances (name, host, username, encrypted_credentials, poll_interval_minutes)
+    VALUES ('AIQUM (demo)', 'https://aiqum.icc.demo', 'operator', ?, 15)
+  `).run(encrypt('demo-not-real'));
+  db.prepare("UPDATE netapp_arrays SET aiqum_instance_id = ? WHERE source = 'aiqum'").run(gw.lastInsertRowid);
+
   // ── Metrics: 30 days @ 2h cadence ──────────────────────────────────────
   let metricsCount = 0;
   for (const arr of arrays) {

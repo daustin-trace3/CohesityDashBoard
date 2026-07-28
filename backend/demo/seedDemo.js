@@ -61,6 +61,7 @@ const SEEDED_TABLES = [
   'netapp_nfs_clients', 'netapp_quotas', 'netapp_lifs', 'netapp_snapmirror',
   'netapp_alerts', 'netapp_disks', 'netapp_nodes', 'netapp_svms',
   'netapp_volumes', 'netapp_aggregates', 'netapp_metrics_history', 'netapp_arrays',
+  'netapp_aiqum_instances',
   // pure
   'pure_arrays',
   'pure1_arrays', 'pure1_alerts', 'pure1_pods', 'pure1_metrics_history',

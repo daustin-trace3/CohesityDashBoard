@@ -5,11 +5,11 @@ const {
   fetchDisks, fetchClusterMetrics, fetchHealthAlerts, fetchEmsAlerts,
   fetchSnapmirror, fetchLifs, fetchQuotas, fetchNfsClients, fetchExportPolicies,
   fetchCifsSessions, fetchCifsShares,
-  fetchManagedClusters, aiqumConfigured, normalizeHost,
+  fetchManagedClusters, instanceConfig, normalizeHost,
 } = require('./netappApi');
 const { getSetting } = require('./settings');
 const logger = require('../utils/logger');
-const { createPoller, createGlobalTask } = require('../core/pollerFramework');
+const { createPoller } = require('../core/pollerFramework');
 
 function pollIntervalMin() {
   return Math.min(1440, Math.max(5, Number(getSetting('netapp_poll_interval_min')) || 15));
@@ -365,9 +365,8 @@ async function doPollArray(array) {
  * registrations in place so their history survives). Rows no longer managed by
  * AIQUM are removed (cascade clears their telemetry).
  */
-async function syncClusters() {
-  if (!aiqumConfigured()) return [];
-  const clusters = await fetchManagedClusters();
+async function syncClusters(instance) {
+  const clusters = await fetchManagedClusters(instanceConfig(instance));
   const reconcile = db.transaction((list) => {
     const keep = new Set();
     for (const c of list) {
@@ -378,25 +377,26 @@ async function syncClusters() {
         || db.prepare('SELECT id FROM netapp_arrays WHERE name = ?').get(c.name);
       if (row) {
         db.prepare(`UPDATE netapp_arrays SET name = ?, mgmt_host = ?, cluster_uuid = ?, management_ip = ?,
-          version = ?, source = 'aiqum', updated_at = datetime('now') WHERE id = ?`)
-          .run(c.name, host, c.uuid, c.management_ip, c.version, row.id);
+          version = ?, source = 'aiqum', aiqum_instance_id = ?, updated_at = datetime('now') WHERE id = ?`)
+          .run(c.name, host, c.uuid, c.management_ip, c.version, instance.id, row.id);
       } else {
         db.prepare(`INSERT INTO netapp_arrays
-            (name, mgmt_host, username, encrypted_credentials, cluster_uuid, management_ip, version, source, polling_interval_minutes)
-          VALUES (?, ?, 'aiqum-gateway', '', ?, ?, ?, 'aiqum', ?)`)
-          .run(c.name, host, c.uuid, c.management_ip, c.version, pollIntervalMin());
+            (name, mgmt_host, username, encrypted_credentials, cluster_uuid, management_ip, version, source, polling_interval_minutes, aiqum_instance_id)
+          VALUES (?, ?, 'aiqum-gateway', '', ?, ?, ?, 'aiqum', ?, ?)`)
+          .run(c.name, host, c.uuid, c.management_ip, c.version, instance.poll_interval_minutes || pollIntervalMin(), instance.id);
       }
     }
-    // Drop only AIQUM-managed clusters no longer reported by AIQUM. Direct
-    // (manually registered) clusters are never touched by this sync.
-    for (const r of db.prepare('SELECT id, cluster_uuid, source FROM netapp_arrays').all()) {
-      if (r.source === 'aiqum' && !keep.has(r.cluster_uuid)) {
+    // Drop only THIS gateway's clusters that it no longer reports (legacy rows
+    // with no gateway id are claimed/cleaned here too). Direct rows and other
+    // gateways' rows are never touched.
+    for (const r of db.prepare("SELECT id, cluster_uuid, aiqum_instance_id FROM netapp_arrays WHERE source = 'aiqum'").all()) {
+      if ((r.aiqum_instance_id === instance.id || r.aiqum_instance_id == null) && !keep.has(r.cluster_uuid)) {
         db.prepare('DELETE FROM netapp_arrays WHERE id = ?').run(r.id);
       }
     }
   });
   reconcile(clusters);
-  return db.prepare("SELECT * FROM netapp_arrays WHERE source = 'aiqum' ORDER BY name").all();
+  return db.prepare("SELECT * FROM netapp_arrays WHERE source = 'aiqum' AND aiqum_instance_id = ? ORDER BY name").all(instance.id);
 }
 
 const directPoller = createPoller({
@@ -414,31 +414,43 @@ async function pollArray(array) {
   await directPoller.trigger(array);
 }
 
-/** Reconcile clusters from AIQUM, then poll each through the gateway. */
-async function syncAndPollAll() {
+/** Reconcile one gateway's clusters from AIQUM, then poll each through it. */
+async function syncAndPollInstance(instance) {
   let clusters = [];
   try {
-    clusters = await syncClusters();
+    clusters = await syncClusters(instance);
   } catch (err) {
-    logger.error('[NetAppPoller] AIQUM cluster sync failed:', safeErrorMessage(err));
-    clusters = db.prepare("SELECT * FROM netapp_arrays WHERE source = 'aiqum'").all();
+    logger.error(`[NetAppPoller] AIQUM sync failed for ${instance.name || instance.host}:`, safeErrorMessage(err));
+    clusters = db.prepare("SELECT * FROM netapp_arrays WHERE source = 'aiqum' AND (aiqum_instance_id = ? OR aiqum_instance_id IS NULL)").all(instance.id);
   }
   for (const c of clusters) {
     try { await pollArray(c); } catch (err) { logger.error(`[NetAppPoller] poll failed for ${c.name}:`, safeErrorMessage(err)); }
   }
 }
 
-const aiqumTask = createGlobalTask({
-  id: 'netapp',
-  sourceId: 0,
-  intervalMinutes: pollIntervalMin,
-  run: syncAndPollAll,
+function loadAiqumInstances() {
+  try { return db.prepare('SELECT * FROM netapp_aiqum_instances ORDER BY id').all(); } catch { return []; }
+}
+
+// One schedule per gateway row; the framework's 5-min reconcile picks up rows
+// added/edited/deleted from the Settings page without a restart.
+const aiqumPoller = createPoller({
+  id: 'netapp-aiqum',
+  loadSources: loadAiqumInstances,
+  intervalMinutes: (inst) => inst.poll_interval_minutes || pollIntervalMin(),
+  poll: syncAndPollInstance,
 });
 
-/** (Re)schedule the single global AIQUM sync+poll cron at the configured interval. */
+/** Sync + poll every configured gateway (Settings "Discover + poll now"). */
+async function syncAndPollAll() {
+  for (const inst of loadAiqumInstances()) {
+    await syncAndPollInstance(inst);
+  }
+}
+
+/** Re-read gateway rows and (re)schedule their crons. */
 function reschedule() {
-  aiqumTask.reschedule();
-  logger.info(`[NetAppPoller] Scheduled AIQUM sync + poll every ${pollIntervalMin()} min`);
+  aiqumPoller.reconcile();
 }
 
 /** Cancel a direct cluster's own per-array polling schedule. */
@@ -451,18 +463,37 @@ function scheduleArray(array) {
   directPoller.schedule(array);
 }
 
+/** Env-only setups (NETAPP_AIQUM_* with nothing in the DB): seed a gateway
+ *  row once so the multi-gateway model is the single source of truth. */
+function seedInstanceFromEnv() {
+  try {
+    if (loadAiqumInstances().length) return;
+    const host = process.env.NETAPP_AIQUM_HOST;
+    const user = process.env.NETAPP_AIQUM_USER;
+    const pass = process.env.NETAPP_AIQUM_PW;
+    if (!host || !user || !pass) return;
+    const { encrypt } = require('./encryption');
+    db.prepare(`
+      INSERT INTO netapp_aiqum_instances (name, host, username, encrypted_credentials, poll_interval_minutes)
+      VALUES ('AIQUM', ?, ?, ?, ?)
+    `).run(host, user, encrypt(pass), pollIntervalMin());
+    logger.info('[NetAppPoller] Seeded AIQUM gateway row from environment variables');
+  } catch (err) {
+    logger.warn('[NetAppPoller] Env AIQUM seed skipped:', err.message);
+  }
+}
+
 function initNetAppPoller() {
-  let aiqumClusterCount = 0;
-  if (aiqumConfigured()) {
-    reschedule();
+  seedInstanceFromEnv();
+  const instances = aiqumPoller.init();
+  if (instances.length) {
     // Kick off an initial discovery + poll shortly after startup (non-blocking).
     setTimeout(() => { syncAndPollAll().catch((e) => logger.error('[NetAppPoller] initial poll failed:', safeErrorMessage(e))); }, 4000);
-    aiqumClusterCount = db.prepare("SELECT COUNT(*) AS n FROM netapp_arrays WHERE source = 'aiqum'").get().n;
   }
-
+  const aiqumClusterCount = db.prepare("SELECT COUNT(*) AS n FROM netapp_arrays WHERE source = 'aiqum'").get().n;
   const directArrays = directPoller.init();
-
-  logger.info(`[NetAppPoller] Initialized ${aiqumClusterCount} AIQUM cluster(s), ${directArrays.length} direct cluster(s)`);
+  logger.info(`[NetAppPoller] Initialized ${instances.length} AIQUM gateway(s) (${aiqumClusterCount} cluster(s)), ${directArrays.length} direct cluster(s)`);
+  return directArrays;
 }
 
 /** Poll one already-discovered/registered cluster now (AIQUM-managed or direct). */
@@ -474,13 +505,11 @@ async function triggerPoll(arrayId) {
 
 function stopAll() {
   directPoller.stopAll();
-  if (aiqumTask.isRunning()) {
-    aiqumTask.stop();
-  }
+  aiqumPoller.stopAll();
 }
 
 module.exports = {
-  initNetAppPoller, reschedule, syncClusters, syncAndPollAll, pollArray, triggerPoll,
+  initNetAppPoller, reschedule, syncClusters, syncAndPollAll, syncAndPollInstance, pollArray, triggerPoll,
   scheduleArray, cancelArray, stopAll,
-  directPoller, aiqumTask,
+  directPoller, aiqumPoller,
 };

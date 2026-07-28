@@ -34,10 +34,9 @@ export default function NetAppSettingsPage() {
   const [tab, setTab] = useState('aiqum');
   const [cfg, setCfg] = useState(null);
   const [clusters, setClusters] = useState(null);
-  const [host, setHost] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [interval, setIntervalMin] = useState(15);
+  const emptyAiqumForm = { name: '', host: '', username: '', password: '', pollIntervalMin: 15 };
+  const [aiqumMode, setAiqumMode] = useState(null); // null | 'add' | { edit: row }
+  const [aiqumForm, setAiqumForm] = useState(emptyAiqumForm);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -58,25 +57,34 @@ export default function NetAppSettingsPage() {
   ]).then(([c, a]) => {
     if (c.status === 'fulfilled') {
       setCfg(c.value.data);
-      setHost(c.value.data.host || '');
-      // Username is write-only: the server reports presence, never the value.
-      setUsername('');
-      setIntervalMin(c.value.data.pollIntervalMin || 15);
-    } else { setCfg({ configured: false }); toast({ type: 'error', title: 'Failed to load AIQUM config' }); }
+    } else { setCfg({ configured: false, instances: [] }); toast({ type: 'error', title: 'Failed to load AIQUM config' }); }
     setClusters(a.status === 'fulfilled' ? a.value.data : []);
   }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
-  const save = async () => {
+  const setAF = (k, v) => setAiqumForm((f) => ({ ...f, [k]: v }));
+  const openAddAiqum = () => { setAiqumMode('add'); setAiqumForm(emptyAiqumForm); setTestResult(null); };
+  const openEditAiqum = (row) => {
+    setAiqumMode({ edit: row });
+    setAiqumForm({ name: row.name || '', host: row.host, username: '', password: '', pollIntervalMin: row.pollIntervalMin || 15 });
+    setTestResult(null);
+  };
+  const closeAiqumForm = () => { setAiqumMode(null); setTestResult(null); };
+  const isAiqumEdit = aiqumMode && aiqumMode !== 'add';
+  const canSaveAiqum = aiqumForm.host.trim() && (isAiqumEdit || (aiqumForm.username.trim() && aiqumForm.password));
+  const canTestAiqum = aiqumForm.host.trim() && (isAiqumEdit || (aiqumForm.username.trim() && aiqumForm.password));
+
+  const aiqumSave = async () => {
     setSaving(true);
+    const payload = { name: aiqumForm.name.trim() || undefined, host: aiqumForm.host.trim(), pollIntervalMin: Number(aiqumForm.pollIntervalMin) || 15 };
+    if (aiqumForm.username.trim()) payload.username = aiqumForm.username.trim();
+    if (aiqumForm.password) payload.password = aiqumForm.password;
     try {
-      const patch = { host, pollIntervalMin: Number(interval) };
-      if (username.trim()) patch.username = username.trim();
-      if (password) patch.password = password;
-      await client.put('/netapp/aiqum', patch);
-      setPassword('');
-      toast({ type: 'success', title: 'AIQUM settings saved' });
+      if (isAiqumEdit) await client.put(`/netapp/aiqum/instances/${aiqumMode.edit.id}`, payload);
+      else await client.post('/netapp/aiqum/instances', payload);
+      toast({ type: 'success', title: isAiqumEdit ? 'Gateway updated' : 'Gateway added', message: payload.host });
+      setAiqumMode(null);
       load();
     } catch (err) {
       toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Could not save.' });
@@ -86,11 +94,35 @@ export default function NetAppSettingsPage() {
   const testConn = async () => {
     setTesting(true); setTestResult(null);
     try {
-      const { data } = await client.post('/netapp/aiqum/test', { host, username: username.trim() || undefined, password: password || undefined });
+      const payload = { host: aiqumForm.host.trim(), username: aiqumForm.username.trim() || undefined, password: aiqumForm.password || undefined };
+      if (isAiqumEdit && !aiqumForm.password) payload.id = aiqumMode.edit.id;
+      const { data } = await client.post('/netapp/aiqum/test', payload);
       setTestResult(data.ok ? { ok: true, msg: `Connected · ${data.clusterCount} clusters managed (${(data.clusters || []).join(', ')})` } : { ok: false, msg: data.error });
     } catch (err) {
       setTestResult({ ok: false, msg: err?.response?.data?.error || 'Connection failed' });
     } finally { setTesting(false); }
+  };
+
+  const aiqumDelete = async (row) => {
+    if (!window.confirm(`Removing gateway "${row.name || row.host}" also removes its ${row.clusterCount} discovered cluster(s) and their collected history.`)) return;
+    try {
+      await client.delete(`/netapp/aiqum/instances/${row.id}`);
+      toast({ type: 'success', title: 'Gateway removed', message: row.host });
+      load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Delete failed', message: err?.response?.data?.error || 'Delete failed.' });
+    }
+  };
+
+  const aiqumPollOne = async (row) => {
+    setPolling(true);
+    try {
+      await client.post(`/netapp/aiqum/instances/${row.id}/poll`);
+      toast({ type: 'success', title: 'Discovery + poll triggered', message: row.name || row.host });
+      setTimeout(load, 1500);
+    } catch (err) {
+      toast({ type: 'error', title: 'Poll failed', message: err?.response?.data?.error || 'Poll failed.' });
+    } finally { setPolling(false); }
   };
 
   const pollAll = async () => {
@@ -204,47 +236,103 @@ export default function NetAppSettingsPage() {
 
       {tab === 'aiqum' && (
         <>
-          {/* Connection status */}
+          {/* AIQUM gateways: one row per Unified Manager appliance */}
           <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-            <div className="flex items-center gap-2 mb-3"><Cloud size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Active IQ Unified Manager</p></div>
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm mb-3">
-              <span className="flex items-center gap-2">Status: {cfg.configured ? <Badge tone="ok">Connected</Badge> : <Badge tone="crit">Not configured</Badge>}</span>
-              <span className="text-ink-muted">Clusters managed: <span className="text-ink tnum">{cfg.clusterCount ?? 0}</span></span>
-              <span className="text-ink-muted">Config source: <span className="text-ink">{cfg.hostSource}</span></span>
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2"><Cloud size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">AIQUM Gateways</p></div>
+              <div className="flex items-center gap-1.5">
+                {!aiqumMode && (
+                  <button onClick={openAddAiqum}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors">
+                    <Plus size={13} /> Add gateway
+                  </button>
+                )}
+                <button onClick={pollAll} disabled={polling || !cfg.configured}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
+                  <Play size={13} /> {polling ? 'Collecting…' : 'Discover + poll all'}
+                </button>
+              </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="AIQUM host" hint="Base URL of the Unified Manager appliance.">
-                <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="https://aiqum.example.com" className={inp} spellCheck={false} />
-              </Field>
-              <Field label="Username" hint={`AIQUM account (Operator/read-only is sufficient). ${cfg.hasUsername ? 'A username is on file — leave blank to keep it.' : 'Required.'}`}>
-                <input type="password" value={username} onChange={(e) => setUsername(e.target.value)} placeholder={cfg.hasUsername ? '•••••• (unchanged)' : 'operator'} className={inp} autoComplete="off" spellCheck={false} />
-              </Field>
-              <Field label="Password" hint={`Stored encrypted. ${cfg.hasPassword ? 'A password is on file — leave blank to keep it.' : 'Required.'}`}>
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={cfg.hasPassword ? '•••••• (unchanged)' : '••••••'} className={inp} autoComplete="new-password" />
-              </Field>
-              <Field label="Poll interval (min)" hint="How often to discover clusters and collect data.">
-                <div className="flex items-center gap-2"><Clock size={14} className="text-ink-faint" /><input type="number" min={5} max={1440} value={interval} onChange={(e) => setIntervalMin(e.target.value)} className={inp} /></div>
-              </Field>
-            </div>
-            <p className="text-[11px] text-ink-faint mt-2">
-              Requires an AIQUM user with at least the Operator role (Settings → Users in Unified Manager).{' '}
-              <a href="https://docs.netapp.com/us-en/active-iq-unified-manager/" target="_blank" rel="noreferrer" className="underline hover:text-ink">AIQUM documentation</a>
-            </p>
-            {testResult && <p className={`text-[12px] mt-2 ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>{testResult.ok ? '✓ ' : '✗ '}{testResult.msg}</p>}
-            <div className="flex items-center gap-2 mt-3">
-              <button onClick={testConn} disabled={testing || !host || (!username.trim() && !cfg.hasUsername)}
-                className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
-                <PlugZap size={13} /> {testing ? 'Testing…' : 'Test connection'}
-              </button>
-              <button onClick={save} disabled={saving || !host || (!username.trim() && !cfg.hasUsername)}
-                className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40">
-                <Save size={13} /> {saving ? 'Saving…' : 'Save'}
-              </button>
-              <button onClick={pollAll} disabled={polling || !cfg.configured}
-                className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 ml-auto">
-                <Play size={13} /> {polling ? 'Collecting…' : 'Discover + poll now'}
-              </button>
-            </div>
+
+            {aiqumMode && (
+              <div className="border border-cohesity-border rounded-lg p-3 mb-4">
+                <p className="text-xs font-semibold text-ink mb-3">{isAiqumEdit ? `Edit gateway — ${aiqumMode.edit.name || aiqumMode.edit.host}` : 'Add AIQUM gateway'}</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Field label="Name" hint="Friendly label (defaults to the host).">
+                    <input value={aiqumForm.name} onChange={(e) => setAF('name', e.target.value)} className={inp} />
+                  </Field>
+                  <Field label="AIQUM host" hint="Base URL of the Unified Manager appliance.">
+                    <input value={aiqumForm.host} onChange={(e) => setAF('host', e.target.value)} placeholder="https://aiqum.example.com" className={inp} spellCheck={false} />
+                  </Field>
+                  <Field label="Username" hint={isAiqumEdit ? 'Leave blank to keep the stored username.' : 'AIQUM account (Operator/read-only is sufficient).'}>
+                    <input value={aiqumForm.username} onChange={(e) => setAF('username', e.target.value)} placeholder={isAiqumEdit ? '•••••• (stored — leave blank to keep)' : 'operator'} className={inp} autoComplete="off" spellCheck={false} />
+                  </Field>
+                  <Field label="Password" hint={isAiqumEdit ? 'Leave blank to keep the stored password.' : 'Stored encrypted.'}>
+                    <input type="password" value={aiqumForm.password} onChange={(e) => setAF('password', e.target.value)} placeholder={isAiqumEdit ? '•••••• (stored — leave blank to keep)' : '••••••'} className={inp} autoComplete="new-password" />
+                  </Field>
+                  <Field label="Poll interval (min)" hint="How often this gateway discovers clusters and collects data.">
+                    <div className="flex items-center gap-2"><Clock size={14} className="text-ink-faint" /><input type="number" min={5} max={1440} value={aiqumForm.pollIntervalMin} onChange={(e) => setAF('pollIntervalMin', e.target.value)} className={inp} /></div>
+                  </Field>
+                </div>
+                <p className="text-[11px] text-ink-faint mt-2">
+                  Requires an AIQUM user with at least the Operator role (Settings → Users in Unified Manager).{' '}
+                  <a href="https://docs.netapp.com/us-en/active-iq-unified-manager/" target="_blank" rel="noreferrer" className="underline hover:text-ink">AIQUM documentation</a>
+                </p>
+                {testResult && <p className={`text-[12px] mt-2 ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>{testResult.ok ? '✓ ' : '✗ '}{testResult.msg}</p>}
+                <div className="flex items-center gap-2 mt-3">
+                  <button onClick={testConn} disabled={testing || !canTestAiqum}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
+                    <PlugZap size={13} /> {testing ? 'Testing…' : 'Test connection'}
+                  </button>
+                  <button onClick={aiqumSave} disabled={saving || !canSaveAiqum}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40">
+                    <Save size={13} /> {saving ? 'Saving…' : 'Save'}
+                  </button>
+                  <button onClick={closeAiqumForm}
+                    className="text-xs font-medium px-3.5 py-2 text-ink-faint hover:text-ink transition-colors">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {(cfg.instances || []).length === 0 ? (
+              <div className="text-sm text-ink-muted py-6 text-center">No AIQUM gateways configured yet. Add one to discover its managed clusters.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                    <th className="py-2 pr-3">Gateway</th><th className="py-2 pr-3">Host</th><th className="py-2 pr-3">Poll interval</th><th className="py-2 pr-3">Clusters</th><th className="py-2 pr-3"></th>
+                  </tr></thead>
+                  <tbody>
+                    {cfg.instances.map((g) => (
+                      <tr key={g.id} className="border-b border-cohesity-border/50">
+                        <td className="py-2 pr-3 text-ink font-medium">{g.name || g.host}</td>
+                        <td className="py-2 pr-3 text-ink-muted">{g.host}</td>
+                        <td className="py-2 pr-3 text-ink-muted tnum">{g.pollIntervalMin}m</td>
+                        <td className="py-2 pr-3 text-ink-muted tnum">{g.clusterCount}</td>
+                        <td className="py-2 pr-3 text-right">
+                          <div className="inline-flex items-center gap-1.5">
+                            <button onClick={() => aiqumPollOne(g)} disabled={polling}
+                              className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
+                              <Play size={12} /> Poll
+                            </button>
+                            <button onClick={() => openEditAiqum(g)}
+                              className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors">
+                              <Pencil size={12} /> Edit
+                            </button>
+                            <button onClick={() => aiqumDelete(g)}
+                              className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-status-crit hover:border-status-crit/40 transition-colors">
+                              <Trash2 size={12} /> Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* Managed clusters (read-only, discovered from AIQUM) */}
@@ -258,7 +346,7 @@ export default function NetAppSettingsPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                    <th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3">ONTAP</th><th className="py-2 pr-3">Management IP</th><th className="py-2 pr-3">Source</th><th className="py-2 pr-3"></th>
+                    <th className="py-2 pr-3">Cluster</th><th className="py-2 pr-3">ONTAP</th><th className="py-2 pr-3">Management IP</th><th className="py-2 pr-3">Source</th><th className="py-2 pr-3">Gateway</th><th className="py-2 pr-3"></th>
                   </tr></thead>
                   <tbody>
                     {clusters.map((c) => (
@@ -267,6 +355,11 @@ export default function NetAppSettingsPage() {
                         <td className="py-2 pr-3 text-ink-muted tnum">{shortVersion(c.version)}</td>
                         <td className="py-2 pr-3 text-ink-muted tnum">{c.management_ip || '—'}</td>
                         <td className="py-2 pr-3"><Badge tone="info">{c.source === 'aiqum' ? 'AIQUM gateway' : c.source}</Badge></td>
+                        <td className="py-2 pr-3 text-ink-muted text-[11px]">
+                          {c.source === 'aiqum'
+                            ? ((cfg.instances || []).find((g) => g.id === c.aiqum_instance_id)?.name || '—')
+                            : '—'}
+                        </td>
                         <td className="py-2 pr-3 text-right">
                           <div className="inline-flex items-center gap-1.5">
                             <button onClick={() => pollOne(c)} disabled={pollingId === c.id}
@@ -279,11 +372,13 @@ export default function NetAppSettingsPage() {
                                   setTab('direct');
                                   openEditDirect(c);
                                 } else {
-                                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                                  toast({
-                                    type: 'info', title: 'AIQUM-managed cluster',
-                                    message: `${c.name} is polled through the AIQUM gateway — its credentials are the AIQUM username/password in the connection form above (leave blank to keep the stored values). Updating them applies to every gateway-managed cluster.`,
-                                  });
+                                  const gw = (cfg.instances || []).find((g) => g.id === c.aiqum_instance_id) || (cfg.instances || [])[0];
+                                  if (gw) {
+                                    openEditAiqum(gw);
+                                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                                  } else {
+                                    toast({ type: 'error', title: 'No gateway found', message: 'This cluster has no AIQUM gateway on record — run a discovery poll first.' });
+                                  }
                                 }
                               }}
                               className="inline-flex items-center gap-1 text-xs font-medium px-2 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors">

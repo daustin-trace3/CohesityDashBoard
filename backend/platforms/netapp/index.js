@@ -3,7 +3,7 @@
 // plugin registry — no route or poller logic is duplicated here.
 const netappMigrations = require('../../db/migrations/netapp');
 const netappRouter = require('../../routes/netapp');
-const { directPoller, aiqumTask, stopAll: netappStopAll } = require('../../services/netappPoller');
+const { directPoller, initNetAppPoller, stopAll: netappStopAll } = require('../../services/netappPoller');
 
 module.exports = {
   id: 'netapp',
@@ -15,15 +15,11 @@ module.exports = {
   },
   createPoller() {
     // Return a wrapper object that combines directPoller (framework handle for
-    // direct clusters) + aiqumTask (global task for AIQUM-managed clusters).
-    // Most methods delegate to directPoller; init/stopAll coordinate both.
+    // direct clusters) + aiqumPoller (per-gateway schedules). init runs the
+    // FULL initializer — the old version only inited direct clusters, so the
+    // dedicated poller process never scheduled the AIQUM sync at all.
     return {
-      init: () => {
-        // directPoller.init() loads and schedules direct clusters;
-        // aiqumTask is started separately if AIQUM is configured (happens in
-        // initNetAppPoller, called by services/netappPoller on startup).
-        return directPoller.init();
-      },
+      init: () => initNetAppPoller(),
       schedule: (source) => directPoller.schedule(source),
       cancel: (sourceId) => directPoller.cancel(sourceId),
       trigger: (source) => directPoller.trigger(source),
