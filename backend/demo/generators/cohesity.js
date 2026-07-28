@@ -508,8 +508,8 @@ function seedCohesity(db, { now, encrypt }) {
     INSERT INTO cohesity_objects
       (cluster_id, object_id, global_id, name, source_name, environment, object_type,
        os_type, protection_type, logical_bytes, is_protected, protection_groups,
-       policy_names, last_backup_status, sla_violated, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       policy_names, last_backup_status, sla_violated, last_backup_ms, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const OBJ_SHAPES = {
     VMware: { type: 'VirtualMachine', src: (c) => `vc-${c.site}.icc.demo`, os: ['Linux', 'Windows'] },
@@ -547,6 +547,8 @@ function seedCohesity(db, { now, encrypt }) {
           isProtected ? JSON.stringify([`${site}-${environment.toLowerCase()}-daily`]) : null,
           isProtected ? (failed ? 'Failed' : 'Succeeded') : null,
           isProtected ? (failed && chance(rng, 0.5) ? 1 : 0) : null,
+          // Failed runs' last GOOD backup skews stale — a few land >7d old.
+          isProtected ? now - (failed ? randInt(rng, 3, 21) : randInt(rng, 0, 2)) * 86400000 - randInt(rng, 0, 20) * 3600000 : null,
           new Date(now - randInt(rng, 2, 30) * 60000).toISOString()
         );
         objectRows++;

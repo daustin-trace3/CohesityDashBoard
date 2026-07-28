@@ -15,6 +15,10 @@ const fmtMem = (mb) => mb == null ? '—' : mb >= 1024 ? `${(mb / 1024).toLocale
 const fmtUptime = (s) => s == null ? '—' : `${(s / 86400).toLocaleString(undefined, { maximumFractionDigits: 1 })} d`;
 const statusTone = (s) => s === 'green' ? 'ok' : s === 'yellow' ? 'warn' : s === 'red' ? 'crit' : 'neutral';
 const runTone = (s) => s === 'Succeeded' || s === 'SucceededWithWarning' ? 'ok' : s === 'Failed' ? 'crit' : s ? 'warn' : 'neutral';
+const fmtAgo = (ms) => {
+  const d = Math.floor((Date.now() - ms) / 86400000);
+  return d < 1 ? 'today' : d === 1 ? '1d ago' : `${d}d ago`;
+};
 
 function Fact({ label, children }) {
   return (
@@ -154,7 +158,14 @@ export default function ServerStatusPage() {
               <Fact label="Protected"><Badge tone={o.is_protected ? 'ok' : 'warn'}>{o.is_protected ? 'protected' : 'unprotected'}</Badge></Fact>
               <Fact label="Cluster">{o.cluster_name}</Fact>
               <Fact label="Protection Group">{o.protection_groups.join(', ') || '—'}</Fact>
-              <Fact label="Last Backup">{o.last_backup_status ? <Badge tone={runTone(o.last_backup_status)}>{o.last_backup_status}</Badge> : '—'}</Fact>
+              <Fact label="Last Backup">
+                {o.last_backup_status ? <Badge tone={runTone(o.last_backup_status)}>{o.last_backup_status}</Badge> : '—'}
+                {o.last_backup_ms ? (
+                  <span className={`ml-1.5 text-[11px] tnum ${Date.now() - o.last_backup_ms > 7 * 86400000 ? 'text-amber-400' : 'text-ink-faint'}`}>
+                    {new Date(o.last_backup_ms).toLocaleDateString()} · {fmtAgo(o.last_backup_ms)}
+                  </span>
+                ) : null}
+              </Fact>
               <Fact label="Logical">{fmtBytes(o.logical_bytes)}</Fact>
             </div>
           ))}

@@ -393,6 +393,36 @@ async function fetchSearchObjects(cluster) {
 }
 
 /**
+ * Last good backup time per protected object: max latestSnapshotsInfo
+ * protectionRunStartTimeUsecs from the protected-objects search, keyed by
+ * per-cluster object id (matches objectProtectionInfos[].objectId). Verified
+ * live: search/objects group entries carry status but no timestamp.
+ */
+async function fetchProtectedObjectTimes(cluster) {
+  const client = await getAuthenticatedClient(cluster);
+  const times = new Map();
+  let cookie = null;
+  let pages = 0;
+  let seen = 0;
+  do {
+    const url = `/v2/data-protect/search/protected-objects?count=1000${cookie ? `&paginationCookie=${encodeURIComponent(cookie)}` : ''}`;
+    const { data } = await client.get(url, { timeout: 120000 });
+    const batch = data?.objects || [];
+    for (const o of batch) {
+      const usecs = Math.max(0, ...(o.latestSnapshotsInfo || [])
+        .map((s) => s.protectionRunStartTimeUsecs || 0));
+      if (o.id != null && usecs > 0) times.set(o.id, Math.round(usecs / 1000));
+    }
+    seen += batch.length;
+    const next = data?.paginationCookie || null;
+    if (!batch.length || next === cookie) break;
+    cookie = next;
+    pages += 1;
+  } while (cookie && seen < 20000 && pages < 25);
+  return times;
+}
+
+/**
  * Cohesity agents on registered physical sources: walk the kPhysical
  * protectionSources tree and flatten every host's agents[]. Verified live:
  * agents carry version, status (kHealthy), upgradability (kCurrent/kUpgradable).
@@ -446,5 +476,6 @@ module.exports = {
   listProtectionGroupsV2,
   getProtectionGroupRunsV2,
   fetchSearchObjects,
+  fetchProtectedObjectTimes,
   fetchPhysicalAgents
 };

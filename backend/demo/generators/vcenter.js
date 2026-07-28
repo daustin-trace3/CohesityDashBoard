@@ -240,12 +240,13 @@ function seedVcenter(db, { now, encrypt }) {
               db.prepare(`
                 INSERT INTO cohesity_objects (cluster_id, object_id, global_id, name, source_name,
                   environment, object_type, os_type, logical_bytes, is_protected,
-                  protection_groups, policy_names, last_backup_status, sla_violated, captured_at)
-                VALUES (?, ?, ?, ?, 'vc-nyc.icc.demo', 'VMware', 'VirtualMachine', ?, ?, 1, ?, ?, 'Succeeded', 0, ?)
+                  protection_groups, policy_names, last_backup_status, sla_violated, last_backup_ms, captured_at)
+                VALUES (?, ?, ?, ?, 'vc-nyc.icc.demo', 'VMware', 'VirtualMachine', ?, ?, 1, ?, ?, 'Succeeded', 0, ?, ?)
               `).run(cohesityCluster.id, 90000 + v, `demo:s360:${v}`, vmName,
                 guestOs?.includes('Windows') ? 'Windows' : 'Linux',
                 randInt(rng, 40, 400) * 1e9,
-                JSON.stringify(['VMware_Protect_1']), JSON.stringify(['nyc-vmware-daily']), nowIso);
+                JSON.stringify(['VMware_Protect_1']), JSON.stringify(['nyc-vmware-daily']),
+                now - randInt(rng, 4, 20) * 3600000, nowIso);
             }
           }
         }

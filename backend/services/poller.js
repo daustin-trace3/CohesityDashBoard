@@ -2,7 +2,8 @@ const cron = require('node-cron');
 const db = require('../db/database');
 const {
   fetchClusterInfo, fetchAlerts, fetchProtectionRuns, fetchProtectionJobs,
-  fetchProtectionPolicies, fetchSourceRegistrations, fetchSearchObjects, fetchPhysicalAgents,
+  fetchProtectionPolicies, fetchSourceRegistrations, fetchSearchObjects,
+  fetchProtectedObjectTimes, fetchPhysicalAgents,
 } = require('./cohesityApi');
 const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
 const { fetchWorkloads, insertWorkloadSnapshot } = require('./workloads');
@@ -284,14 +285,14 @@ const replaceSourceRegistrations = db.transaction((clusterId, sources) => {
 // Per-object inventory from the v2 object search. A protection info entry
 // counts only when it belongs to THIS cluster's search response and is not
 // deleted; group/policy detail comes from the first live entry.
-const replaceObjects = db.transaction((clusterId, objects) => {
+const replaceObjects = db.transaction((clusterId, objects, backupTimes) => {
   db.prepare('DELETE FROM cohesity_objects WHERE cluster_id = ?').run(clusterId);
   const stmt = db.prepare(`
     INSERT INTO cohesity_objects
       (cluster_id, object_id, global_id, name, source_name, environment, object_type,
        os_type, protection_type, logical_bytes, is_protected, protection_groups,
-       policy_names, last_backup_status, sla_violated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       policy_names, last_backup_status, sla_violated, last_backup_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const env = (e) => String(e || 'Unknown').replace(/^k/, '');
   for (const o of objects) {
@@ -312,7 +313,8 @@ const replaceObjects = db.transaction((clusterId, objects) => {
       groups.length ? JSON.stringify(groups.map((g) => g.name).filter(Boolean)) : null,
       groups.length ? JSON.stringify([...new Set(groups.map((g) => g.policyName).filter(Boolean))]) : null,
       groups[0]?.lastBackupRunStatus || null,
-      groups.length ? (groups.some((g) => g.lastRunSlaViolated) ? 1 : 0) : null
+      groups.length ? (groups.some((g) => g.lastRunSlaViolated) ? 1 : 0) : null,
+      (infos[0]?.objectId != null && backupTimes?.get(infos[0].objectId)) || null
     );
   }
 });
@@ -408,6 +410,13 @@ async function doPollCluster(cluster) {
       fetchSearchObjects(cluster),
       fetchPhysicalAgents(cluster)
     ]);
+    // Timestamps come from a second search endpoint; a failure here should
+    // not sink the object snapshot — objects just land without dates.
+    const backupTimes = await fetchProtectedObjectTimes(cluster)
+      .catch((err) => {
+        logger.error(`[Poller] Protected-object times fetch failed for cluster ${cluster.id}:`, safeErrorMessage(err));
+        return new Map();
+      });
 
     if (clusterInfo.status === 'fulfilled') {
       upsertMetrics(cluster, clusterInfo.value);
@@ -453,7 +462,7 @@ async function doPollCluster(cluster) {
 
     if (objectData.status === 'fulfilled') {
       try {
-        replaceObjects(cluster.id, objectData.value);
+        replaceObjects(cluster.id, objectData.value, backupTimes);
       } catch (err) {
         logger.error(`[Poller] Object inventory snapshot failed for cluster ${cluster.id}:`, err.message);
       }

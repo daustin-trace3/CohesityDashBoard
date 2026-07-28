@@ -472,4 +472,15 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 11,
+    up(db) {
+      // Last good backup time per object (max protectionRunStartTimeUsecs from
+      // /v2/data-protect/search/protected-objects latestSnapshotsInfo), in ms.
+      const cols = db.prepare("PRAGMA table_info('cohesity_objects')").all().map((c) => c.name);
+      if (!cols.includes('last_backup_ms')) {
+        db.exec('ALTER TABLE cohesity_objects ADD COLUMN last_backup_ms INTEGER');
+      }
+    },
+  },
 ];
