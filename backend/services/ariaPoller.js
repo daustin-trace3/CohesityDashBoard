@@ -68,10 +68,24 @@ async function collect(row) {
 // 'imageMappings', singular map vs list) is unverified — accept both.
 function mappingEntries(profile, ...keys) {
   for (const k of keys) {
-    const m = profile?.[k];
-    if (m && typeof m === 'object' && !Array.isArray(m)) return Object.entries(m);
+    let m = profile?.[k];
+    // Newer vRA nests the map one level deeper: imageMappings.mapping.{name: {...}}
+    if (m && typeof m === 'object' && !Array.isArray(m) && m.mapping && typeof m.mapping === 'object' && !Array.isArray(m.mapping)) {
+      m = m.mapping;
+    }
+    if (Array.isArray(m)) {
+      return m.map((item) => [item?.mappingName ?? item?.name ?? null, item]).filter(([n]) => n);
+    }
+    if (m && typeof m === 'object') return Object.entries(m);
   }
   return [];
+}
+
+// The mapping value's target image name hides in different places per
+// version; a bare string value IS the image name.
+function mappingImageName(img) {
+  if (typeof img === 'string') return img;
+  return img?.image?.name ?? img?.name ?? img?.imageName ?? null;
 }
 
 const profileRegion = (p) =>
@@ -247,9 +261,10 @@ const store = db.transaction((instanceId, data) => {
     for (const p of imageProfiles) {
       const region = profileRegion(p);
       for (const [mappingName, img] of mappingEntries(p, 'imageMapping', 'imageMappings')) {
+        const o = (img && typeof img === 'object') ? img : {};
         stmt.run(instanceId, p?.id != null ? String(p.id) : null, p?.name ?? null, region,
-          mappingName, img?.name ?? null, img?.externalId ?? null, img?.osFamily ?? null,
-          img?.description ?? null);
+          mappingName, mappingImageName(img), o.externalId ?? o.image?.externalId ?? null,
+          o.osFamily ?? o.image?.osFamily ?? null, o.description ?? o.image?.description ?? null);
       }
     }
   }
