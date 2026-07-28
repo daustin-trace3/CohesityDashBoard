@@ -142,15 +142,31 @@ const store = db.transaction((instanceId, data) => {
     db.prepare('DELETE FROM aria_deployments WHERE instance_id = ?').run(instanceId);
     const stmt = db.prepare(`
       INSERT INTO aria_deployments (instance_id, deployment_id, name, project_name, status,
-        created_by, created_at_src, updated_at_src, lease_expire_at, resource_count, raw_status_detail)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_by, created_at_src, updated_at_src, lease_expire_at, resource_count,
+        raw_status_detail, project_id, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    // Live vRA (2026-07-28): deployments carry projectId only — resolve names
+    // through the projects fetch from the same poll.
+    const projName = new Map((projects || []).map((p) => [String(p?.id), p?.name]).filter(([, n]) => n));
+    const resCount = new Map();
+    for (const r of (deploymentResources || [])) {
+      const k = String(r?.deploymentId ?? '');
+      if (k) resCount.set(k, (resCount.get(k) || 0) + 1);
+    }
     for (const d of deployments) {
-      stmt.run(instanceId, d?.id != null ? String(d.id) : null, d?.name ?? null,
-        d?.projectName ?? d?.project?.name ?? null, d?.status ?? null,
-        d?.createdBy ?? null, d?.createdAt ?? null, d?.lastUpdatedAt ?? null,
-        d?.leaseExpireAt ?? null, d?.resourceCount != null ? Number(d.resourceCount) : null,
-        d?.statusDetail ? JSON.stringify(d.statusDetail) : null);
+      const depId = d?.id != null ? String(d.id) : null;
+      const projectId = d?.projectId != null ? String(d.projectId) : (d?.project?.id != null ? String(d.project.id) : null);
+      const count = d?.resourceCount != null ? Number(d.resourceCount)
+        : Array.isArray(d?.resources) ? d.resources.length
+          : (depId != null && resCount.has(depId)) ? resCount.get(depId) : null;
+      stmt.run(instanceId, depId, d?.name ?? null,
+        d?.projectName ?? d?.project?.name ?? (projectId != null ? projName.get(projectId) : null) ?? null,
+        d?.status ?? null,
+        d?.createdBy ?? d?.ownedBy ?? null, d?.createdAt ?? null, d?.lastUpdatedAt ?? d?.updatedAt ?? null,
+        d?.leaseExpireAt ?? d?.leaseExpiration ?? null, count,
+        d?.statusDetail ? JSON.stringify(d.statusDetail) : null,
+        projectId, JSON.stringify(d));
     }
   }
 

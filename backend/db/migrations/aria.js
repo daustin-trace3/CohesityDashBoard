@@ -282,4 +282,15 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 6,
+    up(db) {
+      // Live vRA (2026-07-28) returns projectId (no name) and shapes we did
+      // not anticipate — keep the id for projects-table resolution and the
+      // raw payload so the detail modal can always show everything.
+      const cols = db.prepare("PRAGMA table_info('aria_deployments')").all().map((c) => c.name);
+      if (!cols.includes('project_id')) db.exec('ALTER TABLE aria_deployments ADD COLUMN project_id TEXT');
+      if (!cols.includes('raw_json')) db.exec('ALTER TABLE aria_deployments ADD COLUMN raw_json TEXT');
+    },
+  },
 ];

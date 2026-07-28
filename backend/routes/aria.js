@@ -238,17 +238,49 @@ router.get('/deployments', [query('instanceId').optional().isInt().toInt()], val
     const params = [];
     if (req.query.instanceId) { clauses.push('d.instance_id = ?'); params.push(req.query.instanceId); }
     const rows = db.prepare(`
-      SELECT d.*, i.name AS instance_name FROM aria_deployments d
+      SELECT d.*, i.name AS instance_name, res.resource_names
+      FROM aria_deployments d
       JOIN aria_instances i ON i.id = d.instance_id
+      LEFT JOIN (
+        SELECT instance_id, deployment_id, GROUP_CONCAT(name, ', ') AS resource_names
+        FROM aria_deployment_resources GROUP BY instance_id, deployment_id
+      ) res ON res.instance_id = d.instance_id AND res.deployment_id = d.deployment_id
       ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
       ORDER BY i.name, d.name
     `).all(...params);
-    res.json(rows.map((d) => ({
+    res.json(rows.map(({ raw_json, ...d }) => ({
       ...d,
       lease_days_left: d.lease_expire_at
         ? Math.round((new Date(d.lease_expire_at).getTime() - Date.now()) / 86400000)
         : null,
     })));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aria/deployments/:id — one deployment with resources + raw payload. */
+router.get('/deployments/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const d = db.prepare(`
+      SELECT d.*, i.name AS instance_name FROM aria_deployments d
+      JOIN aria_instances i ON i.id = d.instance_id WHERE d.id = ?
+    `).get(req.params.id);
+    if (!d) return res.status(404).json({ error: 'Deployment not found.' });
+    const resources = db.prepare(`
+      SELECT * FROM aria_deployment_resources WHERE instance_id = ? AND deployment_id = ?
+      ORDER BY name
+    `).all(d.instance_id, d.deployment_id).map((r) => ({
+      ...r, ip_addresses: r.ip_addresses ? JSON.parse(r.ip_addresses) : [],
+    }));
+    let raw = null;
+    try { raw = d.raw_json ? JSON.parse(d.raw_json) : null; } catch { /* keep null */ }
+    const { raw_json, ...row } = d;
+    res.json({
+      ...row,
+      lease_days_left: d.lease_expire_at
+        ? Math.round((new Date(d.lease_expire_at).getTime() - Date.now()) / 86400000)
+        : null,
+      resources, raw,
+    });
   } catch (err) { next(err); }
 });
 
