@@ -1,9 +1,11 @@
 import { lazy } from 'react';
-import { Gauge, Package, Activity, Server, Puzzle, CheckSquare, Settings, DiscAlbum, Sparkles, ShieldCheck, MonitorSmartphone } from 'lucide-react';
+import { Gauge, Package, Activity, Server, Puzzle, CheckSquare, Settings, DiscAlbum, Sparkles, ShieldCheck, MonitorSmartphone, Bell } from 'lucide-react';
 
 const AriaOverviewPage = lazy(() => import('../../pages/aria/AriaOverviewPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
 const AriaPrivacyPage = () => <PrivacyInspectorPage platform="aria" />;
+const IssueAlertsPage = lazy(() => import('../../components/IssueAlertsPage'));
+const AriaAlertsPage = () => <IssueAlertsPage platform="aria" />;
 const AriaDeploymentsPage = lazy(() => import('../../pages/aria/AriaDeploymentsPage'));
 const AriaActivityPage = lazy(() => import('../../pages/aria/AriaActivityPage'));
 const AriaInfrastructurePage = lazy(() => import('../../pages/aria/AriaInfrastructurePage'));
@@ -20,6 +22,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/aria', icon: Gauge, isActive: (p) => p === '/aria' },
+      { label: 'Alerts', route: '/aria/alerts', icon: Bell, isActive: (p) => p.startsWith('/aria/alerts') },
       { label: 'AI Advisor', route: '/aria/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/aria/advisor'), requiresAi: true },
       { label: 'Deployments', route: '/aria/deployments', icon: Package, isActive: (p) => p.startsWith('/aria/deployments') },
       { label: 'Activity', route: '/aria/activity', icon: Activity, isActive: (p) => p.startsWith('/aria/activity') },
@@ -59,6 +62,7 @@ export default {
   navGroups,
   routes: [
     { path: 'aria', Component: AriaOverviewPage },
+    { path: 'aria/alerts', Component: AriaAlertsPage },
     { path: 'aria/deployments', Component: AriaDeploymentsPage },
     { path: 'aria/activity', Component: AriaActivityPage },
     { path: 'aria/infrastructure', Component: AriaInfrastructurePage },

@@ -142,6 +142,13 @@ const dsUsedPct = (d) => (d.capacity_bytes > 0 ? (1 - d.free_bytes / d.capacity_
 const TOOLS_OUTDATED = ['guestToolsNeedUpgrade', 'guestToolsTooOld', 'guestToolsBlacklisted', 'guestToolsSupportedOld'];
 const toolsOutdatedIn = `tools_version_status IN (${TOOLS_OUTDATED.map(() => '?').join(', ')})`;
 
+/** GET /api/vcenter/issues — computed issues alone (Alerts page). */
+router.get('/issues', (req, res, next) => {
+  try {
+    res.json(computeIssues());
+  } catch (err) { next(err); }
+});
+
 /** GET /api/vcenter/overview — fleet rollup + computed issues. */
 router.get('/overview', (req, res, next) => {
   try {

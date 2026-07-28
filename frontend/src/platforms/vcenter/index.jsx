@@ -1,9 +1,11 @@
 import { lazy } from 'react';
-import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck } from 'lucide-react';
+import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell } from 'lucide-react';
 
 const VcOverviewPage = lazy(() => import('../../pages/vcenter/VcOverviewPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
 const VcPrivacyPage = () => <PrivacyInspectorPage platform="vcenter" />;
+const IssueAlertsPage = lazy(() => import('../../components/IssueAlertsPage'));
+const VcAlertsPage = () => <IssueAlertsPage platform="vcenter" />;
 const VcHostsPage = lazy(() => import('../../pages/vcenter/VcHostsPage'));
 const VcDatastoresPage = lazy(() => import('../../pages/vcenter/VcDatastoresPage'));
 const VcInventoryPage = lazy(() => import('../../pages/vcenter/VcInventoryPage'));
@@ -19,6 +21,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/vcenter', icon: Gauge, isActive: (p) => p === '/vcenter' },
+      { label: 'Alerts', route: '/vcenter/alerts', icon: Bell, isActive: (p) => p.startsWith('/vcenter/alerts') },
       { label: 'AI Advisor', route: '/vcenter/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/vcenter/advisor'), requiresAi: true },
       { label: 'Events', route: '/vcenter/events', icon: History, isActive: (p) => p.startsWith('/vcenter/events') },
     ],
@@ -61,6 +64,7 @@ export default {
   navGroups,
   routes: [
     { path: 'vcenter', Component: VcOverviewPage },
+    { path: 'vcenter/alerts', Component: VcAlertsPage },
     { path: 'vcenter/hosts', Component: VcHostsPage },
     { path: 'vcenter/inventory', Component: VcInventoryPage },
     { path: 'vcenter/datastores', Component: VcDatastoresPage },

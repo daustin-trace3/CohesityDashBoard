@@ -605,6 +605,18 @@ router.get('/issues', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** GET /api/aria/issue-history?days= — detected-issue lifecycle (open first). */
+router.get('/issue-history', (req, res, next) => {
+  try {
+    const days = Math.min(90, Math.max(1, Number(req.query.days) || 30));
+    res.json(db.prepare(`
+      SELECT * FROM aria_issue_history
+      WHERE status = 'open' OR last_seen >= datetime('now', ?)
+      ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, last_seen DESC
+    `).all(`-${days} days`));
+  } catch (err) { next(err); }
+});
+
 /** GET /api/aria/config — alert thresholds. */
 router.get('/config', (req, res, next) => {
   try {
