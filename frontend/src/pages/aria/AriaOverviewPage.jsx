@@ -87,6 +87,45 @@ export default function AriaOverviewPage() {
           tone={(totals.approvalsPending || 0) > 0 ? 'warn' : 'ok'} />
       </div>
 
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> Recently Provisioned VMs</p>
+        <p className="text-[11px] text-ink-faint mb-3">10 most recent successful builds — VM identity from deployment resources, owning vCenter matched from the vCenter platform inventory.</p>
+        {data == null ? (
+          <LoadingPanel label="Loading…" height={120} />
+        ) : recentVms.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No successful deployments with collected machine resources yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">VM Name</th>
+                <th className="py-2 pr-3">IP</th>
+                <th className="py-2 pr-3">Created By</th>
+                <th className="py-2 pr-3">Created</th>
+                <th className="py-2 pr-3">Lease</th>
+                <th className="py-2 pr-3">vCenter</th>
+                <th className="py-2 pr-3">Deployment</th>
+              </tr></thead>
+              <tbody>
+                {recentVms.map((v, i) => (
+                  <tr key={`${v.vm_name}|${i}`} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3">
+                      <Link to={`/ops/server360?name=${encodeURIComponent(v.vm_name)}`} className="text-ink font-medium hover:text-brand" title="Open Server 360">{v.vm_name}</Link>
+                    </td>
+                    <td className="py-2 pr-3 text-ink-muted text-[11px] tnum">{(v.ip_addresses || []).join(', ') || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{v.created_by || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(v.created_at_src)}</td>
+                    <td className="py-2 pr-3 text-ink-muted text-[11px] whitespace-nowrap">{v.lease_expire_at ? fmtWhen(v.lease_expire_at) : 'no lease'}</td>
+                    <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{v.vcenter || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-faint text-[11px] max-w-[240px] truncate" title={v.deployment_name || ''}>{v.deployment_name || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       <div className="grid lg:grid-cols-2 gap-4 mb-4">
         <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Boxes size={15} className="text-brand" /> Aria Instances</p>
@@ -144,45 +183,6 @@ export default function AriaOverviewPage() {
             </div>
           )}
         </div>
-      </div>
-
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> Recently Provisioned VMs</p>
-        <p className="text-[11px] text-ink-faint mb-3">10 most recent successful builds — VM identity from deployment resources, owning vCenter matched from the vCenter platform inventory.</p>
-        {data == null ? (
-          <LoadingPanel label="Loading…" height={120} />
-        ) : recentVms.length === 0 ? (
-          <div className="text-sm text-ink-muted py-6 text-center">No successful deployments with collected machine resources yet.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">VM Name</th>
-                <th className="py-2 pr-3">IP</th>
-                <th className="py-2 pr-3">Created By</th>
-                <th className="py-2 pr-3">Created</th>
-                <th className="py-2 pr-3">Lease</th>
-                <th className="py-2 pr-3">vCenter</th>
-                <th className="py-2 pr-3">Deployment</th>
-              </tr></thead>
-              <tbody>
-                {recentVms.map((v, i) => (
-                  <tr key={`${v.vm_name}|${i}`} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3">
-                      <Link to={`/ops/server360?name=${encodeURIComponent(v.vm_name)}`} className="text-ink font-medium hover:text-brand" title="Open Server 360">{v.vm_name}</Link>
-                    </td>
-                    <td className="py-2 pr-3 text-ink-muted text-[11px] tnum">{(v.ip_addresses || []).join(', ') || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{v.created_by || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(v.created_at_src)}</td>
-                    <td className="py-2 pr-3 text-ink-muted text-[11px] whitespace-nowrap">{v.lease_expire_at ? fmtWhen(v.lease_expire_at) : 'no lease'}</td>
-                    <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{v.vcenter || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-faint text-[11px] max-w-[240px] truncate" title={v.deployment_name || ''}>{v.deployment_name || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
