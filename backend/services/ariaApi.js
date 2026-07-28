@@ -33,12 +33,12 @@ function baseClient(row, headers = {}) {
 
 async function cspLogin(row) {
   const { username, password, domain } = creds(row);
-  const { data } = await baseClient(row).post('/csp/gateway/am/api/login', {
+  // The ?access_token flag asks the CSP gateway for a refresh_token; without
+  // it, on-prem vRA returns only a cspAuthToken (seen live 2026-07-28).
+  const { data } = await baseClient(row).post('/csp/gateway/am/api/login?access_token', {
     username, password, ...(domain ? { domain } : {}),
   });
-  const refreshToken = data?.refresh_token;
-  if (!refreshToken) throw new Error('Aria CSP login returned no refresh_token');
-  return refreshToken;
+  return data || {};
 }
 
 async function iaasLogin(row, refreshToken) {
@@ -48,11 +48,19 @@ async function iaasLogin(row, refreshToken) {
   return token;
 }
 
-/** Full re-login: CSP gateway -> refresh token -> iaas bearer exchange. */
+/** Full re-login: CSP gateway -> refresh token -> iaas bearer exchange.
+ * Falls back to using cspAuthToken directly as the bearer when the gateway
+ * returns no refresh_token even with ?access_token. */
 async function fullLogin(row) {
-  const refreshToken = await cspLogin(row);
-  const bearer = await iaasLogin(row, refreshToken);
-  return { refreshToken, bearer, fetchedAt: Date.now() };
+  const login = await cspLogin(row);
+  if (login.refresh_token) {
+    const bearer = await iaasLogin(row, login.refresh_token);
+    return { refreshToken: login.refresh_token, bearer, fetchedAt: Date.now() };
+  }
+  if (login.cspAuthToken || login.access_token) {
+    return { refreshToken: null, bearer: login.cspAuthToken || login.access_token, fetchedAt: Date.now() };
+  }
+  throw new Error(`Aria CSP login returned no usable token (keys: ${Object.keys(login).join(', ') || 'none'})`);
 }
 
 /**
