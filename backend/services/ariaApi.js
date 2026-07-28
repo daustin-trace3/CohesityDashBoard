@@ -277,9 +277,12 @@ async function testConnection(rowLike) {
     const detail = body == null ? null
       : (typeof body === 'string' ? body : JSON.stringify(body)).slice(0, 300);
     const hop = err.config?.url ? ` at ${err.config.url}` : '';
+    // vIDM rejects bad credentials with an OAuth-style 400 invalid_grant,
+    // not a 401 — treat both as an auth failure.
+    const authFail = status === 401 || (status === 400 && /invalid_grant/i.test(detail || ''));
     return {
       ok: false,
-      error: status === 401 ? 'Authentication failed — check the Aria username, password and domain.'
+      error: authFail ? 'Authentication failed — check the Aria username, password and domain. AD/LDAP accounts: bare username + the identity-source domain exactly as vRA’s login page lists it; local accounts: leave domain empty.'
         : status ? `vRA responded ${status}${hop}${detail ? ` — ${detail}` : ''}`
           : err.message,
     };
