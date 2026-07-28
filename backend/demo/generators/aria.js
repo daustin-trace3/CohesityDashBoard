@@ -298,6 +298,22 @@ function seedAria(db, { now, encrypt }) {
     }
   }
 
+  // ── Deployment resources (Server 360 join): first three deployments of the
+  // first instance own the nyc VM IPs 10.100.11.11-13 seeded as NetApp
+  // clients, so the correlated view links vRA → vCenter → NetApp end to end.
+  const drStmt = db.prepare(`
+    INSERT INTO aria_deployment_resources
+      (instance_id, deployment_id, resource_id, name, type, state, ip_addresses, captured_at)
+    VALUES (?, ?, ?, ?, 'Cloud.vSphere.Machine', 'OK', ?, ?)
+  `);
+  const firstDeps = db.prepare(`
+    SELECT instance_id, deployment_id, name FROM aria_deployments ORDER BY instance_id, id LIMIT 3
+  `).all();
+  firstDeps.forEach((dep, i) => {
+    drStmt.run(dep.instance_id, dep.deployment_id, `res-${dep.deployment_id}-0`,
+      `${dep.name}-vm-01`, JSON.stringify([`10.100.11.1${1 + i}`]), nowIso);
+  });
+
   // ── Issue lifecycle history — the real reconcile against the just-seeded
   // inventory so aria_issue_history keys match computeIssues exactly. ─────
   const { reconcileIssueHistory } = require('../../services/ariaIssues');

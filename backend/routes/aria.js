@@ -149,6 +149,7 @@ router.post('/instances/:id/refresh', [param('id').isInt().toInt()], validate, a
 // place in the codebase that is meant to show an unmassaged upstream shape.
 const PROBE_SECTIONS = [
   ['deployments', (row) => ariaApi.fetchDeployments(row)],
+  ['deploymentResources', async (row) => ariaApi.fetchDeploymentResources(row, (await ariaApi.fetchDeployments(row)).slice(0, 3))],
   ['requests', (row) => ariaApi.fetchRequests(row)],
   ['cloudAccounts', (row) => ariaApi.fetchCloudAccounts(row)],
   ['integrations', (row) => ariaApi.fetchIntegrations(row)],

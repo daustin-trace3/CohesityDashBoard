@@ -260,4 +260,26 @@ module.exports = [
       `);
     },
   },
+  // Migration: per-deployment child resources (machine names + IPs) — the
+  // exact join key Server 360 needs to tie a vRA deployment to its VM.
+  {
+    version: 5,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aria_deployment_resources (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id    INTEGER NOT NULL REFERENCES aria_instances(id) ON DELETE CASCADE,
+          deployment_id  TEXT,
+          resource_id    TEXT,
+          name           TEXT,
+          type           TEXT,              -- e.g. Cloud.vSphere.Machine (unverified vocab)
+          state          TEXT,
+          ip_addresses   TEXT,              -- JSON array
+          captured_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_aria_dep_resources_instance ON aria_deployment_resources(instance_id);
+        CREATE INDEX IF NOT EXISTS idx_aria_dep_resources_dep ON aria_deployment_resources(deployment_id);
+      `);
+    },
+  },
 ];

@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
@@ -23,7 +23,8 @@ const OPS_ENTRY = { id: 'ops', label: 'Ops', route: '/ops', color: '#8FA3B0' };
 const opsNavGroups = [{
   label: 'Estate',
   items: [
-    { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p.startsWith('/ops'), permission: 'cohesity:*:view' },
+    { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p === '/ops', permission: 'cohesity:*:view' },
+    { label: 'Server 360', route: '/ops/server360', icon: Crosshair, isActive: p => p.startsWith('/ops/server360'), permission: 'cohesity:*:view' },
   ],
 }];
 

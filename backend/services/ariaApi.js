@@ -121,6 +121,46 @@ async function fetchDeployments(row) {
   return all.slice(0, cap);
 }
 
+/**
+ * Child resources for each deployment (machine names, IPs). One request per
+ * deployment, capped, sequential — shapes unverified: resources may expose
+ * IPs at properties.address / properties.networks[].address / networks[].
+ */
+async function fetchDeploymentResources(row, deployments) {
+  const CAP_DEPLOYMENTS = 300;
+  const out = [];
+  for (const dep of (deployments || []).slice(0, CAP_DEPLOYMENTS)) {
+    const depId = dep.id || dep.deploymentId;
+    if (!depId) continue;
+    let items;
+    try {
+      items = unwrap(await aGetV(row, `/deployment/api/deployments/${encodeURIComponent(depId)}/resources`, { size: 100 }));
+    } catch {
+      continue; // per-deployment failures shouldn't sink the section
+    }
+    for (const r of items) {
+      const props = r.properties || {};
+      const ips = new Set();
+      if (props.address) ips.add(String(props.address));
+      for (const n of (Array.isArray(props.networks) ? props.networks : [])) {
+        if (n?.address) ips.add(String(n.address));
+      }
+      for (const n of (Array.isArray(r.networks) ? r.networks : [])) {
+        if (n?.address) ips.add(String(n.address));
+      }
+      out.push({
+        deploymentId: String(depId),
+        resourceId: r.id != null ? String(r.id) : null,
+        name: r.name || props.resourceName || null,
+        type: r.type || null,
+        state: r.state || r.syncStatus || null,
+        ipAddresses: [...ips],
+      });
+    }
+  }
+  return out;
+}
+
 const fetchRequests = async (row) => unwrap(await aGetV(row, '/deployment/api/requests', { size: 100 }));
 const fetchCloudAccounts = async (row) => unwrap(await aGetV(row, '/iaas/api/cloud-accounts'));
 const fetchIntegrations = async (row) => unwrap(await aGetV(row, '/iaas/api/integrations'));
@@ -241,7 +281,7 @@ async function testConnection(rowLike) {
 
 module.exports = {
   getBearer, invalidateSession, aGet, aGetV, unwrap,
-  fetchDeployments, fetchRequests, fetchCloudAccounts, fetchIntegrations,
+  fetchDeployments, fetchDeploymentResources, fetchRequests, fetchCloudAccounts, fetchIntegrations,
   fetchProjects, fetchCatalogSources, fetchFabricImages, fetchImageProfiles,
   fetchFlavorProfiles, fetchBlueprints, fetchAbxRuns, fetchPipelineExecutions,
   fetchApprovals, fetchAbout, fetchHealth, fetchTlsCert, testConnection,

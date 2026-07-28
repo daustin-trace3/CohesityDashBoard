@@ -230,6 +230,24 @@ function seedVcenter(db, { now, encrypt }) {
             poweredOn ? `${vmName}.icc.demo` : null,
             nowIso);
           vmTotal++;
+          // Server 360 demo coherence: the first three nyc VMs (whose IPs are
+          // seeded as NetApp NFS/SMB clients and vRA resource IPs) also get a
+          // protected Cohesity object so every panel of the view lights up.
+          if (site === 'nyc' && c === 1 && h === 1 && v <= 3) {
+            const cohesityCluster = db.prepare("SELECT id FROM clusters WHERE name LIKE 'nyc%' ORDER BY id LIMIT 1").get()
+              || db.prepare('SELECT id FROM clusters ORDER BY id LIMIT 1').get();
+            if (cohesityCluster) {
+              db.prepare(`
+                INSERT INTO cohesity_objects (cluster_id, object_id, global_id, name, source_name,
+                  environment, object_type, os_type, logical_bytes, is_protected,
+                  protection_groups, policy_names, last_backup_status, sla_violated, captured_at)
+                VALUES (?, ?, ?, ?, 'vc-nyc.icc.demo', 'VMware', 'VirtualMachine', ?, ?, 1, ?, ?, 'Succeeded', 0, ?)
+              `).run(cohesityCluster.id, 90000 + v, `demo:s360:${v}`, vmName,
+                guestOs?.includes('Windows') ? 'Windows' : 'Linux',
+                randInt(rng, 40, 400) * 1e9,
+                JSON.stringify(['VMware_Protect_1']), JSON.stringify(['nyc-vmware-daily']), nowIso);
+            }
+          }
         }
       }
       insertCluster.run(vcId, `domain-c${vcIdx}${c}`, clusterName, hostCount, clVms,

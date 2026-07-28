@@ -55,6 +55,7 @@ const SEEDED_TABLES = [
   'license_meter_usage', 'license_type_usage', 'license_usage',
   'source_registrations', 'policies', 'replication_runs', 'protection_runs',
   'alerts', 'metrics_history', 'workload_history', 'cohesity_objects', 'cohesity_agents', 'clusters',
+  'aria_deployment_resources',
   // netapp
   'netapp_cifs_shares', 'netapp_cifs_sessions', 'netapp_export_rules',
   'netapp_nfs_clients', 'netapp_quotas', 'netapp_lifs', 'netapp_snapmirror',

@@ -199,7 +199,7 @@ const NEW_TABLES = [
   'aria_instances', 'aria_deployments', 'aria_requests', 'aria_endpoints',
   'aria_projects', 'aria_catalog_sources', 'aria_runs', 'aria_approvals',
   'aria_metrics_history', 'aria_issue_history', 'aria_images',
-  'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints',
+  'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints', 'aria_deployment_resources',
   'ariaops_instances', 'ariaops_resources', 'ariaops_alerts', 'ariaops_metrics_history',
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',

@@ -8,7 +8,7 @@
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const {
-  fetchDeployments, fetchRequests, fetchCloudAccounts, fetchIntegrations,
+  fetchDeployments, fetchDeploymentResources, fetchRequests, fetchCloudAccounts, fetchIntegrations,
   fetchProjects, fetchCatalogSources, fetchFabricImages, fetchImageProfiles,
   fetchFlavorProfiles, fetchBlueprints, fetchAbxRuns, fetchPipelineExecutions,
   fetchApprovals, fetchAbout, fetchHealth, fetchTlsCert, getBearer,
@@ -39,6 +39,8 @@ async function collect(row) {
   const about = await safe('about', row, () => fetchAbout(row));
   const cert = await safe('tls cert', row, () => fetchTlsCert(row));
   const deployments = await safe('deployments', row, () => fetchDeployments(row));
+  const deploymentResources = deployments === null ? null
+    : await safe('deployment resources', row, () => fetchDeploymentResources(row, deployments));
   const requests = await safe('requests', row, () => fetchRequests(row));
   const cloudAccounts = await safe('cloud accounts', row, () => fetchCloudAccounts(row));
   const integrations = await safe('integrations', row, () => fetchIntegrations(row));
@@ -55,7 +57,7 @@ async function collect(row) {
   const approvals = await safe('approvals', row, () => fetchApprovals(row));
 
   return {
-    about, cert, deployments, requests, cloudAccounts, integrations,
+    about, cert, deployments, deploymentResources, requests, cloudAccounts, integrations,
     projects, catalogSources, fabricImages, imageProfiles, flavorProfiles,
     blueprints, abxRuns, pipelineExecutions, approvals,
   };
@@ -100,10 +102,24 @@ function endpointDetail(e) {
 
 const store = db.transaction((instanceId, data) => {
   const {
-    about, cert, deployments, requests, cloudAccounts, integrations,
+    about, cert, deployments, deploymentResources, requests, cloudAccounts, integrations,
     projects, catalogSources, fabricImages, imageProfiles, flavorProfiles,
     blueprints, abxRuns, pipelineExecutions, approvals,
   } = data;
+
+  if (deploymentResources !== null && deploymentResources !== undefined) {
+    db.prepare('DELETE FROM aria_deployment_resources WHERE instance_id = ?').run(instanceId);
+    const drStmt = db.prepare(`
+      INSERT INTO aria_deployment_resources
+        (instance_id, deployment_id, resource_id, name, type, state, ip_addresses)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const r of deploymentResources) {
+      drStmt.run(instanceId, r.deploymentId ?? null, r.resourceId ?? null, r.name ?? null,
+        r.type ?? null, r.state ?? null,
+        r.ipAddresses?.length ? JSON.stringify(r.ipAddresses) : null);
+    }
+  }
 
   db.prepare(`
     UPDATE aria_instances SET

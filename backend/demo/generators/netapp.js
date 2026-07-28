@@ -265,6 +265,17 @@ function seedNetapp(db, { now, encrypt }) {
     for (let i = 0; i < 10; i++) {
       insertNfsClient.run(arr.id, `10.${50 + arr.id}.5.${i + 20}`, arr.mgmtHost, pick(rng, SVM_NAMES), `${arr.name}-node-1`, `vol_${arr.name.replace(/-/g, '_')}_${i % volumeCount}`, nowIso);
     }
+    // Server 360 demo coherence: sessions from nyc vCenter VM IPs
+    // (10.100.11.11-13 = the first VMs on nyc-esx-0101) so the correlated
+    // view finds live NFS+SMB mounts for those servers. First array only.
+    if (arr.id === arrays[0].id) {
+      const s360vol = `vol_${arr.name.replace(/-/g, '_')}_0`;
+      for (const ip of ['10.100.11.11', '10.100.11.12', '10.100.11.13']) {
+        insertNfsClient.run(arr.id, ip, arr.mgmtHost, SVM_NAMES[0], `${arr.name}-node-1`, s360vol, nowIso);
+      }
+      insertCifsSession.run(arr.id, '10.100.11.11', arr.mgmtHost, SVM_NAMES[0], `${arr.name}-node-1`,
+        `vol_${arr.name.replace(/-/g, '_')}_1`, 'demo\\svc-app', 'svc_app', 2, 14, 'P2DT4H10M', 'PT8M', nowIso);
+    }
     for (let i = 0; i < 8; i++) {
       insertExportRule.run(arr.id, `export-policy-${i}`, pick(rng, SVM_NAMES), i, '0.0.0.0/0', nowIso);
     }

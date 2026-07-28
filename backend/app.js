@@ -28,6 +28,7 @@ const licenseRouter = require('./routes/license');
 const pure1Router = require('./routes/pure1');
 const dnsRouter = require('./routes/dns');
 const searchRouter = require('./routes/search');
+const server360Router = require('./routes/server360');
 const opsRouter = require('./routes/ops');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
@@ -173,6 +174,8 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/dns', dnsRouter);
   // Estate-wide entity search — per-category RBAC happens inside the handler.
   app.use('/api/search', searchRouter);
+  // Server 360 correlated view — per-section RBAC inside the handler.
+  app.use('/api/server360', server360Router);
   // Cross-platform ops summary (landing page) — read-only rollup, reachable
   // to any authenticated caller like /api/poller/status.
   app.use('/api/ops', opsRouter);
