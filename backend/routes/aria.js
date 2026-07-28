@@ -235,7 +235,32 @@ router.get('/overview', (req, res, next) => {
       for (const key of Object.keys(i.counts)) acc[key] = (acc[key] || 0) + i.counts[key];
       return acc;
     }, {});
-    res.json({ instances: perInstance, totals });
+
+    // 10 most recent successful builds with their machine resource(s); the
+    // owning vCenter comes from the vCenter platform inventory by VM name.
+    const recentVms = db.prepare(`
+      SELECT r.name AS vm_name, r.ip_addresses,
+        d.name AS deployment_name, d.created_by, d.created_at_src, d.lease_expire_at,
+        i.name AS instance_name
+      FROM aria_deployments d
+      JOIN aria_instances i ON i.id = d.instance_id
+      JOIN aria_deployment_resources r
+        ON r.instance_id = d.instance_id AND r.deployment_id = d.deployment_id
+      WHERE d.status = 'CREATE_SUCCESSFUL' AND LOWER(COALESCE(r.type, '')) LIKE '%machine%'
+      ORDER BY d.created_at_src DESC LIMIT 10
+    `).all().map((v) => {
+      let vcenter = null;
+      try {
+        vcenter = db.prepare(`
+          SELECT vc.name FROM vcenter_vms vm JOIN vcenter_vcenters vc ON vc.id = vm.vcenter_id
+          WHERE LOWER(vm.name) = LOWER(?) OR LOWER(COALESCE(vm.guest_hostname, '')) = LOWER(?)
+          LIMIT 1
+        `).get(v.vm_name, v.vm_name)?.name ?? null;
+      } catch { /* vcenter tables absent */ }
+      return { ...v, ip_addresses: v.ip_addresses ? JSON.parse(v.ip_addresses) : [], vcenter };
+    });
+
+    res.json({ instances: perInstance, totals, recentVms });
   } catch (err) { next(err); }
 });
 
