@@ -233,10 +233,16 @@ const fetchPipelineExecutions = async (row) => unwrap(await aGet(row, '/pipeline
 const fetchApprovals = async (row) => unwrap(await aGetV(row, '/approval/api/approval-requests', { size: 100 }));
 const fetchAbout = async (row) => aGetV(row, '/iaas/api/about');
 
-/** GET /health — LB reachability probe, no auth, 200 = up. Throws on failure
- *  so callers (the poller) can treat it as "instance unreachable". */
+/** Reachability probe via GET /health (no auth). Only LB/VIP deployments
+ *  actually serve /health — single-node appliances 404 it (seen live
+ *  2026-07-28) — so ANY HTTP response counts as reachable; only network-level
+ *  failures (DNS, refused, timeout) throw "unreachable". */
 async function fetchHealth(row) {
-  await baseClient(row).get('/health');
+  try {
+    await baseClient(row).get('/health');
+  } catch (err) {
+    if (!err.response) throw err;
+  }
   return true;
 }
 
