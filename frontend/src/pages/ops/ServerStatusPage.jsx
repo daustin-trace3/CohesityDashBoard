@@ -20,6 +20,27 @@ const fmtAgo = (ms) => {
   return d < 1 ? 'today' : d === 1 ? '1d ago' : `${d}d ago`;
 };
 
+// Same brand colors as the global search dropdown's platform dots.
+const PLATFORM_META = {
+  cohesity: { label: 'Cohesity', color: '#6CB33F' },
+  netapp: { label: 'NetApp', color: '#0067C5' },
+  zerto: { label: 'Zerto', color: '#EE3124' },
+  vcenter: { label: 'vCenter', color: '#0091DA' },
+  aria: { label: 'Aria Automation', color: '#00A2C7' },
+};
+
+function PlatformChip({ platform }) {
+  const meta = PLATFORM_META[platform];
+  if (!meta) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium"
+      style={{ borderColor: `${meta.color}55`, color: meta.color, backgroundColor: `${meta.color}14` }}>
+      <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: meta.color }} />
+      {meta.label}
+    </span>
+  );
+}
+
 function Fact({ label, children }) {
   return (
     <div className="min-w-0">
@@ -110,7 +131,7 @@ export default function ServerStatusPage() {
 
       {/* vCenter — identity & compute */}
       {vm && (
-        <Panel title={`Compute — ${vm.vcenter_name}`} icon={Server}>
+        <Panel title={`Compute — ${vm.vcenter_name}`} icon={Server} actions={<PlatformChip platform="vcenter" />}>
           <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
             <Fact label="VM">{vm.name}</Fact>
             <Fact label="Guest Hostname">{vm.guest_hostname || '—'}</Fact>
@@ -130,7 +151,7 @@ export default function ServerStatusPage() {
 
       {/* vRA provenance */}
       {data?.aria && (
-        <Panel title="Provisioning — Aria Automation" icon={Package}>
+        <Panel title="Provisioning" icon={Package} actions={<PlatformChip platform="aria" />}>
           {data.aria.deployments.map((d) => (
             <div key={d.id} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-2">
               <Fact label="Deployment">{d.name}</Fact>
@@ -151,7 +172,7 @@ export default function ServerStatusPage() {
 
       {/* Cohesity backup posture */}
       {data?.cohesity && (
-        <Panel title="Backup — Cohesity" icon={ShieldCheck}>
+        <Panel title="Backup" icon={ShieldCheck} actions={<PlatformChip platform="cohesity" />}>
           {data.cohesity.objects.map((o) => (
             <div key={o.id} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-2 border-b border-cohesity-border/40 last:border-0 pb-2">
               <Fact label="Object">{o.name} <span className="text-ink-faint text-[11px]">({o.environment})</span></Fact>
@@ -179,7 +200,7 @@ export default function ServerStatusPage() {
 
       {/* Zerto DR */}
       {data?.zerto && (
-        <Panel title="Disaster Recovery — Zerto" icon={ArrowLeftRight}>
+        <Panel title="Disaster Recovery" icon={ArrowLeftRight} actions={<PlatformChip platform="zerto" />}>
           {data.zerto.vms.map((z) => (
             <div key={z.id} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-3">
               <Fact label="VPG">{z.vpg_names || '—'}</Fact>
@@ -194,7 +215,7 @@ export default function ServerStatusPage() {
 
       {/* NetApp live mounts */}
       {data?.netapp && (
-        <Panel title="Storage Mounts — NetApp" icon={FolderTree}>
+        <Panel title="Storage Mounts" icon={FolderTree} actions={<PlatformChip platform="netapp" />}>
           {[...data.netapp.nfs.map((m) => ({ ...m, proto: m.protocol || 'NFS' })),
             ...data.netapp.smb.map((m) => ({ ...m, proto: m.protocol || 'SMB' }))].map((m, i) => (
             <div key={i} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-2 border-b border-cohesity-border/40 last:border-0 pb-2">
