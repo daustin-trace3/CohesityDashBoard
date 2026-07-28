@@ -381,6 +381,37 @@ router.get('/quotas', cacheControl(60), (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// One row per live client↔volume mount (NFS clients + SMB sessions merged),
+// joined with volume detail and resolved to a VM name where inventory knows
+// the IP. Feeds the Mounts page.
+router.get('/mounts', cacheControl(30), (req, res, next) => {
+  try {
+    const ipIndex = require('../services/ipIdentity').buildIpIndex();
+    const rows = db.prepare(`
+      SELECT m.mount_type, m.client_ip, m.protocols, m.smb_users,
+             m.svm_name, m.volume_name, a.name AS array_name,
+             v.aggregate_name, v.type, v.style, v.junction_path,
+             v.size_bytes, v.used_bytes, v.used_percent, v.state
+      FROM (
+        SELECT array_id, 'NFS' AS mount_type, client_ip, svm_name, volume_name,
+               GROUP_CONCAT(DISTINCT protocol) AS protocols, NULL AS smb_users
+        FROM netapp_nfs_clients
+        GROUP BY array_id, client_ip, svm_name, volume_name
+        UNION ALL
+        SELECT array_id, 'SMB', client_ip, svm_name, volume_name,
+               GROUP_CONCAT(DISTINCT protocol), GROUP_CONCAT(DISTINCT smb_user)
+        FROM netapp_cifs_sessions
+        GROUP BY array_id, client_ip, svm_name, volume_name
+      ) m
+      JOIN netapp_arrays a ON a.id = m.array_id
+      LEFT JOIN netapp_volumes v
+        ON v.array_id = m.array_id AND v.svm_name = m.svm_name AND v.name = m.volume_name
+      ORDER BY m.client_ip, m.volume_name
+    `).all().map((r) => ({ ...r, client_name: ipIndex.get(r.client_ip)?.name ?? null }));
+    res.json(rows);
+  } catch (err) { next(err); }
+});
+
 // NFS connected clients + export-policy rules across all clusters.
 router.get('/nfs', cacheControl(30), (req, res, next) => {
   try {

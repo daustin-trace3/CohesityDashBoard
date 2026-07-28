@@ -1,6 +1,6 @@
 import { lazy } from 'react';
 import {
-  Gauge, Database, Layers, Network, FolderTree, Bell, ArrowLeftRight, HardDrive, Settings, Sparkles, ShieldCheck,
+  Gauge, Database, Layers, Network, FolderTree, Bell, ArrowLeftRight, HardDrive, Settings, Sparkles, ShieldCheck, Cable,
 } from 'lucide-react';
 
 const NetAppOverviewPage = lazy(() => import('../../pages/netapp/NetAppOverviewPage'));
@@ -10,6 +10,7 @@ const NetAppCapacityPage = lazy(() => import('../../pages/netapp/NetAppCapacityP
 const NetAppVolumesPage = lazy(() => import('../../pages/netapp/NetAppVolumesPage'));
 const NetAppNfsPage = lazy(() => import('../../pages/netapp/NetAppNfsPage'));
 const NetAppCifsPage = lazy(() => import('../../pages/netapp/NetAppCifsPage'));
+const NetAppMountsPage = lazy(() => import('../../pages/netapp/NetAppMountsPage'));
 const NetAppReplicationPage = lazy(() => import('../../pages/netapp/NetAppReplicationPage'));
 const NetAppAlertsPage = lazy(() => import('../../pages/netapp/NetAppAlertsPage'));
 const NetAppHardwarePage = lazy(() => import('../../pages/netapp/NetAppHardwarePage'));
@@ -27,6 +28,7 @@ const navGroups = [
       { label: 'Volumes', route: '/netapp/volumes', icon: Layers, isActive: (p) => p.startsWith('/netapp/volumes') },
       { label: 'NFS', route: '/netapp/nfs', icon: Network, isActive: (p) => p.startsWith('/netapp/nfs') },
       { label: 'SMB / CIFS', route: '/netapp/cifs', icon: FolderTree, isActive: (p) => p.startsWith('/netapp/cifs') },
+      { label: 'Mounts', route: '/netapp/mounts', icon: Cable, isActive: (p) => p.startsWith('/netapp/mounts') },
       { label: 'Alerts', route: '/netapp/alerts', icon: Bell, isActive: (p) => p.startsWith('/netapp/alerts') },
     ],
   },
@@ -69,6 +71,7 @@ export default {
     { path: 'netapp/volumes', Component: NetAppVolumesPage },
     { path: 'netapp/nfs', Component: NetAppNfsPage },
     { path: 'netapp/cifs', Component: NetAppCifsPage },
+    { path: 'netapp/mounts', Component: NetAppMountsPage },
     { path: 'netapp/replication', Component: NetAppReplicationPage },
     { path: 'netapp/alerts', Component: NetAppAlertsPage },
     { path: 'netapp/hardware', Component: NetAppHardwarePage },
