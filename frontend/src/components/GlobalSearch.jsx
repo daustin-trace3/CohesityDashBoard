@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Search, X, Loader2 } from 'lucide-react';
+import { Search, X, Loader2, Crosshair } from 'lucide-react';
 import client from '../api/client';
 import { useSearch } from '../context';
 
@@ -113,8 +113,15 @@ export default function GlobalSearch() {
       {open && pos && createPortal(
         <div ref={menuRef} style={{ top: pos.top, left: pos.left, width: pos.width }}
           className="fixed z-50 bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl max-h-[70vh] overflow-y-auto">
+          {/* Pinned action: open the correlated Server 360 view for the query */}
+          <button
+            onClick={() => go({ route: `/ops/server360?name=${encodeURIComponent(search.trim())}` })}
+            className="w-full text-left px-3 py-2 border-b border-cohesity-border/60 hover:bg-brand/10 transition-colors cursor-pointer flex items-center gap-2">
+            <Crosshair size={13} className="text-brand flex-shrink-0" />
+            <span className="text-[13px] text-ink">Server 360: everything about “{search.trim()}”</span>
+          </button>
           {totalHits === 0 ? (
-            <p className="px-4 py-3 text-xs text-ink-muted">No matches across the estate.</p>
+            <p className="px-4 py-3 text-xs text-ink-muted">No entity matches across the estate.</p>
           ) : results.map((group) => (
             <div key={group.key} className="py-1.5 border-b border-cohesity-border/50 last:border-0">
               <p className="px-3 pb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-ink-faint font-semibold">
