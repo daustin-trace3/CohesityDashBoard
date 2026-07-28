@@ -4,7 +4,7 @@ import { Server, Cable, FolderKanban, Import, DiscAlbum, Cpu, X, AlertTriangle }
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
+import { useTableControls, SortTh, TableControls, TablePager, useVisibleColumns, ColumnPicker, CsvExportButton } from '../../components/ui/tableTools';
 import { BRAND, fmtNum, fmtWhen, statusTone } from './helpers';
 
 const TABS = [
@@ -276,14 +276,62 @@ function ImageMappingsTable({ rows, onShowUsage }) {
 function FabricImagesTable({ rows, onShowUsage }) {
   const list = rows || [];
   const ctl = useTableControls(list, {
-    searchKeys: ['name', 'instance_name', 'region', 'external_id', 'os_family'],
+    searchKeys: ['name', 'instance_name', 'region', 'external_id', 'os_family', 'description'],
     defaultSortKey: 'created_at_src', defaultSortDir: 'desc',
     paginate: true,
   });
+  const COLUMNS = [
+    { k: 'instance_name', label: 'Instance',
+      render: (img) => <td key="instance_name" className="py-2 pr-3 text-ink-muted whitespace-nowrap">{img.instance_name}</td>,
+      csv: (img) => img.instance_name },
+    { k: 'name', label: 'Name', always: true,
+      render: (img) => (
+        <td key="name" className="py-2 pr-3 max-w-[280px] truncate">
+          <button onClick={() => onShowUsage(img)} className="text-ink hover:text-brand cursor-pointer text-left truncate" title="Show full image details">{img.name || '—'}</button>
+        </td>
+      ),
+      csv: (img) => img.name },
+    { k: 'region', label: 'Region',
+      render: (img) => <td key="region" className="py-2 pr-3 text-ink-muted text-[11px]">{img.region || '—'}</td>,
+      csv: (img) => img.region },
+    { k: 'os_family', label: 'OS',
+      render: (img) => <td key="os_family" className="py-2 pr-3 text-ink-muted text-[11px]">{img.os_family || '—'}</td>,
+      csv: (img) => img.os_family },
+    { k: 'created_at_src', label: 'Discovered',
+      render: (img) => <td key="created_at_src" className="py-2 pr-3 text-ink-muted text-[11px] tnum whitespace-nowrap">{fmtWhen(img.created_at_src)}</td>,
+      csv: (img) => img.created_at_src },
+    { k: 'is_private', label: 'Private',
+      render: (img) => <td key="is_private" className="py-2 pr-3">{img.is_private == null ? <span className="text-ink-faint">—</span> : <Badge tone={img.is_private ? 'warn' : 'ok'}>{img.is_private ? 'private' : 'public'}</Badge>}</td>,
+      csv: (img) => img.is_private == null ? '' : (img.is_private ? 'private' : 'public') },
+    { k: 'usage_count', label: 'Blueprints', align: 'right',
+      render: (img) => (
+        <td key="usage_count" className="py-2 pr-3 text-right">
+          {img.usage_count == null ? <span className="text-ink-faint">—</span>
+            : img.usage_count === 0 ? <Badge tone="warn">unused</Badge>
+            : <span className="tnum text-ink-muted">{img.usage_count}</span>}
+        </td>
+      ),
+      csv: (img) => img.usage_count },
+    { k: 'external_id', label: 'External ID',
+      render: (img) => <td key="external_id" className="py-2 pr-3 text-ink-faint text-[11px] max-w-[200px] truncate" title={img.external_id || ''}>{img.external_id || '—'}</td>,
+      csv: (img) => img.external_id },
+    { k: 'description', label: 'Description',
+      render: (img) => <td key="description" className="py-2 pr-3 text-ink-muted text-[11px] max-w-[260px] truncate" title={img.description || ''}>{img.description || '—'}</td>,
+      csv: (img) => img.description },
+  ];
+  const cols = useVisibleColumns('aria-fabric-images-cols', ['is_private', 'usage_count']);
+  const shown = COLUMNS.filter((c) => c.always || cols.show(c.k));
   return (
     <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-      <div className="text-xs font-semibold text-ink mb-2">Fabric Images <span className="text-ink-faint font-normal">— raw templates/AMIs discovered from cloud accounts</span></div>
-      <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by name or external id…"
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="text-xs font-semibold text-ink">Fabric Images <span className="text-ink-faint font-normal">— raw templates/AMIs discovered from cloud accounts</span></div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <ColumnPicker columns={COLUMNS} prefs={cols} />
+          <CsvExportButton filename="aria-fabric-images" rows={ctl.rows}
+            columns={COLUMNS.map((c) => ({ label: c.label, get: c.csv }))} />
+        </div>
+      </div>
+      <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by name, description or external id…"
         filters={[{ k: 'instance_name', label: 'Instances' }, { k: 'region', label: 'Regions' }, { k: 'os_family', label: 'OS' }]} />
       {rows == null ? (
         <LoadingPanel label="Loading images…" height={120} />
@@ -295,34 +343,12 @@ function FabricImagesTable({ rows, onShowUsage }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-              <SortTh k="instance_name" label="Instance" ctl={ctl} />
-              <SortTh k="name" label="Name" ctl={ctl} />
-              <SortTh k="region" label="Region" ctl={ctl} />
-              <SortTh k="os_family" label="OS" ctl={ctl} />
-              <SortTh k="created_at_src" label="Discovered" ctl={ctl} />
-              <SortTh k="is_private" label="Private" ctl={ctl} />
-              <SortTh k="usage_count" label="Blueprints" ctl={ctl} align="right" />
-              <th className="py-2 pr-3">External ID</th>
-              <th className="py-2 pr-3">Description</th>
+              {shown.map((c) => <SortTh key={c.k} k={c.k} label={c.label} ctl={ctl} align={c.align} />)}
             </tr></thead>
             <tbody>
               {ctl.pageRows.map((img, i) => (
                 <tr key={`${img.instance_name}|${img.image_id}|${i}`} className="border-b border-cohesity-border/50">
-                  <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{img.instance_name}</td>
-                  <td className="py-2 pr-3 max-w-[280px] truncate">
-                    <button onClick={() => onShowUsage(img)} className="text-ink hover:text-brand cursor-pointer text-left truncate" title="Show mapping and blueprint usage">{img.name || '—'}</button>
-                  </td>
-                  <td className="py-2 pr-3 text-ink-muted text-[11px]">{img.region || '—'}</td>
-                  <td className="py-2 pr-3 text-ink-muted text-[11px]">{img.os_family || '—'}</td>
-                  <td className="py-2 pr-3 text-ink-muted text-[11px] tnum whitespace-nowrap">{fmtWhen(img.created_at_src)}</td>
-                  <td className="py-2 pr-3">{img.is_private == null ? <span className="text-ink-faint">—</span> : <Badge tone={img.is_private ? 'warn' : 'ok'}>{img.is_private ? 'private' : 'public'}</Badge>}</td>
-                  <td className="py-2 pr-3 text-right">
-                    {img.usage_count == null ? <span className="text-ink-faint">—</span>
-                      : img.usage_count === 0 ? <Badge tone="warn">unused</Badge>
-                      : <span className="tnum text-ink-muted">{img.usage_count}</span>}
-                  </td>
-                  <td className="py-2 pr-3 text-ink-faint text-[11px] max-w-[200px] truncate" title={img.external_id || ''}>{img.external_id || '—'}</td>
-                  <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[260px] truncate" title={img.description || ''}>{img.description || '—'}</td>
+                  {shown.map((c) => c.render(img))}
                 </tr>
               ))}
             </tbody>
