@@ -74,6 +74,9 @@ export default function ArrangeableSections({ storageKey, sections }) {
         </button>
       </div>
 
+      {/* Uniform gap owns the spacing — sections must NOT carry their own
+          bottom margins or moving the original last section loses its gap. */}
+      <div className="flex flex-col gap-4">
       {order.map((id) => {
         const s = byId[id];
         if (!s || hidden.has(id)) return null;
@@ -101,6 +104,7 @@ export default function ArrangeableSections({ storageKey, sections }) {
           </div>
         );
       })}
+      </div>
 
       {menuOpen && menuPos && createPortal(
         <div ref={menuRef} style={{ top: menuPos.top, right: menuPos.right }}

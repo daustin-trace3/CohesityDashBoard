@@ -75,7 +75,7 @@ export default function AriaOverviewPage() {
 
       <ArrangeableSections storageKey="aria-overview-layout" sections={[
         { id: 'stats', label: 'Stat cards', el: (
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard icon={Package} label="Deployments" value={fmtNum(totals.deployments)}
           sub={`${fmtNum(totals.deploymentsFailed)} failed · ${fmtNum(totals.leaseExpiring7d)} lease ≤7d`}
           tone={(totals.deploymentsFailed || 0) > 0 ? 'crit' : (totals.leaseExpiring7d || 0) > 0 ? 'warn' : 'ok'} />
@@ -91,7 +91,7 @@ export default function AriaOverviewPage() {
       </div>
         ) },
         { id: 'recent-vms', label: 'Recently Provisioned VMs', el: (
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> Recently Provisioned VMs</p>
         <p className="text-[11px] text-ink-faint mb-3">10 most recent successful builds — VM identity from deployment resources, owning vCenter matched from the vCenter platform inventory.</p>
         {data == null ? (
@@ -131,7 +131,7 @@ export default function AriaOverviewPage() {
       </div>
         ) },
         { id: 'inst-attn', label: 'Instances & Attention', el: (
-      <div className="grid lg:grid-cols-2 gap-4 mb-4">
+      <div className="grid lg:grid-cols-2 gap-4">
         <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Boxes size={15} className="text-brand" /> Aria Instances</p>
           {data == null ? (
