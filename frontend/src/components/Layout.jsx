@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
+import UpdateBanner from './UpdateBanner';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
 import { subscribeNetworkActivity } from '../api/client';
 import { usePollerStatus } from '../api/usePollerStatus';
@@ -552,6 +553,7 @@ export default function Layout() {
 
         {/* Page content */}
         <main className="px-5 py-4 flex-1 overflow-auto">
+          <UpdateBanner />
           <Outlet />
         </main>
       </div>

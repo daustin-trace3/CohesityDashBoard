@@ -203,8 +203,30 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // Serve frontend static build in production
   const distPath = path.join(__dirname, '..', 'frontend', 'dist');
   if (fs.existsSync(distPath)) {
-    app.use(express.static(distPath));
+    // Build beacon: changes whenever a new build lands in dist (no restart
+    // needed — stat per request). The SPA polls this and offers a reload.
+    app.get('/api/app-version', (req, res) => {
+      try {
+        const st = fs.statSync(path.join(distPath, 'index.html'));
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ version: `${Math.round(st.mtimeMs)}-${st.size}` });
+      } catch {
+        res.json({ version: null });
+      }
+    });
+    // index.html must revalidate every load or deploys strand browsers on old
+    // hashed bundles; the hashed assets themselves are immutable.
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      },
+    }));
     app.get('*', (req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
