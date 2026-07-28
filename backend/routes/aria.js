@@ -242,8 +242,12 @@ router.get('/deployments', [query('instanceId').optional().isInt().toInt()], val
       FROM aria_deployments d
       JOIN aria_instances i ON i.id = d.instance_id
       LEFT JOIN (
+        -- Machine-typed resources only: the Resource column is about server
+        -- names, and network/LB components would crowd them out.
         SELECT instance_id, deployment_id, GROUP_CONCAT(name, ', ') AS resource_names
-        FROM aria_deployment_resources GROUP BY instance_id, deployment_id
+        FROM aria_deployment_resources
+        WHERE LOWER(COALESCE(type, '')) LIKE '%machine%'
+        GROUP BY instance_id, deployment_id
       ) res ON res.instance_id = d.instance_id AND res.deployment_id = d.deployment_id
       ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
       ORDER BY i.name, d.name
