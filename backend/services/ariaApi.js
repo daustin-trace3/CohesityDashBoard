@@ -271,10 +271,17 @@ async function testConnection(rowLike) {
     return { ok: true, version: about?.latestApiVersion || about?.supportedApis || undefined, deployments };
   } catch (err) {
     const status = err.response?.status;
+    // vRA error bodies vary (message / serverMessage / HTML) — pass through a
+    // snippet of whatever came back so failures are diagnosable from the UI.
+    const body = err.response?.data;
+    const detail = body == null ? null
+      : (typeof body === 'string' ? body : JSON.stringify(body)).slice(0, 300);
+    const hop = err.config?.url ? ` at ${err.config.url}` : '';
     return {
       ok: false,
       error: status === 401 ? 'Authentication failed — check the Aria username, password and domain.'
-        : (err.response?.data?.message || err.message),
+        : status ? `vRA responded ${status}${hop}${detail ? ` — ${detail}` : ''}`
+          : err.message,
     };
   }
 }
