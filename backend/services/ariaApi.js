@@ -171,7 +171,26 @@ async function fetchDeploymentResources(row, deployments) {
   return out;
 }
 
-const fetchRequests = async (row) => unwrap(await aGetV(row, '/deployment/api/requests', { size: 100 }));
+/**
+ * Requests are per-deployment only: the global /deployment/api/requests 400s
+ * with "Required request parameter 'deploymentId'" (verified live 2026-07-28).
+ * Walk the most recently updated deployments for an activity feed.
+ */
+async function fetchRequests(row, deployments, depCap = 50) {
+  const recent = [...(deployments || [])]
+    .sort((a, b) => String(b?.lastUpdatedAt || '').localeCompare(String(a?.lastUpdatedAt || '')))
+    .slice(0, depCap);
+  const out = [];
+  for (const dep of recent) {
+    const depId = dep?.id;
+    if (!depId) continue;
+    try {
+      const items = unwrap(await aGetV(row, `/deployment/api/deployments/${encodeURIComponent(depId)}/requests`, { size: 20 }));
+      for (const r of items) out.push({ ...r, deploymentId: r?.deploymentId ?? String(depId) });
+    } catch { /* per-deployment failures shouldn't sink the feed */ }
+  }
+  return out;
+}
 const fetchCloudAccounts = async (row) => unwrap(await aGetV(row, '/iaas/api/cloud-accounts'));
 const fetchIntegrations = async (row) => unwrap(await aGetV(row, '/iaas/api/integrations'));
 const fetchProjects = async (row) => unwrap(await aGetV(row, '/iaas/api/projects'));
@@ -221,7 +240,9 @@ async function fetchBlueprints(row, detailCap = 200) {
       if (typeof content === 'string' && content) {
         const refs = new Set();
         for (const m of content.matchAll(/^\s*image:\s*['"]?([^\s'"#]+)/gm)) refs.add(m[1]);
-        imageRefs = [...refs];
+        // Parameterized refs (image: '${input.x}') can't be traced to a
+        // specific image — drop them (live blueprints produced refs of "${").
+        imageRefs = [...refs].filter((v) => !v.includes('${'));
       }
     } catch { /* keep the blueprint row, refs unknown */ }
     out.push({ ...b, imageRefs });
@@ -231,7 +252,15 @@ async function fetchBlueprints(row, detailCap = 200) {
 
 const fetchAbxRuns = async (row) => unwrap(await aGet(row, '/abx/api/resources/action-runs', { $top: 100 }));
 const fetchPipelineExecutions = async (row) => unwrap(await aGet(row, '/pipeline/api/executions', { $top: 100 }));
-const fetchApprovals = async (row) => unwrap(await aGetV(row, '/approval/api/approval-requests', { size: 100 }));
+/** approval-requests 404s on some builds (seen live) — fall back to /approvals. */
+const fetchApprovals = async (row) => {
+  try {
+    return unwrap(await aGetV(row, '/approval/api/approval-requests', { size: 100 }));
+  } catch (err) {
+    if (err.response?.status !== 404) throw err;
+    return unwrap(await aGetV(row, '/approval/api/approvals', { size: 100 }));
+  }
+};
 const fetchAbout = async (row) => aGetV(row, '/iaas/api/about');
 
 /** Reachability probe via GET /health (no auth). Only LB/VIP deployments

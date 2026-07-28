@@ -41,7 +41,8 @@ async function collect(row) {
   const deployments = await safe('deployments', row, () => fetchDeployments(row));
   const deploymentResources = deployments === null ? null
     : await safe('deployment resources', row, () => fetchDeploymentResources(row, deployments));
-  const requests = await safe('requests', row, () => fetchRequests(row));
+  const requests = deployments === null ? null
+    : await safe('requests', row, () => fetchRequests(row, deployments));
   const cloudAccounts = await safe('cloud accounts', row, () => fetchCloudAccounts(row));
   const integrations = await safe('integrations', row, () => fetchIntegrations(row));
   const projects = await safe('projects', row, () => fetchProjects(row));

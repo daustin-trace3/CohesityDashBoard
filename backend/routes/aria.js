@@ -153,7 +153,7 @@ router.post('/instances/:id/refresh', [param('id').isInt().toInt()], validate, a
 const PROBE_SECTIONS = [
   ['deployments', (row) => ariaApi.fetchDeployments(row, 25)],
   ['deploymentResources', async (row) => ariaApi.fetchDeploymentResources(row, await ariaApi.fetchDeployments(row, 3))],
-  ['requests', (row) => ariaApi.fetchRequests(row)],
+  ['requests', async (row) => ariaApi.fetchRequests(row, await ariaApi.fetchDeployments(row, 3))],
   ['cloudAccounts', (row) => ariaApi.fetchCloudAccounts(row)],
   ['integrations', (row) => ariaApi.fetchIntegrations(row)],
   ['projects', (row) => ariaApi.fetchProjects(row)],
@@ -491,15 +491,21 @@ router.get('/image-usage', (req, res, next) => {
       blueprints.filter((b) => b.instance_id === instanceId && b.refs.includes(value)).map((b) => b.name);
 
     const mappings = db.prepare(`
-      SELECT m.instance_id, i.name AS instance_name, m.mapping_name, m.region, m.image_name
+      SELECT m.instance_id, i.name AS instance_name, m.mapping_name, m.region, m.image_name, m.image_external_id
       FROM aria_image_mappings m JOIN aria_instances i ON i.id = m.instance_id
     `).all().map((m) => ({ ...m, blueprints: refsFor(m.instance_id, m.mapping_name) }));
+
+    // Mapping targets arrive as "template-folder / image-name" while fabric
+    // images use the bare name (verified live) — compare on the last segment,
+    // and accept externalId matches (it sometimes carries the template name).
+    const base = (s) => String(s || '').split('/').pop().trim();
+    const mappingTargets = (m) => new Set([m.image_name, base(m.image_name), m.image_external_id, base(m.image_external_id)].filter(Boolean));
 
     const fabricImages = db.prepare(`
       SELECT img.instance_id, i.name AS instance_name, img.name, img.region, img.created_at_src
       FROM aria_images img JOIN aria_instances i ON i.id = img.instance_id
     `).all().map((img) => {
-      const viaMappings = mappings.filter((m) => m.instance_id === img.instance_id && m.image_name === img.name);
+      const viaMappings = mappings.filter((m) => m.instance_id === img.instance_id && mappingTargets(m).has(img.name));
       const direct = refsFor(img.instance_id, img.name);
       const blueprintNames = [...new Set([...viaMappings.flatMap((m) => m.blueprints), ...direct])];
       return {
