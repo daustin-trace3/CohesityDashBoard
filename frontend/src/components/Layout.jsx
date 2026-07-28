@@ -448,7 +448,11 @@ export default function Layout() {
             {isPlatform ? (
               platformAlerts > 0 && (
                 <button
-                  onClick={() => navigate(`/${platformKey}/alerts`)}
+                  onClick={() => navigate(
+                    // Aria/vCenter have no alerts page — their computed issues
+                    // live on the platform Overview's attention panel.
+                    platformKey === 'aria' || platformKey === 'vcenter' ? `/${platformKey}` : `/${platformKey}/alerts`
+                  )}
                   className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
                 >
                   <Bell size={11} />
