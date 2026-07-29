@@ -91,6 +91,28 @@ async function refreshAll() {
   }
   const rows = await pure1Api.getOverview({ force: true });
 
+  // Last-good capacity: a failed /metrics/history chunk in fetchLatestCapacity
+  // leaves total/used zeroed for its arrays, and replaceArrays() below would
+  // wipe the fleet's capacity columns wholesale. Backfill from the previous
+  // poll instead (same last-good pattern as the perf snapshot further down).
+  // Must run before appendSnapshot() so the history trend doesn't dip to zero.
+  const priorCap = new Map(db.prepare(`
+    SELECT pure1_id, capacity_bytes, used_bytes, data_reduction,
+           effective_used_bytes, volume_bytes, shared_bytes, snapshots_bytes
+    FROM pure1_arrays WHERE capacity_bytes IS NOT NULL
+  `).all().map((r) => [r.pure1_id, r]));
+  for (const r of rows) {
+    const old = priorCap.get(r.id);
+    if (!old || r.total) continue;
+    r.total = old.capacity_bytes;
+    r.used = r.used || old.used_bytes;
+    r.dataReduction = r.dataReduction ?? old.data_reduction;
+    r.effectiveUsed = r.effectiveUsed ?? old.effective_used_bytes;
+    r.volumeSpace = r.volumeSpace || old.volume_bytes;
+    r.sharedSpace = r.sharedSpace || old.shared_bytes;
+    r.snapshotSpace = r.snapshotSpace || old.snapshots_bytes;
+  }
+
   let enrichment = {};
   try {
     enrichment = await pure1Api.getEnrichment({ force: true });
