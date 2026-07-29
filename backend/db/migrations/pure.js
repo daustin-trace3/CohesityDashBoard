@@ -395,4 +395,50 @@ module.exports = [
       `);
     },
   },
+
+  // Migration: rebuild pure1_arrays on deployments that ran the original
+  // 2026-07-14 Pure poller (schema.sql table keyed by array_uuid). Migration
+  // v5's CREATE TABLE IF NOT EXISTS silently kept that old table, so every
+  // poll since has failed with "no such column: pure1_id". The table is a
+  // wholesale-replaced current-state snapshot — dropping loses nothing that
+  // the next poll doesn't restore.
+  {
+    version: 8,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(pure1_arrays)').all().map((c) => c.name);
+      if (cols.length === 0 || cols.includes('pure1_id')) return;
+      db.exec(`
+        DROP TABLE pure1_arrays;
+        CREATE TABLE pure1_arrays (
+          pure1_id              TEXT PRIMARY KEY,
+          name                  TEXT NOT NULL,
+          fqdn                  TEXT,
+          model                 TEXT,
+          os                    TEXT,
+          version               TEXT,
+          capacity_bytes        INTEGER,
+          used_bytes            INTEGER,
+          data_reduction        REAL,
+          effective_used_bytes  INTEGER,
+          volume_bytes          INTEGER,
+          shared_bytes          INTEGER,
+          snapshots_bytes       INTEGER,
+          provisioned_bytes     INTEGER,
+          health                TEXT,
+          health_detail         TEXT,
+          chassis_serial        TEXT,
+          controller_serials    TEXT,
+          tags                  TEXT,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+          read_iops             REAL,
+          write_iops            REAL,
+          read_latency_us       REAL,
+          write_latency_us      REAL,
+          read_bw_bytes         REAL,
+          write_bw_bytes        REAL,
+          perf_captured_at      TEXT
+        );
+      `);
+    },
+  },
 ];
