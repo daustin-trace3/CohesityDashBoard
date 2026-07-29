@@ -105,18 +105,18 @@ export default function LoginPage() {
         <div className="absolute -left-40 top-1/4 w-[560px] h-[560px] rounded-full bg-status-info/5 blur-3xl pointer-events-none" />
         <div className="absolute right-0 -bottom-32 w-[420px] h-[420px] rounded-full bg-brand/5 blur-3xl pointer-events-none" />
 
-        <div className="flex items-center gap-2 text-[11px] text-ink-muted">
+        <div className="chip border-cohesity-border text-ink-muted w-fit">
           <span className={`w-1.5 h-1.5 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
-          {health === null ? 'Checking status…' : health ? 'Platform online' : 'Platform offline'}
+          {health === null ? 'Checking status…' : health ? 'Platform Online' : 'Platform Offline'}
         </div>
 
         <div className="relative animate-fade-in">
-          <img src="/icc-icon.png" alt="" className="w-60 h-60 rounded-3xl shadow-modal mb-8 select-none" draggable={false} />
-          <h1 className="text-5xl xl:text-6xl font-extrabold text-ink tracking-tight leading-none">
+          <img src="/icc-icon.png" alt="" className="w-52 h-52 rounded-3xl shadow-modal mb-10 select-none" draggable={false} />
+          <h1 className="text-6xl xl:text-7xl font-extrabold text-ink tracking-tight leading-none">
             Infrastructure<br />
             <span className="text-brand">Command Center</span>
           </h1>
-          <p className="text-sm text-ink-muted mt-5 max-w-md leading-relaxed">
+          <p className="text-base text-ink-muted mt-6 max-w-lg leading-relaxed">
             One pane for your entire estate — data protection, storage, virtualization, and automation platforms with live polling and alerting.
           </p>
 
@@ -143,16 +143,13 @@ export default function LoginPage() {
       </div>
 
       {/* Sign-in card */}
-      <div className="flex-1 lg:flex-none flex items-center justify-center px-4 py-10 lg:pr-[12vw]">
-        <div className="w-full max-w-md bg-surface border border-cohesity-border rounded-xl shadow-panel p-6 flex flex-col gap-4 animate-fade-in">
-        <div className="flex items-center gap-3">
-          <img src="/icc-icon.png" alt="" className="w-11 h-11 rounded-xl flex-shrink-0 select-none" draggable={false} />
-          <div>
-            <p className="text-base font-bold text-ink">{needsSetup ? 'First-run setup' : 'Welcome back'}</p>
-            <p className="text-[11px] text-ink-muted">
-              {needsSetup ? 'Create the first administrator account.' : 'Sign in to Infrastructure Command Center.'}
-            </p>
-          </div>
+      <div className="flex-1 lg:flex-none flex items-center justify-center px-4 py-10 lg:pr-[14vw]">
+        <div className="w-full max-w-md bg-surface border border-cohesity-border rounded-xl shadow-panel p-7 flex flex-col gap-4 animate-fade-in">
+        <div>
+          <p className="text-2xl font-bold text-ink">{needsSetup ? 'First-run setup' : 'Welcome back'}</p>
+          <p className="text-xs text-ink-muted mt-1">
+            {needsSetup ? 'Create the first administrator account.' : 'Sign in to Infrastructure Command Center.'}
+          </p>
         </div>
 
         {needsSetup ? (
