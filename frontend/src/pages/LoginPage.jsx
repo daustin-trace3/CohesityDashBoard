@@ -143,7 +143,7 @@ export default function LoginPage() {
       </div>
 
       {/* Sign-in card */}
-      <div className="flex-1 lg:max-w-2xl flex items-center justify-center lg:justify-start px-4 py-10">
+      <div className="flex-1 lg:flex-none flex items-center justify-center px-4 py-10 lg:pr-[12vw]">
         <div className="w-full max-w-md bg-surface border border-cohesity-border rounded-xl shadow-panel p-6 flex flex-col gap-4 animate-fade-in">
         <div className="flex items-center gap-3">
           <img src="/icc-icon.png" alt="" className="w-11 h-11 rounded-xl flex-shrink-0 select-none" draggable={false} />
