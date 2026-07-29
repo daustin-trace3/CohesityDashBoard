@@ -9,6 +9,7 @@ const { initAlertNotifier } = require('./services/alertNotifier');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
+const { initDnsPrewarm } = require('./services/dnsResolve');
 const { initLicense, getLicenseStatus } = require('./services/license');
 const { getPlatformSettings } = require('./services/settings');
 const { isDemo } = require('./services/demoMode');
@@ -99,6 +100,7 @@ if (require.main === module) {
       initLicensing();
       initViews();
       initGflags();
+      initDnsPrewarm();
     } else {
       logger.info('[Boot] Pollers run in the separate poller process (backend/pollerProcess.js, pm2: icc-poller). Set RUN_POLLERS_INLINE=true to run them in this process.');
     }

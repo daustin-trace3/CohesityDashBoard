@@ -14,6 +14,7 @@ const { initAlertNotifier } = require('./services/alertNotifier');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
+const { initDnsPrewarm } = require('./services/dnsResolve');
 const { getPlatformSettings } = require('./services/settings');
 const { isDemo } = require('./services/demoMode');
 const pureManifest = require('./platforms/pure');
@@ -60,7 +61,8 @@ if (isDemo()) {
   initLicensing();
   initViews();
   initGflags();
-  logger.info('[Poller process] All pollers scheduled (Cohesity, plugins, licensing, views, gflags, alert notifier).');
+  initDnsPrewarm();
+  logger.info('[Poller process] All pollers scheduled (Cohesity, plugins, licensing, views, gflags, alert notifier, DNS prewarm).');
 }
 
 process.on('unhandledRejection', (err) => {
