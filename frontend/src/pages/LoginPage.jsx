@@ -107,7 +107,7 @@ export default function LoginPage() {
         <div className="absolute right-0 -bottom-32 w-[420px] h-[420px] rounded-full bg-brand/5 blur-3xl pointer-events-none" />
 
         <div className="flex flex-col gap-3">
-          <img src={t3Logo} alt="Trace3" className="h-9 w-auto self-start select-none" draggable={false} />
+          <img src={t3Logo} alt="Trace3" className="h-[61px] w-auto self-start select-none" draggable={false} />
           <div className="chip border-cohesity-border text-ink-muted w-fit">
             <span className={`w-1.5 h-1.5 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
             {health === null ? 'Checking status…' : health ? 'Platform Online' : 'Platform Offline'}
