@@ -3,7 +3,7 @@ import { ShieldCheck, RefreshCw, Send, KeyRound } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader } from './ui/primitives';
 
-const TOKEN_RE = /(\b(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT|SERIAL)-\d+\b)/g;
+const TOKEN_RE = /(\b(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT|SERIAL|TAG)-\d+\b)/g;
 
 function fmtTime(ts) {
   if (!ts) return '';

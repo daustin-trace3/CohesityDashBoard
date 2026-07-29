@@ -29,8 +29,8 @@ const MAC_RE = /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g;
 // that look like machine names (contain a digit, dot, hyphen or underscore) so
 // plain English after the keyword ("object could not ...") passes through.
 const OBJECT_RE = /\b(object|entity|VM|volume|datastore|database|view|share|job|task)\s+['"[]?([A-Za-z0-9][A-Za-z0-9._-]{2,62})/gi;
-const TOKEN_RE = /\b(CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT|SERIAL)-(\d+)\b/gi;
-const TOKEN_RE_TEST = /^(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT|SERIAL)-\d+$/i;
+const TOKEN_RE = /\b(CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT|SERIAL|TAG)-(\d+)\b/gi;
+const TOKEN_RE_TEST = /^(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJECT|SERIAL|TAG)-\d+$/i;
 
 // Keys whose ENTIRE value is masked outright, regardless of content — these
 // are opaque identifiers (serials) or bare usernames/WWNs that the pattern
@@ -81,6 +81,14 @@ function loadDictionary() {
     add(db.prepare("SELECT DISTINCT source_name AS name FROM source_registrations WHERE source_name IS NOT NULL AND source_name != ''").all(), 'SOURCE');
     add(db.prepare("SELECT DISTINCT view_name AS name FROM license_view_detail WHERE view_name IS NOT NULL AND view_name != ''").all(), 'VIEW');
     addHostOrIp(db.prepare("SELECT DISTINCT vip AS name FROM clusters WHERE vip IS NOT NULL AND vip != ''").all());
+    // Cluster tags are operator-chosen labels (site codes, programs) —
+    // identifying, sent to the model in cluster context, so tokenized too.
+    for (const r of db.prepare("SELECT tags FROM clusters WHERE tags IS NOT NULL AND tags != ''").all()) {
+      for (const t of String(r.tags).split(',')) {
+        const name = t.trim();
+        if (name.length >= 3) entries.push([name, 'TAG']);
+      }
+    }
     // Policy replication/archival targets are JSON arrays of names.
     for (const r of db.prepare("SELECT replication_targets, archival_targets FROM policies").all()) {
       for (const col of [r.replication_targets, r.archival_targets]) {
