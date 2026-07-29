@@ -19,3 +19,11 @@ yarn-error.log*
 .env.local
 .gstack/
 *.iccplugin
+CohesityDashboard.code-workspace
+TODOS.md
+package-lock.json
+package.json
+pm2.config.js
+pm2.demo.config.js
+pure_token_factory.py
+requirements.txt
