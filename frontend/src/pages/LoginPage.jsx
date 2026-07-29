@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Hexagon, ShieldCheck, KeyRound, RefreshCw, LogIn } from 'lucide-react';
+import { ShieldCheck, KeyRound, RefreshCw, LogIn, Layers, Activity, Lock } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 
@@ -87,16 +87,60 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="h-screen overflow-auto flex items-center justify-center bg-cohesity-black px-4">
-      <div className="w-full max-w-md bg-surface border border-cohesity-border rounded-xl p-6 flex flex-col gap-4">
-        <div className="flex items-center gap-3">
-          <div className="relative flex items-center justify-center flex-shrink-0">
-            <Hexagon size={34} className="text-brand" strokeWidth={1.75} />
-            <ShieldCheck size={16} className="text-brand absolute" strokeWidth={2.5} />
+    <div className="min-h-screen overflow-auto flex bg-cohesity-black">
+      {/* Brand hero — hidden on small screens */}
+      <div className="hidden lg:flex flex-1 flex-col justify-between px-14 xl:px-20 py-10 relative overflow-hidden">
+        {/* soft glow behind the hero icon */}
+        <div className="absolute -left-40 top-1/4 w-[560px] h-[560px] rounded-full bg-status-info/5 blur-3xl pointer-events-none" />
+        <div className="absolute right-0 -bottom-32 w-[420px] h-[420px] rounded-full bg-brand/5 blur-3xl pointer-events-none" />
+
+        <div className="flex items-center gap-2 text-[11px] text-ink-muted">
+          <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse" />
+          Platform online
+        </div>
+
+        <div className="relative animate-fade-in">
+          <img src="/icc-icon.png" alt="" className="w-40 h-40 rounded-3xl shadow-modal mb-8 select-none" draggable={false} />
+          <h1 className="text-5xl xl:text-6xl font-extrabold text-ink tracking-tight leading-none">
+            Infrastructure<br />
+            <span className="text-brand">Command Center</span>
+          </h1>
+          <p className="text-sm text-ink-muted mt-5 max-w-md leading-relaxed">
+            One pane for your entire estate — data protection, storage, virtualization, and automation platforms with live polling and alerting.
+          </p>
+
+          <div className="grid grid-cols-3 gap-3 mt-10 max-w-2xl">
+            {[
+              { icon: Layers, title: 'Multi-Platform', text: 'Cohesity · Pure · NetApp · Zerto · vCenter · Dell · Aria' },
+              { icon: Activity, title: 'Ops Rollup', text: 'Estate health and attention items at a glance' },
+              { icon: ShieldCheck, title: 'AI Insights', text: 'Analysis with on-box anonymization' },
+            ].map(({ icon: Icon, title, text }) => (
+              <div key={title} className="panel px-4 py-3.5">
+                <Icon size={15} className="text-brand mb-2" />
+                <p className="text-xs font-bold text-ink">{title}</p>
+                <p className="text-[11px] text-ink-muted mt-0.5 leading-snug">{text}</p>
+              </div>
+            ))}
           </div>
+
+          <div className="chip border-cohesity-border text-ink-muted mt-6">
+            <Lock size={11} className="text-brand" /> Encrypted credentials · Role-based access · Audit trail
+          </div>
+        </div>
+
+        <p className="text-[11px] text-ink-faint">© {new Date().getFullYear()} Infrastructure Command Center</p>
+      </div>
+
+      {/* Sign-in card */}
+      <div className="flex-1 lg:max-w-xl flex items-center justify-center px-4 py-10">
+        <div className="w-full max-w-md bg-surface border border-cohesity-border rounded-xl shadow-panel p-6 flex flex-col gap-4 animate-fade-in">
+        <div className="flex items-center gap-3">
+          <img src="/icc-icon.png" alt="" className="w-11 h-11 rounded-xl flex-shrink-0 select-none" draggable={false} />
           <div>
-            <p className="text-sm font-bold text-ink">Infrastructure Command Center</p>
-            <p className="text-[11px] text-ink-muted">{needsSetup ? 'First-run setup' : 'Sign in'}</p>
+            <p className="text-base font-bold text-ink">{needsSetup ? 'First-run setup' : 'Welcome back'}</p>
+            <p className="text-[11px] text-ink-muted">
+              {needsSetup ? 'Create the first administrator account.' : 'Sign in to Infrastructure Command Center.'}
+            </p>
           </div>
         </div>
 
@@ -124,7 +168,7 @@ export default function LoginPage() {
             </div>
             {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
             <button type="submit" disabled={submitting}
-              className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer">
+              className="mt-1 flex items-center justify-center gap-1.5 text-sm font-semibold px-3.5 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer">
               <KeyRound size={13} /> {submitting ? 'Creating account…' : 'Create admin account'}
             </button>
           </form>
@@ -140,11 +184,12 @@ export default function LoginPage() {
             </div>
             {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
             <button type="submit" disabled={submitting}
-              className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer">
+              className="mt-1 flex items-center justify-center gap-1.5 text-sm font-semibold px-3.5 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer">
               <LogIn size={13} /> {submitting ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
         )}
+        </div>
       </div>
     </div>
   );
