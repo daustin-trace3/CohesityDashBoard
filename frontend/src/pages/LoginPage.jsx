@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ShieldCheck, KeyRound, RefreshCw, LogIn, Layers, Activity, Lock } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import t3Logo from '../assets/t3_logo_dark.png';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -105,9 +106,12 @@ export default function LoginPage() {
         <div className="absolute -left-40 top-1/4 w-[560px] h-[560px] rounded-full bg-status-info/5 blur-3xl pointer-events-none" />
         <div className="absolute right-0 -bottom-32 w-[420px] h-[420px] rounded-full bg-brand/5 blur-3xl pointer-events-none" />
 
-        <div className="chip border-cohesity-border text-ink-muted w-fit">
-          <span className={`w-1.5 h-1.5 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
-          {health === null ? 'Checking status…' : health ? 'Platform Online' : 'Platform Offline'}
+        <div className="flex flex-col gap-3">
+          <img src={t3Logo} alt="Trace3" className="h-9 w-auto self-start select-none" draggable={false} />
+          <div className="chip border-cohesity-border text-ink-muted w-fit">
+            <span className={`w-1.5 h-1.5 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
+            {health === null ? 'Checking status…' : health ? 'Platform Online' : 'Platform Offline'}
+          </div>
         </div>
 
         <div className="relative animate-fade-in">
