@@ -171,8 +171,8 @@ function loadDictionary() {
 
 // Appended to every AI system prompt so the model preserves tokens verbatim.
 const PROMPT_NOTE =
-  ' NOTE: identifiable names in the data (servers, clusters, jobs, policies, sources, views/shares, user accounts, hostnames, IP addresses, serial numbers) ' +
-  'have been replaced with anonymous tokens such as CLUSTER-1, JOB-2, HOST-3 or IP-4. Refer to each entity ONLY ' +
+  ' NOTE: identifiable names in the data (servers, clusters, jobs, policies, sources, views/shares, user accounts, hostnames, IP addresses, serial numbers, operator tags/labels) ' +
+  'have been replaced with anonymous tokens such as CLUSTER-1, JOB-2, HOST-3, IP-4 or TAG-5. Refer to each entity ONLY ' +
   'by its exact token, verbatim and unaltered, so it can be mapped back to the real name locally. ' +
   'Never guess or invent the real names behind the tokens.';
 
