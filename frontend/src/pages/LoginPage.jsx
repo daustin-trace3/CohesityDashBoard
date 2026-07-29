@@ -108,8 +108,8 @@ export default function LoginPage() {
 
         <div className="flex flex-col gap-3">
           <img src={t3Logo} alt="Trace3" className="h-[61px] w-auto self-start select-none" draggable={false} />
-          <div className="chip border-cohesity-border text-ink-muted w-fit">
-            <span className={`w-1.5 h-1.5 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
+          <div className="inline-flex items-center gap-2 rounded-full px-4 py-1 text-base font-medium border border-cohesity-border text-ink-muted w-fit">
+            <span className={`w-3 h-3 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
             {health === null ? 'Checking status…' : health ? 'Platform Online' : 'Platform Offline'}
           </div>
         </div>
