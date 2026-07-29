@@ -107,9 +107,9 @@ export default function LoginPage() {
         <div className="absolute right-0 -bottom-32 w-[420px] h-[420px] rounded-full bg-brand/5 blur-3xl pointer-events-none" />
 
         <div className="flex flex-col gap-3">
-          <img src={t3Logo} alt="Trace3" className="h-[61px] w-auto self-start select-none" draggable={false} />
+          <img src={t3Logo} alt="Trace3" width={200} height={67} className="h-[67px] w-auto self-start select-none" draggable={false} />
           <div className="inline-flex items-center gap-2 rounded-full px-4 py-1 text-base font-medium border border-cohesity-border text-ink-muted w-fit">
-            <span className={`w-3 h-3 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
+            <span className={`w-2.5 h-2.5 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
             {health === null ? 'Checking status…' : health ? 'Platform Online' : 'Platform Offline'}
           </div>
         </div>
@@ -148,9 +148,9 @@ export default function LoginPage() {
 
       {/* Sign-in card */}
       <div className="flex-1 lg:flex-none flex items-center justify-center p-10 lg:pr-[calc(14vw+125px)]">
-        <div className="w-full max-w-[39rem] min-h-[31rem] bg-surface border border-cohesity-border rounded-2xl shadow-modal p-10 flex flex-col gap-4 animate-fade-in">
+        <div className="w-full max-w-[39rem] min-h-[31rem] bg-surface border border-cohesity-border rounded-2xl shadow-modal p-10 flex flex-col gap-2 animate-fade-in">
         <div>
-          <p className="text-2xl font-bold text-ink">{needsSetup ? 'First-run setup' : 'Welcome back'}</p>
+          <p className="text-3xl font-bold text-ink">{needsSetup ? 'First-run setup' : 'Welcome back'}</p>
           <p className="text-lg text-ink-muted mt-1">
             {needsSetup ? 'Create the first administrator account.' : 'Sign in to Infrastructure Command Center.'}
           </p>
@@ -185,7 +185,7 @@ export default function LoginPage() {
             </button>
           </form>
         ) : (
-          <form onSubmit={handleLogin} className="flex-1 flex flex-col gap-3 mt-4">
+          <form onSubmit={handleLogin} className="flex-1 flex flex-col gap-3 mt-2">
             <div>
               <label className="text-xs font-semibold text-ink mb-1 block">Username</label>
               <input type="text" value={username} onChange={e => setUsername(e.target.value)} className={inputClass} autoComplete="username" required autoFocus />
