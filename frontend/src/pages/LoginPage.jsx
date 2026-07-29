@@ -143,8 +143,8 @@ export default function LoginPage() {
       </div>
 
       {/* Sign-in card */}
-      <div className="flex-1 lg:flex-none flex items-center justify-center px-4 py-10 lg:pr-[14vw]">
-        <div className="w-full max-w-md bg-surface border border-cohesity-border rounded-xl shadow-panel p-7 flex flex-col gap-4 animate-fade-in">
+      <div className="flex-1 lg:flex-none flex items-center justify-center p-10 lg:pr-[calc(14vw+200px)]">
+        <div className="w-full max-w-[39rem] min-h-[31rem] bg-surface border border-cohesity-border rounded-2xl shadow-modal p-10 flex flex-col justify-center gap-4 animate-fade-in">
         <div>
           <p className="text-2xl font-bold text-ink">{needsSetup ? 'First-run setup' : 'Welcome back'}</p>
           <p className="text-xs text-ink-muted mt-1">
