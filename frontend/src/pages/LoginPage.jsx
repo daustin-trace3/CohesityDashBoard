@@ -13,6 +13,17 @@ export default function LoginPage() {
   const returnTo = searchParams.get('returnTo') || '/cohesity';
 
   const [checkingSetup, setCheckingSetup] = useState(true);
+  const [health, setHealth] = useState(null); // null = checking, true/false = result
+
+  useEffect(() => {
+    let alive = true;
+    const check = () => {
+      fetch('/health').then((r) => { if (alive) setHealth(r.ok); }).catch(() => { if (alive) setHealth(false); });
+    };
+    check();
+    const t = setInterval(check, 30000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
@@ -95,12 +106,12 @@ export default function LoginPage() {
         <div className="absolute right-0 -bottom-32 w-[420px] h-[420px] rounded-full bg-brand/5 blur-3xl pointer-events-none" />
 
         <div className="flex items-center gap-2 text-[11px] text-ink-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse" />
-          Platform online
+          <span className={`w-1.5 h-1.5 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
+          {health === null ? 'Checking status…' : health ? 'Platform online' : 'Platform offline'}
         </div>
 
         <div className="relative animate-fade-in">
-          <img src="/icc-icon.png" alt="" className="w-40 h-40 rounded-3xl shadow-modal mb-8 select-none" draggable={false} />
+          <img src="/icc-icon.png" alt="" className="w-60 h-60 rounded-3xl shadow-modal mb-8 select-none" draggable={false} />
           <h1 className="text-5xl xl:text-6xl font-extrabold text-ink tracking-tight leading-none">
             Infrastructure<br />
             <span className="text-brand">Command Center</span>
@@ -132,7 +143,7 @@ export default function LoginPage() {
       </div>
 
       {/* Sign-in card */}
-      <div className="flex-1 lg:max-w-xl flex items-center justify-center px-4 py-10">
+      <div className="flex-1 lg:max-w-2xl flex items-center justify-center lg:justify-start px-4 py-10">
         <div className="w-full max-w-md bg-surface border border-cohesity-border rounded-xl shadow-panel p-6 flex flex-col gap-4 animate-fade-in">
         <div className="flex items-center gap-3">
           <img src="/icc-icon.png" alt="" className="w-11 h-11 rounded-xl flex-shrink-0 select-none" draggable={false} />
