@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'cohesity-dashboard',
+      name: 'icc-dashboard',
       script: './backend/server.js',
       cwd: __dirname,
       // Fork mode (not cluster): a single instance gains nothing from cluster
@@ -23,7 +23,7 @@ module.exports = {
       // Scheduled data collectors live in their own process so heavy poll
       // cycles (synchronous better-sqlite3 transactions, large JSON parses)
       // never stall API responses. Shares the SQLite DB via WAL.
-      name: 'cohesity-poller',
+      name: 'icc-poller',
       script: './backend/pollerProcess.js',
       cwd: __dirname,
       exec_mode: 'fork',

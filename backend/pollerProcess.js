@@ -2,8 +2,8 @@
 // synchronous work (large JSON parses, big better-sqlite3 transactions) never
 // stalls the API process's event loop. Shares the SQLite file with server.js
 // via WAL; poller lifecycle state is shared through the poller_status table
-// (services/pollerStatus.js). Started by pm2 as 'cohesity-poller' alongside
-// 'cohesity-dashboard' (see pm2.config.js) and by `npm run dev`.
+// (services/pollerStatus.js). Started by pm2 as 'icc-poller' alongside
+// 'icc-dashboard' (see pm2.config.js) and by `npm run dev`.
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const logger = require('./utils/logger');

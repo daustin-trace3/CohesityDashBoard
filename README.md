@@ -1,6 +1,6 @@
-# Cohesity Dashboard
+# Infrastructure Command Center (ICC)
 
-A web dashboard for monitoring Cohesity clusters — supports Helios multi-cluster and direct cluster connections with API key or username/password auth.
+Enterprise monitoring for data protection and infrastructure platforms — Cohesity (Helios multi-cluster and direct connections), Pure Storage, NetApp, Zerto, vCenter, Dell OME, and VMware Aria, with per-platform polling, alerting, and an operations rollup.
 
 ## Setup
 

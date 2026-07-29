@@ -100,7 +100,7 @@ if (require.main === module) {
       initViews();
       initGflags();
     } else {
-      logger.info('[Boot] Pollers run in the separate poller process (backend/pollerProcess.js, pm2: cohesity-poller). Set RUN_POLLERS_INLINE=true to run them in this process.');
+      logger.info('[Boot] Pollers run in the separate poller process (backend/pollerProcess.js, pm2: icc-poller). Set RUN_POLLERS_INLINE=true to run them in this process.');
     }
     initLicense();
   });

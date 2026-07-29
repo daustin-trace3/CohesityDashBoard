@@ -33,9 +33,9 @@ relative to "now" instead of drifting stale.
 ## Start / stop the demo instance
 
 ```bash
-pm2 start pm2.demo.config.js   # starts as "dashboard-demo" on port 3002
-pm2 stop dashboard-demo
-pm2 delete dashboard-demo
+pm2 start pm2.demo.config.js   # starts as "icc-demo" on port 3002
+pm2 stop icc-demo
+pm2 delete icc-demo
 ```
 
 Do **not** run `pm2 save` after starting the demo unless you actually want it

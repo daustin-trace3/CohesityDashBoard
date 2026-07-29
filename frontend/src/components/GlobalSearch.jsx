@@ -12,7 +12,7 @@ const PLATFORM_COLORS = {
 
 /**
  * Header search: estate-wide entity typeahead (grouped results, deep links)
- * layered on the existing SearchContext so the Cohesity dashboard's live
+ * layered on the existing SearchContext so the ICC app's live
  * cluster-card filter keeps working as you type. The menu portals to <body>
  * (header ancestors hold retained transforms — same trap as ColumnPicker).
  */

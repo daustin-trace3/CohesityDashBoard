@@ -19,7 +19,7 @@ const CHART = {
 
 /**
  * Themed multi-series line chart (chart.js) shared by the storage overview
- * pages so charts are uniform with the Cohesity dashboard.
+ * pages so charts are uniform with the rest of ICC.
  *
  * @param {string[]} labels  x-axis labels
  * @param {{label,data,color,fill?}[]} datasets

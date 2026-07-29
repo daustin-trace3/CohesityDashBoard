@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'dashboard-demo',
+      name: 'icc-demo',
       script: './backend/server.js',
       cwd: __dirname,
       // Fork mode (not cluster): a single instance gains nothing from cluster
