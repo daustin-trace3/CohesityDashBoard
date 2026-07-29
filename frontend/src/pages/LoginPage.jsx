@@ -143,17 +143,17 @@ export default function LoginPage() {
       </div>
 
       {/* Sign-in card */}
-      <div className="flex-1 lg:flex-none flex items-center justify-center p-10 lg:pr-[calc(14vw+200px)]">
-        <div className="w-full max-w-[39rem] min-h-[31rem] bg-surface border border-cohesity-border rounded-2xl shadow-modal p-10 flex flex-col justify-center gap-4 animate-fade-in">
+      <div className="flex-1 lg:flex-none flex items-center justify-center p-10 lg:pr-[calc(14vw+125px)]">
+        <div className="w-full max-w-[39rem] min-h-[31rem] bg-surface border border-cohesity-border rounded-2xl shadow-modal p-10 flex flex-col gap-4 animate-fade-in">
         <div>
           <p className="text-2xl font-bold text-ink">{needsSetup ? 'First-run setup' : 'Welcome back'}</p>
-          <p className="text-xs text-ink-muted mt-1">
+          <p className="text-lg text-ink-muted mt-1">
             {needsSetup ? 'Create the first administrator account.' : 'Sign in to Infrastructure Command Center.'}
           </p>
         </div>
 
         {needsSetup ? (
-          <form onSubmit={handleSetup} className="flex flex-col gap-3">
+          <form onSubmit={handleSetup} className="flex-1 flex flex-col gap-3 mt-4">
             <p className="text-xs text-ink-muted leading-relaxed">
               No administrator account exists yet. Enter the claim token printed in the server console/log,
               then choose a username and password for the first admin account.
@@ -176,12 +176,12 @@ export default function LoginPage() {
             </div>
             {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
             <button type="submit" disabled={submitting}
-              className="mt-1 flex items-center justify-center gap-1.5 text-sm font-semibold px-3.5 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer">
+              className="mt-auto flex items-center justify-center gap-1.5 text-sm font-semibold px-3.5 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer">
               <KeyRound size={13} /> {submitting ? 'Creating account…' : 'Create admin account'}
             </button>
           </form>
         ) : (
-          <form onSubmit={handleLogin} className="flex flex-col gap-3">
+          <form onSubmit={handleLogin} className="flex-1 flex flex-col gap-3 mt-4">
             <div>
               <label className="text-xs font-semibold text-ink mb-1 block">Username</label>
               <input type="text" value={username} onChange={e => setUsername(e.target.value)} className={inputClass} autoComplete="username" required autoFocus />
@@ -192,7 +192,7 @@ export default function LoginPage() {
             </div>
             {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
             <button type="submit" disabled={submitting}
-              className="mt-1 flex items-center justify-center gap-1.5 text-sm font-semibold px-3.5 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer">
+              className="mt-auto flex items-center justify-center gap-1.5 text-sm font-semibold px-3.5 py-2.5 bg-brand hover:bg-brand-dark text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer">
               <LogIn size={13} /> {submitting ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
