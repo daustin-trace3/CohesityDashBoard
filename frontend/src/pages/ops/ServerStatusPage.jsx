@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Crosshair, Search, Server, ShieldCheck, ArrowLeftRight, FolderTree, Package, Loader2 } from 'lucide-react';
+import { Crosshair, Search, Server, ShieldCheck, ArrowLeftRight, FolderTree, Package, Loader2, HardDrive } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge } from '../../components/ui/primitives';
 
@@ -27,6 +27,7 @@ const PLATFORM_META = {
   zerto: { label: 'Zerto', color: '#EE3124' },
   vcenter: { label: 'vCenter', color: '#0091DA' },
   aria: { label: 'Aria Automation', color: '#00A2C7' },
+  netbackup: { label: 'NetBackup', color: '#B1181E' },
 };
 
 function PlatformChip({ platform }) {
@@ -88,7 +89,7 @@ export default function ServerStatusPage() {
   }, [input]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const vm = data?.vcenter;
-  const nothingFound = data && !data.vcenter && !data.cohesity && !data.zerto && !data.netapp && !data.aria;
+  const nothingFound = data && !data.vcenter && !data.cohesity && !data.zerto && !data.netapp && !data.aria && !data.netbackup;
 
   return (
     <div className="animate-fade-in flex flex-col gap-4">
@@ -194,6 +195,28 @@ export default function ServerStatusPage() {
             <p key={a.id} className="text-[11px] text-ink-faint tnum">
               agent {String(a.agent_version || 'unknown').split('_release')[0]} · {a.agent_status || '—'} · {a.upgradability === 'Upgradable' ? 'upgrade available' : a.upgradability || '—'} · {a.cluster_name}
             </p>
+          ))}
+        </Panel>
+      )}
+
+      {/* NetBackup backup posture */}
+      {data?.netbackup && (
+        <Panel title="Backup (NetBackup)" icon={HardDrive} actions={<PlatformChip platform="netbackup" />}>
+          {data.netbackup.clients.map((c, i) => (
+            <div key={i} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-2 border-b border-cohesity-border/40 last:border-0 pb-2">
+              <Fact label="Client">{c.clientName} <span className="text-ink-faint text-[11px]">({c.sourceName})</span></Fact>
+              <Fact label="Policies">{c.policies.join(', ') || '—'}</Fact>
+              <Fact label="Jobs (7d)">{c.jobs7d}</Fact>
+              <Fact label="Failures (7d)"><Badge tone={c.failed7d > 0 ? 'crit' : 'ok'}>{c.failed7d}</Badge></Fact>
+              <Fact label="Last Success">
+                {c.lastSuccessAt ? (
+                  <span className={`text-[11px] tnum ${Date.now() - new Date(c.lastSuccessAt).getTime() > 7 * 86400000 ? 'text-amber-400' : 'text-ink-faint'}`}>
+                    {new Date(c.lastSuccessAt).toLocaleDateString()} · {fmtAgo(new Date(c.lastSuccessAt).getTime())}
+                  </span>
+                ) : '—'}
+              </Fact>
+              <Fact label="FETB">{fmtBytes(c.logicalBytes)}</Fact>
+            </div>
           ))}
         </Panel>
       )}

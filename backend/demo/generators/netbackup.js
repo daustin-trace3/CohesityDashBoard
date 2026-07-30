@@ -98,6 +98,16 @@ function seedNetbackup(db, { now, encrypt }) {
       storage_used_bytes, media_server_count, appliance_count)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertSlp = db.prepare(`
+    INSERT INTO netbackup_slps (source_id, name, version, data_classification, priority,
+      operation_count, operations_json, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertWorkloadHistory = db.prepare(`
+    INSERT INTO netbackup_workload_history
+      (source_id, workload, protected_clients, job_count, success_count, failed_count, protected_bytes, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
 
   const GIB = 1024 ** 3;
 
@@ -129,6 +139,44 @@ function seedNetbackup(db, { now, encrypt }) {
       def.weekly ? 1 : randInt(rngFor(`${def.name}-sched`), 1, 3),
       randInt(rngFor(`${def.name}-sel`), 1, 4), nowIso
     );
+  }
+
+  // ── SLPs (Storage Lifecycle Policies): gold/silver per source ───────────
+  const SLPS = [
+    {
+      source: primaryId, name: 'GOLD-VMWARE-PROD', version: 3, classification: 'Gold', priority: 1,
+      operations: [
+        { type: 'backup', policy: FAILING_POLICY },
+        { type: 'replication', target: 'Alta Production' },
+        { type: 'expiration', retention: '90 days' },
+      ],
+    },
+    {
+      source: primaryId, name: 'SILVER-FILESERVERS', version: 2, classification: 'Silver', priority: 2,
+      operations: [
+        { type: 'backup' },
+        { type: 'expiration', retention: '30 days' },
+      ],
+    },
+    {
+      source: altaId, name: 'GOLD-CLOUD-VMWARE', version: 2, classification: 'Gold', priority: 1,
+      operations: [
+        { type: 'backup' },
+        { type: 'replication', target: 'On-Prem DR' },
+        { type: 'expiration', retention: '60 days' },
+      ],
+    },
+    {
+      source: altaId, name: 'SILVER-CLOUD-STANDARD', version: 1, classification: 'Silver', priority: 3,
+      operations: [
+        { type: 'backup' },
+        { type: 'expiration', retention: '14 days' },
+      ],
+    },
+  ];
+  for (const slp of SLPS) {
+    insertSlp.run(slp.source, slp.name, slp.version, slp.classification, slp.priority,
+      slp.operations.length, JSON.stringify(slp.operations), nowIso);
   }
 
   // ── Storage units + disk pools ──────────────────────────────────────────
@@ -277,6 +325,49 @@ function seedNetbackup(db, { now, encrypt }) {
     }
   }
 
+  // ── Replication jobs: ~60 over 7 days, ~10% failed, feeds the SLP page ──
+  const repRng = rngFor('netbackup-replication');
+  let repJobId = 900000;
+  let repTotal = 0;
+  let repFailed = 0;
+  const REPLICATION_COUNT = 60;
+  for (let i = 0; i < REPLICATION_COUNT; i++) {
+    const def = pick(repRng, POLICY_DEFS);
+    const sourceId = policySourceOf[def.name];
+    const clientName = pick(repRng, def.clients);
+    const dayAgo = randInt(repRng, 0, 6);
+    const hour = nightHour(repRng);
+    const minute = randInt(repRng, 0, 59);
+    const started = new Date(now);
+    started.setUTCDate(started.getUTCDate() - dayAgo);
+    started.setUTCHours(hour, minute, 0, 0);
+    let startedMs = started.getTime();
+    if (startedMs > now) startedMs = now - randInt(repRng, 60, 3600) * 1000;
+
+    const elapsed = randInt(repRng, 300, 5400);
+    const endedMs = startedMs + elapsed * 1000;
+    const staleClientForceFail = clientName === STALE_CLIENT && STALE_CLIENT_DAYS_AGO.includes(dayAgo);
+    const success = staleClientForceFail ? false : chance(repRng, 0.9);
+    const state = success ? 'DONE' : (chance(repRng, 0.3) ? 'FAILED' : 'DONE');
+    const statusCode = success ? 0 : (chance(repRng, 0.4) ? pick(repRng, SPECIAL_CODES) : pick(repRng, FAILURE_CODES));
+    const kilobytes = def.type === 'VMware'
+      ? randInt(repRng, 5_000_000, 400_000_000)
+      : def.type === 'Oracle'
+        ? randInt(repRng, 1_000_000, 80_000_000)
+        : randInt(repRng, 100_000, 20_000_000);
+    const filesCount = randInt(repRng, 10, 50000);
+    const throughput = success ? randInt(repRng, 5000, 250000) : null;
+    const storageUnit = pick(repRng, STORAGE_UNITS.filter((s) => s.source === sourceId)).name;
+
+    insertJob.run(
+      sourceId, repJobId++, 'REPLICATION', state, statusCode, def.name, def.type, clientName,
+      'FULL', storageUnit, kilobytes, filesCount, elapsed, throughput,
+      new Date(startedMs).toISOString(), new Date(endedMs).toISOString(), nowIso
+    );
+    repTotal++;
+    if (!success) repFailed++;
+  }
+
   // ── Issue history: seeded directly (mirrors netbackupIssues.js key scheme)
   // so it stays consistent once the computed-issues service reconciles it.
   const failingStats = jobStats[FAILING_POLICY] || { total: 0, failed: 0 };
@@ -383,10 +474,67 @@ function seedNetbackup(db, { now, encrypt }) {
     }
   }
 
+  // ── 60 days of daily per-source/workload snapshots ──────────────────────
+  // One batch per source per day (all workload rows for a source on a given
+  // day share the same captured_at), with a dip for the failing policy's
+  // workload (VMware @ primary) matching FAILING_POLICY_DAYS_AGO.
+  const TB = 1024 ** 4;
+  const WORKLOAD_HISTORY_DAYS = 59;
+  const workloadDefsBySource = { [primaryId]: PRIMARY_POLICIES, [altaId]: ALTA_POLICIES };
+  let workloadHistoryRows = 0;
+  for (const sourceId of [primaryId, altaId]) {
+    const defs = workloadDefsBySource[sourceId];
+    const workloads = [...new Set(defs.map((d) => d.type))];
+    const whRng = rngFor(`netbackup-workload-history-${sourceId}`);
+    const baseByWorkload = workloads.map((workload) => ({
+      workload,
+      clients: new Set(defs.filter((d) => d.type === workload).flatMap((d) => d.clients)).size,
+      protectedTb: workload === 'VMware' ? randFloat(whRng, 8, 40, 2) : randFloat(whRng, 1, 12, 2),
+      growth: randFloat(whRng, 0.04, 0.16, 3),
+    }));
+    for (let d = WORKLOAD_HISTORY_DAYS; d >= 0; d--) {
+      const capturedAt = new Date(now - d * 86400000).toISOString();
+      const progress = (WORKLOAD_HISTORY_DAYS - d) / WORKLOAD_HISTORY_DAYS;
+      for (const base of baseByWorkload) {
+        const dip = sourceId === primaryId && base.workload === 'VMware' && FAILING_POLICY_DAYS_AGO.includes(d);
+        let scale = 1 - base.growth + base.growth * progress;
+        if (dip) scale *= 0.7;
+        const protectedBytes = Math.round(base.protectedTb * TB * scale);
+        const runsPerClient = randInt(whRng, 2, 4);
+        const jobCount = base.clients * runsPerClient;
+        const failRate = dip ? 0.45 : 0.05;
+        const failedCount = Math.round(jobCount * failRate);
+        const successCount = jobCount - failedCount;
+        insertWorkloadHistory.run(sourceId, base.workload, base.clients, jobCount,
+          successCount, failedCount, protectedBytes, capturedAt);
+        workloadHistoryRows++;
+      }
+    }
+  }
+
+  // ── Entitlement: size netbackup_entitled_tb so computed FETB lands ~70% ──
+  const fetbRows = db.prepare(`
+    SELECT client_name, MAX(kilobytes) AS kb FROM netbackup_jobs
+    WHERE status_code = 0 AND job_type = 'Backup' AND started_at >= datetime('now', '-30 days')
+    GROUP BY client_name
+  `).all();
+  const feBytes = fetbRows.reduce((acc, r) => acc + (r.kb || 0) * 1024, 0);
+  const feTb = feBytes / TB;
+  const rawTarget = feTb / 0.7;
+  const roundTo = rawTarget < 20 ? 1 : rawTarget < 200 ? 10 : 50;
+  let entitledTb = Math.round(rawTarget / roundTo) * roundTo;
+  if (entitledTb < 1) entitledTb = 1;
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES ('netbackup_entitled_tb', ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(String(entitledTb));
+
   return {
     sources: 2,
     policies: POLICY_DEFS.length,
-    jobs: jobTotal,
+    jobs: jobTotal + repTotal,
+    replicationJobs: repTotal,
+    replicationFailed: repFailed,
     storageUnits: STORAGE_UNITS.length,
     diskPools: 2,
     mediaServers: MEDIA_SERVERS.length,
@@ -394,6 +542,10 @@ function seedNetbackup(db, { now, encrypt }) {
     alerts: ALERTS.length,
     issueHistory: issues.length,
     metricsHistory: metricsRows,
+    slps: SLPS.length,
+    workloadHistory: workloadHistoryRows,
+    entitledTb,
+    frontEndTb: Math.round(feTb * 100) / 100,
   };
 }
 

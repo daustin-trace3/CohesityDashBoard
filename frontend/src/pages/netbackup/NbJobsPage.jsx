@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { ClipboardList } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -84,7 +85,11 @@ export default function NbJobsPage() {
                 {ctl.pageRows.map((j) => (
                   <tr key={j.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink tnum">{j.jobId}</td>
-                    <td className="py-2 pr-3 text-ink">{j.clientName || '—'}</td>
+                    <td className="py-2 pr-3">
+                      {j.clientName
+                        ? <Link to={`/ops/server360?name=${encodeURIComponent(j.clientName)}`} className="text-ink font-medium hover:text-brand">{j.clientName}</Link>
+                        : '—'}
+                    </td>
                     <td className="py-2 pr-3 text-ink-muted">{j.policyName || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{j.policyType || '—'}</td>
                     <td className="py-2 pr-3"><Badge tone={jobStateTone(j)}>{j.state || '—'}</Badge></td>

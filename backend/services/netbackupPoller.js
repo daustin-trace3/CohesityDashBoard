@@ -12,7 +12,7 @@ const logger = require('../utils/logger');
 const safeMsg = (e) => (e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e)));
 
 async function collect(source) {
-  const [jobs, policies, storageUnits, diskPools, mediaServers, hosts, alerts] = await Promise.all([
+  const [jobs, policies, storageUnits, diskPools, mediaServers, hosts, alerts, slps] = await Promise.all([
     netbackupApi.fetchJobs(source, 7),
     netbackupApi.fetchPolicies(source),
     netbackupApi.fetchStorageUnits(source),
@@ -20,11 +20,12 @@ async function collect(source) {
     netbackupApi.fetchMediaServers(source),
     netbackupApi.fetchHosts(source),
     netbackupApi.fetchAlerts(source),
+    netbackupApi.fetchSlps(source),
   ]);
-  return { jobs, policies, storageUnits, diskPools, mediaServers, hosts, alerts };
+  return { jobs, policies, storageUnits, diskPools, mediaServers, hosts, alerts, slps };
 }
 
-const store = db.transaction((sourceId, { jobs, policies, storageUnits, diskPools, mediaServers, hosts, alerts }) => {
+const store = db.transaction((sourceId, { jobs, policies, storageUnits, diskPools, mediaServers, hosts, alerts, slps }) => {
   const jobStmt = db.prepare(`
     INSERT INTO netbackup_jobs (source_id, job_id, parent_job_id, job_type, state, status_code,
       policy_name, policy_type, client_name, schedule_type, storage_unit, kilobytes, files_count,
@@ -110,6 +111,43 @@ const store = db.transaction((sourceId, { jobs, policies, storageUnits, diskPool
     if (!a.alertId) continue;
     alStmt.run(sourceId, a.alertId, a.severity ?? null, a.category ?? null, a.message ?? null, a.occurredAt ?? null);
   }
+
+  db.prepare('DELETE FROM netbackup_slps WHERE source_id = ?').run(sourceId);
+  const slpStmt = db.prepare(`
+    INSERT INTO netbackup_slps (source_id, name, version, data_classification, priority, operation_count, operations_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const s of slps) {
+    slpStmt.run(sourceId, s.name, s.version ?? null, s.dataClassification ?? null, s.priority ?? null,
+      s.operations?.length ?? 0, JSON.stringify(s.operations ?? []));
+  }
+
+  const workloadJobs = db.prepare(`
+    SELECT COALESCE(policy_type, 'Other') AS workload, client_name, state, status_code, kilobytes
+    FROM netbackup_jobs WHERE source_id = ? AND started_at >= datetime('now', '-1 day')
+  `).all(sourceId);
+  const byWorkload = new Map();
+  for (const j of workloadJobs) {
+    if (!byWorkload.has(j.workload)) {
+      byWorkload.set(j.workload, { clients: new Set(), jobCount: 0, success: 0, failed: 0, bytes: 0 });
+    }
+    const w = byWorkload.get(j.workload);
+    if (j.client_name) w.clients.add(j.client_name);
+    w.jobCount += 1;
+    const failed = j.state === 'FAILED' || (['EXITED', 'DONE'].includes(j.state) && Number(j.status_code || 0) > 0);
+    if (failed) w.failed += 1; else w.success += 1;
+    w.bytes += (j.kilobytes || 0) * 1024;
+  }
+  db.prepare("DELETE FROM netbackup_workload_history WHERE source_id = ? AND date(captured_at) = date('now')").run(sourceId);
+  const whStmt = db.prepare(`
+    INSERT INTO netbackup_workload_history
+      (source_id, workload, protected_clients, job_count, success_count, failed_count, protected_bytes, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const [workload, w] of byWorkload) {
+    whStmt.run(sourceId, workload, w.clients.size, w.jobCount, w.success, w.failed, w.bytes);
+  }
+  db.prepare("DELETE FROM netbackup_workload_history WHERE captured_at < datetime('now', '-400 days')").run();
 
   const jobs24h = jobs.filter((j) => j.startTime && (Date.now() - new Date(j.startTime).getTime()) < 86400000);
   const failed24h = jobs24h.filter(netbackupApi.isFailedState);

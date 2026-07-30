@@ -206,6 +206,7 @@ const NEW_TABLES = [
   'netbackup_sources', 'netbackup_jobs', 'netbackup_policies', 'netbackup_storage_units',
   'netbackup_disk_pools', 'netbackup_media_servers', 'netbackup_appliances', 'netbackup_alerts',
   'netbackup_issue_history', 'netbackup_metrics_history',
+  'netbackup_slps', 'netbackup_workload_history', 'netbackup_ai_reports',
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
   'ai_audit_exchanges',

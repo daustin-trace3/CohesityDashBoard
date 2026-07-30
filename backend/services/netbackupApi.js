@@ -286,6 +286,52 @@ async function fetchAlerts(source) {
   });
 }
 
+/** `/storage/slps` first, `/config/slps` fallback; both 404/501 -> empty. */
+async function fetchSlps(source) {
+  return tolerantList(source, 'slps', async () => {
+    let items;
+    try {
+      items = await fetchPaginated(source, '/storage/slps');
+    } catch (err) {
+      if (![404, 501].includes(err.response?.status)) throw err;
+      try {
+        items = await fetchPaginated(source, '/config/slps');
+      } catch (err2) {
+        if ([404, 501].includes(err2.response?.status)) return [];
+        throw err2;
+      }
+    }
+    return items.map((s) => ({
+      name: s.slpName ?? s.name ?? null,
+      version: s.version ?? null,
+      dataClassification: s.dataClassification ?? null,
+      priority: s.priority ?? null,
+      operations: Array.isArray(s.operations) ? s.operations : [],
+    })).filter((s) => s.name);
+  });
+}
+
+/** `/licensing/capacity` first, `/admin/licensing` fallback; both 404/501 -> null. */
+async function fetchLicensing(source) {
+  try {
+    const resp = await apiRequest(source, 'get', '/licensing/capacity');
+    return resp.data ?? null;
+  } catch (err) {
+    if (![404, 501].includes(err.response?.status)) {
+      logger.warn(`[netbackupApi] licensing fetch failed for ${source.name || source.host}: ${safeMsg(err)}`);
+    }
+    try {
+      const resp2 = await apiRequest(source, 'get', '/admin/licensing');
+      return resp2.data ?? null;
+    } catch (err2) {
+      if (![404, 501].includes(err2.response?.status)) {
+        logger.warn(`[netbackupApi] licensing fallback fetch failed for ${source.name || source.host}: ${safeMsg(err2)}`);
+      }
+      return null;
+    }
+  }
+}
+
 /** Raw-shape probe: one capped fetch per section, for the blind-build fix loop. */
 async function fetchProbe(rawSource) {
   const source = normSource(rawSource);
@@ -297,6 +343,7 @@ async function fetchProbe(rawSource) {
     mediaServers: () => apiRequest(source, 'get', '/config/media-servers', { params: { 'page[limit]': 5 } }),
     hosts: () => apiRequest(source, 'get', '/config/hosts', { params: { 'page[limit]': 5 } }),
     alerts: () => apiRequest(source, 'get', '/manage/notifications', { params: { 'page[limit]': 5 } }),
+    slps: () => apiRequest(source, 'get', '/storage/slps', { params: { 'page[limit]': 5 } }),
   };
   const out = {};
   for (const [name, fn] of Object.entries(sections)) {
@@ -337,5 +384,6 @@ async function testConnection(rawCandidate) {
 module.exports = {
   normSource, invalidateSession, apiRequest, jsonApiList,
   fetchJobs, fetchPolicies, fetchStorageUnits, fetchDiskPools, fetchMediaServers, fetchHosts, fetchAlerts,
+  fetchSlps, fetchLicensing,
   fetchProbe, testConnection, isFailedState,
 };

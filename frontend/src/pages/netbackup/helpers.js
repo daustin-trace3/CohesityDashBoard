@@ -51,3 +51,18 @@ export function fmtWhen(iso) {
   const d = new Date(String(iso).includes('T') ? iso : `${iso}Z`.replace(' ', 'T'));
   return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
 }
+
+export const TB = 1e12;
+export function fmtTb(b) {
+  if (b == null) return '—';
+  const t = b / TB;
+  return `${t.toLocaleString(undefined, { maximumFractionDigits: t >= 100 ? 0 : 1 })} TB`;
+}
+
+const RUN_STATUS_TONE = { kSuccess: 'ok', kFailure: 'crit', kWarning: 'warn', kRunning: 'info' };
+export function runStatusTone(status) {
+  return RUN_STATUS_TONE[status] || 'neutral';
+}
+export function runStatusLabel(status) {
+  return status ? String(status).replace(/^k/, '') : '—';
+}

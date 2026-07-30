@@ -294,4 +294,41 @@ describe('seedDemo.js', () => {
   it('seeds 30 days of netbackup metrics history per source', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM netbackup_metrics_history').get().c).toBe(2 * 31);
   });
+
+  it('seeds netbackup SLPs referencing the failing policy', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_slps').get().c).toBeGreaterThanOrEqual(4);
+    const slps = db.prepare('SELECT operations_json FROM netbackup_slps').all();
+    const referencesFailingPolicy = slps.some((row) => row.operations_json.includes('VMWARE-PROD-DAILY'));
+    expect(referencesFailingPolicy).toBe(true);
+    for (const row of slps) {
+      expect(() => JSON.parse(row.operations_json)).not.toThrow();
+      expect(Array.isArray(JSON.parse(row.operations_json))).toBe(true);
+    }
+  });
+
+  it('seeds netbackup replication jobs with some failures', () => {
+    const repJobs = db.prepare("SELECT COUNT(*) c FROM netbackup_jobs WHERE job_type = 'REPLICATION'").get().c;
+    expect(repJobs).toBeGreaterThanOrEqual(50);
+    const repFailed = db.prepare("SELECT COUNT(*) c FROM netbackup_jobs WHERE job_type = 'REPLICATION' AND status_code != 0").get().c;
+    expect(repFailed).toBeGreaterThan(0);
+  });
+
+  it('seeds netbackup workload history spanning ~60 days, one batch per source per day', () => {
+    const distinctDays = db.prepare("SELECT COUNT(DISTINCT date(captured_at)) c FROM netbackup_workload_history").get().c;
+    expect(distinctDays).toBeGreaterThanOrEqual(55);
+
+    const dupBatches = db.prepare(`
+      SELECT source_id, date(captured_at) day, COUNT(DISTINCT captured_at) c
+      FROM netbackup_workload_history
+      GROUP BY source_id, day
+      HAVING c > 1
+    `).all();
+    expect(dupBatches.length).toBe(0);
+  });
+
+  it('sets netbackup_entitled_tb for computed FETB licensing', () => {
+    const row = db.prepare("SELECT value FROM app_settings WHERE key = 'netbackup_entitled_tb'").get();
+    expect(row).toBeTruthy();
+    expect(parseFloat(row.value)).toBeGreaterThan(0);
+  });
 });

@@ -21,5 +21,8 @@ module.exports = {
   },
   statusTables: ['netbackup_sources'],
   settingsFields: [],
-  navSections: ['overview', 'jobs', 'storage', 'settings'],
+  navSections: [
+    'overview', 'advisor', 'alerts', 'jobs', 'policies', 'slps', 'governance',
+    'backup-history', 'workloads', 'licensing', 'storage', 'appliances', 'privacy', 'settings',
+  ],
 };

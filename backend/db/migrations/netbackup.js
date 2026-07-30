@@ -175,4 +175,44 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 2,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS netbackup_slps (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id           INTEGER NOT NULL REFERENCES netbackup_sources(id) ON DELETE CASCADE,
+          name                TEXT NOT NULL,
+          version             INTEGER,
+          data_classification TEXT,
+          priority            INTEGER,
+          operation_count     INTEGER,
+          operations_json     TEXT,
+          captured_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_netbackup_slps_source ON netbackup_slps(source_id);
+
+        CREATE TABLE IF NOT EXISTS netbackup_workload_history (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id          INTEGER NOT NULL REFERENCES netbackup_sources(id) ON DELETE CASCADE,
+          workload           TEXT NOT NULL,
+          protected_clients  INTEGER,
+          job_count          INTEGER,
+          success_count      INTEGER,
+          failed_count       INTEGER,
+          protected_bytes    INTEGER,
+          captured_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_netbackup_workload_hist_lookup ON netbackup_workload_history(source_id, workload, captured_at);
+        CREATE INDEX IF NOT EXISTS idx_netbackup_workload_hist_captured ON netbackup_workload_history(captured_at);
+
+        CREATE TABLE IF NOT EXISTS netbackup_ai_reports (
+          report_key   TEXT PRIMARY KEY,
+          model        TEXT,
+          content      TEXT NOT NULL,
+          generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    },
+  },
 ];

@@ -6,12 +6,15 @@ const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
-const { setSetting } = require('../services/settings');
+const { setSetting, getSetting } = require('../services/settings');
 const netbackupApi = require('../services/netbackupApi');
 const { netbackupPoller } = require('../services/netbackupPoller');
+const netbackupAdvisor = require('../services/advisors/netbackupAdvisor');
 const {
   successWarnPct, storageWarnPct, staleBackupHours, computeIssues,
 } = require('../services/netbackupIssues');
+
+const REPLICATION_TYPES = ['REPLICATION', 'REPLICA', 'DUPLICATE', 'DUPLICATION', 'IMPORT'];
 
 const router = express.Router();
 
@@ -431,25 +434,461 @@ router.get('/trends', [
   } catch (err) { next(err); }
 });
 
-/** GET /api/netbackup/config — alert thresholds. */
+function entitledTb() {
+  return Number(getSetting('netbackup_entitled_tb')) || 0;
+}
+
+/** GET /api/netbackup/config — alert thresholds + licensing entitlement. */
 router.get('/config', (req, res, next) => {
   try {
-    res.json({ successWarnPct: successWarnPct(), storageWarnPct: storageWarnPct(), staleBackupHours: staleBackupHours() });
+    res.json({
+      successWarnPct: successWarnPct(), storageWarnPct: storageWarnPct(), staleBackupHours: staleBackupHours(),
+      entitledTb: entitledTb(),
+    });
   } catch (err) { next(err); }
 });
 
-/** PUT /api/netbackup/config — save alert thresholds. */
+/** PUT /api/netbackup/config — save alert thresholds + licensing entitlement. */
 router.put('/config', [
   body('successWarnPct').isInt({ min: 50, max: 100 }).toInt(),
   body('storageWarnPct').isInt({ min: 5, max: 50 }).toInt(),
   body('staleBackupHours').isInt({ min: 12, max: 336 }).toInt(),
+  body('entitledTb').optional().isFloat({ min: 0, max: 100000 }).toFloat(),
 ], validate, (req, res, next) => {
   try {
     setSetting('netbackup_success_warn_pct', String(req.body.successWarnPct));
     setSetting('netbackup_storage_warn_pct', String(req.body.storageWarnPct));
     setSetting('netbackup_stale_backup_hours', String(req.body.staleBackupHours));
-    res.json({ successWarnPct: successWarnPct(), storageWarnPct: storageWarnPct(), staleBackupHours: staleBackupHours() });
+    if (req.body.entitledTb !== undefined) setSetting('netbackup_entitled_tb', String(req.body.entitledTb));
+    res.json({
+      successWarnPct: successWarnPct(), storageWarnPct: storageWarnPct(), staleBackupHours: staleBackupHours(),
+      entitledTb: entitledTb(),
+    });
   } catch (err) { next(err); }
+});
+
+// ── SLP / Replication ────────────────────────────────────────────────────────
+
+/** GET /api/netbackup/slps — SLP definitions + replication/duplication job stats. */
+router.get('/slps', (req, res, next) => {
+  try {
+    const slps = db.prepare(`
+      SELECT sl.*, s.name AS source_name FROM netbackup_slps sl
+      JOIN netbackup_sources s ON s.id = sl.source_id ORDER BY s.name, sl.name
+    `).all().map((r) => ({
+      id: r.id, sourceId: r.source_id, sourceName: r.source_name, name: r.name, version: r.version,
+      dataClassification: r.data_classification, priority: r.priority, operationCount: r.operation_count,
+      operations: r.operations_json ? JSON.parse(r.operations_json) : [],
+    }));
+
+    const placeholders = REPLICATION_TYPES.map(() => '?').join(',');
+    const jobs24h = db.prepare(`
+      SELECT j.*, s.name AS source_name FROM netbackup_jobs j JOIN netbackup_sources s ON s.id = j.source_id
+      WHERE UPPER(j.job_type) IN (${placeholders}) AND j.started_at >= datetime('now', '-1 day')
+    `).all(...REPLICATION_TYPES);
+    const jobs7d = db.prepare(`
+      SELECT j.*, s.name AS source_name FROM netbackup_jobs j JOIN netbackup_sources s ON s.id = j.source_id
+      WHERE UPPER(j.job_type) IN (${placeholders}) AND j.started_at >= datetime('now', '-7 days')
+    `).all(...REPLICATION_TYPES);
+
+    const failed24h = jobs24h.filter(isFailedJob);
+    const failed7d = jobs7d.filter(isFailedJob);
+
+    const byPolicy = new Map();
+    for (const j of jobs7d) {
+      if (!j.policy_name) continue;
+      const key = `${j.source_id}|${j.policy_name}`;
+      if (!byPolicy.has(key)) {
+        byPolicy.set(key, {
+          sourceId: j.source_id, sourceName: j.source_name, policyName: j.policy_name,
+          total7d: 0, failed7d: 0, lastStatus: null, lastRunAt: null, kilobytes7d: 0,
+        });
+      }
+      const p = byPolicy.get(key);
+      p.total7d += 1;
+      if (isFailedJob(j)) p.failed7d += 1;
+      p.kilobytes7d += j.kilobytes || 0;
+      if (!p.lastRunAt || (j.started_at && j.started_at > p.lastRunAt)) {
+        p.lastRunAt = j.started_at;
+        p.lastStatus = isFailedJob(j) ? 'FAILED' : 'SUCCESS';
+      }
+    }
+
+    res.json({
+      slps,
+      replication: {
+        jobs24h: jobs24h.length, failed24h: failed24h.length,
+        jobs7d: jobs7d.length, failed7d: failed7d.length,
+        byPolicy: [...byPolicy.values()],
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// ── Governance ───────────────────────────────────────────────────────────────
+
+/** GET /api/netbackup/governance — inactive/idle policies, unprotected clients, catalog, version drift. */
+router.get('/governance', (req, res, next) => {
+  try {
+    const inactivePolicies = db.prepare(`
+      SELECT p.source_id, s.name AS source_name, p.name, p.policy_type FROM netbackup_policies p
+      JOIN netbackup_sources s ON s.id = p.source_id WHERE p.active = 0 ORDER BY s.name, p.name
+    `).all().map((r) => ({ sourceId: r.source_id, sourceName: r.source_name, name: r.name, policyType: r.policy_type }));
+
+    const activePolicies = db.prepare(`
+      SELECT p.source_id, s.name AS source_name, p.name, p.policy_type FROM netbackup_policies p
+      JOIN netbackup_sources s ON s.id = p.source_id WHERE p.active = 1
+    `).all();
+    const lastRunByPolicy = new Map(db.prepare(`
+      SELECT source_id, policy_name, MAX(started_at) AS last_run FROM netbackup_jobs GROUP BY source_id, policy_name
+    `).all().map((r) => [`${r.source_id}|${r.policy_name}`, r.last_run]));
+    const idlePolicies = activePolicies.filter((p) => {
+      const lastRun = lastRunByPolicy.get(`${p.source_id}|${p.name}`);
+      return !lastRun || (Date.now() - new Date(lastRun).getTime()) / 3600000 > 168;
+    }).map((p) => ({
+      sourceId: p.source_id, sourceName: p.source_name, name: p.name, policyType: p.policy_type,
+      lastRunAt: lastRunByPolicy.get(`${p.source_id}|${p.name}`) || null,
+    }));
+
+    const staleHours = staleBackupHours();
+    const clientRows = db.prepare(`
+      SELECT j.source_id, s.name AS source_name, j.client_name,
+        MAX(CASE WHEN j.state != 'FAILED' AND NOT (j.state IN ('EXITED', 'DONE') AND COALESCE(j.status_code, 0) > 0)
+                  THEN j.started_at END) AS last_success
+      FROM netbackup_jobs j JOIN netbackup_sources s ON s.id = j.source_id
+      WHERE j.client_name IS NOT NULL
+      GROUP BY j.source_id, j.client_name
+    `).all();
+    const unprotectedClients = clientRows.filter((c) => {
+      if (!c.last_success) return true;
+      return (Date.now() - new Date(c.last_success).getTime()) / 3600000 > staleHours;
+    }).map((c) => ({ sourceName: c.source_name, clientName: c.client_name, lastSuccessAt: c.last_success }));
+
+    const catalogRow = db.prepare(`
+      SELECT j.policy_name, MAX(j.started_at) AS last_success FROM netbackup_jobs j
+      WHERE j.policy_type = 'NBU-Catalog' AND j.state != 'FAILED'
+        AND NOT (j.state IN ('EXITED', 'DONE') AND COALESCE(j.status_code, 0) > 0)
+      GROUP BY j.policy_name ORDER BY last_success DESC LIMIT 1
+    `).get();
+    let catalogBackup = null;
+    if (catalogRow) {
+      const ageHours = (Date.now() - new Date(catalogRow.last_success).getTime()) / 3600000;
+      catalogBackup = {
+        policyName: catalogRow.policy_name, lastSuccessAt: catalogRow.last_success,
+        ageHours: +ageHours.toFixed(1), ok: ageHours <= staleHours,
+      };
+    }
+
+    const versionRows = [
+      ...db.prepare(`
+        SELECT s.name AS source_name, m.name, m.version FROM netbackup_media_servers m
+        JOIN netbackup_sources s ON s.id = m.source_id WHERE m.version IS NOT NULL
+      `).all().map((r) => ({ sourceName: r.source_name, name: r.name, kind: 'media-server', version: r.version })),
+      ...db.prepare(`
+        SELECT s.name AS source_name, a.name, a.nbu_version AS version FROM netbackup_appliances a
+        JOIN netbackup_sources s ON s.id = a.source_id WHERE a.nbu_version IS NOT NULL
+      `).all().map((r) => ({ sourceName: r.source_name, name: r.name, kind: 'appliance', version: r.version })),
+    ];
+    const versionCounts = new Map();
+    for (const r of versionRows) versionCounts.set(r.version, (versionCounts.get(r.version) || 0) + 1);
+    let dominant = null; let dominantCount = -1;
+    for (const [v, c] of versionCounts) { if (c > dominantCount) { dominant = v; dominantCount = c; } }
+    const versionDrift = {
+      dominant,
+      rows: versionRows.map((r) => ({ ...r, isOutlier: dominant != null && r.version !== dominant })),
+    };
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      inactivePolicies, idlePolicies, unprotectedClients, catalogBackup, versionDrift,
+      summary: {
+        inactiveCount: inactivePolicies.length, idleCount: idlePolicies.length,
+        unprotectedCount: unprotectedClients.length,
+        catalogOk: catalogBackup ? catalogBackup.ok : null,
+        outlierCount: versionDrift.rows.filter((r) => r.isOutlier).length,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// ── Workloads ────────────────────────────────────────────────────────────────
+
+/** GET /api/netbackup/workloads — latest per-source-per-workload snapshot + estate/domain rollups. */
+router.get('/workloads', (req, res, next) => {
+  try {
+    const sourceTypes = new Map(db.prepare('SELECT id, source_type FROM netbackup_sources').all().map((s) => [s.id, s.source_type]));
+    const rows = db.prepare(`
+      SELECT w.source_id, s.name AS source_name, w.workload, w.protected_clients, w.job_count,
+             w.success_count, w.failed_count, w.protected_bytes, w.captured_at
+      FROM netbackup_workload_history w
+      JOIN netbackup_sources s ON s.id = w.source_id
+      JOIN (SELECT source_id, MAX(captured_at) AS latest FROM netbackup_workload_history GROUP BY source_id) t
+        ON t.source_id = w.source_id AND w.captured_at = t.latest
+      ORDER BY s.name, w.workload
+    `).all();
+
+    const estateMap = new Map();
+    const domainsMap = new Map();
+    for (const r of rows) {
+      if (!estateMap.has(r.workload)) {
+        estateMap.set(r.workload, {
+          workload: r.workload, sources: 0, protectedClients: 0, jobCount: 0,
+          successCount: 0, failedCount: 0, protectedBytes: 0,
+        });
+      }
+      const e = estateMap.get(r.workload);
+      e.sources += 1;
+      e.protectedClients += r.protected_clients || 0;
+      e.jobCount += r.job_count || 0;
+      e.successCount += r.success_count || 0;
+      e.failedCount += r.failed_count || 0;
+      e.protectedBytes += r.protected_bytes || 0;
+
+      if (!domainsMap.has(r.source_id)) {
+        domainsMap.set(r.source_id, {
+          sourceId: r.source_id, sourceName: r.source_name, sourceType: sourceTypes.get(r.source_id) || null,
+          protectedClients: 0, jobCount: 0, failedCount: 0, protectedBytes: 0, workloads: {},
+        });
+      }
+      const d = domainsMap.get(r.source_id);
+      d.protectedClients += r.protected_clients || 0;
+      d.jobCount += r.job_count || 0;
+      d.failedCount += r.failed_count || 0;
+      d.protectedBytes += r.protected_bytes || 0;
+      d.workloads[r.workload] = r.protected_bytes || 0;
+    }
+
+    res.json({
+      rows: rows.map((r) => ({
+        sourceId: r.source_id, sourceName: r.source_name, workload: r.workload,
+        protectedClients: r.protected_clients, jobCount: r.job_count, successCount: r.success_count,
+        failedCount: r.failed_count, protectedBytes: r.protected_bytes, capturedAt: r.captured_at,
+      })),
+      estate: [...estateMap.values()].sort((a, b) => b.protectedBytes - a.protectedBytes),
+      domains: [...domainsMap.values()],
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/netbackup/workloads/trends?days=90&sourceId=&workload= */
+router.get('/workloads/trends', [
+  query('days').optional().isInt({ min: 7, max: 400 }).toInt(),
+  query('sourceId').optional().isInt().toInt(),
+  query('workload').optional().isString(),
+], validate, (req, res, next) => {
+  try {
+    const days = req.query.days || 90;
+    const sourceId = req.query.sourceId ?? null;
+    const workload = req.query.workload ?? null;
+    const rows = db.prepare(`
+      WITH latest_per_day AS (
+        SELECT date(captured_at) AS day, source_id, workload,
+               protected_clients, job_count, failed_count, protected_bytes,
+               ROW_NUMBER() OVER (
+                 PARTITION BY date(captured_at), source_id, workload
+                 ORDER BY captured_at DESC
+               ) AS rn
+        FROM netbackup_workload_history
+        WHERE captured_at >= datetime('now', ?)
+          AND (? IS NULL OR source_id = ?)
+          AND (? IS NULL OR workload = ?)
+      )
+      SELECT day, workload,
+             SUM(protected_clients) AS protected_clients,
+             SUM(job_count) AS job_count,
+             SUM(failed_count) AS failed_count,
+             SUM(protected_bytes) AS protected_bytes
+      FROM latest_per_day WHERE rn = 1
+      GROUP BY day, workload
+      ORDER BY day, workload
+    `).all(`-${days} days`, sourceId, sourceId, workload, workload);
+    res.json({
+      trends: rows.map((r) => ({
+        day: r.day, workload: r.workload, protectedClients: r.protected_clients,
+        jobCount: r.job_count, failedCount: r.failed_count, protectedBytes: r.protected_bytes,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+// ── Licensing ────────────────────────────────────────────────────────────────
+
+/** GET /api/netbackup/licensing — computed FETB by workload/domain + entitlement + upstream (if reachable). */
+router.get('/licensing', async (req, res, next) => {
+  try {
+    const sources = db.prepare('SELECT * FROM netbackup_sources').all();
+    const sourceById = new Map(sources.map((s) => [s.id, s]));
+
+    const rowsRaw = db.prepare(`
+      SELECT source_id, COALESCE(policy_type, 'Other') AS workload, client_name, MAX(kilobytes) AS max_kb
+      FROM netbackup_jobs
+      WHERE started_at >= datetime('now', '-30 days') AND client_name IS NOT NULL
+        AND state != 'FAILED' AND NOT (state IN ('EXITED', 'DONE') AND COALESCE(status_code, 0) > 0)
+        AND UPPER(COALESCE(job_type, '')) NOT IN (${REPLICATION_TYPES.map(() => '?').join(',')})
+      GROUP BY source_id, workload, client_name
+    `).all(...REPLICATION_TYPES);
+
+    let totalBytes = 0;
+    const clientsSet = new Set();
+    const sourcesSet = new Set();
+    const byWorkloadMap = new Map();
+    const byDomainMap = new Map();
+    for (const r of rowsRaw) {
+      const bytes = (r.max_kb || 0) * 1024;
+      totalBytes += bytes;
+      clientsSet.add(`${r.source_id}|${r.client_name}`);
+      sourcesSet.add(r.source_id);
+
+      if (!byWorkloadMap.has(r.workload)) byWorkloadMap.set(r.workload, { workload: r.workload, clients: new Set(), frontEndBytes: 0 });
+      const w = byWorkloadMap.get(r.workload);
+      w.clients.add(`${r.source_id}|${r.client_name}`);
+      w.frontEndBytes += bytes;
+
+      if (!byDomainMap.has(r.source_id)) {
+        const src = sourceById.get(r.source_id);
+        byDomainMap.set(r.source_id, {
+          sourceId: r.source_id, sourceName: src?.name || null, sourceType: src?.source_type || null,
+          clients: new Set(), frontEndBytes: 0,
+        });
+      }
+      const d = byDomainMap.get(r.source_id);
+      d.clients.add(r.client_name);
+      d.frontEndBytes += bytes;
+    }
+
+    const entitled = entitledTb();
+    const altaSource = sources.find((s) => s.source_type === 'alta') || sources[0] || null;
+    let upstream = null;
+    if (altaSource) {
+      try { upstream = await netbackupApi.fetchLicensing(altaSource); } catch { upstream = null; }
+    }
+
+    res.json({
+      capturedAt: new Date().toISOString(),
+      basis: 'computed-fetb',
+      entitledTb: entitled,
+      upstream,
+      totals: { frontEndBytes: totalBytes, clients: clientsSet.size, sources: sourcesSet.size },
+      byWorkload: [...byWorkloadMap.values()]
+        .map((w) => ({ workload: w.workload, clients: w.clients.size, frontEndBytes: w.frontEndBytes }))
+        .sort((a, b) => b.frontEndBytes - a.frontEndBytes),
+      byDomain: [...byDomainMap.values()]
+        .map((d) => ({
+          sourceId: d.sourceId, sourceName: d.sourceName, sourceType: d.sourceType,
+          clients: d.clients.size, frontEndBytes: d.frontEndBytes,
+          usagePercent: entitled > 0 ? +(((d.frontEndBytes / 1e12) / entitled) * 100).toFixed(1) : null,
+        }))
+        .sort((a, b) => b.frontEndBytes - a.frontEndBytes),
+    });
+  } catch (err) { next(err); }
+});
+
+// ── Backup History ───────────────────────────────────────────────────────────
+
+function mapRunStatus(state, statusCode) {
+  if (state === 'ACTIVE' || state === 'QUEUED') return 'kRunning';
+  const failed = state === 'FAILED' || (['EXITED', 'DONE'].includes(state) && Number(statusCode || 0) > 0);
+  return failed ? 'kFailure' : 'kSuccess';
+}
+
+/** GET /api/netbackup/backup-history?q=&days= — per-client day-by-day bubble matrix data, all from netbackup_jobs. */
+router.get('/backup-history', [
+  query('q').optional().isString().trim().isLength({ max: 200 }),
+  query('days').optional().isInt({ min: 1, max: 31 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const days = Math.min(req.query.days || 30, 31);
+    const browse = q.length < 2;
+
+    let clientNames;
+    if (browse) {
+      clientNames = db.prepare(`
+        SELECT DISTINCT client_name FROM netbackup_jobs
+        WHERE client_name IS NOT NULL
+        ORDER BY client_name COLLATE NOCASE LIMIT 25
+      `).all().map((r) => r.client_name);
+    } else {
+      const pattern = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+      clientNames = db.prepare(`
+        SELECT client_name, COUNT(*) AS n FROM netbackup_jobs
+        WHERE client_name LIKE ? ESCAPE '\\'
+        GROUP BY client_name ORDER BY n DESC LIMIT 50
+      `).all(pattern).map((r) => r.client_name);
+    }
+
+    const cutoff = `-${days} days`;
+    const runStmt = db.prepare(`
+      SELECT j.id, j.policy_name, j.schedule_type, j.job_type, j.state, j.status_code,
+             j.kilobytes, j.started_at, j.ended_at, s.name AS source_name
+      FROM netbackup_jobs j JOIN netbackup_sources s ON s.id = j.source_id
+      WHERE j.client_name = ? AND j.started_at >= datetime('now', ?)
+      ORDER BY j.started_at ASC
+    `);
+
+    const servers = clientNames.map((name) => {
+      const rows = runStmt.all(name, cutoff);
+      const sourceNames = [...new Set(rows.map((r) => r.source_name))];
+      const policies = [...new Set(rows.map((r) => r.policy_name).filter(Boolean))];
+      const runs = rows.map((r) => ({
+        id: r.id,
+        group: r.policy_name,
+        clusterName: r.source_name,
+        runType: r.schedule_type || r.job_type,
+        status: mapRunStatus(r.state, r.status_code),
+        startMs: r.started_at ? Date.parse(r.started_at) : null,
+        endMs: r.ended_at ? Date.parse(r.ended_at) : null,
+        logicalBytes: r.kilobytes != null ? r.kilobytes * 1024 : null,
+        errorCode: r.status_code > 0 ? r.status_code : null,
+        errorMessage: null,
+      }));
+      const last = runs[runs.length - 1];
+      return {
+        name, sourceNames, policies,
+        lastBackupStatus: last ? last.status : null,
+        runs,
+      };
+    });
+
+    res.json({ query: q, days, browse, servers });
+  } catch (err) { next(err); }
+});
+
+// ── AI Advisor ───────────────────────────────────────────────────────────────
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /api/netbackup/advisor/:report — cached NetBackup AI Advisor report. */
+router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!netbackupAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    res.json({ enabled: netbackupAdvisor.isConfigured(), report: netbackupAdvisor.getCachedReport(key) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/netbackup/advisor/:report — (re)generate and cache a NetBackup AI Advisor report. */
+router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!netbackupAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const result = await netbackupAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

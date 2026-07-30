@@ -166,6 +166,24 @@ function loadDictionary() {
     add(db.prepare("SELECT name FROM aria_endpoints WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
   } catch { /* Aria tables not present on this instance */ }
 
+  try {
+    add(db.prepare('SELECT name FROM netbackup_sources').all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM netbackup_sources WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM netbackup_policies WHERE name IS NOT NULL AND name != ''").all(), 'POLICY');
+    add(db.prepare("SELECT DISTINCT client_name AS name FROM netbackup_jobs WHERE client_name IS NOT NULL AND client_name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM netbackup_media_servers WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT name FROM netbackup_appliances WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT serial_number AS name FROM netbackup_appliances WHERE serial_number IS NOT NULL AND serial_number != ''").all(), 'SERIAL');
+    add(db.prepare("SELECT name FROM netbackup_storage_units WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT name FROM netbackup_disk_pools WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+  } catch { /* NetBackup tables not present on this instance */ }
+
+  try {
+    // netbackup_slps ships in migration v2 (WP1); guarded separately so its
+    // absence doesn't drop the v1 NetBackup entries above.
+    add(db.prepare("SELECT name FROM netbackup_slps WHERE name IS NOT NULL AND name != ''").all(), 'POLICY');
+  } catch { /* netbackup_slps not present until migration v2 lands */ }
+
   return entries;
 }
 

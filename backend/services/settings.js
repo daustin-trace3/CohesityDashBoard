@@ -30,6 +30,7 @@ const DEFAULTS = {
   netbackup_success_warn_pct: '90',
   netbackup_storage_warn_pct: '20',
   netbackup_stale_backup_hours: '48',
+  netbackup_entitled_tb: '0',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',

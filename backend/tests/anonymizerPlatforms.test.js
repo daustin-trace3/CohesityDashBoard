@@ -66,6 +66,27 @@ beforeAll(() => {
     INSERT INTO aria_deployments (instance_id, deployment_id, name, created_by)
     VALUES (1, 'dep-1', 'app-deployment-checkout', 'jdoe')
   `).run();
+
+  // NetBackup
+  db.prepare(`
+    INSERT INTO netbackup_sources (name, host, encrypted_credentials)
+    VALUES ('netbackup-primary-zeta', 'nbu-master.invalid', ?)
+  `).run(encrypt(JSON.stringify({})));
+  db.prepare(`
+    INSERT INTO netbackup_policies (source_id, name) VALUES (1, 'policy-oracle-nightly')
+  `).run();
+  db.prepare(`
+    INSERT INTO netbackup_jobs (source_id, job_id, client_name) VALUES (1, 1, 'client-webapp-eta')
+  `).run();
+  db.prepare(`
+    INSERT INTO netbackup_media_servers (source_id, name) VALUES (1, 'media-server-theta')
+  `).run();
+  db.prepare(`
+    INSERT INTO netbackup_appliances (source_id, name, serial_number) VALUES (1, 'nbu-appliance-iota', 'SN-NBU-5566')
+  `).run();
+  db.prepare(`
+    INSERT INTO netbackup_storage_units (source_id, name) VALUES (1, 'storage-unit-kappa')
+  `).run();
 });
 
 const SEEDED_NAMES = [
@@ -75,6 +96,8 @@ const SEEDED_NAMES = [
   'vcenter-prod-gamma', 'esxi-rack3-node07',
   'dell-ome-delta', 'poweredge-r740-04',
   'aria-vra-epsilon', 'app-deployment-checkout',
+  'netbackup-primary-zeta', 'policy-oracle-nightly', 'client-webapp-eta',
+  'media-server-theta', 'nbu-appliance-iota', 'storage-unit-kappa',
 ];
 
 describe('anonymizer platform coverage', () => {
