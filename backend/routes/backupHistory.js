@@ -116,15 +116,19 @@ router.get(
         const runs = [];
         for (const [group, clusterIds] of s.groupClusters) {
           const ids = [...clusterIds];
+          // v1 run history sometimes names the job with the vCenter's 'vc'
+          // prefix while the v2 object inventory reports the group without it
+          // (e.g. runs 'vcsnx2gcpra-OraOS' vs group 'snx2gcpra-OraOS') —
+          // match both forms.
           const rows = db.prepare(`
             SELECT pr.id, pr.cluster_id, pr.run_type, pr.status,
                    ${startEpoch} AS start_epoch, ${endEpoch} AS end_epoch,
                    pr.error_code, pr.error_message, pr.logical_bytes
             FROM protection_runs pr
             WHERE pr.cluster_id IN (${ids.map(() => '?').join(',')})
-              AND pr.job_name = ? AND ${startEpoch} >= ?
+              AND pr.job_name IN (?, ?) AND ${startEpoch} >= ?
             ORDER BY start_epoch ASC
-          `).all(...ids, group, cutoff);
+          `).all(...ids, group, `vc${group}`, cutoff);
           for (const r of rows) {
             runs.push({
               id: r.id,
