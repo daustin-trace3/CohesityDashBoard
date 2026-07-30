@@ -521,21 +521,30 @@ function seedCohesity(db, { now, encrypt }) {
     Exchange: { type: 'Database', src: (c) => `${c.site}-exch-dag`, os: ['Windows'] },
   };
   let objectRows = 0;
+  // Objects reference the cluster's REAL seeded run job names so the Backup
+  // History page (objects → protection_groups → protection_runs) lights up.
+  const ENV_JOB_PREFIX = {
+    VMware: 'VM_Prod_Backup', Physical: 'VM_Prod_Backup', SQL: 'SQL_Daily',
+    Oracle: 'Oracle_Weekly', Exchange: 'Exchange_DB', NetApp: 'NAS_Archive', GenericNas: 'NAS_Archive',
+  };
   for (const cluster of clusters) {
     const rng = rngFor(`${cluster.name}-objects`);
     const site = cluster.name.split('-')[0];
+    const clusterJobs = [...new Set((protRunsByCluster.get(cluster.name) || []).map((r) => r.jobName))];
     const envRows = db.prepare(`
       SELECT DISTINCT environment FROM workload_history WHERE cluster_id = ? AND environment != 'Views'
     `).all(cluster.id).map((r) => r.environment);
     for (const environment of envRows) {
       const shape = OBJ_SHAPES[environment] || { type: 'Object', src: () => null, os: [null] };
+      const envJobs = clusterJobs.filter((j) => j.startsWith(ENV_JOB_PREFIX[environment] || ''));
+      const groupPool = envJobs.length ? envJobs : clusterJobs;
       const count = environment === 'VMware' ? randInt(rng, 25, 60) : randInt(rng, 4, 18);
       for (let i = 1; i <= count; i++) {
         const name = environment === 'VMware' ? `${site}-vm-${String(i).padStart(3, '0')}`
           : environment === 'Physical' ? `${site}-phys-${String(i).padStart(2, '0')}`
             : `${site}-${environment.toLowerCase()}-${String(i).padStart(2, '0')}`;
         const isProtected = chance(rng, 0.86);
-        const groupName = `${environment}_Protect_${1 + (i % 3)}`;
+        const groupName = groupPool.length ? groupPool[i % groupPool.length] : `${environment}_Protect_${1 + (i % 3)}`;
         const failed = isProtected && chance(rng, 0.06);
         insertObject.run(
           cluster.id, 10000 + objectRows, `${cluster.id}:demo:${10000 + objectRows}`,
