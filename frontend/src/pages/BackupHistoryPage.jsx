@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams, Link } from 'react-router-dom';
 import { CalendarCheck, Search, X, ArrowLeftRight } from 'lucide-react';
 import client from '../api/client';
@@ -61,8 +62,16 @@ export default function BackupHistoryPage() {
     if (query.length < 2) { setData(null); return; }
     setLoading(true);
     client.get(`/cohesity/backup-history?q=${encodeURIComponent(query)}&days=${nDays}`)
-      .then(({ data }) => setData(data))
-      .catch(() => { setData({ servers: [] }); toast({ type: 'error', title: 'Failed to load backup history' }); })
+      .then(({ data }) => {
+        // A not-yet-restarted backend serves the SPA index.html with 200 on
+        // unknown API paths — validate the shape instead of crashing/blanking.
+        if (data && Array.isArray(data.servers)) setData(data);
+        else {
+          setData({ query, servers: [] });
+          toast({ type: 'error', title: 'Unexpected response', message: 'The backend may not have been restarted since this feature was deployed.' });
+        }
+      })
+      .catch(() => { setData({ query, servers: [] }); toast({ type: 'error', title: 'Failed to load backup history' }); })
       .finally(() => setLoading(false));
   }, [toast]);
 
@@ -188,7 +197,7 @@ export default function BackupHistoryPage() {
         </div>
       )}
 
-      {modal && (
+      {modal && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setModal(null)}>
           <div className="panel w-full max-w-2xl p-5 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3 mb-3">
@@ -234,7 +243,8 @@ export default function BackupHistoryPage() {
               ))}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
