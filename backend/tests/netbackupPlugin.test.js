@@ -282,6 +282,14 @@ describe('routes/netbackup.js v2 routes (SLPs, governance, workloads, licensing,
         (?, 'inactive-policy', 'Standard', 0),
         (?, 'catalog-policy', 'NBU-Catalog', 1)
     `).run(sourceId, sourceId, sourceId);
+    db.prepare(`
+      UPDATE netbackup_policies SET detail_json = ?
+      WHERE source_id = ? AND name = 'active-policy'
+    `).run(JSON.stringify({
+      clients: ['client-a', { hostName: 'client-b' }],
+      schedules: [{ scheduleName: 'Full-Weekly', scheduleType: 'Full', frequencySeconds: 604800, retentionLevel: 3 }, 'Incr-Daily'],
+      selections: ['/data', { path: '/home' }],
+    }), sourceId);
 
     const jobStmt = db.prepare(`
       INSERT INTO netbackup_jobs (source_id, job_id, job_type, state, status_code, policy_name, policy_type,
@@ -382,6 +390,24 @@ describe('routes/netbackup.js v2 routes (SLPs, governance, workloads, licensing,
       sourceId, name: 'does-not-exist', model: 'Whatever',
     });
     expect(res.status).toBe(404);
+  });
+
+  it('GET /api/netbackup/policies/:id returns normalized clients/schedules/selections', async () => {
+    const row = db.prepare("SELECT id FROM netbackup_policies WHERE source_id = ? AND name = 'active-policy'").get(sourceId);
+    const res = await request(app).get(`/api/netbackup/policies/${row.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.hasDetail).toBe(true);
+    expect(res.body.clients).toEqual(['client-a', 'client-b']);
+    expect(res.body.schedules[0]).toMatchObject({ name: 'Full-Weekly', type: 'Full', frequencySeconds: 604800, retentionLevel: 3 });
+    expect(res.body.schedules[1]).toMatchObject({ name: 'Incr-Daily' });
+    expect(res.body.selections).toEqual(['/data', '/home']);
+
+    const noDetail = db.prepare("SELECT id FROM netbackup_policies WHERE source_id = ? AND name = 'inactive-policy'").get(sourceId);
+    const res2 = await request(app).get(`/api/netbackup/policies/${noDetail.id}`);
+    expect(res2.status).toBe(200);
+    expect(res2.body.hasDetail).toBe(false);
+
+    expect((await request(app).get('/api/netbackup/policies/999999')).status).toBe(404);
   });
 
   it('GET /api/netbackup/governance returns flat governance shape', async () => {

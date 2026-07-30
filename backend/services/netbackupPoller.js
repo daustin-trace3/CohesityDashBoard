@@ -53,12 +53,13 @@ const store = db.transaction((sourceId, { jobs, policies, storageUnits, diskPool
 
   db.prepare('DELETE FROM netbackup_policies WHERE source_id = ?').run(sourceId);
   const polStmt = db.prepare(`
-    INSERT INTO netbackup_policies (source_id, name, policy_type, active, client_count, schedule_count, selection_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO netbackup_policies (source_id, name, policy_type, active, client_count, schedule_count, selection_count, detail_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const p of policies) {
     polStmt.run(sourceId, p.policyName ?? null, p.policyType ?? null, p.active ? 1 : 0,
-      p.clients?.length ?? null, p.schedules?.length ?? null, p.selections?.length ?? null);
+      p.clients?.length ?? null, p.schedules?.length ?? null, p.selections?.length ?? null,
+      JSON.stringify({ clients: p.clients || [], schedules: p.schedules || [], selections: p.selections || [] }));
   }
 
   db.prepare('DELETE FROM netbackup_storage_units WHERE source_id = ?').run(sourceId);

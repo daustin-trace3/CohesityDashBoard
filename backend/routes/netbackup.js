@@ -338,6 +338,37 @@ router.get('/policies', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** GET /api/netbackup/policies/:id — stored policy detail (clients/schedules/selections). */
+router.get('/policies/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const p = db.prepare(`
+      SELECT p.*, s.name AS source_name FROM netbackup_policies p
+      JOIN netbackup_sources s ON s.id = p.source_id WHERE p.id = ?
+    `).get(req.params.id);
+    if (!p) return res.status(404).json({ error: 'Policy not found.' });
+    let detail = { clients: [], schedules: [], selections: [] };
+    try { detail = { ...detail, ...JSON.parse(p.detail_json || '{}') }; } catch { /* pre-v4 row */ }
+    // Upstream shapes vary: clients/selections may be strings or objects,
+    // schedules strings or {scheduleName, scheduleType, frequencySeconds}.
+    const asName = (c) => (typeof c === 'string' ? c : (c?.hostName ?? c?.clientName ?? c?.name ?? null));
+    res.json({
+      id: p.id, sourceId: p.source_id, sourceName: p.source_name, name: p.name,
+      policyType: p.policy_type, active: !!p.active, capturedAt: p.captured_at,
+      clients: (detail.clients || []).map(asName).filter(Boolean),
+      schedules: (detail.schedules || []).map((s) => (typeof s === 'string'
+        ? { name: s, type: null, frequencySeconds: null, retentionLevel: null }
+        : {
+          name: s?.scheduleName ?? s?.name ?? null,
+          type: s?.scheduleType ?? s?.type ?? null,
+          frequencySeconds: s?.frequencySeconds ?? s?.frequency ?? null,
+          retentionLevel: s?.retentionLevel ?? null,
+        })).filter((s) => s.name || s.type),
+      selections: (detail.selections || []).map((sel) => (typeof sel === 'string' ? sel : (sel?.path ?? JSON.stringify(sel)))).filter(Boolean),
+      hasDetail: !!p.detail_json,
+    });
+  } catch (err) { next(err); }
+});
+
 /** GET /api/netbackup/storage */
 router.get('/storage', (req, res, next) => {
   try {

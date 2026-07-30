@@ -231,4 +231,13 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 4,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(netbackup_policies)').all().map((c) => c.name);
+      if (!cols.includes('detail_json')) {
+        db.exec('ALTER TABLE netbackup_policies ADD COLUMN detail_json TEXT');
+      }
+    },
+  },
 ];

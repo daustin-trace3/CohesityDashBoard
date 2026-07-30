@@ -55,8 +55,8 @@ function seedNetbackup(db, { now, encrypt }) {
   `);
   const insertPolicy = db.prepare(`
     INSERT INTO netbackup_policies (source_id, name, policy_type, active, client_count,
-      schedule_count, selection_count, captured_at)
-    VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+      schedule_count, selection_count, detail_json, captured_at)
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
   `);
   const insertJob = db.prepare(`
     INSERT INTO netbackup_jobs (source_id, job_id, parent_job_id, job_type, state, status_code,
@@ -133,11 +133,30 @@ function seedNetbackup(db, { now, encrypt }) {
   for (const def of PRIMARY_POLICIES) policySourceOf[def.name] = primaryId;
   for (const def of ALTA_POLICIES) policySourceOf[def.name] = altaId;
 
+  const SCHEDULE_POOL = [
+    { scheduleName: 'Full-Weekly', scheduleType: 'Full', frequencySeconds: 604800, retentionLevel: 3 },
+    { scheduleName: 'Incr-Daily', scheduleType: 'Differential Incremental', frequencySeconds: 86400, retentionLevel: 1 },
+    { scheduleName: 'Cumulative-Monthly', scheduleType: 'Cumulative Incremental', frequencySeconds: 2592000, retentionLevel: 4 },
+  ];
+  const SELECTIONS_BY_TYPE = {
+    VMware: ['vmware:/?filter=Displayname Contains "vm-"', 'vmware:/?filter=Powerstate Equal poweredOn'],
+    'MS-Windows': ['ALL_LOCAL_DRIVES', 'C:\\Users', 'D:\\Shares', 'System State:\\'],
+    Standard: ['/data', '/home', '/var/www', '/opt/app'],
+    Oracle: ['/oracle/rman/backup_full.sh', '/oracle/rman/backup_arch.sh'],
+    'NBU-Catalog': ['NBU-Catalog'],
+  };
   for (const def of POLICY_DEFS) {
+    const schedCount = def.weekly ? 1 : randInt(rngFor(`${def.name}-sched`), 1, 3);
+    const selPool = SELECTIONS_BY_TYPE[def.type] || SELECTIONS_BY_TYPE.Standard;
+    const selCount = Math.min(selPool.length, randInt(rngFor(`${def.name}-sel`), 1, 4));
+    const detail = {
+      clients: def.clients.slice(),
+      schedules: SCHEDULE_POOL.slice(0, schedCount),
+      selections: selPool.slice(0, selCount),
+    };
     insertPolicy.run(
       policySourceOf[def.name], def.name, def.type, def.clients.length,
-      def.weekly ? 1 : randInt(rngFor(`${def.name}-sched`), 1, 3),
-      randInt(rngFor(`${def.name}-sel`), 1, 4), nowIso
+      schedCount, selCount, JSON.stringify(detail), nowIso
     );
   }
 
