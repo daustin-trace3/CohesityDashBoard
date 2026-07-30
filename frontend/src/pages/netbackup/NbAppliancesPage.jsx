@@ -1,8 +1,12 @@
-import { useEffect, useState, useCallback } from 'react';
-import { Server, Box, Pencil, Check, X, HeartPulse, RefreshCw, Info } from 'lucide-react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
+import {
+  Server, Box, Pencil, Check, X, HeartPulse, RefreshCw, Info,
+  HardDrive, Layers, MemoryStick, Cpu, Network, Cable, Plug, Fan, Thermometer, BatteryCharging,
+} from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, LoadingPanel, RefreshButton, LastUpdated, Badge } from '../../components/ui/primitives';
+import { PageHeader, LoadingPanel, RefreshButton, LastUpdated, Badge, Spinner } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtWhen, componentTypeLabel, componentStatusTone, fmtHwDetail } from './helpers';
 
@@ -80,10 +84,113 @@ function ModelCell({ a, editable, onSaved }) {
 const SUMMARY_TONE = { ok: 'ok', warning: 'warn', critical: 'crit', unknown: 'neutral' };
 const SUMMARY_LABEL = { ok: 'OK', warning: 'Warning', critical: 'Critical', unknown: 'Unknown' };
 
+function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative panel w-full max-w-3xl max-h-[85vh] flex flex-col" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <div className="flex items-start justify-between p-4 pb-3 border-b border-cohesity-border">
+          <div className="flex items-center gap-2 min-w-0">
+            {Icon && <Icon size={17} className="text-brand shrink-0" />}
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-ink truncate">{title}</p>
+              {subtitle && <p className="text-[11px] text-ink-faint truncate">{subtitle}</p>}
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer shrink-0">
+            <X size={15} />
+          </button>
+        </div>
+        <div className="p-4 overflow-y-auto">{children}</div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+const COMPONENT_TYPE_ORDER = ['disk', 'raid', 'memory', 'cpu', 'network', 'fc', 'psu', 'fan', 'temperature', 'battery', 'other'];
+const COMPONENT_TYPE_ICON = {
+  disk: HardDrive, raid: Layers, memory: MemoryStick, cpu: Cpu, network: Network,
+  fc: Cable, psu: Plug, fan: Fan, temperature: Thermometer, battery: BatteryCharging, other: Box,
+};
+
+function ComponentSection({ type, rows }) {
+  const Icon = COMPONENT_TYPE_ICON[type] || Box;
+  if (!rows.length) return null;
+  return (
+    <div className="mb-4">
+      <p className="text-xs font-semibold text-ink mb-2 flex items-center gap-1.5"><Icon size={13} className="text-brand" /> {componentTypeLabel(type)} ({rows.length})</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+            <th className="py-1.5 pr-3">Name</th>
+            <th className="py-1.5 pr-3">Status</th>
+            <th className="py-1.5 pr-3">State</th>
+            <th className="py-1.5 pr-3">Detail</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((c, i) => (
+              <tr key={`${c.componentType}-${c.componentName}-${i}`} className="border-b border-cohesity-border/40">
+                <td className="py-1.5 pr-3 text-ink max-w-[200px] truncate" title={c.componentName || ''}>{c.componentName || '—'}</td>
+                <td className="py-1.5 pr-3"><Badge tone={componentStatusTone(c.status)}>{SUMMARY_LABEL[c.status] || c.status}</Badge></td>
+                <td className="py-1.5 pr-3 text-ink-muted">{c.stateRaw || '—'}</td>
+                <td className="py-1.5 pr-3 text-ink-muted max-w-[260px] truncate" title={fmtHwDetail(c.detail) || ''}>{fmtHwDetail(c.detail) || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function applianceHealthTone(summary) {
+  const s = summary || {};
+  if (s.critical > 0) return 'crit';
+  if (s.warning > 0) return 'warn';
+  if (s.ok > 0) return 'ok';
+  return 'neutral';
+}
+function applianceHealthLabel(summary) {
+  const s = summary || {};
+  if (s.critical > 0) return 'Critical';
+  if (s.warning > 0) return 'Warning';
+  if (s.ok > 0) return 'OK';
+  return 'Unknown';
+}
+
+function ApplianceDetailModal({ conn, components, onClose }) {
+  return (
+    <ModalShell
+      title={conn.name}
+      subtitle={`${conn.host} · last poll ${fmtWhen(conn.lastPollAt)}`}
+      icon={Server} onClose={onClose}>
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <Badge tone={applianceHealthTone(conn.summary)}>{applianceHealthLabel(conn.summary)}</Badge>
+        <Badge tone={conn.lastPollStatus === 'error' ? 'crit' : conn.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
+          {conn.lastPollStatus === 'error' ? 'Unreachable' : conn.lastPollStatus === 'success' ? 'Up' : 'Pending'}
+        </Badge>
+        {['ok', 'warning', 'critical', 'unknown'].map((k) => (
+          conn.summary?.[k] ? <Badge key={k} tone={SUMMARY_TONE[k]}>{conn.summary[k]} {SUMMARY_LABEL[k]}</Badge> : null
+        ))}
+      </div>
+      {components.length === 0 ? (
+        <div className="text-sm text-ink-muted py-6 text-center">No hardware components reported yet.</div>
+      ) : (
+        COMPONENT_TYPE_ORDER.map((t) => (
+          <ComponentSection key={t} type={t} rows={components.filter((c) => c.componentType === t)} />
+        ))
+      )}
+    </ModalShell>
+  );
+}
+
 function HardwareHealthSection() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
   const [refreshingId, setRefreshingId] = useState(null);
+  const [detailConnId, setDetailConnId] = useState(null);
 
   const load = useCallback(() => client.get('/netbackup/appliance-hardware')
     .then(({ data }) => setData({ connections: data.connections || [], components: data.components || [] }))
@@ -104,11 +211,21 @@ function HardwareHealthSection() {
     }
   };
 
-  const componentList = data?.components || [];
-  const componentCtl = useTableControls(componentList, {
-    searchKeys: ['componentName'],
-    defaultSortKey: 'connName', paginate: true,
+  const connections = data?.connections || [];
+  const componentsByConn = useMemo(() => {
+    const map = {};
+    for (const c of data?.components || []) {
+      (map[c.connId] = map[c.connId] || []).push(c);
+    }
+    return map;
+  }, [data]);
+
+  const connCtl = useTableControls(connections, {
+    searchKeys: ['name', 'host'],
+    defaultSortKey: 'name', paginate: true,
   });
+
+  const detailConn = detailConnId != null ? connections.find((c) => c.id === detailConnId) : null;
 
   return (
     <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -120,72 +237,65 @@ function HardwareHealthSection() {
 
       {data == null ? (
         <LoadingPanel label="Loading…" height={100} />
-      ) : data.connections.length === 0 ? (
+      ) : connections.length === 0 ? (
         <div className="text-sm text-ink-muted py-6 text-center">
           No appliance management connections registered — add your NetBackup appliances under Settings → Appliance Hardware to monitor disk, memory, network, PSU and fan health.
         </div>
       ) : (
-        <>
-          <div className="flex flex-col gap-2 mb-4">
-            {data.connections.map((c) => (
-              <div key={c.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-cohesity-border bg-surface-overlay px-3 py-2">
-                <div className="min-w-0">
-                  <p className="text-sm text-ink font-medium truncate">{c.name}</p>
-                  <p className="text-[11px] text-ink-muted truncate">{c.host}</p>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Badge tone={c.lastPollStatus === 'error' ? 'crit' : c.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
-                    {c.lastPollStatus === 'error' ? 'Unreachable' : c.lastPollStatus === 'success' ? 'Up' : 'Pending'}
-                  </Badge>
-                  {['ok', 'warning', 'critical', 'unknown'].map((k) => (
-                    c.summary?.[k] ? (
-                      <Badge key={k} tone={SUMMARY_TONE[k]}>{c.summary[k]} {SUMMARY_LABEL[k]}</Badge>
-                    ) : null
-                  ))}
-                  <span className="text-[11px] text-ink-faint tnum">{fmtWhen(c.lastPollAt)}</span>
-                  <button onClick={() => refresh(c)} disabled={refreshingId === c.id} title="Poll now" aria-label={`Poll ${c.name} now`}
-                    className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
-                    <RefreshCw size={13} className={refreshingId === c.id ? 'animate-spin' : ''} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+              <SortTh k="name" label="Appliance" ctl={connCtl} />
+              <SortTh k="host" label="Host" ctl={connCtl} />
+              <th className="py-2 pr-3">Poll status</th>
+              <th className="py-2 pr-3">Health</th>
+              <th className="py-2 pr-3 text-right">Components</th>
+              <th className="py-2 pr-3 text-right">OK</th>
+              <th className="py-2 pr-3 text-right">Warning</th>
+              <th className="py-2 pr-3 text-right">Critical</th>
+              <SortTh k="lastPollAt" label="Last poll" ctl={connCtl} />
+              <th className="py-2 pr-3" />
+            </tr></thead>
+            <tbody>
+              {connCtl.pageRows.map((c) => {
+                const s = c.summary || {};
+                const total = (s.ok || 0) + (s.warning || 0) + (s.critical || 0) + (s.unknown || 0);
+                return (
+                  <tr key={c.id} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3">
+                      <button onClick={() => setDetailConnId(c.id)} className="text-brand hover:underline cursor-pointer text-left">{c.name}</button>
+                    </td>
+                    <td className="py-2 pr-3 text-ink-muted">{c.host}</td>
+                    <td className="py-2 pr-3">
+                      <span title={c.lastPollStatus === 'error' ? (c.lastPollError || '') : undefined}>
+                        <Badge tone={c.lastPollStatus === 'error' ? 'crit' : c.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
+                          {c.lastPollStatus === 'error' ? 'Unreachable' : c.lastPollStatus === 'success' ? 'Up' : 'Pending'}
+                        </Badge>
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3"><Badge tone={applianceHealthTone(s)}>{applianceHealthLabel(s)}</Badge></td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{total}</td>
+                    <td className="py-2 pr-3 text-right tnum text-status-ok">{s.ok || '—'}</td>
+                    <td className="py-2 pr-3 text-right tnum text-status-warn">{s.warning || '—'}</td>
+                    <td className="py-2 pr-3 text-right tnum text-status-crit">{s.critical || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-faint tnum">{fmtWhen(c.lastPollAt)}</td>
+                    <td className="py-2 pr-3">
+                      <button onClick={() => refresh(c)} disabled={refreshingId === c.id} title="Poll now" aria-label={`Poll ${c.name} now`}
+                        className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
+                        <RefreshCw size={13} className={refreshingId === c.id ? 'animate-spin' : ''} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <TablePager ctl={connCtl} />
+        </div>
+      )}
 
-          <TableControls ctl={componentCtl} rows={componentList} searchPlaceholder="Filter by component name…"
-            filters={[{ k: 'componentType', label: 'Types' }, { k: 'status', label: 'Statuses' }, { k: 'connName', label: 'Appliances' }]} />
-          {componentList.length === 0 ? (
-            <div className="text-sm text-ink-muted py-6 text-center">No hardware components reported yet.</div>
-          ) : componentCtl.rows.length === 0 ? (
-            <div className="text-sm text-ink-muted py-6 text-center">No components match your filters.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                  <SortTh k="connName" label="Appliance" ctl={componentCtl} />
-                  <SortTh k="componentType" label="Component" ctl={componentCtl} />
-                  <SortTh k="componentName" label="Name" ctl={componentCtl} />
-                  <SortTh k="status" label="Status" ctl={componentCtl} />
-                  <SortTh k="stateRaw" label="State" ctl={componentCtl} />
-                  <th className="py-2 pr-3">Detail</th>
-                </tr></thead>
-                <tbody>
-                  {componentCtl.pageRows.map((c, i) => (
-                    <tr key={`${c.connId}-${c.componentType}-${c.componentName}-${i}`} className="border-b border-cohesity-border/50">
-                      <td className="py-2 pr-3 text-ink-muted">{c.connName}</td>
-                      <td className="py-2 pr-3 text-ink">{componentTypeLabel(c.componentType)}</td>
-                      <td className="py-2 pr-3 text-ink-muted">{c.componentName || '—'}</td>
-                      <td className="py-2 pr-3"><Badge tone={componentStatusTone(c.status)}>{SUMMARY_LABEL[c.status] || c.status}</Badge></td>
-                      <td className="py-2 pr-3 text-ink-muted text-[11px]">{c.stateRaw || '—'}</td>
-                      <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[260px] truncate" title={fmtHwDetail(c.detail) || ''}>{fmtHwDetail(c.detail) || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <TablePager ctl={componentCtl} />
-        </>
+      {detailConn && (
+        <ApplianceDetailModal conn={detailConn} components={componentsByConn[detailConn.id] || []} onClose={() => setDetailConnId(null)} />
       )}
     </div>
   );
