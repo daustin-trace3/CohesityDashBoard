@@ -60,10 +60,8 @@ export default function NbJobsPage() {
             { label: 'Ended', get: (r) => fmtWhen(r.endedAt) },
           ]} />
         </div>
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by client or policy…"
-            filters={[{ k: 'state', label: 'States' }, { k: 'policyType', label: 'Policy Types' }, { k: 'sourceName', label: 'Sources' }]} />
-        </div>
+        <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by client or policy…"
+          filters={[{ k: 'state', label: 'States' }, { k: 'policyType', label: 'Policy Types' }, { k: 'sourceName', label: 'Sources' }]} />
         {rows == null ? (
           <LoadingPanel label="Loading jobs…" height={140} />
         ) : list.length === 0 ? (

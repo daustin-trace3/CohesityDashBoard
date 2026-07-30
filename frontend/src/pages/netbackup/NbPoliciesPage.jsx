@@ -45,10 +45,8 @@ export default function NbPoliciesPage() {
             { label: 'Failed (24h)', get: 'failed24h' },
           ]} />
         </div>
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by policy or source…"
-            filters={[{ k: 'policyType', label: 'Types' }, { k: 'sourceName', label: 'Sources' }]} />
-        </div>
+        <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by policy or source…"
+          filters={[{ k: 'policyType', label: 'Types' }, { k: 'sourceName', label: 'Sources' }]} />
         {rows == null ? (
           <LoadingPanel label="Loading policies…" height={140} />
         ) : list.length === 0 ? (
