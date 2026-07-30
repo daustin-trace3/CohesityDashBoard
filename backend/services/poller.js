@@ -369,6 +369,10 @@ const smallWindowClusters = new Set();
  * minus an overlap — pushed back to the oldest run still in flight so its
  * final status is always picked up. Empty table → full 90-day backfill.
  */
+// start_time is epoch seconds (pre-May-2026 pollers) or an ISO string — the
+// epoch-seconds epoch expression keeps window math correct for both.
+const START_EPOCH_SQL = "CAST(CASE WHEN start_time LIKE '20%' THEN strftime('%s', start_time) ELSE start_time END AS INTEGER)";
+
 function runsFetchWindow(clusterId) {
   if (smallWindowClusters.has(clusterId)) {
     return {
@@ -379,19 +383,20 @@ function runsFetchWindow(clusterId) {
   }
   const backfillMs = Date.now() - BACKFILL_DAYS * 24 * 60 * 60 * 1000;
   const row = db.prepare(`
-    SELECT MAX(start_time) AS newest,
-           MIN(CASE WHEN status IN ('kRunning', 'kAccepted') THEN start_time END) AS oldestOpen
+    SELECT MAX(${START_EPOCH_SQL}) AS newest,
+           MIN(CASE WHEN status IN ('kRunning', 'kAccepted') THEN ${START_EPOCH_SQL} END) AS oldestOpen
     FROM protection_runs WHERE cluster_id = ?
   `).get(clusterId);
   if (!row?.newest) {
     return { sinceUsecs: backfillMs * 1000, numRuns: NUM_RUNS_BACKFILL, incremental: false };
   }
-  let sinceMs = new Date(row.newest).getTime() - INCREMENTAL_OVERLAP_MS;
+  let sinceMs = row.newest * 1000 - INCREMENTAL_OVERLAP_MS;
   if (row.oldestOpen) {
-    let openMs = new Date(row.oldestOpen).getTime() - 60 * 1000;
-    const openFloor = Date.now() - OPEN_RUN_MAX_LOOKBACK_MS;
-    if (openMs < openFloor) openMs = openFloor;
-    if (openMs < sinceMs) sinceMs = openMs;
+    const openMs = row.oldestOpen * 1000 - 60 * 1000;
+    // Chase an in-flight run's final status only while it's plausibly still
+    // running — an ancient stuck kRunning row must NOT pin the window wide
+    // (that pin + the numRuns cap starved ~57 jobs of run history, 2026-07).
+    if (openMs >= Date.now() - OPEN_RUN_MAX_LOOKBACK_MS && openMs < sinceMs) sinceMs = openMs;
   }
   if (sinceMs < backfillMs) sinceMs = backfillMs;
   return { sinceUsecs: Math.floor(sinceMs) * 1000, numRuns: NUM_RUNS_INCREMENTAL, incremental: true };
@@ -503,12 +508,15 @@ async function doPollCluster(cluster) {
         logger.error(`[Poller] Protection runs upsert failed for cluster ${cluster.id}:`, err.message);
       }
 
-      // Phase 2 (per-job catch-up) only matters on the initial backfill, where
-      // the run-count cap can hide low-frequency jobs. On incremental polls a
-      // job's new runs always fall inside the fetch window, and its history is
-      // already in the DB — re-sweeping every idle job would just hammer the
-      // cluster with the exact large queries the incremental window avoids.
-      if (!window.incremental && !usedFallback) {
+      // Phase 2 (per-job catch-up) matters on the initial backfill AND any
+      // poll whose unfiltered fetch came back capped at numRuns — the v1 API
+      // groups runs per job, so a truncated response silently drops the SAME
+      // trailing jobs every poll (Splunk gap, 2026-07-30).
+      const capped = protRuns.length >= window.numRuns;
+      if (capped && window.incremental) {
+        logger.warn(`[Poller] Cluster ${cluster.id} runs fetch hit the ${window.numRuns}-run cap — running per-job catch-up`);
+      }
+      if ((!window.incremental || capped) && !usedFallback) {
         const seenJobIds = new Set(protRuns.map(r => r.jobId).filter(Boolean));
 
         let allJobs = [];
@@ -584,6 +592,19 @@ async function pollCluster(cluster) {
  * Initialize all scheduled pollers from the database.
  */
 function initPoller() {
+  // Close out runs stuck in kRunning/kAccepted past the chase window — they
+  // can never be updated (some are old epoch-format rows the ISO-keyed
+  // upsert can't match) and previously pinned fetch windows wide open.
+  try {
+    const swept = db.prepare(`
+      UPDATE protection_runs SET status = 'kUnknown'
+      WHERE status IN ('kRunning', 'kAccepted')
+        AND ${START_EPOCH_SQL} < ?
+    `).run(Math.floor((Date.now() - OPEN_RUN_MAX_LOOKBACK_MS) / 1000));
+    if (swept.changes) logger.info(`[Poller] Closed ${swept.changes} stale in-flight run(s) as kUnknown`);
+  } catch (err) {
+    logger.warn(`[Poller] Stale open-run sweep failed: ${err.message}`);
+  }
   const clusters = cohesityPoller.init();
   logger.info(`[Poller] Initialized ${clusters.length} cluster(s)`);
   // Build the dashboard snapshot from existing cached data on startup so the
