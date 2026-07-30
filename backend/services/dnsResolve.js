@@ -23,7 +23,7 @@ db.exec(`
 const TTL_MS = 6 * 60 * 60 * 1000;
 const PREWARM_INTERVAL_MS = 30 * 60 * 1000;
 const PREWARM_INITIAL_DELAY_MS = 2 * 60 * 1000;
-const PREWARM_MAX_IPS = 2000;
+const PREWARM_MAX_IPS = 10000;
 const LOOKUP_CHUNK = 25;
 
 const selectCached = db.prepare('SELECT name, resolved_at AS resolvedAt FROM dns_cache WHERE ip = ?');
@@ -106,7 +106,10 @@ function collectInventoryIps() {
     try {
       for (const row of db.prepare(q).all()) {
         if (row.ip && net.isIP(String(row.ip))) ips.add(String(row.ip));
-        if (ips.size >= PREWARM_MAX_IPS) return [...ips];
+        if (ips.size >= PREWARM_MAX_IPS) {
+          logger.warn(`[DNS prewarm] Inventory exceeds ${PREWARM_MAX_IPS} distinct IPs — truncating; some IPs will resolve cold on page load.`);
+          return [...ips];
+        }
       }
     } catch { /* table absent */ }
   }

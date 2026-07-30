@@ -5,7 +5,7 @@ const { resolveIps } = require('../services/dnsResolve');
 
 const router = express.Router();
 
-const MAX_IPS = 1000;
+const MAX_IPS = 5000;
 
 function validate(req, res, next) {
   const errors = validationResult(req);
