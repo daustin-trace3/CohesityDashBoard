@@ -1,6 +1,8 @@
 const express = require('express');
-const { query, validationResult } = require('express-validator');
+const { query, param, validationResult } = require('express-validator');
 const db = require('../db/database');
+const { fetchProtectionRuns } = require('../services/cohesityApi');
+const { isDemo } = require('../services/demoMode');
 
 const router = express.Router();
 
@@ -171,6 +173,70 @@ router.get(
         : (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
       res.json({ query: q, days, browse: q.length < 2, servers });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * GET /api/cohesity/backup-history/run/:id/detail?server=<name>
+ * Live per-object drill-down for one stored run: fetches the run from its
+ * cluster and returns the group's warnings/error plus per-server statuses
+ * (sourceBackupStatus) — including the requested server's own outcome, which
+ * can differ from the group rollup.
+ */
+router.get(
+  '/run/:id/detail',
+  [param('id').isInt(), query('server').optional().isString().trim().isLength({ max: 300 })],
+  validate,
+  async (req, res, next) => {
+    try {
+      if (isDemo()) return res.json({ demo: true, warnings: [], error: null, thisServer: null, objects: [] });
+      const run = db.prepare('SELECT * FROM protection_runs WHERE id = ?').get(Number(req.params.id));
+      if (!run) return res.status(404).json({ error: 'Run not found' });
+      const cluster = db.prepare('SELECT * FROM clusters WHERE id = ?').get(run.cluster_id);
+      if (!cluster) return res.status(404).json({ error: 'Cluster not found' });
+
+      const startSec = String(run.start_time).startsWith('20')
+        ? Math.floor(Date.parse(run.start_time) / 1000)
+        : Number(run.start_time);
+      const startUsecs = startSec * 1e6;
+      const batch = await fetchProtectionRuns(cluster, 10, startUsecs - 120 * 1e6, startUsecs + 120 * 1e6, run.job_id);
+      const live = (batch || []).find((r) => {
+        const s = r.backupRun?.stats?.startTimeUsecs;
+        return s && Math.abs(s - startUsecs) < 5 * 1e6;
+      });
+      if (!live) return res.json({ warnings: [], error: null, thisServer: null, objects: [], notFound: true });
+
+      const br = live.backupRun || {};
+      const toMsg = (x) => (typeof x === 'string' ? x : (x?.message || JSON.stringify(x)));
+      const warnings = (Array.isArray(br.warnings) ? br.warnings : []).map(toMsg);
+      const error = br.error ? toMsg(br.error) : null;
+
+      const wanted = String(req.query.server || '').trim().toLowerCase();
+      const short = wanted.split('.')[0];
+      const objects = (Array.isArray(br.sourceBackupStatus) ? br.sourceBackupStatus : []).map((s) => {
+        const snap = s.currentSnapshotInfo || {};
+        return {
+          name: s.source?.name || null,
+          status: s.status || null,
+          numRestarts: s.numRestarts ?? null,
+          bytesRead: snap.totalBytesReadFromSource ?? null,
+          error: s.error ? toMsg(s.error) : null,
+          warnings: (Array.isArray(s.warnings) ? s.warnings : []).map(toMsg),
+        };
+      });
+      const thisServer = wanted
+        ? objects.find((o) => {
+            const n = String(o.name || '').toLowerCase();
+            return n === wanted || n.split('.')[0] === short;
+          }) || null
+        : null;
+      const summary = {};
+      for (const o of objects) summary[o.status || 'unknown'] = (summary[o.status || 'unknown'] || 0) + 1;
+
+      res.json({ warnings, error, slaViolated: br.slaViolated ?? null, thisServer, objectSummary: summary, objectCount: objects.length });
     } catch (err) {
       next(err);
     }

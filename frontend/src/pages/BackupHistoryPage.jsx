@@ -58,6 +58,14 @@ export default function BackupHistoryPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(null); // { server, date, runs }
+  const [details, setDetails] = useState({}); // runId -> { loading | data }
+
+  const loadDetail = (runId, serverName) => {
+    setDetails((d) => ({ ...d, [runId]: { loading: true } }));
+    client.get(`/cohesity/backup-history/run/${runId}/detail?server=${encodeURIComponent(serverName)}`)
+      .then(({ data }) => setDetails((d) => ({ ...d, [runId]: { data } })))
+      .catch(() => setDetails((d) => ({ ...d, [runId]: { data: { failed: true } } })));
+  };
 
   const search = useCallback((term, nDays) => {
     const query = String(term || '').trim();
@@ -228,6 +236,44 @@ export default function BackupHistoryPage() {
                   {r.errorMessage && (
                     <p className="text-[12px] text-status-crit mt-2 break-words">{r.errorCode ? `${r.errorCode}: ` : ''}{r.errorMessage}</p>
                   )}
+                  {!details[r.id] ? (
+                    <button onClick={() => loadDetail(r.id, modal.server.name)}
+                      className="mt-2 text-[11px] font-semibold text-brand hover:underline cursor-pointer">
+                      Details from cluster…
+                    </button>
+                  ) : details[r.id].loading ? (
+                    <p className="text-[11px] text-ink-faint mt-2">Fetching run detail from {r.clusterName || 'cluster'}…</p>
+                  ) : (() => {
+                    const d = details[r.id].data || {};
+                    if (d.failed) return <p className="text-[11px] text-status-warn mt-2">Could not fetch live detail (cluster unreachable?).</p>;
+                    if (d.demo) return <p className="text-[11px] text-ink-faint mt-2">Live run detail is unavailable in demo mode.</p>;
+                    if (d.notFound) return <p className="text-[11px] text-ink-faint mt-2">Run no longer available on the cluster (aged out).</p>;
+                    return (
+                      <div className="mt-2 pt-2 border-t border-cohesity-border/50 flex flex-col gap-1.5">
+                        {d.thisServer && (
+                          <div className="flex items-center gap-2 text-[12px] flex-wrap">
+                            <span className="text-ink-faint">This server:</span>
+                            <Badge tone={STATUS_TONE[d.thisServer.status] || 'neutral'}>{statusLabel(d.thisServer.status) || '—'}</Badge>
+                            {d.thisServer.bytesRead != null && <span className="text-ink-faint tnum">{fmtBytes(d.thisServer.bytesRead)} read</span>}
+                            {d.thisServer.numRestarts > 0 && <span className="text-status-warn tnum">{d.thisServer.numRestarts} restart{d.thisServer.numRestarts === 1 ? '' : 's'}</span>}
+                            {d.thisServer.error && <span className="text-status-crit break-words">{d.thisServer.error}</span>}
+                          </div>
+                        )}
+                        {d.thisServer?.warnings?.length > 0 && d.thisServer.warnings.map((w, i) => (
+                          <p key={i} className="text-[11px] text-status-warn break-words">{w}</p>
+                        ))}
+                        {d.objectSummary && (
+                          <p className="text-[11px] text-ink-faint tnum">
+                            Group: {Object.entries(d.objectSummary).map(([s, n]) => `${n} ${statusLabel(s) || s}`).join(' · ')} ({d.objectCount} object{d.objectCount === 1 ? '' : 's'})
+                          </p>
+                        )}
+                        {d.error && <p className="text-[11px] text-status-crit break-words">{d.error}</p>}
+                        {(d.warnings || []).map((w, i) => (
+                          <p key={i} className="text-[11px] text-ink-muted break-words">⚠ {w}</p>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   {r.replication && r.replication.length > 0 && (
                     <div className="mt-2 pt-2 border-t border-cohesity-border/50">
                       <p className="text-[11px] text-ink-faint mb-1 flex items-center gap-1"><ArrowLeftRight size={11} /> Replication</p>

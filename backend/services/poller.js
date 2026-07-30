@@ -183,7 +183,15 @@ function upsertProtectionRuns(cluster, runs) {
       const endTime = stats.endTimeUsecs
         ? new Date(stats.endTimeUsecs / 1000).toISOString()
         : null;
-      const errorMessage = null;
+      // Failure/warning detail: backupRun.error (string or {message}) plus the
+      // warnings array — joined so non-success runs carry a visible reason.
+      const msgs = [];
+      const err = backupRun.error;
+      if (err) msgs.push(typeof err === 'string' ? err : (err.message || JSON.stringify(err)));
+      for (const w of (Array.isArray(backupRun.warnings) ? backupRun.warnings : [])) {
+        if (w) msgs.push(typeof w === 'string' ? w : (w.message || JSON.stringify(w)));
+      }
+      const errorMessage = msgs.length ? msgs.join(' | ').slice(0, 2000) : null;
       const logicalBytes = stats.totalLogicalBackupSizeBytes ?? null;
       const runType = backupRun.runType || null;
 
