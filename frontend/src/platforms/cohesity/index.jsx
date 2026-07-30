@@ -20,8 +20,6 @@ const navGroups = [
       { label: 'Global Overview', route: '/cohesity', icon: LayoutDashboard, isActive: (p) => p === '/' || p === '/cohesity' },
       { label: 'AI Advisor', route: '/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/ai-advisor'), requiresAi: true },
       { label: 'Alerts', route: '/cohesity/alerts', icon: Bell, isActive: (p) => p.startsWith('/cohesity/alerts'), showAlertCount: true },
-      { label: 'Analytics', route: '/analytics', icon: Activity, isActive: (p) => p.startsWith('/analytics') },
-      { label: 'Reporting', route: '/reporting', icon: FileText, isActive: (p) => p.startsWith('/reporting') },
       { label: 'Licensing', route: '/licensing', icon: BadgeCheck, isActive: (p) => p.startsWith('/licensing') },
     ],
   },
@@ -30,11 +28,18 @@ const navGroups = [
     items: [
       { label: 'Data Protection', route: '/data-protection', icon: ShieldCheck, isActive: (p) => p.startsWith('/data-protection') },
       { label: 'Workloads', route: '/workloads', icon: Layers, isActive: (p) => p.startsWith('/workloads') },
-      { label: 'Sources', route: '/sources', icon: Boxes, isActive: (p) => p.startsWith('/sources') },
-      { label: 'Backup History', route: '/cohesity/backup-history', icon: CalendarCheck, isActive: (p) => p.startsWith('/cohesity/backup-history') },
       { label: 'Replication', route: '/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/replication') },
       { label: 'Views', route: '/views', icon: FolderOpen, isActive: (p) => p.startsWith('/views') },
       { label: 'Governance', route: '/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/governance') },
+    ],
+  },
+  {
+    label: 'Reporting',
+    items: [
+      { label: 'Backup History', route: '/cohesity/backup-history', icon: CalendarCheck, isActive: (p) => p.startsWith('/cohesity/backup-history') },
+      { label: 'Reporting', route: '/reporting', icon: FileText, isActive: (p) => p.startsWith('/reporting') },
+      { label: 'Analytics', route: '/analytics', icon: Activity, isActive: (p) => p.startsWith('/analytics') },
+      { label: 'Sources', route: '/sources', icon: Boxes, isActive: (p) => p.startsWith('/sources') },
     ],
   },
   {
