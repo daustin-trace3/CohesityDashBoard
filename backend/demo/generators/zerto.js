@@ -156,6 +156,34 @@ function seedZerto(db, { now, encrypt }) {
     'dal-zvm-dr-01', 'Site', new Date(now - 2 * 3600000).toISOString(), nowIso);
   alertCount++;
 
+  // ── License: one shared ZECE entitlement, usage = protected-VM count ────
+  // site_usage mirrors /v3/licenses shape [{siteIdentifier, siteName,
+  // packageUsedVMsCount}] — per protected (prd) site, tying exactly to the
+  // seeded VMs so the Licensing page totals match the Overview counts.
+  const siteUsage = SITE_PAIRS.map((pair, pairIdx) => ({
+    siteIdentifier: `demo-site-${pairIdx}-prd`,
+    siteName: siteName(pair.prd, 'prd'),
+    packageUsedVMsCount: vpgs.filter((v) => v.from === siteName(pair.prd, 'prd'))
+      .reduce((s, v) => s + v.vms, 0),
+  }));
+  // ~82% consumed so the "VMs Used" card shows the warn tone in demos.
+  const availableVms = Math.ceil(vmCount / 0.82 / 10) * 10;
+  db.prepare(`
+    INSERT INTO zerto_licenses (license_key, license_package, available_vms,
+      used_vms, is_shared, expiration_date, alerts, site_usage, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'ZECE-DEMO-4F7A-91C2-DEMO', 'Zerto Enterprise Cloud Edition', availableVms,
+    vmCount, 1, new Date(now + 420 * 86400000).toISOString(),
+    JSON.stringify([{
+      identifier: 'demo-lic-alert-0',
+      type: 'LicenseUsageThreshold',
+      severity: 'Warning',
+      description: `License usage is at ${Math.round((vmCount / availableVms) * 100)}% of the ${availableVms}-VM entitlement`,
+    }]),
+    JSON.stringify(siteUsage), nowIso
+  );
+
   // ── Account snapshots: 30 days @ 6h for the trends chart ────────────────
   const insertSnap = db.prepare(`
     INSERT INTO zerto_metrics_history (captured_at, sites_count, connected_sites_count,
@@ -185,7 +213,7 @@ function seedZerto(db, { now, encrypt }) {
     snapCount++;
   }
 
-  return { sites: sites.length, vras: vraCount, vpgs: vpgs.length, vms: vmCount, alerts: alertCount, snapshots: snapCount };
+  return { sites: sites.length, vras: vraCount, vpgs: vpgs.length, vms: vmCount, alerts: alertCount, snapshots: snapCount, licenses: 1 };
 }
 
 module.exports = { seedZerto };
