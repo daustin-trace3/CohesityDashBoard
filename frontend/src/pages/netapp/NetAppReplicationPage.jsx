@@ -3,6 +3,7 @@ import { ArrowLeftRight, ShieldCheck, HeartPulse } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtBytes, fmtNum } from './helpers';
 
 function fmtLag(sec) {
@@ -28,6 +29,13 @@ export default function NetAppReplicationPage() {
   const unhealthy = (rels || []).length - healthy;
   const maxLag = (rels || []).reduce((m, r) => Math.max(m, r.lag_seconds || 0), 0);
 
+  const list = (rels || []).map((r) => ({ ...r, health_label: r.healthy ? 'healthy' : 'unhealthy' }));
+  const ctl = useTableControls(list, {
+    searchKeys: ['source_path', 'destination_path', 'source_cluster', 'destination_cluster', 'state'],
+    defaultSortKey: 'lag_seconds', defaultSortDir: 'desc',
+    paginate: true,
+  });
+
   return (
     <div className="animate-fade-in">
       <PageHeader icon={ArrowLeftRight} title="NetApp Replication (SnapMirror)" description="SnapMirror DR relationships, health and lag across all ONTAP clusters">
@@ -43,21 +51,35 @@ export default function NetAppReplicationPage() {
       </div>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by path, cluster or state…"
+          filters={[
+            { k: 'source_cluster', label: 'Source Clusters' },
+            { k: 'destination_cluster', label: 'Destination Clusters' },
+            { k: 'health_label', label: 'Health' },
+            { k: 'state', label: 'States' },
+          ]} />
         {rels == null ? (
           <LoadingPanel label="Loading relationships…" />
         ) : rels.length === 0 ? (
           <div className="text-sm text-ink-muted py-8 text-center">No SnapMirror relationships found on the registered cluster(s).</div>
+        ) : ctl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-8 text-center">No relationships match your filters.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                  <th className="py-2 pr-3">Source</th><th className="py-2 pr-3">Destination</th><th className="py-2 pr-3">State</th>
-                  <th className="py-2 pr-3">Health</th><th className="py-2 pr-3 text-right">Lag</th><th className="py-2 pr-3">Last Transfer</th><th className="py-2 pr-3 text-right">Bytes</th>
+                  <SortTh k="source_path" label="Source" ctl={ctl} />
+                  <SortTh k="destination_path" label="Destination" ctl={ctl} />
+                  <SortTh k="state" label="State" ctl={ctl} />
+                  <SortTh k="health_label" label="Health" ctl={ctl} />
+                  <SortTh k="lag_seconds" label="Lag" ctl={ctl} align="right" />
+                  <SortTh k="transfer_state" label="Last Transfer" ctl={ctl} />
+                  <SortTh k="last_transfer_bytes" label="Bytes" ctl={ctl} align="right" />
                 </tr>
               </thead>
               <tbody>
-                {rels.map((r) => (
+                {ctl.pageRows.map((r) => (
                   <tr key={r.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink truncate max-w-[240px]">{r.source_path}{r.source_cluster ? <span className="text-ink-faint"> @{r.source_cluster}</span> : ''}</td>
                     <td className="py-2 pr-3 text-ink-muted truncate max-w-[240px]">{r.destination_path}{r.destination_cluster ? <span className="text-ink-faint"> @{r.destination_cluster}</span> : ''}</td>
@@ -72,6 +94,7 @@ export default function NetAppReplicationPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={ctl} />
       </div>
     </div>
   );

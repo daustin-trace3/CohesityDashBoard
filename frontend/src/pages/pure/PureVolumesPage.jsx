@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Layers, Search, Activity, Timer, Gauge } from 'lucide-react';
+import { Layers, Activity, Timer, Gauge } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import TrendChart from '../../components/TrendChart';
 import { BRAND, fmtBytes, fmtNum, fmtDateMs } from './helpers';
 import { usePure1Arrays, ArraySelect } from './usePure1Arrays';
@@ -16,7 +17,6 @@ export default function PureVolumesPage() {
   const [days, setDays] = useState(1);
   const [vols, setVols] = useState(null);
   const [perf, setPerf] = useState(null);
-  const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
@@ -37,10 +37,12 @@ export default function PureVolumesPage() {
   useEffect(() => { load(); }, [load]);
 
   const totalProvisioned = useMemo(() => (vols || []).reduce((s, v) => s + (v.provisioned || 0), 0), [vols]);
-  const filtered = useMemo(() => {
-    const n = q.trim().toLowerCase();
-    return (vols || []).filter((v) => !n || String(v.name).toLowerCase().includes(n) || String(v.pod || '').toLowerCase().includes(n));
-  }, [vols, q]);
+  const list = vols || [];
+  const ctl = useTableControls(list, {
+    searchKeys: ['name', 'pod', 'source'],
+    defaultSortKey: 'name', defaultSortDir: 'asc',
+    paginate: true,
+  });
 
   const s = (perf && perf.series) || {};
   const labels = useMemo(() => (s.array_read_iops || []).map(([ts]) =>
@@ -107,26 +109,27 @@ export default function PureVolumesPage() {
       </div>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-          <p className="text-sm font-semibold text-ink">Volumes {vols ? `(${filtered.length})` : ''}</p>
-          <div className="relative w-64 max-w-full">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name or pod…"
-              className="w-full bg-surface border border-cohesity-border text-[13px] text-ink rounded-lg pl-9 pr-3 py-1.5 placeholder-ink-faint focus:border-brand/60" />
-          </div>
-        </div>
+        <p className="text-sm font-semibold text-ink mb-3">Volumes</p>
+        <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by name, pod or source…"
+          filters={[{ k: 'pod', label: 'Pods' }]} />
         {vols == null ? (
           <LoadingPanel label="Loading volumes…" height={160} />
-        ) : filtered.length === 0 ? (
-          <div className="text-sm text-ink-muted py-8 text-center">No volumes match.</div>
+        ) : list.length === 0 ? (
+          <div className="text-sm text-ink-muted py-8 text-center">No volumes on this array.</div>
+        ) : ctl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-8 text-center">No volumes match your filters.</div>
         ) : (
           <div className="overflow-x-auto max-h-[55vh] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-surface"><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Volume</th><th className="py-2 pr-3 text-right">Provisioned</th><th className="py-2 pr-3">Pod</th><th className="py-2 pr-3">Source</th><th className="py-2 pr-3">Created</th>
+                <SortTh k="name" label="Volume" ctl={ctl} />
+                <SortTh k="provisioned" label="Provisioned" ctl={ctl} align="right" />
+                <SortTh k="pod" label="Pod" ctl={ctl} />
+                <SortTh k="source" label="Source" ctl={ctl} />
+                <SortTh k="created" label="Created" ctl={ctl} />
               </tr></thead>
               <tbody>
-                {filtered.map((v) => (
+                {ctl.pageRows.map((v) => (
                   <tr key={v.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink font-medium">{v.name}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(v.provisioned)}</td>
@@ -139,6 +142,7 @@ export default function PureVolumesPage() {
             </table>
           </div>
         )}
+        <TablePager ctl={ctl} />
       </div>
     </div>
   );
