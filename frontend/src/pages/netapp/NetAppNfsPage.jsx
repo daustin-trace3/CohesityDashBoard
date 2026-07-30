@@ -294,7 +294,7 @@ export default function NetAppNfsPage() {
                 <SortTh k="superuser" label="Superuser" ctl={ruleCtl} />
               </tr></thead>
               <tbody>
-                {ruleCtl.rows.map((r) => (
+                {ruleCtl.pageRows.map((r) => (
                   <tr key={r.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{r.policy_name}</td>
                     <td className="py-2 pr-3 text-ink-muted">{r.svm_name || '—'}</td>
