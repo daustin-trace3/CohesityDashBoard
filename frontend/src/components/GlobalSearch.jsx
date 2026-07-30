@@ -90,6 +90,14 @@ export default function GlobalSearch() {
       <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
       <input
         type="search"
+        name="estate-search"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="none"
+        spellCheck={false}
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-form-type="other"
         value={search}
         onChange={e => setSearch(e.target.value)}
         onFocus={() => { if (results.length) { place(); setOpen(true); } }}
