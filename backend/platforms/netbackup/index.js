@@ -3,7 +3,10 @@
 // netbackup_sources, one framework poller task per source.
 const netbackupMigrations = require('../../db/migrations/netbackup');
 const netbackupRouter = require('../../routes/netbackup');
-const { netbackupPoller, initNetbackupPoller } = require('../../services/netbackupPoller');
+const {
+  netbackupPoller, initNetbackupPoller,
+  netbackupAppliancePoller, initNetbackupAppliancePoller,
+} = require('../../services/netbackupPoller');
 
 module.exports = {
   id: 'netbackup',
@@ -16,10 +19,19 @@ module.exports = {
   createPoller() {
     return {
       ...netbackupPoller,
-      init: () => initNetbackupPoller(),
+      init: () => {
+        const sources = initNetbackupPoller();
+        initNetbackupAppliancePoller();
+        return sources;
+      },
+      stopAll: () => {
+        netbackupPoller.stopAll();
+        netbackupAppliancePoller.stopAll();
+      },
+      trigger: (source) => netbackupPoller.trigger(source),
     };
   },
-  statusTables: ['netbackup_sources'],
+  statusTables: ['netbackup_sources', 'netbackup_appliance_conns'],
   settingsFields: [],
   navSections: [
     'overview', 'advisor', 'alerts', 'jobs', 'policies', 'slps', 'governance',

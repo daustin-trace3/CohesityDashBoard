@@ -8,8 +8,9 @@ const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const { setSetting, getSetting } = require('../services/settings');
 const netbackupApi = require('../services/netbackupApi');
+const netbackupApplianceApi = require('../services/netbackupApplianceApi');
 const { isDemo } = require('../services/demoMode');
-const { netbackupPoller } = require('../services/netbackupPoller');
+const { netbackupPoller, netbackupAppliancePoller } = require('../services/netbackupPoller');
 const netbackupAdvisor = require('../services/advisors/netbackupAdvisor');
 const {
   successWarnPct, storageWarnPct, staleBackupHours, computeIssues,
@@ -227,6 +228,184 @@ router.get('/sources/:id/probe', [param('id').isInt().toInt()], validate, async 
     const row = db.prepare('SELECT * FROM netbackup_sources WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'NetBackup source not found.' });
     res.json(await netbackupApi.fetchProbe(row));
+  } catch (err) { next(err); }
+});
+
+// ── Appliance Connections CRUD (52xx/53xx hardware monitoring; BYO not supported) ──
+
+const publicConn = (row) => ({
+  id: row.id, name: row.name, host: row.host, port: row.port, username: row.username,
+  sslVerify: !!row.ssl_verify, pollingIntervalMinutes: row.polling_interval_minutes,
+  lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
+});
+
+/** GET /api/netbackup/appliance-connections — registered appliance connections (never credentials). */
+router.get('/appliance-connections', (req, res, next) => {
+  try {
+    const rows = db.prepare('SELECT * FROM netbackup_appliance_conns ORDER BY name').all();
+    res.json({ connections: rows.map(publicConn) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/netbackup/appliance-connections — register a 52xx/53xx appliance. */
+router.post('/appliance-connections', [
+  body('name').isString().trim().notEmpty().isLength({ max: 120 }),
+  body('host').isString().trim().notEmpty().isLength({ max: 253 }),
+  body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
+  body('username').optional({ nullable: true }).isString().trim().isLength({ max: 256 }),
+  body('password').isString().notEmpty().isLength({ max: 512 }),
+  body('sslVerify').optional().isBoolean(),
+  body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const { name, host } = req.body;
+    const port = req.body.port || 443;
+    const dup = db.prepare('SELECT id FROM netbackup_appliance_conns WHERE name = ? OR (host = ? AND port = ?)')
+      .get(name.trim(), host.trim(), port);
+    if (dup) return res.status(409).json({ error: 'A NetBackup appliance connection with that name or host/port is already registered.' });
+    const encrypted = encrypt(JSON.stringify({ password: req.body.password }));
+    const info = db.prepare(`
+      INSERT INTO netbackup_appliance_conns (name, host, port, username, encrypted_credentials, ssl_verify, polling_interval_minutes)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(name.trim(), host.trim(), port, req.body.username?.trim() || null,
+      encrypted, req.body.sslVerify ? 1 : 0, req.body.pollingIntervalMinutes || 30);
+    const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(info.lastInsertRowid);
+    netbackupAppliancePoller.schedule(row);
+    netbackupAppliancePoller.trigger(row).catch(() => {});
+    res.status(201).json({ connection: publicConn(row) });
+  } catch (err) { next(err); }
+});
+
+/** PUT /api/netbackup/appliance-connections/:id — update (password optional; blank keeps stored). */
+router.put('/appliance-connections/:id', [
+  param('id').isInt().toInt(),
+  body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
+  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }),
+  body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
+  body('username').optional({ nullable: true }).isString().trim().isLength({ max: 256 }),
+  body('password').optional({ nullable: true }).isString().isLength({ max: 512 }),
+  body('sslVerify').optional().isBoolean(),
+  body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'NetBackup appliance connection not found.' });
+    const b = req.body;
+    const encryptedCreds = b.password ? encrypt(JSON.stringify({ password: b.password })) : row.encrypted_credentials;
+    db.prepare(`
+      UPDATE netbackup_appliance_conns SET
+        name = ?, host = ?, port = ?, username = ?, encrypted_credentials = ?,
+        ssl_verify = ?, polling_interval_minutes = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      b.name?.trim() || row.name, b.host?.trim() || row.host, b.port || row.port,
+      b.username !== undefined ? (b.username?.trim() || null) : row.username,
+      encryptedCreds,
+      b.sslVerify !== undefined ? (b.sslVerify ? 1 : 0) : row.ssl_verify,
+      b.pollingIntervalMinutes || row.polling_interval_minutes,
+      row.id
+    );
+    netbackupApplianceApi.invalidateSession(row.id);
+    const updated = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(row.id);
+    netbackupAppliancePoller.schedule(updated);
+    res.json({ connection: publicConn(updated) });
+  } catch (err) { next(err); }
+});
+
+/** DELETE /api/netbackup/appliance-connections/:id — unregister (CASCADE clears hardware rows). */
+router.delete('/appliance-connections/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'NetBackup appliance connection not found.' });
+    netbackupAppliancePoller.cancel(row.id);
+    netbackupApplianceApi.invalidateSession(row.id);
+    db.prepare('DELETE FROM netbackup_appliance_conns WHERE id = ?').run(row.id);
+    res.json({ deleted: true });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/netbackup/appliance-connections/test — validate a saved conn ({id}) or a candidate. */
+router.post('/appliance-connections/test', [
+  body('id').optional().isInt().toInt(),
+  body('host').optional().isString().trim(),
+  body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
+  body('username').optional({ nullable: true }).isString(),
+  body('password').optional({ nullable: true }).isString(),
+  body('sslVerify').optional().isBoolean(),
+], validate, async (req, res) => {
+  const b = req.body;
+  let candidate;
+  if (b.id) {
+    const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(b.id);
+    if (!row) return res.status(404).json({ error: 'NetBackup appliance connection not found.' });
+    candidate = { ...row };
+    if (b.host) candidate.host = b.host.trim();
+    if (b.port) candidate.port = b.port;
+    if (b.username !== undefined) candidate.username = b.username;
+    if (b.sslVerify !== undefined) candidate.ssl_verify = b.sslVerify ? 1 : 0;
+    if (b.password) candidate.password = b.password;
+  } else {
+    if (!b.host) return res.status(400).json({ error: 'host is required.' });
+    candidate = {
+      host: b.host.trim(), port: b.port || 443, username: b.username,
+      password: b.password, sslVerify: b.sslVerify ? 1 : 0,
+    };
+  }
+  const result = await netbackupApplianceApi.testConnection(candidate);
+  res.status(result.ok ? 200 : 502).json(result);
+});
+
+/** POST /api/netbackup/appliance-connections/:id/refresh — poll this connection now. */
+router.post('/appliance-connections/:id/refresh', [param('id').isInt().toInt()], validate, async (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'NetBackup appliance connection not found.' });
+    await netbackupAppliancePoller.trigger(row);
+    res.json({ triggered: true });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/netbackup/appliance-connections/:id/probe — raw-shape probe (blind-build fix loop). */
+router.get('/appliance-connections/:id/probe', [param('id').isInt().toInt()], validate, async (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'NetBackup appliance connection not found.' });
+    res.json(await netbackupApplianceApi.fetchProbe(row));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/netbackup/appliance-hardware — stored hardware inventory + per-connection summary. */
+router.get('/appliance-hardware', (req, res, next) => {
+  try {
+    const conns = db.prepare('SELECT * FROM netbackup_appliance_conns ORDER BY name').all();
+    const hwRows = db.prepare(`
+      SELECT h.*, c.name AS conn_name FROM netbackup_appliance_hw h
+      JOIN netbackup_appliance_conns c ON c.id = h.conn_id
+      ORDER BY c.name, h.component_type, h.component_name
+    `).all();
+
+    const summaries = new Map();
+    for (const c of conns) summaries.set(c.id, { ok: 0, warning: 0, critical: 0, unknown: 0 });
+    for (const h of hwRows) {
+      const s = summaries.get(h.conn_id);
+      if (s && s[h.status] !== undefined) s[h.status] += 1;
+    }
+
+    res.json({
+      connections: conns.map((c) => ({
+        id: c.id, name: c.name, host: c.host,
+        lastPollStatus: c.last_poll_status, lastPollError: c.last_poll_error, lastPollAt: c.last_poll_at,
+        summary: summaries.get(c.id) || { ok: 0, warning: 0, critical: 0, unknown: 0 },
+      })),
+      components: hwRows.map((h) => {
+        let detail = null;
+        try { detail = h.detail_json ? JSON.parse(h.detail_json) : null; } catch { detail = null; }
+        return {
+          connId: h.conn_id, connName: h.conn_name, componentType: h.component_type,
+          componentName: h.component_name, status: h.status, stateRaw: h.state_raw, detail,
+        };
+      }),
+    });
   } catch (err) { next(err); }
 });
 

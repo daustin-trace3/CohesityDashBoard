@@ -89,3 +89,25 @@ export function runStatusTone(status) {
 export function runStatusLabel(status) {
   return status ? String(status).replace(/^k/, '') : '—';
 }
+
+export const COMPONENT_TYPE_LABEL = {
+  disk: 'Disk',
+  raid: 'RAID',
+  fan: 'Fan',
+  psu: 'PSU',
+  temperature: 'Temperature',
+  network: 'Network',
+  memory: 'Memory',
+  cpu: 'CPU',
+  fc: 'Fibre Channel',
+  battery: 'Battery',
+  other: 'Other',
+};
+export function componentTypeLabel(t) {
+  return COMPONENT_TYPE_LABEL[t] || t || 'Other';
+}
+
+const COMPONENT_STATUS_TONE = { ok: 'ok', warning: 'warn', critical: 'crit', unknown: 'neutral' };
+export function componentStatusTone(status) {
+  return COMPONENT_STATUS_TONE[status] || 'neutral';
+}

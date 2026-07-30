@@ -548,6 +548,107 @@ function seedNetbackup(db, { now, encrypt }) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(String(entitledTb));
 
+  // ── Appliance connections + hardware (52xx/53xx hardware monitoring) ────
+  const insertApplianceConn = db.prepare(`
+    INSERT INTO netbackup_appliance_conns (name, host, port, username, encrypted_credentials,
+      ssl_verify, polling_interval_minutes, last_poll_status, last_poll_error, last_poll_at, created_at, updated_at)
+    VALUES (?, ?, 443, 'admin', ?, 0, 30, 'success', NULL, ?, ?, ?)
+  `);
+  const insertApplianceHw = db.prepare(`
+    INSERT INTO netbackup_appliance_hw (conn_id, component_type, component_name, status, state_raw, detail_json, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const applHwRng = rngFor('netbackup-appliance-hw');
+  insertApplianceConn.run(
+    'nbu-appl-5250-01', 'nbu-appl-5250-01.icc.demo',
+    encrypt(JSON.stringify({ password: 'demo-not-real' })),
+    new Date(now - randInt(applHwRng, 2, 14) * 60000).toISOString(), nowIso, nowIso
+  );
+  const applConn1Id = db.prepare("SELECT id FROM netbackup_appliance_conns WHERE name = 'nbu-appl-5250-01'").get().id;
+  insertApplianceConn.run(
+    'nbu-appl-5250-02', 'nbu-appl-5250-02.icc.demo',
+    encrypt(JSON.stringify({ password: 'demo-not-real' })),
+    new Date(now - randInt(applHwRng, 2, 14) * 60000).toISOString(), nowIso, nowIso
+  );
+  const applConn2Id = db.prepare("SELECT id FROM netbackup_appliance_conns WHERE name = 'nbu-appl-5250-02'").get().id;
+
+  const FAILED_DISK_SLOT = 3; // disk #4 on -01 fails
+  const WARN_PSU_SLOT = 2; // PSU #2 on -02 degrades
+
+  function seedApplianceComponents(connId, isApplOne) {
+    let hwCount = 0;
+    for (let i = 1; i <= 12; i++) {
+      const failed = isApplOne && i === FAILED_DISK_SLOT + 1;
+      const status = failed ? 'critical' : 'ok';
+      const stateRaw = failed ? 'Failed' : 'OK';
+      insertApplianceHw.run(connId, 'disk', `Disk Slot ${i}`, status, stateRaw,
+        JSON.stringify({ slot: i, sizeGb: 4000, model: 'NBU-HDD-4TB' }), nowIso);
+      hwCount++;
+    }
+    const raidDegraded = isApplOne;
+    insertApplianceHw.run(connId, 'raid', 'VolumeGroup 1', raidDegraded ? 'warning' : 'ok',
+      raidDegraded ? 'Degraded' : 'Optimal', JSON.stringify({ raidLevel: 'RAID6' }), nowIso);
+    hwCount++;
+    for (let i = 1; i <= 4; i++) {
+      insertApplianceHw.run(connId, 'fan', `Fan ${i}`, 'ok', 'Normal', JSON.stringify({ rpm: 4200 + i * 50 }), nowIso);
+      hwCount++;
+    }
+    for (let i = 1; i <= 2; i++) {
+      const warn = !isApplOne && i === WARN_PSU_SLOT;
+      insertApplianceHw.run(connId, 'psu', `PSU ${i}`, warn ? 'warning' : 'ok', warn ? 'Predictive' : 'OK',
+        JSON.stringify({ wattage: 1100 }), nowIso);
+      hwCount++;
+    }
+    for (let i = 1; i <= 6; i++) {
+      insertApplianceHw.run(connId, 'temperature', `Temp Sensor ${i}`, 'ok', 'Normal', JSON.stringify({ celsius: 32 + i }), nowIso);
+      hwCount++;
+    }
+    for (let i = 1; i <= 4; i++) {
+      insertApplianceHw.run(connId, 'network', `eth${i}`, 'ok', 'Online', JSON.stringify({ linkSpeedMbps: 10000 }), nowIso);
+      hwCount++;
+    }
+    for (let i = 1; i <= 8; i++) {
+      insertApplianceHw.run(connId, 'memory', `DIMM ${i}`, 'ok', 'OK', JSON.stringify({ sizeGb: 32 }), nowIso);
+      hwCount++;
+    }
+    for (let i = 1; i <= 2; i++) {
+      insertApplianceHw.run(connId, 'cpu', `CPU ${i}`, 'ok', 'OK', JSON.stringify({ cores: 16 }), nowIso);
+      hwCount++;
+    }
+    return hwCount;
+  }
+
+  const applHw1Count = seedApplianceComponents(applConn1Id, true);
+  const applHw2Count = seedApplianceComponents(applConn2Id, false);
+
+  const applianceIssueRng = rngFor('netbackup-appliance-issue-history');
+  const applianceIssues = [
+    {
+      connId: applConn1Id, connName: 'nbu-appl-5250-01', type: 'disk',
+      name: `Disk Slot ${FAILED_DISK_SLOT + 1}`, severity: 'critical', stateRaw: 'Failed',
+      openedMinAgo: randInt(applianceIssueRng, 6 * 60, 3 * 24 * 60),
+    },
+    {
+      connId: applConn1Id, connName: 'nbu-appl-5250-01', type: 'raid',
+      name: 'VolumeGroup 1', severity: 'warning', stateRaw: 'Degraded',
+      openedMinAgo: randInt(applianceIssueRng, 6 * 60, 3 * 24 * 60),
+    },
+    {
+      connId: applConn2Id, connName: 'nbu-appl-5250-02', type: 'psu',
+      name: `PSU ${WARN_PSU_SLOT}`, severity: 'warning', stateRaw: 'Predictive',
+      openedMinAgo: randInt(applianceIssueRng, 6 * 60, 3 * 24 * 60),
+    },
+  ];
+  for (const ai of applianceIssues) {
+    const status = ai.severity;
+    insertIssue.run(
+      null, `appliance-hw:${ai.connId}:${ai.type}:${ai.name}`, ai.connName, 'appliance-hw', `${ai.type} ${ai.name}`,
+      ai.severity, `${ai.connName} ${ai.type} ${ai.name} is ${status} (${ai.stateRaw})`,
+      `-${ai.openedMinAgo} minutes`, '-4 minutes'
+    );
+  }
+
   return {
     sources: 2,
     policies: POLICY_DEFS.length,
@@ -565,6 +666,9 @@ function seedNetbackup(db, { now, encrypt }) {
     workloadHistory: workloadHistoryRows,
     entitledTb,
     frontEndTb: Math.round(feTb * 100) / 100,
+    applianceConns: 2,
+    applianceHwComponents: applHw1Count + applHw2Count,
+    applianceIssues: applianceIssues.length,
   };
 }
 

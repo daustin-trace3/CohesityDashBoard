@@ -8,7 +8,7 @@ import {
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
+import { useTableControls, SortTh } from '../../components/ui/tableTools';
 import { BRAND, TB, fmtTb, fmtNum } from './helpers';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend);
@@ -67,12 +67,33 @@ export default function NbWorkloadsPage() {
   }), { clients: 0, jobs: 0, failed: 0, bytes: 0 }), [estate]);
 
   const estateCtl = useTableControls(estate, { defaultSortKey: 'protectedBytes', defaultSortDir: 'desc' });
-  const domainCtl = useTableControls(domains, {
-    searchKeys: ['sourceName', 'sourceType'],
-    defaultSortKey: 'protectedBytes', defaultSortDir: 'desc',
-    sortValues: { protectedBytes: (d) => Object.values(d.workloads || {}).reduce((a, b) => a + b, 0) },
-    paginate: true,
-  });
+
+  // Pivot: one row per domain, one column per workload type (protected-client
+  // counts), plus per-domain totals. Built from `rows` (latest snapshot per
+  // source × workload).
+  const [pivotDomain, setPivotDomain] = useState('');
+  const pivotWorkloads = useMemo(() =>
+    [...new Set(rows.map(r => r.workload))].sort((a, b) => a.localeCompare(b)), [rows]);
+  const pivotRows = useMemo(() => {
+    const byDomain = new Map();
+    for (const r of rows) {
+      if (!byDomain.has(r.sourceId)) {
+        const meta = domains.find(d => d.sourceId === r.sourceId);
+        byDomain.set(r.sourceId, {
+          sourceId: r.sourceId, sourceName: r.sourceName, sourceType: meta?.sourceType || '—',
+          totalClients: 0, totalBytes: 0, cells: {},
+        });
+      }
+      const row = byDomain.get(r.sourceId);
+      row.cells[r.workload] = { clients: r.protectedClients || 0, bytes: r.protectedBytes || 0 };
+      row.totalClients += r.protectedClients || 0;
+      row.totalBytes += r.protectedBytes || 0;
+    }
+    return [...byDomain.values()].sort((a, b) => b.totalBytes - a.totalBytes);
+  }, [rows, domains]);
+  const visiblePivotRows = pivotDomain
+    ? pivotRows.filter(r => String(r.sourceId) === pivotDomain)
+    : pivotRows;
 
   const metricDef = METRICS.find(m => m.k === trendMetric);
   const trendChart = useMemo(() => {
@@ -228,49 +249,63 @@ export default function NbWorkloadsPage() {
       </div>
 
       <div className="panel p-4">
-        <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Server size={15} className="text-brand" /> Breakdown by Domain</p>
-        <TableControls ctl={domainCtl} rows={domains} searchPlaceholder="Filter by domain…"
-          filters={[{ k: 'sourceType', label: 'Types' }]} />
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <p className="text-sm font-semibold text-ink flex items-center gap-2"><Server size={15} className="text-brand" /> Breakdown by Domain</p>
+          <select value={pivotDomain} onChange={(e) => setPivotDomain(e.target.value)}
+            className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-sm text-ink focus:border-brand/60 outline-none cursor-pointer">
+            <option value="">All Domains</option>
+            {domainOpts.map(([id, name]) => <option key={id} value={String(id)}>{name}</option>)}
+          </select>
+        </div>
+        <p className="text-[11px] text-ink-faint mb-3">Protected clients per workload type, per NBU domain. Hover a cell for protected TB.</p>
         {data == null ? (
           <LoadingPanel label="Loading…" height={140} />
-        ) : domains.length === 0 ? (
+        ) : pivotRows.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No domain data yet — it appears after the next poll cycle.</div>
-        ) : domainCtl.rows.length === 0 ? (
-          <div className="text-sm text-ink-muted py-6 text-center">No rows match your filters.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <SortTh k="sourceName" label="Domain" ctl={domainCtl} />
-                <SortTh k="sourceType" label="Type" ctl={domainCtl} />
-                <SortTh k="protectedClients" label="Clients" ctl={domainCtl} align="right" />
-                <SortTh k="jobCount" label="Jobs" ctl={domainCtl} align="right" />
-                <SortTh k="failedCount" label="Failed" ctl={domainCtl} align="right" />
-                <SortTh k="protectedBytes" label="Protected" ctl={domainCtl} align="right" />
-                <th className="py-2 pr-3 text-left text-[11px] uppercase tracking-wide text-ink-faint">Top Workloads</th>
+                <th className="py-2 pr-3">Domain</th>
+                <th className="py-2 pr-3">Type</th>
+                {pivotWorkloads.map((w) => <th key={w} className="py-2 pr-3 text-right">{w}</th>)}
+                <th className="py-2 pr-3 text-right">Total Clients</th>
+                <th className="py-2 pr-3 text-right">Total Protected</th>
               </tr></thead>
               <tbody>
-                {domainCtl.pageRows.map((d) => {
-                  const wls = Object.entries(d.workloads || {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
-                  return (
-                    <tr key={d.sourceId} className="border-b border-cohesity-border/50">
-                      <td className="py-2 pr-3 text-ink">{d.sourceName}</td>
-                      <td className="py-2 pr-3 text-ink-muted">{d.sourceType}</td>
-                      <td className="py-2 pr-3 text-right tnum text-ink">{fmtNum(d.protectedClients)}</td>
-                      <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(d.jobCount)}</td>
-                      <td className="py-2 pr-3 text-right tnum text-ink-faint">{fmtNum(d.failedCount)}</td>
-                      <td className="py-2 pr-3 text-right tnum text-ink">{fmtTb(d.protectedBytes)}</td>
-                      <td className="py-2 pr-3 text-ink-faint text-[11px]">
-                        {wls.length ? wls.map(([w, b]) => `${w} (${fmtTb(b)})`).join(', ') : '—'}
+                {visiblePivotRows.map((d) => (
+                  <tr key={d.sourceId} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink font-medium">{d.sourceName}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{d.sourceType}</td>
+                    {pivotWorkloads.map((w) => {
+                      const cell = d.cells[w];
+                      return (
+                        <td key={w} className="py-2 pr-3 text-right tnum"
+                          title={cell ? `${fmtTb(cell.bytes)} protected` : undefined}>
+                          {cell ? <span className="text-ink">{fmtNum(cell.clients)}</span> : <span className="text-ink-faint">—</span>}
+                        </td>
+                      );
+                    })}
+                    <td className="py-2 pr-3 text-right tnum text-ink font-semibold">{fmtNum(d.totalClients)}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink font-semibold">{fmtTb(d.totalBytes)}</td>
+                  </tr>
+                ))}
+                {!pivotDomain && visiblePivotRows.length > 1 && (
+                  <tr className="border-t border-cohesity-border">
+                    <td className="py-2 pr-3 text-ink-faint text-[11px] uppercase tracking-wide" colSpan={2}>Estate total</td>
+                    {pivotWorkloads.map((w) => (
+                      <td key={w} className="py-2 pr-3 text-right tnum text-ink-muted">
+                        {fmtNum(visiblePivotRows.reduce((s, d) => s + (d.cells[w]?.clients || 0), 0))}
                       </td>
-                    </tr>
-                  );
-                })}
+                    ))}
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(visiblePivotRows.reduce((s, d) => s + d.totalClients, 0))}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtTb(visiblePivotRows.reduce((s, d) => s + d.totalBytes, 0))}</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         )}
-        <TablePager ctl={domainCtl} />
       </div>
     </div>
   );

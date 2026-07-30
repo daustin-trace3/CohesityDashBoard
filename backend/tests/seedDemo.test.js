@@ -331,4 +331,18 @@ describe('seedDemo.js', () => {
     expect(row).toBeTruthy();
     expect(parseFloat(row.value)).toBeGreaterThan(0);
   });
+
+  it('seeds 2 netbackup appliance connections with >=30 hardware components', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_appliance_conns').get().c).toBe(2);
+    expect(db.prepare("SELECT COUNT(*) c FROM netbackup_appliance_conns WHERE last_poll_status = 'success'").get().c).toBe(2);
+    const hwCount = db.prepare('SELECT COUNT(*) c FROM netbackup_appliance_hw').get().c;
+    expect(hwCount).toBeGreaterThanOrEqual(30);
+  });
+
+  it('seeds exactly 1 critical disk and matching appliance hardware issue rows', () => {
+    const criticalDisks = db.prepare("SELECT COUNT(*) c FROM netbackup_appliance_hw WHERE component_type = 'disk' AND status = 'critical'").get().c;
+    expect(criticalDisks).toBe(1);
+    const applianceIssues = db.prepare("SELECT COUNT(*) c FROM netbackup_issue_history WHERE type = 'appliance-hw' AND status = 'open'").get().c;
+    expect(applianceIssues).toBeGreaterThanOrEqual(3);
+  });
 });

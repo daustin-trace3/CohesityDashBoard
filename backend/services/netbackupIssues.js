@@ -190,6 +190,33 @@ function computeIssues() {
     });
   }
 
+  // Appliance hardware connections are a separate connection type
+  // (netbackup_appliance_conns) — not scoped to a netbackup_sources row, so
+  // source_id stays NULL per the estate-wide null pattern above.
+  for (const c of db.prepare('SELECT * FROM netbackup_appliance_conns').all()) {
+    if (c.last_poll_status === 'error') {
+      issues.push({
+        issue_key: `appliance-poll-error:${c.id}`, source_id: null, severity: 'critical', host: c.name,
+        source: c.name, type: 'appliance-poll-error', target: c.name,
+        message: `NetBackup appliance ${c.name} is unreachable: ${c.last_poll_error || 'poll failed'}`,
+      });
+    }
+  }
+
+  const hwRows = db.prepare(`
+    SELECT h.*, c.name AS conn_name FROM netbackup_appliance_hw h
+    JOIN netbackup_appliance_conns c ON c.id = h.conn_id
+    WHERE h.status IN ('warning', 'critical')
+  `).all();
+  for (const h of hwRows) {
+    issues.push({
+      issue_key: `appliance-hw:${h.conn_id}:${h.component_type}:${h.component_name}`, source_id: null,
+      source: h.conn_name, type: 'appliance-hw', target: `${h.component_type} ${h.component_name}`,
+      severity: h.status, host: h.conn_name,
+      message: `${h.conn_name} ${h.component_type} ${h.component_name} is ${h.status}${h.state_raw ? ` (${h.state_raw})` : ''}`,
+    });
+  }
+
   const order = { critical: 0, warning: 1, info: 2 };
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);
 }

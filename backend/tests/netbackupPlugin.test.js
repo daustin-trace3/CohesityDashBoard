@@ -44,6 +44,60 @@ function insertSource(overrides = {}) {
   return info.lastInsertRowid;
 }
 
+function insertApplianceConn(overrides = {}) {
+  const info = db.prepare(`
+    INSERT INTO netbackup_appliance_conns (name, host, port, username, encrypted_credentials,
+      ssl_verify, polling_interval_minutes, last_poll_status, last_poll_error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    overrides.name ?? 'appl1',
+    overrides.host ?? 'test-appliance.invalid',
+    overrides.port ?? 443,
+    overrides.username ?? 'admin',
+    encrypt(JSON.stringify({ password: 'p@ss' })),
+    0, 30,
+    overrides.last_poll_status ?? null,
+    overrides.last_poll_error ?? null,
+  );
+  return info.lastInsertRowid;
+}
+
+describe('netbackupIssues.computeIssues — appliance hardware rules', () => {
+  it('emits appliance-hw for warning/critical components and appliance-poll-error for a failed connection', () => {
+    const { computeIssues } = require('../services/netbackupIssues');
+
+    const connId = insertApplianceConn({ name: 'appl-issues', last_poll_status: 'error', last_poll_error: 'connect ETIMEDOUT' });
+    db.prepare(`
+      INSERT INTO netbackup_appliance_hw (conn_id, component_type, component_name, status, state_raw)
+      VALUES (?, 'disk', 'Disk Slot 1', 'critical', 'Failed')
+    `).run(connId);
+    db.prepare(`
+      INSERT INTO netbackup_appliance_hw (conn_id, component_type, component_name, status, state_raw)
+      VALUES (?, 'psu', 'PSU 1', 'warning', 'Predictive')
+    `).run(connId);
+    db.prepare(`
+      INSERT INTO netbackup_appliance_hw (conn_id, component_type, component_name, status, state_raw)
+      VALUES (?, 'fan', 'Fan 1', 'ok', 'Normal')
+    `).run(connId);
+
+    const issues = computeIssues();
+    const byPrefix = (prefix) => issues.filter((i) => i.issue_key.startsWith(prefix));
+
+    expect(byPrefix(`appliance-poll-error:${connId}`)).toHaveLength(1);
+    expect(byPrefix(`appliance-poll-error:${connId}`)[0].severity).toBe('critical');
+    expect(byPrefix(`appliance-poll-error:${connId}`)[0].source_id).toBeNull();
+
+    expect(byPrefix(`appliance-hw:${connId}:disk:Disk Slot 1`)).toHaveLength(1);
+    expect(byPrefix(`appliance-hw:${connId}:disk:Disk Slot 1`)[0].severity).toBe('critical');
+    expect(byPrefix(`appliance-hw:${connId}:disk:Disk Slot 1`)[0].source_id).toBeNull();
+
+    expect(byPrefix(`appliance-hw:${connId}:psu:PSU 1`)).toHaveLength(1);
+    expect(byPrefix(`appliance-hw:${connId}:psu:PSU 1`)[0].severity).toBe('warning');
+
+    expect(byPrefix(`appliance-hw:${connId}:fan:Fan 1`)).toHaveLength(0);
+  });
+});
+
 describe('netbackupIssues.computeIssues + reconcileIssueHistory', () => {
   it('detects every issue type from seeded rows', () => {
     const { computeIssues, reconcileIssueHistory } = require('../services/netbackupIssues');
@@ -239,6 +293,92 @@ describe('routes/netbackup.js basic CRUD (minimal express app, no dispatcher)', 
       successWarnPct: 10, storageWarnPct: 25, staleBackupHours: 72,
     });
     expect(invalid.status).toBe(400);
+  });
+
+  it('POST/PUT/DELETE /api/netbackup/appliance-connections round-trips, PUT keeps password when blank, 409 on dup', async () => {
+    const created = await request(app).post('/api/netbackup/appliance-connections').send({
+      name: 'crud-appl-conn', host: 'crud-appl.invalid', username: 'admin', password: 'p@ssw0rd!',
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.connection.id).toBeTypeOf('number');
+    expect(created.body.connection.password).toBeUndefined();
+    expect(created.body.connection.sslVerify).toBe(false);
+    const connId = created.body.connection.id;
+
+    const dup = await request(app).post('/api/netbackup/appliance-connections').send({
+      name: 'crud-appl-conn', host: 'other-appl.invalid', password: 'y',
+    });
+    expect(dup.status).toBe(409);
+
+    const missingPassword = await request(app).post('/api/netbackup/appliance-connections').send({
+      name: 'crud-appl-conn-2', host: 'other-appl2.invalid',
+    });
+    expect(missingPassword.status).toBe(400);
+
+    const before = db.prepare('SELECT encrypted_credentials FROM netbackup_appliance_conns WHERE id = ?').get(connId).encrypted_credentials;
+    const updated = await request(app).put(`/api/netbackup/appliance-connections/${connId}`).send({
+      pollingIntervalMinutes: 45,
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body.connection.pollingIntervalMinutes).toBe(45);
+    const after = db.prepare('SELECT encrypted_credentials FROM netbackup_appliance_conns WHERE id = ?').get(connId).encrypted_credentials;
+    expect(after).toBe(before);
+
+    const deleted = await request(app).delete(`/api/netbackup/appliance-connections/${connId}`);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toEqual({ deleted: true });
+  });
+
+  it('GET /api/netbackup/appliance-connections/:id/probe 200s with an array even against an unreachable host', async () => {
+    const connId = insertApplianceConn({ name: 'probe-appl-conn', host: 'definitely-not-a-real-appliance.invalid' });
+    const res = await request(app).get(`/api/netbackup/appliance-connections/${connId}/probe`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThan(0);
+    for (const entry of res.body) {
+      expect(entry.ok).toBe(false);
+      expect(typeof entry.path).toBe('string');
+    }
+  }, 20000);
+
+  it('POST /api/netbackup/appliance-connections/test never throws on an unreachable host', async () => {
+    const res = await request(app).post('/api/netbackup/appliance-connections/test').send({
+      host: 'definitely-not-a-real-appliance.invalid', username: 'admin', password: 'x',
+    });
+    expect(res.status).toBe(502);
+    expect(res.body.ok).toBe(false);
+  }, 20000);
+
+  it('GET /api/netbackup/appliance-hardware returns the connections+components shape with correct summary math', async () => {
+    const connId = insertApplianceConn({ name: 'hw-appl-conn', last_poll_status: 'success' });
+    db.prepare(`
+      INSERT INTO netbackup_appliance_hw (conn_id, component_type, component_name, status, state_raw, detail_json)
+      VALUES (?, 'disk', 'Disk Slot 1', 'ok', 'OK', '{"slot":1}')
+    `).run(connId);
+    db.prepare(`
+      INSERT INTO netbackup_appliance_hw (conn_id, component_type, component_name, status, state_raw)
+      VALUES (?, 'disk', 'Disk Slot 2', 'critical', 'Failed')
+    `).run(connId);
+    db.prepare(`
+      INSERT INTO netbackup_appliance_hw (conn_id, component_type, component_name, status, state_raw)
+      VALUES (?, 'psu', 'PSU 1', 'warning', 'Predictive')
+    `).run(connId);
+
+    const res = await request(app).get('/api/netbackup/appliance-hardware');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.connections)).toBe(true);
+    expect(Array.isArray(res.body.components)).toBe(true);
+
+    const conn = res.body.connections.find((c) => c.id === connId);
+    expect(conn).toBeTruthy();
+    expect(conn.summary).toEqual({ ok: 1, warning: 1, critical: 1, unknown: 0 });
+
+    const diskComponent = res.body.components.find((c) => c.connId === connId && c.componentName === 'Disk Slot 1');
+    expect(diskComponent).toBeTruthy();
+    expect(diskComponent.detail).toEqual({ slot: 1 });
+
+    const noDetail = res.body.components.find((c) => c.connId === connId && c.componentName === 'PSU 1');
+    expect(noDetail.detail).toBeNull();
   });
 
   it('GET /api/netbackup/jobs|policies|storage|media-servers|appliances|issue-history|trends all 200', async () => {

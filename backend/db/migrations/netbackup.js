@@ -240,4 +240,42 @@ module.exports = [
       }
     },
   },
+  {
+    // NBU appliance hardware monitoring (52xx/53xx only — BYO is a documented
+    // gap). A second connection type alongside netbackup_sources: each row is
+    // a directly-registered appliance management endpoint, polled by its own
+    // poller instance (netbackupAppliancePoller).
+    version: 5,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS netbackup_appliance_conns (
+          id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+          name                     TEXT NOT NULL UNIQUE,
+          host                     TEXT NOT NULL,
+          port                     INTEGER NOT NULL DEFAULT 443,
+          username                 TEXT,
+          encrypted_credentials    TEXT NOT NULL,
+          ssl_verify               INTEGER NOT NULL DEFAULT 0,
+          polling_interval_minutes INTEGER NOT NULL DEFAULT 30,
+          last_poll_status         TEXT,
+          last_poll_error          TEXT,
+          last_poll_at             DATETIME,
+          created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS netbackup_appliance_hw (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          conn_id         INTEGER NOT NULL REFERENCES netbackup_appliance_conns(id) ON DELETE CASCADE,
+          component_type  TEXT NOT NULL,
+          component_name  TEXT,
+          status          TEXT NOT NULL DEFAULT 'unknown',
+          state_raw       TEXT,
+          detail_json     TEXT,
+          captured_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_netbackup_appliance_hw_conn ON netbackup_appliance_hw(conn_id);
+      `);
+    },
+  },
 ];

@@ -84,6 +84,7 @@ const SEEDED_TABLES = [
   'netbackup_jobs', 'netbackup_policies', 'netbackup_storage_units', 'netbackup_disk_pools',
   'netbackup_media_servers', 'netbackup_appliances', 'netbackup_alerts',
   'netbackup_issue_history', 'netbackup_metrics_history', 'netbackup_sources',
+  'netbackup_appliance_hw', 'netbackup_appliance_conns',
 ];
 
 function wipeSeededTables(database) {

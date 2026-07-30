@@ -6,6 +6,7 @@
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const netbackupApi = require('./netbackupApi');
+const netbackupApplianceApi = require('./netbackupApplianceApi');
 const { reconcileIssueHistory } = require('./netbackupIssues');
 const logger = require('../utils/logger');
 
@@ -202,4 +203,54 @@ function initNetbackupPoller() {
   return netbackupPoller;
 }
 
-module.exports = { initNetbackupPoller, netbackupPoller, pollSource };
+const storeApplianceHw = db.transaction((connId, components) => {
+  db.prepare('DELETE FROM netbackup_appliance_hw WHERE conn_id = ?').run(connId);
+  const stmt = db.prepare(`
+    INSERT INTO netbackup_appliance_hw (conn_id, component_type, component_name, status, state_raw, detail_json)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const c of components) {
+    stmt.run(connId, c.componentType, c.componentName ?? null, c.status ?? 'unknown',
+      c.stateRaw ?? null, c.detail ? JSON.stringify(c.detail) : null);
+  }
+});
+
+async function pollApplianceConn(conn) {
+  try {
+    const components = await netbackupApplianceApi.fetchHardware(conn);
+    storeApplianceHw(conn.id, components);
+    db.prepare(`
+      UPDATE netbackup_appliance_conns SET last_poll_status = 'success', last_poll_error = NULL,
+        last_poll_at = datetime('now') WHERE id = ?
+    `).run(conn.id);
+    logger.info(`[NbAppliancePoller] ${conn.name}: ${components.length} hardware component(s)`);
+  } catch (err) {
+    db.prepare(`
+      UPDATE netbackup_appliance_conns SET last_poll_status = 'error', last_poll_error = ?,
+        last_poll_at = datetime('now') WHERE id = ?
+    `).run(safeMsg(err), conn.id);
+    throw err;
+  } finally {
+    try { reconcileIssueHistory(); } catch (err) {
+      logger.warn(`[NbAppliancePoller] issue-history reconcile failed: ${err.message}`);
+    }
+  }
+}
+
+const netbackupAppliancePoller = createPoller({
+  id: 'netbackup-appliance',
+  loadSources: () => db.prepare('SELECT * FROM netbackup_appliance_conns').all(),
+  intervalMinutes: (row) => row.polling_interval_minutes,
+  poll: pollApplianceConn,
+});
+
+function initNetbackupAppliancePoller() {
+  const conns = netbackupAppliancePoller.init();
+  logger.info(`[NbAppliancePoller] Initialized ${conns.length} NetBackup appliance connection(s)`);
+  return netbackupAppliancePoller;
+}
+
+module.exports = {
+  initNetbackupPoller, netbackupPoller, pollSource,
+  initNetbackupAppliancePoller, netbackupAppliancePoller, pollApplianceConn,
+};

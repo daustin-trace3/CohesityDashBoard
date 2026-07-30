@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, Cloud, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Plus, X, PlugZap, Save } from 'lucide-react';
+import { Settings, Cloud, Server, HardDrive, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Plus, X, PlugZap, Save } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
@@ -10,6 +10,7 @@ const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg 
 const TABS = [
   { key: 'alta', label: 'Alta (SaaS)', icon: Cloud, sourceType: 'alta' },
   { key: 'primary', label: 'Primary Servers (Direct)', icon: Server, sourceType: 'primary' },
+  { key: 'hardware', label: 'Appliance Hardware', icon: HardDrive, sourceType: 'hardware' },
 ];
 
 const ALTA_EMPTY = { name: '', host: '', apiKey: '', pollingIntervalMinutes: 15 };
@@ -40,9 +41,11 @@ export default function NbSettingsPage() {
         })}
       </div>
 
-      {tab === 'alta' ? <SourcesTab sourceType="alta" /> : <SourcesTab sourceType="primary" />}
+      {tab === 'alta' && <SourcesTab sourceType="alta" />}
+      {tab === 'primary' && <SourcesTab sourceType="primary" />}
+      {tab === 'hardware' && <ApplianceHardwareTab />}
 
-      <AlertThresholdsPanel />
+      {tab !== 'hardware' && <AlertThresholdsPanel />}
     </div>
   );
 }
@@ -327,6 +330,239 @@ function SourcesTab({ sourceType }) {
                           <RefreshCw size={13} className={refreshingId === s.id ? 'animate-spin' : ''} />
                         </button>
                         <button onClick={() => remove(s)} disabled={deletingId === s.id} title="Delete" aria-label={`Delete ${s.name}`}
+                          className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-status-crit hover:border-status-crit/50 transition-colors cursor-pointer">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const HW_EMPTY = { name: '', host: '', port: 443, username: '', password: '', sslVerify: false, pollingIntervalMinutes: 15 };
+
+function ApplianceHardwareTab() {
+  const { toast } = useToast();
+  const [connections, setConnections] = useState(null);
+  const [form, setForm] = useState({ ...HW_EMPTY });
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+  const [refreshingId, setRefreshingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+
+  const load = useCallback(() => client.get('/netbackup/appliance-connections')
+    .then(({ data }) => setConnections(data.connections || []))
+    .catch(() => setConnections([])), []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+
+  const blankForm = () => { setForm({ ...HW_EMPTY }); setTestResult(null); };
+
+  const startEdit = (c) => {
+    setEditingId(c.id);
+    setForm({
+      name: c.name, host: c.host, port: c.port || 443, username: c.username || '',
+      password: '', sslVerify: !!c.sslVerify, pollingIntervalMinutes: c.pollingIntervalMinutes || 15,
+    });
+    setTestResult(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelEdit = () => { setEditingId(null); blankForm(); };
+
+  const buildBody = () => {
+    const body = {
+      name: form.name.trim(), host: form.host.trim(), port: Number(form.port) || 443,
+      username: form.username.trim(), sslVerify: !!form.sslVerify,
+      pollingIntervalMinutes: Number(form.pollingIntervalMinutes) || 15,
+    };
+    if (form.password) body.password = form.password;
+    return body;
+  };
+
+  const test = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const body = editingId ? { id: editingId, ...buildBody() } : buildBody();
+      const { data } = await client.post('/netbackup/appliance-connections/test', body);
+      setTestResult(data);
+    } catch (err) {
+      setTestResult(err?.response?.data || { ok: false, error: 'Connection test failed.' });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = buildBody();
+      if (editingId) {
+        await client.put(`/netbackup/appliance-connections/${editingId}`, body);
+        toast({ type: 'success', title: 'Connection updated' });
+      } else {
+        body.password = form.password;
+        await client.post('/netbackup/appliance-connections', body);
+        toast({ type: 'success', title: 'Appliance connection registered', message: 'First poll started — data appears shortly.' });
+      }
+      setEditingId(null);
+      blankForm();
+      await load();
+    } catch (err) {
+      toast({ type: 'error', title: editingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (c) => {
+    if (!window.confirm(`Delete appliance connection "${c.name}"? Its collected hardware data is removed.`)) return;
+    setDeletingId(c.id);
+    try {
+      await client.delete(`/netbackup/appliance-connections/${c.id}`);
+      await load();
+      toast({ type: 'success', title: `Removed ${c.name}` });
+    } catch (err) {
+      toast({ type: 'error', title: 'Remove failed', message: err?.response?.data?.error });
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const refresh = async (c) => {
+    setRefreshingId(c.id);
+    try {
+      await client.post(`/netbackup/appliance-connections/${c.id}/refresh`, {}, { timeout: 300000 });
+      await load();
+      toast({ type: 'success', title: `${c.name} refresh triggered` });
+    } catch (err) {
+      toast({ type: 'error', title: `Refresh failed for ${c.name}`, message: err?.response?.data?.error });
+    } finally {
+      setRefreshingId(null);
+    }
+  };
+
+  const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && (editingId || form.password);
+
+  return (
+    <div>
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2">
+          {editingId ? <Pencil size={14} className="text-brand" /> : <Plus size={14} className="text-brand" />}
+          {editingId ? `Edit — ${form.name || 'connection'}` : 'Add an appliance management connection'}
+        </p>
+        <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
+          Connects directly to a NetBackup appliance's management API to monitor disk, RAID, memory, network, PSU and fan health. Credentials are encrypted at rest.
+        </p>
+
+        <div className="grid md:grid-cols-2 gap-3 mb-3">
+          <div>
+            <label className="block text-xs font-semibold text-ink mb-1">Display name</label>
+            <input value={form.name} onChange={set('name')} placeholder="Appliance 1" className={inp} spellCheck={false} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-ink mb-1">Host / FQDN</label>
+            <input value={form.host} onChange={set('host')} placeholder="appliance.company.com" className={inp} spellCheck={false} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-ink mb-1">Port</label>
+            <input type="number" min={1} max={65535} value={form.port} onChange={set('port')} className={inp} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-ink mb-1">Username</label>
+            <input value={form.username} onChange={set('username')} className={inp} spellCheck={false} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-ink mb-1">Password{editingId ? <span className="font-normal text-ink-faint"> — stored, leave blank to keep</span> : ''}</label>
+            <input type="password" value={form.password} onChange={set('password')} placeholder={editingId ? '•••••• (stored)' : ''} className={inp} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-ink mb-1">Poll interval (minutes)</label>
+            <input type="number" min={5} max={1440} value={form.pollingIntervalMinutes} onChange={set('pollingIntervalMinutes')} className={inp} />
+          </div>
+          <label className="flex items-end gap-2 pb-2 cursor-pointer select-none">
+            <input type="checkbox" checked={form.sslVerify} onChange={set('sslVerify')} className="accent-brand cursor-pointer" />
+            <span className="text-xs text-ink-muted">Verify TLS certificate (off = accept self-signed)</span>
+          </label>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={save} disabled={saving || !canSubmit}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
+            <Save size={14} /> {saving ? 'Saving…' : editingId ? 'Save changes' : 'Add connection'}
+          </button>
+          {editingId && (
+            <button onClick={cancelEdit}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink transition-colors cursor-pointer">
+              <X size={14} /> Cancel
+            </button>
+          )}
+          <button onClick={test} disabled={testing || !form.host.trim()}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
+            {testing ? <Spinner size={13} /> : <PlugZap size={14} />} Test connection
+          </button>
+          {testResult && (
+            <span className={`inline-flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
+              {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+              {testResult.ok ? 'Connected' : testResult.error}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-3">Registered Appliance Connections</p>
+        {connections == null ? (
+          <LoadingPanel label="Loading…" height={100} />
+        ) : connections.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">None registered yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Name</th>
+                <th className="py-2 pr-3">Host</th>
+                <th className="py-2 pr-3">Status</th>
+                <th className="py-2 pr-3">Last Poll</th>
+                <th className="py-2 pr-3 text-right">Actions</th>
+              </tr></thead>
+              <tbody>
+                {connections.map((c) => (
+                  <tr key={c.id} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink whitespace-nowrap">{c.name}</td>
+                    <td className="py-2 pr-3 text-ink-muted tnum whitespace-nowrap max-w-[220px] truncate" title={c.host}>{c.host}</td>
+                    <td className="py-2 pr-3">
+                      <Badge tone={c.lastPollStatus === 'error' ? 'crit' : c.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
+                        {c.lastPollStatus === 'error' ? 'Unreachable' : c.lastPollStatus === 'success' ? 'Up' : 'Pending'}
+                      </Badge>
+                      {c.lastPollStatus === 'error' && c.lastPollError && (
+                        <p className="text-[10px] text-status-crit mt-0.5 max-w-[260px] truncate" title={c.lastPollError}>{c.lastPollError}</p>
+                      )}
+                    </td>
+                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(c.lastPollAt)}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button onClick={() => startEdit(c)} title="Edit connection / update credentials" aria-label={`Edit ${c.name}`}
+                          className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
+                          <Pencil size={13} />
+                        </button>
+                        <button onClick={() => refresh(c)} disabled={refreshingId === c.id} title="Poll now" aria-label={`Poll ${c.name} now`}
+                          className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
+                          <RefreshCw size={13} className={refreshingId === c.id ? 'animate-spin' : ''} />
+                        </button>
+                        <button onClick={() => remove(c)} disabled={deletingId === c.id} title="Delete" aria-label={`Delete ${c.name}`}
                           className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-status-crit hover:border-status-crit/50 transition-colors cursor-pointer">
                           <Trash2 size={13} />
                         </button>
