@@ -22,7 +22,7 @@ export default function NbJobsPage() {
   const list = (rows || []).map(j => ({ ...j, bytes: j.kilobytes != null ? j.kilobytes * 1024 : null }));
 
   const ctl = useTableControls(list, {
-    searchKeys: ['clientName', 'policyName'],
+    searchKeys: ['clientName', 'policyName', 'jobId'],
     defaultSortKey: 'startedAt', defaultSortDir: 'desc',
     paginate: true,
   });

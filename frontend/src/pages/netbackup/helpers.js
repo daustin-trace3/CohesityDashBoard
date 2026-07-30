@@ -111,3 +111,15 @@ const COMPONENT_STATUS_TONE = { ok: 'ok', warning: 'warn', critical: 'crit', unk
 export function componentStatusTone(status) {
   return COMPONENT_STATUS_TONE[status] || 'neutral';
 }
+
+// Hardware component `detail` arrives as a string, an object of key/value
+// facts ({sizeGb: 4000}), or null — never render it raw (React #31).
+export function fmtHwDetail(detail) {
+  if (detail == null) return null;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail !== 'object') return String(detail);
+  const parts = Object.entries(detail)
+    .filter(([, v]) => v != null && typeof v !== 'object')
+    .map(([k, v]) => `${k}: ${v}`);
+  return parts.length ? parts.join(', ') : null;
+}

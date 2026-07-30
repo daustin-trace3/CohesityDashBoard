@@ -4,7 +4,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, RefreshButton, LastUpdated, Badge } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtWhen, componentTypeLabel, componentStatusTone } from './helpers';
+import { BRAND, fmtWhen, componentTypeLabel, componentStatusTone, fmtHwDetail } from './helpers';
 
 const APPLIANCE_TONE = { appliance: 'brand', flex: 'info', byo: 'neutral' };
 const APPLIANCE_LABEL = { appliance: 'Appliance', flex: 'Flex', byo: 'BYO' };
@@ -177,7 +177,7 @@ function HardwareHealthSection() {
                       <td className="py-2 pr-3 text-ink-muted">{c.componentName || '—'}</td>
                       <td className="py-2 pr-3"><Badge tone={componentStatusTone(c.status)}>{SUMMARY_LABEL[c.status] || c.status}</Badge></td>
                       <td className="py-2 pr-3 text-ink-muted text-[11px]">{c.stateRaw || '—'}</td>
-                      <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[260px] truncate" title={c.detail || ''}>{c.detail || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[260px] truncate" title={fmtHwDetail(c.detail) || ''}>{fmtHwDetail(c.detail) || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
