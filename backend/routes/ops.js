@@ -266,6 +266,42 @@ function ariaSummary() {
   };
 }
 
+function netbackupSummary() {
+  const sources = count('SELECT COUNT(*) c FROM netbackup_sources');
+  const policies = countSafe('SELECT COUNT(*) c FROM netbackup_policies');
+  const storageUnits = countSafe('SELECT COUNT(*) c FROM netbackup_storage_units');
+  const appliances = countSafe('SELECT COUNT(*) c FROM netbackup_appliances');
+  const jobs24h = countSafe("SELECT COUNT(*) c FROM netbackup_jobs WHERE started_at >= datetime('now','-1 day')");
+  const failed24h = countSafe(
+    "SELECT COUNT(*) c FROM netbackup_jobs WHERE started_at >= datetime('now','-1 day') AND (status_code > 0 OR state = 'FAILED')"
+  );
+  const protectedClients = countSafe(
+    "SELECT COUNT(DISTINCT client_name) c FROM netbackup_jobs WHERE started_at >= datetime('now','-7 days')"
+  );
+  const sev = { critical: 0, warning: 0 };
+  for (const r of all("SELECT severity, COUNT(*) c FROM netbackup_issue_history WHERE status = 'open' GROUP BY severity")) {
+    const s = String(r.severity || '').toLowerCase();
+    if (s === 'critical') sev.critical += num(r.c);
+    else if (s === 'warning') sev.warning += num(r.c);
+  }
+  const exceptions = [];
+  if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical issue${sev.critical === 1 ? '' : 's'}`, '/netbackup/alerts'));
+  if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} warning issue${sev.warning === 1 ? '' : 's'}`, '/netbackup/alerts'));
+  return {
+    objects: sources + policies + storageUnits + appliances,
+    headline: [
+      { label: 'Jobs 24h', value: jobs24h },
+      { label: 'Failed 24h', value: failed24h },
+      { label: 'Protected clients', value: protectedClients },
+    ],
+    exceptions,
+    spark: spark7(all(
+      "SELECT date(started_at) d, COUNT(*) c FROM netbackup_jobs WHERE (status_code > 0 OR state = 'FAILED') AND started_at >= datetime('now','-7 days') GROUP BY date(started_at)"
+    )),
+    sparkLabel: 'failed jobs / day',
+  };
+}
+
 const PLATFORMS = [
   { id: 'cohesity', label: 'Cohesity', color: '#6CB33F', route: '/cohesity', fn: cohesitySummary },
   { id: 'pure', label: 'Pure', color: '#FF6B00', route: '/pure', fn: pureSummary },
@@ -274,6 +310,7 @@ const PLATFORMS = [
   { id: 'vcenter', label: 'vCenter', color: '#0091DA', route: '/vcenter', fn: vcenterSummary },
   { id: 'dell', label: 'Dell', color: '#007DB8', route: '/dell', fn: dellSummary },
   { id: 'aria', label: 'Aria', color: '#00A2C7', route: '/aria', fn: ariaSummary },
+  { id: 'netbackup', label: 'NetBackup', color: '#B1181E', route: '/netbackup', fn: netbackupSummary },
 ];
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };

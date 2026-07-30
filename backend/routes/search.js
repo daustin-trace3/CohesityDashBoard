@@ -60,6 +60,12 @@ const CATEGORIES = [
   { key: 'ariaops-resources', label: 'Aria Ops Resources', platform: 'ariaops', perm: 'ariaops:resources:view', base: '/ariaops/resources',
     sql: `SELECT name AS title, (COALESCE(kind, '') || ' · ' || COALESCE(health, '')) AS subtitle
           FROM ariaops_resources WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'netbackup-clients', label: 'NetBackup Clients', platform: 'netbackup', perm: 'netbackup:clients:view', base: '/netbackup/jobs',
+    sql: `SELECT DISTINCT client_name AS title FROM netbackup_jobs WHERE client_name LIKE ? ESCAPE '\\' ORDER BY client_name LIMIT ?` },
+  { key: 'netbackup-policies', label: 'NetBackup Policies', platform: 'netbackup', perm: 'netbackup:policies:view', base: '/netbackup/policies',
+    sql: `SELECT name AS title, policy_type AS subtitle FROM netbackup_policies WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'netbackup-appliances', label: 'NetBackup Appliances', platform: 'netbackup', perm: 'netbackup:appliances:view', base: '/netbackup/appliances',
+    sql: `SELECT name AS title, appliance_type AS subtitle FROM netbackup_appliances WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
 ];
 
 const platformEnabled = (id) => {

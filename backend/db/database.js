@@ -11,6 +11,7 @@ const vcenterMigrations = require('./migrations/vcenter');
 const dellMigrations = require('./migrations/dell');
 const ariaMigrations = require('./migrations/aria');
 const ariaopsMigrations = require('./migrations/ariaops');
+const netbackupMigrations = require('./migrations/netbackup');
 
 const DB_PATH = process.env.DASHBOARD_DB_PATH || path.join(__dirname, '..', 'data', 'cohesity.db');
 
@@ -40,5 +41,6 @@ runMigrations(db, 'vcenter', vcenterMigrations);
 runMigrations(db, 'dell', dellMigrations);
 runMigrations(db, 'aria', ariaMigrations);
 runMigrations(db, 'ariaops', ariaopsMigrations);
+runMigrations(db, 'netbackup', netbackupMigrations);
 
 module.exports = db;

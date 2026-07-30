@@ -12,6 +12,8 @@ const CONFIG = {
     description: 'Computed issues across all registered Aria Automation instances, with open/resolved history' },
   vcenter: { brand: '#0091DA', base: '/vcenter', instanceKey: 'vcenter', instanceLabel: 'vCenter',
     description: 'Computed issues across all registered vCenters, with open/resolved history' },
+  netbackup: { brand: '#B1181E', base: '/netbackup', instanceKey: 'source', instanceLabel: 'Primary Server',
+    description: 'Computed issues across all registered NetBackup sources, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];

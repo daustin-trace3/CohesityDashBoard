@@ -167,6 +167,27 @@ function collectAriaIssues() {
   }));
 }
 
+/** Open NetBackup computed issues — reconcileIssueHistory keeps
+ *  netbackup_issue_history current with a stable issue_key per issue, and
+ *  resolving drops the row out of this query (which is what ends reminders). */
+function collectNetbackupIssues() {
+  const rows = db.prepare(`
+    SELECT i.issue_key AS issueKey, i.severity, i.message,
+           i.first_seen AS firstSeen, i.last_seen AS lastSeen,
+           COALESCE(s.name, i.source, 'estate') AS sourceName
+    FROM netbackup_issue_history i LEFT JOIN netbackup_sources s ON i.source_id = s.id
+    WHERE i.status = 'open'
+  `).all();
+  return rows.map((r) => ({
+    sourceKey: `nb:${r.issueKey}`,
+    severity: String(r.severity || '').toLowerCase(),
+    host: r.sourceName,
+    message: r.message || '',
+    firstSeen: toIso(r.firstSeen),
+    lastSeen: toIso(r.lastSeen),
+  }));
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -175,6 +196,7 @@ const COLLECTORS = {
   vcenter: collectVcenterIssues,
   dell: collectDellAlerts,
   aria: collectAriaIssues,
+  netbackup: collectNetbackupIssues,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({

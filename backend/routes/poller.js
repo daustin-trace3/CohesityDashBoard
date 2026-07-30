@@ -18,6 +18,7 @@ const PLATFORM_METRICS_HISTORY = {
   dell: { arraysTable: 'dell_ome_instances', metricsTable: 'dell_metrics_history', arrayIdColumn: 'ome_id' },
   aria: { arraysTable: 'aria_instances', metricsTable: 'aria_metrics_history', arrayIdColumn: 'instance_id' },
   ariaops: { arraysTable: 'ariaops_instances', metricsTable: 'ariaops_metrics_history', arrayIdColumn: 'instance_id' },
+  netbackup: { arraysTable: 'netbackup_sources', metricsTable: 'netbackup_metrics_history', arrayIdColumn: 'source_id' },
 };
 
 /**

@@ -26,6 +26,10 @@ const DEFAULTS = {
   zerto_poll_interval_minutes: '15',
   pure1_poll_interval_minutes: '15',
   vcenter_cert_warn_days: '60',
+  platform_netbackup_enabled: '0',
+  netbackup_success_warn_pct: '90',
+  netbackup_storage_warn_pct: '20',
+  netbackup_stale_backup_hours: '48',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',
@@ -37,7 +41,7 @@ const DEFAULTS = {
   smtp_from: '',
   smtp_recipients: '',
   alert_email_min_severity: 'warning',
-  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true}',
+  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true,"netbackup":true}',
   alert_email_reminder_hours: '24',
 };
 
@@ -124,6 +128,7 @@ function getPlatformSettings() {
     platformDellEnabled: getSetting('platform_dell_enabled') === '1',
     platformAriaEnabled: getSetting('platform_aria_enabled') === '1',
     platformAriaopsEnabled: getSetting('platform_ariaops_enabled') === '1',
+    platformNetbackupEnabled: getSetting('platform_netbackup_enabled') === '1',
     dnsServer: getSetting('dns_server') || '',
   };
 }
@@ -133,7 +138,7 @@ function getPlatformSettings() {
 function getNotificationSettings() {
   // Merge over defaults so platforms added after a DB stored its JSON come
   // through enabled instead of silently missing (collector gate reads keys).
-  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true };
+  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, netbackup: true };
   let alertPlatforms;
   try {
     alertPlatforms = { ...platformDefaults, ...JSON.parse(getSetting('alert_email_platforms')) };

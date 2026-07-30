@@ -19,6 +19,7 @@ const NOTIFY_PLATFORMS = [
   { key: 'vcenter', label: 'VMware vCenter' },
   { key: 'dell', label: 'Dell (OME)' },
   { key: 'aria', label: 'Aria Automation' },
+  { key: 'netbackup', label: 'Veritas NetBackup' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,
@@ -53,6 +54,7 @@ export default function AdminSettingsPage() {
   const [vcenterEnabled, setVcenterEnabled] = useState(false);
   const [dellEnabled, setDellEnabled] = useState(false);
   const [ariaEnabled, setAriaEnabled] = useState(false);
+  const [netbackupEnabled, setNetbackupEnabled] = useState(false);
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
@@ -94,6 +96,7 @@ export default function AdminSettingsPage() {
         setVcenterEnabled(!!d.platformVcenterEnabled);
         setDellEnabled(!!d.platformDellEnabled);
         setAriaEnabled(!!d.platformAriaEnabled);
+        setNetbackupEnabled(!!d.platformNetbackupEnabled);
         setDnsServer(d.dnsServer || '');
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
@@ -119,6 +122,7 @@ export default function AdminSettingsPage() {
         platformVcenterEnabled: vcenterEnabled,
         platformDellEnabled: dellEnabled,
         platformAriaEnabled: ariaEnabled,
+        platformNetbackupEnabled: netbackupEnabled,
         dnsServer,
       });
       window.dispatchEvent(new Event('platforms-changed'));
@@ -505,6 +509,14 @@ export default function AdminSettingsPage() {
               <span className="text-xs text-ink-muted leading-relaxed">
                 <span className="font-semibold text-ink">VMware Aria Automation</span><br />
                 Show the Aria Automation platform tab. Register vRA instances on its Settings page after enabling.
+              </span>
+            </label>
+            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+              <input type="checkbox" checked={netbackupEnabled} onChange={e => setNetbackupEnabled(e.target.checked)}
+                className="accent-brand mt-0.5 cursor-pointer" />
+              <span className="text-xs text-ink-muted leading-relaxed">
+                <span className="font-semibold text-ink">Veritas NetBackup</span><br />
+                Show the NetBackup platform tab. Register primary servers on its Settings page after enabling.
               </span>
             </label>
 

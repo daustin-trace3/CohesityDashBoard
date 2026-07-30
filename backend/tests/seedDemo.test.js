@@ -247,4 +247,51 @@ describe('seedDemo.js', () => {
     expect(db.prepare("SELECT COUNT(*) c FROM aria_approvals WHERE status = 'PENDING'").get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aria_issue_history').get().c).toBeGreaterThan(0);
   });
+
+  it('seeds the netbackup platform with sources, policies, and jobs', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_sources').get().c).toBe(2);
+    expect(db.prepare("SELECT COUNT(*) c FROM netbackup_sources WHERE source_type = 'primary'").get().c).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM netbackup_sources WHERE source_type = 'alta'").get().c).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_policies').get().c).toBe(8);
+    const jobs = db.prepare('SELECT COUNT(*) c FROM netbackup_jobs').get().c;
+    expect(jobs).toBeGreaterThan(300);
+    expect(jobs).toBeLessThan(600);
+  });
+
+  it('seeds netbackup storage, media servers, and appliances', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_storage_units').get().c).toBe(4);
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_disk_pools').get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_disk_pools WHERE used_capacity_bytes >= total_capacity_bytes * 0.9').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_media_servers').get().c).toBe(3);
+    expect(db.prepare("SELECT COUNT(*) c FROM netbackup_media_servers WHERE state = 'DOWN'").get().c).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_appliances').get().c).toBe(5);
+    expect(db.prepare("SELECT COUNT(*) c FROM netbackup_appliances WHERE appliance_type = 'appliance' AND model = 'NB5250'").get().c).toBe(2);
+    expect(db.prepare("SELECT COUNT(*) c FROM netbackup_appliances WHERE appliance_type = 'flex'").get().c).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM netbackup_appliances WHERE appliance_type = 'byo'").get().c).toBe(2);
+  });
+
+  it('seeds netbackup deliberate trouble: failing policy, failure codes, stale client, alerts, issue history', () => {
+    const failingPolicyJobs = db.prepare(`
+      SELECT COUNT(*) c FROM netbackup_jobs
+      WHERE policy_name = 'VMWARE-PROD-DAILY' AND started_at >= datetime('now', '-4 days') AND started_at < datetime('now', '-1 day')
+        AND status_code != 0
+    `).get().c;
+    expect(failingPolicyJobs).toBeGreaterThan(0);
+    for (const code of [84, 58, 2074]) {
+      expect(db.prepare('SELECT COUNT(*) c FROM netbackup_jobs WHERE status_code = ?').get(code).c).toBeGreaterThan(0);
+    }
+    const staleClientSuccess = db.prepare(`
+      SELECT COUNT(*) c FROM netbackup_jobs
+      WHERE client_name = 'win-fs02' AND status_code = 0 AND started_at >= datetime('now', '-4 days')
+    `).get().c;
+    expect(staleClientSuccess).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_alerts').get().c).toBe(3);
+    const openIssues = db.prepare("SELECT COUNT(*) c FROM netbackup_issue_history WHERE status = 'open'").get().c;
+    expect(openIssues).toBeGreaterThanOrEqual(4);
+    expect(db.prepare("SELECT COUNT(*) c FROM netbackup_issue_history WHERE status = 'open' AND first_seen >= last_seen").get().c).toBe(0);
+  });
+
+  it('seeds 30 days of netbackup metrics history per source', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_metrics_history').get().c).toBe(2 * 31);
+  });
 });

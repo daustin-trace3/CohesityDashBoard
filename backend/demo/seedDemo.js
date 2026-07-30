@@ -46,6 +46,7 @@ const { seedZerto } = require('./generators/zerto');
 const { seedVcenter } = require('./generators/vcenter');
 const { seedDell } = require('./generators/dell');
 const { seedAria } = require('./generators/aria');
+const { seedNetbackup } = require('./generators/netbackup');
 
 const SEEDED_TABLES = [
   // core
@@ -79,6 +80,10 @@ const SEEDED_TABLES = [
   'aria_catalog_sources', 'aria_images', 'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints',
   'aria_runs', 'aria_approvals', 'aria_metrics_history',
   'aria_issue_history', 'aria_instances',
+  // netbackup (children before the parent)
+  'netbackup_jobs', 'netbackup_policies', 'netbackup_storage_units', 'netbackup_disk_pools',
+  'netbackup_media_servers', 'netbackup_appliances', 'netbackup_alerts',
+  'netbackup_issue_history', 'netbackup_metrics_history', 'netbackup_sources',
 ];
 
 function wipeSeededTables(database) {
@@ -109,6 +114,7 @@ async function main() {
   const vcenterResult = db.transaction(() => seedVcenter(db, { now, encrypt }))();
   const dellResult = db.transaction(() => seedDell(db, { now, encrypt }))();
   const ariaResult = db.transaction(() => seedAria(db, { now, encrypt }))();
+  const netbackupResult = db.transaction(() => seedNetbackup(db, { now, encrypt }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -128,6 +134,7 @@ async function main() {
     ['vcenters/hosts/vms', `${vcenterResult.vcenters}/${vcenterResult.hosts}/${vcenterResult.vms}`],
     ['dell instances/devices/components', `${dellResult.instances}/${dellResult.devices}/${dellResult.components}`],
     ['aria instances/deployments/requests', `${ariaResult.instances}/${ariaResult.deployments}/${ariaResult.requests}`],
+    ['netbackup sources/policies/jobs', `${netbackupResult.sources}/${netbackupResult.policies}/${netbackupResult.jobs}`],
     ['users', 1],
   ];
 

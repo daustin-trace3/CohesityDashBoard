@@ -1,0 +1,400 @@
+// NetBackup scope demo data: 2 sources (one on-prem primary, one Alta SaaS),
+// 8 policies across VMware/MS-Windows/Standard/Oracle/NBU-Catalog, ~400 jobs
+// over the last 7 days with a realistic overnight-heavy schedule and ~92%
+// success, 4 storage units + 2 disk pools, 3 media servers, 5 appliances, 3
+// upstream alerts, and 30 days of per-source metrics history. Includes
+// deliberate trouble so the Overview issues panel demos every rule: a policy
+// failing 100% for 2 straight days, a client with no successful backup in 4
+// days, a disk pool pinned at 91% used, and a media server stuck DOWN.
+const { randInt, randFloat, pick, chance, rngFor } = require('./core');
+
+const POLICY_DEFS = [
+  { name: 'VMWARE-PROD-DAILY', type: 'VMware', clients: ['vm-web01', 'vm-web02', 'vm-app01', 'vm-app02', 'vm-db01'], weekly: false },
+  { name: 'VMWARE-DEV-WEEKLY', type: 'VMware', clients: ['vm-dev01', 'vm-dev02', 'vm-dev03'], weekly: true },
+  { name: 'WIN-FILESERVERS', type: 'MS-Windows', clients: ['win-fs01', 'win-fs02', 'win-fs03', 'win-fs04'], weekly: false },
+  { name: 'WIN-DOMAIN-CONTROLLERS', type: 'MS-Windows', clients: ['win-dc01', 'win-dc02'], weekly: false },
+  { name: 'STD-LINUX-DAILY', type: 'Standard', clients: ['lnx-app01', 'lnx-app02', 'lnx-file01'], weekly: false },
+  { name: 'ORACLE-PROD-RMAN', type: 'Oracle', clients: ['ora-prod01', 'ora-prod02'], weekly: false },
+  { name: 'NBU-CATALOG-BACKUP', type: 'NBU-Catalog', clients: ['nbu-primary-01'], weekly: false },
+  { name: 'ALTA-CLOUD-VMWARE', type: 'VMware', clients: ['alta-vm01', 'alta-vm02', 'alta-vm03', 'alta-vm04'], weekly: false },
+];
+
+// Trouble scenarios: this policy fails 100% of its jobs on the two days it
+// runs 2-3 days ago; this client has no successful backup in the last 4 days.
+const FAILING_POLICY = 'VMWARE-PROD-DAILY';
+const FAILING_POLICY_DAYS_AGO = [2, 3];
+const STALE_CLIENT = 'win-fs02';
+// Day 4 included: a day-4 job stamped later in the day than "now" still falls
+// inside the rolling now-4d window the stale-backup rule (and its test) uses.
+const STALE_CLIENT_DAYS_AGO = [0, 1, 2, 3, 4];
+const FAILURE_CODES = [84, 58, 2074, 1, 13, 6];
+const SPECIAL_CODES = [84, 58, 2074];
+
+function nightHour(rng) {
+  // Overnight backup window: 20:00-23:59 or 00:00-05:59.
+  return chance(rng, 0.6) ? randInt(rng, 20, 23) : randInt(rng, 0, 5);
+}
+
+function dayHour(rng) {
+  return randInt(rng, 9, 17);
+}
+
+function seedNetbackup(db, { now, encrypt }) {
+  const nowIso = new Date(now).toISOString();
+
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_netbackup_enabled', '1', datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run();
+
+  const insertSource = db.prepare(`
+    INSERT INTO netbackup_sources (name, source_type, host, port, auth_mode, username,
+      domain_name, domain_type, encrypted_credentials, ssl_verify, polling_interval_minutes,
+      last_poll_status, last_poll_error, last_poll_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 15, 'success', NULL, ?, ?, ?)
+  `);
+  const insertPolicy = db.prepare(`
+    INSERT INTO netbackup_policies (source_id, name, policy_type, active, client_count,
+      schedule_count, selection_count, captured_at)
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+  `);
+  const insertJob = db.prepare(`
+    INSERT INTO netbackup_jobs (source_id, job_id, parent_job_id, job_type, state, status_code,
+      policy_name, policy_type, client_name, schedule_type, storage_unit, kilobytes,
+      files_count, elapsed_seconds, throughput_kbps, started_at, ended_at, captured_at)
+    VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertStorageUnit = db.prepare(`
+    INSERT INTO netbackup_storage_units (source_id, name, storage_unit_type, disk_pool,
+      media_server, max_concurrent_jobs, capacity_bytes, free_bytes, used_bytes, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertDiskPool = db.prepare(`
+    INSERT INTO netbackup_disk_pools (source_id, name, server_type, status,
+      total_capacity_bytes, used_capacity_bytes, available_capacity_bytes, volume_count, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertMediaServer = db.prepare(`
+    INSERT INTO netbackup_media_servers (source_id, name, state, version, captured_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  const insertAppliance = db.prepare(`
+    INSERT INTO netbackup_appliances (source_id, name, host_type, appliance_type, model,
+      serial_number, os_type, os_version, cpu_architecture, nbu_version, raw_json, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertAlert = db.prepare(`
+    INSERT INTO netbackup_alerts (source_id, alert_id, severity, category, message, occurred_at, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertIssue = db.prepare(`
+    INSERT INTO netbackup_issue_history (source_id, issue_key, source, type, target, severity, message, status,
+      first_seen, last_seen, resolved_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'open', datetime('now', ?), datetime('now', ?), NULL)
+  `);
+  const insertMetrics = db.prepare(`
+    INSERT INTO netbackup_metrics_history (source_id, captured_at, jobs_24h, failed_jobs_24h,
+      success_rate, active_policies, protected_clients, storage_capacity_bytes,
+      storage_used_bytes, media_server_count, appliance_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const GIB = 1024 ** 3;
+
+  // ── Sources ──────────────────────────────────────────────────────────────
+  insertSource.run(
+    'nbu-primary-01', 'primary', 'nbu-primary-01.icc.demo', 1556, 'password', 'nbu-admin',
+    null, null, encrypt(JSON.stringify({ password: 'demo-not-real' })), 0,
+    new Date(now - randInt(rngFor('nbu-primary-01'), 2, 14) * 60000).toISOString(), nowIso, nowIso
+  );
+  const primaryId = db.prepare("SELECT id FROM netbackup_sources WHERE name = 'nbu-primary-01'").get().id;
+
+  insertSource.run(
+    'Alta Production', 'alta', 'https://acme.netbackup.alta.veritas.com/netbackup', 1556, 'apikey', null,
+    null, null, encrypt(JSON.stringify({ apiKey: 'demo-not-real-key' })), 1,
+    new Date(now - randInt(rngFor('Alta Production'), 2, 14) * 60000).toISOString(), nowIso, nowIso
+  );
+  const altaId = db.prepare("SELECT id FROM netbackup_sources WHERE name = 'Alta Production'").get().id;
+
+  // ── Policies ─────────────────────────────────────────────────────────────
+  const PRIMARY_POLICIES = POLICY_DEFS.slice(0, 5);
+  const ALTA_POLICIES = POLICY_DEFS.slice(5);
+  const policySourceOf = {};
+  for (const def of PRIMARY_POLICIES) policySourceOf[def.name] = primaryId;
+  for (const def of ALTA_POLICIES) policySourceOf[def.name] = altaId;
+
+  for (const def of POLICY_DEFS) {
+    insertPolicy.run(
+      policySourceOf[def.name], def.name, def.type, def.clients.length,
+      def.weekly ? 1 : randInt(rngFor(`${def.name}-sched`), 1, 3),
+      randInt(rngFor(`${def.name}-sel`), 1, 4), nowIso
+    );
+  }
+
+  // ── Storage units + disk pools ──────────────────────────────────────────
+  const suRng = rngFor('netbackup-storage');
+  const diskPoolPrimary = {
+    name: 'dp-primary-01', server_type: 'PureDisk', status: 'UP',
+    total: 200 * 1024 * GIB, used: Math.round(200 * 1024 * GIB * 0.91), volumeCount: 4,
+  };
+  insertDiskPool.run(primaryId, diskPoolPrimary.name, diskPoolPrimary.server_type, diskPoolPrimary.status,
+    diskPoolPrimary.total, diskPoolPrimary.used, diskPoolPrimary.total - diskPoolPrimary.used,
+    diskPoolPrimary.volumeCount, nowIso);
+
+  const diskPoolAlta = {
+    name: 'dp-alta-cloud-01', server_type: 'CloudCatalyst', status: 'UP',
+    total: 500 * 1024 * GIB, used: Math.round(500 * 1024 * GIB * randFloat(suRng, 0.4, 0.55, 2)), volumeCount: 2,
+  };
+  insertDiskPool.run(altaId, diskPoolAlta.name, diskPoolAlta.server_type, diskPoolAlta.status,
+    diskPoolAlta.total, diskPoolAlta.used, diskPoolAlta.total - diskPoolAlta.used,
+    diskPoolAlta.volumeCount, nowIso);
+
+  const STORAGE_UNITS = [
+    { source: primaryId, name: 'stu-disk-01', type: 'Disk', diskPool: diskPoolPrimary.name, mediaServer: 'nbu-media-01', maxJobs: 12, capGiB: 100 },
+    { source: primaryId, name: 'stu-disk-02', type: 'Disk', diskPool: diskPoolPrimary.name, mediaServer: 'nbu-media-02', maxJobs: 12, capGiB: 100 },
+    { source: primaryId, name: 'stu-tape-01', type: 'Tape (STL)', diskPool: null, mediaServer: 'nbu-media-01', maxJobs: 4, capGiB: 300 },
+    { source: altaId, name: 'stu-cloud-01', type: 'Cloud (S3)', diskPool: diskPoolAlta.name, mediaServer: null, maxJobs: 20, capGiB: 500 },
+  ];
+  for (const su of STORAGE_UNITS) {
+    const total = su.capGiB * GIB;
+    const usedFrac = su.diskPool === diskPoolPrimary.name ? 0.91 : randFloat(suRng, 0.3, 0.6, 2);
+    const used = Math.round(total * usedFrac);
+    insertStorageUnit.run(su.source, su.name, su.type, su.diskPool, su.mediaServer,
+      su.maxJobs, total, total - used, used, nowIso);
+  }
+
+  // ── Media servers (nbu-media-02 stuck DOWN) ─────────────────────────────
+  const MEDIA_SERVERS = [
+    { source: primaryId, name: 'nbu-media-01', state: 'ACTIVE', version: '11.0' },
+    { source: primaryId, name: 'nbu-media-02', state: 'DOWN', version: '11.0' },
+    { source: altaId, name: 'nbu-media-alta-01', state: 'ACTIVE', version: '11.0' },
+  ];
+  for (const ms of MEDIA_SERVERS) {
+    insertMediaServer.run(ms.source, ms.name, ms.state, ms.version, nowIso);
+  }
+
+  // ── Appliances (2 NB5250, 1 flex, 2 byo) ────────────────────────────────
+  const applRng = rngFor('netbackup-appliances');
+  const APPLIANCES = [
+    { source: primaryId, name: 'nbu-primary-01', hostType: 'PRIMARY_SERVER', applianceType: 'appliance', model: 'NB5250', serial: 'NB5250-A1B2C3', os: 'NetBackup Appliance OS', osVer: '5.1', cpu: 'x86_64', nbuVer: '11.0' },
+    { source: primaryId, name: 'nbu-media-01', hostType: 'MEDIA_SERVER', applianceType: 'appliance', model: 'NB5250', serial: 'NB5250-D4E5F6', os: 'NetBackup Appliance OS', osVer: '5.1', cpu: 'x86_64', nbuVer: '11.0' },
+    { source: primaryId, name: 'nbu-flex-01', hostType: 'MEDIA_SERVER', applianceType: 'flex', model: 'NetBackup Flex 5350', serial: 'FLEX-G7H8I9', os: 'NetBackup Flex OS', osVer: '2.4', cpu: 'x86_64', nbuVer: '11.0' },
+    { source: primaryId, name: 'nbu-media-02', hostType: 'MEDIA_SERVER', applianceType: 'byo', model: null, serial: null, os: 'Red Hat Enterprise Linux', osVer: '9.4', cpu: 'x86_64', nbuVer: '11.0' },
+    { source: altaId, name: 'nbu-media-alta-01', hostType: 'MEDIA_SERVER', applianceType: 'byo', model: null, serial: null, os: 'Red Hat Enterprise Linux', osVer: '9.4', cpu: 'x86_64', nbuVer: '11.0' },
+  ];
+  for (const a of APPLIANCES) {
+    insertAppliance.run(a.source, a.name, a.hostType, a.applianceType, a.model, a.serial,
+      a.os, a.osVer, a.cpu, a.nbuVer, JSON.stringify({ demo: true, hostName: a.name }), nowIso);
+  }
+  void applRng;
+
+  // ── Upstream alerts ──────────────────────────────────────────────────────
+  const ALERTS = [
+    { source: primaryId, id: 'alert-1001', severity: 'critical', category: 'Storage', message: 'Disk pool dp-primary-01 is 91% full', minAgo: 45 },
+    { source: primaryId, id: 'alert-1002', severity: 'warning', category: 'MediaServer', message: 'Media server nbu-media-02 is not responding', minAgo: 210 },
+    { source: altaId, id: 'alert-2001', severity: 'warning', category: 'Job', message: "Policy VMWARE-PROD-DAILY backups have failed repeatedly", minAgo: 90 },
+  ];
+  for (const a of ALERTS) {
+    insertAlert.run(a.source, a.id, a.severity, a.category, a.message,
+      new Date(now - a.minAgo * 60000).toISOString(), nowIso);
+  }
+
+  // ── Jobs: ~400 over the last 7 days ─────────────────────────────────────
+  let jobId = 500000;
+  let jobTotal = 0;
+  const jobRng = rngFor('netbackup-jobs');
+  const jobStats = {}; // policy_name -> { total, failed }
+  const clientLastSuccess = {}; // client -> most recent success timestamp (ms)
+
+  function recordJob(sourceId, policy, clientName, dayAgo, forceFail, isNight) {
+    const hour = isNight ? nightHour(jobRng) : dayHour(jobRng);
+    const minute = randInt(jobRng, 0, 59);
+    const started = new Date(now);
+    started.setUTCDate(started.getUTCDate() - dayAgo);
+    started.setUTCHours(hour, minute, 0, 0);
+    const startedMs = started.getTime();
+    if (startedMs > now) return; // avoid future timestamps for "today"
+
+    const elapsed = policy.type === 'VMware' ? randInt(jobRng, 600, 7200) : randInt(jobRng, 90, 3600);
+    const endedMs = startedMs + elapsed * 1000;
+
+    let success = forceFail ? false : chance(jobRng, 0.92);
+    let state, statusCode;
+    if (success) {
+      state = 'DONE';
+      statusCode = 0;
+    } else {
+      state = chance(jobRng, 0.3) ? 'FAILED' : 'DONE';
+      statusCode = chance(jobRng, 0.4) ? pick(jobRng, SPECIAL_CODES) : pick(jobRng, FAILURE_CODES);
+    }
+
+    const kilobytes = policy.type === 'VMware'
+      ? randInt(jobRng, 5_000_000, 400_000_000)
+      : policy.type === 'Oracle'
+        ? randInt(jobRng, 1_000_000, 80_000_000)
+        : randInt(jobRng, 100_000, 20_000_000);
+    const filesCount = policy.type === 'NBU-Catalog' ? randInt(jobRng, 1, 5) : randInt(jobRng, 10, 50000);
+    const throughput = success ? randInt(jobRng, 5000, 250000) : null;
+    const storageUnit = pick(jobRng, STORAGE_UNITS.filter((s) => s.source === sourceId)).name;
+    const scheduleType = policy.weekly ? 'FULL' : pick(jobRng, ['FULL', 'INCR', 'DIFF_INCR']);
+
+    insertJob.run(
+      sourceId, jobId++, 'Backup', state, statusCode, policy.name, policy.type, clientName,
+      scheduleType, storageUnit, kilobytes, filesCount, elapsed, throughput,
+      new Date(startedMs).toISOString(), new Date(endedMs).toISOString(), nowIso
+    );
+    jobTotal++;
+
+    if (!jobStats[policy.name]) jobStats[policy.name] = { total: 0, failed: 0 };
+    jobStats[policy.name].total++;
+    if (!success) jobStats[policy.name].failed++;
+
+    if (success) {
+      if (!clientLastSuccess[clientName] || startedMs > clientLastSuccess[clientName]) {
+        clientLastSuccess[clientName] = startedMs;
+      }
+    } else if (!(clientName in clientLastSuccess)) {
+      clientLastSuccess[clientName] = null;
+    }
+  }
+
+  for (let dayAgo = 6; dayAgo >= 0; dayAgo--) {
+    for (const def of POLICY_DEFS) {
+      const sourceId = policySourceOf[def.name];
+      // Weekly policy only runs once, on day 3.
+      if (def.weekly && dayAgo !== 3) continue;
+
+      const policyForceFail = def.name === FAILING_POLICY && FAILING_POLICY_DAYS_AGO.includes(dayAgo);
+
+      for (const clientName of def.clients) {
+        const clientForceFail = clientName === STALE_CLIENT && STALE_CLIENT_DAYS_AGO.includes(dayAgo);
+        const runs = randInt(jobRng, 2, 4);
+        for (let r = 0; r < runs; r++) {
+          const isNight = r === 0 ? true : chance(jobRng, 0.7);
+          recordJob(sourceId, def, clientName, dayAgo, policyForceFail || clientForceFail, isNight);
+        }
+      }
+    }
+  }
+
+  // ── Issue history: seeded directly (mirrors netbackupIssues.js key scheme)
+  // so it stays consistent once the computed-issues service reconciles it.
+  const failingStats = jobStats[FAILING_POLICY] || { total: 0, failed: 0 };
+  const histRng = rngFor('netbackup-issue-history');
+  const issues = [
+    {
+      sourceId: primaryId,
+      key: `job-failures:${primaryId}:${FAILING_POLICY}`,
+      severity: 'critical',
+      message: `Policy ${FAILING_POLICY} has ${failingStats.failed} failed job(s) of ${failingStats.total} in the last 24h`,
+      openedMinAgo: 2 * 24 * 60 + randInt(histRng, 10, 200),
+    },
+    {
+      sourceId: primaryId,
+      key: `storage-low:${primaryId}:${diskPoolPrimary.name}`,
+      severity: 'critical',
+      message: `Disk pool ${diskPoolPrimary.name} has 9.0% free space`,
+      openedMinAgo: randInt(histRng, 6 * 60, 3 * 24 * 60),
+    },
+    {
+      sourceId: primaryId,
+      key: `media-server-down:${primaryId}:nbu-media-02`,
+      severity: 'warning',
+      message: 'Media server nbu-media-02 is DOWN',
+      openedMinAgo: randInt(histRng, 3 * 60, 4 * 24 * 60),
+    },
+    {
+      sourceId: primaryId,
+      key: `stale-backup:${primaryId}:${STALE_CLIENT}`,
+      severity: 'warning',
+      message: `Client ${STALE_CLIENT} has no successful backup in over 48 hours`,
+      openedMinAgo: 4 * 24 * 60 - randInt(histRng, 10, 60),
+    },
+  ];
+  for (const a of ALERTS) {
+    issues.push({
+      sourceId: a.source,
+      key: `upstream-alert:${a.source}:${a.id}`,
+      severity: a.severity === 'critical' ? 'critical' : 'warning',
+      message: a.message,
+      openedMinAgo: a.minAgo,
+    });
+  }
+  const sourceNameOf = db.prepare('SELECT name FROM netbackup_sources WHERE id = ?');
+  for (const issue of issues) {
+    const segments = issue.key.split(':');
+    insertIssue.run(issue.sourceId, issue.key,
+      sourceNameOf.get(issue.sourceId)?.name ?? 'estate',
+      segments[0], segments[segments.length - 1],
+      issue.severity, issue.message,
+      `-${issue.openedMinAgo} minutes`, '-4 minutes');
+  }
+
+  // ── 30 days of per-source metrics history ───────────────────────────────
+  const jobsBySource = { [primaryId]: [], [altaId]: [] };
+  for (const row of db.prepare('SELECT source_id, state, status_code, started_at FROM netbackup_jobs').all()) {
+    jobsBySource[row.source_id].push(row);
+  }
+  const activePolicyCount = { [primaryId]: PRIMARY_POLICIES.length, [altaId]: ALTA_POLICIES.length };
+  const protectedClients = {
+    [primaryId]: new Set(PRIMARY_POLICIES.flatMap((d) => d.clients)).size,
+    [altaId]: new Set(ALTA_POLICIES.flatMap((d) => d.clients)).size,
+  };
+  const storageTotals = {
+    [primaryId]: STORAGE_UNITS.filter((s) => s.source === primaryId).reduce((acc, s) => acc + s.capGiB * GIB, 0),
+    [altaId]: STORAGE_UNITS.filter((s) => s.source === altaId).reduce((acc, s) => acc + s.capGiB * GIB, 0),
+  };
+  const mediaServerCounts = {
+    [primaryId]: MEDIA_SERVERS.filter((m) => m.source === primaryId).length,
+    [altaId]: MEDIA_SERVERS.filter((m) => m.source === altaId).length,
+  };
+  const applianceCounts = {
+    [primaryId]: APPLIANCES.filter((a) => a.source === primaryId).length,
+    [altaId]: APPLIANCES.filter((a) => a.source === altaId).length,
+  };
+
+  const metricsRng = rngFor('netbackup-metrics-history');
+  let metricsRows = 0;
+  for (const sourceId of [primaryId, altaId]) {
+    for (let i = 30; i >= 0; i--) {
+      const dayMs = now - i * 86400000;
+      const windowStart = dayMs - 86400000;
+      const jobsInWindow = i <= 6
+        ? jobsBySource[sourceId].filter((j) => {
+            const t = new Date(j.started_at).getTime();
+            return t > windowStart && t <= dayMs;
+          })
+        : null;
+      let jobs24h, failed24h, successRate;
+      if (jobsInWindow && jobsInWindow.length) {
+        jobs24h = jobsInWindow.length;
+        failed24h = jobsInWindow.filter((j) => j.status_code !== 0).length;
+        successRate = Math.round(((jobs24h - failed24h) / jobs24h) * 1000) / 10;
+      } else {
+        jobs24h = randInt(metricsRng, 10, 40);
+        failed24h = randInt(metricsRng, 0, 2);
+        successRate = Math.round(((jobs24h - failed24h) / jobs24h) * 1000) / 10;
+      }
+      const used = Math.round(storageTotals[sourceId] * randFloat(metricsRng, 0.45, 0.7, 2));
+      insertMetrics.run(sourceId, new Date(dayMs).toISOString(), jobs24h, failed24h, successRate,
+        activePolicyCount[sourceId], protectedClients[sourceId], storageTotals[sourceId], used,
+        mediaServerCounts[sourceId], applianceCounts[sourceId]);
+      metricsRows++;
+    }
+  }
+
+  return {
+    sources: 2,
+    policies: POLICY_DEFS.length,
+    jobs: jobTotal,
+    storageUnits: STORAGE_UNITS.length,
+    diskPools: 2,
+    mediaServers: MEDIA_SERVERS.length,
+    appliances: APPLIANCES.length,
+    alerts: ALERTS.length,
+    issueHistory: issues.length,
+    metricsHistory: metricsRows,
+  };
+}
+
+module.exports = { seedNetbackup };

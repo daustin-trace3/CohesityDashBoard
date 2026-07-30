@@ -258,4 +258,20 @@ module.exports = [
       }
     },
   },
+  // NetBackup platform grants — same shape as v8/v10.
+  {
+    version: 11,
+    up(db) {
+      const getGroupId = db.prepare('SELECT id FROM groups WHERE name = ?');
+      const insertGrant = db.prepare(
+        'INSERT OR IGNORE INTO role_grants (subject_type, subject_id, permission, created_at) VALUES (?, ?, ?, ?)'
+      );
+      const now = new Date().toISOString();
+      const grants = { Operator: 'netbackup:*:*', Viewer: 'netbackup:*:view' };
+      for (const [groupName, permission] of Object.entries(grants)) {
+        const row = getGroupId.get(groupName);
+        if (row) insertGrant.run('group', row.id, permission, now);
+      }
+    },
+  },
 ];
