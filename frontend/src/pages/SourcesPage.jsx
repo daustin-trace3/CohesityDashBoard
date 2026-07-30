@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { Boxes, Download } from 'lucide-react';
 import client from '../api/client';
 import { useToast } from '../components/ui/Toaster';
@@ -20,7 +21,14 @@ const cellSmall = 'py-2 pr-3 text-ink-muted text-[11px]';
 
 const COLUMNS = [
   { k: 'name', label: 'Object', always: true, csvLabel: 'Object',
-    render: (o) => <td key="name" className="py-2 pr-3 text-ink truncate max-w-[220px]" title={o.name || ''}>{o.name || '—'}</td>, csv: (o) => o.name },
+    render: (o) => (
+      <td key="name" className="py-2 pr-3 truncate max-w-[220px]" title={o.name || ''}>
+        {o.name
+          ? <Link to={`/ops/server360?name=${encodeURIComponent(o.name)}`} title="Open Server 360"
+              className="text-ink font-medium hover:text-brand">{o.name}</Link>
+          : '—'}
+      </td>
+    ), csv: (o) => o.name },
   { k: 'environment', label: 'Workload', csvLabel: 'Workload',
     render: (o) => <td key="environment" className={cellMuted}>{o.environment || '—'}</td>, csv: (o) => o.environment },
   { k: 'object_type', label: 'Type', csvLabel: 'Object Type',
