@@ -24,6 +24,8 @@ const fmtDuration = (a, b) => {
 
 const STATUS_TONE = { kSuccess: 'ok', kWarning: 'warn', kFailure: 'crit', kCanceled: 'neutral', kRunning: 'info', kAccepted: 'info' };
 const STATUS_LABEL = { kSuccess: 'Success', kWarning: 'Warning', kFailure: 'Failed', kCanceled: 'Canceled', kRunning: 'Running', kAccepted: 'Queued' };
+// Unknown statuses (kSkipped, k6Abort…) render without the Cohesity 'k' prefix.
+const statusLabel = (s) => (s ? (STATUS_LABEL[s] || String(s).replace(/^k/, '')) : null);
 
 /** Local YYYY-MM-DD key for a timestamp. */
 const dayKey = (ms) => {
@@ -212,7 +214,7 @@ export default function BackupHistoryPage() {
               {modal.runs.map((r) => (
                 <div key={r.id} className="bg-surface-overlay rounded-lg p-3">
                   <div className="flex items-center gap-2 flex-wrap mb-2">
-                    <Badge tone={STATUS_TONE[r.status] || 'neutral'}>{STATUS_LABEL[r.status] || r.status}</Badge>
+                    <Badge tone={STATUS_TONE[r.status] || 'neutral'}>{statusLabel(r.status)}</Badge>
                     <span className="text-sm text-ink font-medium truncate">{r.group}</span>
                     {r.runType && <span className="text-[11px] text-ink-faint">{String(r.runType).replace(/^k/, '')}</span>}
                     {r.clusterName && <span className="text-[11px] text-ink-faint ml-auto">{r.clusterName}</span>}
@@ -231,7 +233,7 @@ export default function BackupHistoryPage() {
                       <p className="text-[11px] text-ink-faint mb-1 flex items-center gap-1"><ArrowLeftRight size={11} /> Replication</p>
                       {r.replication.map((rep, i) => (
                         <div key={i} className="flex items-center gap-2 text-[12px] py-0.5">
-                          <Badge tone={STATUS_TONE[rep.status] || 'neutral'}>{STATUS_LABEL[rep.status] || rep.status || '—'}</Badge>
+                          <Badge tone={STATUS_TONE[rep.status] || 'neutral'}>{statusLabel(rep.status) || '—'}</Badge>
                           <span className="text-ink">{rep.targetCluster || '—'}</span>
                           <span className="text-ink-faint tnum ml-auto">{fmtBytes(rep.logicalBytes)}</span>
                         </div>
