@@ -259,8 +259,13 @@ describe('seedDemo.js', () => {
   });
 
   it('seeds netbackup storage, media servers, and appliances', () => {
-    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_storage_units').get().c).toBe(4);
-    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_disk_pools').get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_storage_units').get().c).toBe(7);
+    expect(db.prepare('SELECT COUNT(*) c FROM netbackup_disk_pools').get().c).toBe(6);
+    // Pool-type reporting variety: MSDP, OST/DataDomain and S3 archive present.
+    const poolTypes = db.prepare('SELECT DISTINCT server_type FROM netbackup_disk_pools').all().map((r) => r.server_type);
+    for (const t of ['PureDisk (MSDP)', 'OST (DataDomain)', 'Cloud (S3 Archive)']) {
+      expect(poolTypes).toContain(t);
+    }
     expect(db.prepare('SELECT COUNT(*) c FROM netbackup_disk_pools WHERE used_capacity_bytes >= total_capacity_bytes * 0.9').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM netbackup_media_servers').get().c).toBe(3);
     expect(db.prepare("SELECT COUNT(*) c FROM netbackup_media_servers WHERE state = 'DOWN'").get().c).toBe(1);

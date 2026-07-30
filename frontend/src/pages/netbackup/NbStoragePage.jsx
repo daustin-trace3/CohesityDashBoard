@@ -44,6 +44,21 @@ export default function NbStoragePage() {
     usedPct: p.totalCapacityBytes > 0 && p.usedCapacityBytes != null ? (p.usedCapacityBytes / p.totalCapacityBytes) * 100 : null,
   }));
 
+  const poolTypeRollup = useMemo(() => {
+    const byType = new Map();
+    for (const p of poolList) {
+      const type = p.serverType || 'Unknown';
+      if (!byType.has(type)) byType.set(type, { type, pools: 0, total: 0, used: 0 });
+      const t = byType.get(type);
+      t.pools += 1;
+      t.total += p.totalCapacityBytes || 0;
+      t.used += p.usedCapacityBytes || 0;
+    }
+    return [...byType.values()]
+      .map((t) => ({ ...t, usedPct: t.total > 0 ? (t.used / t.total) * 100 : null }))
+      .sort((a, b) => b.total - a.total);
+  }, [poolList]);
+
   const unitCtl = useTableControls(unitList, { searchKeys: ['name', 'sourceName'], defaultSortKey: 'name', paginate: true });
   const poolCtl = useTableControls(poolList, { searchKeys: ['name', 'sourceName'], defaultSortKey: 'name', paginate: true });
 
@@ -122,10 +137,31 @@ export default function NbStoragePage() {
         </div>
       </div>
 
+      {poolTypeRollup.length > 0 && (
+        <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Database size={15} className="text-brand" /> Capacity by Pool Type</p>
+          <p className="text-[11px] text-ink-faint mb-3">Disk pool capacity grouped by server type (MSDP, OST, cloud, …).</p>
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+            {poolTypeRollup.map((t) => (
+              <div key={t.type} className="bg-surface-overlay border border-cohesity-border rounded-lg p-3">
+                <p className="text-[11px] font-semibold text-ink truncate" title={t.type}>{t.type}</p>
+                <p className="text-lg font-bold text-ink tnum">{fmtBytes(t.used)}</p>
+                <p className="text-[11px] text-ink-faint tnum">of {fmtBytes(t.total)} · {t.pools} pool{t.pools === 1 ? '' : 's'}</p>
+                <div className="mt-2 h-1.5 rounded-full bg-cohesity-border overflow-hidden">
+                  <div className={`h-full rounded-full ${t.usedPct >= 90 ? 'bg-status-crit' : t.usedPct >= 80 ? 'bg-status-warn' : 'bg-brand'}`}
+                    style={{ width: `${Math.min(100, t.usedPct || 0)}%` }} />
+                </div>
+                <p className="text-[10px] text-ink-faint tnum mt-1">{t.usedPct != null ? `${t.usedPct.toFixed(0)}% used` : '—'}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Database size={15} className="text-brand" /> Disk Pools</p>
         <TableControls ctl={poolCtl} rows={poolList} searchPlaceholder="Filter by pool or source…"
-          filters={[{ k: 'status', label: 'Statuses' }, { k: 'sourceName', label: 'Sources' }]} />
+          filters={[{ k: 'serverType', label: 'Pool Types' }, { k: 'status', label: 'Statuses' }, { k: 'sourceName', label: 'Sources' }]} />
         {pools == null ? (
           <LoadingPanel label="Loading…" height={140} />
         ) : poolList.length === 0 ? (

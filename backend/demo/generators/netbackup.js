@@ -216,11 +216,28 @@ function seedNetbackup(db, { now, encrypt }) {
     diskPoolAlta.total, diskPoolAlta.used, diskPoolAlta.total - diskPoolAlta.used,
     diskPoolAlta.volumeCount, nowIso);
 
+  // Pool-type variety so the Storage page can report by type (Doug 2026-07-30):
+  // MSDP, OST/DataDomain and S3 archive alongside the two pools above.
+  const EXTRA_POOLS = [
+    { source: primaryId, name: 'dp-msdp-01', type: 'PureDisk (MSDP)', total: 400, usedFrac: 0.62, vols: 8 },
+    { source: primaryId, name: 'dp-ost-dd-01', type: 'OST (DataDomain)', total: 350, usedFrac: 0.48, vols: 2 },
+    { source: primaryId, name: 'dp-adv-01', type: 'AdvancedDisk', total: 80, usedFrac: 0.35, vols: 2 },
+    { source: altaId, name: 'dp-s3-archive-01', type: 'Cloud (S3 Archive)', total: 1200, usedFrac: 0.27, vols: 1 },
+  ];
+  for (const p of EXTRA_POOLS) {
+    const total = p.total * 1024 * GIB;
+    const used = Math.round(total * p.usedFrac);
+    insertDiskPool.run(p.source, p.name, p.type, 'UP', total, used, total - used, p.vols, nowIso);
+  }
+
   const STORAGE_UNITS = [
     { source: primaryId, name: 'stu-disk-01', type: 'Disk', diskPool: diskPoolPrimary.name, mediaServer: 'nbu-media-01', maxJobs: 12, capGiB: 100 },
     { source: primaryId, name: 'stu-disk-02', type: 'Disk', diskPool: diskPoolPrimary.name, mediaServer: 'nbu-media-02', maxJobs: 12, capGiB: 100 },
     { source: primaryId, name: 'stu-tape-01', type: 'Tape (STL)', diskPool: null, mediaServer: 'nbu-media-01', maxJobs: 4, capGiB: 300 },
     { source: altaId, name: 'stu-cloud-01', type: 'Cloud (S3)', diskPool: diskPoolAlta.name, mediaServer: null, maxJobs: 20, capGiB: 500 },
+    { source: primaryId, name: 'stu-msdp-01', type: 'Disk (MSDP)', diskPool: 'dp-msdp-01', mediaServer: 'nbu-media-01', maxJobs: 16, capGiB: 400 * 1024 },
+    { source: primaryId, name: 'stu-ost-dd-01', type: 'Disk (OST)', diskPool: 'dp-ost-dd-01', mediaServer: 'nbu-media-02', maxJobs: 8, capGiB: 350 * 1024 },
+    { source: altaId, name: 'stu-s3-archive-01', type: 'Cloud (S3 Archive)', diskPool: 'dp-s3-archive-01', mediaServer: null, maxJobs: 6, capGiB: 1200 * 1024 },
   ];
   for (const su of STORAGE_UNITS) {
     const total = su.capGiB * GIB;
