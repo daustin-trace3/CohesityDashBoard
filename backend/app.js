@@ -54,6 +54,16 @@ function cohesityPermission(name) {
 function createApp({ licenseGate = requireLicense } = {}) {
   const app = express();
 
+  // Behind a reverse proxy, X-Forwarded-For must be trusted or
+  // express-rate-limit throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR and keys
+  // every client on the proxy's IP. Opt-in via TRUST_PROXY: a hop count
+  // ("1"), "true" (= 1 hop), or an express value like "loopback"/CIDR.
+  // Default off so direct-exposed deployments can't spoof client IPs.
+  const trustProxy = (process.env.TRUST_PROXY || '').trim();
+  if (trustProxy) {
+    app.set('trust proxy', trustProxy === 'true' ? 1 : (Number(trustProxy) || trustProxy));
+  }
+
   // Security headers
   // Non-HTTPS/public-IP testing: avoid forced HTTPS asset upgrades and COOP/OAC warnings; harden these behind HTTPS.
   app.use(helmet({
