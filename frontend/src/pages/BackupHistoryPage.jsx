@@ -59,7 +59,6 @@ export default function BackupHistoryPage() {
 
   const search = useCallback((term, nDays) => {
     const query = String(term || '').trim();
-    if (query.length < 2) { setData(null); return; }
     setLoading(true);
     client.get(`/cohesity/backup-history?q=${encodeURIComponent(query)}&days=${nDays}`)
       .then(({ data }) => {
@@ -75,7 +74,7 @@ export default function BackupHistoryPage() {
       .finally(() => setLoading(false));
   }, [toast]);
 
-  useEffect(() => { if (q) search(q, days); }, [q, days, search]);
+  useEffect(() => { search(q, days); }, [q, days, search]);
 
   const submit = (e) => {
     e?.preventDefault();
@@ -127,26 +126,26 @@ export default function BackupHistoryPage() {
           <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Server or object name (min 2 characters)…"
             className="w-full bg-surface border border-cohesity-border text-[13px] text-ink rounded-lg pl-9 pr-3 py-2 placeholder-ink-faint focus:border-brand/60" />
         </div>
-        <button type="submit" disabled={input.trim().length < 2}
+        <button type="submit" disabled={input.trim().length > 0 && input.trim().length < 2}
           className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand/15 border border-brand/40 text-brand hover:bg-brand/25 transition-colors disabled:opacity-40 cursor-pointer">
           Search
         </button>
       </form>
 
       {loading ? (
-        <LoadingPanel label="Searching backup history…" />
-      ) : !q ? (
-        <div className="panel p-10 text-center text-sm text-ink-muted">
-          Enter a server name to see its day-by-day backup history across every cluster.
-        </div>
+        <LoadingPanel label="Loading backup history…" />
       ) : !data ? null : servers.length === 0 ? (
         <div className="panel p-10 text-center text-sm text-ink-muted">
-          No objects match “{data.query}”. Names come from the Sources inventory — try a shorter fragment.
+          {data.browse
+            ? 'No protected servers in the inventory yet — data appears after the next poll of each cluster.'
+            : <>No objects match “{data.query}”. Names come from the Sources inventory — try a shorter fragment.</>}
         </div>
       ) : (
         <div className="panel p-4">
           <p className="text-[11px] text-ink-faint mb-3 tnum">
-            {servers.length === 50 ? 'First 50 matches' : `${servers.length} match${servers.length === 1 ? '' : 'es'}`} for “{data.query}” ·
+            {data.browse
+              ? `First ${servers.length} protected servers A–Z — search to find a specific server`
+              : `${servers.length === 50 ? 'First 50 matches' : `${servers.length} match${servers.length === 1 ? '' : 'es'}`} for “${data.query}”`} ·
             green = success, amber = warning/canceled, red = failure · bubble marks the day the run started
           </p>
           <div className="overflow-x-auto">

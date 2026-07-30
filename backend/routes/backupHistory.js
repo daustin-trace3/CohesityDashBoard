@@ -25,28 +25,47 @@ const endEpoch = "CAST(CASE WHEN pr.end_time LIKE '20%' THEN strftime('%s', pr.e
 router.get(
   '/',
   [
-    query('q').isString().trim().isLength({ min: 2, max: 200 }),
+    query('q').optional().isString().trim().isLength({ max: 200 }),
     query('days').optional().isInt({ min: 1, max: 31 }),
   ],
   validate,
   (req, res, next) => {
     try {
-      const q = String(req.query.q).trim();
+      const q = String(req.query.q || '').trim();
       const days = Math.min(Number(req.query.days) || 30, 31);
       const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
-      const pattern = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
 
-      const objects = db.prepare(`
+      const objectCols = `
         SELECT o.id, o.name, o.environment, o.object_type, o.os_type, o.source_name,
                o.is_protected, o.protection_groups, o.policy_names,
                o.last_backup_status, o.sla_violated, o.logical_bytes,
                o.cluster_id, c.name AS cluster_name
         FROM cohesity_objects o
-        JOIN clusters c ON c.id = o.cluster_id
-        WHERE o.name LIKE ? ESCAPE '\\'
-        ORDER BY o.name, c.name
-        LIMIT 50
-      `).all(pattern);
+        JOIN clusters c ON c.id = o.cluster_id`;
+
+      let objects;
+      if (q.length >= 2) {
+        const pattern = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+        objects = db.prepare(`
+          ${objectCols}
+          WHERE o.name LIKE ? ESCAPE '\\'
+          ORDER BY o.name, c.name
+          LIMIT 50
+        `).all(pattern);
+      } else {
+        // Browse mode (no/short query): first 25 protected servers A→Z, with
+        // every registration row for those names so the merge works.
+        const names = db.prepare(`
+          SELECT DISTINCT name FROM cohesity_objects
+          WHERE is_protected = 1 AND protection_groups IS NOT NULL
+          ORDER BY name COLLATE NOCASE LIMIT 25
+        `).all().map((r) => r.name);
+        objects = names.length ? db.prepare(`
+          ${objectCols}
+          WHERE o.name IN (${names.map(() => '?').join(',')})
+          ORDER BY o.name, c.name
+        `).all(...names) : [];
+      }
 
       const repStmt = db.prepare(`
         SELECT target_cluster_name, status, logical_bytes, lag_seconds
@@ -143,9 +162,11 @@ router.get(
           logicalBytes: s.logicalBytes,
           runs,
         };
-      }).sort((a, b) => (b.runs.length - a.runs.length) || a.name.localeCompare(b.name));
+      }).sort(q.length >= 2
+        ? (a, b) => (b.runs.length - a.runs.length) || a.name.localeCompare(b.name)
+        : (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
-      res.json({ query: q, days, servers });
+      res.json({ query: q, days, browse: q.length < 2, servers });
     } catch (err) {
       next(err);
     }
