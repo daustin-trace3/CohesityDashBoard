@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen, Layers, Flag, Boxes,
+  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen, Layers, Flag, Boxes, CalendarCheck,
 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('../../pages/Dashboard'));
@@ -9,6 +9,7 @@ const AlertsPage = lazy(() => import('../../pages/AlertsPage'));
 const HardwarePage = lazy(() => import('../../pages/HardwarePage'));
 const ClusterManagement = lazy(() => import('../../pages/ClusterManagement'));
 const GflagsPage = lazy(() => import('../../pages/GflagsPage'));
+const BackupHistoryPage = lazy(() => import('../../pages/BackupHistoryPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
 const CohesityPrivacyPage = () => <PrivacyInspectorPage platform="cohesity" />;
 
@@ -30,6 +31,7 @@ const navGroups = [
       { label: 'Data Protection', route: '/data-protection', icon: ShieldCheck, isActive: (p) => p.startsWith('/data-protection') },
       { label: 'Workloads', route: '/workloads', icon: Layers, isActive: (p) => p.startsWith('/workloads') },
       { label: 'Sources', route: '/sources', icon: Boxes, isActive: (p) => p.startsWith('/sources') },
+      { label: 'Backup History', route: '/cohesity/backup-history', icon: CalendarCheck, isActive: (p) => p.startsWith('/cohesity/backup-history') },
       { label: 'Replication', route: '/replication', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/replication') },
       { label: 'Views', route: '/views', icon: FolderOpen, isActive: (p) => p.startsWith('/views') },
       { label: 'Governance', route: '/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/governance') },
@@ -72,6 +74,7 @@ export default {
     { path: 'cohesity/hardware', Component: HardwarePage },
     { path: 'cohesity/clusters', Component: ClusterManagement },
     { path: 'cohesity/gflags', Component: GflagsPage },
+    { path: 'cohesity/backup-history', Component: BackupHistoryPage },
     { path: 'cohesity/privacy', Component: CohesityPrivacyPage },
   ],
 };

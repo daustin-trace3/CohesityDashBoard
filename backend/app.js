@@ -23,6 +23,7 @@ const aiAuditRouter = require('./routes/aiAudit');
 const licensingRouter = require('./routes/licensing');
 const viewsRouter = require('./routes/views');
 const workloadsRouter = require('./routes/workloads');
+const backupHistoryRouter = require('./routes/backupHistory');
 const gflagsRouter = require('./routes/gflags');
 const licenseRouter = require('./routes/license');
 const pure1Router = require('./routes/pure1');
@@ -142,6 +143,8 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/cohesity/licensing', requirePermission(cohesityPermission('licensing')), licensingRouter);
   app.use('/api/cohesity/views', requirePermission(cohesityPermission('views')), viewsRouter);
   app.use('/api/cohesity/workloads', requirePermission(cohesityPermission('workloads')), workloadsRouter);
+  // Same data domain as workloads (objects + runs), so it shares that permission.
+  app.use('/api/cohesity/backup-history', requirePermission(cohesityPermission('workloads')), backupHistoryRouter);
   app.use('/api/cohesity/gflags', requirePermission(cohesityPermission('gflags')), gflagsRouter);
 
   app.use('/api/clusters', deprecated('/api/clusters', '/api/cohesity/clusters'), requirePermission(cohesityPermission('clusters')), clustersRouter);
