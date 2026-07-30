@@ -140,20 +140,41 @@ export default function NbStoragePage() {
       {poolTypeRollup.length > 0 && (
         <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
           <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Database size={15} className="text-brand" /> Capacity by Pool Type</p>
-          <p className="text-[11px] text-ink-faint mb-3">Disk pool capacity grouped by server type (MSDP, OST, cloud, …).</p>
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-            {poolTypeRollup.map((t) => (
-              <div key={t.type} className="bg-surface-overlay border border-cohesity-border rounded-lg p-3">
-                <p className="text-[11px] font-semibold text-ink truncate" title={t.type}>{t.type}</p>
-                <p className="text-lg font-bold text-ink tnum">{fmtBytes(t.used)}</p>
-                <p className="text-[11px] text-ink-faint tnum">of {fmtBytes(t.total)} · {t.pools} pool{t.pools === 1 ? '' : 's'}</p>
-                <div className="mt-2 h-1.5 rounded-full bg-cohesity-border overflow-hidden">
-                  <div className={`h-full rounded-full ${t.usedPct >= 90 ? 'bg-status-crit' : t.usedPct >= 80 ? 'bg-status-warn' : 'bg-brand'}`}
-                    style={{ width: `${Math.min(100, t.usedPct || 0)}%` }} />
-                </div>
-                <p className="text-[10px] text-ink-faint tnum mt-1">{t.usedPct != null ? `${t.usedPct.toFixed(0)}% used` : '—'}</p>
-              </div>
-            ))}
+          <p className="text-[11px] text-ink-faint mb-3">
+            Usable (formatted) pool capacity as reported by NetBackup — not raw disk, and for deduplicating
+            pools (MSDP, OST) post-dedup consumption, not front-end protected data.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Pool Type</th>
+                <th className="py-2 pr-3 text-right">Pools</th>
+                <th className="py-2 pr-3 text-right">Used</th>
+                <th className="py-2 pr-3 text-right">Capacity</th>
+                <th className="py-2 pr-3 text-right">Free</th>
+                <th className="py-2 pr-3 w-[220px]">Usage</th>
+              </tr></thead>
+              <tbody>
+                {poolTypeRollup.map((t) => (
+                  <tr key={t.type} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink font-medium">{t.type}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{t.pools}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink">{fmtBytes(t.used)}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(t.total)}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(Math.max(0, t.total - t.used))}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1.5 rounded-full bg-cohesity-border overflow-hidden">
+                          <div className={`h-full rounded-full ${t.usedPct >= 90 ? 'bg-status-crit' : t.usedPct >= 80 ? 'bg-status-warn' : 'bg-brand'}`}
+                            style={{ width: `${Math.min(100, t.usedPct || 0)}%` }} />
+                        </div>
+                        <span className="text-[11px] text-ink-faint tnum w-10 text-right">{t.usedPct != null ? `${t.usedPct.toFixed(0)}%` : '—'}</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
