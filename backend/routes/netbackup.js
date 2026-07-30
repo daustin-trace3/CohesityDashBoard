@@ -327,11 +327,21 @@ router.get('/storage', (req, res, next) => {
       storageUnits: db.prepare(`
         SELECT u.*, s.name AS source_name FROM netbackup_storage_units u
         JOIN netbackup_sources s ON s.id = u.source_id ORDER BY s.name, u.name
-      `).all(),
+      `).all().map((u) => ({
+        id: u.id, sourceId: u.source_id, sourceName: u.source_name, name: u.name,
+        storageUnitType: u.storage_unit_type, diskPool: u.disk_pool, mediaServer: u.media_server,
+        maxConcurrentJobs: u.max_concurrent_jobs, capacityBytes: u.capacity_bytes,
+        freeBytes: u.free_bytes, usedBytes: u.used_bytes,
+      })),
       diskPools: db.prepare(`
         SELECT p.*, s.name AS source_name FROM netbackup_disk_pools p
         JOIN netbackup_sources s ON s.id = p.source_id ORDER BY s.name, p.name
-      `).all(),
+      `).all().map((p) => ({
+        id: p.id, sourceId: p.source_id, sourceName: p.source_name, name: p.name,
+        serverType: p.server_type, status: p.status, totalCapacityBytes: p.total_capacity_bytes,
+        usedCapacityBytes: p.used_capacity_bytes, availableCapacityBytes: p.available_capacity_bytes,
+        volumeCount: p.volume_count,
+      })),
     });
   } catch (err) { next(err); }
 });
@@ -343,7 +353,10 @@ router.get('/media-servers', (req, res, next) => {
       mediaServers: db.prepare(`
         SELECT m.*, s.name AS source_name FROM netbackup_media_servers m
         JOIN netbackup_sources s ON s.id = m.source_id ORDER BY s.name, m.name
-      `).all(),
+      `).all().map((m) => ({
+        id: m.id, sourceId: m.source_id, sourceName: m.source_name,
+        name: m.name, state: m.state, version: m.version,
+      })),
     });
   } catch (err) { next(err); }
 });
@@ -355,7 +368,12 @@ router.get('/appliances', (req, res, next) => {
       appliances: db.prepare(`
         SELECT a.*, s.name AS source_name FROM netbackup_appliances a
         JOIN netbackup_sources s ON s.id = a.source_id ORDER BY s.name, a.name
-      `).all().map((a) => ({ ...a, applianceType: a.appliance_type })),
+      `).all().map((a) => ({
+        id: a.id, sourceId: a.source_id, sourceName: a.source_name, name: a.name,
+        hostType: a.host_type, applianceType: a.appliance_type, model: a.model,
+        serialNumber: a.serial_number, osType: a.os_type, osVersion: a.os_version,
+        cpuArchitecture: a.cpu_architecture, nbuVersion: a.nbu_version,
+      })),
     });
   } catch (err) { next(err); }
 });
