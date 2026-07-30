@@ -198,7 +198,7 @@ export default function BackupHistoryPage() {
 
       {modal && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setModal(null)}>
-          <div className="panel w-full max-w-2xl p-5 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="panel w-auto min-w-[560px] max-w-[92vw] p-5 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="min-w-0">
                 <h2 className="text-sm font-bold text-ink truncate">{modal.server.name} — {new Date(modal.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</h2>
@@ -217,11 +217,11 @@ export default function BackupHistoryPage() {
                     {r.runType && <span className="text-[11px] text-ink-faint">{String(r.runType).replace(/^k/, '')}</span>}
                     {r.clusterName && <span className="text-[11px] text-ink-faint ml-auto">{r.clusterName}</span>}
                   </div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-[12px]">
-                    <div><span className="text-ink-faint">Start</span> <span className="text-ink tnum">{fmtTime(r.startMs)}</span></div>
-                    <div><span className="text-ink-faint">Duration</span> <span className="text-ink tnum">{fmtDuration(r.startMs, r.endMs)}</span></div>
-                    <div><span className="text-ink-faint">Logical</span> <span className="text-ink tnum">{fmtBytes(r.logicalBytes)}</span></div>
-                    <div><span className="text-ink-faint">Policy</span> <span className="text-ink truncate">{(modal.server.policies || [])[0] || '—'}</span></div>
+                  <div className="flex flex-wrap gap-x-6 gap-y-1 text-[12px]">
+                    <div className="whitespace-nowrap"><span className="text-ink-faint">Start</span> <span className="text-ink tnum">{fmtTime(r.startMs)}</span></div>
+                    <div className="whitespace-nowrap"><span className="text-ink-faint">Duration</span> <span className="text-ink tnum">{fmtDuration(r.startMs, r.endMs)}</span></div>
+                    <div className="whitespace-nowrap"><span className="text-ink-faint">Logical</span> <span className="text-ink tnum">{fmtBytes(r.logicalBytes)}</span></div>
+                    <div className="whitespace-nowrap"><span className="text-ink-faint">Policy</span> <span className="text-ink">{(modal.server.policies || [])[0] || '—'}</span></div>
                   </div>
                   {r.errorMessage && (
                     <p className="text-[12px] text-status-crit mt-2 break-words">{r.errorCode ? `${r.errorCode}: ` : ''}{r.errorMessage}</p>
