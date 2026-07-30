@@ -5,7 +5,7 @@ import { CalendarCheck, Search, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel } from '../../components/ui/primitives';
-import { fmtBytes, runStatusTone, runStatusLabel } from './helpers';
+import { fmtBytes, runStatusTone, runStatusLabel, nbuStatusText } from './helpers';
 
 const fmtTime = (ms) => (ms ? new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '—');
 const fmtDuration = (a, b) => {
@@ -206,7 +206,7 @@ export default function NbBackupHistoryPage() {
                     <div className="whitespace-nowrap"><span className="text-ink-faint">Logical</span> <span className="text-ink tnum">{fmtBytes(r.logicalBytes)}</span></div>
                   </div>
                   {r.errorCode != null && (
-                    <p className="text-[12px] text-status-crit mt-2 break-words">{r.errorCode}{r.errorMessage ? `: ${r.errorMessage}` : ''}</p>
+                    <p className="text-[12px] text-status-crit mt-2 break-words">{nbuStatusText(r.errorCode)}{r.errorMessage ? `: ${r.errorMessage}` : ''}</p>
                   )}
                 </div>
               ))}

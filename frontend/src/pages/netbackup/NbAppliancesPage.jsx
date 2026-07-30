@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Server, Box } from 'lucide-react';
+import { Server, Box, Pencil, Check, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, RefreshButton, LastUpdated, Badge } from '../../components/ui/primitives';
@@ -8,6 +8,74 @@ import { BRAND } from './helpers';
 
 const APPLIANCE_TONE = { appliance: 'brand', flex: 'info', byo: 'neutral' };
 const APPLIANCE_LABEL = { appliance: 'Appliance', flex: 'Flex', byo: 'BYO' };
+
+function ModelCell({ a, editable, onSaved }) {
+  const { toast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(a.model || '');
+  const [saving, setSaving] = useState(false);
+
+  const start = () => { setValue(a.model || ''); setEditing(true); };
+  const cancel = () => setEditing(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const { data } = await client.put('/netbackup/appliances/model', { sourceId: a.sourceId, name: a.name, model: value.trim() });
+      onSaved(data);
+      setEditing(false);
+      toast({ type: 'success', title: 'Model updated' });
+    } catch (err) {
+      toast({ type: 'error', title: 'Update failed', message: err?.response?.data?.error });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter') save();
+    if (e.key === 'Escape') cancel();
+  };
+
+  if (!editable) {
+    return (
+      <span className="text-ink-muted">
+        {a.model || '—'}
+        {a.modelSource === 'override' && (
+          <span className="text-[10px] text-ink-faint ml-1" title={a.modelRaw || ''}>(custom)</span>
+        )}
+      </span>
+    );
+  }
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={onKeyDown}
+          disabled={saving}
+          className="w-40 bg-surface-overlay border border-cohesity-border rounded-md px-2 py-1 text-xs text-ink focus:border-brand/60 outline-none" />
+        <button onClick={save} disabled={saving} title="Save" className="flex items-center justify-center h-6 w-6 rounded-md text-status-ok hover:bg-status-ok/10 cursor-pointer disabled:opacity-50">
+          <Check size={13} />
+        </button>
+        <button onClick={cancel} disabled={saving} title="Cancel" className="flex items-center justify-center h-6 w-6 rounded-md text-ink-faint hover:text-ink cursor-pointer disabled:opacity-50">
+          <X size={13} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button onClick={start} title="Edit model" className="group inline-flex items-center gap-1.5 text-ink-muted hover:text-ink cursor-pointer">
+      <span>
+        {a.model || '—'}
+        {a.modelSource === 'override' && (
+          <span className="text-[10px] text-ink-faint ml-1" title={a.modelRaw || ''}>(custom)</span>
+        )}
+      </span>
+      <Pencil size={11} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+    </button>
+  );
+}
 
 export default function NbAppliancesPage() {
   const { toast } = useToast();
@@ -69,7 +137,10 @@ export default function NbAppliancesPage() {
                   <tr key={a.id} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{a.name || '—'}</td>
                     <td className="py-2 pr-3"><Badge tone={APPLIANCE_TONE[a.applianceType] || 'neutral'}>{APPLIANCE_LABEL[a.applianceType] || a.applianceType || 'BYO'}</Badge></td>
-                    <td className="py-2 pr-3 text-ink-muted">{a.model || '—'}</td>
+                    <td className="py-2 pr-3">
+                      <ModelCell a={a} editable={a.applianceType === 'byo'}
+                        onSaved={(updated) => setAppliances((prev) => (prev || []).map((row) => (row.id === a.id ? { ...row, ...updated } : row)))} />
+                    </td>
                     <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{a.serialNumber || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{a.osType ? `${a.osType}${a.osVersion ? ` ${a.osVersion}` : ''}` : '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{a.nbuVersion || '—'}</td>

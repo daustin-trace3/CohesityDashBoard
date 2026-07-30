@@ -8,6 +8,7 @@ const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const { setSetting, getSetting } = require('../services/settings');
 const netbackupApi = require('../services/netbackupApi');
+const { isDemo } = require('../services/demoMode');
 const { netbackupPoller } = require('../services/netbackupPoller');
 const netbackupAdvisor = require('../services/advisors/netbackupAdvisor');
 const {
@@ -262,6 +263,20 @@ router.get('/overview', (req, res, next) => {
       .slice(0, 25)
       .map(mapJobRow);
 
+    const catalog = sources.map((s) => {
+      const row = db.prepare(`
+        SELECT kilobytes, started_at FROM netbackup_jobs
+        WHERE source_id = ? AND policy_type = 'NBU-Catalog'
+          AND state != 'FAILED' AND NOT (state IN ('EXITED', 'DONE') AND COALESCE(status_code, 0) > 0)
+        ORDER BY started_at DESC LIMIT 1
+      `).get(s.id);
+      if (!row) return null;
+      return {
+        sourceId: s.id, sourceName: s.name,
+        catalogBytes: (row.kilobytes || 0) * 1024, lastRunAt: row.started_at,
+      };
+    }).filter(Boolean);
+
     res.json({
       sources: sources.map((s) => ({
         id: s.id, name: s.name, sourceType: s.source_type,
@@ -273,7 +288,7 @@ router.get('/overview', (req, res, next) => {
         storageCapacityBytes: storageAgg.cap || 0, storageUsedBytes: storageAgg.used || 0,
         mediaServerCount, applianceCount, openIssues: computeIssues().length,
       },
-      jobsByState, jobsByPolicyType, recentFailedJobs,
+      jobsByState, jobsByPolicyType, recentFailedJobs, catalog,
     });
   } catch (err) { next(err); }
 });
@@ -364,20 +379,68 @@ router.get('/media-servers', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** Normalizes reported models like "NB5250" / "NB-5250" -> "NetBackup 5250". */
+function normalizeModel(reported) {
+  if (!reported) return null;
+  const m = /^NB\s?-?(\d{4})$/i.exec(String(reported).trim());
+  return m ? `NetBackup ${m[1]}` : reported;
+}
+
+function mapApplianceRow(a) {
+  const override = a.model_override ?? null;
+  return {
+    id: a.id, sourceId: a.source_id, sourceName: a.source_name, name: a.name,
+    hostType: a.host_type, applianceType: a.appliance_type,
+    modelRaw: a.model,
+    model: override || normalizeModel(a.model),
+    modelSource: override ? 'override' : (a.model ? 'reported' : null),
+    serialNumber: a.serial_number, osType: a.os_type, osVersion: a.os_version,
+    cpuArchitecture: a.cpu_architecture, nbuVersion: a.nbu_version,
+  };
+}
+
 /** GET /api/netbackup/appliances */
 router.get('/appliances', (req, res, next) => {
   try {
     res.json({
       appliances: db.prepare(`
-        SELECT a.*, s.name AS source_name FROM netbackup_appliances a
-        JOIN netbackup_sources s ON s.id = a.source_id ORDER BY s.name, a.name
-      `).all().map((a) => ({
-        id: a.id, sourceId: a.source_id, sourceName: a.source_name, name: a.name,
-        hostType: a.host_type, applianceType: a.appliance_type, model: a.model,
-        serialNumber: a.serial_number, osType: a.os_type, osVersion: a.os_version,
-        cpuArchitecture: a.cpu_architecture, nbuVersion: a.nbu_version,
-      })),
+        SELECT a.*, s.name AS source_name, o.model_override AS model_override
+        FROM netbackup_appliances a
+        JOIN netbackup_sources s ON s.id = a.source_id
+        LEFT JOIN netbackup_appliance_overrides o ON o.source_id = a.source_id AND o.name = a.name
+        ORDER BY s.name, a.name
+      `).all().map(mapApplianceRow),
     });
+  } catch (err) { next(err); }
+});
+
+/** PUT /api/netbackup/appliances/model — set/clear a per-appliance model override. */
+router.put('/appliances/model', [
+  body('sourceId').isInt().toInt(),
+  body('name').isString().trim().notEmpty().isLength({ max: 200 }),
+  body('model').optional({ nullable: true }).isString().isLength({ max: 120 }),
+], validate, (req, res, next) => {
+  try {
+    const { sourceId, name } = req.body;
+    const model = (req.body.model ?? '').trim();
+
+    const appliance = db.prepare('SELECT a.*, s.name AS source_name FROM netbackup_appliances a JOIN netbackup_sources s ON s.id = a.source_id WHERE a.source_id = ? AND a.name = ?')
+      .get(sourceId, name);
+    if (!appliance) return res.status(404).json({ error: 'No matching NetBackup appliance found for that source/name.' });
+
+    if (model) {
+      db.prepare(`
+        INSERT INTO netbackup_appliance_overrides (source_id, name, model_override, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(source_id, name) DO UPDATE SET model_override = excluded.model_override, updated_at = datetime('now')
+      `).run(sourceId, name, model);
+    } else {
+      db.prepare('DELETE FROM netbackup_appliance_overrides WHERE source_id = ? AND name = ?').run(sourceId, name);
+    }
+
+    const override = db.prepare('SELECT model_override FROM netbackup_appliance_overrides WHERE source_id = ? AND name = ?')
+      .get(sourceId, name);
+    res.json({ appliance: mapApplianceRow({ ...appliance, model_override: override?.model_override ?? null }) });
   } catch (err) { next(err); }
 });
 
@@ -436,6 +499,26 @@ router.get('/trends', [
 
 function entitledTb() {
   return Number(getSetting('netbackup_entitled_tb')) || 0;
+}
+
+/** Tolerantly normalizes whatever shape fetchLicensing() returned into a stable render-ready object. */
+function normalizeUpstreamLicensing(raw, fallbackEntitledTb) {
+  if (!raw || typeof raw !== 'object') return null;
+  const num = (v) => (v === undefined || v === null || Number.isNaN(Number(v)) ? null : Number(v));
+  const reportedTb = num(
+    raw.frontEndTerabytes ?? raw.frontEndTb ?? raw.reportedTb ?? raw.usedTb
+      ?? raw.consumedTb ?? raw.capacityTb ?? (raw.capacity != null ? Number(raw.capacity) / 1e12 : null)
+      ?? (raw.usedBytes != null ? Number(raw.usedBytes) / 1e12 : null)
+      ?? (raw.frontEndBytes != null ? Number(raw.frontEndBytes) / 1e12 : null)
+  );
+  const entitledTbUpstream = num(raw.entitledTb ?? raw.licensedTb ?? raw.entitlementTb);
+  return {
+    meter: raw.meter ?? raw.meterName ?? raw.licenseMeter ?? 'Capacity (FETB)',
+    reportedTb,
+    entitledTb: entitledTbUpstream != null ? entitledTbUpstream : fallbackEntitledTb,
+    asOf: raw.asOf ?? raw.reportedAt ?? raw.capturedAt ?? raw.timestamp ?? new Date().toISOString(),
+    raw,
+  };
 }
 
 /** GET /api/netbackup/config — alert thresholds + licensing entitlement. */
@@ -757,10 +840,21 @@ router.get('/licensing', async (req, res, next) => {
     }
 
     const entitled = entitledTb();
-    const altaSource = sources.find((s) => s.source_type === 'alta') || sources[0] || null;
-    let upstream = null;
-    if (altaSource) {
-      try { upstream = await netbackupApi.fetchLicensing(altaSource); } catch { upstream = null; }
+
+    let upstream;
+    if (isDemo()) {
+      const reportedTb = +((totalBytes / 1e12) * 0.97).toFixed(2);
+      upstream = {
+        meter: 'Capacity (FETB)', reportedTb, entitledTb: entitled,
+        asOf: new Date().toISOString(), raw: null,
+      };
+    } else {
+      const altaSource = sources.find((s) => s.source_type === 'alta') || sources[0] || null;
+      let raw = null;
+      if (altaSource) {
+        try { raw = await netbackupApi.fetchLicensing(altaSource); } catch { raw = null; }
+      }
+      upstream = normalizeUpstreamLicensing(raw, entitled);
     }
 
     res.json({

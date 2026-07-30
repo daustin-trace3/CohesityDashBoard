@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { BadgeCheck, Save, Cloud } from 'lucide-react';
+import { BadgeCheck, Cloud, Users, Globe } from 'lucide-react';
 import { Chart as ChartJS, ArcElement, Tooltip as ChartTooltip, Legend } from 'chart.js';
 import { Doughnut } from 'react-chartjs-2';
 import client from '../../api/client';
@@ -10,8 +10,6 @@ import { BRAND, TB, fmtTb, fmtNum, fmtWhen } from './helpers';
 
 ChartJS.register(ArcElement, ChartTooltip, Legend);
 
-const inp = 'w-28 bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-1.5 text-sm text-ink focus:border-brand/60 outline-none';
-
 function Gauge({ pct }) {
   const clamped = Math.max(0, Math.min(pct ?? 0, 100));
   const color = pct >= 90 ? '#EF4444' : pct >= 75 ? '#F59E0B' : '#6CB33F';
@@ -21,12 +19,51 @@ function Gauge({ pct }) {
   };
   const options = { responsive: true, maintainAspectRatio: false, cutout: '74%', animation: false, plugins: { legend: { display: false }, tooltip: { enabled: false } } };
   return (
-    <div className="relative h-28 w-28 flex-shrink-0">
+    <div className="relative h-24 w-24 flex-shrink-0">
       <Doughnut data={data} options={options} />
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-xl font-bold tnum" style={{ color }}>{pct.toFixed(0)}%</span>
+        <span className="text-lg font-bold tnum" style={{ color }}>{pct.toFixed(0)}%</span>
         <span className={`text-[9px] font-semibold uppercase tracking-wide ${pct > 100 ? 'text-status-crit' : 'text-ink-faint'}`}>{pct > 100 ? 'Over' : 'Used'}</span>
       </div>
+    </div>
+  );
+}
+
+function MeterCard({ title, icon: Icon, pct, consumedTb, entitledTb, sub, empty }) {
+  return (
+    <div className="panel p-4 flex flex-col gap-3">
+      <div className="flex items-start gap-2.5">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 border border-brand/20 flex-shrink-0">
+          <Icon size={18} className="text-brand" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold text-ink">{title}</p>
+          {sub && <p className="text-[11px] text-ink-muted leading-snug">{sub}</p>}
+        </div>
+      </div>
+      {empty ? (
+        <div className="py-6 text-center text-sm text-ink-muted">{empty}</div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-4">
+          {pct != null ? (
+            <Gauge pct={pct} />
+          ) : (
+            <div className="h-24 w-24 flex-shrink-0 flex flex-col items-center justify-center gap-1 rounded-full border border-dashed border-cohesity-border text-center px-3">
+              <span className="text-[10px] text-ink-muted leading-tight">No entitlement set</span>
+            </div>
+          )}
+          <div className="flex-1 flex flex-col gap-1.5 text-sm min-w-[160px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-ink-muted text-xs">Consumed</span>
+              <span className="text-ink font-semibold tnum">{fmtTb(consumedTb * TB)}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-ink-muted text-xs">Entitled</span>
+              <span className="text-ink font-semibold tnum">{entitledTb > 0 ? `${entitledTb.toLocaleString()} TB` : '— not set'}</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -35,43 +72,28 @@ export default function NbLicensingPage() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
-  const [entitledInput, setEntitledInput] = useState('');
-  const [saving, setSaving] = useState(false);
 
   const load = useCallback(() => client.get('/netbackup/licensing')
     .then(({ data }) => {
       setData(data);
-      setEntitledInput(data.entitledTb ? String(data.entitledTb) : '');
       setLastRefreshed(new Date());
     })
     .catch(() => { setData({ totals: {}, byWorkload: [], byDomain: [], entitledTb: 0, upstream: null }); toast({ type: 'error', title: 'Failed to load licensing data' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
-  const save = async () => {
-    const val = Number(entitledInput);
-    if (!Number.isFinite(val) || val < 0 || val > 100000) {
-      toast({ type: 'error', title: 'Invalid entitlement', message: 'Enter a value between 0 and 100000 TB.' });
-      return;
-    }
-    setSaving(true);
-    try {
-      await client.put('/netbackup/config', { entitledTb: val });
-      await load();
-      toast({ type: 'success', title: 'Entitlement saved' });
-    } catch (err) {
-      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error });
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const totals = data?.totals || {};
   const byWorkload = data?.byWorkload || [];
   const byDomain = data?.byDomain || [];
   const entitledTb = data?.entitledTb || 0;
   const consumedTb = (totals.frontEndBytes || 0) / TB;
-  const pct = entitledTb > 0 ? (consumedTb / entitledTb) * 100 : null;
+  const computedPct = entitledTb > 0 ? (consumedTb / entitledTb) * 100 : null;
+
+  const upstream = data?.upstream || null;
+  const upstreamPct = upstream && upstream.entitledTb > 0 ? (upstream.reportedTb / upstream.entitledTb) * 100 : null;
+
+  const showDelta = upstream != null && entitledTb > 0;
+  const delta = showDelta ? consumedTb - upstream.reportedTb : null;
 
   const domainCtl = useTableControls(byDomain, {
     searchKeys: ['sourceName', 'sourceType'],
@@ -81,7 +103,7 @@ export default function NbLicensingPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={BadgeCheck} title="Licensing" description="Computed FETB (front-end terabytes) — largest successful job per client in the last 30 days, an estimate until live Alta contact is available">
+      <PageHeader icon={BadgeCheck} title="Licensing" description="Veritas's own licensing meter alongside ICC's computed FETB estimate">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -90,63 +112,48 @@ export default function NbLicensingPage() {
         <LoadingPanel label="Loading licensing data…" height={280} />
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="panel p-4 flex flex-col gap-3">
-            <div className="flex items-start gap-2.5">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand/10 border border-brand/20 flex-shrink-0">
-                <BadgeCheck size={18} className="text-brand" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-bold text-ink">NetBackup FETB</p>
-                <p className="text-[11px] text-ink-muted leading-snug">Computed from stored job history — not Veritas's own licensing meter.</p>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-4">
-              {pct != null ? (
-                <Gauge pct={pct} />
-              ) : (
-                <div className="h-28 w-28 flex-shrink-0 flex flex-col items-center justify-center gap-1 rounded-full border border-dashed border-cohesity-border text-center px-3" style={{ borderStyle: 'dashed' }}>
-                  <span className="text-[10px] text-ink-muted leading-tight">Set entitlement below</span>
-                </div>
-              )}
-              <div className="flex-1 flex flex-col gap-1.5 text-sm min-w-[220px]">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-ink-muted text-xs">Consumed (computed-FETB)</span>
-                  <span className="text-ink font-semibold tnum">{fmtTb(totals.frontEndBytes)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-ink-muted text-xs">Entitled</span>
-                  <span className="text-ink font-semibold tnum">{entitledTb > 0 ? `${entitledTb.toLocaleString()} TB` : '— not set'}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-ink-muted text-xs">Clients</span>
-                  <span className="text-ink tnum">{fmtNum(totals.clients)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-ink-muted text-xs">Domains</span>
-                  <span className="text-ink tnum">{fmtNum(totals.sources)}</span>
-                </div>
-              </div>
-              <div className="flex items-end gap-2">
-                <div>
-                  <label className="block text-xs font-semibold text-ink mb-1">Entitlement (TB)</label>
-                  <input type="number" min={0} max={100000} step="0.1" value={entitledInput}
-                    onChange={(e) => setEntitledInput(e.target.value)} className={inp} />
-                </div>
-                <button onClick={save} disabled={saving}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
-                  <Save size={14} /> {saving ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            </div>
+          <div className="grid md:grid-cols-2 gap-4">
+            <MeterCard title="Veritas Licensing Meter" icon={Cloud}
+              pct={upstreamPct}
+              consumedTb={upstream?.reportedTb || 0}
+              entitledTb={upstream?.entitledTb || 0}
+              sub={upstream ? `${upstream.meter || 'Alta meter'}${upstream.asOf ? ` · as of ${fmtWhen(upstream.asOf)}` : ''}` : 'From Veritas Alta'}
+              empty={!upstream ? 'Awaiting live Alta connection — Veritas’s own meter will appear here.' : null} />
+            <MeterCard title="ICC Computed (FETB)" icon={BadgeCheck}
+              pct={computedPct}
+              consumedTb={consumedTb}
+              entitledTb={entitledTb}
+              sub="Largest successful job per client, last 30 days" />
           </div>
 
+          {showDelta && (
+            <div className="panel p-3 text-sm text-ink-muted">
+              ICC computes <span className="text-ink font-semibold tnum">{fmtTb(consumedTb * TB)}</span> vs Veritas{' '}
+              <span className="text-ink font-semibold tnum">{fmtTb((upstream.reportedTb || 0) * TB)}</span> · Δ{' '}
+              <span className={`font-semibold tnum ${Math.abs(delta) > (upstream.reportedTb || 0) * 0.1 ? 'text-status-warn' : 'text-ink'}`}>
+                {delta >= 0 ? '+' : ''}{fmtTb(delta * TB)}
+              </span>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {byWorkload.length === 0 ? (
-              <div className="col-span-full text-sm text-ink-muted text-center py-4">No workload breakdown yet.</div>
-            ) : byWorkload.map((w) => (
-              <StatCard key={w.workload} icon={BadgeCheck} label={w.workload} value={fmtTb(w.frontEndBytes)} sub={`${fmtNum(w.clients)} clients`} />
-            ))}
+            <StatCard icon={BadgeCheck} label="Consumed (FETB)" value={fmtTb(totals.frontEndBytes)} />
+            <StatCard icon={BadgeCheck} label="Entitled" value={entitledTb > 0 ? `${entitledTb.toLocaleString()} TB` : '—'} />
+            <StatCard icon={Users} label="Clients" value={fmtNum(totals.clients)} />
+            <StatCard icon={Globe} label="Domains" value={fmtNum(totals.sources)} />
           </div>
+
+          <Panel title="Consumption by Workload">
+            {byWorkload.length === 0 ? (
+              <div className="text-sm text-ink-muted text-center py-4">No workload breakdown yet.</div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+                {byWorkload.map((w) => (
+                  <StatCard key={w.workload} icon={BadgeCheck} label={w.workload} value={fmtTb(w.frontEndBytes)} sub={`${fmtNum(w.clients)} clients`} />
+                ))}
+              </div>
+            )}
+          </Panel>
 
           <Panel title="Consumption by Domain">
             {byDomain.length === 0 ? (
@@ -182,25 +189,6 @@ export default function NbLicensingPage() {
                 </div>
                 <TablePager ctl={domainCtl} />
               </>
-            )}
-          </Panel>
-
-          <Panel title="Alta Licensing (Upstream)" icon={Cloud}>
-            {!data.upstream ? (
-              <p className="text-sm text-ink-muted py-4 text-center">Not available until live Alta contact.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs text-ink-muted">
-                  <tbody>
-                    {Object.entries(data.upstream).map(([k, v]) => (
-                      <tr key={k} className="border-b border-cohesity-border/50">
-                        <td className="py-1.5 pr-4 text-ink-faint font-medium">{k}</td>
-                        <td className="py-1.5 text-ink tnum">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
             )}
           </Panel>
 

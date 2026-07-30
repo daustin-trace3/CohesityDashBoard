@@ -42,9 +42,8 @@ export default function NbJobsPage() {
       </PageHeader>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by client or policy…"
-            filters={[{ k: 'state', label: 'States' }, { k: 'policyType', label: 'Policy Types' }, { k: 'sourceName', label: 'Sources' }]} />
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <p className="text-sm font-semibold text-ink">Jobs</p>
           <CsvExportButton filename="netbackup-jobs" rows={ctl.rows} columns={[
             { label: 'Job ID', get: 'jobId' },
             { label: 'Source', get: 'sourceName' },
@@ -60,6 +59,10 @@ export default function NbJobsPage() {
             { label: 'Started', get: (r) => fmtWhen(r.startedAt) },
             { label: 'Ended', get: (r) => fmtWhen(r.endedAt) },
           ]} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by client or policy…"
+            filters={[{ k: 'state', label: 'States' }, { k: 'policyType', label: 'Policy Types' }, { k: 'sourceName', label: 'Sources' }]} />
         </div>
         {rows == null ? (
           <LoadingPanel label="Loading jobs…" height={140} />

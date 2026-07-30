@@ -57,7 +57,7 @@ export default function NbStoragePage() {
     labels: ['Used', 'Free'],
     datasets: [{
       data: [totals.used, Math.max(0, totals.capacity - totals.used)],
-      backgroundColor: [BRAND, '#3A3F44'],
+      backgroundColor: ['#F59E0B', '#22C55E'],
       borderWidth: 0,
     }],
   };

@@ -296,12 +296,14 @@ describe('routes/netbackup.js v2 routes (SLPs, governance, workloads, licensing,
     jobStmt.run(sourceId, 103, 'REPLICATION', 'FAILED', 1, 'active-policy', 'Standard', 'client-v2-b', 'FULL', 512, '-3 hours', '-2 hours');
     // Catalog backup, success.
     jobStmt.run(sourceId, 104, 'BACKUP', 'DONE', 0, 'catalog-policy', 'NBU-Catalog', 'catalog-host', 'FULL', 100, '-1 hours', '-1 hours');
+    // Older, failed catalog job -- must not win over the successful one above.
+    jobStmt.run(sourceId, 105, 'BACKUP', 'FAILED', 1, 'catalog-policy', 'NBU-Catalog', 'catalog-host', 'FULL', 9999, '-5 hours', '-5 hours');
 
     db.prepare(`
       INSERT INTO netbackup_media_servers (source_id, name, state, version) VALUES (?, 'media-v2', 'ACTIVE', '11.0')
     `).run(sourceId);
     db.prepare(`
-      INSERT INTO netbackup_appliances (source_id, name, nbu_version) VALUES (?, 'appl-v2', '10.5')
+      INSERT INTO netbackup_appliances (source_id, name, model, nbu_version) VALUES (?, 'appl-v2', 'NB5250', '10.5')
     `).run(sourceId);
 
     // Two workload_history snapshots same day (simulates two polls) to exercise the
@@ -328,6 +330,58 @@ describe('routes/netbackup.js v2 routes (SLPs, governance, workloads, licensing,
     expect(res.body.replication.jobs7d).toBeGreaterThanOrEqual(2);
     expect(res.body.replication.failed7d).toBeGreaterThanOrEqual(1);
     expect(Array.isArray(res.body.replication.byPolicy)).toBe(true);
+  });
+
+  it('GET /api/netbackup/overview includes catalog with the latest successful NBU-Catalog job', async () => {
+    const res = await request(app).get('/api/netbackup/overview');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.catalog)).toBe(true);
+    const entry = res.body.catalog.find((c) => c.sourceId === sourceId);
+    expect(entry).toBeTruthy();
+    expect(entry.sourceName).toBe('nb-v2');
+    expect(entry.catalogBytes).toBe(100 * 1024);
+  });
+
+  it('GET /api/netbackup/appliances normalizes reported model and reports modelSource', async () => {
+    const res = await request(app).get('/api/netbackup/appliances');
+    expect(res.status).toBe(200);
+    const appliance = res.body.appliances.find((a) => a.sourceId === sourceId && a.name === 'appl-v2');
+    expect(appliance).toBeTruthy();
+    expect(appliance.modelRaw).toBe('NB5250');
+    expect(appliance.model).toBe('NetBackup 5250');
+    expect(appliance.modelSource).toBe('reported');
+  });
+
+  it('PUT /api/netbackup/appliances/model upserts an override (wins over normalization) and clears back to reported', async () => {
+    const set = await request(app).put('/api/netbackup/appliances/model').send({
+      sourceId, name: 'appl-v2', model: 'Custom 5250 Label',
+    });
+    expect(set.status).toBe(200);
+    expect(set.body.appliance.model).toBe('Custom 5250 Label');
+    expect(set.body.appliance.modelSource).toBe('override');
+    expect(set.body.appliance.modelRaw).toBe('NB5250');
+
+    const listed = await request(app).get('/api/netbackup/appliances');
+    const appliance = listed.body.appliances.find((a) => a.sourceId === sourceId && a.name === 'appl-v2');
+    expect(appliance.model).toBe('Custom 5250 Label');
+    expect(appliance.modelSource).toBe('override');
+
+    const cleared = await request(app).put('/api/netbackup/appliances/model').send({
+      sourceId, name: 'appl-v2', model: '',
+    });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.appliance.model).toBe('NetBackup 5250');
+    expect(cleared.body.appliance.modelSource).toBe('reported');
+
+    const row = db.prepare('SELECT * FROM netbackup_appliance_overrides WHERE source_id = ? AND name = ?').get(sourceId, 'appl-v2');
+    expect(row).toBeUndefined();
+  });
+
+  it('PUT /api/netbackup/appliances/model 404s when no matching appliance row exists', async () => {
+    const res = await request(app).put('/api/netbackup/appliances/model').send({
+      sourceId, name: 'does-not-exist', model: 'Whatever',
+    });
+    expect(res.status).toBe(404);
   });
 
   it('GET /api/netbackup/governance returns flat governance shape', async () => {

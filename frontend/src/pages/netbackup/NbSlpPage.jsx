@@ -38,6 +38,15 @@ export default function NbSlpPage() {
         <RefreshButton onClick={load} />
       </PageHeader>
 
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <StatCard icon={ArrowLeftRight} label="Replication Jobs (24h)" value={fmtNum(replication.jobs24h)} />
+        <StatCard icon={ArrowLeftRight} label="Failed (24h)" value={fmtNum(replication.failed24h)}
+          tone={replication.failed24h ? 'crit' : 'ok'} />
+        <StatCard icon={ArrowLeftRight} label="Replication Jobs (7d)" value={fmtNum(replication.jobs7d)} />
+        <StatCard icon={ArrowLeftRight} label="Failed (7d)" value={fmtNum(replication.failed7d)}
+          tone={replication.failed7d ? 'warn' : 'ok'} />
+      </div>
+
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Storage Lifecycle Policies</p>
         {data == null ? (
@@ -80,15 +89,6 @@ export default function NbSlpPage() {
             <TablePager ctl={slpCtl} />
           </>
         )}
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-        <StatCard icon={ArrowLeftRight} label="Replication Jobs (24h)" value={fmtNum(replication.jobs24h)} />
-        <StatCard icon={ArrowLeftRight} label="Failed (24h)" value={fmtNum(replication.failed24h)}
-          tone={replication.failed24h ? 'crit' : 'ok'} />
-        <StatCard icon={ArrowLeftRight} label="Replication Jobs (7d)" value={fmtNum(replication.jobs7d)} />
-        <StatCard icon={ArrowLeftRight} label="Failed (7d)" value={fmtNum(replication.failed7d)}
-          tone={replication.failed7d ? 'warn' : 'ok'} />
       </div>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>

@@ -32,9 +32,8 @@ export default function NbPoliciesPage() {
       </PageHeader>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by policy or source…"
-            filters={[{ k: 'policyType', label: 'Types' }, { k: 'sourceName', label: 'Sources' }]} />
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <p className="text-sm font-semibold text-ink">Policies</p>
           <CsvExportButton filename="netbackup-policies" rows={ctl.rows} columns={[
             { label: 'Name', get: 'name' },
             { label: 'Source', get: 'sourceName' },
@@ -45,6 +44,10 @@ export default function NbPoliciesPage() {
             { label: 'Selections', get: 'selectionCount' },
             { label: 'Failed (24h)', get: 'failed24h' },
           ]} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by policy or source…"
+            filters={[{ k: 'policyType', label: 'Types' }, { k: 'sourceName', label: 'Sources' }]} />
         </div>
         {rows == null ? (
           <LoadingPanel label="Loading policies…" height={140} />

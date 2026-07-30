@@ -215,4 +215,20 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 3,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS netbackup_appliance_overrides (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id      INTEGER NOT NULL REFERENCES netbackup_sources(id) ON DELETE CASCADE,
+          name           TEXT NOT NULL,
+          model_override TEXT,
+          updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(source_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_netbackup_appliance_overrides_source ON netbackup_appliance_overrides(source_id);
+      `);
+    },
+  },
 ];

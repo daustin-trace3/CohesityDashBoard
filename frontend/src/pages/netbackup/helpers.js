@@ -59,6 +59,29 @@ export function fmtTb(b) {
   return `${t.toLocaleString(undefined, { maximumFractionDigits: t >= 100 ? 0 : 1 })} TB`;
 }
 
+export const NBU_STATUS_CODES = {
+  1: 'partially successful',
+  2: 'none of the requested files were backed up',
+  6: 'the backup failed to back up the requested files',
+  13: 'file read failed',
+  58: "can't connect to client",
+  59: 'access to the client was not allowed',
+  71: 'none of the files in the file list exist',
+  84: 'media write error',
+  96: 'unable to allocate new media for backup',
+  129: 'disk storage unit is full',
+  130: 'system error occurred',
+  156: 'snapshot error encountered',
+  196: 'client backup was not attempted because backup window closed',
+  2074: 'disk volume is down',
+  2106: 'disk storage server is down',
+};
+export function nbuStatusText(code) {
+  if (code == null) return '—';
+  const desc = NBU_STATUS_CODES[Number(code)];
+  return desc ? `Error code ${code} — ${desc}` : `NetBackup status code ${code}`;
+}
+
 const RUN_STATUS_TONE = { kSuccess: 'ok', kFailure: 'crit', kWarning: 'warn', kRunning: 'info' };
 export function runStatusTone(status) {
   return RUN_STATUS_TONE[status] || 'neutral';

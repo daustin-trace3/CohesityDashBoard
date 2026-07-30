@@ -9,13 +9,21 @@ import {
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
-import { BRAND, fmtNum, fmtBytes, fmtPct, severityTone, jobStateTone } from './helpers';
+import { BRAND, fmtNum, fmtBytes, fmtPct, fmtWhen, severityTone, jobStateTone } from './helpers';
 
 const asDate = (v) => (v ? new Date(String(v).includes('T') ? v : `${String(v).replace(' ', 'T')}Z`) : null);
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Tooltip, Legend);
 
 const NB_COLORS = ['#B1181E', '#0091DA', '#6CB33F', '#D4A24E', '#9B6CD4', '#4ED4B8', '#D46CB3', '#8FA3B0'];
+
+const STATE_COLORS = {
+  DONE: '#22C55E', SUCCESSFUL: '#22C55E', SUCCESS: '#22C55E',
+  FAILED: '#EF4444', INCOMPLETE: '#EF4444',
+  ACTIVE: '#0091DA', RUNNING: '#0091DA',
+  QUEUED: '#D4A24E', INITIATED: '#D4A24E', SUSPENDED: '#D4A24E',
+};
+const stateColor = (state, idx) => STATE_COLORS[String(state).toUpperCase()] || '#8FA3B0';
 
 export default function NbOverviewPage() {
   const { toast } = useToast();
@@ -87,7 +95,7 @@ export default function NbOverviewPage() {
       labels: entries.map(([k]) => k),
       datasets: [{
         data: entries.map(([, v]) => v),
-        backgroundColor: entries.map((_, i) => NB_COLORS[i % NB_COLORS.length]),
+        backgroundColor: entries.map(([k], i) => stateColor(k, i)),
         borderWidth: 0,
       }],
     };
@@ -97,10 +105,12 @@ export default function NbOverviewPage() {
     labels: ['Used', 'Free'],
     datasets: [{
       data: [stats.storageUsedBytes || 0, Math.max(0, (stats.storageCapacityBytes || 0) - (stats.storageUsedBytes || 0))],
-      backgroundColor: [BRAND, '#3A3F44'],
+      backgroundColor: ['#F59E0B', '#22C55E'],
       borderWidth: 0,
     }],
   }), [stats.storageUsedBytes, stats.storageCapacityBytes]);
+
+  const catalog = data?.catalog || [];
 
   const policyTypeBar = useMemo(() => {
     const entries = Object.entries(jobsByPolicyType);
@@ -218,6 +228,34 @@ export default function NbOverviewPage() {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Database size={15} className="text-brand" /> NBU Catalog Size</p>
+        {data == null ? (
+          <LoadingPanel label="Loading…" height={100} />
+        ) : catalog.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No catalog data yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Domain</th>
+                <th className="py-2 pr-3 text-right">Catalog Size</th>
+                <th className="py-2 pr-3 text-right">Last Run</th>
+              </tr></thead>
+              <tbody>
+                {catalog.map((c) => (
+                  <tr key={c.sourceId} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink">{c.sourceName}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(c.catalogBytes)}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-faint text-[11px]">{fmtWhen(c.lastRunAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Recent failed jobs + issues */}

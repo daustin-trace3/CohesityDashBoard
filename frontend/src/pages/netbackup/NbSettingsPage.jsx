@@ -349,6 +349,7 @@ function AlertThresholdsPanel() {
   const [successWarnPct, setSuccessWarnPct] = useState('');
   const [storageWarnPct, setStorageWarnPct] = useState('');
   const [staleBackupHours, setStaleBackupHours] = useState('');
+  const [entitledTb, setEntitledTb] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -358,6 +359,7 @@ function AlertThresholdsPanel() {
         setSuccessWarnPct(String(data.successWarnPct));
         setStorageWarnPct(String(data.storageWarnPct));
         setStaleBackupHours(String(data.staleBackupHours));
+        setEntitledTb(data.entitledTb ? String(data.entitledTb) : '');
       })
       .catch(() => setCfg({ successWarnPct: 90, storageWarnPct: 20, staleBackupHours: 48 }));
   }, []);
@@ -367,11 +369,13 @@ function AlertThresholdsPanel() {
     try {
       const { data } = await client.put('/netbackup/config', {
         successWarnPct: Number(successWarnPct), storageWarnPct: Number(storageWarnPct), staleBackupHours: Number(staleBackupHours),
+        entitledTb: Number(entitledTb) || 0,
       });
       setCfg(data);
       setSuccessWarnPct(String(data.successWarnPct));
       setStorageWarnPct(String(data.storageWarnPct));
       setStaleBackupHours(String(data.staleBackupHours));
+      setEntitledTb(data.entitledTb ? String(data.entitledTb) : '');
       toast({ type: 'success', title: 'Thresholds saved' });
     } catch (err) {
       toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Check the entered values.' });
@@ -394,7 +398,7 @@ function AlertThresholdsPanel() {
       <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
         Thresholds that drive the computed issues feed — success rate, storage headroom and stale-backup detection.
       </p>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-3">
         <div>
           <label className="block text-xs font-semibold text-ink mb-1">Success rate warning % (50–100)</label>
           <input type="number" min={50} max={100} value={successWarnPct} onChange={(e) => setSuccessWarnPct(e.target.value)} className={inp} />
@@ -406,6 +410,10 @@ function AlertThresholdsPanel() {
         <div>
           <label className="block text-xs font-semibold text-ink mb-1">Stale backup hours (12–336)</label>
           <input type="number" min={12} max={336} value={staleBackupHours} onChange={(e) => setStaleBackupHours(e.target.value)} className={inp} />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-ink mb-1">Licensing Entitlement (TB)</label>
+          <input type="number" min={0} max={100000} step="0.1" value={entitledTb} onChange={(e) => setEntitledTb(e.target.value)} className={inp} />
         </div>
       </div>
       <button onClick={save} disabled={saving}
