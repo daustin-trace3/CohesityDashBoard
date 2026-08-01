@@ -274,4 +274,23 @@ module.exports = [
       }
     },
   },
+  // Custom dashboards (phase 2): per-owner saved dashboards, widgets as a
+  // JSON array of { title, datasetId, chartType, query } referencing the
+  // dataset catalog. Private-only in this phase — no sharing columns yet.
+  {
+    version: 12,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS user_dashboards (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner      TEXT NOT NULL,
+          name       TEXT NOT NULL,
+          widgets    TEXT NOT NULL DEFAULT '[]',
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_dashboards_owner ON user_dashboards(owner);
+      `);
+    },
+  },
 ];

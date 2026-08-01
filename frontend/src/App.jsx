@@ -17,6 +17,7 @@ import AdminPluginsPage from './pages/AdminPluginsPage';
 import AIAdvisorPage from './pages/AIAdvisorPage';
 import OpsMonitorPage from './pages/ops/OpsMonitorPage';
 import ServerStatusPage from './pages/ops/ServerStatusPage';
+import CustomDashboardsPage from './pages/dashboards/CustomDashboardsPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import LicenseGate from './components/LicenseGate';
 import LoginPage from './pages/LoginPage';
@@ -46,6 +47,7 @@ function AppRoutes() {
           <Route index element={<Navigate to="/ops" replace />} />
           <Route path="ops" element={withBoundary(<OpsMonitorPage />)} />
           <Route path="ops/server360" element={withBoundary(<ServerStatusPage />)} />
+          <Route path="ops/dashboards" element={withBoundary(<CustomDashboardsPage />)} />
           <Route path="dashboard" element={<Navigate to="/cohesity" replace />} />
           <Route path="alerts" element={<Navigate to="/cohesity/alerts" replace />} />
           <Route path="hardware" element={<Navigate to="/cohesity/hardware" replace />} />

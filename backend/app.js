@@ -31,6 +31,9 @@ const dnsRouter = require('./routes/dns');
 const searchRouter = require('./routes/search');
 const server360Router = require('./routes/server360');
 const opsRouter = require('./routes/ops');
+const datasetsRouter = require('./routes/datasets');
+const userDashboardsRouter = require('./routes/userDashboards');
+require('./services/coreDatasets').registerCoreDatasets();
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
 const pluginsRouter = require('./routes/plugins');
@@ -192,6 +195,12 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // Cross-platform ops summary (landing page) — read-only rollup, reachable
   // to any authenticated caller like /api/poller/status.
   app.use('/api/ops', opsRouter);
+  // Dataset catalog (custom dashboards) — per-dataset RBAC inside the handler.
+  // Must mount before the plugin dispatcher below.
+  app.use('/api/datasets', datasetsRouter);
+  // Saved custom dashboards — owner-scoped CRUD; widget data access is
+  // enforced per-viewer by /api/datasets at render time.
+  app.use('/api/user-dashboards', userDashboardsRouter);
 
   // Plugin dispatcher — resolves the registry at request time. Falls through
   // to the static routes above (which still win while the registry is empty)
