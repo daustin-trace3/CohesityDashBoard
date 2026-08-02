@@ -64,6 +64,9 @@ function validateDataset(ns, ds, { core }) {
     if (!COLUMN_TYPES.has(col.type)) {
       throw new Error(`dataset '${id}': column '${col.key}' has invalid type '${String(col.type)}'`);
     }
+    if (col.unit != null && (typeof col.unit !== 'string' || !/^[a-z%]{1,16}$/.test(col.unit))) {
+      throw new Error(`dataset '${id}': column '${col.key}' has invalid unit '${String(col.unit)}'`);
+    }
   }
   if (ds.defaultSort != null && !keys.has(ds.defaultSort)) {
     throw new Error(`dataset '${id}': defaultSort '${ds.defaultSort}' is not a declared column`);
@@ -98,6 +101,7 @@ function registerDatasets(ns, list, { core = false } = {}) {
         key: c.key,
         label: c.label || c.key,
         type: c.type,
+        unit: c.unit || null,
         filterable: !!c.filterable,
         aggregatable: !!c.aggregatable,
       })),

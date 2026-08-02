@@ -26,7 +26,7 @@ const opsNavGroups = [{
   items: [
     { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p === '/ops', permission: 'cohesity:*:view' },
     { label: 'Server 360', route: '/ops/server360', icon: Crosshair, isActive: p => p.startsWith('/ops/server360'), permission: 'cohesity:*:view' },
-    { label: 'Custom Dashboards', route: '/ops/dashboards', icon: LayoutGrid, isActive: p => p.startsWith('/ops/dashboards'), permission: 'cohesity:*:view' },
+    { label: 'Custom Dashboards', route: '/ops/dashboards', icon: LayoutGrid, isActive: p => p.startsWith('/ops/dashboards'), permission: 'cohesity:*:view', requiresCustomDashboards: true },
   ],
 }];
 
@@ -64,6 +64,8 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
   // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
   const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
+  // Custom Dashboards ships dark — nav item hidden until enabled in Settings → Platforms.
+  const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherMode] = useState(getSwitcherMode);
 
   useEffect(() => {
@@ -306,6 +308,10 @@ export default function Layout() {
 
   useEffect(() => {
     const loadPlatforms = () => client.get('/settings')
+      .then(r => {
+        setCustomDashboardsEnabled(!!r.data.featureCustomDashboardsEnabled);
+        return r;
+      })
       .then(r => setEnabledPlatformIds([
         ...(r.data.platformCohesityEnabled !== false ? ['cohesity'] : []),
         ...(r.data.platformPureEnabled ? ['pure'] : []),
@@ -352,6 +358,7 @@ export default function Layout() {
       ...group,
       items: group.items.filter(item =>
         (!item.requiresAi || aiEnabled)
+        && (!item.requiresCustomDashboards || customDashboardsEnabled)
         && (authLoading || hasPermission(requiredNavPermission(navPlatformKey, item)))),
     }))
     .filter(group => group.items.length > 0);

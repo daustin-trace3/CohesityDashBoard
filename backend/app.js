@@ -34,6 +34,7 @@ const opsRouter = require('./routes/ops');
 const datasetsRouter = require('./routes/datasets');
 const userDashboardsRouter = require('./routes/userDashboards');
 require('./services/coreDatasets').registerCoreDatasets();
+const { getSetting } = require('./services/settings');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
 const pluginsRouter = require('./routes/plugins');
@@ -195,12 +196,20 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // Cross-platform ops summary (landing page) — read-only rollup, reachable
   // to any authenticated caller like /api/poller/status.
   app.use('/api/ops', opsRouter);
+  // Custom dashboards ship dark: both mounts 404 until the feature is
+  // switched on in Global Settings → Platforms (feature_custom_dashboards_enabled).
+  const requireCustomDashboards = (req, res, next) => {
+    if (getSetting('feature_custom_dashboards_enabled') !== '1') {
+      return res.status(404).json({ error: 'Custom dashboards are not enabled.' });
+    }
+    next();
+  };
   // Dataset catalog (custom dashboards) — per-dataset RBAC inside the handler.
   // Must mount before the plugin dispatcher below.
-  app.use('/api/datasets', datasetsRouter);
+  app.use('/api/datasets', requireCustomDashboards, datasetsRouter);
   // Saved custom dashboards — owner-scoped CRUD; widget data access is
   // enforced per-viewer by /api/datasets at render time.
-  app.use('/api/user-dashboards', userDashboardsRouter);
+  app.use('/api/user-dashboards', requireCustomDashboards, userDashboardsRouter);
 
   // Plugin dispatcher — resolves the registry at request time. Falls through
   // to the static routes above (which still win while the registry is empty)

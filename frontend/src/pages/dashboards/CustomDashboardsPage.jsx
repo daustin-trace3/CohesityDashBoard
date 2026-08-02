@@ -18,6 +18,7 @@ export default function CustomDashboardsPage() {
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const [featureDisabled, setFeatureDisabled] = useState(false);
 
   const loadList = useCallback(async (selectFirst = false) => {
     try {
@@ -26,8 +27,14 @@ export default function CustomDashboardsPage() {
       if (selectFirst && res.data.dashboards.length && !selectedId) {
         setSelectedId(res.data.dashboards[0].id);
       }
-    } catch {
+    } catch (err) {
       setList([]);
+      // The app-level gate 404s every /user-dashboards call while the feature
+      // is switched off in Global Settings (the list route itself never 404s).
+      if (err.response?.status === 404) {
+        setFeatureDisabled(true);
+        return;
+      }
       toast({ type: 'error', title: 'Failed to load dashboards' });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -94,6 +101,24 @@ export default function CustomDashboardsPage() {
       toast({ type: 'error', title: 'Delete failed' });
     }
   };
+
+  if (featureDisabled) {
+    return (
+      <div className="p-6 flex flex-col gap-4">
+        <PageHeader
+          icon={LayoutGrid}
+          title="Custom Dashboards"
+          description="Build your own views from the platform dataset catalog"
+        />
+        <Panel className="p-6 text-center">
+          <p className="text-sm font-semibold text-ink">Custom Dashboards is not enabled</p>
+          <p className="text-xs text-ink-muted mt-1">
+            An administrator can turn it on in Global Settings → Platforms → Preview features.
+          </p>
+        </Panel>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 flex flex-col gap-4">

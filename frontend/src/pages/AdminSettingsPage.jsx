@@ -55,6 +55,7 @@ export default function AdminSettingsPage() {
   const [dellEnabled, setDellEnabled] = useState(false);
   const [ariaEnabled, setAriaEnabled] = useState(false);
   const [netbackupEnabled, setNetbackupEnabled] = useState(false);
+  const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
@@ -97,6 +98,7 @@ export default function AdminSettingsPage() {
         setDellEnabled(!!d.platformDellEnabled);
         setAriaEnabled(!!d.platformAriaEnabled);
         setNetbackupEnabled(!!d.platformNetbackupEnabled);
+        setCustomDashboardsEnabled(!!d.featureCustomDashboardsEnabled);
         setDnsServer(d.dnsServer || '');
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
@@ -123,6 +125,7 @@ export default function AdminSettingsPage() {
         platformDellEnabled: dellEnabled,
         platformAriaEnabled: ariaEnabled,
         platformNetbackupEnabled: netbackupEnabled,
+        featureCustomDashboardsEnabled: customDashboardsEnabled,
         dnsServer,
       });
       window.dispatchEvent(new Event('platforms-changed'));
@@ -519,6 +522,19 @@ export default function AdminSettingsPage() {
                 Show the NetBackup platform tab. Register primary servers on its Settings page after enabling.
               </span>
             </label>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <p className="text-xs font-semibold text-ink mb-1 mt-2">Preview features</p>
+              <label className="flex items-start gap-2.5 cursor-pointer select-none mt-1">
+                <input type="checkbox" checked={customDashboardsEnabled} onChange={e => setCustomDashboardsEnabled(e.target.checked)}
+                  className="accent-brand mt-0.5 cursor-pointer" />
+                <span className="text-xs text-ink-muted leading-relaxed">
+                  <span className="font-semibold text-ink">Custom Dashboards</span><br />
+                  Show the Custom Dashboards page under Estate and enable its APIs. Leave off while the
+                  feature is still being refined — when off it is hidden from all users.
+                </span>
+              </label>
+            </div>
 
             <div className="pt-2 border-t border-cohesity-border/60">
               <p className="text-xs font-semibold text-ink mb-1 mt-2">Platform switcher style</p>

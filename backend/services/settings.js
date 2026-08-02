@@ -27,6 +27,7 @@ const DEFAULTS = {
   pure1_poll_interval_minutes: '15',
   vcenter_cert_warn_days: '60',
   platform_netbackup_enabled: '0',
+  feature_custom_dashboards_enabled: '0',
   netbackup_success_warn_pct: '90',
   netbackup_storage_warn_pct: '20',
   netbackup_stale_backup_hours: '48',
@@ -130,6 +131,7 @@ function getPlatformSettings() {
     platformAriaEnabled: getSetting('platform_aria_enabled') === '1',
     platformAriaopsEnabled: getSetting('platform_ariaops_enabled') === '1',
     platformNetbackupEnabled: getSetting('platform_netbackup_enabled') === '1',
+    featureCustomDashboardsEnabled: getSetting('feature_custom_dashboards_enabled') === '1',
     dnsServer: getSetting('dns_server') || '',
   };
 }

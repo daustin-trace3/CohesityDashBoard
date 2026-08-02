@@ -186,6 +186,9 @@ router.put('/', (req, res, next) => {
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));
     }
+    if (req.body?.featureCustomDashboardsEnabled !== undefined) {
+      setSetting('feature_custom_dashboards_enabled', req.body.featureCustomDashboardsEnabled ? '1' : '0');
+    }
     res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings() });
   } catch (err) {
     next(err);

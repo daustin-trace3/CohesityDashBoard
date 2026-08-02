@@ -293,4 +293,23 @@ module.exports = [
       `);
     },
   },
+  // Name-enriched views for the dataset catalog: cluster_id alone is
+  // meaningless in user-built widgets, so these join clusters.name in.
+  // Views, not tables — always current, nothing to backfill.
+  {
+    version: 13,
+    up(db) {
+      db.exec(`
+        CREATE VIEW IF NOT EXISTS v_ds_metrics_history AS
+          SELECT m.*, c.name AS cluster_name
+          FROM metrics_history m LEFT JOIN clusters c ON c.id = m.cluster_id;
+        CREATE VIEW IF NOT EXISTS v_ds_alerts AS
+          SELECT a.*, c.name AS cluster_name
+          FROM alerts a LEFT JOIN clusters c ON c.id = a.cluster_id;
+        CREATE VIEW IF NOT EXISTS v_ds_protection_runs AS
+          SELECT p.*, c.name AS cluster_name
+          FROM protection_runs p LEFT JOIN clusters c ON c.id = p.cluster_id;
+      `);
+    },
+  },
 ];

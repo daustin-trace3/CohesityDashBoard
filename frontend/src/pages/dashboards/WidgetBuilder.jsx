@@ -4,7 +4,7 @@
 import { useMemo, useState } from 'react';
 import { Plus, Eye, X } from 'lucide-react';
 import { Panel, Badge } from '../../components/ui/primitives';
-import { CHART_TYPES, WidgetView } from './widgets';
+import { BYTE_FACTORS, CHART_TYPES, DISPLAY_UNITS, WidgetView } from './widgets';
 
 const OPS = [
   { id: 'eq', label: '=' },
@@ -30,6 +30,28 @@ function coerce(col, raw) {
   return raw;
 }
 
+// Which columns a unit conversion would apply to, and their source unit.
+// Only byte-family units are convertible; mixed-unit tables convert the
+// first unit family found.
+function conversionTarget(state, dataset) {
+  const colUnit = (key) => dataset.columns.find((c) => c.key === key)?.unit;
+  const { chartType, aggFn, aggCol, yCol, columns } = state;
+  if (chartType === 'bar' || chartType === 'pie' || chartType === 'stat') {
+    if (aggFn === 'count') return null;
+    const unit = colUnit(aggCol);
+    return BYTE_FACTORS[unit] ? { from: unit, columns: ['value'] } : null;
+  }
+  if (chartType === 'line') {
+    const unit = colUnit(yCol);
+    return BYTE_FACTORS[unit] ? { from: unit, columns: [yCol] } : null;
+  }
+  const shown = columns.length ? columns : dataset.columns.map((c) => c.key);
+  const convertible = shown.filter((k) => BYTE_FACTORS[colUnit(k)]);
+  if (!convertible.length) return null;
+  const from = colUnit(convertible[0]);
+  return { from, columns: convertible.filter((k) => colUnit(k) === from) };
+}
+
 function buildWidget(state, dataset) {
   const { chartType, title, filters, groupBy, aggFn, aggCol, xCol, yCol, columns, sortCol, sortDir } = state;
   const query = {};
@@ -52,22 +74,34 @@ function buildWidget(state, dataset) {
     query.aggregate = aggFn === 'count' ? { fn: 'count', column: '*' } : { fn: aggFn, column: aggCol };
     if (aggFn !== 'count' && !aggCol) return null;
   } else if (chartType === 'line') {
-    if (!xCol || !yCol) return null;
-    query.columns = [xCol, yCol];
-    query.sort = { column: xCol, dir: 'asc' };
-    query.limit = 500;
+    // Line X must be a datetime column — a stale non-datetime selection
+    // (e.g. from before this restriction) falls back to the first one.
+    const dtCols = dataset.columns.filter((c) => c.type === 'datetime');
+    const effXCol = (dtCols.find((c) => c.key === xCol) || dtCols[0])?.key;
+    if (!effXCol || !yCol) return null;
+    // Sort desc so the row cap keeps the MOST RECENT window; the renderer
+    // re-sorts ascending for display.
+    query.columns = state.seriesCol ? [effXCol, yCol, state.seriesCol] : [effXCol, yCol];
+    query.sort = { column: effXCol, dir: 'desc' };
+    query.limit = state.seriesCol ? 1000 : 500;
   } else {
     if (columns.length) query.columns = columns;
     if (sortCol) query.sort = { column: sortCol, dir: sortDir };
     query.limit = 200;
   }
 
-  return {
+  const out = {
     title: title.trim() || `${dataset.label} — ${CHART_TYPES.find((c) => c.id === chartType)?.label}`,
     datasetId: dataset.id,
     chartType,
     query,
   };
+  if (chartType === 'line' && state.seriesCol) out.seriesColumn = state.seriesCol;
+  const target = conversionTarget(state, dataset);
+  if (target && state.unit !== 'raw') {
+    out.unitConvert = { from: target.from, to: state.unit, columns: target.columns };
+  }
+  return out;
 }
 
 function Field({ label, children }) {
@@ -93,6 +127,8 @@ export default function WidgetBuilder({ datasets, onAdd, onClose }) {
     columns: [],
     sortCol: '',
     sortDir: 'asc',
+    unit: 'auto',
+    seriesCol: '',
   });
   const [preview, setPreview] = useState(null);
   const [previewNonce, setPreviewNonce] = useState(0);
@@ -103,6 +139,7 @@ export default function WidgetBuilder({ datasets, onAdd, onClose }) {
   const filterable = dataset?.columns.filter((c) => c.filterable) || [];
   const aggregatable = dataset?.columns.filter((c) => c.aggregatable) || [];
   const numeric = dataset?.columns.filter((c) => c.type === 'number') || [];
+  const convertible = dataset ? conversionTarget(state, dataset) : null;
   const widget = dataset ? buildWidget(state, dataset) : null;
 
   const doPreview = () => {
@@ -126,7 +163,7 @@ export default function WidgetBuilder({ datasets, onAdd, onClose }) {
             <select
               className={inputCls}
               value={state.datasetId}
-              onChange={(e) => set({ datasetId: e.target.value, filters: [], groupBy: '', aggCol: '', xCol: '', yCol: '', columns: [], sortCol: '' })}
+              onChange={(e) => set({ datasetId: e.target.value, filters: [], groupBy: '', aggCol: '', xCol: '', yCol: '', columns: [], sortCol: '', seriesCol: '' })}
             >
               <option value="">Select…</option>
               {datasets.map((d) => (
@@ -190,10 +227,17 @@ export default function WidgetBuilder({ datasets, onAdd, onClose }) {
 
         {dataset && state.chartType === 'line' && (
           <div className="flex flex-wrap gap-3 items-end">
-            <Field label="X axis">
-              <select className={inputCls} value={state.xCol} onChange={(e) => set({ xCol: e.target.value })}>
-                <option value="">Select…</option>
-                {dataset.columns.filter((c) => c.type === 'datetime' || c.type === 'number').map((c) => (
+            <Field label="X axis (time)">
+              <select
+                className={inputCls}
+                value={
+                  dataset.columns.some((c) => c.type === 'datetime' && c.key === state.xCol)
+                    ? state.xCol
+                    : dataset.columns.find((c) => c.type === 'datetime')?.key || ''
+                }
+                onChange={(e) => set({ xCol: e.target.value })}
+              >
+                {dataset.columns.filter((c) => c.type === 'datetime').map((c) => (
                   <option key={c.key} value={c.key}>{c.label}</option>
                 ))}
               </select>
@@ -202,6 +246,14 @@ export default function WidgetBuilder({ datasets, onAdd, onClose }) {
               <select className={inputCls} value={state.yCol} onChange={(e) => set({ yCol: e.target.value })}>
                 <option value="">Select…</option>
                 {numeric.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+              </select>
+            </Field>
+            <Field label="Series by (optional)">
+              <select className={inputCls} value={state.seriesCol} onChange={(e) => set({ seriesCol: e.target.value })}>
+                <option value="">Single line</option>
+                {filterable
+                  .filter((c) => c.type !== 'datetime' && c.key !== state.yCol)
+                  .map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
               </select>
             </Field>
           </div>
@@ -238,6 +290,19 @@ export default function WidgetBuilder({ datasets, onAdd, onClose }) {
                 </select>
               </Field>
             </div>
+          </div>
+        )}
+
+        {dataset && convertible && (
+          <div className="flex flex-wrap gap-3 items-end">
+            <Field label={`Display unit (source: ${convertible.from.toUpperCase()})`}>
+              <select className={inputCls} value={state.unit} onChange={(e) => set({ unit: e.target.value })}>
+                {DISPLAY_UNITS.map((u) => (
+                  <option key={u} value={u}>{u === 'auto' ? 'Auto (best fit)' : u.toUpperCase()}</option>
+                ))}
+                <option value="raw">Raw (no conversion)</option>
+              </select>
+            </Field>
           </div>
         )}
 
