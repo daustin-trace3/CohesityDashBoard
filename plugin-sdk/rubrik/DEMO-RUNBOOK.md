@@ -1,0 +1,49 @@
+# Rubrik Plugin — Customer Demo Runbook
+
+Demo story: "the dashboard doesn't know Rubrik → we install a signed plugin live → a full
+Rubrik platform appears with data, no reload, no restart."
+
+## Files
+- `rubrik-1.0.0.iccplugin` — the signed installable (also staged at `%USERPROFILE%\Desktop\`).
+  Rebuild after source changes: `cd plugin-sdk && node build.mjs --dir ./rubrik && node pack.mjs --dir ./rubrik`
+  (signing key: `../LicenseTools/keys/plugin-signing-private.pem`).
+
+## The demo (on https://cc.austihome.com, login demo / IccDemo2026!)
+1. **Absent**: show the platform switcher — no Rubrik. Optionally hit Plugins page
+   (gear → Plugins): only built-ins listed.
+2. **Install**: drag `rubrik-1.0.0.iccplugin` onto the Plugins page upload target.
+   Toast: installed and live ("hot add"). Signature + per-file hashes verified server-side.
+3. **Appears**: Rubrik shows up in the platform switcher immediately — no reload
+   (a `platforms-changed` event refreshes the platform registry live).
+4. **Data**: click Rubrik → Overview (3 clusters, 30 protected objects, 2 out of
+   compliance, 24h jobs w/ 2 failures, capacity bar), then Clusters / Protected
+   Objects / Jobs pages. Data comes from the plugin's own migration-seeded tables.
+5. Optional second beat: Global Settings → Platforms → toggle a full built-in
+   (e.g. Zerto) off and on — shows a complete, fully-styled platform materializing
+   with rich data. Complements the plugin story ("plugins for new platforms,
+   toggles for licensed ones").
+
+## Reset between customer sessions
+Uninstall is restart-gated (marks `.remove`, applied at next boot):
+```
+ssh DevServer
+# in a login shell:
+cd /tmp && curl -s -c cj.txt -X POST -H "Content-Type: application/json" \
+  -d '{"username":"demo","password":"IccDemo2026!"}' http://localhost:3002/api/auth/login -o /dev/null
+TOK=$(curl -s -b cj.txt http://localhost:3002/api/auth/session | python3 -c "import json,sys; print(json.load(sys.stdin)['csrfToken'])")
+curl -s -b cj.txt -H "x-csrf-token: $TOK" -X DELETE http://localhost:3002/api/plugins/rubrik
+pm2 restart icc-demo && rm cj.txt
+```
+Or from the UI: Plugins page → trash icon on Rubrik → restart icc-demo.
+Leave "also delete its data" UNCHECKED — the rubrik_* tables then survive, so the next
+install shows data instantly (migration is versioned and skips re-seeding).
+
+## Gotchas learned bringing this live (2026-08-02)
+- Mutating API calls need the CSRF token from `GET /api/auth/session` in `x-csrf-token`.
+- Host fix `0fb3e89`/`4c9fd3c` was REQUIRED: before it, any plugin platform blanked the
+  whole app (Layout rendered `<undefined/>` for icon-less plugin nav items, React #130)
+  and the header fell through to Cohesity labels. Don't demo from a build older than these.
+- Unknown `/api/<id>/*` returns 200 with index.html (SPA fallback), not 404 — don't use
+  curl status alone to prove absence; check `GET /api/plugins`.
+- Plugin pages use inline styles (no Tailwind in bundles) — the Rubrik pages are styled
+  to match the host closely; keep that discipline in edits.
