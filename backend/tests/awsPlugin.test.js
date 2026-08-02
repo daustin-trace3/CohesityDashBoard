@@ -491,6 +491,187 @@ describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dis
   });
 });
 
+describe('awsPoller optimizer heuristics (computeHeuristicRecommendations)', () => {
+  const { computeHeuristicRecommendations } = require('../services/awsPoller');
+
+  it('gp2-to-gp3: gp2 volume -> savings = size_gb * 0.02, recommended gp3', () => {
+    const accountId = insertAccount({ name: 'opt-gp2' });
+    db.prepare(`
+      INSERT INTO aws_ebs_volumes (account_id, volume_id, state, size_gb, volume_type, az)
+      VALUES (?, 'vol-gp2', 'in-use', 100, 'gp2', 'us-east-2a')
+    `).run(accountId);
+
+    const rows = computeHeuristicRecommendations(accountId, true);
+    const row = rows.find((r) => r.finding === 'gp2-to-gp3');
+    expect(row).toBeTruthy();
+    expect(row).toEqual(expect.objectContaining({
+      source: 'heuristic', resourceType: 'ebs', resourceId: 'vol-gp2', region: 'us-east-2a',
+      currentConfig: 'gp2', recommendedConfig: 'gp3',
+    }));
+    expect(row.estMonthlySavingsUsd).toBeCloseTo(100 * 0.02, 5);
+  });
+
+  it('ebs-unattached: available volume -> savings = size_gb * (gp2 ? 0.10 : 0.08)', () => {
+    const accountId = insertAccount({ name: 'opt-unattached' });
+    db.prepare(`
+      INSERT INTO aws_ebs_volumes (account_id, volume_id, state, size_gb, volume_type, az)
+      VALUES (?, 'vol-unattached-gp3', 'available', 50, 'gp3', 'us-east-2a')
+    `).run(accountId);
+    db.prepare(`
+      INSERT INTO aws_ebs_volumes (account_id, volume_id, state, size_gb, volume_type, az)
+      VALUES (?, 'vol-attached', 'in-use', 50, 'gp3', 'us-east-2a')
+    `).run(accountId);
+
+    const rows = computeHeuristicRecommendations(accountId, true);
+    const unattachedRows = rows.filter((r) => r.finding === 'ebs-unattached');
+    expect(unattachedRows).toHaveLength(1);
+    expect(unattachedRows[0].resourceId).toBe('vol-unattached-gp3');
+    expect(unattachedRows[0].estMonthlySavingsUsd).toBeCloseTo(50 * 0.08, 5);
+    expect(unattachedRows[0].recommendedConfig).toBe('delete or snapshot-and-delete');
+  });
+
+  it('stopped-ec2-ebs: stopped instance with attached volumes -> savings = sum(size_gb) * 0.08', () => {
+    const accountId = insertAccount({ name: 'opt-stopped' });
+    db.prepare(`
+      INSERT INTO aws_ec2_instances (account_id, instance_id, name, state, instance_type, az)
+      VALUES (?, 'i-stopped', 'stopped-box', 'stopped', 'm5.large', 'us-east-2a')
+    `).run(accountId);
+    db.prepare(`
+      INSERT INTO aws_ebs_volumes (account_id, volume_id, state, size_gb, volume_type, az, attached_instance_id)
+      VALUES (?, 'vol-a', 'in-use', 30, 'gp3', 'us-east-2a', 'i-stopped')
+    `).run(accountId);
+    db.prepare(`
+      INSERT INTO aws_ebs_volumes (account_id, volume_id, state, size_gb, volume_type, az, attached_instance_id)
+      VALUES (?, 'vol-b', 'in-use', 20, 'gp3', 'us-east-2a', 'i-stopped')
+    `).run(accountId);
+
+    const rows = computeHeuristicRecommendations(accountId, true);
+    const row = rows.find((r) => r.finding === 'stopped-ec2-ebs');
+    expect(row).toBeTruthy();
+    expect(row.resourceId).toBe('i-stopped');
+    expect(row.currentConfig).toBe('m5.large');
+    expect(row.estMonthlySavingsUsd).toBeCloseTo((30 + 20) * 0.08, 5);
+  });
+
+  it('prev-gen-type: t2 instance -> recommended t3, savings null', () => {
+    const accountId = insertAccount({ name: 'opt-prevgen' });
+    db.prepare(`
+      INSERT INTO aws_ec2_instances (account_id, instance_id, name, state, instance_type, az)
+      VALUES (?, 'i-oldgen', 'old-box', 'running', 't2.micro', 'us-east-2a')
+    `).run(accountId);
+
+    const rows = computeHeuristicRecommendations(accountId, true);
+    const row = rows.find((r) => r.finding === 'prev-gen-type');
+    expect(row).toBeTruthy();
+    expect(row.resourceId).toBe('i-oldgen');
+    expect(row.currentConfig).toBe('t2.micro');
+    expect(row.recommendedConfig).toBe('t3.micro');
+    expect(row.estMonthlySavingsUsd).toBeNull();
+  });
+
+  it('nat-gateway-consolidation: VPC with 2 NATs -> savings = (count-1) * 32.85', () => {
+    const accountId = insertAccount({ name: 'opt-nat' });
+    db.prepare(`
+      INSERT INTO aws_vpcs (account_id, vpc_id, nat_gateway_count)
+      VALUES (?, 'vpc-multi-nat', 2)
+    `).run(accountId);
+    db.prepare(`
+      INSERT INTO aws_vpcs (account_id, vpc_id, nat_gateway_count)
+      VALUES (?, 'vpc-single-nat', 1)
+    `).run(accountId);
+
+    const rows = computeHeuristicRecommendations(accountId, true);
+    const natRows = rows.filter((r) => r.finding === 'nat-gateway-consolidation');
+    expect(natRows).toHaveLength(1);
+    expect(natRows[0].resourceId).toBe('vpc-multi-nat');
+    expect(natRows[0].estMonthlySavingsUsd).toBeCloseTo(1 * 32.85, 5);
+  });
+
+  it('s3-no-lifecycle: only emitted when elected — large bucket with no lifecycle rules', () => {
+    const accountId = insertAccount({ name: 'opt-s3-lifecycle' });
+    db.prepare(`
+      INSERT INTO aws_s3_buckets (account_id, name, region, lifecycle_rules, size_bytes)
+      VALUES (?, 'big-no-lifecycle', 'us-east-2', 0, ?)
+    `).run(accountId, 60 * 1024 ** 3);
+    db.prepare(`
+      INSERT INTO aws_s3_buckets (account_id, name, region, lifecycle_rules, size_bytes)
+      VALUES (?, 'small-no-lifecycle', 'us-east-2', 0, ?)
+    `).run(accountId, 1024);
+    db.prepare(`
+      INSERT INTO aws_s3_buckets (account_id, name, region, lifecycle_rules, size_bytes)
+      VALUES (?, 'big-with-lifecycle', 'us-east-2', 2, ?)
+    `).run(accountId, 60 * 1024 ** 3);
+
+    const electedRows = computeHeuristicRecommendations(accountId, true);
+    const s3Rows = electedRows.filter((r) => r.finding === 's3-no-lifecycle');
+    expect(s3Rows).toHaveLength(1);
+    expect(s3Rows[0].resourceId).toBe('big-no-lifecycle');
+    expect(s3Rows[0].recommendedConfig).toBe('add lifecycle/IA transition');
+    expect(s3Rows[0].estMonthlySavingsUsd).toBeNull();
+
+    const nonElectedRows = computeHeuristicRecommendations(accountId, false);
+    expect(nonElectedRows.some((r) => r.finding === 's3-no-lifecycle')).toBe(false);
+  });
+});
+
+describe('GET /api/aws/optimizer', () => {
+  let app;
+
+  beforeAll(() => {
+    const awsRouter = require('../routes/aws');
+    app = express();
+    app.use(express.json());
+    app.use('/api/aws', awsRouter);
+  });
+
+  it('returns totals + recommendations, sorted savings desc with nulls last, and supports accountId filter', async () => {
+    const { storeOptimizer } = require('../services/awsPoller');
+    const accountId = insertAccount({ name: 'optimizer-route-account' });
+    const otherAccountId = insertAccount({ name: 'optimizer-route-other' });
+
+    storeOptimizer(accountId, 'Active', [
+      { source: 'heuristic', resourceType: 'ebs', resourceId: 'vol-low', region: 'us-east-2a',
+        finding: 'gp2-to-gp3', currentConfig: 'gp2', recommendedConfig: 'gp3', reason: 'x', estMonthlySavingsUsd: 2 },
+      { source: 'compute-optimizer', resourceType: 'ec2', resourceId: 'i-high', region: 'us-east-2a',
+        finding: 'Overprovisioned', currentConfig: 'm5.xlarge', recommendedConfig: 'm5.large', reason: 'y', estMonthlySavingsUsd: 40 },
+      { source: 'heuristic', resourceType: 'ec2', resourceId: 'i-nullsave', region: 'us-east-2a',
+        finding: 'prev-gen-type', currentConfig: 't2.micro', recommendedConfig: 't3.micro', reason: 'z', estMonthlySavingsUsd: null },
+    ]);
+    storeOptimizer(otherAccountId, 'Inactive', [
+      { source: 'heuristic', resourceType: 'vpc', resourceId: 'vpc-other', region: null,
+        finding: 'nat-gateway-consolidation', currentConfig: '2 NAT gateways', recommendedConfig: 'consolidate to 1 NAT gateway',
+        reason: 'w', estMonthlySavingsUsd: 32.85 },
+    ]);
+
+    const all = await request(app).get('/api/aws/optimizer');
+    expect(all.status).toBe(200);
+    expect(all.body.totals.count).toBeGreaterThanOrEqual(4);
+    const savings = all.body.recommendations.map((r) => r.estMonthlySavingsUsd);
+    const nonNull = savings.filter((s) => s !== null);
+    for (let i = 1; i < nonNull.length; i++) expect(nonNull[i - 1]).toBeGreaterThanOrEqual(nonNull[i]);
+    const firstNullIdx = savings.findIndex((s) => s === null);
+    if (firstNullIdx >= 0) expect(savings.slice(firstNullIdx).every((s) => s === null)).toBe(true);
+
+    const filtered = await request(app).get('/api/aws/optimizer').query({ accountId });
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.totals.count).toBe(3);
+    expect(filtered.body.recommendations.every((r) => r.account === 'optimizer-route-account')).toBe(true);
+    expect(filtered.body.recommendations[0].resourceId).toBe('i-high');
+    expect(filtered.body.recommendations[0].source).toBe('compute-optimizer');
+  });
+
+  it('POST /api/aws/optimizer/refresh clears the daily gate and returns 202', async () => {
+    const accountId = insertAccount({ name: 'optimizer-refresh-account' });
+    db.prepare("UPDATE aws_accounts SET last_optimizer_capture_at = datetime('now') WHERE id = ?").run(accountId);
+
+    const res = await request(app).post('/api/aws/optimizer/refresh').query({ accountId });
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ ok: true });
+    const row = db.prepare('SELECT last_optimizer_capture_at FROM aws_accounts WHERE id = ?').get(accountId);
+    expect(row.last_optimizer_capture_at).toBeNull();
+  });
+});
+
 describe('aws platform plugin dispatcher (registered via registry, like platformPlugins.test.js)', () => {
   const registry = require('../core/registry');
   const awsManifest = require('../platforms/aws');

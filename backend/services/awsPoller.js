@@ -339,6 +339,137 @@ async function collectEcr(account) {
   }, []);
 }
 
+// ── Optimizer (Compute Optimizer + local heuristics) ────────────────────────
+
+async function collectComputeOptimizer(account) {
+  return degradeGracefully(account, 'Compute Optimizer', async () => {
+    const enrollment = await awsApi.fetchCoEnrollmentStatus(account);
+    let rows = [];
+    if (enrollment.status === 'Active') {
+      const [ec2, ebs, lambdaRecs, ecs] = await Promise.all([
+        degradeGracefully(account, 'CO EC2 recommendations', () => awsApi.fetchCoEc2Recommendations(account), []),
+        degradeGracefully(account, 'CO EBS recommendations', () => awsApi.fetchCoEbsRecommendations(account), []),
+        degradeGracefully(account, 'CO Lambda recommendations', () => awsApi.fetchCoLambdaRecommendations(account), []),
+        degradeGracefully(account, 'CO ECS recommendations', () => awsApi.fetchCoEcsRecommendations(account), []),
+      ]);
+      rows = [
+        ...ec2.map((r) => ({ ...r, resourceType: 'ec2' })),
+        ...ebs.map((r) => ({ ...r, resourceType: 'ebs' })),
+        ...lambdaRecs.map((r) => ({ ...r, resourceType: 'lambda' })),
+        ...ecs.map((r) => ({ ...r, resourceType: 'ecs' })),
+      ];
+    }
+    return { status: enrollment.status || 'Inactive', rows };
+  }, { status: 'denied', rows: [] });
+}
+
+const PREV_GEN_MAP = { t2: 't3', m3: 'm5', m4: 'm5', c3: 'c5', c4: 'c5', r3: 'r5', r4: 'r5' };
+const PREV_GEN_RE = /^(t2|m3|m4|c3|c4|r3|r4)\./;
+
+/**
+ * Local savings heuristics computed from OUR tables for one account row —
+ * gp2-to-gp3, ebs-unattached, stopped-ec2-ebs, prev-gen-type, nat-gateway-
+ * consolidation always run; s3-no-lifecycle only when `elected` (S3 rows
+ * only live on the elected row, see Fix #0 above).
+ */
+function computeHeuristicRecommendations(accountId, elected) {
+  const rows = [];
+
+  const volumes = db.prepare('SELECT volume_id, state, size_gb, volume_type, az FROM aws_ebs_volumes WHERE account_id = ?').all(accountId);
+  for (const v of volumes) {
+    if (v.volume_type === 'gp2') {
+      rows.push({
+        source: 'heuristic', resourceType: 'ebs', resourceId: v.volume_id, resourceName: null, region: v.az,
+        finding: 'gp2-to-gp3', currentConfig: 'gp2', recommendedConfig: 'gp3',
+        reason: 'gp2 volume type costs more than gp3 for equivalent performance',
+        estMonthlySavingsUsd: (v.size_gb || 0) * 0.02,
+      });
+    }
+    if (v.state === 'available') {
+      const perGb = v.volume_type === 'gp2' ? 0.10 : 0.08;
+      rows.push({
+        source: 'heuristic', resourceType: 'ebs', resourceId: v.volume_id, resourceName: null, region: v.az,
+        finding: 'ebs-unattached', currentConfig: v.volume_type, recommendedConfig: 'delete or snapshot-and-delete',
+        reason: 'volume is unattached and still billed',
+        estMonthlySavingsUsd: (v.size_gb || 0) * perGb,
+      });
+    }
+  }
+
+  const instances = db.prepare('SELECT instance_id, state, instance_type, az FROM aws_ec2_instances WHERE account_id = ?').all(accountId);
+  for (const i of instances) {
+    if (i.state === 'stopped') {
+      const attached = db.prepare(
+        "SELECT SUM(size_gb) AS s FROM aws_ebs_volumes WHERE account_id = ? AND attached_instance_id = ?"
+      ).get(accountId, i.instance_id);
+      const sizeGb = attached?.s || 0;
+      if (sizeGb > 0) {
+        rows.push({
+          source: 'heuristic', resourceType: 'ec2', resourceId: i.instance_id, resourceName: null, region: i.az,
+          finding: 'stopped-ec2-ebs', currentConfig: i.instance_type, recommendedConfig: null,
+          reason: 'stopped instance still pays for attached EBS',
+          estMonthlySavingsUsd: sizeGb * 0.08,
+        });
+      }
+    }
+    const m = i.instance_type ? String(i.instance_type).match(PREV_GEN_RE) : null;
+    if (m) {
+      rows.push({
+        source: 'heuristic', resourceType: 'ec2', resourceId: i.instance_id, resourceName: null, region: i.az,
+        finding: 'prev-gen-type', currentConfig: i.instance_type,
+        recommendedConfig: i.instance_type.replace(m[1], PREV_GEN_MAP[m[1]]),
+        reason: 'previous-generation instance type', estMonthlySavingsUsd: null,
+      });
+    }
+  }
+
+  const vpcs = db.prepare('SELECT vpc_id, nat_gateway_count FROM aws_vpcs WHERE account_id = ?').all(accountId);
+  for (const v of vpcs) {
+    if ((v.nat_gateway_count || 0) > 1) {
+      rows.push({
+        source: 'heuristic', resourceType: 'vpc', resourceId: v.vpc_id, resourceName: null, region: null,
+        finding: 'nat-gateway-consolidation', currentConfig: `${v.nat_gateway_count} NAT gateways`,
+        recommendedConfig: 'consolidate to 1 NAT gateway',
+        reason: 'multiple NAT gateways ~$32.85/mo each',
+        estMonthlySavingsUsd: (v.nat_gateway_count - 1) * 32.85,
+      });
+    }
+  }
+
+  if (elected) {
+    const buckets = db.prepare('SELECT name, region, lifecycle_rules, size_bytes FROM aws_s3_buckets WHERE account_id = ?').all(accountId);
+    for (const b of buckets) {
+      if ((b.lifecycle_rules || 0) === 0 && (b.size_bytes || 0) > 50 * 1024 ** 3) {
+        rows.push({
+          source: 'heuristic', resourceType: 's3', resourceId: b.name, resourceName: b.name, region: b.region,
+          finding: 's3-no-lifecycle', currentConfig: 'no lifecycle rules', recommendedConfig: 'add lifecycle/IA transition',
+          reason: 'bucket over 50GB has no lifecycle rules configured',
+          estMonthlySavingsUsd: null,
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
+const storeOptimizer = db.transaction((accountId, coEnrollment, rows) => {
+  db.prepare('DELETE FROM aws_optimizer_recommendations WHERE account_id = ?').run(accountId);
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO aws_optimizer_recommendations
+      (account_id, source, resource_type, resource_id, resource_name, region, finding,
+       current_config, recommended_config, reason, est_monthly_savings_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const r of rows) {
+    stmt.run(accountId, r.source, r.resourceType, r.resourceId, r.resourceName ?? null, r.region ?? null,
+      r.finding ?? null, r.currentConfig ?? null, r.recommendedConfig ?? null, r.reason ?? null,
+      r.estMonthlySavingsUsd ?? null);
+  }
+  db.prepare("UPDATE aws_accounts SET last_optimizer_capture_at = datetime('now'), co_enrollment = ? WHERE id = ?")
+    .run(coEnrollment, accountId);
+});
+
 async function collectVpc(account) {
   const [vpcs, subnets, natGateways, securityGroups, internetGateways] = await Promise.all([
     degradeGracefully(account, 'VPC', () => awsApi.fetchVpcs(account), []),
@@ -609,6 +740,17 @@ async function pollAccount(account) {
       s3Rows = [];
     }
 
+    if (needsDaily(account.last_optimizer_capture_at)) {
+      try {
+        const co = await collectComputeOptimizer(account);
+        const heuristics = computeHeuristicRecommendations(account.id, elected);
+        const rows = [...co.rows.map((r) => ({ ...r, source: 'compute-optimizer' })), ...heuristics];
+        storeOptimizer(account.id, co.status, rows);
+      } catch (err) {
+        logger.warn(`[AwsPoller] ${account.name}: Optimizer capture failed: ${safeMsg(err)}`);
+      }
+    }
+
     appendMetricsHistory(account.id, { ec2, lightsail, ecs, s3Rows });
 
     db.prepare(`
@@ -647,4 +789,5 @@ module.exports = {
   isElected, cleanupNonElectedGlobalRows,
   upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType,
   getHealthLastCheckedAt, HEALTH_SERVICES,
+  collectComputeOptimizer, computeHeuristicRecommendations, storeOptimizer,
 };

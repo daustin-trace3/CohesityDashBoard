@@ -9,7 +9,7 @@ const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const { setSetting } = require('../services/settings');
 const awsApi = require('../services/awsApi');
-const { awsPoller, getHealthLastCheckedAt, HEALTH_SERVICES } = require('../services/awsPoller');
+const { awsPoller, getHealthLastCheckedAt, HEALTH_SERVICES, isElected } = require('../services/awsPoller');
 const { costSpikePct, rdsStorageWarnPct, computeIssues } = require('../services/awsIssues');
 const awsAdvisor = require('../services/advisors/awsAdvisor');
 
@@ -146,7 +146,7 @@ router.post('/accounts/:id/refresh', [param('id').isInt().toInt()], validate, as
 
 // ── Probe (blind-build fix loop) ─────────────────────────────────────────────
 
-const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost', 'rds', 'lambda', 'dynamo', 'ecr', 'vpc'];
+const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost', 'rds', 'lambda', 'dynamo', 'ecr', 'vpc', 'optimizer'];
 
 function truncate(raw) {
   if (Array.isArray(raw)) return { items: raw.slice(0, 2), _count: raw.length };
@@ -236,6 +236,12 @@ router.get('/accounts/:id/probe', [
         const vpcs = await awsApi.fetchVpcs(row);
         const subnets = await awsApi.fetchSubnets(row);
         raw = { vpcs, subnets };
+        break;
+      }
+      case 'optimizer': {
+        const enrollment = await awsApi.fetchCoEnrollmentStatus(row);
+        const ec2Recommendations = enrollment.status === 'Active' ? await awsApi.fetchCoEc2Recommendations(row) : [];
+        raw = { enrollment, ec2Recommendations };
         break;
       }
       default:
@@ -840,6 +846,61 @@ router.get('/vpc', (req, res, next) => {
         availableIps: r.available_ips, public: !!r.public, account: r.account_name,
       })),
     });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/optimizer?accountId= — Compute Optimizer + heuristic recommendations, savings desc. */
+router.get('/optimizer', [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const accountId = req.query.accountId;
+    const acctSql = accountId ? 'AND o.account_id = ?' : '';
+    const acctArg = accountId ? [accountId] : [];
+    const rows = db.prepare(`
+      SELECT o.*, a.name AS account_name FROM aws_optimizer_recommendations o
+      JOIN aws_accounts a ON a.id = o.account_id
+      WHERE 1=1 ${acctSql}
+      ORDER BY (o.est_monthly_savings_usd IS NULL) ASC, o.est_monthly_savings_usd DESC
+    `).all(...acctArg);
+
+    const accounts = db.prepare('SELECT * FROM aws_accounts').all();
+    const electedRow = accounts.find((a) => isElected(a));
+
+    const totalsRow = db.prepare(`
+      SELECT COUNT(*) AS n, SUM(est_monthly_savings_usd) AS s FROM aws_optimizer_recommendations o
+      WHERE 1=1 ${acctSql}
+    `).get(...acctArg);
+    const lastCaptureRow = accountId
+      ? db.prepare('SELECT last_optimizer_capture_at AS c FROM aws_accounts WHERE id = ?').get(accountId)
+      : db.prepare('SELECT MAX(last_optimizer_capture_at) AS c FROM aws_accounts').get();
+
+    res.json({
+      totals: {
+        count: totalsRow.n || 0,
+        estMonthlySavingsUsd: totalsRow.s || 0,
+        coEnrollment: electedRow?.co_enrollment ?? null,
+        lastCapture: lastCaptureRow?.c ?? null,
+      },
+      recommendations: rows.map((r) => ({
+        source: r.source, resourceType: r.resource_type, resourceId: r.resource_id, resourceName: r.resource_name,
+        region: r.region, finding: r.finding, currentConfig: r.current_config, recommendedConfig: r.recommended_config,
+        reason: r.reason, estMonthlySavingsUsd: r.est_monthly_savings_usd, account: r.account_name,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/aws/optimizer/refresh?accountId= — clear the daily gate + trigger a re-poll now. */
+router.post('/optimizer/refresh', [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const accountId = req.query.accountId;
+    const rows = accountId
+      ? db.prepare('SELECT * FROM aws_accounts WHERE id = ?').all(accountId)
+      : db.prepare('SELECT * FROM aws_accounts').all();
+    for (const row of rows) {
+      db.prepare("UPDATE aws_accounts SET last_optimizer_capture_at = NULL WHERE id = ?").run(row.id);
+      awsPoller.trigger(row).catch(() => {});
+    }
+    res.status(202).json({ ok: true });
   } catch (err) { next(err); }
 });
 

@@ -368,4 +368,32 @@ module.exports = [
       `);
     },
   },
+  {
+    // Round 5: Optimizer page (Compute Optimizer + local heuristics).
+    version: 5,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_optimizer_recommendations (
+          id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id             INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          source                 TEXT NOT NULL,
+          resource_type          TEXT NOT NULL,
+          resource_id            TEXT NOT NULL,
+          resource_name          TEXT,
+          region                 TEXT,
+          finding                TEXT,
+          current_config         TEXT,
+          recommended_config     TEXT,
+          reason                 TEXT,
+          est_monthly_savings_usd REAL,
+          captured_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, source, resource_type, resource_id, finding)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_optimizer_account ON aws_optimizer_recommendations(account_id);
+      `);
+      const cols = db.prepare("PRAGMA table_info('aws_accounts')").all().map((c) => c.name);
+      if (!cols.includes('last_optimizer_capture_at')) db.exec('ALTER TABLE aws_accounts ADD COLUMN last_optimizer_capture_at DATETIME');
+      if (!cols.includes('co_enrollment')) db.exec('ALTER TABLE aws_accounts ADD COLUMN co_enrollment TEXT');
+    },
+  },
 ];

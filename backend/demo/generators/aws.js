@@ -108,6 +108,19 @@ const INSTANCE_TYPE_COSTS = [
 ];
 const COST_INSTANCE_TYPE_DAYS = 45;
 
+const OPTIMIZER_RECOMMENDATIONS = [
+  { source: 'compute-optimizer', resourceType: 'ec2', resourceId: 'i-0aaa4444demo04', resourceName: 'app-02', region: 'us-east-2', finding: 'Overprovisioned', currentConfig: 'm5.xlarge', recommendedConfig: 'm5.large', reason: 'CPU and memory utilization consistently underused over the last 14 days', savingsUsd: 45.00 },
+  { source: 'compute-optimizer', resourceType: 'ec2', resourceId: 'i-0aaa8888demo08', resourceName: 'jenkins-ci', region: 'us-east-2', finding: 'Overprovisioned', currentConfig: 't3.large', recommendedConfig: 't3.medium', reason: 'CPU utilization consistently underused over the last 14 days', savingsUsd: 15.50 },
+  { source: 'compute-optimizer', resourceType: 'ebs', resourceId: 'vol-0bbb5555demo05', resourceName: 'vol-0bbb5555demo05', region: 'us-east-2', finding: 'NotOptimized', currentConfig: 'io2, 500 GiB', recommendedConfig: 'gp3, 500 GiB', reason: 'Provisioned IOPS exceed observed usage', savingsUsd: 62.00 },
+  { source: 'compute-optimizer', resourceType: 'lambda', resourceId: 'demo-nightly-etl', resourceName: 'demo-nightly-etl', region: 'us-east-2', finding: 'Overprovisioned', currentConfig: '1024 MB', recommendedConfig: '512 MB', reason: 'Memory allocation exceeds peak usage', savingsUsd: 3.20 },
+  { source: 'compute-optimizer', resourceType: 'ecs', resourceId: 'prod-cluster/worker-service', resourceName: 'worker-service', region: 'us-east-2', finding: 'Underprovisioned', currentConfig: '0.5 vCPU / 1 GB', recommendedConfig: '1 vCPU / 2 GB', reason: 'CPU utilization consistently above target during peak', savingsUsd: null },
+  { source: 'heuristic', resourceType: 'ebs', resourceId: 'vol-0bbb9999demo09', resourceName: 'vol-0bbb9999demo09', region: 'us-east-2', finding: 'gp2-to-gp3', currentConfig: 'gp2, 100 GiB', recommendedConfig: 'gp3', reason: 'gp3 is cheaper and faster than gp2 at the same size', savingsUsd: 2.00 },
+  { source: 'heuristic', resourceType: 'ebs', resourceId: 'vol-0bbb8888demo08', resourceName: 'vol-0bbb8888demo08', region: 'us-east-2', finding: 'ebs-unattached', currentConfig: 'gp3, 20 GiB, available', recommendedConfig: 'delete or snapshot-and-delete', reason: 'Volume has been unattached', savingsUsd: 1.60 },
+  { source: 'heuristic', resourceType: 'ebs', resourceId: 'vol-0bbba000demo10', resourceName: 'vol-0bbba000demo10', region: 'us-east-2', finding: 'ebs-unattached', currentConfig: 'gp3, 8 GiB, available', recommendedConfig: 'delete or snapshot-and-delete', reason: 'Volume has been unattached', savingsUsd: 0.64 },
+  { source: 'heuristic', resourceType: 'ec2', resourceId: 'i-0aaa6666demo06', resourceName: 'batch-worker-01', region: 'us-east-2', finding: 'stopped-ec2-ebs', currentConfig: 'stopped, 1 attached volume', recommendedConfig: 'terminate or snapshot-and-delete attached volumes', reason: 'stopped instance still pays for attached EBS', savingsUsd: 4.00 },
+  { source: 'heuristic', resourceType: 'vpc', resourceId: 'vpc-0demo1111prod', resourceName: 'demo-prod-vpc', region: 'us-east-2', finding: 'nat-gateway-consolidation', currentConfig: '2 NAT gateways', recommendedConfig: '1 NAT gateway', reason: 'multiple NAT gateways ~$32.85/mo each', savingsUsd: 32.85 },
+];
+
 const HEALTH_EVENTS = [
   { feed: 'ec2-us-east-2', service: 'ec2', region: 'us-east-2', title: 'Increased API error rates for EC2 in US-EAST-2', summary: 'Between 08:00 and 08:45 UTC, some customers experienced increased error rates for EC2 API calls. The issue has been resolved.', hoursAgo: 5 },
   { feed: 's3-us-east-2', service: 's3', region: 'us-east-2', title: 'Informational message about Amazon S3', summary: 'We are investigating increased request latencies for a subset of S3 requests in the US-EAST-2 Region.', hoursAgo: 72 },
@@ -166,13 +179,15 @@ function seedAws(db, { now, encrypt }) {
 
   const insertAccount = db.prepare(`
     INSERT INTO aws_accounts (name, access_key_id, encrypted_credentials, region, polling_interval_minutes,
-      last_poll_status, last_poll_error, last_poll_at, last_cost_capture_at, last_s3_capture_at, created_at, updated_at)
+      last_poll_status, last_poll_error, last_poll_at, last_cost_capture_at, last_s3_capture_at,
+      last_optimizer_capture_at, co_enrollment, created_at, updated_at)
     VALUES (?, ?, ?, 'us-east-2', 10, 'success', NULL,
-      datetime('now', ?), datetime('now', ?), datetime('now', ?), datetime('now', '-400 days'), datetime('now', '-4 minutes'))
+      datetime('now', ?), datetime('now', ?), datetime('now', ?), datetime('now', ?), ?,
+      datetime('now', '-400 days'), datetime('now', '-4 minutes'))
   `);
   insertAccount.run(
     'Demo AWS', 'AKIADEMO0000000000EX', encrypt(JSON.stringify({ secretAccessKey: 'demo-not-real-secret' })),
-    '-4 minutes', '-6 hours', '-6 hours'
+    '-4 minutes', '-6 hours', '-6 hours', '-3 hours', 'Active'
   );
   const accountId = db.prepare("SELECT id FROM aws_accounts WHERE name = 'Demo AWS'").get().id;
 
@@ -292,6 +307,17 @@ function seedAws(db, { now, encrypt }) {
       subnetRows++;
     }
   }
+
+  const insertOptimizer = db.prepare(`
+    INSERT INTO aws_optimizer_recommendations (account_id, source, resource_type, resource_id, resource_name,
+      region, finding, current_config, recommended_config, reason, est_monthly_savings_usd, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-3 hours'))
+  `);
+  for (const r of OPTIMIZER_RECOMMENDATIONS) {
+    insertOptimizer.run(accountId, r.source, r.resourceType, r.resourceId, r.resourceName,
+      r.region, r.finding, r.currentConfig, r.recommendedConfig, r.reason, r.savingsUsd);
+  }
+  const optimizerRows = OPTIMIZER_RECOMMENDATIONS.length;
 
   // ── Cost Explorer: 45 days x 6 services, yesterday ~40% above day-before ──
   const insertCost = db.prepare(`
@@ -533,6 +559,7 @@ function seedAws(db, { now, encrypt }) {
     costUsageRows,
     costInstanceTypeRows,
     healthRows,
+    optimizerRows,
   };
 }
 

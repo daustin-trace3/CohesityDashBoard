@@ -27,6 +27,10 @@ const {
   DynamoDBClient, ListTablesCommand, DescribeTableCommand,
 } = require('@aws-sdk/client-dynamodb');
 const { ECRClient, DescribeRepositoriesCommand, DescribeImagesCommand } = require('@aws-sdk/client-ecr');
+const {
+  ComputeOptimizerClient, GetEnrollmentStatusCommand, GetEC2InstanceRecommendationsCommand,
+  GetEBSVolumeRecommendationsCommand, GetLambdaFunctionRecommendationsCommand, GetECSServiceRecommendationsCommand,
+} = require('@aws-sdk/client-compute-optimizer');
 const axios = require('axios');
 const { XMLParser } = require('fast-xml-parser');
 const { decrypt } = require('./encryption');
@@ -76,6 +80,7 @@ const rdsClient = (account) => new RDSClient(clientConfig(account));
 const lambdaClient = (account) => new LambdaClient(clientConfig(account));
 const dynamoClient = (account) => new DynamoDBClient(clientConfig(account));
 const ecrClient = (account) => new ECRClient(clientConfig(account));
+const computeOptimizerClient = (account) => new ComputeOptimizerClient(clientConfig(account));
 
 // ── EC2 ──────────────────────────────────────────────────────────────────────
 
@@ -907,6 +912,130 @@ async function fetchInternetGateways(account) {
   return gateways;
 }
 
+// ── Compute Optimizer ────────────────────────────────────────────────────────
+
+/** ARN tail (the part after the final '/' or ':') — used as resource_id. */
+const arnTail = (arn) => {
+  if (!arn) return null;
+  const s = String(arn);
+  const slash = s.lastIndexOf('/');
+  if (slash >= 0) return s.slice(slash + 1);
+  const colon = s.lastIndexOf(':');
+  return colon >= 0 ? s.slice(colon + 1) : s;
+};
+
+/** Region segment of an ARN (arn:aws:SERVICE:REGION:ACCOUNT:...), or null. */
+const arnRegion = (arn) => (String(arn || '').split(':')[3] || null);
+
+/** { status, memberAccountsEnrolled } from GetEnrollmentStatus — never throws (caller wraps in degradeGracefully). */
+async function fetchCoEnrollmentStatus(account) {
+  const client = computeOptimizerClient(account);
+  const resp = await client.send(new GetEnrollmentStatusCommand({}));
+  return { status: resp?.status || null, memberAccountsEnrolled: !!resp?.memberAccountsEnrolled };
+}
+
+async function fetchCoEc2Recommendations(account) {
+  const client = computeOptimizerClient(account);
+  const out = [];
+  let nextToken;
+  let pages = 0;
+  do {
+    const resp = await client.send(new GetEC2InstanceRecommendationsCommand({ nextToken }));
+    for (const r of resp?.instanceRecommendations || []) {
+      const top = (r.recommendationOptions || []).find((o) => o.rank === 1) || r.recommendationOptions?.[0];
+      out.push({
+        resourceId: arnTail(r.instanceArn),
+        region: arnRegion(r.instanceArn),
+        finding: r.finding || null,
+        currentConfig: r.currentInstanceType || null,
+        recommendedConfig: top?.instanceType || null,
+        estMonthlySavingsUsd: top?.savingsOpportunity?.estimatedMonthlySavings?.value ?? null,
+        reason: (r.findingReasonCodes || []).join(', ') || null,
+      });
+    }
+    nextToken = resp?.nextToken;
+    pages += 1;
+  } while (nextToken && pages < 3);
+  return out;
+}
+
+async function fetchCoEbsRecommendations(account) {
+  const client = computeOptimizerClient(account);
+  const out = [];
+  let nextToken;
+  let pages = 0;
+  do {
+    const resp = await client.send(new GetEBSVolumeRecommendationsCommand({ nextToken }));
+    for (const r of resp?.volumeRecommendations || []) {
+      const top = (r.volumeRecommendationOptions || []).find((o) => o.rank === 1) || r.volumeRecommendationOptions?.[0];
+      const cur = r.currentConfiguration;
+      out.push({
+        resourceId: arnTail(r.volumeArn),
+        region: arnRegion(r.volumeArn),
+        finding: r.finding || null,
+        currentConfig: cur ? `${cur.volumeType || ''} ${cur.volumeSize ?? ''}GiB`.trim() : null,
+        recommendedConfig: top?.configuration ? `${top.configuration.volumeType || ''} ${top.configuration.volumeSize ?? ''}GiB`.trim() : null,
+        estMonthlySavingsUsd: top?.savingsOpportunity?.estimatedMonthlySavings?.value ?? null,
+        reason: null,
+      });
+    }
+    nextToken = resp?.nextToken;
+    pages += 1;
+  } while (nextToken && pages < 3);
+  return out;
+}
+
+async function fetchCoLambdaRecommendations(account) {
+  const client = computeOptimizerClient(account);
+  const out = [];
+  let nextToken;
+  let pages = 0;
+  do {
+    const resp = await client.send(new GetLambdaFunctionRecommendationsCommand({ nextToken }));
+    for (const r of resp?.lambdaFunctionRecommendations || []) {
+      const top = (r.memorySizeRecommendationOptions || []).find((o) => o.rank === 1) || r.memorySizeRecommendationOptions?.[0];
+      out.push({
+        resourceId: arnTail(r.functionArn),
+        region: arnRegion(r.functionArn),
+        finding: r.finding || null,
+        currentConfig: r.currentMemorySize != null ? `${r.currentMemorySize}MB` : null,
+        recommendedConfig: top?.memorySize != null ? `${top.memorySize}MB` : null,
+        estMonthlySavingsUsd: top?.savingsOpportunity?.estimatedMonthlySavings?.value ?? null,
+        reason: (r.findingReasonCodes || []).join(', ') || null,
+      });
+    }
+    nextToken = resp?.nextToken;
+    pages += 1;
+  } while (nextToken && pages < 3);
+  return out;
+}
+
+async function fetchCoEcsRecommendations(account) {
+  const client = computeOptimizerClient(account);
+  const out = [];
+  let nextToken;
+  let pages = 0;
+  do {
+    const resp = await client.send(new GetECSServiceRecommendationsCommand({ nextToken }));
+    for (const r of resp?.ecsServiceRecommendations || []) {
+      const top = (r.serviceRecommendationOptions || []).find((o) => o.rank === 1) || r.serviceRecommendationOptions?.[0];
+      const cur = r.currentServiceConfiguration;
+      out.push({
+        resourceId: arnTail(r.serviceArn),
+        region: arnRegion(r.serviceArn),
+        finding: r.finding || null,
+        currentConfig: cur ? `${cur.cpu ?? ''} vCPU / ${cur.memory ?? ''}MB`.trim() : null,
+        recommendedConfig: top ? `${top.cpu ?? ''} vCPU / ${top.memory ?? ''}MB`.trim() : null,
+        estMonthlySavingsUsd: top?.savingsOpportunity?.estimatedMonthlySavings?.value ?? null,
+        reason: (r.findingReasonCodes || []).join(', ') || null,
+      });
+    }
+    nextToken = resp?.nextToken;
+    pages += 1;
+  } while (nextToken && pages < 3);
+  return out;
+}
+
 // ── Test connection ──────────────────────────────────────────────────────────
 
 /** Validate a saved or candidate account. Never throws. */
@@ -938,5 +1067,8 @@ module.exports = {
   fetchDynamoTableNames, fetchDynamoTable,
   fetchEcrRepos, fetchEcrRepoImages,
   fetchVpcs, fetchSubnets, fetchNatGateways, fetchSecurityGroups, fetchInternetGateways,
+  computeOptimizerClient,
+  fetchCoEnrollmentStatus, fetchCoEc2Recommendations, fetchCoEbsRecommendations,
+  fetchCoLambdaRecommendations, fetchCoEcsRecommendations,
   testConnection,
 };

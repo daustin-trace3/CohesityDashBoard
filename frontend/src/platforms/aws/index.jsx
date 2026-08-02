@@ -1,8 +1,9 @@
 import { lazy } from 'react';
-import { Gauge, DollarSign, Bell, Server, Boxes, Zap, Container, Package, Database, Table2, Network, BrainCircuit, Settings, Sparkles, ShieldCheck as PrivacyIcon } from 'lucide-react';
+import { Gauge, DollarSign, Bell, Server, Boxes, Zap, Container, Package, Database, Table2, Network, BrainCircuit, Settings, Sparkles, Wrench, ShieldCheck as PrivacyIcon } from 'lucide-react';
 
 const AwsOverviewPage = lazy(() => import('../../pages/aws/AwsOverviewPage'));
 const AwsCostPage = lazy(() => import('../../pages/aws/AwsCostPage'));
+const AwsOptimizerPage = lazy(() => import('../../pages/aws/AwsOptimizerPage'));
 const AwsAlertsPage = lazy(() => import('../../pages/aws/AwsAlertsPage'));
 const AwsAdvisorPage = lazy(() => import('../../pages/aws/AwsAdvisorPage'));
 const AwsEc2Page = lazy(() => import('../../pages/aws/AwsEc2Page'));
@@ -26,6 +27,7 @@ const navGroups = [
     items: [
       { label: 'Overview', route: '/aws', icon: Gauge, isActive: (p) => p === '/aws' },
       { label: 'Cost', route: '/aws/cost', icon: DollarSign, isActive: (p) => p.startsWith('/aws/cost') },
+      { label: 'Optimizer', route: '/aws/optimizer', icon: Wrench, isActive: (p) => p.startsWith('/aws/optimizer') },
       { label: 'AI Advisor', route: '/aws/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/aws/advisor'), requiresAi: true },
       { label: 'Alerts', route: '/aws/alerts', icon: Bell, isActive: (p) => p.startsWith('/aws/alerts') },
     ],
@@ -94,6 +96,7 @@ export default {
   routes: [
     { path: 'aws', Component: AwsOverviewPage },
     { path: 'aws/cost', Component: AwsCostPage },
+    { path: 'aws/optimizer', Component: AwsOptimizerPage },
     { path: 'aws/advisor', Component: AwsAdvisorPage },
     { path: 'aws/alerts', Component: AwsAlertsPage },
     { path: 'aws/ec2', Component: AwsEc2Page },

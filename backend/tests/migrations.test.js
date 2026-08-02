@@ -222,6 +222,7 @@ const NEW_TABLES = [
   'aws_ecr_repos', 'aws_vpcs', 'aws_subnets',
   'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_ai_reports',
+  'aws_optimizer_recommendations',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.
