@@ -30,6 +30,7 @@ export default function AwsCostPage() {
   const [accountId, setAccountId] = useState('');
   const [usageTypes, setUsageTypes] = useState(null);
   const [instanceTypes, setInstanceTypes] = useState(null);
+  const [selectedDay, setSelectedDay] = useState('');
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   useEffect(() => {
@@ -38,18 +39,29 @@ export default function AwsCostPage() {
 
   const load = useCallback(() => {
     const params = accountId ? { days, accountId } : { days };
+    const usageParams = selectedDay ? { ...params, day: selectedDay } : params;
     return Promise.all([
       client.get('/aws/costs', { params }).then(({ data }) => setData(data)),
-      client.get('/aws/costs/usage-types', { params }).then(({ data }) => setUsageTypes(data?.rows || [])).catch(() => setUsageTypes([])),
+      client.get('/aws/costs/usage-types', { params: usageParams }).then(({ data }) => setUsageTypes(data?.rows || [])).catch(() => setUsageTypes([])),
       client.get('/aws/costs/instance-types', { params }).then(({ data }) => setInstanceTypes(data?.rows || [])).catch(() => setInstanceTypes([])),
     ]).then(() => setLastRefreshed(new Date()))
       .catch(() => { setData({ days: [], byService: [] }); toast({ type: 'error', title: 'Failed to load AWS costs' }); });
-  }, [toast, days, accountId]);
+  }, [toast, days, accountId, selectedDay]);
 
   useEffect(() => { load(); }, [load]);
 
   const byDay = data?.days || [];
   const byService = data?.byService || [];
+
+  // Day filter: service totals for one selected day, computed from the daily series.
+  const serviceRows = useMemo(() => {
+    if (!selectedDay) return byService.map((s) => ({ service: s.service, usd: s.mtdUsd }));
+    const day = byDay.find((d) => d.day === selectedDay);
+    return (day?.services || [])
+      .map((s) => ({ service: s.service, usd: s.amountUsd || 0 }))
+      .sort((a, b) => b.usd - a.usd);
+  }, [selectedDay, byService, byDay]);
+  const fmtDayLabel = (d) => `${Number(String(d).slice(5, 7))}/${Number(String(d).slice(8, 10))}`;
 
   const dailyBar = useMemo(() => {
     const topServices = byService.slice(0, 6).map((s) => s.service);
@@ -82,6 +94,14 @@ export default function AwsCostPage() {
           <option value="">All accounts</option>
           {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
+        <select
+          value={selectedDay}
+          onChange={(e) => setSelectedDay(e.target.value)}
+          className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
+        >
+          <option value="">All days</option>
+          {[...byDay].reverse().map((d) => <option key={d.day} value={d.day}>{fmtDayLabel(d.day)}</option>)}
+        </select>
         <div className="flex items-center gap-1 mr-2">
           {[7, 30, 90].map((d) => (
             <button key={d} onClick={() => setDays(d)}
@@ -107,28 +127,45 @@ export default function AwsCostPage() {
         ) : byDay.length === 0 ? (
           <div className="text-sm text-ink-muted py-8 text-center">No cost data yet.</div>
         ) : (
-          <div className="h-64"><Bar data={dailyBar} options={chartOpts} /></div>
+          <div className="h-64">
+            <Bar data={dailyBar} options={{
+              ...chartOpts,
+              onClick: (evt, elements) => {
+                if (elements?.length) {
+                  const day = byDay[elements[0].index]?.day;
+                  if (day) setSelectedDay((cur) => (cur === day ? '' : day));
+                }
+              },
+            }} />
+          </div>
         )}
       </div>
 
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">By Service (MTD)</p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm font-semibold text-ink">By Service {selectedDay ? `(${fmtDayLabel(selectedDay)})` : '(MTD)'}</p>
+          {selectedDay && (
+            <button onClick={() => setSelectedDay('')}
+              className="text-[11px] text-brand hover:underline cursor-pointer">Clear day filter</button>
+          )}
+        </div>
         {data == null ? (
           <LoadingPanel label="Loading…" height={140} />
-        ) : byService.length === 0 ? (
-          <div className="text-sm text-ink-muted py-6 text-center">No cost data yet.</div>
+        ) : serviceRows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No cost data{selectedDay ? ' for this day' : ' yet'}.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
                 <th className="py-2 pr-3">Service</th>
-                <th className="py-2 pr-3 text-right">MTD Spend</th>
+                <th className="py-2 pr-3 text-right">{selectedDay ? 'Day Spend' : 'MTD Spend'}</th>
               </tr></thead>
               <tbody>
-                {byService.map((s) => (
+                {serviceRows.map((s) => (
                   <tr key={s.service} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{s.service}</td>
-                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(s.mtdUsd)}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(s.usd)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -137,8 +174,8 @@ export default function AwsCostPage() {
         )}
       </div>
 
-      <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink">Usage Type Breakdown</p>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink">Usage Type Breakdown {selectedDay ? `(${fmtDayLabel(selectedDay)})` : ''}</p>
         <p className="text-[11px] text-ink-muted mb-3">Decomposes bundled service lines like "EC2 - Other" into billable usage types</p>
         {usageTypes == null ? (
           <LoadingPanel label="Loading…" height={140} />
@@ -162,6 +199,7 @@ export default function AwsCostPage() {
             </table>
           </div>
         )}
+      </div>
       </div>
 
       <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>

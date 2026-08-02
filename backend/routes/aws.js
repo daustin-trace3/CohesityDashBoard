@@ -629,17 +629,20 @@ router.get('/costs', [
 router.get('/costs/usage-types', [
   query('days').optional().isInt().toInt(),
   query('accountId').optional().isInt().toInt(),
+  query('day').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
 ], validate, (req, res, next) => {
   try {
     const days = Math.min(90, Math.max(7, req.query.days || 30));
     const accountId = req.query.accountId;
     const acctSql = accountId ? 'AND account_id = ?' : '';
     const acctArg = accountId ? [accountId] : [];
+    const daySql = req.query.day ? 'AND day = ?' : "AND day >= date('now', ?)";
+    const dayArg = req.query.day ? [req.query.day] : [`-${days} days`];
     const rows = db.prepare(`
       SELECT usage_type, SUM(amount_usd) AS total_usd FROM aws_cost_usage_daily
-      WHERE day >= date('now', ?) ${acctSql}
+      WHERE 1=1 ${daySql} ${acctSql}
       GROUP BY usage_type ORDER BY total_usd DESC LIMIT 40
-    `).all(`-${days} days`, ...acctArg);
+    `).all(...dayArg, ...acctArg);
     res.json({ rows: rows.map((r) => ({ usageType: r.usage_type, totalUsd: r.total_usd || 0 })) });
   } catch (err) { next(err); }
 });
