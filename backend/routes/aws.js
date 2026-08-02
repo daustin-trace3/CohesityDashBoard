@@ -9,7 +9,7 @@ const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const { setSetting } = require('../services/settings');
 const awsApi = require('../services/awsApi');
-const { awsPoller, getHealthLastCheckedAt } = require('../services/awsPoller');
+const { awsPoller, getHealthLastCheckedAt, HEALTH_SERVICES } = require('../services/awsPoller');
 const { costSpikePct, rdsStorageWarnPct, computeIssues } = require('../services/awsIssues');
 
 const router = express.Router();
@@ -278,9 +278,34 @@ router.get('/health', (req, res, next) => {
     const recentEvents = db.prepare(`
       SELECT COUNT(*) AS n FROM aws_health_events WHERE published_at >= datetime('now', '-24 hours')
     `).get().n || 0;
+    const regions = db.prepare('SELECT DISTINCT region FROM aws_accounts ORDER BY region').all().map((r) => r.region);
+    const active = db.prepare(`
+      SELECT service, region, MAX(published_at) AS last_event_at,
+             (SELECT title FROM aws_health_events e2
+              WHERE e2.service = e.service AND e2.region = e.region
+              ORDER BY e2.published_at DESC LIMIT 1) AS title
+      FROM aws_health_events e
+      WHERE published_at >= datetime('now', '-24 hours')
+      GROUP BY service, region
+    `).all();
+    const activeMap = new Map(active.map((a) => [`${a.service}|${a.region}`, a]));
+    const matrix = HEALTH_SERVICES.map((service) => {
+      const regionCells = regions.map((region) => {
+        const ev = activeMap.get(`${service}|${region}`);
+        return {
+          region,
+          status: ev ? 'event' : 'ok',
+          title: ev ? ev.title : null,
+          publishedAt: ev ? ev.last_event_at : null,
+        };
+      });
+      return { service, degraded: regionCells.some((c) => c.status === 'event'), regions: regionCells };
+    }).sort((a, b) => (b.degraded - a.degraded) || a.service.localeCompare(b.service));
     res.json({
       operational: recentEvents === 0,
       lastChecked: getHealthLastCheckedAt(),
+      regions,
+      matrix,
       events: rows.map((r) => ({
         service: r.service, region: r.region, title: r.title, summary: r.summary, publishedAt: r.published_at,
       })),

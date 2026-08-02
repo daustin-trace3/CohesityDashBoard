@@ -646,5 +646,5 @@ module.exports = {
   initAwsPoller, awsPoller, pollAccount,
   isElected, cleanupNonElectedGlobalRows,
   upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType,
-  getHealthLastCheckedAt,
+  getHealthLastCheckedAt, HEALTH_SERVICES,
 };

@@ -6,6 +6,10 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtNum, fmtBytes, fmtUsd, severityTone, dateAgo } from './helpers';
 
+const HEALTH_SERVICE_LABELS = { ec2: 'EC2', s3: 'S3', rds: 'RDS', lambda: 'Lambda', dynamodb: 'DynamoDB', ecs: 'ECS' };
+// 'us-east-1' -> 'USE1'
+const shortRegion = (r) => r.replace(/^([a-z]{2})-([a-z]+)-(\d+)$/, (m, geo, dir, n) => `${geo}${dir[0]}${n}`.toUpperCase()) || r;
+
 export default function AwsOverviewPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -203,24 +207,48 @@ export default function AwsOverviewPage() {
           <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Activity size={15} className="text-brand" /> AWS Service Health</p>
           {health == null ? (
             <LoadingPanel label="Loading…" height={140} />
-          ) : health.operational && healthEvents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
-              <span className="inline-block h-2.5 w-2.5 rounded-full bg-status-ok" style={{ animation: 'orb-pulse 2.5s ease-in-out infinite' }} />
-              <p className="text-sm text-status-ok font-medium">All monitored services operational</p>
-            </div>
           ) : (
             <div className="flex flex-col gap-1.5 max-h-[45vh] overflow-y-auto pr-1">
-              {healthEvents.slice(0, 8).map((e, idx) => (
-                <div key={idx} className="flex items-start gap-2.5 bg-surface-overlay rounded-lg px-3 py-2">
-                  <Badge tone="warn">{e.service}</Badge>
-                  <div className="min-w-0">
-                    <p className="text-xs text-ink leading-relaxed">{e.title}</p>
-                    <p className="text-[10px] text-ink-faint">{e.region} · {dateAgo(e.publishedAt)}</p>
-                  </div>
+              {(health.regions || []).length > 0 && (
+                <div className="flex items-center gap-2 px-3">
+                  <span className="flex-1" />
+                  {health.regions.map((r) => (
+                    <span key={r} className="w-9 text-center text-[9px] text-ink-faint font-semibold uppercase" title={r}>
+                      {shortRegion(r)}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {(health.matrix || []).map((row) => (
+                <div key={row.service}
+                  className={`flex items-center gap-2 rounded-lg px-3 py-1.5 ${row.degraded ? 'bg-status-crit/10' : 'bg-surface-overlay'}`}>
+                  <span className="flex-1 text-xs font-medium text-ink">{HEALTH_SERVICE_LABELS[row.service] || row.service}</span>
+                  {row.regions.map((c) => (
+                    <span key={c.region} className="w-9 flex justify-center"
+                      title={`${c.region}: ${c.status === 'event' ? (c.title || 'recent event') : 'operational'}`}>
+                      <span className={`h-2.5 w-2.5 rounded-full ${c.status === 'event' ? 'bg-status-crit' : 'bg-status-ok'}`}
+                        style={c.status === 'event' ? { animation: 'orb-pulse 1.5s ease-in-out infinite' } : undefined} />
+                    </span>
+                  ))}
                 </div>
               ))}
-              {healthEvents.length === 0 && (
-                <div className="text-sm text-ink-muted py-6 text-center">No recent events.</div>
+              {health.operational && healthEvents.length === 0 ? (
+                <p className="text-[11px] text-status-ok flex items-center gap-1.5 px-3 pt-1">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-status-ok" /> All monitored services operational
+                </p>
+              ) : (
+                <>
+                  <p className="text-[10px] text-ink-faint font-semibold uppercase px-3 pt-1.5">Recent events</p>
+                  {healthEvents.slice(0, 8).map((e, idx) => (
+                    <div key={idx} className="flex items-start gap-2.5 bg-surface-overlay rounded-lg px-3 py-2">
+                      <Badge tone="warn">{e.service}</Badge>
+                      <div className="min-w-0">
+                        <p className="text-xs text-ink leading-relaxed">{e.title}</p>
+                        <p className="text-[10px] text-ink-faint">{e.region} · {dateAgo(e.publishedAt)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </>
               )}
             </div>
           )}
