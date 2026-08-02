@@ -228,11 +228,12 @@ export default function AwsSettingsPage() {
           </div>
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Region</label>
-            <input value={form.region} onChange={set('region')} placeholder="us-east-2" className={inp} spellCheck={false} list="aws-regions" />
-            <datalist id="aws-regions">
-              <option value="us-east-1" /><option value="us-east-2" /><option value="us-west-1" /><option value="us-west-2" />
-              <option value="eu-west-1" /><option value="eu-central-1" /><option value="ap-southeast-1" /><option value="ap-southeast-2" />
-            </datalist>
+            <select value={form.region} onChange={set('region')} className={inp}>
+              <option value="us-east-1">us-east-1 (N. Virginia)</option>
+              <option value="us-east-2">us-east-2 (Ohio)</option>
+              <option value="us-west-1">us-west-1 (N. California)</option>
+              <option value="us-west-2">us-west-2 (Oregon)</option>
+            </select>
           </div>
         </div>
         <div className="flex items-center gap-2">
