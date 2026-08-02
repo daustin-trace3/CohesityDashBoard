@@ -37,7 +37,18 @@ async function collectEc2(account) {
 }
 
 async function collectLightsail(account) {
-  const instances = await awsApi.fetchLightsailInstances(account);
+  let instances;
+  try {
+    instances = await awsApi.fetchLightsailInstances(account);
+  } catch (err) {
+    // Lightsail has no endpoint in some regions (e.g. us-west-1) — the SDK
+    // surfaces that as a DNS ENOTFOUND. Treat as "service not offered here".
+    if (String(err.code || '').includes('ENOTFOUND') || String(err.message || '').includes('ENOTFOUND')) {
+      logger.debug(`[AwsPoller] ${account.name}: Lightsail unavailable in ${account.region}: ${safeMsg(err)}`);
+      return [];
+    }
+    throw err;
+  }
   for (const i of instances) {
     try {
       i.cpuUtil = await awsApi.fetchLightsailMetric(account, i.name);
