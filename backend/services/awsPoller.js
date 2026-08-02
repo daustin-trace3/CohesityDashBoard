@@ -5,6 +5,17 @@
 // Bedrock). Cost Explorer and S3 (each with its own CloudWatch calls) are
 // daily-gated behind last_cost_capture_at / last_s3_capture_at so we never
 // burn more than one $0.01 Cost Explorer call per ~20h.
+//
+// Fix #0 (global-collector election): Cost Explorer and S3 ListBuckets are
+// ACCOUNT-GLOBAL, not per-region, but every account row used to poll them,
+// quadrupling stored data when several rows share one credential across
+// regions (Doug's live setup: 4 regions, 1 account). Only the row with the
+// lowest id among rows sharing the same effective access key id ("elected")
+// runs Cost Explorer / S3 / their history+grouping collectors; every other
+// row self-heals by deleting its own copies each cycle instead. RDS storage
+// history and the AWS Service Health RSS feeds are unaffected (regional /
+// estate-wide respectively) and run for every account (health is additionally
+// module-level throttled to once per 15 minutes regardless of account count).
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const awsApi = require('./awsApi');
@@ -37,6 +48,117 @@ async function degradeGracefully(account, label, fn, fallback) {
     }
     throw err;
   }
+}
+
+// ── Fix #0: global-collector election ───────────────────────────────────────
+
+/** account.access_key_id || env AWS_ACCESS_KEY_ID || '' — blank key = one shared group. */
+function effectiveKeyId(account) {
+  return account.access_key_id || process.env.AWS_ACCESS_KEY_ID || '';
+}
+
+/**
+ * True when `account` is the lowest-id row among all aws_accounts rows
+ * sharing the same effective access key id (same rule expressed in SQL).
+ * The elected row is the only one allowed to run the account-global Cost
+ * Explorer / S3 collectors this cycle.
+ */
+function isElected(account) {
+  const envKey = process.env.AWS_ACCESS_KEY_ID || '';
+  const key = effectiveKeyId(account);
+  const row = db.prepare(`
+    SELECT MIN(id) AS minId FROM aws_accounts
+    WHERE COALESCE(NULLIF(access_key_id, ''), ?) = ?
+  `).get(envKey, key);
+  return (row?.minId ?? account.id) === account.id;
+}
+
+/** Idempotent self-heal for a non-elected row: clear its duplicated global-collector data. */
+function cleanupNonElectedGlobalRows(accountId) {
+  db.prepare('DELETE FROM aws_cost_daily WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_cost_usage_daily WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_cost_instance_type_daily WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_s3_buckets WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_s3_size_history WHERE account_id = ?').run(accountId);
+}
+
+const upsertS3SizeHistory = db.transaction((accountId, buckets) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_s3_size_history (account_id, bucket_name, day, size_bytes, object_count)
+    VALUES (?, ?, date('now'), ?, ?)
+    ON CONFLICT(account_id, bucket_name, day) DO UPDATE SET
+      size_bytes = excluded.size_bytes, object_count = excluded.object_count
+  `);
+  for (const b of buckets) stmt.run(accountId, b.name, b.sizeBytes, b.objectCount);
+});
+
+const upsertRdsStorageHistory = db.transaction((accountId, instances) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_rds_storage_history (account_id, db_id, day, free_storage_bytes, allocated_gb)
+    VALUES (?, ?, date('now'), ?, ?)
+    ON CONFLICT(account_id, db_id, day) DO UPDATE SET
+      free_storage_bytes = excluded.free_storage_bytes, allocated_gb = excluded.allocated_gb
+  `);
+  for (const i of instances) {
+    if (i.freeStorageBytes != null) stmt.run(accountId, i.dbId, i.freeStorageBytes, i.allocatedGb);
+  }
+});
+
+const upsertCostUsageType = db.transaction((accountId, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_cost_usage_daily (account_id, day, usage_type, amount_usd)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(account_id, day, usage_type) DO UPDATE SET amount_usd = excluded.amount_usd
+  `);
+  for (const r of rows) stmt.run(accountId, r.day, r.usageType, r.amountUsd);
+});
+
+const upsertCostInstanceType = db.transaction((accountId, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_cost_instance_type_daily (account_id, day, instance_type, amount_usd)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(account_id, day, instance_type) DO UPDATE SET amount_usd = excluded.amount_usd
+  `);
+  for (const r of rows) stmt.run(accountId, r.day, r.instanceType, r.amountUsd);
+});
+
+// ── AWS Service Health RSS (module-level, not per-account) ─────────────────
+
+const HEALTH_GATE_MS = 15 * 60 * 1000;
+const HEALTH_SERVICES = ['ec2', 's3', 'rds', 'lambda', 'dynamodb', 'ecs'];
+let lastHealthFetchAt = null;
+
+const upsertHealthEvents = db.transaction((feed, service, region, events) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_health_events (feed, service, region, title, summary, published_at, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(feed, title, published_at) DO UPDATE SET
+      summary = excluded.summary, fetched_at = datetime('now')
+  `);
+  for (const e of events) stmt.run(feed, service, region, e.title, e.summary, e.publishedAt);
+});
+
+/** ISO timestamp of the last health-RSS sweep, or null before the first one. */
+function getHealthLastCheckedAt() {
+  return lastHealthFetchAt;
+}
+
+/** Guarded module-level sweep across every distinct account region × HEALTH_SERVICES. */
+async function maybeCollectHealth() {
+  if (lastHealthFetchAt && Date.now() - new Date(lastHealthFetchAt).getTime() < HEALTH_GATE_MS) return;
+  lastHealthFetchAt = new Date().toISOString();
+  const regions = db.prepare('SELECT DISTINCT region FROM aws_accounts WHERE region IS NOT NULL').all().map((r) => r.region);
+  for (const region of regions) {
+    for (const service of HEALTH_SERVICES) {
+      try {
+        const events = await awsApi.fetchHealthRss(service, region);
+        if (events.length) upsertHealthEvents(`${service}-${region}`, service, region, events);
+      } catch (err) {
+        logger.debug(`[AwsPoller] health RSS sweep failed for ${service}-${region}: ${safeMsg(err)}`);
+      }
+    }
+  }
+  db.prepare("DELETE FROM aws_health_events WHERE fetched_at < datetime('now', '-90 days')").run();
 }
 
 async function collectEc2(account) {
@@ -421,6 +543,12 @@ function appendMetricsHistory(accountId, { ec2, lightsail, ecs, s3Rows }) {
 
 async function pollAccount(account) {
   try {
+    try {
+      await maybeCollectHealth();
+    } catch (err) {
+      logger.debug(`[AwsPoller] health RSS sweep failed: ${safeMsg(err)}`);
+    }
+
     const ec2 = await collectEc2(account);
     const lightsail = await collectLightsail(account);
     const ecs = await collectEcs(account);
@@ -431,6 +559,9 @@ async function pollAccount(account) {
     ]);
     storeR2(account.id, { rds, lambda: lambdaFns, dynamo, ecr, vpc });
 
+    upsertRdsStorageHistory(account.id, rds);
+    db.prepare("DELETE FROM aws_rds_storage_history WHERE account_id = ? AND day < date('now', '-365 days')").run(account.id);
+
     try {
       const bedrock = await collectBedrock(account);
       upsertBedrock(account.id, bedrock);
@@ -438,29 +569,44 @@ async function pollAccount(account) {
       logger.warn(`[AwsPoller] ${account.name}: Bedrock usage collection failed: ${safeMsg(err)}`);
     }
 
-    if (needsDaily(account.last_cost_capture_at)) {
-      try {
-        const cost = await awsApi.fetchCostAndUsage(account);
-        upsertCost(account.id, cost);
-        db.prepare('UPDATE aws_accounts SET last_cost_capture_at = datetime(\'now\') WHERE id = ?').run(account.id);
-      } catch (err) {
-        logger.warn(`[AwsPoller] ${account.name}: Cost Explorer capture failed: ${safeMsg(err)}`);
-      }
-    }
-
+    const elected = isElected(account);
     let s3Rows = null;
-    if (needsDaily(account.last_s3_capture_at)) {
-      try {
-        s3Rows = await collectS3(account);
-        storeS3(account.id, s3Rows);
-        db.prepare('UPDATE aws_accounts SET last_s3_capture_at = datetime(\'now\') WHERE id = ?').run(account.id);
-      } catch (err) {
-        logger.warn(`[AwsPoller] ${account.name}: S3 capture failed: ${safeMsg(err)}`);
+
+    if (elected) {
+      if (needsDaily(account.last_cost_capture_at)) {
+        try {
+          const cost = await awsApi.fetchCostAndUsage(account);
+          upsertCost(account.id, cost);
+          const usageTypeCost = await awsApi.fetchCostByUsageType(account);
+          upsertCostUsageType(account.id, usageTypeCost);
+          const instanceTypeCost = await awsApi.fetchCostByInstanceType(account);
+          upsertCostInstanceType(account.id, instanceTypeCost.filter((r) => r.instanceType && r.instanceType !== 'NoInstanceType'));
+          db.prepare('UPDATE aws_accounts SET last_cost_capture_at = datetime(\'now\') WHERE id = ?').run(account.id);
+        } catch (err) {
+          logger.warn(`[AwsPoller] ${account.name}: Cost Explorer capture failed: ${safeMsg(err)}`);
+        }
       }
-    }
-    if (!s3Rows) {
-      s3Rows = db.prepare('SELECT size_bytes FROM aws_s3_buckets WHERE account_id = ?').all(account.id)
-        .map((r) => ({ sizeBytes: r.size_bytes }));
+
+      if (needsDaily(account.last_s3_capture_at)) {
+        try {
+          s3Rows = await collectS3(account);
+          storeS3(account.id, s3Rows);
+          upsertS3SizeHistory(account.id, s3Rows);
+          db.prepare('UPDATE aws_accounts SET last_s3_capture_at = datetime(\'now\') WHERE id = ?').run(account.id);
+        } catch (err) {
+          logger.warn(`[AwsPoller] ${account.name}: S3 capture failed: ${safeMsg(err)}`);
+        }
+      }
+      if (!s3Rows) {
+        s3Rows = db.prepare('SELECT size_bytes FROM aws_s3_buckets WHERE account_id = ?').all(account.id)
+          .map((r) => ({ sizeBytes: r.size_bytes }));
+      }
+      db.prepare("DELETE FROM aws_s3_size_history WHERE account_id = ? AND day < date('now', '-365 days')").run(account.id);
+    } else {
+      // Non-elected row: another account with the same credential owns Cost
+      // Explorer / S3 this cycle — self-heal any previously duplicated data.
+      cleanupNonElectedGlobalRows(account.id);
+      s3Rows = [];
     }
 
     appendMetricsHistory(account.id, { ec2, lightsail, ecs, s3Rows });
@@ -496,4 +642,9 @@ function initAwsPoller() {
   return awsPoller;
 }
 
-module.exports = { initAwsPoller, awsPoller, pollAccount };
+module.exports = {
+  initAwsPoller, awsPoller, pollAccount,
+  isElected, cleanupNonElectedGlobalRows,
+  upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType,
+  getHealthLastCheckedAt,
+};

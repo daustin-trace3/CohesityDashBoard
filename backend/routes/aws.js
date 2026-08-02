@@ -9,7 +9,7 @@ const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const { setSetting } = require('../services/settings');
 const awsApi = require('../services/awsApi');
-const { awsPoller } = require('../services/awsPoller');
+const { awsPoller, getHealthLastCheckedAt } = require('../services/awsPoller');
 const { costSpikePct, rdsStorageWarnPct, computeIssues } = require('../services/awsIssues');
 
 const router = express.Router();
@@ -265,6 +265,29 @@ router.put('/config', [
   } catch (err) { next(err); }
 });
 
+// ── Health (AWS Service Health RSS) ─────────────────────────────────────────
+
+/** GET /api/aws/health — recent events across every monitored feed, last 7 days. */
+router.get('/health', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT service, region, title, summary, published_at FROM aws_health_events
+      WHERE published_at >= datetime('now', '-7 days')
+      ORDER BY published_at DESC LIMIT 50
+    `).all();
+    const recentEvents = db.prepare(`
+      SELECT COUNT(*) AS n FROM aws_health_events WHERE published_at >= datetime('now', '-24 hours')
+    `).get().n || 0;
+    res.json({
+      operational: recentEvents === 0,
+      lastChecked: getHealthLastCheckedAt(),
+      events: rows.map((r) => ({
+        service: r.service, region: r.region, title: r.title, summary: r.summary, publishedAt: r.published_at,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
 // ── Issues ───────────────────────────────────────────────────────────────────
 
 /** GET /api/aws/issues — computed issues (Alerts feed). */
@@ -365,6 +388,28 @@ router.get('/overview', (req, res, next) => {
     const ecrAgg = db.prepare('SELECT COUNT(*) AS repos FROM aws_ecr_repos').get();
     const vpcAgg = db.prepare('SELECT COUNT(*) AS vpcs, SUM(nat_gateway_count) AS natGateways FROM aws_vpcs').get();
 
+    const healthRecent24h = db.prepare(`
+      SELECT COUNT(*) AS n FROM aws_health_events WHERE published_at >= datetime('now', '-24 hours')
+    `).get().n || 0;
+
+    const accountsDetail = db.prepare('SELECT id, name, region, last_poll_status, last_poll_at FROM aws_accounts ORDER BY name').all()
+      .map((r) => ({ id: r.id, name: r.name, region: r.region, lastPollStatus: r.last_poll_status, lastPollAt: r.last_poll_at }));
+
+    const unattachedEbs = db.prepare("SELECT COUNT(*) AS n FROM aws_ebs_volumes WHERE state = 'available'").get().n || 0;
+    const natGatewaysTotal = db.prepare('SELECT SUM(nat_gateway_count) AS n FROM aws_vpcs').get().n || 0;
+
+    // Post-fix-#0 aws_cost_daily only carries the elected credential's rows, so a plain SUM is correct.
+    const moverRows = db.prepare(`
+      SELECT service,
+        SUM(CASE WHEN day = ? THEN amount_usd ELSE 0 END) AS lastUsd,
+        SUM(CASE WHEN day = ? THEN amount_usd ELSE 0 END) AS prevUsd
+      FROM aws_cost_daily WHERE day IN (?, ?)
+      GROUP BY service
+    `).all(yesterday, dayBefore, yesterday, dayBefore);
+    const topMovers = moverRows.map((r) => ({
+      service: r.service, prevUsd: r.prevUsd || 0, lastUsd: r.lastUsd || 0, deltaUsd: (r.lastUsd || 0) - (r.prevUsd || 0),
+    })).sort((a, b) => Math.abs(b.deltaUsd) - Math.abs(a.deltaUsd)).slice(0, 5);
+
     res.json({
       accounts: accountCount,
       ec2: { total: ec2Agg.total || 0, running: ec2Agg.running || 0, stopped: ec2Agg.stopped || 0, alarmed: ec2Agg.alarmed || 0 },
@@ -386,6 +431,9 @@ router.get('/overview', (req, res, next) => {
       dynamo: { total: dynamoAgg.total || 0, sizeBytes: dynamoAgg.sizeBytes || 0 },
       ecr: { repos: ecrAgg.repos || 0 },
       vpc: { vpcs: vpcAgg.vpcs || 0, natGateways: vpcAgg.natGateways || 0 },
+      health: { operational: healthRecent24h === 0, recentEvents: healthRecent24h },
+      accountsDetail,
+      estate: { unattachedEbs, natGateways: natGatewaysTotal, topMovers },
     });
   } catch (err) { next(err); }
 });
@@ -510,14 +558,20 @@ router.get('/bedrock', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/aws/costs?days=30 */
-router.get('/costs', [query('days').optional().isInt().toInt()], validate, (req, res, next) => {
+/** GET /api/aws/costs?days=30&accountId= — accountId is an optional additive filter. */
+router.get('/costs', [
+  query('days').optional().isInt().toInt(),
+  query('accountId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
   try {
     const days = Math.min(90, Math.max(7, req.query.days || 30));
+    const accountId = req.query.accountId;
+    const acctSql = accountId ? 'AND account_id = ?' : '';
+    const acctArg = accountId ? [accountId] : [];
     const rows = db.prepare(`
       SELECT day, service, amount_usd FROM aws_cost_daily
-      WHERE day >= date('now', ?) ORDER BY day ASC
-    `).all(`-${days} days`);
+      WHERE day >= date('now', ?) ${acctSql} ORDER BY day ASC
+    `).all(`-${days} days`, ...acctArg);
     const byDay = new Map();
     for (const r of rows) {
       if (!byDay.has(r.day)) byDay.set(r.day, { day: r.day, totalUsd: 0, services: [] });
@@ -526,16 +580,16 @@ router.get('/costs', [query('days').optional().isInt().toInt()], validate, (req,
       d.services.push({ service: r.service, amountUsd: r.amount_usd || 0 });
     }
     const monthStart = `${new Date().toISOString().slice(0, 7)}-01`;
-    const mtdRows = db.prepare('SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day >= ?').get(monthStart);
+    const mtdRows = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day >= ? ${acctSql}`).get(monthStart, ...acctArg);
     const mtdUsd = mtdRows.s || 0;
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     const dayBefore = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
-    const yTotal = db.prepare('SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ?').get(yesterday).s || 0;
-    const dbTotal = db.prepare('SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ?').get(dayBefore).s || 0;
+    const yTotal = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(yesterday, ...acctArg).s || 0;
+    const dbTotal = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(dayBefore, ...acctArg).s || 0;
     const deltaPct = dbTotal > 0 ? ((yTotal - dbTotal) / dbTotal) * 100 : null;
     const byServiceMap = new Map();
-    for (const r of db.prepare('SELECT service, SUM(amount_usd) AS mtdUsd FROM aws_cost_daily WHERE day >= ? GROUP BY service')
-      .all(monthStart)) {
+    for (const r of db.prepare(`SELECT service, SUM(amount_usd) AS mtdUsd FROM aws_cost_daily WHERE day >= ? ${acctSql} GROUP BY service`)
+      .all(monthStart, ...acctArg)) {
       byServiceMap.set(r.service, r.mtdUsd || 0);
     }
     res.json({
@@ -543,6 +597,92 @@ router.get('/costs', [query('days').optional().isInt().toInt()], validate, (req,
       mtdUsd, deltaPct,
       byService: [...byServiceMap.entries()].map(([service, mtdUsd]) => ({ service, mtdUsd })).sort((a, b) => b.mtdUsd - a.mtdUsd),
     });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/costs/usage-types?days=30&accountId= — explains "EC2 - Other" style line items. */
+router.get('/costs/usage-types', [
+  query('days').optional().isInt().toInt(),
+  query('accountId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const days = Math.min(90, Math.max(7, req.query.days || 30));
+    const accountId = req.query.accountId;
+    const acctSql = accountId ? 'AND account_id = ?' : '';
+    const acctArg = accountId ? [accountId] : [];
+    const rows = db.prepare(`
+      SELECT usage_type, SUM(amount_usd) AS total_usd FROM aws_cost_usage_daily
+      WHERE day >= date('now', ?) ${acctSql}
+      GROUP BY usage_type ORDER BY total_usd DESC LIMIT 40
+    `).all(`-${days} days`, ...acctArg);
+    res.json({ rows: rows.map((r) => ({ usageType: r.usage_type, totalUsd: r.total_usd || 0 })) });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/costs/instance-types?days=30&accountId= */
+router.get('/costs/instance-types', [
+  query('days').optional().isInt().toInt(),
+  query('accountId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const days = Math.min(90, Math.max(7, req.query.days || 30));
+    const accountId = req.query.accountId;
+    const acctSql = accountId ? 'AND account_id = ?' : '';
+    const acctArg = accountId ? [accountId] : [];
+    const rows = db.prepare(`
+      SELECT instance_type, SUM(amount_usd) AS total_usd FROM aws_cost_instance_type_daily
+      WHERE day >= date('now', ?) ${acctSql}
+      GROUP BY instance_type ORDER BY total_usd DESC
+    `).all(`-${days} days`, ...acctArg);
+    const runSql = accountId ? 'AND account_id = ?' : '';
+    const runArg = accountId ? [accountId] : [];
+    res.json({
+      rows: rows.map((r) => {
+        const running = db.prepare(`
+          SELECT COUNT(*) AS n FROM aws_ec2_instances WHERE instance_type = ? AND state = 'running' ${runSql}
+        `).get(r.instance_type, ...runArg).n || 0;
+        return {
+          instanceType: r.instance_type, totalUsd: r.total_usd || 0, runningCount: running,
+          estPerInstanceUsd: running > 0 ? (r.total_usd || 0) / running : null,
+        };
+      }),
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/s3/history?bucket=<name>&days=90&accountId= */
+router.get('/s3/history', [
+  query('bucket').isString().trim().notEmpty(),
+  query('days').optional().isInt().toInt(),
+  query('accountId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const days = Math.min(365, Math.max(7, req.query.days || 90));
+    const accountId = req.query.accountId;
+    const acctSql = accountId ? 'AND account_id = ?' : '';
+    const acctArg = accountId ? [accountId] : [];
+    const rows = db.prepare(`
+      SELECT day, size_bytes, object_count FROM aws_s3_size_history
+      WHERE bucket_name = ? AND day >= date('now', ?) ${acctSql}
+      ORDER BY day ASC
+    `).all(req.query.bucket, `-${days} days`, ...acctArg);
+    res.json({ rows: rows.map((r) => ({ day: r.day, sizeBytes: r.size_bytes, objectCount: r.object_count })) });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/rds/history?dbId=<id>&days=90 */
+router.get('/rds/history', [
+  query('dbId').isString().trim().notEmpty(),
+  query('days').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const days = Math.min(365, Math.max(7, req.query.days || 90));
+    const rows = db.prepare(`
+      SELECT day, free_storage_bytes, allocated_gb FROM aws_rds_storage_history
+      WHERE db_id = ? AND day >= date('now', ?)
+      ORDER BY day ASC
+    `).all(req.query.dbId, `-${days} days`);
+    res.json({ rows: rows.map((r) => ({ day: r.day, freeStorageBytes: r.free_storage_bytes, allocatedGb: r.allocated_gb })) });
   } catch (err) { next(err); }
 });
 

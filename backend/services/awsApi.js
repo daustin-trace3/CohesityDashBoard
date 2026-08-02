@@ -27,8 +27,12 @@ const {
   DynamoDBClient, ListTablesCommand, DescribeTableCommand,
 } = require('@aws-sdk/client-dynamodb');
 const { ECRClient, DescribeRepositoriesCommand, DescribeImagesCommand } = require('@aws-sdk/client-ecr');
+const axios = require('axios');
+const { XMLParser } = require('fast-xml-parser');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
+
+const healthXmlParser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: true });
 
 /** Resolve { accessKeyId, secretAccessKey } for an account row (or unsaved candidate). */
 function creds(account) {
@@ -538,6 +542,73 @@ async function fetchCostAndUsage(account) {
   return rows;
 }
 
+/**
+ * Shared GroupBy helper for the two additional Cost Explorer groupings
+ * (USAGE_TYPE, INSTANCE_TYPE) — same 35d DAILY window/client as
+ * fetchCostAndUsage. Returns [{ day, key, amountUsd }].
+ */
+async function fetchCostAndUsageGrouped(account, groupByKey) {
+  const client = costExplorerClient(account);
+  const end = new Date();
+  const start = new Date(end.getTime() - 35 * 86400000);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const resp = await client.send(new GetCostAndUsageCommand({
+    TimePeriod: { Start: fmt(start), End: fmt(end) },
+    Granularity: 'DAILY',
+    Metrics: ['UnblendedCost'],
+    GroupBy: [{ Type: 'DIMENSION', Key: groupByKey }],
+  }));
+  const rows = [];
+  for (const period of resp?.ResultsByTime || []) {
+    const day = period.TimePeriod?.Start;
+    for (const g of period.Groups || []) {
+      const key = g.Keys?.[0] || 'Unknown';
+      const amountUsd = Number(g.Metrics?.UnblendedCost?.Amount) || 0;
+      rows.push({ day, key, amountUsd });
+    }
+  }
+  return rows;
+}
+
+/** [{ day, usageType, amountUsd }] — GroupBy DIMENSION/USAGE_TYPE, same window as fetchCostAndUsage. */
+async function fetchCostByUsageType(account) {
+  const rows = await fetchCostAndUsageGrouped(account, 'USAGE_TYPE');
+  return rows.map((r) => ({ day: r.day, usageType: r.key, amountUsd: r.amountUsd }));
+}
+
+/** [{ day, instanceType, amountUsd }] — GroupBy DIMENSION/INSTANCE_TYPE, same window as fetchCostAndUsage. */
+async function fetchCostByInstanceType(account) {
+  const rows = await fetchCostAndUsageGrouped(account, 'INSTANCE_TYPE');
+  return rows.map((r) => ({ day: r.day, instanceType: r.key, amountUsd: r.amountUsd }));
+}
+
+// ── AWS Service Health RSS ──────────────────────────────────────────────────
+
+const textOf = (v) => (v && typeof v === 'object' ? (v['#text'] ?? '') : (v ?? ''));
+
+/**
+ * status.aws.amazon.com/rss/<service>-<region>.rss — public, no auth. Never
+ * throws: network/parse failures and 404/empty feeds (a healthy service)
+ * both resolve to []. Returns [{ title, summary, publishedAt }].
+ */
+async function fetchHealthRss(service, region) {
+  try {
+    const url = `https://status.aws.amazon.com/rss/${service}-${region}.rss`;
+    const resp = await axios.get(url, { timeout: 5000 });
+    const parsed = healthXmlParser.parse(resp.data);
+    let items = parsed?.rss?.channel?.item || [];
+    if (!Array.isArray(items)) items = [items];
+    return items.map((it) => ({
+      title: String(textOf(it.title)),
+      summary: String(textOf(it.description)).slice(0, 500),
+      publishedAt: it.pubDate ? new Date(it.pubDate).toISOString() : null,
+    }));
+  } catch (err) {
+    logger.debug(`[awsApi] health RSS fetch failed for ${service}-${region}: ${err.message}`);
+    return [];
+  }
+}
+
 // ── RDS ──────────────────────────────────────────────────────────────────────
 
 async function fetchRdsInstances(account) {
@@ -860,7 +931,8 @@ module.exports = {
   fetchS3Buckets, fetchBucketLocation, fetchBucketPublicAccessBlocked, fetchBucketVersioning,
   fetchBucketLifecycleRuleCount, fetchBucketStorageMetrics,
   fetchBedrockModelIds, fetchBedrockDailyUsage,
-  fetchCostAndUsage,
+  fetchCostAndUsage, fetchCostByUsageType, fetchCostByInstanceType,
+  fetchHealthRss,
   fetchRdsInstances, fetchRdsMetrics,
   fetchLambdaFunctions, fetchLambdaMetrics,
   fetchDynamoTableNames, fetchDynamoTable,

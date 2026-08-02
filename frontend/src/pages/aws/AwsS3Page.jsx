@@ -1,17 +1,79 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Database, ShieldAlert } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Database, ShieldAlert, LineChart, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
+import TrendChart from '../../components/TrendChart';
 import { BRAND, fmtBytes, fmtNum, fmtWhen } from './helpers';
 
 const isPublic = (b) => !b.publicAccessBlocked;
+
+// Portal to <body> — matches AwsSettingsPage's ProbeModal (the page wrapper's
+// fade-in animation leaves a transform applied, which would re-anchor
+// position:fixed to the page div and cut off the modal on scrolled pages).
+function BucketHistoryModal({ bucket, onClose }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    setRows(null);
+    setError(false);
+    client.get('/aws/s3/history', { params: { bucket: bucket.name, days: 90 } })
+      .then(({ data }) => setRows(data?.rows || []))
+      .catch(() => setError(true));
+  }, [bucket.name]);
+
+  const labels = (rows || []).map((r) => r.day);
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="panel w-full max-w-2xl p-5 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-ink truncate flex items-center gap-2">
+              <LineChart size={15} className="text-brand" /> {bucket.name} — growth (90d)
+            </h2>
+            <p className="text-[11px] text-ink-muted mt-0.5">Daily size and object count snapshots.</p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="text-ink-faint hover:text-ink flex-shrink-0 cursor-pointer"><X size={16} /></button>
+        </div>
+        <div className="overflow-y-auto pr-1 min-h-0 flex-1">
+          {error ? (
+            <div className="text-sm text-status-crit py-6 text-center">Failed to load bucket history.</div>
+          ) : rows == null ? (
+            <div className="py-10 flex justify-center"><Spinner size={20} /></div>
+          ) : rows.length === 0 ? (
+            <div className="text-sm text-ink-muted py-6 text-center">No history yet — snapshots accumulate daily.</div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs font-semibold text-ink-muted mb-1">Size</p>
+                <TrendChart labels={labels}
+                  datasets={[{ label: 'Size', data: rows.map((r) => r.sizeBytes), color: BRAND, fill: true }]}
+                  format={(v) => fmtBytes(v)} height={160} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-ink-muted mb-1">Object count</p>
+                <TrendChart labels={labels}
+                  datasets={[{ label: 'Objects', data: rows.map((r) => r.objectCount), color: '#569BD6', fill: true }]}
+                  format={(v) => fmtNum(v)} height={160} />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 export default function AwsS3Page() {
   const { toast } = useToast();
   const [buckets, setBuckets] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [historyBucket, setHistoryBucket] = useState(null);
 
   const load = useCallback(() => client.get('/aws/s3')
     .then(({ data }) => { setBuckets(data?.buckets || []); setLastRefreshed(new Date()); })
@@ -60,6 +122,7 @@ export default function AwsS3Page() {
                 <SortTh k="lifecycleRules" label="Lifecycle Rules" ctl={ctl} align="right" />
                 <SortTh k="createdAt" label="Created" ctl={ctl} />
                 <SortTh k="account" label="Account" ctl={ctl} />
+                <th className="py-2 pr-3 text-right">Growth</th>
               </tr></thead>
               <tbody>
                 {ctl.pageRows.map((b) => (
@@ -75,6 +138,12 @@ export default function AwsS3Page() {
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(b.lifecycleRules)}</td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(b.createdAt)}</td>
                     <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{b.account}</td>
+                    <td className="py-2 pr-3 text-right">
+                      <button onClick={() => setHistoryBucket(b)} title={`${b.name} growth history`} aria-label={`${b.name} growth history`}
+                        className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-brand hover:border-brand/40 transition-colors cursor-pointer">
+                        <LineChart size={13} />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -83,6 +152,8 @@ export default function AwsS3Page() {
         )}
         <TablePager ctl={ctl} />
       </div>
+
+      {historyBucket && <BucketHistoryModal bucket={historyBucket} onClose={() => setHistoryBucket(null)} />}
     </div>
   );
 }

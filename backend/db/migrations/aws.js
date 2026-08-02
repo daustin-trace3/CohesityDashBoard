@@ -288,4 +288,70 @@ module.exports = [
       `);
     },
   },
+  {
+    // Round 3: global-collector election fix (#0) support tables — per-day
+    // history for S3 bucket size/object count and RDS free storage, plus two
+    // additional Cost Explorer groupings and AWS Service Health RSS events.
+    version: 3,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_s3_size_history (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id   INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          bucket_name  TEXT NOT NULL,
+          day          TEXT NOT NULL,
+          size_bytes   INTEGER,
+          object_count INTEGER,
+          UNIQUE(account_id, bucket_name, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_s3_history_account ON aws_s3_size_history(account_id);
+        CREATE INDEX IF NOT EXISTS idx_aws_s3_history_bucket ON aws_s3_size_history(bucket_name, day);
+
+        CREATE TABLE IF NOT EXISTS aws_rds_storage_history (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id         INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          db_id              TEXT NOT NULL,
+          day                TEXT NOT NULL,
+          free_storage_bytes INTEGER,
+          allocated_gb       INTEGER,
+          UNIQUE(account_id, db_id, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_rds_history_account ON aws_rds_storage_history(account_id);
+        CREATE INDEX IF NOT EXISTS idx_aws_rds_history_db ON aws_rds_storage_history(db_id, day);
+
+        CREATE TABLE IF NOT EXISTS aws_cost_usage_daily (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id  INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day         TEXT NOT NULL,
+          usage_type  TEXT NOT NULL,
+          amount_usd  REAL,
+          UNIQUE(account_id, day, usage_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_cost_usage_account ON aws_cost_usage_daily(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_cost_instance_type_daily (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id     INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day            TEXT NOT NULL,
+          instance_type  TEXT NOT NULL,
+          amount_usd     REAL,
+          UNIQUE(account_id, day, instance_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_cost_instance_type_account ON aws_cost_instance_type_daily(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_health_events (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          feed          TEXT NOT NULL,
+          service       TEXT,
+          region        TEXT,
+          title         TEXT NOT NULL,
+          summary       TEXT,
+          published_at  DATETIME,
+          fetched_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(feed, title, published_at)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_health_events_published ON aws_health_events(published_at);
+      `);
+    },
+  },
 ];

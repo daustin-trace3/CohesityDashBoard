@@ -187,6 +187,80 @@ describe('awsIssues.computeIssues + reconcileIssueHistory', () => {
   });
 });
 
+describe('awsPoller global-collector election (Fix #0)', () => {
+  it('elects the lowest account id among rows sharing the same effective access key', () => {
+    const { isElected } = require('../services/awsPoller');
+    const a = insertAccount({ name: 'elect-a', access_key_id: 'AKIASHARED' });
+    const b = insertAccount({ name: 'elect-b', access_key_id: 'AKIASHARED' });
+    const c = insertAccount({ name: 'elect-c', access_key_id: 'AKIAOTHER' });
+    const d = insertAccount({ name: 'elect-d', access_key_id: null, encrypted_credentials: null });
+    const rowA = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(a);
+    const rowB = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(b);
+    const rowC = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(c);
+    const rowD = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(d);
+
+    expect(isElected(rowA)).toBe(true); // lowest id in the AKIASHARED group
+    expect(isElected(rowB)).toBe(false);
+    expect(isElected(rowC)).toBe(true); // sole member of the AKIAOTHER group
+    // Blank access_key_id falls back to env — grouped with any other blank-key row (env mode).
+    expect(typeof isElected(rowD)).toBe('boolean');
+  });
+
+  it('non-elected row: cost + S3-family rows are deleted (idempotent self-heal)', () => {
+    const { cleanupNonElectedGlobalRows } = require('../services/awsPoller');
+    const accountId = insertAccount({ name: 'cleanup-account' });
+
+    db.prepare("INSERT INTO aws_cost_daily (account_id, day, service, amount_usd) VALUES (?, date('now'), 'EC2', 5)").run(accountId);
+    db.prepare("INSERT INTO aws_cost_usage_daily (account_id, day, usage_type, amount_usd) VALUES (?, date('now'), 'BoxUsage', 5)").run(accountId);
+    db.prepare("INSERT INTO aws_cost_instance_type_daily (account_id, day, instance_type, amount_usd) VALUES (?, date('now'), 't3.micro', 5)").run(accountId);
+    db.prepare("INSERT INTO aws_s3_buckets (account_id, name) VALUES (?, 'dup-bucket')").run(accountId);
+    db.prepare("INSERT INTO aws_s3_size_history (account_id, bucket_name, day, size_bytes, object_count) VALUES (?, 'dup-bucket', date('now'), 100, 1)").run(accountId);
+
+    cleanupNonElectedGlobalRows(accountId);
+    cleanupNonElectedGlobalRows(accountId); // idempotent
+
+    for (const table of ['aws_cost_daily', 'aws_cost_usage_daily', 'aws_cost_instance_type_daily', 'aws_s3_buckets', 'aws_s3_size_history']) {
+      expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE account_id = ?`).get(accountId).n).toBe(0);
+    }
+  });
+
+  it('history upserts (S3 size, RDS storage, cost groupings) are idempotent per day', () => {
+    const {
+      upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType,
+    } = require('../services/awsPoller');
+    const accountId = insertAccount({ name: 'history-upsert-account' });
+
+    upsertS3SizeHistory(accountId, [{ name: 'bkt', sizeBytes: 100, objectCount: 10 }]);
+    upsertS3SizeHistory(accountId, [{ name: 'bkt', sizeBytes: 200, objectCount: 20 }]);
+    let rows = db.prepare('SELECT * FROM aws_s3_size_history WHERE account_id = ? AND bucket_name = ?').all(accountId, 'bkt');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].size_bytes).toBe(200);
+    expect(rows[0].object_count).toBe(20);
+
+    upsertRdsStorageHistory(accountId, [{ dbId: 'db-x', freeStorageBytes: 1000, allocatedGb: 50 }]);
+    upsertRdsStorageHistory(accountId, [{ dbId: 'db-x', freeStorageBytes: 500, allocatedGb: 50 }]);
+    rows = db.prepare('SELECT * FROM aws_rds_storage_history WHERE account_id = ? AND db_id = ?').all(accountId, 'db-x');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].free_storage_bytes).toBe(500);
+
+    upsertRdsStorageHistory(accountId, [{ dbId: 'db-null', freeStorageBytes: null, allocatedGb: 50 }]);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM aws_rds_storage_history WHERE account_id = ? AND db_id = ?').get(accountId, 'db-null').n).toBe(0);
+
+    const today = new Date().toISOString().slice(0, 10);
+    upsertCostUsageType(accountId, [{ day: today, usageType: 'BoxUsage:t3.micro', amountUsd: 1.5 }]);
+    upsertCostUsageType(accountId, [{ day: today, usageType: 'BoxUsage:t3.micro', amountUsd: 2.5 }]);
+    rows = db.prepare('SELECT * FROM aws_cost_usage_daily WHERE account_id = ? AND day = ? AND usage_type = ?').all(accountId, today, 'BoxUsage:t3.micro');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amount_usd).toBe(2.5);
+
+    upsertCostInstanceType(accountId, [{ day: today, instanceType: 't3.micro', amountUsd: 3 }]);
+    upsertCostInstanceType(accountId, [{ day: today, instanceType: 't3.micro', amountUsd: 4 }]);
+    rows = db.prepare('SELECT * FROM aws_cost_instance_type_daily WHERE account_id = ? AND day = ? AND instance_type = ?').all(accountId, today, 't3.micro');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amount_usd).toBe(4);
+  });
+});
+
 describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dispatcher)', () => {
   let app;
 
@@ -315,12 +389,69 @@ describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dis
       ['dynamo', (b) => Array.isArray(b.tables)],
       ['ecr', (b) => Array.isArray(b.repos)],
       ['vpc', (b) => Array.isArray(b.vpcs) && Array.isArray(b.subnets)],
+      ['health', (b) => typeof b.operational === 'boolean' && Array.isArray(b.events)],
+      ['costs/usage-types', (b) => Array.isArray(b.rows)],
+      ['costs/instance-types', (b) => Array.isArray(b.rows)],
     ];
     for (const [path, shapeOk] of checks) {
       const res = await request(app).get(`/api/aws/${path}`);
       expect(res.status, `GET /api/aws/${path}`).toBe(200);
       expect(shapeOk(res.body), `GET /api/aws/${path} body shape`).toBe(true);
     }
+  });
+
+  it('GET /api/aws/s3/history and /api/aws/rds/history return ascending day rows', async () => {
+    const accountId = insertAccount({ name: 'aws-history-route' });
+    db.prepare(`
+      INSERT INTO aws_s3_size_history (account_id, bucket_name, day, size_bytes, object_count)
+      VALUES (?, 'hist-bucket', date('now', '-2 days'), 100, 1), (?, 'hist-bucket', date('now', '-1 days'), 200, 2)
+    `).run(accountId, accountId);
+    const s3res = await request(app).get('/api/aws/s3/history').query({ bucket: 'hist-bucket', days: 30 });
+    expect(s3res.status).toBe(200);
+    expect(s3res.body.rows.length).toBeGreaterThanOrEqual(2);
+    expect(s3res.body.rows[0].day <= s3res.body.rows[s3res.body.rows.length - 1].day).toBe(true);
+    expect(s3res.body.rows[0]).toEqual(expect.objectContaining({ day: expect.any(String), sizeBytes: expect.any(Number), objectCount: expect.any(Number) }));
+
+    const missingBucket = await request(app).get('/api/aws/s3/history');
+    expect(missingBucket.status).toBe(400);
+
+    db.prepare(`
+      INSERT INTO aws_rds_storage_history (account_id, db_id, day, free_storage_bytes, allocated_gb)
+      VALUES (?, 'hist-db', date('now', '-2 days'), 500, 100), (?, 'hist-db', date('now', '-1 days'), 400, 100)
+    `).run(accountId, accountId);
+    const rdsRes = await request(app).get('/api/aws/rds/history').query({ dbId: 'hist-db', days: 30 });
+    expect(rdsRes.status).toBe(200);
+    expect(rdsRes.body.rows.length).toBeGreaterThanOrEqual(2);
+    expect(rdsRes.body.rows[0]).toEqual(expect.objectContaining({ day: expect.any(String), freeStorageBytes: expect.any(Number), allocatedGb: expect.any(Number) }));
+  });
+
+  it('GET /api/aws/costs accepts an optional accountId filter without changing the omitted-filter shape', async () => {
+    const accountId = insertAccount({ name: 'aws-costs-filter' });
+    db.prepare(`INSERT INTO aws_cost_daily (account_id, day, service, amount_usd) VALUES (?, date('now'), 'S3', 3.5)`).run(accountId);
+
+    const all = await request(app).get('/api/aws/costs');
+    expect(all.status).toBe(200);
+    expect(Array.isArray(all.body.days)).toBe(true);
+    expect(Array.isArray(all.body.byService)).toBe(true);
+
+    const filtered = await request(app).get('/api/aws/costs').query({ accountId });
+    expect(filtered.status).toBe(200);
+    expect(Array.isArray(filtered.body.days)).toBe(true);
+  });
+
+  it('GET /api/aws/overview exposes the round-3 additive keys (health, accountsDetail, estate)', async () => {
+    const res = await request(app).get('/api/aws/overview');
+    expect(res.status).toBe(200);
+    expect(res.body.health).toEqual(expect.objectContaining({ operational: expect.any(Boolean), recentEvents: expect.any(Number) }));
+    expect(Array.isArray(res.body.accountsDetail)).toBe(true);
+    if (res.body.accountsDetail.length) {
+      expect(res.body.accountsDetail[0]).toEqual(expect.objectContaining({
+        id: expect.any(Number), name: expect.any(String), region: expect.any(String),
+      }));
+    }
+    expect(res.body.estate).toEqual(expect.objectContaining({
+      unattachedEbs: expect.any(Number), natGateways: expect.any(Number), topMovers: expect.any(Array),
+    }));
   });
 
   it('GET /api/aws/rds pins camelCase shape and computes freeStoragePct', async () => {

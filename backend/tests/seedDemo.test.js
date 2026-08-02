@@ -364,6 +364,11 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM aws_ecr_repos').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aws_vpcs').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aws_subnets').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_s3_size_history').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_rds_storage_history').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_cost_usage_daily').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_cost_instance_type_daily').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_health_events').get().c).toBeGreaterThan(0);
 
     for (const type of ['ec2-status-check', 'ecs-degraded', 'cost-spike', 's3-public', 'ebs-unattached', 'rds-storage-low']) {
       const row = db.prepare("SELECT COUNT(*) c FROM aws_issue_history WHERE type = ? AND status = 'open'").get(type);

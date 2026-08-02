@@ -43,6 +43,11 @@ export default function AwsEc2Page() {
   });
 
   const volList = volumes || [];
+  const volCtl = useTableControls(volList, {
+    searchKeys: ['volumeId', 'volumeType', 'az', 'attachedInstanceId', 'account'],
+    defaultSortKey: 'volumeId', defaultSortDir: 'asc',
+    paginate: true,
+  });
   const unattachedCount = volList.filter((v) => v.state === 'available').length;
 
   return (
@@ -104,24 +109,28 @@ export default function AwsEc2Page() {
           <p className="text-sm font-semibold text-ink flex items-center gap-2"><HardDrive size={15} className="text-brand" /> EBS Volumes</p>
           {unattachedCount > 0 && <Badge tone="warn">{fmtNum(unattachedCount)} unattached</Badge>}
         </div>
+        <TableControls ctl={volCtl} rows={volList} searchPlaceholder="Filter by volume ID, type, AZ or account…"
+          filters={[{ k: 'state', label: 'States' }, { k: 'volumeType', label: 'Types' }, { k: 'account', label: 'Accounts' }]} />
         {volumes == null ? (
           <LoadingPanel label="Loading volumes…" height={140} />
         ) : volList.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No EBS volumes found.</div>
+        ) : volCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No volumes match your filters.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Volume ID</th>
-                <th className="py-2 pr-3">State</th>
-                <th className="py-2 pr-3">Type</th>
-                <th className="py-2 pr-3 text-right">Size (GB)</th>
-                <th className="py-2 pr-3">AZ</th>
-                <th className="py-2 pr-3">Attached Instance</th>
-                <th className="py-2 pr-3">Account</th>
+                <SortTh k="volumeId" label="Volume ID" ctl={volCtl} />
+                <SortTh k="state" label="State" ctl={volCtl} />
+                <SortTh k="volumeType" label="Type" ctl={volCtl} />
+                <SortTh k="sizeGb" label="Size (GB)" ctl={volCtl} align="right" />
+                <SortTh k="az" label="AZ" ctl={volCtl} />
+                <SortTh k="attachedInstanceId" label="Attached Instance" ctl={volCtl} />
+                <SortTh k="account" label="Account" ctl={volCtl} />
               </tr></thead>
               <tbody>
-                {volList.map((v) => (
+                {volCtl.pageRows.map((v) => (
                   <tr key={v.volumeId} className={`border-b border-cohesity-border/50 ${v.state === 'available' ? 'bg-status-warn/5' : ''}`}>
                     <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{v.volumeId}</td>
                     <td className="py-2 pr-3"><Badge tone={v.state === 'available' ? 'warn' : v.state === 'in-use' ? 'ok' : 'neutral'}>{v.state || '—'}</Badge></td>
@@ -136,6 +145,7 @@ export default function AwsEc2Page() {
             </table>
           </div>
         )}
+        <TablePager ctl={volCtl} />
       </div>
     </div>
   );

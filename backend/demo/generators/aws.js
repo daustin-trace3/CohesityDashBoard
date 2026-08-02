@@ -80,6 +80,39 @@ const BEDROCK_MODELS = [
 const BEDROCK_DAYS = 30;
 const METRICS_HISTORY_DAYS = 7;
 
+const S3_HISTORY_BUCKETS = ['demo-aws-app-assets', 'demo-aws-logs-archive', 'demo-aws-backups'];
+const S3_JUMP_BUCKET = 'demo-aws-logs-archive';
+const S3_JUMP_AT_DAY = 30;
+const S3_JUMP_FACTOR = 1.35;
+const S3_HISTORY_DAYS = 90;
+
+const RDS_HISTORY_DB = 'demo-analytics-mysql';
+const RDS_HISTORY_DAYS = 30;
+
+const USAGE_TYPES = [
+  { usageType: 'BoxUsage:m5.large', base: 8 },
+  { usageType: 'BoxUsage:m5.xlarge', base: 6 },
+  { usageType: 'EBS:VolumeUsage.gp3', base: 4 },
+  { usageType: 'NatGateway-Hours', base: 3.5 },
+  { usageType: 'DataTransfer-Out-Bytes', base: 2.5 },
+  { usageType: 'TimedStorage-ByteHrs', base: 2 },
+  { usageType: 'Requests-Tier1', base: 1.2 },
+  { usageType: 'Lambda-GB-Second', base: 0.8 },
+];
+const COST_USAGE_DAYS = 45;
+
+const INSTANCE_TYPE_COSTS = [
+  { instanceType: 'm5.large', base: 18 },
+  { instanceType: 'm5.xlarge', base: 24 },
+  { instanceType: 't3.medium', base: 4 },
+];
+const COST_INSTANCE_TYPE_DAYS = 45;
+
+const HEALTH_EVENTS = [
+  { feed: 'ec2-us-east-2', service: 'ec2', region: 'us-east-2', title: 'Increased API error rates for EC2 in US-EAST-2', summary: 'Between 08:00 and 08:45 UTC, some customers experienced increased error rates for EC2 API calls. The issue has been resolved.', hoursAgo: 5 },
+  { feed: 's3-us-east-2', service: 's3', region: 'us-east-2', title: 'Informational message about Amazon S3', summary: 'We are investigating increased request latencies for a subset of S3 requests in the US-EAST-2 Region.', hoursAgo: 72 },
+];
+
 const RDS_INSTANCES = [
   { dbId: 'demo-prod-postgres', engine: 'postgres', engineVersion: '15.4', instanceClass: 'db.r5.large', status: 'available', multiAz: 1, allocatedGb: 200, freeStorageBytes: Math.round(200 * 1024 ** 3 * 0.45), cpuUtil: 32.1, connections: 24, backupRetentionDays: 7, latestBackupDaysAgo: 0, endpoint: 'demo-prod-postgres.abcdemo.us-east-2.rds.amazonaws.com' },
   { dbId: 'demo-analytics-mysql', engine: 'mysql', engineVersion: '8.0.35', instanceClass: 'db.m5.large', status: 'available', multiAz: 0, allocatedGb: 500, freeStorageBytes: Math.round(500 * 1024 ** 3 * 0.09), cpuUtil: 54.6, connections: 60, backupRetentionDays: 7, latestBackupDaysAgo: 0, endpoint: 'demo-analytics-mysql.abcdemo.us-east-2.rds.amazonaws.com' },
@@ -323,6 +356,84 @@ function seedAws(db, { now, encrypt }) {
     metricsRows++;
   }
 
+  // ── S3 size history: 90 days x 3 buckets (steady growth; one with a jump) ─
+  const insertS3History = db.prepare(`
+    INSERT INTO aws_s3_size_history (account_id, bucket_name, day, size_bytes, object_count)
+    VALUES (?, ?, date('now', ?), ?, ?)
+  `);
+  const s3HistRng = rngFor('aws-s3-size-history');
+  let s3HistoryRows = 0;
+  for (const bucketName of S3_HISTORY_BUCKETS) {
+    const bucket = S3_BUCKETS.find((b) => b.name === bucketName);
+    const dailyRate = randFloat(s3HistRng, 0.003, 0.007, 4);
+    for (let i = S3_HISTORY_DAYS - 1; i >= 0; i--) {
+      let size = bucket.sizeBytes / (1 + dailyRate) ** i;
+      if (bucketName === S3_JUMP_BUCKET && i > S3_JUMP_AT_DAY) {
+        size /= S3_JUMP_FACTOR;
+      }
+      size *= randFloat(s3HistRng, 0.98, 1.02, 4);
+      const objectCount = Math.max(1, Math.round(bucket.objectCount * (size / bucket.sizeBytes)));
+      insertS3History.run(accountId, bucketName, `-${i} days`, Math.round(size), objectCount);
+      s3HistoryRows++;
+    }
+  }
+
+  // ── RDS storage history: 30 days for the low-storage RDS (declining trend) ─
+  const insertRdsHistory = db.prepare(`
+    INSERT INTO aws_rds_storage_history (account_id, db_id, day, free_storage_bytes, allocated_gb)
+    VALUES (?, ?, date('now', ?), ?, ?)
+  `);
+  const rdsHistRng = rngFor('aws-rds-storage-history');
+  let rdsHistoryRows = 0;
+  const rdsHistTarget = RDS_INSTANCES.find((r) => r.dbId === RDS_HISTORY_DB);
+  for (let i = RDS_HISTORY_DAYS - 1; i >= 0; i--) {
+    const declineFactor = 1 + (i / RDS_HISTORY_DAYS) * 0.6;
+    const free = Math.round(rdsHistTarget.freeStorageBytes * declineFactor * randFloat(rdsHistRng, 0.97, 1.03, 4));
+    insertRdsHistory.run(accountId, RDS_HISTORY_DB, `-${i} days`, free, rdsHistTarget.allocatedGb);
+    rdsHistoryRows++;
+  }
+
+  // ── Cost usage-type breakdown: 45 days x 8 usage types ──────────────────
+  const insertCostUsage = db.prepare(`
+    INSERT INTO aws_cost_usage_daily (account_id, day, usage_type, amount_usd)
+    VALUES (?, date('now', ?), ?, ?)
+  `);
+  const usageRng = rngFor('aws-cost-usage-daily');
+  let costUsageRows = 0;
+  for (let i = COST_USAGE_DAYS - 1; i >= 0; i--) {
+    for (const u of USAGE_TYPES) {
+      const amount = Math.round(u.base * randFloat(usageRng, 0.85, 1.15, 3) * 100) / 100;
+      insertCostUsage.run(accountId, `-${i} days`, u.usageType, amount);
+      costUsageRows++;
+    }
+  }
+
+  // ── Cost instance-type breakdown: 45 days x 3 instance types ────────────
+  const insertCostInstanceType = db.prepare(`
+    INSERT INTO aws_cost_instance_type_daily (account_id, day, instance_type, amount_usd)
+    VALUES (?, date('now', ?), ?, ?)
+  `);
+  const instTypeRng = rngFor('aws-cost-instance-type-daily');
+  let costInstanceTypeRows = 0;
+  for (let i = COST_INSTANCE_TYPE_DAYS - 1; i >= 0; i--) {
+    for (const t of INSTANCE_TYPE_COSTS) {
+      const amount = Math.round(t.base * randFloat(instTypeRng, 0.85, 1.15, 3) * 100) / 100;
+      insertCostInstanceType.run(accountId, `-${i} days`, t.instanceType, amount);
+      costInstanceTypeRows++;
+    }
+  }
+
+  // ── AWS health events: one <24h old, one 3 days old ─────────────────────
+  const insertHealth = db.prepare(`
+    INSERT INTO aws_health_events (feed, service, region, title, summary, published_at, fetched_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now', ?), datetime('now'))
+  `);
+  let healthRows = 0;
+  for (const h of HEALTH_EVENTS) {
+    insertHealth.run(h.feed, h.service, h.region, h.title, h.summary, `-${h.hoursAgo} hours`);
+    healthRows++;
+  }
+
   // ── Issue history: one open row per demoed trouble scenario ────────────
   const accountName = 'Demo AWS';
   let issueRows = 0;
@@ -417,6 +528,11 @@ function seedAws(db, { now, encrypt }) {
     metricsRows,
     issueRows,
     usedReconcile,
+    s3HistoryRows,
+    rdsHistoryRows,
+    costUsageRows,
+    costInstanceTypeRows,
+    healthRows,
   };
 }
 

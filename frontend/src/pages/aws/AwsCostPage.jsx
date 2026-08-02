@@ -26,11 +26,25 @@ export default function AwsCostPage() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
   const [days, setDays] = useState(30);
+  const [accounts, setAccounts] = useState([]);
+  const [accountId, setAccountId] = useState('');
+  const [usageTypes, setUsageTypes] = useState(null);
+  const [instanceTypes, setInstanceTypes] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
-  const load = useCallback(() => client.get('/aws/costs', { params: { days } })
-    .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
-    .catch(() => { setData({ days: [], byService: [] }); toast({ type: 'error', title: 'Failed to load AWS costs' }); }), [toast, days]);
+  useEffect(() => {
+    client.get('/aws/accounts').then(({ data }) => setAccounts(Array.isArray(data) ? data : data?.accounts || [])).catch(() => setAccounts([]));
+  }, []);
+
+  const load = useCallback(() => {
+    const params = accountId ? { days, accountId } : { days };
+    return Promise.all([
+      client.get('/aws/costs', { params }).then(({ data }) => setData(data)),
+      client.get('/aws/costs/usage-types', { params }).then(({ data }) => setUsageTypes(data?.rows || [])).catch(() => setUsageTypes([])),
+      client.get('/aws/costs/instance-types', { params }).then(({ data }) => setInstanceTypes(data?.rows || [])).catch(() => setInstanceTypes([])),
+    ]).then(() => setLastRefreshed(new Date()))
+      .catch(() => { setData({ days: [], byService: [] }); toast({ type: 'error', title: 'Failed to load AWS costs' }); });
+  }, [toast, days, accountId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -60,6 +74,14 @@ export default function AwsCostPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={DollarSign} title="AWS Cost" description="Daily spend by service across all registered AWS accounts">
+        <select
+          value={accountId}
+          onChange={(e) => setAccountId(e.target.value)}
+          className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
+        >
+          <option value="">All accounts</option>
+          {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
         <div className="flex items-center gap-1 mr-2">
           {[7, 30, 90].map((d) => (
             <button key={d} onClick={() => setDays(d)}
@@ -107,6 +129,64 @@ export default function AwsCostPage() {
                   <tr key={s.service} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink">{s.service}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(s.mtdUsd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink">Usage Type Breakdown</p>
+        <p className="text-[11px] text-ink-muted mb-3">Decomposes bundled service lines like "EC2 - Other" into billable usage types</p>
+        {usageTypes == null ? (
+          <LoadingPanel label="Loading…" height={140} />
+        ) : usageTypes.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No usage type data yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Usage Type</th>
+                <th className="py-2 pr-3 text-right">Total</th>
+              </tr></thead>
+              <tbody>
+                {usageTypes.map((u) => (
+                  <tr key={u.usageType} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink">{u.usageType}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(u.totalUsd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink">Instance Type Costs</p>
+        <p className="text-[11px] text-ink-muted mb-3">Estimates divide the type's total cost evenly across currently running instances of that type</p>
+        {instanceTypes == null ? (
+          <LoadingPanel label="Loading…" height={140} />
+        ) : instanceTypes.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No instance type cost data yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Instance Type</th>
+                <th className="py-2 pr-3 text-right">Total</th>
+                <th className="py-2 pr-3 text-right">Running</th>
+                <th className="py-2 pr-3 text-right">Est. $/Instance</th>
+              </tr></thead>
+              <tbody>
+                {instanceTypes.map((i) => (
+                  <tr key={i.instanceType} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink">{i.instanceType}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(i.totalUsd)}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{i.runningCount ?? '—'}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{i.estPerInstanceUsd != null ? `est. ${fmtUsd(i.estPerInstanceUsd)}` : '—'}</td>
                   </tr>
                 ))}
               </tbody>
