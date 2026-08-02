@@ -11,6 +11,7 @@ const { setSetting } = require('../services/settings');
 const awsApi = require('../services/awsApi');
 const { awsPoller, getHealthLastCheckedAt, HEALTH_SERVICES } = require('../services/awsPoller');
 const { costSpikePct, rdsStorageWarnPct, computeIssues } = require('../services/awsIssues');
+const awsAdvisor = require('../services/advisors/awsAdvisor');
 
 const router = express.Router();
 
@@ -589,7 +590,7 @@ router.get('/costs', [
   query('accountId').optional().isInt().toInt(),
 ], validate, (req, res, next) => {
   try {
-    const days = Math.min(90, Math.max(7, req.query.days || 30));
+    const days = Math.min(365, Math.max(7, req.query.days || 30));
     const accountId = req.query.accountId;
     const acctSql = accountId ? 'AND account_id = ?' : '';
     const acctArg = accountId ? [accountId] : [];
@@ -825,6 +826,43 @@ router.get('/vpc', (req, res, next) => {
       })),
     });
   } catch (err) { next(err); }
+});
+
+// ── AI Advisor ───────────────────────────────────────────────────────────────
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /api/aws/advisor/:report — cached AWS FinOps AI Advisor report. */
+router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!awsAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    res.json({ enabled: awsAdvisor.isConfigured(), report: awsAdvisor.getCachedReport(key) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/aws/advisor/:report — (re)generate and cache an AWS FinOps AI Advisor report. */
+router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
+  try {
+    const key = advisorReportKey(req.params.report);
+    if (!awsAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const result = await awsAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    next(err);
+  }
 });
 
 module.exports = router;

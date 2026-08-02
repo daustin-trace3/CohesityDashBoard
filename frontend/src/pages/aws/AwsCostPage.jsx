@@ -63,25 +63,50 @@ export default function AwsCostPage() {
   }, [selectedDay, byService, byDay]);
   const fmtDayLabel = (d) => `${Number(String(d).slice(5, 7))}/${Number(String(d).slice(8, 10))}`;
 
+  const isMonthly = days === 365;
+
+  // 12m mode: aggregate the daily series into months client-side (day granularity doesn't apply).
+  const byMonth = useMemo(() => {
+    if (!isMonthly) return [];
+    const months = new Map();
+    byDay.forEach((d) => {
+      const month = String(d.day).slice(0, 7);
+      if (!months.has(month)) months.set(month, new Map());
+      const svcMap = months.get(month);
+      (d.services || []).forEach((s) => {
+        svcMap.set(s.service, (svcMap.get(s.service) || 0) + (s.amountUsd || 0));
+      });
+    });
+    return [...months.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, svcMap]) => ({
+        month,
+        services: [...svcMap.entries()].map(([service, amountUsd]) => ({ service, amountUsd })),
+      }));
+  }, [isMonthly, byDay]);
+
   const dailyBar = useMemo(() => {
+    const buckets = isMonthly ? byMonth : byDay;
+    const bucketServices = isMonthly ? (b) => b.services : (b) => b.services || [];
     const topServices = byService.slice(0, 6).map((s) => s.service);
-    const labels = byDay.map((d) => String(d.day).slice(5));
+    const labels = isMonthly ? byMonth.map((m) => m.month) : byDay.map((d) => String(d.day).slice(5));
     const datasets = topServices.map((service, i) => ({
       label: service,
-      data: byDay.map((d) => (d.services || []).find((s) => s.service === service)?.amountUsd || 0),
+      data: buckets.map((b) => bucketServices(b).find((s) => s.service === service)?.amountUsd || 0),
       backgroundColor: COST_COLORS[i % COST_COLORS.length],
       borderRadius: 2,
     }));
-    const otherData = byDay.map((d) => {
-      const total = (d.services || []).reduce((sum, s) => sum + (s.amountUsd || 0), 0);
-      const known = (d.services || []).filter((s) => topServices.includes(s.service)).reduce((sum, s) => sum + (s.amountUsd || 0), 0);
+    const otherData = buckets.map((b) => {
+      const svcs = bucketServices(b);
+      const total = svcs.reduce((sum, s) => sum + (s.amountUsd || 0), 0);
+      const known = svcs.filter((s) => topServices.includes(s.service)).reduce((sum, s) => sum + (s.amountUsd || 0), 0);
       return Math.max(0, total - known);
     });
     if (otherData.some((v) => v > 0.005)) {
       datasets.push({ label: 'Other', data: otherData, backgroundColor: '#3A4450', borderRadius: 2 });
     }
     return { labels, datasets };
-  }, [byDay, byService]);
+  }, [byDay, byService, isMonthly, byMonth]);
 
   return (
     <div className="animate-fade-in">
@@ -94,14 +119,16 @@ export default function AwsCostPage() {
           <option value="">All accounts</option>
           {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
-        <select
-          value={selectedDay}
-          onChange={(e) => setSelectedDay(e.target.value)}
-          className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
-        >
-          <option value="">All days</option>
-          {[...byDay].reverse().map((d) => <option key={d.day} value={d.day}>{fmtDayLabel(d.day)}</option>)}
-        </select>
+        {!isMonthly && (
+          <select
+            value={selectedDay}
+            onChange={(e) => setSelectedDay(e.target.value)}
+            className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
+          >
+            <option value="">All days</option>
+            {[...byDay].reverse().map((d) => <option key={d.day} value={d.day}>{fmtDayLabel(d.day)}</option>)}
+          </select>
+        )}
         <div className="flex items-center gap-1 mr-2">
           {[7, 30, 90].map((d) => (
             <button key={d} onClick={() => setDays(d)}
@@ -109,6 +136,10 @@ export default function AwsCostPage() {
               {d}d
             </button>
           ))}
+          <button onClick={() => { setDays(365); setSelectedDay(''); }}
+            className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${days === 365 ? 'bg-brand text-cohesity-black' : 'text-ink-muted hover:text-ink border border-cohesity-border'}`}>
+            12m
+          </button>
         </div>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
@@ -131,6 +162,7 @@ export default function AwsCostPage() {
             <Bar data={dailyBar} options={{
               ...chartOpts,
               onClick: (evt, elements) => {
+                if (isMonthly) return;
                 if (elements?.length) {
                   const day = byDay[elements[0].index]?.day;
                   if (day) setSelectedDay((cur) => (cur === day ? '' : day));

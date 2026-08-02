@@ -184,6 +184,31 @@ function loadDictionary() {
     add(db.prepare("SELECT name FROM netbackup_slps WHERE name IS NOT NULL AND name != ''").all(), 'POLICY');
   } catch { /* netbackup_slps not present until migration v2 lands */ }
 
+  try {
+    // aws_accounts/aws_ec2_instances/aws_lightsail_instances/aws_ecs_*/aws_s3_buckets
+    // ship in AWS migration v1.
+    add(db.prepare('SELECT name FROM aws_accounts').all(), 'CLUSTER');
+    add(db.prepare("SELECT access_key_id AS name FROM aws_accounts WHERE access_key_id IS NOT NULL AND access_key_id != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM aws_ec2_instances WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT instance_id AS name FROM aws_ec2_instances WHERE instance_id IS NOT NULL AND instance_id != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM aws_lightsail_instances WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT cluster_name AS name FROM aws_ecs_clusters WHERE cluster_name IS NOT NULL AND cluster_name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT service_name AS name FROM aws_ecs_services WHERE service_name IS NOT NULL AND service_name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM aws_s3_buckets WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+  } catch { /* AWS v1 tables not present on this instance */ }
+
+  try {
+    // aws_rds_instances/aws_lambda_functions/aws_dynamo_tables/aws_ecr_repos/aws_vpcs
+    // ship in AWS migration v2 (WP1); guarded separately so its absence
+    // doesn't drop the v1 AWS entries above (netbackup :181-185 pattern).
+    add(db.prepare("SELECT db_id AS name FROM aws_rds_instances WHERE db_id IS NOT NULL AND db_id != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM aws_lambda_functions WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+    add(db.prepare("SELECT name FROM aws_dynamo_tables WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM aws_ecr_repos WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT vpc_id AS name FROM aws_vpcs WHERE vpc_id IS NOT NULL AND vpc_id != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM aws_vpcs WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+  } catch { /* AWS v2 tables not present until migration v2 lands */ }
+
   return entries;
 }
 

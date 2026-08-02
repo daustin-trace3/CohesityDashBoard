@@ -1,9 +1,10 @@
 import { lazy } from 'react';
-import { Gauge, DollarSign, Bell, Server, Boxes, Zap, Container, Package, Database, Table2, Network, BrainCircuit, Settings } from 'lucide-react';
+import { Gauge, DollarSign, Bell, Server, Boxes, Zap, Container, Package, Database, Table2, Network, BrainCircuit, Settings, Sparkles, ShieldCheck as PrivacyIcon } from 'lucide-react';
 
 const AwsOverviewPage = lazy(() => import('../../pages/aws/AwsOverviewPage'));
 const AwsCostPage = lazy(() => import('../../pages/aws/AwsCostPage'));
 const AwsAlertsPage = lazy(() => import('../../pages/aws/AwsAlertsPage'));
+const AwsAdvisorPage = lazy(() => import('../../pages/aws/AwsAdvisorPage'));
 const AwsEc2Page = lazy(() => import('../../pages/aws/AwsEc2Page'));
 const AwsLightsailPage = lazy(() => import('../../pages/aws/AwsLightsailPage'));
 const AwsLambdaPage = lazy(() => import('../../pages/aws/AwsLambdaPage'));
@@ -15,6 +16,8 @@ const AwsS3Page = lazy(() => import('../../pages/aws/AwsS3Page'));
 const AwsVpcPage = lazy(() => import('../../pages/aws/AwsVpcPage'));
 const AwsBedrockPage = lazy(() => import('../../pages/aws/AwsBedrockPage'));
 const AwsSettingsPage = lazy(() => import('../../pages/aws/AwsSettingsPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const AwsPrivacyPage = () => <PrivacyInspectorPage platform="aws" />;
 
 // AWS sidebar — shown when the AWS platform is active.
 const navGroups = [
@@ -23,6 +26,7 @@ const navGroups = [
     items: [
       { label: 'Overview', route: '/aws', icon: Gauge, isActive: (p) => p === '/aws' },
       { label: 'Cost', route: '/aws/cost', icon: DollarSign, isActive: (p) => p.startsWith('/aws/cost') },
+      { label: 'AI Advisor', route: '/aws/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/aws/advisor'), requiresAi: true },
       { label: 'Alerts', route: '/aws/alerts', icon: Bell, isActive: (p) => p.startsWith('/aws/alerts') },
     ],
   },
@@ -69,6 +73,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/aws/privacy', icon: PrivacyIcon, isActive: (p) => p.startsWith('/aws/privacy'), requiresAi: true },
       { label: 'Settings', route: '/aws/settings', icon: Settings, isActive: (p) => p.startsWith('/aws/settings') },
     ],
   },
@@ -89,6 +94,7 @@ export default {
   routes: [
     { path: 'aws', Component: AwsOverviewPage },
     { path: 'aws/cost', Component: AwsCostPage },
+    { path: 'aws/advisor', Component: AwsAdvisorPage },
     { path: 'aws/alerts', Component: AwsAlertsPage },
     { path: 'aws/ec2', Component: AwsEc2Page },
     { path: 'aws/lightsail', Component: AwsLightsailPage },
@@ -100,6 +106,7 @@ export default {
     { path: 'aws/s3', Component: AwsS3Page },
     { path: 'aws/vpc', Component: AwsVpcPage },
     { path: 'aws/bedrock', Component: AwsBedrockPage },
+    { path: 'aws/privacy', Component: AwsPrivacyPage },
     { path: 'aws/settings', Component: AwsSettingsPage },
   ],
 };

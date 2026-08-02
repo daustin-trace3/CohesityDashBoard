@@ -87,6 +87,41 @@ beforeAll(() => {
   db.prepare(`
     INSERT INTO netbackup_storage_units (source_id, name) VALUES (1, 'storage-unit-kappa')
   `).run();
+
+  // AWS
+  db.prepare(`
+    INSERT INTO aws_accounts (name, access_key_id) VALUES ('aws-account-lambda', 'AKIAEXAMPLE12345678')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_ec2_instances (account_id, instance_id, name) VALUES (1, 'i-0abc123mu', 'ec2-webapp-mu')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_lightsail_instances (account_id, name) VALUES (1, 'lightsail-node-nu')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_ecs_clusters (account_id, cluster_arn, cluster_name) VALUES (1, 'arn:aws:ecs:cl-1', 'ecs-cluster-xi')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_ecs_services (account_id, cluster_name, service_name) VALUES (1, 'ecs-cluster-xi', 'ecs-service-omicron')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_s3_buckets (account_id, name) VALUES (1, 'bucket-reports-pi')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_rds_instances (account_id, db_id) VALUES (1, 'rds-orders-rho')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_lambda_functions (account_id, name) VALUES (1, 'lambda-invoice-sigma')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_dynamo_tables (account_id, name) VALUES (1, 'dynamo-sessions-tau')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_ecr_repos (account_id, name) VALUES (1, 'ecr-repo-upsilon')
+  `).run();
+  db.prepare(`
+    INSERT INTO aws_vpcs (account_id, vpc_id, name) VALUES (1, 'vpc-0phichi', 'vpc-core-phi')
+  `).run();
 });
 
 const SEEDED_NAMES = [
@@ -98,6 +133,9 @@ const SEEDED_NAMES = [
   'aria-vra-epsilon', 'app-deployment-checkout',
   'netbackup-primary-zeta', 'policy-oracle-nightly', 'client-webapp-eta',
   'media-server-theta', 'nbu-appliance-iota', 'storage-unit-kappa',
+  'aws-account-lambda', 'ec2-webapp-mu', 'lightsail-node-nu', 'ecs-cluster-xi',
+  'ecs-service-omicron', 'bucket-reports-pi', 'rds-orders-rho', 'lambda-invoice-sigma',
+  'dynamo-sessions-tau', 'ecr-repo-upsilon', 'vpc-core-phi',
 ];
 
 describe('anonymizer platform coverage', () => {

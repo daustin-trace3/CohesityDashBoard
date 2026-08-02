@@ -29,6 +29,7 @@ const vcenterManifest = require('../platforms/vcenter');
 const dellManifest = require('../platforms/dell');
 const ariaManifest = require('../platforms/aria');
 const netbackupManifest = require('../platforms/netbackup');
+const awsManifest = require('../platforms/aws');
 const { createApp } = require('../app');
 
 const pureAdvisor = require('../services/advisors/pureAdvisor');
@@ -38,6 +39,7 @@ const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
 const dellAdvisor = require('../services/advisors/dellAdvisor');
 const ariaAdvisor = require('../services/advisors/ariaAdvisor');
 const netbackupAdvisor = require('../services/advisors/netbackupAdvisor');
+const awsAdvisor = require('../services/advisors/awsAdvisor');
 
 const API_KEY = 'test-api-key';
 
@@ -49,6 +51,7 @@ const ADVISORS = {
   dell: dellAdvisor,
   aria: ariaAdvisor,
   netbackup: netbackupAdvisor,
+  aws: awsAdvisor,
 };
 
 describe('platform AI advisors: contract', () => {
@@ -94,6 +97,7 @@ describe('platform AI advisors: dispatcher routes', () => {
     registry.registerPlugin(dellManifest);
     registry.registerPlugin(ariaManifest);
     registry.registerPlugin(netbackupManifest);
+    registry.registerPlugin(awsManifest);
     app = createApp({ licenseGate: (req, res, next) => next() });
   });
 
@@ -150,6 +154,14 @@ describe('platform AI advisors: dispatcher routes', () => {
   it('GET /api/netbackup/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
     const key = netbackupAdvisor.REPORTS[0];
     const res = await request(app).get(`/api/netbackup/advisor/${slug(key)}`).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.enabled).toBe(false);
+    expect(res.body.report).toBeNull();
+  });
+
+  it('GET /api/aws/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
+    const key = awsAdvisor.REPORTS[0];
+    const res = await request(app).get(`/api/aws/advisor/${slug(key)}`).set('x-api-key', API_KEY);
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(false);
     expect(res.body.report).toBeNull();

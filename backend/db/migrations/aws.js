@@ -354,4 +354,18 @@ module.exports = [
       `);
     },
   },
+  {
+    // Round 4: AI FinOps Advisor cache table, same shape as netbackup's.
+    version: 4,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_ai_reports (
+          report_key   TEXT PRIMARY KEY,
+          model        TEXT,
+          content      TEXT NOT NULL,
+          generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    },
+  },
 ];

@@ -21,7 +21,7 @@ module.exports = {
   },
   statusTables: ['aws_accounts'],
   settingsFields: [],
-  navSections: ['overview', 'ec2', 's3', 'settings'],
+  navSections: ['overview', 'ec2', 's3', 'settings', 'advisor', 'privacy'],
   datasets: [
     {
       id: 'aws.ec2_instances',
