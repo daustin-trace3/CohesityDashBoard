@@ -14,6 +14,8 @@ const CONFIG = {
     description: 'Computed issues across all registered vCenters, with open/resolved history' },
   netbackup: { brand: '#B1181E', base: '/netbackup', instanceKey: 'source', instanceLabel: 'Primary Server',
     description: 'Computed issues across all registered NetBackup sources, with open/resolved history' },
+  aws: { brand: '#FF9900', base: '/aws', instanceKey: 'account', instanceLabel: 'Account',
+    description: 'Computed issues across AWS accounts, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];

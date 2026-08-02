@@ -7,8 +7,9 @@ import vcenter from './vcenter/index.jsx';
 import dell from './dell/index.jsx';
 import aria from './aria/index.jsx';
 import ariaops from './ariaops/index.jsx';
+import aws from './aws/index.jsx';
 
-export const platforms = [cohesity, pure, netapp, zerto, netbackup, vcenter, dell, aria, ariaops];
+export const platforms = [cohesity, pure, netapp, zerto, netbackup, vcenter, dell, aria, ariaops, aws];
 
 export function getPlatform(id) {
   return platforms.find(p => p.id === id);

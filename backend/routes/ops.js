@@ -302,6 +302,41 @@ function netbackupSummary() {
   };
 }
 
+function awsSummary() {
+  const accounts = count('SELECT COUNT(*) c FROM aws_accounts');
+  if (!accounts) return null;
+  const ec2Total = countSafe('SELECT COUNT(*) c FROM aws_ec2_instances');
+  const ec2Running = countSafe("SELECT COUNT(*) c FROM aws_ec2_instances WHERE state = 'running'");
+  const lightsailTotal = countSafe('SELECT COUNT(*) c FROM aws_lightsail_instances');
+  const ecsServices = countSafe('SELECT COUNT(*) c FROM aws_ecs_services');
+  const s3Buckets = countSafe('SELECT COUNT(*) c FROM aws_s3_buckets');
+  const mtdRow = one("SELECT COALESCE(SUM(amount_usd), 0) c FROM aws_cost_daily WHERE day >= strftime('%Y-%m-01', 'now')");
+  const mtd = num(mtdRow?.c);
+  const sev = { critical: 0, warning: 0 };
+  let costSpike = false;
+  for (const r of all("SELECT type, severity, COUNT(*) c FROM aws_issue_history WHERE status = 'open' GROUP BY type, severity")) {
+    const s = String(r.severity || '').toLowerCase();
+    if (s === 'critical') sev.critical += num(r.c);
+    else if (s === 'warning') sev.warning += num(r.c);
+    if (r.type === 'cost-spike') costSpike = true;
+  }
+  const exceptions = [];
+  if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical issue${sev.critical === 1 ? '' : 's'}`, '/aws/alerts'));
+  if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} warning issue${sev.warning === 1 ? '' : 's'}${costSpike ? ' (cost spike)' : ''}`, '/aws/alerts'));
+  return {
+    objects: ec2Total + lightsailTotal + ecsServices + s3Buckets,
+    headline: [
+      { label: 'MTD Spend', value: `$${mtd.toFixed(2)}` },
+      { label: 'EC2 Running', value: `${ec2Running}/${ec2Total}` },
+    ],
+    exceptions,
+    spark: spark7(all(
+      "SELECT date(captured_at) d, MAX(mtd_spend_usd) c FROM aws_metrics_history WHERE captured_at >= datetime('now','-7 days') GROUP BY date(captured_at)"
+    )),
+    sparkLabel: 'MTD spend 7d',
+  };
+}
+
 const PLATFORMS = [
   { id: 'cohesity', label: 'Cohesity', color: '#6CB33F', route: '/cohesity', fn: cohesitySummary },
   { id: 'pure', label: 'Pure', color: '#FF6B00', route: '/pure', fn: pureSummary },
@@ -311,6 +346,7 @@ const PLATFORMS = [
   { id: 'dell', label: 'Dell', color: '#007DB8', route: '/dell', fn: dellSummary },
   { id: 'aria', label: 'Aria', color: '#00A2C7', route: '/aria', fn: ariaSummary },
   { id: 'netbackup', label: 'NetBackup', color: '#B1181E', route: '/netbackup', fn: netbackupSummary },
+  { id: 'aws', label: 'AWS', color: '#FF9900', route: '/aws', fn: awsSummary },
 ];
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };

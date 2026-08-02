@@ -95,10 +95,11 @@ export default function Layout() {
   const isAriaOps = pathname === '/ariaops' || pathname.startsWith('/ariaops/');
   const isAria = !isAriaOps && (pathname === '/aria' || pathname.startsWith('/aria/'));
   const isNetbackup = pathname.startsWith('/netbackup');
+  const isAws = pathname.startsWith('/aws');
   const isOps = pathname.startsWith('/ops');
-  const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell || isAria || isAriaOps || isNetbackup;
-  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isNetbackup ? 'netbackup' : null;
-  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isNetbackup ? 'Server' : '';
+  const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell || isAria || isAriaOps || isNetbackup || isAws;
+  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isNetbackup ? 'netbackup' : isAws ? 'aws' : null;
+  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isNetbackup ? 'Server' : isAws ? 'Instance' : '';
 
   const { platforms: allPlatforms } = usePlatforms();
   const getPlatform = (id) => allPlatforms.find(p => p.id === id);
@@ -112,6 +113,7 @@ export default function Layout() {
   const ariaNavGroups = getPlatform('aria')?.navGroups || [];
   const ariaopsNavGroups = getPlatform('ariaops')?.navGroups || [];
   const netbackupNavGroups = getPlatform('netbackup')?.navGroups || [];
+  const awsNavGroups = getPlatform('aws')?.navGroups || [];
   const isActivePlatform = (id, pathname) => {
     if (id === 'ops') return pathname.startsWith('/ops');
     const platform = getPlatform(id);
@@ -179,6 +181,7 @@ export default function Layout() {
     const aria = platformKey === 'aria';
     const ariaops = platformKey === 'ariaops';
     const netbackup = platformKey === 'netbackup';
+    const aws = platformKey === 'aws';
     // Zerto's "entities" are sites; vCenter's are ESX hosts. Both platforms'
     // overview endpoints are rollup objects, so entity lists come from their
     // inventory endpoints; vCenter's "alerts" are its computed issues.
@@ -188,8 +191,8 @@ export default function Layout() {
     // and its alerts endpoint is a flat array of raw alert rows (level/status).
     // NetBackup's overview is a rollup object ({sources, stats, ...}) rather
     // than a bare entity array, so its source count comes from stats.sourceCount.
-    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : dell ? '/dell/devices' : aria ? '/aria/deployments' : ariaops ? '/ariaops/resources' : netbackup ? '/netbackup/overview' : `/${platformKey}/overview`;
-    const alertsUrl = pureFleet ? '/pure1/alerts' : (vcenter || dell) ? `/${platformKey}/overview` : aria ? '/aria/issues' : ariaops ? '/ariaops/alerts' : netbackup ? '/netbackup/issues' : `/${platformKey}/alerts`;
+    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : dell ? '/dell/devices' : aria ? '/aria/deployments' : ariaops ? '/ariaops/resources' : netbackup ? '/netbackup/overview' : aws ? '/aws/overview' : `/${platformKey}/overview`;
+    const alertsUrl = pureFleet ? '/pure1/alerts' : (vcenter || dell) ? `/${platformKey}/overview` : aria ? '/aria/issues' : ariaops ? '/ariaops/alerts' : netbackup ? '/netbackup/issues' : aws ? '/aws/issues' : `/${platformKey}/alerts`;
 
     const loadAlertList = () => client.get(alertsUrl)
       .then(r => {
@@ -248,6 +251,15 @@ export default function Layout() {
             description: i.message,
           })));
           setPlatformAlerts(rows.length);
+        } else if (aws) {
+          const rows = (r.data?.issues || []).filter(i => i.severity !== 'info');
+          setPlatformAlertList(rows.map((i, idx) => ({
+            id: idx,
+            cluster_name: i.account || '—',
+            severity: i.severity === 'critical' ? 'critical' : 'warning',
+            description: i.message,
+          })));
+          setPlatformAlerts(rows.length);
         } else {
           const rows = (r.data || []).filter(a => !a.resolved && a.state !== 'closed' && a.state !== 'resolved');
           setPlatformAlertList(rows.map(a => ({
@@ -268,7 +280,9 @@ export default function Layout() {
         // Zerto/Aria branches below, whose overview endpoints are also not
         // bare entity arrays).
         const rows = netbackup ? (r.data?.sources || []) : (r.data || []);
-        setPlatformCount(netbackup ? (r.data?.stats?.sourceCount ?? rows.length) : rows.length);
+        setPlatformCount(netbackup ? (r.data?.stats?.sourceCount ?? rows.length)
+          : aws ? ((r.data?.ec2?.total || 0) + (r.data?.lightsail?.total || 0))
+          : rows.length);
         const now = Date.now();
         if (zerto) {
           setPlatformHealthy(rows.filter(s => s.connection_status === 'Connected').length);
@@ -288,6 +302,10 @@ export default function Layout() {
         } else if (netbackup) {
           // A source is healthy if it has no critical (poll-error) issue.
           setPlatformHealthy(rows.filter(s => s.lastPollStatus !== 'error').length);
+        } else if (aws) {
+          // Overview is a rollup object, not a bare entity array — count
+          // running instances (EC2 + Lightsail) as "healthy".
+          setPlatformHealthy((r.data?.ec2?.running || 0) + (r.data?.lightsail?.running || 0));
         } else {
           setPlatformAlerts(rows.reduce((s, a) => s + (a.open_alerts || 0), 0));
           const healthy = rows.filter(a => {
@@ -322,6 +340,7 @@ export default function Layout() {
         ...(r.data.platformAriaEnabled ? ['aria'] : []),
         ...(r.data.platformAriaopsEnabled ? ['ariaops'] : []),
         ...(r.data.platformNetbackupEnabled ? ['netbackup'] : []),
+        ...(r.data.platformAwsEnabled ? ['aws'] : []),
         ...allPlatforms.filter(p => !builtinIds.includes(p.id)).map(p => p.id),
       ]))
       .catch(() => {});
@@ -347,7 +366,7 @@ export default function Layout() {
 
   // Swap the sidebar menu to match the active vendor platform.
   const baseNavGroups = isOps ? opsNavGroups
-    : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : isAria ? ariaNavGroups : isAriaOps ? ariaopsNavGroups : isNetbackup ? netbackupNavGroups
+    : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : isAria ? ariaNavGroups : isAriaOps ? ariaopsNavGroups : isNetbackup ? netbackupNavGroups : isAws ? awsNavGroups
     : activePluginPlatform ? activePluginPlatform.navGroups : navGroups;
 
   // Hide items the user lacks permission for. While auth is still loading,
@@ -364,7 +383,7 @@ export default function Layout() {
     .filter(group => group.items.length > 0);
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
-  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isNetbackup ? 'server' : 'array';
+  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isNetbackup ? 'server' : isAws ? 'instance' : 'array';
   const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
   const footerOk = isPlatform ? platformAllOk : apiOnline;
   const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
@@ -385,8 +404,8 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isNetbackup ? 'NetBackup' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isNetbackup ? '#B1181E' : activePluginPlatform ? activePluginPlatform.color : undefined}
+          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isNetbackup ? 'NetBackup' : isAws ? 'AWS' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
+          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isNetbackup ? '#B1181E' : isAws ? '#FF9900' : activePluginPlatform ? activePluginPlatform.color : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
@@ -469,7 +488,7 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : isAws ? 'AWS Dashboard' : 'Global Cluster Dashboard'}</h1>
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform

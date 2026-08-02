@@ -22,6 +22,7 @@ const dellManifest = require('./platforms/dell');
 const ariaManifest = require('./platforms/aria');
 const ariaopsManifest = require('./platforms/ariaops');
 const netbackupManifest = require('./platforms/netbackup');
+const awsManifest = require('./platforms/aws');
 
 // Auth boot work (contract C8.3): prune stale sessions and (re-)check the
 // first-run claim token. authService already runs this once at module load
@@ -38,7 +39,7 @@ registry.init();
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
 // (C9.5) gates enabling regardless of the stored flag.
-const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled } = getPlatformSettings();
+const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled } = getPlatformSettings();
 registry.registerPlugin(pureManifest);
 registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
 registry.registerPlugin(netappManifest);
@@ -55,6 +56,8 @@ registry.registerPlugin(ariaopsManifest);
 registry.setEnabled('ariaops', platformAriaopsEnabled && registry.isEntitled('ariaops'));
 registry.registerPlugin(netbackupManifest);
 registry.setEnabled('netbackup', platformNetbackupEnabled && registry.isEntitled('netbackup'));
+registry.registerPlugin(awsManifest);
+registry.setEnabled('aws', platformAwsEnabled && registry.isEntitled('aws'));
 
 // Scan and register any installed (non-built-in) plugins left in plugins/
 // after the boot swap above.

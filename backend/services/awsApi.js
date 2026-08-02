@@ -1,0 +1,553 @@
+// AWS API client. One SDK v3 client per service, built per-account: stored
+// credentials (encrypted_credentials -> secretAccessKey, access_key_id
+// plaintext) take priority; a row with blank/NULL creds falls back to
+// process.env.AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (the "env mode" seam
+// routes/aws.js reports as credSource). All fetchers are failure-tolerant:
+// optional chaining, default 0/null, never throw on a missing/empty field —
+// only on the underlying AWS call itself.
+const { EC2Client, DescribeInstancesCommand, DescribeVolumesCommand } = require('@aws-sdk/client-ec2');
+const {
+  LightsailClient, GetInstancesCommand, GetInstanceMetricDataCommand, GetInstanceSnapshotsCommand,
+} = require('@aws-sdk/client-lightsail');
+const {
+  ECSClient, ListClustersCommand, DescribeClustersCommand, ListServicesCommand, DescribeServicesCommand,
+} = require('@aws-sdk/client-ecs');
+const {
+  S3Client, ListBucketsCommand, GetBucketLocationCommand, GetPublicAccessBlockCommand,
+  GetBucketVersioningCommand, GetBucketLifecycleConfigurationCommand,
+} = require('@aws-sdk/client-s3');
+const { CloudWatchClient, ListMetricsCommand, GetMetricDataCommand } = require('@aws-sdk/client-cloudwatch');
+const { CostExplorerClient, GetCostAndUsageCommand } = require('@aws-sdk/client-cost-explorer');
+const { decrypt } = require('./encryption');
+const logger = require('../utils/logger');
+
+/** Resolve { accessKeyId, secretAccessKey } for an account row (or unsaved candidate). */
+function creds(account) {
+  // Unsaved test candidates carry a plaintext secretAccessKey.
+  if (account.secretAccessKey) {
+    return { accessKeyId: account.accessKeyId || account.access_key_id, secretAccessKey: account.secretAccessKey };
+  }
+  if (account.access_key_id && account.encrypted_credentials) {
+    try {
+      const c = JSON.parse(decrypt(account.encrypted_credentials));
+      if (c.secretAccessKey) return { accessKeyId: account.access_key_id, secretAccessKey: c.secretAccessKey };
+    } catch (err) {
+      logger.warn(`[awsApi] decrypt failed for account ${account.name || account.id}: ${err.message}`);
+    }
+  }
+  return { accessKeyId: process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY };
+}
+
+/** 'stored' | 'env' | 'none' — never the secret itself. */
+function credSource(account) {
+  if (account.access_key_id && account.encrypted_credentials) return 'stored';
+  if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) return 'env';
+  return 'none';
+}
+
+function clientConfig(account, region) {
+  const { accessKeyId, secretAccessKey } = creds(account);
+  const cfg = { region: region || account.region || 'us-east-2' };
+  if (accessKeyId && secretAccessKey) cfg.credentials = { accessKeyId, secretAccessKey };
+  return cfg;
+}
+
+const ec2Client = (account) => new EC2Client(clientConfig(account));
+const lightsailClient = (account) => new LightsailClient(clientConfig(account));
+const ecsClient = (account) => new ECSClient(clientConfig(account));
+const s3Client = (account, region) => new S3Client(clientConfig(account, region));
+const cloudwatchClient = (account, region) => new CloudWatchClient(clientConfig(account, region));
+// Cost Explorer is a global service reachable only via us-east-1.
+const costExplorerClient = (account) => new CostExplorerClient(clientConfig(account, 'us-east-1'));
+
+// ── EC2 ──────────────────────────────────────────────────────────────────────
+
+async function fetchEc2Instances(account) {
+  const client = ec2Client(account);
+  const instances = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeInstancesCommand({ NextToken: nextToken }));
+    for (const r of resp?.Reservations || []) {
+      for (const i of r?.Instances || []) {
+        const nameTag = (i.Tags || []).find((t) => t.Key === 'Name');
+        instances.push({
+          instanceId: i.InstanceId,
+          name: nameTag?.Value || null,
+          state: i.State?.Name || null,
+          instanceType: i.InstanceType || null,
+          az: i.Placement?.AvailabilityZone || null,
+          privateIp: i.PrivateIpAddress || null,
+          publicIp: i.PublicIpAddress || null,
+          platform: i.PlatformDetails || i.Platform || null,
+          launchTime: i.LaunchTime ? new Date(i.LaunchTime).toISOString() : null,
+        });
+      }
+    }
+    nextToken = resp?.NextToken;
+  } while (nextToken);
+  return instances;
+}
+
+async function fetchEbsVolumes(account) {
+  const client = ec2Client(account);
+  const volumes = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeVolumesCommand({ NextToken: nextToken }));
+    for (const v of resp?.Volumes || []) {
+      volumes.push({
+        volumeId: v.VolumeId,
+        state: v.State || null,
+        sizeGb: v.Size ?? null,
+        volumeType: v.VolumeType || null,
+        az: v.AvailabilityZone || null,
+        attachedInstanceId: v.Attachments?.[0]?.InstanceId || null,
+      });
+    }
+    nextToken = resp?.NextToken;
+  } while (nextToken);
+  return volumes;
+}
+
+/**
+ * Per-instance CPUUtilization average + StatusCheckFailed max over the last
+ * 15 minutes, via one batched GetMetricData call. Returns
+ * Map(instanceId -> { cpuUtil, statusCheck }). Failure-tolerant — an empty
+ * instance list or a CloudWatch error yields an empty map.
+ */
+async function fetchEc2Metrics(account, instanceIds) {
+  const out = new Map();
+  if (!instanceIds?.length) return out;
+  const client = cloudwatchClient(account);
+  const endTime = new Date();
+  const startTime = new Date(endTime.getTime() - 15 * 60000);
+  const queries = [];
+  instanceIds.forEach((id, idx) => {
+    queries.push({
+      Id: `cpu${idx}`,
+      MetricStat: {
+        Metric: { Namespace: 'AWS/EC2', MetricName: 'CPUUtilization', Dimensions: [{ Name: 'InstanceId', Value: id }] },
+        Period: 900, Stat: 'Average',
+      },
+      ReturnData: true,
+    });
+    queries.push({
+      Id: `sc${idx}`,
+      MetricStat: {
+        Metric: { Namespace: 'AWS/EC2', MetricName: 'StatusCheckFailed', Dimensions: [{ Name: 'InstanceId', Value: id }] },
+        Period: 900, Stat: 'Maximum',
+      },
+      ReturnData: true,
+    });
+  });
+  // GetMetricData caps at 500 queries per call.
+  for (let i = 0; i < queries.length; i += 500) {
+    const chunk = queries.slice(i, i + 500);
+    const resp = await client.send(new GetMetricDataCommand({
+      StartTime: startTime, EndTime: endTime, MetricDataQueries: chunk,
+    }));
+    for (const r of resp?.MetricDataResults || []) {
+      const idx = Number(r.Id.replace(/^\D+/, ''));
+      const instanceId = instanceIds[idx];
+      if (!instanceId) continue;
+      const val = r.Values?.[0] ?? null;
+      if (!out.has(instanceId)) out.set(instanceId, { cpuUtil: null, statusCheck: null });
+      const entry = out.get(instanceId);
+      if (r.Id.startsWith('cpu')) entry.cpuUtil = val;
+      else if (r.Id.startsWith('sc')) entry.statusCheck = val != null ? (val > 0 ? 'failed' : 'ok') : null;
+    }
+  }
+  return out;
+}
+
+// ── Lightsail ────────────────────────────────────────────────────────────────
+
+async function fetchLightsailInstances(account) {
+  const client = lightsailClient(account);
+  const instances = [];
+  let pageToken;
+  do {
+    const resp = await client.send(new GetInstancesCommand({ pageToken }));
+    for (const i of resp?.instances || []) {
+      instances.push({
+        name: i.name,
+        state: i.state?.name || null,
+        blueprint: i.blueprintName || null,
+        bundle: i.bundleId || null,
+        az: i.location?.availabilityZone || null,
+        publicIp: i.publicIpAddress || null,
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return instances;
+}
+
+/** Average CPUUtilization over the last 15 minutes, per Lightsail instance name. */
+async function fetchLightsailMetric(account, instanceName) {
+  try {
+    const client = lightsailClient(account);
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 15 * 60000);
+    const resp = await client.send(new GetInstanceMetricDataCommand({
+      instanceName, metricName: 'CPUUtilization',
+      period: 900, startTime, endTime, unit: 'Percent', statistics: ['Average'],
+    }));
+    const points = resp?.metricData || [];
+    if (!points.length) return null;
+    points.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    return points[0]?.average ?? null;
+  } catch (err) {
+    logger.debug(`[awsApi] Lightsail metric fetch failed for ${instanceName}: ${err.message}`);
+    return null;
+  }
+}
+
+/** { count, latestAt } for an instance's snapshots. */
+async function fetchLightsailSnapshots(account, instanceName) {
+  try {
+    const client = lightsailClient(account);
+    const snaps = [];
+    let pageToken;
+    do {
+      const resp = await client.send(new GetInstanceSnapshotsCommand({ pageToken }));
+      for (const s of resp?.instanceSnapshots || []) {
+        if (s.fromInstanceName === instanceName) snaps.push(s);
+      }
+      pageToken = resp?.nextPageToken;
+    } while (pageToken);
+    const latest = snaps.reduce((max, s) => {
+      const t = s.createdAt ? new Date(s.createdAt).getTime() : 0;
+      return t > max ? t : max;
+    }, 0);
+    return { count: snaps.length, latestAt: latest ? new Date(latest).toISOString() : null };
+  } catch (err) {
+    logger.debug(`[awsApi] Lightsail snapshot fetch failed for ${instanceName}: ${err.message}`);
+    return { count: 0, latestAt: null };
+  }
+}
+
+// ── ECS ──────────────────────────────────────────────────────────────────────
+
+async function fetchEcsClusters(account) {
+  const client = ecsClient(account);
+  const arns = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new ListClustersCommand({ nextToken }));
+    arns.push(...(resp?.clusterArns || []));
+    nextToken = resp?.nextToken;
+  } while (nextToken);
+  if (!arns.length) return [];
+  const clusters = [];
+  for (let i = 0; i < arns.length; i += 100) {
+    const chunk = arns.slice(i, i + 100);
+    const resp = await client.send(new DescribeClustersCommand({ clusters: chunk }));
+    for (const c of resp?.clusters || []) {
+      clusters.push({
+        clusterArn: c.clusterArn,
+        clusterName: c.clusterName || null,
+        status: c.status || null,
+        runningTasks: c.runningTasksCount ?? null,
+        pendingTasks: c.pendingTasksCount ?? null,
+        serviceCount: c.activeServicesCount ?? null,
+        containerInstances: c.registeredContainerInstancesCount ?? null,
+      });
+    }
+  }
+  return clusters;
+}
+
+/** Services for one cluster, batched ≤10 ARNs per DescribeServices call. */
+async function fetchEcsServices(account, clusterArn) {
+  const client = ecsClient(account);
+  const arns = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new ListServicesCommand({ cluster: clusterArn, nextToken }));
+    arns.push(...(resp?.serviceArns || []));
+    nextToken = resp?.nextToken;
+  } while (nextToken);
+  if (!arns.length) return [];
+  const services = [];
+  for (let i = 0; i < arns.length; i += 10) {
+    const chunk = arns.slice(i, i + 10);
+    const resp = await client.send(new DescribeServicesCommand({ cluster: clusterArn, services: chunk }));
+    for (const s of resp?.services || []) {
+      services.push({
+        serviceName: s.serviceName || null,
+        status: s.status || null,
+        desiredCount: s.desiredCount ?? null,
+        runningCount: s.runningCount ?? null,
+        pendingCount: s.pendingCount ?? null,
+        launchType: s.launchType || s.capacityProviderStrategy?.[0]?.capacityProvider || null,
+      });
+    }
+  }
+  return services;
+}
+
+/** Per-service CPU/MemoryUtilization average over the last 15 minutes, AWS/ECS namespace. */
+async function fetchEcsServiceMetrics(account, clusterName, serviceNames) {
+  const out = new Map();
+  if (!serviceNames?.length) return out;
+  try {
+    const client = cloudwatchClient(account);
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 15 * 60000);
+    const queries = [];
+    serviceNames.forEach((name, idx) => {
+      for (const [prefix, metric] of [['cpu', 'CPUUtilization'], ['mem', 'MemoryUtilization']]) {
+        queries.push({
+          Id: `${prefix}${idx}`,
+          MetricStat: {
+            Metric: {
+              Namespace: 'AWS/ECS', MetricName: metric,
+              Dimensions: [{ Name: 'ClusterName', Value: clusterName }, { Name: 'ServiceName', Value: name }],
+            },
+            Period: 900, Stat: 'Average',
+          },
+          ReturnData: true,
+        });
+      }
+    });
+    for (let i = 0; i < queries.length; i += 500) {
+      const chunk = queries.slice(i, i + 500);
+      const resp = await client.send(new GetMetricDataCommand({ StartTime: startTime, EndTime: endTime, MetricDataQueries: chunk }));
+      for (const r of resp?.MetricDataResults || []) {
+        const idx = Number(r.Id.replace(/^\D+/, ''));
+        const name = serviceNames[idx];
+        if (!name) continue;
+        if (!out.has(name)) out.set(name, { cpuUtil: null, memoryUtil: null });
+        const entry = out.get(name);
+        const val = r.Values?.[0] ?? null;
+        if (r.Id.startsWith('cpu')) entry.cpuUtil = val;
+        else if (r.Id.startsWith('mem')) entry.memoryUtil = val;
+      }
+    }
+  } catch (err) {
+    logger.debug(`[awsApi] ECS service metrics fetch failed for cluster ${clusterName}: ${err.message}`);
+  }
+  return out;
+}
+
+// ── S3 ───────────────────────────────────────────────────────────────────────
+
+async function fetchS3Buckets(account) {
+  const client = s3Client(account);
+  const resp = await client.send(new ListBucketsCommand({}));
+  return (resp?.Buckets || []).map((b) => ({ name: b.Name, createdAt: b.CreationDate ? new Date(b.CreationDate).toISOString() : null }));
+}
+
+async function fetchBucketLocation(account, bucketName) {
+  try {
+    const client = s3Client(account);
+    const resp = await client.send(new GetBucketLocationCommand({ Bucket: bucketName }));
+    return resp?.LocationConstraint || 'us-east-1';
+  } catch (err) {
+    logger.debug(`[awsApi] GetBucketLocation failed for ${bucketName}: ${err.message}`);
+    return 'us-east-1';
+  }
+}
+
+async function fetchBucketPublicAccessBlocked(account, bucketName, region) {
+  try {
+    const client = s3Client(account, region);
+    const resp = await client.send(new GetPublicAccessBlockCommand({ Bucket: bucketName }));
+    const cfg = resp?.PublicAccessBlockConfiguration;
+    return !!(cfg?.BlockPublicAcls && cfg?.BlockPublicPolicy && cfg?.IgnorePublicAcls && cfg?.RestrictPublicBuckets);
+  } catch (err) {
+    if (err.name === 'NoSuchPublicAccessBlockConfiguration') return false;
+    logger.debug(`[awsApi] GetPublicAccessBlock failed for ${bucketName}: ${err.message}`);
+    return false;
+  }
+}
+
+async function fetchBucketVersioning(account, bucketName, region) {
+  try {
+    const client = s3Client(account, region);
+    const resp = await client.send(new GetBucketVersioningCommand({ Bucket: bucketName }));
+    return resp?.Status || 'Disabled';
+  } catch (err) {
+    logger.debug(`[awsApi] GetBucketVersioning failed for ${bucketName}: ${err.message}`);
+    return 'Disabled';
+  }
+}
+
+async function fetchBucketLifecycleRuleCount(account, bucketName, region) {
+  try {
+    const client = s3Client(account, region);
+    const resp = await client.send(new GetBucketLifecycleConfigurationCommand({ Bucket: bucketName }));
+    return (resp?.Rules || []).length;
+  } catch (err) {
+    if (err.name === 'NoSuchLifecycleConfiguration') return 0;
+    logger.debug(`[awsApi] GetBucketLifecycleConfiguration failed for ${bucketName}: ${err.message}`);
+    return 0;
+  }
+}
+
+/** { sizeBytes, objectCount } — newest AWS/S3 daily datapoint over the last 3 days. */
+async function fetchBucketStorageMetrics(account, bucketName, region) {
+  try {
+    const client = cloudwatchClient(account, region);
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 3 * 86400000);
+    const resp = await client.send(new GetMetricDataCommand({
+      StartTime: startTime, EndTime: endTime,
+      MetricDataQueries: [
+        {
+          Id: 'size',
+          MetricStat: {
+            Metric: {
+              Namespace: 'AWS/S3', MetricName: 'BucketSizeBytes',
+              Dimensions: [{ Name: 'BucketName', Value: bucketName }, { Name: 'StorageType', Value: 'StandardStorage' }],
+            },
+            Period: 86400, Stat: 'Average',
+          },
+          ReturnData: true,
+        },
+        {
+          Id: 'objects',
+          MetricStat: {
+            Metric: {
+              Namespace: 'AWS/S3', MetricName: 'NumberOfObjects',
+              Dimensions: [{ Name: 'BucketName', Value: bucketName }, { Name: 'StorageType', Value: 'AllStorageTypes' }],
+            },
+            Period: 86400, Stat: 'Average',
+          },
+          ReturnData: true,
+        },
+      ],
+    }));
+    const byId = new Map((resp?.MetricDataResults || []).map((r) => [r.Id, r]));
+    const newest = (r) => {
+      if (!r?.Timestamps?.length) return null;
+      let bestIdx = 0;
+      for (let i = 1; i < r.Timestamps.length; i++) if (new Date(r.Timestamps[i]) > new Date(r.Timestamps[bestIdx])) bestIdx = i;
+      return r.Values?.[bestIdx] ?? null;
+    };
+    return { sizeBytes: newest(byId.get('size')), objectCount: newest(byId.get('objects')) };
+  } catch (err) {
+    logger.debug(`[awsApi] S3 CloudWatch metrics failed for ${bucketName}: ${err.message}`);
+    return { sizeBytes: null, objectCount: null };
+  }
+}
+
+// ── Bedrock (via CloudWatch AWS/Bedrock namespace) ────────────────────────────
+
+/** Distinct ModelId dimension values reporting under AWS/Bedrock. */
+async function fetchBedrockModelIds(account) {
+  try {
+    const client = cloudwatchClient(account);
+    const resp = await client.send(new ListMetricsCommand({ Namespace: 'AWS/Bedrock' }));
+    const ids = new Set();
+    for (const m of resp?.Metrics || []) {
+      const dim = (m.Dimensions || []).find((d) => d.Name === 'ModelId');
+      if (dim?.Value) ids.add(dim.Value);
+    }
+    return [...ids];
+  } catch (err) {
+    logger.debug(`[awsApi] Bedrock ListMetrics failed: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Daily Invocations(Sum)/InputTokenCount(Sum)/OutputTokenCount(Sum)/
+ * InvocationLatency(Average) for one ModelId, last 30 days.
+ * Returns [{ day, invocations, inputTokens, outputTokens, avgLatencyMs }].
+ */
+async function fetchBedrockDailyUsage(account, modelId) {
+  try {
+    const client = cloudwatchClient(account);
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 30 * 86400000);
+    const dims = [{ Name: 'ModelId', Value: modelId }];
+    const resp = await client.send(new GetMetricDataCommand({
+      StartTime: startTime, EndTime: endTime,
+      MetricDataQueries: [
+        { Id: 'inv', MetricStat: { Metric: { Namespace: 'AWS/Bedrock', MetricName: 'Invocations', Dimensions: dims }, Period: 86400, Stat: 'Sum' }, ReturnData: true },
+        { Id: 'intok', MetricStat: { Metric: { Namespace: 'AWS/Bedrock', MetricName: 'InputTokenCount', Dimensions: dims }, Period: 86400, Stat: 'Sum' }, ReturnData: true },
+        { Id: 'outtok', MetricStat: { Metric: { Namespace: 'AWS/Bedrock', MetricName: 'OutputTokenCount', Dimensions: dims }, Period: 86400, Stat: 'Sum' }, ReturnData: true },
+        { Id: 'lat', MetricStat: { Metric: { Namespace: 'AWS/Bedrock', MetricName: 'InvocationLatency', Dimensions: dims }, Period: 86400, Stat: 'Average' }, ReturnData: true },
+      ],
+    }));
+    const byId = new Map((resp?.MetricDataResults || []).map((r) => [r.Id, r]));
+    const byDay = new Map();
+    const merge = (id, key) => {
+      const r = byId.get(id);
+      if (!r) return;
+      (r.Timestamps || []).forEach((ts, idx) => {
+        const day = new Date(ts).toISOString().slice(0, 10);
+        if (!byDay.has(day)) byDay.set(day, { day, invocations: null, inputTokens: null, outputTokens: null, avgLatencyMs: null });
+        byDay.get(day)[key] = r.Values?.[idx] ?? null;
+      });
+    };
+    merge('inv', 'invocations');
+    merge('intok', 'inputTokens');
+    merge('outtok', 'outputTokens');
+    merge('lat', 'avgLatencyMs');
+    return [...byDay.values()];
+  } catch (err) {
+    logger.debug(`[awsApi] Bedrock GetMetricData failed for ${modelId}: ${err.message}`);
+    return [];
+  }
+}
+
+// ── Cost Explorer ────────────────────────────────────────────────────────────
+
+/**
+ * ONE GetCostAndUsage call ($0.01) — daily granularity, last 35 days through
+ * today, grouped by SERVICE. Returns [{ day, service, amountUsd }]. Callers
+ * MUST gate this behind the daily last_cost_capture_at stamp.
+ */
+async function fetchCostAndUsage(account) {
+  const client = costExplorerClient(account);
+  const end = new Date();
+  const start = new Date(end.getTime() - 35 * 86400000);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const resp = await client.send(new GetCostAndUsageCommand({
+    TimePeriod: { Start: fmt(start), End: fmt(end) },
+    Granularity: 'DAILY',
+    Metrics: ['UnblendedCost'],
+    GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
+  }));
+  const rows = [];
+  for (const period of resp?.ResultsByTime || []) {
+    const day = period.TimePeriod?.Start;
+    for (const g of period.Groups || []) {
+      const service = g.Keys?.[0] || 'Unknown';
+      const amountUsd = Number(g.Metrics?.UnblendedCost?.Amount) || 0;
+      rows.push({ day, service, amountUsd });
+    }
+  }
+  return rows;
+}
+
+// ── Test connection ──────────────────────────────────────────────────────────
+
+/** Validate a saved or candidate account. Never throws. */
+async function testConnection(account) {
+  try {
+    const client = ec2Client(account);
+    const resp = await client.send(new DescribeInstancesCommand({ MaxResults: 5 }));
+    const instanceCount = (resp?.Reservations || []).reduce((n, r) => n + (r.Instances || []).length, 0);
+    return { ok: true, instanceCount };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+}
+
+module.exports = {
+  creds, credSource,
+  ec2Client, lightsailClient, ecsClient, s3Client, cloudwatchClient, costExplorerClient,
+  fetchEc2Instances, fetchEbsVolumes, fetchEc2Metrics,
+  fetchLightsailInstances, fetchLightsailMetric, fetchLightsailSnapshots,
+  fetchEcsClusters, fetchEcsServices, fetchEcsServiceMetrics,
+  fetchS3Buckets, fetchBucketLocation, fetchBucketPublicAccessBlocked, fetchBucketVersioning,
+  fetchBucketLifecycleRuleCount, fetchBucketStorageMetrics,
+  fetchBedrockModelIds, fetchBedrockDailyUsage,
+  fetchCostAndUsage,
+  testConnection,
+};

@@ -25,6 +25,7 @@ const zertoManifest = require('../platforms/zerto');
 const dellManifest = require('../platforms/dell');
 const ariaManifest = require('../platforms/aria');
 const ariaopsManifest = require('../platforms/ariaops');
+const awsManifest = require('../platforms/aws');
 const { createApp } = require('../app');
 
 const API_KEY = 'test-api-key';
@@ -39,6 +40,7 @@ beforeEach(() => {
   registry.registerPlugin(dellManifest);
   registry.registerPlugin(ariaManifest);
   registry.registerPlugin(ariaopsManifest);
+  registry.registerPlugin(awsManifest);
   app = createApp({ licenseGate: (req, res, next) => next() });
 });
 
@@ -194,6 +196,23 @@ describe('platform plugin manifests (pure, netapp)', () => {
 
     registry.setEnabled('ariaops', true);
     const enabledRes = await get('/api/ariaops/instances');
+    expect(enabledRes.status).toBe(200);
+  });
+
+  it('aws: dispatcher 200, disabled -> 404 platform_disabled', async () => {
+    const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
+
+    const accountsRes = await get('/api/aws/accounts');
+    expect(accountsRes.status).toBe(200);
+    expect(accountsRes.body).toEqual([]);
+
+    registry.setEnabled('aws', false);
+    const disabledRes = await get('/api/aws/accounts');
+    expect(disabledRes.status).toBe(404);
+    expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
+
+    registry.setEnabled('aws', true);
+    const enabledRes = await get('/api/aws/accounts');
     expect(enabledRes.status).toBe(200);
   });
 

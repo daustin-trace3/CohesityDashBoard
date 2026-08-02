@@ -66,6 +66,14 @@ const CATEGORIES = [
     sql: `SELECT name AS title, policy_type AS subtitle FROM netbackup_policies WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
   { key: 'netbackup-appliances', label: 'NetBackup Appliances', platform: 'netbackup', perm: 'netbackup:appliances:view', base: '/netbackup/appliances',
     sql: `SELECT name AS title, appliance_type AS subtitle FROM netbackup_appliances WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'aws-ec2', label: 'AWS EC2 Instances', platform: 'aws', perm: 'aws:ec2:view', base: '/aws/ec2',
+    sql: `SELECT COALESCE(i.name, i.instance_id) AS title, (COALESCE(i.state, '') || ' · ' || COALESCE(i.instance_type, '') || ' · ' || a.name) AS subtitle
+          FROM aws_ec2_instances i JOIN aws_accounts a ON a.id = i.account_id
+          WHERE COALESCE(i.name, i.instance_id) LIKE ? ESCAPE '\\' ORDER BY title LIMIT ?` },
+  { key: 'aws-s3', label: 'AWS S3 Buckets', platform: 'aws', perm: 'aws:s3:view', base: '/aws/s3',
+    sql: `SELECT name AS title, region AS subtitle FROM aws_s3_buckets WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'aws-ecs', label: 'AWS ECS Services', platform: 'aws', perm: 'aws:ecs:view', base: '/aws/ecs',
+    sql: `SELECT service_name AS title, cluster_name AS subtitle FROM aws_ecs_services WHERE service_name LIKE ? ESCAPE '\\' ORDER BY service_name LIMIT ?` },
 ];
 
 const platformEnabled = (id) => {

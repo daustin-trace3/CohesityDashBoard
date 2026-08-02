@@ -10,6 +10,12 @@
     "poller": "node pollerProcess.js"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1101.0",
+    "@aws-sdk/client-cost-explorer": "^3.1101.0",
+    "@aws-sdk/client-ec2": "^3.1101.0",
+    "@aws-sdk/client-ecs": "^3.1101.0",
+    "@aws-sdk/client-lightsail": "^3.1101.0",
+    "@aws-sdk/client-s3": "^3.1101.0",
     "argon2": "^0.44.0",
     "axios": "^1.7.2",
     "better-sqlite3": "^12.9.0",

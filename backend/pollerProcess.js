@@ -25,6 +25,7 @@ const dellManifest = require('./platforms/dell');
 const ariaManifest = require('./platforms/aria');
 const ariaopsManifest = require('./platforms/ariaops');
 const netbackupManifest = require('./platforms/netbackup');
+const awsManifest = require('./platforms/aws');
 
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
@@ -35,7 +36,7 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
@@ -52,6 +53,8 @@ if (isDemo()) {
   registry.setEnabled('ariaops', platformAriaopsEnabled && registry.isEntitled('ariaops'));
   registry.registerPlugin(netbackupManifest);
   registry.setEnabled('netbackup', platformNetbackupEnabled && registry.isEntitled('netbackup'));
+  registry.registerPlugin(awsManifest);
+  registry.setEnabled('aws', platformAwsEnabled && registry.isEntitled('aws'));
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();

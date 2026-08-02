@@ -19,6 +19,7 @@ const PLATFORM_METRICS_HISTORY = {
   aria: { arraysTable: 'aria_instances', metricsTable: 'aria_metrics_history', arrayIdColumn: 'instance_id' },
   ariaops: { arraysTable: 'ariaops_instances', metricsTable: 'ariaops_metrics_history', arrayIdColumn: 'instance_id' },
   netbackup: { arraysTable: 'netbackup_sources', metricsTable: 'netbackup_metrics_history', arrayIdColumn: 'source_id' },
+  aws: { arraysTable: 'aws_accounts', metricsTable: 'aws_metrics_history', arrayIdColumn: 'account_id' },
 };
 
 /**
@@ -178,6 +179,8 @@ router.get('/status', (req, res, next) => {
       dell: platformSections.dell,
       aria: platformSections.aria,
       ariaops: platformSections.ariaops,
+      netbackup: platformSections.netbackup,
+      aws: platformSections.aws,
       licensing: {
         enabled: true,
         isSyncing: licensingState.isSyncing,

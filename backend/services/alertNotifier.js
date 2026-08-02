@@ -188,6 +188,26 @@ function collectNetbackupIssues() {
   }));
 }
 
+/** Open AWS computed issues — reconcileIssueHistory keeps aws_issue_history
+ *  current with a stable issue_key per issue, and resolving drops the row
+ *  out of this query (which is what ends reminders). */
+function collectAwsIssues() {
+  const rows = db.prepare(`
+    SELECT i.issue_key AS issueKey, COALESCE(a.name, i.account, 'estate') AS account,
+           i.severity, i.message, i.first_seen AS firstSeen, i.last_seen AS lastSeen
+    FROM aws_issue_history i LEFT JOIN aws_accounts a ON i.account_id = a.id
+    WHERE i.status = 'open'
+  `).all();
+  return rows.map((r) => ({
+    sourceKey: `aws:${r.issueKey}`,
+    severity: String(r.severity || '').toLowerCase(),
+    host: r.account,
+    message: r.message || '',
+    firstSeen: toIso(r.firstSeen),
+    lastSeen: toIso(r.lastSeen),
+  }));
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -197,6 +217,7 @@ const COLLECTORS = {
   dell: collectDellAlerts,
   aria: collectAriaIssues,
   netbackup: collectNetbackupIssues,
+  aws: collectAwsIssues,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({

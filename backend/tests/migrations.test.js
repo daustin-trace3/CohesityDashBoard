@@ -21,6 +21,7 @@ import dellMigrations from '../db/migrations/dell.js';
 import ariaMigrations from '../db/migrations/aria.js';
 import ariaopsMigrations from '../db/migrations/ariaops.js';
 import netbackupMigrations from '../db/migrations/netbackup.js';
+import awsMigrations from '../db/migrations/aws.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -158,6 +159,7 @@ function buildNewDb() {
   runMigrations(db, 'aria', ariaMigrations);
   runMigrations(db, 'ariaops', ariaopsMigrations);
   runMigrations(db, 'netbackup', netbackupMigrations);
+  runMigrations(db, 'aws', awsMigrations);
   return db;
 }
 
@@ -213,6 +215,9 @@ const NEW_TABLES = [
   'ai_audit_exchanges',
   'netapp_aiqum_instances',
   'user_dashboards',
+  'aws_accounts', 'aws_ec2_instances', 'aws_ebs_volumes', 'aws_lightsail_instances',
+  'aws_ecs_clusters', 'aws_ecs_services', 'aws_s3_buckets', 'aws_bedrock_usage',
+  'aws_cost_daily', 'aws_metrics_history', 'aws_issue_history',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.
@@ -307,6 +312,7 @@ describe('runMigrations', () => {
       runMigrations(db, 'aria', ariaMigrations);
       runMigrations(db, 'ariaops', ariaopsMigrations);
   runMigrations(db, 'netbackup', netbackupMigrations);
+      runMigrations(db, 'aws', awsMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

@@ -350,4 +350,21 @@ describe('seedDemo.js', () => {
     const applianceIssues = db.prepare("SELECT COUNT(*) c FROM netbackup_issue_history WHERE type = 'appliance-hw' AND status = 'open'").get().c;
     expect(applianceIssues).toBeGreaterThanOrEqual(3);
   });
+
+  it('seeds the aws platform with inventory, cost/bedrock history, and every computed issue', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_accounts').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_ec2_instances').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_ecs_services').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_s3_buckets').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_cost_daily').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_bedrock_usage').get().c).toBeGreaterThan(0);
+
+    for (const type of ['ec2-status-check', 'ecs-degraded', 'cost-spike', 's3-public', 'ebs-unattached']) {
+      const row = db.prepare("SELECT COUNT(*) c FROM aws_issue_history WHERE type = ? AND status = 'open'").get(type);
+      expect(row.c).toBeGreaterThan(0);
+    }
+
+    const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_aws_enabled'").get();
+    expect(flag.value).toBe('1');
+  });
 });
