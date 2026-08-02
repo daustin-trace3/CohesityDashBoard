@@ -16,14 +16,15 @@ export default function AwsOverviewPage() {
   const [data, setData] = useState(null);
   const [issues, setIssues] = useState(null);
   const [health, setHealth] = useState(null);
+  const [filterAccountId, setFilterAccountId] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => Promise.all([
-    client.get('/aws/overview').then(({ data }) => setData(data)),
+    client.get('/aws/overview', { params: filterAccountId ? { accountId: filterAccountId } : {} }).then(({ data }) => setData(data)),
     client.get('/aws/issues').then(({ data }) => setIssues(Array.isArray(data) ? data : data?.issues || [])).catch(() => setIssues([])),
     client.get('/aws/health').then(({ data }) => setHealth(data)).catch(() => setHealth({ operational: true, events: [] })),
   ]).then(() => setLastRefreshed(new Date()))
-    .catch(() => { setData({}); toast({ type: 'error', title: 'Failed to load AWS overview' }); }), [toast]);
+    .catch(() => { setData({}); toast({ type: 'error', title: 'Failed to load AWS overview' }); }), [toast, filterAccountId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -42,6 +43,8 @@ export default function AwsOverviewPage() {
   const estate = data?.estate || {};
   const topMovers = estate.topMovers || [];
   const healthEvents = health?.events || [];
+  const filterAccount = accountsDetail.find((a) => a.id === filterAccountId) || null;
+  const visibleIssues = filterAccount ? (issues || []).filter((i) => i.account === filterAccount.name) : issues;
 
   return (
     <div className="animate-fade-in">
@@ -115,11 +118,11 @@ export default function AwsOverviewPage() {
           </div>
           {issues == null ? (
             <LoadingPanel label="Loading…" height={140} />
-          ) : issues.length === 0 ? (
-            <div className="text-sm text-status-ok py-6 text-center">No open issues.</div>
+          ) : visibleIssues.length === 0 ? (
+            <div className="text-sm text-status-ok py-6 text-center">No open issues{filterAccount ? ` for ${filterAccount.region}` : ''}.</div>
           ) : (
             <div className="flex flex-col gap-1.5 max-h-[45vh] overflow-y-auto pr-1">
-              {issues.slice(0, 8).map((i, idx) => (
+              {visibleIssues.slice(0, 8).map((i, idx) => (
                 <div key={idx} className="flex items-start gap-2.5 bg-surface-overlay rounded-lg px-3 py-2">
                   <Badge tone={severityTone(i.severity)}>{i.severity}</Badge>
                   <div className="min-w-0">
@@ -141,16 +144,30 @@ export default function AwsOverviewPage() {
           ) : (
             <div className="flex flex-col gap-3">
               {accountsDetail.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {accountsDetail.map((a) => (
-                    <div key={a.id} className="flex items-center gap-1.5 bg-surface-overlay rounded-lg px-2.5 py-1.5 border border-cohesity-border">
+                    <button key={a.id} type="button"
+                      onClick={() => setFilterAccountId((cur) => (cur === a.id ? null : a.id))}
+                      title={filterAccountId === a.id ? 'Clear region filter' : `Filter overview to ${a.region}`}
+                      className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 border transition-colors cursor-pointer ${filterAccountId === a.id ? 'bg-brand/15 border-brand/60' : 'bg-surface-overlay border-cohesity-border hover:border-brand/40'}`}>
                       <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 ${a.lastPollStatus === 'error' ? 'bg-status-crit' : a.lastPollStatus === 'success' ? 'bg-status-ok' : 'bg-status-warn'}`} />
                       <span className="text-xs text-ink font-medium">{a.name}</span>
                       <span className="text-[10px] text-ink-faint">{a.region}</span>
                       <span className="text-[10px] text-ink-faint">· {dateAgo(a.lastPollAt)}</span>
-                    </div>
+                    </button>
                   ))}
+                  {filterAccount && (
+                    <button onClick={() => setFilterAccountId(null)}
+                      className="text-[11px] text-brand hover:underline cursor-pointer ml-1">
+                      Clear filter
+                    </button>
+                  )}
                 </div>
+              )}
+              {filterAccount && (
+                <p className="text-[10px] text-ink-faint -mt-1">
+                  Showing {filterAccount.region} only — cost figures remain account-wide (Cost Explorer has no region dimension).
+                </p>
               )}
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

@@ -346,34 +346,48 @@ router.get('/issue-history', (req, res, next) => {
 // ── Overview ─────────────────────────────────────────────────────────────────
 
 /** GET /api/aws/overview — estate rollup + computed issue counts. */
-router.get('/overview', (req, res, next) => {
+router.get('/overview', [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
   try {
     const accountCount = db.prepare('SELECT COUNT(*) AS n FROM aws_accounts').get().n;
+
+    // Optional region scope: filter inventory/issues to one account row. Cost
+    // and health stay account-global (Cost Explorer has no region dimension);
+    // S3 rows all live on the elected row, so they scope by bucket region.
+    const fAcct = req.query.accountId || null;
+    const fRow = fAcct ? db.prepare('SELECT id, name, region FROM aws_accounts WHERE id = ?').get(fAcct) : null;
+    const W = fRow ? ' WHERE account_id = ?' : '';
+    const A = fRow ? ' AND account_id = ?' : '';
+    const args = fRow ? [fRow.id] : [];
 
     const ec2Agg = db.prepare(`
       SELECT COUNT(*) AS total,
         SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END) AS running,
         SUM(CASE WHEN state = 'stopped' THEN 1 ELSE 0 END) AS stopped,
         SUM(CASE WHEN state = 'running' AND status_check LIKE '%failed%' THEN 1 ELSE 0 END) AS alarmed
-      FROM aws_ec2_instances
-    `).get();
+      FROM aws_ec2_instances${W}
+    `).get(...args);
 
     const lsAgg = db.prepare(`
       SELECT COUNT(*) AS total, SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END) AS running
-      FROM aws_lightsail_instances
-    `).get();
+      FROM aws_lightsail_instances${W}
+    `).get(...args);
 
-    const ecsAgg = db.prepare('SELECT COUNT(*) AS clusters FROM aws_ecs_clusters').get();
+    const ecsAgg = db.prepare(`SELECT COUNT(*) AS clusters FROM aws_ecs_clusters${W}`).get(...args);
     const svcAgg = db.prepare(`
       SELECT COUNT(*) AS services,
         SUM(CASE WHEN status = 'ACTIVE' AND running_count < desired_count THEN 1 ELSE 0 END) AS degraded
-      FROM aws_ecs_services
-    `).get();
+      FROM aws_ecs_services${W}
+    `).get(...args);
 
-    const s3Agg = db.prepare(`
-      SELECT COUNT(*) AS buckets, SUM(size_bytes) AS totalSizeBytes, SUM(object_count) AS totalObjects
-      FROM aws_s3_buckets
-    `).get();
+    const s3Agg = fRow
+      ? db.prepare(`
+          SELECT COUNT(*) AS buckets, SUM(size_bytes) AS totalSizeBytes, SUM(object_count) AS totalObjects
+          FROM aws_s3_buckets WHERE region = ?
+        `).get(fRow.region)
+      : db.prepare(`
+          SELECT COUNT(*) AS buckets, SUM(size_bytes) AS totalSizeBytes, SUM(object_count) AS totalObjects
+          FROM aws_s3_buckets
+        `).get();
 
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -390,29 +404,30 @@ router.get('/overview', (req, res, next) => {
 
     const bedrockAgg = db.prepare(`
       SELECT SUM(invocations) AS invocations30d, SUM(input_tokens) AS inputTokens30d, SUM(output_tokens) AS outputTokens30d
-      FROM aws_bedrock_usage WHERE day >= date('now', '-30 days')
-    `).get();
+      FROM aws_bedrock_usage WHERE day >= date('now', '-30 days')${A}
+    `).get(...args);
 
-    const issues = computeIssues();
+    const allIssues = computeIssues();
+    const issues = fRow ? allIssues.filter((i) => i.account === fRow.name) : allIssues;
     const issueCounts = { critical: 0, warning: 0, info: 0 };
     for (const i of issues) issueCounts[i.severity] = (issueCounts[i.severity] || 0) + 1;
 
     const rdsAgg = db.prepare(`
       SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) AS available
-      FROM aws_rds_instances
-    `).get();
+      FROM aws_rds_instances${W}
+    `).get(...args);
     const rdsPct = rdsStorageWarnPct();
     const rdsStorageLow = db.prepare(`
       SELECT COUNT(*) AS n FROM aws_rds_instances
       WHERE status = 'available' AND allocated_gb > 0 AND free_storage_bytes IS NOT NULL
-        AND free_storage_bytes < (allocated_gb * 1073741824 * ? / 100)
-    `).get(rdsPct).n;
+        AND free_storage_bytes < (allocated_gb * 1073741824 * ? / 100)${A}
+    `).get(rdsPct, ...args).n;
 
-    const lambdaAgg = db.prepare('SELECT COUNT(*) AS total, SUM(errors_24h) AS errors24h FROM aws_lambda_functions').get();
+    const lambdaAgg = db.prepare(`SELECT COUNT(*) AS total, SUM(errors_24h) AS errors24h FROM aws_lambda_functions${W}`).get(...args);
 
-    const dynamoAgg = db.prepare('SELECT COUNT(*) AS total, SUM(size_bytes) AS sizeBytes FROM aws_dynamo_tables').get();
-    const ecrAgg = db.prepare('SELECT COUNT(*) AS repos FROM aws_ecr_repos').get();
-    const vpcAgg = db.prepare('SELECT COUNT(*) AS vpcs, SUM(nat_gateway_count) AS natGateways FROM aws_vpcs').get();
+    const dynamoAgg = db.prepare(`SELECT COUNT(*) AS total, SUM(size_bytes) AS sizeBytes FROM aws_dynamo_tables${W}`).get(...args);
+    const ecrAgg = db.prepare(`SELECT COUNT(*) AS repos FROM aws_ecr_repos${W}`).get(...args);
+    const vpcAgg = db.prepare(`SELECT COUNT(*) AS vpcs, SUM(nat_gateway_count) AS natGateways FROM aws_vpcs${W}`).get(...args);
 
     const healthRecent24h = db.prepare(`
       SELECT COUNT(*) AS n FROM aws_health_events WHERE published_at >= datetime('now', '-24 hours')
@@ -421,8 +436,8 @@ router.get('/overview', (req, res, next) => {
     const accountsDetail = db.prepare('SELECT id, name, region, last_poll_status, last_poll_at FROM aws_accounts ORDER BY name').all()
       .map((r) => ({ id: r.id, name: r.name, region: r.region, lastPollStatus: r.last_poll_status, lastPollAt: r.last_poll_at }));
 
-    const unattachedEbs = db.prepare("SELECT COUNT(*) AS n FROM aws_ebs_volumes WHERE state = 'available'").get().n || 0;
-    const natGatewaysTotal = db.prepare('SELECT SUM(nat_gateway_count) AS n FROM aws_vpcs').get().n || 0;
+    const unattachedEbs = db.prepare(`SELECT COUNT(*) AS n FROM aws_ebs_volumes WHERE state = 'available'${A}`).get(...args).n || 0;
+    const natGatewaysTotal = db.prepare(`SELECT SUM(nat_gateway_count) AS n FROM aws_vpcs${W}`).get(...args).n || 0;
 
     // Post-fix-#0 aws_cost_daily only carries the elected credential's rows, so a plain SUM is correct.
     const moverRows = db.prepare(`
