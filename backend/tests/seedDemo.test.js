@@ -358,8 +358,14 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM aws_s3_buckets').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aws_cost_daily').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aws_bedrock_usage').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_rds_instances').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_lambda_functions').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_dynamo_tables').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_ecr_repos').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_vpcs').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM aws_subnets').get().c).toBeGreaterThan(0);
 
-    for (const type of ['ec2-status-check', 'ecs-degraded', 'cost-spike', 's3-public', 'ebs-unattached']) {
+    for (const type of ['ec2-status-check', 'ecs-degraded', 'cost-spike', 's3-public', 'ebs-unattached', 'rds-storage-low']) {
       const row = db.prepare("SELECT COUNT(*) c FROM aws_issue_history WHERE type = ? AND status = 'open'").get(type);
       expect(row.c).toBeGreaterThan(0);
     }

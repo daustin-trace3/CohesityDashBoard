@@ -218,6 +218,8 @@ const NEW_TABLES = [
   'aws_accounts', 'aws_ec2_instances', 'aws_ebs_volumes', 'aws_lightsail_instances',
   'aws_ecs_clusters', 'aws_ecs_services', 'aws_s3_buckets', 'aws_bedrock_usage',
   'aws_cost_daily', 'aws_metrics_history', 'aws_issue_history',
+  'aws_rds_instances', 'aws_lambda_functions', 'aws_dynamo_tables',
+  'aws_ecr_repos', 'aws_vpcs', 'aws_subnets',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.

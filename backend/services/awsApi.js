@@ -5,7 +5,10 @@
 // routes/aws.js reports as credSource). All fetchers are failure-tolerant:
 // optional chaining, default 0/null, never throw on a missing/empty field —
 // only on the underlying AWS call itself.
-const { EC2Client, DescribeInstancesCommand, DescribeVolumesCommand } = require('@aws-sdk/client-ec2');
+const { EC2Client, DescribeInstancesCommand, DescribeVolumesCommand,
+  DescribeVpcsCommand, DescribeSubnetsCommand, DescribeNatGatewaysCommand,
+  DescribeSecurityGroupsCommand, DescribeInternetGatewaysCommand,
+} = require('@aws-sdk/client-ec2');
 const {
   LightsailClient, GetInstancesCommand, GetInstanceMetricDataCommand, GetInstanceSnapshotsCommand,
 } = require('@aws-sdk/client-lightsail');
@@ -18,6 +21,12 @@ const {
 } = require('@aws-sdk/client-s3');
 const { CloudWatchClient, ListMetricsCommand, GetMetricDataCommand } = require('@aws-sdk/client-cloudwatch');
 const { CostExplorerClient, GetCostAndUsageCommand } = require('@aws-sdk/client-cost-explorer');
+const { RDSClient, DescribeDBInstancesCommand } = require('@aws-sdk/client-rds');
+const { LambdaClient, ListFunctionsCommand } = require('@aws-sdk/client-lambda');
+const {
+  DynamoDBClient, ListTablesCommand, DescribeTableCommand,
+} = require('@aws-sdk/client-dynamodb');
+const { ECRClient, DescribeRepositoriesCommand, DescribeImagesCommand } = require('@aws-sdk/client-ecr');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
 
@@ -59,6 +68,10 @@ const s3Client = (account, region) => new S3Client(clientConfig(account, region)
 const cloudwatchClient = (account, region) => new CloudWatchClient(clientConfig(account, region));
 // Cost Explorer is a global service reachable only via us-east-1.
 const costExplorerClient = (account) => new CostExplorerClient(clientConfig(account, 'us-east-1'));
+const rdsClient = (account) => new RDSClient(clientConfig(account));
+const lambdaClient = (account) => new LambdaClient(clientConfig(account));
+const dynamoClient = (account) => new DynamoDBClient(clientConfig(account));
+const ecrClient = (account) => new ECRClient(clientConfig(account));
 
 // ── EC2 ──────────────────────────────────────────────────────────────────────
 
@@ -525,6 +538,304 @@ async function fetchCostAndUsage(account) {
   return rows;
 }
 
+// ── RDS ──────────────────────────────────────────────────────────────────────
+
+async function fetchRdsInstances(account) {
+  const client = rdsClient(account);
+  const instances = [];
+  let marker;
+  do {
+    const resp = await client.send(new DescribeDBInstancesCommand({ Marker: marker }));
+    for (const d of resp?.DBInstances || []) {
+      instances.push({
+        dbId: d.DBInstanceIdentifier,
+        engine: d.Engine || null,
+        engineVersion: d.EngineVersion || null,
+        instanceClass: d.DBInstanceClass || null,
+        status: d.DBInstanceStatus || null,
+        multiAz: !!d.MultiAZ,
+        allocatedGb: d.AllocatedStorage ?? null,
+        backupRetentionDays: d.BackupRetentionPeriod ?? null,
+        latestBackupAt: d.LatestRestorableTime ? new Date(d.LatestRestorableTime).toISOString() : null,
+        endpoint: d.Endpoint?.Address || null,
+      });
+    }
+    marker = resp?.Marker;
+  } while (marker);
+  return instances;
+}
+
+/**
+ * Latest 15-minute FreeStorageSpace/CPUUtilization/DatabaseConnections
+ * datapoint per DB instance, via one batched GetMetricData call. Returns
+ * Map(dbId -> { freeStorageBytes, cpuUtil, connections }).
+ */
+async function fetchRdsMetrics(account, dbIds) {
+  const out = new Map();
+  if (!dbIds?.length) return out;
+  const client = cloudwatchClient(account);
+  const endTime = new Date();
+  const startTime = new Date(endTime.getTime() - 15 * 60000);
+  const metrics = [['fs', 'FreeStorageSpace', 'Average'], ['cpu', 'CPUUtilization', 'Average'], ['conn', 'DatabaseConnections', 'Average']];
+  const queries = [];
+  dbIds.forEach((id, idx) => {
+    for (const [prefix, metricName, stat] of metrics) {
+      queries.push({
+        Id: `${prefix}${idx}`,
+        MetricStat: {
+          Metric: { Namespace: 'AWS/RDS', MetricName: metricName, Dimensions: [{ Name: 'DBInstanceIdentifier', Value: id }] },
+          Period: 900, Stat: stat,
+        },
+        ReturnData: true,
+      });
+    }
+  });
+  for (let i = 0; i < queries.length; i += 500) {
+    const chunk = queries.slice(i, i + 500);
+    const resp = await client.send(new GetMetricDataCommand({ StartTime: startTime, EndTime: endTime, MetricDataQueries: chunk }));
+    for (const r of resp?.MetricDataResults || []) {
+      const idx = Number(r.Id.replace(/^\D+/, ''));
+      const dbId = dbIds[idx];
+      if (!dbId) continue;
+      if (!out.has(dbId)) out.set(dbId, { freeStorageBytes: null, cpuUtil: null, connections: null });
+      const entry = out.get(dbId);
+      const val = r.Values?.[0] ?? null;
+      if (r.Id.startsWith('fs')) entry.freeStorageBytes = val;
+      else if (r.Id.startsWith('cpu')) entry.cpuUtil = val;
+      else if (r.Id.startsWith('conn')) entry.connections = val;
+    }
+  }
+  return out;
+}
+
+// ── Lambda ───────────────────────────────────────────────────────────────────
+
+async function fetchLambdaFunctions(account) {
+  const client = lambdaClient(account);
+  const functions = [];
+  let marker;
+  do {
+    const resp = await client.send(new ListFunctionsCommand({ Marker: marker }));
+    for (const f of resp?.Functions || []) {
+      functions.push({
+        name: f.FunctionName,
+        runtime: f.Runtime || null,
+        memoryMb: f.MemorySize ?? null,
+        timeoutS: f.Timeout ?? null,
+        codeSizeBytes: f.CodeSize ?? null,
+        lastModified: f.LastModified ? new Date(f.LastModified).toISOString() : null,
+      });
+    }
+    marker = resp?.NextMarker;
+  } while (marker);
+  return functions;
+}
+
+/**
+ * Invocations(Sum)/Errors(Sum)/Duration(Average) over the last 24h, per
+ * Lambda function name, via one batched GetMetricData call. Returns
+ * Map(name -> { invocations24h, errors24h, avgDurationMs }).
+ */
+async function fetchLambdaMetrics(account, functionNames) {
+  const out = new Map();
+  if (!functionNames?.length) return out;
+  const client = cloudwatchClient(account);
+  const endTime = new Date();
+  const startTime = new Date(endTime.getTime() - 24 * 3600000);
+  const metrics = [['inv', 'Invocations', 'Sum'], ['err', 'Errors', 'Sum'], ['dur', 'Duration', 'Average']];
+  const queries = [];
+  functionNames.forEach((name, idx) => {
+    for (const [prefix, metricName, stat] of metrics) {
+      queries.push({
+        Id: `${prefix}${idx}`,
+        MetricStat: {
+          Metric: { Namespace: 'AWS/Lambda', MetricName: metricName, Dimensions: [{ Name: 'FunctionName', Value: name }] },
+          Period: 86400, Stat: stat,
+        },
+        ReturnData: true,
+      });
+    }
+  });
+  for (let i = 0; i < queries.length; i += 500) {
+    const chunk = queries.slice(i, i + 500);
+    const resp = await client.send(new GetMetricDataCommand({ StartTime: startTime, EndTime: endTime, MetricDataQueries: chunk }));
+    for (const r of resp?.MetricDataResults || []) {
+      const idx = Number(r.Id.replace(/^\D+/, ''));
+      const name = functionNames[idx];
+      if (!name) continue;
+      if (!out.has(name)) out.set(name, { invocations24h: null, errors24h: null, avgDurationMs: null });
+      const entry = out.get(name);
+      const val = r.Values?.[0] ?? null;
+      if (r.Id.startsWith('inv')) entry.invocations24h = val;
+      else if (r.Id.startsWith('err')) entry.errors24h = val;
+      else if (r.Id.startsWith('dur')) entry.avgDurationMs = val;
+    }
+  }
+  return out;
+}
+
+// ── DynamoDB ─────────────────────────────────────────────────────────────────
+
+async function fetchDynamoTableNames(account) {
+  const client = dynamoClient(account);
+  const names = [];
+  let exclusiveStartTableName;
+  do {
+    const resp = await client.send(new ListTablesCommand({ ExclusiveStartTableName: exclusiveStartTableName }));
+    names.push(...(resp?.TableNames || []));
+    exclusiveStartTableName = resp?.LastEvaluatedTableName;
+  } while (exclusiveStartTableName);
+  return names;
+}
+
+async function fetchDynamoTable(account, name) {
+  const client = dynamoClient(account);
+  const resp = await client.send(new DescribeTableCommand({ TableName: name }));
+  const t = resp?.Table;
+  return {
+    name,
+    status: t?.TableStatus || null,
+    billingMode: t?.BillingModeSummary?.BillingMode || 'PROVISIONED',
+    itemCount: t?.ItemCount ?? null,
+    sizeBytes: t?.TableSizeBytes ?? null,
+    readCapacity: t?.ProvisionedThroughput?.ReadCapacityUnits ?? null,
+    writeCapacity: t?.ProvisionedThroughput?.WriteCapacityUnits ?? null,
+  };
+}
+
+// ── ECR ──────────────────────────────────────────────────────────────────────
+
+async function fetchEcrRepos(account) {
+  const client = ecrClient(account);
+  const repos = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeRepositoriesCommand({ nextToken }));
+    for (const r of resp?.repositories || []) {
+      repos.push({
+        name: r.repositoryName,
+        scanOnPush: !!r.imageScanningConfiguration?.scanOnPush,
+      });
+    }
+    nextToken = resp?.nextToken;
+  } while (nextToken);
+  return repos;
+}
+
+/** { imageCount, sizeBytes, latestPushAt } — DescribeImages capped at 3 pages. */
+async function fetchEcrRepoImages(account, repositoryName) {
+  const client = ecrClient(account);
+  let imageCount = 0;
+  let sizeBytes = 0;
+  let latestPushAt = null;
+  let nextToken;
+  let pages = 0;
+  do {
+    const resp = await client.send(new DescribeImagesCommand({ repositoryName, nextToken }));
+    for (const img of resp?.imageDetails || []) {
+      imageCount += 1;
+      sizeBytes += img.imageSizeInBytes || 0;
+      if (img.imagePushedAt) {
+        const t = new Date(img.imagePushedAt).getTime();
+        if (!latestPushAt || t > new Date(latestPushAt).getTime()) latestPushAt = new Date(t).toISOString();
+      }
+    }
+    nextToken = resp?.nextToken;
+    pages += 1;
+  } while (nextToken && pages < 3);
+  return { imageCount, sizeBytes, latestPushAt };
+}
+
+// ── VPC (via EC2 client) ─────────────────────────────────────────────────────
+
+const nameTagOf = (tags) => (tags || []).find((t) => t.Key === 'Name')?.Value || null;
+
+async function fetchVpcs(account) {
+  const client = ec2Client(account);
+  const vpcs = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeVpcsCommand({ NextToken: nextToken }));
+    for (const v of resp?.Vpcs || []) {
+      vpcs.push({
+        vpcId: v.VpcId,
+        name: nameTagOf(v.Tags),
+        cidr: v.CidrBlock || null,
+        state: v.State || null,
+        isDefault: !!v.IsDefault,
+      });
+    }
+    nextToken = resp?.NextToken;
+  } while (nextToken);
+  return vpcs;
+}
+
+async function fetchSubnets(account) {
+  const client = ec2Client(account);
+  const subnets = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeSubnetsCommand({ NextToken: nextToken }));
+    for (const s of resp?.Subnets || []) {
+      subnets.push({
+        subnetId: s.SubnetId,
+        vpcId: s.VpcId || null,
+        name: nameTagOf(s.Tags),
+        cidr: s.CidrBlock || null,
+        az: s.AvailabilityZone || null,
+        availableIps: s.AvailableIpAddressCount ?? null,
+        public: !!s.MapPublicIpOnLaunch,
+      });
+    }
+    nextToken = resp?.NextToken;
+  } while (nextToken);
+  return subnets;
+}
+
+async function fetchNatGateways(account) {
+  const client = ec2Client(account);
+  const gateways = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeNatGatewaysCommand({ NextToken: nextToken }));
+    for (const g of resp?.NatGateways || []) {
+      gateways.push({ vpcId: g.VpcId || null, state: g.State || null });
+    }
+    nextToken = resp?.NextToken;
+  } while (nextToken);
+  return gateways;
+}
+
+async function fetchSecurityGroups(account) {
+  const client = ec2Client(account);
+  const groups = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeSecurityGroupsCommand({ NextToken: nextToken }));
+    for (const g of resp?.SecurityGroups || []) {
+      groups.push({ vpcId: g.VpcId || null });
+    }
+    nextToken = resp?.NextToken;
+  } while (nextToken);
+  return groups;
+}
+
+async function fetchInternetGateways(account) {
+  const client = ec2Client(account);
+  const gateways = [];
+  let nextToken;
+  do {
+    const resp = await client.send(new DescribeInternetGatewaysCommand({ NextToken: nextToken }));
+    for (const g of resp?.InternetGateways || []) {
+      for (const a of g.Attachments || []) {
+        if (a.VpcId) gateways.push({ vpcId: a.VpcId });
+      }
+    }
+    nextToken = resp?.NextToken;
+  } while (nextToken);
+  return gateways;
+}
+
 // ── Test connection ──────────────────────────────────────────────────────────
 
 /** Validate a saved or candidate account. Never throws. */
@@ -542,6 +853,7 @@ async function testConnection(account) {
 module.exports = {
   creds, credSource,
   ec2Client, lightsailClient, ecsClient, s3Client, cloudwatchClient, costExplorerClient,
+  rdsClient, lambdaClient, dynamoClient, ecrClient,
   fetchEc2Instances, fetchEbsVolumes, fetchEc2Metrics,
   fetchLightsailInstances, fetchLightsailMetric, fetchLightsailSnapshots,
   fetchEcsClusters, fetchEcsServices, fetchEcsServiceMetrics,
@@ -549,5 +861,10 @@ module.exports = {
   fetchBucketLifecycleRuleCount, fetchBucketStorageMetrics,
   fetchBedrockModelIds, fetchBedrockDailyUsage,
   fetchCostAndUsage,
+  fetchRdsInstances, fetchRdsMetrics,
+  fetchLambdaFunctions, fetchLambdaMetrics,
+  fetchDynamoTableNames, fetchDynamoTable,
+  fetchEcrRepos, fetchEcrRepoImages,
+  fetchVpcs, fetchSubnets, fetchNatGateways, fetchSecurityGroups, fetchInternetGateways,
   testConnection,
 };

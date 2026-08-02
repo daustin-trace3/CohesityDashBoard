@@ -74,6 +74,18 @@ const CATEGORIES = [
     sql: `SELECT name AS title, region AS subtitle FROM aws_s3_buckets WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
   { key: 'aws-ecs', label: 'AWS ECS Services', platform: 'aws', perm: 'aws:ecs:view', base: '/aws/ecs',
     sql: `SELECT service_name AS title, cluster_name AS subtitle FROM aws_ecs_services WHERE service_name LIKE ? ESCAPE '\\' ORDER BY service_name LIMIT ?` },
+  { key: 'aws-rds', label: 'AWS RDS Instances', platform: 'aws', perm: 'aws:rds:view', base: '/aws/rds',
+    sql: `SELECT r.db_id AS title, (COALESCE(r.engine, '') || ' · ' || a.name) AS subtitle
+          FROM aws_rds_instances r JOIN aws_accounts a ON a.id = r.account_id
+          WHERE r.db_id LIKE ? ESCAPE '\\' ORDER BY r.db_id LIMIT ?` },
+  { key: 'aws-lambda', label: 'AWS Lambda Functions', platform: 'aws', perm: 'aws:lambda:view', base: '/aws/lambda',
+    sql: `SELECT l.name AS title, (COALESCE(l.runtime, '') || ' · ' || a.name) AS subtitle
+          FROM aws_lambda_functions l JOIN aws_accounts a ON a.id = l.account_id
+          WHERE l.name LIKE ? ESCAPE '\\' ORDER BY l.name LIMIT ?` },
+  { key: 'aws-dynamo', label: 'AWS DynamoDB Tables', platform: 'aws', perm: 'aws:dynamo:view', base: '/aws/dynamo',
+    sql: `SELECT d.name AS title, (COALESCE(d.status, '') || ' · ' || a.name) AS subtitle
+          FROM aws_dynamo_tables d JOIN aws_accounts a ON a.id = d.account_id
+          WHERE d.name LIKE ? ESCAPE '\\' ORDER BY d.name LIMIT ?` },
 ];
 
 const platformEnabled = (id) => {

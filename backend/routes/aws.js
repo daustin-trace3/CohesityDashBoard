@@ -10,7 +10,7 @@ const { encrypt } = require('../services/encryption');
 const { setSetting } = require('../services/settings');
 const awsApi = require('../services/awsApi');
 const { awsPoller } = require('../services/awsPoller');
-const { costSpikePct, computeIssues } = require('../services/awsIssues');
+const { costSpikePct, rdsStorageWarnPct, computeIssues } = require('../services/awsIssues');
 
 const router = express.Router();
 
@@ -145,7 +145,7 @@ router.post('/accounts/:id/refresh', [param('id').isInt().toInt()], validate, as
 
 // ── Probe (blind-build fix loop) ─────────────────────────────────────────────
 
-const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost'];
+const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost', 'rds', 'lambda', 'dynamo', 'ecr', 'vpc'];
 
 function truncate(raw) {
   if (Array.isArray(raw)) return { items: raw.slice(0, 2), _count: raw.length };
@@ -211,6 +211,32 @@ router.get('/accounts/:id/probe', [
         raw = { rows };
         break;
       }
+      case 'rds': {
+        const instances = await awsApi.fetchRdsInstances(row);
+        raw = { instances };
+        break;
+      }
+      case 'lambda': {
+        const functions = await awsApi.fetchLambdaFunctions(row);
+        raw = { functions };
+        break;
+      }
+      case 'dynamo': {
+        const tables = await awsApi.fetchDynamoTableNames(row);
+        raw = { tables };
+        break;
+      }
+      case 'ecr': {
+        const repos = await awsApi.fetchEcrRepos(row);
+        raw = { repos };
+        break;
+      }
+      case 'vpc': {
+        const vpcs = await awsApi.fetchVpcs(row);
+        const subnets = await awsApi.fetchSubnets(row);
+        raw = { vpcs, subnets };
+        break;
+      }
       default:
         return res.status(400).json({ error: 'Unknown service.' });
     }
@@ -223,17 +249,19 @@ router.get('/accounts/:id/probe', [
 /** GET /api/aws/config — alert thresholds. */
 router.get('/config', (req, res, next) => {
   try {
-    res.json({ costSpikePct: costSpikePct() });
+    res.json({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct() });
   } catch (err) { next(err); }
 });
 
 /** PUT /api/aws/config — save alert thresholds. */
 router.put('/config', [
   body('costSpikePct').isInt({ min: 5, max: 500 }).toInt(),
+  body('rdsStorageWarnPct').optional().isInt({ min: 5, max: 50 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     setSetting('aws_cost_spike_pct', String(req.body.costSpikePct));
-    res.json({ costSpikePct: costSpikePct() });
+    if (req.body.rdsStorageWarnPct !== undefined) setSetting('aws_rds_storage_warn_pct', String(req.body.rdsStorageWarnPct));
+    res.json({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct() });
   } catch (err) { next(err); }
 });
 
@@ -320,6 +348,23 @@ router.get('/overview', (req, res, next) => {
     const issueCounts = { critical: 0, warning: 0, info: 0 };
     for (const i of issues) issueCounts[i.severity] = (issueCounts[i.severity] || 0) + 1;
 
+    const rdsAgg = db.prepare(`
+      SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'available' THEN 1 ELSE 0 END) AS available
+      FROM aws_rds_instances
+    `).get();
+    const rdsPct = rdsStorageWarnPct();
+    const rdsStorageLow = db.prepare(`
+      SELECT COUNT(*) AS n FROM aws_rds_instances
+      WHERE status = 'available' AND allocated_gb > 0 AND free_storage_bytes IS NOT NULL
+        AND free_storage_bytes < (allocated_gb * 1073741824 * ? / 100)
+    `).get(rdsPct).n;
+
+    const lambdaAgg = db.prepare('SELECT COUNT(*) AS total, SUM(errors_24h) AS errors24h FROM aws_lambda_functions').get();
+
+    const dynamoAgg = db.prepare('SELECT COUNT(*) AS total, SUM(size_bytes) AS sizeBytes FROM aws_dynamo_tables').get();
+    const ecrAgg = db.prepare('SELECT COUNT(*) AS repos FROM aws_ecr_repos').get();
+    const vpcAgg = db.prepare('SELECT COUNT(*) AS vpcs, SUM(nat_gateway_count) AS natGateways FROM aws_vpcs').get();
+
     res.json({
       accounts: accountCount,
       ec2: { total: ec2Agg.total || 0, running: ec2Agg.running || 0, stopped: ec2Agg.stopped || 0, alarmed: ec2Agg.alarmed || 0 },
@@ -336,6 +381,11 @@ router.get('/overview', (req, res, next) => {
         outputTokens30d: bedrockAgg.outputTokens30d || 0,
       },
       issues: issueCounts,
+      rds: { total: rdsAgg.total || 0, available: rdsAgg.available || 0, storageLow: rdsStorageLow || 0 },
+      lambda: { total: lambdaAgg.total || 0, errors24h: lambdaAgg.errors24h || 0 },
+      dynamo: { total: dynamoAgg.total || 0, sizeBytes: dynamoAgg.sizeBytes || 0 },
+      ecr: { repos: ecrAgg.repos || 0 },
+      vpc: { vpcs: vpcAgg.vpcs || 0, natGateways: vpcAgg.natGateways || 0 },
     });
   } catch (err) { next(err); }
 });
@@ -508,6 +558,102 @@ router.get('/trends', (req, res, next) => {
       rows: rows.map((r) => ({
         capturedAt: r.captured_at, ec2Running: r.ec2_running, ecsDegraded: r.ecs_degraded,
         s3TotalBytes: r.s3_total_bytes, mtdSpendUsd: r.mtd_spend_usd,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/rds — RDS instances across all accounts. */
+router.get('/rds', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT r.*, a.name AS account_name FROM aws_rds_instances r
+      JOIN aws_accounts a ON a.id = r.account_id ORDER BY a.name, r.db_id
+    `).all();
+    res.json({
+      instances: rows.map((r) => ({
+        dbId: r.db_id, engine: r.engine, engineVersion: r.engine_version, instanceClass: r.instance_class,
+        status: r.status, multiAz: !!r.multi_az, allocatedGb: r.allocated_gb,
+        freeStorageBytes: r.free_storage_bytes,
+        freeStoragePct: r.allocated_gb ? (r.free_storage_bytes / (r.allocated_gb * 1073741824)) * 100 : null,
+        cpuUtil: r.cpu_util, connections: r.connections, backupRetentionDays: r.backup_retention_days,
+        latestBackupAt: r.latest_backup_at, endpoint: r.endpoint, account: r.account_name,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/lambda — Lambda functions across all accounts. */
+router.get('/lambda', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT f.*, a.name AS account_name FROM aws_lambda_functions f
+      JOIN aws_accounts a ON a.id = f.account_id ORDER BY a.name, f.name
+    `).all();
+    res.json({
+      functions: rows.map((r) => ({
+        name: r.name, runtime: r.runtime, memoryMb: r.memory_mb, timeoutS: r.timeout_s,
+        codeSizeBytes: r.code_size_bytes, lastModified: r.last_modified,
+        invocations24h: r.invocations_24h, errors24h: r.errors_24h, avgDurationMs: r.avg_duration_ms,
+        account: r.account_name,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/dynamo — DynamoDB tables across all accounts. */
+router.get('/dynamo', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT t.*, a.name AS account_name FROM aws_dynamo_tables t
+      JOIN aws_accounts a ON a.id = t.account_id ORDER BY a.name, t.name
+    `).all();
+    res.json({
+      tables: rows.map((r) => ({
+        name: r.name, status: r.status, billingMode: r.billing_mode, itemCount: r.item_count,
+        sizeBytes: r.size_bytes, readCapacity: r.read_capacity, writeCapacity: r.write_capacity,
+        account: r.account_name,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/ecr — ECR repositories across all accounts. */
+router.get('/ecr', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT r.*, a.name AS account_name FROM aws_ecr_repos r
+      JOIN aws_accounts a ON a.id = r.account_id ORDER BY a.name, r.name
+    `).all();
+    res.json({
+      repos: rows.map((r) => ({
+        name: r.name, imageCount: r.image_count, sizeBytes: r.size_bytes,
+        scanOnPush: !!r.scan_on_push, latestPushAt: r.latest_push_at, account: r.account_name,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/vpc — VPCs + subnets across all accounts. */
+router.get('/vpc', (req, res, next) => {
+  try {
+    const vpcRows = db.prepare(`
+      SELECT v.*, a.name AS account_name FROM aws_vpcs v
+      JOIN aws_accounts a ON a.id = v.account_id ORDER BY a.name, v.vpc_id
+    `).all();
+    const subnetRows = db.prepare(`
+      SELECT s.*, a.name AS account_name FROM aws_subnets s
+      JOIN aws_accounts a ON a.id = s.account_id ORDER BY a.name, s.subnet_id
+    `).all();
+    res.json({
+      vpcs: vpcRows.map((r) => ({
+        vpcId: r.vpc_id, name: r.name, cidr: r.cidr, state: r.state, isDefault: !!r.is_default,
+        subnetCount: r.subnet_count, natGatewayCount: r.nat_gateway_count,
+        securityGroupCount: r.security_group_count, igw: !!r.igw, account: r.account_name,
+      })),
+      subnets: subnetRows.map((r) => ({
+        subnetId: r.subnet_id, vpcId: r.vpc_id, name: r.name, cidr: r.cidr, az: r.az,
+        availableIps: r.available_ips, public: !!r.public, account: r.account_name,
       })),
     });
   } catch (err) { next(err); }

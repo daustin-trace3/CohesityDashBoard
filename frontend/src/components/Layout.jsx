@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, LayoutGrid,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, LayoutGrid, ChevronDown,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
@@ -67,6 +67,8 @@ export default function Layout() {
   // Custom Dashboards ships dark — nav item hidden until enabled in Settings → Platforms.
   const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherMode] = useState(getSwitcherMode);
+  // Collapsible nav groups: {label: bool} open-state, persisted per platform.
+  const [openGroups, setOpenGroups] = useState({});
 
   useEffect(() => {
     const onModeChange = () => setSwitcherMode(getSwitcherMode());
@@ -125,6 +127,24 @@ export default function Layout() {
     ? allPlatforms.find(p => !builtinIds.includes(p.id) && p.isActive(pathname))
     : null;
   const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
+
+  // Read the persisted open/closed map once per platform switch.
+  useEffect(() => {
+    try {
+      setOpenGroups(JSON.parse(localStorage.getItem(`nav-open:${navPlatformKey}`) || '{}'));
+    } catch {
+      setOpenGroups({});
+    }
+  }, [navPlatformKey]);
+
+  const toggleNavGroup = (label) => {
+    setOpenGroups(prev => {
+      const isOpen = prev[label] !== false;
+      const next = { ...prev, [label]: !isOpen };
+      localStorage.setItem(`nav-open:${navPlatformKey}`, JSON.stringify(next));
+      return next;
+    });
+  };
 
   const { user, logout, hasPermission, loading: authLoading } = useAuth();
   const aiEnabled = useAiEnabled();
@@ -409,11 +429,22 @@ export default function Layout() {
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
-          {activeNavGroups.map(group => (
+          {activeNavGroups.map(group => {
+            const groupHasActiveItem = group.items.some(item => item.isActive(pathname));
+            const groupOpen = collapsed || groupHasActiveItem || openGroups[group.label] !== false;
+            return (
             <div key={group.label}>
               {!collapsed && (
-                <p className="px-4 mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-ink-faint select-none">{group.label}</p>
+                <button
+                  type="button"
+                  onClick={() => toggleNavGroup(group.label)}
+                  className="w-full flex items-center justify-between gap-1 px-4 mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-ink-faint select-none cursor-pointer hover:text-ink transition-colors"
+                >
+                  <span className="truncate">{group.label}</span>
+                  <ChevronDown size={12} className={`flex-shrink-0 transition-transform duration-150 ${groupOpen ? 'rotate-180' : ''}`} />
+                </button>
               )}
+              {(collapsed || groupOpen) && (
               <div className="flex flex-col gap-0.5 px-2">
                 {group.items.map(item => {
                   const active = item.isActive(pathname);
@@ -445,8 +476,10 @@ export default function Layout() {
                   );
                 })}
               </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </nav>
 
         {/* Sidebar footer */}

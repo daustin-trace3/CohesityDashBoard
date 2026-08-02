@@ -34,6 +34,7 @@ const DEFAULTS = {
   netbackup_entitled_tb: '0',
   platform_aws_enabled: '0',
   aws_cost_spike_pct: '30',
+  aws_rds_storage_warn_pct: '15',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',

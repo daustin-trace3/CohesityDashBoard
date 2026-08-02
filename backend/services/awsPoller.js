@@ -19,6 +19,26 @@ function needsDaily(stamp) {
   return Date.now() - new Date(stamp).getTime() > DAILY_GATE_MS;
 }
 
+// IAM policy not yet updated for a new service, or the service has no
+// regional endpoint (Lightsail ENOTFOUND lesson) — degrade to empty and warn
+// once instead of failing the whole poll. Any other error still propagates.
+const DEGRADE_NAMES = new Set(['AccessDenied', 'AccessDeniedException', 'UnrecognizedClientException', 'AuthorizationError']);
+function isDegradable(err) {
+  if (DEGRADE_NAMES.has(err?.name)) return true;
+  return String(err?.code || '').includes('ENOTFOUND') || String(err?.message || '').includes('ENOTFOUND');
+}
+async function degradeGracefully(account, label, fn, fallback) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (isDegradable(err)) {
+      logger.warn(`[AwsPoller] ${account.name}: ${label} unavailable (${err.name || 'error'}): ${safeMsg(err)}`);
+      return fallback;
+    }
+    throw err;
+  }
+}
+
 async function collectEc2(account) {
   const instances = await awsApi.fetchEc2Instances(account);
   const volumes = await awsApi.fetchEbsVolumes(account);
@@ -124,6 +144,105 @@ async function collectS3(account) {
   return out;
 }
 
+async function collectRds(account) {
+  return degradeGracefully(account, 'RDS', async () => {
+    const instances = await awsApi.fetchRdsInstances(account);
+    let metrics = new Map();
+    try {
+      metrics = await awsApi.fetchRdsMetrics(account, instances.map((i) => i.dbId));
+    } catch (err) {
+      logger.debug(`[AwsPoller] ${account.name}: RDS CloudWatch metrics failed: ${safeMsg(err)}`);
+    }
+    for (const i of instances) {
+      const m = metrics.get(i.dbId);
+      i.freeStorageBytes = m?.freeStorageBytes ?? null;
+      i.cpuUtil = m?.cpuUtil ?? null;
+      i.connections = m?.connections ?? null;
+    }
+    return instances;
+  }, []);
+}
+
+async function collectLambda(account) {
+  return degradeGracefully(account, 'Lambda', async () => {
+    const functions = await awsApi.fetchLambdaFunctions(account);
+    let metrics = new Map();
+    try {
+      metrics = await awsApi.fetchLambdaMetrics(account, functions.map((f) => f.name));
+    } catch (err) {
+      logger.debug(`[AwsPoller] ${account.name}: Lambda CloudWatch metrics failed: ${safeMsg(err)}`);
+    }
+    for (const f of functions) {
+      const m = metrics.get(f.name);
+      f.invocations24h = m?.invocations24h ?? null;
+      f.errors24h = m?.errors24h ?? null;
+      f.avgDurationMs = m?.avgDurationMs ?? null;
+    }
+    return functions;
+  }, []);
+}
+
+async function collectDynamo(account) {
+  return degradeGracefully(account, 'DynamoDB', async () => {
+    const names = await awsApi.fetchDynamoTableNames(account);
+    const tables = [];
+    for (const name of names) {
+      try {
+        tables.push(await awsApi.fetchDynamoTable(account, name));
+      } catch (err) {
+        logger.debug(`[AwsPoller] ${account.name}: DynamoDB DescribeTable failed for ${name}: ${safeMsg(err)}`);
+      }
+    }
+    return tables;
+  }, []);
+}
+
+async function collectEcr(account) {
+  return degradeGracefully(account, 'ECR', async () => {
+    const repos = await awsApi.fetchEcrRepos(account);
+    for (const r of repos) {
+      try {
+        const images = await awsApi.fetchEcrRepoImages(account, r.name);
+        r.imageCount = images.imageCount;
+        r.sizeBytes = images.sizeBytes;
+        r.latestPushAt = images.latestPushAt;
+      } catch (err) {
+        logger.debug(`[AwsPoller] ${account.name}: ECR DescribeImages failed for ${r.name}: ${safeMsg(err)}`);
+        r.imageCount = null;
+        r.sizeBytes = null;
+        r.latestPushAt = null;
+      }
+    }
+    return repos;
+  }, []);
+}
+
+async function collectVpc(account) {
+  const [vpcs, subnets, natGateways, securityGroups, internetGateways] = await Promise.all([
+    degradeGracefully(account, 'VPC', () => awsApi.fetchVpcs(account), []),
+    degradeGracefully(account, 'Subnets', () => awsApi.fetchSubnets(account), []),
+    degradeGracefully(account, 'NAT Gateways', () => awsApi.fetchNatGateways(account), []),
+    degradeGracefully(account, 'Security Groups', () => awsApi.fetchSecurityGroups(account), []),
+    degradeGracefully(account, 'Internet Gateways', () => awsApi.fetchInternetGateways(account), []),
+  ]);
+  const countBy = (rows) => {
+    const m = new Map();
+    for (const r of rows) if (r.vpcId) m.set(r.vpcId, (m.get(r.vpcId) || 0) + 1);
+    return m;
+  };
+  const subnetCounts = countBy(subnets);
+  const natCounts = countBy(natGateways);
+  const sgCounts = countBy(securityGroups);
+  const igwCounts = countBy(internetGateways);
+  for (const v of vpcs) {
+    v.subnetCount = subnetCounts.get(v.vpcId) || 0;
+    v.natGatewayCount = natCounts.get(v.vpcId) || 0;
+    v.securityGroupCount = sgCounts.get(v.vpcId) || 0;
+    v.igw = igwCounts.get(v.vpcId) || 0;
+  }
+  return { vpcs, subnets };
+}
+
 const storeCore = db.transaction((accountId, { ec2, lightsail, ecs }) => {
   db.prepare('DELETE FROM aws_ec2_instances WHERE account_id = ?').run(accountId);
   const ec2Stmt = db.prepare(`
@@ -176,6 +295,72 @@ const storeCore = db.transaction((accountId, { ec2, lightsail, ecs }) => {
   for (const s of ecs.services) {
     svcStmt.run(accountId, s.clusterName, s.serviceName, s.status, s.desiredCount,
       s.runningCount, s.pendingCount, s.launchType, s.cpuUtil, s.memoryUtil);
+  }
+});
+
+const storeR2 = db.transaction((accountId, { rds, lambda, dynamo, ecr, vpc }) => {
+  db.prepare('DELETE FROM aws_rds_instances WHERE account_id = ?').run(accountId);
+  const rdsStmt = db.prepare(`
+    INSERT INTO aws_rds_instances (account_id, db_id, engine, engine_version, instance_class, status,
+      multi_az, allocated_gb, free_storage_bytes, cpu_util, connections, backup_retention_days,
+      latest_backup_at, endpoint)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const i of rds) {
+    rdsStmt.run(accountId, i.dbId, i.engine, i.engineVersion, i.instanceClass, i.status,
+      i.multiAz ? 1 : 0, i.allocatedGb, i.freeStorageBytes, i.cpuUtil, i.connections,
+      i.backupRetentionDays, i.latestBackupAt, i.endpoint);
+  }
+
+  db.prepare('DELETE FROM aws_lambda_functions WHERE account_id = ?').run(accountId);
+  const lambdaStmt = db.prepare(`
+    INSERT INTO aws_lambda_functions (account_id, name, runtime, memory_mb, timeout_s, code_size_bytes,
+      last_modified, invocations_24h, errors_24h, avg_duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const f of lambda) {
+    lambdaStmt.run(accountId, f.name, f.runtime, f.memoryMb, f.timeoutS, f.codeSizeBytes,
+      f.lastModified, f.invocations24h, f.errors24h, f.avgDurationMs);
+  }
+
+  db.prepare('DELETE FROM aws_dynamo_tables WHERE account_id = ?').run(accountId);
+  const dynamoStmt = db.prepare(`
+    INSERT INTO aws_dynamo_tables (account_id, name, status, billing_mode, item_count, size_bytes,
+      read_capacity, write_capacity)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const t of dynamo) {
+    dynamoStmt.run(accountId, t.name, t.status, t.billingMode, t.itemCount, t.sizeBytes,
+      t.readCapacity, t.writeCapacity);
+  }
+
+  db.prepare('DELETE FROM aws_ecr_repos WHERE account_id = ?').run(accountId);
+  const ecrStmt = db.prepare(`
+    INSERT INTO aws_ecr_repos (account_id, name, image_count, size_bytes, scan_on_push, latest_push_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const r of ecr) {
+    ecrStmt.run(accountId, r.name, r.imageCount, r.sizeBytes, r.scanOnPush ? 1 : 0, r.latestPushAt);
+  }
+
+  db.prepare('DELETE FROM aws_vpcs WHERE account_id = ?').run(accountId);
+  const vpcStmt = db.prepare(`
+    INSERT INTO aws_vpcs (account_id, vpc_id, name, cidr, state, is_default, subnet_count,
+      nat_gateway_count, security_group_count, igw)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const v of vpc.vpcs) {
+    vpcStmt.run(accountId, v.vpcId, v.name, v.cidr, v.state, v.isDefault ? 1 : 0,
+      v.subnetCount, v.natGatewayCount, v.securityGroupCount, v.igw);
+  }
+
+  db.prepare('DELETE FROM aws_subnets WHERE account_id = ?').run(accountId);
+  const subnetStmt = db.prepare(`
+    INSERT INTO aws_subnets (account_id, subnet_id, vpc_id, name, cidr, az, available_ips, public)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const s of vpc.subnets) {
+    subnetStmt.run(accountId, s.subnetId, s.vpcId, s.name, s.cidr, s.az, s.availableIps, s.public ? 1 : 0);
   }
 });
 
@@ -240,6 +425,11 @@ async function pollAccount(account) {
     const lightsail = await collectLightsail(account);
     const ecs = await collectEcs(account);
     storeCore(account.id, { ec2, lightsail, ecs });
+
+    const [rds, lambdaFns, dynamo, ecr, vpc] = await Promise.all([
+      collectRds(account), collectLambda(account), collectDynamo(account), collectEcr(account), collectVpc(account),
+    ]);
+    storeR2(account.id, { rds, lambda: lambdaFns, dynamo, ecr, vpc });
 
     try {
       const bedrock = await collectBedrock(account);

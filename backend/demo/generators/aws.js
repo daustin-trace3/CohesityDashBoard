@@ -80,6 +80,49 @@ const BEDROCK_MODELS = [
 const BEDROCK_DAYS = 30;
 const METRICS_HISTORY_DAYS = 7;
 
+const RDS_INSTANCES = [
+  { dbId: 'demo-prod-postgres', engine: 'postgres', engineVersion: '15.4', instanceClass: 'db.r5.large', status: 'available', multiAz: 1, allocatedGb: 200, freeStorageBytes: Math.round(200 * 1024 ** 3 * 0.45), cpuUtil: 32.1, connections: 24, backupRetentionDays: 7, latestBackupDaysAgo: 0, endpoint: 'demo-prod-postgres.abcdemo.us-east-2.rds.amazonaws.com' },
+  { dbId: 'demo-analytics-mysql', engine: 'mysql', engineVersion: '8.0.35', instanceClass: 'db.m5.large', status: 'available', multiAz: 0, allocatedGb: 500, freeStorageBytes: Math.round(500 * 1024 ** 3 * 0.09), cpuUtil: 54.6, connections: 60, backupRetentionDays: 7, latestBackupDaysAgo: 0, endpoint: 'demo-analytics-mysql.abcdemo.us-east-2.rds.amazonaws.com' },
+  { dbId: 'demo-staging-postgres', engine: 'postgres', engineVersion: '15.4', instanceClass: 'db.t3.medium', status: 'available', multiAz: 0, allocatedGb: 50, freeStorageBytes: Math.round(50 * 1024 ** 3 * 0.7), cpuUtil: 8.9, connections: 4, backupRetentionDays: 3, latestBackupDaysAgo: 1, endpoint: 'demo-staging-postgres.abcdemo.us-east-2.rds.amazonaws.com' },
+];
+
+const LAMBDA_FUNCTIONS = [
+  { name: 'demo-api-router', runtime: 'nodejs20.x', memoryMb: 256, timeoutS: 10, codeSizeBytes: 4 * 1024 ** 2, lastModifiedDaysAgo: 5, invocations24h: 84000, errors24h: 0, avgDurationMs: 45.2 },
+  { name: 'demo-image-resize', runtime: 'python3.12', memoryMb: 512, timeoutS: 30, codeSizeBytes: 12 * 1024 ** 2, lastModifiedDaysAgo: 20, invocations24h: 3400, errors24h: 0, avgDurationMs: 310.5 },
+  { name: 'demo-nightly-etl', runtime: 'python3.12', memoryMb: 1024, timeoutS: 300, codeSizeBytes: 30 * 1024 ** 2, lastModifiedDaysAgo: 40, invocations24h: 24, errors24h: 0, avgDurationMs: 42000 },
+  { name: 'demo-webhook-handler', runtime: 'nodejs20.x', memoryMb: 128, timeoutS: 5, codeSizeBytes: 1 * 1024 ** 2, lastModifiedDaysAgo: 2, invocations24h: 15200, errors24h: 187, avgDurationMs: 22.8 },
+  { name: 'demo-auth-authorizer', runtime: 'nodejs20.x', memoryMb: 128, timeoutS: 5, codeSizeBytes: 2 * 1024 ** 2, lastModifiedDaysAgo: 60, invocations24h: 92000, errors24h: 0, avgDurationMs: 12.4 },
+  { name: 'demo-report-generator', runtime: 'python3.12', memoryMb: 512, timeoutS: 60, codeSizeBytes: 8 * 1024 ** 2, lastModifiedDaysAgo: 15, invocations24h: 480, errors24h: 0, avgDurationMs: 1850.3 },
+];
+
+const DYNAMO_TABLES = [
+  { name: 'demo-sessions', status: 'ACTIVE', billingMode: 'PAY_PER_REQUEST', itemCount: 42000, sizeBytes: 18 * 1024 ** 2, readCapacity: null, writeCapacity: null },
+  { name: 'demo-user-profiles', status: 'ACTIVE', billingMode: 'PAY_PER_REQUEST', itemCount: 8600, sizeBytes: 6 * 1024 ** 2, readCapacity: null, writeCapacity: null },
+  { name: 'demo-orders', status: 'ACTIVE', billingMode: 'PROVISIONED', itemCount: 150000, sizeBytes: 210 * 1024 ** 2, readCapacity: 20, writeCapacity: 10 },
+  { name: 'demo-audit-log', status: 'ACTIVE', billingMode: 'PROVISIONED', itemCount: 900000, sizeBytes: 1200 * 1024 ** 2, readCapacity: 5, writeCapacity: 5 },
+];
+
+const ECR_REPOS = [
+  { name: 'demo-api-service', imageCount: 42, sizeBytes: Math.round(3.1 * 1024 ** 3), scanOnPush: 1, latestPushDaysAgo: 1 },
+  { name: 'demo-worker-service', imageCount: 30, sizeBytes: Math.round(2.4 * 1024 ** 3), scanOnPush: 1, latestPushDaysAgo: 3 },
+  { name: 'demo-batch-jobs', imageCount: 15, sizeBytes: Math.round(1.1 * 1024 ** 3), scanOnPush: 0, latestPushDaysAgo: 12 },
+];
+
+const VPCS = [
+  { vpcId: 'vpc-0demo1111prod', name: 'demo-prod-vpc', cidr: '10.20.0.0/16', state: 'available', isDefault: 0, natGatewayCount: 2, securityGroupCount: 12, igw: 1,
+    subnets: [
+      { subnetId: 'subnet-0demo1111a', name: 'demo-prod-public-a', cidr: '10.20.1.0/24', az: 'us-east-2a', availableIps: 240, public: 1 },
+      { subnetId: 'subnet-0demo1111b', name: 'demo-prod-public-b', cidr: '10.20.2.0/24', az: 'us-east-2b', availableIps: 238, public: 1 },
+      { subnetId: 'subnet-0demo1111c', name: 'demo-prod-private-a', cidr: '10.20.11.0/24', az: 'us-east-2a', availableIps: 190, public: 0 },
+      { subnetId: 'subnet-0demo1111d', name: 'demo-prod-private-b', cidr: '10.20.12.0/24', az: 'us-east-2b', availableIps: 205, public: 0 },
+    ] },
+  { vpcId: 'vpc-0demo2222default', name: 'default', cidr: '172.31.0.0/16', state: 'available', isDefault: 1, natGatewayCount: 0, securityGroupCount: 3, igw: 1,
+    subnets: [
+      { subnetId: 'subnet-0demo2222a', name: null, cidr: '172.31.0.0/20', az: 'us-east-2a', availableIps: 4090, public: 1 },
+      { subnetId: 'subnet-0demo2222b', name: null, cidr: '172.31.16.0/20', az: 'us-east-2b', availableIps: 4088, public: 1 },
+    ] },
+];
+
 function seedAws(db, { now, encrypt }) {
   void now;
 
@@ -156,6 +199,65 @@ function seedAws(db, { now, encrypt }) {
   for (const b of S3_BUCKETS) {
     insertS3.run(accountId, b.name, b.region, b.sizeBytes, b.objectCount,
       b.publicAccessBlocked, b.versioning, b.lifecycleRules, `-${b.createdDaysAgo} days`);
+  }
+
+  const insertRds = db.prepare(`
+    INSERT INTO aws_rds_instances (account_id, db_id, engine, engine_version, instance_class, status,
+      multi_az, allocated_gb, free_storage_bytes, cpu_util, connections, backup_retention_days,
+      latest_backup_at, endpoint)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), ?)
+  `);
+  for (const r of RDS_INSTANCES) {
+    insertRds.run(accountId, r.dbId, r.engine, r.engineVersion, r.instanceClass, r.status,
+      r.multiAz, r.allocatedGb, r.freeStorageBytes, r.cpuUtil, r.connections, r.backupRetentionDays,
+      `-${r.latestBackupDaysAgo} days`, r.endpoint);
+  }
+
+  const insertLambda = db.prepare(`
+    INSERT INTO aws_lambda_functions (account_id, name, runtime, memory_mb, timeout_s, code_size_bytes,
+      last_modified, invocations_24h, errors_24h, avg_duration_ms)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?), ?, ?, ?)
+  `);
+  for (const l of LAMBDA_FUNCTIONS) {
+    insertLambda.run(accountId, l.name, l.runtime, l.memoryMb, l.timeoutS, l.codeSizeBytes,
+      `-${l.lastModifiedDaysAgo} days`, l.invocations24h, l.errors24h, l.avgDurationMs);
+  }
+
+  const insertDynamo = db.prepare(`
+    INSERT INTO aws_dynamo_tables (account_id, name, status, billing_mode, item_count, size_bytes,
+      read_capacity, write_capacity)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const t of DYNAMO_TABLES) {
+    insertDynamo.run(accountId, t.name, t.status, t.billingMode, t.itemCount, t.sizeBytes,
+      t.readCapacity, t.writeCapacity);
+  }
+
+  const insertEcr = db.prepare(`
+    INSERT INTO aws_ecr_repos (account_id, name, image_count, size_bytes, scan_on_push, latest_push_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now', ?))
+  `);
+  for (const e of ECR_REPOS) {
+    insertEcr.run(accountId, e.name, e.imageCount, e.sizeBytes, e.scanOnPush, `-${e.latestPushDaysAgo} days`);
+  }
+
+  const insertVpc = db.prepare(`
+    INSERT INTO aws_vpcs (account_id, vpc_id, name, cidr, state, is_default, subnet_count,
+      nat_gateway_count, security_group_count, igw)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertSubnet = db.prepare(`
+    INSERT INTO aws_subnets (account_id, subnet_id, vpc_id, name, cidr, az, available_ips, public)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let subnetRows = 0;
+  for (const v of VPCS) {
+    insertVpc.run(accountId, v.vpcId, v.name, v.cidr, v.state, v.isDefault, v.subnets.length,
+      v.natGatewayCount, v.securityGroupCount, v.igw);
+    for (const s of v.subnets) {
+      insertSubnet.run(accountId, s.subnetId, v.vpcId, s.name, s.cidr, s.az, s.availableIps, s.public);
+      subnetRows++;
+    }
   }
 
   // ── Cost Explorer: 45 days x 6 services, yesterday ~40% above day-before ──
@@ -247,6 +349,8 @@ function seedAws(db, { now, encrypt }) {
     const degradedService = ECS_SERVICES.find((s) => s.status === 'ACTIVE' && s.runningCount < s.desiredCount);
     const publicBucket = S3_BUCKETS.find((b) => b.publicAccessBlocked === 0);
     const unattachedVolumes = EBS_VOLUMES.filter((v) => v.state === 'available');
+    const lowStorageRds = RDS_INSTANCES.find((r) => r.status === 'available' && r.allocatedGb > 0
+      && r.freeStorageBytes < r.allocatedGb * 1073741824 * 0.15);
 
     const issues = [
       {
@@ -273,6 +377,13 @@ function seedAws(db, { now, encrypt }) {
         message: `Volume ${v.volumeId} (${v.sizeGb} GiB) is unattached`, openedMinAgo: 480,
       });
     }
+    if (lowStorageRds) {
+      const pct = Math.round((lowStorageRds.freeStorageBytes / (lowStorageRds.allocatedGb * 1073741824)) * 1000) / 10;
+      issues.push({
+        type: 'rds-storage-low', target: lowStorageRds.dbId, severity: 'warning',
+        message: `RDS instance ${lowStorageRds.dbId} has ${pct}% free storage remaining`, openedMinAgo: 120,
+      });
+    }
 
     for (const issue of issues) {
       insertIssue.run(
@@ -295,6 +406,12 @@ function seedAws(db, { now, encrypt }) {
     ecsClusters: ECS_CLUSTERS.length,
     ecsServices: ECS_SERVICES.length,
     s3: S3_BUCKETS.length,
+    rds: RDS_INSTANCES.length,
+    lambda: LAMBDA_FUNCTIONS.length,
+    dynamo: DYNAMO_TABLES.length,
+    ecr: ECR_REPOS.length,
+    vpcs: VPCS.length,
+    subnets: subnetRows,
     costRows,
     bedrockRows,
     metricsRows,

@@ -10,6 +10,11 @@ function costSpikePct() {
   return Number.isFinite(n) && n >= 5 && n <= 500 ? Math.round(n) : 30;
 }
 
+function rdsStorageWarnPct() {
+  const n = Number(getSetting('aws_rds_storage_warn_pct'));
+  return Number.isFinite(n) && n >= 5 && n <= 50 ? Math.round(n) : 15;
+}
+
 /**
  * Current issues from the stored inventory. Every issue carries a `target`
  * so `type|account|target` is a stable identity across polls.
@@ -97,6 +102,24 @@ function computeIssues() {
     }
   }
 
+  // 7 (added round 2). rds-storage-low — available instance with free storage below the
+  // configured percentage of allocated storage.
+  const rdsPct = rdsStorageWarnPct();
+  const rdsRows = db.prepare(`
+    SELECT r.*, a.name AS account_name FROM aws_rds_instances r JOIN aws_accounts a ON a.id = r.account_id
+  `).all();
+  for (const r of rdsRows) {
+    if (r.status === 'available' && r.allocated_gb > 0 && r.free_storage_bytes != null
+      && r.free_storage_bytes < (r.allocated_gb * 1073741824 * rdsPct / 100)) {
+      const freePct = (r.free_storage_bytes / (r.allocated_gb * 1073741824)) * 100;
+      issues.push({
+        severity: 'warning', type: 'rds-storage-low', account: r.account_name, accountId: r.account_id,
+        target: r.db_id,
+        message: `RDS instance ${r.db_id} has ${freePct.toFixed(1)}% free storage (below ${rdsPct}% threshold)`,
+      });
+    }
+  }
+
   // 6. account-poll-error — account last_poll_status = 'error'.
   for (const acc of accounts) {
     if (acc.last_poll_status === 'error') {
@@ -151,4 +174,4 @@ const reconcileIssueHistory = db.transaction(() => {
   db.prepare("DELETE FROM aws_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
 });
 
-module.exports = { costSpikePct, computeIssues, reconcileIssueHistory };
+module.exports = { costSpikePct, rdsStorageWarnPct, computeIssues, reconcileIssueHistory };

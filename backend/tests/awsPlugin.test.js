@@ -143,6 +143,48 @@ describe('awsIssues.computeIssues + reconcileIssueHistory', () => {
     const { costSpikePct } = require('../services/awsIssues');
     expect(costSpikePct()).toBe(30);
   });
+
+  it('clamps rdsStorageWarnPct to its documented default/bounds', () => {
+    const { rdsStorageWarnPct } = require('../services/awsIssues');
+    expect(rdsStorageWarnPct()).toBe(15);
+  });
+
+  it('detects rds-storage-low and respects the clamped threshold', () => {
+    const { computeIssues, reconcileIssueHistory } = require('../services/awsIssues');
+    const { setSetting } = require('../services/settings');
+
+    const accountId = insertAccount({ name: 'aws-rds-issues' });
+
+    // Below default 15% threshold — should trip.
+    db.prepare(`
+      INSERT INTO aws_rds_instances (account_id, db_id, status, allocated_gb, free_storage_bytes)
+      VALUES (?, 'db-low', 'available', 100, ?)
+    `).run(accountId, Math.round(100 * 1073741824 * 0.10)); // 10% free
+    // Comfortably above threshold — must not trip.
+    db.prepare(`
+      INSERT INTO aws_rds_instances (account_id, db_id, status, allocated_gb, free_storage_bytes)
+      VALUES (?, 'db-ok', 'available', 100, ?)
+    `).run(accountId, Math.round(100 * 1073741824 * 0.50)); // 50% free
+
+    let issues = computeIssues();
+    let low = issues.filter((i) => i.type === 'rds-storage-low' && i.accountId === accountId);
+    expect(low).toHaveLength(1);
+    expect(low[0].target).toBe('db-low');
+    expect(low[0].severity).toBe('warning');
+
+    reconcileIssueHistory();
+    const openRow = db.prepare(
+      "SELECT * FROM aws_issue_history WHERE issue_key = ? AND account_id = ?"
+    ).get(`rds-storage-low|aws-rds-issues|db-low`, accountId);
+    expect(openRow.status).toBe('open');
+
+    // Tighten the threshold to 5% — the 10%-free instance no longer trips.
+    setSetting('aws_rds_storage_warn_pct', '5');
+    issues = computeIssues();
+    low = issues.filter((i) => i.type === 'rds-storage-low' && i.accountId === accountId);
+    expect(low).toHaveLength(0);
+    setSetting('aws_rds_storage_warn_pct', '15'); // restore default
+  });
 });
 
 describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dispatcher)', () => {
@@ -200,19 +242,26 @@ describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dis
     await request(app).delete(`/api/aws/accounts/${created.body.id}`);
   });
 
-  it('GET/PUT /api/aws/config round-trips clamped costSpikePct', async () => {
+  it('GET/PUT /api/aws/config round-trips clamped costSpikePct and rdsStorageWarnPct', async () => {
     const before = await request(app).get('/api/aws/config');
     expect(before.status).toBe(200);
-    expect(before.body).toEqual({ costSpikePct: 30 });
+    expect(before.body).toEqual({ costSpikePct: 30, rdsStorageWarnPct: 15 });
 
     const saved = await request(app).put('/api/aws/config').send({ costSpikePct: 50 });
     expect(saved.status).toBe(200);
-    expect(saved.body).toEqual({ costSpikePct: 50 });
+    expect(saved.body).toEqual({ costSpikePct: 50, rdsStorageWarnPct: 15 });
+
+    const savedRds = await request(app).put('/api/aws/config').send({ costSpikePct: 50, rdsStorageWarnPct: 25 });
+    expect(savedRds.status).toBe(200);
+    expect(savedRds.body).toEqual({ costSpikePct: 50, rdsStorageWarnPct: 25 });
 
     const invalid = await request(app).put('/api/aws/config').send({ costSpikePct: 1 });
     expect(invalid.status).toBe(400);
 
-    await request(app).put('/api/aws/config').send({ costSpikePct: 30 }); // restore default
+    const invalidRds = await request(app).put('/api/aws/config').send({ costSpikePct: 30, rdsStorageWarnPct: 1 });
+    expect(invalidRds.status).toBe(400);
+
+    await request(app).put('/api/aws/config').send({ costSpikePct: 30, rdsStorageWarnPct: 15 }); // restore defaults
   });
 
   it('GET /api/aws/overview returns the estate rollup shape', async () => {
@@ -226,6 +275,11 @@ describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dis
     expect(Array.isArray(res.body.cost.topServices)).toBe(true);
     expect(res.body.bedrock).toBeTypeOf('object');
     expect(res.body.issues).toEqual(expect.objectContaining({ critical: expect.any(Number), warning: expect.any(Number), info: expect.any(Number) }));
+    expect(res.body.rds).toEqual(expect.objectContaining({ total: expect.any(Number), available: expect.any(Number), storageLow: expect.any(Number) }));
+    expect(res.body.lambda).toEqual(expect.objectContaining({ total: expect.any(Number), errors24h: expect.any(Number) }));
+    expect(res.body.dynamo).toEqual(expect.objectContaining({ total: expect.any(Number), sizeBytes: expect.any(Number) }));
+    expect(res.body.ecr).toEqual(expect.objectContaining({ repos: expect.any(Number) }));
+    expect(res.body.vpc).toEqual(expect.objectContaining({ vpcs: expect.any(Number), natGateways: expect.any(Number) }));
   });
 
   it('GET /api/aws/issues returns the wrapped computed issue array', async () => {
@@ -256,12 +310,39 @@ describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dis
       ['bedrock', (b) => Array.isArray(b.models) && typeof b.totals === 'object'],
       ['costs', (b) => Array.isArray(b.days) && Array.isArray(b.byService)],
       ['trends', (b) => Array.isArray(b.rows)],
+      ['rds', (b) => Array.isArray(b.instances)],
+      ['lambda', (b) => Array.isArray(b.functions)],
+      ['dynamo', (b) => Array.isArray(b.tables)],
+      ['ecr', (b) => Array.isArray(b.repos)],
+      ['vpc', (b) => Array.isArray(b.vpcs) && Array.isArray(b.subnets)],
     ];
     for (const [path, shapeOk] of checks) {
       const res = await request(app).get(`/api/aws/${path}`);
       expect(res.status, `GET /api/aws/${path}`).toBe(200);
       expect(shapeOk(res.body), `GET /api/aws/${path} body shape`).toBe(true);
     }
+  });
+
+  it('GET /api/aws/rds pins camelCase shape and computes freeStoragePct', async () => {
+    const accountId = insertAccount({ name: 'aws-rds-route' });
+    db.prepare(`
+      INSERT INTO aws_rds_instances (account_id, db_id, engine, engine_version, instance_class, status,
+        multi_az, allocated_gb, free_storage_bytes, cpu_util, connections, backup_retention_days,
+        latest_backup_at, endpoint)
+      VALUES (?, 'db-route-test', 'postgres', '15.4', 'db.t3.medium', 'available', 1, 100,
+        ?, 12.5, 3, 7, datetime('now'), 'db-route-test.abc123.us-east-2.rds.amazonaws.com')
+    `).run(accountId, Math.round(100 * 1073741824 * 0.20));
+
+    const res = await request(app).get('/api/aws/rds');
+    expect(res.status).toBe(200);
+    const row = res.body.instances.find((i) => i.dbId === 'db-route-test');
+    expect(row).toBeTruthy();
+    expect(row).toEqual(expect.objectContaining({
+      dbId: 'db-route-test', engine: 'postgres', engineVersion: '15.4', instanceClass: 'db.t3.medium',
+      status: 'available', multiAz: true, allocatedGb: 100, cpuUtil: 12.5, connections: 3,
+      backupRetentionDays: 7, account: 'aws-rds-route',
+    }));
+    expect(row.freeStoragePct).toBeCloseTo(20, 1);
   });
 
   it('POST /api/aws/accounts/test never throws with bogus credentials', async () => {

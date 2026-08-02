@@ -182,4 +182,110 @@ module.exports = [
       `);
     },
   },
+  {
+    // Round 2: RDS, Lambda, DynamoDB, ECR, VPC/subnet inventory. Wholesale-
+    // replaced per account each poll, same as EC2/EBS/Lightsail/ECS.
+    version: 2,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_rds_instances (
+          id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id             INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          db_id                  TEXT NOT NULL,
+          engine                 TEXT,
+          engine_version         TEXT,
+          instance_class         TEXT,
+          status                 TEXT,
+          multi_az               INTEGER,
+          allocated_gb           INTEGER,
+          free_storage_bytes     INTEGER,
+          cpu_util               REAL,
+          connections            INTEGER,
+          backup_retention_days  INTEGER,
+          latest_backup_at       DATETIME,
+          endpoint               TEXT,
+          captured_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, db_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_rds_account ON aws_rds_instances(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_lambda_functions (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id        INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name              TEXT NOT NULL,
+          runtime           TEXT,
+          memory_mb         INTEGER,
+          timeout_s         INTEGER,
+          code_size_bytes   INTEGER,
+          last_modified     DATETIME,
+          invocations_24h   INTEGER,
+          errors_24h        INTEGER,
+          avg_duration_ms   REAL,
+          captured_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_lambda_account ON aws_lambda_functions(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_dynamo_tables (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id     INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name           TEXT NOT NULL,
+          status         TEXT,
+          billing_mode   TEXT,
+          item_count     INTEGER,
+          size_bytes     INTEGER,
+          read_capacity  INTEGER,
+          write_capacity INTEGER,
+          captured_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_dynamo_account ON aws_dynamo_tables(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_ecr_repos (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id     INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name           TEXT NOT NULL,
+          image_count    INTEGER,
+          size_bytes     INTEGER,
+          scan_on_push   INTEGER,
+          latest_push_at DATETIME,
+          captured_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_ecr_account ON aws_ecr_repos(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_vpcs (
+          id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id             INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          vpc_id                 TEXT NOT NULL,
+          name                   TEXT,
+          cidr                   TEXT,
+          state                  TEXT,
+          is_default             INTEGER,
+          subnet_count           INTEGER,
+          nat_gateway_count      INTEGER,
+          security_group_count   INTEGER,
+          igw                    INTEGER,
+          captured_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, vpc_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_vpcs_account ON aws_vpcs(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_subnets (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id     INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          subnet_id      TEXT NOT NULL,
+          vpc_id         TEXT,
+          name           TEXT,
+          cidr           TEXT,
+          az             TEXT,
+          available_ips  INTEGER,
+          public         INTEGER,
+          captured_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, subnet_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_subnets_account ON aws_subnets(account_id);
+      `);
+    },
+  },
 ];

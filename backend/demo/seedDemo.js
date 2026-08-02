@@ -89,7 +89,9 @@ const SEEDED_TABLES = [
   // aws
   'aws_ec2_instances', 'aws_ebs_volumes', 'aws_lightsail_instances',
   'aws_ecs_services', 'aws_ecs_clusters', 'aws_s3_buckets', 'aws_bedrock_usage',
-  'aws_cost_daily', 'aws_metrics_history', 'aws_issue_history', 'aws_accounts',
+  'aws_cost_daily', 'aws_metrics_history', 'aws_issue_history',
+  'aws_rds_instances', 'aws_lambda_functions', 'aws_dynamo_tables',
+  'aws_ecr_repos', 'aws_subnets', 'aws_vpcs', 'aws_accounts',
 ];
 
 function wipeSeededTables(database) {
