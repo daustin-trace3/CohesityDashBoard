@@ -463,7 +463,13 @@ export default function Layout() {
                       }`}
                     >
                       {active && <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-r bg-brand" />}
-                      <Icon size={16} strokeWidth={active ? 2.25 : 1.75} className="flex-shrink-0" />
+                      {Icon ? (
+                        <Icon size={16} strokeWidth={active ? 2.25 : 1.75} className="flex-shrink-0" />
+                      ) : (
+                        // Installed plugins can't import the host icon set — render a
+                        // neutral dot instead of crashing on <undefined />.
+                        <span className="h-1.5 w-1.5 mx-[5px] rounded-full bg-current opacity-60 flex-shrink-0" />
+                      )}
                       {!collapsed && <span className="truncate">{item.label}</span>}
                       {!collapsed && item.showAlertCount && alertCount > 0 && (
                         <span className={`ml-auto min-w-[20px] text-center rounded-full px-1.5 py-px text-[10px] font-bold tnum ${
