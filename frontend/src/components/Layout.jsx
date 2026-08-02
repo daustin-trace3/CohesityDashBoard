@@ -527,14 +527,18 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : isAws ? 'AWS Dashboard' : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : isAws ? 'AWS Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
+            {/* Plugin platforms have no entity-feed endpoints — hide the count chip
+                rather than showing the Cohesity fall-through. */}
+            {!activePluginPlatform && (
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform
                 ? `${platformCount} ${platformLabel}${platformCount !== 1 ? 's' : ''}`
                 : `${clusterCount} Cohesity Cluster${clusterCount !== 1 ? 's' : ''}`}
             </span>
-            {isPlatform ? (
+            )}
+            {activePluginPlatform ? null : isPlatform ? (
               platformAlerts > 0 && (
                 <button
                   onClick={() => navigate(`/${platformKey}/alerts`)}
