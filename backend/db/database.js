@@ -13,7 +13,6 @@ const ariaMigrations = require('./migrations/aria');
 const ariaopsMigrations = require('./migrations/ariaops');
 const netbackupMigrations = require('./migrations/netbackup');
 const awsMigrations = require('./migrations/aws');
-const proxmoxMigrations = require('./migrations/proxmox');
 
 const DB_PATH = process.env.DASHBOARD_DB_PATH || path.join(__dirname, '..', 'data', 'cohesity.db');
 
@@ -45,6 +44,5 @@ runMigrations(db, 'aria', ariaMigrations);
 runMigrations(db, 'ariaops', ariaopsMigrations);
 runMigrations(db, 'netbackup', netbackupMigrations);
 runMigrations(db, 'aws', awsMigrations);
-runMigrations(db, 'proxmox', proxmoxMigrations);
 
 module.exports = db;

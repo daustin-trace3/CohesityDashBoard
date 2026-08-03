@@ -33,9 +33,6 @@ router.get('/suggest', (req, res, next) => {
     if (platformEnabled('netbackup') && hasPermission(grants, 'netbackup:jobs:view')) {
       for (const r of db.prepare(`SELECT DISTINCT client_name AS name FROM netbackup_jobs WHERE client_name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 8`).all(pattern)) names.add(r.name);
     }
-    if (platformEnabled('proxmox') && hasPermission(grants, 'proxmox:guests:view')) {
-      for (const r of db.prepare(`SELECT name FROM proxmox_guests WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 8`).all(pattern)) names.add(r.name);
-    }
     for (const p of registry.getServer360Providers()) {
       if (!p.suggest || !hasPermission(grants, `${p.id}:objects:view`)) continue;
       try {
@@ -175,23 +172,6 @@ router.get('/', (req, res, next) => {
       }
     }
 
-    // ── Proxmox: guest posture by name, or by IP (agent-reported) ─────────
-    let proxmox = null;
-    if (platformEnabled('proxmox') && can('proxmox:guests:view')) {
-      const ipPattern = `%"${q.replace(/[\\%_]/g, (c) => `\\${c}`)}"%`;
-      const rows = db.prepare(`
-        SELECT g.*, s.name AS server_name FROM proxmox_guests g
-        JOIN proxmox_servers s ON s.id = g.server_id
-        WHERE lower(g.name) IN (${namePh}) OR g.ip_addresses LIKE ? ESCAPE '\\'
-      `).all(...nameList, ipPattern);
-      if (rows.length) {
-        proxmox = {
-          guests: rows.map((g) => ({ ...g, osName: g.os_name, ipAddresses: parseJson(g.ip_addresses, []) })),
-        };
-        for (const g of rows) names.add(lower(g.name));
-      }
-    }
-
     // ── NetBackup: backup posture by client name ──────────────────────────
     let netbackup = null;
     if (platformEnabled('netbackup') && can('netbackup:jobs:view')) {
@@ -250,7 +230,6 @@ router.get('/', (req, res, next) => {
       netapp,
       aria,
       netbackup,
-      proxmox,
       plugins: pluginSections,
     });
   } catch (err) { next(err); }

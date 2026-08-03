@@ -96,9 +96,9 @@ describe('seedDemo.js', () => {
 
   it('seeds platform flags as string "1"', () => {
     const rows = db.prepare(
-      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled', 'platform_proxmox_enabled')"
+      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled')"
     ).all();
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(6);
     for (const row of rows) {
       expect(row.value).toBe('1');
     }
@@ -380,114 +380,4 @@ describe('seedDemo.js', () => {
     expect(flag.value).toBe('1');
   });
 
-  it('seeds the proxmox platform with 2 servers, mixed guests, and 2 templates', () => {
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_servers').get().c).toBe(2);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_nodes').get().c).toBe(4);
-    const guests = db.prepare('SELECT COUNT(*) c FROM proxmox_guests').get().c;
-    expect(guests).toBeGreaterThanOrEqual(24);
-    expect(guests).toBeLessThanOrEqual(32);
-    expect(db.prepare("SELECT COUNT(*) c FROM proxmox_guests WHERE type = 'qemu'").get().c).toBeGreaterThan(0);
-    expect(db.prepare("SELECT COUNT(*) c FROM proxmox_guests WHERE type = 'lxc'").get().c).toBeGreaterThan(0);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_guests WHERE is_template = 1').get().c).toBe(2);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_storage').get().c).toBeGreaterThanOrEqual(6);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_backup_jobs').get().c).toBe(4);
-
-    const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_proxmox_enabled'").get();
-    expect(flag.value).toBe('1');
-  });
-
-  it('seeds proxmox deliberate trouble covering every issue rule', () => {
-    expect(db.prepare("SELECT COUNT(*) c FROM proxmox_nodes WHERE status != 'online'").get().c).toBeGreaterThan(0);
-    expect(db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_storage WHERE total_bytes > 0 AND (CAST(used_bytes AS REAL) / total_bytes) >= 0.95
-    `).get().c).toBeGreaterThan(0);
-    expect(db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_storage
-      WHERE total_bytes > 0 AND (CAST(used_bytes AS REAL) / total_bytes) >= 0.85 AND (CAST(used_bytes AS REAL) / total_bytes) < 0.95
-    `).get().c).toBeGreaterThan(0);
-    expect(db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_tasks
-      WHERE type = 'vzdump' AND status != 'OK' AND started_at >= datetime('now', '-7 days')
-    `).get().c).toBeGreaterThan(0);
-    expect(db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_tasks
-      WHERE type != 'vzdump' AND status != 'OK' AND started_at >= datetime('now', '-1 day')
-    `).get().c).toBeGreaterThan(0);
-    expect(db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_guests
-      WHERE is_template = 0 AND last_backup_status = 'OK'
-        AND last_backup_at < datetime('now', '-3 days')
-    `).get().c).toBeGreaterThan(0);
-    expect(db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_nodes
-      WHERE cert_expires_at IS NOT NULL AND julianday(cert_expires_at) - julianday('now') <= 30
-    `).get().c).toBeGreaterThan(0);
-    expect(db.prepare("SELECT quorate FROM proxmox_servers WHERE name = 'pve-cluster-hq'").get().quorate).toBe(0);
-    const forbidden = db.prepare("SELECT forbidden_endpoints FROM proxmox_servers WHERE name = 'pve-lab-01'").get().forbidden_endpoints;
-    expect(forbidden).toBeTruthy();
-    expect(JSON.parse(forbidden).length).toBeGreaterThan(0);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_issue_history').get().c).toBeGreaterThan(0);
-  });
-
-  it('seeds 14 days of proxmox tasks and hourly metrics per node', () => {
-    const oldestTask = db.prepare("SELECT MIN(started_at) m FROM proxmox_tasks").get().m;
-    expect(new Date(oldestTask).getTime()).toBeLessThanOrEqual(Date.now() - 6 * 24 * 60 * 60 * 1000);
-    const metricsPerNode = db.prepare('SELECT node, COUNT(*) c FROM proxmox_metrics GROUP BY node').all();
-    expect(metricsPerNode.length).toBeGreaterThanOrEqual(4);
-    for (const row of metricsPerNode) {
-      expect(row.c).toBeGreaterThanOrEqual(7);
-    }
-  });
-
-  it('seeds the proxmox v2 tables (snapshots, services, disks, networks, storage content, events)', () => {
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_snapshots').get().c).toBeGreaterThan(0);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_services').get().c).toBeGreaterThanOrEqual(4 * 7);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_disks').get().c).toBeGreaterThanOrEqual(4 * 2);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_node_networks').get().c).toBeGreaterThanOrEqual(4 * 2);
-    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_storage_content').get().c).toBeGreaterThan(0);
-    const events = db.prepare('SELECT COUNT(*) c FROM proxmox_events').get().c;
-    expect(events).toBeGreaterThanOrEqual(190);
-    expect(events).toBeLessThanOrEqual(210);
-
-    const guestExtras = db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_guests
-      WHERE is_template = 0 AND config_json IS NOT NULL
-    `).get().c;
-    expect(guestExtras).toBeGreaterThan(0);
-    const agentGuests = db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_guests WHERE type = 'qemu' AND agent_running = 1 AND os_name IS NOT NULL
-    `).get().c;
-    expect(agentGuests).toBeGreaterThan(0);
-  });
-
-  it('seeds proxmox v2 trouble covering the 3 new issue rules', () => {
-    // snapshot-age: a snapshot older than the 30-day default on lab-app-01.
-    const oldSnap = db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_snapshots
-      WHERE vmid = 102 AND julianday('now') - julianday(snap_time) > 30
-    `).get().c;
-    expect(oldSnap).toBeGreaterThan(0);
-    expect(db.prepare("SELECT oldest_snapshot_at FROM proxmox_guests WHERE vmid = 102").get().oldest_snapshot_at).toBeTruthy();
-
-    // service-down: pvescheduler enabled but dead on pve-hq-02.
-    const deadService = db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_services
-      WHERE node = 'pve-hq-02' AND name = 'pvescheduler' AND unit_state = 'enabled' AND state != 'running'
-    `).get().c;
-    expect(deadService).toBe(1);
-
-    // smart-failing: a FAILED disk on pve-hq-03.
-    const failedDisk = db.prepare(`
-      SELECT COUNT(*) c FROM proxmox_disks WHERE node = 'pve-hq-03' AND health = 'FAILED'
-    `).get().c;
-    expect(failedDisk).toBeGreaterThan(0);
-
-    // Once services/proxmoxIssues.js grows the 3 new rules, reconcile should
-    // have opened issue_history rows for each. If this fails only because the
-    // rules aren't landed yet (WPA in-flight), that's the expected escape hatch.
-    for (const type of ['snapshot-age', 'service-down', 'smart-failing']) {
-      const row = db.prepare("SELECT COUNT(*) c FROM proxmox_issue_history WHERE type = ? AND status = 'open'").get(type);
-      expect(row.c).toBeGreaterThan(0);
-    }
-  });
 });

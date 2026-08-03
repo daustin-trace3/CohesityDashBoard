@@ -21,7 +21,6 @@ const NOTIFY_PLATFORMS = [
   { key: 'aria', label: 'Aria Automation' },
   { key: 'netbackup', label: 'Veritas NetBackup' },
   { key: 'aws', label: 'AWS' },
-  { key: 'proxmox', label: 'Proxmox VE' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,

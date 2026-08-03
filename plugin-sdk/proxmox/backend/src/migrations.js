@@ -3,7 +3,12 @@
 // (AES-encrypted API token secret) like vCenter. Inventory tables (nodes,
 // guests, storage, backup jobs, tasks) are replaced per server each poll;
 // proxmox_metrics accumulates per-node snapshots for trends.
-module.exports = [
+//
+// Copied VERBATIM from backend/db/migrations/proxmox.js (v1 + v2) — the host
+// runs plugin migrations under the same plugin id 'proxmox', and an existing
+// local DB already has schema_migrations rows for proxmox v1+v2, so on
+// install these are skipped and existing data is adopted intact.
+const migrations = [
   {
     version: 1,
     up(db) {
@@ -274,3 +279,5 @@ module.exports = [
     },
   },
 ];
+
+module.exports = { migrations };

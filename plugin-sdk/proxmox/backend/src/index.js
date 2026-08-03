@@ -1,28 +1,31 @@
-// Proxmox VE platform manifest (ICC contract). Direct-connection model like
+// Proxmox VE plugin manifest (ICC contract C1). Direct-connection model like
 // vCenter: registered servers in proxmox_servers, one framework poller task
-// per server.
-const proxmoxMigrations = require('../../db/migrations/proxmox');
-const proxmoxRouter = require('../../routes/proxmox');
-const { proxmoxPoller, initProxmoxPoller } = require('../../services/proxmoxPoller');
+// per server, LIVE polling (not static demo data — unlike plugin-sdk/rubrik).
+//
+// Ported from backend/platforms/proxmox/index.js + the proxmox blocks in
+// backend/routes/ops.js, backend/services/alertNotifier.js,
+// backend/routes/search.js, backend/routes/server360.js. Migrations copied
+// VERBATIM from backend/db/migrations/proxmox.js so an existing local DB's
+// proxmox_* data (and schema_migrations rows) is adopted intact on install.
+const { migrations } = require('./migrations');
+const { createRouter } = require('./routes');
+const { createProxmoxPoller } = require('./poller');
+const { opsSummary } = require('./ops');
+const { collectAlerts } = require('./alerts');
+const { searchCategories } = require('./search');
+const { server360, server360Suggest } = require('./server360');
 
 module.exports = {
   id: 'proxmox',
   name: 'Proxmox VE',
   apiVersion: 1,
   color: '#E57000',
-  migrations: proxmoxMigrations,
-  createRouter() {
-    return proxmoxRouter;
-  },
-  createPoller() {
-    return {
-      ...proxmoxPoller,
-      init: () => initProxmoxPoller(),
-    };
+  migrations,
+  createRouter,
+  createPoller(coreApi) {
+    return createProxmoxPoller(coreApi);
   },
   statusTables: ['proxmox_servers'],
-  settingsFields: [],
-  navSections: ['overview', 'nodes', 'guests', 'storage', 'backups', 'settings'],
   datasets: [
     {
       id: 'proxmox.guests',
@@ -74,4 +77,13 @@ module.exports = {
       ],
     },
   ],
+  // Phase-1 manifest-driven core hooks (2026-08-03 contract): ops landing
+  // page card, alert-email collector, global search categories, poller
+  // status metrics-history section, and Server 360 backup-posture section.
+  opsSummary,
+  collectAlerts,
+  searchCategories,
+  metricsHistory: { arraysTable: 'proxmox_servers', metricsTable: 'proxmox_metrics', arrayIdColumn: 'server_id' },
+  server360,
+  server360Suggest,
 };

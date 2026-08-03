@@ -2,30 +2,32 @@
 // lifecycle history: each poll reconciles the freshly computed issue set
 // against proxmox_issue_history so every issue gets first-seen / resolved
 // timestamps instead of existing only as a live snapshot.
-const db = require('../db/database');
-const { getSetting } = require('./settings');
+//
+// Ported from backend/services/proxmoxIssues.js — db/getSetting now come
+// from coreApi rather than direct host requires.
 
-function clampPct(key, def) {
-  const n = Number(getSetting(key));
+function clampPct(coreApi, key, def) {
+  const n = Number(coreApi.settings.getSetting(key));
   return Number.isFinite(n) && n >= 1 && n <= 100 ? n : def;
 }
-function clampDays(key, def) {
-  const n = Number(getSetting(key));
+function clampDays(coreApi, key, def) {
+  const n = Number(coreApi.settings.getSetting(key));
   return Number.isFinite(n) && n >= 1 && n <= 365 ? Math.round(n) : def;
 }
 
-const storageWarnPct = () => clampPct('proxmox_storage_warn_pct', 85);
-const storageCritPct = () => clampPct('proxmox_storage_crit_pct', 95);
-const backupStaleDays = () => clampDays('proxmox_backup_stale_days', 3);
-const certWarnDays = () => clampDays('proxmox_cert_warn_days', 30);
-const snapshotAgeDays = () => clampDays('proxmox_snapshot_age_days', 30);
+const storageWarnPct = (coreApi) => clampPct(coreApi, 'proxmox_storage_warn_pct', 85);
+const storageCritPct = (coreApi) => clampPct(coreApi, 'proxmox_storage_crit_pct', 95);
+const backupStaleDays = (coreApi) => clampDays(coreApi, 'proxmox_backup_stale_days', 3);
+const certWarnDays = (coreApi) => clampDays(coreApi, 'proxmox_cert_warn_days', 30);
+const snapshotAgeDays = (coreApi) => clampDays(coreApi, 'proxmox_snapshot_age_days', 30);
 
 /**
  * Current issues from the stored inventory. Every issue carries a `target`
  * so `type|source|target` is a stable identity across polls even as the
  * message's numbers change. `source` is the server name, `sourceId` its id.
  */
-function computeIssues() {
+function computeIssues(coreApi) {
+  const db = coreApi.db;
   const issues = [];
   const servers = db.prepare('SELECT * FROM proxmox_servers').all();
 
@@ -43,8 +45,8 @@ function computeIssues() {
   }
 
   // storage-full / storage-warn
-  const critPct = storageCritPct();
-  const warnPct = storageWarnPct();
+  const critPct = storageCritPct(coreApi);
+  const warnPct = storageWarnPct(coreApi);
   const storages = db.prepare(`
     SELECT st.*, s.name AS server_name FROM proxmox_storage st JOIN proxmox_servers s ON s.id = st.server_id
   `).all();
@@ -83,7 +85,7 @@ function computeIssues() {
 
   // backup-stale: non-template guest with no successful vzdump within N days,
   // AND at least one backup job exists for that server.
-  const staleDays = backupStaleDays();
+  const staleDays = backupStaleDays(coreApi);
   const serversWithJobs = new Set(
     db.prepare('SELECT DISTINCT server_id FROM proxmox_backup_jobs').all().map((r) => r.server_id)
   );
@@ -119,7 +121,7 @@ function computeIssues() {
   }
 
   // cert-expiring
-  const certWarn = certWarnDays();
+  const certWarn = certWarnDays(coreApi);
   for (const n of nodes) {
     if (!n.cert_expires_at) continue;
     const days = (new Date(n.cert_expires_at).getTime() - Date.now()) / 86400000;
@@ -158,7 +160,7 @@ function computeIssues() {
   }
 
   // snapshot-age: oldest offending snapshot (excl 'current') per guest.
-  const snapAgeDays = snapshotAgeDays();
+  const snapAgeDays = snapshotAgeDays(coreApi);
   const snapCutoff = db.prepare("SELECT datetime('now', ?) AS d").get(`-${snapAgeDays} days`).d;
   const oldestSnaps = db.prepare(`
     SELECT sn.*, s.name AS server_name FROM proxmox_snapshots sn
@@ -222,36 +224,40 @@ const issueKey = (i) => `${i.type}|${i.source}|${i.target}`;
  * open rows whose issue is gone get resolved. Idempotent — safe to run after
  * every per-server poll. Rows resolved >90 days ago are pruned.
  */
-const reconcileIssueHistory = db.transaction(() => {
-  const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
-  const open = db.prepare("SELECT * FROM proxmox_issue_history WHERE status = 'open'").all();
+function reconcileIssueHistory(coreApi) {
+  const db = coreApi.db;
+  const run = db.transaction(() => {
+    const current = new Map(computeIssues(coreApi).map((i) => [issueKey(i), i]));
+    const open = db.prepare("SELECT * FROM proxmox_issue_history WHERE status = 'open'").all();
 
-  const touch = db.prepare(`
-    UPDATE proxmox_issue_history SET last_seen = datetime('now'), message = ?, severity = ? WHERE id = ?
-  `);
-  const resolve = db.prepare(`
-    UPDATE proxmox_issue_history SET status = 'resolved', resolved_at = datetime('now'), last_seen = datetime('now') WHERE id = ?
-  `);
-  const insert = db.prepare(`
-    INSERT INTO proxmox_issue_history (issue_key, source, source_id, severity, type, target, message)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
+    const touch = db.prepare(`
+      UPDATE proxmox_issue_history SET last_seen = datetime('now'), message = ?, severity = ? WHERE id = ?
+    `);
+    const resolve = db.prepare(`
+      UPDATE proxmox_issue_history SET status = 'resolved', resolved_at = datetime('now'), last_seen = datetime('now') WHERE id = ?
+    `);
+    const insert = db.prepare(`
+      INSERT INTO proxmox_issue_history (issue_key, source, source_id, severity, type, target, message)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
 
-  const openKeys = new Set();
-  for (const row of open) {
-    const cur = current.get(row.issue_key);
-    if (cur) {
-      openKeys.add(row.issue_key);
-      touch.run(cur.message, cur.severity, row.id);
-    } else {
-      resolve.run(row.id);
+    const openKeys = new Set();
+    for (const row of open) {
+      const cur = current.get(row.issue_key);
+      if (cur) {
+        openKeys.add(row.issue_key);
+        touch.run(cur.message, cur.severity, row.id);
+      } else {
+        resolve.run(row.id);
+      }
     }
-  }
-  for (const [key, i] of current) {
-    if (!openKeys.has(key)) insert.run(key, i.source, i.sourceId, i.severity, i.type, i.target, i.message);
-  }
-  db.prepare("DELETE FROM proxmox_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
-});
+    for (const [key, i] of current) {
+      if (!openKeys.has(key)) insert.run(key, i.source, i.sourceId, i.severity, i.type, i.target, i.message);
+    }
+    db.prepare("DELETE FROM proxmox_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
+  });
+  run();
+}
 
 module.exports = {
   storageWarnPct, storageCritPct, backupStaleDays, certWarnDays, snapshotAgeDays,

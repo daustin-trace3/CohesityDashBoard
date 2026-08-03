@@ -20,7 +20,6 @@ const PLATFORM_METRICS_HISTORY = {
   ariaops: { arraysTable: 'ariaops_instances', metricsTable: 'ariaops_metrics_history', arrayIdColumn: 'instance_id' },
   netbackup: { arraysTable: 'netbackup_sources', metricsTable: 'netbackup_metrics_history', arrayIdColumn: 'source_id' },
   aws: { arraysTable: 'aws_accounts', metricsTable: 'aws_metrics_history', arrayIdColumn: 'account_id' },
-  proxmox: { arraysTable: 'proxmox_servers', metricsTable: 'proxmox_metrics', arrayIdColumn: 'server_id' },
 };
 
 /**
