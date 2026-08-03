@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
-import { Puzzle, Upload, Trash2, Power, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { Layers, Upload, Trash2, Power, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
 import AdminNav from '../components/AdminNav';
 import client from '../api/client';
 import { PageHeader, Badge } from '../components/ui/primitives';
@@ -105,9 +105,11 @@ export default function AdminPluginsPage() {
   const toggleEnabled = async (p) => {
     try {
       await client.post(`/plugins/${p.id}/enabled`, { enabled: !p.enabled });
+      // Refresh the platform switcher/nav live, same as the old settings save did.
+      window.dispatchEvent(new Event('platforms-changed'));
       load();
     } catch (err) {
-      toast({ type: 'error', title: 'Could not update plugin', message: errorMessage(err, '') });
+      toast({ type: 'error', title: 'Could not update platform', message: errorMessage(err, '') });
     }
   };
 
@@ -170,9 +172,9 @@ export default function AdminPluginsPage() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        icon={Puzzle}
-        title="Plugins"
-        description="Built-in and installed platform plugins. Installed plugins add data protection platforms without a code deploy."
+        icon={Layers}
+        title="Platforms"
+        description="Every platform in this dashboard — toggle built-ins on or off, or install a signed plugin to add a new platform without a code deploy."
       />
 
       <div className="flex flex-col md:flex-row gap-5 items-start">
@@ -233,7 +235,7 @@ export default function AdminPluginsPage() {
               </tr>
             </thead>
             <tbody>
-              {plugins.map(p => (
+              {[...plugins].sort((a, b) => (a.source === b.source ? a.name.localeCompare(b.name) : a.source === 'builtin' ? -1 : 1)).map(p => (
                 <Fragment key={p.id}>
                   <tr className="border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50">
                     <td className="px-3 py-2 text-ink font-medium">{p.name}</td>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { Sparkles, Save, Layers, KeyRound, Settings, Mail } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
@@ -48,15 +48,7 @@ export default function AdminSettingsPage() {
   const [modelList, setModelList] = useState(null);   // { provider, models, default } | null
   const [modelsError, setModelsError] = useState(null);
   const [aiEnabled, setAiEnabled] = useState(true);
-  const [cohesityEnabled, setCohesityEnabled] = useState(true);
-  const [pureEnabled, setPureEnabled] = useState(false);
-  const [netappEnabled, setNetappEnabled] = useState(false);
-  const [zertoEnabled, setZertoEnabled] = useState(false);
-  const [vcenterEnabled, setVcenterEnabled] = useState(false);
-  const [dellEnabled, setDellEnabled] = useState(false);
-  const [ariaEnabled, setAriaEnabled] = useState(false);
-  const [netbackupEnabled, setNetbackupEnabled] = useState(false);
-  const [awsEnabled, setAwsEnabled] = useState(false);
+  // Platform enable/disable moved to the merged Platforms page (/admin/plugins).
   const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [dnsServer, setDnsServer] = useState('');
@@ -92,15 +84,6 @@ export default function AdminSettingsPage() {
         setFlagUnprotected(!!d.llmFlagUnprotected);
         setLlmModel(d.llmModel || '');
         setTtlHours(d.llmAnalysisTtlHours || 24);
-        setCohesityEnabled(d.platformCohesityEnabled !== false);
-        setPureEnabled(!!d.platformPureEnabled);
-        setNetappEnabled(!!d.platformNetappEnabled);
-        setZertoEnabled(!!d.platformZertoEnabled);
-        setVcenterEnabled(!!d.platformVcenterEnabled);
-        setDellEnabled(!!d.platformDellEnabled);
-        setAriaEnabled(!!d.platformAriaEnabled);
-        setNetbackupEnabled(!!d.platformNetbackupEnabled);
-        setAwsEnabled(!!d.platformAwsEnabled);
         setCustomDashboardsEnabled(!!d.featureCustomDashboardsEnabled);
         setDnsServer(d.dnsServer || '');
       }
@@ -120,15 +103,6 @@ export default function AdminSettingsPage() {
         llmFlagUnprotected: flagUnprotected,
         llmModel,
         llmAnalysisTtlHours: Number(ttlHours) || 24,
-        platformCohesityEnabled: cohesityEnabled,
-        platformPureEnabled: pureEnabled,
-        platformNetappEnabled: netappEnabled,
-        platformZertoEnabled: zertoEnabled,
-        platformVcenterEnabled: vcenterEnabled,
-        platformDellEnabled: dellEnabled,
-        platformAriaEnabled: ariaEnabled,
-        platformNetbackupEnabled: netbackupEnabled,
-        platformAwsEnabled: awsEnabled,
         featureCustomDashboardsEnabled: customDashboardsEnabled,
         dnsServer,
       });
@@ -441,7 +415,7 @@ export default function AdminSettingsPage() {
       </>
       )}
 
-      {/* Platforms */}
+      {/* Features & preferences (platform enable/disable lives on the merged Platforms page) */}
       {tab === 'platforms' && (
       <div className="panel p-4">
         <div className="flex items-center gap-2 mb-1">
@@ -449,10 +423,10 @@ export default function AdminSettingsPage() {
             <Layers size={14} className="text-brand" />
           </div>
           <div>
-            <p className="text-sm font-bold text-ink">Platforms</p>
+            <p className="text-sm font-bold text-ink">Features & Preferences</p>
             <p className="text-[11px] text-ink-muted">
-              Vendor tabs shown at the top of the dashboard. Enable each platform once its integration is
-              configured. At least one platform must stay enabled; with only one, the platform bar is hidden.
+              Preview features, switcher style, and estate-wide preferences. Platform on/off toggles moved to the{' '}
+              <Link to="/admin/plugins" className="text-brand hover:text-brand-bright">Platforms</Link> page.
             </p>
           </div>
         </div>
@@ -461,81 +435,7 @@ export default function AdminSettingsPage() {
           <p className="text-gray-400 text-sm mt-4">Loading…</p>
         ) : (
           <div className="flex flex-col gap-3 mt-4">
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={cohesityEnabled} onChange={e => setCohesityEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">Cohesity</span><br />
-                Show the Cohesity platform tab. Disable only if this deployment monitors other platforms
-                (e.g. Pure and NetApp) without Cohesity.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={pureEnabled} onChange={e => setPureEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">Pure Storage</span><br />
-                Show the Pure Storage platform tab. Leave off until the Pure integration is configured.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={netappEnabled} onChange={e => setNetappEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">NetApp</span><br />
-                Show the NetApp platform tab. Leave off until the NetApp integration is configured.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={zertoEnabled} onChange={e => setZertoEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">Zerto</span><br />
-                Show the Zerto platform tab. Leave off until the Zerto Analytics credentials are configured.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={vcenterEnabled} onChange={e => setVcenterEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">VMware vCenter</span><br />
-                Show the vCenter platform tab. Register vCenters on its Settings page after enabling.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={dellEnabled} onChange={e => setDellEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">Dell OpenManage Enterprise</span><br />
-                Show the Dell OME platform tab. Register OME appliances on its Settings page after enabling.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={ariaEnabled} onChange={e => setAriaEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">VMware Aria Automation</span><br />
-                Show the Aria Automation platform tab. Register vRA instances on its Settings page after enabling.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={netbackupEnabled} onChange={e => setNetbackupEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">Veritas NetBackup</span><br />
-                Show the NetBackup platform tab. Register primary servers on its Settings page after enabling.
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input type="checkbox" checked={awsEnabled} onChange={e => setAwsEnabled(e.target.checked)}
-                className="accent-brand mt-0.5 cursor-pointer" />
-              <span className="text-xs text-ink-muted leading-relaxed">
-                <span className="font-semibold text-ink">Amazon Web Services</span><br />
-                EC2, Lightsail, ECS, S3, Bedrock usage and cost monitoring. Register accounts on its Settings page after enabling.
-              </span>
-            </label>
-
-            <div className="pt-2 border-t border-cohesity-border/60">
+            <div>
               <p className="text-xs font-semibold text-ink mb-1 mt-2">Preview features</p>
               <label className="flex items-start gap-2.5 cursor-pointer select-none mt-1">
                 <input type="checkbox" checked={customDashboardsEnabled} onChange={e => setCustomDashboardsEnabled(e.target.checked)}

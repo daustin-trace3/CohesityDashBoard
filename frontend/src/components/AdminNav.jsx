@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Sparkles, Layers, KeyRound, Mail, Users, Puzzle } from 'lucide-react';
+import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 
 // Grouped vertical nav shared by every Global Settings page. Each item is a
@@ -14,8 +14,9 @@ const GROUPS = [
   {
     label: 'Platforms',
     items: [
-      { to: '/admin/platforms', label: 'Platforms', icon: Layers },
-      { to: '/admin/plugins', label: 'Plugins', icon: Puzzle, permission: 'admin:plugins:view' },
+      // Merged page: built-in platform toggles + installed plugin management.
+      { to: '/admin/plugins', label: 'Platforms', icon: Layers, permission: 'admin:plugins:view' },
+      { to: '/admin/platforms', label: 'Features', icon: SlidersHorizontal },
     ],
   },
   {
