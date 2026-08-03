@@ -238,11 +238,18 @@ async function collect(server) {
     }
   }
 
-  let backupJobs = [];
+  // null = fetch failed (skip the store, keep prior rows); [] = confirmed empty
+  // (no permission, or genuinely zero backup jobs) and safe to store.
+  let backupJobs = null;
   try {
     backupJobs = (await proxmoxApi.pveGet(server, '/cluster/backup')) || [];
   } catch (err) {
-    if (err?.pveForbidden) { forbidden.add('cluster/backup'); }
+    if (err?.pveForbidden) {
+      forbidden.add('cluster/backup');
+      backupJobs = [];
+    } else {
+      logger.warn(`[ProxmoxPoller] ${server.name}: cluster/backup fetch failed: ${safeMsg(err)}`);
+    }
   }
 
   let clusterStatus = [];
@@ -420,16 +427,20 @@ const store = db.transaction((serverId, data) => {
   }
   db.prepare("DELETE FROM proxmox_events WHERE server_id = ? AND event_time < datetime('now', '-14 days')").run(serverId);
 
-  db.prepare('DELETE FROM proxmox_backup_jobs WHERE server_id = ?').run(serverId);
-  const jobStmt = db.prepare(`
-    INSERT INTO proxmox_backup_jobs (server_id, job_id, enabled, schedule, storage, mode, compress, selection, next_run)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const j of backupJobs) {
-    const selection = j.all === 1 || j.all === '1' ? 'all' : (j.vmid ?? null);
-    jobStmt.run(serverId, j.id, j.enabled ? 1 : 0, j.schedule ?? null, j.storage ?? null,
-      j.mode ?? null, j.compress ?? null, selection,
-      j['next-run'] != null ? new Date(Number(j['next-run']) * 1000).toISOString() : null);
+  if (backupJobs === null) {
+    logger.warn(`[ProxmoxPoller] backup jobs fetch failed for server ${serverId}; keeping existing backup job inventory`);
+  } else {
+    db.prepare('DELETE FROM proxmox_backup_jobs WHERE server_id = ?').run(serverId);
+    const jobStmt = db.prepare(`
+      INSERT INTO proxmox_backup_jobs (server_id, job_id, enabled, schedule, storage, mode, compress, selection, next_run)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const j of backupJobs) {
+      const selection = j.all === 1 || j.all === '1' ? 'all' : (j.vmid ?? null);
+      jobStmt.run(serverId, j.id, j.enabled ? 1 : 0, j.schedule ?? null, j.storage ?? null,
+        j.mode ?? null, j.compress ?? null, selection,
+        j['next-run'] != null ? new Date(Number(j['next-run']) * 1000).toISOString() : null);
+    }
   }
 
   // Tasks: upsert (keep the rolling 14-day window; don't wholesale-replace so

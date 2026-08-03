@@ -213,7 +213,7 @@ async function fetchHardware(rawConn) {
     }
   }
   logger.warn(`[netbackupApplianceApi] hardware fetch failed for all candidate paths on ${conn.name || conn.host}`);
-  return [];
+  return null; // signals failure (vs. a successful fetch that legitimately found 0 components)
 }
 
 /** Validate a connection (saved row or unsaved candidate). Never throws. */

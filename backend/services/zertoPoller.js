@@ -163,14 +163,15 @@ async function refreshAll() {
   }
   const [sites, vpgData, alerts, vms, topology, licenses] = await Promise.all([
     fetchSites(), fetchVpgs(), fetchAlerts(), fetchProtectedVms(),
-    fetchSitesTopology().catch(() => []),
+    // null (not []) on failure — keep previous rows instead of wiping VRAs/licenses.
+    fetchSitesTopology().catch((err) => { logger.warn(`[ZertoPoller] topology fetch failed, keeping existing VRA rows: ${err.message}`); return null; }),
     fetchLicenses().catch(() => null), // v3 endpoint — keep previous rows if it fails
   ]);
   replaceSites(sites);
   replaceVpgs(vpgData.vpgs || []);
   replaceAlerts(alerts);
   replaceVms(vms);
-  replaceVras(topology);
+  if (topology) replaceVras(topology);
   if (licenses) replaceLicenses(licenses);
   appendSnapshot({ sites, vpgData, alerts, vms });
   logger.info(`[ZertoPoller] Refreshed ${sites.length} site(s), ${(vpgData.vpgs || []).length} VPG(s), ${alerts.length} alert(s), ${vms.length} VM(s)`);

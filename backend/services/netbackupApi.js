@@ -140,7 +140,12 @@ async function fetchPaginated(source, path, extraParams = {}) {
 }
 
 const loggedFailures = new Set();
-/** Never throws: logs the first failure per (source, label) and returns []. */
+/**
+ * Never throws: logs the first failure per (source, label) and returns null
+ * to signal failure. A successful fetch that legitimately found nothing
+ * returns [] — callers MUST treat null (skip store/delete) differently from
+ * [] (store the empty result, clearing prior rows).
+ */
 async function tolerantList(source, label, fn) {
   try {
     return await fn();
@@ -150,7 +155,7 @@ async function tolerantList(source, label, fn) {
       loggedFailures.add(key);
       logger.warn(`[netbackupApi] ${label} fetch failed for ${source.name || source.host}: ${safeMsg(err)}`);
     }
-    return [];
+    return null;
   }
 }
 

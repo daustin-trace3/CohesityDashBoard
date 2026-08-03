@@ -129,12 +129,14 @@ async function refreshAll() {
     }
   }
 
-  let alerts = [];
+  // null = fetch failed: skip replaceAlerts entirely (the old id-only reconstruction
+  // here used to re-insert every alert with everything but its id nulled out, which
+  // looked like "last-good" but actually destroyed the stored alert detail).
+  let alerts = null;
   try {
     alerts = await pure1Api.getAlerts({ force: true });
   } catch (err) {
-    logger.error('[Pure1Poller] Alerts fetch failed, keeping last-good:', err.message);
-    alerts = db.prepare('SELECT * FROM pure1_alerts').all().map((a) => ({ id: a.pure1_alert_id }));
+    logger.warn('[Pure1Poller] Alerts fetch failed; keeping existing alert inventory:', err.message);
   }
 
   try {
@@ -151,8 +153,10 @@ async function refreshAll() {
     FROM pure1_arrays WHERE read_iops IS NOT NULL OR perf_captured_at IS NOT NULL
   `).all().map((r) => [r.pure1_id, r]));
   replaceArrays(rows, enrichment);
-  replaceAlerts(alerts);
-  appendSnapshot(rowsForSnapshot, alerts);
+  if (alerts !== null) replaceAlerts(alerts);
+  const alertCountForSnapshot = alerts !== null ? alerts.length
+    : db.prepare('SELECT COUNT(*) AS n FROM pure1_alerts').get().n;
+  appendSnapshot(rowsForSnapshot, { length: alertCountForSnapshot });
 
   // Per-array performance snapshot. replaceArrays() above rebuilt the rows
   // with null perf columns, so re-apply fresh values where the fetch worked
@@ -182,7 +186,7 @@ async function refreshAll() {
       r.id
     );
   }
-  logger.info(`[Pure1Poller] Refreshed ${rows.length} array(s), ${alerts.length} alert(s)`);
+  logger.info(`[Pure1Poller] Refreshed ${rows.length} array(s), ${alertCountForSnapshot} alert(s)`);
 }
 
 const pure1Task = createGlobalTask({

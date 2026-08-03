@@ -26,103 +26,148 @@ async function collect(source) {
   return { jobs, policies, storageUnits, diskPools, mediaServers, hosts, alerts, slps };
 }
 
+// Sections below are delete-then-insert per source. `null` from a fetcher means the
+// fetch FAILED (see netbackupApi.tolerantList) — the section is skipped entirely so
+// prior inventory is left intact. `[]` means the fetch SUCCEEDED and legitimately
+// found nothing, so the delete still clears stale rows.
 const store = db.transaction((sourceId, { jobs, policies, storageUnits, diskPools, mediaServers, hosts, alerts, slps }) => {
-  const jobStmt = db.prepare(`
-    INSERT INTO netbackup_jobs (source_id, job_id, parent_job_id, job_type, state, status_code,
-      policy_name, policy_type, client_name, schedule_type, storage_unit, kilobytes, files_count,
-      elapsed_seconds, throughput_kbps, started_at, ended_at, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(source_id, job_id) DO UPDATE SET
-      parent_job_id = excluded.parent_job_id, job_type = excluded.job_type, state = excluded.state,
-      status_code = excluded.status_code, policy_name = excluded.policy_name, policy_type = excluded.policy_type,
-      client_name = excluded.client_name, schedule_type = excluded.schedule_type, storage_unit = excluded.storage_unit,
-      kilobytes = excluded.kilobytes, files_count = excluded.files_count, elapsed_seconds = excluded.elapsed_seconds,
-      throughput_kbps = excluded.throughput_kbps, started_at = excluded.started_at, ended_at = excluded.ended_at,
-      captured_at = datetime('now')
-  `);
-  for (const j of jobs) {
-    if (j.jobId == null) continue;
-    jobStmt.run(
-      sourceId, j.jobId, j.parentJobId ?? null, j.jobType ?? null, j.state ?? null,
-      j.statusCode ?? j.status ?? null, j.policyName ?? null, j.policyType ?? null, j.clientName ?? null,
-      j.scheduleType ?? null, j.storageUnitName ?? null, j.kilobytesTransferred ?? null,
-      j.filesTransferred ?? null, j.elapsedTime ?? null, j.transferRate ?? null,
-      j.startTime ?? null, j.endTime ?? null
-    );
+  if (jobs === null) {
+    logger.warn(`[NbPoller] jobs fetch failed for source ${sourceId}; skipping job upserts this cycle`);
+  } else {
+    const jobStmt = db.prepare(`
+      INSERT INTO netbackup_jobs (source_id, job_id, parent_job_id, job_type, state, status_code,
+        policy_name, policy_type, client_name, schedule_type, storage_unit, kilobytes, files_count,
+        elapsed_seconds, throughput_kbps, started_at, ended_at, captured_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(source_id, job_id) DO UPDATE SET
+        parent_job_id = excluded.parent_job_id, job_type = excluded.job_type, state = excluded.state,
+        status_code = excluded.status_code, policy_name = excluded.policy_name, policy_type = excluded.policy_type,
+        client_name = excluded.client_name, schedule_type = excluded.schedule_type, storage_unit = excluded.storage_unit,
+        kilobytes = excluded.kilobytes, files_count = excluded.files_count, elapsed_seconds = excluded.elapsed_seconds,
+        throughput_kbps = excluded.throughput_kbps, started_at = excluded.started_at, ended_at = excluded.ended_at,
+        captured_at = datetime('now')
+    `);
+    for (const j of jobs) {
+      if (j.jobId == null) continue;
+      jobStmt.run(
+        sourceId, j.jobId, j.parentJobId ?? null, j.jobType ?? null, j.state ?? null,
+        j.statusCode ?? j.status ?? null, j.policyName ?? null, j.policyType ?? null, j.clientName ?? null,
+        j.scheduleType ?? null, j.storageUnitName ?? null, j.kilobytesTransferred ?? null,
+        j.filesTransferred ?? null, j.elapsedTime ?? null, j.transferRate ?? null,
+        j.startTime ?? null, j.endTime ?? null
+      );
+    }
   }
+  // Time-based retention prune, independent of this cycle's fetch outcome.
   db.prepare("DELETE FROM netbackup_jobs WHERE source_id = ? AND started_at IS NOT NULL AND started_at < datetime('now', '-30 days')").run(sourceId);
 
-  db.prepare('DELETE FROM netbackup_policies WHERE source_id = ?').run(sourceId);
-  const polStmt = db.prepare(`
-    INSERT INTO netbackup_policies (source_id, name, policy_type, active, client_count, schedule_count, selection_count, detail_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const p of policies) {
-    polStmt.run(sourceId, p.policyName ?? null, p.policyType ?? null, p.active ? 1 : 0,
-      p.clients?.length ?? null, p.schedules?.length ?? null, p.selections?.length ?? null,
-      JSON.stringify({ clients: p.clients || [], schedules: p.schedules || [], selections: p.selections || [] }));
+  if (policies === null) {
+    logger.warn(`[NbPoller] policies fetch failed for source ${sourceId}; keeping existing policy inventory`);
+  } else {
+    db.prepare('DELETE FROM netbackup_policies WHERE source_id = ?').run(sourceId);
+    const polStmt = db.prepare(`
+      INSERT INTO netbackup_policies (source_id, name, policy_type, active, client_count, schedule_count, selection_count, detail_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const p of policies) {
+      polStmt.run(sourceId, p.policyName ?? null, p.policyType ?? null, p.active ? 1 : 0,
+        p.clients?.length ?? null, p.schedules?.length ?? null, p.selections?.length ?? null,
+        JSON.stringify({ clients: p.clients || [], schedules: p.schedules || [], selections: p.selections || [] }));
+    }
   }
 
-  db.prepare('DELETE FROM netbackup_storage_units WHERE source_id = ?').run(sourceId);
-  const suStmt = db.prepare(`
-    INSERT INTO netbackup_storage_units (source_id, name, storage_unit_type, disk_pool, media_server,
-      max_concurrent_jobs, capacity_bytes, free_bytes, used_bytes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const u of storageUnits) {
-    suStmt.run(sourceId, u.name ?? null, u.storageUnitType ?? null, u.diskPool ?? null, u.mediaServerName ?? null,
-      u.maxConcurrentJobs ?? null, u.capacityBytes ?? null, u.freeBytes ?? null, u.usedBytes ?? null);
+  if (storageUnits === null) {
+    logger.warn(`[NbPoller] storageUnits fetch failed for source ${sourceId}; keeping existing storage unit inventory`);
+  } else {
+    db.prepare('DELETE FROM netbackup_storage_units WHERE source_id = ?').run(sourceId);
+    const suStmt = db.prepare(`
+      INSERT INTO netbackup_storage_units (source_id, name, storage_unit_type, disk_pool, media_server,
+        max_concurrent_jobs, capacity_bytes, free_bytes, used_bytes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const u of storageUnits) {
+      suStmt.run(sourceId, u.name ?? null, u.storageUnitType ?? null, u.diskPool ?? null, u.mediaServerName ?? null,
+        u.maxConcurrentJobs ?? null, u.capacityBytes ?? null, u.freeBytes ?? null, u.usedBytes ?? null);
+    }
   }
 
-  db.prepare('DELETE FROM netbackup_disk_pools WHERE source_id = ?').run(sourceId);
-  const dpStmt = db.prepare(`
-    INSERT INTO netbackup_disk_pools (source_id, name, server_type, status,
-      total_capacity_bytes, used_capacity_bytes, available_capacity_bytes, volume_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const d of diskPools) {
-    dpStmt.run(sourceId, d.name ?? null, d.serverType ?? null, d.status ?? null,
-      d.totalCapacityBytes ?? null, d.usedCapacityBytes ?? null, d.availableCapacityBytes ?? null, d.volumeCount ?? null);
+  if (diskPools === null) {
+    logger.warn(`[NbPoller] diskPools fetch failed for source ${sourceId}; keeping existing disk pool inventory`);
+  } else {
+    db.prepare('DELETE FROM netbackup_disk_pools WHERE source_id = ?').run(sourceId);
+    const dpStmt = db.prepare(`
+      INSERT INTO netbackup_disk_pools (source_id, name, server_type, status,
+        total_capacity_bytes, used_capacity_bytes, available_capacity_bytes, volume_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const d of diskPools) {
+      dpStmt.run(sourceId, d.name ?? null, d.serverType ?? null, d.status ?? null,
+        d.totalCapacityBytes ?? null, d.usedCapacityBytes ?? null, d.availableCapacityBytes ?? null, d.volumeCount ?? null);
+    }
   }
 
-  db.prepare('DELETE FROM netbackup_media_servers WHERE source_id = ?').run(sourceId);
-  const msStmt = db.prepare('INSERT INTO netbackup_media_servers (source_id, name, state, version) VALUES (?, ?, ?, ?)');
-  for (const m of mediaServers) msStmt.run(sourceId, m.name ?? null, m.state ?? null, m.version ?? null);
-
-  db.prepare('DELETE FROM netbackup_appliances WHERE source_id = ?').run(sourceId);
-  const applStmt = db.prepare(`
-    INSERT INTO netbackup_appliances (source_id, name, host_type, appliance_type, model, serial_number,
-      os_type, os_version, cpu_architecture, nbu_version, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const h of hosts) {
-    applStmt.run(sourceId, h.name ?? null, h.hostType ?? null, h.applianceType ?? 'byo', h.model ?? null,
-      h.serialNumber ?? null, h.osType ?? null, h.osVersion ?? null, h.cpuArchitecture ?? null, h.nbuVersion ?? null,
-      h.raw ? JSON.stringify(h.raw) : null);
+  if (mediaServers === null) {
+    logger.warn(`[NbPoller] mediaServers fetch failed for source ${sourceId}; keeping existing media server inventory`);
+  } else {
+    db.prepare('DELETE FROM netbackup_media_servers WHERE source_id = ?').run(sourceId);
+    const msStmt = db.prepare('INSERT INTO netbackup_media_servers (source_id, name, state, version) VALUES (?, ?, ?, ?)');
+    for (const m of mediaServers) msStmt.run(sourceId, m.name ?? null, m.state ?? null, m.version ?? null);
   }
 
-  db.prepare('DELETE FROM netbackup_alerts WHERE source_id = ?').run(sourceId);
-  const alStmt = db.prepare(`
-    INSERT INTO netbackup_alerts (source_id, alert_id, severity, category, message, occurred_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(source_id, alert_id) DO UPDATE SET
-      severity = excluded.severity, category = excluded.category, message = excluded.message,
-      occurred_at = excluded.occurred_at, captured_at = datetime('now')
-  `);
-  for (const a of alerts) {
-    if (!a.alertId) continue;
-    alStmt.run(sourceId, a.alertId, a.severity ?? null, a.category ?? null, a.message ?? null, a.occurredAt ?? null);
+  if (hosts === null) {
+    logger.warn(`[NbPoller] hosts fetch failed for source ${sourceId}; keeping existing appliance inventory`);
+  } else {
+    db.prepare('DELETE FROM netbackup_appliances WHERE source_id = ?').run(sourceId);
+    const applStmt = db.prepare(`
+      INSERT INTO netbackup_appliances (source_id, name, host_type, appliance_type, model, serial_number,
+        os_type, os_version, cpu_architecture, nbu_version, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const h of hosts) {
+      applStmt.run(sourceId, h.name ?? null, h.hostType ?? null, h.applianceType ?? 'byo', h.model ?? null,
+        h.serialNumber ?? null, h.osType ?? null, h.osVersion ?? null, h.cpuArchitecture ?? null, h.nbuVersion ?? null,
+        h.raw ? JSON.stringify(h.raw) : null);
+    }
   }
 
-  db.prepare('DELETE FROM netbackup_slps WHERE source_id = ?').run(sourceId);
-  const slpStmt = db.prepare(`
-    INSERT INTO netbackup_slps (source_id, name, version, data_classification, priority, operation_count, operations_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const s of slps) {
-    slpStmt.run(sourceId, s.name, s.version ?? null, s.dataClassification ?? null, s.priority ?? null,
-      s.operations?.length ?? 0, JSON.stringify(s.operations ?? []));
+  if (alerts === null) {
+    logger.warn(`[NbPoller] alerts fetch failed for source ${sourceId}; keeping existing alert inventory`);
+  } else {
+    db.prepare('DELETE FROM netbackup_alerts WHERE source_id = ?').run(sourceId);
+    const alStmt = db.prepare(`
+      INSERT INTO netbackup_alerts (source_id, alert_id, severity, category, message, occurred_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source_id, alert_id) DO UPDATE SET
+        severity = excluded.severity, category = excluded.category, message = excluded.message,
+        occurred_at = excluded.occurred_at, captured_at = datetime('now')
+    `);
+    for (const a of alerts) {
+      if (!a.alertId) continue;
+      alStmt.run(sourceId, a.alertId, a.severity ?? null, a.category ?? null, a.message ?? null, a.occurredAt ?? null);
+    }
   }
+
+  if (slps === null) {
+    logger.warn(`[NbPoller] slps fetch failed for source ${sourceId}; keeping existing SLP inventory`);
+  } else {
+    db.prepare('DELETE FROM netbackup_slps WHERE source_id = ?').run(sourceId);
+    const slpStmt = db.prepare(`
+      INSERT INTO netbackup_slps (source_id, name, version, data_classification, priority, operation_count, operations_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const s of slps) {
+      slpStmt.run(sourceId, s.name, s.version ?? null, s.dataClassification ?? null, s.priority ?? null,
+        s.operations?.length ?? 0, JSON.stringify(s.operations ?? []));
+    }
+  }
+
+  // Metrics/workload rollups below use best-available data (empty when a fetch failed);
+  // they append/prune history rows rather than replacing a scope's inventory.
+  jobs = jobs || [];
+  policies = policies || [];
+  storageUnits = storageUnits || [];
+  mediaServers = mediaServers || [];
+  hosts = hosts || [];
 
   const workloadJobs = db.prepare(`
     SELECT COALESCE(policy_type, 'Other') AS workload, client_name, state, status_code, kilobytes
@@ -176,7 +221,7 @@ async function pollSource(source) {
       UPDATE netbackup_sources SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?
     `).run(source.id);
-    logger.info(`[NbPoller] ${source.name}: ${data.jobs.length} job(s), ${data.policies.length} policy(ies), ${data.hosts.length} host(s)`);
+    logger.info(`[NbPoller] ${source.name}: ${(data.jobs || []).length} job(s), ${(data.policies || []).length} policy(ies), ${(data.hosts || []).length} host(s)`);
   } catch (err) {
     db.prepare(`
       UPDATE netbackup_sources SET last_poll_status = 'error', last_poll_error = ?,
@@ -203,6 +248,8 @@ function initNetbackupPoller() {
   return netbackupPoller;
 }
 
+// Caller (pollApplianceConn) must never pass null here — a failed fetch is skipped
+// before this is called so existing hardware inventory is never wiped by a fetch error.
 const storeApplianceHw = db.transaction((connId, components) => {
   db.prepare('DELETE FROM netbackup_appliance_hw WHERE conn_id = ?').run(connId);
   const stmt = db.prepare(`
@@ -218,6 +265,16 @@ const storeApplianceHw = db.transaction((connId, components) => {
 async function pollApplianceConn(conn) {
   try {
     const components = await netbackupApplianceApi.fetchHardware(conn);
+    if (components === null) {
+      // Fetch failed on every candidate path: skip the store so existing hardware
+      // inventory isn't wiped, but still surface the failure on the connection.
+      logger.warn(`[NbAppliancePoller] hardware fetch failed for ${conn.name}; keeping existing inventory`);
+      db.prepare(`
+        UPDATE netbackup_appliance_conns SET last_poll_status = 'error',
+          last_poll_error = 'Hardware fetch failed for all candidate paths', last_poll_at = datetime('now') WHERE id = ?
+      `).run(conn.id);
+      return;
+    }
     storeApplianceHw(conn.id, components);
     db.prepare(`
       UPDATE netbackup_appliance_conns SET last_poll_status = 'success', last_poll_error = NULL,

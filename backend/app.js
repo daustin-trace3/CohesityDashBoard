@@ -46,6 +46,7 @@ const { requirePermission, platformPermission } = require('./middleware/requireP
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const deprecated = require('./middleware/deprecatedAlias');
+const demoPollGuard = require('./middleware/demoPollGuard');
 
 /** cohesity:<name>:view|manage — same permission for a mount and its deprecated alias (contract C8.6). */
 function cohesityPermission(name) {
@@ -119,6 +120,11 @@ function createApp({ licenseGate = requireLicense } = {}) {
 
   // Product license gate — blocks everything except /api/license/* when unlicensed
   app.use('/api', licenseGate);
+
+  // Demo mode: block manual poll-trigger endpoints (refresh/poll/trigger)
+  // before any route — static Cohesity mounts, deprecated aliases, and the
+  // plugin dispatcher — can run. See middleware/demoPollGuard.js.
+  app.use('/api', demoPollGuard);
 
   // Routes
   app.use('/api/auth', authRouter);
