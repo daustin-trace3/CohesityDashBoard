@@ -1,7 +1,7 @@
-// Rubrik v2.0.0 Backup History page — mirrors host frontend/src/pages/
+// Rubrik v2.1.0 Backup History page — true clone of host frontend/src/pages/
 // BackupHistoryPage.jsx (per-server day-by-day bubble matrix + run-detail
-// modal). Absorbs the old v1.2.1 Compliance matrix content — that page is
-// gone; /rubrik/compliance now routes here (see index.jsx).
+// modal), substituting Rubrik data/status vocabulary. See RUBRIK_V21_CONTRACT
+// SCOUT REPORT A §1 for the byte-for-byte behavior this mirrors.
 //
 // The kit's charts.jsx BubbleMatrix renders the whole grid as one <svg>,
 // which cannot do a real sticky first column, per-cell hover rings, or
@@ -13,13 +13,18 @@ import {
   PageHeader, Badge, LoadingPanel, CalendarIcon, SearchIcon, XIcon, EmptyState,
 } from '../ui';
 
+function ArrowLeftRightIcon({ size = 16, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      <path d="M17 3l4 4-4 4" /><path d="M21 7H9a4 4 0 0 0-4 4v1" />
+      <path d="M7 21l-4-4 4-4" /><path d="M3 17h12a4 4 0 0 0 4-4v-1" />
+    </svg>
+  );
+}
+
 const STATUS_TONE = { Succeeded: 'ok', Warning: 'warn', Failed: 'crit', Canceled: 'neutral', Running: 'info' };
-const BUBBLE_COLOR = {
-  ok: 'var(--rbk-ok)',
-  warn: 'var(--rbk-warn)',
-  crit: 'var(--rbk-crit)',
-  info: 'var(--rbk-info)',
-};
+const STATUS_LABEL = { Succeeded: 'Success', Warning: 'Warning', Failed: 'Failed', Canceled: 'Canceled', Running: 'Running' };
+const statusLabel = (s) => (s ? (STATUS_LABEL[s] || String(s)) : null);
 
 function fmtBytes(b) {
   if (b == null) return '—';
@@ -31,14 +36,12 @@ function fmtBytes(b) {
 function fmtTime(ms) {
   return ms ? new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '—';
 }
-function fmtDurationS(s) {
-  if (s == null) return '—';
+function fmtDuration(a, b) {
+  if (!a || !b || b < a) return '—';
+  const s = Math.round((b - a) / 1000);
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.round(s / 60)}m`;
   return `${(s / 3600).toFixed(1)}h`;
-}
-function statusLabel(s) {
-  return s || null;
 }
 
 const dayKey = (ms) => {
@@ -54,6 +57,8 @@ function dayRollup(runs) {
   return 'info';
 }
 
+const BUBBLE_COLOR = { ok: 'var(--rbk-ok)', warn: 'var(--rbk-warn)', crit: 'var(--rbk-crit)', info: 'var(--rbk-info)' };
+
 export default function BackupHistoryPage() {
   const initialQ = React.useMemo(() => {
     try { return new URLSearchParams(window.location.search).get('q') || ''; } catch { return ''; }
@@ -66,9 +71,9 @@ export default function BackupHistoryPage() {
   const [modal, setModal] = React.useState(null); // { server, date, runs }
   const [details, setDetails] = React.useState({}); // runId -> { loading | data }
 
-  const loadDetail = (runId) => {
+  const loadDetail = (runId, serverName) => {
     setDetails((d) => ({ ...d, [runId]: { loading: true } }));
-    fetch(`/api/rubrik/backup-history/run/${runId}/detail`, { credentials: 'include' })
+    fetch(`/api/rubrik/backup-history/run/${runId}/detail?server=${encodeURIComponent(serverName)}`, { credentials: 'include' })
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
       .then((json) => setDetails((d) => ({ ...d, [runId]: { data: json } })))
       .catch(() => setDetails((d) => ({ ...d, [runId]: { data: { failed: true } } })));
@@ -79,8 +84,8 @@ export default function BackupHistoryPage() {
     setLoading(true);
     fetch(`/api/rubrik/backup-history?q=${encodeURIComponent(q)}&days=${days}`, { credentials: 'include' })
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
-      .then((json) => { if (!cancelled) setData(Array.isArray(json?.servers) ? json : { servers: [] }); })
-      .catch(() => { if (!cancelled) setData({ servers: [] }); })
+      .then((json) => { if (!cancelled) setData(json && Array.isArray(json.servers) ? json : { query: q, servers: [] }); })
+      .catch(() => { if (!cancelled) setData({ query: q, servers: [] }); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [q, days]);
@@ -154,30 +159,25 @@ export default function BackupHistoryPage() {
           <EmptyState
             icon={CalendarIcon}
             title="No matching servers"
-            description={q ? `No objects match "${q}". Names come from the Sources inventory — try a shorter fragment.` : 'No protected servers in the inventory yet — data appears after the next poll of each cluster.'}
+            description={data.browse
+              ? 'No protected servers in the inventory yet — data appears after the next poll of each cluster.'
+              : `No objects match "${data.query}". Names come from the Sources inventory — try a shorter fragment.`}
           />
         </div>
       ) : (
         <div className="rbk-panel" style={{ padding: 16 }}>
           <p className="rbk-tnum" style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', marginBottom: 10 }}>
-            {servers.length} match{servers.length === 1 ? '' : 'es'}{q ? ` for "${q}"` : ''} ·{' '}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: BUBBLE_COLOR.ok }} /> success
-            </span>{' '}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: BUBBLE_COLOR.warn }} /> warning/canceled
-            </span>{' '}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: BUBBLE_COLOR.crit }} /> failure
-            </span>{' '}
-            · bubble marks the day the run started
+            {data.browse
+              ? `First ${servers.length} protected servers A–Z — search to find a specific server`
+              : `${servers.length === 50 ? 'First 50 matches' : `${servers.length} match${servers.length === 1 ? '' : 'es'}`} for "${data.query}"`}
+            {' · green = success, amber = warning/canceled, red = failure · bubble marks the day the run started'}
           </p>
           <div className="rbk-scroll" style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 13 }}>
               <thead>
                 <tr>
                   <th style={{ position: 'sticky', left: 0, background: 'var(--rbk-surface)', zIndex: 1, textAlign: 'left', padding: '6px 12px 6px 0', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--rbk-ink-faint)', borderBottom: '1px solid var(--rbk-border)', minWidth: 240 }}>
-                    Server / Groups / Cluster
+                    Server / Group / Cluster
                   </th>
                   {dayCols.map((c) => (
                     <th key={c.key} className="rbk-tnum" style={{ padding: '6px 4px', textAlign: 'center', fontSize: 11, fontWeight: 600, color: 'var(--rbk-ink-faint)', borderBottom: '1px solid var(--rbk-border)' }}>
@@ -188,11 +188,22 @@ export default function BackupHistoryPage() {
               </thead>
               <tbody>
                 {servers.map((s, idx) => (
-                  <tr key={`${s.name}|${s.cluster}|${idx}`}>
+                  <tr key={`${s.name}|${idx}`}>
                     <td style={{ position: 'sticky', left: 0, background: 'var(--rbk-surface)', zIndex: 1, padding: '8px 12px 8px 0', borderBottom: '1px solid var(--rbk-border)' }}>
-                      <div style={{ color: 'var(--rbk-ink)', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 280 }}>{s.name}</div>
-                      <div style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 280 }}>
-                        {(s.groups || []).join(', ') || 'unprotected'} · {s.cluster || '—'}
+                      <ReactRouterDOM.Link
+                        to={`/rubrik/object-360?name=${encodeURIComponent(s.name)}`}
+                        title="Open Object 360"
+                        style={{ color: 'var(--rbk-ink)', fontWeight: 500, display: 'block', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 280, textDecoration: 'none' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--rbk-brand)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--rbk-ink)'; }}
+                      >
+                        {s.name}
+                      </ReactRouterDOM.Link>
+                      <div
+                        title={`${(s.groups || []).join(', ')} · ${(s.clusters || []).join(', ')}`}
+                        style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 280 }}
+                      >
+                        {(s.groups || []).join(', ') || 'unprotected'} · {(s.clusters || []).join(', ')}
                       </div>
                     </td>
                     {dayCols.map((c) => {
@@ -204,7 +215,8 @@ export default function BackupHistoryPage() {
                           {tone ? (
                             <button
                               onClick={() => setModal({ server: s, date: c.key, runs })}
-                              title={`${runs.length} run${runs.length === 1 ? '' : 's'} · ${fmtBytes(bytes)}`}
+                              title={`${runs.length} run${runs.length === 1 ? '' : 's'} · ${fmtBytes(bytes)} logical`}
+                              aria-label={`Backups on ${c.key}`}
                               style={{
                                 width: 14, height: 14, borderRadius: '50%', border: 'none', padding: 0, cursor: 'pointer',
                                 background: BUBBLE_COLOR[tone],
@@ -231,7 +243,7 @@ export default function BackupHistoryPage() {
 
       {modal && ReactDOM.createPortal(
         <div
-          style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,.7)', backdropFilter: 'blur(4px)', padding: 16 }}
+          style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(4px)', padding: 16 }}
           onClick={() => setModal(null)}
         >
           <div
@@ -245,7 +257,7 @@ export default function BackupHistoryPage() {
                   {modal.server.name} — {new Date(`${modal.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
                 </h2>
                 <p style={{ fontSize: 11, color: 'var(--rbk-ink-muted)', margin: '2px 0 0' }}>
-                  {modal.server.cluster || '—'} · {modal.server.environment || '—'} · {modal.runs.length} run{modal.runs.length === 1 ? '' : 's'}
+                  {(modal.server.clusters || []).join(', ')} · {modal.server.environment || '—'}{modal.server.osType ? ` · ${modal.server.osType}` : ''} · {modal.runs.length} run{modal.runs.length === 1 ? '' : 's'}
                 </p>
               </div>
               <button onClick={() => setModal(null)} aria-label="Close" style={{ background: 'none', border: 'none', color: 'var(--rbk-ink-faint)', cursor: 'pointer', flexShrink: 0 }}>
@@ -259,48 +271,71 @@ export default function BackupHistoryPage() {
                     <Badge tone={STATUS_TONE[r.status] || 'neutral'}>{statusLabel(r.status)}</Badge>
                     <span style={{ fontSize: 13, color: 'var(--rbk-ink)', fontWeight: 500 }}>{r.group}</span>
                     {r.runType && <span style={{ fontSize: 11, color: 'var(--rbk-ink-faint)' }}>{r.runType}</span>}
-                    {r.errorMessage ? null : <span style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', marginLeft: 'auto' }} />}
+                    {r.clusterName && <span style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', marginLeft: 'auto' }}>{r.clusterName}</span>}
                   </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 20px', fontSize: 12 }}>
-                    <div><span style={{ color: 'var(--rbk-ink-faint)' }}>Start</span> <span className="rbk-tnum" style={{ color: 'var(--rbk-ink)' }}>{fmtTime(r.startMs)}</span></div>
-                    <div><span style={{ color: 'var(--rbk-ink-faint)' }}>Duration</span> <span className="rbk-tnum" style={{ color: 'var(--rbk-ink)' }}>{fmtDurationS(r.durationS)}</span></div>
-                    <div><span style={{ color: 'var(--rbk-ink-faint)' }}>Logical</span> <span className="rbk-tnum" style={{ color: 'var(--rbk-ink)' }}>{fmtBytes(r.logicalBytes)}</span></div>
-                    <div><span style={{ color: 'var(--rbk-ink-faint)' }}>SLA</span> <span style={{ color: 'var(--rbk-ink)' }}>{r.sla || '—'}</span></div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 24px', fontSize: 12 }}>
+                    <div style={{ whiteSpace: 'nowrap' }}><span style={{ color: 'var(--rbk-ink-faint)' }}>Start</span> <span className="rbk-tnum" style={{ color: 'var(--rbk-ink)' }}>{fmtTime(r.startMs)}</span></div>
+                    <div style={{ whiteSpace: 'nowrap' }}><span style={{ color: 'var(--rbk-ink-faint)' }}>Duration</span> <span className="rbk-tnum" style={{ color: 'var(--rbk-ink)' }}>{fmtDuration(r.startMs, r.endMs)}</span></div>
+                    <div style={{ whiteSpace: 'nowrap' }}><span style={{ color: 'var(--rbk-ink-faint)' }}>Logical</span> <span className="rbk-tnum" style={{ color: 'var(--rbk-ink)' }}>{fmtBytes(r.logicalBytes)}</span></div>
+                    <div style={{ whiteSpace: 'nowrap' }}><span style={{ color: 'var(--rbk-ink-faint)' }}>Policy</span> <span style={{ color: 'var(--rbk-ink)' }}>{(modal.server.policies || [])[0] || '—'}</span></div>
                   </div>
                   {r.errorMessage && (
-                    <p style={{ fontSize: 12, color: 'var(--rbk-crit)', marginTop: 8, wordBreak: 'break-word' }}>{r.errorMessage}</p>
+                    <p style={{ fontSize: 12, color: 'var(--rbk-crit)', marginTop: 8, wordBreak: 'break-word' }}>{r.errorCode ? `${r.errorCode}: ` : ''}{r.errorMessage}</p>
                   )}
                   {!details[r.id] ? (
                     <button
-                      onClick={() => loadDetail(r.id)}
+                      onClick={() => loadDetail(r.id, modal.server.name)}
                       style={{ marginTop: 8, fontSize: 11, fontWeight: 600, color: 'var(--rbk-brand)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                     >
                       Details from cluster…
                     </button>
                   ) : details[r.id].loading ? (
-                    <p style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', marginTop: 8 }}>Fetching run detail from {modal.server.cluster || 'cluster'}…</p>
+                    <p style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', marginTop: 8 }}>Fetching run detail from {r.clusterName || 'cluster'}…</p>
                   ) : (() => {
                     const d = details[r.id].data || {};
                     if (d.failed) return <p style={{ fontSize: 11, color: 'var(--rbk-warn)', marginTop: 8 }}>Could not fetch live detail (cluster unreachable?).</p>;
+                    if (d.demo) return <p style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', marginTop: 8 }}>Live run detail is unavailable in demo mode.</p>;
+                    if (d.notFound) return <p style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', marginTop: 8 }}>Run no longer available on the cluster (aged out).</p>;
                     return (
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--rbk-border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        {d.status && (
+                        {d.thisServer && (
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flexWrap: 'wrap' }}>
-                            <Badge tone={STATUS_TONE[d.status] || 'neutral'}>{statusLabel(d.status)}</Badge>
-                            {d.bytesRead != null && <span className="rbk-tnum" style={{ color: 'var(--rbk-ink-faint)' }}>{fmtBytes(d.bytesRead)} read</span>}
+                            <span style={{ color: 'var(--rbk-ink-faint)' }}>This server:</span>
+                            <Badge tone={STATUS_TONE[d.thisServer.status] || 'neutral'}>{statusLabel(d.thisServer.status) || '—'}</Badge>
+                            {d.thisServer.bytesRead != null && <span className="rbk-tnum" style={{ color: 'var(--rbk-ink-faint)' }}>{fmtBytes(d.thisServer.bytesRead)} read</span>}
+                            {d.thisServer.numRestarts > 0 && <span className="rbk-tnum" style={{ color: 'var(--rbk-warn)' }}>{d.thisServer.numRestarts} restart{d.thisServer.numRestarts === 1 ? '' : 's'}</span>}
+                            {d.thisServer.error && <span style={{ color: 'var(--rbk-crit)', wordBreak: 'break-word' }}>{d.thisServer.error}</span>}
                           </div>
                         )}
-                        {(d.warnings || []).map((w, i) => (
+                        {d.thisServer?.warnings?.length > 0 && d.thisServer.warnings.map((w, i) => (
                           <p key={i} style={{ fontSize: 11, color: 'var(--rbk-warn)', margin: 0, wordBreak: 'break-word' }}>{w}</p>
                         ))}
                         {d.objectSummary && (
                           <p className="rbk-tnum" style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', margin: 0 }}>
-                            {Object.entries(d.objectSummary).map(([status, n]) => `${n} ${status}`).join(' · ')}
+                            Group: {Object.entries(d.objectSummary).map(([status, n]) => `${n} ${statusLabel(status) || status}`).join(' · ')} ({d.objectCount} object{d.objectCount === 1 ? '' : 's'})
                           </p>
                         )}
+                        {d.error && <p style={{ fontSize: 11, color: 'var(--rbk-crit)', margin: 0, wordBreak: 'break-word' }}>{d.error}</p>}
+                        {(d.warnings || []).map((w, i) => (
+                          <p key={i} style={{ fontSize: 11, color: 'var(--rbk-ink-muted)', margin: 0, wordBreak: 'break-word' }}>⚠ {w}</p>
+                        ))}
                       </div>
                     );
                   })()}
+                  {r.replication && r.replication.length > 0 && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--rbk-border)' }}>
+                      <p style={{ fontSize: 11, color: 'var(--rbk-ink-faint)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <ArrowLeftRightIcon size={11} /> Replication
+                      </p>
+                      {r.replication.map((rep, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '2px 0' }}>
+                          <Badge tone={STATUS_TONE[rep.status] || 'neutral'}>{statusLabel(rep.status) || '—'}</Badge>
+                          <span style={{ color: 'var(--rbk-ink)' }}>{rep.targetCluster || '—'}</span>
+                          <span className="rbk-tnum" style={{ color: 'var(--rbk-ink-faint)', marginLeft: 'auto' }}>{fmtBytes(rep.logicalBytes)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -28,6 +28,7 @@ import SourcesPage from './pages/sources';
 import SecurityPage from './pages/security';
 import EventsPage from './pages/events';
 import ObjectsPage from './pages/objects';
+import Object360Page from './pages/object360';
 import JobsPage from './pages/jobs';
 import ClustersPage from './pages/clusters';
 import ForecastPage from './pages/forecast';
@@ -110,6 +111,7 @@ window.__ICC_REGISTER_PLUGIN__({
     { path: 'rubrik/security', Component: SecurityPage },
     { path: 'rubrik/events', Component: EventsPage },
     { path: 'rubrik/objects', Component: ObjectsPage },
+    { path: 'rubrik/object-360', Component: Object360Page },
     { path: 'rubrik/jobs', Component: JobsPage },
     { path: 'rubrik/clusters', Component: ClustersPage },
     { path: 'rubrik/forecast', Component: ForecastPage },

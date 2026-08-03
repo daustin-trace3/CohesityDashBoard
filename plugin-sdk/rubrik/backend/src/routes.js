@@ -302,6 +302,10 @@ function createRouter(coreApi) {
           forecast.push({ day: isoDate(i), usedBytes: Math.round(Math.min(c.capacity_bytes, raw)) });
         }
         const runwayDays = Math.max(1, Math.round((c.capacity_bytes - lastUsed) / slope));
+        const daysTo85Raw = (c.capacity_bytes * 0.85 - lastUsed) / slope;
+        const daysTo85 = daysTo85Raw > 0 && daysTo85Raw <= 999 ? Math.round(daysTo85Raw) : null;
+        const daysTo90Raw = (c.capacity_bytes * 0.9 - lastUsed) / slope;
+        const daysTo90 = daysTo90Raw > 0 && daysTo90Raw <= 999 ? Math.round(daysTo90Raw) : null;
 
         return {
           cluster: c.name,
@@ -310,6 +314,11 @@ function createRouter(coreApi) {
           forecast,
           runwayDays,
           growthPerDayBytes: Math.round(slope),
+          growthBytesPerDay: Math.round(slope),
+          daysTo85,
+          dateTo85: daysTo85 != null ? isoDate(daysTo85) : null,
+          daysTo90,
+          dateTo90: daysTo90 != null ? isoDate(daysTo90) : null,
         };
       });
       res.json({ clusters: out });
@@ -566,6 +575,265 @@ function computeClusterForecast(coreApi, clusterRow) {
 
 const CLUSTER_ENVIRONMENT = { 'rbk-prd-01': 'Production', 'rbk-dr-01': 'DR', 'rbk-dev-01': 'Development' };
 const WORKLOAD_TYPE_MAP = { VM: 'VM', 'MSSQL DB': 'SQL', 'NAS Share': 'NAS', 'EC2 Instance': 'EC2' };
+
+// ---------------------------------------------------------------------
+// v2.1.0 additions below: object-360 drill-in, /insights rule engine, and
+// host-parity /backup-history rewrite. Existing v1/v2 routes above are
+// otherwise untouched.
+// ---------------------------------------------------------------------
+
+const OBJECT_TYPE_ENV = { VM: 'kVMware', 'MSSQL DB': 'kSQL', 'NAS Share': 'kNAS', 'EC2 Instance': 'kAWS' };
+const OBJECT_TYPE_SOURCE = { VM: 'vCenter', 'MSSQL DB': 'SQL Host', 'NAS Share': 'NAS Array', 'EC2 Instance': 'AWS Account' };
+
+// Names may contain backslashes (\\nas01\finance) — decode defensively so a
+// literal '%' passed through raw or a double-encoded value never throws.
+function safeDecode(v) {
+  if (v == null) return '';
+  try {
+    return decodeURIComponent(String(v));
+  } catch (e) {
+    return String(v);
+  }
+}
+
+function escapeLike(s) {
+  return String(s).replace(/[%_\\]/g, (c) => `\\${c}`);
+}
+
+function fmtBytesRubrik(b) {
+  if (b == null) return '—';
+  const abs = Math.abs(b);
+  if (abs >= 1e15) return (b / 1e15).toFixed(2) + ' PB';
+  if (abs >= 1e12) return (b / 1e12).toFixed(2) + ' TB';
+  if (abs >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
+  return (b / 1e6).toFixed(0) + ' MB';
+}
+
+// Deterministic rule engine mirroring the host's /insights shape: capacity
+// runway, chronic failures, open security anomalies, replication lag,
+// no-offsite SLA policies, outdated cluster versions, 7d/30d success rate,
+// unprotected sources, licensing overage, and alert-volume spikes.
+function computeRubrikInsights(coreApi) {
+  const insights = [];
+  const clusters = coreApi.db.prepare('SELECT * FROM rubrik_clusters ORDER BY id').all();
+
+  for (const c of clusters) {
+    const forecast = computeClusterForecast(coreApi, c);
+    const pct = c.capacity_bytes > 0 ? (forecast.lastUsed / c.capacity_bytes) * 100 : 0;
+    const daysTo85Raw = (c.capacity_bytes * 0.85 - forecast.lastUsed) / forecast.slope;
+    const daysTo85 = daysTo85Raw > 0 && daysTo85Raw <= 999 ? Math.round(daysTo85Raw) : null;
+    if (pct >= 90) {
+      insights.push({
+        severity: 'critical',
+        category: 'capacity',
+        clusterId: c.id,
+        clusterName: c.name,
+        title: `${c.name} is at ${pct.toFixed(1)}% capacity`,
+        detail: `${fmtBytesRubrik(forecast.lastUsed)} of ${fmtBytesRubrik(c.capacity_bytes)} consumed on ${c.name}.`,
+        recommendation: `Expand capacity or archive cold data on ${c.name} immediately — resiliency headroom is gone.`,
+        metric: { pct: Math.round(pct * 10) / 10, daysTo85 },
+      });
+    } else if (pct >= 80 || (daysTo85 != null && daysTo85 <= 60)) {
+      insights.push({
+        severity: 'warning',
+        category: 'capacity',
+        clusterId: c.id,
+        clusterName: c.name,
+        title:
+          daysTo85 != null ? `${c.name} will reach 85% capacity in ~${daysTo85} days` : `${c.name} is at ${pct.toFixed(1)}% capacity`,
+        detail: `${fmtBytesRubrik(forecast.lastUsed)} of ${fmtBytesRubrik(c.capacity_bytes)} consumed, growing ~${fmtBytesRubrik(forecast.slope)}/day.`,
+        recommendation: `Plan a capacity expansion or archival offload for ${c.name} before the 85% threshold is reached.`,
+        metric: { pct: Math.round(pct * 10) / 10, daysTo85 },
+      });
+    }
+  }
+
+  const chronicRows = coreApi.db
+    .prepare(
+      `SELECT object_name, cluster, COUNT(*) AS failures
+       FROM rubrik_protection_runs
+       WHERE status = 'Failed' AND day >= date('now', '-30 days')
+       GROUP BY object_name, cluster HAVING failures >= 5 ORDER BY failures DESC`
+    )
+    .all();
+  for (const r of chronicRows) {
+    insights.push({
+      severity: 'critical',
+      category: 'protection',
+      clusterName: r.cluster,
+      title: `${r.object_name} has failed ${r.failures} times in the last 30 days`,
+      detail: `Recovery points are not reliably being created for ${r.object_name} on ${r.cluster}.`,
+      recommendation: `Investigate credential/connectivity issues on ${r.object_name} — repeated failures indicate a persistent root cause.`,
+      metric: { failures: r.failures },
+    });
+  }
+
+  const openAnomalies = coreApi.db.prepare("SELECT * FROM rubrik_anomaly_events WHERE status = 'Open' ORDER BY anomaly_probability DESC").all();
+  for (const a of openAnomalies) {
+    insights.push({
+      severity: a.severity === 'Critical' ? 'critical' : 'warning',
+      category: 'security',
+      clusterName: a.cluster,
+      title: `Open ransomware anomaly on ${a.object_name}`,
+      detail: `Radar flagged ${a.object_name} on ${a.cluster} at ${Math.round(a.anomaly_probability * 100)}% confidence${a.snapshot_quarantined ? ' — snapshot quarantined' : ''}.`,
+      recommendation: `Review the quarantined snapshot and threat hunt results before restoring or resuming backups for ${a.object_name}.`,
+      metric: { probability: a.anomaly_probability },
+    });
+  }
+
+  const laggingPairs = coreApi.db.prepare("SELECT * FROM rubrik_replication_pairs WHERE status = 'Lagging'").all();
+  for (const p of laggingPairs) {
+    insights.push({
+      severity: 'warning',
+      category: 'replication',
+      clusterName: p.source_cluster,
+      title: `Replication from ${p.source_cluster} to ${p.target_cluster} is lagging`,
+      detail: `Lag is ${Math.round(p.lag_seconds / 60)} minute(s) for ${p.objects} object(s).`,
+      recommendation: `Check WAN connectivity and target cluster capacity between ${p.source_cluster} and ${p.target_cluster}.`,
+      metric: { lagSeconds: p.lag_seconds },
+    });
+  }
+
+  const noOffsite = coreApi.db.prepare('SELECT * FROM rubrik_sla_domains WHERE no_offsite = 1').all();
+  for (const s of noOffsite) {
+    insights.push({
+      severity: 'warning',
+      category: 'governance',
+      clusterName: null,
+      title: `${s.name} SLA has no offsite replication`,
+      detail: `Objects on the ${s.name} SLA domain have no replication or archival target — a site-level failure would be unrecoverable.`,
+      recommendation: `Add a replication or archival target to the ${s.name} SLA domain.`,
+      metric: { objectCount: s.object_count },
+    });
+  }
+
+  for (const c of clusters) {
+    if (c.software_status === 'Outdated') {
+      insights.push({
+        severity: 'warning',
+        category: 'governance',
+        clusterId: c.id,
+        clusterName: c.name,
+        title: `${c.name} is running an outdated version (${c.version})`,
+        detail: `${c.name} is not on the fleet's current software version.`,
+        recommendation: `Schedule a software upgrade for ${c.name} to bring it onto the current release.`,
+        metric: { version: c.version },
+      });
+    }
+  }
+
+  const runs7d = coreApi.db.prepare("SELECT status FROM rubrik_protection_runs WHERE day >= date('now', '-7 days')").all();
+  if (runs7d.length > 0) {
+    const rate7d = Math.round((runs7d.filter((r) => r.status === 'Succeeded').length / runs7d.length) * 1000) / 10;
+    if (rate7d < 95) {
+      insights.push({
+        severity: rate7d < 75 ? 'critical' : 'warning',
+        category: 'protection',
+        clusterName: null,
+        title: `7-day protection success rate is ${rate7d}%`,
+        detail: `${runs7d.filter((r) => r.status === 'Failed').length} of ${runs7d.length} runs failed in the last 7 days.`,
+        recommendation: 'Review the at-risk objects and prioritize remediation for repeated failures.',
+        metric: { successRate: rate7d },
+      });
+    }
+  }
+  const runs30d = coreApi.db.prepare("SELECT status FROM rubrik_protection_runs WHERE day >= date('now', '-30 days')").all();
+  if (runs30d.length > 0) {
+    const rate30d = Math.round((runs30d.filter((r) => r.status === 'Succeeded').length / runs30d.length) * 1000) / 10;
+    if (rate30d < 95) {
+      insights.push({
+        severity: rate30d < 90 ? 'critical' : 'warning',
+        category: 'protection',
+        clusterName: null,
+        title: `30-day protection success rate is ${rate30d}%`,
+        detail: `${runs30d.filter((r) => r.status === 'Failed').length} of ${runs30d.length} runs failed in the last 30 days.`,
+        recommendation: 'Review the at-risk objects and prioritize remediation for repeated failures.',
+        metric: { successRate: rate30d },
+      });
+    }
+  }
+
+  const unprotectedSources = coreApi.db.prepare('SELECT * FROM rubrik_sources WHERE unprotected_count > 0 ORDER BY unprotected_count DESC').all();
+  for (const s of unprotectedSources) {
+    insights.push({
+      severity: s.unprotected_count >= 2 ? 'warning' : 'info',
+      category: 'governance',
+      clusterName: s.cluster,
+      title: `${s.unprotected_count} unprotected object(s) on ${s.name}`,
+      detail: `${s.unprotected_count} discovered object(s) on ${s.name} (${s.cluster}) have no protection job.`,
+      recommendation: `Review ${s.name} and add the unprotected objects to an SLA domain, or exclude them deliberately.`,
+      metric: { unprotectedCount: s.unprotected_count },
+    });
+  }
+
+  const TB = 1000000000000;
+  const meters = coreApi.db.prepare('SELECT * FROM rubrik_licensing').all();
+  for (const m of meters) {
+    const pct = Math.round((m.consumed_bytes / (m.entitled_tb * TB)) * 1000) / 10;
+    if (pct >= 100) {
+      insights.push({
+        severity: 'critical',
+        category: 'licensing',
+        clusterName: null,
+        title: `${m.label} license is over entitlement (${pct}%)`,
+        detail: `${fmtBytesRubrik(m.consumed_bytes)} consumed against a ${m.entitled_tb} TB entitlement.`,
+        recommendation: `Contact Rubrik to true up the ${m.label} license before renewal.`,
+        metric: { pct },
+      });
+    } else if (pct >= 90) {
+      insights.push({
+        severity: 'warning',
+        category: 'licensing',
+        clusterName: null,
+        title: `${m.label} license is at ${pct}% of entitlement`,
+        detail: `${fmtBytesRubrik(m.consumed_bytes)} consumed against a ${m.entitled_tb} TB entitlement.`,
+        recommendation: `Plan a license expansion for ${m.label} before it is exhausted.`,
+        metric: { pct },
+      });
+    }
+  }
+
+  const spike = coreApi.db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM rubrik_alerts WHERE first_seen >= datetime('now', '-1 day')) AS last24h,
+         (SELECT COUNT(*) FROM rubrik_alerts WHERE first_seen >= datetime('now', '-8 days') AND first_seen < datetime('now', '-1 day')) AS prior7d`
+    )
+    .get();
+  const dailyAvg = (spike.prior7d || 0) / 7;
+  if (spike.last24h >= 5 && spike.last24h > dailyAvg * 2) {
+    insights.push({
+      severity: 'warning',
+      category: 'alerts',
+      clusterName: null,
+      title: `Alert volume spike: ${spike.last24h} new alerts in 24h`,
+      detail: `That is well above the trailing 7-day average of ${dailyAvg.toFixed(1)}/day.`,
+      recommendation: 'Review the Alerts page grouped by type to identify a common root cause.',
+      metric: { last24h: spike.last24h, dailyAvg: Math.round(dailyAvg * 10) / 10 },
+    });
+  }
+
+  const order = { critical: 0, warning: 1, info: 2 };
+  insights.sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3));
+  const summary = {
+    critical: insights.filter((i) => i.severity === 'critical').length,
+    warning: insights.filter((i) => i.severity === 'warning').length,
+    info: insights.filter((i) => i.severity === 'info').length,
+  };
+  if (insights.length === 0) {
+    insights.push({
+      severity: 'ok',
+      category: 'health',
+      clusterName: null,
+      title: 'All systems healthy',
+      detail: 'No capacity, protection, replication, or security risks detected across the Rubrik estate.',
+      recommendation: null,
+      metric: {},
+    });
+  }
+
+  return { generatedAt: new Date().toISOString(), summary, insights: insights.slice(0, 30) };
+}
 
 function addV2Routes(coreApi, req, res) {
   // --- /alerts ---
@@ -909,42 +1177,102 @@ function addV2Routes(coreApi, req, res) {
     return true;
   }
 
-  // --- /backup-history ---
+  // --- /backup-history (v2.1 host-parity rewrite) ---
   if (req.method === 'GET' && req.path === '/backup-history') {
-    const days = Math.max(1, Math.min(90, parseInt((req.query && req.query.days) || '30', 10) || 30));
-    const q = (req.query && req.query.q) || '';
-    const runs = coreApi.db
-      .prepare("SELECT * FROM rubrik_protection_runs WHERE day >= date('now', ?) ORDER BY start_ms ASC")
-      .all(`-${days} days`);
+    const days = Math.max(1, Math.min(31, parseInt((req.query && req.query.days) || '30', 10) || 30));
+    const q = safeDecode((req.query && req.query.q) || '').trim();
 
-    const byObject = new Map();
-    for (const r of runs) {
-      if (q && !r.object_name.toLowerCase().includes(q.toLowerCase())) continue;
-      if (!byObject.has(r.object_name)) {
-        byObject.set(r.object_name, { name: r.object_name, cluster: r.cluster, groups: new Set(), runs: [] });
-      }
-      const bucket = byObject.get(r.object_name);
-      bucket.groups.add(r.run_type);
-      bucket.runs.push({
-        id: r.id,
-        group: r.run_type,
-        status: r.status,
-        runType: r.run_type,
-        startMs: r.start_ms,
-        durationS: r.duration_s,
-        logicalBytes: r.logical_bytes,
-        errorMessage: r.error_message,
-      });
+    let objectRows;
+    if (q.length >= 2) {
+      const pattern = `%${escapeLike(q)}%`;
+      objectRows = coreApi.db
+        .prepare(
+          `SELECT o.*, c.name AS cluster_name
+           FROM rubrik_protected_objects o
+           JOIN rubrik_clusters c ON c.id = o.cluster_id
+           WHERE o.name LIKE ? ESCAPE '\\'
+           LIMIT 50`
+        )
+        .all(pattern);
+    } else {
+      objectRows = coreApi.db
+        .prepare(
+          `SELECT o.*, c.name AS cluster_name
+           FROM rubrik_protected_objects o
+           JOIN rubrik_clusters c ON c.id = o.cluster_id
+           ORDER BY o.name COLLATE NOCASE
+           LIMIT 25`
+        )
+        .all();
     }
 
-    const servers = Array.from(byObject.values()).map((b) => ({
-      name: b.name,
-      cluster: b.cluster,
-      groups: Array.from(b.groups),
-      environment: CLUSTER_ENVIRONMENT[b.cluster] || 'Unknown',
-      runs: b.runs,
-    }));
-    res.json({ servers });
+    const cutoff = `-${days} days`;
+    const runsStmt = coreApi.db.prepare(
+      "SELECT * FROM rubrik_protection_runs WHERE object_name = ? AND day >= date('now', ?) ORDER BY start_ms ASC"
+    );
+    const pairsBySource = new Map();
+    for (const p of coreApi.db.prepare('SELECT * FROM rubrik_replication_pairs').all()) {
+      pairsBySource.set(p.source_cluster, p);
+    }
+    const sourceStmt = coreApi.db.prepare('SELECT name FROM rubrik_sources WHERE cluster = ? AND source_type = ? LIMIT 1');
+
+    const servers = objectRows.map((o) => {
+      const runsRaw = runsStmt.all(o.name, cutoff);
+      const runs = runsRaw.map((r) => {
+        let replication = [];
+        if (r.run_type === 'Replication') {
+          const pair = pairsBySource.get(r.cluster);
+          replication = [
+            {
+              targetCluster: pair ? pair.target_cluster : null,
+              status: r.status,
+              logicalBytes: r.logical_bytes,
+              lagSeconds: pair ? pair.lag_seconds : null,
+            },
+          ];
+        }
+        return {
+          id: r.id,
+          group: r.job_name,
+          clusterName: r.cluster,
+          runType: r.run_type,
+          status: r.status,
+          startMs: r.start_ms,
+          endMs: r.start_ms + r.duration_s * 1000,
+          logicalBytes: r.logical_bytes,
+          errorCode: null,
+          errorMessage: r.error_message,
+          replication,
+        };
+      });
+      let lastBackupStatus = null;
+      if (runs.length) lastBackupStatus = runs.reduce((a, b) => (b.startMs > a.startMs ? b : a)).status;
+      const srcRow = sourceStmt.get(o.cluster_name, OBJECT_TYPE_SOURCE[o.type] || '');
+
+      return {
+        name: o.name,
+        clusters: [o.cluster_name],
+        sourceName: srcRow ? srcRow.name : 'Rubrik',
+        environment: OBJECT_TYPE_ENV[o.type] || 'Unknown',
+        objectType: o.type,
+        osType: '—',
+        isProtected: true,
+        groups: Array.from(new Set(runs.map((r) => r.runType))),
+        policies: [o.sla_domain],
+        lastBackupStatus,
+        slaViolated: !o.compliant,
+        logicalBytes: o.local_storage_bytes,
+        runs,
+      };
+    });
+
+    servers.sort(
+      q.length >= 2
+        ? (a, b) => b.runs.length - a.runs.length || a.name.localeCompare(b.name)
+        : (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    );
+
+    res.json({ query: q, days, browse: q.length < 2, servers });
     return true;
   }
 
@@ -956,12 +1284,133 @@ function addV2Routes(coreApi, req, res) {
       res.status(404).json({ error: 'not_found' });
       return true;
     }
+    const dayRuns = coreApi.db
+      .prepare('SELECT status FROM rubrik_protection_runs WHERE object_name = ? AND day = ?')
+      .all(row.object_name, row.day);
+    const objectSummary = {};
+    for (const r of dayRuns) objectSummary[r.status] = (objectSummary[r.status] || 0) + 1;
+    const warnings = row.status === 'Warning' && row.error_message ? [row.error_message] : [];
+
     res.json({
-      status: row.status,
-      bytesRead: row.logical_bytes,
-      warnings: row.status === 'Warning' && row.error_message ? [row.error_message] : [],
-      objectSummary: `${row.object_name} (${row.cluster}) — ${row.run_type}`,
+      warnings,
+      error: row.error_message || null,
+      slaViolated: row.status === 'Failed',
+      thisServer: {
+        name: row.object_name,
+        status: row.status,
+        numRestarts: row.status === 'Failed' ? 1 : 0,
+        bytesRead: row.logical_bytes,
+        error: row.error_message || null,
+        warnings,
+      },
+      objectSummary,
+      objectCount: dayRuns.length,
     });
+    return true;
+  }
+
+  // --- /object-360 ---
+  if (req.method === 'GET' && req.path === '/object-360') {
+    const name = safeDecode((req.query && req.query.name) || '').trim();
+    const row = coreApi.db
+      .prepare(
+        `SELECT o.*, c.name AS cluster_name
+         FROM rubrik_protected_objects o
+         JOIN rubrik_clusters c ON c.id = o.cluster_id
+         WHERE o.name = ?
+         LIMIT 1`
+      )
+      .get(name);
+
+    if (!row) {
+      res.json({ query: name, found: false, object: null, runs14d: [], alerts: [], anomalies: [], events: [], replication: { legs: [] } });
+      return true;
+    }
+
+    const object = {
+      id: row.id,
+      clusterId: row.cluster_id,
+      name: row.name,
+      type: row.type,
+      cluster: row.cluster_name,
+      slaDomain: row.sla_domain,
+      compliant: !!row.compliant,
+      lastBackupAt: row.last_backup_at,
+      snapshotCount: row.snapshot_count,
+      localStorageBytes: row.local_storage_bytes,
+      archivedBytes: row.archived_bytes,
+      location: row.location,
+      nextSnapshotAt: row.next_snapshot_at,
+    };
+
+    const runs14d = coreApi.db
+      .prepare(
+        "SELECT day, status, run_type, start_ms, duration_s, logical_bytes, error_message FROM rubrik_protection_runs WHERE object_name = ? AND day >= date('now', '-14 days') ORDER BY start_ms ASC"
+      )
+      .all(row.name)
+      .map((r) => ({
+        day: r.day,
+        status: r.status,
+        runType: r.run_type,
+        startMs: r.start_ms,
+        durationS: r.duration_s,
+        logicalBytes: r.logical_bytes,
+        errorMessage: r.error_message,
+      }));
+
+    const alerts = coreApi.db
+      .prepare('SELECT * FROM rubrik_alerts WHERE object_name = ? AND resolved = 0 AND dismissed = 0 ORDER BY first_seen DESC')
+      .all(row.name)
+      .map(alertToJson);
+
+    const anomalies = coreApi.db
+      .prepare('SELECT * FROM rubrik_anomaly_events WHERE object_name = ? ORDER BY detected_at DESC')
+      .all(row.name)
+      .map((a) => ({
+        id: a.id,
+        detectedAt: a.detected_at,
+        cluster: a.cluster,
+        objectType: a.object_type,
+        anomalyProbability: a.anomaly_probability,
+        encryptionDetected: !!a.encryption_detected,
+        fileChanges: a.file_changes,
+        severity: a.severity,
+        status: a.status,
+        snapshotQuarantined: !!a.snapshot_quarantined,
+      }));
+
+    const events = coreApi.db
+      .prepare('SELECT * FROM rubrik_events WHERE object_name = ? ORDER BY at DESC LIMIT 20')
+      .all(row.name)
+      .map((e) => ({ id: e.id, at: e.at, cluster: e.cluster, severity: e.severity, eventType: e.event_type, message: e.message }));
+
+    const pair = coreApi.db.prepare('SELECT * FROM rubrik_replication_pairs WHERE source_cluster = ?').get(row.cluster_name);
+    const legs = pair
+      ? [{ targetCluster: pair.target_cluster, status: pair.status, lagSeconds: pair.lag_seconds, lastSyncAt: pair.last_sync_at }]
+      : [];
+
+    res.json({ query: name, found: true, object, runs14d, alerts, anomalies, events, replication: { legs } });
+    return true;
+  }
+
+  // --- /object-360/suggest ---
+  if (req.method === 'GET' && req.path === '/object-360/suggest') {
+    const q = safeDecode((req.query && req.query.q) || '').trim();
+    if (q.length < 2) {
+      res.json({ names: [] });
+      return true;
+    }
+    const pattern = `%${escapeLike(q)}%`;
+    const rows = coreApi.db
+      .prepare("SELECT DISTINCT name FROM rubrik_protected_objects WHERE name LIKE ? ESCAPE '\\' ORDER BY name COLLATE NOCASE LIMIT 10")
+      .all(pattern);
+    res.json({ names: rows.map((r) => r.name) });
+    return true;
+  }
+
+  // --- /insights ---
+  if (req.method === 'GET' && req.path === '/insights') {
+    res.json(computeRubrikInsights(coreApi));
     return true;
   }
 
@@ -1161,10 +1610,28 @@ function overviewV2Additions(coreApi) {
     capacityBytes: capacityByCluster.get(r.cluster) || 0,
   }));
 
+  const alertsByCluster = new Map(
+    coreApi.db
+      .prepare(
+        `SELECT cluster,
+                SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS crit,
+                SUM(CASE WHEN severity = 'warning' THEN 1 ELSE 0 END) AS warn,
+                COUNT(*) AS n
+         FROM rubrik_alerts WHERE resolved = 0 AND dismissed = 0 GROUP BY cluster`
+      )
+      .all()
+      .map((r) => [r.cluster, r])
+  );
+
   const clusterCards = clusters.map((c) => {
     const forecast = computeClusterForecast(coreApi, c);
     const physicalBytes = Math.round(c.used_bytes * 0.4);
-    const spark = forecast.history.slice(-14).map((h) => h.used_bytes);
+    const historyTail = forecast.history.slice(-14);
+    const spark = historyTail.map((h) => h.used_bytes);
+    const sparkDays = historyTail.map((h) => h.day);
+    const alertRow = alertsByCluster.get(c.name);
+    const alertCount = alertRow ? alertRow.n : 0;
+    const alertLevel = alertRow && alertRow.crit > 0 ? 'critical' : alertRow && alertRow.warn > 0 ? 'warning' : 'none';
     return {
       cluster: c.name,
       usedPct: c.capacity_bytes > 0 ? Math.round((c.used_bytes / c.capacity_bytes) * 1000) / 10 : 0,
@@ -1173,13 +1640,35 @@ function overviewV2Additions(coreApi) {
       availableBytes: c.capacity_bytes - c.used_bytes,
       savingsX: physicalBytes > 0 ? Math.round((c.used_bytes / physicalBytes) * 10) / 10 : 0,
       spark,
+      model: c.model,
+      nodes: c.nodes,
+      version: c.version,
+      status: c.status,
+      alertCount,
+      alertLevel,
+      sparkDays,
     };
   });
 
   const recentCriticalAlerts = coreApi.db
-    .prepare("SELECT * FROM rubrik_alerts WHERE severity = 'critical' ORDER BY first_seen DESC LIMIT 5")
+    .prepare("SELECT * FROM rubrik_alerts WHERE severity = 'critical' AND resolved = 0 AND dismissed = 0 ORDER BY first_seen DESC LIMIT 10")
     .all()
     .map(alertToJson);
+
+  const protRuns7d = coreApi.db
+    .prepare("SELECT status FROM rubrik_protection_runs WHERE run_type = 'Backup' AND day >= date('now', '-7 days')")
+    .all();
+  const protTotal = protRuns7d.length;
+  const protSuccess = protRuns7d.filter((r) => r.status === 'Succeeded').length;
+  const protFailure = protRuns7d.filter((r) => r.status === 'Failed').length;
+  const protWarning = protRuns7d.filter((r) => r.status === 'Warning').length;
+  const protectionSummary = {
+    total: protTotal,
+    success: protSuccess,
+    failure: protFailure,
+    warning: protWarning,
+    successRate: protTotal > 0 ? Math.round((protSuccess / protTotal) * 1000) / 10 : 100,
+  };
 
   return {
     kpis: {
@@ -1198,6 +1687,7 @@ function overviewV2Additions(coreApi) {
     capacityTrend,
     clusterCards,
     recentCriticalAlerts,
+    protectionSummary,
   };
 }
 
