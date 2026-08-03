@@ -15,7 +15,28 @@ const COST_COLORS = ['#FF9900', '#0091DA', '#6CB33F', '#D4A24E', '#C75D5D', '#9B
 
 const chartOpts = {
   responsive: true, maintainAspectRatio: false, animation: false,
-  plugins: { legend: { labels: { color: '#E5E5E5', boxWidth: 12, font: { size: 11 } } } },
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { labels: { color: '#E5E5E5', boxWidth: 12, font: { size: 11 } } },
+    // AWS Cost Explorer-style hover: every service for the day, sorted by
+    // spend, zero lines hidden, with a bold day total footer.
+    tooltip: {
+      mode: 'index',
+      intersect: false,
+      itemSort: (a, b) => (b.parsed?.y || 0) - (a.parsed?.y || 0),
+      filter: (item) => (item.parsed?.y || 0) >= 0.005,
+      backgroundColor: 'rgba(20, 22, 26, 0.96)',
+      borderColor: 'rgba(255,255,255,0.12)',
+      borderWidth: 1,
+      padding: 10,
+      titleFont: { size: 12, weight: 'bold' },
+      footerFont: { size: 12, weight: 'bold' },
+      callbacks: {
+        label: (ctx) => ` ${ctx.dataset.label}: $${(ctx.parsed?.y || 0).toFixed(2)}`,
+        footer: (items) => `Total: $${items.reduce((s, i) => s + (i.parsed?.y || 0), 0).toFixed(2)}`,
+      },
+    },
+  },
   scales: {
     x: { stacked: true, ticks: { color: '#E5E5E5', maxTicksLimit: 12, font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.1)' } },
     y: { stacked: true, ticks: { color: '#E5E5E5', font: { size: 10 }, callback: (v) => `$${v}` }, grid: { color: 'rgba(255,255,255,0.1)' } },
