@@ -51,32 +51,39 @@ export default function PxOverviewPage() {
       .catch(() => { setRrd(null); setRrdFailed(true); });
   }, [selectedNodeId, rrdTimeframe]);
 
-  const rrdChart = useMemo(() => {
+  const rrdCharts = useMemo(() => {
     if (!rrd || rrd.length === 0) return null;
     const labels = rrd.map(r => {
       const d = new Date(Number(r.time) * 1000);
       return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     });
+    const pr = rrd.length > 60 ? 0 : 2;
+    const line = (label, data, color, extra = {}) => ({
+      label, data, borderColor: color, backgroundColor: color, pointRadius: pr, borderWidth: 2, tension: 0.25, spanGaps: true, ...extra,
+    });
     return {
-      labels,
-      datasets: [
-        {
-          label: 'CPU %', data: rrd.map(r => (r.cpu == null ? null : r.cpu * 100)),
-          borderColor: '#E57000', backgroundColor: '#E57000', pointRadius: rrd.length > 60 ? 0 : 2, borderWidth: 2, tension: 0.25, spanGaps: true,
-        },
-        {
-          label: 'Mem %', data: rrd.map(r => (r.memused == null || !r.memtotal ? null : (r.memused / r.memtotal) * 100)),
-          borderColor: '#0091DA', backgroundColor: '#0091DA', pointRadius: rrd.length > 60 ? 0 : 2, borderWidth: 2, tension: 0.25, spanGaps: true,
-        },
-        {
-          label: 'IOWait %', data: rrd.map(r => (r.iowait == null ? null : r.iowait * 100)),
-          borderColor: '#D4A24E', backgroundColor: '#D4A24E', pointRadius: rrd.length > 60 ? 0 : 2, borderWidth: 2, tension: 0.25, spanGaps: true,
-        },
-      ],
+      cpu: {
+        labels,
+        datasets: [
+          line('Used cores', rrd.map(r => (r.cpu == null || !r.maxcpu ? null : r.cpu * r.maxcpu)), '#E57000'),
+          line('Total cores', rrd.map(r => (r.maxcpu == null ? null : r.maxcpu)), '#8A8A8A', { borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5 }),
+        ],
+      },
+      mem: {
+        labels,
+        datasets: [
+          line('Used', rrd.map(r => (r.memused == null ? null : r.memused)), '#0091DA'),
+          line('Total', rrd.map(r => (r.memtotal == null ? null : r.memtotal)), '#8A8A8A', { borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5 }),
+        ],
+      },
+      iowait: {
+        labels,
+        datasets: [line('IO Wait %', rrd.map(r => (r.iowait == null ? null : r.iowait * 100)), '#D4A24E')],
+      },
     };
   }, [rrd]);
 
-  const useRrd = rrdChart != null && !rrdFailed;
+  const useRrd = rrdCharts != null && !rrdFailed;
 
   const servers = data?.servers || [];
   const totals = data?.totals || {};
@@ -108,14 +115,19 @@ export default function PxOverviewPage() {
     };
   }, [trend]);
 
-  const chartOpts = {
+  const baseX = {
+    ticks: { color: '#E5E5E5', maxTicksLimit: 8, font: { size: 10 }, callback(value) { const l = this.getLabelForValue(value); return String(l).slice(11, 16) || l; } },
+    grid: { color: 'rgba(255,255,255,0.1)' },
+  };
+  const makeOpts = (yTicks, yMax) => ({
     responsive: true, maintainAspectRatio: false, animation: false,
     plugins: { legend: { labels: { color: '#E5E5E5', boxWidth: 12, font: { size: 11 } } } },
-    scales: {
-      x: { ticks: { color: '#E5E5E5', maxTicksLimit: 8, font: { size: 10 }, callback(value) { const l = this.getLabelForValue(value); return String(l).slice(11, 16) || l; } }, grid: { color: 'rgba(255,255,255,0.1)' } },
-      y: { ticks: { color: '#E5E5E5', font: { size: 10 }, callback: (v) => `${v}%` }, grid: { color: 'rgba(255,255,255,0.1)' }, min: 0, max: 100 },
-    },
-  };
+    scales: { x: baseX, y: { ticks: { color: '#E5E5E5', font: { size: 10 }, ...yTicks }, grid: { color: 'rgba(255,255,255,0.1)' }, min: 0, ...(yMax !== undefined ? { max: yMax } : {}) } },
+  });
+  const chartOpts = makeOpts({ callback: (v) => `${v}%` }, 100);
+  const coreOpts = makeOpts({ callback: (v) => `${v}` });
+  const byteOpts = makeOpts({ callback: (v) => fmtBytes(v), maxTicksLimit: 6 });
+  const iowaitOpts = makeOpts({ callback: (v) => `${v}%` });
 
   const storagePct = totals.storageTotalBytes > 0 ? (totals.storageUsedBytes / totals.storageTotalBytes) * 100 : null;
 
@@ -156,7 +168,7 @@ export default function PxOverviewPage() {
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <p className="text-sm font-semibold text-ink mr-auto">
-            {useRrd ? 'Node Trend' : 'CPU Usage per Node (last 24h)'}
+            {useRrd ? 'Node Trends' : 'CPU Usage per Node (last 24h)'}
           </p>
           {nodes && nodes.length > 1 && (
             <div className="flex flex-wrap gap-1">
@@ -182,7 +194,20 @@ export default function PxOverviewPage() {
           </div>
         </div>
         {useRrd ? (
-          <div className="h-60"><Line data={rrdChart} options={chartOpts} /></div>
+          <div className="grid lg:grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs font-semibold text-ink-muted mb-1.5">CPU — used vs total cores</p>
+              <div className="h-52"><Line data={rrdCharts.cpu} options={coreOpts} /></div>
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-ink-muted mb-1.5">Memory — used vs total</p>
+              <div className="h-52"><Line data={rrdCharts.mem} options={byteOpts} /></div>
+            </div>
+            <div className="lg:col-span-2">
+              <p className="text-xs font-semibold text-ink-muted mb-1.5">IO Wait</p>
+              <div className="h-40"><Line data={rrdCharts.iowait} options={iowaitOpts} /></div>
+            </div>
+          </div>
         ) : rrd == null && !rrdFailed ? (
           <LoadingPanel label="Loading trend…" height={200} />
         ) : trend == null ? (
