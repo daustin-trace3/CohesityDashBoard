@@ -168,6 +168,79 @@ const ROUTINE_TEMPLATES = [
   { eventType: 'Archival', severity: 'Info', msg: (o) => `Archival job completed for ${o}` },
 ];
 
+// ---------------------------------------------------------------------
+// v2.0.0 additions below (version 4): Cohesity-parity mirror — alerts,
+// per-object protection run history, workload trends, licensing meters,
+// SLA-domain policy extensions, sources, and replication-run granularity.
+// The SQL-BILLING-DR / SQL-HR-DR chronic-failure narrative from v1/v2 is
+// carried forward here so alerts and run history stay coherent with it.
+// ---------------------------------------------------------------------
+
+const CHRONIC_FAIL_OBJECTS = new Set(['SQL-BILLING-DR', 'SQL-HR-DR']);
+
+const RUN_TYPE_RANGES = {
+  Backup: { durMin: 120, durMax: 900, bytesMin: 1500000000, bytesMax: 25000000000 },
+  Replication: { durMin: 60, durMax: 500, bytesMin: 1000000000, bytesMax: 15000000000 },
+  Archival: { durMin: 400, durMax: 1400, bytesMin: 5000000000, bytesMax: 45000000000 },
+};
+
+const GENERIC_FAIL_ERRORS = [
+  'Snapshot creation failed: insufficient space on staging pool',
+  'Network timeout while transferring blocks to replica target',
+  'Backup skipped: object not reachable (host unresponsive)',
+  'Archival upload failed: cloud provider throttling (429)',
+];
+
+const GENERIC_WARN_ERRORS = [
+  'Completed with warnings: retry required for 2 files',
+  'Completed with warnings: snapshot retention approaching limit',
+];
+
+const CHRONIC_ERROR_BY_OBJECT = {
+  'SQL-BILLING-DR': 'Snapshot mount timeout: exceeded 45s waiting for VSS quiesce on host dr-sql-02',
+  'SQL-HR-DR': 'Authentication failed: service account credentials expired (AD trust)',
+};
+
+const ALERT_TYPES = ['Backup', 'Replication', 'Capacity', 'Security', 'System'];
+const ALERT_SEVERITIES = ['critical', 'warning', 'info'];
+
+const WORKLOAD_DEFS = [
+  { workload: 'VM', count: 12, unprotected: 2, bytesPerObj: 9000000000, reduction: 0.55 },
+  { workload: 'SQL', count: 6, unprotected: 1, bytesPerObj: 5000000000, reduction: 0.35 },
+  { workload: 'NAS', count: 6, unprotected: 1, bytesPerObj: 20000000000, reduction: 0.7 },
+  { workload: 'EC2', count: 6, unprotected: 0, bytesPerObj: 4000000000, reduction: 0.5 },
+  { workload: 'VolumeGroup', count: 8, unprotected: 1, bytesPerObj: 12000000000, reduction: 0.6 },
+];
+
+const WORKLOAD_GROWTH_PER_DAY = { VM: 0.0012, SQL: 0.0009, NAS: 0.0007, EC2: 0.0015, VolumeGroup: 0.0006 };
+
+const SOURCES = [
+  { id: 1, name: 'vCenter01-PRD', cluster: 'rbk-prd-01', sourceType: 'vCenter', environment: 'Production', protected: 10, unprotected: 0, unprotectedBytes: 0 },
+  { id: 2, name: 'vCenter02-DR', cluster: 'rbk-dr-01', sourceType: 'vCenter', environment: 'DR', protected: 3, unprotected: 0, unprotectedBytes: 0 },
+  { id: 3, name: 'vCenter03-DEV', cluster: 'rbk-dev-01', sourceType: 'vCenter', environment: 'Development', protected: 2, unprotected: 1, unprotectedBytes: 45000000000 },
+  { id: 4, name: 'SQL-Host-PRD01', cluster: 'rbk-prd-01', sourceType: 'SQL Host', environment: 'Production', protected: 2, unprotected: 0, unprotectedBytes: 0 },
+  { id: 5, name: 'SQL-Host-DR01', cluster: 'rbk-dr-01', sourceType: 'SQL Host', environment: 'DR', protected: 1, unprotected: 1, unprotectedBytes: 120000000000 },
+  { id: 6, name: 'SQL-Host-DEV01', cluster: 'rbk-dev-01', sourceType: 'SQL Host', environment: 'Development', protected: 2, unprotected: 0, unprotectedBytes: 0 },
+  { id: 7, name: 'NAS-Array-PRD', cluster: 'rbk-prd-01', sourceType: 'NAS Array', environment: 'Production', protected: 2, unprotected: 0, unprotectedBytes: 0 },
+  { id: 8, name: 'NAS-Array-DR', cluster: 'rbk-dr-01', sourceType: 'NAS Array', environment: 'DR', protected: 2, unprotected: 0, unprotectedBytes: 0 },
+  { id: 9, name: 'NAS-Array-DEV', cluster: 'rbk-dev-01', sourceType: 'NAS Array', environment: 'Development', protected: 2, unprotected: 0, unprotectedBytes: 0 },
+  { id: 10, name: 'AWS-Account-Prod', cluster: 'rbk-prd-01', sourceType: 'AWS Account', environment: 'Production', protected: 2, unprotected: 0, unprotectedBytes: 0 },
+  { id: 11, name: 'AWS-Account-DR', cluster: 'rbk-dr-01', sourceType: 'AWS Account', environment: 'DR', protected: 2, unprotected: 0, unprotectedBytes: 0 },
+  { id: 12, name: 'Physical-Dev-Hosts', cluster: 'rbk-dev-01', sourceType: 'Physical', environment: 'Development', protected: 2, unprotected: 0, unprotectedBytes: 0 },
+];
+
+function retentionDaysFor(text) {
+  if (text === '30d') return 30;
+  if (text === '90d') return 90;
+  if (text === '1y') return 365;
+  if (text === '7d') return 7;
+  return 30;
+}
+
+function rangeFor(min, max, rnd) {
+  return Math.round(min + rnd() * (max - min));
+}
+
 const migrations = [
   {
     version: 1,
@@ -531,6 +604,305 @@ const migrations = [
           updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `);
+    },
+  },
+  {
+    version: 4,
+    up(db) {
+      // --- version drift + software_status column ---
+      ensureColumn(db, 'rubrik_clusters', 'software_status', 'TEXT');
+      db.prepare(`UPDATE rubrik_clusters SET software_status = ? WHERE id = ?`).run('Current', 1);
+      db.prepare(`UPDATE rubrik_clusters SET software_status = ? WHERE id = ?`).run('Current', 2);
+      db.prepare(`UPDATE rubrik_clusters SET version = ?, software_status = ? WHERE id = ?`).run('9.1.2-p8', 'Outdated', 3);
+
+      // --- rubrik_sla_domains (== "rubrik_policies") extension ---
+      ensureColumn(db, 'rubrik_sla_domains', 'replication_targets', 'TEXT');
+      ensureColumn(db, 'rubrik_sla_domains', 'archival_targets', 'TEXT');
+      ensureColumn(db, 'rubrik_sla_domains', 'datalock', 'INTEGER');
+      ensureColumn(db, 'rubrik_sla_domains', 'no_offsite', 'INTEGER');
+      ensureColumn(db, 'rubrik_sla_domains', 'retention_days', 'INTEGER');
+      const updateSla = db.prepare(
+        `UPDATE rubrik_sla_domains
+           SET replication_targets = ?, archival_targets = ?, datalock = ?, no_offsite = ?, retention_days = ?
+         WHERE name = ?`
+      );
+      for (const name of Object.keys(SLA_META)) {
+        const meta = SLA_META[name];
+        const replicationTargets = meta.replication ? JSON.stringify([meta.replication]) : JSON.stringify([]);
+        const archivalTargets = meta.archival ? JSON.stringify([meta.archival]) : JSON.stringify([]);
+        const datalock = name === 'Gold-4h' ? 1 : 0;
+        const noOffsite = name === 'Bronze-7d' ? 1 : 0;
+        updateSla.run(replicationTargets, archivalTargets, datalock, noOffsite, retentionDaysFor(meta.retention), name);
+      }
+
+      // --- rubrik_alerts: ~45 rows over 14 days ---
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_alerts (
+          id               INTEGER PRIMARY KEY,
+          cluster          TEXT NOT NULL,
+          severity         TEXT NOT NULL CHECK(severity IN ('critical', 'warning', 'info')),
+          alert_type       TEXT NOT NULL,
+          description      TEXT NOT NULL,
+          object_name      TEXT,
+          first_seen       DATETIME NOT NULL,
+          dismissed        INTEGER NOT NULL DEFAULT 0,
+          resolved         INTEGER NOT NULL DEFAULT 0,
+          resolution_note  TEXT
+        )
+      `);
+      const seedAlert = db.prepare(
+        `INSERT OR IGNORE INTO rubrik_alerts
+           (id, cluster, severity, alert_type, description, object_name, first_seen, dismissed, resolved, resolution_note)
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?), ?, ?, ?)`
+      );
+      const alertRnd = mulberry32(55021);
+      let alertId = 1;
+      // The pinned SQL-BILLING-DR anomaly gets a critical Security alert first, open (unresolved).
+      seedAlert.run(
+        alertId++,
+        'rbk-dr-01',
+        'critical',
+        'Security',
+        'Radar detected encryption anomaly (97% probability) on SQL-BILLING-DR',
+        'SQL-BILLING-DR',
+        offsetModifier(-3),
+        0,
+        0,
+        null
+      );
+      // Chronic-failure backup alerts for the two narrative objects.
+      seedAlert.run(alertId++, 'rbk-dr-01', 'critical', 'Backup', CHRONIC_ERROR_BY_OBJECT['SQL-BILLING-DR'], 'SQL-BILLING-DR', offsetModifier(-8), 0, 0, null);
+      seedAlert.run(alertId++, 'rbk-dr-01', 'critical', 'Backup', CHRONIC_ERROR_BY_OBJECT['SQL-HR-DR'], 'SQL-HR-DR', offsetModifier(-12), 0, 0, null);
+
+      const resolvedTarget = 8;
+      const dismissedTarget = 5;
+      let resolvedSoFar = 0;
+      let dismissedSoFar = 0;
+      while (alertId <= 45) {
+        const hoursAgo = alertRnd() * 14 * 24;
+        const cluster = CLUSTERS[Math.floor(alertRnd() * CLUSTERS.length)].name;
+        const alertType = ALERT_TYPES[Math.floor(alertRnd() * ALERT_TYPES.length)];
+        const severity = ALERT_SEVERITIES[Math.floor(alertRnd() * ALERT_SEVERITIES.length)];
+        const obj = OBJECTS[Math.floor(alertRnd() * OBJECTS.length)];
+        const descByType = {
+          Backup: `Backup job for ${obj.name} exceeded expected duration`,
+          Replication: `Replication lag threshold exceeded for ${cluster}`,
+          Capacity: `${cluster} capacity utilization crossed warning threshold`,
+          Security: `Radar flagged unusual file activity on ${obj.name}`,
+          System: `${cluster} node health check reported a transient issue`,
+        };
+        let dismissed = 0;
+        let resolved = 0;
+        let resolutionNote = null;
+        const remaining = 45 - alertId;
+        if (resolvedSoFar < resolvedTarget && (alertRnd() < 0.25 || remaining <= resolvedTarget - resolvedSoFar)) {
+          resolved = 1;
+          resolvedSoFar++;
+          resolutionNote = 'Resolved: condition cleared on next successful run';
+        } else if (dismissedSoFar < dismissedTarget && (alertRnd() < 0.2 || remaining <= dismissedTarget - dismissedSoFar)) {
+          dismissed = 1;
+          dismissedSoFar++;
+        }
+        seedAlert.run(alertId++, cluster, severity, alertType, descByType[alertType], obj.name, offsetModifier(-hoursAgo), dismissed, resolved, resolutionNote);
+      }
+
+      // --- rubrik_protection_runs: 30 days x ~40 runs/day ---
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_protection_runs (
+          id            INTEGER PRIMARY KEY,
+          day           TEXT NOT NULL,
+          cluster       TEXT NOT NULL,
+          job_name      TEXT NOT NULL,
+          object_name   TEXT NOT NULL,
+          status        TEXT NOT NULL CHECK(status IN ('Succeeded', 'Failed', 'Warning', 'Running', 'Canceled')),
+          run_type      TEXT NOT NULL CHECK(run_type IN ('Backup', 'Replication', 'Archival')),
+          start_ms      INTEGER NOT NULL,
+          duration_s    INTEGER NOT NULL,
+          logical_bytes INTEGER NOT NULL,
+          error_message TEXT
+        )
+      `);
+      const seedRun = db.prepare(
+        `INSERT OR IGNORE INTO rubrik_protection_runs
+           (id, day, cluster, job_name, object_name, status, run_type, start_ms, duration_s, logical_bytes, error_message)
+         VALUES (?, date('now', ?), ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      const runRnd = mulberry32(30044);
+      const nowMs = Date.now();
+      let runId = 1;
+      for (let dayIdx = 0; dayIdx < 30; dayIdx++) {
+        const daysAgo = 29 - dayIdx;
+        for (const o of OBJECTS) {
+          const cluster = CLUSTERS.find((c) => c.id === o.clusterId);
+          const meta = SLA_META[o.slaDomain];
+          const chronic = CHRONIC_FAIL_OBJECTS.has(o.name);
+          const runTypes = ['Backup'];
+          if (meta.replication && (dayIdx + o.id) % 3 === 0) runTypes.push('Replication');
+          if (meta.archival && (dayIdx + o.id) % 5 === 0) runTypes.push('Archival');
+
+          for (const runType of runTypes) {
+            const failRate = chronic ? 0.85 : 0.05;
+            const warnRate = chronic ? 0.05 : 0.03;
+            const r = runRnd();
+            let status;
+            if (r < failRate) status = 'Failed';
+            else if (r < failRate + warnRate) status = 'Warning';
+            else status = 'Succeeded';
+
+            const ranges = RUN_TYPE_RANGES[runType];
+            let durationS = rangeFor(ranges.durMin, ranges.durMax, runRnd);
+            let logicalBytes = rangeFor(ranges.bytesMin, ranges.bytesMax, runRnd);
+            let errorMessage = null;
+            if (status === 'Failed') {
+              durationS = Math.round(durationS * 0.15);
+              logicalBytes = 0;
+              errorMessage =
+                chronic && CHRONIC_ERROR_BY_OBJECT[o.name]
+                  ? CHRONIC_ERROR_BY_OBJECT[o.name]
+                  : GENERIC_FAIL_ERRORS[Math.floor(runRnd() * GENERIC_FAIL_ERRORS.length)];
+            } else if (status === 'Warning') {
+              errorMessage = GENERIC_WARN_ERRORS[Math.floor(runRnd() * GENERIC_WARN_ERRORS.length)];
+            }
+
+            const startMs = nowMs - daysAgo * 86400000 - Math.floor(runRnd() * 20 * 3600000);
+            const jobName = `${o.name} ${runType}`;
+
+            seedRun.run(
+              runId++,
+              `-${daysAgo} days`,
+              cluster.name,
+              jobName,
+              o.name,
+              status,
+              runType,
+              startMs,
+              durationS,
+              logicalBytes,
+              errorMessage
+            );
+          }
+        }
+      }
+
+      // --- rubrik_workload_history: 180 days x 5 workload categories ---
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_workload_history (
+          day               TEXT NOT NULL,
+          workload          TEXT NOT NULL,
+          protected_count   INTEGER NOT NULL,
+          unprotected_count INTEGER NOT NULL,
+          protected_bytes   INTEGER NOT NULL,
+          logical_bytes     INTEGER NOT NULL,
+          physical_bytes    INTEGER NOT NULL,
+          UNIQUE(day, workload)
+        )
+      `);
+      const seedWorkload = db.prepare(
+        `INSERT OR IGNORE INTO rubrik_workload_history
+           (day, workload, protected_count, unprotected_count, protected_bytes, logical_bytes, physical_bytes)
+         VALUES (date('now', ?), ?, ?, ?, ?, ?, ?)`
+      );
+      const workloadRnd = mulberry32(18077);
+      for (let dayIdx = 0; dayIdx < 180; dayIdx++) {
+        const daysAgo = 179 - dayIdx;
+        for (const w of WORKLOAD_DEFS) {
+          const growth = 1 + WORKLOAD_GROWTH_PER_DAY[w.workload] * dayIdx;
+          const wiggle = daysAgo === 0 ? 0 : Math.sin(dayIdx * 0.5 + w.workload.length) * 0.03;
+          const baseLogical = Math.round(w.count * w.bytesPerObj * growth * (1 + wiggle));
+          const logicalBytes = Math.max(0, baseLogical);
+          const protectedBytes = logicalBytes;
+          const physicalBytes = Math.round(logicalBytes * (1 - w.reduction));
+          const unprotectedCount = daysAgo === 0 ? w.unprotected : Math.max(0, w.unprotected - Math.floor(workloadRnd() * 2));
+          seedWorkload.run(dayOffsetModifier(daysAgo), w.workload, w.count, unprotectedCount, protectedBytes, logicalBytes, physicalBytes);
+        }
+      }
+
+      // --- rubrik_licensing: 3 meters ---
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_licensing (
+          key            TEXT PRIMARY KEY CHECK(key IN ('capacity', 'cloud', 'security')),
+          label          TEXT NOT NULL,
+          consumed_bytes INTEGER NOT NULL,
+          entitled_tb    REAL NOT NULL,
+          basis          TEXT NOT NULL
+        )
+      `);
+      const TB = 1000000000000;
+      const seedLicensing = db.prepare(
+        `INSERT OR IGNORE INTO rubrik_licensing (key, label, consumed_bytes, entitled_tb, basis) VALUES (?, ?, ?, ?, ?)`
+      );
+      seedLicensing.run('capacity', 'Capacity', 61 * TB, 80, 'FETB');
+      seedLicensing.run('cloud', 'Cloud Archival', 18 * TB, 40, 'Archived bytes');
+      seedLicensing.run('security', 'Security (Radar)', 55 * TB, 80, 'Covered objects as bytes');
+
+      // --- rubrik_sources ---
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_sources (
+          id                 INTEGER PRIMARY KEY,
+          name               TEXT NOT NULL,
+          cluster            TEXT NOT NULL,
+          source_type        TEXT NOT NULL,
+          environment        TEXT NOT NULL,
+          protected_count    INTEGER NOT NULL,
+          unprotected_count  INTEGER NOT NULL,
+          unprotected_bytes  INTEGER NOT NULL
+        )
+      `);
+      const seedSource = db.prepare(
+        `INSERT OR IGNORE INTO rubrik_sources
+           (id, name, cluster, source_type, environment, protected_count, unprotected_count, unprotected_bytes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const s of SOURCES) {
+        seedSource.run(s.id, s.name, s.cluster, s.sourceType, s.environment, s.protected, s.unprotected, s.unprotectedBytes);
+      }
+
+      // --- rubrik_replication_runs: ~25 recent runs ---
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_replication_runs (
+          id                 INTEGER PRIMARY KEY,
+          job_name           TEXT NOT NULL,
+          source_cluster     TEXT NOT NULL,
+          target_cluster     TEXT NOT NULL,
+          status             TEXT NOT NULL CHECK(status IN ('Active', 'Completed', 'Failed')),
+          start_ms_offset    INTEGER NOT NULL,
+          logical_bytes      INTEGER NOT NULL,
+          transferred_bytes  INTEGER NOT NULL,
+          percent_complete   REAL NOT NULL
+        )
+      `);
+      const seedReplRun = db.prepare(
+        `INSERT OR IGNORE INTO rubrik_replication_runs
+           (id, job_name, source_cluster, target_cluster, status, start_ms_offset, logical_bytes, transferred_bytes, percent_complete)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      const replRnd = mulberry32(72091);
+      const prdReplicatedObjs = OBJECTS.filter((o) => o.clusterId === 1 && SLA_META[o.slaDomain].replication === 'rbk-dr-01');
+      const devReplicatedObjs = OBJECTS.filter((o) => o.clusterId === 3);
+      const replPool = [
+        ...prdReplicatedObjs.map((o) => ({ name: o.name, source: 'rbk-prd-01', target: 'rbk-dr-01' })),
+        ...devReplicatedObjs.slice(0, 3).map((o) => ({ name: o.name, source: 'rbk-dev-01', target: 'rbk-dr-01' })),
+      ];
+      for (let i = 1; i <= 25; i++) {
+        const pick = replPool[(i - 1) % replPool.length];
+        const jobName = `${pick.name} Replication`;
+        let status;
+        let percentComplete;
+        if (i <= 3) {
+          status = 'Active';
+          percentComplete = Math.round(20 + replRnd() * 60);
+        } else if (i <= 5) {
+          status = 'Failed';
+          percentComplete = Math.round(replRnd() * 40);
+        } else {
+          status = 'Completed';
+          percentComplete = 100;
+        }
+        const logicalBytes = rangeFor(1000000000, 15000000000, replRnd);
+        const transferredBytes = status === 'Completed' ? logicalBytes : Math.round((logicalBytes * percentComplete) / 100);
+        const startMsOffset = Math.round(replRnd() * 12 * 3600000) + (pick.source === 'rbk-dev-01' ? 9 * 3600000 : 0);
+        seedReplRun.run(i, jobName, pick.source, pick.target, status, startMsOffset, logicalBytes, transferredBytes, percentComplete);
+      }
     },
   },
 ];
