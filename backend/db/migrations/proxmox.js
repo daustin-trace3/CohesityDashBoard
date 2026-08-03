@@ -158,4 +158,119 @@ module.exports = [
       `);
     },
   },
+  {
+    // Round 2: Guest 360 (config/snapshots/agent OS+IPs), node services/network,
+    // physical disks, storage content listing, cluster event log. rrddata is
+    // NOT stored — routes proxy it live from upstream.
+    version: 2,
+    up(db) {
+      const guestCols = db.prepare("PRAGMA table_info('proxmox_guests')").all().map((c) => c.name);
+      if (!guestCols.includes('os_name')) db.exec('ALTER TABLE proxmox_guests ADD COLUMN os_name TEXT');
+      if (!guestCols.includes('ip_addresses')) db.exec('ALTER TABLE proxmox_guests ADD COLUMN ip_addresses TEXT');
+      if (!guestCols.includes('agent_running')) db.exec('ALTER TABLE proxmox_guests ADD COLUMN agent_running INTEGER DEFAULT 0');
+      if (!guestCols.includes('config_json')) db.exec('ALTER TABLE proxmox_guests ADD COLUMN config_json TEXT');
+      if (!guestCols.includes('cpu_sockets')) db.exec('ALTER TABLE proxmox_guests ADD COLUMN cpu_sockets INTEGER');
+      if (!guestCols.includes('snapshot_count')) db.exec('ALTER TABLE proxmox_guests ADD COLUMN snapshot_count INTEGER DEFAULT 0');
+      if (!guestCols.includes('oldest_snapshot_at')) db.exec('ALTER TABLE proxmox_guests ADD COLUMN oldest_snapshot_at TEXT');
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS proxmox_snapshots (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          server_id   INTEGER NOT NULL REFERENCES proxmox_servers(id) ON DELETE CASCADE,
+          vmid        INTEGER,
+          guest_name  TEXT,
+          name        TEXT,
+          parent      TEXT,
+          description TEXT,
+          vmstate     INTEGER,
+          snap_time   TEXT,
+          updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(server_id, vmid, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_proxmox_snapshots_server ON proxmox_snapshots(server_id);
+
+        CREATE TABLE IF NOT EXISTS proxmox_services (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          server_id    INTEGER NOT NULL REFERENCES proxmox_servers(id) ON DELETE CASCADE,
+          node         TEXT,
+          name         TEXT,
+          state        TEXT,
+          active_state TEXT,
+          unit_state   TEXT,
+          description  TEXT,
+          updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(server_id, node, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_proxmox_services_server ON proxmox_services(server_id);
+
+        CREATE TABLE IF NOT EXISTS proxmox_disks (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          server_id   INTEGER NOT NULL REFERENCES proxmox_servers(id) ON DELETE CASCADE,
+          node        TEXT,
+          devpath     TEXT,
+          model       TEXT,
+          vendor      TEXT,
+          serial      TEXT,
+          size_bytes  INTEGER,
+          health      TEXT,
+          wearout     TEXT,
+          disk_type   TEXT,
+          used_as     TEXT,
+          updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(server_id, node, devpath)
+        );
+        CREATE INDEX IF NOT EXISTS idx_proxmox_disks_server ON proxmox_disks(server_id);
+
+        CREATE TABLE IF NOT EXISTS proxmox_node_networks (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          server_id        INTEGER NOT NULL REFERENCES proxmox_servers(id) ON DELETE CASCADE,
+          node             TEXT,
+          iface            TEXT,
+          iface_type       TEXT,
+          method           TEXT,
+          cidr             TEXT,
+          vlan_id          TEXT,
+          vlan_raw_device  TEXT,
+          active           INTEGER,
+          autostart        INTEGER,
+          comments         TEXT,
+          updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(server_id, node, iface)
+        );
+        CREATE INDEX IF NOT EXISTS idx_proxmox_node_networks_server ON proxmox_node_networks(server_id);
+
+        CREATE TABLE IF NOT EXISTS proxmox_storage_content (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          server_id       INTEGER NOT NULL REFERENCES proxmox_servers(id) ON DELETE CASCADE,
+          node            TEXT,
+          storage         TEXT,
+          volid           TEXT,
+          content         TEXT,
+          format          TEXT,
+          size_bytes      INTEGER,
+          vmid            INTEGER,
+          created_at_src  TEXT,
+          notes           TEXT,
+          updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(server_id, node, volid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_proxmox_storage_content_server ON proxmox_storage_content(server_id);
+
+        CREATE TABLE IF NOT EXISTS proxmox_events (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          server_id   INTEGER NOT NULL REFERENCES proxmox_servers(id) ON DELETE CASCADE,
+          event_key   TEXT,
+          node        TEXT,
+          event_time  TEXT,
+          user        TEXT,
+          tag         TEXT,
+          pri         INTEGER,
+          message     TEXT,
+          UNIQUE(server_id, event_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_proxmox_events_server ON proxmox_events(server_id);
+        CREATE INDEX IF NOT EXISTS idx_proxmox_events_time ON proxmox_events(event_time);
+      `);
+    },
+  },
 ];

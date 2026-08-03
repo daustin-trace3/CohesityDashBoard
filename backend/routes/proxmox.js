@@ -9,7 +9,7 @@ const { setSetting } = require('../services/settings');
 const proxmoxApi = require('../services/proxmoxApi');
 const { proxmoxPoller } = require('../services/proxmoxPoller');
 const {
-  storageWarnPct, storageCritPct, backupStaleDays, certWarnDays, computeIssues,
+  storageWarnPct, storageCritPct, backupStaleDays, certWarnDays, snapshotAgeDays, computeIssues,
 } = require('../services/proxmoxIssues');
 
 const router = express.Router();
@@ -212,6 +212,7 @@ router.get('/config', (req, res, next) => {
     res.json({
       storageWarnPct: storageWarnPct(), storageCritPct: storageCritPct(),
       backupStaleDays: backupStaleDays(), certWarnDays: certWarnDays(),
+      snapshotAgeDays: snapshotAgeDays(),
     });
   } catch (err) { next(err); }
 });
@@ -222,15 +223,18 @@ router.put('/config', [
   body('storageCritPct').isInt({ min: 1, max: 100 }).toInt(),
   body('backupStaleDays').isInt({ min: 1, max: 365 }).toInt(),
   body('certWarnDays').isInt({ min: 1, max: 365 }).toInt(),
+  body('snapshotAgeDays').isInt({ min: 1, max: 365 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     setSetting('proxmox_storage_warn_pct', String(req.body.storageWarnPct));
     setSetting('proxmox_storage_crit_pct', String(req.body.storageCritPct));
     setSetting('proxmox_backup_stale_days', String(req.body.backupStaleDays));
     setSetting('proxmox_cert_warn_days', String(req.body.certWarnDays));
+    setSetting('proxmox_snapshot_age_days', String(req.body.snapshotAgeDays));
     res.json({
       storageWarnPct: storageWarnPct(), storageCritPct: storageCritPct(),
       backupStaleDays: backupStaleDays(), certWarnDays: certWarnDays(),
+      snapshotAgeDays: snapshotAgeDays(),
     });
   } catch (err) { next(err); }
 });
@@ -344,6 +348,8 @@ router.get('/guests', [
       memUsed: r.mem_used, memTotal: r.mem_total, diskUsed: r.disk_used, diskTotal: r.disk_total,
       uptimeSeconds: r.uptime_seconds, netIn: r.net_in, netOut: r.net_out, pool: r.pool,
       tags: r.tags ? JSON.parse(r.tags) : null, lastBackupAt: r.last_backup_at, lastBackupStatus: r.last_backup_status,
+      osName: r.os_name, ipAddresses: r.ip_addresses ? JSON.parse(r.ip_addresses) : [],
+      agentRunning: !!r.agent_running, snapshotCount: r.snapshot_count || 0, oldestSnapshotAt: r.oldest_snapshot_at,
       updatedAt: r.updated_at,
     })));
   } catch (err) { next(err); }
@@ -420,6 +426,233 @@ router.get('/metrics-history', [
     res.json(rows.map((r) => ({
       node: r.node, capturedAt: r.captured_at, cpuUsage: r.cpu_usage, memUsed: r.mem_used, memTotal: r.mem_total,
       storageUsed: r.storage_used, storageTotal: r.storage_total,
+    })));
+  } catch (err) { next(err); }
+});
+
+// ── v2: Guest 360, rrd live proxies, node detail, network/disks/storage-content/events/snapshots ──
+
+const RRD_TIMEFRAMES = ['hour', 'day', 'week', 'month', 'year'];
+const DEVICE_KEY_RE = /^(scsi|sata|ide|virtio|efidisk|tpmstate)\d+$/;
+const NET_KEY_RE = /^net\d+$/;
+
+function parseKeyValueList(parts) {
+  const opts = {};
+  for (const p of parts) {
+    const eq = p.indexOf('=');
+    if (eq > -1) opts[p.slice(0, eq)] = p.slice(eq + 1);
+    else if (p) opts[p] = true;
+  }
+  return opts;
+}
+
+/** GET /api/proxmox/guests/:id/detail — Guest 360: config, parsed disks/nics, snapshots. */
+router.get('/guests/:id/detail', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const g = db.prepare(`
+      SELECT g.*, s.name AS server_name FROM proxmox_guests g JOIN proxmox_servers s ON s.id = g.server_id
+      WHERE g.id = ?
+    `).get(req.params.id);
+    if (!g) return res.status(404).json({ error: 'Guest not found.' });
+
+    let config = {};
+    if (g.config_json) {
+      try { config = JSON.parse(g.config_json) || {}; } catch { config = {}; }
+    }
+
+    const disks = [];
+    const nics = [];
+    for (const [key, val] of Object.entries(config)) {
+      if (typeof val !== 'string') continue;
+      if (DEVICE_KEY_RE.test(key)) {
+        const [storageVol, ...rest] = val.split(',');
+        const opts = parseKeyValueList(rest);
+        disks.push({ key, storage: storageVol, size: opts.size || null, raw: val });
+      } else if (NET_KEY_RE.test(key)) {
+        const [modelMac, ...rest] = val.split(',');
+        const eqIdx = modelMac.indexOf('=');
+        const model = eqIdx > -1 ? modelMac.slice(0, eqIdx) : null;
+        const mac = eqIdx > -1 ? modelMac.slice(eqIdx + 1) : null;
+        const opts = parseKeyValueList(rest);
+        nics.push({ key, model, mac, bridge: opts.bridge || null, tag: opts.tag || null, raw: val });
+      }
+    }
+
+    const snapshots = db.prepare(`
+      SELECT * FROM proxmox_snapshots WHERE server_id = ? AND vmid = ? AND name != 'current' ORDER BY snap_time
+    `).all(g.server_id, g.vmid).map((sn) => ({
+      name: sn.name, parent: sn.parent, description: sn.description,
+      vmstate: !!sn.vmstate, snapTime: sn.snap_time,
+    }));
+
+    res.json({
+      guest: {
+        id: g.id, serverId: g.server_id, serverName: g.server_name, vmid: g.vmid, name: g.name, type: g.type,
+        node: g.node, status: g.status, isTemplate: !!g.is_template, cpuCount: g.cpu_count, cpuSockets: g.cpu_sockets,
+        cpuUsage: g.cpu_usage, memUsed: g.mem_used, memTotal: g.mem_total, diskUsed: g.disk_used, diskTotal: g.disk_total,
+        uptimeSeconds: g.uptime_seconds, netIn: g.net_in, netOut: g.net_out, pool: g.pool,
+        tags: g.tags ? JSON.parse(g.tags) : null, lastBackupAt: g.last_backup_at, lastBackupStatus: g.last_backup_status,
+        osName: g.os_name, ipAddresses: g.ip_addresses ? JSON.parse(g.ip_addresses) : [],
+        agentRunning: !!g.agent_running, snapshotCount: g.snapshot_count || 0, oldestSnapshotAt: g.oldest_snapshot_at,
+        updatedAt: g.updated_at,
+      },
+      config,
+      disks,
+      nics,
+      snapshots,
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/proxmox/guests/:id/rrd?timeframe= — live proxy to guest rrddata (not stored). */
+router.get('/guests/:id/rrd', [
+  param('id').isInt().toInt(),
+  query('timeframe').optional().isString(),
+], validate, async (req, res, next) => {
+  try {
+    const g = db.prepare(`
+      SELECT g.*, s.host, s.port, s.token_id, s.encrypted_credentials, s.ssl_verify
+      FROM proxmox_guests g JOIN proxmox_servers s ON s.id = g.server_id WHERE g.id = ?
+    `).get(req.params.id);
+    if (!g) return res.status(404).json({ error: 'Guest not found.' });
+    const timeframe = RRD_TIMEFRAMES.includes(req.query.timeframe) ? req.query.timeframe : 'hour';
+    try {
+      const rows = await proxmoxApi.pveGet(g, `/nodes/${g.node}/${g.type}/${g.vmid}/rrddata`, { timeframe, cf: 'AVERAGE' });
+      res.json(rows || []);
+    } catch (err) {
+      res.status(502).json({ error: err.message || 'Upstream rrddata request failed' });
+    }
+  } catch (err) { next(err); }
+});
+
+/** GET /api/proxmox/nodes/:id/rrd?timeframe= — live proxy to node rrddata (not stored). */
+router.get('/nodes/:id/rrd', [
+  param('id').isInt().toInt(),
+  query('timeframe').optional().isString(),
+], validate, async (req, res, next) => {
+  try {
+    const n = db.prepare(`
+      SELECT n.*, s.host, s.port, s.token_id, s.encrypted_credentials, s.ssl_verify
+      FROM proxmox_nodes n JOIN proxmox_servers s ON s.id = n.server_id WHERE n.id = ?
+    `).get(req.params.id);
+    if (!n) return res.status(404).json({ error: 'Node not found.' });
+    const timeframe = RRD_TIMEFRAMES.includes(req.query.timeframe) ? req.query.timeframe : 'hour';
+    try {
+      const rows = await proxmoxApi.pveGet(n, `/nodes/${n.name}/rrddata`, { timeframe, cf: 'AVERAGE' });
+      res.json(rows || []);
+    } catch (err) {
+      res.status(502).json({ error: err.message || 'Upstream rrddata request failed' });
+    }
+  } catch (err) { next(err); }
+});
+
+/** GET /api/proxmox/nodes/:id/detail — services, disks, networks for one node (WPC consumes). */
+router.get('/nodes/:id/detail', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const n = db.prepare('SELECT * FROM proxmox_nodes WHERE id = ?').get(req.params.id);
+    if (!n) return res.status(404).json({ error: 'Node not found.' });
+    const services = db.prepare(`
+      SELECT * FROM proxmox_services WHERE server_id = ? AND node = ? ORDER BY name
+    `).all(n.server_id, n.name).map((sv) => ({
+      id: sv.id, node: sv.node, name: sv.name, state: sv.state, activeState: sv.active_state,
+      unitState: sv.unit_state, description: sv.description, updatedAt: sv.updated_at,
+    }));
+    const disks = db.prepare(`
+      SELECT * FROM proxmox_disks WHERE server_id = ? AND node = ? ORDER BY devpath
+    `).all(n.server_id, n.name).map((d) => ({
+      id: d.id, node: d.node, devpath: d.devpath, model: d.model, vendor: d.vendor, serial: d.serial,
+      sizeBytes: d.size_bytes, health: d.health, wearout: d.wearout, diskType: d.disk_type, usedAs: d.used_as,
+      updatedAt: d.updated_at,
+    }));
+    const networks = db.prepare(`
+      SELECT * FROM proxmox_node_networks WHERE server_id = ? AND node = ? ORDER BY iface
+    `).all(n.server_id, n.name).map((nw) => ({
+      id: nw.id, node: nw.node, iface: nw.iface, ifaceType: nw.iface_type, method: nw.method, cidr: nw.cidr,
+      vlanId: nw.vlan_id, vlanRawDevice: nw.vlan_raw_device, active: !!nw.active, autostart: !!nw.autostart,
+      comments: nw.comments, updatedAt: nw.updated_at,
+    }));
+    res.json({ services, disks, networks });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/proxmox/network — node network interfaces across all servers. */
+router.get('/network', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT nw.*, s.name AS server_name FROM proxmox_node_networks nw JOIN proxmox_servers s ON s.id = nw.server_id
+      ORDER BY s.name, nw.node, nw.iface
+    `).all();
+    res.json(rows.map((r) => ({
+      id: r.id, serverId: r.server_id, serverName: r.server_name, node: r.node, iface: r.iface,
+      ifaceType: r.iface_type, method: r.method, cidr: r.cidr, vlanId: r.vlan_id, vlanRawDevice: r.vlan_raw_device,
+      active: !!r.active, autostart: !!r.autostart, comments: r.comments,
+    })));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/proxmox/disks — physical disks across all servers. */
+router.get('/disks', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT d.*, s.name AS server_name FROM proxmox_disks d JOIN proxmox_servers s ON s.id = d.server_id
+      ORDER BY s.name, d.node, d.devpath
+    `).all();
+    res.json(rows.map((r) => ({
+      id: r.id, serverId: r.server_id, serverName: r.server_name, node: r.node, devpath: r.devpath,
+      model: r.model, vendor: r.vendor, serial: r.serial, sizeBytes: r.size_bytes, health: r.health,
+      wearout: r.wearout, diskType: r.disk_type, usedAs: r.used_as,
+    })));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/proxmox/storage-content?content=&storage= — vzdump/iso/vztmpl listing. */
+router.get('/storage-content', [
+  query('content').optional().isString(),
+  query('storage').optional().isString(),
+], validate, (req, res, next) => {
+  try {
+    const clauses = [];
+    const params = [];
+    if (req.query.content) { clauses.push('sc.content = ?'); params.push(req.query.content); }
+    if (req.query.storage) { clauses.push('sc.storage = ?'); params.push(req.query.storage); }
+    const rows = db.prepare(`
+      SELECT sc.*, s.name AS server_name FROM proxmox_storage_content sc JOIN proxmox_servers s ON s.id = sc.server_id
+      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      ORDER BY s.name, sc.node, sc.storage, sc.volid
+    `).all(...params);
+    res.json(rows.map((r) => ({
+      id: r.id, serverId: r.server_id, serverName: r.server_name, node: r.node, storage: r.storage,
+      volid: r.volid, content: r.content, format: r.format, sizeBytes: r.size_bytes, vmid: r.vmid,
+      createdAt: r.created_at_src, notes: r.notes,
+    })));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/proxmox/events?limit=200 — cluster log, newest first. */
+router.get('/events', [query('limit').optional().isInt({ min: 1, max: 1000 }).toInt()], validate, (req, res, next) => {
+  try {
+    const limit = req.query.limit || 200;
+    const rows = db.prepare(`
+      SELECT e.*, s.name AS server_name FROM proxmox_events e JOIN proxmox_servers s ON s.id = e.server_id
+      ORDER BY e.event_time DESC LIMIT ?
+    `).all(limit);
+    res.json(rows.map((r) => ({
+      id: r.id, serverId: r.server_id, serverName: r.server_name, node: r.node, eventTime: r.event_time,
+      user: r.user, tag: r.tag, pri: r.pri, message: r.message,
+    })));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/proxmox/snapshots — all guest snapshots across all servers. */
+router.get('/snapshots', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT sn.*, s.name AS server_name FROM proxmox_snapshots sn JOIN proxmox_servers s ON s.id = sn.server_id
+      ORDER BY s.name, sn.vmid, sn.snap_time
+    `).all();
+    res.json(rows.map((r) => ({
+      id: r.id, serverId: r.server_id, serverName: r.server_name, vmid: r.vmid, guestName: r.guest_name,
+      name: r.name, parent: r.parent, description: r.description, vmstate: !!r.vmstate, snapTime: r.snap_time,
     })));
   } catch (err) { next(err); }
 });

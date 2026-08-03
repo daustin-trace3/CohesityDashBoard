@@ -1,18 +1,22 @@
 import { Fragment, useEffect, useState, useCallback } from 'react';
-import { Server, ChevronDown, ChevronUp, Cpu, MemoryStick, HardDrive, ShieldCheck, Package } from 'lucide-react';
+import { Server, ChevronDown, ChevronUp, Cpu, MemoryStick, HardDrive, ShieldCheck, Package, Settings2, Disc3 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum, fmtBytes, fmtWhen, humanizeSeconds } from './helpers';
 
 const pct = (used, total) => (total > 0 && used != null ? (used / total) * 100 : null);
 
-function NodeDetail({ node }) {
+function NodeDetail({ node, detail }) {
+  const services = detail?.services || [];
+  const disks = detail?.disks || [];
+  const nonRunningEnabled = services.filter(s => s.unitState === 'enabled' && s.state !== 'running');
+
   return (
     <tr className="border-b border-cohesity-border/50">
       <td colSpan={8} className="bg-surface-overlay px-4 py-3">
-        <div className="grid md:grid-cols-4 gap-3 text-xs">
+        <div className="grid md:grid-cols-4 gap-3 text-xs mb-4">
           <div>
             <p className="text-ink-faint uppercase tracking-wide text-[10px] mb-0.5">Load Average</p>
             <p className="text-ink tnum">{node.loadAvg || '—'}</p>
@@ -38,6 +42,60 @@ function NodeDetail({ node }) {
             <p className="text-ink tnum">{humanizeSeconds(node.uptimeSeconds)}</p>
           </div>
         </div>
+
+        {detail == null ? (
+          <div className="py-4 flex justify-center"><Spinner size={16} /></div>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <p className="text-ink-faint uppercase tracking-wide text-[10px] mb-1.5 flex items-center gap-1"><Settings2 size={11} /> Services{nonRunningEnabled.length > 0 ? ` (${nonRunningEnabled.length} down)` : ''}</p>
+              {services.length === 0 ? (
+                <p className="text-ink-faint text-[11px]">No service data.</p>
+              ) : (
+                <div className="max-h-48 overflow-y-auto pr-1">
+                  <table className="w-full text-[11px]">
+                    <tbody>
+                      {services.map((s, i) => {
+                        const down = s.unitState === 'enabled' && s.state !== 'running';
+                        return (
+                          <tr key={i} className={`border-b border-cohesity-border/30 ${down ? 'bg-status-warn/10' : ''}`}>
+                            <td className="py-1 pr-2 text-ink tnum">{s.name}</td>
+                            <td className="py-1 pr-2 text-ink-faint">{s.unitState || '—'}</td>
+                            <td className="py-1"><Badge tone={s.state === 'running' ? 'ok' : down ? 'warn' : 'neutral'}>{s.state || '—'}</Badge></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+            <div>
+              <p className="text-ink-faint uppercase tracking-wide text-[10px] mb-1.5 flex items-center gap-1"><Disc3 size={11} /> Disks</p>
+              {disks.length === 0 ? (
+                <p className="text-ink-faint text-[11px]">No disk data.</p>
+              ) : (
+                <div className="max-h-48 overflow-y-auto pr-1">
+                  <table className="w-full text-[11px]">
+                    <tbody>
+                      {disks.map((d, i) => {
+                        const failing = d.health && !['PASSED', 'OK', 'UNKNOWN', ''].includes(d.health);
+                        return (
+                          <tr key={i} className={`border-b border-cohesity-border/30 ${failing ? 'bg-status-crit/10' : ''}`}>
+                            <td className="py-1 pr-2 text-ink tnum">{d.devpath}</td>
+                            <td className="py-1 pr-2 text-ink-faint truncate max-w-[140px]" title={d.model}>{d.model || '—'}</td>
+                            <td className="py-1 pr-2 text-ink-muted tnum">{fmtBytes(d.sizeBytes)}</td>
+                            <td className="py-1"><Badge tone={failing ? 'crit' : 'neutral'}>{d.health || '—'}</Badge></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </td>
     </tr>
   );
@@ -48,6 +106,7 @@ export default function PxNodesPage() {
   const [rows, setRows] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [open, setOpen] = useState(() => new Set());
+  const [details, setDetails] = useState({}); // nodeId -> {services, disks, networks}
 
   const load = useCallback(() => client.get('/proxmox/nodes')
     .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
@@ -55,11 +114,19 @@ export default function PxNodesPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const toggle = (id) => setOpen(s => {
-    const next = new Set(s);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
+  const toggle = (n) => {
+    const key = `${n.serverId}|${n.name}`;
+    setOpen(s => {
+      const next = new Set(s);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+    if (!details[n.id]) {
+      client.get(`/proxmox/nodes/${n.id}/detail`)
+        .then(({ data }) => setDetails(d => ({ ...d, [n.id]: data })))
+        .catch(() => setDetails(d => ({ ...d, [n.id]: { services: [], disks: [], networks: [] } })));
+    }
+  };
 
   const list = (rows || []).map(n => ({
     ...n,
@@ -109,7 +176,7 @@ export default function PxNodesPage() {
                   const isOpen = open.has(key);
                   return (
                     <Fragment key={key}>
-                      <tr className="border-b border-cohesity-border/50 cursor-pointer hover:bg-surface-overlay/60" onClick={() => toggle(key)}>
+                      <tr className="border-b border-cohesity-border/50 cursor-pointer hover:bg-surface-overlay/60" onClick={() => toggle(n)}>
                         <td className="py-2 pr-3 text-ink-faint">{isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</td>
                         <td className="py-2 pr-3 text-ink">{n.name || '—'}</td>
                         <td className="py-2 pr-3 text-ink-muted">{n.serverName}</td>
@@ -125,7 +192,7 @@ export default function PxNodesPage() {
                         </td>
                         <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{n.pveVersion || '—'}</td>
                       </tr>
-                      {isOpen && <NodeDetail node={n} />}
+                      {isOpen && <NodeDetail node={n} detail={details[n.id]} />}
                     </Fragment>
                   );
                 })}

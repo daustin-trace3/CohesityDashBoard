@@ -57,6 +57,36 @@ export function backupStatusTone(status) {
   return status === 'OK' ? 'ok' : 'crit';
 }
 
+export function fmtEpoch(sec) {
+  if (sec == null) return '—';
+  const d = new Date(Number(sec) * 1000);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}
+
+export function parseIpAddresses(ipAddresses) {
+  if (!ipAddresses) return [];
+  if (Array.isArray(ipAddresses)) return ipAddresses;
+  try {
+    const parsed = JSON.parse(ipAddresses);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function daysAgo(iso) {
+  if (!iso) return null;
+  const d = new Date(String(iso).includes('T') ? iso : `${iso}Z`.replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return null;
+  return Math.floor((Date.now() - d.getTime()) / 86400000);
+}
+
+export function snapshotAgeTone(iso, thresholdDays = 30) {
+  const age = daysAgo(iso);
+  if (age == null) return 'neutral';
+  return age >= thresholdDays ? 'warn' : 'ok';
+}
+
 export function humanizeSeconds(sec) {
   if (sec == null || !Number.isFinite(Number(sec))) return '—';
   const s = Number(sec);

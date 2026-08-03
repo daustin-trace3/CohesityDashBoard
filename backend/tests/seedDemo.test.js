@@ -438,4 +438,56 @@ describe('seedDemo.js', () => {
       expect(row.c).toBeGreaterThanOrEqual(7);
     }
   });
+
+  it('seeds the proxmox v2 tables (snapshots, services, disks, networks, storage content, events)', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_snapshots').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_services').get().c).toBeGreaterThanOrEqual(4 * 7);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_disks').get().c).toBeGreaterThanOrEqual(4 * 2);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_node_networks').get().c).toBeGreaterThanOrEqual(4 * 2);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_storage_content').get().c).toBeGreaterThan(0);
+    const events = db.prepare('SELECT COUNT(*) c FROM proxmox_events').get().c;
+    expect(events).toBeGreaterThanOrEqual(190);
+    expect(events).toBeLessThanOrEqual(210);
+
+    const guestExtras = db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_guests
+      WHERE is_template = 0 AND config_json IS NOT NULL
+    `).get().c;
+    expect(guestExtras).toBeGreaterThan(0);
+    const agentGuests = db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_guests WHERE type = 'qemu' AND agent_running = 1 AND os_name IS NOT NULL
+    `).get().c;
+    expect(agentGuests).toBeGreaterThan(0);
+  });
+
+  it('seeds proxmox v2 trouble covering the 3 new issue rules', () => {
+    // snapshot-age: a snapshot older than the 30-day default on lab-app-01.
+    const oldSnap = db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_snapshots
+      WHERE vmid = 102 AND julianday('now') - julianday(snap_time) > 30
+    `).get().c;
+    expect(oldSnap).toBeGreaterThan(0);
+    expect(db.prepare("SELECT oldest_snapshot_at FROM proxmox_guests WHERE vmid = 102").get().oldest_snapshot_at).toBeTruthy();
+
+    // service-down: pvescheduler enabled but dead on pve-hq-02.
+    const deadService = db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_services
+      WHERE node = 'pve-hq-02' AND name = 'pvescheduler' AND unit_state = 'enabled' AND state != 'running'
+    `).get().c;
+    expect(deadService).toBe(1);
+
+    // smart-failing: a FAILED disk on pve-hq-03.
+    const failedDisk = db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_disks WHERE node = 'pve-hq-03' AND health = 'FAILED'
+    `).get().c;
+    expect(failedDisk).toBeGreaterThan(0);
+
+    // Once services/proxmoxIssues.js grows the 3 new rules, reconcile should
+    // have opened issue_history rows for each. If this fails only because the
+    // rules aren't landed yet (WPA in-flight), that's the expected escape hatch.
+    for (const type of ['snapshot-age', 'service-down', 'smart-failing']) {
+      const row = db.prepare("SELECT COUNT(*) c FROM proxmox_issue_history WHERE type = ? AND status = 'open'").get(type);
+      expect(row.c).toBeGreaterThan(0);
+    }
+  });
 });

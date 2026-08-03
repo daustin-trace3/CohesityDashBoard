@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from 'react';
 import { MonitorSmartphone } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtBytes, fmtWhen, guestTypeLabel, backupStatusTone, humanizeSeconds } from './helpers';
+import { BRAND, fmtBytes, fmtWhen, guestTypeLabel, backupStatusTone, humanizeSeconds, parseIpAddresses } from './helpers';
 
 const pct = (used, total) => (total > 0 && used != null ? (used / total) * 100 : null);
 
@@ -24,9 +25,10 @@ export default function PxGuestsPage() {
     typeLabel: guestTypeLabel(g.type),
     mem_pct: pct(g.memUsed, g.memTotal),
     disk_pct: pct(g.diskUsed, g.diskTotal),
+    ipList: parseIpAddresses(g.ipAddresses).join(', '),
   }));
   const ctl = useTableControls(list, {
-    searchKeys: ['name', 'vmid', 'node', 'serverName', 'status', 'typeLabel', 'pool', 'tags'],
+    searchKeys: ['name', 'vmid', 'node', 'serverName', 'status', 'typeLabel', 'pool', 'tags', 'osName', 'ipList'],
     defaultSortKey: 'name', defaultSortDir: 'asc',
     paginate: true,
   });
@@ -63,6 +65,8 @@ export default function PxGuestsPage() {
                 <SortTh k="status" label="Status" ctl={ctl} />
                 <SortTh k="node" label="Node" ctl={ctl} />
                 <SortTh k="serverName" label="Server" ctl={ctl} />
+                <SortTh k="osName" label="OS" ctl={ctl} />
+                <th className="py-2 pr-3">IP Address</th>
                 <SortTh k="cpuUsage" label="CPU" ctl={ctl} align="right" />
                 <SortTh k="mem_pct" label="Memory" ctl={ctl} align="right" />
                 <SortTh k="uptimeSeconds" label="Uptime" ctl={ctl} align="right" />
@@ -71,12 +75,19 @@ export default function PxGuestsPage() {
               <tbody>
                 {ctl.pageRows.map((g) => (
                   <tr key={`${g.serverId}|${g.vmid}|${g.type}`} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink">{g.name || '—'}{g.isTemplate ? <span className="ml-1.5 text-[10px] text-ink-faint">(template)</span> : ''}</td>
+                    <td className="py-2 pr-3 text-ink">
+                      <Link to={`/proxmox/guests/${g.id}`} className="text-brand hover:underline">
+                        {g.name || '—'}
+                      </Link>
+                      {g.isTemplate ? <span className="ml-1.5 text-[10px] text-ink-faint">(template)</span> : ''}
+                    </td>
                     <td className="py-2 pr-3 text-ink-muted tnum">{g.vmid}</td>
                     <td className="py-2 pr-3"><Badge tone={g.type === 'qemu' ? 'brand' : 'info'}>{g.typeLabel}</Badge></td>
                     <td className="py-2 pr-3"><Badge tone={g.status === 'running' ? 'ok' : 'neutral'}>{g.status || '—'}</Badge></td>
                     <td className="py-2 pr-3 text-ink-muted">{g.node}</td>
                     <td className="py-2 pr-3 text-ink-muted">{g.serverName}</td>
+                    <td className="py-2 pr-3 text-ink-muted text-[11px] max-w-[160px] truncate" title={g.osName}>{g.osName || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted text-[11px] tnum max-w-[160px] truncate" title={g.ipList}>{g.ipList || '—'}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{g.cpuUsage != null ? `${(g.cpuUsage * 100).toFixed(0)}%` : '—'}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">
                       {g.mem_pct != null ? `${g.mem_pct.toFixed(0)}% (${fmtBytes(g.memUsed)})` : '—'}

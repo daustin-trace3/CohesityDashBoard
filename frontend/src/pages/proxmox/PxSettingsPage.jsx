@@ -90,8 +90,9 @@ export default function PxSettingsPage() {
         storageCritPct: String(data.storageCritPct),
         backupStaleDays: String(data.backupStaleDays),
         certWarnDays: String(data.certWarnDays),
+        snapshotAgeDays: String(data.snapshotAgeDays),
       }))
-      .catch(() => setConfig({ storageWarnPct: '85', storageCritPct: '95', backupStaleDays: '3', certWarnDays: '30' }));
+      .catch(() => setConfig({ storageWarnPct: '85', storageCritPct: '95', backupStaleDays: '3', certWarnDays: '30', snapshotAgeDays: '30' }));
   }, []);
 
   const saveConfig = async () => {
@@ -102,6 +103,7 @@ export default function PxSettingsPage() {
         storageCritPct: Number(config.storageCritPct),
         backupStaleDays: Number(config.backupStaleDays),
         certWarnDays: Number(config.certWarnDays),
+        snapshotAgeDays: Number(config.snapshotAgeDays),
       };
       const { data } = await client.put('/proxmox/config', body);
       setConfig({
@@ -109,6 +111,7 @@ export default function PxSettingsPage() {
         storageCritPct: String(data.storageCritPct),
         backupStaleDays: String(data.backupStaleDays),
         certWarnDays: String(data.certWarnDays),
+        snapshotAgeDays: String(data.snapshotAgeDays),
       });
       toast({ type: 'success', title: 'Thresholds saved' });
     } catch (err) {
@@ -274,7 +277,7 @@ export default function PxSettingsPage() {
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
-          Storage utilization warning/critical percentages, days without a successful backup before a guest is flagged stale, and days ahead of TLS certificate expiry to warn.
+          Storage utilization warning/critical percentages, days without a successful backup before a guest is flagged stale, days ahead of TLS certificate expiry to warn, and snapshot age before it's flagged stale.
         </p>
         {config == null ? (
           <LoadingPanel label="Loading…" height={60} />
@@ -299,6 +302,11 @@ export default function PxSettingsPage() {
               <label className="block text-xs font-semibold text-ink mb-1">Cert warning (days)</label>
               <input type="number" min={1} max={365} value={config.certWarnDays}
                 onChange={(e) => setConfig(c => ({ ...c, certWarnDays: e.target.value }))} className={inp} />
+            </div>
+            <div className="w-44">
+              <label className="block text-xs font-semibold text-ink mb-1">Snapshot age (days)</label>
+              <input type="number" min={1} max={365} value={config.snapshotAgeDays}
+                onChange={(e) => setConfig(c => ({ ...c, snapshotAgeDays: e.target.value }))} className={inp} />
             </div>
             <button onClick={saveConfig} disabled={savingConfig}
               className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">

@@ -98,7 +98,9 @@ const SEEDED_TABLES = [
   'aws_accounts',
   // proxmox (children before the parent)
   'proxmox_guests', 'proxmox_storage', 'proxmox_backup_jobs', 'proxmox_tasks',
-  'proxmox_metrics', 'proxmox_issue_history', 'proxmox_nodes', 'proxmox_servers',
+  'proxmox_metrics', 'proxmox_issue_history', 'proxmox_snapshots', 'proxmox_services',
+  'proxmox_disks', 'proxmox_node_networks', 'proxmox_storage_content', 'proxmox_events',
+  'proxmox_nodes', 'proxmox_servers',
 ];
 
 function wipeSeededTables(database) {

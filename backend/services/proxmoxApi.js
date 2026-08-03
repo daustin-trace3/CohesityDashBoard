@@ -70,6 +70,18 @@ const fetchAptUpdates = (server, node) => pveGetSafe(server, `/nodes/${node}/apt
 const fetchClusterResources = (server) => pveGetSafe(server, '/cluster/resources', {}, []);
 const fetchClusterStatus = (server) => pveGetSafe(server, '/cluster/status', {}, []);
 
+const fetchGuestConfig = (server, node, type, vmid) => pveGetSafe(server, `/nodes/${node}/${type}/${vmid}/config`, {}, null);
+const fetchGuestSnapshots = (server, node, type, vmid) => pveGetSafe(server, `/nodes/${node}/${type}/${vmid}/snapshot`, {}, []);
+const fetchAgentOsInfo = (server, node, vmid) => pveGetSafe(server, `/nodes/${node}/qemu/${vmid}/agent/get-osinfo`, {}, null);
+const fetchAgentInterfaces = (server, node, vmid) => pveGetSafe(server, `/nodes/${node}/qemu/${vmid}/agent/network-get-interfaces`, {}, null);
+const fetchNodeServices = (server, node) => pveGetSafe(server, `/nodes/${node}/services`, {}, []);
+const fetchNodeNetwork = (server, node) => pveGetSafe(server, `/nodes/${node}/network`, {}, []);
+const fetchDisksList = (server, node) => pveGetSafe(server, `/nodes/${node}/disks/list`, {}, []);
+const fetchStorageContent = (server, node, storage, content) => pveGetSafe(server, `/nodes/${node}/storage/${storage}/content`, { content }, []);
+const fetchClusterLog = (server, max = 200) => pveGetSafe(server, '/cluster/log', { max }, []);
+const fetchNodeRrdData = (server, node, timeframe = 'hour', cf = 'AVERAGE') => pveGetSafe(server, `/nodes/${node}/rrddata`, { timeframe, cf }, []);
+const fetchGuestRrdData = (server, node, type, vmid, timeframe = 'hour', cf = 'AVERAGE') => pveGetSafe(server, `/nodes/${node}/${type}/${vmid}/rrddata`, { timeframe, cf }, []);
+
 /** Validate a Proxmox server (saved row or unsaved candidate). Never throws. */
 async function testConnection(serverLike) {
   try {
@@ -91,4 +103,7 @@ module.exports = {
   fetchVersion, fetchNodes, fetchNodeStatus, fetchQemu, fetchLxc, fetchNodeStorage,
   fetchTasks, fetchClusterBackup, fetchCertificates, fetchSubscription, fetchAptUpdates,
   fetchClusterResources, fetchClusterStatus, testConnection,
+  fetchGuestConfig, fetchGuestSnapshots, fetchAgentOsInfo, fetchAgentInterfaces,
+  fetchNodeServices, fetchNodeNetwork, fetchDisksList, fetchStorageContent,
+  fetchClusterLog, fetchNodeRrdData, fetchGuestRrdData,
 };

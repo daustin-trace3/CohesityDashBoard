@@ -40,6 +40,7 @@ const DEFAULTS = {
   proxmox_storage_crit_pct: '95',
   proxmox_backup_stale_days: '3',
   proxmox_cert_warn_days: '30',
+  proxmox_snapshot_age_days: '30',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',

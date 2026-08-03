@@ -1,8 +1,11 @@
 // Proxmox VE poller — one scheduled task per registered server (framework
 // per-source model, like vCenter/AWS). Each poll walks version -> nodes ->
 // per-node (status, qemu, lxc, storage, tasks, certificates, subscription,
-// apt) -> cluster/resources, cluster/backup, cluster/status, replaces the
-// inventory tables for that server and appends one metrics row per node.
+// apt, services, network, disks/list) -> per-guest (config, snapshots, agent
+// osinfo/interfaces when running) -> per-storage content -> cluster/resources,
+// cluster/backup, cluster/status, cluster/log, replaces the inventory tables
+// for that server and appends one metrics row per node. rrddata is NOT
+// polled/stored — routes proxy it live from upstream.
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const proxmoxApi = require('./proxmoxApi');
@@ -10,6 +13,16 @@ const { reconcileIssueHistory } = require('./proxmoxIssues');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => (e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e)));
+
+// config.agent may be "1", "0", or "1,fstrim_cloned_disks=1" — truthy iff the
+// first csv segment is "1".
+const agentEnabled = (config) => {
+  const raw = config?.agent;
+  if (raw == null) return false;
+  return String(raw).split(',')[0].trim() === '1';
+};
+
+const STORAGE_CONTENT_TYPES = ['backup', 'iso', 'vztmpl'];
 
 async function collect(server) {
   const forbidden = new Set();
@@ -34,6 +47,11 @@ async function collect(server) {
   const guestRows = [];
   const storageRows = [];
   const taskRows = [];
+  const serviceRows = [];
+  const networkRows = [];
+  const diskRows = [];
+  const storageContentRows = [];
+  const snapshotRows = [];
 
   for (const n of nodes) {
     const nodeName = n.node;
@@ -44,13 +62,16 @@ async function collect(server) {
       if (err?.pveForbidden) { forbidden.add('nodes/status'); }
     }
 
-    const [qemu, lxc, storage, tasks, certs, subscription] = await Promise.all([
+    const [qemu, lxc, storage, tasks, certs, subscription, services, network, disks] = await Promise.all([
       proxmoxApi.fetchQemu(server, nodeName),
       proxmoxApi.fetchLxc(server, nodeName),
       proxmoxApi.fetchNodeStorage(server, nodeName),
       proxmoxApi.fetchTasks(server, nodeName, 200),
       proxmoxApi.fetchCertificates(server, nodeName),
       proxmoxApi.fetchSubscription(server, nodeName),
+      proxmoxApi.fetchNodeServices(server, nodeName),
+      proxmoxApi.fetchNodeNetwork(server, nodeName),
+      proxmoxApi.fetchDisksList(server, nodeName),
     ]);
 
     const pveSslCert = Array.isArray(certs) ? certs.find((c) => c.filename === 'pve-ssl.pem') : null;
@@ -105,6 +126,47 @@ async function collect(server) {
         endedAt: t.endtime != null ? new Date(t.endtime * 1000).toISOString() : null,
       });
     }
+
+    for (const sv of services) {
+      serviceRows.push({
+        node: nodeName, name: sv.name, state: sv.state ?? null,
+        activeState: sv['active-state'] ?? null, unitState: sv['unit-state'] ?? null,
+        description: sv.desc ?? null,
+      });
+    }
+
+    for (const nw of network) {
+      networkRows.push({
+        node: nodeName, iface: nw.iface, ifaceType: nw.type ?? null, method: nw.method ?? null,
+        cidr: nw.cidr ?? null, vlanId: nw['vlan-id'] ?? null, vlanRawDevice: nw['vlan-raw-device'] ?? null,
+        active: nw.active ? 1 : 0, autostart: nw.autostart ? 1 : 0, comments: nw.comments ?? null,
+      });
+    }
+
+    for (const d of disks) {
+      diskRows.push({
+        node: nodeName, devpath: d.devpath, model: d.model ?? null, vendor: d.vendor ?? null,
+        serial: d.serial ?? null, sizeBytes: d.size ?? null, health: d.health ?? null,
+        wearout: d.wearout != null ? String(d.wearout) : null, diskType: d.type ?? null,
+        usedAs: d.used ?? null,
+      });
+    }
+
+    // Storage content (backup/iso/vztmpl only, per storage's own content types).
+    for (const s of storage) {
+      const types = String(s.content || '').split(',').map((c) => c.trim()).filter((c) => STORAGE_CONTENT_TYPES.includes(c));
+      for (const contentType of types) {
+        const items = await proxmoxApi.fetchStorageContent(server, nodeName, s.storage, contentType);
+        for (const item of items || []) {
+          storageContentRows.push({
+            node: nodeName, storage: s.storage, volid: item.volid, content: item.content ?? contentType,
+            format: item.format ?? null, sizeBytes: item.size ?? null, vmid: item.vmid != null ? Number(item.vmid) : null,
+            createdAtSrc: item.ctime != null ? new Date(item.ctime * 1000).toISOString() : null,
+            notes: item.notes ?? null,
+          });
+        }
+      }
+    }
   }
 
   // Any guest present only via cluster/resources (not per-node lists) — fallback coverage.
@@ -119,6 +181,60 @@ async function collect(server) {
         uptimeSeconds: r.uptime ?? null, netIn: r.netin ?? null, netOut: r.netout ?? null,
         pool: r.pool ?? null, tags: r.tags ?? null,
       });
+    }
+  }
+
+  // Per non-template guest: config, snapshots, and (if agent enabled +
+  // running) OS info + IP addresses.
+  for (const g of guestRows) {
+    if (g.isTemplate || !g.node || g.vmid == null) continue;
+    const [config, snaps] = await Promise.all([
+      proxmoxApi.fetchGuestConfig(server, g.node, g.type, g.vmid),
+      proxmoxApi.fetchGuestSnapshots(server, g.node, g.type, g.vmid),
+    ]);
+
+    g.configJson = config || null;
+    g.cpuSockets = config?.sockets ?? null;
+    g.agentRunning = 0;
+    g.osName = null;
+    g.ipAddresses = null;
+
+    const realSnaps = (snaps || []).filter((s) => s.name !== 'current');
+    g.snapshotCount = realSnaps.length;
+    let oldest = null;
+    for (const s of realSnaps) {
+      if (s.snaptime == null) continue;
+      const iso = new Date(s.snaptime * 1000).toISOString();
+      snapshotRows.push({
+        vmid: g.vmid, guestName: g.name, name: s.name, parent: s.parent ?? null,
+        description: s.description ?? null, vmstate: s.vmstate ? 1 : 0, snapTime: iso,
+      });
+      if (!oldest || iso < oldest) oldest = iso;
+    }
+    g.oldestSnapshotAt = oldest;
+
+    if (config && agentEnabled(config) && g.type === 'qemu' && g.status === 'running') {
+      try {
+        const osinfo = await proxmoxApi.fetchAgentOsInfo(server, g.node, g.vmid);
+        g.osName = osinfo?.result?.['pretty-name'] ?? null;
+        if (osinfo) g.agentRunning = 1;
+      } catch { /* tolerate: non-running/no-agent 500s */ }
+      try {
+        const ifaces = await proxmoxApi.fetchAgentInterfaces(server, g.node, g.vmid);
+        if (ifaces?.result) {
+          const ips = [];
+          for (const iface of ifaces.result) {
+            if (/^(lo|loopback)/i.test(iface.name || '')) continue;
+            for (const addr of iface['ip-addresses'] || []) {
+              if (addr['ip-address-type'] !== 'ipv4') continue;
+              if (addr['ip-address'] === '127.0.0.1') continue;
+              ips.push(addr['ip-address']);
+            }
+          }
+          g.ipAddresses = ips;
+          g.agentRunning = 1;
+        }
+      } catch { /* tolerate: non-running/no-agent 500s */ }
     }
   }
 
@@ -137,8 +253,17 @@ async function collect(server) {
   const clusterRow = Array.isArray(clusterStatus) ? clusterStatus.find((r) => r.type === 'cluster') : null;
   const quorate = clusterRow ? (clusterRow.quorate ? 1 : 0) : null;
 
+  const clusterLog = await proxmoxApi.fetchClusterLog(server, 200);
+  const eventRows = (clusterLog || []).filter((e) => e.time != null).map((e) => ({
+    eventKey: `${e.id || e.uid}:${e.time}`, node: e.node ?? null,
+    eventTime: new Date(e.time * 1000).toISOString(), user: e.user ?? null,
+    tag: e.tag ?? null, pri: e.pri ?? null, message: e.msg ?? null,
+  }));
+
   return {
     nodes: nodeRows, guests: guestRows, storage: storageRows, tasks: taskRows,
+    services: serviceRows, networks: networkRows, disks: diskRows,
+    storageContent: storageContentRows, snapshots: snapshotRows, events: eventRows,
     backupJobs, quorate,
     forbiddenEndpoints: [...forbidden],
   };
@@ -167,7 +292,10 @@ function toGuestRow(g, type, nodeName, cr) {
 }
 
 const store = db.transaction((serverId, data) => {
-  const { nodes, guests, storage, tasks, backupJobs, quorate, forbiddenEndpoints } = data;
+  const {
+    nodes, guests, storage, tasks, backupJobs, quorate, forbiddenEndpoints,
+    services, networks, disks, storageContent, snapshots, events,
+  } = data;
 
   db.prepare('DELETE FROM proxmox_nodes WHERE server_id = ?').run(serverId);
   const nodeStmt = db.prepare(`
@@ -186,8 +314,9 @@ const store = db.transaction((serverId, data) => {
   const guestStmt = db.prepare(`
     INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template,
       cpu_count, cpu_usage, mem_used, mem_total, disk_used, disk_total, uptime_seconds,
-      net_in, net_out, pool, tags, last_backup_at, last_backup_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      net_in, net_out, pool, tags, last_backup_at, last_backup_status,
+      os_name, ip_addresses, agent_running, config_json, cpu_sockets, snapshot_count, oldest_snapshot_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   // Preserve last_backup_at/status across polls (derived below from tasks),
   // seeded from the previous row so a guest not seen in this poll's tasks
@@ -213,7 +342,10 @@ const store = db.transaction((serverId, data) => {
     const lastBackupStatus = latest?.status ?? prev?.status ?? null;
     guestStmt.run(serverId, g.vmid, g.name, g.type, g.node, g.status, g.isTemplate,
       g.cpuCount, g.cpuUsage, g.memUsed, g.memTotal, g.diskUsed, g.diskTotal, g.uptimeSeconds,
-      g.netIn, g.netOut, g.pool, g.tags ? JSON.stringify(g.tags) : null, lastBackupAt, lastBackupStatus);
+      g.netIn, g.netOut, g.pool, g.tags ? JSON.stringify(g.tags) : null, lastBackupAt, lastBackupStatus,
+      g.osName ?? null, g.ipAddresses ? JSON.stringify(g.ipAddresses) : null, g.agentRunning ?? 0,
+      g.configJson ? JSON.stringify(g.configJson) : null, g.cpuSockets ?? null,
+      g.snapshotCount ?? 0, g.oldestSnapshotAt ?? null);
   }
 
   db.prepare('DELETE FROM proxmox_storage WHERE server_id = ?').run(serverId);
@@ -226,6 +358,67 @@ const store = db.transaction((serverId, data) => {
     storageStmt.run(serverId, s.node, s.storage, s.type, s.content, s.active, s.shared,
       s.usedBytes, s.totalBytes, s.availBytes);
   }
+
+  db.prepare('DELETE FROM proxmox_services WHERE server_id = ?').run(serverId);
+  const serviceStmt = db.prepare(`
+    INSERT INTO proxmox_services (server_id, node, name, state, active_state, unit_state, description)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const sv of services) {
+    serviceStmt.run(serverId, sv.node, sv.name, sv.state, sv.activeState, sv.unitState, sv.description);
+  }
+
+  db.prepare('DELETE FROM proxmox_node_networks WHERE server_id = ?').run(serverId);
+  const networkStmt = db.prepare(`
+    INSERT INTO proxmox_node_networks (server_id, node, iface, iface_type, method, cidr,
+      vlan_id, vlan_raw_device, active, autostart, comments)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const nw of networks) {
+    networkStmt.run(serverId, nw.node, nw.iface, nw.ifaceType, nw.method, nw.cidr,
+      nw.vlanId, nw.vlanRawDevice, nw.active, nw.autostart, nw.comments);
+  }
+
+  db.prepare('DELETE FROM proxmox_disks WHERE server_id = ?').run(serverId);
+  const diskStmt = db.prepare(`
+    INSERT INTO proxmox_disks (server_id, node, devpath, model, vendor, serial, size_bytes,
+      health, wearout, disk_type, used_as)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const d of disks) {
+    diskStmt.run(serverId, d.node, d.devpath, d.model, d.vendor, d.serial, d.sizeBytes,
+      d.health, d.wearout, d.diskType, d.usedAs);
+  }
+
+  db.prepare('DELETE FROM proxmox_storage_content WHERE server_id = ?').run(serverId);
+  const contentStmt = db.prepare(`
+    INSERT INTO proxmox_storage_content (server_id, node, storage, volid, content, format,
+      size_bytes, vmid, created_at_src, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const c of storageContent) {
+    contentStmt.run(serverId, c.node, c.storage, c.volid, c.content, c.format,
+      c.sizeBytes, c.vmid, c.createdAtSrc, c.notes);
+  }
+
+  db.prepare('DELETE FROM proxmox_snapshots WHERE server_id = ?').run(serverId);
+  const snapStmt = db.prepare(`
+    INSERT INTO proxmox_snapshots (server_id, vmid, guest_name, name, parent, description, vmstate, snap_time)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const sn of snapshots) {
+    snapStmt.run(serverId, sn.vmid, sn.guestName, sn.name, sn.parent, sn.description, sn.vmstate, sn.snapTime);
+  }
+
+  const eventStmt = db.prepare(`
+    INSERT INTO proxmox_events (server_id, event_key, node, event_time, user, tag, pri, message)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(server_id, event_key) DO NOTHING
+  `);
+  for (const e of events) {
+    eventStmt.run(serverId, e.eventKey, e.node, e.eventTime, e.user, e.tag, e.pri, e.message);
+  }
+  db.prepare("DELETE FROM proxmox_events WHERE server_id = ? AND event_time < datetime('now', '-14 days')").run(serverId);
 
   db.prepare('DELETE FROM proxmox_backup_jobs WHERE server_id = ?').run(serverId);
   const jobStmt = db.prepare(`

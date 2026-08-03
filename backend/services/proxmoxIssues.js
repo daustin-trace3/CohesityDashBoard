@@ -18,6 +18,7 @@ const storageWarnPct = () => clampPct('proxmox_storage_warn_pct', 85);
 const storageCritPct = () => clampPct('proxmox_storage_crit_pct', 95);
 const backupStaleDays = () => clampDays('proxmox_backup_stale_days', 3);
 const certWarnDays = () => clampDays('proxmox_cert_warn_days', 30);
+const snapshotAgeDays = () => clampDays('proxmox_snapshot_age_days', 30);
 
 /**
  * Current issues from the stored inventory. Every issue carries a `target`
@@ -156,6 +157,59 @@ function computeIssues() {
     }
   }
 
+  // snapshot-age: oldest offending snapshot (excl 'current') per guest.
+  const snapAgeDays = snapshotAgeDays();
+  const snapCutoff = db.prepare("SELECT datetime('now', ?) AS d").get(`-${snapAgeDays} days`).d;
+  const oldestSnaps = db.prepare(`
+    SELECT sn.*, s.name AS server_name FROM proxmox_snapshots sn
+    JOIN proxmox_servers s ON s.id = sn.server_id
+    WHERE sn.name != 'current' AND sn.snap_time IS NOT NULL AND sn.snap_time < ?
+    ORDER BY sn.snap_time ASC
+  `).all(snapCutoff);
+  const oldestSnapByGuest = new Map();
+  for (const sn of oldestSnaps) {
+    const key = `${sn.server_id}:${sn.vmid}`;
+    if (!oldestSnapByGuest.has(key)) oldestSnapByGuest.set(key, sn);
+  }
+  for (const sn of oldestSnapByGuest.values()) {
+    const days = Math.floor((Date.now() - new Date(sn.snap_time).getTime()) / 86400000);
+    const label = `${sn.guest_name || sn.vmid} (${sn.vmid}): ${sn.name}`;
+    issues.push({
+      severity: 'warning', type: 'snapshot-age', source: sn.server_name, sourceId: sn.server_id,
+      target: label, message: `Snapshot ${label} is ${days} day(s) old`,
+    });
+  }
+
+  // service-down: unit_state enabled but not running; corosync excluded when
+  // the server has no cluster quorum reading (single-node deployment).
+  const services = db.prepare(`
+    SELECT sv.*, s.name AS server_name, s.quorate FROM proxmox_services sv
+    JOIN proxmox_servers s ON s.id = sv.server_id
+    WHERE sv.unit_state = 'enabled' AND sv.state != 'running'
+  `).all();
+  for (const sv of services) {
+    if (sv.name === 'corosync' && sv.quorate == null) continue;
+    const target = `${sv.name} on ${sv.node}`;
+    issues.push({
+      severity: 'warning', type: 'service-down', source: sv.server_name, sourceId: sv.server_id,
+      target, message: `Service ${target} is enabled but ${sv.state}`,
+    });
+  }
+
+  // smart-failing: disk health outside the known-good/unknown set.
+  const disks = db.prepare(`
+    SELECT d.*, s.name AS server_name FROM proxmox_disks d
+    JOIN proxmox_servers s ON s.id = d.server_id
+    WHERE d.health IS NOT NULL AND d.health NOT IN ('PASSED', 'OK', 'UNKNOWN', '')
+  `).all();
+  for (const d of disks) {
+    const target = `${d.devpath} on ${d.node}`;
+    issues.push({
+      severity: 'critical', type: 'smart-failing', source: d.server_name, sourceId: d.server_id,
+      target, message: `Disk ${target} SMART health is ${d.health}`,
+    });
+  }
+
   const order = { critical: 0, warning: 1, info: 2 };
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);
 }
@@ -200,6 +254,6 @@ const reconcileIssueHistory = db.transaction(() => {
 });
 
 module.exports = {
-  storageWarnPct, storageCritPct, backupStaleDays, certWarnDays,
+  storageWarnPct, storageCritPct, backupStaleDays, certWarnDays, snapshotAgeDays,
   computeIssues, reconcileIssueHistory,
 };

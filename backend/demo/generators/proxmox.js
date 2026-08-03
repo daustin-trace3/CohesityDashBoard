@@ -59,11 +59,110 @@ function seedProxmox(db, { now, encrypt }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
   `);
 
+  // ── v2 additions: snapshots, services, disks, node networks, storage
+  // content, events, and the new proxmox_guests columns (config/OS/IP/agent).
+  const updateGuestExtra = db.prepare(`
+    UPDATE proxmox_guests SET os_name = ?, ip_addresses = ?, agent_running = ?, config_json = ?,
+      cpu_sockets = ?, snapshot_count = ?, oldest_snapshot_at = ?
+    WHERE server_id = ? AND vmid = ?
+  `);
+  const insertSnapshot = db.prepare(`
+    INSERT INTO proxmox_snapshots (server_id, vmid, guest_name, name, parent, description, vmstate, snap_time, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  const insertService = db.prepare(`
+    INSERT INTO proxmox_services (server_id, node, name, state, active_state, unit_state, description, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  const insertDisk = db.prepare(`
+    INSERT INTO proxmox_disks (server_id, node, devpath, model, vendor, serial, size_bytes, health, wearout, disk_type, used_as, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  const insertNetwork = db.prepare(`
+    INSERT INTO proxmox_node_networks (server_id, node, iface, iface_type, method, cidr, vlan_id, vlan_raw_device, active, autostart, comments, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  const insertStorageContent = db.prepare(`
+    INSERT INTO proxmox_storage_content (server_id, node, storage, volid, content, format, size_bytes, vmid, created_at_src, notes, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  const insertEvent = db.prepare(`
+    INSERT INTO proxmox_events (server_id, event_key, node, event_time, user, tag, pri, message)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const OS_NAMES = ['Ubuntu 22.04.3 LTS', 'Debian GNU/Linux 12 (bookworm)', 'Rocky Linux 9.3', 'AlmaLinux 9.3', 'Windows Server 2022 Standard'];
+  const SNAPSHOT_NAMES = ['pre-update', 'weekly-checkpoint', 'manual-backup', 'config-change'];
+  const macFor = (rng) => {
+    const hex = () => randInt(rng, 0, 255).toString(16).padStart(2, '0').toUpperCase();
+    return ['BC', '24', '11', hex(), hex(), hex()].join(':');
+  };
+  // Deliberate 45-day-old snapshot trouble (snapshot-age rule) lives on
+  // lab-app-01 (vmid 102, pve-lab-01) — assigned once server ids are known below.
+  let specialSnapshot = null;
+
+  const SERVICE_DEFS = (isCluster) => {
+    const base = [
+      { name: 'pvedaemon', desc: 'PVE API Daemon' },
+      { name: 'pveproxy', desc: 'PVE API Proxy Server' },
+      { name: 'pvestatd', desc: 'PVE Status Daemon' },
+      { name: 'pve-cluster', desc: 'The Proxmox VE cluster filesystem' },
+      { name: 'pve-firewall', desc: 'Proxmox VE firewall' },
+      { name: 'pvescheduler', desc: 'Proxmox VE scheduler' },
+      { name: 'sshd', desc: 'OpenSSH server daemon' },
+    ];
+    if (isCluster) base.push({ name: 'corosync', desc: 'Corosync Cluster Engine' });
+    return base;
+  };
+  const seedNodeServices = (serverId, nodeName, isCluster, deadService) => {
+    for (const svc of SERVICE_DEFS(isCluster)) {
+      const isDead = deadService && svc.name === deadService;
+      insertService.run(serverId, nodeName, svc.name, isDead ? 'dead' : 'running',
+        isDead ? 'failed' : 'active', 'enabled', svc.desc);
+    }
+  };
+  const seedNodeDisks = (serverId, nodeName, failSecondDisk) => {
+    const rng = rngFor(`${nodeName}-disks`);
+    const disks = [
+      { devpath: '/dev/sda', model: 'Samsung SSD 870 EVO 1TB', size: 1e12, usedAs: 'LVM (root)' },
+      { devpath: '/dev/sdb', model: 'Samsung SSD 870 EVO 2TB', size: 2e12, usedAs: 'LVM (data)' },
+    ];
+    disks.forEach((d, idx) => {
+      const isFailing = !!failSecondDisk && idx === 1;
+      insertDisk.run(serverId, nodeName, d.devpath, d.model, 'Samsung',
+        `S${randInt(rng, 100000000, 999999999)}`, d.size,
+        isFailing ? 'FAILED' : 'UNKNOWN', isFailing ? '0' : 'N/A', 'SSD', d.usedAs);
+    });
+  };
+  const seedNodeNetwork = (serverId, nodeName, subnetOctet, vlanComment) => {
+    insertNetwork.run(serverId, nodeName, 'vmbr0', 'bridge', 'static', `192.168.128.${subnetOctet}/24`, null, null, 1, 1, null);
+    insertNetwork.run(serverId, nodeName, 'eno1', 'eth', 'manual', null, null, null, 1, 1, null);
+    if (vlanComment) {
+      insertNetwork.run(serverId, nodeName, 'vmbr0.100', 'vlan', 'static', '10.100.0.1/24', '100', 'vmbr0', 1, 1, vlanComment);
+    }
+  };
+  const seedEvents = (serverId, nodes, countPerNode) => {
+    const rng = rngFor(`${serverId}-events`);
+    const TAGS = ['startall', 'stopall', 'vzdump', 'qmstart', 'qmstop', 'aptupdate', 'srvstart', 'srvstop'];
+    let counter = 0;
+    for (const node of nodes) {
+      for (let i = 0; i < countPerNode; i++) {
+        counter++;
+        const tag = pick(rng, TAGS);
+        const hoursAgo = randInt(rng, 1, 14 * 24);
+        insertEvent.run(serverId, `${counter}:${node}`, node, ago(`-${hoursAgo} hours`),
+          'root@pam', tag, pick(rng, [3, 4, 5, 6]), `${tag}: ${node} OK`);
+      }
+    }
+    return counter;
+  };
+
   let taskCounter = 0;
   const nextUpid = (node, type, vmidOrTarget) => {
     taskCounter++;
     return `UPID:${node}:${String(taskCounter).padStart(8, '0')}:00000000:${type}:${vmidOrTarget}:root@pam:`;
   };
+  let storageContentTotal = 0;
 
   // ── pve-lab-01: single node ─────────────────────────────────────────────
   insertServer.run('pve-lab-01', 'pve-lab-01.icc.demo', 'demo@pve!icc-token',
@@ -71,15 +170,24 @@ function seedProxmox(db, { now, encrypt }) {
     null, JSON.stringify(['nodes/status', 'cluster/resources', 'cluster/backup']),
     'success', null, ago('-6 minutes'));
   const labId = db.prepare("SELECT id FROM proxmox_servers WHERE name = 'pve-lab-01'").get().id;
+  specialSnapshot = { serverId: labId, vmid: 102 }; // lab-app-01: deliberate 45-day-old snapshot
 
   insertNode.run(labId, 'pve-lab-01', 'online', 0.18, 16, 24 * GIB, 64 * GIB, 420 * GIB, 900 * GIB,
     randInt(rngFor('pve-lab-01-uptime'), 20, 200) * 86400, '0.42, 0.51, 0.48', '9.1.4', '6.8.12-4-pve',
     ago('+12 days'), 'notfound', 3);
+  seedNodeServices(labId, 'pve-lab-01', false, null);
+  seedNodeDisks(labId, 'pve-lab-01', false);
+  seedNodeNetwork(labId, 'pve-lab-01', 50, null);
 
   insertStorage.run(labId, 'pve-lab-01', 'local', 'dir', 'iso,vztmpl,backup', 1, 0,
     Math.round(0.45 * 200 * GIB), 200 * GIB, Math.round(0.55 * 200 * GIB));
   insertStorage.run(labId, 'pve-lab-01', 'local-lvm', 'lvmthin', 'images,rootdir', 1, 0,
     Math.round(0.97 * 700 * GIB), 700 * GIB, Math.round(0.03 * 700 * GIB));
+  insertStorageContent.run(labId, 'pve-lab-01', 'local', 'local:iso/ubuntu-24.04.1-live-server-amd64.iso',
+    'iso', 'iso', 3_100_000_000, null, ago('-40 days'), null);
+  insertStorageContent.run(labId, 'pve-lab-01', 'local', 'local:iso/debian-12.7.0-amd64-netinst.iso',
+    'iso', 'iso', 650_000_000, null, ago('-70 days'), null);
+  storageContentTotal += 2;
 
   insertJob.run(labId, 'lab-daily-all', '02:00', 'local', 'snapshot', 'zstd', 'all', ago('+18 hours'));
   insertJob.run(labId, 'lab-weekly-db', 'sat 03:00', 'local', 'stop', 'zstd', '103', ago('+4 days'));
@@ -95,7 +203,7 @@ function seedProxmox(db, { now, encrypt }) {
     { vmid: 107, name: 'ubuntu-2204-tpl', type: 'qemu', status: 'stopped', backup: 'none', template: true },
   ];
 
-  let guestTotal = 0, taskTotal = 0, metricTotal = 0;
+  let guestTotal = 0, taskTotal = 0, metricTotal = 0, snapshotTotal = 0;
   const seedGuestSet = (serverId, serverName, nodeName, guests, rngSeed) => {
     const rng = rngFor(rngSeed);
     for (const g of guests) {
@@ -103,13 +211,14 @@ function seedProxmox(db, { now, encrypt }) {
       const running = g.status === 'running';
       const memTotal = pick(rng, [2, 4, 8, 16]) * GIB;
       const diskTotal = pick(rng, [20, 40, 80]) * GIB;
+      const cpuCount = isTemplate ? null : pick(rng, [1, 2, 4]);
       let lastBackupAt = null, lastBackupStatus = null;
       if (g.backup === 'healthy') { lastBackupAt = ago(`-${randInt(rng, 3, 20)} hours`); lastBackupStatus = 'OK'; }
       else if (g.backup === 'failed-recent') { lastBackupAt = ago('-8 hours'); lastBackupStatus = 'OK'; }
       else if (g.backup === 'stale') { lastBackupAt = ago('-120 hours'); lastBackupStatus = 'OK'; }
 
       insertGuest.run(serverId, g.vmid, g.name, g.type, nodeName, isTemplate ? 'stopped' : g.status,
-        isTemplate ? 1 : 0, isTemplate ? null : pick(rng, [1, 2, 4]),
+        isTemplate ? 1 : 0, cpuCount,
         isTemplate ? null : (running ? randFloat(rng, 0.02, 0.55, 3) : 0),
         isTemplate ? null : (running ? Math.round(memTotal * randFloat(rng, 0.3, 0.75, 2)) : 0),
         isTemplate ? null : memTotal,
@@ -122,6 +231,63 @@ function seedProxmox(db, { now, encrypt }) {
       guestTotal++;
 
       if (isTemplate) continue;
+
+      // ── v2: config_json, cpu_sockets, agent OS/IP, snapshots ────────────
+      const sockets = g.type === 'qemu' ? pick(rng, [1, 1, 2]) : null;
+      const cores = sockets ? Math.max(1, Math.round(cpuCount / sockets)) : cpuCount;
+      const memMB = Math.round(memTotal / (1024 * 1024));
+      const diskGB = Math.round(diskTotal / GIB);
+      const config = g.type === 'qemu'
+        ? {
+            name: g.name, cores, sockets, memory: memMB, ostype: 'l26', machine: 'q35', bios: 'seabios',
+            boot: 'order=scsi0;ide2;net0', onboot: running ? 1 : 0, agent: running ? 1 : 0, tags: 'vm',
+            scsi0: `local-lvm:vm-${g.vmid}-disk-0,size=${diskGB}G`,
+            net0: `virtio=${macFor(rng)},bridge=vmbr0,firewall=1`,
+          }
+        : {
+            arch: 'amd64', hostname: g.name, cores, memory: memMB, swap: 512, onboot: running ? 1 : 0,
+            rootfs: `local-lvm:vm-${g.vmid}-disk-0,size=${diskGB}G`,
+            net0: 'name=eth0,bridge=vmbr0,ip=dhcp,firewall=1',
+          };
+
+      const hasAgent = g.type === 'qemu' && running;
+      const osName = hasAgent ? pick(rng, OS_NAMES) : null;
+      const ipAddresses = hasAgent ? [`10.20.${Math.floor(g.vmid / 100)}.${g.vmid % 250 || 10}`] : null;
+      const agentRunning = hasAgent ? 1 : 0;
+
+      const isSpecialSnapshot = specialSnapshot
+        && specialSnapshot.serverId === serverId && specialSnapshot.vmid === g.vmid;
+      const snaps = [];
+      if (isSpecialSnapshot) {
+        snaps.push({ name: 'pre-migration', ageDays: 45, desc: 'Before HQ migration test' });
+        snaps.push({ name: 'weekly-checkpoint', ageDays: 9, desc: '' });
+      } else if (chance(rng, 0.45)) {
+        const n = randInt(rng, 1, 2);
+        for (let i = 0; i < n; i++) {
+          snaps.push({ name: `${pick(rng, SNAPSHOT_NAMES)}-${i}`, ageDays: randInt(rng, 1, 25), desc: '' });
+        }
+      }
+      let snapCount = 0, oldestSnapAt = null;
+      for (const snap of snaps) {
+        const snapTime = ago(`-${snap.ageDays} days`);
+        insertSnapshot.run(serverId, g.vmid, g.name, snap.name, null, snap.desc, 0, snapTime);
+        snapCount++;
+        snapshotTotal++;
+        if (!oldestSnapAt || snapTime < oldestSnapAt) oldestSnapAt = snapTime;
+      }
+
+      updateGuestExtra.run(osName, ipAddresses ? JSON.stringify(ipAddresses) : null, agentRunning,
+        JSON.stringify(config), sockets, snapCount, oldestSnapAt, serverId, g.vmid);
+
+      if (lastBackupAt) {
+        const ext = g.type === 'qemu' ? 'vma.zst' : 'tar.zst';
+        const dateTag = lastBackupAt.slice(0, 10).replace(/-/g, '_');
+        const sizeBytes = Math.round(diskTotal * randFloat(rng, 0.15, 0.4, 2));
+        insertStorageContent.run(serverId, nodeName, 'local',
+          `local:backup/vzdump-${g.type}-${g.vmid}-${dateTag}_000000.${ext}`, 'backup', ext.split('.')[0],
+          sizeBytes, g.vmid, lastBackupAt, null);
+        storageContentTotal++;
+      }
 
       // Rolling vzdump history: a healthy run most days, plus deliberate trouble.
       for (let d = 3; d >= 0; d--) {
@@ -175,11 +341,22 @@ function seedProxmox(db, { now, encrypt }) {
   insertNode.run(hqId, 'pve-hq-01', 'online', 0.32, 32, 96 * GIB, 256 * GIB, 1200 * GIB, 3000 * GIB,
     randInt(rngFor('hq-01-uptime'), 20, 200) * 86400, '1.10, 1.22, 1.05', '9.1.4', '6.8.12-4-pve',
     ago('+280 days'), 'notfound', 5);
+  seedNodeServices(hqId, 'pve-hq-01', true, null);
+  seedNodeDisks(hqId, 'pve-hq-01', false);
+  seedNodeNetwork(hqId, 'pve-hq-01', 61, 'Guest VLAN 100 - DMZ segment');
   insertNode.run(hqId, 'pve-hq-02', 'online', 0.29, 32, 88 * GIB, 256 * GIB, 1100 * GIB, 3000 * GIB,
     randInt(rngFor('hq-02-uptime'), 20, 200) * 86400, '0.95, 1.02, 0.99', '9.1.4', '6.8.12-4-pve',
     ago('+300 days'), 'notfound', 4);
+  // Deliberate trouble: pvescheduler enabled but dead — service-down rule.
+  seedNodeServices(hqId, 'pve-hq-02', true, 'pvescheduler');
+  seedNodeDisks(hqId, 'pve-hq-02', false);
+  seedNodeNetwork(hqId, 'pve-hq-02', 62, null);
   insertNode.run(hqId, 'pve-hq-03', 'offline', null, 32, null, 256 * GIB, null, 3000 * GIB,
     null, null, '9.1.4', '6.8.12-4-pve', ago('+310 days'), 'notfound', null);
+  seedNodeServices(hqId, 'pve-hq-03', true, null);
+  // Deliberate trouble: second disk reporting FAILED health — smart-failing rule.
+  seedNodeDisks(hqId, 'pve-hq-03', true);
+  seedNodeNetwork(hqId, 'pve-hq-03', 63, null);
 
   insertStorage.run(hqId, 'pve-hq-01', 'local', 'dir', 'iso,vztmpl,backup', 1, 0,
     Math.round(0.5 * 300 * GIB), 300 * GIB, Math.round(0.5 * 300 * GIB));
@@ -189,6 +366,11 @@ function seedProxmox(db, { now, encrypt }) {
     Math.round(0.4 * 300 * GIB), 300 * GIB, Math.round(0.6 * 300 * GIB));
   insertStorage.run(hqId, 'pve-hq-02', 'local-lvm', 'lvmthin', 'images,rootdir', 1, 0,
     Math.round(0.6 * 1500 * GIB), 1500 * GIB, Math.round(0.4 * 1500 * GIB));
+  insertStorageContent.run(hqId, 'pve-hq-01', 'local', 'local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst',
+    'vztmpl', 'tzst', 220_000_000, null, ago('-90 days'), null);
+  insertStorageContent.run(hqId, 'pve-hq-01', 'local', 'local:iso/ubuntu-24.04.1-live-server-amd64.iso',
+    'iso', 'iso', 3_100_000_000, null, ago('-30 days'), null);
+  storageContentTotal += 2;
 
   insertJob.run(hqId, 'hq-daily-all', '01:00', 'local', 'snapshot', 'zstd', 'all', ago('+16 hours'));
   insertJob.run(hqId, 'hq-critical-4h', '*/4:00', 'local', 'snapshot', 'lzo', '200,204,210', ago('+2 hours'));
@@ -248,6 +430,11 @@ function seedProxmox(db, { now, encrypt }) {
     metricTotal++;
   }
 
+  // ~200 cluster/log events over the last 14 days (50/node across 4 nodes).
+  let eventTotal = 0;
+  eventTotal += seedEvents(labId, ['pve-lab-01'], 50);
+  eventTotal += seedEvents(hqId, ['pve-hq-01', 'pve-hq-02', 'pve-hq-03'], 50);
+
   // ── Computed issue reconcile (proxmoxIssues.js, owned by WP1) ───────────
   // NOTE (WP5 deviation): wrapped in try/catch because services/proxmoxIssues.js
   // does not exist yet at the time this generator was written (WP1's file
@@ -281,6 +468,9 @@ function seedProxmox(db, { now, encrypt }) {
     backupJobs: 4,
     tasks: taskTotal,
     metrics: metricTotal,
+    snapshots: snapshotTotal,
+    storageContent: storageContentTotal,
+    events: eventTotal,
     issueHistory: db.prepare('SELECT COUNT(*) n FROM proxmox_issue_history').get().n,
   };
 }

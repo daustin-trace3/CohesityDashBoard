@@ -1,26 +1,34 @@
 import { useEffect, useState, useCallback } from 'react';
-import { ShieldCheck, History } from 'lucide-react';
+import { ShieldCheck, History, FileArchive } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtWhen } from './helpers';
+import { BRAND, fmtWhen, fmtBytes } from './helpers';
 
 const taskTone = (status) => (status == null ? 'neutral' : status === 'OK' ? 'ok' : 'crit');
 
 export default function PxBackupsPage() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
+  const [files, setFiles] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
-  const load = useCallback(() => client.get('/proxmox/backups')
-    .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
+  const load = useCallback(() => Promise.all([
+    client.get('/proxmox/backups').then(({ data }) => setData(data)),
+    client.get('/proxmox/storage-content', { params: { content: 'backup' } }).then(({ data }) => setFiles(data)).catch(() => setFiles([])),
+  ]).then(() => setLastRefreshed(new Date()))
     .catch(() => { setData({ jobs: [], recentTasks: [] }); toast({ type: 'error', title: 'Failed to load backups' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
   const jobs = data?.jobs || [];
   const tasks = data?.recentTasks || [];
+  const fileCtl = useTableControls(files || [], {
+    searchKeys: ['volid', 'storage', 'node', 'serverName', 'vmid'],
+    defaultSortKey: 'createdAt', defaultSortDir: 'desc',
+    paginate: true,
+  });
 
   const jobCtl = useTableControls(jobs, {
     searchKeys: ['jobId', 'serverName', 'storage', 'schedule'],
@@ -121,6 +129,48 @@ export default function PxBackupsPage() {
           </div>
         )}
         <TablePager ctl={taskCtl} />
+      </div>
+
+      <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><FileArchive size={15} className="text-brand" /> Backup Files</p>
+        <p className="text-[11px] text-ink-faint mb-3">vzdump backup archives stored on registered storage pools.</p>
+        <TableControls ctl={fileCtl} rows={files || []} searchPlaceholder="Filter by volume, storage or vmid…"
+          filters={[{ k: 'serverName', label: 'Servers' }, { k: 'node', label: 'Nodes' }, { k: 'storage', label: 'Storage' }]} />
+        {files == null ? (
+          <LoadingPanel label="Loading backup files…" height={140} />
+        ) : files.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No backup files found.</div>
+        ) : fileCtl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No files match your filters.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <SortTh k="volid" label="Volume" ctl={fileCtl} />
+                <SortTh k="vmid" label="VMID" ctl={fileCtl} align="right" />
+                <SortTh k="storage" label="Storage" ctl={fileCtl} />
+                <SortTh k="node" label="Node" ctl={fileCtl} />
+                <SortTh k="serverName" label="Server" ctl={fileCtl} />
+                <SortTh k="sizeBytes" label="Size" ctl={fileCtl} align="right" />
+                <SortTh k="createdAt" label="Created" ctl={fileCtl} />
+              </tr></thead>
+              <tbody>
+                {fileCtl.pageRows.map((f) => (
+                  <tr key={f.id} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink text-[11px] max-w-[260px] truncate" title={f.volid}>{f.volid}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{f.vmid ?? '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{f.storage}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{f.node}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{f.serverName}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(f.sizeBytes)}</td>
+                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(f.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <TablePager ctl={fileCtl} />
       </div>
     </div>
   );

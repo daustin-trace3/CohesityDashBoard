@@ -14,22 +14,69 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip,
 
 const PX_COLORS = ['#E57000', '#0091DA', '#6CB33F', '#D4A24E', '#C75D5D', '#9B6CD4', '#4ED4B8', '#D46CB3'];
 
+const RRD_TIMEFRAMES = ['hour', 'day', 'week', 'month'];
+
 export default function PxOverviewPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [issues, setIssues] = useState(null);
   const [trend, setTrend] = useState(null);
+  const [nodes, setNodes] = useState(null);
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [rrdTimeframe, setRrdTimeframe] = useState('day');
+  const [rrd, setRrd] = useState(null);
+  const [rrdFailed, setRrdFailed] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => Promise.all([
     client.get('/proxmox/overview').then(({ data }) => setData(data)),
     client.get('/proxmox/issues').then(({ data }) => setIssues(Array.isArray(data) ? data : data?.issues || [])).catch(() => setIssues([])),
     client.get('/proxmox/metrics-history', { params: { hours: 24 } }).then(({ data }) => setTrend(data)).catch(() => setTrend([])),
+    client.get('/proxmox/nodes').then(({ data }) => {
+      setNodes(data);
+      setSelectedNodeId(prev => prev ?? (data[0]?.id ?? null));
+    }).catch(() => setNodes([])),
   ]).then(() => setLastRefreshed(new Date()))
     .catch(() => { setData({ servers: [], totals: {} }); toast({ type: 'error', title: 'Failed to load Proxmox overview' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (selectedNodeId == null) return;
+    setRrd(null);
+    setRrdFailed(false);
+    client.get(`/proxmox/nodes/${selectedNodeId}/rrd`, { params: { timeframe: rrdTimeframe } })
+      .then(({ data }) => setRrd(Array.isArray(data) ? data : []))
+      .catch(() => { setRrd(null); setRrdFailed(true); });
+  }, [selectedNodeId, rrdTimeframe]);
+
+  const rrdChart = useMemo(() => {
+    if (!rrd || rrd.length === 0) return null;
+    const labels = rrd.map(r => {
+      const d = new Date(Number(r.time) * 1000);
+      return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    });
+    return {
+      labels,
+      datasets: [
+        {
+          label: 'CPU %', data: rrd.map(r => (r.cpu == null ? null : r.cpu * 100)),
+          borderColor: '#E57000', backgroundColor: '#E57000', pointRadius: rrd.length > 60 ? 0 : 2, borderWidth: 2, tension: 0.25, spanGaps: true,
+        },
+        {
+          label: 'Mem %', data: rrd.map(r => (r.memused == null || !r.memtotal ? null : (r.memused / r.memtotal) * 100)),
+          borderColor: '#0091DA', backgroundColor: '#0091DA', pointRadius: rrd.length > 60 ? 0 : 2, borderWidth: 2, tension: 0.25, spanGaps: true,
+        },
+        {
+          label: 'IOWait %', data: rrd.map(r => (r.iowait == null ? null : r.iowait * 100)),
+          borderColor: '#D4A24E', backgroundColor: '#D4A24E', pointRadius: rrd.length > 60 ? 0 : 2, borderWidth: 2, tension: 0.25, spanGaps: true,
+        },
+      ],
+    };
+  }, [rrd]);
+
+  const useRrd = rrdChart != null && !rrdFailed;
 
   const servers = data?.servers || [];
   const totals = data?.totals || {};
@@ -107,8 +154,38 @@ export default function PxOverviewPage() {
       </div>
 
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-3">CPU Usage per Node (last 24h)</p>
-        {trend == null ? (
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <p className="text-sm font-semibold text-ink mr-auto">
+            {useRrd ? 'Node Trend' : 'CPU Usage per Node (last 24h)'}
+          </p>
+          {nodes && nodes.length > 1 && (
+            <div className="flex flex-wrap gap-1">
+              {nodes.map(n => (
+                <button key={n.id} onClick={() => setSelectedNodeId(n.id)}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer ${
+                    selectedNodeId === n.id ? 'bg-brand text-cohesity-black border-brand' : 'border-cohesity-border text-ink-muted hover:text-ink'
+                  }`}>
+                  {n.name}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-1">
+            {RRD_TIMEFRAMES.map(tf => (
+              <button key={tf} onClick={() => setRrdTimeframe(tf)}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer ${
+                  rrdTimeframe === tf ? 'bg-brand text-cohesity-black border-brand' : 'border-cohesity-border text-ink-muted hover:text-ink'
+                }`}>
+                {tf}
+              </button>
+            ))}
+          </div>
+        </div>
+        {useRrd ? (
+          <div className="h-60"><Line data={rrdChart} options={chartOpts} /></div>
+        ) : rrd == null && !rrdFailed ? (
+          <LoadingPanel label="Loading trend…" height={200} />
+        ) : trend == null ? (
           <LoadingPanel label="Loading trend…" height={200} />
         ) : !cpuTrend || cpuTrend.labels.length === 0 ? (
           <div className="text-sm text-ink-muted py-8 text-center">No trend data yet — snapshots accumulate as servers poll.</div>

@@ -149,11 +149,51 @@ describe('proxmoxIssues.computeIssues + reconcileIssueHistory', () => {
   });
 
   it('clamps thresholds to their documented defaults', () => {
-    const { storageWarnPct, storageCritPct, backupStaleDays, certWarnDays } = require('../services/proxmoxIssues');
+    const { storageWarnPct, storageCritPct, backupStaleDays, certWarnDays, snapshotAgeDays } = require('../services/proxmoxIssues');
     expect(storageWarnPct()).toBe(85);
     expect(storageCritPct()).toBe(95);
     expect(backupStaleDays()).toBe(3);
     expect(certWarnDays()).toBe(30);
+    expect(snapshotAgeDays()).toBe(30);
+  });
+
+  it('detects the v2 issue rules: snapshot-age, service-down, smart-failing', () => {
+    const { computeIssues } = require('../services/proxmoxIssues');
+    const serverId = insertServer({ name: 'pve-v2-issues' });
+
+    db.prepare(`
+      INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template)
+      VALUES (?, 200, 'snap-guest', 'qemu', 'n1', 'running', 0)
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_snapshots (server_id, vmid, guest_name, name, snap_time)
+      VALUES (?, 200, 'snap-guest', 'old-snap', datetime('now', '-45 days'))
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_snapshots (server_id, vmid, guest_name, name, snap_time)
+      VALUES (?, 200, 'snap-guest', 'current', datetime('now', '-90 days'))
+    `).run(serverId);
+
+    db.prepare(`
+      INSERT INTO proxmox_services (server_id, node, name, state, active_state, unit_state)
+      VALUES (?, 'n1', 'pvescheduler', 'dead', 'inactive', 'enabled')
+    `).run(serverId);
+
+    db.prepare(`
+      INSERT INTO proxmox_disks (server_id, node, devpath, health)
+      VALUES (?, 'n1', '/dev/sda', 'FAILED')
+    `).run(serverId);
+
+    const issues = computeIssues();
+    const byType = (type) => issues.filter((i) => i.sourceId === serverId && i.type === type);
+
+    expect(byType('snapshot-age').some((i) => i.target === 'snap-guest (200): old-snap')).toBe(true);
+    expect(byType('snapshot-age').some((i) => i.target.includes('current'))).toBe(false);
+
+    expect(byType('service-down').some((i) => i.target === 'pvescheduler on n1')).toBe(true);
+
+    expect(byType('smart-failing').some((i) => i.target === '/dev/sda on n1')).toBe(true);
+    expect(byType('smart-failing')[0].severity).toBe('critical');
   });
 });
 
@@ -210,25 +250,25 @@ describe('routes/proxmox.js basic CRUD + data endpoints (minimal express app, no
     const before = await request(app).get('/api/proxmox/config');
     expect(before.status).toBe(200);
     expect(before.body).toEqual({
-      storageWarnPct: 85, storageCritPct: 95, backupStaleDays: 3, certWarnDays: 30,
+      storageWarnPct: 85, storageCritPct: 95, backupStaleDays: 3, certWarnDays: 30, snapshotAgeDays: 30,
     });
 
     const saved = await request(app).put('/api/proxmox/config').send({
-      storageWarnPct: 80, storageCritPct: 90, backupStaleDays: 5, certWarnDays: 45,
+      storageWarnPct: 80, storageCritPct: 90, backupStaleDays: 5, certWarnDays: 45, snapshotAgeDays: 60,
     });
     expect(saved.status).toBe(200);
     expect(saved.body).toEqual({
-      storageWarnPct: 80, storageCritPct: 90, backupStaleDays: 5, certWarnDays: 45,
+      storageWarnPct: 80, storageCritPct: 90, backupStaleDays: 5, certWarnDays: 45, snapshotAgeDays: 60,
     });
 
     const invalid = await request(app).put('/api/proxmox/config').send({
-      storageWarnPct: 0, storageCritPct: 90, backupStaleDays: 5, certWarnDays: 45,
+      storageWarnPct: 0, storageCritPct: 90, backupStaleDays: 5, certWarnDays: 45, snapshotAgeDays: 60,
     });
     expect(invalid.status).toBe(400);
 
     // restore defaults
     await request(app).put('/api/proxmox/config').send({
-      storageWarnPct: 85, storageCritPct: 95, backupStaleDays: 3, certWarnDays: 30,
+      storageWarnPct: 85, storageCritPct: 95, backupStaleDays: 3, certWarnDays: 30, snapshotAgeDays: 30,
     });
   });
 
@@ -277,6 +317,158 @@ describe('routes/proxmox.js basic CRUD + data endpoints (minimal express app, no
       expect(res.status, `GET /api/proxmox/${path}`).toBe(200);
       expect(shapeOk(res.body), `GET /api/proxmox/${path} body shape`).toBe(true);
     }
+  });
+
+  it('GET /api/proxmox/network|disks|storage-content|events|snapshots all 200 bare arrays', async () => {
+    const serverId = insertServer({ name: 'pve-v2-data' });
+    db.prepare(`INSERT INTO proxmox_nodes (server_id, name, status) VALUES (?, 'n1', 'online')`).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_node_networks (server_id, node, iface, iface_type, method, active, autostart)
+      VALUES (?, 'n1', 'vmbr0', 'bridge', 'static', 1, 1)
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_disks (server_id, node, devpath, model, health)
+      VALUES (?, 'n1', '/dev/sda', 'HP Smart Array', 'UNKNOWN')
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_storage_content (server_id, node, storage, volid, content, size_bytes)
+      VALUES (?, 'n1', 'local', 'local:backup/vzdump-qemu-100.vma.zst', 'backup', 12345)
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_events (server_id, event_key, node, event_time, user, tag, pri, message)
+      VALUES (?, 'evt1:1', 'n1', datetime('now'), 'root@pam', 'vzdump', 6, 'backup finished')
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template)
+      VALUES (?, 300, 'snap-list-guest', 'qemu', 'n1', 'running', 0)
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_snapshots (server_id, vmid, guest_name, name, snap_time)
+      VALUES (?, 300, 'snap-list-guest', 'snap-a', datetime('now', '-1 day'))
+    `).run(serverId);
+
+    const checks = ['network', 'disks', 'storage-content', 'events', 'snapshots'];
+    for (const path of checks) {
+      const res = await request(app).get(`/api/proxmox/${path}`);
+      expect(res.status, `GET /api/proxmox/${path}`).toBe(200);
+      expect(Array.isArray(res.body), `GET /api/proxmox/${path} body`).toBe(true);
+    }
+
+    const network = (await request(app).get('/api/proxmox/network')).body;
+    expect(network.some((r) => r.iface === 'vmbr0' && r.ifaceType === 'bridge')).toBe(true);
+
+    const disks = (await request(app).get('/api/proxmox/disks')).body;
+    expect(disks.some((r) => r.devpath === '/dev/sda' && r.health === 'UNKNOWN')).toBe(true);
+
+    const content = (await request(app).get('/api/proxmox/storage-content?content=backup')).body;
+    expect(content.every((r) => r.content === 'backup')).toBe(true);
+
+    const events = (await request(app).get('/api/proxmox/events?limit=5')).body;
+    expect(events.some((r) => r.tag === 'vzdump')).toBe(true);
+
+    const snapshots = (await request(app).get('/api/proxmox/snapshots')).body;
+    expect(snapshots.some((r) => r.name === 'snap-a' && r.guestName === 'snap-list-guest')).toBe(true);
+  });
+
+  it('GET /api/proxmox/guests/:id/detail parses config device/net keys and returns snapshots', async () => {
+    const serverId = insertServer({ name: 'pve-detail' });
+    const config = {
+      name: 'detail-vm', cores: 2, sockets: 1, memory: '4096', agent: 1,
+      scsi0: 'local-lvm:vm-100-disk-0,size=32G',
+      net0: 'virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0,tag=10',
+    };
+    const info = db.prepare(`
+      INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template,
+        cpu_sockets, config_json, os_name, ip_addresses, agent_running, snapshot_count, oldest_snapshot_at)
+      VALUES (?, 400, 'detail-vm', 'qemu', 'n1', 'running', 0, 1, ?, 'Linux', ?, 1, 1, datetime('now', '-1 day'))
+    `).run(serverId, JSON.stringify(config), JSON.stringify(['10.0.0.5']));
+    const guestId = info.lastInsertRowid;
+    db.prepare(`
+      INSERT INTO proxmox_snapshots (server_id, vmid, guest_name, name, snap_time)
+      VALUES (?, 400, 'detail-vm', 'before-upgrade', datetime('now', '-1 day'))
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_snapshots (server_id, vmid, guest_name, name, snap_time)
+      VALUES (?, 400, 'detail-vm', 'current', datetime('now'))
+    `).run(serverId);
+
+    const res = await request(app).get(`/api/proxmox/guests/${guestId}/detail`);
+    expect(res.status).toBe(200);
+    expect(res.body.guest.osName).toBe('Linux');
+    expect(res.body.guest.ipAddresses).toEqual(['10.0.0.5']);
+    expect(res.body.guest.agentRunning).toBe(true);
+    expect(res.body.config.name).toBe('detail-vm');
+    expect(res.body.disks).toEqual([{ key: 'scsi0', storage: 'local-lvm:vm-100-disk-0', size: '32G', raw: config.scsi0 }]);
+    expect(res.body.nics).toEqual([{ key: 'net0', model: 'virtio', mac: 'AA:BB:CC:DD:EE:FF', bridge: 'vmbr0', tag: '10', raw: config.net0 }]);
+    expect(res.body.snapshots).toHaveLength(1);
+    expect(res.body.snapshots[0].name).toBe('before-upgrade');
+
+    const missing = await request(app).get('/api/proxmox/guests/999999/detail');
+    expect(missing.status).toBe(404);
+  });
+
+  it('GET /api/proxmox/guests/:id/rrd and /nodes/:id/rrd 502 on upstream failure, 404 for unknown id', async () => {
+    const serverId = insertServer({ name: 'pve-rrd', host: '127.0.0.1', port: 1 });
+    const guestInfo = db.prepare(`
+      INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template)
+      VALUES (?, 500, 'rrd-guest', 'qemu', 'n1', 'running', 0)
+    `).run(serverId);
+    const nodeInfo = db.prepare(`INSERT INTO proxmox_nodes (server_id, name, status) VALUES (?, 'n1', 'online')`).run(serverId);
+
+    const guestRrd = await request(app).get(`/api/proxmox/guests/${guestInfo.lastInsertRowid}/rrd?timeframe=bogus`);
+    expect(guestRrd.status).toBe(502);
+    expect(typeof guestRrd.body.error).toBe('string');
+
+    const nodeRrd = await request(app).get(`/api/proxmox/nodes/${nodeInfo.lastInsertRowid}/rrd`);
+    expect(nodeRrd.status).toBe(502);
+    expect(typeof nodeRrd.body.error).toBe('string');
+
+    const missingGuest = await request(app).get('/api/proxmox/guests/999999/rrd');
+    expect(missingGuest.status).toBe(404);
+    const missingNode = await request(app).get('/api/proxmox/nodes/999999/rrd');
+    expect(missingNode.status).toBe(404);
+  }, 20000);
+
+  it('GET /api/proxmox/nodes/:id/detail returns services, disks, networks for the node', async () => {
+    const serverId = insertServer({ name: 'pve-node-detail' });
+    const nodeInfo = db.prepare(`INSERT INTO proxmox_nodes (server_id, name, status) VALUES (?, 'nd1', 'online')`).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_services (server_id, node, name, state, active_state, unit_state)
+      VALUES (?, 'nd1', 'sshd', 'running', 'active', 'enabled')
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_disks (server_id, node, devpath, health) VALUES (?, 'nd1', '/dev/sdb', 'PASSED')
+    `).run(serverId);
+    db.prepare(`
+      INSERT INTO proxmox_node_networks (server_id, node, iface, iface_type) VALUES (?, 'nd1', 'eth0', 'eth')
+    `).run(serverId);
+
+    const res = await request(app).get(`/api/proxmox/nodes/${nodeInfo.lastInsertRowid}/detail`);
+    expect(res.status).toBe(200);
+    expect(res.body.services.some((s) => s.name === 'sshd')).toBe(true);
+    expect(res.body.disks.some((d) => d.devpath === '/dev/sdb')).toBe(true);
+    expect(res.body.networks.some((n) => n.iface === 'eth0')).toBe(true);
+
+    const missing = await request(app).get('/api/proxmox/nodes/999999/detail');
+    expect(missing.status).toBe(404);
+  });
+
+  it('GET /api/proxmox/guests includes v2 fields (osName, ipAddresses, agentRunning, snapshotCount, oldestSnapshotAt)', async () => {
+    const serverId = insertServer({ name: 'pve-guests-v2' });
+    db.prepare(`
+      INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template,
+        os_name, ip_addresses, agent_running, snapshot_count, oldest_snapshot_at)
+      VALUES (?, 600, 'v2-guest', 'qemu', 'n1', 'running', 0, 'Windows 10 Pro', ?, 1, 2, datetime('now', '-5 days'))
+    `).run(serverId, JSON.stringify(['192.168.1.50']));
+
+    const res = await request(app).get('/api/proxmox/guests?serverId=' + serverId);
+    expect(res.status).toBe(200);
+    const guest = res.body.find((g) => g.vmid === 600);
+    expect(guest.osName).toBe('Windows 10 Pro');
+    expect(guest.ipAddresses).toEqual(['192.168.1.50']);
+    expect(guest.agentRunning).toBe(true);
+    expect(guest.snapshotCount).toBe(2);
+    expect(guest.oldestSnapshotAt).not.toBeNull();
   });
 
   it('POST /api/proxmox/servers/test never throws with bogus credentials', async () => {

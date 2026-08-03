@@ -175,15 +175,21 @@ router.get('/', (req, res, next) => {
       }
     }
 
-    // ── Proxmox: guest posture by name ────────────────────────────────────
+    // ── Proxmox: guest posture by name, or by IP (agent-reported) ─────────
     let proxmox = null;
     if (platformEnabled('proxmox') && can('proxmox:guests:view')) {
+      const ipPattern = `%"${q.replace(/[\\%_]/g, (c) => `\\${c}`)}"%`;
       const rows = db.prepare(`
         SELECT g.*, s.name AS server_name FROM proxmox_guests g
         JOIN proxmox_servers s ON s.id = g.server_id
-        WHERE lower(g.name) IN (${namePh})
-      `).all(...nameList);
-      if (rows.length) proxmox = { guests: rows };
+        WHERE lower(g.name) IN (${namePh}) OR g.ip_addresses LIKE ? ESCAPE '\\'
+      `).all(...nameList, ipPattern);
+      if (rows.length) {
+        proxmox = {
+          guests: rows.map((g) => ({ ...g, osName: g.os_name, ipAddresses: parseJson(g.ip_addresses, []) })),
+        };
+        for (const g of rows) names.add(lower(g.name));
+      }
     }
 
     // ── NetBackup: backup posture by client name ──────────────────────────
@@ -237,7 +243,7 @@ router.get('/', (req, res, next) => {
 
     res.json({
       query: q,
-      identity: { names: nameList, ips: ipList },
+      identity: { names: [...names], ips: ipList },
       vcenter: vm,
       cohesity,
       zerto,
