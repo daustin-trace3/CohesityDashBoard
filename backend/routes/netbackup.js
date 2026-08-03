@@ -1158,6 +1158,109 @@ router.get('/backup-history', [
   } catch (err) { next(err); }
 });
 
+// ── Object 360 ───────────────────────────────────────────────────────────────
+
+/** GET /api/netbackup/object-360/suggest?q= — client-name typeahead for the picker. */
+router.get('/object-360/suggest', [query('q').optional().isString()], validate, (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ names: [] });
+    const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const rows = db.prepare(`
+      SELECT DISTINCT client_name AS name FROM netbackup_jobs
+      WHERE client_name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 10
+    `).all(pattern);
+    res.json({ names: rows.map((r) => r.name) });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/netbackup/object-360?name= — everything NetBackup knows about one client. */
+router.get('/object-360', [query('name').optional().isString()], validate, (req, res, next) => {
+  try {
+    const q = String(req.query.name || '').trim();
+    if (!q) return res.status(400).json({ error: 'name required' });
+
+    const jobs30 = db.prepare(`
+      SELECT j.*, s.name AS source_name FROM netbackup_jobs j
+      JOIN netbackup_sources s ON s.id = j.source_id
+      WHERE j.client_name = ? AND j.started_at >= datetime('now', '-30 days')
+      ORDER BY j.started_at DESC
+    `).all(q);
+
+    if (!jobs30.length) {
+      return res.json({ query: q, found: false, client: null, runs14d: [], policies: [], issues: [] });
+    }
+
+    const cutoff7Ms = Date.now() - 7 * 86400000;
+    const policiesSet = new Set();
+    const sourceNames = new Set();
+    let jobs7d = 0, failed7d = 0, jobs30d = 0, failed30d = 0;
+    let lastStatus = null, lastRunAt = null, lastSuccessAt = null, logicalBytes = null;
+    for (const j of jobs30) {
+      if (j.policy_name) policiesSet.add(j.policy_name);
+      if (j.source_name) sourceNames.add(j.source_name);
+      jobs30d += 1;
+      const failed = isFailedJob(j);
+      const succeeded = !failed && ['EXITED', 'DONE'].includes(j.state);
+      const startedMs = j.started_at ? Date.parse(j.started_at) : null;
+      if (startedMs != null && startedMs >= cutoff7Ms) {
+        jobs7d += 1;
+        if (failed) failed7d += 1;
+      }
+      if (failed) failed30d += 1;
+      const runAt = j.ended_at || j.started_at;
+      if (runAt && (!lastRunAt || runAt > lastRunAt)) {
+        lastRunAt = runAt;
+        lastStatus = failed ? 'failed' : succeeded ? 'success' : (j.state || null);
+      }
+      if (succeeded && runAt && (!lastSuccessAt || runAt > lastSuccessAt)) {
+        lastSuccessAt = runAt;
+        logicalBytes = j.kilobytes != null ? j.kilobytes * 1024 : null;
+      }
+    }
+
+    const client = {
+      clientName: q, sourceName: [...sourceNames].join(', ') || null, policies: [...policiesSet],
+      jobs7d, failed7d, jobs30d, failed30d, lastStatus, lastRunAt, lastSuccessAt, logicalBytes,
+    };
+
+    const cutoff14Ms = Date.now() - 14 * 86400000;
+    const runs14d = jobs30
+      .filter((j) => j.started_at && Date.parse(j.started_at) >= cutoff14Ms)
+      .slice(0, 100)
+      .map((j) => ({
+        id: j.id, policyName: j.policy_name, jobType: j.job_type, scheduleType: j.schedule_type,
+        state: j.state, statusCode: j.status_code, startedAt: j.started_at, endedAt: j.ended_at,
+        elapsedSeconds: j.elapsed_seconds, kilobytes: j.kilobytes, clientName: j.client_name, sourceName: j.source_name,
+      }));
+
+    const byPolicy = new Map();
+    for (const j of jobs30) {
+      if (!j.policy_name) continue;
+      let p = byPolicy.get(j.policy_name);
+      if (!p) {
+        p = { policyName: j.policy_name, jobCount30d: 0, failed30d: 0, lastRunAt: null, lastStatus: null };
+        byPolicy.set(j.policy_name, p);
+      }
+      p.jobCount30d += 1;
+      const failed = isFailedJob(j);
+      if (failed) p.failed30d += 1;
+      const runAt = j.ended_at || j.started_at;
+      if (runAt && (!p.lastRunAt || runAt > p.lastRunAt)) {
+        p.lastRunAt = runAt;
+        p.lastStatus = failed ? 'failed' : (['EXITED', 'DONE'].includes(j.state) ? 'success' : (j.state || null));
+      }
+    }
+    const policies = [...byPolicy.values()];
+
+    const issues = db.prepare(`
+      SELECT * FROM netbackup_issue_history WHERE target = ? AND status = 'open' ORDER BY last_seen DESC LIMIT 10
+    `).all(q).map((i) => ({ type: i.type, severity: i.severity, message: i.message, target: i.target, createdAt: i.first_seen }));
+
+    res.json({ query: q, found: true, client, runs14d, policies, issues });
+  } catch (err) { next(err); }
+});
+
 // ── AI Advisor ───────────────────────────────────────────────────────────────
 
 function advisorReportKey(slug) {

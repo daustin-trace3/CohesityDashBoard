@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Bell, ClipboardList, ShieldCheck, HardDrive, Server, Settings, Sparkles, Workflow, ClipboardCheck, CalendarCheck, Layers, BadgeCheck, ShieldCheck as PrivacyIcon } from 'lucide-react';
+import { Gauge, Bell, ClipboardList, ShieldCheck, HardDrive, Server, Settings, Sparkles, Workflow, ClipboardCheck, CalendarCheck, Layers, BadgeCheck, ShieldCheck as PrivacyIcon, Crosshair } from 'lucide-react';
 
 const NbOverviewPage = lazy(() => import('../../pages/netbackup/NbOverviewPage'));
 const IssueAlertsPage = lazy(() => import('../../components/IssueAlertsPage'));
@@ -13,6 +13,7 @@ const NbAdvisorPage = lazy(() => import('../../pages/netbackup/NbAdvisorPage'));
 const NbSlpPage = lazy(() => import('../../pages/netbackup/NbSlpPage'));
 const NbGovernancePage = lazy(() => import('../../pages/netbackup/NbGovernancePage'));
 const NbBackupHistoryPage = lazy(() => import('../../pages/netbackup/NbBackupHistoryPage'));
+const NbObject360Page = lazy(() => import('../../pages/netbackup/NbObject360Page'));
 const NbWorkloadsPage = lazy(() => import('../../pages/netbackup/NbWorkloadsPage'));
 const NbLicensingPage = lazy(() => import('../../pages/netbackup/NbLicensingPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
@@ -41,6 +42,7 @@ const navGroups = [
     label: 'Reporting',
     items: [
       { label: 'Backup History', route: '/netbackup/backup-history', icon: CalendarCheck, isActive: (p) => p.startsWith('/netbackup/backup-history') },
+      { label: 'Object 360', route: '/netbackup/object-360', icon: Crosshair, isActive: (p) => p.startsWith('/netbackup/object-360') },
       { label: 'Workloads', route: '/netbackup/workloads', icon: Layers, isActive: (p) => p.startsWith('/netbackup/workloads') },
       { label: 'Licensing', route: '/netbackup/licensing', icon: BadgeCheck, isActive: (p) => p.startsWith('/netbackup/licensing') },
     ],
@@ -82,6 +84,7 @@ export default {
     { path: 'netbackup/slps', Component: NbSlpPage },
     { path: 'netbackup/governance', Component: NbGovernancePage },
     { path: 'netbackup/backup-history', Component: NbBackupHistoryPage },
+    { path: 'netbackup/object-360', Component: NbObject360Page },
     { path: 'netbackup/workloads', Component: NbWorkloadsPage },
     { path: 'netbackup/licensing', Component: NbLicensingPage },
     { path: 'netbackup/storage', Component: NbStoragePage },

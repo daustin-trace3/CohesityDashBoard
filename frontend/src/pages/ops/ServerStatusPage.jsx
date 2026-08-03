@@ -190,6 +190,12 @@ export default function ServerStatusPage() {
                 ) : null}
               </Fact>
               <Fact label="Logical">{fmtBytes(o.logical_bytes)}</Fact>
+              <div className="col-span-full -mt-1">
+                <Link to={`/cohesity/object-360?name=${encodeURIComponent(o.name)}`}
+                  className="text-[11px] text-brand hover:text-brand-bright" title="Open Cohesity Object 360">
+                  Open Object 360 →
+                </Link>
+              </div>
             </div>
           ))}
           {data.cohesity.agents.map((a) => (
@@ -217,6 +223,12 @@ export default function ServerStatusPage() {
                 ) : '—'}
               </Fact>
               <Fact label="FETB">{fmtBytes(c.logicalBytes)}</Fact>
+              <div className="col-span-full -mt-1">
+                <Link to={`/netbackup/object-360?name=${encodeURIComponent(c.clientName)}`}
+                  className="text-[11px] text-brand hover:text-brand-bright" title="Open NetBackup Object 360">
+                  Open Object 360 →
+                </Link>
+              </div>
             </div>
           ))}
         </Panel>

@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import {
   LayoutDashboard, Bell, Server, ShieldCheck, ArrowLeftRight, HardDrive,
-  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen, Layers, Flag, Boxes, CalendarCheck,
+  Activity, FileText, ClipboardCheck, Settings, Sparkles, BadgeCheck, FolderOpen, Layers, Flag, Boxes, CalendarCheck, Crosshair,
 } from 'lucide-react';
 
 const Dashboard = lazy(() => import('../../pages/Dashboard'));
@@ -10,6 +10,7 @@ const HardwarePage = lazy(() => import('../../pages/HardwarePage'));
 const ClusterManagement = lazy(() => import('../../pages/ClusterManagement'));
 const GflagsPage = lazy(() => import('../../pages/GflagsPage'));
 const BackupHistoryPage = lazy(() => import('../../pages/BackupHistoryPage'));
+const CohesityObject360Page = lazy(() => import('../../pages/CohesityObject360Page'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
 const CohesityPrivacyPage = () => <PrivacyInspectorPage platform="cohesity" />;
 
@@ -37,6 +38,7 @@ const navGroups = [
     label: 'Reporting',
     items: [
       { label: 'Backup History', route: '/cohesity/backup-history', icon: CalendarCheck, isActive: (p) => p.startsWith('/cohesity/backup-history') },
+      { label: 'Object 360', route: '/cohesity/object-360', icon: Crosshair, isActive: (p) => p.startsWith('/cohesity/object-360') },
       { label: 'Reporting', route: '/reporting', icon: FileText, isActive: (p) => p.startsWith('/reporting') },
       { label: 'Analytics', route: '/analytics', icon: Activity, isActive: (p) => p.startsWith('/analytics') },
       { label: 'Sources', route: '/sources', icon: Boxes, isActive: (p) => p.startsWith('/sources') },
@@ -80,6 +82,7 @@ export default {
     { path: 'cohesity/clusters', Component: ClusterManagement },
     { path: 'cohesity/gflags', Component: GflagsPage },
     { path: 'cohesity/backup-history', Component: BackupHistoryPage },
+    { path: 'cohesity/object-360', Component: CohesityObject360Page },
     { path: 'cohesity/privacy', Component: CohesityPrivacyPage },
   ],
 };

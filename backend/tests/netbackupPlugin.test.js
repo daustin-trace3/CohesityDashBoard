@@ -615,6 +615,45 @@ describe('routes/netbackup.js v2 routes (SLPs, governance, workloads, licensing,
     expect(res.body.servers.some((s) => s.name === 'client-v2-a')).toBe(true);
   });
 
+  it('GET /api/netbackup/object-360/suggest returns matching client names', async () => {
+    const res = await request(app).get('/api/netbackup/object-360/suggest?q=client-v2');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.names)).toBe(true);
+    expect(res.body.names).toContain('client-v2-a');
+    expect(res.body.names.length).toBeLessThanOrEqual(10);
+  });
+
+  it('GET /api/netbackup/object-360?name= returns found:true with client/runs/policies/issues for a seeded client', async () => {
+    db.prepare(`
+      INSERT INTO netbackup_issue_history (source_id, issue_key, source, type, target, severity, message, status)
+      VALUES (?, 'stale-backup:test:client-v2-a', 'nb-v2', 'stale-backup', 'client-v2-a', 'warning', 'client-v2-a has not backed up recently', 'open')
+    `).run(sourceId);
+
+    const res = await request(app).get('/api/netbackup/object-360?name=client-v2-a');
+    expect(res.status).toBe(200);
+    expect(res.body.found).toBe(true);
+    expect(res.body.client.clientName).toBe('client-v2-a');
+    expect(res.body.client.jobs30d).toBeGreaterThanOrEqual(2);
+    expect(Array.isArray(res.body.runs14d)).toBe(true);
+    expect(res.body.runs14d.length).toBeGreaterThanOrEqual(2);
+    expect(Array.isArray(res.body.policies)).toBe(true);
+    expect(res.body.policies.some((p) => p.policyName === 'active-policy')).toBe(true);
+    expect(Array.isArray(res.body.issues)).toBe(true);
+    expect(res.body.issues.some((i) => i.type === 'stale-backup')).toBe(true);
+  });
+
+  it('GET /api/netbackup/object-360?name= returns found:false for an unknown client', async () => {
+    const res = await request(app).get('/api/netbackup/object-360?name=no-such-client');
+    expect(res.status).toBe(200);
+    expect(res.body.found).toBe(false);
+    expect(res.body.client).toBeNull();
+  });
+
+  it('GET /api/netbackup/object-360 without name returns 400', async () => {
+    const res = await request(app).get('/api/netbackup/object-360');
+    expect(res.status).toBe(400);
+  });
+
   it('GET /api/netbackup/advisor/:report — 404 for unknown, null cached report for a known one', async () => {
     const unknown = await request(app).get('/api/netbackup/advisor/not-a-report');
     expect(unknown.status).toBe(404);
