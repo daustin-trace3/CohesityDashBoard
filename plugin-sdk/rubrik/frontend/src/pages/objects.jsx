@@ -131,8 +131,8 @@ export default function ObjectsPage() {
                   <tr key={o.id} className="rbk-row" style={{ borderBottom: '1px solid var(--rbk-border)', background: o.compliant ? 'transparent' : 'rgba(248,113,113,0.06)' }}>
                     <td style={{ padding: '8px 12px 8px 0' }}>
                       <ReactRouterDOM.Link
-                        to={`/rubrik/object-360?name=${encodeURIComponent(o.name)}`}
-                        title="Open Object 360"
+                        to={`/ops/server360?name=${encodeURIComponent(o.name)}`}
+                        title="Open Server 360"
                         style={{ color: 'var(--rbk-ink)', fontWeight: 500, textDecoration: 'none' }}
                         onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--rbk-brand)'; }}
                         onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--rbk-ink)'; }}

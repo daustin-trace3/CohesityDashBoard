@@ -89,26 +89,65 @@ export function Donut({ pct, segments, size = 74, stroke = 9, colors, thresholds
   );
 }
 
+/* ── axis helpers ────────────────────────────────────────────────────── */
+// "Nice" tick step so gridlines land on round numbers (1/2/5 × 10^n).
+function niceStep(rough) {
+  if (!(rough > 0)) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  const frac = rough / pow;
+  return (frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10) * pow;
+}
+function niceTicks(max, count = 4) {
+  const step = niceStep(max / count);
+  const ticks = [];
+  for (let v = 0; v <= max + step * 0.001; v += step) ticks.push(Math.round(v * 1000) / 1000);
+  return { ticks, top: ticks[ticks.length - 1] };
+}
+const fmtTick = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(v % 1e6 ? 1 : 0)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(v % 1e3 ? 1 : 0)}k` : `${v}`);
+
 /* ── HBar ────────────────────────────────────────────────────────────── */
-export function HBar({ rows = [], max, unit, width = 320, height }) {
-  const barMax = max != null ? max : Math.max(1, ...rows.map((r) => r.value));
-  const barH = 14;
-  const gap = 8;
-  const h = height || rows.length * (barH + gap);
+// Chart.js-style horizontal bar: label column, x gridlines on nice ticks,
+// tick labels along the bottom axis, value labels clamped inside the plot
+// (never clipped), native tooltips carrying the untruncated label.
+export function HBar({ rows = [], max, unit, width = 460, height, labelWidth = 90, truncate = 14 }) {
+  const dataMax = max != null ? max : Math.max(1, ...rows.map((r) => r.value));
+  const { ticks, top } = max != null ? { ticks: niceTicks(max, 4).ticks, top: max } : niceTicks(dataMax, 4);
+  const barH = 13;
+  const gap = 9;
+  const padR = 10;
+  const axisH = 18;
+  const plotX = labelWidth + 8;
+  const plotW = Math.max(40, width - plotX - padR);
+  const plotH = rows.length * (barH + gap);
+  const h = height || plotH + axisH;
+  const xFor = (v) => plotX + (v / top) * plotW;
   return (
-    <svg width={width} height={h}>
+    <svg width={width} height={h} style={{ display: 'block' }}>
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={xFor(t)} y1={0} x2={xFor(t)} y2={plotH} stroke={GRID} strokeWidth={1} />
+          <text x={xFor(t)} y={plotH + 13} fontSize={10} fill={TICK} textAnchor="middle">
+            {unit ? `${fmtTick(t)}${unit}` : fmtTick(t)}
+          </text>
+        </g>
+      ))}
       {rows.map((r, i) => {
-        const w = Math.max(2, (r.value / barMax) * (width - 90));
+        const w = Math.max(2, (r.value / top) * plotW);
         const y = i * (barH + gap);
+        const valText = unit ? `${r.value}${unit}` : String(r.value);
+        const fitsOutside = w + 6 + valText.length * 6.5 < plotW;
         return (
-          <g key={r.label}>
-            <text x={0} y={y + barH / 2 + 4} fontSize={11} fill={INK_MUTED}>
-              {r.label.length > 14 ? `${r.label.slice(0, 13)}…` : r.label}
+          <g key={`${r.label}-${i}`}>
+            <title>{`${r.label}: ${valText}`}</title>
+            <text x={labelWidth} y={y + barH / 2 + 4} fontSize={11} fill={INK_MUTED} textAnchor="end">
+              {r.label.length > truncate ? `${r.label.slice(0, truncate - 1)}…` : r.label}
             </text>
-            <rect x={82} y={y} width={w} height={barH} rx={3} fill={r.color || BRAND} />
-            <text x={82 + w + 6} y={y + barH / 2 + 4} fontSize={11} fill={INK}>
-              {unit ? `${r.value}${unit}` : r.value}
-            </text>
+            <rect x={plotX} y={y} width={w} height={barH} rx={3} fill={r.color || BRAND} />
+            {fitsOutside ? (
+              <text x={plotX + w + 6} y={y + barH / 2 + 4} fontSize={11} fill={INK}>{valText}</text>
+            ) : (
+              <text x={plotX + w - 5} y={y + barH / 2 + 4} fontSize={10} fontWeight={600} fill="#0B1015" textAnchor="end">{valText}</text>
+            )}
           </g>
         );
       })}
@@ -118,27 +157,39 @@ export function HBar({ rows = [], max, unit, width = 320, height }) {
 
 /* ── StackedHBar ─────────────────────────────────────────────────────── */
 // rows: [{label, values:{seriesKey: number}}]; series: [{key,color,label}]
-export function StackedHBar({ rows = [], series = [], width = 320 }) {
-  const barH = 14;
+export function StackedHBar({ rows = [], series = [], width = 460, labelWidth = 90, truncate = 14 }) {
+  const barH = 13;
   const gap = 10;
+  const padR = 10;
+  const axisH = 18;
   const totals = rows.map((r) => series.reduce((s, sr) => s + (r.values[sr.key] || 0), 0));
-  const max = Math.max(1, ...totals);
+  const { ticks, top } = niceTicks(Math.max(1, ...totals), 4);
+  const plotX = labelWidth + 8;
+  const plotW = Math.max(40, width - plotX - padR);
+  const plotH = rows.length * (barH + gap);
+  const xFor = (v) => plotX + (v / top) * plotW;
   return (
-    <svg width={width} height={rows.length * (barH + gap)}>
+    <svg width={width} height={plotH + axisH} style={{ display: 'block' }}>
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={xFor(t)} y1={0} x2={xFor(t)} y2={plotH} stroke={GRID} strokeWidth={1} />
+          <text x={xFor(t)} y={plotH + 13} fontSize={10} fill={TICK} textAnchor="middle">{fmtTick(t)}</text>
+        </g>
+      ))}
       {rows.map((r, i) => {
         const y = i * (barH + gap);
-        let x = 82;
+        let x = plotX;
         return (
-          <g key={r.label}>
-            <text x={0} y={y + barH / 2 + 4} fontSize={11} fill={INK_MUTED}>
-              {r.label.length > 14 ? `${r.label.slice(0, 13)}…` : r.label}
+          <g key={`${r.label}-${i}`}>
+            <text x={labelWidth} y={y + barH / 2 + 4} fontSize={11} fill={INK_MUTED} textAnchor="end">
+              {r.label.length > truncate ? `${r.label.slice(0, truncate - 1)}…` : r.label}
             </text>
             {series.map((sr) => {
               const v = r.values[sr.key] || 0;
-              const w = (v / max) * (width - 90);
+              const w = (v / top) * plotW;
               const seg = (
                 <rect key={sr.key} x={x} y={y} width={Math.max(0, w)} height={barH} fill={sr.color}>
-                  <title>{`${sr.label}: ${v}`}</title>
+                  <title>{`${r.label} — ${sr.label}: ${v}`}</title>
                 </rect>
               );
               x += w;
@@ -156,20 +207,30 @@ export function StackedHBar({ rows = [], series = [], width = 320 }) {
 export function StackedVBar({ days = [], series = [], colors, width = 480, height = 160 }) {
   const padB = 20;
   const padT = 6;
+  const padL = 34;
   const innerH = height - padB - padT;
   const totals = days.map((d) => series.reduce((s, sr) => s + (d.values[sr.key] || 0), 0));
-  const max = Math.max(1, ...totals);
-  const barW = Math.max(4, Math.floor((width - days.length * 4) / Math.max(1, days.length)));
+  const { ticks, top } = niceTicks(Math.max(1, ...totals), 3);
+  const innerW = width - padL - 4;
+  const barW = Math.max(4, Math.floor((innerW - days.length * 4) / Math.max(1, days.length)));
+  const labelEvery = Math.max(1, Math.ceil(days.length / 6));
+  const yFor = (v) => padT + innerH - (v / top) * innerH;
   return (
-    <svg width={width} height={height}>
+    <svg width={width} height={height} style={{ display: 'block' }}>
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={padL} y1={yFor(t)} x2={width - 4} y2={yFor(t)} stroke={GRID} strokeWidth={1} />
+          <text x={padL - 5} y={yFor(t) + 3} fontSize={9} fill={TICK} textAnchor="end">{fmtTick(t)}</text>
+        </g>
+      ))}
       {days.map((d, i) => {
-        const x = i * (barW + 4);
-        let y = height - padB;
+        const x = padL + i * (barW + 4);
+        let y = padT + innerH;
         return (
           <g key={d.day}>
             {series.map((sr) => {
               const v = d.values[sr.key] || 0;
-              const h = (v / max) * innerH;
+              const h = (v / top) * innerH;
               y -= h;
               return (
                 <rect key={sr.key} x={x} y={y} width={barW} height={Math.max(0, h)} fill={(colors && colors[sr.key]) || sr.color}>
@@ -177,6 +238,11 @@ export function StackedVBar({ days = [], series = [], colors, width = 480, heigh
                 </rect>
               );
             })}
+            {i % labelEvery === 0 && (
+              <text x={x + barW / 2} y={height - 6} fontSize={9} fill={TICK} textAnchor="middle">
+                {String(d.day).slice(5)}
+              </text>
+            )}
           </g>
         );
       })}

@@ -236,18 +236,28 @@ export default function CohesityObject360Page() {
 
           {(data.replication || []).length > 0 && (
             <Panel title="Replication" icon={ArrowLeftRight}>
-              <div className="flex flex-col gap-2">
-                {data.replication.map((leg, i) => (
-                  <div key={i} className="flex items-center gap-2.5 text-xs flex-wrap">
-                    <span className="text-ink font-medium">{leg.targetCluster || '—'}</span>
-                    <Badge tone={STATUS_TONE[leg.status] || 'neutral'}>{statusLabel(leg.status) || leg.status || '—'}</Badge>
-                    <span className="text-ink-faint tnum ml-auto">{fmtBytes(leg.logicalBytes)}</span>
-                    {leg.lagSeconds != null && (
-                      <span className="text-ink-faint tnum">{leg.lagSeconds < 60 ? `${leg.lagSeconds}s` : `${Math.round(leg.lagSeconds / 60)}m`} lag</span>
-                    )}
-                  </div>
-                ))}
-              </div>
+              <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wide text-ink-faint">
+                    <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60">Target Cluster</th>
+                    <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60">Status</th>
+                    <th className="text-right font-semibold pb-2 border-b border-cohesity-border/60">Logical</th>
+                    <th className="text-right font-semibold pb-2 border-b border-cohesity-border/60">Lag</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.replication.map((leg, i) => (
+                    <tr key={i} className="border-b border-cohesity-border/40 last:border-0">
+                      <td className="py-2 pr-2 text-ink font-medium">{leg.targetCluster || '—'}</td>
+                      <td className="py-2 pr-2"><Badge tone={STATUS_TONE[leg.status] || 'neutral'}>{statusLabel(leg.status) || leg.status || '—'}</Badge></td>
+                      <td className="py-2 pr-2 text-right text-ink-faint tnum">{fmtBytes(leg.logicalBytes)}</td>
+                      <td className="py-2 text-right text-ink-faint tnum">
+                        {leg.lagSeconds != null ? (leg.lagSeconds < 60 ? `${leg.lagSeconds}s` : `${Math.round(leg.lagSeconds / 60)}m`) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </Panel>
           )}
 

@@ -4,8 +4,7 @@
 // second "Topology & Archival" section. Default export name is unchanged so
 // index.jsx keeps resolving it.
 
-import { PageHeader, StatCard, SkeletonTable, RefreshButton, LastUpdated, ArrowsIcon } from '../ui';
-import { AMBER, TEXT, MUTED, panelStyle, thStyle, tdStyle, StatusPill as LegacyStatusPill, useFetch, formatWhen, formatLag, formatBytes as legacyFormatBytes } from './_shared';
+import { PageHeader, StatCard, Badge, SkeletonTable, RefreshButton, LastUpdated, ArrowsIcon, fmtBytes } from '../ui';
 
 const API_BASE = '/api/rubrik';
 
@@ -16,14 +15,20 @@ function apiFetch(path) {
   });
 }
 
-function formatBytes(bytes) {
-  if (bytes == null) return '—';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  let n = bytes;
-  let i = 0;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-  return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+function useFetch(path) {
+  const [data, setData] = React.useState(null);
+  const [error, setError] = React.useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    apiFetch(path)
+      .then((json) => { if (!cancelled) setData(json); })
+      .catch((err) => { if (!cancelled) setError(err.message); });
+    return () => { cancelled = true; };
+  }, [path]);
+  return { data, error };
 }
+
+const formatBytes = fmtBytes;
 
 function formatDateTime(ms) {
   if (!ms) return '—';
@@ -31,6 +36,37 @@ function formatDateTime(ms) {
   if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString();
 }
+
+function formatWhen(iso) {
+  if (!iso) return '—';
+  const raw = typeof iso === 'string' && !iso.includes('T') ? iso.replace(' ', 'T') + 'Z' : iso;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return iso;
+  const diffH = (Date.now() - d.getTime()) / (1000 * 60 * 60);
+  if (diffH < -1) return `in ${Math.round(-diffH)}h`;
+  if (diffH < 1) return `${Math.max(1, Math.round(diffH * 60))}m ago`;
+  if (diffH < 48) return `${Math.round(diffH)}h ago`;
+  return d.toLocaleString();
+}
+
+function formatLag(seconds) {
+  if (seconds == null) return '—';
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.round(seconds / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  return `${h}h`;
+}
+
+function LegacyStatusPill({ status }) {
+  const isBad = status === 'Failed' || status === 'Lagging' || status === 'Critical' || status === 'Open';
+  const isWarn = status === 'Warning' || status === 'Investigating';
+  const tone = isBad ? 'crit' : isWarn ? 'warn' : 'ok';
+  return <Badge tone={tone}>{status}</Badge>;
+}
+
+const th = { padding: '8px 12px 8px 0', textAlign: 'left', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em', color: 'var(--rbk-ink-muted)' };
+const td = { padding: '8px 12px 8px 0', fontSize: 12, color: 'var(--rbk-ink-muted)' };
 
 const STATUS_TONE = {
   Active: { bg: 'rgba(96,165,250,0.1)', color: '#60A5FA', border: 'rgba(96,165,250,0.25)' },
@@ -229,74 +265,67 @@ export default function ReplicationPage() {
         )}
         {topo && (
           <>
-            <div style={{ ...panelStyle(), marginBottom: 20 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: TEXT }}>Replication Pairs</div>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr>
-                    <th style={thStyle}>Source</th>
-                    <th style={thStyle}>Target</th>
-                    <th style={thStyle}>Objects</th>
-                    <th style={thStyle}>Lag</th>
-                    <th style={thStyle}>Status</th>
-                    <th style={thStyle}>Last Sync</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topo.pairs.map((p) => (
-                    <tr key={p.id} style={{ background: p.status === 'Lagging' ? `${AMBER}14` : 'transparent' }}>
-                      <td style={tdStyle}>{p.sourceCluster}</td>
-                      <td style={tdStyle}>{p.targetCluster}</td>
-                      <td style={tdStyle}>{p.objects}</td>
-                      <td style={{ ...tdStyle, color: p.status === 'Lagging' ? AMBER : TEXT }}>{formatLag(p.lagSeconds)}</td>
-                      <td style={tdStyle}><LegacyStatusPill status={p.status} /></td>
-                      <td style={tdStyle}>{formatWhen(p.lastSyncAt)}</td>
+            <div className="rbk-panel" style={{ padding: 16, marginBottom: 20 }}>
+              <p className="rbk-panel-title" style={{ marginBottom: 12 }}>Replication Pairs</p>
+              <div className="rbk-scroll" style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--rbk-border)' }}>
+                      <th style={th}>Source</th>
+                      <th style={th}>Target</th>
+                      <th style={th}>Objects</th>
+                      <th style={th}>Lag</th>
+                      <th style={th}>Status</th>
+                      <th style={th}>Last Sync</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div style={{ marginTop: 10, fontSize: 12, color: MUTED }}>
+                  </thead>
+                  <tbody>
+                    {topo.pairs.map((p) => (
+                      <tr key={p.id} className="rbk-row" style={{ borderBottom: '1px solid var(--rbk-border)', background: p.status === 'Lagging' ? 'rgba(251,191,36,0.08)' : 'transparent' }}>
+                        <td style={td}>{p.sourceCluster}</td>
+                        <td style={td}>{p.targetCluster}</td>
+                        <td style={td}>{p.objects}</td>
+                        <td style={{ ...td, color: p.status === 'Lagging' ? 'var(--rbk-warn)' : 'var(--rbk-ink)' }}>{formatLag(p.lagSeconds)}</td>
+                        <td style={td}><LegacyStatusPill status={p.status} /></td>
+                        <td style={td}>{formatWhen(p.lastSyncAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ marginTop: 10, fontSize: 12, color: 'var(--rbk-ink-muted)' }}>
                 {topo.pairs.map((p) => `${p.sourceCluster} → ${p.targetCluster}`).join('   •   ')}
               </div>
             </div>
 
-            <div style={panelStyle()}>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: TEXT }}>Archival Locations</div>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr>
-                    <th style={thStyle}>Name</th>
-                    <th style={thStyle}>Type</th>
-                    <th style={thStyle}>Archived</th>
-                    <th style={thStyle}>Objects</th>
-                    <th style={thStyle}>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topo.archival.map((a) => (
-                    <tr key={a.id}>
-                      <td style={tdStyle}>{a.name}</td>
-                      <td style={tdStyle}>
-                        <span
-                          style={{
-                            padding: '2px 8px',
-                            borderRadius: 4,
-                            fontSize: 11,
-                            background: a.type === 'S3' ? `${AMBER}26` : '#3b82f626',
-                            color: a.type === 'S3' ? AMBER : '#60a5fa',
-                            border: `1px solid ${a.type === 'S3' ? AMBER : '#3b82f6'}`,
-                          }}
-                        >
-                          {a.type}
-                        </span>
-                      </td>
-                      <td style={tdStyle}>{legacyFormatBytes(a.archivedBytes)}</td>
-                      <td style={tdStyle}>{a.objectCount}</td>
-                      <td style={tdStyle}><LegacyStatusPill status={a.status === 'Active' ? 'Succeeded' : a.status} /></td>
+            <div className="rbk-panel" style={{ padding: 16 }}>
+              <p className="rbk-panel-title" style={{ marginBottom: 12 }}>Archival Locations</p>
+              <div className="rbk-scroll" style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--rbk-border)' }}>
+                      <th style={th}>Name</th>
+                      <th style={th}>Type</th>
+                      <th style={th}>Archived</th>
+                      <th style={th}>Objects</th>
+                      <th style={th}>Status</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {topo.archival.map((a) => (
+                      <tr key={a.id} className="rbk-row" style={{ borderBottom: '1px solid var(--rbk-border)' }}>
+                        <td style={td}>{a.name}</td>
+                        <td style={td}>
+                          {a.type === 'S3' ? <Badge tone="warn">{a.type}</Badge> : <Badge tone="info">{a.type}</Badge>}
+                        </td>
+                        <td style={td}>{formatBytes(a.archivedBytes)}</td>
+                        <td style={td}>{a.objectCount}</td>
+                        <td style={td}><LegacyStatusPill status={a.status === 'Active' ? 'Succeeded' : a.status} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         )}

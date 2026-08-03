@@ -303,17 +303,29 @@ export default function Object360Page() {
           {/* Replication */}
           {(data.replication?.legs || []).length > 0 && (
             <Panel title="Replication" icon={ArrowLeftRightIcon}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {data.replication.legs.map((leg, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, flexWrap: 'wrap' }}>
-                    <span style={{ color: 'var(--rbk-ink)', fontWeight: 500 }}>{leg.targetCluster || '—'}</span>
-                    <Badge tone={STATUS_TONE[leg.status] || 'neutral'}>{leg.status || '—'}</Badge>
-                    <span className="rbk-tnum" style={{ color: 'var(--rbk-ink-faint)', marginLeft: 'auto' }}>
-                      {leg.lagSeconds != null ? `${leg.lagSeconds < 60 ? `${leg.lagSeconds}s` : `${Math.round(leg.lagSeconds / 60)}m`} lag` : '—'}
-                    </span>
-                  </div>
-                ))}
-              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    {['Target Cluster', 'Status', 'Lag', 'Last Sync'].map((hd, i) => (
+                      <th key={hd} style={{ textAlign: i === 0 ? 'left' : i >= 2 ? 'right' : 'left', padding: '0 8px 8px 0', fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--rbk-ink-faint)', borderBottom: '1px solid var(--rbk-border)' }}>{hd}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.replication.legs.map((leg, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--rbk-border)' }}>
+                      <td style={{ padding: '8px 8px 8px 0', color: 'var(--rbk-ink)', fontWeight: 500 }}>{leg.targetCluster || '—'}</td>
+                      <td style={{ padding: '8px 8px 8px 0' }}><Badge tone={STATUS_TONE[leg.status] || 'neutral'}>{leg.status || '—'}</Badge></td>
+                      <td className="rbk-tnum" style={{ padding: '8px 8px 8px 0', textAlign: 'right', color: 'var(--rbk-ink-muted)' }}>
+                        {leg.lagSeconds != null ? (leg.lagSeconds < 60 ? `${leg.lagSeconds}s` : `${Math.round(leg.lagSeconds / 60)}m`) : '—'}
+                      </td>
+                      <td className="rbk-tnum" style={{ padding: '8px 0 8px 0', textAlign: 'right', color: 'var(--rbk-ink-faint)' }}>
+                        {fmtAgo(leg.lastSyncAt) || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </Panel>
           )}
 

@@ -4,7 +4,7 @@ import {
   PageHeader, StatCard, Panel, Spinner, LastUpdated, RefreshButton, Badge,
   EmptyState, fmtBytes, ActivityIcon, ChartIcon, ArrowsIcon, XIcon,
 } from '../ui';
-import { StackedVBar, MeshDiagram } from '../charts';
+import { StackedVBar, MeshDiagram, HBar } from '../charts';
 
 const OK = '#34D399';
 const WARN = '#FBBF24';
@@ -26,35 +26,8 @@ function formatLag(seconds) {
   return `${Math.round(m / 60)}h`;
 }
 
-// charts.jsx's HBar hardcodes a 14-char label truncation (built for short
-// cluster/job names) — the contract calls for 40-char truncation on failure
-// reason strings, so this page renders its own compact bar list rather than
-// stretching HBar's fixed label column. Kept visually consistent (crit red,
-// same row height/typography as the rest of the kit).
-function TopFailuresBar({ rows, width = 480 }) {
-  const barH = 14;
-  const gap = 14;
-  const max = Math.max(1, ...rows.map((r) => r.value));
-  return (
-    <svg width={width} height={rows.length * (barH + gap)}>
-      {rows.map((r, i) => {
-        const y = i * (barH + gap);
-        const w = Math.max(2, (r.value / max) * (width - 40));
-        return (
-          <g key={i}>
-            <text x={0} y={y - 2} fontSize={10} fill="var(--rbk-ink-muted)">
-              {r.label.length > 40 ? `${r.label.slice(0, 39)}…` : r.label}
-            </text>
-            <rect x={0} y={y + 2} width={w} height={barH - 4} rx={3} fill={CRIT} />
-            <text x={w + 6} y={y + 2 + (barH - 4) / 2 + 4} fontSize={10} fill="var(--rbk-ink)">
-              {r.value}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
+// Failure reasons render via the kit HBar (axis gridlines/ticks, clamped
+// value labels) with a wide label column for full error strings.
 
 function MeshPanel({ title, note, flows }) {
   const [filterSource, setFilterSource] = React.useState('');
@@ -280,7 +253,7 @@ export default function AnalyticsPage() {
     { key: 'warning', color: WARN, label: 'Warning' },
   ];
 
-  const failureRows = topErrors.map((e) => ({ label: e.errorMessage || '(unknown error)', value: e.count }));
+  const failureRows = topErrors.map((e) => ({ label: e.errorMessage || '(unknown error)', value: e.count, color: CRIT }));
 
   return (
     <div className="rbk-root rbk-fade-in">
@@ -349,7 +322,7 @@ export default function AnalyticsPage() {
             </Panel>
             <Panel title="Top Failure Reasons" icon={ChartIcon}>
               {failureRows.length > 0 ? (
-                <TopFailuresBar rows={failureRows} width={440} />
+                <HBar rows={failureRows} width={560} labelWidth={250} truncate={38} />
               ) : (
                 <EmptyState title="No errors recorded" />
               )}

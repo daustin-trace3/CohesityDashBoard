@@ -51,35 +51,8 @@ function formatDate(ms) {
   return d.toLocaleDateString();
 }
 
-// FLAG (kit gap): charts.jsx's HBar hardcodes a 14-char label truncation,
-// but this page's spec calls for 40-char truncation on failure-reason
-// labels (they're full error strings). Implemented locally, same visual
-// language (rect/text layout, colors) as HBar, just with a wider label
-// column and truncation cutoff, plus a native <title> tooltip for the rest.
-function FailureHBar({ rows = [], width = 320 }) {
-  const barMax = Math.max(1, ...rows.map((r) => r.value));
-  const barH = 14;
-  const gap = 8;
-  const labelW = 220;
-  const h = rows.length * (barH + gap);
-  return (
-    <svg width={width} height={h || 20}>
-      {rows.map((r, i) => {
-        const w = Math.max(2, (r.value / barMax) * (width - labelW - 40));
-        const y = i * (barH + gap);
-        const label = r.label.length > 40 ? `${r.label.slice(0, 39)}…` : r.label;
-        return (
-          <g key={`${r.label}-${i}`}>
-            <title>{r.label}</title>
-            <text x={0} y={y + barH / 2 + 4} fontSize={11} fill="#94A3B3">{label}</text>
-            <rect x={labelW} y={y} width={w} height={barH} rx={3} fill={r.color || '#ef4444'} />
-            <text x={labelW + w + 6} y={y + barH / 2 + 4} fontSize={11} fill="#E8EDF2">{r.value}</text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
+// Failure reasons use the kit HBar with a wide label column (full error
+// strings) — the kit renders axis gridlines/ticks and clamps value labels.
 
 export default function DataProtectionPage() {
   const [days, setDays] = React.useState(7);
@@ -242,11 +215,11 @@ export default function DataProtectionPage() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 24 }}>
           <div className="rbk-panel" style={{ padding: 16 }}>
             <p className="rbk-panel-title" style={{ marginBottom: 12 }}>Top Failure Reasons</p>
-            {failureRows.length > 0 ? <FailureHBar rows={failureRows} /> : <div style={{ color: 'var(--rbk-ink-faint)', fontSize: 12, padding: '20px 0', textAlign: 'center' }}>No failures recorded</div>}
+            {failureRows.length > 0 ? <HBar rows={failureRows} width={560} labelWidth={250} truncate={38} /> : <div style={{ color: 'var(--rbk-ink-faint)', fontSize: 12, padding: '20px 0', textAlign: 'center' }}>No failures recorded</div>}
           </div>
           <div className="rbk-panel" style={{ padding: 16 }}>
             <p className="rbk-panel-title" style={{ marginBottom: 12 }}>Status Breakdown</p>
-            {statusRows.length > 0 ? <HBar rows={statusRows} /> : <div style={{ color: 'var(--rbk-ink-faint)', fontSize: 12, padding: '20px 0', textAlign: 'center' }}>No data</div>}
+            {statusRows.length > 0 ? <HBar rows={statusRows} width={560} labelWidth={90} /> : <div style={{ color: 'var(--rbk-ink-faint)', fontSize: 12, padding: '20px 0', textAlign: 'center' }}>No data</div>}
           </div>
         </div>
 

@@ -191,8 +191,8 @@ export default function BackupHistoryPage() {
                   <tr key={`${s.name}|${idx}`}>
                     <td style={{ position: 'sticky', left: 0, background: 'var(--rbk-surface)', zIndex: 1, padding: '8px 12px 8px 0', borderBottom: '1px solid var(--rbk-border)' }}>
                       <ReactRouterDOM.Link
-                        to={`/rubrik/object-360?name=${encodeURIComponent(s.name)}`}
-                        title="Open Object 360"
+                        to={`/ops/server360?name=${encodeURIComponent(s.name)}`}
+                        title="Open Server 360"
                         style={{ color: 'var(--rbk-ink)', fontWeight: 500, display: 'block', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 280, textDecoration: 'none' }}
                         onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--rbk-brand)'; }}
                         onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--rbk-ink)'; }}

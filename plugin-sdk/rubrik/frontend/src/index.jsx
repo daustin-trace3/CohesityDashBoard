@@ -68,6 +68,7 @@ window.__ICC_REGISTER_PLUGIN__({
       label: 'Reporting',
       items: [
         { label: 'Backup History', route: '/rubrik/backup-history', isActive: (p) => p === '/rubrik/backup-history' || p === '/rubrik/compliance' },
+        { label: 'Object 360', route: '/rubrik/object-360', isActive: (p) => p === '/rubrik/object-360' },
         { label: 'Reporting', route: '/rubrik/reporting', isActive: (p) => p === '/rubrik/reporting' },
         { label: 'Analytics', route: '/rubrik/analytics', isActive: (p) => p === '/rubrik/analytics' },
         { label: 'Sources', route: '/rubrik/sources', isActive: (p) => p === '/rubrik/sources' },
