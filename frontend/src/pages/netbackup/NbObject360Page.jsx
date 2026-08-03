@@ -229,6 +229,39 @@ export default function NbObject360Page() {
             )}
           </Panel>
 
+          {(data.replication || []).length > 0 && (
+            <Panel title="Replication" icon={ClipboardList}>
+              <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wide text-ink-faint">
+                    <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60">SLP / Policy</th>
+                    <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60">Type</th>
+                    <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60">Status</th>
+                    <th className="text-right font-semibold pb-2 border-b border-cohesity-border/60">Start</th>
+                    <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60 pl-3">Storage Unit</th>
+                    <th className="text-right font-semibold pb-2 border-b border-cohesity-border/60">Size</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.replication.map((r, i) => {
+                    const failed = r.state === 'FAILED' || (['EXITED', 'DONE'].includes(r.state) && Number(r.statusCode || 0) > 0);
+                    const done = !failed && ['EXITED', 'DONE'].includes(r.state);
+                    return (
+                      <tr key={i} className="border-b border-cohesity-border/40 last:border-0">
+                        <td className="py-2 pr-2 text-ink font-medium">{r.slpOrPolicy || '—'}</td>
+                        <td className="py-2 pr-2 text-ink-muted">{r.jobType || '—'}</td>
+                        <td className="py-2 pr-2"><Badge tone={failed ? 'crit' : done ? 'ok' : 'info'}>{failed ? 'failed' : done ? 'success' : (r.state || '—')}</Badge></td>
+                        <td className="py-2 pr-2 text-right text-ink-faint tnum">{fmtDate(r.startedAt)}</td>
+                        <td className="py-2 pr-2 pl-3 text-ink-muted">{r.storageUnit || '—'}</td>
+                        <td className="py-2 text-right text-ink-faint tnum">{r.kilobytes != null ? fmtBytes(r.kilobytes * 1024) : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </Panel>
+          )}
+
           {(data.policies || []).length > 0 && (
             <Panel title="Policies" icon={ClipboardList}>
               <div className="flex flex-col gap-2">

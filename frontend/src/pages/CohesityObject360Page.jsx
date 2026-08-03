@@ -239,8 +239,10 @@ export default function CohesityObject360Page() {
               <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
                 <thead>
                   <tr className="text-[10px] uppercase tracking-wide text-ink-faint">
+                    <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60">Job</th>
                     <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60">Target Cluster</th>
                     <th className="text-left font-semibold pb-2 border-b border-cohesity-border/60">Status</th>
+                    <th className="text-right font-semibold pb-2 border-b border-cohesity-border/60">Start</th>
                     <th className="text-right font-semibold pb-2 border-b border-cohesity-border/60">Logical</th>
                     <th className="text-right font-semibold pb-2 border-b border-cohesity-border/60">Lag</th>
                   </tr>
@@ -248,8 +250,10 @@ export default function CohesityObject360Page() {
                 <tbody>
                   {data.replication.map((leg, i) => (
                     <tr key={i} className="border-b border-cohesity-border/40 last:border-0">
+                      <td className="py-2 pr-2 text-ink-muted">{leg.group || '—'}</td>
                       <td className="py-2 pr-2 text-ink font-medium">{leg.targetCluster || '—'}</td>
                       <td className="py-2 pr-2"><Badge tone={STATUS_TONE[leg.status] || 'neutral'}>{statusLabel(leg.status) || leg.status || '—'}</Badge></td>
+                      <td className="py-2 pr-2 text-right text-ink-faint tnum">{leg.startMs ? new Date(leg.startMs).toLocaleDateString() : '—'}</td>
                       <td className="py-2 pr-2 text-right text-ink-faint tnum">{fmtBytes(leg.logicalBytes)}</td>
                       <td className="py-2 text-right text-ink-faint tnum">
                         {leg.lagSeconds != null ? (leg.lagSeconds < 60 ? `${leg.lagSeconds}s` : `${Math.round(leg.lagSeconds / 60)}m`) : '—'}

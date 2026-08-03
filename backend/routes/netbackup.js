@@ -1257,7 +1257,18 @@ router.get('/object-360', [query('name').optional().isString()], validate, (req,
       SELECT * FROM netbackup_issue_history WHERE target = ? AND status = 'open' ORDER BY last_seen DESC LIMIT 10
     `).all(q).map((i) => ({ type: i.type, severity: i.severity, message: i.message, target: i.target, createdAt: i.first_seen }));
 
-    res.json({ query: q, found: true, client, runs14d, policies, issues });
+    // Replication traceability: SLP-driven replication/duplication jobs run
+    // under the SLP name in policy_name — surface them with start dates so
+    // users can track a replica back to its job/SLP.
+    const replication = jobs30
+      .filter((j) => ['REPLICATION', 'DUPLICATION', 'REPLICA'].includes(String(j.job_type || '').toUpperCase()))
+      .slice(0, 25)
+      .map((j) => ({
+        slpOrPolicy: j.policy_name, jobType: j.job_type, state: j.state, statusCode: j.status_code,
+        startedAt: j.started_at, kilobytes: j.kilobytes, storageUnit: j.storage_unit, sourceName: j.source_name,
+      }));
+
+    res.json({ query: q, found: true, client, runs14d, policies, issues, replication });
   } catch (err) { next(err); }
 });
 

@@ -142,10 +142,12 @@ router.get(
           });
           for (const leg of repStmt.all(r.id)) {
             replication.push({
+              group,
               targetCluster: leg.target_cluster_name,
               status: leg.status,
               logicalBytes: leg.logical_bytes,
               lagSeconds: leg.lag_seconds,
+              startMs: r.start_epoch ? r.start_epoch * 1000 : null,
             });
           }
         }

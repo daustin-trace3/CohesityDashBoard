@@ -89,6 +89,25 @@ export function Donut({ pct, segments, size = 74, stroke = 9, colors, thresholds
   );
 }
 
+/* ── responsive width ────────────────────────────────────────────────── */
+// Charts fill their container like the host's Chart.js (fixed widths looked
+// tiny in wide panels). The `width` prop remains the pre-measure fallback.
+function useMeasuredWidth(fallback) {
+  const ref = React.useRef(null);
+  const [w, setW] = React.useState(0);
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver((entries) => {
+      const cw = Math.floor(entries[0].contentRect.width);
+      if (cw > 0) setW(cw);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, w || fallback];
+}
+
 /* ── axis helpers ────────────────────────────────────────────────────── */
 // "Nice" tick step so gridlines land on round numbers (1/2/5 × 10^n).
 function niceStep(rough) {
@@ -99,9 +118,12 @@ function niceStep(rough) {
 }
 function niceTicks(max, count = 4) {
   const step = niceStep(max / count);
+  // Round the axis top UP past the data max so bars never overrun the last
+  // gridline (Chart.js behavior).
+  const top = Math.ceil((max + step * 0.001) / step) * step;
   const ticks = [];
-  for (let v = 0; v <= max + step * 0.001; v += step) ticks.push(Math.round(v * 1000) / 1000);
-  return { ticks, top: ticks[ticks.length - 1] };
+  for (let v = 0; v <= top + step * 0.001; v += step) ticks.push(Math.round(v * 1000) / 1000);
+  return { ticks, top };
 }
 const fmtTick = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(v % 1e6 ? 1 : 0)}M` : v >= 1e3 ? `${(v / 1e3).toFixed(v % 1e3 ? 1 : 0)}k` : `${v}`);
 
@@ -110,66 +132,74 @@ const fmtTick = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(v % 1e6 ? 1 : 0)}M` : v 
 // tick labels along the bottom axis, value labels clamped inside the plot
 // (never clipped), native tooltips carrying the untruncated label.
 export function HBar({ rows = [], max, unit, width = 460, height, labelWidth = 90, truncate = 14 }) {
+  const [wrapRef, w] = useMeasuredWidth(width);
   const dataMax = max != null ? max : Math.max(1, ...rows.map((r) => r.value));
-  const { ticks, top } = max != null ? { ticks: niceTicks(max, 4).ticks, top: max } : niceTicks(dataMax, 4);
-  const barH = 13;
-  const gap = 9;
-  const padR = 10;
-  const axisH = 18;
-  const plotX = labelWidth + 8;
-  const plotW = Math.max(40, width - plotX - padR);
+  const barH = 14;
+  const gap = 12;
+  const padR = 12;
+  const axisH = 20;
+  const plotX = labelWidth + 10;
+  const plotW = Math.max(40, w - plotX - padR);
+  // Tick density scales with the plot like Chart.js (~1 tick / 80px).
+  const { ticks, top } = niceTicks(dataMax, Math.max(4, Math.min(10, Math.floor(plotW / 80))));
   const plotH = rows.length * (barH + gap);
   const h = height || plotH + axisH;
   const xFor = (v) => plotX + (v / top) * plotW;
   return (
-    <svg width={width} height={h} style={{ display: 'block' }}>
-      {ticks.map((t) => (
-        <g key={t}>
-          <line x1={xFor(t)} y1={0} x2={xFor(t)} y2={plotH} stroke={GRID} strokeWidth={1} />
-          <text x={xFor(t)} y={plotH + 13} fontSize={10} fill={TICK} textAnchor="middle">
-            {unit ? `${fmtTick(t)}${unit}` : fmtTick(t)}
-          </text>
-        </g>
-      ))}
-      {rows.map((r, i) => {
-        const w = Math.max(2, (r.value / top) * plotW);
-        const y = i * (barH + gap);
-        const valText = unit ? `${r.value}${unit}` : String(r.value);
-        const fitsOutside = w + 6 + valText.length * 6.5 < plotW;
-        return (
-          <g key={`${r.label}-${i}`}>
-            <title>{`${r.label}: ${valText}`}</title>
-            <text x={labelWidth} y={y + barH / 2 + 4} fontSize={11} fill={INK_MUTED} textAnchor="end">
-              {r.label.length > truncate ? `${r.label.slice(0, truncate - 1)}…` : r.label}
+    <div ref={wrapRef} style={{ width: '100%' }}>
+      <svg width={w} height={h} style={{ display: 'block' }}>
+        {ticks.map((t) => (
+          <g key={t}>
+            <line x1={xFor(t)} y1={0} x2={xFor(t)} y2={plotH} stroke={GRID} strokeWidth={1} />
+            <text x={xFor(t)} y={plotH + 14} fontSize={10} fill={TICK} textAnchor="middle">
+              {unit ? `${fmtTick(t)}${unit}` : fmtTick(t)}
             </text>
-            <rect x={plotX} y={y} width={w} height={barH} rx={3} fill={r.color || BRAND} />
-            {fitsOutside ? (
-              <text x={plotX + w + 6} y={y + barH / 2 + 4} fontSize={11} fill={INK}>{valText}</text>
-            ) : (
-              <text x={plotX + w - 5} y={y + barH / 2 + 4} fontSize={10} fontWeight={600} fill="#0B1015" textAnchor="end">{valText}</text>
-            )}
           </g>
-        );
-      })}
-    </svg>
+        ))}
+        {rows.map((r, i) => {
+          const bw = Math.max(2, (r.value / top) * plotW);
+          const y = i * (barH + gap);
+          const valText = unit ? `${r.value}${unit}` : String(r.value);
+          const fitsOutside = bw + 6 + valText.length * 6.5 < plotW;
+          return (
+            <g key={`${r.label}-${i}`}>
+              <title>{`${r.label}: ${valText}`}</title>
+              {i > 0 && <line x1={plotX} y1={y - gap / 2} x2={plotX + plotW} y2={y - gap / 2} stroke={GRID} strokeWidth={0.5} opacity={0.6} />}
+              <text x={labelWidth} y={y + barH / 2 + 4} fontSize={11} fill={INK_MUTED} textAnchor="end">
+                {r.label.length > truncate ? `${r.label.slice(0, truncate - 1)}…` : r.label}
+              </text>
+              <rect x={plotX} y={y} width={bw} height={barH} rx={3} fill={r.color || BRAND} />
+              {fitsOutside ? (
+                <text x={plotX + bw + 6} y={y + barH / 2 + 4} fontSize={11} fill={INK}>{valText}</text>
+              ) : (
+                <text x={plotX + bw - 5} y={y + barH / 2 + 4} fontSize={10} fontWeight={600} fill="#0B1015" textAnchor="end">{valText}</text>
+              )}
+            </g>
+          );
+        })}
+        <line x1={plotX} y1={plotH} x2={plotX + plotW} y2={plotH} stroke={TICK} strokeWidth={1} opacity={0.5} />
+      </svg>
+    </div>
   );
 }
 
 /* ── StackedHBar ─────────────────────────────────────────────────────── */
 // rows: [{label, values:{seriesKey: number}}]; series: [{key,color,label}]
 export function StackedHBar({ rows = [], series = [], width = 460, labelWidth = 90, truncate = 14 }) {
-  const barH = 13;
-  const gap = 10;
-  const padR = 10;
-  const axisH = 18;
+  const [wrapRef, w] = useMeasuredWidth(width);
+  const barH = 14;
+  const gap = 12;
+  const padR = 12;
+  const axisH = 20;
   const totals = rows.map((r) => series.reduce((s, sr) => s + (r.values[sr.key] || 0), 0));
-  const { ticks, top } = niceTicks(Math.max(1, ...totals), 4);
-  const plotX = labelWidth + 8;
-  const plotW = Math.max(40, width - plotX - padR);
+  const plotX = labelWidth + 10;
+  const plotW = Math.max(40, w - plotX - padR);
+  const { ticks, top } = niceTicks(Math.max(1, ...totals), Math.max(4, Math.min(10, Math.floor(plotW / 80))));
   const plotH = rows.length * (barH + gap);
   const xFor = (v) => plotX + (v / top) * plotW;
   return (
-    <svg width={width} height={plotH + axisH} style={{ display: 'block' }}>
+    <div ref={wrapRef} style={{ width: '100%' }}>
+    <svg width={w} height={plotH + axisH} style={{ display: 'block' }}>
       {ticks.map((t) => (
         <g key={t}>
           <line x1={xFor(t)} y1={0} x2={xFor(t)} y2={plotH} stroke={GRID} strokeWidth={1} />
@@ -186,40 +216,44 @@ export function StackedHBar({ rows = [], series = [], width = 460, labelWidth = 
             </text>
             {series.map((sr) => {
               const v = r.values[sr.key] || 0;
-              const w = (v / top) * plotW;
+              const segW = (v / top) * plotW;
               const seg = (
-                <rect key={sr.key} x={x} y={y} width={Math.max(0, w)} height={barH} fill={sr.color}>
+                <rect key={sr.key} x={x} y={y} width={Math.max(0, segW)} height={barH} fill={sr.color}>
                   <title>{`${r.label} — ${sr.label}: ${v}`}</title>
                 </rect>
               );
-              x += w;
+              x += segW;
               return seg;
             })}
           </g>
         );
       })}
+      <line x1={plotX} y1={plotH} x2={plotX + plotW} y2={plotH} stroke={TICK} strokeWidth={1} opacity={0.5} />
     </svg>
+    </div>
   );
 }
 
 /* ── StackedVBar ─────────────────────────────────────────────────────── */
 // days: [{day, values:{seriesKey:number}}]; series: [{key,color,label}]
 export function StackedVBar({ days = [], series = [], colors, width = 480, height = 160 }) {
+  const [wrapRef, w] = useMeasuredWidth(width);
   const padB = 20;
   const padT = 6;
-  const padL = 34;
+  const padL = 38;
   const innerH = height - padB - padT;
   const totals = days.map((d) => series.reduce((s, sr) => s + (d.values[sr.key] || 0), 0));
   const { ticks, top } = niceTicks(Math.max(1, ...totals), 3);
-  const innerW = width - padL - 4;
+  const innerW = w - padL - 6;
   const barW = Math.max(4, Math.floor((innerW - days.length * 4) / Math.max(1, days.length)));
-  const labelEvery = Math.max(1, Math.ceil(days.length / 6));
+  const labelEvery = Math.max(1, Math.ceil(days.length / Math.max(4, Math.floor(innerW / 90))));
   const yFor = (v) => padT + innerH - (v / top) * innerH;
   return (
-    <svg width={width} height={height} style={{ display: 'block' }}>
+    <div ref={wrapRef} style={{ width: '100%' }}>
+    <svg width={w} height={height} style={{ display: 'block' }}>
       {ticks.map((t) => (
         <g key={t}>
-          <line x1={padL} y1={yFor(t)} x2={width - 4} y2={yFor(t)} stroke={GRID} strokeWidth={1} />
+          <line x1={padL} y1={yFor(t)} x2={w - 6} y2={yFor(t)} stroke={GRID} strokeWidth={1} />
           <text x={padL - 5} y={yFor(t) + 3} fontSize={9} fill={TICK} textAnchor="end">{fmtTick(t)}</text>
         </g>
       ))}
@@ -247,18 +281,20 @@ export function StackedVBar({ days = [], series = [], colors, width = 480, heigh
         );
       })}
     </svg>
+    </div>
   );
 }
 
 /* ── LineChart ───────────────────────────────────────────────────────── */
 // series: [{label,color,points:[{x,y}],dashed?}]; refLines:[{y,color,dash}]
 export function LineChart({ series = [], refLines = [], width = 640, height = 220, yUnit, tooltip = true }) {
+  const [wrapRef, w] = useMeasuredWidth(width);
   const [hover, setHover] = React.useState(null);
   const padL = 44;
   const padB = 20;
   const padT = 10;
   const padR = 8;
-  const innerW = width - padL - padR;
+  const innerW = w - padL - padR;
   const innerH = height - padB - padT;
 
   const allPoints = series.flatMap((s) => s.points || []);
@@ -274,15 +310,16 @@ export function LineChart({ series = [], refLines = [], width = 640, height = 22
   const onMove = (e) => {
     if (!tooltip) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const px = ((e.clientX - rect.left) / rect.width) * width;
+    const px = ((e.clientX - rect.left) / rect.width) * innerW + padL;
     const idx = Math.max(0, Math.min(maxN - 1, Math.round(((px - padL) / innerW) * (maxN - 1))));
     setHover(idx);
   };
 
   return (
-    <svg width={width} height={height} onMouseLeave={() => setHover(null)}>
+    <div ref={wrapRef} style={{ width: '100%' }}>
+    <svg width={w} height={height} onMouseLeave={() => setHover(null)}>
       {gridLines.map((g) => (
-        <line key={g} x1={padL} x2={width - padR} y1={padT + innerH * g} y2={padT + innerH * g} stroke={GRID} strokeWidth={1} />
+        <line key={g} x1={padL} x2={w - padR} y1={padT + innerH * g} y2={padT + innerH * g} stroke={GRID} strokeWidth={1} />
       ))}
       {gridLines.map((g) => (
         <text key={`t${g}`} x={padL - 6} y={padT + innerH * g + 3} fontSize={9} fill={TICK} textAnchor="end">
@@ -291,7 +328,7 @@ export function LineChart({ series = [], refLines = [], width = 640, height = 22
       ))}
       {refLines.map((r, i) => (
         <g key={i}>
-          <line x1={padL} x2={width - padR} y1={yAt(r.y)} y2={yAt(r.y)} stroke={r.color || CRIT} strokeWidth={1.5} strokeDasharray={r.dash || '2 3'} />
+          <line x1={padL} x2={w - padR} y1={yAt(r.y)} y2={yAt(r.y)} stroke={r.color || CRIT} strokeWidth={1.5} strokeDasharray={r.dash || '2 3'} />
         </g>
       ))}
       {series.map((s) => {
@@ -315,13 +352,13 @@ export function LineChart({ series = [], refLines = [], width = 640, height = 22
         <g>
           <line x1={xAt(hover)} x2={xAt(hover)} y1={padT} y2={height - padB} stroke={TOOLTIP_BORDER} strokeWidth={1} />
           {(() => {
-            const w = 150;
+            const tw = 150;
             const h = 20 + series.length * 14;
-            const tx = Math.min(width - padR - w, Math.max(padL, xAt(hover) + 8));
+            const tx = Math.min(w - padR - tw, Math.max(padL, xAt(hover) + 8));
             const ty = padT + 4;
             return (
               <g style={{ pointerEvents: 'none' }}>
-                <rect x={tx} y={ty} width={w} height={h} rx={6} fill={TOOLTIP_BG} stroke={TOOLTIP_BORDER} />
+                <rect x={tx} y={ty} width={tw} height={h} rx={6} fill={TOOLTIP_BG} stroke={TOOLTIP_BORDER} />
                 {series.map((s, i) => {
                   const p = (s.points || [])[hover];
                   return (
@@ -336,6 +373,7 @@ export function LineChart({ series = [], refLines = [], width = 640, height = 22
         </g>
       )}
     </svg>
+    </div>
   );
 }
 

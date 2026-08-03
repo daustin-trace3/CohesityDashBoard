@@ -1385,8 +1385,18 @@ function addV2Routes(coreApi, req, res) {
       .map((e) => ({ id: e.id, at: e.at, cluster: e.cluster, severity: e.severity, eventType: e.event_type, message: e.message }));
 
     const pair = coreApi.db.prepare('SELECT * FROM rubrik_replication_pairs WHERE source_cluster = ?').get(row.cluster_name);
+    const lastRepRun = coreApi.db
+      .prepare("SELECT job_name, start_ms, status FROM rubrik_protection_runs WHERE object_name = ? AND run_type = 'Replication' ORDER BY start_ms DESC LIMIT 1")
+      .get(row.name);
     const legs = pair
-      ? [{ targetCluster: pair.target_cluster, status: pair.status, lagSeconds: pair.lag_seconds, lastSyncAt: pair.last_sync_at }]
+      ? [{
+          targetCluster: pair.target_cluster,
+          status: pair.status,
+          lagSeconds: pair.lag_seconds,
+          lastSyncAt: pair.last_sync_at,
+          jobName: lastRepRun ? lastRepRun.job_name : null,
+          startMs: lastRepRun ? lastRepRun.start_ms : null,
+        }]
       : [];
 
     res.json({ query: name, found: true, object, runs14d, alerts, anomalies, events, replication: { legs } });
