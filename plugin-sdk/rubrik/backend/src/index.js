@@ -76,6 +76,69 @@ function offsetModifier(hours) {
 // version:1 migration) is untouched byte-for-byte above this line.
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// v1.2.0 additions below: Settings/connections page (rubrik_connections).
+// ---------------------------------------------------------------------
+
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
+
+function connectionToJson(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    kind: row.kind,
+    endpoint: row.endpoint,
+    identity: row.identity,
+    hasSecret: !!row.encrypted_credentials,
+    createdAt: row.created_at,
+  };
+}
+
+// Honest reachability check: HEAD to the endpoint root, falling back to GET
+// if the server rejects HEAD, 5s timeout, self-signed certs tolerated. Never
+// claims auth success — that's future live-polling work.
+function testEndpointReachable(endpoint) {
+  return new Promise((resolve) => {
+    let parsed;
+    try {
+      parsed = new URL(endpoint);
+    } catch (e) {
+      resolve({ ok: false, error: 'Invalid URL' });
+      return;
+    }
+    const lib = parsed.protocol === 'http:' ? http : https;
+    const attempt = (method, onFail) => {
+      const req = lib.request(
+        {
+          method,
+          hostname: parsed.hostname,
+          port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
+          path: parsed.pathname || '/',
+          timeout: 5000,
+          rejectUnauthorized: false,
+        },
+        (res) => {
+          res.resume();
+          resolve({ ok: true, statusCode: res.statusCode });
+        }
+      );
+      req.on('timeout', () => {
+        req.destroy();
+        if (onFail) onFail('Connection timed out');
+        else resolve({ ok: false, error: 'Connection timed out' });
+      });
+      req.on('error', (err) => {
+        if (onFail) onFail(err.message);
+        else resolve({ ok: false, error: err.message });
+      });
+      req.end();
+    };
+    attempt('HEAD', () => attempt('GET', (err) => resolve({ ok: false, error: err })));
+  });
+}
+
 function dayOffsetModifier(daysAgo) {
   return `${-daysAgo} days`;
 }
@@ -512,6 +575,25 @@ module.exports = {
         }
       },
     },
+    {
+      version: 3,
+      up(db) {
+        // --- Settings/connections page: user-registered RSC / CDM
+        // connections. No seed rows — starts empty (that's the point). ---
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS rubrik_connections (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            name                  TEXT NOT NULL UNIQUE,
+            kind                  TEXT NOT NULL CHECK(kind IN ('rsc', 'cdm')),
+            endpoint              TEXT NOT NULL,
+            identity              TEXT,
+            encrypted_credentials TEXT,
+            created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+      },
+    },
   ],
   // createRouter must return a BARE (req, res, next) function — installed
   // plugins are loaded via require() on their own dist/backend/index.cjs and
@@ -561,6 +643,10 @@ module.exports = {
         const archivalLocations = coreApi.db.prepare('SELECT COUNT(*) AS n FROM rubrik_archival_locations').get().n;
         const archivedBytes = coreApi.db.prepare('SELECT COALESCE(SUM(archived_bytes), 0) AS n FROM rubrik_archival_locations').get().n;
 
+        const connectionsTotal = coreApi.db.prepare('SELECT COUNT(*) AS n FROM rubrik_connections').get().n;
+        const connectionsRsc = coreApi.db.prepare("SELECT COUNT(*) AS n FROM rubrik_connections WHERE kind = 'rsc'").get().n;
+        const connectionsCdm = coreApi.db.prepare("SELECT COUNT(*) AS n FROM rubrik_connections WHERE kind = 'cdm'").get().n;
+
         const minRunway = clusters.reduce((min, c) => (c.runway_days != null && c.runway_days < min ? c.runway_days : min), Infinity);
         let growth30dBytes = 0;
         for (const c of clusters) {
@@ -591,6 +677,7 @@ module.exports = {
           threatHunts: { running: huntsRunning, completed7d: huntsCompleted7d, matches: huntMatches },
           replication: { pairs: replicationPairs, lagging: replicationLagging },
           archival: { locations: archivalLocations, archivedBytes },
+          connections: { total: connectionsTotal, rsc: connectionsRsc, cdm: connectionsCdm },
           capacity: {
             usedBytes,
             capacityBytes,
@@ -849,6 +936,106 @@ module.exports = {
         return;
       }
 
+      if (req.method === 'GET' && req.path === '/connections') {
+        const rows = coreApi.db.prepare('SELECT * FROM rubrik_connections ORDER BY id').all();
+        res.json(rows.map(connectionToJson));
+        return;
+      }
+
+      if (req.method === 'POST' && req.path === '/connections') {
+        const { name, kind, endpoint, identity, secret } = req.body || {};
+        if (!name || !kind || !endpoint) {
+          res.status(400).json({ error: 'name, kind, and endpoint are required' });
+          return;
+        }
+        if (kind !== 'rsc' && kind !== 'cdm') {
+          res.status(400).json({ error: "kind must be 'rsc' or 'cdm'" });
+          return;
+        }
+        const encryptedCredentials = secret ? coreApi.encryption.encrypt(JSON.stringify({ secret })) : null;
+        try {
+          const result = coreApi.db
+            .prepare(
+              `INSERT INTO rubrik_connections (name, kind, endpoint, identity, encrypted_credentials)
+               VALUES (?, ?, ?, ?, ?)`
+            )
+            .run(name, kind, endpoint, identity || null, encryptedCredentials);
+          const row = coreApi.db.prepare('SELECT * FROM rubrik_connections WHERE id = ?').get(result.lastInsertRowid);
+          res.status(201).json(connectionToJson(row));
+        } catch (err) {
+          if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+            res.status(409).json({ error: 'duplicate' });
+            return;
+          }
+          throw err;
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && req.path === '/connections/test') {
+        const { endpoint, id } = req.body || {};
+        let target = endpoint;
+        if (!target && id != null) {
+          const row = coreApi.db.prepare('SELECT endpoint FROM rubrik_connections WHERE id = ?').get(id);
+          target = row && row.endpoint;
+        }
+        if (!target) {
+          res.status(200).json({ ok: false, error: 'No endpoint provided' });
+          return;
+        }
+        testEndpointReachable(target).then((result) => res.json(result));
+        return;
+      }
+
+      const connIdMatch = req.path.match(/^\/connections\/(\d+)$/);
+      if (connIdMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+        const id = Number(connIdMatch[1]);
+        const existing = coreApi.db.prepare('SELECT * FROM rubrik_connections WHERE id = ?').get(id);
+        if (!existing) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+
+        if (req.method === 'DELETE') {
+          coreApi.db.prepare('DELETE FROM rubrik_connections WHERE id = ?').run(id);
+          res.status(204).end();
+          return;
+        }
+
+        // PUT: all fields optional; blank/omitted secret KEEPS the stored one.
+        const { name, kind, endpoint, identity, secret } = req.body || {};
+        if (kind != null && kind !== 'rsc' && kind !== 'cdm') {
+          res.status(400).json({ error: "kind must be 'rsc' or 'cdm'" });
+          return;
+        }
+        const encryptedCredentials = secret ? coreApi.encryption.encrypt(JSON.stringify({ secret })) : existing.encrypted_credentials;
+        try {
+          coreApi.db
+            .prepare(
+              `UPDATE rubrik_connections
+                 SET name = ?, kind = ?, endpoint = ?, identity = ?, encrypted_credentials = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            )
+            .run(
+              name != null ? name : existing.name,
+              kind != null ? kind : existing.kind,
+              endpoint != null ? endpoint : existing.endpoint,
+              identity != null ? identity : existing.identity,
+              encryptedCredentials,
+              id
+            );
+          const row = coreApi.db.prepare('SELECT * FROM rubrik_connections WHERE id = ?').get(id);
+          res.json(connectionToJson(row));
+        } catch (err) {
+          if (err && err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+            res.status(409).json({ error: 'duplicate' });
+            return;
+          }
+          throw err;
+        }
+        return;
+      }
+
       next();
     };
   },
@@ -874,5 +1061,6 @@ module.exports = {
     'rubrik_anomaly_events',
     'rubrik_threat_hunts',
     'rubrik_events',
+    'rubrik_connections',
   ],
 };
