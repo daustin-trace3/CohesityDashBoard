@@ -48,12 +48,10 @@ export default function ForecastPage() {
     if (!active) return null;
     const history = (active.series || []).map((s) => ({ y: s.usedBytes }));
     const forecast = (active.forecast || []).map((f) => ({ y: f.usedBytes }));
-    // Forecast series is padded with the leading history values (all but the
-    // last) so its point indices line up with history's shared x-domain,
-    // then continues into the real forecast values right after — giving a
-    // seamless dashed continuation without needing real x-domain support in
-    // the hand-rolled LineChart (which positions points by array index).
-    const forecastPoints = history.slice(0, -1).concat(forecast);
+    // Forecast series is padded with nulls (LineChart skips them) so its
+    // indices share history's x-domain; the last history point anchors the
+    // dashed continuation so it starts exactly at the junction.
+    const forecastPoints = history.slice(0, -1).map(() => null).concat([history[history.length - 1]], forecast);
     return {
       series: [
         { label: 'History', color: '#00B388', points: history },

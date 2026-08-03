@@ -262,7 +262,7 @@ export function LineChart({ series = [], refLines = [], width = 640, height = 22
   const innerH = height - padB - padT;
 
   const allPoints = series.flatMap((s) => s.points || []);
-  const allY = [...allPoints.map((p) => p.y), ...refLines.map((r) => r.y)].filter((v) => v != null);
+  const allY = [...allPoints.map((p) => (p ? p.y : null)), ...refLines.map((r) => r.y)].filter((v) => v != null);
   const maxY = Math.max(1, ...allY) * 1.05;
   const maxN = Math.max(1, ...series.map((s) => (s.points || []).length));
 
@@ -295,10 +295,17 @@ export function LineChart({ series = [], refLines = [], width = 640, height = 22
         </g>
       ))}
       {series.map((s) => {
-        const pts = (s.points || []).map((p, i) => [xAt(i), yAt(p.y)]);
-        const path = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]},${p[1]}`).join(' ');
+        // null/undefined y values are skipped (segment breaks) — lets a
+        // forecast series share the index x-scale but start mid-chart.
+        let path = '';
+        let pen = false;
+        (s.points || []).forEach((p, i) => {
+          if (p == null || p.y == null) { pen = false; return; }
+          path += `${pen ? 'L' : 'M'}${xAt(i)},${yAt(p.y)} `;
+          pen = true;
+        });
         return (
-          <path key={s.label} d={path} fill="none" stroke={s.color || BRAND} strokeWidth={2} strokeDasharray={s.dashed ? '5 4' : undefined} />
+          <path key={s.label} d={path.trim()} fill="none" stroke={s.color || BRAND} strokeWidth={2} strokeDasharray={s.dashed ? '5 4' : undefined} />
         );
       })}
       {tooltip && (
