@@ -4,8 +4,15 @@ Demo story: "the dashboard doesn't know Rubrik → we install a signed plugin li
 Rubrik platform appears with data, no reload, no restart."
 
 ## Files
-- `rubrik-2.0.0.iccplugin` — the signed installable (also staged at `%USERPROFILE%\Desktop\`).
-  v2.0 is the COHESITY-PARITY dashboard: 19 pages/routes across Monitor / Protect /
+- `rubrik-2.1.0.iccplugin` — the signed installable (also staged at `%USERPROFILE%\Desktop\`).
+  v2.1 rebuilt Overview / Backup History / Protected Objects / Settings as SOURCE-LEVEL
+  clones of the Cohesity pages (built from Dashboard.jsx/BackupHistoryPage.jsx/
+  ServerStatusPage.jsx/SettingsPage.jsx, not summaries), added the Object 360 drill-in
+  page (`/rubrik/object-360?name=` — object names link to it from Backup History and
+  Protected Objects), a real `/insights` rule engine feeding an Intelligent Insights
+  panel, capacity growth forecast table (days/date to 85%/90%), and Chrome-autofill
+  defenses on the Settings credential fields.
+  v2.0 was the first COHESITY-PARITY dashboard: 19 pages/routes across Monitor / Protect /
   Reporting / Security / Infrastructure / System, deliberately mirroring the Cohesity
   platform's pages so "only the accent color tells you where you are": Overview (KPI strip,
   storage donut, capacity-growth forecast, cluster health cards), Alerts (full triage w/
@@ -25,7 +32,7 @@ Rubrik platform appears with data, no reload, no restart."
 ## The demo (on https://cc.austihome.com, login demo / IccDemo2026!)
 1. **Absent**: show the platform switcher — no Rubrik. Optionally hit Plugins page
    (gear → Plugins): only built-ins listed.
-2. **Install**: drag `rubrik-2.0.0.iccplugin` onto the Plugins page upload target.
+2. **Install**: drag `rubrik-2.1.0.iccplugin` onto the Plugins page upload target.
    Toast: installed and live ("hot add"). Signature + per-file hashes verified server-side.
 3. **Appears**: Rubrik shows up in the platform switcher immediately — no reload
    (a `platforms-changed` event refreshes the platform registry live).
