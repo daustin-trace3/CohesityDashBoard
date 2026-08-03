@@ -6,6 +6,7 @@ const express = require('express');
 const db = require('../db/database');
 const { hasPermission } = require('../services/rbac');
 const { getSetting } = require('../services/settings');
+const registry = require('../core/registry');
 
 const router = express.Router();
 
@@ -109,8 +110,16 @@ router.get('/', (req, res, next) => {
     const pattern = `%${escLike(q)}%`;
     const grants = (req.auth && req.auth.grants) || [];
 
+    // Phase 1 manifest-driven core hooks: merge plugin-declared categories
+    // after the static built-in list, resolved per-request so hot-added
+    // plugins are picked up without a restart.
+    let pluginCategories = [];
+    try {
+      pluginCategories = registry.getSearchCategoryContributors();
+    } catch { /* degrade: no plugin categories surfaced */ }
+
     const results = [];
-    for (const cat of CATEGORIES) {
+    for (const cat of CATEGORIES.concat(pluginCategories)) {
       if (!platformEnabled(cat.platform)) continue;
       if (!hasPermission(grants, cat.perm)) continue;
       let items;

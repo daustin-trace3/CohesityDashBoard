@@ -147,6 +147,7 @@ function registerPlugin(manifest) {
   }
 
   upsertPluginRow(entry);
+  if (entry.status === 'active' && entry.enabled) seedRoleGrants(entry.id);
   return getPlugin(entry.id);
 }
 
@@ -201,6 +202,35 @@ function getServer360Providers() {
     }));
 }
 
+/**
+ * Phase 1 manifest-driven core hooks (2026-08-03): seeds Operator/Viewer
+ * role_grants for a plugin id the first time it's enabled, mirroring the
+ * per-platform INSERTs core migrations v4+ write (contract: idempotent via
+ * INSERT OR IGNORE + the role_grants UNIQUE constraint, so re-enabling never
+ * duplicates). Never throws — a DB hiccup here must not block enabling.
+ */
+function seedRoleGrants(id) {
+  const db = coreApiRef && coreApiRef.db;
+  if (!db) return;
+  try {
+    const now = new Date().toISOString();
+    const getGroupId = db.prepare('SELECT id FROM groups WHERE name = ?');
+    const insertGrant = db.prepare(
+      'INSERT OR IGNORE INTO role_grants (subject_type, subject_id, permission, created_at) VALUES (?, ?, ?, ?)'
+    );
+    const grants = { Operator: `${id}:*:*`, Viewer: `${id}:*:view` };
+    for (const [groupName, permission] of Object.entries(grants)) {
+      const row = getGroupId.get(groupName);
+      if (row) insertGrant.run('group', row.id, permission, now);
+    }
+  } catch (err) {
+    const logger = coreApiRef && coreApiRef.logger;
+    const msg = `[registry] failed to seed role grants for '${id}':`;
+    if (logger) logger.error(msg, err.message);
+    else console.error(msg, err.message);
+  }
+}
+
 /** Refused (returns false, no state change) when turning ON a plugin that
  *  isn't entitled (contract C9.5). Disabling is always allowed. */
 function setEnabled(id, enabled) {
@@ -209,7 +239,62 @@ function setEnabled(id, enabled) {
   if (enabled && !isEntitled(id)) return false;
   entry.enabled = !!enabled;
   upsertPluginRow(entry);
+  if (entry.enabled) seedRoleGrants(id);
   return true;
+}
+
+/**
+ * Phase 1 manifest-driven core hooks (2026-08-03): a plugin manifest may
+ * optionally export opsSummary/collectAlerts/searchCategories/metricsHistory
+ * so ANY plugin (installed or built-in) contributes to the ops landing page,
+ * alert-email collector, global search, and poller-status metrics history —
+ * surfaces that were previously hardcoded per-platform lists in core. Only
+ * enabled, non-errored plugins contribute; callers still wrap each call in
+ * try/catch so one bad plugin degrades a single surface, never the request.
+ */
+function getOpsSummaryProviders() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.opsSummary === 'function')
+    .map((e) => ({
+      id: e.id,
+      name: e.manifest.name,
+      color: e.manifest.color || null,
+      run: () => e.manifest.opsSummary(coreApiRef),
+    }));
+}
+
+function getAlertCollectors() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.collectAlerts === 'function')
+    .map((e) => ({ id: e.id, collect: () => e.manifest.collectAlerts(coreApiRef) }));
+}
+
+/** Flat array of category objects (search.js's own shape), plugin manifests
+ *  declaring `searchCategories` merged after the static built-in list. */
+function getSearchCategoryContributors() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && Array.isArray(e.manifest.searchCategories))
+    .flatMap((e) => e.manifest.searchCategories);
+}
+
+/** { [pluginId]: { arraysTable, metricsTable, arrayIdColumn } } for plugins
+ *  declaring a well-formed `metricsHistory` static config. */
+function getMetricsHistoryContributors() {
+  const out = {};
+  for (const e of plugins.values()) {
+    if (!e.enabled || e.status === 'error') continue;
+    const cfg = e.manifest.metricsHistory;
+    if (cfg && cfg.arraysTable && cfg.metricsTable && cfg.arrayIdColumn) out[e.id] = cfg;
+  }
+  return out;
+}
+
+/** [{id, name}] for enabled plugins that declare collectAlerts — drives the
+ *  notification-settings platform toggle list and its default-on gate. */
+function getAlertPlatformPlugins() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.collectAlerts === 'function')
+    .map((e) => ({ id: e.id, name: e.manifest.name }));
 }
 
 /** Express middleware mounted at `/api/:pluginId`. */
@@ -239,6 +324,11 @@ module.exports = {
   getPollerHandle,
   listPlugins,
   getServer360Providers,
+  getOpsSummaryProviders,
+  getAlertCollectors,
+  getSearchCategoryContributors,
+  getMetricsHistoryContributors,
+  getAlertPlatformPlugins,
   setEnabled,
   isEntitled,
   setIsEntitledFn,

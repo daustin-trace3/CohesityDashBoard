@@ -4,6 +4,7 @@ const nodemailer = require('nodemailer');
 const db = require('../db/database');
 const logger = require('../utils/logger');
 const { getNotificationSettings, getSmtpPassword } = require('./settings');
+const registry = require('../core/registry');
 
 const SEVERITY_RANK = { info: 0, warning: 1, error: 2, critical: 3 };
 const THRESHOLD_RANK = { info: 0, warning: 1, critical: 3 };
@@ -320,6 +321,27 @@ async function run() {
       let items;
       try {
         items = collect();
+      } catch (err) {
+        logger.error(`[AlertNotifier] Failed to collect ${source} alerts:`, err.message);
+        continue;
+      }
+      for (const item of items) {
+        activeKeys.add(`${source}:${item.sourceKey}`);
+        if (normalizedRank(item.severity) < thresholdRank) continue;
+        candidates.push({ source, ...item });
+      }
+    }
+
+    // Plugin-contributed collectors (Phase 1 manifest-driven core hooks):
+    // any enabled plugin declaring collectAlerts, that isn't already a
+    // built-in source above.
+    for (const contributor of registry.getAlertCollectors()) {
+      const source = contributor.id;
+      if (COLLECTORS[source]) continue;
+      if (!config.alertPlatforms[source]) continue;
+      let items;
+      try {
+        items = contributor.collect();
       } catch (err) {
         logger.error(`[AlertNotifier] Failed to collect ${source} alerts:`, err.message);
         continue;

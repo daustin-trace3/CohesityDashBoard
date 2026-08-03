@@ -70,6 +70,13 @@ export default function AdminSettingsPage() {
   const [savingNotify, setSavingNotify] = useState(false);
   const [testingNotify, setTestingNotify] = useState(false);
 
+  // Merge API-provided plugin platforms (Phase 1 manifest-driven core hooks)
+  // with the static list, keeping the static list as the fallback/ordering base.
+  const notifyPlatforms = [
+    ...NOTIFY_PLATFORMS,
+    ...(notify?.platforms || []).filter(p => !NOTIFY_PLATFORMS.some(np => np.key === p.key)),
+  ];
+
   useEffect(() => {
     Promise.allSettled([
       client.get('/settings'),
@@ -732,7 +739,7 @@ export default function AdminSettingsPage() {
           </div>
 
           <div className="flex flex-col gap-2">
-            {NOTIFY_PLATFORMS.map(p => (
+            {notifyPlatforms.map(p => (
               <label key={p.key} className="flex items-start gap-2.5 cursor-pointer select-none">
                 <input
                   type="checkbox"

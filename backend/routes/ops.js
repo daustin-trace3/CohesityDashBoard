@@ -384,6 +384,15 @@ const PLATFORMS = [
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };
 
+// Zero objects with nothing wrong means no source is connected yet — report
+// 'unknown' (NO DATA) rather than a hollow green. Shared by the built-in
+// PLATFORMS loop and the plugin-contributed opsSummary loop below.
+function healthOf(s) {
+  return s.exceptions.some((e) => e.severity === 'critical') ? 'critical'
+    : s.exceptions.some((e) => e.severity === 'warning') ? 'warning'
+    : num(s.objects) === 0 ? 'unknown' : 'ok';
+}
+
 router.get('/summary', async (req, res) => {
   const cards = [];
   for (const p of PLATFORMS) {
@@ -394,12 +403,22 @@ router.get('/summary', async (req, res) => {
     try {
       const s = await p.fn();
       if (!s) continue;
-      // Zero objects with nothing wrong means no source is connected yet —
-      // report 'unknown' (NO DATA) rather than a hollow green.
-      const health = s.exceptions.some((e) => e.severity === 'critical') ? 'critical'
-        : s.exceptions.some((e) => e.severity === 'warning') ? 'warning'
-        : num(s.objects) === 0 ? 'unknown' : 'ok';
-      cards.push({ ...base, ...s, health });
+      cards.push({ ...base, ...s, health: healthOf(s) });
+    } catch (err) {
+      cards.push({ ...base, health: 'unknown', objects: 0, headline: [], exceptions: [], spark: null, error: true });
+    }
+  }
+
+  // Plugin-contributed cards (Phase 1 manifest-driven core hooks): any
+  // enabled plugin declaring opsSummary, that isn't already a built-in above.
+  const builtinIds = new Set(PLATFORMS.map((p) => p.id));
+  for (const provider of registry.getOpsSummaryProviders()) {
+    if (builtinIds.has(provider.id)) continue;
+    const base = { id: provider.id, label: provider.name, color: provider.color, route: `/${provider.id}` };
+    try {
+      const s = await provider.run();
+      if (!s) continue;
+      cards.push({ ...base, ...s, health: healthOf(s) });
     } catch (err) {
       cards.push({ ...base, health: 'unknown', objects: 0, headline: [], exceptions: [], spark: null, error: true });
     }

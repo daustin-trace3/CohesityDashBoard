@@ -124,6 +124,32 @@ router.get('/status', (req, res, next) => {
       };
     }
 
+    // Phase 1 manifest-driven core hooks: plugins declaring a static
+    // `metricsHistory` config get the same lastCapture-lookup section as the
+    // built-ins above, merged at request time (not module load) so hot-added
+    // plugins work without a restart. Missing/mismatched tables degrade to
+    // an empty section instead of a 500.
+    const extraPluginSections = {};
+    let pluginMetricsHistory = {};
+    try {
+      pluginMetricsHistory = registry.getMetricsHistoryContributors();
+    } catch { /* degrade: no plugin metrics-history sections surfaced */ }
+    for (const [pluginId, cfg] of Object.entries(pluginMetricsHistory)) {
+      if (pluginId in PLATFORM_METRICS_HISTORY) continue; // built-in already wins above
+      const plugin = registry.getPlugin(pluginId);
+      try {
+        const arrays = db.prepare(`SELECT id, name, polling_interval_minutes FROM ${cfg.arraysTable}`).all();
+        const entities = buildEntities(
+          arrays,
+          `SELECT captured_at FROM ${cfg.metricsTable} WHERE ${cfg.arrayIdColumn} = ? ORDER BY captured_at DESC LIMIT 1`,
+          pluginId
+        );
+        extraPluginSections[pluginId] = { enabled: plugin ? plugin.enabled : false, entities };
+      } catch (err) {
+        extraPluginSections[pluginId] = { enabled: plugin ? plugin.enabled : false, entities: [] };
+      }
+    }
+
     // Pure: direct arrays (pure_arrays) build entities as above; SaaS-only
     // deployments have no direct arrays, so fall back to the Pure1 account-
     // global snapshot (mirrors the Zerto block below) instead of an empty
@@ -208,6 +234,7 @@ router.get('/status', (req, res, next) => {
         isStale: zertoAge !== null ? zertoAge > zertoInterval * 2 + 5 : false,
         failedSources: [],
       },
+      ...extraPluginSections,
     });
   } catch (err) {
     next(err);

@@ -209,7 +209,15 @@ router.put('/', (req, res, next) => {
  *  never returned, only smtpPasswordSet. */
 router.get('/notifications', (req, res, next) => {
   try {
-    res.json(getNotificationSettings());
+    const settings = getNotificationSettings();
+    // Phase 1 manifest-driven core hooks: surface enabled plugins declaring
+    // collectAlerts so the frontend can render their alert-email toggle
+    // alongside the static NOTIFY_PLATFORMS list.
+    let platforms = [];
+    try {
+      platforms = registry.getAlertPlatformPlugins().map((p) => ({ key: p.id, label: p.name }));
+    } catch { /* degrade: no dynamic platforms surfaced */ }
+    res.json({ ...settings, platforms });
   } catch (err) {
     next(err);
   }

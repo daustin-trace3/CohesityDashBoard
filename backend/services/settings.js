@@ -153,6 +153,16 @@ function getNotificationSettings() {
   // Merge over defaults so platforms added after a DB stored its JSON come
   // through enabled instead of silently missing (collector gate reads keys).
   const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, netbackup: true, aws: true, proxmox: true };
+  // Phase 1 manifest-driven core hooks: any enabled plugin declaring
+  // collectAlerts also gets a default-on toggle, without disturbing the
+  // built-in defaults above. Lazily required — settings.js loads before the
+  // registry is populated at boot, and coreApi itself requires settings.js.
+  try {
+    const registry = require('../core/registry');
+    for (const p of registry.getAlertPlatformPlugins()) {
+      if (!(p.id in platformDefaults)) platformDefaults[p.id] = true;
+    }
+  } catch { /* registry not ready yet — built-in defaults still apply */ }
   let alertPlatforms;
   try {
     alertPlatforms = { ...platformDefaults, ...JSON.parse(getSetting('alert_email_platforms')) };
