@@ -4,20 +4,28 @@ Demo story: "the dashboard doesn't know Rubrik → we install a signed plugin li
 Rubrik platform appears with data, no reload, no restart."
 
 ## Files
-- `rubrik-1.1.0.iccplugin` — the signed installable (also staged at `%USERPROFILE%\Desktop\`).
-  v1.1 is the FULL dashboard: 10 pages across Monitor/Protection/Security/Data Movement/
-  Capacity — Overview (Radar banner, SLA donut), Events, Protected Objects, SLA Domains,
-  Compliance bubble matrix, Jobs, Threat Monitoring (Radar anomalies + IOC threat hunts),
-  Replication & Archival, Clusters, Capacity Forecast (90d history + 90d regression w/
-  runway). All charts are self-contained inline SVG; all data seeds from the plugin's own
-  migrations — nothing depends on host data.
+- `rubrik-2.0.0.iccplugin` — the signed installable (also staged at `%USERPROFILE%\Desktop\`).
+  v2.0 is the COHESITY-PARITY dashboard: 19 pages/routes across Monitor / Protect /
+  Reporting / Security / Infrastructure / System, deliberately mirroring the Cohesity
+  platform's pages so "only the accent color tells you where you are": Overview (KPI strip,
+  storage donut, capacity-growth forecast, cluster health cards), Alerts (full triage w/
+  bulk resolve/dismiss), Licensing (3 donut meters), Data Protection (risk scores, SLA
+  compliance, failure analysis), Workloads (+180d trends), Replication (runs w/ progress
+  bars + topology/archival), SLA Domains, Governance (tabbed audits), Backup History
+  (searchable per-server bubble matrix + run-detail modal), Reporting (executive report,
+  printable), Analytics (animated replication meshes w/ flowing packets), Sources (tile-
+  filtered inventory), Threat Monitoring (RICHER than Cohesity — Radar + IOC hunts),
+  Events, Clusters (accordion + node detail), Forecast, Settings (RSC/CDM connections).
+  Styling via a plugin-injected stylesheet cloned from the host design system (CSP-legal);
+  charts are self-contained SVG; all data seeds from the plugin's own migrations (30d
+  protection runs, alerts, licensing meters, workload history — nothing depends on host data).
   Rebuild after source changes: `cd plugin-sdk && node build.mjs --dir ./rubrik && node pack.mjs --dir ./rubrik`
   (signing key: `../LicenseTools/keys/plugin-signing-private.pem`).
 
 ## The demo (on https://cc.austihome.com, login demo / IccDemo2026!)
 1. **Absent**: show the platform switcher — no Rubrik. Optionally hit Plugins page
    (gear → Plugins): only built-ins listed.
-2. **Install**: drag `rubrik-1.1.0.iccplugin` onto the Plugins page upload target.
+2. **Install**: drag `rubrik-2.0.0.iccplugin` onto the Plugins page upload target.
    Toast: installed and live ("hot add"). Signature + per-file hashes verified server-side.
 3. **Appears**: Rubrik shows up in the platform switcher immediately — no reload
    (a `platforms-changed` event refreshes the platform registry live).
