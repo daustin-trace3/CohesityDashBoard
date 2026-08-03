@@ -24,6 +24,25 @@ function installedIds() {
   return ids;
 }
 
+/** Cohesity is semi-core (not a registry plugin) but its enable flag works
+ *  the same way — surface it as a synthetic built-in row so the merged
+ *  Platforms page covers every platform. */
+function cohesityRow() {
+  const { getSetting } = require('../services/settings');
+  return {
+    id: 'cohesity',
+    name: 'Cohesity',
+    version: null,
+    source: 'builtin',
+    status: 'active',
+    error: null,
+    enabled: String(getSetting('platform_cohesity_enabled') ?? '1') !== '0',
+    hasFrontend: false,
+    pendingAction: 'none',
+    entitled: true,
+  };
+}
+
 /** GET /api/plugins — built-ins + installed, merged with on-disk pending state. */
 router.get('/', requirePermission('admin:plugins:view'), (req, res) => {
   const pluginsDir = pluginBoot.getPluginsDir();
@@ -49,7 +68,7 @@ router.get('/', requirePermission('admin:plugins:view'), (req, res) => {
     };
   });
 
-  res.json(list);
+  res.json([cohesityRow(), ...list]);
 });
 
 /** POST /api/plugins/install — multipart field 'plugin'. Fresh id hot-adds;
@@ -75,6 +94,14 @@ router.post('/install', requirePermission('admin:plugins:manage'), (req, res) =>
  *  routes/settings.js applyPlatformEnabled for pure/netapp). */
 router.post('/:id/enabled', requirePermission('admin:plugins:manage'), (req, res) => {
   const { id } = req.params;
+  if (id === 'cohesity') {
+    // Semi-core: only the setting exists (nav/API gating); no registry entry
+    // or registry-managed poller to flip.
+    const wantEnabled = !!(req.body && req.body.enabled);
+    const { setSetting } = require('../services/settings');
+    setSetting('platform_cohesity_enabled', wantEnabled ? '1' : '0');
+    return res.json({ ...cohesityRow(), enabled: wantEnabled });
+  }
   if (!registry.getPlugin(id)) return res.status(404).json({ error: `plugin '${id}' is not registered` });
 
   const wantEnabled = !!(req.body && req.body.enabled);
