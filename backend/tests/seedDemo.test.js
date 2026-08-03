@@ -96,9 +96,9 @@ describe('seedDemo.js', () => {
 
   it('seeds platform flags as string "1"', () => {
     const rows = db.prepare(
-      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled')"
+      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled', 'platform_proxmox_enabled')"
     ).all();
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     for (const row of rows) {
       expect(row.value).toBe('1');
     }
@@ -378,5 +378,64 @@ describe('seedDemo.js', () => {
 
     const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_aws_enabled'").get();
     expect(flag.value).toBe('1');
+  });
+
+  it('seeds the proxmox platform with 2 servers, mixed guests, and 2 templates', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_servers').get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_nodes').get().c).toBe(4);
+    const guests = db.prepare('SELECT COUNT(*) c FROM proxmox_guests').get().c;
+    expect(guests).toBeGreaterThanOrEqual(24);
+    expect(guests).toBeLessThanOrEqual(32);
+    expect(db.prepare("SELECT COUNT(*) c FROM proxmox_guests WHERE type = 'qemu'").get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM proxmox_guests WHERE type = 'lxc'").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_guests WHERE is_template = 1').get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_storage').get().c).toBeGreaterThanOrEqual(6);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_backup_jobs').get().c).toBe(4);
+
+    const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_proxmox_enabled'").get();
+    expect(flag.value).toBe('1');
+  });
+
+  it('seeds proxmox deliberate trouble covering every issue rule', () => {
+    expect(db.prepare("SELECT COUNT(*) c FROM proxmox_nodes WHERE status != 'online'").get().c).toBeGreaterThan(0);
+    expect(db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_storage WHERE total_bytes > 0 AND (CAST(used_bytes AS REAL) / total_bytes) >= 0.95
+    `).get().c).toBeGreaterThan(0);
+    expect(db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_storage
+      WHERE total_bytes > 0 AND (CAST(used_bytes AS REAL) / total_bytes) >= 0.85 AND (CAST(used_bytes AS REAL) / total_bytes) < 0.95
+    `).get().c).toBeGreaterThan(0);
+    expect(db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_tasks
+      WHERE type = 'vzdump' AND status != 'OK' AND started_at >= datetime('now', '-7 days')
+    `).get().c).toBeGreaterThan(0);
+    expect(db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_tasks
+      WHERE type != 'vzdump' AND status != 'OK' AND started_at >= datetime('now', '-1 day')
+    `).get().c).toBeGreaterThan(0);
+    expect(db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_guests
+      WHERE is_template = 0 AND last_backup_status = 'OK'
+        AND last_backup_at < datetime('now', '-3 days')
+    `).get().c).toBeGreaterThan(0);
+    expect(db.prepare(`
+      SELECT COUNT(*) c FROM proxmox_nodes
+      WHERE cert_expires_at IS NOT NULL AND julianday(cert_expires_at) - julianday('now') <= 30
+    `).get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT quorate FROM proxmox_servers WHERE name = 'pve-cluster-hq'").get().quorate).toBe(0);
+    const forbidden = db.prepare("SELECT forbidden_endpoints FROM proxmox_servers WHERE name = 'pve-lab-01'").get().forbidden_endpoints;
+    expect(forbidden).toBeTruthy();
+    expect(JSON.parse(forbidden).length).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM proxmox_issue_history').get().c).toBeGreaterThan(0);
+  });
+
+  it('seeds 14 days of proxmox tasks and hourly metrics per node', () => {
+    const oldestTask = db.prepare("SELECT MIN(started_at) m FROM proxmox_tasks").get().m;
+    expect(new Date(oldestTask).getTime()).toBeLessThanOrEqual(Date.now() - 6 * 24 * 60 * 60 * 1000);
+    const metricsPerNode = db.prepare('SELECT node, COUNT(*) c FROM proxmox_metrics GROUP BY node').all();
+    expect(metricsPerNode.length).toBeGreaterThanOrEqual(4);
+    for (const row of metricsPerNode) {
+      expect(row.c).toBeGreaterThanOrEqual(7);
+    }
   });
 });

@@ -22,6 +22,7 @@ import ariaMigrations from '../db/migrations/aria.js';
 import ariaopsMigrations from '../db/migrations/ariaops.js';
 import netbackupMigrations from '../db/migrations/netbackup.js';
 import awsMigrations from '../db/migrations/aws.js';
+import proxmoxMigrations from '../db/migrations/proxmox.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -160,6 +161,7 @@ function buildNewDb() {
   runMigrations(db, 'ariaops', ariaopsMigrations);
   runMigrations(db, 'netbackup', netbackupMigrations);
   runMigrations(db, 'aws', awsMigrations);
+  runMigrations(db, 'proxmox', proxmoxMigrations);
   return db;
 }
 
@@ -223,6 +225,8 @@ const NEW_TABLES = [
   'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_ai_reports',
   'aws_optimizer_recommendations',
+  'proxmox_servers', 'proxmox_nodes', 'proxmox_guests', 'proxmox_storage',
+  'proxmox_backup_jobs', 'proxmox_tasks', 'proxmox_metrics', 'proxmox_issue_history',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.
@@ -318,6 +322,7 @@ describe('runMigrations', () => {
       runMigrations(db, 'ariaops', ariaopsMigrations);
   runMigrations(db, 'netbackup', netbackupMigrations);
       runMigrations(db, 'aws', awsMigrations);
+      runMigrations(db, 'proxmox', proxmoxMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

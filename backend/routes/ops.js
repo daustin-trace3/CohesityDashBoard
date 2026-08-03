@@ -337,6 +337,38 @@ function awsSummary() {
   };
 }
 
+function proxmoxSummary() {
+  const servers = count('SELECT COUNT(*) c FROM proxmox_servers');
+  if (!servers) return null;
+  const nodes = countSafe('SELECT COUNT(*) c FROM proxmox_nodes');
+  const nodesOffline = countSafe("SELECT COUNT(*) c FROM proxmox_nodes WHERE status != 'online'");
+  const guests = countSafe('SELECT COUNT(*) c FROM proxmox_guests');
+  const guestsRunning = countSafe("SELECT COUNT(*) c FROM proxmox_guests WHERE status = 'running'");
+  const storagePools = countSafe('SELECT COUNT(*) c FROM proxmox_storage');
+  const sev = { critical: 0, warning: 0 };
+  for (const r of all("SELECT severity, COUNT(*) c FROM proxmox_issue_history WHERE status = 'open' GROUP BY severity")) {
+    const s = String(r.severity || '').toLowerCase();
+    if (s === 'critical') sev.critical += num(r.c);
+    else if (s === 'warning') sev.warning += num(r.c);
+  }
+  const exceptions = [];
+  if (nodesOffline) exceptions.push(exception('critical', nodesOffline, `${fnum(nodesOffline)} node${nodesOffline === 1 ? '' : 's'} offline`, '/proxmox/nodes'));
+  if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical issue${sev.critical === 1 ? '' : 's'}`, '/proxmox/alerts'));
+  if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} warning issue${sev.warning === 1 ? '' : 's'}`, '/proxmox/alerts'));
+  return {
+    objects: nodes + guests + storagePools,
+    headline: [
+      { label: 'Nodes', value: nodes },
+      { label: 'Guests', value: `${guestsRunning}/${guests}` },
+    ],
+    exceptions,
+    spark: spark7(all(
+      "SELECT date(started_at) d, COUNT(*) c FROM proxmox_tasks WHERE status IS NOT NULL AND status != 'OK' AND started_at >= datetime('now','-7 days') GROUP BY date(started_at)"
+    )),
+    sparkLabel: 'failed tasks / day',
+  };
+}
+
 const PLATFORMS = [
   { id: 'cohesity', label: 'Cohesity', color: '#6CB33F', route: '/cohesity', fn: cohesitySummary },
   { id: 'pure', label: 'Pure', color: '#FF6B00', route: '/pure', fn: pureSummary },
@@ -347,6 +379,7 @@ const PLATFORMS = [
   { id: 'aria', label: 'Aria', color: '#00A2C7', route: '/aria', fn: ariaSummary },
   { id: 'netbackup', label: 'NetBackup', color: '#B1181E', route: '/netbackup', fn: netbackupSummary },
   { id: 'aws', label: 'AWS', color: '#FF9900', route: '/aws', fn: awsSummary },
+  { id: 'proxmox', label: 'Proxmox VE', color: '#E57000', route: '/proxmox', fn: proxmoxSummary },
 ];
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };

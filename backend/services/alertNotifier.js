@@ -208,6 +208,28 @@ function collectAwsIssues() {
   }));
 }
 
+/** Open Proxmox VE computed issues — reconcileIssueHistory keeps
+ *  proxmox_issue_history current with a stable issue_key per issue, and
+ *  resolving drops the row out of this query (which is what ends reminders).
+ *  LEFT JOIN so issue rows with a NULL source_id (estate-wide issues) still
+ *  surface instead of being dropped. */
+function collectProxmoxIssues() {
+  const rows = db.prepare(`
+    SELECT i.issue_key AS issueKey, COALESCE(s.name, i.source, 'estate') AS server,
+           i.severity, i.message, i.first_seen AS firstSeen, i.last_seen AS lastSeen
+    FROM proxmox_issue_history i LEFT JOIN proxmox_servers s ON i.source_id = s.id
+    WHERE i.status = 'open'
+  `).all();
+  return rows.map((r) => ({
+    sourceKey: `px:${r.issueKey}`,
+    severity: String(r.severity || '').toLowerCase(),
+    host: r.server,
+    message: r.message || '',
+    firstSeen: toIso(r.firstSeen),
+    lastSeen: toIso(r.lastSeen),
+  }));
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -218,6 +240,7 @@ const COLLECTORS = {
   aria: collectAriaIssues,
   netbackup: collectNetbackupIssues,
   aws: collectAwsIssues,
+  proxmox: collectProxmoxIssues,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({

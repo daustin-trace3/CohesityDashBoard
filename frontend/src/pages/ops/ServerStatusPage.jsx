@@ -28,6 +28,7 @@ const PLATFORM_META = {
   vcenter: { label: 'vCenter', color: '#0091DA' },
   aria: { label: 'Aria Automation', color: '#00A2C7' },
   netbackup: { label: 'NetBackup', color: '#B1181E' },
+  proxmox: { label: 'Proxmox VE', color: '#E57000' },
 };
 
 function PlatformChip({ platform }) {
@@ -90,7 +91,7 @@ export default function ServerStatusPage() {
 
   const vm = data?.vcenter;
   const pluginSections = data?.plugins || [];
-  const nothingFound = data && !data.vcenter && !data.cohesity && !data.zerto && !data.netapp && !data.aria && !data.netbackup && !pluginSections.length;
+  const nothingFound = data && !data.vcenter && !data.cohesity && !data.zerto && !data.netapp && !data.aria && !data.netbackup && !data.proxmox && !pluginSections.length;
 
   return (
     <div className="animate-fade-in flex flex-col gap-4">

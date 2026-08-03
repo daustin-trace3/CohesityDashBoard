@@ -48,6 +48,7 @@ const { seedDell } = require('./generators/dell');
 const { seedAria } = require('./generators/aria');
 const { seedNetbackup } = require('./generators/netbackup');
 const { seedAws } = require('./generators/aws');
+const { seedProxmox } = require('./generators/proxmox');
 
 const SEEDED_TABLES = [
   // core
@@ -95,6 +96,9 @@ const SEEDED_TABLES = [
   'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_optimizer_recommendations',
   'aws_accounts',
+  // proxmox (children before the parent)
+  'proxmox_guests', 'proxmox_storage', 'proxmox_backup_jobs', 'proxmox_tasks',
+  'proxmox_metrics', 'proxmox_issue_history', 'proxmox_nodes', 'proxmox_servers',
 ];
 
 function wipeSeededTables(database) {
@@ -127,6 +131,7 @@ async function main() {
   const ariaResult = db.transaction(() => seedAria(db, { now, encrypt }))();
   const netbackupResult = db.transaction(() => seedNetbackup(db, { now, encrypt }))();
   const awsResult = db.transaction(() => seedAws(db, { now, encrypt }))();
+  const proxmoxResult = db.transaction(() => seedProxmox(db, { now, encrypt }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -148,6 +153,7 @@ async function main() {
     ['aria instances/deployments/requests', `${ariaResult.instances}/${ariaResult.deployments}/${ariaResult.requests}`],
     ['netbackup sources/policies/jobs', `${netbackupResult.sources}/${netbackupResult.policies}/${netbackupResult.jobs}`],
     ['aws ec2/ecs services/s3/cost rows', `${awsResult.ec2}/${awsResult.ecsServices}/${awsResult.s3}/${awsResult.costRows}`],
+    ['proxmox servers/nodes/guests', `${proxmoxResult.servers}/${proxmoxResult.nodes}/${proxmoxResult.guests}`],
     ['users', 1],
   ];
 

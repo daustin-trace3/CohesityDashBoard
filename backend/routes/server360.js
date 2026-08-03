@@ -33,6 +33,9 @@ router.get('/suggest', (req, res, next) => {
     if (platformEnabled('netbackup') && hasPermission(grants, 'netbackup:jobs:view')) {
       for (const r of db.prepare(`SELECT DISTINCT client_name AS name FROM netbackup_jobs WHERE client_name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 8`).all(pattern)) names.add(r.name);
     }
+    if (platformEnabled('proxmox') && hasPermission(grants, 'proxmox:guests:view')) {
+      for (const r of db.prepare(`SELECT name FROM proxmox_guests WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 8`).all(pattern)) names.add(r.name);
+    }
     for (const p of registry.getServer360Providers()) {
       if (!p.suggest || !hasPermission(grants, `${p.id}:objects:view`)) continue;
       try {
@@ -172,6 +175,17 @@ router.get('/', (req, res, next) => {
       }
     }
 
+    // ── Proxmox: guest posture by name ────────────────────────────────────
+    let proxmox = null;
+    if (platformEnabled('proxmox') && can('proxmox:guests:view')) {
+      const rows = db.prepare(`
+        SELECT g.*, s.name AS server_name FROM proxmox_guests g
+        JOIN proxmox_servers s ON s.id = g.server_id
+        WHERE lower(g.name) IN (${namePh})
+      `).all(...nameList);
+      if (rows.length) proxmox = { guests: rows };
+    }
+
     // ── NetBackup: backup posture by client name ──────────────────────────
     let netbackup = null;
     if (platformEnabled('netbackup') && can('netbackup:jobs:view')) {
@@ -230,6 +244,7 @@ router.get('/', (req, res, next) => {
       netapp,
       aria,
       netbackup,
+      proxmox,
       plugins: pluginSections,
     });
   } catch (err) { next(err); }

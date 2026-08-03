@@ -35,6 +35,11 @@ const DEFAULTS = {
   platform_aws_enabled: '0',
   aws_cost_spike_pct: '30',
   aws_rds_storage_warn_pct: '15',
+  platform_proxmox_enabled: '0',
+  proxmox_storage_warn_pct: '85',
+  proxmox_storage_crit_pct: '95',
+  proxmox_backup_stale_days: '3',
+  proxmox_cert_warn_days: '30',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',
@@ -46,7 +51,7 @@ const DEFAULTS = {
   smtp_from: '',
   smtp_recipients: '',
   alert_email_min_severity: 'warning',
-  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true,"netbackup":true,"aws":true}',
+  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true,"netbackup":true,"aws":true,"proxmox":true}',
   alert_email_reminder_hours: '24',
 };
 
@@ -135,6 +140,7 @@ function getPlatformSettings() {
     platformAriaopsEnabled: getSetting('platform_ariaops_enabled') === '1',
     platformNetbackupEnabled: getSetting('platform_netbackup_enabled') === '1',
     platformAwsEnabled: getSetting('platform_aws_enabled') === '1',
+    platformProxmoxEnabled: getSetting('platform_proxmox_enabled') === '1',
     featureCustomDashboardsEnabled: getSetting('feature_custom_dashboards_enabled') === '1',
     dnsServer: getSetting('dns_server') || '',
   };
@@ -145,7 +151,7 @@ function getPlatformSettings() {
 function getNotificationSettings() {
   // Merge over defaults so platforms added after a DB stored its JSON come
   // through enabled instead of silently missing (collector gate reads keys).
-  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, netbackup: true, aws: true };
+  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, netbackup: true, aws: true, proxmox: true };
   let alertPlatforms;
   try {
     alertPlatforms = { ...platformDefaults, ...JSON.parse(getSetting('alert_email_platforms')) };
