@@ -23,6 +23,7 @@ export default function GlobalSearch() {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [inputLocked, setInputLocked] = useState(true);
   const boxRef = useRef(null);
   const menuRef = useRef(null);
   const seqRef = useRef(0);
@@ -90,8 +91,14 @@ export default function GlobalSearch() {
       <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
       <input
         type="search"
-        name="estate-search"
-        autoComplete="off"
+        // Chrome ignores autocomplete="off" for lone text fields once it has
+        // saved credentials for the origin and offers the username anyway.
+        // Two measures it does respect: a readonly field at focus time (the
+        // autofill decision happens on focus; we lift readonly right after),
+        // and the "one-time-code" autocomplete hint. No name attr so past
+        // submissions can't seed suggestions either.
+        autoComplete="one-time-code"
+        readOnly={inputLocked}
         autoCorrect="off"
         autoCapitalize="none"
         spellCheck={false}
@@ -100,7 +107,8 @@ export default function GlobalSearch() {
         data-form-type="other"
         value={search}
         onChange={e => setSearch(e.target.value)}
-        onFocus={() => { if (results.length) { place(); setOpen(true); } }}
+        onFocus={() => { setInputLocked(false); if (results.length) { place(); setOpen(true); } }}
+        onBlur={() => setInputLocked(true)}
         onKeyDown={(e) => { if (e.key === 'Enter' && search.trim().length >= 2) go({ route: server360Route() }); }}
         placeholder="Search estate…"
         aria-label="Search the estate"
