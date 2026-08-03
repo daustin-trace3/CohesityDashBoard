@@ -4,7 +4,7 @@ Demo story: "the dashboard doesn't know Rubrik → we install a signed plugin li
 Rubrik platform appears with data, no reload, no restart."
 
 ## Files
-- `rubrik-2.1.1.iccplugin` — the signed installable (also staged at `%USERPROFILE%\Desktop\`).
+- `rubrik-2.1.4.iccplugin` — the signed installable (also staged at `%USERPROFILE%\Desktop\`).
   v2.1 rebuilt Overview / Backup History / Protected Objects / Settings as SOURCE-LEVEL
   clones of the Cohesity pages (built from Dashboard.jsx/BackupHistoryPage.jsx/
   ServerStatusPage.jsx/SettingsPage.jsx, not summaries), added the Object 360 drill-in
@@ -39,7 +39,7 @@ Rubrik platform appears with data, no reload, no restart."
 ## The demo (on https://cc.austihome.com, login demo / IccDemo2026!)
 1. **Absent**: show the platform switcher — no Rubrik. Optionally hit Plugins page
    (gear → Plugins): only built-ins listed.
-2. **Install**: drag `rubrik-2.1.1.iccplugin` onto the Plugins page upload target.
+2. **Install**: drag `rubrik-2.1.4.iccplugin` onto the Plugins page upload target.
    Toast: installed and live ("hot add"). Signature + per-file hashes verified server-side.
 3. **Appears**: Rubrik shows up in the platform switcher immediately — no reload
    (a `platforms-changed` event refreshes the platform registry live).
