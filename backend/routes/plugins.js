@@ -124,6 +124,10 @@ router.delete('/:id', requirePermission('admin:plugins:manage'), (req, res) => {
 router.get('/:id/bundle.js', requirePermission((req) => `${req.params.id}:*:view`), (req, res) => {
   const bundlePath = path.join(pluginBoot.getPluginsDir(), req.params.id, 'frontend', 'bundle.js');
   if (!fs.existsSync(bundlePath)) return res.status(404).end();
+  // no-cache: CDNs (Cloudflare) cache .js by extension regardless of the /api
+  // path, which served stale plugin bundles after upgrades. ETag revalidation
+  // still gives 304s; the loader also appends ?v=<version> to bust old copies.
+  res.set('Cache-Control', 'no-cache');
   res.type('text/javascript').sendFile(bundlePath);
 });
 
@@ -136,7 +140,7 @@ router.get('/frontend-manifest', (req, res) => {
   for (const entry of registry.listPlugins()) {
     if (!entry.enabled || !entry.entitled) continue;
     if (!fs.existsSync(path.join(pluginsDir, entry.id, 'frontend', 'bundle.js'))) continue;
-    out.push({ id: entry.id, hasFrontend: true, name: entry.name, color: entry.color });
+    out.push({ id: entry.id, hasFrontend: true, name: entry.name, color: entry.color, version: entry.version || null });
   }
   res.json(out);
 });

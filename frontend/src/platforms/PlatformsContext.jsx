@@ -27,7 +27,7 @@ export function PlatformsProvider({ children }) {
       if (!entry?.id || loadedIds.current.has(entry.id)) continue;
       loadedIds.current.add(entry.id);
       try {
-        const module = await pluginLoader.load(entry.id);
+        const module = await pluginLoader.load(entry.id, entry.version);
         setPlatforms(prev => (prev.some(p => p.id === module.id) ? prev : [...prev, module]));
       } catch (err) {
         loadedIds.current.delete(entry.id);
