@@ -73,7 +73,7 @@ export default function AlertsPage() {
     setLoading(true);
     setError(null);
     apiFetch(`/alerts?${params}`)
-      .then((data) => { setAlerts(data || []); setSelectedIds(new Set()); })
+      .then((data) => { setAlerts(Array.isArray(data) ? data : (data && data.rows) || []); setSelectedIds(new Set()); })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [severity, showDismissed, showResolved]);
