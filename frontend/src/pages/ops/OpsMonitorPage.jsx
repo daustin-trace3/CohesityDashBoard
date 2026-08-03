@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Check, ChevronRight, Maximize2, Minimize2 } from 'lucide-react';
+import { Activity, Check, ChevronRight, GripVertical, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
 import client from '../../api/client';
 import { PlatformLogo } from '../../components/PlatformSwitcher';
+
+const CARD_ORDER_KEY = 'ops-card-order';
 
 const TONES = {
   ok: '#6CB33F',
@@ -55,7 +57,7 @@ function SevDot({ severity }) {
   return <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: TONES[severity] || TONES.unknown }} />;
 }
 
-function PlatformCard({ card, fresh, onNavigate }) {
+function PlatformCard({ card, fresh, onNavigate, dragEnabled, dragOver, onGripDown, onGripUp, onDragStart, onDragEnd, onDragOver, onDrop }) {
   const stale = fresh?.stale || fresh?.error;
   const tone = stale ? TONES.stale : TONES[card.health] || TONES.unknown;
   const verdict = fresh?.error ? 'POLL ERROR'
@@ -68,9 +70,25 @@ function PlatformCard({ card, fresh, onNavigate }) {
   return (
     <button
       onClick={() => onNavigate(card.route)}
-      className="panel p-5 text-left transition-all cursor-pointer hover:-translate-y-0.5 flex flex-col gap-4"
+      draggable={dragEnabled}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={`panel p-5 text-left transition-all cursor-pointer hover:-translate-y-0.5 flex flex-col gap-4 relative group/card ${dragOver ? 'ring-2 ring-brand/60' : ''}`}
       style={{ borderTop: `3px solid ${card.color}`, opacity: stale ? 0.85 : 1 }}
     >
+      {dragEnabled && (
+        <span
+          onMouseDown={onGripDown}
+          onMouseUp={onGripUp}
+          onClick={(e) => e.stopPropagation()}
+          title="Drag to reorder"
+          className="absolute right-2 top-2 z-10 p-1 rounded text-ink-faint opacity-0 group-hover/card:opacity-100 hover:text-ink hover:bg-surface-overlay cursor-grab active:cursor-grabbing transition-opacity"
+        >
+          <GripVertical size={14} />
+        </span>
+      )}
       <div className="flex items-center gap-3">
         <span className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 text-[11px] font-bold"
           style={{ backgroundColor: `${card.color}22`, color: card.color }}>
@@ -141,6 +159,12 @@ export default function OpsMonitorPage() {
   const [pollerStatus, setPollerStatus] = useState(null);
   const [countdown, setCountdown] = useState(60);
   const [tv, setTv] = useState(false);
+  const [order, setOrder] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(CARD_ORDER_KEY)) || []; } catch { return []; }
+  });
+  const [dragId, setDragId] = useState(null);
+  const [overId, setOverId] = useState(null);
+  const [armed, setArmed] = useState(null);
 
   const load = useCallback(() => {
     client.get('/ops/summary').then((r) => setData(r.data)).catch(() => {});
@@ -169,6 +193,31 @@ export default function OpsMonitorPage() {
   const cards = data?.platforms || [];
   const totals = data?.totals || {};
   const attention = data?.attention || [];
+
+  const ids = useMemo(() => cards.map((c) => c.id), [cards]);
+  const orderedIds = useMemo(() => {
+    const kept = order.filter((id) => ids.includes(id));
+    const merged = [...kept];
+    ids.forEach((id) => { if (!merged.includes(id)) merged.push(id); });
+    return merged;
+  }, [order, ids]);
+  const customized = JSON.stringify(orderedIds) !== JSON.stringify(ids);
+  const byId = Object.fromEntries(cards.map((c) => [c.id, c]));
+  const sortedCards = orderedIds.map((id) => byId[id]).filter(Boolean);
+
+  const persistOrder = (next) => {
+    setOrder(next);
+    try { localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(next)); } catch { /* private mode */ }
+  };
+
+  const moveCard = (from, to, before) => {
+    const next = orderedIds.filter((id) => id !== from);
+    const j = next.indexOf(to);
+    next.splice(before ? j : j + 1, 0, from);
+    if (JSON.stringify(next) !== JSON.stringify(orderedIds)) persistOrder(next);
+  };
+
+  const resetOrder = () => persistOrder([]);
 
   const freshById = Object.fromEntries(cards.map((c) => [c.id, freshness(pollerStatus, c.id)]));
   const staleIds = cards.filter((c) => freshById[c.id]?.stale || freshById[c.id]?.error).map((c) => c.id);
@@ -225,11 +274,42 @@ export default function OpsMonitorPage() {
       ) : cards.length === 0 ? (
         <div className="panel p-8 text-center text-sm text-ink-muted">No platforms enabled yet — connect one under its Settings page.</div>
       ) : (
-        <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-4">
-          {cards.map((c) => (
-            <PlatformCard key={c.id} card={c} fresh={freshById[c.id]} onNavigate={navigate} />
-          ))}
-        </div>
+        <>
+          {!tv && customized && (
+            <div className="flex justify-end -mb-1">
+              <button
+                onClick={resetOrder}
+                className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] text-ink-faint hover:text-ink border border-transparent hover:border-cohesity-border transition-colors cursor-pointer"
+              >
+                <RotateCcw size={11} /> Reset layout
+              </button>
+            </div>
+          )}
+          <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-4">
+            {sortedCards.map((c) => (
+              <PlatformCard
+                key={c.id}
+                card={c}
+                fresh={freshById[c.id]}
+                onNavigate={navigate}
+                dragEnabled={!tv}
+                dragOver={dragId != null && dragId !== c.id && overId === c.id}
+                onGripDown={() => setArmed(c.id)}
+                onGripUp={() => setArmed(null)}
+                onDragStart={(e) => { if (armed !== c.id) { e.preventDefault(); return; } setDragId(c.id); e.dataTransfer.effectAllowed = 'move'; }}
+                onDragEnd={() => { setDragId(null); setOverId(null); setArmed(null); }}
+                onDragOver={(e) => {
+                  if (!dragId || dragId === c.id) return;
+                  e.preventDefault();
+                  setOverId(c.id);
+                  const r = e.currentTarget.getBoundingClientRect();
+                  moveCard(dragId, c.id, e.clientX < r.left + r.width / 2);
+                }}
+                onDrop={(e) => { e.preventDefault(); setDragId(null); setOverId(null); setArmed(null); }}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       {/* Attention feed */}

@@ -605,20 +605,55 @@ router.get('/bedrock', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/aws/costs?days=30&accountId= — accountId is an optional additive filter. */
+/** GET /api/aws/costs?days=30&accountId=&month=YYYY-MM — accountId is an optional additive filter;
+ * month overrides days and returns that closed month's series instead of the rolling window. */
 router.get('/costs', [
   query('days').optional().isInt().toInt(),
   query('accountId').optional().isInt().toInt(),
+  query('month').optional().matches(/^\d{4}-\d{2}$/),
 ], validate, (req, res, next) => {
   try {
     const days = Math.min(365, Math.max(7, req.query.days || 30));
     const accountId = req.query.accountId;
+    const month = req.query.month;
     const acctSql = accountId ? 'AND account_id = ?' : '';
     const acctArg = accountId ? [accountId] : [];
-    const rows = db.prepare(`
-      SELECT day, service, amount_usd FROM aws_cost_daily
-      WHERE day >= date('now', ?) ${acctSql} ORDER BY day ASC
-    `).all(`-${days} days`, ...acctArg);
+
+    const months = db.prepare(`SELECT DISTINCT substr(day, 1, 7) AS m FROM aws_cost_daily ORDER BY m DESC`).all().map((r) => r.m);
+
+    let rows, mtdUsd, deltaPct, byServiceMap;
+    if (month) {
+      rows = db.prepare(`
+        SELECT day, service, amount_usd FROM aws_cost_daily
+        WHERE substr(day, 1, 7) = ? ${acctSql} ORDER BY day ASC
+      `).all(month, ...acctArg);
+      mtdUsd = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE substr(day, 1, 7) = ? ${acctSql}`)
+        .get(month, ...acctArg).s || 0;
+      deltaPct = null;
+      byServiceMap = new Map();
+      for (const r of db.prepare(`SELECT service, SUM(amount_usd) AS mtdUsd FROM aws_cost_daily WHERE substr(day, 1, 7) = ? ${acctSql} GROUP BY service`)
+        .all(month, ...acctArg)) {
+        byServiceMap.set(r.service, r.mtdUsd || 0);
+      }
+    } else {
+      rows = db.prepare(`
+        SELECT day, service, amount_usd FROM aws_cost_daily
+        WHERE day >= date('now', ?) ${acctSql} ORDER BY day ASC
+      `).all(`-${days} days`, ...acctArg);
+      const monthStart = `${new Date().toISOString().slice(0, 7)}-01`;
+      mtdUsd = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day >= ? ${acctSql}`).get(monthStart, ...acctArg).s || 0;
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      const dayBefore = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+      const yTotal = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(yesterday, ...acctArg).s || 0;
+      const dbTotal = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(dayBefore, ...acctArg).s || 0;
+      deltaPct = dbTotal > 0 ? ((yTotal - dbTotal) / dbTotal) * 100 : null;
+      byServiceMap = new Map();
+      for (const r of db.prepare(`SELECT service, SUM(amount_usd) AS mtdUsd FROM aws_cost_daily WHERE day >= ? ${acctSql} GROUP BY service`)
+        .all(monthStart, ...acctArg)) {
+        byServiceMap.set(r.service, r.mtdUsd || 0);
+      }
+    }
+
     const byDay = new Map();
     for (const r of rows) {
       if (!byDay.has(r.day)) byDay.set(r.day, { day: r.day, totalUsd: 0, services: [] });
@@ -626,40 +661,40 @@ router.get('/costs', [
       d.totalUsd += r.amount_usd || 0;
       d.services.push({ service: r.service, amountUsd: r.amount_usd || 0 });
     }
-    const monthStart = `${new Date().toISOString().slice(0, 7)}-01`;
-    const mtdRows = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day >= ? ${acctSql}`).get(monthStart, ...acctArg);
-    const mtdUsd = mtdRows.s || 0;
-    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-    const dayBefore = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
-    const yTotal = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(yesterday, ...acctArg).s || 0;
-    const dbTotal = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(dayBefore, ...acctArg).s || 0;
-    const deltaPct = dbTotal > 0 ? ((yTotal - dbTotal) / dbTotal) * 100 : null;
-    const byServiceMap = new Map();
-    for (const r of db.prepare(`SELECT service, SUM(amount_usd) AS mtdUsd FROM aws_cost_daily WHERE day >= ? ${acctSql} GROUP BY service`)
-      .all(monthStart, ...acctArg)) {
-      byServiceMap.set(r.service, r.mtdUsd || 0);
-    }
+
     res.json({
       days: [...byDay.values()],
       mtdUsd, deltaPct,
       byService: [...byServiceMap.entries()].map(([service, mtdUsd]) => ({ service, mtdUsd })).sort((a, b) => b.mtdUsd - a.mtdUsd),
+      months,
     });
   } catch (err) { next(err); }
 });
 
-/** GET /api/aws/costs/usage-types?days=30&accountId= — explains "EC2 - Other" style line items. */
+/** GET /api/aws/costs/usage-types?days=30&accountId=&day=&month=YYYY-MM — explains "EC2 - Other" style
+ * line items. month and day are mutually exclusive; month wins if both are given. */
 router.get('/costs/usage-types', [
   query('days').optional().isInt().toInt(),
   query('accountId').optional().isInt().toInt(),
   query('day').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
+  query('month').optional().matches(/^\d{4}-\d{2}$/),
 ], validate, (req, res, next) => {
   try {
     const days = Math.min(90, Math.max(7, req.query.days || 30));
     const accountId = req.query.accountId;
     const acctSql = accountId ? 'AND account_id = ?' : '';
     const acctArg = accountId ? [accountId] : [];
-    const daySql = req.query.day ? 'AND day = ?' : "AND day >= date('now', ?)";
-    const dayArg = req.query.day ? [req.query.day] : [`-${days} days`];
+    let daySql, dayArg;
+    if (req.query.month) {
+      daySql = 'AND substr(day, 1, 7) = ?';
+      dayArg = [req.query.month];
+    } else if (req.query.day) {
+      daySql = 'AND day = ?';
+      dayArg = [req.query.day];
+    } else {
+      daySql = "AND day >= date('now', ?)";
+      dayArg = [`-${days} days`];
+    }
     const rows = db.prepare(`
       SELECT usage_type, SUM(amount_usd) AS total_usd FROM aws_cost_usage_daily
       WHERE 1=1 ${daySql} ${acctSql}

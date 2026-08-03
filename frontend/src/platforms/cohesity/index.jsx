@@ -17,7 +17,7 @@ const navGroups = [
   {
     label: 'Monitor',
     items: [
-      { label: 'Global Overview', route: '/cohesity', icon: LayoutDashboard, isActive: (p) => p === '/' || p === '/cohesity' },
+      { label: 'Overview', route: '/cohesity', icon: LayoutDashboard, isActive: (p) => p === '/' || p === '/cohesity' },
       { label: 'AI Advisor', route: '/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/ai-advisor'), requiresAi: true },
       { label: 'Alerts', route: '/cohesity/alerts', icon: Bell, isActive: (p) => p.startsWith('/cohesity/alerts'), showAlertCount: true },
       { label: 'Licensing', route: '/licensing', icon: BadgeCheck, isActive: (p) => p.startsWith('/licensing') },

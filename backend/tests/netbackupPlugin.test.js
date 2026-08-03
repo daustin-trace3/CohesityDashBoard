@@ -456,13 +456,16 @@ describe('routes/netbackup.js v2 routes (SLPs, governance, workloads, licensing,
 
     // Two workload_history snapshots same day (simulates two polls) to exercise the
     // day-dedupe: the earlier one must be superseded, not summed, in /workloads/trends.
+    // Anchored to fixed times on today's UTC date — a relative "-2 hours" offset
+    // crosses the UTC midnight boundary for two hours every day and split the
+    // rows across two days (flaked 2026-08-02).
     db.prepare(`
       INSERT INTO netbackup_workload_history (source_id, workload, protected_clients, job_count, success_count, failed_count, protected_bytes, captured_at)
-      VALUES (?, 'Standard', 1, 1, 1, 0, 1000, datetime('now', '-2 hours'))
+      VALUES (?, 'Standard', 1, 1, 1, 0, 1000, date('now') || ' 03:00:00')
     `).run(sourceId);
     db.prepare(`
       INSERT INTO netbackup_workload_history (source_id, workload, protected_clients, job_count, success_count, failed_count, protected_bytes, captured_at)
-      VALUES (?, 'Standard', 2, 3, 3, 0, 5000, datetime('now'))
+      VALUES (?, 'Standard', 2, 3, 3, 0, 5000, date('now') || ' 04:00:00')
     `).run(sourceId);
   });
 
