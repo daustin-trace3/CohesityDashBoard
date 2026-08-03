@@ -13,28 +13,68 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
 const COST_COLORS = ['#FF9900', '#0091DA', '#6CB33F', '#D4A24E', '#C75D5D', '#9B6CD4', '#5A6572'];
 
+// External HTML tooltip: two-column rows (service | right-aligned $) + total.
+function renderCostTooltip(context) {
+  const { chart, tooltip } = context;
+  const parent = chart.canvas.parentNode;
+  let el = parent.querySelector('.aws-cost-tt');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'aws-cost-tt';
+    Object.assign(el.style, {
+      position: 'absolute', pointerEvents: 'none', zIndex: 30,
+      background: 'rgba(20, 22, 26, 0.97)', border: '1px solid rgba(255,255,255,0.12)',
+      borderRadius: '8px', padding: '10px 12px', minWidth: '240px',
+      font: '12px ui-sans-serif, system-ui, sans-serif', color: '#E5E5E5',
+      transition: 'opacity 0.08s ease', opacity: 0,
+    });
+    parent.style.position = 'relative';
+    parent.appendChild(el);
+  }
+  if (tooltip.opacity === 0 || !tooltip.dataPoints?.length) {
+    el.style.opacity = 0;
+    return;
+  }
+  const rows = tooltip.dataPoints.map((p) => {
+    const color = p.dataset.backgroundColor;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:18px;padding:1.5px 0">
+      <span style="display:inline-flex;align-items:center;gap:6px;min-width:0">
+        <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${color};flex-shrink:0"></span>
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px">${p.dataset.label}</span>
+      </span>
+      <span style="font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0">$${(p.parsed?.y || 0).toFixed(2)}</span>
+    </div>`;
+  }).join('');
+  const total = tooltip.dataPoints.reduce((s, p) => s + (p.parsed?.y || 0), 0);
+  el.innerHTML = `
+    <div style="font-weight:700;margin-bottom:6px">${tooltip.title?.[0] ?? ''}</div>
+    ${rows}
+    <div style="display:flex;justify-content:space-between;gap:18px;margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.14);font-weight:700">
+      <span>Total</span>
+      <span style="font-variant-numeric:tabular-nums">$${total.toFixed(2)}</span>
+    </div>`;
+  const maxLeft = parent.clientWidth - el.offsetWidth - 4;
+  el.style.left = `${Math.max(4, Math.min(tooltip.caretX + 12, maxLeft))}px`;
+  el.style.top = `${Math.max(4, Math.min(tooltip.caretY - el.offsetHeight / 2, parent.clientHeight - el.offsetHeight - 4))}px`;
+  el.style.opacity = 1;
+}
+
 const chartOpts = {
   responsive: true, maintainAspectRatio: false, animation: false,
   interaction: { mode: 'index', intersect: false },
   plugins: {
     legend: { labels: { color: '#E5E5E5', boxWidth: 12, font: { size: 11 } } },
     // AWS Cost Explorer-style hover: every service for the day, sorted by
-    // spend, zero lines hidden, with a bold day total footer.
+    // spend, zero lines hidden, day total under a divider. Rendered as an
+    // external HTML tooltip because the canvas tooltip can't right-align a
+    // dollar column.
     tooltip: {
+      enabled: false,
       mode: 'index',
       intersect: false,
       itemSort: (a, b) => (b.parsed?.y || 0) - (a.parsed?.y || 0),
       filter: (item) => (item.parsed?.y || 0) >= 0.005,
-      backgroundColor: 'rgba(20, 22, 26, 0.96)',
-      borderColor: 'rgba(255,255,255,0.12)',
-      borderWidth: 1,
-      padding: 10,
-      titleFont: { size: 12, weight: 'bold' },
-      footerFont: { size: 12, weight: 'bold' },
-      callbacks: {
-        label: (ctx) => ` ${ctx.dataset.label}: $${(ctx.parsed?.y || 0).toFixed(2)}`,
-        footer: (items) => `Total: $${items.reduce((s, i) => s + (i.parsed?.y || 0), 0).toFixed(2)}`,
-      },
+      external: renderCostTooltip,
     },
   },
   scales: {
