@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useState, useCallback } from 'react';
-import { Database, ChevronDown, ChevronUp } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
+import { Database, ChevronDown, ChevronUp, MonitorSmartphone, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
@@ -69,11 +71,82 @@ function ContentsRow({ colSpan, storage }) {
   );
 }
 
+function GuestsModal({ storage, onClose }) {
+  const [guests, setGuests] = useState(null);
+
+  useEffect(() => {
+    client.get(`/proxmox/storage/${storage.id}/guests`)
+      .then(({ data }) => setGuests(Array.isArray(data) ? data : []))
+      .catch(() => setGuests([]));
+  }, [storage.id]);
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="panel w-full max-w-2xl p-5 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-ink truncate flex items-center gap-2">
+              <MonitorSmartphone size={15} className="text-brand" /> Guests on {storage.storage}
+            </h2>
+            <p className="text-[11px] text-ink-muted mt-0.5">
+              {storage.node} · {storage.serverName} — guests with disks or volumes on this storage pool
+            </p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="text-ink-faint hover:text-ink flex-shrink-0 cursor-pointer"><X size={16} /></button>
+        </div>
+        <div className="overflow-y-auto pr-1">
+          {guests == null ? (
+            <div className="py-8 flex justify-center"><Spinner size={18} /></div>
+          ) : guests.length === 0 ? (
+            <p className="text-sm text-ink-muted py-6 text-center">No guests have disks on this storage.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Guest</th>
+                <th className="py-2 pr-3">VMID</th>
+                <th className="py-2 pr-3">Type</th>
+                <th className="py-2 pr-3">Status</th>
+                <th className="py-2 pr-3">Disks on this storage</th>
+              </tr></thead>
+              <tbody>
+                {guests.map((g) => (
+                  <tr key={g.id} className="border-b border-cohesity-border/50 align-top">
+                    <td className="py-2 pr-3">
+                      <Link to={`/proxmox/guests/${g.id}`} className="text-brand hover:underline" onClick={onClose}>{g.name}</Link>
+                      {g.isTemplate ? <span className="ml-1.5 text-[10px] text-ink-faint">(template)</span> : null}
+                    </td>
+                    <td className="py-2 pr-3 tnum text-ink-muted">{g.vmid}</td>
+                    <td className="py-2 pr-3 text-ink-muted text-[11px]">{g.type === 'lxc' ? 'LXC' : 'VM'}</td>
+                    <td className="py-2 pr-3"><Badge tone={g.status === 'running' ? 'ok' : 'neutral'}>{g.status}</Badge></td>
+                    <td className="py-2 pr-3">
+                      <div className="flex flex-col gap-0.5">
+                        {g.devices.map((d) => (
+                          <span key={d.key} className="text-[11px] text-ink-muted tnum">
+                            <span className="text-ink">{d.key}</span>
+                            {d.size ? ` · ${d.size}` : ''}
+                            {d.cdrom ? <span className="text-ink-faint"> · cdrom</span> : ''}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export default function PxStoragePage() {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [open, setOpen] = useState(() => new Set());
+  const [guestsFor, setGuestsFor] = useState(null);
 
   const load = useCallback(() => client.get('/proxmox/storage')
     .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
@@ -127,6 +200,7 @@ export default function PxStoragePage() {
                 <SortTh k="active" label="Active" ctl={ctl} />
                 <SortTh k="totalBytes" label="Capacity" ctl={ctl} align="right" />
                 <SortTh k="used_pct" label="Used" ctl={ctl} align="right" />
+                <th className="py-2 pr-3" />
               </tr></thead>
               <tbody>
                 {ctl.pageRows.map((s) => {
@@ -144,8 +218,16 @@ export default function PxStoragePage() {
                         <td className="py-2 pr-3"><Badge tone={s.active ? 'ok' : 'neutral'}>{s.active ? 'active' : 'inactive'}</Badge></td>
                         <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(s.totalBytes)}</td>
                         <td className="py-2 pr-3"><UsageBar pct={s.used_pct} /></td>
+                        <td className="py-2 pr-3">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setGuestsFor(s); }}
+                            className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand transition-colors cursor-pointer"
+                            title="Show guests with disks on this storage">
+                            <MonitorSmartphone size={12} /> VMs
+                          </button>
+                        </td>
                       </tr>
-                      {isOpen && <ContentsRow colSpan={9} storage={s} />}
+                      {isOpen && <ContentsRow colSpan={10} storage={s} />}
                     </Fragment>
                   );
                 })}
@@ -155,6 +237,7 @@ export default function PxStoragePage() {
         )}
         <TablePager ctl={ctl} />
       </div>
+      {guestsFor && <GuestsModal storage={guestsFor} onClose={() => setGuestsFor(null)} />}
     </div>
   );
 }

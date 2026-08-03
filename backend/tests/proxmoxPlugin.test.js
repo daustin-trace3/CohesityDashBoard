@@ -407,6 +407,40 @@ describe('routes/proxmox.js basic CRUD + data endpoints (minimal express app, no
     expect(missing.status).toBe(404);
   });
 
+  it('GET /api/proxmox/storage/:id/guests correlates guests via config_json volume prefixes', async () => {
+    const serverId = insertServer({ name: 'pve-stcorr', host: 'stcorr.local' });
+    const stInfo = db.prepare(`
+      INSERT INTO proxmox_storage (server_id, node, storage, type, content, active, shared, used_bytes, total_bytes)
+      VALUES (?, 'n1', 'ds920', 'nfs', 'images,iso', 1, 0, 100, 1000)
+    `).run(serverId);
+    const stId = stInfo.lastInsertRowid;
+    db.prepare(`
+      INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template, config_json)
+      VALUES (?, 600, 'on-ds920', 'qemu', 'n1', 'running', 0, ?)
+    `).run(serverId, JSON.stringify({ scsi0: 'ds920:600/vm-600-disk-0.qcow2,size=50G', ide2: 'ds920:iso/x.iso,media=cdrom,size=1G', net0: 'virtio=AA:AA:AA:AA:AA:AA,bridge=vmbr0' }));
+    db.prepare(`
+      INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template, config_json)
+      VALUES (?, 601, 'lxc-on-ds920', 'lxc', 'n1', 'running', 0, ?)
+    `).run(serverId, JSON.stringify({ rootfs: 'ds920:601/vm-601-disk-0.raw,size=8G' }));
+    db.prepare(`
+      INSERT INTO proxmox_guests (server_id, vmid, name, type, node, status, is_template, config_json)
+      VALUES (?, 602, 'elsewhere', 'qemu', 'n1', 'running', 0, ?)
+    `).run(serverId, JSON.stringify({ scsi0: 'local-lvm:vm-602-disk-0,size=10G' }));
+
+    const res = await request(app).get(`/api/proxmox/storage/${stId}/guests`);
+    expect(res.status).toBe(200);
+    expect(res.body.map((g) => g.vmid)).toEqual([600, 601]);
+    const vm = res.body.find((g) => g.vmid === 600);
+    expect(vm.devices).toEqual([
+      { key: 'scsi0', volume: 'ds920:600/vm-600-disk-0.qcow2', size: '50G', cdrom: false },
+      { key: 'ide2', volume: 'ds920:iso/x.iso', size: '1G', cdrom: true },
+    ]);
+    expect(res.body.find((g) => g.vmid === 601).devices[0].key).toBe('rootfs');
+
+    const missing = await request(app).get('/api/proxmox/storage/999999/guests');
+    expect(missing.status).toBe(404);
+  });
+
   it('GET /api/proxmox/guests/:id/rrd and /nodes/:id/rrd 502 on upstream failure, 404 for unknown id', async () => {
     const serverId = insertServer({ name: 'pve-rrd', host: '127.0.0.1', port: 1 });
     const guestInfo = db.prepare(`

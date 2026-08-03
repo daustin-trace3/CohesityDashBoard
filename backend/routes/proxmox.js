@@ -370,6 +370,44 @@ router.get('/storage', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+const STORAGE_DEVICE_KEY_RE = /^(?:(?:scsi|sata|ide|virtio|efidisk|tpmstate|mp)\d+|rootfs)$/;
+
+/** GET /api/proxmox/storage/:id/guests — guests with disks/volumes on this storage pool. */
+router.get('/storage/:id/guests', (req, res, next) => {
+  try {
+    const st = db.prepare(`
+      SELECT st.*, s.name AS server_name FROM proxmox_storage st JOIN proxmox_servers s ON s.id = st.server_id
+      WHERE st.id = ?
+    `).get(Number(req.params.id));
+    if (!st) return res.status(404).json({ error: 'Storage not found' });
+
+    const guests = db.prepare('SELECT * FROM proxmox_guests WHERE server_id = ?').all(st.server_id);
+    const prefix = `${st.storage}:`;
+    const out = [];
+    for (const g of guests) {
+      if (!g.config_json) continue;
+      let config = {};
+      try { config = JSON.parse(g.config_json) || {}; } catch { continue; }
+      const devices = [];
+      for (const [key, val] of Object.entries(config)) {
+        if (typeof val !== 'string' || !STORAGE_DEVICE_KEY_RE.test(key)) continue;
+        const [volume, ...rest] = val.split(',');
+        if (!volume.startsWith(prefix)) continue;
+        const opts = parseKeyValueList(rest);
+        devices.push({ key, volume, size: opts.size || null, cdrom: opts.media === 'cdrom' });
+      }
+      if (devices.length) {
+        out.push({
+          id: g.id, vmid: g.vmid, name: g.name, type: g.type, node: g.node, status: g.status,
+          isTemplate: !!g.is_template, devices,
+        });
+      }
+    }
+    out.sort((a, b) => a.vmid - b.vmid);
+    res.json(out);
+  } catch (err) { next(err); }
+});
+
 /** GET /api/proxmox/backups — backup jobs + recent vzdump task outcomes. */
 router.get('/backups', (req, res, next) => {
   try {
