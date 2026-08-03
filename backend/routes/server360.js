@@ -7,6 +7,8 @@ const express = require('express');
 const db = require('../db/database');
 const { hasPermission } = require('../services/rbac');
 const { getSetting } = require('../services/settings');
+const registry = require('../core/registry');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -30,6 +32,12 @@ router.get('/suggest', (req, res, next) => {
     }
     if (platformEnabled('netbackup') && hasPermission(grants, 'netbackup:jobs:view')) {
       for (const r of db.prepare(`SELECT DISTINCT client_name AS name FROM netbackup_jobs WHERE client_name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 8`).all(pattern)) names.add(r.name);
+    }
+    for (const p of registry.getServer360Providers()) {
+      if (!p.suggest || !hasPermission(grants, `${p.id}:objects:view`)) continue;
+      try {
+        for (const n of p.suggest(q) || []) names.add(n);
+      } catch (err) { logger.warn(`[server360] plugin '${p.id}' suggest failed:`, err.message); }
     }
     res.json({ names: [...names].slice(0, 10) });
   } catch (err) { next(err); }
@@ -203,6 +211,16 @@ router.get('/', (req, res, next) => {
       }
     }
 
+    // ── Installed plugins: display-ready sections via manifest.server360 ──
+    const pluginSections = [];
+    for (const p of registry.getServer360Providers()) {
+      if (!can(`${p.id}:objects:view`)) continue;
+      try {
+        const section = p.run({ query: q, names: nameList, ips: ipList });
+        if (section) pluginSections.push({ id: p.id, ...section });
+      } catch (err) { logger.warn(`[server360] plugin '${p.id}' section failed:`, err.message); }
+    }
+
     res.json({
       query: q,
       identity: { names: nameList, ips: ipList },
@@ -212,6 +230,7 @@ router.get('/', (req, res, next) => {
       netapp,
       aria,
       netbackup,
+      plugins: pluginSections,
     });
   } catch (err) { next(err); }
 });

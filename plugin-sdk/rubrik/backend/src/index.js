@@ -7,13 +7,19 @@
 
 const { migrations } = require('./migrations');
 const { createRouter } = require('./routes');
+const { server360, server360Suggest } = require('./server360');
 
 module.exports = {
   id: 'rubrik',
   name: 'Rubrik',
   apiVersion: 1,
+  color: '#00B388',
   migrations,
   createRouter,
+  // Host Server 360 contribution (ops page): display-ready backup posture
+  // for any Rubrik protected object matching the pivot identity.
+  server360,
+  server360Suggest,
   // Demo data is static (seeded by the migration) — no upstream to poll.
   // init()/stopAll() are no-ops so the host's plugin lifecycle stays uniform.
   createPoller(coreApi) {

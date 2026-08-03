@@ -178,6 +178,29 @@ function listPlugins() {
   return Array.from(plugins.values()).map(toPublic);
 }
 
+/**
+ * Server 360 contributions (2026-08-03): a plugin manifest may export
+ *   server360(coreApi, { query, names, ips }) -> displaySection | null
+ *   server360Suggest(coreApi, q) -> [names]
+ * where displaySection is display-ready:
+ *   { title, chip: { label, color }, groups: [{ facts: [{label, value, tone?}],
+ *     lines: [string], link: { label, href } }] }
+ * Only enabled, non-errored plugins are returned; provider errors must never
+ * break the host route (callers wrap each call in try/catch).
+ */
+function getServer360Providers() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.server360 === 'function')
+    .map((e) => ({
+      id: e.id,
+      name: e.manifest.name,
+      run: (ctx) => e.manifest.server360(coreApiRef, ctx),
+      suggest: typeof e.manifest.server360Suggest === 'function'
+        ? (q) => e.manifest.server360Suggest(coreApiRef, q)
+        : null,
+    }));
+}
+
 /** Refused (returns false, no state change) when turning ON a plugin that
  *  isn't entitled (contract C9.5). Disabling is always allowed. */
 function setEnabled(id, enabled) {
@@ -215,6 +238,7 @@ module.exports = {
   getPlugin,
   getPollerHandle,
   listPlugins,
+  getServer360Providers,
   setEnabled,
   isEntitled,
   setIsEntitledFn,

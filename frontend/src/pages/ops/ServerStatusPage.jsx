@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { Crosshair, Search, Server, ShieldCheck, ArrowLeftRight, FolderTree, Package, Loader2, HardDrive } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge } from '../../components/ui/primitives';
@@ -89,7 +89,8 @@ export default function ServerStatusPage() {
   }, [input]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const vm = data?.vcenter;
-  const nothingFound = data && !data.vcenter && !data.cohesity && !data.zerto && !data.netapp && !data.aria && !data.netbackup;
+  const pluginSections = data?.plugins || [];
+  const nothingFound = data && !data.vcenter && !data.cohesity && !data.zerto && !data.netapp && !data.aria && !data.netbackup && !pluginSections.length;
 
   return (
     <div className="animate-fade-in flex flex-col gap-4">
@@ -220,6 +221,38 @@ export default function ServerStatusPage() {
           ))}
         </Panel>
       )}
+
+      {/* Installed plugins (display-ready sections from manifest.server360) */}
+      {pluginSections.map((p) => (
+        <Panel key={p.id} title={p.title} icon={ShieldCheck}
+          actions={p.chip ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium"
+              style={{ borderColor: `${p.chip.color}55`, color: p.chip.color, backgroundColor: `${p.chip.color}14` }}>
+              <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: p.chip.color }} />
+              {p.chip.label}
+            </span>
+          ) : null}>
+          {(p.groups || []).map((g, i) => (
+            <div key={i} className="mb-2 border-b border-cohesity-border/40 last:border-0 pb-2 last:pb-0 last:mb-0">
+              <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
+                {(g.facts || []).map((f, j) => (
+                  <Fact key={j} label={f.label}>
+                    {f.tone ? <Badge tone={f.tone}>{f.value ?? '—'}</Badge> : (f.value ?? '—')}
+                  </Fact>
+                ))}
+              </div>
+              {(g.lines || []).map((line, j) => (
+                <p key={j} className="text-[11px] text-ink-faint tnum mt-1">{line}</p>
+              ))}
+              {g.link && (
+                <Link to={g.link.href} className="inline-block text-[11px] text-brand hover:text-brand-bright mt-1" title={g.link.label}>
+                  {g.link.label}
+                </Link>
+              )}
+            </div>
+          ))}
+        </Panel>
+      ))}
 
       {/* Zerto DR */}
       {data?.zerto && (
