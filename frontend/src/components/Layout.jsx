@@ -1,10 +1,11 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, LayoutGrid, ChevronDown,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, LayoutGrid, ChevronDown, HelpCircle,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
+import ReleaseNotesModal from './ReleaseNotesModal';
 import UpdateBanner from './UpdateBanner';
 import { SyncStatusChip, LastUpdated } from './ui/primitives';
 import { subscribeNetworkActivity } from '../api/client';
@@ -82,6 +83,9 @@ export default function Layout() {
   const [platformAlertList, setPlatformAlertList] = useState([]);
 
   const [networkSyncing, setNetworkSyncing] = useState(false);
+  const [releaseNotes, setReleaseNotes] = useState(null);
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
+  const [releaseNotesUnseen, setReleaseNotesUnseen] = useState(false);
   const networkSyncTimer = useRef(null);
 
   const navigate = useNavigate();
@@ -150,6 +154,21 @@ export default function Layout() {
 
   const { user, logout, hasPermission, loading: authLoading } = useAuth();
   const aiEnabled = useAiEnabled();
+
+  useEffect(() => {
+    client.get('/release-notes')
+      .then(({ data }) => {
+        setReleaseNotes(data);
+        const seen = localStorage.getItem('icc:release-notes-seen');
+        if (data?.latest?.version && data.latest.version !== seen) setReleaseNotesUnseen(true);
+      })
+      .catch(() => {});
+  }, []);
+
+  const openReleaseNotes = () => {
+    setReleaseNotesOpen(true);
+    setReleaseNotesUnseen(false);
+  };
 
   const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)))];
   const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity');
@@ -588,6 +607,22 @@ export default function Layout() {
 
           {/* Global search — estate-wide entity typeahead */}
           <GlobalSearch />
+
+          {/* What's New — release notes for the current version */}
+          <button
+            onClick={openReleaseNotes}
+            title="What's New"
+            aria-label="What's New"
+            className="relative flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-lg border transition-colors cursor-pointer border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40"
+          >
+            <HelpCircle size={16} />
+            {releaseNotesUnseen && (
+              <span className="absolute -top-1 -right-1 h-2.5 w-2.5 bg-status-crit rounded-full shadow" />
+            )}
+          </button>
+          {releaseNotesOpen && (
+            <ReleaseNotesModal latest={releaseNotes?.latest} onClose={() => setReleaseNotesOpen(false)} />
+          )}
 
           <div className="flex-shrink-0">
             <NotificationBell

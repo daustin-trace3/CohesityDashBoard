@@ -27,6 +27,7 @@ const backupHistoryRouter = require('./routes/backupHistory');
 const cohesityObject360Router = require('./routes/cohesityObject360');
 const gflagsRouter = require('./routes/gflags');
 const licenseRouter = require('./routes/license');
+const releaseNotesRouter = require('./routes/releaseNotes');
 const pure1Router = require('./routes/pure1');
 const dnsRouter = require('./routes/dns');
 const searchRouter = require('./routes/search');
@@ -198,6 +199,8 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/pure1', requirePermission(platformPermission('pure')), pure1Router);
   // /api/dns is reachable to any authenticated caller (no permission gate).
   app.use('/api/dns', dnsRouter);
+  // /api/release-notes is reachable to any authenticated caller (no permission gate).
+  app.use('/api/release-notes', releaseNotesRouter);
   // Estate-wide entity search — per-category RBAC happens inside the handler.
   app.use('/api/search', searchRouter);
   // Server 360 correlated view — per-section RBAC inside the handler.
