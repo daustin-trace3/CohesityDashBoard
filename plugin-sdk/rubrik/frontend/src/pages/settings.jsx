@@ -311,7 +311,7 @@ export default function RbkSettingsPage() {
   const ActiveIcon = KIND_TABS.find((t) => t.key === kind)?.icon;
 
   return (
-    <div className="rbk-root" style={{ maxWidth: 768, margin: '0 auto' }}>
+    <div className="rbk-root" style={{ maxWidth: 768 }}>
       <PageHeader icon={GearIcon} title="Rubrik Settings" description="Rubrik-specific connections. Register a Rubrik Security Cloud organization or local CDM clusters to poll." />
 
       {error && <p style={{ color: 'var(--rbk-crit)', fontSize: 13, marginBottom: 12 }}>{error}</p>}
