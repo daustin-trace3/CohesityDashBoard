@@ -537,8 +537,20 @@ function getPoller(coreApi) {
   return pollerInstance;
 }
 
-/** Manifest createPoller(coreApi) entry point. */
+/** Manifest createPoller(coreApi) entry point. On a demo instance ONLY, this
+ *  regenerates the fixture estate first (the generator moved here from
+ *  backend/demo/generators/proxmox.js when the platform became a plugin), so
+ *  demo timestamps stay relative to boot. Real instances never seed. */
 function createProxmoxPoller(coreApi) {
+  if (process.env.DASHBOARD_DEMO === '1') {
+    try {
+      const { seedProxmoxDemo } = require('./demoSeed');
+      const r = seedProxmoxDemo(coreApi);
+      coreApi.logger.info(`[ProxmoxPoller] demo estate seeded: ${r.servers} servers, ${r.nodes} nodes, ${r.guests} guests`);
+    } catch (err) {
+      coreApi.logger.warn(`[ProxmoxPoller] demo seed failed: ${err.message}`);
+    }
+  }
   return getPoller(coreApi);
 }
 
