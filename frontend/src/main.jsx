@@ -1,6 +1,11 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import * as ReactRouterDOM from 'react-router-dom';
+import {
+  Chart as ChartJS,
+  CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement,
+  Title, Tooltip as ChartTooltip, Legend, Filler,
+} from 'chart.js';
 import App from './App';
 import './index.css';
 
@@ -9,6 +14,13 @@ import './index.css';
 window.React = React;
 window.ReactDOM = ReactDOM;
 window.ReactRouterDOM = ReactRouterDOM;
+
+// Registers the same controllers/elements/scales/plugins the host's own
+// pages use (line, bar, doughnut/pie) so plugin bundles get one shared
+// Chart.js instance instead of hand-rolling SVG charts or bundling their
+// own copy of chart.js (which the plugin sandbox can't import anyway).
+ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Title, ChartTooltip, Legend, Filler);
+window.Chart = ChartJS;
 
 // After a deploy, an open tab can lazy-load a page chunk that no longer
 // exists (old hashed filename). Vite surfaces that as vite:preloadError —

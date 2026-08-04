@@ -18,6 +18,39 @@ Copy `template/` to a new directory (e.g. `../my-plugin/`) and edit:
   the build injects `const React = window.React;`). No Tailwind: the host's
   CSS purge doesn't scan plugin source, so style with inline `style={}`.
 
+## Charts (window.Chart)
+
+Plugins cannot `import 'chart.js'` — it isn't a dependency of `plugin-sdk`,
+so esbuild has nothing to resolve it against, and even if it could resolve
+it would bundle a second copy alongside the host's. Instead the host exposes
+its single Chart.js instance the same way it exposes React:
+
+```js
+window.Chart
+```
+
+This is the raw `Chart` class from `chart.js`, already `.register()`'d by
+the host with `CategoryScale, LinearScale, BarElement, LineElement,
+PointElement, ArcElement, Title, Tooltip, Legend, Filler` — enough for line,
+bar, and doughnut/pie charts. Plugins do not need to (and cannot) register
+anything themselves. Use it imperatively against a canvas ref, e.g.:
+
+```js
+const canvasRef = React.useRef(null);
+const chartRef = React.useRef(null);
+React.useEffect(() => {
+  if (!window.Chart || !canvasRef.current) return undefined;
+  chartRef.current = new window.Chart(canvasRef.current, { type: 'line', data, options });
+  return () => chartRef.current?.destroy();
+}, [data, options]);
+return React.createElement('canvas', { ref: canvasRef });
+```
+
+Always guard on `window.Chart` being defined and never throw if it's
+missing — see `proxmox/frontend/src/charts.jsx` and
+`rubrik/frontend/src/charts.jsx` for the pattern used across the built-in
+chart kits.
+
 ## Router note (bare function, not Express)
 
 Installed plugins are loaded with `require()` on their own bundled
