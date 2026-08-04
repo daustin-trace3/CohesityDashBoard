@@ -53,7 +53,16 @@ async function main() {
       jsx: 'transform',
       jsxFactory: 'React.createElement',
       jsxFragment: 'React.Fragment',
-      banner: { js: 'const React = window.React;' },
+      // Rewrite bare React/Chart references to the host globals at build time.
+      // A `const React = ...` banner would sit OUTSIDE the IIFE, so a second
+      // installed plugin threw "Identifier 'React' has already been declared"
+      // and never registered.
+      define: {
+        React: 'window.React',
+        ReactDOM: 'window.ReactDOM',
+        ReactRouterDOM: 'window.ReactRouterDOM',
+        Chart: 'window.Chart',
+      },
       logLevel: 'info',
     });
     console.log(`[build] frontend -> ${path.join(distDir, 'frontend', 'bundle.js')}`);
