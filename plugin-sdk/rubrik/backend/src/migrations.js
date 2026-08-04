@@ -2,6 +2,15 @@
 // v1.2.1 monolithic backend/src/index.js as part of the v2.0.0 file
 // restructure (plugin-sdk/rubrik foundation). SQL/seed logic is
 // byte-identical to the original — only the module boundary changed.
+//
+// POLICY (v2.1.9): demo/fake content (INSERT/UPDATE of seed rows) only ever
+// runs when DASHBOARD_DEMO=1. Schema (CREATE TABLE / ensureColumn / indexes)
+// ALWAYS runs, on every instance, so the plugin's routes/pages work against
+// an empty estate on a non-demo install. Version 5 purges any previously
+// seeded rows when demo mode is off, cleaning instances that installed
+// earlier plugin versions before this policy existed.
+
+const isDemo = () => process.env.DASHBOARD_DEMO === '1';
 
 const CLUSTERS = [
   { id: 1, name: 'rbk-prd-01', model: 'r6408', nodes: 8, version: '9.2.1-p3', capacityBytes: 480000000000000, usedBytes: 345600000000000, status: 'Connected' },
@@ -283,6 +292,8 @@ const migrations = [
         )
       `);
 
+      if (!isDemo()) return;
+
       const seedCluster = db.prepare(
         `INSERT OR IGNORE INTO rubrik_clusters
            (id, name, model, nodes, version, used_bytes, capacity_bytes, status)
@@ -417,6 +428,8 @@ const migrations = [
           message     TEXT NOT NULL
         )
       `);
+
+      if (!isDemo()) return;
 
       // --- backfill new cluster columns ---
       const updateCluster = db.prepare(
@@ -609,18 +622,99 @@ const migrations = [
   {
     version: 4,
     up(db) {
-      // --- version drift + software_status column ---
+      // --- schema: always runs, demo or not ---
       ensureColumn(db, 'rubrik_clusters', 'software_status', 'TEXT');
-      db.prepare(`UPDATE rubrik_clusters SET software_status = ? WHERE id = ?`).run('Current', 1);
-      db.prepare(`UPDATE rubrik_clusters SET software_status = ? WHERE id = ?`).run('Current', 2);
-      db.prepare(`UPDATE rubrik_clusters SET version = ?, software_status = ? WHERE id = ?`).run('9.1.2-p8', 'Outdated', 3);
-
-      // --- rubrik_sla_domains (== "rubrik_policies") extension ---
       ensureColumn(db, 'rubrik_sla_domains', 'replication_targets', 'TEXT');
       ensureColumn(db, 'rubrik_sla_domains', 'archival_targets', 'TEXT');
       ensureColumn(db, 'rubrik_sla_domains', 'datalock', 'INTEGER');
       ensureColumn(db, 'rubrik_sla_domains', 'no_offsite', 'INTEGER');
       ensureColumn(db, 'rubrik_sla_domains', 'retention_days', 'INTEGER');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_alerts (
+          id               INTEGER PRIMARY KEY,
+          cluster          TEXT NOT NULL,
+          severity         TEXT NOT NULL CHECK(severity IN ('critical', 'warning', 'info')),
+          alert_type       TEXT NOT NULL,
+          description      TEXT NOT NULL,
+          object_name      TEXT,
+          first_seen       DATETIME NOT NULL,
+          dismissed        INTEGER NOT NULL DEFAULT 0,
+          resolved         INTEGER NOT NULL DEFAULT 0,
+          resolution_note  TEXT
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_protection_runs (
+          id            INTEGER PRIMARY KEY,
+          day           TEXT NOT NULL,
+          cluster       TEXT NOT NULL,
+          job_name      TEXT NOT NULL,
+          object_name   TEXT NOT NULL,
+          status        TEXT NOT NULL CHECK(status IN ('Succeeded', 'Failed', 'Warning', 'Running', 'Canceled')),
+          run_type      TEXT NOT NULL CHECK(run_type IN ('Backup', 'Replication', 'Archival')),
+          start_ms      INTEGER NOT NULL,
+          duration_s    INTEGER NOT NULL,
+          logical_bytes INTEGER NOT NULL,
+          error_message TEXT
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_workload_history (
+          day               TEXT NOT NULL,
+          workload          TEXT NOT NULL,
+          protected_count   INTEGER NOT NULL,
+          unprotected_count INTEGER NOT NULL,
+          protected_bytes   INTEGER NOT NULL,
+          logical_bytes     INTEGER NOT NULL,
+          physical_bytes    INTEGER NOT NULL,
+          UNIQUE(day, workload)
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_licensing (
+          key            TEXT PRIMARY KEY CHECK(key IN ('capacity', 'cloud', 'security')),
+          label          TEXT NOT NULL,
+          consumed_bytes INTEGER NOT NULL,
+          entitled_tb    REAL NOT NULL,
+          basis          TEXT NOT NULL
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_sources (
+          id                 INTEGER PRIMARY KEY,
+          name               TEXT NOT NULL,
+          cluster            TEXT NOT NULL,
+          source_type        TEXT NOT NULL,
+          environment        TEXT NOT NULL,
+          protected_count    INTEGER NOT NULL,
+          unprotected_count  INTEGER NOT NULL,
+          unprotected_bytes  INTEGER NOT NULL
+        )
+      `);
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_replication_runs (
+          id                 INTEGER PRIMARY KEY,
+          job_name           TEXT NOT NULL,
+          source_cluster     TEXT NOT NULL,
+          target_cluster     TEXT NOT NULL,
+          status             TEXT NOT NULL CHECK(status IN ('Active', 'Completed', 'Failed')),
+          start_ms_offset    INTEGER NOT NULL,
+          logical_bytes      INTEGER NOT NULL,
+          transferred_bytes  INTEGER NOT NULL,
+          percent_complete   REAL NOT NULL
+        )
+      `);
+
+      if (!isDemo()) return;
+
+      // --- demo seed content below: always skipped when DASHBOARD_DEMO !== '1' ---
+
+      // --- version drift + software_status column ---
+      db.prepare(`UPDATE rubrik_clusters SET software_status = ? WHERE id = ?`).run('Current', 1);
+      db.prepare(`UPDATE rubrik_clusters SET software_status = ? WHERE id = ?`).run('Current', 2);
+      db.prepare(`UPDATE rubrik_clusters SET version = ?, software_status = ? WHERE id = ?`).run('9.1.2-p8', 'Outdated', 3);
+
+      // --- rubrik_sla_domains (== "rubrik_policies") extension ---
       const updateSla = db.prepare(
         `UPDATE rubrik_sla_domains
            SET replication_targets = ?, archival_targets = ?, datalock = ?, no_offsite = ?, retention_days = ?
@@ -636,20 +730,6 @@ const migrations = [
       }
 
       // --- rubrik_alerts: ~45 rows over 14 days ---
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS rubrik_alerts (
-          id               INTEGER PRIMARY KEY,
-          cluster          TEXT NOT NULL,
-          severity         TEXT NOT NULL CHECK(severity IN ('critical', 'warning', 'info')),
-          alert_type       TEXT NOT NULL,
-          description      TEXT NOT NULL,
-          object_name      TEXT,
-          first_seen       DATETIME NOT NULL,
-          dismissed        INTEGER NOT NULL DEFAULT 0,
-          resolved         INTEGER NOT NULL DEFAULT 0,
-          resolution_note  TEXT
-        )
-      `);
       const seedAlert = db.prepare(
         `INSERT OR IGNORE INTO rubrik_alerts
            (id, cluster, severity, alert_type, description, object_name, first_seen, dismissed, resolved, resolution_note)
@@ -707,21 +787,6 @@ const migrations = [
       }
 
       // --- rubrik_protection_runs: 30 days x ~40 runs/day ---
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS rubrik_protection_runs (
-          id            INTEGER PRIMARY KEY,
-          day           TEXT NOT NULL,
-          cluster       TEXT NOT NULL,
-          job_name      TEXT NOT NULL,
-          object_name   TEXT NOT NULL,
-          status        TEXT NOT NULL CHECK(status IN ('Succeeded', 'Failed', 'Warning', 'Running', 'Canceled')),
-          run_type      TEXT NOT NULL CHECK(run_type IN ('Backup', 'Replication', 'Archival')),
-          start_ms      INTEGER NOT NULL,
-          duration_s    INTEGER NOT NULL,
-          logical_bytes INTEGER NOT NULL,
-          error_message TEXT
-        )
-      `);
       const seedRun = db.prepare(
         `INSERT OR IGNORE INTO rubrik_protection_runs
            (id, day, cluster, job_name, object_name, status, run_type, start_ms, duration_s, logical_bytes, error_message)
@@ -785,18 +850,6 @@ const migrations = [
       }
 
       // --- rubrik_workload_history: 180 days x 5 workload categories ---
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS rubrik_workload_history (
-          day               TEXT NOT NULL,
-          workload          TEXT NOT NULL,
-          protected_count   INTEGER NOT NULL,
-          unprotected_count INTEGER NOT NULL,
-          protected_bytes   INTEGER NOT NULL,
-          logical_bytes     INTEGER NOT NULL,
-          physical_bytes    INTEGER NOT NULL,
-          UNIQUE(day, workload)
-        )
-      `);
       const seedWorkload = db.prepare(
         `INSERT OR IGNORE INTO rubrik_workload_history
            (day, workload, protected_count, unprotected_count, protected_bytes, logical_bytes, physical_bytes)
@@ -818,15 +871,6 @@ const migrations = [
       }
 
       // --- rubrik_licensing: 3 meters ---
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS rubrik_licensing (
-          key            TEXT PRIMARY KEY CHECK(key IN ('capacity', 'cloud', 'security')),
-          label          TEXT NOT NULL,
-          consumed_bytes INTEGER NOT NULL,
-          entitled_tb    REAL NOT NULL,
-          basis          TEXT NOT NULL
-        )
-      `);
       const TB = 1000000000000;
       const seedLicensing = db.prepare(
         `INSERT OR IGNORE INTO rubrik_licensing (key, label, consumed_bytes, entitled_tb, basis) VALUES (?, ?, ?, ?, ?)`
@@ -836,18 +880,6 @@ const migrations = [
       seedLicensing.run('security', 'Security (Radar)', 55 * TB, 80, 'Covered objects as bytes');
 
       // --- rubrik_sources ---
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS rubrik_sources (
-          id                 INTEGER PRIMARY KEY,
-          name               TEXT NOT NULL,
-          cluster            TEXT NOT NULL,
-          source_type        TEXT NOT NULL,
-          environment        TEXT NOT NULL,
-          protected_count    INTEGER NOT NULL,
-          unprotected_count  INTEGER NOT NULL,
-          unprotected_bytes  INTEGER NOT NULL
-        )
-      `);
       const seedSource = db.prepare(
         `INSERT OR IGNORE INTO rubrik_sources
            (id, name, cluster, source_type, environment, protected_count, unprotected_count, unprotected_bytes)
@@ -858,19 +890,6 @@ const migrations = [
       }
 
       // --- rubrik_replication_runs: ~25 recent runs ---
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS rubrik_replication_runs (
-          id                 INTEGER PRIMARY KEY,
-          job_name           TEXT NOT NULL,
-          source_cluster     TEXT NOT NULL,
-          target_cluster     TEXT NOT NULL,
-          status             TEXT NOT NULL CHECK(status IN ('Active', 'Completed', 'Failed')),
-          start_ms_offset    INTEGER NOT NULL,
-          logical_bytes      INTEGER NOT NULL,
-          transferred_bytes  INTEGER NOT NULL,
-          percent_complete   REAL NOT NULL
-        )
-      `);
       const seedReplRun = db.prepare(
         `INSERT OR IGNORE INTO rubrik_replication_runs
            (id, job_name, source_cluster, target_cluster, status, start_ms_offset, logical_bytes, transferred_bytes, percent_complete)
@@ -902,6 +921,44 @@ const migrations = [
         const transferredBytes = status === 'Completed' ? logicalBytes : Math.round((logicalBytes * percentComplete) / 100);
         const startMsOffset = Math.round(replRnd() * 12 * 3600000) + (pick.source === 'rbk-dev-01' ? 9 * 3600000 : 0);
         seedReplRun.run(i, jobName, pick.source, pick.target, status, startMsOffset, logicalBytes, transferredBytes, percentComplete);
+      }
+    },
+  },
+  {
+    version: 5,
+    up(db) {
+      // Purges seeded demo rows on any instance NOT running in demo mode.
+      // Cleans up installs from before this policy existed (all seed
+      // content used to run unconditionally). Complete no-op when demo
+      // mode is on — the demo instance keeps its data. rubrik_connections
+      // is deliberately excluded: it holds user-created connections, not
+      // seed data. Idempotent: DELETE on an already-empty table is a no-op.
+      if (isDemo()) return;
+
+      const DATA_TABLES = [
+        'rubrik_clusters',
+        'rubrik_protected_objects',
+        'rubrik_jobs',
+        'rubrik_sla_domains',
+        'rubrik_capacity_history',
+        'rubrik_replication_pairs',
+        'rubrik_archival_locations',
+        'rubrik_anomaly_events',
+        'rubrik_threat_hunts',
+        'rubrik_events',
+        'rubrik_alerts',
+        'rubrik_protection_runs',
+        'rubrik_workload_history',
+        'rubrik_licensing',
+        'rubrik_sources',
+        'rubrik_replication_runs',
+      ];
+
+      for (const table of DATA_TABLES) {
+        const exists = db
+          .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+          .get(table);
+        if (exists) db.exec(`DELETE FROM ${table}`);
       }
     },
   },
