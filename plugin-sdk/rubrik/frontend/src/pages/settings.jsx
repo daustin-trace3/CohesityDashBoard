@@ -352,7 +352,11 @@ export default function RbkSettingsPage() {
   const ActiveIcon = KIND_TABS.find((t) => t.key === kind)?.icon;
 
   return (
-    <div className="rbk-root" style={{ maxWidth: 768 }}>
+    // The form column keeps the host's 768px settings width; the connections
+    // table below is full-width because 7 columns and an endpoint URL do not
+    // fit in 768 (the Actions column was being clipped).
+    <div className="rbk-root">
+      <div style={{ maxWidth: 768 }}>
       <PageHeader icon={GearIcon} title="Rubrik Settings" description="Rubrik-specific connections. Register a Rubrik Security Cloud organization or local CDM clusters to poll." />
 
       {error && <p style={{ color: 'var(--rbk-crit)', fontSize: 13, marginBottom: 12 }}>{error}</p>}
@@ -469,13 +473,17 @@ export default function RbkSettingsPage() {
         </div>
       </div>
 
-      {/* Registered connections */}
+      </div>
+
+      {/* Registered connections — full width, and scrolls rather than clips
+          on a narrow viewport. */}
       {connections && (
-        <div className="rbk-panel" style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="rbk-panel" style={{ padding: 0 }}>
           <div style={{ padding: '12px 16px 0' }}>
             <p className="rbk-panel-title" style={{ margin: 0 }}>Registered Connections</p>
           </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+          <div style={{ overflowX: 'auto', marginTop: 8 }}>
+          <table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse' }}>
             <thead>
               <tr>
                 <th style={thStyle}>Kind</th>
@@ -508,6 +516,7 @@ export default function RbkSettingsPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>
