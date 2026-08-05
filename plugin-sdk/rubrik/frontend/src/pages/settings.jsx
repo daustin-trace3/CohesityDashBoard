@@ -3,7 +3,7 @@
 // status chips, host-styled buttons) with RSC / CDM connection CRUD
 // preserved from v1.2.x. Chrome credential-autofill defenses applied to the
 // identity/secret fields (see GlobalSearch.jsx for the proven pattern).
-import { injectStyles, PageHeader, Badge, ServerIcon, GearIcon, ShieldIcon } from '../ui.jsx';
+import { injectStyles, PageHeader, Badge, ServerIcon, GearIcon, ShieldIcon, RefreshIcon, PencilIcon, TrashIcon } from '../ui.jsx';
 
 injectStyles();
 
@@ -166,27 +166,64 @@ function StatusRow({ hasSecret }) {
   );
 }
 
+// 28px square icon button, matching the host's AWS Registered Accounts row.
+const squareBtnStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  height: 28,
+  width: 28,
+  borderRadius: 6,
+  border: '1px solid var(--rbk-border)',
+  background: 'transparent',
+  color: 'var(--rbk-ink-muted)',
+  cursor: 'pointer',
+  padding: 0,
+};
+
+function fmtWhen(ts) {
+  if (!ts) return 'Never';
+  const d = new Date(String(ts).replace(' ', 'T') + (String(ts).endsWith('Z') ? '' : 'Z'));
+  if (Number.isNaN(d.getTime())) return String(ts);
+  return d.toLocaleString();
+}
+
 function ConnectionRow({ c, onEdit, onRemove, onTest, testing, result }) {
+  // A just-run test wins over the stored one so the badge reacts immediately.
+  const status = result ? (result.ok ? 'success' : 'error') : c.lastTestStatus;
+  const error = result ? (result.ok ? null : result.error || 'unreachable') : c.lastTestError;
   return (
     <tr className="rbk-row">
       <td style={tdStyle}><KindBadge kind={c.kind} /></td>
-      <td style={tdStyle}>{c.name}</td>
-      <td style={tdStyle}>{c.endpoint}</td>
-      <td style={{ ...tdStyle, color: 'var(--rbk-ink-muted)' }}>{c.identity || '—'}</td>
-      <td style={tdStyle}>{c.hasSecret ? <Badge tone="ok">Stored encrypted</Badge> : <Badge tone="neutral">none</Badge>}</td>
+      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{c.name}</td>
+      <td style={{ ...tdStyle, color: 'var(--rbk-ink-muted)' }}>{c.endpoint}</td>
+      <td style={tdStyle}>{c.hasSecret ? <Badge tone="ok">Stored</Badge> : <Badge tone="neutral">None</Badge>}</td>
       <td style={tdStyle}>
-        <button style={iconBtnStyle} onClick={() => onTest(c)} disabled={testing}>
-          {testing ? 'Testing…' : 'Test'}
-        </button>
-        {result && (
-          <span style={{ fontSize: 11, color: result.ok ? 'var(--rbk-brand)' : 'var(--rbk-crit)' }}>
-            {result.ok ? `reachable (${result.statusCode})` : result.error || 'unreachable'}
-          </span>
+        <Badge tone={status === 'error' ? 'crit' : status === 'success' ? 'ok' : 'neutral'}>
+          {testing ? 'Testing…' : status === 'error' ? 'Error' : status === 'success' ? 'Up' : 'Pending'}
+        </Badge>
+        {status === 'error' && error && (
+          <p style={{ fontSize: 10, color: 'var(--rbk-crit)', marginTop: 2, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={error}>{error}</p>
         )}
       </td>
+      <td style={{ ...tdStyle, fontSize: 11, color: 'var(--rbk-ink-faint)', whiteSpace: 'nowrap' }}>
+        {result ? 'just now' : fmtWhen(c.lastTestAt)}
+      </td>
       <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
-        <button style={iconBtnStyle} onClick={() => onEdit(c)}>Edit</button>
-        <button style={{ ...iconBtnStyle, marginRight: 0, color: 'var(--rbk-crit)', borderColor: 'rgba(248,113,113,0.4)' }} onClick={() => onRemove(c)}>Delete</button>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+          <button style={squareBtnStyle} onClick={() => onTest(c)} disabled={testing}
+            title="Test connection" aria-label={`Test ${c.name}`}>
+            <RefreshIcon size={13} />
+          </button>
+          <button style={squareBtnStyle} onClick={() => onEdit(c)}
+            title="Edit connection / update credentials" aria-label={`Edit ${c.name}`}>
+            <PencilIcon size={13} />
+          </button>
+          <button style={{ ...squareBtnStyle, color: 'var(--rbk-crit)', borderColor: 'rgba(248,113,113,0.4)' }}
+            onClick={() => onRemove(c)} title="Remove" aria-label={`Remove ${c.name}`}>
+            <TrashIcon size={13} />
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -444,10 +481,10 @@ export default function RbkSettingsPage() {
                 <th style={thStyle}>Kind</th>
                 <th style={thStyle}>Name</th>
                 <th style={thStyle}>Endpoint</th>
-                <th style={thStyle}>Identity</th>
-                <th style={thStyle}>Secret</th>
-                <th style={thStyle}>Test</th>
-                <th style={thStyle}></th>
+                <th style={thStyle}>Credentials</th>
+                <th style={thStyle}>Status</th>
+                <th style={thStyle}>Last Test</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <tbody>

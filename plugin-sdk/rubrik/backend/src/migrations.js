@@ -962,6 +962,17 @@ const migrations = [
       }
     },
   },
+  {
+    // Connection test outcome, persisted so the Settings table can show a
+    // Status / Last Test column that survives a reload (the AWS Registered
+    // Accounts layout). Schema only — never seeds.
+    version: 6,
+    up(db) {
+      ensureColumn(db, 'rubrik_connections', 'last_test_status', 'TEXT');
+      ensureColumn(db, 'rubrik_connections', 'last_test_error', 'TEXT');
+      ensureColumn(db, 'rubrik_connections', 'last_test_at', 'DATETIME');
+    },
+  },
 ];
 
 module.exports = {

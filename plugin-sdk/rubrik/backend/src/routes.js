@@ -17,6 +17,9 @@ function connectionToJson(row) {
     identity: row.identity,
     hasSecret: !!row.encrypted_credentials,
     createdAt: row.created_at,
+    lastTestStatus: row.last_test_status || null,
+    lastTestError: row.last_test_error || null,
+    lastTestAt: row.last_test_at || null,
   };
 }
 
@@ -461,7 +464,22 @@ function createRouter(coreApi) {
         res.status(200).json({ ok: false, error: 'No endpoint provided' });
         return;
       }
-      testEndpointReachable(target).then((result) => res.json(result));
+      testEndpointReachable(target).then((result) => {
+        // Persist the outcome so Settings shows Status / Last Test after a
+        // reload instead of losing it with component state.
+        if (id != null) {
+          try {
+            coreApi.db.prepare(
+              `UPDATE rubrik_connections
+                 SET last_test_status = ?, last_test_error = ?, last_test_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            ).run(result.ok ? 'success' : 'error', result.ok ? null : (result.error || 'unreachable'), id);
+          } catch (err) {
+            coreApi.logger.warn(`[rubrik] could not record test result: ${err.message}`);
+          }
+        }
+        res.json(result);
+      });
       return;
     }
 
