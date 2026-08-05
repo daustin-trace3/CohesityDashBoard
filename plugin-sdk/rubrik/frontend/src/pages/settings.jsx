@@ -475,10 +475,12 @@ export default function RbkSettingsPage() {
 
       </div>
 
-      {/* Registered connections — full width, and scrolls rather than clips
-          on a narrow viewport. */}
+      {/* Registered connections — wider than the 768px form column because
+          seven columns and an endpoint URL do not fit there, but still
+          bounded rather than full-bleed. Scrolls instead of clipping when the
+          viewport is narrower than the content. */}
       {connections && (
-        <div className="rbk-panel" style={{ padding: 0 }}>
+        <div className="rbk-panel" style={{ padding: 0, maxWidth: 980 }}>
           <div style={{ padding: '12px 16px 0' }}>
             <p className="rbk-panel-title" style={{ margin: 0 }}>Registered Connections</p>
           </div>
