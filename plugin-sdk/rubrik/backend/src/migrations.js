@@ -963,6 +963,43 @@ const migrations = [
     },
   },
   {
+    // Live RSC polling: the demo tables key on integer ids, but RSC objects
+    // are UUIDs, so live rows carry rsc_id plus the connection they came from
+    // (an instance can register more than one RSC org). Schema only.
+    version: 7,
+    up(db) {
+      for (const table of ['rubrik_clusters', 'rubrik_sla_domains', 'rubrik_protected_objects', 'rubrik_jobs']) {
+        ensureColumn(db, table, 'rsc_id', 'TEXT');
+        ensureColumn(db, table, 'connection_id', 'INTEGER');
+      }
+      ensureColumn(db, 'rubrik_clusters', 'cluster_type', 'TEXT');
+      ensureColumn(db, 'rubrik_clusters', 'connected_state', 'TEXT');
+      ensureColumn(db, 'rubrik_clusters', 'last_connection_at', 'TEXT');
+      ensureColumn(db, 'rubrik_clusters', 'estimated_runway_days', 'INTEGER');
+      ensureColumn(db, 'rubrik_clusters', 'snapshot_count', 'INTEGER');
+      ensureColumn(db, 'rubrik_connections', 'polling_interval_minutes', 'INTEGER');
+      ensureColumn(db, 'rubrik_connections', 'last_poll_status', 'TEXT');
+      ensureColumn(db, 'rubrik_connections', 'last_poll_error', 'TEXT');
+      ensureColumn(db, 'rubrik_connections', 'last_poll_at', 'DATETIME');
+      db.exec(`UPDATE rubrik_connections SET polling_interval_minutes = 30 WHERE polling_interval_minutes IS NULL`);
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rubrik_clusters_rsc ON rubrik_clusters(rsc_id) WHERE rsc_id IS NOT NULL`);
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rubrik_objects_rsc ON rubrik_protected_objects(rsc_id) WHERE rsc_id IS NOT NULL`);
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rubrik_jobs_rsc ON rubrik_jobs(rsc_id) WHERE rsc_id IS NOT NULL`);
+    },
+  },
+  {
+    // Capacity history keyed by cluster id so the manifest can declare a
+    // metricsHistory contributor — without one the platform never gets a
+    // section in /api/poller/status. The demo rows key on cluster NAME, which
+    // stays valid; live rows fill cluster_id as well.
+    version: 8,
+    up(db) {
+      ensureColumn(db, 'rubrik_capacity_history', 'cluster_id', 'INTEGER');
+      ensureColumn(db, 'rubrik_capacity_history', 'captured_at', 'DATETIME');
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_rubrik_capacity_cluster ON rubrik_capacity_history(cluster_id, day)`);
+    },
+  },
+  {
     // Connection test outcome, persisted so the Settings table can show a
     // Status / Last Test column that survives a reload (the AWS Registered
     // Accounts layout). Schema only — never seeds.

@@ -4,6 +4,8 @@
 // changed. New v2 routes land additively in later work packages.
 
 const http = require('http');
+const rscApi = require('./rscApi');
+const { pollConnection } = require('./poller');
 const https = require('https');
 const { URL } = require('url');
 const { isoDate, CHRONIC_NAMES } = require('./migrations');
@@ -456,14 +458,36 @@ function createRouter(coreApi) {
     if (req.method === 'POST' && req.path === '/connections/test') {
       const { endpoint, id } = req.body || {};
       let target = endpoint;
-      if (!target && id != null) {
-        const row = coreApi.db.prepare('SELECT endpoint FROM rubrik_connections WHERE id = ?').get(id);
-        target = row && row.endpoint;
+      let stored = null;
+      if (id != null) {
+        stored = coreApi.db.prepare('SELECT * FROM rubrik_connections WHERE id = ?').get(id);
+        if (!target && stored) target = stored.endpoint;
       }
       if (!target) {
         res.status(200).json({ ok: false, error: 'No endpoint provided' });
         return;
       }
+
+      // A stored RSC connection can be tested for real: request a token and
+      // list clusters. Reachability alone says nothing about the credentials.
+      if (stored && stored.kind === 'rsc' && stored.encrypted_credentials) {
+        rscApi.verifyCredentials(coreApi, stored).then((result) => {
+          try {
+            coreApi.db.prepare(
+              `UPDATE rubrik_connections
+                 SET last_test_status = ?, last_test_error = ?, last_test_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            ).run(result.ok ? 'success' : 'error', result.ok ? null : (result.error || 'failed'), id);
+          } catch (err) {
+            coreApi.logger.warn(`[rubrik] could not record test result: ${err.message}`);
+          }
+          res.json(result.ok
+            ? { ok: true, authenticated: true, clusters: result.clusters, connected: result.connected }
+            : { ok: false, error: result.error });
+        });
+        return;
+      }
+
       testEndpointReachable(target).then((result) => {
         // Persist the outcome so Settings shows Status / Last Test after a
         // reload instead of losing it with component state.
@@ -480,6 +504,18 @@ function createRouter(coreApi) {
         }
         res.json(result);
       });
+      return;
+    }
+
+    const refreshMatch = req.path.match(/^\/connections\/(\d+)\/refresh$/);
+    if (refreshMatch && req.method === 'POST') {
+      const id = Number(refreshMatch[1]);
+      const row = coreApi.db.prepare('SELECT * FROM rubrik_connections WHERE id = ?').get(id);
+      if (!row) { res.status(404).json({ error: 'not_found' }); return; }
+      if (row.kind !== 'rsc') { res.status(400).json({ error: 'Only RSC connections can be polled.' }); return; }
+      pollConnection(row, coreApi)
+        .then(() => res.json({ triggered: true }))
+        .catch((err) => res.status(502).json({ triggered: false, error: err.message }));
       return;
     }
 
