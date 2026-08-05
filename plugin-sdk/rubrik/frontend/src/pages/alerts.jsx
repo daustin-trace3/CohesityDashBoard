@@ -11,10 +11,13 @@ import {
 const API_BASE = '/api/rubrik';
 
 function apiFetch(path, opts) {
+  // Session mutations must carry the host's CSRF token (middleware/csrf.js)
+  // or they come back as a bare 403. The host publishes it on window.
+  const csrf = typeof window !== 'undefined' ? window.__ICC_CSRF_TOKEN__ : null;
   return fetch(`${API_BASE}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
     ...opts,
+    headers: { 'Content-Type': 'application/json', ...(csrf ? { 'x-csrf-token': csrf } : {}), ...(opts && opts.headers) },
   }).then((res) => {
     if (!res.ok) return res.json().catch(() => ({})).then((body) => { throw new Error(body.error || `request failed: ${res.status}`); });
     return res.json();

@@ -33,10 +33,13 @@ function apiGet(path, params) {
   });
 }
 function apiSend(path, method, body) {
+  // Session mutations must carry the host's CSRF token (middleware/csrf.js)
+  // or they come back as a bare 403. The host publishes it on window.
+  const csrf = typeof window !== 'undefined' ? window.__ICC_CSRF_TOKEN__ : null;
   return fetch(`/api/proxmox${path}`, {
     method,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(csrf ? { 'x-csrf-token': csrf } : {}) },
     body: body != null ? JSON.stringify(body) : undefined,
   }).then((res) => {
     if (!res.ok) return res.json().catch(() => ({})).then((b) => { throw Object.assign(new Error(b.error || `request failed: ${res.status}`), { body: b }); });

@@ -12,6 +12,10 @@ const KIND_TABS = [
   { key: 'cdm', label: 'Local Cluster (CDM)', icon: ServerIcon },
 ];
 
+// Session mutations must carry the host's CSRF token (middleware/csrf.js) or
+// they come back as a bare 403 — surfaced here as "Save failed (403)".
+const iccCsrf = () => (typeof window !== 'undefined' ? window.__ICC_CSRF_TOKEN__ : null);
+
 const EMPTY_FORM = { name: '', endpoint: '', identity: '', secret: '' };
 
 const KIND_COPY = {
@@ -260,7 +264,7 @@ export default function RbkSettingsPage() {
       const res = await fetch(url, {
         method,
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(iccCsrf() ? { 'x-csrf-token': iccCsrf() } : {}) },
         body: JSON.stringify(body),
       });
       if (!res.ok) {
@@ -279,7 +283,7 @@ export default function RbkSettingsPage() {
   const remove = async (c) => {
     if (!window.confirm(`Remove connection "${c.name}"?`)) return;
     try {
-      const res = await fetch(`/api/rubrik/connections/${c.id}`, { method: 'DELETE', credentials: 'include' });
+      const res = await fetch(`/api/rubrik/connections/${c.id}`, { method: 'DELETE', credentials: 'include', headers: { ...(iccCsrf() ? { 'x-csrf-token': iccCsrf() } : {}) } });
       if (!res.ok && res.status !== 204) throw new Error(`Delete failed (${res.status})`);
       load();
     } catch (err) {
@@ -293,7 +297,7 @@ export default function RbkSettingsPage() {
       const res = await fetch('/api/rubrik/connections/test', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(iccCsrf() ? { 'x-csrf-token': iccCsrf() } : {}) },
         body: JSON.stringify({ id: c.id }),
       });
       const result = await res.json();

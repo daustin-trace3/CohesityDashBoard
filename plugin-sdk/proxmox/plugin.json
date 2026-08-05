@@ -1,6 +1,6 @@
 {
   "id": "proxmox",
   "name": "Proxmox VE",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "color": "#E57000"
 }
