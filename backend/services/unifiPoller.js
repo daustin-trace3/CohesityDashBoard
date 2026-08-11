@@ -142,8 +142,11 @@ const storeRogueAps = db.transaction((sourceId, rows) => {
 
 const storeEvents = db.transaction((sourceId, rows) => {
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO unifi_events (source_id, event_id, category, event_key, event_type, message, raw_json, occurred_at)
+    INSERT INTO unifi_events (source_id, event_id, category, event_key, event_type, message, raw_json, occurred_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(source_id, event_id) DO UPDATE SET
+      category = excluded.category, event_key = excluded.event_key, event_type = excluded.event_type,
+      message = excluded.message, raw_json = excluded.raw_json, occurred_at = excluded.occurred_at
   `);
   for (const e of rows) {
     if (!e.eventId) continue;

@@ -352,6 +352,25 @@ async function fetchHealth(source, site) {
   return safeArr(d?.data);
 }
 
+// message_raw is a template ("{SRC_CLIENT} was blocked from accessing {DST_IP}…")
+// with the real values in a parallel `parameters` object whose entries are either
+// plain strings or objects ({id: mac, ip, name, hostname, …}) — substitute them.
+function renderLogMessage(e) {
+  const raw = e?.message_raw ?? e?.message ?? null;
+  if (!raw) return null;
+  const params = e?.parameters && typeof e.parameters === 'object' ? e.parameters : {};
+  return String(raw).replace(/\{([A-Za-z0-9_]+)\}/g, (match, key) => {
+    const v = params[key];
+    if (v == null) return match;
+    if (typeof v === 'object') {
+      const label = v.name || v.hostname || v.essid || v.ip || v.id || null;
+      const ip = v.ip && v.ip !== label ? ` (${v.ip})` : '';
+      return label ? `${label}${ip}` : match;
+    }
+    return String(v);
+  });
+}
+
 async function fetchSystemLog(source, site) {
   const d = await legacyV2Post(source, site, '/system-log/all', { pageNumber: 0, pageSize: 200 });
   return safeArr(d?.data).map((e) => ({
@@ -359,7 +378,7 @@ async function fetchSystemLog(source, site) {
     category: strOrNull(e.category),
     eventKey: strOrNull(e.key),
     eventType: strOrNull(e.event),
-    message: strOrNull(e.message_raw),
+    message: strOrNull(renderLogMessage(e)),
     rawJson: jsonOrNull(e),
     occurredAt: occurredAtIso(e),
   }));
