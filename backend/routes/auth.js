@@ -30,6 +30,34 @@ const authLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later.' },
 });
 
+// Per-username lockout on repeated failures — the per-IP limiter alone is
+// weak against distributed guessing, and behind a tunnel/proxy all clients
+// can share one IP. Keyed on the attempted name whether or not it exists,
+// so the 429 leaks nothing about which accounts are real.
+const FAIL_LIMIT = 8;
+const FAIL_WINDOW_MS = 15 * 60 * 1000;
+const failedLogins = new Map(); // username -> { count, first, lockedUntil }
+
+function loginLocked(username) {
+  const entry = failedLogins.get(username);
+  if (!entry) return false;
+  if (entry.lockedUntil && Date.now() < entry.lockedUntil) return true;
+  if (Date.now() - entry.first > FAIL_WINDOW_MS) failedLogins.delete(username);
+  return false;
+}
+
+function recordLoginFailure(username) {
+  const now = Date.now();
+  let entry = failedLogins.get(username);
+  if (!entry || (now - entry.first > FAIL_WINDOW_MS && !(entry.lockedUntil > now))) {
+    entry = { count: 0, first: now, lockedUntil: 0 };
+  }
+  entry.count += 1;
+  if (entry.count >= FAIL_LIMIT) entry.lockedUntil = now + FAIL_WINDOW_MS;
+  if (failedLogins.size > 10000) failedLogins.clear();
+  failedLogins.set(username, entry);
+}
+
 function parseCookie(header, name) {
   if (!header) return null;
   const match = header.split(';').map((s) => s.trim()).find((s) => s.startsWith(`${name}=`));
@@ -109,14 +137,21 @@ router.post('/setup', authLimiter, async (req, res, next) => {
 router.post('/login', authLimiter, async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
-    const invalid = () => res.status(401).json({ error: 'Invalid username or password.' });
+    const invalid = () => {
+      recordLoginFailure(String(username || ''));
+      return res.status(401).json({ error: 'Invalid username or password.' });
+    };
     if (!username || !password) return invalid();
+    if (loginLocked(String(username))) {
+      return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
+    }
 
     const user = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username));
     if (!user || !user.is_active) return invalid();
 
     const ok = await verifyPassword(user.password_hash, String(password));
     if (!ok) return invalid();
+    failedLogins.delete(String(username));
 
     db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), user.id);
 
