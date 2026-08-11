@@ -227,8 +227,43 @@ router.get('/overview', (req, res, next) => {
         (CASE WHEN c.storage_capacity_bytes > 0 THEN (CAST(c.storage_usage_bytes AS REAL) / c.storage_capacity_bytes) * 100 ELSE NULL END) AS usage_pct
       FROM nutanix_clusters c JOIN nutanix_sources s ON s.id = c.source_id ORDER BY s.name, c.name
     `).all();
+    // Estate utilization: cluster ppm weighted by node count (per-cluster ppm is
+    // already a cluster-wide figure, so node count is the sane weight).
+    const util = db.prepare(`
+      SELECT SUM(cpu_usage_ppm * COALESCE(num_nodes, 1)) / NULLIF(SUM(CASE WHEN cpu_usage_ppm IS NOT NULL THEN COALESCE(num_nodes, 1) END), 0) AS cpu_ppm,
+             SUM(memory_usage_ppm * COALESCE(num_nodes, 1)) / NULLIF(SUM(CASE WHEN memory_usage_ppm IS NOT NULL THEN COALESCE(num_nodes, 1) END), 0) AS mem_ppm
+      FROM nutanix_clusters
+    `).get();
+    const provisioning = {
+      vcpus: db.prepare('SELECT SUM(num_vcpus) v FROM nutanix_vms').get().v || 0,
+      physicalCores: db.prepare('SELECT SUM(num_cpu_cores) c FROM nutanix_hosts').get().c || 0,
+      vmemMb: db.prepare('SELECT SUM(memory_mb) m FROM nutanix_vms').get().m || 0,
+      physicalMemBytes: db.prepare('SELECT SUM(memory_capacity_bytes) m FROM nutanix_hosts').get().m || 0,
+    };
+    const worstRunway = db.prepare(`
+      SELECT name, runway_days FROM nutanix_clusters WHERE runway_days IS NOT NULL ORDER BY runway_days ASC LIMIT 1
+    `).get() || null;
+    // 30-day estate trend: last history row per cluster per day, then rolled up.
+    const trend = db.prepare(`
+      SELECT substr(m.captured_at, 1, 10) AS day,
+             SUM(m.storage_capacity_bytes) AS storage_capacity_bytes,
+             SUM(m.storage_usage_bytes) AS storage_usage_bytes,
+             AVG(m.cpu_usage_ppm) AS cpu_usage_ppm,
+             AVG(m.memory_usage_ppm) AS memory_usage_ppm,
+             SUM(m.controller_iops) AS controller_iops,
+             AVG(m.controller_latency_usecs) AS controller_latency_usecs
+      FROM nutanix_metrics_history m
+      JOIN (
+        SELECT MAX(id) AS id FROM nutanix_metrics_history
+        WHERE captured_at >= datetime('now', '-31 days')
+        GROUP BY cluster_id, substr(captured_at, 1, 10)
+      ) latest ON latest.id = m.id
+      GROUP BY day ORDER BY day
+    `).all();
     res.json({
       totals, clusters,
+      utilization: { cpuPpm: util?.cpu_ppm ?? null, memPpm: util?.mem_ppm ?? null },
+      provisioning, worstRunway, trend,
       moveConfigured: db.prepare('SELECT COUNT(*) n FROM nutanix_move_conns').get().n > 0,
       issues: computeIssues().slice(0, 10),
     });
