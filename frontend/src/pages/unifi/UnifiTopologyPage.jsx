@@ -22,7 +22,7 @@ function isDeviceVertex(v, deviceMeta) {
   return String(v.type || '').toUpperCase() === 'DEVICE' || !!deviceMeta[v.mac];
 }
 
-function buildTree(vertices, edges, deviceMeta) {
+function buildTree(vertices, edges, deviceMeta, clientMeta) {
   const byMac = new Map(vertices.map((v) => [v.mac, v]));
   const childrenOf = new Map();
   const hasParent = new Set();
@@ -43,7 +43,7 @@ function buildTree(vertices, edges, deviceMeta) {
     if (visited.has(mac)) return null;
     visited.add(mac);
     const v = byMac.get(mac);
-    const meta = deviceMeta[mac];
+    const meta = deviceMeta[mac] || clientMeta?.[mac];
     const childEdges = childrenOf.get(mac) || [];
     const children = childEdges
       .map((e) => ({ edge: e, node: makeNode(e.downlinkMac) }))
@@ -114,7 +114,7 @@ export default function UnifiTopologyPage() {
 
   const tree = useMemo(() => {
     if (!data || !data.vertices?.length) return null;
-    return buildTree(data.vertices, data.edges || [], data.deviceMeta || {});
+    return buildTree(data.vertices, data.edges || [], data.deviceMeta || {}, data.clientMeta || {});
   }, [data]);
 
   const totalH = useMemo(() => (tree ? layoutTree(tree) : 0), [tree]);
@@ -325,11 +325,12 @@ export default function UnifiTopologyPage() {
               </div>
               {selected.isClient ? (
                 <div className="flex flex-col gap-2 text-xs">
+                  {selected.meta?.hostname && <Row label="Hostname" value={selected.meta.hostname} />}
                   <Row label="IP" value={selected.meta?.ip} />
                   <Row label="MAC" value={selected.mac} />
                   <Row label="Wired" value={selected.meta?.is_wired ? 'Yes' : 'No'} />
                   {selected.meta?.signal != null && <Row label="Signal" value={`${selected.meta.signal} dBm`} />}
-                  <Link to={`/unifi/clients?q=${encodeURIComponent(nodeLabel(selected))}`} className="text-brand text-xs underline mt-2">View in Clients</Link>
+                  <Link to={`/unifi/clients?q=${encodeURIComponent(clientQuery(selected))}`} className="text-brand text-xs underline mt-2">View in Clients</Link>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2 text-xs">
@@ -347,6 +348,13 @@ export default function UnifiTopologyPage() {
       )}
     </div>
   );
+}
+
+// Deep-link with a value the Clients page can actually match (its search keys are
+// name/hostname/ip/mac/essid/network) — the topology vertex label is the controller's
+// display name with a mac suffix appended, which matches nothing in our table.
+function clientQuery(node) {
+  return node.meta?.name || node.meta?.hostname || node.meta?.ip || node.mac;
 }
 
 function Row({ label, value }) {
