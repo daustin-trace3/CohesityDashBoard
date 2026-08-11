@@ -77,7 +77,10 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
-        upgradeInsecureRequests: null
+        upgradeInsecureRequests: null,
+        // blob: for object-URL images (UniFi Protect camera snapshots are
+        // fetched as authenticated blobs and rendered via URL.createObjectURL)
+        imgSrc: ["'self'", 'data:', 'blob:']
       }
     },
     crossOriginOpenerPolicy: false,
