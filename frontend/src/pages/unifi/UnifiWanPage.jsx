@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Globe, Activity, MousePointerClick } from 'lucide-react';
+import { Globe, Activity, MousePointerClick, LayoutGrid, List } from 'lucide-react';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler,
@@ -27,14 +27,18 @@ const chartOpts = {
   },
 };
 
-// One tile per WAN (a controller with dual-WAN gets two); clicking a tile
-// scopes the trend charts to that WAN's source. With a single WAN this
-// behaves exactly like the old fixed layout.
+// One tile per WAN (a controller with dual-WAN gets two); clicking a tile or
+// table row scopes the trend charts to that WAN's source. Density toggle:
+// tiles up to TABLE_THRESHOLD WANs, a compact selectable table beyond that
+// (12-site fleets stay scannable); the user can switch views either way.
+const TABLE_THRESHOLD = 4;
+
 export default function UnifiWanPage() {
   const { toast } = useToast();
   const [data, setData] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [selectedKey, setSelectedKey] = useState(null);
+  const [viewPref, setViewPref] = useState(null); // null = auto by count
 
   const load = useCallback(() => client.get('/unifi/wan')
     .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
@@ -70,6 +74,7 @@ export default function UnifiWanPage() {
   }), [history, labels]);
 
   const chartScope = selected ? `${selected.isp_name || selected.wan_name} — ${selected.source_name}` : '';
+  const view = viewPref || (wans.length > TABLE_THRESHOLD ? 'table' : 'tiles');
 
   return (
     <div className="animate-fade-in">
@@ -85,38 +90,109 @@ export default function UnifiWanPage() {
       ) : (
         <>
           {wans.length > 1 && (
-            <p className="text-[11px] text-ink-faint mb-2 flex items-center gap-1.5">
-              <MousePointerClick size={12} /> Select a WAN to scope the trend charts below.
-            </p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[11px] text-ink-faint flex items-center gap-1.5">
+                <MousePointerClick size={12} /> Select a WAN to scope the trend charts below.
+              </p>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setViewPref('tiles')} title="Tile view"
+                  className={`flex items-center justify-center h-7 w-7 rounded-md border cursor-pointer ${view === 'tiles' ? 'border-brand/50 text-brand bg-brand/10' : 'border-cohesity-border text-ink-muted hover:text-ink'}`}>
+                  <LayoutGrid size={13} />
+                </button>
+                <button onClick={() => setViewPref('table')} title="Table view"
+                  className={`flex items-center justify-center h-7 w-7 rounded-md border cursor-pointer ${view === 'table' ? 'border-brand/50 text-brand bg-brand/10' : 'border-cohesity-border text-ink-muted hover:text-ink'}`}>
+                  <List size={13} />
+                </button>
+              </div>
+            </div>
           )}
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
-            {wans.map((w) => {
-              const isSel = selected && wanKey(w) === wanKey(selected);
-              return (
-                <button key={wanKey(w)} onClick={() => setSelectedKey(wanKey(w))}
-                  className={`panel p-4 text-left transition-all cursor-pointer ${isSel ? 'ring-2 ring-brand/70' : 'hover:ring-1 hover:ring-brand/30'}`}
-                  style={{ borderTop: `3px solid ${isSel ? BRAND : '#3a4048'}` }}>
+
+          {view === 'tiles' ? (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
+              {wans.map((w) => {
+                const isSel = selected && wanKey(w) === wanKey(selected);
+                return (
+                  <button key={wanKey(w)} onClick={() => setSelectedKey(wanKey(w))}
+                    className={`panel p-4 text-left transition-all cursor-pointer ${isSel ? 'ring-2 ring-brand/70' : 'hover:ring-1 hover:ring-brand/30'}`}
+                    style={{ borderTop: `3px solid ${isSel ? BRAND : '#3a4048'}` }}>
+                    <div className="flex items-start justify-between gap-2 mb-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-ink truncate">{w.isp_name || w.wan_name}</p>
+                        <p className="text-[11px] text-ink-faint truncate">{w.source_name}{w.isp_organization ? ` · ${w.isp_organization}` : ''}</p>
+                      </div>
+                      <Badge tone={w.latency_ms > 75 ? 'warn' : 'ok'}>{w.latency_ms != null ? `${w.latency_ms}ms` : '—'}</Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Fact label="ASN" value={w.asn} />
+                      <Fact label="WAN IP" value={w.wan_ip} />
+                      <Fact label="Gateway" value={w.gateway_ip} />
+                      <Fact label="Availability" value={w.availability_pct != null ? `${w.availability_pct}%` : null} />
+                      <Fact label="Uptime" value={secsToHuman(w.uptime_sec)} />
+                      <Fact label="Uplink" value={[w.uplink_media, w.uplink_speed ? `${w.uplink_speed} Mbps` : null].filter(Boolean).join(' · ') || null} />
+                      {w.speedtest_down != null && <Fact label="Speedtest ↓/↑" value={`${w.speedtest_down} / ${w.speedtest_up} Mbps`} />}
+                      {w.speedtest_ping != null && <Fact label="Speedtest Ping" value={`${w.speedtest_ping}ms`} />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <>
+              <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                      <th className="py-2 pr-3">Site</th>
+                      <th className="py-2 pr-3">ISP</th>
+                      <th className="py-2 pr-3">WAN IP</th>
+                      <th className="py-2 pr-3 text-right">Latency</th>
+                      <th className="py-2 pr-3 text-right">Availability</th>
+                      <th className="py-2 pr-3 text-right">Uptime</th>
+                      <th className="py-2 pr-3">Uplink</th>
+                    </tr></thead>
+                    <tbody>
+                      {wans.map((w) => {
+                        const isSel = selected && wanKey(w) === wanKey(selected);
+                        return (
+                          <tr key={wanKey(w)} onClick={() => setSelectedKey(wanKey(w))}
+                            className={`border-b border-cohesity-border/50 cursor-pointer transition-colors ${isSel ? 'bg-brand/10' : 'hover:bg-surface-overlay'}`}>
+                            <td className="py-2 pr-3 text-ink font-medium">{isSel ? <span className="text-brand mr-1.5">›</span> : null}{w.source_name}{w.wan_name && w.wan_name !== 'WAN' ? ` · ${w.wan_name}` : ''}</td>
+                            <td className="py-2 pr-3 text-ink-muted">{w.isp_name || '—'}</td>
+                            <td className="py-2 pr-3 text-ink-muted tnum">{w.wan_ip || '—'}</td>
+                            <td className={`py-2 pr-3 text-right tnum ${w.latency_ms > 75 ? 'text-status-warn font-semibold' : 'text-ink-muted'}`}>{w.latency_ms != null ? `${w.latency_ms}ms` : '—'}</td>
+                            <td className={`py-2 pr-3 text-right tnum ${w.availability_pct != null && w.availability_pct < 99 ? 'text-status-warn font-semibold' : 'text-ink-muted'}`}>{w.availability_pct != null ? `${w.availability_pct}%` : '—'}</td>
+                            <td className="py-2 pr-3 text-right tnum text-ink-muted">{secsToHuman(w.uptime_sec) || '—'}</td>
+                            <td className="py-2 pr-3 text-ink-faint text-[11px]">{[w.uplink_media, w.uplink_speed ? `${w.uplink_speed} Mbps` : null].filter(Boolean).join(' · ') || '—'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              {selected && (
+                <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
                   <div className="flex items-start justify-between gap-2 mb-3">
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-ink truncate">{w.isp_name || w.wan_name}</p>
-                      <p className="text-[11px] text-ink-faint truncate">{w.source_name}{w.isp_organization ? ` · ${w.isp_organization}` : ''}</p>
+                      <p className="text-sm font-semibold text-ink truncate">{selected.isp_name || selected.wan_name}</p>
+                      <p className="text-[11px] text-ink-faint truncate">{selected.source_name}{selected.isp_organization ? ` · ${selected.isp_organization}` : ''}</p>
                     </div>
-                    <Badge tone={w.latency_ms > 75 ? 'warn' : 'ok'}>{w.latency_ms != null ? `${w.latency_ms}ms` : '—'}</Badge>
+                    <Badge tone={selected.latency_ms > 75 ? 'warn' : 'ok'}>{selected.latency_ms != null ? `${selected.latency_ms}ms` : '—'}</Badge>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Fact label="ASN" value={w.asn} />
-                    <Fact label="WAN IP" value={w.wan_ip} />
-                    <Fact label="Gateway" value={w.gateway_ip} />
-                    <Fact label="Availability" value={w.availability_pct != null ? `${w.availability_pct}%` : null} />
-                    <Fact label="Uptime" value={secsToHuman(w.uptime_sec)} />
-                    <Fact label="Uplink" value={[w.uplink_media, w.uplink_speed ? `${w.uplink_speed} Mbps` : null].filter(Boolean).join(' · ') || null} />
-                    {w.speedtest_down != null && <Fact label="Speedtest ↓/↑" value={`${w.speedtest_down} / ${w.speedtest_up} Mbps`} />}
-                    {w.speedtest_ping != null && <Fact label="Speedtest Ping" value={`${w.speedtest_ping}ms`} />}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <Fact label="ASN" value={selected.asn} />
+                    <Fact label="WAN IP" value={selected.wan_ip} />
+                    <Fact label="Gateway" value={selected.gateway_ip} />
+                    <Fact label="Availability" value={selected.availability_pct != null ? `${selected.availability_pct}%` : null} />
+                    <Fact label="Uptime" value={secsToHuman(selected.uptime_sec)} />
+                    <Fact label="Uplink" value={[selected.uplink_media, selected.uplink_speed ? `${selected.uplink_speed} Mbps` : null].filter(Boolean).join(' · ') || null} />
+                    {selected.speedtest_down != null && <Fact label="Speedtest ↓/↑" value={`${selected.speedtest_down} / ${selected.speedtest_up} Mbps`} />}
+                    {selected.speedtest_ping != null && <Fact label="Speedtest Ping" value={`${selected.speedtest_ping}ms`} />}
                   </div>
-                </button>
-              );
-            })}
-          </div>
+                </div>
+              )}
+            </>
+          )}
 
           {history.length > 1 ? (
             <>
