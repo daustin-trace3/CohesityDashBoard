@@ -72,7 +72,7 @@ export default function Layout() {
   const [openGroups, setOpenGroups] = useState({});
   // Nutanix Move/Mine nav items are conditionally hidden until a connection
   // of that kind exists — driven by the /nutanix/overview fetch below.
-  const [nutanixFeatures, setNutanixFeatures] = useState({ move: false, mine: false });
+  const [nutanixFeatures, setNutanixFeatures] = useState({ move: false });
 
   useEffect(() => {
     const onModeChange = () => setSwitcherMode(getSwitcherMode());
@@ -335,7 +335,7 @@ export default function Layout() {
           : nutanix ? (r.data?.totals?.clusters ?? rows.length)
           : rows.length);
         if (nutanix) {
-          setNutanixFeatures({ move: !!r.data?.moveConfigured, mine: !!r.data?.mineConfigured });
+          setNutanixFeatures({ move: !!r.data?.moveConfigured });
         }
         const now = Date.now();
         if (zerto) {

@@ -381,11 +381,10 @@ describe('seedDemo.js', () => {
   });
 
   describe('nutanix platform', () => {
-    it('seeds 6 sources spanning prism_central and prism_element, including one is_mine', () => {
+    it('seeds 6 sources spanning prism_central and prism_element', () => {
       expect(db.prepare('SELECT COUNT(*) c FROM nutanix_sources').get().c).toBe(6);
       expect(db.prepare("SELECT COUNT(*) c FROM nutanix_sources WHERE source_type = 'prism_central'").get().c).toBe(2);
       expect(db.prepare("SELECT COUNT(*) c FROM nutanix_sources WHERE source_type = 'prism_element'").get().c).toBe(4);
-      expect(db.prepare('SELECT COUNT(*) c FROM nutanix_sources WHERE is_mine = 1').get().c).toBeGreaterThanOrEqual(1);
       expect(db.prepare("SELECT COUNT(*) c FROM nutanix_sources WHERE last_poll_status != 'success'").get().c).toBe(0);
     });
 

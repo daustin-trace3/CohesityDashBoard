@@ -1,15 +1,14 @@
 // Nutanix scope demo data: 2 Prism Central sources (fronting 5 AHV clusters
 // total) + 4 standalone Prism Element sources (one Community Edition
-// single-node, one flagged as the "Mine" cluster), Move + Veeam companion
-// appliances, and 31 days of per-cluster metrics history. Includes deliberate
-// trouble so the Nutanix issues feed demos every rule in
-// services/nutanixIssues.js: a cluster with ft_failures_tolerable=0, two hot
-// containers (91%/96%), a cluster at 88% storage, 3 unresolved critical
-// alerts, a degraded host, a paused in-flight replication, an 8h-old
-// recovery point under a 1h RPO policy, 12 unprotected VMs on a PE cluster,
-// a cluster with runway_days=45, a failed Move event, and a failed Veeam job.
-// All sources poll clean (last_poll_status='success') — source-unreachable
-// and auth-degraded are intentionally NOT triggered.
+// single-node), a Move companion appliance, and 31 days of per-cluster
+// metrics history. Includes deliberate trouble so the Nutanix issues feed
+// demos every rule in services/nutanixIssues.js: a cluster with
+// ft_failures_tolerable=0, two hot containers (91%/96%), a cluster at 88%
+// storage, 3 unresolved critical alerts, a degraded host, a paused in-flight
+// replication, an 8h-old recovery point under a 1h RPO policy, 12 unprotected
+// VMs on a PE cluster, a cluster with runway_days=45, and a failed Move
+// event. All sources poll clean (last_poll_status='success') —
+// source-unreachable and auth-degraded are intentionally NOT triggered.
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 const HOST_MODELS = [
@@ -46,12 +45,12 @@ function uuid(rng) {
 
 // source name -> source_type / host / flags
 const SOURCES = [
-  { name: 'nyc-ntx-pc-01', type: 'prism_central', host: 'pc-nyc.icc.demo', isMine: 0, isCe: 0, apiFlavor: 'v3', productVersion: 'pc.2024.3' },
-  { name: 'lon-ntx-pc-01', type: 'prism_central', host: 'pc-lon.icc.demo', isMine: 0, isCe: 0, apiFlavor: 'v3', productVersion: null },
-  { name: 'fra-ntx-pe-01', type: 'prism_element', host: 'pe-fra.icc.demo', isMine: 0, isCe: 0, apiFlavor: 'v2.0', productVersion: null },
-  { name: 'sgp-ntx-pe-01', type: 'prism_element', host: 'pe-sgp.icc.demo', isMine: 0, isCe: 1, apiFlavor: 'v2.0', productVersion: null },
-  { name: 'syd-ntx-pe-01', type: 'prism_element', host: 'pe-syd.icc.demo', isMine: 0, isCe: 0, apiFlavor: 'v2.0', productVersion: null },
-  { name: 'chi-ntx-pe-01', type: 'prism_element', host: 'pe-chi.icc.demo', isMine: 1, isCe: 0, apiFlavor: 'v2.0', productVersion: null },
+  { name: 'nyc-ntx-pc-01', type: 'prism_central', host: 'pc-nyc.icc.demo', isCe: 0, apiFlavor: 'v3', productVersion: 'pc.2024.3' },
+  { name: 'lon-ntx-pc-01', type: 'prism_central', host: 'pc-lon.icc.demo', isCe: 0, apiFlavor: 'v3', productVersion: null },
+  { name: 'fra-ntx-pe-01', type: 'prism_element', host: 'pe-fra.icc.demo', isCe: 0, apiFlavor: 'v2.0', productVersion: null },
+  { name: 'sgp-ntx-pe-01', type: 'prism_element', host: 'pe-sgp.icc.demo', isCe: 1, apiFlavor: 'v2.0', productVersion: null },
+  { name: 'syd-ntx-pe-01', type: 'prism_element', host: 'pe-syd.icc.demo', isCe: 0, apiFlavor: 'v2.0', productVersion: null },
+  { name: 'chi-ntx-pe-01', type: 'prism_element', host: 'pe-chi.icc.demo', isCe: 0, apiFlavor: 'v2.0', productVersion: null },
 ];
 
 // cluster plan: which source manages it, node count, VM count, deliberate flags
@@ -79,9 +78,9 @@ function seedNutanix(db, { now, encrypt }) {
 
   const insertSource = db.prepare(`
     INSERT INTO nutanix_sources (name, source_type, host, port, username, encrypted_credentials,
-      ssl_verify, polling_interval_minutes, is_mine, is_ce, api_flavor, product_version,
+      ssl_verify, polling_interval_minutes, is_ce, api_flavor, product_version,
       last_poll_status, last_poll_error, last_poll_at, created_at, updated_at)
-    VALUES (@name, @source_type, @host, 9440, 'admin', @encrypted_credentials, 0, 15, @is_mine, @is_ce,
+    VALUES (@name, @source_type, @host, 9440, 'admin', @encrypted_credentials, 0, 15, @is_ce,
       @api_flavor, @product_version, 'success', NULL, @last_poll_at, @created_at, @updated_at)
   `);
   const insertCluster = db.prepare(`
@@ -200,28 +199,13 @@ function seedNutanix(db, { now, encrypt }) {
       failure_notes, created_usecs, created_at)
     VALUES (@conn_id, @event_id, @event_name, @vm_name, @plan_name, @status, @failure_notes, @created_usecs, @created_at)
   `);
-  const insertVeeamConn = db.prepare(`
-    INSERT INTO nutanix_veeam_conns (source_id, host, port, username, encrypted_credentials,
-      ssl_verify, last_poll_status, last_poll_error, last_poll_at, created_at, updated_at)
-    VALUES (@source_id, @host, 9419, @username, @encrypted_credentials, 0, 'success', NULL,
-      @last_poll_at, @created_at, @updated_at)
-  `);
-  const insertVeeamJob = db.prepare(`
-    INSERT INTO nutanix_veeam_jobs (conn_id, job_uid, name, type, last_result, last_run_at, description, updated_at)
-    VALUES (@conn_id, @job_uid, @name, @type, @last_result, @last_run_at, @description, @updated_at)
-  `);
-  const insertVeeamRepo = db.prepare(`
-    INSERT INTO nutanix_veeam_repos (conn_id, repo_uid, name, capacity_bytes, free_bytes, used_bytes, updated_at)
-    VALUES (@conn_id, @repo_uid, @name, @capacity_bytes, @free_bytes, @used_bytes, @updated_at)
-  `);
-
   // ── Sources ────────────────────────────────────────────────────────────
   const sourceIds = {};
   for (const s of SOURCES) {
     const info = insertSource.run({
       name: s.name, source_type: s.type, host: s.host,
       encrypted_credentials: encrypt(JSON.stringify({ username: 'admin', password: 'demo-not-real' })),
-      is_mine: s.isMine, is_ce: s.isCe, api_flavor: s.apiFlavor, product_version: s.productVersion,
+      is_ce: s.isCe, api_flavor: s.apiFlavor, product_version: s.productVersion,
       last_poll_at: ago(`-${randInt(rngFor(s.name), 2, 12)} minutes`), created_at: nowIso, updated_at: nowIso,
     });
     sourceIds[s.name] = info.lastInsertRowid;
@@ -624,41 +608,6 @@ function seedNutanix(db, { now, encrypt }) {
     });
   });
 
-  // ── Veeam: 1 conn on the is_mine source, 5 jobs, 2 repos ───────────────
-  const veeamRng = rngFor('nutanix-veeam');
-  const mineSourceId = sourceIds['chi-ntx-pe-01'];
-  const veeamInfo = insertVeeamConn.run({
-    source_id: mineSourceId, host: 'veeam-chi.icc.demo', username: 'administrator',
-    encrypted_credentials: encrypt(JSON.stringify({ password: 'demo-not-real' })),
-    last_poll_at: ago('-10 minutes'), created_at: nowIso, updated_at: nowIso,
-  });
-  const veeamConnId = veeamInfo.lastInsertRowid;
-  const VEEAM_JOBS = [
-    { name: 'AHV-Prod-Daily', type: 'Backup', result: 'Success' },
-    { name: 'AHV-Prod-Replica', type: 'Replication', result: 'Success' },
-    { name: 'AHV-Dev-Weekly', type: 'Backup', result: 'Warning' },
-    { name: 'AHV-FileServers', type: 'Backup', result: 'Failed' },
-    { name: 'AHV-DR-Sync', type: 'Replication', result: 'Success' },
-  ];
-  VEEAM_JOBS.forEach((j, i) => {
-    insertVeeamJob.run({
-      conn_id: veeamConnId, job_uid: uuid(veeamRng), name: j.name, type: j.type, last_result: j.result,
-      last_run_at: ago(`-${randInt(veeamRng, 30, 600)} minutes`), description: `Nutanix AHV ${j.type.toLowerCase()} job`, updated_at: nowIso,
-    });
-  });
-  const REPOS = [
-    { name: 'chi-veeam-repo-01', capGb: 40000 },
-    { name: 'chi-veeam-repo-02', capGb: 25000 },
-  ];
-  REPOS.forEach((r) => {
-    const capBytes = r.capGb * GIB;
-    const usedBytes = Math.round(capBytes * 0.7);
-    insertVeeamRepo.run({
-      conn_id: veeamConnId, repo_uid: uuid(veeamRng), name: r.name, capacity_bytes: capBytes,
-      free_bytes: capBytes - usedBytes, used_bytes: usedBytes, updated_at: nowIso,
-    });
-  });
-
   // ── Issue history: reconciled live from the seeded inventory ──────────
   let issueHistoryTotal = 0;
   try {
@@ -696,7 +645,6 @@ function seedNutanix(db, { now, encrypt }) {
     containers: containerTotal, disks: diskTotal, alerts: alertTotal, events: eventTotal,
     pds: pdTotal, replications: replicationTotal, policies: policyTotal,
     recoveryPoints: recoveryPointTotal, metrics: metricsTotal, moveConns: 1, movePlans: 2,
-    veeamConns: 1, veeamJobs: VEEAM_JOBS.length, veeamRepos: REPOS.length,
     issueHistory: issueHistoryTotal,
   };
 }

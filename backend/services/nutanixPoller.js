@@ -1,15 +1,12 @@
 // Nutanix poller — two composed framework pollers (contract): one per
 // nutanix_sources row (Prism Central / Prism Element), one per
-// nutanix_move_conns row. Veeam sub-connections are polled inside the source
-// poll when is_mine=1 (best-effort — a Veeam failure never fails the source
-// poll). Every inventory section is fetched independently; a failed section
-// SKIPS its DELETE+INSERT so a transient API error never wipes previously
-// good rows (netbackup 2126f39 lesson).
+// nutanix_move_conns row. Every inventory section is fetched independently;
+// a failed section SKIPS its DELETE+INSERT so a transient API error never
+// wipes previously good rows (netbackup 2126f39 lesson).
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const nutanixApi = require('./nutanixApi');
 const moveApi = require('./nutanixMoveApi');
-const veeamApi = require('./nutanixVeeamApi');
 const { reconcileIssueHistory } = require('./nutanixIssues');
 const logger = require('../utils/logger');
 
@@ -297,39 +294,6 @@ async function collectEvents(source) {
   }
 }
 
-async function pollVeeam(source) {
-  const conn = db.prepare('SELECT * FROM nutanix_veeam_conns WHERE source_id = ?').get(source.id);
-  if (!conn) return;
-  try {
-    const [jobs, repos] = await Promise.all([veeamApi.fetchJobs(conn), veeamApi.fetchRepositories(conn)]);
-    db.transaction(() => {
-      db.prepare('DELETE FROM nutanix_veeam_jobs WHERE conn_id = ?').run(conn.id);
-      const jobStmt = db.prepare(`
-        INSERT INTO nutanix_veeam_jobs (conn_id, job_uid, name, type, last_result, last_run_at, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const j of jobs) jobStmt.run(conn.id, j.jobUid, j.name, j.type, j.lastResult, j.lastRunAt, j.description);
-
-      db.prepare('DELETE FROM nutanix_veeam_repos WHERE conn_id = ?').run(conn.id);
-      const repoStmt = db.prepare(`
-        INSERT INTO nutanix_veeam_repos (conn_id, repo_uid, name, capacity_bytes, free_bytes, used_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      for (const r of repos) repoStmt.run(conn.id, r.repoUid, r.name, r.capacityBytes, r.freeBytes, r.usedBytes);
-    })();
-    db.prepare(`
-      UPDATE nutanix_veeam_conns SET last_poll_status = 'success', last_poll_error = NULL,
-        last_poll_at = datetime('now') WHERE id = ?
-    `).run(conn.id);
-  } catch (err) {
-    db.prepare(`
-      UPDATE nutanix_veeam_conns SET last_poll_status = 'error', last_poll_error = ?,
-        last_poll_at = datetime('now') WHERE id = ?
-    `).run(safeMsg(err), conn.id);
-    logger.warn(`[NutanixPoller] Veeam poll failed for source ${source.name} (source poll continues): ${safeMsg(err)}`);
-  }
-}
-
 async function pollSource(source) {
   try {
     const data = source.source_type === 'prism_central' ? await collectPC(source) : await collectPE(source);
@@ -343,7 +307,6 @@ async function pollSource(source) {
       source.id
     );
     await collectEvents(source);
-    if (source.is_mine) await pollVeeam(source);
     logger.info(`[NutanixPoller] ${source.name}: ${(data.clusters || []).length} cluster(s), ${(data.hosts || []).length} host(s), ${(data.vms || []).length} VM(s)`);
   } catch (err) {
     db.prepare(`

@@ -1,6 +1,6 @@
 // Nutanix platform manifest (ICC contract, feat/plugin-touchpoints). Dual
 // connection model (Prism Central / Prism Element) registered like
-// vCenter/NetBackup, plus Move + Mine/Veeam sub-connections. RBAC grants,
+// vCenter/NetBackup, plus Move sub-connections. RBAC grants,
 // ops-summary card, alert-email collection, global search, and per-cluster
 // metrics history are all wired via the branch's manifest hooks
 // (backend/core/registry.js) — no core.js/ops.js/poller.js/alertNotifier.js/
@@ -158,7 +158,7 @@ module.exports = {
   },
   statusTables: ['nutanix_sources'],
   settingsFields: [],
-  navSections: ['overview', 'clusters', 'hosts', 'vms', 'storage', 'protection', 'alerts', 'move', 'mine', 'advisor', 'settings'],
+  navSections: ['overview', 'clusters', 'hosts', 'vms', 'storage', 'protection', 'alerts', 'move', 'advisor', 'settings'],
   datasets: [
     {
       id: 'nutanix.clusters',

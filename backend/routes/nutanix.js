@@ -8,7 +8,6 @@ const { encrypt } = require('../services/encryption');
 const { setSetting } = require('../services/settings');
 const nutanixApi = require('../services/nutanixApi');
 const moveApi = require('../services/nutanixMoveApi');
-const veeamApi = require('../services/nutanixVeeamApi');
 const { nutanixPoller, nutanixMovePoller } = require('../services/nutanixPoller');
 const {
   containerWarnPct, containerCritPct, clusterWarnPct, clusterCritPct, rpoGracePct, runwayWarnDays,
@@ -29,7 +28,7 @@ const validate = (req, res, next) => {
 const publicSource = (row) => ({
   id: row.id, name: row.name, sourceType: row.source_type, host: row.host, port: row.port,
   sslVerify: !!row.ssl_verify, pollingIntervalMinutes: row.polling_interval_minutes,
-  isMine: !!row.is_mine, isCe: !!row.is_ce, apiFlavor: row.api_flavor, productVersion: row.product_version,
+  isCe: !!row.is_ce, apiFlavor: row.api_flavor, productVersion: row.product_version,
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
   clusterCount: db.prepare('SELECT COUNT(*) n FROM nutanix_clusters WHERE source_id = ?').get(row.id).n,
 });
@@ -39,11 +38,6 @@ const publicMoveConn = (row) => ({
   applianceVersion: row.appliance_version, lastPollStatus: row.last_poll_status,
   lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
   planCount: db.prepare('SELECT COUNT(*) n FROM nutanix_move_plans WHERE conn_id = ?').get(row.id).n,
-});
-
-const publicVeeamConn = (row) => ({
-  id: row.id, sourceId: row.source_id, host: row.host, port: row.port, sslVerify: !!row.ssl_verify,
-  lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
 });
 
 // ── Source registration CRUD ────────────────────────────────────────────────
@@ -63,19 +57,18 @@ router.post('/sources', [
   body('password').isString().notEmpty().isLength({ max: 512 }),
   body('sslVerify').optional().isBoolean(),
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
-  body('isMine').optional().isBoolean(),
 ], validate, (req, res, next) => {
   try {
-    const { name, sourceType, host, port, username, password, sslVerify, pollingIntervalMinutes, isMine } = req.body;
+    const { name, sourceType, host, port, username, password, sslVerify, pollingIntervalMinutes } = req.body;
     const dup = db.prepare('SELECT id FROM nutanix_sources WHERE name = ? OR (host = ? AND source_type = ?)')
       .get(name.trim(), host.trim(), sourceType);
     if (dup) return res.status(409).json({ error: 'A Nutanix source with that name or host+type is already registered.' });
     const info = db.prepare(`
       INSERT INTO nutanix_sources (name, source_type, host, port, username, encrypted_credentials,
-        ssl_verify, polling_interval_minutes, is_mine)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ssl_verify, polling_interval_minutes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(name.trim(), sourceType, host.trim(), port || 9440, username.trim(),
-      encrypt(JSON.stringify({ password })), sslVerify ? 1 : 0, pollingIntervalMinutes || 15, isMine ? 1 : 0);
+      encrypt(JSON.stringify({ password })), sslVerify ? 1 : 0, pollingIntervalMinutes || 15);
     const row = db.prepare('SELECT * FROM nutanix_sources WHERE id = ?').get(info.lastInsertRowid);
     nutanixPoller.schedule(row);
     nutanixPoller.trigger(row).catch(() => {});
@@ -93,7 +86,6 @@ router.put('/sources/:id', [
   body('password').optional().isString().isLength({ max: 512 }),
   body('sslVerify').optional().isBoolean(),
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
-  body('isMine').optional().isBoolean(),
 ], validate, (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM nutanix_sources WHERE id = ?').get(req.params.id);
@@ -102,7 +94,7 @@ router.put('/sources/:id', [
     db.prepare(`
       UPDATE nutanix_sources SET
         name = ?, source_type = ?, host = ?, port = ?, username = ?, encrypted_credentials = ?,
-        ssl_verify = ?, polling_interval_minutes = ?, is_mine = ?, updated_at = datetime('now')
+        ssl_verify = ?, polling_interval_minutes = ?, updated_at = datetime('now')
       WHERE id = ?
     `).run(
       b.name?.trim() || row.name, b.sourceType || row.source_type, b.host?.trim() || row.host,
@@ -110,7 +102,6 @@ router.put('/sources/:id', [
       b.password ? encrypt(JSON.stringify({ password: b.password })) : row.encrypted_credentials,
       b.sslVerify !== undefined ? (b.sslVerify ? 1 : 0) : row.ssl_verify,
       b.pollingIntervalMinutes || row.polling_interval_minutes,
-      b.isMine !== undefined ? (b.isMine ? 1 : 0) : row.is_mine,
       row.id
     );
     nutanixApi.invalidateSession(row.id);
@@ -239,7 +230,6 @@ router.get('/overview', (req, res, next) => {
     res.json({
       totals, clusters,
       moveConfigured: db.prepare('SELECT COUNT(*) n FROM nutanix_move_conns').get().n > 0,
-      mineConfigured: db.prepare('SELECT COUNT(*) n FROM nutanix_sources WHERE is_mine = 1').get().n > 0,
       issues: computeIssues().slice(0, 10),
     });
   } catch (err) { next(err); }
@@ -534,117 +524,6 @@ router.get('/move/summary', (req, res, next) => {
         ORDER BY e.created_at DESC LIMIT 100
       `).all(),
     });
-  } catch (err) { next(err); }
-});
-
-// ── Mine / Veeam ─────────────────────────────────────────────────────────────
-
-router.get('/mine/summary', (req, res, next) => {
-  try {
-    const mineSources = db.prepare('SELECT * FROM nutanix_sources WHERE is_mine = 1 ORDER BY name').all();
-    const connections = db.prepare(`
-      SELECT vc.*, s.name AS source_name FROM nutanix_veeam_conns vc JOIN nutanix_sources s ON s.id = vc.source_id
-    `).all();
-    res.json({
-      configured: mineSources.length > 0,
-      clusters: mineSources.map(publicSource),
-      veeam: {
-        connections: connections.map(publicVeeamConn),
-        jobs: db.prepare(`SELECT j.*, c.host AS conn_host FROM nutanix_veeam_jobs j JOIN nutanix_veeam_conns c ON c.id = j.conn_id`).all(),
-        repos: db.prepare(`SELECT r.*, c.host AS conn_host FROM nutanix_veeam_repos r JOIN nutanix_veeam_conns c ON c.id = r.conn_id`).all(),
-      },
-    });
-  } catch (err) { next(err); }
-});
-
-router.post('/mine/veeam', [
-  body('sourceId').isInt().toInt(),
-  body('host').isString().trim().notEmpty().isLength({ max: 253 }),
-  body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
-  body('username').isString().trim().notEmpty().isLength({ max: 256 }),
-  body('password').isString().notEmpty().isLength({ max: 512 }),
-  body('sslVerify').optional().isBoolean(),
-], validate, (req, res, next) => {
-  try {
-    const { sourceId, host, port, username, password, sslVerify } = req.body;
-    const source = db.prepare('SELECT * FROM nutanix_sources WHERE id = ?').get(sourceId);
-    if (!source) return res.status(404).json({ error: 'Nutanix source not found.' });
-    const dup = db.prepare('SELECT id FROM nutanix_veeam_conns WHERE source_id = ?').get(sourceId);
-    if (dup) return res.status(409).json({ error: 'A Veeam connection already exists for this source.' });
-    const info = db.prepare(`
-      INSERT INTO nutanix_veeam_conns (source_id, host, port, username, encrypted_credentials, ssl_verify)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(sourceId, host.trim(), port || 9419, username.trim(), encrypt(JSON.stringify({ password })), sslVerify ? 1 : 0);
-    const row = db.prepare('SELECT * FROM nutanix_veeam_conns WHERE id = ?').get(info.lastInsertRowid);
-    res.status(201).json({ connection: publicVeeamConn(row) });
-  } catch (err) { next(err); }
-});
-
-router.put('/mine/veeam/:id', [
-  param('id').isInt().toInt(),
-  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }),
-  body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
-  body('username').optional().isString().trim().notEmpty().isLength({ max: 256 }),
-  body('password').optional().isString().isLength({ max: 512 }),
-  body('sslVerify').optional().isBoolean(),
-], validate, (req, res, next) => {
-  try {
-    const row = db.prepare('SELECT * FROM nutanix_veeam_conns WHERE id = ?').get(req.params.id);
-    if (!row) return res.status(404).json({ error: 'Veeam connection not found.' });
-    const b = req.body;
-    db.prepare(`
-      UPDATE nutanix_veeam_conns SET host = ?, port = ?, username = ?, encrypted_credentials = ?,
-        ssl_verify = ?, updated_at = datetime('now') WHERE id = ?
-    `).run(
-      b.host?.trim() || row.host, b.port || row.port, b.username?.trim() || row.username,
-      b.password ? encrypt(JSON.stringify({ password: b.password })) : row.encrypted_credentials,
-      b.sslVerify !== undefined ? (b.sslVerify ? 1 : 0) : row.ssl_verify,
-      row.id
-    );
-    veeamApi.invalidateToken(row.id);
-    res.json({ connection: publicVeeamConn(db.prepare('SELECT * FROM nutanix_veeam_conns WHERE id = ?').get(row.id)) });
-  } catch (err) { next(err); }
-});
-
-router.delete('/mine/veeam/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
-  try {
-    const row = db.prepare('SELECT * FROM nutanix_veeam_conns WHERE id = ?').get(req.params.id);
-    if (!row) return res.status(404).json({ error: 'Veeam connection not found.' });
-    veeamApi.invalidateToken(row.id);
-    db.prepare('DELETE FROM nutanix_veeam_conns WHERE id = ?').run(row.id);
-    res.json({ ok: true });
-  } catch (err) { next(err); }
-});
-
-router.post('/mine/veeam/test', [
-  body('host').optional().isString().trim().notEmpty(),
-  body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
-  body('username').optional().isString().trim().notEmpty(),
-  body('password').optional().isString(),
-  body('id').optional().isInt().toInt(),
-  body('sslVerify').optional().isBoolean(),
-], validate, async (req, res) => {
-  const { id, host, port, username, password, sslVerify } = req.body;
-  let candidate;
-  if (id) {
-    const row = db.prepare('SELECT * FROM nutanix_veeam_conns WHERE id = ?').get(id);
-    if (!row) return res.status(404).json({ error: 'Veeam connection not found.' });
-    candidate = { ...row, ...(password ? { password } : {}) };
-  } else {
-    if (!host || !username || !password) return res.status(400).json({ error: 'Invalid parameters' });
-    candidate = { host: host.trim(), port: port || 9419, username: username.trim(), password, ssl_verify: sslVerify ? 1 : 0 };
-  }
-  const result = await veeamApi.testConnection(candidate);
-  res.status(result.ok ? 200 : 502).json(result);
-});
-
-router.post('/mine/veeam/:id/poll', [param('id').isInt().toInt()], validate, async (req, res, next) => {
-  try {
-    const row = db.prepare('SELECT * FROM nutanix_veeam_conns WHERE id = ?').get(req.params.id);
-    if (!row) return res.status(404).json({ error: 'Veeam connection not found.' });
-    const source = db.prepare('SELECT * FROM nutanix_sources WHERE id = ?').get(row.source_id);
-    if (source) nutanixPoller.trigger(source).catch(() => {});
-    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

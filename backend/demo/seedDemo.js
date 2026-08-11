@@ -101,7 +101,6 @@ const SEEDED_TABLES = [
   'aws_accounts',
   // nutanix (children before parents)
   'nutanix_move_events', 'nutanix_move_workloads', 'nutanix_move_plans', 'nutanix_move_conns',
-  'nutanix_veeam_jobs', 'nutanix_veeam_repos', 'nutanix_veeam_conns',
   'nutanix_metrics_history', 'nutanix_hosts', 'nutanix_vms', 'nutanix_containers',
   'nutanix_disks', 'nutanix_alerts', 'nutanix_events', 'nutanix_pds', 'nutanix_replications',
   'nutanix_remote_sites', 'nutanix_protection_policies', 'nutanix_recovery_points',
@@ -163,7 +162,7 @@ async function main() {
     ['netbackup sources/policies/jobs', `${netbackupResult.sources}/${netbackupResult.policies}/${netbackupResult.jobs}`],
     ['aws ec2/ecs services/s3/cost rows', `${awsResult.ec2}/${awsResult.ecsServices}/${awsResult.s3}/${awsResult.costRows}`],
     ['nutanix sources/clusters/hosts/vms', `${nutanixResult.sources}/${nutanixResult.clusters}/${nutanixResult.hosts}/${nutanixResult.vms}`],
-    ['nutanix move plans/veeam jobs', `${nutanixResult.movePlans}/${nutanixResult.veeamJobs}`],
+    ['nutanix move plans', `${nutanixResult.movePlans}`],
     ['users', 1],
   ];
 

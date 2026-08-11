@@ -231,8 +231,7 @@ const NEW_TABLES = [
   'nutanix_protection_policies', 'nutanix_recovery_points',
   'nutanix_metrics_history', 'nutanix_issue_history', 'nutanix_ai_reports',
   'nutanix_move_conns', 'nutanix_move_plans', 'nutanix_move_workloads',
-  'nutanix_move_events', 'nutanix_veeam_conns', 'nutanix_veeam_jobs',
-  'nutanix_veeam_repos',
+  'nutanix_move_events',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.

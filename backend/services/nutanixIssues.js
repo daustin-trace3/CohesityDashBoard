@@ -196,15 +196,6 @@ function computeIssues() {
       message: `Move plan ${p.name} is in a failed state` });
   }
 
-  // Rule 13: veeam-job-failed
-  const veeamConns = db.prepare('SELECT nc.id, ns.name AS source_name FROM nutanix_veeam_conns nc JOIN nutanix_sources ns ON ns.id = nc.source_id').all();
-  const veeamSourceName = new Map(veeamConns.map((c) => [c.id, c.source_name]));
-  for (const j of db.prepare(`SELECT * FROM nutanix_veeam_jobs WHERE last_result IN ('Failed', 'Warning')`).all()) {
-    const source = veeamSourceName.get(j.conn_id) || `Veeam connection ${j.conn_id}`;
-    issues.push({ severity: 'warning', type: 'veeam-job-failed', source, target: j.name,
-      message: `Veeam job ${j.name} last result: ${j.last_result}` });
-  }
-
   const order = { critical: 0, warning: 1, info: 2 };
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);
 }

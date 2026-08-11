@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import {
   Gauge, Server, Database, Settings, MonitorSmartphone, ShieldCheck, Sparkles, Bell,
-  ArrowRightLeft, HardDrive, ClipboardCheck,
+  ArrowRightLeft, ClipboardCheck,
 } from 'lucide-react';
 
 const NxOverviewPage = lazy(() => import('../../pages/nutanix/NxOverviewPage'));
@@ -12,7 +12,6 @@ const NxStoragePage = lazy(() => import('../../pages/nutanix/NxStoragePage'));
 const NxAlertsPage = lazy(() => import('../../pages/nutanix/NxAlertsPage'));
 const NxProtectionPage = lazy(() => import('../../pages/nutanix/NxProtectionPage'));
 const NxMovePage = lazy(() => import('../../pages/nutanix/NxMovePage'));
-const NxMinePage = lazy(() => import('../../pages/nutanix/NxMinePage'));
 const NxAdvisorPage = lazy(() => import('../../pages/nutanix/NxAdvisorPage'));
 const NxSettingsPage = lazy(() => import('../../pages/nutanix/NxSettingsPage'));
 
@@ -39,7 +38,6 @@ const navGroups = [
     items: [
       { label: 'Protection & Replication', route: '/nutanix/protection', icon: ShieldCheck, isActive: (p) => p.startsWith('/nutanix/protection') },
       { label: 'Move', route: '/nutanix/move', icon: ArrowRightLeft, isActive: (p) => p.startsWith('/nutanix/move'), feature: 'move' },
-      { label: 'Mine', route: '/nutanix/mine', icon: HardDrive, isActive: (p) => p.startsWith('/nutanix/mine'), feature: 'mine' },
     ],
   },
   {
@@ -79,7 +77,6 @@ export default {
     { path: 'nutanix/alerts', Component: NxAlertsPage },
     { path: 'nutanix/protection', Component: NxProtectionPage },
     { path: 'nutanix/move', Component: NxMovePage },
-    { path: 'nutanix/mine', Component: NxMinePage },
     { path: 'nutanix/issues', Component: NxIssuesPage },
     { path: 'nutanix/advisor', Component: NxAdvisorPage },
     { path: 'nutanix/privacy', Component: NxPrivacyPage },

@@ -65,7 +65,6 @@ describe('nutanix platform manifest', () => {
     expect(res.body.totals.sources).toBe(0);
     expect(Array.isArray(res.body.clusters)).toBe(true);
     expect(res.body.moveConfigured).toBe(false);
-    expect(res.body.mineConfigured).toBe(false);
     expect(Array.isArray(res.body.issues)).toBe(true);
   });
 
@@ -182,20 +181,6 @@ describe('nutanix platform manifest', () => {
 
     const delRes = await del(`/api/nutanix/move/connections/${id}`);
     expect(delRes.status).toBe(200);
-  });
-
-  it('GET /api/nutanix/mine/summary reflects mine-flagged sources', async () => {
-    const before = await get('/api/nutanix/mine/summary');
-    expect(before.body.configured).toBe(false);
-
-    await post('/api/nutanix/sources', {
-      name: 'Mine-Cluster', sourceType: 'prism_element', host: '10.0.0.80',
-      username: 'viewer', password: 'secret123', isMine: true,
-    });
-
-    const after = await get('/api/nutanix/mine/summary');
-    expect(after.body.configured).toBe(true);
-    expect(after.body.clusters.length).toBe(1);
   });
 
   it('advisor route 404s for an unknown report', async () => {

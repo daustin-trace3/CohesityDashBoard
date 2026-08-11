@@ -1,10 +1,9 @@
 // Nutanix scope: nutanix_* tables. Dual-connection model (Prism Central v3 +
 // groups, or Prism Element v2.0 + v1) registered like vCenter/NetBackup, plus
-// separate Move appliance connections and an optional Veeam VBR sub-connection
-// per Mine-flagged source. Inventory tables are replaced per source each poll
-// (failed sections keep prior rows — see nutanixPoller.js); metrics/events/
-// history tables append and self-retain. Single version — no live estate yet,
-// so the whole schema ships in v1.
+// separate Move appliance connections. Inventory tables are replaced per source
+// each poll (failed sections keep prior rows — see nutanixPoller.js); metrics/
+// events/history tables append and self-retain. Single version — no live estate
+// yet, so the whole schema ships in v1.
 module.exports = [
   {
     version: 1,
@@ -20,7 +19,6 @@ module.exports = [
           encrypted_credentials     TEXT,
           ssl_verify                INTEGER DEFAULT 0,
           polling_interval_minutes  INTEGER DEFAULT 15,
-          is_mine                   INTEGER DEFAULT 0,
           is_ce                     INTEGER DEFAULT 0,
           api_flavor                TEXT,
           product_version           TEXT,
@@ -359,47 +357,6 @@ module.exports = [
           created_at     TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_nutanix_move_events_conn ON nutanix_move_events(conn_id);
-
-        CREATE TABLE IF NOT EXISTS nutanix_veeam_conns (
-          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-          source_id             INTEGER NOT NULL REFERENCES nutanix_sources(id) ON DELETE CASCADE,
-          host                  TEXT NOT NULL,
-          port                  INTEGER DEFAULT 9419,
-          username              TEXT,
-          encrypted_credentials TEXT,
-          ssl_verify            INTEGER DEFAULT 0,
-          last_poll_status      TEXT,
-          last_poll_error       TEXT,
-          last_poll_at          TEXT,
-          created_at            TEXT DEFAULT CURRENT_TIMESTAMP,
-          updated_at            TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE INDEX IF NOT EXISTS idx_nutanix_veeam_conns_source ON nutanix_veeam_conns(source_id);
-
-        CREATE TABLE IF NOT EXISTS nutanix_veeam_jobs (
-          id           INTEGER PRIMARY KEY AUTOINCREMENT,
-          conn_id      INTEGER NOT NULL REFERENCES nutanix_veeam_conns(id) ON DELETE CASCADE,
-          job_uid      TEXT,
-          name         TEXT,
-          type         TEXT,
-          last_result  TEXT,
-          last_run_at  TEXT,
-          description  TEXT,
-          updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE INDEX IF NOT EXISTS idx_nutanix_veeam_jobs_conn ON nutanix_veeam_jobs(conn_id);
-
-        CREATE TABLE IF NOT EXISTS nutanix_veeam_repos (
-          id             INTEGER PRIMARY KEY AUTOINCREMENT,
-          conn_id        INTEGER NOT NULL REFERENCES nutanix_veeam_conns(id) ON DELETE CASCADE,
-          repo_uid       TEXT,
-          name           TEXT,
-          capacity_bytes INTEGER,
-          free_bytes     INTEGER,
-          used_bytes     INTEGER,
-          updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE INDEX IF NOT EXISTS idx_nutanix_veeam_repos_conn ON nutanix_veeam_repos(conn_id);
       `);
     },
   },

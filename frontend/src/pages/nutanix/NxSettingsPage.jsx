@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
   Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil,
-  ArrowRightLeft, HardDrive, ToggleLeft, ToggleRight,
+  ArrowRightLeft,
 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -22,7 +22,6 @@ const TABS = [
 const SECTIONS = [
   { key: 'sources', label: 'Prism Sources', icon: Server, group: 'Connections' },
   { key: 'move', label: 'Move Appliances', icon: ArrowRightLeft, group: 'Connections' },
-  { key: 'mine', label: 'Mine & Veeam', icon: HardDrive, group: 'Connections' },
   { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing, group: 'Tuning' },
 ];
 
@@ -39,7 +38,6 @@ function SourceTable({ sources, onEdit, onDelete, onPoll, pollingId }) {
         <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
           <th className="py-2 pr-3">Name</th>
           <th className="py-2 pr-3">Host</th>
-          <th className="py-2 pr-3">Mine</th>
           <th className="py-2 pr-3">Status</th>
           <th className="py-2 pr-3">Last Poll</th>
           <th className="py-2 pr-3 text-right">Clusters</th>
@@ -50,7 +48,6 @@ function SourceTable({ sources, onEdit, onDelete, onPoll, pollingId }) {
             <tr key={s.id} className="border-b border-cohesity-border/50">
               <td className="py-2 pr-3 text-ink whitespace-nowrap">{s.name}{s.isCe && <Badge tone="info" className="ml-1.5">CE</Badge>}</td>
               <td className="py-2 pr-3 text-ink-muted tnum whitespace-nowrap">{s.host}:{s.port || 9440}</td>
-              <td className="py-2 pr-3">{s.isMine ? <Badge tone="brand">Mine</Badge> : <span className="text-ink-faint text-xs">—</span>}</td>
               <td className="py-2 pr-3">
                 <Badge tone={s.lastPollStatus === 'error' ? 'crit' : s.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
                   {s.lastPollStatus === 'error' ? 'Unreachable' : s.lastPollStatus === 'success' ? 'Up' : 'Pending'}
@@ -99,11 +96,6 @@ export default function NxSettingsPage() {
   const [moveSaving, setMoveSaving] = useState(false);
   const [movePollingId, setMovePollingId] = useState(null);
 
-  const [veeamConns, setVeeamConns] = useState(null);
-  const [veeamForm, setVeeamForm] = useState({ sourceId: '', host: '', port: 9419, username: '', password: '', sslVerify: false });
-  const [veeamEditingId, setVeeamEditingId] = useState(null);
-  const [veeamSaving, setVeeamSaving] = useState(false);
-
   const [config, setConfig] = useState(null);
   const [savingConfig, setSavingConfig] = useState(false);
 
@@ -115,23 +107,17 @@ export default function NxSettingsPage() {
     .then(({ data }) => setMoveConns(data.connections || []))
     .catch(() => setMoveConns([])), []);
 
-  const loadMineSummary = useCallback(() => client.get('/nutanix/mine/summary')
-    .then(({ data }) => setVeeamConns(data?.veeam?.connections || []))
-    .catch(() => setVeeamConns([])), []);
-
   useEffect(() => {
     loadSources();
     loadMoveConns();
-    loadMineSummary();
     client.get('/nutanix/config')
       .then(({ data }) => setConfig(data))
       .catch(() => setConfig({ containerWarnPct: 85, containerCritPct: 95, clusterWarnPct: 80, clusterCritPct: 90, rpoGracePct: 50, runwayWarnDays: 90 }));
-  }, [loadSources, loadMoveConns, loadMineSummary]);
+  }, [loadSources, loadMoveConns]);
 
   const set = (setter) => (k) => (e) => setter(f => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
   const setF = set(setForm);
   const setMoveF = set(setMoveForm);
-  const setVeeamF = set(setVeeamForm);
 
   const switchTab = (k) => {
     setTab(k);
@@ -223,19 +209,8 @@ export default function NxSettingsPage() {
     }
   };
 
-  const toggleMine = async (s) => {
-    try {
-      await client.put(`/nutanix/sources/${s.id}`, { isMine: !s.isMine });
-      await loadSources();
-      await loadMineSummary();
-    } catch (err) {
-      toast({ type: 'error', title: 'Update failed', message: err?.response?.data?.error });
-    }
-  };
-
   const canSubmitSource = form.name.trim() && form.host.trim() && form.username.trim() && (editingId || form.password);
   const tabSources = (sources || []).filter(s => s.sourceType === tab);
-  const mineSources = (sources || []).filter(s => s.isMine);
 
   // ── Move connections ────────────────────────────────────────────────────
   const startEditMove = (c) => {
@@ -292,51 +267,6 @@ export default function NxSettingsPage() {
 
   const canSubmitMove = moveForm.name.trim() && moveForm.host.trim() && moveForm.username.trim() && (moveEditingId || moveForm.password);
 
-  // ── Veeam (Mine) connections ────────────────────────────────────────────
-  const startEditVeeam = (c) => {
-    setVeeamEditingId(c.id);
-    setVeeamForm({ sourceId: c.sourceId ?? '', host: c.host, port: c.port || 9419, username: c.username || '', password: '', sslVerify: !!c.sslVerify });
-  };
-  const cancelEditVeeam = () => { setVeeamEditingId(null); setVeeamForm({ sourceId: '', host: '', port: 9419, username: '', password: '', sslVerify: false }); };
-
-  const saveVeeam = async () => {
-    setVeeamSaving(true);
-    try {
-      const body = {
-        sourceId: Number(veeamForm.sourceId), host: veeamForm.host.trim(), port: Number(veeamForm.port) || 9419,
-        username: veeamForm.username.trim(), sslVerify: veeamForm.sslVerify,
-      };
-      if (veeamEditingId) {
-        if (veeamForm.password) body.password = veeamForm.password;
-        await client.put(`/nutanix/mine/veeam/${veeamEditingId}`, body);
-        toast({ type: 'success', title: 'Veeam connection updated' });
-      } else {
-        body.password = veeamForm.password;
-        await client.post('/nutanix/mine/veeam', body);
-        toast({ type: 'success', title: 'Veeam connection registered' });
-      }
-      cancelEditVeeam();
-      await loadMineSummary();
-    } catch (err) {
-      toast({ type: 'error', title: veeamEditingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error });
-    } finally {
-      setVeeamSaving(false);
-    }
-  };
-
-  const deleteVeeam = async (c) => {
-    if (!window.confirm(`Remove Veeam connection to "${c.host}"?`)) return;
-    try {
-      await client.delete(`/nutanix/mine/veeam/${c.id}`);
-      await loadMineSummary();
-      toast({ type: 'success', title: 'Veeam connection removed' });
-    } catch (err) {
-      toast({ type: 'error', title: 'Remove failed', message: err?.response?.data?.error });
-    }
-  };
-
-  const canSubmitVeeam = veeamForm.sourceId && veeamForm.host.trim() && veeamForm.username.trim() && (veeamEditingId || veeamForm.password);
-
   // ── Alert thresholds ─────────────────────────────────────────────────────
   const saveConfig = async () => {
     setSavingConfig(true);
@@ -357,7 +287,7 @@ export default function NxSettingsPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Settings} title="Nutanix Settings" description="Register Prism Central / Prism Element sources, Move appliances and Mine backup targets" />
+      <PageHeader icon={Settings} title="Nutanix Settings" description="Register Prism Central / Prism Element sources and Move appliances" />
 
       <div className="flex flex-col md:flex-row gap-6 items-start">
         <nav className="w-full md:w-48 shrink-0 flex flex-row md:flex-col flex-wrap gap-x-6" aria-label="Nutanix settings sections">
@@ -523,109 +453,6 @@ export default function NxSettingsPage() {
                           <RefreshCw size={13} className={movePollingId === c.id ? 'animate-spin' : ''} />
                         </button>
                         <button onClick={() => deleteMove(c)}
-                          className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-status-crit hover:border-status-crit/50 transition-colors cursor-pointer">
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-      )}
-
-      {/* ── Mine ── */}
-      {section === 'mine' && (
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><HardDrive size={15} className="text-brand" /> Mine</p>
-        <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">Flag a registered source as a Mine backup-target cluster, then optionally attach its Veeam Backup & Replication server.</p>
-
-        {sources == null ? (
-          <LoadingPanel label="Loading…" height={60} />
-        ) : (sources || []).length === 0 ? (
-          <div className="text-sm text-ink-muted py-4 text-center">Register a source under Prism Sources first.</div>
-        ) : (
-          <div className="flex flex-col gap-1.5 mb-4">
-            {(sources || []).map((s) => (
-              <div key={s.id} className="flex items-center justify-between bg-surface-overlay rounded-lg px-3 py-2">
-                <div className="min-w-0">
-                  <p className="text-sm text-ink truncate">{s.name}</p>
-                  <p className="text-[11px] text-ink-faint">{s.host} · {s.sourceType === 'prism_central' ? 'Prism Central' : 'Prism Element'}</p>
-                </div>
-                <button onClick={() => toggleMine(s)} className="flex items-center gap-1.5 text-xs font-semibold text-ink-muted hover:text-brand cursor-pointer">
-                  {s.isMine ? <ToggleRight size={20} className="text-brand" /> : <ToggleLeft size={20} />}
-                  {s.isMine ? 'Mine' : 'Not Mine'}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <p className="text-xs font-semibold text-ink mb-2">Veeam Connection</p>
-        <div className="grid md:grid-cols-2 gap-3 mb-3">
-          <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Mine source</label>
-            <select value={veeamForm.sourceId} onChange={setVeeamF('sourceId')} className={inp}>
-              <option value="">Select a Mine-flagged source…</option>
-              {mineSources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Veeam server host</label>
-            <input value={veeamForm.host} onChange={setVeeamF('host')} className={inp} spellCheck={false} />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Port</label>
-            <input type="number" value={veeamForm.port} onChange={setVeeamF('port')} className={inp} />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Username</label>
-            <input value={veeamForm.username} onChange={setVeeamF('username')} className={inp} spellCheck={false} />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Password{veeamEditingId ? <span className="font-normal text-ink-faint"> — stored, leave blank to keep</span> : ''}</label>
-            <input type="password" value={veeamForm.password} onChange={setVeeamF('password')} placeholder={veeamEditingId ? '•••••• (stored)' : ''} className={inp} />
-          </div>
-          <label className="flex items-end gap-2 pb-2 cursor-pointer select-none">
-            <input type="checkbox" checked={veeamForm.sslVerify} onChange={setVeeamF('sslVerify')} className="accent-brand cursor-pointer" />
-            <span className="text-xs text-ink-muted">Verify TLS certificate</span>
-          </label>
-        </div>
-        <div className="flex items-center gap-2 mb-4">
-          <button onClick={saveVeeam} disabled={veeamSaving || !canSubmitVeeam} className={btnPrimary}>
-            {veeamSaving ? 'Saving…' : veeamEditingId ? 'Save changes' : 'Add Veeam connection'}
-          </button>
-          {veeamEditingId && <button onClick={cancelEditVeeam} className={btnGhost}>Cancel</button>}
-        </div>
-
-        {veeamConns == null ? (
-          <LoadingPanel label="Loading…" height={60} />
-        ) : veeamConns.length === 0 ? (
-          <div className="text-sm text-ink-muted py-4 text-center">No Veeam connections registered.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                <th className="py-2 pr-3">Host</th>
-                <th className="py-2 pr-3">Status</th>
-                <th className="py-2 pr-3 text-right">Actions</th>
-              </tr></thead>
-              <tbody>
-                {veeamConns.map((c) => (
-                  <tr key={c.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink-muted tnum">{c.host}:{c.port || 9419}</td>
-                    <td className="py-2 pr-3">
-                      <Badge tone={c.lastPollStatus === 'error' ? 'crit' : c.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
-                        {c.lastPollStatus === 'error' ? 'Unreachable' : c.lastPollStatus === 'success' ? 'Up' : 'Pending'}
-                      </Badge>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button onClick={() => startEditVeeam(c)} className={iconBtn}><Pencil size={13} /></button>
-                        <button onClick={() => deleteVeeam(c)}
                           className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-status-crit hover:border-status-crit/50 transition-colors cursor-pointer">
                           <Trash2 size={13} />
                         </button>
