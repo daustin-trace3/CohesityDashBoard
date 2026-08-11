@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Activity, Check, ChevronRight, GripVertical, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
+import { Activity, Check, ChevronRight, GripVertical, LayoutGrid, Maximize2, Minimize2, RotateCcw, Rows3 } from 'lucide-react';
 import client from '../../api/client';
 import { PlatformLogo } from '../../components/PlatformSwitcher';
 
 const CARD_ORDER_KEY = 'ops-card-order';
+const DENSITY_KEY = 'ops-density';
 
 const TONES = {
   ok: '#6CB33F',
@@ -57,7 +58,7 @@ function SevDot({ severity }) {
   return <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: TONES[severity] || TONES.unknown }} />;
 }
 
-function PlatformCard({ card, fresh, onNavigate, dragEnabled, dragOver, onGripDown, onGripUp, onDragStart, onDragEnd, onDragOver, onDrop }) {
+function PlatformCard({ card, fresh, compact, onNavigate, dragEnabled, dragOver, onGripDown, onGripUp, onDragStart, onDragEnd, onDragOver, onDrop }) {
   const stale = fresh?.stale || fresh?.error;
   const tone = stale ? TONES.stale : TONES[card.health] || TONES.unknown;
   const verdict = fresh?.error ? 'POLL ERROR'
@@ -67,6 +68,67 @@ function PlatformCard({ card, fresh, onNavigate, dragEnabled, dragOver, onGripDo
     : card.health.toUpperCase();
   const shown = card.exceptions.slice(0, 3);
   const hidden = card.exceptions.length - shown.length;
+  if (compact) {
+    const crit = card.exceptions.filter((e) => e.severity === 'critical').reduce((s, e) => s + (e.count ?? 1), 0);
+    const warn = card.exceptions.filter((e) => e.severity === 'warning').reduce((s, e) => s + (e.count ?? 1), 0);
+    return (
+      <button
+        onClick={() => onNavigate(card.route)}
+        draggable={dragEnabled}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        className={`panel px-3.5 py-2.5 text-left transition-all cursor-pointer hover:-translate-y-0.5 flex flex-col gap-2 relative group/card ${dragOver ? 'ring-2 ring-brand/60' : ''}`}
+        style={{ borderTop: `3px solid ${card.color}`, opacity: stale ? 0.85 : 1 }}
+      >
+        {dragEnabled && (
+          <span
+            onMouseDown={onGripDown}
+            onMouseUp={onGripUp}
+            onClick={(e) => e.stopPropagation()}
+            title="Drag to reorder"
+            className="absolute right-1.5 top-1.5 z-10 p-0.5 rounded text-ink-faint opacity-0 group-hover/card:opacity-100 hover:text-ink hover:bg-surface-overlay cursor-grab active:cursor-grabbing transition-opacity"
+          >
+            <GripVertical size={12} />
+          </span>
+        )}
+        <div className="flex items-center gap-2">
+          <span className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: `${card.color}22`, color: card.color }}>
+            <PlatformLogo platform={card} size={14} />
+          </span>
+          <span className="text-[13px] font-semibold text-ink flex-1 truncate">{card.label}</span>
+          {verdict ? (
+            <span className="text-[10px] font-bold tracking-wide px-2 py-0.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: `${tone}1f`, color: tone }}>
+              {verdict}
+            </span>
+          ) : (
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: tone, boxShadow: `0 0 6px ${tone}88` }} />
+          )}
+        </div>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[15px] font-bold text-ink tnum leading-none flex-shrink-0">{fmt(card.headline[0]?.value)}</span>
+          <span className="text-[10px] uppercase tracking-wide text-ink-faint truncate">{card.headline[0]?.label}</span>
+          <span className="ml-auto flex items-center gap-2 text-[11px] font-semibold flex-shrink-0">
+            {card.error ? (
+              <span className="text-ink-faint font-normal">unavailable</span>
+            ) : crit || warn ? (
+              <>
+                {crit > 0 && <span style={{ color: TONES.critical }}>{fmt(crit)} crit</span>}
+                {warn > 0 && <span style={{ color: TONES.warning }}>{fmt(warn)} warn</span>}
+              </>
+            ) : card.health === 'unknown' ? (
+              <span className="text-ink-faint font-normal">no source</span>
+            ) : (
+              <Check size={13} strokeWidth={2.5} style={{ color: TONES.ok }} />
+            )}
+          </span>
+        </div>
+      </button>
+    );
+  }
   return (
     <button
       onClick={() => onNavigate(card.route)}
@@ -159,6 +221,9 @@ export default function OpsMonitorPage() {
   const [pollerStatus, setPollerStatus] = useState(null);
   const [countdown, setCountdown] = useState(60);
   const [tv, setTv] = useState(false);
+  const [compact, setCompact] = useState(() => {
+    try { return localStorage.getItem(DENSITY_KEY) === 'compact'; } catch { return false; }
+  });
   const [order, setOrder] = useState(() => {
     try { return JSON.parse(localStorage.getItem(CARD_ORDER_KEY)) || []; } catch { return []; }
   });
@@ -184,6 +249,13 @@ export default function OpsMonitorPage() {
     document.addEventListener('fullscreenchange', onFs);
     return () => document.removeEventListener('fullscreenchange', onFs);
   }, []);
+
+  const toggleCompact = () => {
+    setCompact((c) => {
+      try { localStorage.setItem(DENSITY_KEY, c ? 'comfortable' : 'compact'); } catch { /* private mode */ }
+      return !c;
+    });
+  };
 
   const toggleTv = () => {
     if (document.fullscreenElement) document.exitFullscreen();
@@ -259,6 +331,13 @@ export default function OpsMonitorPage() {
         <div className="ml-auto flex items-center gap-3">
           <span className="text-[11px] text-ink-faint tnum">refresh in {countdown}s</span>
           <button
+            onClick={toggleCompact}
+            title={compact ? 'Comfortable cards' : 'Compact cards — fit more platforms on screen'}
+            className="flex items-center justify-center h-8 w-8 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer"
+          >
+            {compact ? <LayoutGrid size={14} /> : <Rows3 size={14} />}
+          </button>
+          <button
             onClick={toggleTv}
             title={tv ? 'Exit TV mode' : 'TV mode (fullscreen)'}
             className="flex items-center justify-center h-8 w-8 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer"
@@ -285,12 +364,15 @@ export default function OpsMonitorPage() {
               </button>
             </div>
           )}
-          <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-4">
+          <div className={compact
+            ? 'grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2 mb-4'
+            : 'grid sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-4'}>
             {sortedCards.map((c) => (
               <PlatformCard
                 key={c.id}
                 card={c}
                 fresh={freshById[c.id]}
+                compact={compact}
                 onNavigate={navigate}
                 dragEnabled={!tv}
                 dragOver={dragId != null && dragId !== c.id && overId === c.id}
