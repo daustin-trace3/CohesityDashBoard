@@ -10,6 +10,7 @@ import proxmoxLogo from '../assets/platform-logos/proxmox.png';
 import awsLogo from '../assets/platform-logos/aws.png';
 import cohesityLogo from '../assets/platform-logos/cohesity.png';
 import rubrikLogo from '../assets/platform-logos/rubrik.png';
+import netbackupLogo from '../assets/platform-logos/netbackup.png';
 
 // Three experimental platform-switcher styles (dropdown | rail | grid), trialed
 // side-by-side against the original tab row. The active style is a per-browser
@@ -59,7 +60,7 @@ const monogram = (label) => label.slice(0, 2);
 // Official brand marks (bundled SVGs, tinted to each platform's color).
 // Cohesity reuses the app's own hexagon+shield identity; platforms without
 // a mark (Zerto, future plugins) fall back to the monogram.
-const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo, rubrik: rubrikLogo };
+const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo, rubrik: rubrikLogo, netbackup: netbackupLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {
