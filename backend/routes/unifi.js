@@ -320,19 +320,30 @@ router.get('/wifi', (req, res, next) => {
       for (const r of list) {
         radios.push({
           deviceMac: d.mac, deviceName: d.name, radio: r.radio ?? r.name ?? null,
-          channel: r.channel ?? null, txPower: r.tx_power ?? null, numSta: r.num_sta ?? null,
+          channel: r.channel ?? null, txPower: r.tx_power ?? null, maxTxPower: r.max_txpower ?? null,
+          txPowerMode: r.tx_power_mode ?? null, width: r.ht ?? null, numSta: r.num_sta ?? null,
+          satisfaction: r.satisfaction ?? null, utilization: r.cu_total ?? null,
         });
       }
     }
     const rogues = db.prepare('SELECT r.*, s.name AS source_name FROM unifi_rogue_aps r JOIN unifi_sources s ON s.id = r.source_id ORDER BY r.is_rogue DESC, r.signal DESC LIMIT 200').all();
+    const bucketOf = (signal) => (signal >= -50 ? 'excellent' : signal >= -60 ? 'good' : signal >= -70 ? 'fair' : 'poor');
     const buckets = { excellent: 0, good: 0, fair: 0, poor: 0 };
-    for (const c of db.prepare('SELECT signal FROM unifi_clients WHERE is_wired = 0 AND signal IS NOT NULL').all()) {
-      if (c.signal >= -50) buckets.excellent += 1;
-      else if (c.signal >= -60) buckets.good += 1;
-      else if (c.signal >= -70) buckets.fair += 1;
-      else buckets.poor += 1;
+    const byAp = new Map();
+    const apNames = new Map(db.prepare('SELECT mac, name FROM unifi_devices').all().map((r) => [r.mac, r.name]));
+    for (const c of db.prepare('SELECT ap_mac, signal FROM unifi_clients WHERE is_wired = 0 AND signal IS NOT NULL').all()) {
+      buckets[bucketOf(c.signal)] += 1;
+      const key = c.ap_mac || 'unknown';
+      if (!byAp.has(key)) byAp.set(key, { apMac: key, apName: apNames.get(key) || key, buckets: { excellent: 0, good: 0, fair: 0, poor: 0 }, total: 0, signalSum: 0 });
+      const a = byAp.get(key);
+      a.buckets[bucketOf(c.signal)] += 1;
+      a.total += 1;
+      a.signalSum += c.signal;
     }
-    res.json({ wlans, radios, rogues, signalBuckets: buckets });
+    const signalByAp = [...byAp.values()]
+      .map(({ signalSum, ...a }) => ({ ...a, avgSignal: a.total ? Math.round(signalSum / a.total) : null }))
+      .sort((x, y) => y.total - x.total);
+    res.json({ wlans, radios, rogues, signalBuckets: buckets, signalByAp });
   } catch (err) { next(err); }
 });
 

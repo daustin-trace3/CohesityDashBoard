@@ -8,6 +8,7 @@ import { BRAND, fmtNum } from './helpers';
 
 const BUCKET_COLOR = { excellent: '#6CB33F', good: '#8FA3B0', fair: '#D4A24E', poor: '#C75D5D' };
 const BUCKET_LABEL = { excellent: 'Excellent', good: 'Good', fair: 'Fair', poor: 'Poor' };
+const BAND_LABEL = { ng: '2.4 GHz', na: '5 GHz', '6e': '6 GHz' };
 
 function SignalBar({ buckets }) {
   const total = Object.values(buckets || {}).reduce((a, b) => a + (b || 0), 0);
@@ -28,6 +29,35 @@ function SignalBar({ buckets }) {
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ApSignalRows({ signalByAp }) {
+  if (!signalByAp?.length) return null;
+  return (
+    <div className="mt-4 flex flex-col gap-2.5">
+      <p className="text-[11px] uppercase tracking-wide text-ink-faint">By access point</p>
+      {signalByAp.map((a) => (
+        <div key={a.apMac} className="flex items-center gap-3">
+          <div className="w-44 shrink-0 min-w-0">
+            <p className="text-xs text-ink truncate">{a.apName}</p>
+            <p className="text-[10px] text-ink-faint tnum">{a.total} client{a.total === 1 ? '' : 's'}{a.avgSignal != null ? ` · avg ${a.avgSignal} dBm` : ''}</p>
+          </div>
+          <div className="flex flex-1 h-2.5 rounded-full overflow-hidden bg-surface-overlay">
+            {['excellent', 'good', 'fair', 'poor'].map((k) => {
+              const pct = a.total ? ((a.buckets[k] || 0) / a.total) * 100 : 0;
+              return pct > 0 ? (
+                <div key={k} style={{ width: `${pct}%`, backgroundColor: BUCKET_COLOR[k] }}
+                  title={`${BUCKET_LABEL[k]}: ${a.buckets[k]}`} />
+              ) : null;
+            })}
+          </div>
+          <div className="w-28 shrink-0 text-right text-[10px] text-ink-faint tnum">
+            {['excellent', 'good', 'fair', 'poor'].filter((k) => a.buckets[k]).map((k) => `${a.buckets[k]} ${BUCKET_LABEL[k].toLowerCase()}`).slice(0, 2).join(' · ')}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -97,16 +127,22 @@ export default function UnifiWifiPage() {
                     <th className="py-2 pr-3">Access Point</th>
                     <th className="py-2 pr-3">Band</th>
                     <th className="py-2 pr-3 text-right">Channel</th>
+                    <th className="py-2 pr-3 text-right">Width</th>
                     <th className="py-2 pr-3 text-right">Tx Power</th>
+                    <th className="py-2 pr-3 text-right">Utilization</th>
+                    <th className="py-2 pr-3 text-right">Satisfaction</th>
                     <th className="py-2 pr-3 text-right">Clients</th>
                   </tr></thead>
                   <tbody>
                     {radios.map((r, i) => (
                       <tr key={i} className="border-b border-cohesity-border/50">
                         <td className="py-2 pr-3 text-ink">{r.deviceName || r.deviceMac}</td>
-                        <td className="py-2 pr-3 text-ink-muted">{r.radio || '—'}</td>
+                        <td className="py-2 pr-3 text-ink-muted">{BAND_LABEL[r.radio] || r.radio || '—'}</td>
                         <td className="py-2 pr-3 text-right tnum text-ink-muted">{r.channel ?? '—'}</td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{r.txPower ?? '—'}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{r.width ? `${r.width} MHz` : '—'}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{r.txPower != null ? `${r.txPower} dBm${r.txPowerMode ? ` (${r.txPowerMode})` : ''}` : '—'}</td>
+                        <td className={`py-2 pr-3 text-right tnum ${r.utilization > 60 ? 'text-status-warn font-semibold' : 'text-ink-muted'}`}>{r.utilization != null ? `${r.utilization}%` : '—'}</td>
+                        <td className={`py-2 pr-3 text-right tnum ${r.satisfaction != null && r.satisfaction < 70 ? 'text-status-warn font-semibold' : 'text-ink-muted'}`}>{r.satisfaction != null ? `${r.satisfaction}%` : '—'}</td>
                         <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(r.numSta)}</td>
                       </tr>
                     ))}
@@ -119,6 +155,7 @@ export default function UnifiWifiPage() {
           <p className="text-sm font-semibold text-ink mb-3">Signal Quality Distribution</p>
           <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
             <SignalBar buckets={signalBuckets} />
+            <ApSignalRows signalByAp={data?.signalByAp} />
           </div>
 
           <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><ShieldAlert size={15} className="text-brand" /> Neighboring / Rogue Access Points</p>

@@ -210,7 +210,7 @@ function parseDevice(d) {
       uplinkMac: strOrNull(uplink.uplink_mac),
       uplinkPort: numOrNull(uplink.port_idx),
       uplinkType: strOrNull(uplink.type),
-      radiosJson: Array.isArray(d.radio_table) ? jsonOrNull(d.radio_table) : null,
+      radiosJson: mergedRadiosJson(d),
       isGateway: d.type === 'udm' ? 1 : 0,
       lastSeen: numOrNull(d.last_seen),
     },
@@ -219,6 +219,35 @@ function parseDevice(d) {
     uplink: d.uplink || null,
     speedtestStatus: d['speedtest-status'] || null,
   };
+}
+
+// radio_table is config only; the live numbers (actual tx_power, num_sta,
+// satisfaction, channel utilization) arrive in radio_table_stats — merge by
+// interface name so the stored radios carry both.
+function mergedRadiosJson(d) {
+  const table = Array.isArray(d.radio_table) ? d.radio_table : [];
+  const stats = Array.isArray(d.radio_table_stats) ? d.radio_table_stats : [];
+  if (!table.length && !stats.length) return null;
+  const statsByName = new Map(stats.map((s) => [s.name, s]));
+  const names = new Set([...table.map((r) => r.name), ...stats.map((s) => s.name)]);
+  const merged = [...names].map((name) => {
+    const r = table.find((x) => x.name === name) || {};
+    const s = statsByName.get(name) || {};
+    return {
+      name,
+      radio: s.radio ?? r.radio ?? null,
+      channel: numOrNull(s.channel ?? r.channel),
+      ht: numOrNull(s.bw ?? r.ht),
+      tx_power: numOrNull(s.tx_power ?? r.tx_power),
+      max_txpower: numOrNull(r.max_txpower),
+      tx_power_mode: strOrNull(r.tx_power_mode),
+      num_sta: numOrNull(s.num_sta),
+      satisfaction: s.satisfaction != null && s.satisfaction >= 0 ? numOrNull(s.satisfaction) : null,
+      cu_total: numOrNull(s.cu_total),
+      state: strOrNull(s.state),
+    };
+  });
+  return jsonOrNull(merged);
 }
 
 async function fetchDevices(source, site) {
