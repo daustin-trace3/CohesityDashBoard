@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, LayoutGrid, Check, Hexagon, ShieldCheck, Activity } from 'lucide-react';
+import { ChevronDown, LayoutGrid, Check, Activity } from 'lucide-react';
 import dellLogo from '../assets/platform-logos/dell.svg';
 import vcenterLogo from '../assets/platform-logos/vcenter.svg';
 import netappLogo from '../assets/platform-logos/netapp.svg';
@@ -8,6 +8,7 @@ import ariaLogo from '../assets/platform-logos/aria.svg';
 import nutanixLogo from '../assets/platform-logos/nutanix.png';
 import proxmoxLogo from '../assets/platform-logos/proxmox.png';
 import awsLogo from '../assets/platform-logos/aws.png';
+import cohesityLogo from '../assets/platform-logos/cohesity.png';
 
 // Three experimental platform-switcher styles (dropdown | rail | grid), trialed
 // side-by-side against the original tab row. The active style is a per-browser
@@ -57,19 +58,11 @@ const monogram = (label) => label.slice(0, 2);
 // Official brand marks (bundled SVGs, tinted to each platform's color).
 // Cohesity reuses the app's own hexagon+shield identity; platforms without
 // a mark (Zerto, future plugins) fall back to the monogram.
-const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo };
+const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {
     return <Activity size={size} strokeWidth={2} style={{ color: platform.color }} />;
-  }
-  if (platform.id === 'cohesity') {
-    return (
-      <span className="relative flex items-center justify-center" style={{ width: size, height: size }}>
-        <Hexagon size={size} strokeWidth={1.75} style={{ color: platform.color }} />
-        <ShieldCheck size={Math.round(size * 0.46)} className="absolute" strokeWidth={2.5} style={{ color: platform.color }} />
-      </span>
-    );
   }
   const src = LOGOS[platform.id];
   if (src) return <img src={src} alt="" style={{ width: size, height: size }} draggable={false} />;
