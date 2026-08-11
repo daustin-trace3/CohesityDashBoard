@@ -126,7 +126,9 @@ function server360(coreApi, ctx) {
       { label: 'Memory (MB)', value: vm.memory_mb ?? '—' },
     ],
     lines: vm.host_name ? [`Host: ${vm.host_name}`] : [],
-    link: { label: vm.name, href: `/nutanix/vms/${vm.uuid}` },
+    // No per-VM detail route exists — deep-link to the VMs page pre-filtered
+    // to this VM (?q= convention, same as global search).
+    link: { label: vm.name, href: `/nutanix/vms?q=${encodeURIComponent(vm.name)}` },
   }));
 
   return {
