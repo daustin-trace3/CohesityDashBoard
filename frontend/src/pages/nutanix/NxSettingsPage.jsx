@@ -18,6 +18,14 @@ const TABS = [
   { key: 'prism_element', label: 'Prism Element' },
 ];
 
+// Side-menu sections (AdminNav styling) — one visible at a time.
+const SECTIONS = [
+  { key: 'sources', label: 'Prism Sources', icon: Server, group: 'Connections' },
+  { key: 'move', label: 'Move Appliances', icon: ArrowRightLeft, group: 'Connections' },
+  { key: 'mine', label: 'Mine & Veeam', icon: HardDrive, group: 'Connections' },
+  { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing, group: 'Tuning' },
+];
+
 const blankSourceForm = (sourceType) => ({
   name: '', host: '', port: 9440, username: '', password: '',
   sslVerify: false, pollingIntervalMinutes: 15, sourceType,
@@ -75,6 +83,7 @@ function SourceTable({ sources, onEdit, onDelete, onPoll, pollingId }) {
 
 export default function NxSettingsPage() {
   const { toast } = useToast();
+  const [section, setSection] = useState('sources');
   const [tab, setTab] = useState('prism_central');
   const [sources, setSources] = useState(null);
   const [form, setForm] = useState(blankSourceForm('prism_central'));
@@ -347,9 +356,32 @@ export default function NxSettingsPage() {
   };
 
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="Nutanix Settings" description="Register Prism Central / Prism Element sources, Move appliances and Mine backup targets" />
 
+      <div className="flex flex-col md:flex-row gap-6 items-start">
+        <nav className="w-full md:w-48 shrink-0 flex flex-row md:flex-col flex-wrap gap-x-6" aria-label="Nutanix settings sections">
+          {['Connections', 'Tuning'].map((g) => (
+            <div key={g} className="flex flex-col gap-0.5 min-w-[10rem] mb-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint px-2 mb-1">{g}</p>
+              {SECTIONS.filter((s) => s.group === g).map((s) => {
+                const Icon = s.icon;
+                const active = section === s.key;
+                return (
+                  <button key={s.key} onClick={() => setSection(s.key)} aria-current={active ? 'page' : undefined}
+                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] font-medium text-left transition-colors duration-150 cursor-pointer ${
+                      active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
+                    }`}>
+                    <Icon size={13} className={active ? 'text-brand' : ''} /> {s.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+
+        <div className="flex-1 min-w-0 max-w-3xl">
+      {section === 'sources' && (<>
       {/* ── Prism source tabs ── */}
       <div className="flex items-center gap-1 mb-3">
         {TABS.map(t => (
@@ -424,8 +456,10 @@ export default function NxSettingsPage() {
             pollingId={pollingId} />
         )}
       </div>
+      </>)}
 
       {/* ── Move ── */}
+      {section === 'move' && (
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><ArrowRightLeft size={15} className="text-brand" /> Move Appliances</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">Migration appliances polled independently of Prism sources.</p>
@@ -501,8 +535,10 @@ export default function NxSettingsPage() {
           </div>
         )}
       </div>
+      )}
 
       {/* ── Mine ── */}
+      {section === 'mine' && (
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><HardDrive size={15} className="text-brand" /> Mine</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">Flag a registered source as a Mine backup-target cluster, then optionally attach its Veeam Backup & Replication server.</p>
@@ -510,7 +546,7 @@ export default function NxSettingsPage() {
         {sources == null ? (
           <LoadingPanel label="Loading…" height={60} />
         ) : (sources || []).length === 0 ? (
-          <div className="text-sm text-ink-muted py-4 text-center">Register a Prism source above first.</div>
+          <div className="text-sm text-ink-muted py-4 text-center">Register a source under Prism Sources first.</div>
         ) : (
           <div className="flex flex-col gap-1.5 mb-4">
             {(sources || []).map((s) => (
@@ -602,8 +638,10 @@ export default function NxSettingsPage() {
           </div>
         )}
       </div>
+      )}
 
       {/* ── Alert thresholds ── */}
+      {section === 'thresholds' && (
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">Container/cluster storage warning and critical levels, RPO grace percentage, and capacity-runway warning window.</p>
@@ -649,10 +687,13 @@ export default function NxSettingsPage() {
           </>
         )}
       </div>
+      )}
 
       <p className="text-[11px] text-ink-faint mt-3 leading-relaxed">
         The Nutanix platform tab itself is enabled from Global Settings (gear icon → Platforms).
       </p>
+        </div>
+      </div>
     </div>
   );
 }
