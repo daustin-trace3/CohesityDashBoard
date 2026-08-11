@@ -1,0 +1,251 @@
+// Computed UniFi issues (shared by routes and the poller) plus their
+// lifecycle history — nutanixIssues.js model exactly. Issue identity is
+// `type|source|target` — stable across polls even as the message text
+// changes.
+//
+// Deviation flag (WP1): the historic nutanix template required settings from
+// '../core/settings', but at HEAD that module is backend/services/settings.js
+// (there is no backend/core/settings.js). Using the real path.
+const db = require('../db/database');
+const { getSetting } = require('./settings');
+
+function clampedInt(key, def, min, max) {
+  const n = Number(getSetting(key));
+  return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : def;
+}
+
+const wanLatencyWarnMs = () => clampedInt('unifi_wan_latency_warn_ms', 75, 1, 5000);
+const wanAvailWarnPct = () => clampedInt('unifi_wan_avail_warn_pct', 99, 0, 100);
+const portErrDeltaWarn = () => clampedInt('unifi_port_err_delta_warn', 500, 1, 1000000);
+const portFlapWarn = () => clampedInt('unifi_port_flap_warn', 3, 1, 100);
+const deviceCpuWarnPct = () => clampedInt('unifi_device_cpu_warn_pct', 90, 1, 100);
+const deviceMemWarnPct = () => clampedInt('unifi_device_mem_warn_pct', 92, 1, 100);
+const tempWarnC = () => clampedInt('unifi_temp_warn_c', 80, 1, 200);
+const satisfactionWarn = () => clampedInt('unifi_satisfaction_warn', 50, 1, 100);
+
+const thresholdGetters = {
+  unifiWanLatencyWarnMs: wanLatencyWarnMs,
+  unifiWanAvailWarnPct: wanAvailWarnPct,
+  unifiPortErrDeltaWarn: portErrDeltaWarn,
+  unifiPortFlapWarn: portFlapWarn,
+  unifiDeviceCpuWarnPct: deviceCpuWarnPct,
+  unifiDeviceMemWarnPct: deviceMemWarnPct,
+  unifiTempWarnC: tempWarnC,
+  unifiSatisfactionWarn: satisfactionWarn,
+};
+
+/**
+ * Port error growth over the trailing 24h of unifi_port_history: delta
+ * between the oldest and newest (rx_errors+tx_errors) sample for the port.
+ * Returns null if fewer than 2 samples exist in the window.
+ */
+function portErrorDelta24h(sourceId, deviceMac, portIdx) {
+  const rows = db.prepare(`
+    SELECT rx_errors, tx_errors FROM unifi_port_history
+    WHERE source_id = ? AND device_mac = ? AND port_idx = ? AND captured_at >= datetime('now', '-1 day')
+    ORDER BY captured_at ASC
+  `).all(sourceId, deviceMac, portIdx);
+  if (rows.length < 2) return null;
+  const first = (rows[0].rx_errors || 0) + (rows[0].tx_errors || 0);
+  const last = (rows[rows.length - 1].rx_errors || 0) + (rows[rows.length - 1].tx_errors || 0);
+  const delta = last - first;
+  return delta > 0 ? delta : 0;
+}
+
+/** Count of up-state transitions (0->1 or 1->0) in the trailing 24h history. */
+function portFlapCount24h(sourceId, deviceMac, portIdx) {
+  const rows = db.prepare(`
+    SELECT up FROM unifi_port_history
+    WHERE source_id = ? AND device_mac = ? AND port_idx = ? AND captured_at >= datetime('now', '-1 day')
+    ORDER BY captured_at ASC
+  `).all(sourceId, deviceMac, portIdx);
+  let transitions = 0;
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i].up !== rows[i - 1].up) transitions += 1;
+  }
+  return transitions;
+}
+
+function computeIssues() {
+  const issues = [];
+  const sources = db.prepare('SELECT * FROM unifi_sources').all();
+  const srcName = new Map(sources.map((s) => [s.id, s.name]));
+
+  // Rule 1: source-unreachable
+  for (const src of sources) {
+    if (src.last_poll_status === 'error') {
+      issues.push({ severity: 'critical', type: 'source-unreachable', source: src.name, target: src.host,
+        message: `UniFi source ${src.name} is unreachable: ${src.last_poll_error || 'poll failed'}` });
+    }
+  }
+
+  // Rule 2: device-offline / Rule 6: device-load / Rule 7: device-overheating
+  // Rule 11: firmware-upgrade
+  const cpuWarn = deviceCpuWarnPct();
+  const memWarn = deviceMemWarnPct();
+  const tWarn = tempWarnC();
+  const devices = db.prepare('SELECT * FROM unifi_devices').all();
+  for (const d of devices) {
+    const source = srcName.get(d.source_id) || `source ${d.source_id}`;
+    if (d.state !== 1) {
+      issues.push({ severity: 'critical', type: 'device-offline', source, target: d.name || d.mac,
+        message: `Device ${d.name || d.mac} is offline (state ${d.state})` });
+    }
+    if ((d.cpu_pct != null && d.cpu_pct >= cpuWarn) || (d.mem_pct != null && d.mem_pct >= memWarn)) {
+      issues.push({ severity: 'warning', type: 'device-load', source, target: d.name || d.mac,
+        message: `Device ${d.name || d.mac} is under load (cpu ${d.cpu_pct ?? '—'}%, mem ${d.mem_pct ?? '—'}%)` });
+    }
+    let hotTemp = null;
+    if (d.temps_json) {
+      try {
+        const temps = JSON.parse(d.temps_json) || [];
+        for (const t of temps) {
+          if (typeof t?.value === 'number' && t.value >= tWarn) { hotTemp = t.value; break; }
+        }
+      } catch { /* ignore */ }
+    }
+    if (d.overheating === 1 || hotTemp != null) {
+      issues.push({ severity: 'warning', type: 'device-overheating', source, target: d.name || d.mac,
+        message: `Device ${d.name || d.mac} is overheating${hotTemp != null ? ` (${hotTemp}C)` : ''}` });
+    }
+    if (d.upgradable === 1) {
+      issues.push({ severity: 'info', type: 'firmware-upgrade', source, target: d.name || d.mac,
+        message: `Device ${d.name || d.mac} has a firmware upgrade available` });
+    }
+  }
+
+  // Rule 3: poe-fault / Rule 4: port-errors / Rule 5: port-flapping
+  const errDeltaWarn = portErrDeltaWarn();
+  const flapWarn = portFlapWarn();
+  const deviceByMac = new Map(devices.map((d) => [`${d.source_id}|${d.mac}`, d]));
+  const ports = db.prepare('SELECT * FROM unifi_ports').all();
+  for (const p of ports) {
+    const source = srcName.get(p.source_id) || `source ${p.source_id}`;
+    const dev = deviceByMac.get(`${p.source_id}|${p.device_mac}`);
+    const devName = dev?.name || p.device_mac;
+    const target = `${devName} port ${p.port_idx}`;
+    if (p.poe_enable === 1 && p.poe_good === 0) {
+      issues.push({ severity: 'critical', type: 'poe-fault', source, target,
+        message: `PoE fault on ${target}` });
+    }
+    const errDelta = portErrorDelta24h(p.source_id, p.device_mac, p.port_idx);
+    if (errDelta != null && errDelta >= errDeltaWarn) {
+      issues.push({ severity: 'warning', type: 'port-errors', source, target,
+        message: `${target} has grown ${errDelta} error(s) in the last 24h` });
+    }
+    const flaps = portFlapCount24h(p.source_id, p.device_mac, p.port_idx);
+    if (flaps >= flapWarn) {
+      issues.push({ severity: 'warning', type: 'port-flapping', source, target,
+        message: `${target} has flapped ${flaps} time(s) in the last 24h` });
+    }
+  }
+
+  // Rule 8: wan-latency / wan-availability
+  const latencyWarn = wanLatencyWarnMs();
+  const availWarn = wanAvailWarnPct();
+  for (const w of db.prepare('SELECT * FROM unifi_wan').all()) {
+    const source = srcName.get(w.source_id) || `source ${w.source_id}`;
+    const target = w.isp_name || w.wan_name || 'WAN';
+    if (w.latency_ms != null && w.latency_ms >= latencyWarn) {
+      issues.push({ severity: 'warning', type: 'wan-latency', source, target,
+        message: `WAN latency is ${w.latency_ms}ms on ${target}` });
+    }
+    if (w.availability_pct != null && w.availability_pct < availWarn) {
+      issues.push({ severity: 'warning', type: 'wan-availability', source, target,
+        message: `WAN availability is ${w.availability_pct}% on ${target}` });
+    }
+  }
+
+  // Rule 9: rogue-ap
+  for (const r of db.prepare('SELECT * FROM unifi_rogue_aps WHERE is_rogue = 1').all()) {
+    const source = srcName.get(r.source_id) || `source ${r.source_id}`;
+    const target = r.essid || r.bssid;
+    issues.push({ severity: 'warning', type: 'rogue-ap', source, target,
+      message: `Rogue AP detected: ${target}` });
+  }
+
+  // Rule 10: ips-disabled — one per source (site granularity not tracked in
+  // this table set), target = source name.
+  for (const src of sources) {
+    if (src.health_json) {
+      // Best-effort: ips settings are not persisted as their own table per
+      // contract's schema; the poller stamps ips-enabled state onto the
+      // source via a dedicated flag captured in health_json.ips.
+      let enabled = null;
+      try { enabled = JSON.parse(src.health_json)?.ips?.enabled ?? null; } catch { enabled = null; }
+      if (enabled === false) {
+        issues.push({ severity: 'info', type: 'ips-disabled', source: src.name, target: src.name,
+          message: `IPS/IDS is disabled on ${src.name}` });
+      }
+    }
+  }
+
+  // Rule 12: wifi-experience — >=3 wireless clients under the satisfaction
+  // threshold, grouped per source/site.
+  const satWarn = satisfactionWarn();
+  const bySite = new Map(); // `${source_id}|${site}` -> [clients]
+  for (const c of db.prepare('SELECT * FROM unifi_clients WHERE is_wired = 0 AND satisfaction IS NOT NULL').all()) {
+    if (c.satisfaction >= satWarn) continue;
+    const key = `${c.source_id}|${c.site}`;
+    if (!bySite.has(key)) bySite.set(key, []);
+    bySite.get(key).push(c);
+  }
+  for (const [key, clients] of bySite) {
+    if (clients.length < 3) continue;
+    const [sourceIdStr, site] = key.split('|');
+    const source = srcName.get(Number(sourceIdStr)) || `source ${sourceIdStr}`;
+    const worst = clients.reduce((min, c) => (c.satisfaction < min.satisfaction ? c : min), clients[0]);
+    issues.push({ severity: 'info', type: 'wifi-experience', source, target: site,
+      message: `${clients.length} wireless client(s) with poor satisfaction on ${site} (worst: ${worst.name || worst.hostname || worst.mac} at ${worst.satisfaction})` });
+  }
+
+  const order = { critical: 0, warning: 1, info: 2 };
+  return issues.sort((a, b) => order[a.severity] - order[b.severity]);
+}
+
+const issueKey = (i) => `${i.type}|${i.source}|${i.target}`;
+
+/**
+ * Sync the computed issue set into unifi_issue_history: new issues open a
+ * row, still-present ones bump last_seen, and open rows whose issue is gone
+ * get resolved. Idempotent — safe to run after every poll. Rows resolved
+ * >90 days ago are pruned.
+ */
+const reconcileIssueHistory = db.transaction(() => {
+  const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
+  const open = db.prepare("SELECT * FROM unifi_issue_history WHERE status = 'open'").all();
+
+  const touch = db.prepare(`
+    UPDATE unifi_issue_history SET last_seen = datetime('now'), message = ?, severity = ? WHERE id = ?
+  `);
+  const resolve = db.prepare(`
+    UPDATE unifi_issue_history SET status = 'resolved', resolved_at = datetime('now'), last_seen = datetime('now') WHERE id = ?
+  `);
+  const insert = db.prepare(`
+    INSERT INTO unifi_issue_history (issue_key, source, severity, type, target, message)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  const openKeys = new Set();
+  for (const row of open) {
+    const cur = current.get(row.issue_key);
+    if (cur) {
+      openKeys.add(row.issue_key);
+      touch.run(cur.message, cur.severity, row.id);
+    } else {
+      resolve.run(row.id);
+    }
+  }
+  for (const [key, i] of current) {
+    if (!openKeys.has(key)) insert.run(key, i.source, i.severity, i.type, i.target, i.message);
+  }
+  db.prepare("DELETE FROM unifi_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
+});
+
+module.exports = {
+  wanLatencyWarnMs, wanAvailWarnPct, portErrDeltaWarn, portFlapWarn,
+  deviceCpuWarnPct, deviceMemWarnPct, tempWarnC, satisfactionWarn,
+  thresholdGetters,
+  computeIssues, reconcileIssueHistory,
+  portErrorDelta24h, portFlapCount24h,
+};

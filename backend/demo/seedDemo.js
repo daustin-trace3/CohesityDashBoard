@@ -48,6 +48,7 @@ const { seedDell } = require('./generators/dell');
 const { seedAria } = require('./generators/aria');
 const { seedAriaops } = require('./generators/ariaops');
 const { seedAws } = require('./generators/aws');
+const { seedUnifi } = require('./generators/unifi');
 
 const SEEDED_TABLES = [
   // core
@@ -92,6 +93,10 @@ const SEEDED_TABLES = [
   'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_optimizer_recommendations',
   'aws_accounts',
+  // unifi (children before the parent)
+  'unifi_port_history', 'unifi_ports', 'unifi_devices', 'unifi_clients', 'unifi_wlans',
+  'unifi_networks', 'unifi_rogue_aps', 'unifi_events', 'unifi_wan', 'unifi_topology',
+  'unifi_metrics_history', 'unifi_issue_history', 'unifi_sources',
 ];
 
 function wipeSeededTables(database) {
@@ -124,6 +129,7 @@ async function main() {
   const ariaResult = db.transaction(() => seedAria(db, { now, encrypt }))();
   const ariaopsResult = db.transaction(() => seedAriaops(db, { now, encrypt }))();
   const awsResult = db.transaction(() => seedAws(db, { now, encrypt }))();
+  const unifiResult = db.transaction(() => seedUnifi(db, { now, encrypt }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -145,6 +151,7 @@ async function main() {
     ['aria instances/deployments/requests', `${ariaResult.instances}/${ariaResult.deployments}/${ariaResult.requests}`],
     ['ariaops instances/resources/alerts', `${ariaopsResult.instances}/${ariaopsResult.resources}/${ariaopsResult.alerts}`],
     ['aws ec2/ecs services/s3/cost rows', `${awsResult.ec2}/${awsResult.ecsServices}/${awsResult.s3}/${awsResult.costRows}`],
+    ['unifi sources/devices/ports/clients', `${unifiResult.sources}/${unifiResult.devices}/${unifiResult.ports}/${unifiResult.clients}`],
     ['users', 1],
   ];
 

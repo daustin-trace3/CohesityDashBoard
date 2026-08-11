@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+### Added
+- Ubiquiti UniFi platform: controllers, devices, ports, clients, WLANs, topology, WAN/ISP status, and security events, with proactive issue detection (offline devices, PoE faults, port errors/flapping, WAN/WiFi quality)
+
 ## [1.2.0] - 2026-08-10
 ### Added
 - Nutanix platform: Prism Central and standalone Prism Element connections, clusters, hosts, VMs, storage, and Prism alerts

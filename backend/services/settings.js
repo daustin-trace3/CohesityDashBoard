@@ -30,6 +30,15 @@ const DEFAULTS = {
   platform_aws_enabled: '0',
   aws_cost_spike_pct: '30',
   aws_rds_storage_warn_pct: '15',
+  platform_unifi_enabled: '0',
+  unifi_wan_latency_warn_ms: '75',
+  unifi_wan_avail_warn_pct: '99',
+  unifi_port_err_delta_warn: '500',
+  unifi_port_flap_warn: '3',
+  unifi_device_cpu_warn_pct: '90',
+  unifi_device_mem_warn_pct: '92',
+  unifi_temp_warn_c: '80',
+  unifi_satisfaction_warn: '50',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',
@@ -41,7 +50,7 @@ const DEFAULTS = {
   smtp_from: '',
   smtp_recipients: '',
   alert_email_min_severity: 'warning',
-  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true,"aws":true}',
+  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true,"aws":true,"unifi":true}',
   alert_email_reminder_hours: '24',
 };
 
@@ -129,6 +138,7 @@ function getPlatformSettings() {
     platformAriaEnabled: getSetting('platform_aria_enabled') === '1',
     platformAriaopsEnabled: getSetting('platform_ariaops_enabled') === '1',
     platformAwsEnabled: getSetting('platform_aws_enabled') === '1',
+    platformUnifiEnabled: getSetting('platform_unifi_enabled') === '1',
     featureCustomDashboardsEnabled: getSetting('feature_custom_dashboards_enabled') === '1',
     dnsServer: getSetting('dns_server') || '',
   };
@@ -139,7 +149,7 @@ function getPlatformSettings() {
 function getNotificationSettings() {
   // Merge over defaults so platforms added after a DB stored its JSON come
   // through enabled instead of silently missing (collector gate reads keys).
-  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, aws: true };
+  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, aws: true, unifi: true };
   // Phase 1 manifest-driven core hooks: any enabled plugin declaring
   // collectAlerts also gets a default-on toggle, without disturbing the
   // built-in defaults above. Lazily required — settings.js loads before the

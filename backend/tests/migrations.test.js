@@ -21,6 +21,7 @@ import dellMigrations from '../db/migrations/dell.js';
 import ariaMigrations from '../db/migrations/aria.js';
 import ariaopsMigrations from '../db/migrations/ariaops.js';
 import awsMigrations from '../db/migrations/aws.js';
+import unifiMigrations from '../db/migrations/unifi.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -158,6 +159,7 @@ function buildNewDb() {
   runMigrations(db, 'aria', ariaMigrations);
   runMigrations(db, 'ariaops', ariaopsMigrations);
   runMigrations(db, 'aws', awsMigrations);
+  runMigrations(db, 'unifi', unifiMigrations);
   return db;
 }
 
@@ -216,6 +218,10 @@ const NEW_TABLES = [
   'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_ai_reports',
   'aws_optimizer_recommendations',
+  'unifi_sources', 'unifi_devices', 'unifi_ports', 'unifi_port_history',
+  'unifi_clients', 'unifi_wlans', 'unifi_networks', 'unifi_rogue_aps',
+  'unifi_events', 'unifi_wan', 'unifi_topology', 'unifi_metrics_history',
+  'unifi_issue_history',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.
@@ -310,6 +316,7 @@ describe('runMigrations', () => {
       runMigrations(db, 'aria', ariaMigrations);
       runMigrations(db, 'ariaops', ariaopsMigrations);
       runMigrations(db, 'aws', awsMigrations);
+      runMigrations(db, 'unifi', unifiMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

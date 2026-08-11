@@ -96,9 +96,9 @@ describe('seedDemo.js', () => {
 
   it('seeds platform flags as string "1"', () => {
     const rows = db.prepare(
-      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled')"
+      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled', 'platform_unifi_enabled')"
     ).all();
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     for (const row of rows) {
       expect(row.value).toBe('1');
     }
@@ -274,6 +274,48 @@ describe('seedDemo.js', () => {
     }
 
     const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_aws_enabled'").get();
+    expect(flag.value).toBe('1');
+  });
+
+  it('seeds the unifi platform with sources, devices, ports, and every computed issue trigger', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_sources').get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_devices').get().c).toBe(13);
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_ports').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_clients').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_wlans').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_networks').get().c).toBe(6);
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_rogue_aps').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_events').get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM unifi_events WHERE category = 'SECURITY'").get().c).toBeGreaterThanOrEqual(12);
+
+    // cross-platform Server 360 hits: wired clients matching vcenter demo VM names.
+    for (const name of ['vra-prod', 'vra-dr', 'vrops-nyc-01', 'vrli-nyc-01']) {
+      expect(db.prepare('SELECT COUNT(*) c FROM unifi_clients WHERE name = ?').get(name).c).toBe(1);
+    }
+
+    // port history exists for the error-ramp port and shows a trailing-24h delta.
+    const errHist = db.prepare(`
+      SELECT COUNT(*) c FROM unifi_port_history WHERE captured_at >= datetime('now', '-170 hours')
+    `).get().c;
+    expect(errHist).toBeGreaterThan(0);
+    const errPort = db.prepare(`
+      SELECT device_mac, port_idx FROM unifi_port_history GROUP BY device_mac, port_idx ORDER BY COUNT(*) DESC LIMIT 1
+    `).get();
+    const errDelta = db.prepare(`
+      SELECT (SELECT rx_errors + tx_errors FROM unifi_port_history WHERE device_mac = ? AND port_idx = ? ORDER BY captured_at DESC LIMIT 1) -
+             (SELECT rx_errors + tx_errors FROM unifi_port_history WHERE device_mac = ? AND port_idx = ? AND captured_at <= datetime('now', '-24 hours') ORDER BY captured_at DESC LIMIT 1) AS d
+    `).get(errPort.device_mac, errPort.port_idx, errPort.device_mac, errPort.port_idx).d;
+    expect(errDelta).toBeGreaterThanOrEqual(500);
+
+    expect(db.prepare('SELECT COUNT(*) c FROM unifi_metrics_history').get().c).toBe(96 * 2);
+
+    const openTypes = db.prepare("SELECT DISTINCT type FROM unifi_issue_history WHERE status = 'open'").all().map((r) => r.type);
+    for (const type of ['poe-fault', 'port-errors', 'port-flapping', 'device-offline', 'device-load', 'device-overheating', 'wan-latency', 'wan-availability', 'rogue-ap', 'ips-disabled', 'firmware-upgrade']) {
+      expect(openTypes).toContain(type);
+    }
+    expect(db.prepare("SELECT COUNT(*) c FROM unifi_issue_history WHERE status = 'resolved'").get().c).toBeGreaterThanOrEqual(2);
+
+    const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_unifi_enabled'").get();
     expect(flag.value).toBe('1');
   });
 
