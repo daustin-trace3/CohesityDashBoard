@@ -5,13 +5,60 @@
 // namespace, not admin:plugins:*.
 const express = require('express');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
+const axios = require('axios');
 const { requirePermission } = require('../middleware/requirePermission');
 const registry = require('../core/registry');
 const pluginBoot = require('../services/pluginBoot');
 const { upload, installPlugin, BUILTIN_IDS } = require('../services/pluginInstaller');
 
 const router = express.Router();
+
+const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+
+/** Streams `url` to a temp file, enforcing a 100MB cap and a 60s timeout.
+ *  Trusts the marketplace's signature verification (installPlugin) rather
+ *  than the URL shape, so no `.iccplugin` extension is required here. */
+async function downloadToTemp(url) {
+  const dest = path.join(os.tmpdir(), `icc-plugin-url-${crypto.randomUUID()}.iccplugin`);
+  const response = await axios.get(url, {
+    responseType: 'stream',
+    timeout: 60000,
+    maxRedirects: 5,
+  });
+
+  const declaredLength = Number(response.headers['content-length']);
+  if (declaredLength && declaredLength > MAX_DOWNLOAD_BYTES) {
+    response.data.destroy();
+    const err = new Error('download exceeds 100MB limit');
+    err.status = 400;
+    throw err;
+  }
+
+  await new Promise((resolve, reject) => {
+    let total = 0;
+    let settled = false;
+    const writeStream = fs.createWriteStream(dest);
+
+    response.data.on('data', (chunk) => {
+      total += chunk.length;
+      if (total > MAX_DOWNLOAD_BYTES && !settled) {
+        settled = true;
+        response.data.destroy();
+        writeStream.destroy();
+        reject(Object.assign(new Error('download exceeds 100MB limit'), { status: 400 }));
+      }
+    });
+    response.data.on('error', (err) => { if (!settled) { settled = true; reject(err); } });
+    writeStream.on('error', (err) => { if (!settled) { settled = true; reject(err); } });
+    writeStream.on('finish', () => { if (!settled) { settled = true; resolve(); } });
+    response.data.pipe(writeStream);
+  });
+
+  return dest;
+}
 
 function installedIds() {
   const pluginsDir = pluginBoot.getPluginsDir();
@@ -87,6 +134,31 @@ router.post('/install', requirePermission('admin:plugins:manage'), (req, res) =>
       fs.rm(req.file.path, { force: true }, () => {});
     }
   });
+});
+
+/** POST /api/plugins/install-from-url { url } — downloads an .iccplugin from
+ *  a marketplace (or any http(s) host) and installs it, same success shape
+ *  as /install. Extension-agnostic: trust is the Ed25519 signature check
+ *  inside installPlugin, not the URL. */
+router.post('/install-from-url', requirePermission('admin:plugins:manage'), async (req, res) => {
+  const url = req.body && req.body.url;
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: 'url must be an http(s) URL' });
+  }
+
+  let tmpPath;
+  try {
+    tmpPath = await downloadToTemp(url);
+    const result = await installPlugin(tmpPath);
+    res.json(result);
+  } catch (err) {
+    if (err.isAxiosError) {
+      return res.status(502).json({ error: `failed to download plugin: ${err.message}` });
+    }
+    res.status(err.status || 400).json({ error: err.message });
+  } finally {
+    if (tmpPath) fs.rm(tmpPath, { force: true }, () => {});
+  }
 });
 
 /** POST /api/plugins/:id/enabled — flips the platform_<id>_enabled setting

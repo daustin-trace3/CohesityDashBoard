@@ -1,10 +1,12 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
-import { Layers, Upload, Trash2, Power, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { Layers, Upload, Trash2, Power, ChevronDown, ChevronUp, AlertTriangle, ExternalLink } from 'lucide-react';
 import AdminNav from '../components/AdminNav';
 import client from '../api/client';
 import { PageHeader, Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
+
+const MARKETPLACE_URL = 'https://marketplace.austihome.com';
 
 function errorMessage(err, fallback) {
   return err?.response?.data?.error || fallback;
@@ -90,6 +92,9 @@ export default function AdminPluginsPage() {
   const [uploadError, setUploadError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
+  const [installUrl, setInstallUrl] = useState('');
+  const [installingUrl, setInstallingUrl] = useState(false);
+  const [installUrlError, setInstallUrlError] = useState(null);
 
   const canManage = authLoading || hasPermission('admin:plugins:manage');
 
@@ -149,6 +154,28 @@ export default function AdminPluginsPage() {
     }
   };
 
+  const installFromUrl = async () => {
+    const url = installUrl.trim();
+    if (!url) return;
+    setInstallUrlError(null);
+    setInstallingUrl(true);
+    try {
+      const { data } = await client.post('/plugins/install-from-url', { url });
+      window.dispatchEvent(new Event('platforms-changed'));
+      toast({
+        type: 'success',
+        title: data.hotAdded ? 'Installed and live' : 'Installed — restart to apply',
+        message: data.hotAdded ? `${data.id} is active now.` : `${data.id} will apply after the next restart.`,
+      });
+      setInstallUrl('');
+      load();
+    } catch (err) {
+      setInstallUrlError(errorMessage(err, 'Could not install the plugin.'));
+    } finally {
+      setInstallingUrl(false);
+    }
+  };
+
   const onDrop = (e) => {
     e.preventDefault();
     setDragOver(false);
@@ -175,7 +202,16 @@ export default function AdminPluginsPage() {
         icon={Layers}
         title="Platforms"
         description="Every platform in this dashboard — toggle built-ins on or off, or install a signed plugin to add a new platform without a code deploy."
-      />
+      >
+        <a
+          href={MARKETPLACE_URL}
+          target="_blank"
+          rel="noopener"
+          className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-2 bg-surface-overlay border border-cohesity-border text-ink rounded-lg hover:border-brand/40 transition-colors cursor-pointer"
+        >
+          <ExternalLink size={13} /> Browse Marketplace
+        </a>
+      </PageHeader>
 
       <div className="flex flex-col md:flex-row gap-5 items-start">
         <AdminNav />
@@ -213,6 +249,35 @@ export default function AdminPluginsPage() {
           {uploadError && (
             <p className="text-[11px] text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-2.5 py-1.5 mt-1">
               {uploadError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {canManage && (
+        <div className="panel p-3 flex flex-col gap-2">
+          <p className="text-xs font-medium text-ink">Install from URL</p>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={installUrl}
+              onChange={(e) => setInstallUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !installingUrl) installFromUrl(); }}
+              placeholder="https://marketplace.austihome.com/files/rubrik-2.4.1.iccplugin"
+              disabled={installingUrl}
+              className="flex-1 min-w-0 bg-surface border border-cohesity-border text-xs text-ink rounded-lg px-3 py-2 focus:border-brand/60 disabled:opacity-50"
+            />
+            <button
+              onClick={installFromUrl}
+              disabled={installingUrl || !installUrl.trim()}
+              className="text-xs font-medium px-3.5 py-2 bg-brand hover:bg-brand-dark text-white rounded-lg transition-colors disabled:opacity-40 cursor-pointer flex-shrink-0"
+            >
+              {installingUrl ? 'Installing…' : 'Install'}
+            </button>
+          </div>
+          {installUrlError && (
+            <p className="text-[11px] text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-2.5 py-1.5">
+              {installUrlError}
             </p>
           )}
         </div>
