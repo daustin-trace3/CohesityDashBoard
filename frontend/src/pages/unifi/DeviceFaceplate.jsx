@@ -4,25 +4,23 @@ import { X, Router, Monitor, History, Cable } from 'lucide-react';
 import PortHistoryModal from './PortHistoryModal';
 import { poeWatts } from './helpers';
 
-const PORT_W = 30;
-const PORT_H = 34;
-const PORT_GAP = 4;
+// Styled after Ubiquiti's product design: brushed-silver chassis, dark
+// recessed port jacks with link/activity LEDs, LCD tile + drive bays on
+// gateways. Vector-drawn so any port count works and every port stays live.
+const PORT_W = 34;
+const PORT_H = 30;
+const PORT_GAP = 6;
+const NUM_H = 11;    // number strip above/below each port row
 const BANK_COLS = 12;
-const SFP_W = 38;
+const SFP_W = 40;
+const SFP_H = 26;
 
-const COLOR_DOWN = '#3a4048';
-const COLOR_UP = '#6CB33F';
-const COLOR_ERROR = '#D4A24E';
-const COLOR_POE = '#006FFF';
+const LED_UP = '#38c95c';
+const LED_ERR = '#e0a13e';
+const LED_POE = '#2f81f7';
 
 function isSfp(port) {
   return String(port.media || '').toUpperCase().includes('SFP');
-}
-
-function portColor(port, errored) {
-  if (!port.up) return COLOR_DOWN;
-  if (errored) return COLOR_ERROR;
-  return COLOR_UP;
 }
 
 function portHasErrors(port) {
@@ -35,11 +33,6 @@ function isPoeActive(port) {
   return !!port.poe_enable && port.poe_good !== 0 && port.poe_good !== false;
 }
 
-// Generic front-panel render, driven entirely by the ports array — scales from
-// 5 to 24+ ports (wraps into extra port banks of up to 12 columns). Reused on
-// both the Devices detail modal and directly on switch/AP rows.
-// `attachments` maps port_idx -> [{mac,name,kind:'device'|'client',ip,signal,model}]
-// and powers the port click popup; without it the popup still shows port facts.
 export default function DeviceFaceplate({ ports = [], type, model, name, deviceMac, deviceName, uplinkPortIdx, errorFlags, attachments }) {
   const [hover, setHover] = useState(null); // { port, x, y }
   const [popupPort, setPopupPort] = useState(null);
@@ -53,64 +46,125 @@ export default function DeviceFaceplate({ ports = [], type, model, name, deviceM
     const bank = Math.floor(col / BANK_COLS);
     const colInBank = col % BANK_COLS;
     const row = (i % 2) + bank * 2;
-    return { port: p, x: colInBank * (PORT_W + PORT_GAP), y: row * (PORT_H + PORT_GAP) };
+    return { port: p, x: colInBank * (PORT_W + PORT_GAP), y: NUM_H + row * (PORT_H + PORT_GAP), topRow: i % 2 === 0 };
   }), [rj45]);
 
-  const banks = rj45Layout.length ? Math.max(...rj45Layout.map((l) => Math.floor(l.y / (PORT_H + PORT_GAP)))) / 2 + 1 : 1;
+  const banks = rj45Layout.length ? Math.floor(Math.max(...rj45Layout.map((l) => (l.y - NUM_H) / (PORT_H + PORT_GAP))) / 2) + 1 : 1;
   const cols = rj45Layout.length ? Math.min(BANK_COLS, Math.ceil(rj45.length / 2)) : 0;
+  const portAreaH = banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP + NUM_H * 2;
 
   const isUdm = type === 'udm';
-  const lcdW = isUdm ? 56 : 0;
-  const padX = 16;
-  const padTop = 30; // room for device label
+  const lcdW = isUdm ? 64 : 0;
+  const bayW = isUdm ? 150 : 0; // two drive bays like the real unit
+  const padX = 18;
+  const padTop = 26;
   const rj45AreaW = cols * (PORT_W + PORT_GAP) - (cols ? PORT_GAP : 0);
-  const sfpAreaW = sfp.length * (SFP_W + PORT_GAP);
-  const chassisW = padX * 2 + lcdW + (lcdW ? 12 : 0) + rj45AreaW + (sfp.length ? 12 + sfpAreaW : 0);
-  const chassisH = padTop + banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP + 14;
-  const minW = 260;
+  const sfpCols = Math.ceil(sfp.length / 2);
+  const sfpAreaW = sfpCols * (SFP_W + PORT_GAP);
+  const chassisW = padX * 2 + lcdW + (lcdW ? 14 : 0) + bayW + (bayW ? 14 : 0) + rj45AreaW + (sfp.length ? 14 + sfpAreaW : 0);
+  const chassisH = padTop + portAreaH + 12;
+  const minW = 300;
   const svgW = Math.max(minW, chassisW);
-  const svgH = Math.max(120, chassisH);
+  const svgH = Math.max(110, chassisH);
+  const innerH = portAreaH;
 
   const attachedFor = (p) => (attachments && attachments[p.port_idx]) || [];
 
-  const renderPort = (p, x, y, w, h, keyPrefix) => {
+  const renderRj45 = ({ port: p, x, y, topRow }) => {
     const errored = errorFlags ? !!errorFlags[p.port_idx] : portHasErrors(p);
-    const color = portColor(p, errored);
     const poeActive = isPoeActive(p);
     const w_ = poeWatts(p);
     const uplink = p.is_uplink || (uplinkPortIdx != null && p.port_idx === uplinkPortIdx);
     const attached = attachedFor(p);
     const stagger = ((p.port_idx % 8) * 0.18).toFixed(2);
     return (
-      <g key={`${keyPrefix}-${p.port_idx}`}
-        transform={`translate(${x},${y})`}
+      <g key={`rj45-${p.port_idx}`} transform={`translate(${x},${y})`}
         onMouseEnter={(e) => setHover({ port: p, x: e.clientX, y: e.clientY })}
         onMouseMove={(e) => setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h))}
         onMouseLeave={() => setHover(null)}
         onClick={() => { setHover(null); setPopupPort(p); }}
-        style={{ cursor: 'pointer' }}
-      >
+        style={{ cursor: 'pointer' }}>
+        {/* port number (⚡ = PoE-capable), above top-row ports / below bottom-row like the real units */}
+        <text x={PORT_W / 2} y={topRow ? -3 : PORT_H + 9} textAnchor="middle" fontSize="7.5" fill="#6b7684" fontWeight="600">
+          {p.port_idx}{p.poe_capable ? '⚡' : ''}{uplink ? ' ▲' : ''}
+        </text>
+        {/* jack: dark recessed socket */}
+        <rect width={PORT_W} height={PORT_H} rx={2.5} fill="#14171b" stroke="#0a0c0e" strokeWidth="1" />
+        <rect x={2} y={2} width={PORT_W - 4} height={PORT_H - 4} rx={1.5} fill="#1e2126" />
+        {/* pin block */}
+        <rect x={PORT_W / 2 - 8} y={PORT_H - 9} width={16} height={5} rx={1} fill="#0a0c0e" />
+        {/* link + activity LEDs in the top corners */}
+        {p.up ? (
+          <>
+            <circle cx={5.5} cy={5.5} r={2.4} fill={errored ? LED_ERR : LED_UP} />
+            <circle cx={5.5} cy={5.5} r={4} fill="none" stroke={errored ? LED_ERR : LED_UP} strokeWidth="1" opacity="0.35" />
+            <circle cx={PORT_W - 5.5} cy={5.5} r={2} fill={errored ? LED_ERR : LED_UP}>
+              <animate attributeName="opacity" values="1;0.1;1" dur={errored ? '0.7s' : '1.3s'} begin={`${stagger}s`} repeatCount="indefinite" />
+            </circle>
+          </>
+        ) : (
+          <>
+            <circle cx={5.5} cy={5.5} r={2.4} fill="#33383f" />
+            <circle cx={PORT_W - 5.5} cy={5.5} r={2} fill="#33383f" />
+          </>
+        )}
+        {/* PoE delivery: blue tag under the jack */}
         {poeActive && (
-          <rect x={-2} y={-2} width={w + 4} height={h + 4} rx={4} fill="none" stroke={COLOR_POE} strokeWidth="2">
-            <animate attributeName="opacity" values="0.9;0.35;0.9" dur="2.4s" begin={`${stagger}s`} repeatCount="indefinite" />
-          </rect>
+          <g>
+            <rect x={PORT_W / 2 - 11} y={topRow ? PORT_H + 1.5 : -8.5} width={22} height={7} rx={2} fill={LED_POE} opacity="0.9">
+              <animate attributeName="opacity" values="0.9;0.5;0.9" dur="2.4s" begin={`${stagger}s`} repeatCount="indefinite" />
+            </rect>
+            <text x={PORT_W / 2} y={topRow ? PORT_H + 7 : -3} textAnchor="middle" fontSize="5.5" fill="#fff" fontWeight="700">
+              {w_ != null ? `${w_.toFixed(1)}W` : 'PoE'}
+            </text>
+          </g>
         )}
-        <rect width={w} height={h} rx={2} fill={color} stroke="#1A1A1A" strokeWidth="1" />
-        {p.up && (
-          <rect x={3} y={3} width={5} height={3.5} rx={1} fill={errored ? '#7a5a1e' : '#eafff0'}>
-            <animate attributeName="opacity" values="1;0.15;1" dur={errored ? '0.7s' : '1.3s'} begin={`${stagger}s`} repeatCount="indefinite" />
-          </rect>
-        )}
-        <text x={w / 2} y={h / 2 + 4} textAnchor="middle" fontSize="9" fill="#111" fontWeight="600">{p.port_idx}</text>
-        {uplink && <text x={w / 2} y={-4} textAnchor="middle" fontSize="9" fill="#E5E5E5">&#9650;</text>}
         {attached.length > 0 && (
-          <g transform={`translate(${w - 5},${h - 5})`}>
-            <circle r={4.5} fill="#0d0f12" stroke={COLOR_POE} strokeWidth="0.75" />
+          <g transform={`translate(${PORT_W - 5},${PORT_H - 5})`}>
+            <circle r={4.5} fill="#0d0f12" stroke={LED_POE} strokeWidth="0.75" />
             <text y={2.5} textAnchor="middle" fontSize="6.5" fill="#E5E5E5" fontWeight="700">{attached.length}</text>
           </g>
         )}
-        {poeActive && w_ != null && (
-          <text x={w / 2} y={h + 11} textAnchor="middle" fontSize="7" fill="#8FA3B0">{w_.toFixed(1)}W</text>
+      </g>
+    );
+  };
+
+  const renderSfp = (p, i) => {
+    const errored = errorFlags ? !!errorFlags[p.port_idx] : portHasErrors(p);
+    const uplink = p.is_uplink || (uplinkPortIdx != null && p.port_idx === uplinkPortIdx);
+    const attached = attachedFor(p);
+    const col = Math.floor(i / 2);
+    const topRow = i % 2 === 0;
+    const x = col * (SFP_W + PORT_GAP);
+    const y = NUM_H + (topRow ? 0 : SFP_H + PORT_GAP + 8);
+    const stagger = ((p.port_idx % 8) * 0.18).toFixed(2);
+    return (
+      <g key={`sfp-${p.port_idx}`} transform={`translate(${x},${y})`}
+        onMouseEnter={(e) => setHover({ port: p, x: e.clientX, y: e.clientY })}
+        onMouseMove={(e) => setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h))}
+        onMouseLeave={() => setHover(null)}
+        onClick={() => { setHover(null); setPopupPort(p); }}
+        style={{ cursor: 'pointer' }}>
+        <text x={SFP_W / 2} y={topRow ? -3 : SFP_H + 9} textAnchor="middle" fontSize="7.5" fill="#6b7684" fontWeight="600">
+          {p.port_idx}{uplink ? ' ▲' : ''} <tspan fontSize="6">SFP+</tspan>
+        </text>
+        {/* cage */}
+        <rect width={SFP_W} height={SFP_H} rx={2} fill="#14171b" stroke="#0a0c0e" strokeWidth="1" />
+        <rect x={3} y={4} width={SFP_W - 6} height={SFP_H - 8} rx={1} fill="#1e2126" stroke="#2c313a" strokeWidth="0.75" />
+        {/* latch bar */}
+        <rect x={6} y={SFP_H / 2 - 1.25} width={SFP_W - 12} height={2.5} rx={1.25} fill="#3d434d" />
+        {p.up ? (
+          <circle cx={SFP_W - 6} cy={6} r={2.2} fill={errored ? LED_ERR : LED_UP}>
+            <animate attributeName="opacity" values="1;0.25;1" dur={errored ? '0.7s' : '1.6s'} begin={`${stagger}s`} repeatCount="indefinite" />
+          </circle>
+        ) : (
+          <circle cx={SFP_W - 6} cy={6} r={2.2} fill="#33383f" />
+        )}
+        {attached.length > 0 && (
+          <g transform={`translate(${SFP_W - 6},${SFP_H - 6})`}>
+            <circle r={4.5} fill="#0d0f12" stroke={LED_POE} strokeWidth="0.75" />
+            <text y={2.5} textAnchor="middle" fontSize="6.5" fill="#E5E5E5" fontWeight="700">{attached.length}</text>
+          </g>
         )}
       </g>
     );
@@ -119,25 +173,71 @@ export default function DeviceFaceplate({ ports = [], type, model, name, deviceM
   return (
     <div className="relative">
       <svg viewBox={`0 0 ${svgW} ${svgH}`} width="100%" style={{ maxWidth: svgW }} className="select-none">
-        <rect x={0} y={0} width={svgW} height={svgH} rx={10} fill="#1e2126" stroke="#3a4048" strokeWidth="1.5" />
-        <text x={10} y={16} fontSize="10" fill="#E5E5E5" fontWeight="600">{name || model || 'Device'}</text>
+        <defs>
+          <linearGradient id="ufp-chassis" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#e8eaed" />
+            <stop offset="0.06" stopColor="#f4f5f7" />
+            <stop offset="0.5" stopColor="#dfe2e6" />
+            <stop offset="1" stopColor="#c3c8cf" />
+          </linearGradient>
+          <linearGradient id="ufp-bay" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#cfd3d9" />
+            <stop offset="0.5" stopColor="#dde0e5" />
+            <stop offset="1" stopColor="#c6cbd2" />
+          </linearGradient>
+        </defs>
+
+        {/* chassis */}
+        <rect x={0} y={0} width={svgW} height={svgH} rx={8} fill="url(#ufp-chassis)" stroke="#a9afb8" strokeWidth="1" />
+        <rect x={0.75} y={1} width={svgW - 1.5} height={2.5} rx={1.25} fill="#ffffff" opacity="0.55" />
+        <text x={12} y={16} fontSize="9" fill="#4b535e" fontWeight="700">{name || model || 'Device'}</text>
+        {model && <text x={svgW - 12} y={16} fontSize="8" fill="#8a919c" fontWeight="600" textAnchor="end">{model}</text>}
+
+        {/* LCD tile (gateways) */}
         {isUdm && (
-          <g transform={`translate(${padX}, ${padTop})`}>
-            <rect width={lcdW} height={banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP} rx={4} fill="#0d0f12" stroke="#3a4048" strokeWidth="1" />
-            <rect x={6} y={6} width={lcdW - 12} height={(banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP) - 12} rx={2} fill="#062033" stroke="#006FFF" strokeWidth="0.5" opacity="0.6" />
-            <circle cx={lcdW / 2} cy={(banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP) / 2} r={3} fill="#006FFF">
-              <animate attributeName="opacity" values="0.9;0.3;0.9" dur="3s" repeatCount="indefinite" />
+          <g transform={`translate(${padX}, ${padTop + Math.max(0, (innerH - 56) / 2)})`}>
+            <rect width={lcdW} height={56} rx={6} fill="#0b0e14" stroke="#2a2f38" strokeWidth="1" />
+            <text x={lcdW / 2} y={13} textAnchor="middle" fontSize="6" fill="#7d8794">Network</text>
+            <circle cx={lcdW / 2} cy={32} r={11} fill="none" stroke="#2f5cab" strokeWidth="2" opacity="0.9" />
+            <circle cx={lcdW / 2} cy={32} r={4.5} fill="#e8eaed">
+              <animate attributeName="opacity" values="1;0.55;1" dur="3s" repeatCount="indefinite" />
             </circle>
+            <g fill="#3a4552">
+              {[0, 1, 2, 3, 4].map((i) => <circle key={i} cx={lcdW / 2 - 10 + i * 5} cy={49} r={1.1} opacity={i === 0 ? 1 : 0.45} />)}
+            </g>
           </g>
         )}
-        <g transform={`translate(${padX + lcdW + (lcdW ? 12 : 0)}, ${padTop})`}>
-          {rj45Layout.map(({ port, x, y }) => renderPort(port, x, y, PORT_W, PORT_H, 'rj45'))}
+
+        {/* drive bays (gateways) */}
+        {isUdm && (
+          <g transform={`translate(${padX + lcdW + 14}, ${padTop + Math.max(0, (innerH - 56) / 2)})`}>
+            {[0, 1].map((i) => (
+              <g key={i} transform={`translate(${i * (bayW / 2 + 4)},0)`}>
+                <rect width={bayW / 2 - 4} height={56} rx={4} fill="url(#ufp-bay)" stroke="#aeb4bd" strokeWidth="0.75" />
+                <circle cx={(bayW / 2 - 4) / 2} cy={28} r={1.6} fill="#f7f8fa" stroke="#9aa1ab" strokeWidth="0.5" />
+                <text x={(bayW / 2 - 4) / 2} y={51} textAnchor="middle" fontSize="6" fill="#8a919c">{i + 1}</text>
+              </g>
+            ))}
+          </g>
+        )}
+
+        {/* port block */}
+        <g transform={`translate(${padX + lcdW + (lcdW ? 14 : 0) + bayW + (bayW ? 14 : 0)}, ${padTop})`}>
+          {rj45Layout.map(renderRj45)}
         </g>
         {sfp.length > 0 && (
-          <g transform={`translate(${padX + lcdW + (lcdW ? 12 : 0) + rj45AreaW + 12}, ${padTop})`}>
-            {sfp.map((p, i) => renderPort(p, i * (SFP_W + PORT_GAP), 0, SFP_W, PORT_H, 'sfp'))}
+          <g transform={`translate(${padX + lcdW + (lcdW ? 14 : 0) + bayW + (bayW ? 14 : 0) + rj45AreaW + 14}, ${padTop})`}>
+            {sfp.map((p, i) => renderSfp(p, i))}
           </g>
         )}
+
+        {/* LED legend, bottom-left like the hardware labels */}
+        <g transform={`translate(12, ${svgH - 7})`} fontSize="6" fill="#8a919c">
+          <circle cx={0} cy={-2} r={2} fill={LED_UP} /><text x={5} y={0}>link</text>
+          <circle cx={26} cy={-2} r={2} fill={LED_ERR} /><text x={31} y={0}>errors</text>
+          <rect x={57} y={-5} width={10} height={6} rx={2} fill={LED_POE} /><text x={70} y={0}>PoE</text>
+          <circle cx={92} cy={-2} r={2} fill="#33383f" /><text x={97} y={0}>down</text>
+        </g>
       </svg>
 
       {hover && !popupPort && (
