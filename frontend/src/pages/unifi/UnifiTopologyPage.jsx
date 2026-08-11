@@ -15,6 +15,13 @@ const CLIENT_R = 7;
 const TYPE_ICON = { udm: '⌂', usw: '▦', uap: '◎' };
 const TYPE_ORDER = ['udm', 'usw', 'uap', 'other'];
 
+// Live controllers mark network gear with type 'DEVICE' (unifiDevice is undefined there),
+// while Protect cameras arrive as CLIENT vertices with unifiDevice:true — so type/meta,
+// not the unifiDevice flag, decides what counts as an infrastructure node.
+function isDeviceVertex(v, deviceMeta) {
+  return String(v.type || '').toUpperCase() === 'DEVICE' || !!deviceMeta[v.mac];
+}
+
 function buildTree(vertices, edges, deviceMeta) {
   const byMac = new Map(vertices.map((v) => [v.mac, v]));
   const childrenOf = new Map();
@@ -25,9 +32,10 @@ function buildTree(vertices, edges, deviceMeta) {
     childrenOf.get(e.uplinkMac).push(e);
     hasParent.add(e.downlinkMac);
   }
-  let rootMac = vertices.find((v) => v.unifiDevice && deviceMeta[v.mac]?.type === 'udm')?.mac;
-  if (!rootMac) rootMac = vertices.find((v) => v.unifiDevice && !hasParent.has(v.mac))?.mac;
-  if (!rootMac) rootMac = vertices.find((v) => v.unifiDevice)?.mac;
+  const deviceVerts = vertices.filter((v) => isDeviceVertex(v, deviceMeta));
+  let rootMac = deviceVerts.find((v) => deviceMeta[v.mac]?.type === 'udm')?.mac;
+  if (!rootMac) rootMac = deviceVerts.find((v) => !hasParent.has(v.mac))?.mac;
+  if (!rootMac) rootMac = deviceVerts[0]?.mac;
   if (!rootMac) return null;
 
   const visited = new Set();
@@ -41,7 +49,8 @@ function buildTree(vertices, edges, deviceMeta) {
       .map((e) => ({ edge: e, node: makeNode(e.downlinkMac) }))
       .filter((c) => c.node);
     return {
-      mac, vertex: v, meta, isClient: !v.unifiDevice,
+      mac, vertex: v, meta, isClient: !isDeviceVertex(v, deviceMeta),
+      isCamera: !isDeviceVertex(v, deviceMeta) && v.unifiDevice === true,
       children,
     };
   }
@@ -279,7 +288,8 @@ export default function UnifiTopologyPage() {
                       return (
                         <g key={n.mac} transform={`translate(${n.x},${n.y})`} opacity={dimmed ? 0.25 : 1}
                           onClick={() => setSelected(n)} style={{ cursor: 'pointer' }}>
-                          <circle r={CLIENT_R} fill={selected?.mac === n.mac ? BRAND : '#8FA3B0'} stroke="#1A1A1A" strokeWidth="1" />
+                          <circle r={CLIENT_R} fill={selected?.mac === n.mac ? BRAND : n.isCamera ? '#7bb3ff' : '#8FA3B0'} stroke="#1A1A1A" strokeWidth="1" />
+                          {n.isCamera && <circle r={2.5} fill="#1A1A1A" />}
                           <text x={CLIENT_R + 5} y={4} fontSize="9" fill="#E5E5E5">{label}</text>
                         </g>
                       );

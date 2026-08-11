@@ -76,14 +76,51 @@ function PortTable({ ports }) {
   );
 }
 
+// Attached-per-port map from the controller topology: edges carry the parent-side
+// port number, which is the only reliable per-port wiring source (client sw_port
+// covers wired clients but not downstream UniFi devices).
+function buildAttachments(topo, deviceMac, detailClients) {
+  if (!topo?.edges) return {};
+  const clientRows = new Map((detailClients || []).map((c) => [c.mac, c]));
+  const childEdges = new Map(); // uplinkMac -> edges
+  for (const e of topo.edges) {
+    if (!childEdges.has(e.uplinkMac)) childEdges.set(e.uplinkMac, []);
+    childEdges.get(e.uplinkMac).push(e);
+  }
+  const behindCount = (m, seen = new Set()) => {
+    if (seen.has(m)) return 0;
+    seen.add(m);
+    let n = 0;
+    for (const e of childEdges.get(m) || []) { n += 1 + behindCount(e.downlinkMac, seen); }
+    return n;
+  };
+  const out = {};
+  for (const e of childEdges.get(deviceMac) || []) {
+    if (e.uplinkPortNumber == null) continue; // wireless attachments have no port
+    const dm = topo.deviceMeta?.[e.downlinkMac];
+    const cm = topo.clientMeta?.[e.downlinkMac];
+    const row = clientRows.get(e.downlinkMac);
+    const entry = dm
+      ? { mac: e.downlinkMac, kind: 'device', name: dm.name, model: dm.model, ip: dm.ip, behind: behindCount(e.downlinkMac) }
+      : { mac: e.downlinkMac, kind: 'client', name: cm?.name || cm?.hostname || row?.name || row?.hostname, ip: cm?.ip || row?.ip, signal: cm?.signal ?? row?.signal };
+    if (!out[e.uplinkPortNumber]) out[e.uplinkPortNumber] = [];
+    out[e.uplinkPortNumber].push(entry);
+  }
+  return out;
+}
+
 function DeviceDetailModal({ mac, onClose }) {
   const [detail, setDetail] = useState(null);
+  const [topo, setTopo] = useState(null);
   const { toast } = useToast();
 
   useEffect(() => {
     client.get(`/unifi/devices/${mac}`)
       .then(({ data }) => setDetail(data))
       .catch(() => { setDetail(false); toast({ type: 'error', title: 'Failed to load device' }); });
+    client.get('/unifi/topology')
+      .then(({ data }) => setTopo(data))
+      .catch(() => setTopo(null));
   }, [mac, toast]);
 
   if (detail === false) {
@@ -128,7 +165,8 @@ function DeviceDetailModal({ mac, onClose }) {
         <p className="text-xs font-semibold text-ink mb-2 flex items-center gap-1.5"><Cable size={13} className="text-brand" /> Front Panel</p>
         <div className="panel p-3">
           <DeviceFaceplate ports={ports} type={device.type} model={device.model} name={device.name}
-            deviceMac={device.mac} deviceName={device.name} uplinkPortIdx={device.uplink_port} />
+            deviceMac={device.mac} deviceName={device.name} uplinkPortIdx={device.uplink_port}
+            attachments={buildAttachments(topo, device.mac, clients)} />
         </div>
       </div>
 

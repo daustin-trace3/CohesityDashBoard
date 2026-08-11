@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { X, Router, Monitor, History, Cable } from 'lucide-react';
 import PortHistoryModal from './PortHistoryModal';
 import { poeWatts } from './helpers';
 
@@ -36,8 +38,11 @@ function isPoeActive(port) {
 // Generic front-panel render, driven entirely by the ports array — scales from
 // 5 to 24+ ports (wraps into extra port banks of up to 12 columns). Reused on
 // both the Devices detail modal and directly on switch/AP rows.
-export default function DeviceFaceplate({ ports = [], type, model, name, deviceMac, deviceName, uplinkPortIdx, errorFlags }) {
+// `attachments` maps port_idx -> [{mac,name,kind:'device'|'client',ip,signal,model}]
+// and powers the port click popup; without it the popup still shows port facts.
+export default function DeviceFaceplate({ ports = [], type, model, name, deviceMac, deviceName, uplinkPortIdx, errorFlags, attachments }) {
   const [hover, setHover] = useState(null); // { port, x, y }
+  const [popupPort, setPopupPort] = useState(null);
   const [historyPort, setHistoryPort] = useState(null);
 
   const rj45 = useMemo(() => [...ports].filter((p) => !isSfp(p)).sort((a, b) => a.port_idx - b.port_idx), [ports]);
@@ -66,10 +71,7 @@ export default function DeviceFaceplate({ ports = [], type, model, name, deviceM
   const svgW = Math.max(minW, chassisW);
   const svgH = Math.max(120, chassisH);
 
-  const onPortClick = (port) => {
-    if (!deviceMac) return;
-    setHistoryPort(port);
-  };
+  const attachedFor = (p) => (attachments && attachments[p.port_idx]) || [];
 
   const renderPort = (p, x, y, w, h, keyPrefix) => {
     const errored = errorFlags ? !!errorFlags[p.port_idx] : portHasErrors(p);
@@ -77,21 +79,36 @@ export default function DeviceFaceplate({ ports = [], type, model, name, deviceM
     const poeActive = isPoeActive(p);
     const w_ = poeWatts(p);
     const uplink = p.is_uplink || (uplinkPortIdx != null && p.port_idx === uplinkPortIdx);
+    const attached = attachedFor(p);
+    const stagger = ((p.port_idx % 8) * 0.18).toFixed(2);
     return (
       <g key={`${keyPrefix}-${p.port_idx}`}
         transform={`translate(${x},${y})`}
         onMouseEnter={(e) => setHover({ port: p, x: e.clientX, y: e.clientY })}
         onMouseMove={(e) => setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h))}
         onMouseLeave={() => setHover(null)}
-        onClick={() => onPortClick(p)}
-        style={{ cursor: deviceMac ? 'pointer' : 'default' }}
+        onClick={() => { setHover(null); setPopupPort(p); }}
+        style={{ cursor: 'pointer' }}
       >
         {poeActive && (
-          <rect x={-2} y={-2} width={w + 4} height={h + 4} rx={4} fill="none" stroke={COLOR_POE} strokeWidth="2" opacity="0.85" />
+          <rect x={-2} y={-2} width={w + 4} height={h + 4} rx={4} fill="none" stroke={COLOR_POE} strokeWidth="2">
+            <animate attributeName="opacity" values="0.9;0.35;0.9" dur="2.4s" begin={`${stagger}s`} repeatCount="indefinite" />
+          </rect>
         )}
         <rect width={w} height={h} rx={2} fill={color} stroke="#1A1A1A" strokeWidth="1" />
+        {p.up && (
+          <rect x={3} y={3} width={5} height={3.5} rx={1} fill={errored ? '#7a5a1e' : '#eafff0'}>
+            <animate attributeName="opacity" values="1;0.15;1" dur={errored ? '0.7s' : '1.3s'} begin={`${stagger}s`} repeatCount="indefinite" />
+          </rect>
+        )}
         <text x={w / 2} y={h / 2 + 4} textAnchor="middle" fontSize="9" fill="#111" fontWeight="600">{p.port_idx}</text>
         {uplink && <text x={w / 2} y={-4} textAnchor="middle" fontSize="9" fill="#E5E5E5">&#9650;</text>}
+        {attached.length > 0 && (
+          <g transform={`translate(${w - 5},${h - 5})`}>
+            <circle r={4.5} fill="#0d0f12" stroke={COLOR_POE} strokeWidth="0.75" />
+            <text y={2.5} textAnchor="middle" fontSize="6.5" fill="#E5E5E5" fontWeight="700">{attached.length}</text>
+          </g>
+        )}
         {poeActive && w_ != null && (
           <text x={w / 2} y={h + 11} textAnchor="middle" fontSize="7" fill="#8FA3B0">{w_.toFixed(1)}W</text>
         )}
@@ -108,7 +125,9 @@ export default function DeviceFaceplate({ ports = [], type, model, name, deviceM
           <g transform={`translate(${padX}, ${padTop})`}>
             <rect width={lcdW} height={banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP} rx={4} fill="#0d0f12" stroke="#3a4048" strokeWidth="1" />
             <rect x={6} y={6} width={lcdW - 12} height={(banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP) - 12} rx={2} fill="#062033" stroke="#006FFF" strokeWidth="0.5" opacity="0.6" />
-            <circle cx={lcdW / 2} cy={(banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP) / 2} r={3} fill="#006FFF" opacity="0.8" />
+            <circle cx={lcdW / 2} cy={(banks * 2 * (PORT_H + PORT_GAP) - PORT_GAP) / 2} r={3} fill="#006FFF">
+              <animate attributeName="opacity" values="0.9;0.3;0.9" dur="3s" repeatCount="indefinite" />
+            </circle>
           </g>
         )}
         <g transform={`translate(${padX + lcdW + (lcdW ? 12 : 0)}, ${padTop})`}>
@@ -121,16 +140,29 @@ export default function DeviceFaceplate({ ports = [], type, model, name, deviceM
         )}
       </svg>
 
-      {hover && (
+      {hover && !popupPort && (
         <div className="fixed z-50 pointer-events-none bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl px-3 py-2 text-[11px] text-ink"
           style={{ left: hover.x + 12, top: hover.y + 12, maxWidth: 220 }}>
           <p className="font-semibold mb-1">Port {hover.port.port_idx}{hover.port.name ? ` — ${hover.port.name}` : ''}</p>
           <p className="text-ink-muted">{hover.port.up ? 'Up' : 'Down'}{hover.port.speed ? ` · ${hover.port.speed} Mbps` : ''}{hover.port.full_duplex != null ? ` · ${hover.port.full_duplex ? 'Full' : 'Half'} duplex` : ''}</p>
           {hover.port.poe_class && <p className="text-ink-muted">PoE {hover.port.poe_class}{poeWatts(hover.port) != null ? ` · ${poeWatts(hover.port).toFixed(1)}W` : ''}{hover.port.poe_voltage ? ` · ${Number(hover.port.poe_voltage).toFixed(1)}V` : ''}</p>}
+          {attachedFor(hover.port).length > 0 && <p className="text-ink-muted">{attachedFor(hover.port).length} attached</p>}
           {(Number(hover.port.rx_errors) || Number(hover.port.tx_errors)) ? (
             <p className="text-status-warn">{fmtErrCount(hover.port)} errors</p>
           ) : null}
+          <p className="text-ink-faint mt-1">Click for details</p>
         </div>
+      )}
+
+      {popupPort && (
+        <PortPopup
+          port={popupPort}
+          attached={attachedFor(popupPort)}
+          deviceName={deviceName || name}
+          canHistory={!!deviceMac}
+          onHistory={() => { setPopupPort(null); setHistoryPort(popupPort); }}
+          onClose={() => setPopupPort(null)}
+        />
       )}
 
       {historyPort && (
@@ -142,6 +174,86 @@ export default function DeviceFaceplate({ ports = [], type, model, name, deviceM
           onClose={() => setHistoryPort(null)}
         />
       )}
+    </div>
+  );
+}
+
+function PortPopup({ port, attached, deviceName, canHistory, onHistory, onClose }) {
+  const errs = (Number(port.rx_errors) || 0) + (Number(port.tx_errors) || 0);
+  const drops = (Number(port.rx_dropped) || 0) + (Number(port.tx_dropped) || 0);
+  const w_ = poeWatts(port);
+  return createPortal(
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative panel w-full max-w-md max-h-[80vh] flex flex-col" style={{ borderTop: '3px solid #006FFF' }}>
+        <div className="flex items-start justify-between p-4 pb-3 border-b border-cohesity-border">
+          <div className="flex items-center gap-2 min-w-0">
+            <Cable size={16} className="text-brand shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-ink truncate">Port {port.port_idx}{port.name && port.name !== `Port ${port.port_idx}` ? ` — ${port.name}` : ''}</p>
+              <p className="text-[11px] text-ink-faint truncate">{deviceName}</p>
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="Close"
+            className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer shrink-0">
+            <X size={15} />
+          </button>
+        </div>
+        <div className="p-4 overflow-y-auto">
+          <div className="grid grid-cols-3 gap-3 mb-4 text-xs">
+            <PFact label="Status" value={port.up ? `Up · ${port.speed ? `${port.speed} Mbps` : ''}` : 'Down'} tone={port.up ? 'ok' : undefined} />
+            <PFact label="Media" value={port.media || '—'} />
+            <PFact label="Network" value={port.network_name || '—'} />
+            <PFact label="PoE" value={port.poe_enable ? `${port.poe_class || 'on'}${w_ != null ? ` · ${w_.toFixed(1)}W` : ''}${port.poe_good === 0 ? ' · FAULT' : ''}` : '—'}
+              tone={port.poe_good === 0 && port.poe_enable ? 'bad' : undefined} />
+            <PFact label="Errors" value={errs.toLocaleString()} tone={errs > 0 ? 'warn' : undefined} />
+            <PFact label="Dropped" value={drops.toLocaleString()} />
+          </div>
+
+          <p className="text-xs font-semibold text-ink mb-2">Attached ({attached.length})</p>
+          {attached.length === 0 ? (
+            <p className="text-xs text-ink-muted mb-3">{port.up ? 'Nothing directly attached is reported on this port.' : 'Port is down — nothing attached.'}</p>
+          ) : (
+            <div className="flex flex-col gap-1 mb-3">
+              {attached.map((a) => (
+                <div key={a.mac} className="flex items-center gap-2 text-xs bg-surface-overlay rounded-lg px-3 py-2">
+                  {a.kind === 'device'
+                    ? <Router size={13} className="text-brand shrink-0" />
+                    : <Monitor size={13} className="text-ink-faint shrink-0" />}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-ink truncate">{a.name || a.mac}</p>
+                    <p className="text-[10px] text-ink-faint truncate">
+                      {[a.kind === 'device' ? (a.model || 'UniFi device') : null, a.ip, a.mac, a.signal != null ? `${a.signal} dBm` : null]
+                        .filter(Boolean).join(' · ')}
+                    </p>
+                  </div>
+                  {a.kind === 'device' && a.behind > 0 && (
+                    <span className="text-[10px] text-ink-faint shrink-0">+{a.behind} behind</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {canHistory && (
+            <button onClick={onHistory}
+              className="flex items-center gap-1.5 text-xs font-semibold text-brand border border-brand/30 bg-brand/10 rounded-lg px-3 py-1.5 cursor-pointer hover:bg-brand/20 transition-colors">
+              <History size={13} /> View port history
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function PFact({ label, value, tone }) {
+  const toneCls = tone === 'ok' ? 'text-status-ok' : tone === 'warn' ? 'text-status-warn' : tone === 'bad' ? 'text-status-bad' : 'text-ink';
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-ink-faint">{label}</p>
+      <p className={toneCls}>{value ?? '—'}</p>
     </div>
   );
 }
