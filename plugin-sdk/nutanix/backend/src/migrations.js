@@ -1,10 +1,15 @@
 // Nutanix scope: nutanix_* tables. Dual-connection model (Prism Central v3 +
 // groups, or Prism Element v2.0 + v1) registered like vCenter/NetBackup, plus
 // separate Move appliance connections. Inventory tables are replaced per source
-// each poll (failed sections keep prior rows — see nutanixPoller.js); metrics/
+// each poll (failed sections keep prior rows — see poller.js); metrics/
 // events/history tables append and self-retain. Single version — no live estate
 // yet, so the whole schema ships in v1.
-module.exports = [
+//
+// Copied VERBATIM from backend/db/migrations/nutanix.js — the host runs
+// plugin migrations under the same plugin id 'nutanix', and an existing local
+// DB already has a schema_migrations row for nutanix v1, so on install this
+// migration is skipped and existing nutanix_* data is adopted intact.
+const migrations = [
   {
     version: 1,
     up(db) {
@@ -361,3 +366,5 @@ module.exports = [
     },
   },
 ];
+
+module.exports = { migrations };

@@ -49,7 +49,6 @@ const { seedAria } = require('./generators/aria');
 const { seedAriaops } = require('./generators/ariaops');
 const { seedNetbackup } = require('./generators/netbackup');
 const { seedAws } = require('./generators/aws');
-const { seedNutanix } = require('./generators/nutanix');
 
 const SEEDED_TABLES = [
   // core
@@ -99,12 +98,6 @@ const SEEDED_TABLES = [
   'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_optimizer_recommendations',
   'aws_accounts',
-  // nutanix (children before parents)
-  'nutanix_move_events', 'nutanix_move_workloads', 'nutanix_move_plans', 'nutanix_move_conns',
-  'nutanix_metrics_history', 'nutanix_hosts', 'nutanix_vms', 'nutanix_containers',
-  'nutanix_disks', 'nutanix_alerts', 'nutanix_events', 'nutanix_pds', 'nutanix_replications',
-  'nutanix_remote_sites', 'nutanix_protection_policies', 'nutanix_recovery_points',
-  'nutanix_clusters', 'nutanix_sources', 'nutanix_issue_history',
 ];
 
 function wipeSeededTables(database) {
@@ -138,7 +131,6 @@ async function main() {
   const ariaopsResult = db.transaction(() => seedAriaops(db, { now, encrypt }))();
   const netbackupResult = db.transaction(() => seedNetbackup(db, { now, encrypt }))();
   const awsResult = db.transaction(() => seedAws(db, { now, encrypt }))();
-  const nutanixResult = db.transaction(() => seedNutanix(db, { now, encrypt }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -161,8 +153,6 @@ async function main() {
     ['ariaops instances/resources/alerts', `${ariaopsResult.instances}/${ariaopsResult.resources}/${ariaopsResult.alerts}`],
     ['netbackup sources/policies/jobs', `${netbackupResult.sources}/${netbackupResult.policies}/${netbackupResult.jobs}`],
     ['aws ec2/ecs services/s3/cost rows', `${awsResult.ec2}/${awsResult.ecsServices}/${awsResult.s3}/${awsResult.costRows}`],
-    ['nutanix sources/clusters/hosts/vms', `${nutanixResult.sources}/${nutanixResult.clusters}/${nutanixResult.hosts}/${nutanixResult.vms}`],
-    ['nutanix move plans', `${nutanixResult.movePlans}`],
     ['users', 1],
   ];
 

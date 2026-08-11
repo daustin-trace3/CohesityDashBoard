@@ -30,7 +30,6 @@ const dellManifest = require('../platforms/dell');
 const ariaManifest = require('../platforms/aria');
 const netbackupManifest = require('../platforms/netbackup');
 const awsManifest = require('../platforms/aws');
-const nutanixManifest = require('../platforms/nutanix');
 const { createApp } = require('../app');
 
 const pureAdvisor = require('../services/advisors/pureAdvisor');
@@ -41,7 +40,6 @@ const dellAdvisor = require('../services/advisors/dellAdvisor');
 const ariaAdvisor = require('../services/advisors/ariaAdvisor');
 const netbackupAdvisor = require('../services/advisors/netbackupAdvisor');
 const awsAdvisor = require('../services/advisors/awsAdvisor');
-const nutanixAdvisor = require('../services/advisors/nutanixAdvisor');
 
 const API_KEY = 'test-api-key';
 
@@ -54,7 +52,6 @@ const ADVISORS = {
   aria: ariaAdvisor,
   netbackup: netbackupAdvisor,
   aws: awsAdvisor,
-  nutanix: nutanixAdvisor,
 };
 
 describe('platform AI advisors: contract', () => {
@@ -101,7 +98,6 @@ describe('platform AI advisors: dispatcher routes', () => {
     registry.registerPlugin(ariaManifest);
     registry.registerPlugin(netbackupManifest);
     registry.registerPlugin(awsManifest);
-    registry.registerPlugin(nutanixManifest);
     app = createApp({ licenseGate: (req, res, next) => next() });
   });
 
@@ -166,14 +162,6 @@ describe('platform AI advisors: dispatcher routes', () => {
   it('GET /api/aws/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
     const key = awsAdvisor.REPORTS[0];
     const res = await request(app).get(`/api/aws/advisor/${slug(key)}`).set('x-api-key', API_KEY);
-    expect(res.status).toBe(200);
-    expect(res.body.enabled).toBe(false);
-    expect(res.body.report).toBeNull();
-  });
-
-  it('GET /api/nutanix/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
-    const key = nutanixAdvisor.REPORTS[0];
-    const res = await request(app).get(`/api/nutanix/advisor/${slug(key)}`).set('x-api-key', API_KEY);
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(false);
     expect(res.body.report).toBeNull();

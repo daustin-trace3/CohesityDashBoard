@@ -1,17 +1,20 @@
-// Nutanix platform manifest (ICC contract, feat/plugin-touchpoints). Dual
-// connection model (Prism Central / Prism Element) registered like
-// vCenter/NetBackup, plus Move sub-connections. RBAC grants,
-// ops-summary card, alert-email collection, global search, and per-cluster
-// metrics history are all wired via the branch's manifest hooks
+// Nutanix plugin manifest. Dual connection model (Prism Central / Prism
+// Element) registered like vCenter/NetBackup, plus Move sub-connections.
+// RBAC grants, ops-summary card, alert-email collection, global search, and
+// per-cluster metrics history are all wired via the host's manifest hooks
 // (backend/core/registry.js) — no core.js/ops.js/poller.js/alertNotifier.js/
 // search.js/server360.js edits required.
-const nutanixMigrations = require('../../db/migrations/nutanix');
-const nutanixRouter = require('../../routes/nutanix');
-const { createNutanixPollerHandle } = require('../../services/nutanixPoller');
-const { computeIssues } = require('../../services/nutanixIssues');
+//
+// Ported from backend/platforms/nutanix/index.js. Migrations copied
+// VERBATIM (same scope id 'nutanix') so an existing local DB's nutanix_* data
+// (and its schema_migrations row) is adopted intact on install.
+const { migrations } = require('./migrations');
+const { createRouter } = require('./router');
+const { createNutanixPoller } = require('./poller');
+const { computeIssues } = require('./issues');
 
-function opsSummary() {
-  const db = require('../../db/database');
+function opsSummary(coreApi) {
+  const db = coreApi.db;
   const sourceCount = db.prepare('SELECT COUNT(*) n FROM nutanix_sources').get().n;
   if (!sourceCount) return null;
 
@@ -20,7 +23,7 @@ function opsSummary() {
   const capAgg = db.prepare('SELECT SUM(storage_capacity_bytes) cap, SUM(storage_usage_bytes) used FROM nutanix_clusters').get();
   const usedPct = capAgg.cap > 0 ? Math.round((capAgg.used / capAgg.cap) * 100) : null;
 
-  const issues = computeIssues();
+  const issues = computeIssues(coreApi);
   const bySeverityCount = { critical: 0, warning: 0 };
   for (const i of issues) {
     if (i.severity === 'critical') bySeverityCount.critical += 1;
@@ -47,9 +50,8 @@ function opsSummary() {
   };
 }
 
-function collectAlerts() {
-  const db = require('../../db/database');
-  return db.prepare(`
+function collectAlerts(coreApi) {
+  return coreApi.db.prepare(`
     SELECT issue_key, severity, source, target, message, first_seen, last_seen
     FROM nutanix_issue_history WHERE status = 'open'
   `).all().map((row) => ({
@@ -85,8 +87,8 @@ const searchCategories = [
 /**
  * Server 360 contribution: VMs matching the queried server name/IP, either by
  * case-insensitive name match or membership in the VM's ip_addresses JSON
- * array. Display-ready per the registry.js provider contract; never throws
- * (a bad JSON row is skipped, not fatal).
+ * array. Display-ready per the host registry.js provider contract; never
+ * throws (a bad JSON row is skipped, not fatal).
  */
 function server360(coreApi, ctx) {
   const db = coreApi.db;
@@ -151,12 +153,13 @@ module.exports = {
   name: 'Nutanix',
   apiVersion: 1,
   color: '#7855FA',
-  migrations: nutanixMigrations,
-  createRouter() {
-    return nutanixRouter;
+  version: '1.0.0',
+  migrations,
+  createRouter(coreApi) {
+    return createRouter(coreApi);
   },
-  createPoller() {
-    return createNutanixPollerHandle();
+  createPoller(coreApi) {
+    return createNutanixPoller(coreApi);
   },
   statusTables: ['nutanix_sources'],
   settingsFields: [],

@@ -3,44 +3,36 @@
 // guards every field access; a malformed/missing field degrades to null
 // rather than throwing, and every response body is treated as untrusted.
 // Basic auth + session-cookie reuse (per source), calls serialized per
-// source, back off + surface on HTTP 429 (contract decisions #2, #7).
-const axios = require('axios');
+// source, back off + surface on HTTP 429.
+//
+// DEVIATION FROM THE BUILT-IN: the original (backend/services/nutanixApi.js)
+// uses axios, which is not available to a bundled plugin (esbuild has no
+// axios to bundle from plugin-sdk's dependency tree). Re-implemented on
+// Node's built-in `https` module (plugin-sdk/proxmox backend client pattern),
+// with GET (query-string) and POST (JSON body) support. Session-cookie reuse,
+// 401 re-auth-once, and 429 backoff behavior is preserved exactly; every
+// function now threads `coreApi` through for decrypt/logging instead of
+// requiring host modules directly.
 const https = require('https');
-const { decrypt } = require('./encryption');
-const logger = require('../utils/logger');
+const { URLSearchParams } = require('url');
 
 const SESSION_TTL_MS = 20 * 60 * 1000;
 const sessions = new Map(); // source.id -> { cookie, fetchedAt }
 const queues = new Map(); // source.id -> Promise (serialization mutex)
 
-// ── Credentials / client plumbing ───────────────────────────────────────────
+// ── Credentials / transport plumbing ────────────────────────────────────────
 
-function creds(source) {
+function creds(source, coreApi) {
   // Unsaved candidates (test connection) carry a plaintext password;
   // registered rows carry the encrypted blob.
   if (source.password != null) return { username: source.username, password: source.password };
   if (!source.encrypted_credentials) return { username: source.username, password: null };
   try {
-    const c = JSON.parse(decrypt(source.encrypted_credentials));
+    const c = JSON.parse(coreApi.encryption.decrypt(source.encrypted_credentials));
     return { username: source.username, password: c.password };
   } catch {
     return { username: source.username, password: null };
   }
-}
-
-function baseUrl(source) {
-  const port = source.port || 9440;
-  return `https://${source.host}:${port}`;
-}
-
-function baseClient(source, headers = {}) {
-  return axios.create({
-    baseURL: baseUrl(source),
-    timeout: 60000,
-    headers,
-    httpsAgent: new https.Agent({ rejectUnauthorized: !!source.ssl_verify }),
-    validateStatus: (s) => s >= 200 && s < 300,
-  });
 }
 
 /** Serializes async work per source id — Nutanix rate-limits aggressive fanout. */
@@ -52,13 +44,65 @@ function serialize(sourceId, fn) {
   return next;
 }
 
-async function withBackoff(fn) {
+/** Raw GET/POST against a Nutanix source. Resolves with { data, headers };
+ *  rejects with an Error carrying `.response = { status, data, headers }`. */
+function rawRequest(source, { method = 'GET', path, params, data, headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v !== undefined && v !== null) qs.set(k, String(v));
+    }
+    const query = qs.toString();
+    const reqPath = `${path}${query ? `?${query}` : ''}`;
+    const body = data !== undefined ? JSON.stringify(data) : undefined;
+    const reqHeaders = { ...headers };
+    if (body !== undefined) {
+      reqHeaders['Content-Type'] = 'application/json';
+      reqHeaders['Content-Length'] = Buffer.byteLength(body);
+    }
+    const sslVerify = source.ssl_verify !== undefined ? source.ssl_verify : source.sslVerify;
+
+    const req = https.request(
+      {
+        hostname: source.host,
+        port: source.port || 9440,
+        path: reqPath,
+        method,
+        timeout: 60000,
+        rejectUnauthorized: !!sslVerify,
+        headers: reqHeaders,
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => {
+          let json = null;
+          try { json = raw ? JSON.parse(raw) : null; } catch { json = raw || null; }
+          const status = res.statusCode;
+          if (status >= 200 && status < 300) {
+            resolve({ data: json, headers: res.headers });
+            return;
+          }
+          const e = new Error(json?.message || json?.data?.message || `HTTP ${status}`);
+          e.response = { status, data: json, headers: res.headers };
+          reject(e);
+        });
+      }
+    );
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
+    req.on('error', (err) => reject(err));
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+async function withBackoff(fn, coreApi) {
   try {
     return await fn();
   } catch (err) {
     if (err.response?.status === 429) {
       const retryAfter = Number(err.response.headers?.['retry-after']) || 2;
-      logger.warn(`[NutanixApi] HTTP 429 — backing off ${retryAfter}s`);
+      coreApi.logger.warn(`[NutanixApi] HTTP 429 — backing off ${retryAfter}s`);
       await new Promise((r) => setTimeout(r, retryAfter * 1000));
       return await fn();
     }
@@ -71,23 +115,21 @@ async function withBackoff(fn) {
  * present; falls back to Basic auth and re-caches whatever cookie comes back.
  * A 401 forces one re-auth attempt.
  */
-async function request(source, { method = 'GET', path, params, data, headers = {} } = {}) {
+async function request(source, coreApi, { method = 'GET', path, params, data, headers = {} } = {}) {
   const sourceId = source.id ?? `test-${source.host}`;
   return serialize(sourceId, () => withBackoff(async () => {
-    const { username, password } = creds(source);
+    const { username, password } = creds(source, coreApi);
     const cached = sessions.get(sourceId);
     const useCookie = cached && Date.now() - cached.fetchedAt < SESSION_TTL_MS;
 
     const doCall = async (withCookie) => {
       const reqHeaders = { ...headers };
-      const opts = { method, url: path, params, data };
       if (withCookie && cached?.cookie) {
         reqHeaders.Cookie = cached.cookie;
       } else if (username && password) {
-        opts.auth = { username, password };
+        reqHeaders.Authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
       }
-      const client = baseClient(source, reqHeaders);
-      const res = await client.request(opts);
+      const res = await rawRequest(source, { method, path, params, data, headers: reqHeaders });
       const setCookie = res.headers?.['set-cookie'];
       if (setCookie && setCookie.length) {
         sessions.set(sourceId, { cookie: setCookie.map((c) => c.split(';')[0]).join('; '), fetchedAt: Date.now() });
@@ -104,14 +146,14 @@ async function request(source, { method = 'GET', path, params, data, headers = {
       }
       throw err;
     }
-  }));
+  }, coreApi));
 }
 
 function invalidateSession(sourceId) {
   sessions.delete(sourceId);
 }
 
-// ── Parsing helpers (failure-tolerant, per contract §6-7) ──────────────────
+// ── Parsing helpers (failure-tolerant) ──────────────────────────────────────
 
 // Nutanix "-1" (or -1) is the not-available sentinel throughout v1/v2/v3.
 function numOrNull(v) {
@@ -168,22 +210,22 @@ const safeArr = (v) => (Array.isArray(v) ? v : []);
 const PE_V2 = '/PrismGateway/services/rest/v2.0';
 const PE_V1 = '/PrismGateway/services/rest/v1';
 
-async function peGet(source, path, params) {
-  return request(source, { method: 'GET', path: `${PE_V2}${path}`, params });
+async function peGet(source, coreApi, path, params) {
+  return request(source, coreApi, { method: 'GET', path: `${PE_V2}${path}`, params });
 }
-async function peV1Get(source, path, params) {
-  return request(source, { method: 'GET', path: `${PE_V1}${path}`, params });
+async function peV1Get(source, coreApi, path, params) {
+  return request(source, coreApi, { method: 'GET', path: `${PE_V1}${path}`, params });
 }
 
-async function fetchPECluster(source) {
-  const c = await peGet(source, '/cluster/');
+async function fetchPECluster(source, coreApi) {
+  const c = await peGet(source, coreApi, '/cluster/');
   if (!c || typeof c !== 'object') return null;
   const stats = c.stats || {};
   const usage = c.usage_stats || {};
   let ft = null;
-  try { ft = await fetchFaultTolerance(source); } catch { ft = null; }
+  try { ft = await fetchFaultTolerance(source, coreApi); } catch { ft = null; }
   let ncc = null;
-  try { ncc = await fetchNccSummary(source); } catch { ncc = null; }
+  try { ncc = await fetchNccSummary(source, coreApi); } catch { ncc = null; }
   return {
     uuid: strOrNull(c.uuid),
     name: strOrNull(c.name),
@@ -212,8 +254,8 @@ async function fetchPECluster(source) {
   };
 }
 
-async function fetchFaultTolerance(source) {
-  const d = await peGet(source, '/cluster/domain_fault_tolerance_status/');
+async function fetchFaultTolerance(source, coreApi) {
+  const d = await peGet(source, coreApi, '/cluster/domain_fault_tolerance_status/');
   const list = safeArr(d?.entities ?? d);
   if (!list.length) return null;
   let min = null;
@@ -230,9 +272,9 @@ async function fetchFaultTolerance(source) {
   return { minFailuresTolerable: min, components };
 }
 
-async function fetchNccSummary(source) {
+async function fetchNccSummary(source, coreApi) {
   try {
-    const d = await peV1Get(source, '/ncc/run_summary');
+    const d = await peV1Get(source, coreApi, '/ncc/run_summary');
     if (!d || typeof d !== 'object') return null;
     return {
       pass: numOrNull(d.pass ?? d.numPassed ?? d.passCount) ?? 0,
@@ -244,8 +286,8 @@ async function fetchNccSummary(source) {
   }
 }
 
-async function fetchPEHosts(source) {
-  const d = await peGet(source, '/hosts/');
+async function fetchPEHosts(source, coreApi) {
+  const d = await peGet(source, coreApi, '/hosts/');
   return safeArr(d?.entities).map((h) => {
     const stats = h.stats || {};
     const usage = h.usage_stats || {};
@@ -282,8 +324,8 @@ async function fetchPEHosts(source) {
   });
 }
 
-async function fetchPEVms(source) {
-  const d = await peGet(source, '/vms/', { include_vm_disk_config: true, include_vm_nic_config: true });
+async function fetchPEVms(source, coreApi) {
+  const d = await peGet(source, coreApi, '/vms/', { include_vm_disk_config: true, include_vm_nic_config: true });
   return safeArr(d?.entities).map((v) => {
     const disks = safeArr(v.vm_disk_info);
     const nics = safeArr(v.vm_nics);
@@ -310,9 +352,9 @@ async function fetchPEVms(source) {
 }
 
 // v1 per-VM stats — best-effort, PE only supplies stats this way.
-async function fetchPEVmStats(source) {
+async function fetchPEVmStats(source, coreApi) {
   try {
-    const d = await peV1Get(source, '/vms/');
+    const d = await peV1Get(source, coreApi, '/vms/');
     const map = new Map();
     for (const v of safeArr(d?.entities)) {
       const stats = v.stats || {};
@@ -329,8 +371,8 @@ async function fetchPEVmStats(source) {
   }
 }
 
-async function fetchPEContainers(source) {
-  const d = await peGet(source, '/storage_containers/');
+async function fetchPEContainers(source, coreApi) {
+  const d = await peGet(source, coreApi, '/storage_containers/');
   return safeArr(d?.entities).map((c) => {
     const usage = c.usage_stats || {};
     return {
@@ -348,8 +390,8 @@ async function fetchPEContainers(source) {
   });
 }
 
-async function fetchPEDisks(source) {
-  const d = await peGet(source, '/disks/');
+async function fetchPEDisks(source, coreApi) {
+  const d = await peGet(source, coreApi, '/disks/');
   return safeArr(d?.entities).map((disk) => {
     const usage = disk.usage_stats || {};
     const hw = disk.disk_hardware_config || {};
@@ -370,8 +412,8 @@ async function fetchPEDisks(source) {
   });
 }
 
-async function fetchPEAlerts(source) {
-  const d = await peGet(source, '/alerts/', { count: 500, resolved: false });
+async function fetchPEAlerts(source, coreApi) {
+  const d = await peGet(source, coreApi, '/alerts/', { count: 500, resolved: false });
   return safeArr(d?.entities).map((a) => {
     const sev = String(a.severity || '').replace(/^k/, '').toLowerCase();
     return {
@@ -388,8 +430,8 @@ async function fetchPEAlerts(source) {
   });
 }
 
-async function fetchPEEvents(source, sinceUsecs) {
-  const d = await peGet(source, '/events/', { count: 500, start_time_in_usecs: sinceUsecs });
+async function fetchPEEvents(source, coreApi, sinceUsecs) {
+  const d = await peGet(source, coreApi, '/events/', { count: 500, start_time_in_usecs: sinceUsecs });
   return safeArr(d?.entities).map((e) => ({
     message: strOrNull(e.message ?? e.default_message),
     entityType: strOrNull(e.affected_entities?.[0]?.entity_type),
@@ -398,8 +440,8 @@ async function fetchPEEvents(source, sinceUsecs) {
   }));
 }
 
-async function fetchPEPds(source) {
-  const d = await peGet(source, '/protection_domains/');
+async function fetchPEPds(source, coreApi) {
+  const d = await peGet(source, coreApi, '/protection_domains/');
   return safeArr(d?.entities).map((pd) => ({
     name: strOrNull(pd.name),
     active: boolToInt(pd.active),
@@ -414,8 +456,8 @@ async function fetchPEPds(source) {
   }));
 }
 
-async function fetchPEReplications(source) {
-  const d = await peGet(source, '/protection_domains/replications/');
+async function fetchPEReplications(source, coreApi) {
+  const d = await peGet(source, coreApi, '/protection_domains/replications/');
   return safeArr(d?.entities).map((r) => ({
     replicationId: strOrNull(r.id),
     pdName: strOrNull(r.protection_domain_name),
@@ -429,8 +471,8 @@ async function fetchPEReplications(source) {
   }));
 }
 
-async function fetchPERemoteSites(source) {
-  const d = await peGet(source, '/remote_sites/');
+async function fetchPERemoteSites(source, coreApi) {
+  const d = await peGet(source, coreApi, '/remote_sites/');
   return safeArr(d?.entities).map((rs) => ({
     name: strOrNull(rs.name),
     status: strOrNull(rs.status),
@@ -440,18 +482,18 @@ async function fetchPERemoteSites(source) {
   }));
 }
 
-async function fetchPEUnprotectedVmCount(source) {
+async function fetchPEUnprotectedVmCount(source, coreApi) {
   try {
-    const d = await peGet(source, '/protection_domains/unprotected_vms/');
+    const d = await peGet(source, coreApi, '/protection_domains/unprotected_vms/');
     return safeArr(d?.entities).length;
   } catch {
     return null;
   }
 }
 
-async function fetchPESnapshots(source) {
+async function fetchPESnapshots(source, coreApi) {
   try {
-    const d = await peGet(source, '/protection_domains/dr_snapshots/');
+    const d = await peGet(source, coreApi, '/protection_domains/dr_snapshots/');
     return safeArr(d?.entities).map((s) => ({
       kind: 'pd_snapshot',
       pdName: strOrNull(s.protection_domain_name),
@@ -471,16 +513,16 @@ async function fetchPESnapshots(source) {
 
 const PC_V3 = '/api/nutanix/v3';
 
-async function pcPost(source, path, body) {
-  return request(source, { method: 'POST', path: `${PC_V3}${path}`, data: body });
+async function pcPost(source, coreApi, path, body) {
+  return request(source, coreApi, { method: 'POST', path: `${PC_V3}${path}`, data: body });
 }
 
-async function fetchPCClustersRaw(source, length = 100) {
-  const d = await pcPost(source, '/clusters/list', { kind: 'cluster', length });
+async function fetchPCClustersRaw(source, coreApi, length = 100) {
+  const d = await pcPost(source, coreApi, '/clusters/list', { kind: 'cluster', length });
   return safeArr(d?.entities).filter((c) => !safeArr(c.status?.resources?.config?.service_list).includes('PRISM_CENTRAL'));
 }
 
-async function fetchGroupsClusterStats(source) {
+async function fetchGroupsClusterStats(source, coreApi) {
   const body = {
     entity_type: 'cluster',
     group_member_count: 100,
@@ -499,7 +541,7 @@ async function fetchGroupsClusterStats(source) {
       { attribute: 'capacity.runway' },
     ],
   };
-  const d = await request(source, { method: 'POST', path: `${PC_V3}/groups`, data: body });
+  const d = await request(source, coreApi, { method: 'POST', path: `${PC_V3}/groups`, data: body });
   const out = new Map(); // uuid -> stats
   for (const group of safeArr(d?.group_results)) {
     for (const entity of safeArr(group.entity_results)) {
@@ -526,11 +568,11 @@ async function fetchGroupsClusterStats(source) {
   return out;
 }
 
-async function fetchPCClusters(source) {
-  const raw = await fetchPCClustersRaw(source);
+async function fetchPCClusters(source, coreApi) {
+  const raw = await fetchPCClustersRaw(source, coreApi);
   let statsMap = new Map();
-  try { statsMap = await fetchGroupsClusterStats(source); } catch (err) {
-    logger.debug(`[NutanixApi] PC groups cluster stats failed for ${source.name}: ${err.message}`);
+  try { statsMap = await fetchGroupsClusterStats(source, coreApi); } catch (err) {
+    coreApi.logger.debug(`[NutanixApi] PC groups cluster stats failed for ${source.name}: ${err.message}`);
   }
   return raw.map((c) => {
     const uuid = strOrNull(c.metadata?.uuid);
@@ -565,8 +607,8 @@ async function fetchPCClusters(source) {
   });
 }
 
-async function fetchPCHosts(source) {
-  const d = await pcPost(source, '/hosts/list', { kind: 'host', length: 500 });
+async function fetchPCHosts(source, coreApi) {
+  const d = await pcPost(source, coreApi, '/hosts/list', { kind: 'host', length: 500 });
   return safeArr(d?.entities).map((h) => {
     const r = h.status?.resources || {};
     return {
@@ -601,8 +643,8 @@ async function fetchPCHosts(source) {
   });
 }
 
-async function fetchPCVms(source) {
-  const d = await pcPost(source, '/vms/list', { kind: 'vm', length: 500 });
+async function fetchPCVms(source, coreApi) {
+  const d = await pcPost(source, coreApi, '/vms/list', { kind: 'vm', length: 500 });
   return safeArr(d?.entities).map((v) => {
     const r = v.status?.resources || {};
     const nics = safeArr(r.nic_list);
@@ -629,7 +671,7 @@ async function fetchPCVms(source) {
   });
 }
 
-async function fetchGroupsVmStats(source) {
+async function fetchGroupsVmStats(source, coreApi) {
   const body = {
     entity_type: 'mh_vm',
     group_member_count: 500,
@@ -642,7 +684,7 @@ async function fetchGroupsVmStats(source) {
       { attribute: 'controller_avg_io_latency_usecs' },
     ],
   };
-  const d = await request(source, { method: 'POST', path: `${PC_V3}/groups`, data: body });
+  const d = await request(source, coreApi, { method: 'POST', path: `${PC_V3}/groups`, data: body });
   const out = new Map();
   for (const group of safeArr(d?.group_results)) {
     for (const entity of safeArr(group.entity_results)) {
@@ -660,8 +702,8 @@ async function fetchGroupsVmStats(source) {
   return out;
 }
 
-async function fetchPCAlerts(source) {
-  const d = await pcPost(source, '/alerts/list', { kind: 'alert', length: 250, filter: 'resolved==false' });
+async function fetchPCAlerts(source, coreApi) {
+  const d = await pcPost(source, coreApi, '/alerts/list', { kind: 'alert', length: 250, filter: 'resolved==false' });
   return safeArr(d?.entities).map((a) => {
     const r = a.status?.resources || {};
     const sev = String(r.severity || '').toLowerCase();
@@ -687,9 +729,9 @@ function usecsFromIso(iso) {
   return Number.isFinite(ms) ? ms * 1000 : null;
 }
 
-async function fetchPCEvents(source, sinceIso) {
+async function fetchPCEvents(source, coreApi) {
   try {
-    const d = await pcPost(source, '/events/list', { kind: 'event', length: 250 });
+    const d = await pcPost(source, coreApi, '/events/list', { kind: 'event', length: 250 });
     return safeArr(d?.entities).map((e) => {
       const r = e.status?.resources || {};
       return {
@@ -705,8 +747,8 @@ async function fetchPCEvents(source, sinceIso) {
   }
 }
 
-async function fetchPCPolicies(source) {
-  const d = await pcPost(source, '/protection_rules/list', { kind: 'protection_rule', length: 250 });
+async function fetchPCPolicies(source, coreApi) {
+  const d = await pcPost(source, coreApi, '/protection_rules/list', { kind: 'protection_rule', length: 250 });
   return safeArr(d?.entities).map((p) => {
     const r = p.status?.resources || p.spec?.resources || {};
     const schedules = safeArr(r.availability_zone_connectivity_list).flatMap((az) => safeArr(az.snapshot_schedule_list));
@@ -721,8 +763,8 @@ async function fetchPCPolicies(source) {
   });
 }
 
-async function fetchPCRecoveryPoints(source) {
-  const d = await pcPost(source, '/vm_recovery_points/list', { kind: 'vm_recovery_point', length: 500 });
+async function fetchPCRecoveryPoints(source, coreApi) {
+  const d = await pcPost(source, coreApi, '/vm_recovery_points/list', { kind: 'vm_recovery_point', length: 500 });
   return safeArr(d?.entities).map((rp) => {
     const r = rp.status?.resources || {};
     return {
@@ -738,24 +780,23 @@ async function fetchPCRecoveryPoints(source) {
   });
 }
 
-// v4 GA probe — record what's discoverable but v3 remains the poll path
-// (contract #1 / prism-central.md §1 recommendation).
-async function fetchV4Probe(source) {
-  const d = await request(source, { method: 'GET', path: '/api/clustermgmt/v4.0/config/clusters', params: { '$limit': 5 } });
+// v4 GA probe — record what's discoverable but v3 remains the poll path.
+async function fetchV4Probe(source, coreApi) {
+  const d = await request(source, coreApi, { method: 'GET', path: '/api/clustermgmt/v4.0/config/clusters', params: { '$limit': 5 } });
   return safeArr(d?.data);
 }
 
 // ── Connection test ─────────────────────────────────────────────────────────
 
-async function testConnection(sourceLike) {
+async function testConnection(sourceLike, coreApi) {
   try {
     if (sourceLike.source_type === 'prism_central' || sourceLike.sourceType === 'prism_central') {
-      const raw = await fetchPCClustersRaw(sourceLike, 5);
+      const raw = await fetchPCClustersRaw(sourceLike, coreApi, 5);
       let v4 = false;
-      try { await fetchV4Probe(sourceLike); v4 = true; } catch { v4 = false; }
+      try { await fetchV4Probe(sourceLike, coreApi); v4 = true; } catch { v4 = false; }
       return { ok: true, apiFlavor: v4 ? 'v3+v4' : 'v3', productVersion: strOrNull(raw[0]?.status?.resources?.config?.software_map?.NOS?.version) || null, clusterCount: raw.length };
     }
-    const cluster = await peGet(sourceLike, '/cluster/');
+    const cluster = await peGet(sourceLike, coreApi, '/cluster/');
     return { ok: true, apiFlavor: 'v2.0', productVersion: strOrNull(cluster?.version) || null };
   } catch (err) {
     const status = err.response?.status;
@@ -780,6 +821,6 @@ module.exports = {
   // PC
   fetchPCClusters, fetchGroupsClusterStats, fetchPCHosts, fetchPCVms, fetchGroupsVmStats,
   fetchPCAlerts, fetchPCEvents, fetchPCPolicies, fetchPCRecoveryPoints, fetchV4Probe,
-  // helpers (exported for the poller/tests)
+  // helpers (exported for the poller/router)
   numOrNull, strOrNull, usecsToIso,
 };

@@ -1,22 +1,21 @@
-// Computed Nutanix issues (shared by routes and the poller) plus their
-// lifecycle history, mirroring vcenterIssues.js. Issue identity is
-// `type|source|target` — stable across polls even as the message text
-// changes. computeRpoCompliance() is also consumed directly by
-// GET /nutanix/protection (contract: rpoCompliance array).
-const db = require('../db/database');
-const { getSetting } = require('./settings');
-
-function clampedInt(key, def, min, max) {
-  const n = Number(getSetting(key));
+// Computed Nutanix issues (shared by router.js and poller.js) plus their
+// lifecycle history. Issue identity is `type|source|target` — stable across
+// polls even as the message text changes. computeRpoCompliance() is also
+// consumed directly by GET /nutanix/protection (rpoCompliance array).
+//
+// Ported from backend/services/nutanixIssues.js — db/getSetting now come from
+// coreApi rather than direct host requires.
+function clampedInt(coreApi, key, def, min, max) {
+  const n = Number(coreApi.settings.getSetting(key));
   return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : def;
 }
 
-const containerWarnPct = () => clampedInt('nutanix_container_warn_pct', 85, 1, 100);
-const containerCritPct = () => clampedInt('nutanix_container_crit_pct', 95, 1, 100);
-const clusterWarnPct = () => clampedInt('nutanix_cluster_warn_pct', 80, 1, 100);
-const clusterCritPct = () => clampedInt('nutanix_cluster_crit_pct', 90, 1, 100);
-const rpoGracePct = () => clampedInt('nutanix_rpo_grace_pct', 50, 0, 500);
-const runwayWarnDays = () => clampedInt('nutanix_runway_warn_days', 90, 1, 3650);
+const containerWarnPct = (coreApi) => clampedInt(coreApi, 'nutanix_container_warn_pct', 85, 1, 100);
+const containerCritPct = (coreApi) => clampedInt(coreApi, 'nutanix_container_crit_pct', 95, 1, 100);
+const clusterWarnPct = (coreApi) => clampedInt(coreApi, 'nutanix_cluster_warn_pct', 80, 1, 100);
+const clusterCritPct = (coreApi) => clampedInt(coreApi, 'nutanix_cluster_crit_pct', 90, 1, 100);
+const rpoGracePct = (coreApi) => clampedInt(coreApi, 'nutanix_rpo_grace_pct', 50, 0, 500);
+const runwayWarnDays = (coreApi) => clampedInt(coreApi, 'nutanix_runway_warn_days', 90, 1, 3650);
 
 const pct = (used, cap) => (cap > 0 && used != null ? (used / cap) * 100 : null);
 
@@ -29,7 +28,8 @@ const pct = (used, cap) => (cap > 0 && used != null ? (used / cap) * 100 : null)
  * inventing a mapping. Capped at 20 rows for the issues rule; the /protection
  * route may show more.
  */
-function computeRpoCompliance(limit = 200) {
+function computeRpoCompliance(coreApi, limit = 200) {
+  const db = coreApi.db;
   const out = [];
   const sources = db.prepare('SELECT id, name FROM nutanix_sources').all();
   for (const src of sources) {
@@ -51,7 +51,7 @@ function computeRpoCompliance(limit = 200) {
       if (out.length >= limit) break;
       const created = rp.created_at_ts ? new Date(rp.created_at_ts).getTime() : null;
       const ageSecs = created != null && Number.isFinite(created) ? (Date.now() - created) / 1000 : null;
-      const compliant = ageSecs != null ? ageSecs <= tightest.rpo_secs * (1 + rpoGracePct() / 100) : null;
+      const compliant = ageSecs != null ? ageSecs <= tightest.rpo_secs * (1 + rpoGracePct(coreApi) / 100) : null;
       out.push({
         source: src.name,
         vmName: rp.vm_name,
@@ -70,7 +70,8 @@ function computeRpoCompliance(limit = 200) {
  * Current issues from the stored inventory. Every issue carries a `target`
  * (cluster/host/VM/source name) for a stable `type|source|target` identity.
  */
-function computeIssues() {
+function computeIssues(coreApi) {
+  const db = coreApi.db;
   const issues = [];
   const sources = db.prepare('SELECT * FROM nutanix_sources').all();
 
@@ -81,7 +82,7 @@ function computeIssues() {
         message: `Nutanix source ${src.name} is unreachable: ${src.last_poll_error || 'poll failed'}` });
     }
     // Rule 11: auth-degraded — poll succeeded but nothing came back (likely
-    // a permission-limited credential; proxmox lesson).
+    // a permission-limited credential).
     if (src.last_poll_status === 'success') {
       const clusterCount = db.prepare('SELECT COUNT(*) n FROM nutanix_clusters WHERE source_id = ?').get(src.id).n;
       const vmCount = db.prepare('SELECT COUNT(*) n FROM nutanix_vms WHERE source_id = ?').get(src.id).n;
@@ -96,9 +97,9 @@ function computeIssues() {
 
   // Rule 2 / 4 / 10: cluster-scoped resiliency, storage usage, runway.
   const clusters = db.prepare('SELECT * FROM nutanix_clusters').all();
-  const clWarn = clusterWarnPct();
-  const clCrit = clusterCritPct();
-  const rwWarn = runwayWarnDays();
+  const clWarn = clusterWarnPct(coreApi);
+  const clCrit = clusterCritPct(coreApi);
+  const rwWarn = runwayWarnDays(coreApi);
   for (const c of clusters) {
     const source = srcName.get(c.source_id) || `source ${c.source_id}`;
     if (c.ft_failures_tolerable === 0 && c.num_nodes > 1) {
@@ -121,8 +122,8 @@ function computeIssues() {
   }
 
   // Rule 3: container-usage
-  const ctWarn = containerWarnPct();
-  const ctCrit = containerCritPct();
+  const ctWarn = containerWarnPct(coreApi);
+  const ctCrit = containerCritPct(coreApi);
   for (const ct of db.prepare('SELECT * FROM nutanix_containers').all()) {
     const source = srcName.get(ct.source_id) || `source ${ct.source_id}`;
     const usedPct = pct(ct.usage_bytes, ct.capacity_bytes);
@@ -171,7 +172,7 @@ function computeIssues() {
   }
 
   // Rule 8: rpo-violation (cap 20 rows)
-  for (const row of computeRpoCompliance(20)) {
+  for (const row of computeRpoCompliance(coreApi, 20)) {
     if (row.compliant === false) {
       issues.push({ severity: 'warning', type: 'rpo-violation', source: row.source, target: row.vmName,
         message: `VM ${row.vmName} recovery point is ${Math.round((row.ageSecs || 0) / 3600)}h old (RPO ${Math.round(row.rpoSecs / 60)}m via ${row.policyName})` });
@@ -208,36 +209,40 @@ const issueKey = (i) => `${i.type}|${i.source}|${i.target}`;
  * get resolved. Idempotent — safe to run after every poll. Rows resolved
  * >90 days ago are pruned.
  */
-const reconcileIssueHistory = db.transaction(() => {
-  const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
-  const open = db.prepare("SELECT * FROM nutanix_issue_history WHERE status = 'open'").all();
+function reconcileIssueHistory(coreApi) {
+  const db = coreApi.db;
+  const run = db.transaction(() => {
+    const current = new Map(computeIssues(coreApi).map((i) => [issueKey(i), i]));
+    const open = db.prepare("SELECT * FROM nutanix_issue_history WHERE status = 'open'").all();
 
-  const touch = db.prepare(`
-    UPDATE nutanix_issue_history SET last_seen = datetime('now'), message = ?, severity = ? WHERE id = ?
-  `);
-  const resolve = db.prepare(`
-    UPDATE nutanix_issue_history SET status = 'resolved', resolved_at = datetime('now'), last_seen = datetime('now') WHERE id = ?
-  `);
-  const insert = db.prepare(`
-    INSERT INTO nutanix_issue_history (issue_key, source, severity, type, target, message)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
+    const touch = db.prepare(`
+      UPDATE nutanix_issue_history SET last_seen = datetime('now'), message = ?, severity = ? WHERE id = ?
+    `);
+    const resolve = db.prepare(`
+      UPDATE nutanix_issue_history SET status = 'resolved', resolved_at = datetime('now'), last_seen = datetime('now') WHERE id = ?
+    `);
+    const insert = db.prepare(`
+      INSERT INTO nutanix_issue_history (issue_key, source, severity, type, target, message)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
 
-  const openKeys = new Set();
-  for (const row of open) {
-    const cur = current.get(row.issue_key);
-    if (cur) {
-      openKeys.add(row.issue_key);
-      touch.run(cur.message, cur.severity, row.id);
-    } else {
-      resolve.run(row.id);
+    const openKeys = new Set();
+    for (const row of open) {
+      const cur = current.get(row.issue_key);
+      if (cur) {
+        openKeys.add(row.issue_key);
+        touch.run(cur.message, cur.severity, row.id);
+      } else {
+        resolve.run(row.id);
+      }
     }
-  }
-  for (const [key, i] of current) {
-    if (!openKeys.has(key)) insert.run(key, i.source, i.severity, i.type, i.target, i.message);
-  }
-  db.prepare("DELETE FROM nutanix_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
-});
+    for (const [key, i] of current) {
+      if (!openKeys.has(key)) insert.run(key, i.source, i.severity, i.type, i.target, i.message);
+    }
+    db.prepare("DELETE FROM nutanix_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
+  });
+  run();
+}
 
 module.exports = {
   containerWarnPct, containerCritPct, clusterWarnPct, clusterCritPct, rpoGracePct, runwayWarnDays,

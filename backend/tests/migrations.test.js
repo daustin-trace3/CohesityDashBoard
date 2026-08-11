@@ -22,7 +22,6 @@ import ariaMigrations from '../db/migrations/aria.js';
 import ariaopsMigrations from '../db/migrations/ariaops.js';
 import netbackupMigrations from '../db/migrations/netbackup.js';
 import awsMigrations from '../db/migrations/aws.js';
-import nutanixMigrations from '../db/migrations/nutanix.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -161,7 +160,6 @@ function buildNewDb() {
   runMigrations(db, 'ariaops', ariaopsMigrations);
   runMigrations(db, 'netbackup', netbackupMigrations);
   runMigrations(db, 'aws', awsMigrations);
-  runMigrations(db, 'nutanix', nutanixMigrations);
   return db;
 }
 
@@ -225,13 +223,6 @@ const NEW_TABLES = [
   'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_ai_reports',
   'aws_optimizer_recommendations',
-  'nutanix_sources', 'nutanix_clusters', 'nutanix_hosts', 'nutanix_vms',
-  'nutanix_containers', 'nutanix_disks', 'nutanix_alerts', 'nutanix_events',
-  'nutanix_pds', 'nutanix_replications', 'nutanix_remote_sites',
-  'nutanix_protection_policies', 'nutanix_recovery_points',
-  'nutanix_metrics_history', 'nutanix_issue_history', 'nutanix_ai_reports',
-  'nutanix_move_conns', 'nutanix_move_plans', 'nutanix_move_workloads',
-  'nutanix_move_events',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.
@@ -327,7 +318,6 @@ describe('runMigrations', () => {
       runMigrations(db, 'ariaops', ariaopsMigrations);
   runMigrations(db, 'netbackup', netbackupMigrations);
       runMigrations(db, 'aws', awsMigrations);
-      runMigrations(db, 'nutanix', nutanixMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

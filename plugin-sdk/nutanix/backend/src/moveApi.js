@@ -1,63 +1,102 @@
 // Nutanix Move v2 API client. Standalone appliance, own local user DB — not
 // part of Prism. JWT bearer auth via /move/v2/users/login (classic, works
 // 3.x-6.x) with fallback to the newer form-encoded /move/v2/token endpoint.
-// Token TTL ~15 min — re-auth transparently on 401 mid-poll (contract #4).
-const axios = require('axios');
+// Token TTL ~15 min — re-auth transparently on 401 mid-poll.
+//
+// DEVIATION FROM THE BUILT-IN: the original (backend/services/nutanixMoveApi.js)
+// uses axios; re-implemented on Node's built-in `https` module. Login/token
+// refresh and 401-retry-once behavior is preserved exactly.
 const https = require('https');
-const { decrypt } = require('./encryption');
-const logger = require('../utils/logger');
+const { URLSearchParams } = require('url');
 
 const tokens = new Map(); // conn.id -> { token, fetchedAt }
 const TOKEN_TTL_MS = 13 * 60 * 1000; // refresh a bit before the 15-min expiry
 
-function creds(conn) {
+function creds(conn, coreApi) {
   if (conn.password != null) return { username: conn.username, password: conn.password };
   if (!conn.encrypted_credentials) return { username: conn.username, password: null };
   try {
-    const c = JSON.parse(decrypt(conn.encrypted_credentials));
+    const c = JSON.parse(coreApi.encryption.decrypt(conn.encrypted_credentials));
     return { username: conn.username, password: c.password };
   } catch {
     return { username: conn.username, password: null };
   }
 }
 
-function baseClient(conn, headers = {}) {
-  return axios.create({
-    baseURL: `https://${conn.host}`,
-    timeout: 60000,
-    headers,
-    httpsAgent: new https.Agent({ rejectUnauthorized: !!conn.ssl_verify }),
+function rawRequest(conn, { method = 'GET', path, data, headers = {}, contentType = 'application/json' } = {}) {
+  return new Promise((resolve, reject) => {
+    const body = data !== undefined
+      ? (contentType === 'application/json' ? JSON.stringify(data) : String(data))
+      : undefined;
+    const reqHeaders = { ...headers };
+    if (body !== undefined) {
+      reqHeaders['Content-Type'] = contentType;
+      reqHeaders['Content-Length'] = Buffer.byteLength(body);
+    }
+    const req = https.request(
+      {
+        hostname: conn.host,
+        port: 443,
+        path,
+        method,
+        timeout: 60000,
+        rejectUnauthorized: !!conn.ssl_verify,
+        headers: reqHeaders,
+      },
+      (res) => {
+        let raw = '';
+        res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => {
+          let json = null;
+          try { json = raw ? JSON.parse(raw) : null; } catch { json = raw || null; }
+          const status = res.statusCode;
+          if (status >= 200 && status < 300) {
+            resolve(json);
+            return;
+          }
+          const e = new Error(json?.message || `HTTP ${status}`);
+          e.response = { status, data: json };
+          reject(e);
+        });
+      }
+    );
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
+    req.on('error', (err) => reject(err));
+    if (body !== undefined) req.write(body);
+    req.end();
   });
 }
 
-async function login(conn) {
-  const { username, password } = creds(conn);
+async function login(conn, coreApi) {
+  const { username, password } = creds(conn, coreApi);
   if (!username || !password) throw new Error('Move connection is missing credentials');
 
-  // Classic login first (broadest version compatibility per move-mine.md).
+  // Classic login first (broadest version compatibility).
   try {
-    const { data } = await baseClient(conn).post('/move/v2/users/login', {
-      Spec: { UserName: username, Password: password },
+    const data = await rawRequest(conn, {
+      method: 'POST', path: '/move/v2/users/login',
+      data: { Spec: { UserName: username, Password: password } },
     });
     const token = data?.Status?.Token;
     if (token) return token;
   } catch (err) {
-    logger.debug(`[NutanixMoveApi] classic login failed for ${conn.name}, trying token endpoint: ${err.message}`);
+    coreApi.logger.debug(`[NutanixMoveApi] classic login failed for ${conn.name}, trying token endpoint: ${err.message}`);
   }
 
   // Fallback: form-encoded token endpoint (API 2.5.0+).
   const params = new URLSearchParams({ grantType: 'PASSWORD', username, password });
-  const { data } = await baseClient(conn, { 'Content-Type': 'application/x-www-form-urlencoded' })
-    .post('/move/v2/token', params.toString());
+  const data = await rawRequest(conn, {
+    method: 'POST', path: '/move/v2/token', data: params.toString(), contentType: 'application/x-www-form-urlencoded',
+  });
   const token = data?.AccessToken;
   if (!token) throw new Error('Move login returned no token');
   return token;
 }
 
-async function getToken(conn, force = false) {
+async function getToken(conn, coreApi, force = false) {
   const cached = tokens.get(conn.id);
   if (!force && cached && Date.now() - cached.fetchedAt < TOKEN_TTL_MS) return cached.token;
-  const token = await login(conn);
+  const token = await login(conn, coreApi);
   tokens.set(conn.id, { token, fetchedAt: Date.now() });
   return token;
 }
@@ -66,17 +105,15 @@ function invalidateToken(connId) {
   tokens.delete(connId);
 }
 
-async function mReq(conn, { method = 'GET', path, data } = {}) {
-  let token = await getToken(conn);
-  const doCall = (t) => baseClient(conn, { Authorization: `Bearer ${t}` }).request({ method, url: path, data });
+async function mReq(conn, coreApi, { method = 'GET', path, data } = {}) {
+  let token = await getToken(conn, coreApi);
+  const doCall = (t) => rawRequest(conn, { method, path, data, headers: { Authorization: `Bearer ${t}` } });
   try {
-    const res = await doCall(token);
-    return res.data;
+    return await doCall(token);
   } catch (err) {
     if (err.response?.status === 401) {
-      token = await getToken(conn, true);
-      const res = await doCall(token);
-      return res.data;
+      token = await getToken(conn, coreApi, true);
+      return await doCall(token);
     }
     throw err;
   }
@@ -90,8 +127,8 @@ const numOrNull = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-async function fetchAppInfo(conn) {
-  const d = await mReq(conn, { path: '/move/v2/appinfo' });
+async function fetchAppInfo(conn, coreApi) {
+  const d = await mReq(conn, coreApi, { path: '/move/v2/appinfo' });
   return { version: strOrNull(d?.Status?.Version ?? d?.Version) };
 }
 
@@ -101,12 +138,12 @@ function stateLabel(code) {
   return STATE_LABELS[code] || (code != null ? `State ${code}` : null);
 }
 
-async function fetchPlans(conn) {
+async function fetchPlans(conn, coreApi) {
   let d;
   try {
-    d = await mReq(conn, { method: 'POST', path: '/move/v2/plans/list', data: {} });
+    d = await mReq(conn, coreApi, { method: 'POST', path: '/move/v2/plans/list', data: {} });
   } catch {
-    d = await mReq(conn, { path: '/move/v2/plans' });
+    d = await mReq(conn, coreApi, { path: '/move/v2/plans' });
   }
   return safeArr(d?.Entities ?? d?.entities).map((p) => {
     const spec = p.Spec || {};
@@ -124,9 +161,9 @@ async function fetchPlans(conn) {
   });
 }
 
-async function fetchWorkloads(conn, plan) {
+async function fetchWorkloads(conn, coreApi, plan) {
   try {
-    const d = await mReq(conn, { path: `/move/v2/plans/${plan.planUuid}/workloads/list` });
+    const d = await mReq(conn, coreApi, { path: `/move/v2/plans/${plan.planUuid}/workloads/list` });
     return safeArr(d?.Entities ?? d?.entities).map((w) => {
       const spec = w.Spec || {};
       const status = spec.Status || w.Status || {};
@@ -141,13 +178,13 @@ async function fetchWorkloads(conn, plan) {
       };
     });
   } catch (err) {
-    logger.debug(`[NutanixMoveApi] workloads fetch failed for plan ${plan.name}: ${err.message}`);
+    coreApi.logger.debug(`[NutanixMoveApi] workloads fetch failed for plan ${plan.name}: ${err.message}`);
     return [];
   }
 }
 
-async function fetchEvents(conn) {
-  const d = await mReq(conn, { method: 'POST', path: '/move/v2/events', data: {} });
+async function fetchEvents(conn, coreApi) {
+  const d = await mReq(conn, coreApi, { method: 'POST', path: '/move/v2/events', data: {} });
   return safeArr(d?.Events).map((e) => {
     const ev = e.Event || e;
     return {
@@ -162,9 +199,9 @@ async function fetchEvents(conn) {
   });
 }
 
-async function testConnection(connLike) {
+async function testConnection(connLike, coreApi) {
   try {
-    const info = await fetchAppInfo(connLike);
+    const info = await fetchAppInfo(connLike, coreApi);
     return { ok: true, applianceVersion: info.version };
   } catch (err) {
     const status = err.response?.status;

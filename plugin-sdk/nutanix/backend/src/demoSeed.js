@@ -2,14 +2,25 @@
 // total) + 4 standalone Prism Element sources (one Community Edition
 // single-node), a Move companion appliance, and 31 days of per-cluster
 // metrics history. Includes deliberate trouble so the Nutanix issues feed
-// demos every rule in services/nutanixIssues.js: a cluster with
-// ft_failures_tolerable=0, two hot containers (91%/96%), a cluster at 88%
-// storage, 3 unresolved critical alerts, a degraded host, a paused in-flight
-// replication, an 8h-old recovery point under a 1h RPO policy, 12 unprotected
-// VMs on a PE cluster, a cluster with runway_days=45, and a failed Move
-// event. All sources poll clean (last_poll_status='success') —
-// source-unreachable and auth-degraded are intentionally NOT triggered.
-const { randInt, randFloat, pick, chance, rngFor } = require('./core');
+// demos every rule in issues.js: a cluster with ft_failures_tolerable=0, two
+// hot containers (91%/96%), a cluster at 88% storage, 3 unresolved critical
+// alerts, a degraded host, a paused in-flight replication, an 8h-old
+// recovery point under a 1h RPO policy, 12 unprotected VMs on a PE cluster, a
+// cluster with runway_days=45, and a failed Move event. All sources poll
+// clean (last_poll_status='success') — source-unreachable and auth-degraded
+// are intentionally NOT triggered.
+//
+// Ported from backend/demo/generators/nutanix.js. ALL inserts here run ONLY
+// behind the DASHBOARD_DEMO==='1' gate — see seedNutanixDemo() below, called
+// from poller.js's manifest createPoller(coreApi) entry point on every boot
+// in demo mode (wipe children->parents, then reseed with fresh relative
+// timestamps). Real (non-demo) instances never call this module. Port traps
+// fixed here: the generator's issue-history reconcile is repointed at this
+// plugin's own ./issues module (threaded with coreApi) instead of the host's
+// backend/services/nutanixIssues; only the seeded-random helpers were copied
+// from the host's demo/generators/core.js (./demoRng.js) — no seedCore/
+// encryption requires.
+const { randInt, randFloat, pick, chance, rngFor } = require('./demoRng');
 
 const HOST_MODELS = [
   { model: 'NX-3060-G7', cpu: 'Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz', sockets: 2, cores: 16, clockHz: 2000000000, memGb: 256, hybrid: true },
@@ -30,12 +41,11 @@ const GUEST_OS = [
 ];
 const VM_ROLES = ['app', 'db', 'web', 'dc', 'file', 'mon', 'ci', 'jump'];
 const NGT_STATUSES = ['INSTALLED_AND_ENABLED', 'INSTALLED_AND_ENABLED', 'INSTALLED_AND_ENABLED', 'INSTALLED_NOT_ENABLED', 'NOT_INSTALLED'];
-// Reused exact VM names from vcenter.js's nyc Aria-suite block so Server 360
-// gets cross-platform hits on the same guest names.
+// Reused exact VM names from the host vcenter demo generator's nyc Aria-suite
+// block so Server 360 gets cross-platform hits on the same guest names.
 const CROSS_HIT_VM_NAMES = ['vra-prod', 'vra-dr', 'vrops-nyc-01', 'vrli-nyc-01'];
 
 const GIB = 1024 ** 3;
-const PPM = 1000000;
 
 function uuid(rng) {
   const hex = () => Math.floor(rng() * 16).toString(16);
@@ -66,7 +76,7 @@ const CLUSTER_PLAN = [
   { source: 'chi-ntx-pe-01', name: 'chi-ntx-prd-01', numNodes: 4, vmCount: 40, runwayLow: true },
 ];
 
-function seedNutanix(db, { now, encrypt }) {
+function seedNutanix(db, { now, encrypt, coreApi }) {
   const agoStmt = db.prepare("SELECT datetime('now', ?) d");
   const ago = (offset) => agoStmt.get(offset).d;
   const nowIso = new Date(now).toISOString();
@@ -484,7 +494,6 @@ function seedNutanix(db, { now, encrypt }) {
   // ── Protection policies on PC sources ──────────────────────────────────
   const PC_SOURCES = SOURCES.filter((s) => s.type === 'prism_central');
   let policyTotal = 0;
-  let rpoViolationPolicyName = null;
   PC_SOURCES.forEach((s) => {
     const rng = rngFor(`nutanix-policy-${s.name}`);
     const sourceId = sourceIds[s.name];
@@ -500,7 +509,6 @@ function seedNutanix(db, { now, encrypt }) {
       categories_json: JSON.stringify({ Environment: 'Dev' }), updated_at: nowIso,
     });
     policyTotal += 2;
-    if (s.name === 'nyc-ntx-pc-01') rpoViolationPolicyName = goldName;
   });
 
   // ── Recovery points: recovery_point (PC) + pd_snapshot (PE) ────────────
@@ -611,8 +619,8 @@ function seedNutanix(db, { now, encrypt }) {
   // ── Issue history: reconciled live from the seeded inventory ──────────
   let issueHistoryTotal = 0;
   try {
-    const { reconcileIssueHistory } = require('../../services/nutanixIssues');
-    reconcileIssueHistory();
+    const { reconcileIssueHistory } = require('./issues');
+    reconcileIssueHistory(coreApi);
     const histRng = rngFor('nutanix-issue-history');
     for (const row of db.prepare("SELECT id FROM nutanix_issue_history WHERE status = 'open'").all()) {
       const ageMin = randInt(histRng, 3 * 60, 6 * 24 * 60);
@@ -637,7 +645,7 @@ function seedNutanix(db, { now, encrypt }) {
     }
     issueHistoryTotal = db.prepare('SELECT COUNT(*) n FROM nutanix_issue_history').get().n;
   } catch (err) {
-    console.error(`[seedNutanix] issue history reconcile skipped (WP1 services/nutanixIssues.js missing?): ${err.message}`);
+    console.error(`[demoSeed] nutanix issue history reconcile skipped: ${err.message}`);
   }
 
   return {
@@ -649,4 +657,29 @@ function seedNutanix(db, { now, encrypt }) {
   };
 }
 
-module.exports = { seedNutanix };
+// Demo-only entry point. Wipes the nutanix_* estate (children before parents)
+// and regenerates it with fresh relative timestamps, so a demo box refreshes
+// on every boot instead of aging into a stale-looking estate. NEVER runs
+// outside demo mode — see the DASHBOARD_DEMO gate in poller.js.
+const DEMO_TABLES = [
+  'nutanix_metrics_history', 'nutanix_recovery_points', 'nutanix_protection_policies',
+  'nutanix_remote_sites', 'nutanix_replications', 'nutanix_pds', 'nutanix_events',
+  'nutanix_alerts', 'nutanix_disks', 'nutanix_containers', 'nutanix_vms', 'nutanix_hosts',
+  'nutanix_clusters', 'nutanix_move_events', 'nutanix_move_workloads', 'nutanix_move_plans',
+  'nutanix_issue_history', 'nutanix_sources', 'nutanix_move_conns',
+];
+
+function seedNutanixDemo(coreApi) {
+  const db = coreApi.db;
+  return db.transaction(() => {
+    for (const table of DEMO_TABLES) {
+      const exists = db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?"
+      ).get(table);
+      if (exists) db.exec(`DELETE FROM ${table}`);
+    }
+    return seedNutanix(db, { now: Date.now(), encrypt: coreApi.encryption.encrypt, coreApi });
+  })();
+}
+
+module.exports = { seedNutanix, seedNutanixDemo };
