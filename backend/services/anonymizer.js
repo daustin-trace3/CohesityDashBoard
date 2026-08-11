@@ -209,6 +209,22 @@ function loadDictionary() {
     add(db.prepare("SELECT name FROM aws_vpcs WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
   } catch { /* AWS v2 tables not present until migration v2 lands */ }
 
+  try {
+    // nutanix_* tables ship in the Nutanix migration (WP1); guarded
+    // separately (netbackup :169-179 pattern) so their absence never breaks
+    // other platforms' dictionary entries.
+    add(db.prepare("SELECT name FROM nutanix_sources WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT host AS name FROM nutanix_sources WHERE host IS NOT NULL AND host != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT name FROM nutanix_clusters WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT name FROM nutanix_hosts WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT serial AS name FROM nutanix_hosts WHERE serial IS NOT NULL AND serial != ''").all(), 'SERIAL');
+    add(db.prepare("SELECT name FROM nutanix_vms WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM nutanix_containers WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT name FROM nutanix_pds WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+    add(db.prepare("SELECT name FROM nutanix_move_conns WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT host AS name FROM nutanix_move_conns WHERE host IS NOT NULL AND host != ''").all(), 'SOURCE');
+  } catch { /* Nutanix tables not present on this instance */ }
+
   return entries;
 }
 

@@ -16,6 +16,8 @@ const CONFIG = {
     description: 'Computed issues across all registered NetBackup sources, with open/resolved history' },
   aws: { brand: '#FF9900', base: '/aws', instanceKey: 'account', instanceLabel: 'Account',
     description: 'Computed issues across AWS accounts, with open/resolved history' },
+  nutanix: { brand: '#7855FA', base: '/nutanix', instanceKey: 'source', instanceLabel: 'Source',
+    description: 'Computed issues across all registered Nutanix sources, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];
@@ -88,7 +90,7 @@ function CurrentIssuesPanel({ cfg, rows }) {
 function HistoryPanel({ cfg, rows }) {
   const list = rows || [];
   const ctl = useTableControls(list, {
-    searchKeys: ['message', 'type', 'target', 'instance', 'vcenter'],
+    searchKeys: ['message', 'type', 'target', 'instance', 'vcenter', 'source'],
     defaultSortKey: 'last_seen', defaultSortDir: 'desc',
     paginate: true,
   });

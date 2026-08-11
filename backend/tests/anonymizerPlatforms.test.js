@@ -122,6 +122,33 @@ beforeAll(() => {
   db.prepare(`
     INSERT INTO aws_vpcs (account_id, vpc_id, name) VALUES (1, 'vpc-0phichi', 'vpc-core-phi')
   `).run();
+
+  // Nutanix
+  db.prepare(`
+    INSERT INTO nutanix_sources (name, source_type, host, username, encrypted_credentials)
+    VALUES ('nutanix-source-chi', 'prism_central', 'pc-psi.invalid', 'admin', ?)
+  `).run(encrypt(JSON.stringify({})));
+  db.prepare(`
+    INSERT INTO nutanix_clusters (source_id, uuid, name) VALUES (1, 'uuid-1', 'nutanix-cluster-omega')
+  `).run();
+  db.prepare(`
+    INSERT INTO nutanix_hosts (source_id, cluster_uuid, uuid, name, serial)
+    VALUES (1, 'uuid-1', 'host-uuid-1', 'nutanix-host-alpha2', 'SN-NTNX-7788')
+  `).run();
+  db.prepare(`
+    INSERT INTO nutanix_vms (source_id, cluster_uuid, cluster_name, uuid, name)
+    VALUES (1, 'uuid-1', 'nutanix-cluster-omega', 'vm-uuid-1', 'nutanix-vm-beta2')
+  `).run();
+  db.prepare(`
+    INSERT INTO nutanix_containers (source_id, cluster_uuid, cluster_name, uuid, name)
+    VALUES (1, 'uuid-1', 'nutanix-cluster-omega', 'ctr-uuid-1', 'nutanix-container-gamma2')
+  `).run();
+  db.prepare(`
+    INSERT INTO nutanix_pds (source_id, name) VALUES (1, 'nutanix-pd-delta2')
+  `).run();
+  db.prepare(`
+    INSERT INTO nutanix_move_conns (name, host) VALUES ('nutanix-move-epsilon2', 'move-eta2.invalid')
+  `).run();
 });
 
 const SEEDED_NAMES = [
@@ -136,6 +163,9 @@ const SEEDED_NAMES = [
   'aws-account-lambda', 'ec2-webapp-mu', 'lightsail-node-nu', 'ecs-cluster-xi',
   'ecs-service-omicron', 'bucket-reports-pi', 'rds-orders-rho', 'lambda-invoice-sigma',
   'dynamo-sessions-tau', 'ecr-repo-upsilon', 'vpc-core-phi',
+  'nutanix-source-chi', 'nutanix-cluster-omega', 'nutanix-host-alpha2',
+  'nutanix-vm-beta2', 'nutanix-container-gamma2', 'nutanix-pd-delta2',
+  'nutanix-move-epsilon2',
 ];
 
 describe('anonymizer platform coverage', () => {

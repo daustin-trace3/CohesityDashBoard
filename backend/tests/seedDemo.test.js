@@ -96,9 +96,9 @@ describe('seedDemo.js', () => {
 
   it('seeds platform flags as string "1"', () => {
     const rows = db.prepare(
-      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled')"
+      "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled', 'platform_nutanix_enabled')"
     ).all();
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     for (const row of rows) {
       expect(row.value).toBe('1');
     }
@@ -378,6 +378,31 @@ describe('seedDemo.js', () => {
 
     const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_aws_enabled'").get();
     expect(flag.value).toBe('1');
+  });
+
+  describe('nutanix platform', () => {
+    it('seeds 6 sources spanning prism_central and prism_element, including one is_mine', () => {
+      expect(db.prepare('SELECT COUNT(*) c FROM nutanix_sources').get().c).toBe(6);
+      expect(db.prepare("SELECT COUNT(*) c FROM nutanix_sources WHERE source_type = 'prism_central'").get().c).toBe(2);
+      expect(db.prepare("SELECT COUNT(*) c FROM nutanix_sources WHERE source_type = 'prism_element'").get().c).toBe(4);
+      expect(db.prepare('SELECT COUNT(*) c FROM nutanix_sources WHERE is_mine = 1').get().c).toBeGreaterThanOrEqual(1);
+      expect(db.prepare("SELECT COUNT(*) c FROM nutanix_sources WHERE last_poll_status != 'success'").get().c).toBe(0);
+    });
+
+    it('seeds 9 clusters and ~600 VMs', () => {
+      expect(db.prepare('SELECT COUNT(*) c FROM nutanix_clusters').get().c).toBe(9);
+      expect(db.prepare('SELECT COUNT(*) c FROM nutanix_vms').get().c).toBe(600);
+    });
+
+    it('seeds 31 days of metrics history per cluster', () => {
+      const clusters = db.prepare('SELECT COUNT(*) c FROM nutanix_clusters').get().c;
+      expect(db.prepare('SELECT COUNT(*) c FROM nutanix_metrics_history').get().c).toBe(clusters * 31);
+    });
+
+    it('seeds 2 move plans on 1 connection', () => {
+      expect(db.prepare('SELECT COUNT(*) c FROM nutanix_move_conns').get().c).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) c FROM nutanix_move_plans').get().c).toBe(2);
+    });
   });
 
 });

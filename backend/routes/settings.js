@@ -97,7 +97,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled, platformNutanixEnabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -115,6 +115,7 @@ router.put('/', (req, res, next) => {
       resolve(platformAriaopsEnabled, 'platformAriaopsEnabled'),
       resolve(platformNetbackupEnabled, 'platformNetbackupEnabled'),
       resolve(platformAwsEnabled, 'platformAwsEnabled'),
+      resolve(platformNutanixEnabled, 'platformNutanixEnabled'),
     ].some(Boolean);
     if (!anyEnabled) {
       return res.status(400).json({ error: 'At least one platform must remain enabled.' });
@@ -187,6 +188,10 @@ router.put('/', (req, res, next) => {
     if (platformAwsEnabled !== undefined) {
       setSetting('platform_aws_enabled', platformAwsEnabled ? '1' : '0');
       applyPlatformEnabled('aws', !!platformAwsEnabled);
+    }
+    if (platformNutanixEnabled !== undefined) {
+      setSetting('platform_nutanix_enabled', platformNutanixEnabled ? '1' : '0');
+      applyPlatformEnabled('nutanix', !!platformNutanixEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));
