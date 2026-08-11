@@ -408,9 +408,9 @@ router.get('/wan', (req, res, next) => {
   try {
     const wans = db.prepare('SELECT w.*, s.name AS source_name FROM unifi_wan w JOIN unifi_sources s ON s.id = w.source_id').all();
     const history = db.prepare(`
-      SELECT captured_at, wan_latency_ms, wan_availability_pct, wan_tx_rate, wan_rx_rate
+      SELECT source_id, captured_at, wan_latency_ms, wan_availability_pct, wan_tx_rate, wan_rx_rate
       FROM unifi_metrics_history WHERE captured_at >= datetime('now', '-7 days') ORDER BY captured_at ASC
-    `).all().map((r) => ({ capturedAt: r.captured_at, wanLatencyMs: r.wan_latency_ms, wanAvailabilityPct: r.wan_availability_pct, wanTxRate: r.wan_tx_rate, wanRxRate: r.wan_rx_rate }));
+    `).all().map((r) => ({ sourceId: r.source_id, capturedAt: r.captured_at, wanLatencyMs: r.wan_latency_ms, wanAvailabilityPct: r.wan_availability_pct, wanTxRate: r.wan_tx_rate, wanRxRate: r.wan_rx_rate }));
     res.json({ wans, history });
   } catch (err) { next(err); }
 });
