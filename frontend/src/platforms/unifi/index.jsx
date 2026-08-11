@@ -1,6 +1,6 @@
 import { lazy } from 'react';
 import {
-  Gauge, Router, Cable, Users, Wifi, Share2, Globe, ShieldCheck, ClipboardCheck, Settings,
+  Gauge, Router, Cable, Users, Wifi, Share2, Globe, ShieldCheck, ClipboardCheck, Settings, Cctv,
 } from 'lucide-react';
 
 const UnifiOverviewPage = lazy(() => import('../../pages/unifi/UnifiOverviewPage'));
@@ -8,6 +8,7 @@ const UnifiDevicesPage = lazy(() => import('../../pages/unifi/UnifiDevicesPage')
 const UnifiPortsPage = lazy(() => import('../../pages/unifi/UnifiPortsPage'));
 const UnifiClientsPage = lazy(() => import('../../pages/unifi/UnifiClientsPage'));
 const UnifiWifiPage = lazy(() => import('../../pages/unifi/UnifiWifiPage'));
+const UnifiProtectPage = lazy(() => import('../../pages/unifi/UnifiProtectPage'));
 const UnifiTopologyPage = lazy(() => import('../../pages/unifi/UnifiTopologyPage'));
 const UnifiWanPage = lazy(() => import('../../pages/unifi/UnifiWanPage'));
 const UnifiSecurityPage = lazy(() => import('../../pages/unifi/UnifiSecurityPage'));
@@ -26,6 +27,7 @@ const navGroups = [
       { label: 'Ports', route: '/unifi/ports', icon: Cable, isActive: (p) => p.startsWith('/unifi/ports') },
       { label: 'Clients', route: '/unifi/clients', icon: Users, isActive: (p) => p.startsWith('/unifi/clients') },
       { label: 'WiFi', route: '/unifi/wifi', icon: Wifi, isActive: (p) => p.startsWith('/unifi/wifi') },
+      { label: 'Protect', route: '/unifi/protect', icon: Cctv, isActive: (p) => p.startsWith('/unifi/protect') },
     ],
   },
   {
@@ -68,6 +70,7 @@ export default {
     { path: 'unifi/ports', Component: UnifiPortsPage },
     { path: 'unifi/clients', Component: UnifiClientsPage },
     { path: 'unifi/wifi', Component: UnifiWifiPage },
+    { path: 'unifi/protect', Component: UnifiProtectPage },
     { path: 'unifi/topology', Component: UnifiTopologyPage },
     { path: 'unifi/wan', Component: UnifiWanPage },
     { path: 'unifi/security', Component: UnifiSecurityPage },

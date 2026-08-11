@@ -81,6 +81,11 @@ const searchCategories = [
     sql: `SELECT w.name AS title, w.security AS subtitle FROM unifi_wlans w
           WHERE w.name LIKE ? ESCAPE '\\' ORDER BY w.name LIMIT ?`,
   },
+  {
+    key: 'unifi-cameras', label: 'UniFi Cameras', platform: 'unifi', perm: 'unifi:objects:view', base: '/unifi',
+    sql: `SELECT c.name AS title, (CASE WHEN c.model_key = 'chime' THEN 'Chime' ELSE 'Camera' END || ' · ' || COALESCE(c.state, '')) AS subtitle
+          FROM unifi_cameras c WHERE c.name LIKE ? ESCAPE '\\' ORDER BY c.name LIMIT ?`,
+  },
 ];
 
 /**
@@ -162,7 +167,7 @@ module.exports = {
   },
   statusTables: ['unifi_sources'],
   settingsFields: [],
-  navSections: ['overview', 'devices', 'ports', 'clients', 'wifi', 'topology', 'wan', 'security', 'alerts', 'settings'],
+  navSections: ['overview', 'devices', 'ports', 'clients', 'wifi', 'protect', 'topology', 'wan', 'security', 'alerts', 'settings'],
   datasets: [
     {
       id: 'unifi.devices',

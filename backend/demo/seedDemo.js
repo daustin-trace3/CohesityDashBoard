@@ -96,7 +96,7 @@ const SEEDED_TABLES = [
   // unifi (children before the parent)
   'unifi_port_history', 'unifi_ports', 'unifi_devices', 'unifi_clients', 'unifi_wlans',
   'unifi_networks', 'unifi_rogue_aps', 'unifi_events', 'unifi_wan', 'unifi_topology',
-  'unifi_metrics_history', 'unifi_issue_history', 'unifi_sources',
+  'unifi_metrics_history', 'unifi_issue_history', 'unifi_cameras', 'unifi_sources',
 ];
 
 function wipeSeededTables(database) {

@@ -236,6 +236,16 @@ function seedUnifi(db, { now, encrypt }) {
         enabled: s.ipsEnabled,
         categories: s.ipsEnabled ? ['botnet', 'trojan', 'exploit-kit', 'scan'] : [],
       },
+      // Protect runs on the first (AustinHome) controller only — mirrors the
+      // poller's health_json.protect stamp read by /protect and the breach rule.
+      protect: s.name === 'AustinHome' ? {
+        applicationVersion: '6.0.21',
+        nvr: {
+          name: 'UDM Pro Max',
+          armMode: { status: 'disabled', armedAt: null, breachDetectedAt: null, breachEventCount: 0 },
+          doorbell: { defaultMessage: 'WELCOME' },
+        },
+      } : null,
     });
     const info = insertSource.run({
       name: s.name, host: s.host,
@@ -618,6 +628,28 @@ function seedUnifi(db, { now, encrypt }) {
     }
   });
 
+  // ── Protect cameras (AustinHome only; one deliberately DISCONNECTED for
+  // the camera-offline rule) — before reconcile so the issue lands in history
+  const camRng = rngFor('unifi-cameras');
+  const insertCamera = db.prepare(`
+    INSERT INTO unifi_cameras (source_id, camera_id, model_key, name, mac, state, is_mic_enabled,
+      video_mode, hdr_type, smart_detect_json, has_package_camera)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const CAMERAS = [
+    { name: 'Front Door', detect: ['person', 'vehicle'], state: 'CONNECTED' },
+    { name: 'Driveway', detect: ['person', 'vehicle', 'animal'], state: 'CONNECTED' },
+    { name: 'Backyard', detect: ['person', 'animal'], state: 'CONNECTED' },
+    { name: 'Garage', detect: ['person'], state: 'DISCONNECTED' },
+  ];
+  CAMERAS.forEach((c, i) => {
+    insertCamera.run(sourceIds.AustinHome, `demo-cam-${i + 1}`, 'camera', c.name, randMac(camRng),
+      c.state, 1, 'default', 'auto', JSON.stringify(c.detect), 0);
+  });
+  insertCamera.run(sourceIds.AustinHome, 'demo-chime-1', 'chime', 'DoorBell Chime', randMac(camRng),
+    'CONNECTED', null, null, null, null, null);
+  const cameraTotal = CAMERAS.length + 1;
+
   // ── Issue history: reconciled live from seeded inventory ──────────────
   let issueHistoryTotal = 0;
   try {
@@ -653,7 +685,7 @@ function seedUnifi(db, { now, encrypt }) {
   return {
     sources: SOURCES.length, devices: deviceTotal, ports: portTotal, portHistory: portHistoryTotal,
     clients: clientTotal, networks: networkTotal, wlans: wlanTotal, rogueAps: rogueTotal,
-    events: eventTotal, metrics: metricsTotal, issueHistory: issueHistoryTotal,
+    events: eventTotal, metrics: metricsTotal, issueHistory: issueHistoryTotal, cameras: cameraTotal,
   };
 }
 

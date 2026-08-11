@@ -155,6 +155,20 @@ const storeEvents = db.transaction((sourceId, rows) => {
   db.prepare("DELETE FROM unifi_events WHERE occurred_at IS NOT NULL AND occurred_at < datetime('now', '-30 days')").run();
 });
 
+const storeCameras = db.transaction((sourceId, rows) => {
+  db.prepare('DELETE FROM unifi_cameras WHERE source_id = ?').run(sourceId);
+  const stmt = db.prepare(`
+    INSERT INTO unifi_cameras (source_id, camera_id, model_key, name, mac, state, is_mic_enabled,
+      video_mode, hdr_type, smart_detect_json, has_package_camera)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const c of rows) {
+    if (!c.cameraId) continue;
+    stmt.run(sourceId, c.cameraId, c.modelKey, c.name, c.mac, c.state, c.isMicEnabled,
+      c.videoMode, c.hdrType, c.smartDetectJson, c.hasPackageCamera);
+  }
+});
+
 // ── WAN + metrics rollup ─────────────────────────────────────────────────────
 
 function pickHealthSubsystem(health, name) {
@@ -294,6 +308,12 @@ async function pollSource(source) {
       `).run(source.id, unifiApi.jsonOrNull(lastTopology.vertices), unifiApi.jsonOrNull(lastTopology.edges), lastTopology.hasUnknownSwitch);
     }
 
+    // Protect is optional per controller — a miss here is "not installed", never a
+    // poll error, and an absent app clears any previously stored cameras.
+    let protect = null;
+    try { protect = await unifiApi.fetchProtect(source); } catch { protect = null; }
+    storeCameras(source.id, protect ? protect.cameras : []);
+
     const wanFacts = buildWanFacts(lastHealth, gatewayParsed);
     upsertWan(source.id, wanFacts);
 
@@ -318,7 +338,11 @@ async function pollSource(source) {
       gwMemPct: gatewayParsed?.device?.memPct ?? null,
     });
 
-    const healthJson = unifiApi.jsonOrNull({ subsystems: lastHealth || [], ips: lastIps || null });
+    const healthJson = unifiApi.jsonOrNull({
+      subsystems: lastHealth || [],
+      ips: lastIps || null,
+      protect: protect ? { applicationVersion: protect.applicationVersion, nvr: protect.nvr } : null,
+    });
     db.prepare(`
       UPDATE unifi_sources SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now'), sites_json = ?, controller_version = ?, health_json = ? WHERE id = ?

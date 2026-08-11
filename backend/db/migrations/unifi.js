@@ -279,4 +279,27 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 2,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS unifi_cameras (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id           INTEGER NOT NULL REFERENCES unifi_sources(id) ON DELETE CASCADE,
+          camera_id           TEXT NOT NULL,
+          model_key           TEXT,
+          name                TEXT,
+          mac                 TEXT,
+          state               TEXT,
+          is_mic_enabled      INTEGER,
+          video_mode          TEXT,
+          hdr_type            TEXT,
+          smart_detect_json   TEXT,
+          has_package_camera  INTEGER,
+          UNIQUE(source_id, camera_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_unifi_cameras_source ON unifi_cameras(source_id);
+      `);
+    },
+  },
 ];

@@ -384,6 +384,58 @@ async function fetchSystemLog(source, site) {
   }));
 }
 
+// ── Protect integration API (same X-API-KEY, /proxy/protect/integration/v1) ──
+// Not every controller runs Protect — callers treat a failed/404 fetch as
+// "Protect not present" and skip, never as a poll error.
+const PROTECT_BASE = '/proxy/protect/integration/v1';
+
+async function fetchProtect(source) {
+  const client = baseClient(source);
+  const info = (await client.get(`${PROTECT_BASE}/meta/info`)).data;
+  const cameras = safeArr((await client.get(`${PROTECT_BASE}/cameras`)).data).map((c) => ({
+    cameraId: strOrNull(c.id),
+    modelKey: strOrNull(c.modelKey) || 'camera',
+    name: strOrNull(c.name),
+    mac: strOrNull(c.mac),
+    state: strOrNull(c.state),
+    isMicEnabled: boolToInt(c.isMicEnabled),
+    videoMode: strOrNull(c.videoMode),
+    hdrType: strOrNull(c.hdrType),
+    smartDetectJson: jsonOrNull(c.smartDetectSettings?.objectTypes || c.featureFlags?.smartDetectTypes || null),
+    hasPackageCamera: boolToInt(c.hasPackageCamera),
+  }));
+  let chimes = [];
+  try {
+    chimes = safeArr((await client.get(`${PROTECT_BASE}/chimes`)).data).map((c) => ({
+      cameraId: strOrNull(c.id), modelKey: strOrNull(c.modelKey) || 'chime', name: strOrNull(c.name),
+      mac: strOrNull(c.mac), state: strOrNull(c.state), isMicEnabled: null, videoMode: null,
+      hdrType: null, smartDetectJson: null, hasPackageCamera: null,
+    }));
+  } catch { /* chimes endpoint optional */ }
+  let nvr = null;
+  try {
+    const n = (await client.get(`${PROTECT_BASE}/nvrs`)).data;
+    nvr = n ? {
+      name: strOrNull(n.name),
+      armMode: n.armMode || null,
+      doorbell: n.doorbellSettings ? { defaultMessage: strOrNull(n.doorbellSettings.defaultMessageText) } : null,
+    } : null;
+  } catch { /* nvr endpoint optional */ }
+  return {
+    applicationVersion: strOrNull(info?.applicationVersion),
+    cameras: cameras.concat(chimes),
+    nvr,
+  };
+}
+
+async function fetchCameraSnapshot(source, cameraId) {
+  const client = baseClient(source);
+  const res = await client.get(`${PROTECT_BASE}/cameras/${encodeURIComponent(cameraId)}/snapshot`, {
+    responseType: 'arraybuffer',
+  });
+  return { contentType: res.headers['content-type'] || 'image/jpeg', body: Buffer.from(res.data) };
+}
+
 async function fetchTopology(source, site) {
   const d = await legacyV2Get(source, site, '/topology');
   return {
@@ -406,6 +458,8 @@ module.exports = {
   fetchHealth,
   fetchSystemLog,
   fetchTopology,
+  fetchProtect,
+  fetchCameraSnapshot,
   // exported for reuse/testing
   numOrNull, strOrNull, boolToInt, jsonOrNull, occurredAtIso, errMsg,
 };

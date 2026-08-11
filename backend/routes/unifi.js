@@ -443,6 +443,41 @@ router.get('/issue-history', [query('days').optional().isInt({ min: 1, max: 90 }
   } catch (err) { next(err); }
 });
 
+router.get('/protect', (req, res, next) => {
+  try {
+    const cameras = db.prepare(`
+      SELECT c.*, s.name AS source_name, cl.ip AS client_ip
+      FROM unifi_cameras c
+      JOIN unifi_sources s ON s.id = c.source_id
+      LEFT JOIN unifi_clients cl ON cl.source_id = c.source_id
+        AND REPLACE(LOWER(cl.mac), ':', '') = REPLACE(LOWER(COALESCE(c.mac, '')), ':', '')
+      ORDER BY s.name, c.name
+    `).all();
+    const nvrs = [];
+    for (const src of db.prepare('SELECT id, name, health_json FROM unifi_sources').all()) {
+      let protect = null;
+      try { protect = JSON.parse(src.health_json || '{}')?.protect ?? null; } catch { protect = null; }
+      if (protect) nvrs.push({ sourceId: src.id, sourceName: src.name, applicationVersion: protect.applicationVersion, nvr: protect.nvr });
+    }
+    res.json({ cameras, nvrs });
+  } catch (err) { next(err); }
+});
+
+router.get('/protect/cameras/:id/snapshot', [param('id').isString().notEmpty()], validate, (req, res, next) => {
+  (async () => {
+    const row = db.prepare('SELECT c.*, s.* , c.camera_id AS cam_id FROM unifi_cameras c JOIN unifi_sources s ON s.id = c.source_id WHERE c.camera_id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'unknown camera' });
+    try {
+      const snap = await unifiApi.fetchCameraSnapshot(row, row.cam_id);
+      res.set('Content-Type', snap.contentType);
+      res.set('Cache-Control', 'private, max-age=10');
+      res.send(snap.body);
+    } catch (err) {
+      res.status(502).json({ error: 'snapshot unavailable' });
+    }
+  })().catch(next);
+});
+
 router.get('/config', (req, res, next) => {
   try {
     res.json({

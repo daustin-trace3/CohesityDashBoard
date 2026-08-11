@@ -180,6 +180,25 @@ function computeIssues() {
     }
   }
 
+  // Rule 13: camera-offline — Protect cameras/chimes not CONNECTED.
+  try {
+    for (const c of db.prepare("SELECT c.*, s.name AS source_name FROM unifi_cameras c JOIN unifi_sources s ON s.id = c.source_id WHERE c.state IS NOT NULL AND c.state != 'CONNECTED'").all()) {
+      issues.push({ severity: 'warning', type: 'camera-offline', source: c.source_name, target: c.name || c.mac,
+        message: `Protect ${c.model_key === 'chime' ? 'chime' : 'camera'} ${c.name || c.mac} is ${String(c.state).toLowerCase()}` });
+    }
+  } catch { /* unifi_cameras arrives in migration v2 — tolerate older DBs */ }
+
+  // Rule 14: protect-breach — NVR alarm/arm mode reports a breach.
+  for (const src of sources) {
+    if (!src.health_json) continue;
+    let arm = null;
+    try { arm = JSON.parse(src.health_json)?.protect?.nvr?.armMode ?? null; } catch { arm = null; }
+    if (arm && (arm.breachDetectedAt || (arm.breachEventCount || 0) > 0)) {
+      issues.push({ severity: 'critical', type: 'protect-breach', source: src.name, target: src.name,
+        message: `Protect alarm breach on ${src.name} (${arm.breachEventCount || 1} event(s))` });
+    }
+  }
+
   // Rule 12: wifi-experience — >=3 wireless clients under the satisfaction
   // threshold, grouped per source/site.
   const satWarn = satisfactionWarn();
