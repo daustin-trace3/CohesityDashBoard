@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { MonitorSmartphone } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -81,7 +82,12 @@ export default function NxVMsPage() {
               <tbody>
                 {ctl.pageRows.map((v) => (
                   <tr key={v.id} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink">{v.name || '—'}</td>
+                    <td className="py-2 pr-3">
+                      {v.name ? (
+                        <Link to={`/ops/server360?name=${encodeURIComponent(v.name)}`} title="Open Server 360"
+                          className="text-ink font-medium hover:text-brand">{v.name}</Link>
+                      ) : '—'}
+                    </td>
                     <td className="py-2 pr-3"><Badge tone={powerTone(v.power_state)}>{v.power}</Badge></td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{v.cpu_pct != null ? `${v.cpu_pct.toFixed(0)}%` : '—'}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{v.mem_pct != null ? `${v.mem_pct.toFixed(0)}%` : '—'}</td>
