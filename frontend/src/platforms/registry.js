@@ -2,14 +2,13 @@ import cohesity from './cohesity/index.jsx';
 import pure from './pure/index.jsx';
 import netapp from './netapp/index.jsx';
 import zerto from './zerto/index.jsx';
-import netbackup from './netbackup/index.jsx';
 import vcenter from './vcenter/index.jsx';
 import dell from './dell/index.jsx';
 import aria from './aria/index.jsx';
 import ariaops from './ariaops/index.jsx';
 import aws from './aws/index.jsx';
 
-export const platforms = [cohesity, pure, netapp, zerto, netbackup, vcenter, dell, aria, ariaops, aws];
+export const platforms = [cohesity, pure, netapp, zerto, vcenter, dell, aria, ariaops, aws];
 
 export function getPlatform(id) {
   return platforms.find(p => p.id === id);

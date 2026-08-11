@@ -47,7 +47,6 @@ const { seedVcenter } = require('./generators/vcenter');
 const { seedDell } = require('./generators/dell');
 const { seedAria } = require('./generators/aria');
 const { seedAriaops } = require('./generators/ariaops');
-const { seedNetbackup } = require('./generators/netbackup');
 const { seedAws } = require('./generators/aws');
 
 const SEEDED_TABLES = [
@@ -84,11 +83,6 @@ const SEEDED_TABLES = [
   'aria_issue_history', 'aria_instances',
   // ariaops (children before the parent)
   'ariaops_resources', 'ariaops_alerts', 'ariaops_metrics_history', 'ariaops_instances',
-  // netbackup (children before the parent)
-  'netbackup_jobs', 'netbackup_policies', 'netbackup_storage_units', 'netbackup_disk_pools',
-  'netbackup_media_servers', 'netbackup_appliances', 'netbackup_alerts',
-  'netbackup_issue_history', 'netbackup_metrics_history', 'netbackup_sources',
-  'netbackup_appliance_hw', 'netbackup_appliance_conns',
   // aws
   'aws_ec2_instances', 'aws_ebs_volumes', 'aws_lightsail_instances',
   'aws_ecs_services', 'aws_ecs_clusters', 'aws_s3_buckets', 'aws_bedrock_usage',
@@ -129,7 +123,6 @@ async function main() {
   const dellResult = db.transaction(() => seedDell(db, { now, encrypt }))();
   const ariaResult = db.transaction(() => seedAria(db, { now, encrypt }))();
   const ariaopsResult = db.transaction(() => seedAriaops(db, { now, encrypt }))();
-  const netbackupResult = db.transaction(() => seedNetbackup(db, { now, encrypt }))();
   const awsResult = db.transaction(() => seedAws(db, { now, encrypt }))();
 
   const summary = [
@@ -151,7 +144,6 @@ async function main() {
     ['dell instances/devices/components', `${dellResult.instances}/${dellResult.devices}/${dellResult.components}`],
     ['aria instances/deployments/requests', `${ariaResult.instances}/${ariaResult.deployments}/${ariaResult.requests}`],
     ['ariaops instances/resources/alerts', `${ariaopsResult.instances}/${ariaopsResult.resources}/${ariaopsResult.alerts}`],
-    ['netbackup sources/policies/jobs', `${netbackupResult.sources}/${netbackupResult.policies}/${netbackupResult.jobs}`],
     ['aws ec2/ecs services/s3/cost rows', `${awsResult.ec2}/${awsResult.ecsServices}/${awsResult.s3}/${awsResult.costRows}`],
     ['users', 1],
   ];

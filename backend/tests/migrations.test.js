@@ -20,7 +20,6 @@ import vcenterMigrations from '../db/migrations/vcenter.js';
 import dellMigrations from '../db/migrations/dell.js';
 import ariaMigrations from '../db/migrations/aria.js';
 import ariaopsMigrations from '../db/migrations/ariaops.js';
-import netbackupMigrations from '../db/migrations/netbackup.js';
 import awsMigrations from '../db/migrations/aws.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -158,7 +157,6 @@ function buildNewDb() {
   runMigrations(db, 'dell', dellMigrations);
   runMigrations(db, 'aria', ariaMigrations);
   runMigrations(db, 'ariaops', ariaopsMigrations);
-  runMigrations(db, 'netbackup', netbackupMigrations);
   runMigrations(db, 'aws', awsMigrations);
   return db;
 }
@@ -205,11 +203,6 @@ const NEW_TABLES = [
   'aria_metrics_history', 'aria_issue_history', 'aria_images',
   'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints', 'aria_deployment_resources',
   'ariaops_instances', 'ariaops_resources', 'ariaops_alerts', 'ariaops_metrics_history',
-  'netbackup_sources', 'netbackup_jobs', 'netbackup_policies', 'netbackup_storage_units',
-  'netbackup_disk_pools', 'netbackup_media_servers', 'netbackup_appliances', 'netbackup_alerts',
-  'netbackup_issue_history', 'netbackup_metrics_history',
-  'netbackup_slps', 'netbackup_workload_history', 'netbackup_ai_reports', 'netbackup_appliance_overrides',
-  'netbackup_appliance_conns', 'netbackup_appliance_hw',
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
   'ai_audit_exchanges',
@@ -316,7 +309,6 @@ describe('runMigrations', () => {
       runMigrations(db, 'dell', dellMigrations);
       runMigrations(db, 'aria', ariaMigrations);
       runMigrations(db, 'ariaops', ariaopsMigrations);
-  runMigrations(db, 'netbackup', netbackupMigrations);
       runMigrations(db, 'aws', awsMigrations);
     }).not.toThrow();
 

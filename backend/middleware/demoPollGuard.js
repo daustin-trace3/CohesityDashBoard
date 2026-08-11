@@ -4,7 +4,7 @@ const { isDemo } = require('../services/demoMode');
 // platform list — covers both built-in routers and future plugins:
 //   POST .../refresh                (aria, ariaops, aws, dell, proxmox,
 //                                     vcenter, gflags, licensing, views,
-//                                     workloads, zerto, netbackup, ...)
+//                                     workloads, zerto, ...)
 //   POST .../poll                   (netapp, pure)
 //   POST .../trigger, .../trigger/:id   (poller)
 const REFRESH_OR_POLL_RE = /\/(refresh|poll)$/i;

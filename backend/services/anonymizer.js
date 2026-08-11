@@ -167,24 +167,6 @@ function loadDictionary() {
   } catch { /* Aria tables not present on this instance */ }
 
   try {
-    add(db.prepare('SELECT name FROM netbackup_sources').all(), 'CLUSTER');
-    addHostOrIp(db.prepare("SELECT host AS name FROM netbackup_sources WHERE host IS NOT NULL AND host != ''").all());
-    add(db.prepare("SELECT name FROM netbackup_policies WHERE name IS NOT NULL AND name != ''").all(), 'POLICY');
-    add(db.prepare("SELECT DISTINCT client_name AS name FROM netbackup_jobs WHERE client_name IS NOT NULL AND client_name != ''").all(), 'OBJECT');
-    add(db.prepare("SELECT name FROM netbackup_media_servers WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
-    add(db.prepare("SELECT name FROM netbackup_appliances WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
-    add(db.prepare("SELECT serial_number AS name FROM netbackup_appliances WHERE serial_number IS NOT NULL AND serial_number != ''").all(), 'SERIAL');
-    add(db.prepare("SELECT name FROM netbackup_storage_units WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
-    add(db.prepare("SELECT name FROM netbackup_disk_pools WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
-  } catch { /* NetBackup tables not present on this instance */ }
-
-  try {
-    // netbackup_slps ships in migration v2 (WP1); guarded separately so its
-    // absence doesn't drop the v1 NetBackup entries above.
-    add(db.prepare("SELECT name FROM netbackup_slps WHERE name IS NOT NULL AND name != ''").all(), 'POLICY');
-  } catch { /* netbackup_slps not present until migration v2 lands */ }
-
-  try {
     // aws_accounts/aws_ec2_instances/aws_lightsail_instances/aws_ecs_*/aws_s3_buckets
     // ship in AWS migration v1.
     add(db.prepare('SELECT name FROM aws_accounts').all(), 'CLUSTER');
@@ -200,7 +182,7 @@ function loadDictionary() {
   try {
     // aws_rds_instances/aws_lambda_functions/aws_dynamo_tables/aws_ecr_repos/aws_vpcs
     // ship in AWS migration v2 (WP1); guarded separately so its absence
-    // doesn't drop the v1 AWS entries above (netbackup :181-185 pattern).
+    // doesn't drop the v1 AWS entries above.
     add(db.prepare("SELECT db_id AS name FROM aws_rds_instances WHERE db_id IS NOT NULL AND db_id != ''").all(), 'OBJECT');
     add(db.prepare("SELECT name FROM aws_lambda_functions WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
     add(db.prepare("SELECT name FROM aws_dynamo_tables WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
@@ -211,8 +193,8 @@ function loadDictionary() {
 
   try {
     // nutanix_* tables ship in the Nutanix migration (WP1); guarded
-    // separately (netbackup :169-179 pattern) so their absence never breaks
-    // other platforms' dictionary entries.
+    // separately so their absence never breaks other platforms' dictionary
+    // entries.
     add(db.prepare("SELECT name FROM nutanix_sources WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
     add(db.prepare("SELECT host AS name FROM nutanix_sources WHERE host IS NOT NULL AND host != ''").all(), 'SOURCE');
     add(db.prepare("SELECT name FROM nutanix_clusters WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');

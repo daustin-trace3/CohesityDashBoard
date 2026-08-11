@@ -61,12 +61,6 @@ const CATEGORIES = [
   { key: 'ariaops-resources', label: 'Aria Ops Resources', platform: 'ariaops', perm: 'ariaops:resources:view', base: '/ariaops/resources',
     sql: `SELECT name AS title, (COALESCE(kind, '') || ' · ' || COALESCE(health, '')) AS subtitle
           FROM ariaops_resources WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
-  { key: 'netbackup-clients', label: 'NetBackup Clients', platform: 'netbackup', perm: 'netbackup:clients:view', base: '/netbackup/jobs',
-    sql: `SELECT DISTINCT client_name AS title FROM netbackup_jobs WHERE client_name LIKE ? ESCAPE '\\' ORDER BY client_name LIMIT ?` },
-  { key: 'netbackup-policies', label: 'NetBackup Policies', platform: 'netbackup', perm: 'netbackup:policies:view', base: '/netbackup/policies',
-    sql: `SELECT name AS title, policy_type AS subtitle FROM netbackup_policies WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
-  { key: 'netbackup-appliances', label: 'NetBackup Appliances', platform: 'netbackup', perm: 'netbackup:appliances:view', base: '/netbackup/appliances',
-    sql: `SELECT name AS title, appliance_type AS subtitle FROM netbackup_appliances WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
   { key: 'aws-ec2', label: 'AWS EC2 Instances', platform: 'aws', perm: 'aws:ec2:view', base: '/aws/ec2',
     sql: `SELECT COALESCE(i.name, i.instance_id) AS title, (COALESCE(i.state, '') || ' · ' || COALESCE(i.instance_type, '') || ' · ' || a.name) AS subtitle
           FROM aws_ec2_instances i JOIN aws_accounts a ON a.id = i.account_id

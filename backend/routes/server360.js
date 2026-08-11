@@ -30,9 +30,6 @@ router.get('/suggest', (req, res, next) => {
     if (hasPermission(grants, 'cohesity:workloads:view')) {
       for (const r of db.prepare(`SELECT name FROM cohesity_objects WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 8`).all(pattern)) names.add(r.name);
     }
-    if (platformEnabled('netbackup') && hasPermission(grants, 'netbackup:jobs:view')) {
-      for (const r of db.prepare(`SELECT DISTINCT client_name AS name FROM netbackup_jobs WHERE client_name LIKE ? ESCAPE '\\' ORDER BY name LIMIT 8`).all(pattern)) names.add(r.name);
-    }
     for (const p of registry.getServer360Providers()) {
       if (!p.suggest || !hasPermission(grants, `${p.id}:objects:view`)) continue;
       try {
@@ -172,45 +169,6 @@ router.get('/', (req, res, next) => {
       }
     }
 
-    // ── NetBackup: backup posture by client name ──────────────────────────
-    let netbackup = null;
-    if (platformEnabled('netbackup') && can('netbackup:jobs:view')) {
-      const jobs = db.prepare(`
-        SELECT j.*, s.name AS source_name FROM netbackup_jobs j
-        JOIN netbackup_sources s ON s.id = j.source_id
-        WHERE lower(j.client_name) IN (${namePh}) AND j.started_at >= datetime('now', '-7 days')
-      `).all(...nameList);
-      if (jobs.length) {
-        const byClient = new Map();
-        for (const j of jobs) {
-          const key = `${lower(j.client_name)}|${j.source_id}`;
-          let c = byClient.get(key);
-          if (!c) {
-            c = {
-              clientName: j.client_name, sourceName: j.source_name, policies: new Set(),
-              jobs7d: 0, failed7d: 0, lastStatus: null, lastRunAt: null, lastSuccessAt: null, logicalBytes: null,
-            };
-            byClient.set(key, c);
-          }
-          if (j.policy_name) c.policies.add(j.policy_name);
-          c.jobs7d += 1;
-          const failed = j.state === 'FAILED' || (['EXITED', 'DONE'].includes(j.state) && Number(j.status_code || 0) > 0);
-          const succeeded = !failed && ['EXITED', 'DONE'].includes(j.state);
-          if (failed) c.failed7d += 1;
-          const runAt = j.ended_at || j.started_at;
-          if (runAt && (!c.lastRunAt || runAt > c.lastRunAt)) {
-            c.lastRunAt = runAt;
-            c.lastStatus = failed ? 'failed' : succeeded ? 'success' : (j.state || null);
-          }
-          if (succeeded && runAt && (!c.lastSuccessAt || runAt > c.lastSuccessAt)) {
-            c.lastSuccessAt = runAt;
-            c.logicalBytes = j.kilobytes != null ? j.kilobytes * 1024 : null;
-          }
-        }
-        netbackup = { clients: [...byClient.values()].map((c) => ({ ...c, policies: [...c.policies] })) };
-      }
-    }
-
     // ── Installed plugins: display-ready sections via manifest.server360 ──
     const pluginSections = [];
     for (const p of registry.getServer360Providers()) {
@@ -229,7 +187,6 @@ router.get('/', (req, res, next) => {
       zerto,
       netapp,
       aria,
-      netbackup,
       plugins: pluginSections,
     });
   } catch (err) { next(err); }

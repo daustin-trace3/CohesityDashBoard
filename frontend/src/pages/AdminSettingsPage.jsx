@@ -19,7 +19,6 @@ const NOTIFY_PLATFORMS = [
   { key: 'vcenter', label: 'VMware vCenter' },
   { key: 'dell', label: 'Dell (OME)' },
   { key: 'aria', label: 'Aria Automation' },
-  { key: 'netbackup', label: 'Veritas NetBackup' },
   { key: 'aws', label: 'AWS' },
 ];
 
