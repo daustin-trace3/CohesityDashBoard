@@ -1,6 +1,6 @@
 // Port of frontend/src/pages/unifi/DeviceFaceplate.jsx — SVG front-panel
 // with link/PoE/attached-count animations, hover tooltip and click popup.
-import { poeWatts } from '../ui.jsx';
+import { portalOrInline, poeWatts } from '../ui.jsx';
 import { X, Router, Cable, History } from '../icons.jsx';
 import PortHistoryModal from './portHistoryModal.jsx';
 
@@ -267,7 +267,7 @@ function PortPopup({ port, attached, deviceName, canHistory, onHistory, onClose 
   const errs = (Number(port.rx_errors) || 0) + (Number(port.tx_errors) || 0);
   const drops = (Number(port.rx_dropped) || 0) + (Number(port.tx_dropped) || 0);
   const w_ = poeWatts(port);
-  return ReactDOM.createPortal(
+  return portalOrInline(
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative panel w-full max-w-md max-h-[80vh] flex flex-col" style={{ borderTop: '3px solid #006FFF' }}>
@@ -328,8 +328,7 @@ function PortPopup({ port, attached, deviceName, canHistory, onHistory, onClose 
           )}
         </div>
       </div>
-    </div>,
-    document.body
+    </div>
   );
 }
 

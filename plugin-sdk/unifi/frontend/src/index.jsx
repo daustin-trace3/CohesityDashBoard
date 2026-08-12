@@ -5,10 +5,7 @@
 //
 // Feature-module conditionality (contract §Feature toggles): wifi/protect/
 // security nav items are hidden unless GET /api/unifi/features reports the
-// module on — fetched BEFORE __ICC_REGISTER_PLUGIN__ is called, since
-// navGroups are static at register time. Toggling a module afterwards
-// needs a page reload for the menu to pick it up (pages self-gate via
-// disabled payloads in the meantime).
+// module on — served through a live `navGroups` getter (see bottom of file).
 
 import { injectStyles } from './ui.jsx';
 import {
@@ -84,29 +81,50 @@ const routes = [
   { path: 'unifi/settings', Component: SettingsPage },
 ];
 
-function register(features) {
-  window.__ICC_REGISTER_PLUGIN__({
-    id: 'unifi',
-    label: 'Ubiquiti UniFi',
-    color: ACCENT,
-    switcherRoute: '/unifi',
-    basePath: '/unifi',
-    isActive: (p) => p.startsWith('/unifi'),
-    navGroups: navGroups(features),
-    routes,
-  });
+// Live feature flags. The original register-time fetch had two failure modes
+// hit on the demo install (2026-08-12): it ran before login so /features
+// 401'd and every module nav item stayed hidden forever, and it read
+// json.wifi instead of json.features.wifi. Now: register synchronously (no
+// loader-timeout risk) with a `navGroups` GETTER — the host Layout reads the
+// property on every render, so the menu updates as soon as a throttled
+// background refresh succeeds (first render after login, and again on the
+// 'platforms-changed' event the Settings toggles dispatch).
+let featureFlags = { wifi: false, protect: false, security: false };
+let flagsLoaded = false;
+let lastAttempt = 0;
+let inFlight = false;
+
+function refreshFeatures(force = false) {
+  if (typeof fetch !== 'function' || inFlight) return;
+  const now = Date.now();
+  if (!force && flagsLoaded) return;
+  if (!force && now - lastAttempt < FEATURES_TIMEOUT_MS) return;
+  lastAttempt = now;
+  inFlight = true;
+  fetch('/api/unifi/features', { credentials: 'include' })
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+    .then((json) => {
+      const f = json?.features ?? json ?? {};
+      featureFlags = { wifi: f.wifi === true, protect: f.protect === true, security: f.security === true };
+      flagsLoaded = true;
+    })
+    .catch(() => { /* stay hidden (default-OFF shipping); retried on later renders */ })
+    .finally(() => { inFlight = false; });
 }
 
-function probeFeatures() {
-  if (typeof fetch !== 'function') return Promise.resolve({ wifi: false, protect: false, security: false });
-  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = setTimeout(() => controller?.abort(), FEATURES_TIMEOUT_MS);
-  return fetch('/api/unifi/features', { credentials: 'include', signal: controller?.signal })
-    .then((res) => (res.ok ? res.json() : {}))
-    .then((json) => ({ wifi: json?.wifi === true, protect: json?.protect === true, security: json?.security === true }))
-    // default-OFF shipping: hide feature-tagged nav items on fetch failure/timeout.
-    .catch(() => ({ wifi: false, protect: false, security: false }))
-    .finally(() => clearTimeout(timer));
-}
+refreshFeatures();
+window.addEventListener('platforms-changed', () => refreshFeatures(true));
 
-probeFeatures().then(register);
+window.__ICC_REGISTER_PLUGIN__({
+  id: 'unifi',
+  label: 'Ubiquiti UniFi',
+  color: ACCENT,
+  switcherRoute: '/unifi',
+  basePath: '/unifi',
+  isActive: (p) => p.startsWith('/unifi'),
+  get navGroups() {
+    refreshFeatures();
+    return navGroups(featureFlags);
+  },
+  routes,
+});

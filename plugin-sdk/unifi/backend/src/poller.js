@@ -495,13 +495,33 @@ function getPoller(coreApi) {
  *  mirroring the built-in's createUnifiPollerHandle() shape. */
 function createUnifiPoller(coreApi) {
   if (process.env.DASHBOARD_DEMO === '1') {
-    try {
-      const { seedUnifiDemo } = require('./demoSeed');
-      const r = seedUnifiDemo(coreApi);
-      coreApi.logger.info(`[UnifiPoller] demo estate seeded: ${r.sources} sources, ${r.devices} devices, ${r.clients} clients`);
-    } catch (err) {
-      coreApi.logger.warn(`[UnifiPoller] demo seed failed: ${err.message}`);
-    }
+    const seedDemo = () => {
+      try {
+        const { seedUnifiDemo } = require('./demoSeed');
+        const r = seedUnifiDemo(coreApi);
+        coreApi.logger.info(`[UnifiPoller] demo estate seeded: ${r.sources} sources, ${r.devices} devices, ${r.clients} clients`);
+        return r;
+      } catch (err) {
+        coreApi.logger.warn(`[UnifiPoller] demo seed failed: ${err.message}`);
+        return null;
+      }
+    };
+    seedDemo();
+    // Demo instances seed fixtures but NEVER poll them: the seeded hosts are
+    // real-looking IPs (the fixture UDM address is routable from the demo
+    // box), so live polls would both hammer a stranger's/Doug's gateway with
+    // a fake key AND overwrite the pristine demo estate with poll errors —
+    // exactly what happened on the first live demo install (sources flipped
+    // to "Unreachable HTTP 401" minutes after seeding). trigger() re-seeds
+    // instead, which is what the demo Refresh button semantics want.
+    return {
+      init: () => { coreApi.logger.info('[UnifiPoller] demo mode — polling disabled, fixtures only'); return []; },
+      stopAll: () => {},
+      trigger: () => { seedDemo(); return Promise.resolve(); },
+      schedule: () => {},
+      cancel: () => {},
+      taskCount: () => 0,
+    };
   }
 
   const unifiPoller = getPoller(coreApi);

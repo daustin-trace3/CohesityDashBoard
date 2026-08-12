@@ -649,10 +649,20 @@ export function Fact({ label, value }) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────
- * Modal — portaled to document.body.
+ * Modal — portaled to document.body WHEN the host exposes createPortal.
+ * The host's window.ReactDOM is react-dom/client (createRoot only), which
+ * has NO createPortal — calling it unguarded crashes the page ("not a
+ * function", hit live on the demo install 2026-08-12). The inline fixed
+ * overlay fallback renders identically except on transformed ancestors.
  * ────────────────────────────────────────────────────────────────────── */
+export function portalOrInline(node) {
+  const rd = typeof window !== 'undefined' ? window.ReactDOM : null;
+  if (rd && typeof rd.createPortal === 'function') return rd.createPortal(node, document.body);
+  return node;
+}
+
 export function Modal({ title, subtitle, icon: IconComp, onClose, children, maxWidth = 'min(720px,92vw)' }) {
-  return ReactDOM.createPortal(
+  return portalOrInline(
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} role="dialog" aria-modal="true">
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(4px)' }} onClick={onClose} />
       <div className="panel" style={{ position: 'relative', width: maxWidth, maxHeight: '85vh', display: 'flex', flexDirection: 'column', borderTop: `3px solid ${BRAND}` }}>
@@ -670,8 +680,7 @@ export function Modal({ title, subtitle, icon: IconComp, onClose, children, maxW
         </div>
         <div className="uf-scroll" style={{ padding: 16, overflowY: 'auto' }}>{children}</div>
       </div>
-    </div>,
-    document.body
+    </div>
   );
 }
 

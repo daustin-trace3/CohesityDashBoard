@@ -1,5 +1,5 @@
 // Port of frontend/src/pages/unifi/PortHistoryModal.jsx onto the plugin ui/charts kit.
-import { LoadingPanel, apiFetch, fmtWhen, counterDelta, BRAND } from '../ui.jsx';
+import { portalOrInline, LoadingPanel, apiFetch, fmtWhen, counterDelta, BRAND } from '../ui.jsx';
 import { Activity, X } from '../icons.jsx';
 import { LineChart } from '../charts.jsx';
 
@@ -70,7 +70,7 @@ export default function PortHistoryModal({ mac, portIdx, portLabel, deviceName, 
   const poeOpts = { scales: { x: chartOpts.scales.x, y: { position: 'left' }, y1: { position: 'right', grid: { drawOnChartArea: false } } } };
   const stateOpts = { scales: { x: chartOpts.scales.x, y: { min: -0.1, max: 1.1, ticks: { callback: (v) => (v === 1 ? 'Up' : v === 0 ? 'Down' : '') } } } };
 
-  return ReactDOM.createPortal(
+  return portalOrInline(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative panel w-full max-w-3xl max-h-[85vh] flex flex-col" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -124,7 +124,6 @@ export default function PortHistoryModal({ mac, portIdx, portLabel, deviceName, 
           )}
         </div>
       </div>
-    </div>,
-    document.body
+    </div>
   );
 }
