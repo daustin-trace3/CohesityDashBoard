@@ -11,7 +11,7 @@ const unifiApi = require('../services/unifiApi');
 const { unifiPoller } = require('../services/unifiPoller');
 const {
   wanLatencyWarnMs, wanAvailWarnPct, portErrDeltaWarn, portFlapWarn,
-  deviceCpuWarnPct, deviceMemWarnPct, tempWarnC, satisfactionWarn,
+  deviceCpuWarnPct, deviceMemWarnPct, tempWarnC, satisfactionWarn, newDeviceDays,
   computeIssues,
 } = require('../services/unifiIssues');
 
@@ -411,7 +411,38 @@ router.get('/wan', (req, res, next) => {
       SELECT source_id, captured_at, wan_latency_ms, wan_availability_pct, wan_tx_rate, wan_rx_rate
       FROM unifi_metrics_history WHERE captured_at >= datetime('now', '-7 days') ORDER BY captured_at ASC
     `).all().map((r) => ({ sourceId: r.source_id, capturedAt: r.captured_at, wanLatencyMs: r.wan_latency_ms, wanAvailabilityPct: r.wan_availability_pct, wanTxRate: r.wan_tx_rate, wanRxRate: r.wan_rx_rate }));
-    res.json({ wans, history });
+
+    // Outage / degradation log derived from 90d of metrics history: group
+    // consecutive samples where availability dipped under the warn threshold
+    // (or latency ran hot) into episodes. Stateless — retention-bound to the
+    // metrics table, no extra bookkeeping.
+    const availWarn = wanAvailWarnPct();
+    const latHot = wanLatencyWarnMs() * 2;
+    const outages = [];
+    for (const src of db.prepare('SELECT id, name FROM unifi_sources').all()) {
+      const rows = db.prepare(`
+        SELECT captured_at, wan_availability_pct a, wan_latency_ms l FROM unifi_metrics_history
+        WHERE source_id = ? AND captured_at >= datetime('now', '-90 days')
+        ORDER BY captured_at ASC
+      `).all(src.id);
+      let ep = null;
+      const close = () => { if (ep && ep.samples >= 2) outages.push(ep); ep = null; };
+      for (const r of rows) {
+        const degraded = (r.a != null && r.a < availWarn) || (r.l != null && r.l >= latHot);
+        if (degraded) {
+          if (!ep) ep = { sourceId: src.id, sourceName: src.name, startedAt: r.captured_at, endedAt: r.captured_at, samples: 0, minAvailabilityPct: null, maxLatencyMs: null, kind: 'degraded' };
+          ep.endedAt = r.captured_at;
+          ep.samples += 1;
+          if (r.a != null && (ep.minAvailabilityPct == null || r.a < ep.minAvailabilityPct)) ep.minAvailabilityPct = r.a;
+          if (r.l != null && (ep.maxLatencyMs == null || r.l > ep.maxLatencyMs)) ep.maxLatencyMs = r.l;
+          if (ep.minAvailabilityPct != null && ep.minAvailabilityPct < 50) ep.kind = 'outage';
+        } else close();
+      }
+      close();
+    }
+    outages.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+
+    res.json({ wans, history, outages: outages.slice(0, 50) });
   } catch (err) { next(err); }
 });
 
@@ -566,7 +597,74 @@ router.get('/insights', (req, res, next) => {
       for (const r of rows) newDevices.push({ ...r, sourceName: name });
     }
 
+    // 8. Busiest hour (24h) + same-window-yesterday comparison
+    // Inner MAX dedupes double-writes when a source got polled twice in the
+    // same second (registration trigger + manual poll) before summing sources.
+    const dedupedTotals = `
+      SELECT captured_at, SUM(c) c FROM (
+        SELECT source_id, captured_at, MAX(clients_total) c FROM unifi_metrics_history
+        %WHERE% GROUP BY source_id, captured_at
+      ) GROUP BY captured_at`;
+    const peakRow = db.prepare(`${dedupedTotals.replace('%WHERE%', "WHERE captured_at >= datetime('now', '-24 hours')")} ORDER BY c DESC LIMIT 1`).get();
+    const nowRow = db.prepare(`${dedupedTotals.replace('%WHERE%', '')} ORDER BY captured_at DESC LIMIT 1`).get();
+    const yesterdayRow = db.prepare(`${dedupedTotals.replace('%WHERE%', "WHERE captured_at BETWEEN datetime('now', '-1 day', '-30 minutes') AND datetime('now', '-1 day', '+30 minutes')")} ORDER BY captured_at DESC LIMIT 1`).get();
+    const busiestHour = peakRow ? {
+      peakClients: peakRow.c, peakAt: peakRow.captured_at,
+      clientsNow: nowRow?.c ?? null, clientsSameTimeYesterday: yesterdayRow?.c ?? null,
+    } : null;
+
+    // 9. Top talkers (cumulative bytes since association)
+    const topTalkers = db.prepare(`
+      SELECT COALESCE(NULLIF(name, ''), NULLIF(hostname, ''), mac) label, ip, is_wired, (COALESCE(tx_bytes,0) + COALESCE(rx_bytes,0)) bytes
+      FROM unifi_clients WHERE tx_bytes IS NOT NULL OR rx_bytes IS NOT NULL
+      ORDER BY bytes DESC LIMIT 5
+    `).all();
+
+    // 10. Uplink utilization: live WAN rate vs uplink max speed (rates bps, max Mbps)
+    const uplinks = db.prepare('SELECT w.source_id, s.name source_name, w.isp_name, w.tx_rate, w.rx_rate, w.uplink_max_speed, w.uplink_speed FROM unifi_wan w JOIN unifi_sources s ON s.id = w.source_id').all()
+      .filter((w) => w.uplink_max_speed > 0)
+      .map((w) => ({
+        sourceId: w.source_id, sourceName: w.source_name, ispName: w.isp_name,
+        utilizationPct: Math.round(((Math.max(w.tx_rate || 0, w.rx_rate || 0) / 1e6) / (w.uplink_max_speed)) * 1000) / 10,
+        linkMbps: w.uplink_speed, maxMbps: w.uplink_max_speed,
+      }));
+
+    // 11. Temperature trend: hottest now + last-24h avg vs prior-7d avg
+    const tempNow = db.prepare(`
+      SELECT max_temp_c FROM unifi_metrics_history WHERE max_temp_c IS NOT NULL ORDER BY captured_at DESC LIMIT 1
+    `).get()?.max_temp_c ?? null;
+    const tempAvg24 = db.prepare(`
+      SELECT AVG(max_temp_c) a FROM unifi_metrics_history
+      WHERE max_temp_c IS NOT NULL AND captured_at >= datetime('now', '-24 hours')
+    `).get().a;
+    const tempAvgPrior = db.prepare(`
+      SELECT AVG(max_temp_c) a FROM unifi_metrics_history
+      WHERE max_temp_c IS NOT NULL AND captured_at BETWEEN datetime('now', '-8 days') AND datetime('now', '-24 hours')
+    `).get().a;
+    const hottestDevice = (() => {
+      let best = null;
+      for (const d of db.prepare('SELECT name, mac, temps_json FROM unifi_devices WHERE temps_json IS NOT NULL').all()) {
+        try {
+          for (const t of JSON.parse(d.temps_json) || []) {
+            const v = Number(t?.value);
+            if (Number.isFinite(v) && (!best || v > best.tempC)) best = { name: d.name || d.mac, sensor: t.name, tempC: v };
+          }
+        } catch { /* ignore */ }
+      }
+      return best;
+    })();
+    const tempTrend = tempNow != null || hottestDevice ? {
+      currentMaxC: tempNow, hottestDevice,
+      avg24hC: tempAvg24 != null ? Math.round(tempAvg24 * 10) / 10 : null,
+      avgPrior7dC: tempAvgPrior != null ? Math.round(tempAvgPrior * 10) / 10 : null,
+      deltaC: tempAvg24 != null && tempAvgPrior != null ? Math.round((tempAvg24 - tempAvgPrior) * 10) / 10 : null,
+    } : null;
+
     res.json({
+      busiestHour,
+      topTalkers,
+      uplinks,
+      tempTrend,
       poe: { totalWatts: Math.round(poeNow * 10) / 10, topPorts: poeTop, trend: poeTrend },
       portHealth: {
         total: portTotals.total || 0, up: portTotals.up || 0,
@@ -629,6 +727,7 @@ router.get('/config', (req, res, next) => {
         unifiDeviceMemWarnPct: deviceMemWarnPct(),
         unifiTempWarnC: tempWarnC(),
         unifiSatisfactionWarn: satisfactionWarn(),
+        unifiNewDeviceDays: newDeviceDays(),
       },
     });
   } catch (err) { next(err); }
@@ -643,6 +742,7 @@ router.put('/config', [
   body('unifiDeviceMemWarnPct').optional().isInt({ min: 1, max: 100 }).toInt(),
   body('unifiTempWarnC').optional().isInt({ min: 1, max: 200 }).toInt(),
   body('unifiSatisfactionWarn').optional().isInt({ min: 1, max: 100 }).toInt(),
+  body('unifiNewDeviceDays').optional().isInt({ min: 1, max: 30 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     const map = {
@@ -654,6 +754,7 @@ router.put('/config', [
       unifiDeviceMemWarnPct: 'unifi_device_mem_warn_pct',
       unifiTempWarnC: 'unifi_temp_warn_c',
       unifiSatisfactionWarn: 'unifi_satisfaction_warn',
+      unifiNewDeviceDays: 'unifi_new_device_days',
     };
     for (const [k, settingKey] of Object.entries(map)) {
       if (req.body[k] !== undefined) setSetting(settingKey, String(req.body[k]));
@@ -668,6 +769,7 @@ router.put('/config', [
         unifiDeviceMemWarnPct: deviceMemWarnPct(),
         unifiTempWarnC: tempWarnC(),
         unifiSatisfactionWarn: satisfactionWarn(),
+        unifiNewDeviceDays: newDeviceDays(),
       },
     });
   } catch (err) { next(err); }

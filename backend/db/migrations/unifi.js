@@ -321,4 +321,15 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 4,
+    up(db) {
+      // Hottest device temperature per capture — powers the temperature-trend
+      // insight ("running hotter than last week").
+      const cols = db.prepare('PRAGMA table_info(unifi_metrics_history)').all().map((c) => c.name);
+      if (!cols.includes('max_temp_c')) {
+        db.exec('ALTER TABLE unifi_metrics_history ADD COLUMN max_temp_c REAL');
+      }
+    },
+  },
 ];

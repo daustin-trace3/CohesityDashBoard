@@ -18,6 +18,49 @@ const Fact = ({ label, value }) => (
   </div>
 );
 
+function durationLabel(startedAt, endedAt) {
+  try {
+    const ms = new Date(endedAt.replace(' ', 'T') + 'Z') - new Date(startedAt.replace(' ', 'T') + 'Z');
+    const min = Math.max(1, Math.round(ms / 60000));
+    return min >= 60 ? `${Math.floor(min / 60)}h ${min % 60}m` : `${min}m`;
+  } catch { return '—'; }
+}
+
+// Derived from metrics history server-side: consecutive degraded samples
+// grouped into episodes — the ISP accountability log.
+function OutageLog({ outages, multiWan }) {
+  if (!outages.length) return null;
+  return (
+    <div className="panel p-4 mb-4" style={{ borderTop: '3px solid #D4A24E' }}>
+      <p className="text-sm font-semibold text-ink mb-2">Outage / Degradation Log (90d)</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+            {multiWan && <th className="py-1.5 pr-3">Site</th>}
+            <th className="py-1.5 pr-3">Started</th>
+            <th className="py-1.5 pr-3">Duration</th>
+            <th className="py-1.5 pr-3">Kind</th>
+            <th className="py-1.5 pr-3 text-right">Min Availability</th>
+            <th className="py-1.5 pr-3 text-right">Max Latency</th>
+          </tr></thead>
+          <tbody>
+            {outages.map((o, i) => (
+              <tr key={i} className="border-b border-cohesity-border/40">
+                {multiWan && <td className="py-1.5 pr-3 text-ink-muted">{o.sourceName}</td>}
+                <td className="py-1.5 pr-3 text-ink tnum">{fmtWhen(o.startedAt)}</td>
+                <td className="py-1.5 pr-3 text-ink-muted tnum">{durationLabel(o.startedAt, o.endedAt)}</td>
+                <td className="py-1.5 pr-3"><Badge tone={o.kind === 'outage' ? 'crit' : 'warn'}>{o.kind}</Badge></td>
+                <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{o.minAvailabilityPct != null ? `${o.minAvailabilityPct}%` : '—'}</td>
+                <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{o.maxLatencyMs != null ? `${o.maxLatencyMs}ms` : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 const chartOpts = {
   responsive: true, maintainAspectRatio: false, animation: false,
   plugins: { legend: { labels: { color: '#E5E5E5', boxWidth: 12, font: { size: 11 } } } },
@@ -193,6 +236,8 @@ export default function UnifiWanPage() {
               )}
             </>
           )}
+
+          <OutageLog outages={(data?.outages || []).filter((o) => !selected || o.sourceId === selected.source_id)} multiWan={wans.length > 1} />
 
           {history.length > 1 ? (
             <>

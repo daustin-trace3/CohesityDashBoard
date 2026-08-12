@@ -26,6 +26,7 @@ const THRESHOLD_FIELDS = [
   { key: 'unifiDeviceMemWarnPct', label: 'Device memory warn (%)', min: 1, max: 100 },
   { key: 'unifiTempWarnC', label: 'Device temperature warn (°C)', min: 1, max: 150 },
   { key: 'unifiSatisfactionWarn', label: 'Client satisfaction warn (%)', min: 1, max: 100 },
+  { key: 'unifiNewDeviceDays', label: 'New-device alert window (days)', min: 1, max: 30 },
 ];
 
 const blankForm = () => ({ name: '', host: '', port: 443, apiKey: '', sslVerify: false, pollingIntervalMinutes: 10 });

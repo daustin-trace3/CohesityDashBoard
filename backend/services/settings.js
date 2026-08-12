@@ -39,6 +39,7 @@ const DEFAULTS = {
   unifi_device_mem_warn_pct: '92',
   unifi_temp_warn_c: '80',
   unifi_satisfaction_warn: '50',
+  unifi_new_device_days: '7',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',

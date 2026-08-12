@@ -22,6 +22,7 @@ const deviceCpuWarnPct = () => clampedInt('unifi_device_cpu_warn_pct', 90, 1, 10
 const deviceMemWarnPct = () => clampedInt('unifi_device_mem_warn_pct', 92, 1, 100);
 const tempWarnC = () => clampedInt('unifi_temp_warn_c', 80, 1, 200);
 const satisfactionWarn = () => clampedInt('unifi_satisfaction_warn', 50, 1, 100);
+const newDeviceDays = () => clampedInt('unifi_new_device_days', 7, 1, 30);
 
 const thresholdGetters = {
   unifiWanLatencyWarnMs: wanLatencyWarnMs,
@@ -32,6 +33,7 @@ const thresholdGetters = {
   unifiDeviceMemWarnPct: deviceMemWarnPct,
   unifiTempWarnC: tempWarnC,
   unifiSatisfactionWarn: satisfactionWarn,
+  unifiNewDeviceDays: newDeviceDays,
 };
 
 /**
@@ -199,6 +201,25 @@ function computeIssues() {
     }
   }
 
+  // Rule 15: new-device — client first seen within the window (post-bootstrap),
+  // info severity; auto-resolves when the window slides past first_seen.
+  try {
+    const days = newDeviceDays();
+    for (const src of sources) {
+      const bootstrap = db.prepare('SELECT MIN(first_seen) t FROM unifi_client_seen WHERE source_id = ?').get(src.id).t;
+      if (!bootstrap) continue;
+      const rows = db.prepare(`
+        SELECT mac, name FROM unifi_client_seen
+        WHERE source_id = ? AND first_seen >= datetime('now', ?)
+          AND first_seen > datetime(?, '+1 hour')
+      `).all(src.id, `-${days} days`, bootstrap);
+      for (const r of rows) {
+        issues.push({ severity: 'info', type: 'new-device', source: src.name, target: r.name || r.mac,
+          message: `New client on the network: ${r.name || r.mac} (first seen within ${days}d)` });
+      }
+    }
+  } catch { /* unifi_client_seen arrives in migration v3 — tolerate older DBs */ }
+
   // Rule 12: wifi-experience — >=3 wireless clients under the satisfaction
   // threshold, grouped per source/site.
   const satWarn = satisfactionWarn();
@@ -263,7 +284,7 @@ const reconcileIssueHistory = db.transaction(() => {
 
 module.exports = {
   wanLatencyWarnMs, wanAvailWarnPct, portErrDeltaWarn, portFlapWarn,
-  deviceCpuWarnPct, deviceMemWarnPct, tempWarnC, satisfactionWarn,
+  deviceCpuWarnPct, deviceMemWarnPct, tempWarnC, satisfactionWarn, newDeviceDays,
   thresholdGetters,
   computeIssues, reconcileIssueHistory,
   portErrorDelta24h, portFlapCount24h,

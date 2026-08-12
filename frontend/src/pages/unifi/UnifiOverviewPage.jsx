@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Gauge, Router, Users, Globe, ShieldAlert, Activity, Server, Zap, Cable, Shield, Wifi, RotateCcw, UserPlus } from 'lucide-react';
+import { Gauge, Router, Users, Globe, ShieldAlert, Activity, Server, Zap, Cable, Shield, Wifi, RotateCcw, UserPlus, Clock, ArrowDownUp, Thermometer, Cctv } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { CameraSnapshot } from './UnifiProtectPage';
 import { useNavigate } from 'react-router-dom';
 import { Line } from 'react-chartjs-2';
 import {
@@ -36,7 +38,16 @@ const Line11 = ({ children, warn }) => (
 // Insights band — every card is derived server-side in /unifi/insights from
 // data the poller already collects.
 function InsightsBand({ insights, navigate, chartOpts }) {
-  const { poe, portHealth, wanScores, security24h, wifiCongestion, reboots, newDevices } = insights;
+  const { poe, portHealth, wanScores, security24h, wifiCongestion, reboots, newDevices, busiestHour, topTalkers, uplinks, tempTrend } = insights;
+  const fmtBytes = (b) => {
+    const n = Number(b) || 0;
+    if (n >= 1e12) return `${(n / 1e12).toFixed(1)} TB`;
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
+    return `${Math.round(n / 1e3)} KB`;
+  };
+  const fmtHour = (ts) => { try { return new Date(ts.replace(' ', 'T') + 'Z').toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { return ts; } };
+  const busiestUplink = (uplinks || []).slice().sort((a, b) => b.utilizationPct - a.utilizationPct)[0] || null;
   const worstWan = (wanScores || []).slice().sort((a, b) => a.score - b.score)[0] || null;
   const congested = (wifiCongestion?.radios24 || []).filter((r) => (r.utilization ?? 0) >= 40);
   const rec = wifiCongestion?.recommendedChannel || null;
@@ -72,8 +83,52 @@ function InsightsBand({ insights, navigate, chartOpts }) {
                 {wanScores.length > 1 && <span className="text-[10px] text-ink-faint">worst of {wanScores.length} WANs</span>}
               </div>
               <Line11>{worstWan.sourceName}: p95 {worstWan.latencyP95}ms · jitter {worstWan.jitterMs}ms · min avail {worstWan.availabilityMin ?? '—'}%</Line11>
+              {busiestUplink && (
+                <Line11 warn={busiestUplink.utilizationPct >= 70}>
+                  Uplink: {busiestUplink.utilizationPct}% of {busiestUplink.maxMbps >= 1000 ? `${busiestUplink.maxMbps / 1000}G` : `${busiestUplink.maxMbps}M`} pipe in use
+                </Line11>
+              )}
             </>
           ) : <Line11>Not enough history yet.</Line11>}
+        </InsightCard>
+
+        <InsightCard icon={Clock} title="Busiest Hour (24h)" onClick={() => navigate('/unifi/clients')}>
+          {busiestHour ? (
+            <>
+              <p className="text-lg font-semibold text-ink tnum">{busiestHour.peakClients} <span className="text-xs font-normal text-ink-faint">clients at {fmtHour(busiestHour.peakAt)}</span></p>
+              <Line11>Now: {busiestHour.clientsNow ?? '—'}{busiestHour.clientsSameTimeYesterday != null ? ` · same time yesterday: ${busiestHour.clientsSameTimeYesterday}` : ''}</Line11>
+            </>
+          ) : <Line11>Not enough history yet.</Line11>}
+        </InsightCard>
+
+        <InsightCard icon={ArrowDownUp} title="Top Talkers" onClick={() => navigate('/unifi/clients')}>
+          {(topTalkers || []).length ? (
+            <div className="flex flex-col gap-0.5">
+              {topTalkers.slice(0, 4).map((t) => (
+                <Line11 key={t.label + t.ip}>
+                  <span className="text-ink">{t.label}</span> · {fmtBytes(t.bytes)} · {t.is_wired ? 'wired' : 'wifi'}
+                </Line11>
+              ))}
+            </div>
+          ) : <Line11>No traffic data.</Line11>}
+          <p className="text-[10px] text-ink-faint mt-1">Traffic since each client connected</p>
+        </InsightCard>
+
+        <InsightCard icon={Thermometer} title="Temperatures"
+          tone={tempTrend?.deltaC != null && tempTrend.deltaC >= 3 ? 'warn' : undefined}>
+          {tempTrend ? (
+            <>
+              <p className="text-lg font-semibold text-ink tnum">{tempTrend.hottestDevice ? `${tempTrend.hottestDevice.tempC.toFixed(0)}°C` : (tempTrend.currentMaxC != null ? `${tempTrend.currentMaxC.toFixed(0)}°C` : '—')}
+                <span className="text-xs font-normal text-ink-faint"> hottest{tempTrend.hottestDevice ? ` (${tempTrend.hottestDevice.name} ${tempTrend.hottestDevice.sensor})` : ''}</span></p>
+              {tempTrend.deltaC != null ? (
+                <Line11 warn={tempTrend.deltaC >= 3}>
+                  24h avg {tempTrend.avg24hC}°C — {tempTrend.deltaC > 0 ? `${tempTrend.deltaC}°C hotter` : tempTrend.deltaC < 0 ? `${Math.abs(tempTrend.deltaC)}°C cooler` : 'level'} vs prior week
+                </Line11>
+              ) : (
+                <Line11>Trend accrues as temperature history builds.</Line11>
+              )}
+            </>
+          ) : <Line11>No temperature sensors reported.</Line11>}
         </InsightCard>
 
         <InsightCard icon={Shield} title="Security (24h)" onClick={() => navigate('/unifi/security')}
@@ -132,6 +187,7 @@ export default function UnifiOverviewPage() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [insights, setInsights] = useState(null);
+  const [cameras, setCameras] = useState([]);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => Promise.all([
@@ -144,6 +200,9 @@ export default function UnifiOverviewPage() {
     client.get('/unifi/insights')
       .then(({ data }) => setInsights(data))
       .catch(() => setInsights(null)),
+    client.get('/unifi/protect')
+      .then(({ data }) => setCameras((data?.cameras || []).filter((c) => c.model_key !== 'chime')))
+      .catch(() => setCameras([])),
   ]), [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -234,6 +293,23 @@ export default function UnifiOverviewPage() {
       )}
 
       {insights && <InsightsBand insights={insights} navigate={navigate} chartOpts={chartOpts} />}
+
+      {cameras.length > 0 && (
+        <div className="mb-4">
+          <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2">
+            <Cctv size={15} className="text-brand" /> Cameras
+            <Link to="/unifi/protect" className="text-[11px] text-brand font-normal underline ml-auto">View all</Link>
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            {cameras.slice(0, 5).map((c) => (
+              <div key={c.id} className="min-w-0">
+                <CameraSnapshot cameraId={c.camera_id} state={c.state} />
+                <p className="text-[10px] text-ink-faint truncate mt-1">{c.name || c.mac}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {spark.length > 1 && (
         <div className="grid lg:grid-cols-2 gap-4 mb-4">

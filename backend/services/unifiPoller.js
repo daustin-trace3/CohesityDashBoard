@@ -242,10 +242,11 @@ const appendMetricsHistory = db.transaction((sourceId, m) => {
   db.prepare(`
     INSERT INTO unifi_metrics_history (source_id, devices_total, devices_online, clients_total, clients_wired,
       clients_wireless, clients_guest, wan_latency_ms, wan_availability_pct, wan_tx_rate, wan_rx_rate,
-      gw_cpu_pct, gw_mem_pct)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      gw_cpu_pct, gw_mem_pct, max_temp_c)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(sourceId, m.devicesTotal, m.devicesOnline, m.clientsTotal, m.clientsWired, m.clientsWireless,
-    m.clientsGuest, m.wanLatencyMs, m.wanAvailabilityPct, m.wanTxRate, m.wanRxRate, m.gwCpuPct, m.gwMemPct);
+    m.clientsGuest, m.wanLatencyMs, m.wanAvailabilityPct, m.wanTxRate, m.wanRxRate, m.gwCpuPct, m.gwMemPct,
+    m.maxTempC ?? null);
   db.prepare("DELETE FROM unifi_metrics_history WHERE captured_at < datetime('now', '-90 days')").run();
 });
 
@@ -348,6 +349,18 @@ async function pollSource(source) {
       wanRxRate: wanFacts.rxRate,
       gwCpuPct: gatewayParsed?.device?.cpuPct ?? null,
       gwMemPct: gatewayParsed?.device?.memPct ?? null,
+      maxTempC: (() => {
+        let max = null;
+        for (const d of db.prepare('SELECT temps_json FROM unifi_devices WHERE source_id = ? AND temps_json IS NOT NULL').all(source.id)) {
+          try {
+            for (const t of JSON.parse(d.temps_json) || []) {
+              const v = Number(t?.value);
+              if (Number.isFinite(v) && (max == null || v > max)) max = v;
+            }
+          } catch { /* tolerate malformed temps */ }
+        }
+        return max;
+      })(),
     });
 
     const healthJson = unifiApi.jsonOrNull({

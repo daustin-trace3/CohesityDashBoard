@@ -9,7 +9,8 @@ const SNAP_REFRESH_MS = 60000;
 
 // Snapshot <img> can't carry the x-api-key header, so frames are fetched as
 // blobs through the authenticated client and swapped in as object URLs.
-function CameraSnapshot({ cameraId, state }) {
+// Exported for the Overview camera strip.
+export function CameraSnapshot({ cameraId, state }) {
   const [url, setUrl] = useState(null);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(false);

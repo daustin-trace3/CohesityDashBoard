@@ -216,10 +216,10 @@ function seedUnifi(db, { now, encrypt }) {
   const insertMetric = db.prepare(`
     INSERT INTO unifi_metrics_history (source_id, captured_at, devices_total, devices_online, clients_total,
       clients_wired, clients_wireless, clients_guest, wan_latency_ms, wan_availability_pct, wan_tx_rate,
-      wan_rx_rate, gw_cpu_pct, gw_mem_pct)
+      wan_rx_rate, gw_cpu_pct, gw_mem_pct, max_temp_c)
     VALUES (@source_id, @captured_at, @devices_total, @devices_online, @clients_total,
       @clients_wired, @clients_wireless, @clients_guest, @wan_latency_ms, @wan_availability_pct, @wan_tx_rate,
-      @wan_rx_rate, @gw_cpu_pct, @gw_mem_pct)
+      @wan_rx_rate, @gw_cpu_pct, @gw_mem_pct, @max_temp_c)
   `);
 
   // ── Sources ──────────────────────────────────────────────────────────
@@ -626,6 +626,7 @@ function seedUnifi(db, { now, encrypt }) {
         wan_tx_rate: randInt(rng, 5000, 300000), wan_rx_rate: randInt(rng, 5000, 300000),
         gw_cpu_pct: gateway && gateway.cpuHigh && isRecent ? randFloat(rng, 88, 94, 1) : randFloat(rng, 10, 40, 1),
         gw_mem_pct: randFloat(rng, 40, 70, 1),
+        max_temp_c: randFloat(rng, 48, 62, 1),
       });
       metricsTotal++;
     }
