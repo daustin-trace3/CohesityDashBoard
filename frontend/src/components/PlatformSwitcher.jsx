@@ -68,7 +68,7 @@ export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {
     return <Activity size={size} strokeWidth={2} style={{ color: platform.color }} />;
   }
-  const src = LOGOS[platform.id];
+  const src = LOGOS[platform.id] || platform.logo;
   if (src) return <img src={src} alt="" style={{ width: size, height: size }} draggable={false} />;
   return <>{monogram(platform.label)}</>;
 }

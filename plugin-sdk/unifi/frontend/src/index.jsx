@@ -8,6 +8,7 @@
 // module on — served through a live `navGroups` getter (see bottom of file).
 
 import { injectStyles } from './ui.jsx';
+import { LOGO_DATA_URI } from './logo.js';
 import {
   Gauge, Router, Cable, Users, Wifi, Share2, Globe, ShieldCheck, ClipboardCheck, Settings, Cctv,
 } from './icons.jsx';
@@ -124,6 +125,7 @@ window.__ICC_REGISTER_PLUGIN__({
   id: 'unifi',
   label: 'Ubiquiti UniFi',
   color: ACCENT,
+  logo: LOGO_DATA_URI,
   switcherRoute: '/unifi',
   basePath: '/unifi',
   isActive: (p) => p.startsWith('/unifi'),

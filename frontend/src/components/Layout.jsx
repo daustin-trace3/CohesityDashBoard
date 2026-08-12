@@ -109,7 +109,7 @@ export default function Layout() {
 
   const { platforms: allPlatforms } = usePlatforms();
   const getPlatform = (id) => allPlatforms.find(p => p.id === id);
-  const platforms = allPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color }));
+  const platforms = allPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color, logo: p.logo }));
   const navGroups = getPlatform('cohesity')?.navGroups || [];
   const pureNavGroups = getPlatform('pure')?.navGroups || [];
   const netappNavGroups = getPlatform('netapp')?.navGroups || [];
