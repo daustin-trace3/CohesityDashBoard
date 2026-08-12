@@ -144,10 +144,15 @@ function seedUnifi(db, { now, encrypt }) {
   const ago = (offset) => agoStmt.get(offset).d;
   const nowIso = new Date(now).toISOString();
 
-  db.prepare(`
-    INSERT INTO app_settings (key, value, updated_at) VALUES ('platform_unifi_enabled', '1', datetime('now'))
+  // Demo enables everything: the platform flag AND all optional feature
+  // modules (they default OFF in shipping settings — demo showcases them).
+  const setDemoSetting = db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES (?, '1', datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run();
+  `);
+  for (const key of ['platform_unifi_enabled', 'unifi_feature_protect', 'unifi_feature_wifi', 'unifi_feature_security']) {
+    setDemoSetting.run(key);
+  }
 
   const insertSource = db.prepare(`
     INSERT INTO unifi_sources (name, host, port, encrypted_credentials, ssl_verify, polling_interval_minutes,

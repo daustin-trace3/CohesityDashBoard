@@ -40,9 +40,11 @@ const DEFAULTS = {
   unifi_temp_warn_c: '80',
   unifi_satisfaction_warn: '50',
   unifi_new_device_days: '7',
-  unifi_feature_protect: '1',
-  unifi_feature_wifi: '1',
-  unifi_feature_security: '1',
+  // Optional UniFi modules ship OFF — network monitoring is the core;
+  // operators opt in to Protect/WiFi/Security from Settings → Feature Modules.
+  unifi_feature_protect: '0',
+  unifi_feature_wifi: '0',
+  unifi_feature_security: '0',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',

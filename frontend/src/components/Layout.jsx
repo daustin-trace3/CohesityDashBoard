@@ -121,7 +121,8 @@ export default function Layout() {
   const awsNavGroups = getPlatform('aws')?.navGroups || [];
   // UniFi feature-module toggles hide nav items for disabled modules; the
   // flags ride the /unifi/overview payload (fetched in the header-feed effect).
-  const [unifiFeatures, setUnifiFeatures] = useState({ protect: true, wifi: true, security: true });
+  // Modules ship OFF by default, so render conservatively until flags arrive.
+  const [unifiFeatures, setUnifiFeatures] = useState({ protect: false, wifi: false, security: false });
   const unifiNavGroups = (getPlatform('unifi')?.navGroups || [])
     .map((g) => ({ ...g, items: g.items.filter((it) => !it.feature || unifiFeatures[it.feature] !== false) }))
     .filter((g) => g.items.length > 0);

@@ -22,6 +22,12 @@ const { encrypt } = require('../services/encryption');
 
 beforeAll(() => {
   runMigrations(db, 'unifi', unifiMigrations);
+  // Optional modules default OFF in shipping settings; these tests exercise
+  // the fully-enabled surface, so switch them on like an operator would.
+  const { setSetting } = require('../services/settings');
+  for (const k of ['unifi_feature_protect', 'unifi_feature_wifi', 'unifi_feature_security']) {
+    setSetting(k, '1');
+  }
 });
 
 function insertSource(overrides = {}) {
