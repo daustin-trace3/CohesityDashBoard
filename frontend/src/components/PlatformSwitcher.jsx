@@ -9,6 +9,7 @@ import zertoLogo from '../assets/platform-logos/zerto.png';
 import nutanixLogo from '../assets/platform-logos/nutanix.png';
 import proxmoxLogo from '../assets/platform-logos/proxmox.png';
 import awsLogo from '../assets/platform-logos/aws.png';
+import unifiLogo from '../assets/platform-logos/unifi.png';
 import cohesityLogo from '../assets/platform-logos/cohesity.png';
 import rubrikLogo from '../assets/platform-logos/rubrik.png';
 import netbackupLogo from '../assets/platform-logos/netbackup.png';
@@ -61,7 +62,7 @@ const monogram = (label) => label.slice(0, 2);
 // Official brand marks (bundled SVGs, tinted to each platform's color).
 // Cohesity reuses the app's own hexagon+shield identity; platforms without
 // a mark (Zerto, future plugins) fall back to the monogram.
-const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, zerto: zertoLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo, rubrik: rubrikLogo, netbackup: netbackupLogo };
+const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, zerto: zertoLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo, rubrik: rubrikLogo, netbackup: netbackupLogo, unifi: unifiLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {
