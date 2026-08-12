@@ -301,12 +301,60 @@ const CSS = `
 }
 ` + spacingCss();
 
+/* Responsive variants re-declared LAST so they beat base utilities of equal
+ * specificity (Tailwind's own emit order). Without this, `.w-full` (declared
+ * after the earlier media blocks) overrode `md:w-48` and collapsed every
+ * side-menu + content layout — the "empty settings page" bug (1.0.2). */
+const RESPONSIVE_LAST = `
+@media (min-width: 640px) {
+  .sm\\:grid-cols-2 { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .sm\\:grid-cols-3 { grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .sm\\:grid-cols-4 { grid-template-columns: repeat(4,minmax(0,1fr)); }
+}
+@media (min-width: 768px) {
+  .md\\:grid-cols-2 { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .md\\:grid-cols-4 { grid-template-columns: repeat(4,minmax(0,1fr)); }
+  .md\\:grid-cols-5 { grid-template-columns: repeat(5,minmax(0,1fr)); }
+  .md\\:col-span-2 { grid-column: span 2 / span 2; }
+  .md\\:flex-col { flex-direction: column; }
+  .md\\:flex-row { flex-direction: row; }
+  .md\\:w-48 { width: 12rem; }
+}
+@media (min-width: 1024px) {
+  .lg\\:grid-cols-2 { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .lg\\:grid-cols-3 { grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .lg\\:grid-cols-5 { grid-template-columns: repeat(5,minmax(0,1fr)); }
+  .lg\\:col-span-2 { grid-column: span 2 / span 2; }
+}
+`;
+
+/* Scope every rule under .uf-root so the utility vocabulary (w-full, flex,
+ * panel, ...) cannot leak into HOST pages. Unscoped, this stylesheet loads
+ * after the host's Tailwind CSS and its `.w-full` beat the host's own
+ * responsive menu widths — which blanked the host Global Settings pages
+ * (the second half of the 1.0.2 bug). :root var declarations stay global
+ * (uf- prefixed, collision-free); @keyframes bodies must not be prefixed. */
+function scopeCss(css) {
+  const parts = css.split(/(@keyframes[^{]+\{(?:[^{}]*\{[^{}]*\})*[^{}]*\})/g);
+  return parts.map((part, i) => {
+    if (i % 2 === 1) return part; // @keyframes block — untouched
+    return part.replace(/(^|\{|\})(\s*)([^@{}]+?)(\s*\{)/g, (m, brace, ws, sel, open) => {
+      const scoped = sel.split(',').map((s) => {
+        const t = s.trim();
+        if (!t || t === ':root' || t.startsWith('.uf-root')) return t;
+        return `.uf-root ${t}`;
+      }).join(', ');
+      return `${brace}${ws}${scoped}${open}`;
+    });
+  }).join('');
+}
+
 export function injectStyles() {
   if (typeof document === 'undefined') return;
   if (document.getElementById(STYLE_ID)) return;
   const el = document.createElement('style');
   el.id = STYLE_ID;
-  el.textContent = CSS;
+  el.textContent = scopeCss(CSS + RESPONSIVE_LAST);
   document.head.appendChild(el);
 }
 
@@ -656,9 +704,12 @@ export function Fact({ label, value }) {
  * overlay fallback renders identically except on transformed ancestors.
  * ────────────────────────────────────────────────────────────────────── */
 export function portalOrInline(node) {
+  // Portaled content lands outside the .uf-root wrapper, so re-wrap it —
+  // otherwise the scoped stylesheet (see scopeCss) no longer applies.
+  const wrapped = <div className="uf-root">{node}</div>;
   const rd = typeof window !== 'undefined' ? window.ReactDOM : null;
-  if (rd && typeof rd.createPortal === 'function') return rd.createPortal(node, document.body);
-  return node;
+  if (rd && typeof rd.createPortal === 'function') return rd.createPortal(wrapped, document.body);
+  return wrapped;
 }
 
 export function Modal({ title, subtitle, icon: IconComp, onClose, children, maxWidth = 'min(720px,92vw)' }) {

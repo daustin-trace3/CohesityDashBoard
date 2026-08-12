@@ -67,18 +67,23 @@ function navGroups(features) {
   ];
 }
 
+// Every page renders inside a .uf-root wrapper — the plugin stylesheet is
+// scoped under it (see ui.jsx scopeCss) so its utility classes can't leak
+// into host pages.
+const rooted = (C) => function UfRooted() { return <div className="uf-root"><C /></div>; };
+
 const routes = [
-  { path: 'unifi', Component: OverviewPage },
-  { path: 'unifi/devices', Component: DevicesPage },
-  { path: 'unifi/ports', Component: PortsPage },
-  { path: 'unifi/clients', Component: ClientsPage },
-  { path: 'unifi/wifi', Component: WifiPage },
-  { path: 'unifi/protect', Component: ProtectPage },
-  { path: 'unifi/topology', Component: TopologyPage },
-  { path: 'unifi/wan', Component: WanPage },
-  { path: 'unifi/security', Component: SecurityPage },
-  { path: 'unifi/alerts', Component: AlertsPage },
-  { path: 'unifi/settings', Component: SettingsPage },
+  { path: 'unifi', Component: rooted(OverviewPage) },
+  { path: 'unifi/devices', Component: rooted(DevicesPage) },
+  { path: 'unifi/ports', Component: rooted(PortsPage) },
+  { path: 'unifi/clients', Component: rooted(ClientsPage) },
+  { path: 'unifi/wifi', Component: rooted(WifiPage) },
+  { path: 'unifi/protect', Component: rooted(ProtectPage) },
+  { path: 'unifi/topology', Component: rooted(TopologyPage) },
+  { path: 'unifi/wan', Component: rooted(WanPage) },
+  { path: 'unifi/security', Component: rooted(SecurityPage) },
+  { path: 'unifi/alerts', Component: rooted(AlertsPage) },
+  { path: 'unifi/settings', Component: rooted(SettingsPage) },
 ];
 
 // Live feature flags. The original register-time fetch had two failure modes

@@ -162,7 +162,10 @@ module.exports = {
   name: 'Ubiquiti UniFi',
   apiVersion: 1,
   color: '#006FFF',
-  version: '1.0.0',
+  // No hardcoded version: the installer falls back to the packaged
+  // manifest.json (sourced from plugin.json at pack time). A literal here
+  // goes stale on upgrades and — because the bundle URL cache-buster is
+  // ?v=<version> — makes CDNs serve the OLD frontend bundle forever.
   migrations,
   createRouter(coreApi) {
     return createRouter(coreApi);
