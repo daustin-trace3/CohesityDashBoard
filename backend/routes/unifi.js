@@ -443,6 +443,145 @@ router.get('/issue-history', [query('days').optional().isInt({ min: 1, max: 90 }
   } catch (err) { next(err); }
 });
 
+// Overview insights — all derived from already-collected tables; one payload
+// so the Overview page adds a single fetch.
+router.get('/insights', (req, res, next) => {
+  try {
+    const srcName = new Map(db.prepare('SELECT id, name FROM unifi_sources').all().map((r) => [r.id, r.name]));
+
+    // 1. PoE power: live total + top ports + hourly 7d trend
+    const poeNow = db.prepare('SELECT COALESCE(SUM(poe_power), 0) w FROM unifi_ports WHERE poe_enable = 1').get().w;
+    const poeTop = db.prepare(`
+      SELECT p.device_mac, p.port_idx, p.poe_power, p.poe_class, d.name AS device_name
+      FROM unifi_ports p LEFT JOIN unifi_devices d ON d.mac = p.device_mac AND d.source_id = p.source_id
+      WHERE p.poe_enable = 1 AND p.poe_power > 0 ORDER BY p.poe_power DESC LIMIT 5
+    `).all();
+    const poeTrend = db.prepare(`
+      SELECT strftime('%Y-%m-%d %H:00', captured_at) bucket,
+             SUM(poe_power) * 1.0 / MAX(1, COUNT(DISTINCT captured_at)) avg_w
+      FROM unifi_port_history WHERE captured_at >= datetime('now', '-7 days') AND poe_power > 0
+      GROUP BY bucket ORDER BY bucket ASC
+    `).all().map((r) => ({ bucket: r.bucket, watts: Math.round(r.avg_w * 10) / 10 }));
+
+    // 2. Port health digest
+    const portTotals = db.prepare('SELECT COUNT(*) total, SUM(CASE WHEN up = 1 THEN 1 ELSE 0 END) up FROM unifi_ports').get();
+    const growth = db.prepare(`
+      SELECT device_mac, port_idx, MAX(rx_errors + tx_errors) - MIN(rx_errors + tx_errors) delta
+      FROM unifi_port_history WHERE captured_at >= datetime('now', '-24 hours')
+      GROUP BY device_mac, port_idx HAVING delta > 0
+    `).all();
+    const flapRows = db.prepare(`
+      SELECT device_mac, port_idx, COUNT(*) n FROM (
+        SELECT device_mac, port_idx, up, LAG(up) OVER (PARTITION BY device_mac, port_idx ORDER BY captured_at) prev
+        FROM unifi_port_history WHERE captured_at >= datetime('now', '-24 hours')
+      ) WHERE prev IS NOT NULL AND up != prev GROUP BY device_mac, port_idx HAVING n >= 2
+    `).all();
+    const belowCap = db.prepare(`
+      SELECT p.device_mac, p.port_idx, p.speed, p.media, d.name AS device_name
+      FROM unifi_ports p LEFT JOIN unifi_devices d ON d.mac = p.device_mac AND d.source_id = p.source_id
+      WHERE p.up = 1 AND p.media = 'GE' AND p.speed IS NOT NULL AND p.speed < 1000
+    `).all();
+
+    // 3. WAN quality score per source (7d): p95 latency, jitter (stddev), availability
+    const wanScores = [];
+    for (const [sid, name] of srcName) {
+      const rows = db.prepare(`
+        SELECT wan_latency_ms lat, wan_availability_pct avail FROM unifi_metrics_history
+        WHERE source_id = ? AND captured_at >= datetime('now', '-7 days') AND wan_latency_ms IS NOT NULL
+        ORDER BY wan_latency_ms ASC
+      `).all(sid);
+      if (!rows.length) continue;
+      const lats = rows.map((r) => r.lat);
+      const p95 = lats[Math.min(lats.length - 1, Math.floor(lats.length * 0.95))];
+      const mean = lats.reduce((a, b) => a + b, 0) / lats.length;
+      const jitter = Math.sqrt(lats.reduce((a, b) => a + (b - mean) ** 2, 0) / lats.length);
+      const avails = rows.map((r) => r.avail).filter((a) => a != null);
+      const availMin = avails.length ? Math.min(...avails) : null;
+      const score = Math.max(0, Math.min(100, Math.round(
+        100 - Math.max(0, p95 - 30) * 0.5 - jitter * 1.5 - (availMin != null ? (100 - availMin) * 10 : 0)
+      )));
+      const grade = score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F';
+      wanScores.push({ sourceId: sid, sourceName: name, score, grade, latencyP95: p95, jitterMs: Math.round(jitter * 10) / 10, availabilityMin: availMin, samples: lats.length });
+    }
+
+    // 4. Security digest (24h)
+    const secEvents = db.prepare(`
+      SELECT event_type, message, raw_json FROM unifi_events
+      WHERE category = 'SECURITY' AND occurred_at >= datetime('now', '-24 hours')
+    `).all();
+    let blocks = 0, ips = 0;
+    const bySource = new Map();
+    for (const e of secEvents) {
+      const isIps = /intrusion|ips|ids/i.test(e.event_type || '') || /intrusion/i.test(e.message || '');
+      if (isIps) ips += 1; else blocks += 1;
+      let src = null;
+      try { const p = JSON.parse(e.raw_json || '{}')?.parameters?.SRC_CLIENT; src = p?.name || p?.hostname || p?.ip || null; } catch { src = null; }
+      if (src) bySource.set(src, (bySource.get(src) || 0) + 1);
+    }
+    const topBlocked = [...bySource.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([source, count]) => ({ source, count }));
+    const rogueFlagged = db.prepare('SELECT COUNT(*) n FROM unifi_rogue_aps WHERE is_rogue = 1').get().n;
+
+    // 5. WiFi congestion advisor (2.4 GHz focus) + band distribution
+    const radios24 = [];
+    for (const d of db.prepare("SELECT source_id, mac, name, radios_json FROM unifi_devices WHERE radios_json IS NOT NULL").all()) {
+      let list = [];
+      try { list = JSON.parse(d.radios_json) || []; } catch { list = []; }
+      for (const r of list) {
+        if (r.radio === 'ng') radios24.push({ deviceName: d.name, channel: r.channel, utilization: r.cu_total ?? null });
+      }
+    }
+    const neighborsByChannel = {};
+    for (const r of db.prepare('SELECT channel, COUNT(*) n FROM unifi_rogue_aps WHERE channel BETWEEN 1 AND 14 GROUP BY channel').all()) {
+      neighborsByChannel[r.channel] = r.n;
+    }
+    const candidates = [1, 6, 11].map((ch) => ({ channel: ch, neighbors: neighborsByChannel[ch] || 0 }));
+    const best = candidates.slice().sort((a, b) => a.neighbors - b.neighbors)[0] || null;
+    const bandCounts = { '2.4 GHz': 0, '5 GHz': 0, '6 GHz': 0 };
+    for (const r of db.prepare("SELECT radio, COUNT(*) n FROM unifi_clients WHERE is_wired = 0 GROUP BY radio").all()) {
+      const label = r.radio === 'ng' ? '2.4 GHz' : r.radio === 'na' ? '5 GHz' : r.radio === '6e' ? '6 GHz' : null;
+      if (label) bandCounts[label] += r.n;
+    }
+    const wifiCongestion = { radios24, neighborsByChannel, recommendedChannel: best, bandCounts };
+
+    // 6. Recently rebooted devices (uptime under ~2 poll cycles)
+    const reboots = db.prepare(`
+      SELECT d.name, d.mac, d.model, d.uptime, s.name AS source_name
+      FROM unifi_devices d JOIN unifi_sources s ON s.id = d.source_id
+      WHERE d.state = 1 AND d.uptime IS NOT NULL AND d.uptime < 1800 ORDER BY d.uptime ASC
+    `).all();
+
+    // 7. New devices on network (7d) — ignore the bootstrap wave (everything is
+    // "new" on a source's very first poll)
+    const newDevices = [];
+    for (const [sid, name] of srcName) {
+      const bootstrap = db.prepare('SELECT MIN(first_seen) t FROM unifi_client_seen WHERE source_id = ?').get(sid).t;
+      if (!bootstrap) continue;
+      const rows = db.prepare(`
+        SELECT mac, name, first_seen FROM unifi_client_seen
+        WHERE source_id = ? AND first_seen >= datetime('now', '-7 days')
+          AND first_seen > datetime(?, '+1 hour')
+        ORDER BY first_seen DESC LIMIT 20
+      `).all(sid, bootstrap);
+      for (const r of rows) newDevices.push({ ...r, sourceName: name });
+    }
+
+    res.json({
+      poe: { totalWatts: Math.round(poeNow * 10) / 10, topPorts: poeTop, trend: poeTrend },
+      portHealth: {
+        total: portTotals.total || 0, up: portTotals.up || 0,
+        errorGrowth24h: growth.length, flapping24h: flapRows.length,
+        belowCapability: belowCap,
+      },
+      wanScores,
+      security24h: { firewallBlocks: blocks, ipsDetections: ips, topBlockedSources: topBlocked, rogueFlagged },
+      wifiCongestion,
+      reboots,
+      newDevices,
+    });
+  } catch (err) { next(err); }
+});
+
 router.get('/protect', (req, res, next) => {
   try {
     const cameras = db.prepare(`

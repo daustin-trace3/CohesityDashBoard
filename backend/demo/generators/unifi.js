@@ -320,6 +320,9 @@ function seedUnifi(db, { now, encrypt }) {
         if (p) p.up = 1;
       }
       ports.forEach((p) => {
+        // One deliberate below-capability link (GE negotiated at 100 Mbps =
+        // classic bad-cable tell) for the Overview port-health insight.
+        if (d.key === 'sw1' && p.port_idx === 7 && p.up) { p.speed = 100; }
         insertPort.run({ source_id: d.sourceId, device_mac: d.mac, ...p });
         portTotal++;
       });
@@ -626,6 +629,20 @@ function seedUnifi(db, { now, encrypt }) {
       });
       metricsTotal++;
     }
+  });
+
+  // ── Client-seen ledger: bootstrap 30 days back, then mark 3 clients as
+  // newly joined this week for the new-devices insight ─────────────────
+  db.prepare(`
+    INSERT INTO unifi_client_seen (source_id, mac, name, first_seen, last_seen)
+    SELECT source_id, mac, COALESCE(name, hostname), datetime('now', '-30 days'), datetime('now')
+    FROM unifi_clients
+  `).run();
+  const seenRng = rngFor('unifi-client-seen');
+  const recentIds = db.prepare('SELECT id FROM unifi_client_seen ORDER BY id LIMIT 3').all();
+  recentIds.forEach((r, i) => {
+    db.prepare("UPDATE unifi_client_seen SET first_seen = datetime('now', ?) WHERE id = ?")
+      .run(`-${randInt(seenRng, 1, 5)} days`, r.id);
   });
 
   // ── Protect cameras (AustinHome only; one deliberately DISCONNECTED for

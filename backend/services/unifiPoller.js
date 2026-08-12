@@ -96,6 +96,18 @@ const storeClients = db.transaction((sourceId, site, clientRows) => {
       c.essid, c.apMac, c.swMac, c.swPort, c.channel, c.radio, c.rssi, c.signal, c.noise, c.satisfaction,
       c.txRate, c.rxRate, c.wiredRateMbps, c.uptime, c.txBytes, c.rxBytes, c.oui);
   }
+  // Membership ledger survives the replace above — first_seen powers the
+  // new-devices-on-network insight.
+  const seen = db.prepare(`
+    INSERT INTO unifi_client_seen (source_id, mac, name, first_seen, last_seen)
+    VALUES (?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(source_id, mac) DO UPDATE SET
+      last_seen = datetime('now'), name = COALESCE(excluded.name, unifi_client_seen.name)
+  `);
+  for (const c of clientRows) {
+    if (!c.mac) continue;
+    seen.run(sourceId, c.mac, c.name || c.hostname || null);
+  }
 });
 
 // ── Store: source-wide sections (no site column) ────────────────────────────

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Gauge, Router, Users, Globe, ShieldAlert, Activity, Server } from 'lucide-react';
+import { Gauge, Router, Users, Globe, ShieldAlert, Activity, Server, Zap, Cable, Shield, Wifi, RotateCcw, UserPlus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Line } from 'react-chartjs-2';
 import {
@@ -14,18 +14,137 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip,
 
 const HEALTH_TONE = (status) => (status === 'ok' ? 'ok' : status ? 'warn' : 'neutral');
 
+const GRADE_COLOR = { A: '#6CB33F', B: '#8FBF4F', C: '#D4A24E', D: '#D4784E', F: '#C75D5D' };
+
+function InsightCard({ icon: Icon, title, onClick, children, tone }) {
+  const border = tone === 'warn' ? '#D4A24E' : tone === 'crit' ? '#C75D5D' : BRAND;
+  return (
+    <div className={`panel p-4 ${onClick ? 'cursor-pointer hover:ring-1 hover:ring-brand/30 transition-all' : ''}`}
+      style={{ borderTop: `3px solid ${border}` }} onClick={onClick}>
+      <p className="text-xs font-semibold text-ink mb-2 flex items-center gap-1.5">
+        <Icon size={13} className="text-brand" /> {title}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+const Line11 = ({ children, warn }) => (
+  <p className={`text-[11px] ${warn ? 'text-status-warn' : 'text-ink-muted'}`}>{children}</p>
+);
+
+// Insights band — every card is derived server-side in /unifi/insights from
+// data the poller already collects.
+function InsightsBand({ insights, navigate, chartOpts }) {
+  const { poe, portHealth, wanScores, security24h, wifiCongestion, reboots, newDevices } = insights;
+  const worstWan = (wanScores || []).slice().sort((a, b) => a.score - b.score)[0] || null;
+  const congested = (wifiCongestion?.radios24 || []).filter((r) => (r.utilization ?? 0) >= 40);
+  const rec = wifiCongestion?.recommendedChannel || null;
+  const onRecommended = rec && (wifiCongestion?.radios24 || []).every((r) => r.channel === rec.channel);
+  const bands = wifiCongestion?.bandCounts || {};
+  const poeTrendData = {
+    labels: (poe?.trend || []).map((t) => t.bucket.slice(5)),
+    datasets: [{ label: 'PoE W', data: (poe?.trend || []).map((t) => t.watts), borderColor: '#2f81f7', backgroundColor: 'rgba(47,129,247,0.12)', pointRadius: 0, borderWidth: 1.5, tension: 0.3, fill: true }],
+  };
+  const belowCap = portHealth?.belowCapability || [];
+  return (
+    <div className="mb-4">
+      <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Gauge size={15} className="text-brand" /> Insights</p>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <InsightCard icon={Cable} title="Port Health" onClick={() => navigate('/unifi/ports')}
+          tone={portHealth?.errorGrowth24h || portHealth?.flapping24h ? 'warn' : undefined}>
+          <p className="text-lg font-semibold text-ink tnum">{portHealth?.up}/{portHealth?.total} <span className="text-xs font-normal text-ink-faint">ports up</span></p>
+          <Line11 warn={portHealth?.errorGrowth24h > 0}>{portHealth?.errorGrowth24h || 0} with error growth (24h) · {portHealth?.flapping24h || 0} flapping</Line11>
+          {belowCap.length > 0 ? (
+            <Line11>{belowCap.length} link{belowCap.length > 1 ? 's' : ''} at 10/100: {belowCap.slice(0, 2).map((p) => `${p.device_name || p.device_mac} p${p.port_idx} @ ${p.speed}Mb`).join(', ')}{belowCap.length > 2 ? '…' : ''} (device limit or cabling)</Line11>
+          ) : (
+            <Line11>All active GE links at full speed</Line11>
+          )}
+        </InsightCard>
+
+        <InsightCard icon={Activity} title="WAN Quality (7d)" onClick={() => navigate('/unifi/wan')}
+          tone={worstWan && worstWan.score < 70 ? 'warn' : undefined}>
+          {worstWan ? (
+            <>
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl font-bold tnum" style={{ color: GRADE_COLOR[worstWan.grade] }}>{worstWan.grade}</span>
+                <span className="text-lg font-semibold text-ink tnum">{worstWan.score}<span className="text-xs font-normal text-ink-faint">/100</span></span>
+                {wanScores.length > 1 && <span className="text-[10px] text-ink-faint">worst of {wanScores.length} WANs</span>}
+              </div>
+              <Line11>{worstWan.sourceName}: p95 {worstWan.latencyP95}ms · jitter {worstWan.jitterMs}ms · min avail {worstWan.availabilityMin ?? '—'}%</Line11>
+            </>
+          ) : <Line11>Not enough history yet.</Line11>}
+        </InsightCard>
+
+        <InsightCard icon={Shield} title="Security (24h)" onClick={() => navigate('/unifi/security')}
+          tone={security24h?.ipsDetections ? 'warn' : undefined}>
+          <p className="text-lg font-semibold text-ink tnum">{(security24h?.firewallBlocks || 0) + (security24h?.ipsDetections || 0)} <span className="text-xs font-normal text-ink-faint">events</span></p>
+          <Line11 warn={security24h?.ipsDetections > 0}>{security24h?.firewallBlocks || 0} firewall blocks · {security24h?.ipsDetections || 0} IPS detections · {security24h?.rogueFlagged || 0} rogue AP{security24h?.rogueFlagged === 1 ? '' : 's'}</Line11>
+          {(security24h?.topBlockedSources || []).length > 0 && (
+            <Line11>Noisiest: {security24h.topBlockedSources.map((t) => `${t.source} (${t.count})`).join(', ')}</Line11>
+          )}
+        </InsightCard>
+
+        <InsightCard icon={Wifi} title="WiFi Congestion" onClick={() => navigate('/unifi/wifi')}
+          tone={congested.length ? 'warn' : undefined}>
+          {congested.length > 0 ? (
+            <Line11 warn>2.4 GHz busy: {congested.map((r) => `${r.deviceName} ch${r.channel} @ ${r.utilization}%`).join(', ')}</Line11>
+          ) : (
+            <Line11>2.4 GHz utilization normal</Line11>
+          )}
+          {rec && !onRecommended && (
+            <Line11>Least-crowded 2.4 channel: <span className="text-ink">ch {rec.channel}</span> ({rec.neighbors} neighboring APs)</Line11>
+          )}
+          <Line11>Bands: {['2.4 GHz', '5 GHz', '6 GHz'].filter((b) => bands[b]).map((b) => `${bands[b]} on ${b}`).join(' · ') || '—'}</Line11>
+        </InsightCard>
+
+        <InsightCard icon={Zap} title="PoE Power" onClick={() => navigate('/unifi/ports')}>
+          <p className="text-lg font-semibold text-ink tnum">{poe?.totalWatts ?? 0}W <span className="text-xs font-normal text-ink-faint">delivered now</span></p>
+          {(poe?.topPorts || []).length > 0 && (
+            <Line11>Top: {poe.topPorts.slice(0, 3).map((p) => `${p.device_name || p.device_mac} p${p.port_idx} ${Number(p.poe_power).toFixed(1)}W`).join(' · ')}</Line11>
+          )}
+          {(poe?.trend || []).length > 1 && <div className="h-12 mt-1.5"><Line data={poeTrendData} options={{ ...chartOpts, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }} /></div>}
+        </InsightCard>
+
+        <InsightCard icon={RotateCcw} title="Recent Reboots & New Devices"
+          tone={(reboots || []).length ? 'warn' : undefined}>
+          {(reboots || []).length > 0 ? (
+            <Line11 warn>Rebooted &lt;30m ago: {reboots.slice(0, 3).map((r) => r.name || r.mac).join(', ')}</Line11>
+          ) : (
+            <Line11>No recent device reboots</Line11>
+          )}
+          <div className="flex items-center gap-1.5 mt-1.5">
+            <UserPlus size={11} className="text-ink-faint" />
+            {(newDevices || []).length > 0 ? (
+              <Line11>{newDevices.length} new client{newDevices.length > 1 ? 's' : ''} this week: {newDevices.slice(0, 3).map((n) => n.name || n.mac).join(', ')}{newDevices.length > 3 ? '…' : ''}</Line11>
+            ) : (
+              <Line11>No new clients this week</Line11>
+            )}
+          </div>
+        </InsightCard>
+      </div>
+    </div>
+  );
+}
+
 export default function UnifiOverviewPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
+  const [insights, setInsights] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
-  const load = useCallback(() => client.get('/unifi/overview')
-    .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
-    .catch(() => {
-      setData({ sources: [], deviceCounts: {}, clientCounts: {}, wan: null, health: [], issueCounts: {}, spark: [] });
-      toast({ type: 'error', title: 'Failed to load UniFi overview' });
-    }), [toast]);
+  const load = useCallback(() => Promise.all([
+    client.get('/unifi/overview')
+      .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
+      .catch(() => {
+        setData({ sources: [], deviceCounts: {}, clientCounts: {}, wan: null, health: [], issueCounts: {}, spark: [] });
+        toast({ type: 'error', title: 'Failed to load UniFi overview' });
+      }),
+    client.get('/unifi/insights')
+      .then(({ data }) => setInsights(data))
+      .catch(() => setInsights(null)),
+  ]), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -113,6 +232,8 @@ export default function UnifiOverviewPage() {
           ))}
         </div>
       )}
+
+      {insights && <InsightsBand insights={insights} navigate={navigate} chartOpts={chartOpts} />}
 
       {spark.length > 1 && (
         <div className="grid lg:grid-cols-2 gap-4 mb-4">

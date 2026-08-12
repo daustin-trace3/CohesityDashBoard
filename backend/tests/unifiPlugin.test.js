@@ -302,6 +302,10 @@ describe('routes/unifi.js basic CRUD + data endpoints (minimal express app, no d
       ['wan', (b) => Array.isArray(b.wans) && Array.isArray(b.history)],
       ['trends', (b) => Array.isArray(b)],
       ['events', (b) => Array.isArray(b)],
+      ['protect', (b) => Array.isArray(b.cameras) && Array.isArray(b.nvrs)],
+      ['insights', (b) => typeof b.poe === 'object' && typeof b.portHealth === 'object' && Array.isArray(b.wanScores)
+        && typeof b.security24h === 'object' && typeof b.wifiCongestion === 'object'
+        && Array.isArray(b.reboots) && Array.isArray(b.newDevices)],
     ];
     for (const [path, shapeOk] of checks) {
       const res = await request(app).get(`/api/unifi/${path}`);

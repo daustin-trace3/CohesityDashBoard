@@ -302,4 +302,23 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 3,
+    up(db) {
+      // Persistent client membership — unifi_clients is replaced every poll,
+      // so first-seen/new-device insights need their own upserted table.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS unifi_client_seen (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id   INTEGER NOT NULL REFERENCES unifi_sources(id) ON DELETE CASCADE,
+          mac         TEXT NOT NULL,
+          name        TEXT,
+          first_seen  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_seen   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(source_id, mac)
+        );
+        CREATE INDEX IF NOT EXISTS idx_unifi_client_seen_first ON unifi_client_seen(source_id, first_seen);
+      `);
+    },
+  },
 ];
