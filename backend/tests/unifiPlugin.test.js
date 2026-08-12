@@ -296,8 +296,12 @@ describe('routes/unifi.js basic CRUD + data endpoints (minimal express app, no d
       ['devices', (b) => Array.isArray(b)],
       ['ports', (b) => Array.isArray(b)],
       ['clients', (b) => Array.isArray(b)],
-      ['wifi', (b) => Array.isArray(b.wlans) && Array.isArray(b.radios) && Array.isArray(b.rogues) && typeof b.signalBuckets === 'object'],
-      ['security', (b) => typeof b.ips === 'object' && typeof b.rogueCounts === 'object' && Array.isArray(b.events)],
+      ['wifi', (b) => Array.isArray(b.wlans) && Array.isArray(b.radios) && Array.isArray(b.rogues) && typeof b.signalBuckets === 'object'
+        && Array.isArray(b.roaming) && typeof b.history === 'object' && Array.isArray(b.history.site) && Array.isArray(b.history.aps)],
+      ['security', (b) => typeof b.ips === 'object' && typeof b.rogueCounts === 'object' && Array.isArray(b.events)
+        && Array.isArray(b.posture) && typeof b.rules === 'object' && Array.isArray(b.rules.firewall) && Array.isArray(b.rules.traffic)
+        && Array.isArray(b.timeline) && Array.isArray(b.topDestinations) && Array.isArray(b.topOffenders)
+        && Array.isArray(b.policyHits) && typeof b.rogueChanges === 'object' && Array.isArray(b.rogueChanges.flagged)],
       ['topology', (b) => Array.isArray(b.vertices) && Array.isArray(b.edges) && typeof b.deviceMeta === 'object'],
       ['wan', (b) => Array.isArray(b.wans) && Array.isArray(b.history)],
       ['trends', (b) => Array.isArray(b)],
@@ -312,7 +316,7 @@ describe('routes/unifi.js basic CRUD + data endpoints (minimal express app, no d
       expect(res.status, `GET /api/unifi/${path}`).toBe(200);
       expect(shapeOk(res.body), `GET /api/unifi/${path} body shape`).toBe(true);
     }
-  });
+  }, 20000); // /wifi live-fetches hourly reports for any success-status source (DNS-fail tolerant, but not instant)
 
   it('GET /api/unifi/devices/:mac 404s for an unknown mac, 200 with facts for a known one', async () => {
     const missing = await request(app).get('/api/unifi/devices/zz:zz:zz:zz:zz:zz');
@@ -378,6 +382,110 @@ describe('routes/unifi.js basic CRUD + data endpoints (minimal express app, no d
   it('POST /api/unifi/sources/:id/poll 404s for an unknown id', async () => {
     const res = await request(app).post('/api/unifi/sources/999999/poll');
     expect(res.status).toBe(404);
+  });
+});
+
+describe('WiFi/Security round (migration v5): posture, rules, roaming, timeline, rogueChanges', () => {
+  let app;
+
+  beforeAll(() => {
+    const unifiRouter = require('../routes/unifi');
+    app = express();
+    app.use(express.json());
+    app.use('/api/unifi', unifiRouter);
+  });
+
+  it('GET /api/unifi/wifi parses WLAN posture, computes radio interference, and builds the roaming table from CLIENT events', async () => {
+    const sourceId = insertSource({ name: 'wifisec-source', host: 'wifisec.local' });
+
+    db.prepare(`
+      INSERT INTO unifi_wlans (source_id, wlan_id, name, enabled, security, wpa_mode, is_guest, hide_ssid, posture_json)
+      VALUES (?, 'wlan-1', 'IoT', 1, 'wpapsk', 'wpa2', 0, 0, ?)
+    `).run(sourceId, JSON.stringify({ wpa_mode: 'wpa2', wpa3_support: 0, pmf_mode: 'optional' }));
+
+    db.prepare(`
+      INSERT INTO unifi_devices (source_id, site, mac, name, model, type, state, radios_json)
+      VALUES (?, 'default', 'dd:dd:dd:00:00:01', 'ap-1', 'UAL6', 'uap', 1, ?)
+    `).run(sourceId, JSON.stringify([{ name: 'wifi1', radio: 'ng', channel: 6, cu_total: 55, tx_retries_pct: 22.5, cu_self_rx: 10, cu_self_tx: 5 }]));
+
+    db.prepare(`
+      INSERT INTO unifi_clients (source_id, site, mac, name, is_wired, signal)
+      VALUES (?, 'default', 'ee:ee:ee:00:00:01', 'roam-laptop', 0, -74)
+    `).run(sourceId);
+
+    const roamTime = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    db.prepare(`
+      INSERT INTO unifi_events (source_id, event_id, category, event_key, event_type, message, raw_json, occurred_at)
+      VALUES (?, 'evt-roam-test-1', 'CLIENT', 'EVT_WC_Disconnected', 'EVT_WC_Disconnected', 'disconnected', ?, ?)
+    `).run(sourceId, JSON.stringify({ parameters: { CLIENT: { mac: 'ee:ee:ee:00:00:01', name: 'roam-laptop' } } }), roamTime);
+
+    const res = await request(app).get('/api/unifi/wifi');
+    expect(res.status).toBe(200);
+
+    const wlan = res.body.wlans.find((w) => w.wlan_id === 'wlan-1');
+    expect(wlan.posture).toEqual(expect.objectContaining({ wpa_mode: 'wpa2', wpa3_support: 0, pmf_mode: 'optional' }));
+
+    const radio = res.body.radios.find((r) => r.deviceMac === 'dd:dd:dd:00:00:01');
+    expect(radio.txRetriesPct).toBe(22.5);
+    expect(radio.selfPct).toBe(15);
+    expect(radio.interferencePct).toBe(40); // max(0, 55 - 15)
+
+    const roamEntry = res.body.roaming.find((r) => r.mac === 'ee:ee:ee:00:00:01');
+    expect(roamEntry).toBeTruthy();
+    expect(roamEntry.disconnects24h).toBe(1);
+    expect(roamEntry.roams24h).toBe(0);
+    expect(roamEntry.signal).toBe(-74);
+    expect(roamEntry.sticky).toBe(true); // signal <= -70 AND roams24h === 0
+  }, 20000);
+
+  it('GET /api/unifi/security surfaces posture, rules, timeline, top lists, and rogueChanges from seeded rows', async () => {
+    const sourceId = insertSource({
+      name: 'wifisec-security-source', host: 'wifisec-sec.local',
+      health_json: JSON.stringify({ ips: { mode: 'ips', honeypotEnabled: true, dnsFiltering: true, adBlocking: false, contentFiltering: true, enabledNetworks: ['Default', 'IoT'] } }),
+    });
+
+    db.prepare(`
+      INSERT INTO unifi_firewall_rules (source_id, rule_id, kind, ruleset, rule_index, name, action, enabled, protocol, src, dst, logging, raw_json)
+      VALUES (?, 'fw-1', 'firewall', 'WAN_IN', 2000, 'NAS Germany', 'drop', 1, 'all', '85.214.0.0/16', 'any', 1, '{}')
+    `).run(sourceId);
+    db.prepare(`
+      INSERT INTO unifi_firewall_rules (source_id, rule_id, kind, ruleset, rule_index, name, action, enabled, protocol, src, dst, logging, raw_json)
+      VALUES (?, 'tr-1', 'traffic', NULL, NULL, 'Block ads', 'BLOCK', 1, NULL, 'Default', NULL, NULL, '{}')
+    `).run(sourceId);
+
+    const eventTime = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    db.prepare(`
+      INSERT INTO unifi_events (source_id, event_id, category, event_key, event_type, message, raw_json, occurred_at)
+      VALUES (?, 'evt-sec-test-1', 'SECURITY', 'BLOCKED_BY_FIREWALL', 'BLOCKED_BY_FIREWALL', 'blocked', ?, ?)
+    `).run(sourceId, JSON.stringify({
+      parameters: { SRC_CLIENT: { ip: '192.168.1.55', name: 'offender-laptop' }, DST_IP: { ip: '85.214.1.1' }, TRIGGER: { name: 'NAS Germany' } },
+    }), eventTime);
+
+    db.prepare(`
+      INSERT INTO unifi_rogue_aps (source_id, bssid, essid, is_rogue, signal, first_seen_at)
+      VALUES (?, 'ff:ff:ff:00:00:01', 'evil-twin-test', 1, -40, datetime('now', '-2 days'))
+    `).run(sourceId);
+
+    const res = await request(app).get('/api/unifi/security');
+    expect(res.status).toBe(200);
+
+    const posture = res.body.posture.find((p) => p.sourceId === sourceId);
+    expect(posture).toEqual(expect.objectContaining({
+      mode: 'ips', honeypotEnabled: true, dnsFiltering: true, adBlocking: false, contentFiltering: true, enabledNetworksCount: 2,
+    }));
+
+    expect(res.body.rules.firewall.some((r) => r.name === 'NAS Germany' && r.source_id === sourceId)).toBe(true);
+    expect(res.body.rules.traffic.some((r) => r.name === 'Block ads' && r.source_id === sourceId)).toBe(true);
+
+    expect(res.body.timeline.length).toBeGreaterThan(0);
+    expect(res.body.timeline.some((t) => t.blocks >= 1)).toBe(true);
+
+    expect(res.body.topDestinations.some((d) => d.dst === '85.214.1.1')).toBe(true);
+    expect(res.body.policyHits.some((p) => p.policy === 'NAS Germany')).toBe(true);
+
+    const flaggedEntry = res.body.rogueChanges.flagged.find((r) => r.bssid === 'ff:ff:ff:00:00:01');
+    expect(flaggedEntry).toBeTruthy();
+    expect(res.body.rogueChanges.newThisWeek).toBeGreaterThanOrEqual(0);
   });
 });
 

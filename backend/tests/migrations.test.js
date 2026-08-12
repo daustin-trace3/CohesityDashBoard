@@ -221,7 +221,7 @@ const NEW_TABLES = [
   'unifi_sources', 'unifi_devices', 'unifi_ports', 'unifi_port_history',
   'unifi_clients', 'unifi_wlans', 'unifi_networks', 'unifi_rogue_aps',
   'unifi_events', 'unifi_wan', 'unifi_topology', 'unifi_metrics_history',
-  'unifi_issue_history', 'unifi_cameras', 'unifi_client_seen',
+  'unifi_issue_history', 'unifi_cameras', 'unifi_client_seen', 'unifi_firewall_rules',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.

@@ -186,16 +186,22 @@ function seedUnifi(db, { now, encrypt }) {
       @tx_rate, @rx_rate, @wired_rate_mbps, @uptime, @tx_bytes, @rx_bytes, @oui)
   `);
   const insertWlan = db.prepare(`
-    INSERT INTO unifi_wlans (source_id, wlan_id, name, enabled, security, wpa_mode, is_guest, hide_ssid)
-    VALUES (@source_id, @wlan_id, @name, @enabled, @security, @wpa_mode, @is_guest, @hide_ssid)
+    INSERT INTO unifi_wlans (source_id, wlan_id, name, enabled, security, wpa_mode, is_guest, hide_ssid, posture_json)
+    VALUES (@source_id, @wlan_id, @name, @enabled, @security, @wpa_mode, @is_guest, @hide_ssid, @posture_json)
+  `);
+  const insertFirewallRule = db.prepare(`
+    INSERT INTO unifi_firewall_rules (source_id, rule_id, kind, ruleset, rule_index, name, action, enabled,
+      protocol, src, dst, logging, raw_json)
+    VALUES (@source_id, @rule_id, @kind, @ruleset, @rule_index, @name, @action, @enabled,
+      @protocol, @src, @dst, @logging, @raw_json)
   `);
   const insertNetwork = db.prepare(`
     INSERT INTO unifi_networks (source_id, network_id, name, purpose, vlan, subnet, enabled)
     VALUES (@source_id, @network_id, @name, @purpose, @vlan, @subnet, @enabled)
   `);
   const insertRogue = db.prepare(`
-    INSERT INTO unifi_rogue_aps (source_id, bssid, essid, channel, signal, security, oui, is_rogue, last_seen)
-    VALUES (@source_id, @bssid, @essid, @channel, @signal, @security, @oui, @is_rogue, @last_seen)
+    INSERT INTO unifi_rogue_aps (source_id, bssid, essid, channel, signal, security, oui, is_rogue, last_seen, first_seen_at)
+    VALUES (@source_id, @bssid, @essid, @channel, @signal, @security, @oui, @is_rogue, @last_seen, @first_seen_at)
   `);
   const insertEvent = db.prepare(`
     INSERT OR IGNORE INTO unifi_events (source_id, event_id, category, event_key, event_type, message, raw_json, occurred_at)
@@ -383,14 +389,21 @@ function seedUnifi(db, { now, encrypt }) {
   };
   const WLAN_PLAN = {
     AustinHome: [
-      { id: 'wlan-5g', name: 'AustinHome-5G', security: 'wpapsk', wpa_mode: 'wpa3', is_guest: 0, hide_ssid: 0 },
-      { id: 'wlan-iot', name: 'AustinHome-IoT', security: 'wpapsk', wpa_mode: 'wpa2', is_guest: 0, hide_ssid: 0 },
-      { id: 'wlan-cam', name: 'AustinHome-Cameras', security: 'wpapsk', wpa_mode: 'wpa2', is_guest: 0, hide_ssid: 1 },
-      { id: 'wlan-guest', name: 'AustinHome-Guest', security: 'wpapsk', wpa_mode: 'wpa2', is_guest: 1, hide_ssid: 0 },
+      { id: 'wlan-5g', name: 'AustinHome-5G', security: 'wpapsk', wpa_mode: 'wpa3', is_guest: 0, hide_ssid: 0,
+        wpa3_support: 1, wpa3_transition: 1, pmf_mode: 'required', l2_isolation: 0, bss_transition: 1, fast_roaming_enabled: 1, minrate_ng_enabled: 0 },
+      // Deliberate posture warning: WPA2-only, no WPA3 transition (WiFi Security Posture panel).
+      { id: 'wlan-iot', name: 'AustinHome-IoT', security: 'wpapsk', wpa_mode: 'wpa2', is_guest: 0, hide_ssid: 0,
+        wpa3_support: 0, wpa3_transition: 0, pmf_mode: 'optional', l2_isolation: 1, bss_transition: 0, fast_roaming_enabled: 0, minrate_ng_enabled: 1 },
+      { id: 'wlan-cam', name: 'AustinHome-Cameras', security: 'wpapsk', wpa_mode: 'wpa2', is_guest: 0, hide_ssid: 1,
+        wpa3_support: 0, wpa3_transition: 0, pmf_mode: 'optional', l2_isolation: 1, bss_transition: 0, fast_roaming_enabled: 0, minrate_ng_enabled: 0 },
+      { id: 'wlan-guest', name: 'AustinHome-Guest', security: 'wpapsk', wpa_mode: 'wpa2', is_guest: 1, hide_ssid: 0,
+        wpa3_support: 0, wpa3_transition: 0, pmf_mode: 'disabled', l2_isolation: 1, bss_transition: 0, fast_roaming_enabled: 0, minrate_ng_enabled: 0 },
     ],
     Lakehouse: [
-      { id: 'wlan-lh-main', name: 'Lakehouse-5G', security: 'wpapsk', wpa_mode: 'wpa3', is_guest: 0, hide_ssid: 0 },
-      { id: 'wlan-lh-guest', name: 'Lakehouse-Guest', security: 'wpapsk', wpa_mode: 'wpa2', is_guest: 1, hide_ssid: 0 },
+      { id: 'wlan-lh-main', name: 'Lakehouse-5G', security: 'wpapsk', wpa_mode: 'wpa3', is_guest: 0, hide_ssid: 0,
+        wpa3_support: 1, wpa3_transition: 1, pmf_mode: 'required', l2_isolation: 0, bss_transition: 1, fast_roaming_enabled: 1, minrate_ng_enabled: 0 },
+      { id: 'wlan-lh-guest', name: 'Lakehouse-Guest', security: 'wpapsk', wpa_mode: 'wpa2', is_guest: 1, hide_ssid: 0,
+        wpa3_support: 0, wpa3_transition: 0, pmf_mode: 'disabled', l2_isolation: 1, bss_transition: 0, fast_roaming_enabled: 0, minrate_ng_enabled: 0 },
     ],
   };
   let networkTotal = 0, wlanTotal = 0;
@@ -400,8 +413,50 @@ function seedUnifi(db, { now, encrypt }) {
       networkTotal++;
     });
     WLAN_PLAN[s.name].forEach((w) => {
-      insertWlan.run({ source_id: sourceIds[s.name], wlan_id: w.id, name: w.name, enabled: 1, security: w.security, wpa_mode: w.wpa_mode, is_guest: w.is_guest, hide_ssid: w.hide_ssid });
+      const posture = JSON.stringify({
+        wpa_mode: w.wpa_mode, wpa3_support: w.wpa3_support, wpa3_transition: w.wpa3_transition,
+        pmf_mode: w.pmf_mode, hide_ssid: w.hide_ssid, l2_isolation: w.l2_isolation,
+        bss_transition: w.bss_transition, fast_roaming_enabled: w.fast_roaming_enabled, minrate_ng_enabled: w.minrate_ng_enabled,
+      });
+      insertWlan.run({ source_id: sourceIds[s.name], wlan_id: w.id, name: w.name, enabled: 1, security: w.security, wpa_mode: w.wpa_mode, is_guest: w.is_guest, hide_ssid: w.hide_ssid, posture_json: posture });
       wlanTotal++;
+    });
+  });
+
+  // ── Firewall + traffic rules (~8 firewall incl. 'NAS Germany', 3 traffic) ─
+  let firewallRuleTotal = 0;
+  const FIREWALL_RULES = [
+    { ruleset: 'WAN_IN', index: 2000, name: 'NAS Germany', action: 'drop', enabled: 1, protocol: 'all', src: '85.214.0.0/16', dst: 'any', logging: 1 },
+    { ruleset: 'WAN_IN', index: 2001, name: 'Block Telnet', action: 'drop', enabled: 1, protocol: 'tcp', src: 'any', dst: 'any:23', logging: 0 },
+    { ruleset: 'WAN_IN', index: 2002, name: 'Allow established/related', action: 'accept', enabled: 1, protocol: 'all', src: 'any', dst: 'any', logging: 0 },
+    { ruleset: 'LAN_IN', index: 3000, name: 'Guest to LAN block', action: 'drop', enabled: 1, protocol: 'all', src: 'Guest', dst: 'Default', logging: 1 },
+    { ruleset: 'LAN_IN', index: 3001, name: 'IoT to LAN block', action: 'drop', enabled: 1, protocol: 'all', src: 'IoT', dst: 'Default', logging: 1 },
+    { ruleset: 'LAN_IN', index: 3002, name: 'Cameras to WAN block', action: 'drop', enabled: 1, protocol: 'all', src: 'Cameras', dst: 'any', logging: 0 },
+    { ruleset: 'WAN_OUT', index: 2100, name: 'Block known scanners', action: 'reject', enabled: 1, protocol: 'tcp', src: 'any', dst: 'any', logging: 1 },
+    { ruleset: 'WAN_LOCAL', index: 2200, name: 'Allow VPN', action: 'accept', enabled: 0, protocol: 'udp', src: 'any', dst: 'any:51820', logging: 0 },
+  ];
+  const TRAFFIC_RULES = [
+    { description: 'Block social media on IoT', action: 'BLOCK', enabled: 1, matching_target: 'IoT' },
+    { description: 'Block ads network-wide', action: 'BLOCK', enabled: 1, matching_target: 'Default' },
+    { description: 'Allow smart TV streaming', action: 'ALLOW', enabled: 1, matching_target: 'Default' },
+  ];
+  SOURCES.forEach((s) => {
+    const sourceId = sourceIds[s.name];
+    FIREWALL_RULES.forEach((r, i) => {
+      insertFirewallRule.run({
+        source_id: sourceId, rule_id: `fwrule-${s.name.toLowerCase()}-${i}`, kind: 'firewall',
+        ruleset: r.ruleset, rule_index: r.index, name: r.name, action: r.action, enabled: r.enabled,
+        protocol: r.protocol, src: r.src, dst: r.dst, logging: r.logging, raw_json: JSON.stringify(r),
+      });
+      firewallRuleTotal++;
+    });
+    TRAFFIC_RULES.forEach((r, i) => {
+      insertFirewallRule.run({
+        source_id: sourceId, rule_id: `trrule-${s.name.toLowerCase()}-${i}`, kind: 'traffic',
+        ruleset: null, rule_index: null, name: r.description, action: r.action, enabled: r.enabled,
+        protocol: null, src: r.matching_target, dst: null, logging: null, raw_json: JSON.stringify(r),
+      });
+      firewallRuleTotal++;
     });
   });
 
@@ -484,18 +539,24 @@ function seedUnifi(db, { now, encrypt }) {
   genClientsForSource(SOURCES[0], SRC1_CLIENT_PLAN);
   genClientsForSource(SOURCES[1], SRC2_CLIENT_PLAN);
 
-  // ── Rogue / neighboring APs (~30 total, 1 flagged is_rogue on AustinHome) ─
+  // ── Rogue / neighboring APs (~30 total, 1 flagged is_rogue on AustinHome).
+  //    Most first-seen 30d back; 2 rows first-seen 3d back for the
+  //    "N new this week" rogueChanges chip. ───────────────────────────────
   let rogueTotal = 0;
   const NEIGHBOR_ESSIDS = ['NETGEAR87', 'ATT-WIFI-4521', 'xfinitywifi', 'Linksys00234', 'HP-Print-9C-Office', 'MySpectrumWiFi-8821', 'DIRECT-4B-HP', 'TP-Link_2.4G'];
+  let rogueNewThisWeekLeft = 2;
   SOURCES.forEach((s, sIdx) => {
     const rng = rngFor(`unifi-rogue-${s.name}`);
     const count = sIdx === 0 ? 20 : 10;
     for (let i = 0; i < count; i++) {
+      const isNew = rogueNewThisWeekLeft > 0 && i === 0;
+      if (isNew) rogueNewThisWeekLeft--;
       insertRogue.run({
         source_id: sourceIds[s.name], bssid: randMac(rng), essid: pick(rng, NEIGHBOR_ESSIDS),
         channel: pick(rng, [1, 6, 11, 36, 44, 149]), signal: -randInt(rng, 55, 90),
         security: pick(rng, ['WPA2-Personal (AES/CCMP)', 'WPA3-Personal (SAE)', 'Open']),
         oui: pick(rng, OUIS), is_rogue: 0, last_seen: Math.round(now / 1000) - randInt(rng, 60, 3600),
+        first_seen_at: ago(isNew ? '-3 days' : '-30 days'),
       });
       rogueTotal++;
     }
@@ -503,11 +564,12 @@ function seedUnifi(db, { now, encrypt }) {
   insertRogue.run({
     source_id: sourceIds.AustinHome, bssid: randMac(rngFor('unifi-rogue-evil-twin')),
     essid: 'AustinHome-5G', channel: 6, signal: -38, security: 'Open',
-    oui: 'Unknown', is_rogue: 1, last_seen: Math.round(now / 1000) - 300,
+    oui: 'Unknown', is_rogue: 1, last_seen: Math.round(now / 1000) - 300, first_seen_at: ago('-3 days'),
   });
   rogueTotal++;
 
-  // ── Events (~60, >=12 SECURITY) ────────────────────────────────────────
+  // ── Events (~60, >=12 SECURITY, >=6 carrying rich parameters incl. a
+  //    'NAS Germany' TRIGGER, plus 4 CLIENT roam/disconnect events below) ──
   const EVENT_DEFS = [
     { category: 'SECURITY', event: 'BLOCKED_BY_FIREWALL', msg: (h) => `Traffic blocked by firewall rule from ${h}` },
     { category: 'SECURITY', event: 'IPS_ALERT', msg: (h) => `IPS alert triggered for connection from ${h}` },
@@ -518,6 +580,7 @@ function seedUnifi(db, { now, encrypt }) {
     { category: 'DEVICE', event: 'EVT_AP_Restarted', msg: (h) => `Access point ${h} restarted` },
     { category: 'ADMIN', event: 'EVT_AD_Login', msg: () => 'Admin logged into controller' },
   ];
+  const SECURITY_TRIGGERS = ['NAS Germany', 'Block Telnet', 'Guest to LAN block'];
   let eventTotal = 0;
   let eventIdx = 0;
   SOURCES.forEach((s) => {
@@ -525,10 +588,18 @@ function seedUnifi(db, { now, encrypt }) {
     const securityCount = s.name === 'AustinHome' ? 8 : 5;
     for (let i = 0; i < securityCount; i++) {
       const def = EVENT_DEFS[i % 3];
+      const srcIp = `192.168.1.${randInt(rng, 10, 250)}`;
+      // First 3 SECURITY events per source carry parsed parameters (>=6 total).
+      const rich = i < 3;
+      const parameters = rich ? {
+        SRC_CLIENT: { id: randMac(rng), ip: srcIp, name: `${s.name.toLowerCase()}-wd-00${i + 1}` },
+        DST_IP: { ip: `85.214.${randInt(rng, 1, 254)}.${randInt(rng, 1, 254)}` },
+        TRIGGER: { name: pick(rng, SECURITY_TRIGGERS) },
+      } : {};
       insertEvent.run({
         source_id: sourceIds[s.name], event_id: `evt-${s.name}-${eventIdx}`, category: def.category,
-        event_key: def.event, event_type: def.event, message: def.msg(`192.168.1.${randInt(rng, 10, 250)}`),
-        raw_json: JSON.stringify({ category: def.category, event: def.event }),
+        event_key: def.event, event_type: def.event, message: def.msg(srcIp),
+        raw_json: JSON.stringify({ category: def.category, event: def.event, parameters }),
         occurred_at: ago(`-${randInt(rng, 5, 10080)} minutes`),
       });
       eventTotal++;
@@ -547,6 +618,28 @@ function seedUnifi(db, { now, encrypt }) {
       eventIdx++;
     }
   });
+
+  // ── CLIENT roam/disconnect events tied to real seeded wireless clients
+  //    (Roaming & Stability table + sticky-client detection). ─────────────
+  {
+    const roamRng = rngFor('unifi-roam-events');
+    const wirelessClients = db.prepare(`
+      SELECT mac, name FROM unifi_clients WHERE source_id = ? AND is_wired = 0 ORDER BY id LIMIT 4
+    `).all(sourceIds.AustinHome);
+    const ROAM_DEFS = ['EVT_WC_RoamRadio', 'EVT_WC_Roam', 'EVT_WC_Disconnected', 'EVT_WC_Disconnected'];
+    wirelessClients.forEach((c, i) => {
+      const key = ROAM_DEFS[i % ROAM_DEFS.length];
+      const isRoam = /ROAM/i.test(key);
+      insertEvent.run({
+        source_id: sourceIds.AustinHome, event_id: `evt-roam-${i}`, category: 'CLIENT',
+        event_key: key, event_type: key,
+        message: isRoam ? `Client ${c.name || c.mac} roamed to a new AP` : `Client ${c.name || c.mac} disconnected`,
+        raw_json: JSON.stringify({ category: 'CLIENT', event: key, parameters: { CLIENT: { mac: c.mac, name: c.name } } }),
+        occurred_at: ago(`-${randInt(roamRng, 5, 1400)} minutes`),
+      });
+      eventTotal++;
+    });
+  }
 
   // ── WAN ──────────────────────────────────────────────────────────────
   SOURCES.forEach((s) => {
@@ -704,6 +797,7 @@ function seedUnifi(db, { now, encrypt }) {
     sources: SOURCES.length, devices: deviceTotal, ports: portTotal, portHistory: portHistoryTotal,
     clients: clientTotal, networks: networkTotal, wlans: wlanTotal, rogueAps: rogueTotal,
     events: eventTotal, metrics: metricsTotal, issueHistory: issueHistoryTotal, cameras: cameraTotal,
+    firewallRules: firewallRuleTotal,
   };
 }
 

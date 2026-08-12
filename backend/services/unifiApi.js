@@ -31,11 +31,11 @@ function baseUrl(source) {
   return `https://${source.host}:${port}`;
 }
 
-function baseClient(source) {
+function baseClient(source, timeout = 30000) {
   const { apiKey } = creds(source);
   return axios.create({
     baseURL: baseUrl(source),
-    timeout: 30000,
+    timeout,
     headers: apiKey ? { 'X-API-KEY': apiKey } : {},
     httpsAgent: new https.Agent({ rejectUnauthorized: !!source.ssl_verify }),
     validateStatus: (s) => s >= 200 && s < 300,
@@ -54,6 +54,11 @@ async function integrationGet(source, path, params) {
 async function legacyGet(source, site, path, params) {
   const client = baseClient(source);
   const res = await client.get(`${LEGACY_BASE}/s/${site}${path}`, { params });
+  return res.data;
+}
+async function legacyPost(source, site, path, data) {
+  const client = baseClient(source);
+  const res = await client.post(`${LEGACY_BASE}/s/${site}${path}`, data);
   return res.data;
 }
 async function legacyV2Get(source, site, path, params) {
@@ -245,6 +250,9 @@ function mergedRadiosJson(d) {
       satisfaction: s.satisfaction != null && s.satisfaction >= 0 ? numOrNull(s.satisfaction) : null,
       cu_total: numOrNull(s.cu_total),
       state: strOrNull(s.state),
+      tx_retries_pct: numOrNull(s.tx_retries_pct),
+      cu_self_rx: numOrNull(s.cu_self_rx),
+      cu_self_tx: numOrNull(s.cu_self_tx),
     };
   });
   return jsonOrNull(merged);
@@ -303,6 +311,17 @@ async function fetchWlans(source, site) {
     wpaMode: strOrNull(w.wpa_mode),
     isGuest: boolToInt(w.is_guest),
     hideSsid: boolToInt(w.hide_ssid),
+    postureJson: jsonOrNull({
+      wpa_mode: w.wpa_mode ?? null,
+      wpa3_support: w.wpa3_support ?? null,
+      wpa3_transition: w.wpa3_transition ?? null,
+      pmf_mode: w.pmf_mode ?? null,
+      hide_ssid: w.hide_ssid ?? null,
+      l2_isolation: w.l2_isolation ?? null,
+      bss_transition: w.bss_transition ?? null,
+      fast_roaming_enabled: w.fast_roaming_enabled ?? null,
+      minrate_ng_enabled: w.minrate_ng_enabled ?? null,
+    }),
   }));
 }
 
@@ -335,21 +354,81 @@ async function fetchRogueAps(source, site) {
 async function fetchIpsSettings(source, site) {
   const d = await legacyGet(source, site, '/rest/setting/ips');
   const row = safeArr(d?.data)[0] || null;
-  if (!row) return { enabled: false, categories: [], adBlocking: false, raw: null };
+  if (!row) {
+    return {
+      enabled: false, categories: [], adBlocking: false, raw: null,
+      mode: null, honeypotEnabled: false, dnsFiltering: false, contentFiltering: false, enabledNetworks: [],
+    };
+  }
   const categories = safeArr(row.enabled_categories);
   const mode = strOrNull(row.ips_mode);
   const enabled = mode != null ? mode !== 'disabled' : categories.length > 0;
   return {
     enabled,
     categories,
-    adBlocking: boolToInt(row.ad_blocking_enabled),
+    adBlocking: !!row.ad_blocking_enabled,
     raw: jsonOrNull(row),
+    mode,
+    honeypotEnabled: !!row.honeypot_enabled,
+    dnsFiltering: !!row.dns_filtering,
+    contentFiltering: !!row.content_filtering_blocking_page_enabled,
+    enabledNetworks: Array.isArray(row.enabled_networks) ? row.enabled_networks : (row.enabled_networks ? [row.enabled_networks] : []),
   };
 }
 
 async function fetchHealth(source, site) {
   const d = await legacyGet(source, site, '/stat/health');
   return safeArr(d?.data);
+}
+
+// ── WiFi/Security round: firewall/traffic rules + hourly usage reports ──────
+
+function parseFirewallRule(kind, r) {
+  return {
+    kind,
+    ruleId: strOrNull(r._id ?? r.id),
+    ruleset: strOrNull(r.ruleset),
+    ruleIndex: numOrNull(r.rule_index ?? r.index),
+    name: strOrNull(r.name ?? r.description),
+    action: strOrNull(r.action),
+    enabled: boolToInt(r.enabled),
+    protocol: strOrNull(r.protocol),
+    src: strOrNull(r.src_address ?? r.matching_target),
+    dst: strOrNull(r.dst_address),
+    logging: boolToInt(r.logging),
+    rawJson: jsonOrNull(r),
+  };
+}
+
+// Each surface (legacy firewallrule / v2 trafficrules) is fetched
+// independently so a missing/unsupported one degrades to an empty array
+// rather than dropping the other kind.
+async function fetchFirewallRules(source, site) {
+  let firewall = [];
+  let traffic = [];
+  try {
+    const d = await legacyGet(source, site, '/rest/firewallrule');
+    firewall = safeArr(d?.data).map((r) => parseFirewallRule('firewall', r));
+  } catch { /* tolerate missing/unsupported */ }
+  try {
+    const d = await legacyV2Get(source, site, '/trafficrules');
+    traffic = safeArr(d).map((r) => parseFirewallRule('traffic', r));
+  } catch { /* tolerate missing/unsupported */ }
+  return { firewall, traffic };
+}
+
+// Not called by the poller — route-side live fetch (§ROUTES /wifi history),
+// cached in-memory by the caller. scope is 'site' or 'ap'. Deviation flag
+// (WP-A): uses a short 8s timeout instead of the poller's 30s — this call
+// blocks an in-flight HTTP response (GET /wifi), so a slow/unreachable
+// controller must not hang the page load for up to 30s per source.
+async function fetchHourlyReport(source, site, scope, hours) {
+  const attrs = scope === 'ap' ? ['bytes', 'num_sta', 'time'] : ['bytes', 'wlan_bytes', 'num_sta', 'wlan-num_sta', 'time'];
+  const end = Date.now();
+  const start = end - hours * 3600 * 1000;
+  const client = baseClient(source, 8000);
+  const res = await client.post(`${LEGACY_BASE}/s/${site}/stat/report/hourly.${scope}`, { attrs, start, end });
+  return safeArr(res.data?.data);
 }
 
 // message_raw is a template ("{SRC_CLIENT} was blocked from accessing {DST_IP}…")
@@ -460,6 +539,8 @@ module.exports = {
   fetchTopology,
   fetchProtect,
   fetchCameraSnapshot,
+  fetchFirewallRules,
+  fetchHourlyReport,
   // exported for reuse/testing
   numOrNull, strOrNull, boolToInt, jsonOrNull, occurredAtIso, errMsg,
 };

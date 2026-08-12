@@ -115,10 +115,10 @@ const storeClients = db.transaction((sourceId, site, clientRows) => {
 const storeWlans = db.transaction((sourceId, rows) => {
   db.prepare('DELETE FROM unifi_wlans WHERE source_id = ?').run(sourceId);
   const stmt = db.prepare(`
-    INSERT INTO unifi_wlans (source_id, wlan_id, name, enabled, security, wpa_mode, is_guest, hide_ssid)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO unifi_wlans (source_id, wlan_id, name, enabled, security, wpa_mode, is_guest, hide_ssid, posture_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  for (const w of rows) stmt.run(sourceId, w.wlanId, w.name, w.enabled, w.security, w.wpaMode, w.isGuest, w.hideSsid);
+  for (const w of rows) stmt.run(sourceId, w.wlanId, w.name, w.enabled, w.security, w.wpaMode, w.isGuest, w.hideSsid, w.postureJson);
 });
 
 const storeNetworks = db.transaction((sourceId, rows) => {
@@ -133,11 +133,12 @@ const storeNetworks = db.transaction((sourceId, rows) => {
 const storeRogueAps = db.transaction((sourceId, rows) => {
   const seenBssids = rows.map((r) => r.bssid).filter(Boolean);
   const stmt = db.prepare(`
-    INSERT INTO unifi_rogue_aps (source_id, bssid, essid, channel, signal, security, oui, is_rogue, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO unifi_rogue_aps (source_id, bssid, essid, channel, signal, security, oui, is_rogue, last_seen, first_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(source_id, bssid) DO UPDATE SET
       essid = excluded.essid, channel = excluded.channel, signal = excluded.signal,
-      security = excluded.security, oui = excluded.oui, is_rogue = excluded.is_rogue, last_seen = excluded.last_seen
+      security = excluded.security, oui = excluded.oui, is_rogue = excluded.is_rogue, last_seen = excluded.last_seen,
+      first_seen_at = COALESCE(unifi_rogue_aps.first_seen_at, excluded.first_seen_at)
   `);
   for (const r of rows) {
     if (!r.bssid) continue;
@@ -149,6 +150,20 @@ const storeRogueAps = db.transaction((sourceId, rows) => {
       DELETE FROM unifi_rogue_aps WHERE source_id = ? AND bssid NOT IN (${placeholders})
         AND last_seen < CAST(strftime('%s', datetime('now', '-7 days')) AS INTEGER)
     `).run(sourceId, ...seenBssids);
+  }
+});
+
+const storeFirewallRules = db.transaction((sourceId, rows) => {
+  db.prepare('DELETE FROM unifi_firewall_rules WHERE source_id = ?').run(sourceId);
+  const stmt = db.prepare(`
+    INSERT INTO unifi_firewall_rules (source_id, rule_id, kind, ruleset, rule_index, name, action, enabled,
+      protocol, src, dst, logging, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const r of rows) {
+    if (!r.ruleId) continue;
+    stmt.run(sourceId, r.ruleId, r.kind, r.ruleset, r.ruleIndex, r.name, r.action, r.enabled,
+      r.protocol, r.src, r.dst, r.logging, r.rawJson);
   }
 });
 
@@ -262,6 +277,7 @@ async function pollSource(source) {
     const networkRows = [];
     const rogueApRows = [];
     const eventRows = [];
+    const firewallRows = [];
     let lastHealth = null;
     let lastIps = null;
     let lastTopology = null;
@@ -300,6 +316,9 @@ async function pollSource(source) {
       const health = await trySection(`health (${site})`, () => unifiApi.fetchHealth(source, site));
       if (health) lastHealth = health;
 
+      const firewall = await trySection(`firewall (${site})`, () => unifiApi.fetchFirewallRules(source, site));
+      if (firewall) firewallRows.push(...firewall.firewall, ...firewall.traffic);
+
       const log = await trySection(`system-log (${site})`, () => unifiApi.fetchSystemLog(source, site));
       if (log) eventRows.push(...log);
 
@@ -311,6 +330,7 @@ async function pollSource(source) {
     if (networkRows.length || db.prepare('SELECT COUNT(*) n FROM unifi_networks WHERE source_id = ?').get(source.id).n) storeNetworks(source.id, networkRows);
     if (rogueApRows.length) storeRogueAps(source.id, rogueApRows);
     if (eventRows.length) storeEvents(source.id, eventRows);
+    if (firewallRows.length || db.prepare('SELECT COUNT(*) n FROM unifi_firewall_rules WHERE source_id = ?').get(source.id).n) storeFirewallRules(source.id, firewallRows);
     if (lastTopology) {
       db.prepare(`
         INSERT INTO unifi_topology (source_id, captured_at, vertices_json, edges_json, has_unknown_switch)

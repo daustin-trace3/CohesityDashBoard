@@ -310,19 +310,43 @@ router.get('/clients', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/wifi', (req, res, next) => {
+// Hourly-report (site/AP) fetches hit the controller live — cache briefly so
+// repeated Overview/WiFi loads within the window don't hammer it.
+const hourlyReportCache = new Map(); // `${sourceId}:${scope}:${hours}` -> {at, data}
+const HOURLY_CACHE_MS = 5 * 60 * 1000;
+
+async function cachedHourlyReport(source, site, scope, hours) {
+  const key = `${source.id}:${scope}:${hours}`;
+  const cached = hourlyReportCache.get(key);
+  if (cached && Date.now() - cached.at < HOURLY_CACHE_MS) return cached.data;
+  const data = await unifiApi.fetchHourlyReport(source, site, scope, hours);
+  hourlyReportCache.set(key, { at: Date.now(), data });
+  return data;
+}
+
+router.get('/wifi', [query('hours').optional().isInt({ min: 1, max: 168 }).toInt()], validate, async (req, res, next) => {
   try {
-    const wlans = db.prepare('SELECT w.*, s.name AS source_name FROM unifi_wlans w JOIN unifi_sources s ON s.id = w.source_id ORDER BY s.name, w.name').all();
+    const hours = req.query.hours || 24;
+    const wlans = db.prepare('SELECT w.*, s.name AS source_name FROM unifi_wlans w JOIN unifi_sources s ON s.id = w.source_id ORDER BY s.name, w.name').all()
+      .map((w) => {
+        let posture = null;
+        if (w.posture_json) { try { posture = JSON.parse(w.posture_json); } catch { posture = null; } }
+        return { ...w, posture };
+      });
     const radios = [];
     for (const d of db.prepare("SELECT source_id, mac, name, radios_json FROM unifi_devices WHERE radios_json IS NOT NULL").all()) {
       let list = [];
       try { list = JSON.parse(d.radios_json) || []; } catch { list = []; }
       for (const r of list) {
+        const cuTotal = r.cu_total ?? null;
+        const selfPct = (r.cu_self_rx != null || r.cu_self_tx != null) ? (Number(r.cu_self_rx || 0) + Number(r.cu_self_tx || 0)) : null;
+        const interferencePct = cuTotal != null ? Math.max(0, cuTotal - (selfPct || 0)) : null;
         radios.push({
           deviceMac: d.mac, deviceName: d.name, radio: r.radio ?? r.name ?? null,
           channel: r.channel ?? null, txPower: r.tx_power ?? null, maxTxPower: r.max_txpower ?? null,
           txPowerMode: r.tx_power_mode ?? null, width: r.ht ?? null, numSta: r.num_sta ?? null,
           satisfaction: r.satisfaction ?? null, utilization: r.cu_total ?? null,
+          txRetriesPct: r.tx_retries_pct ?? null, interferencePct, selfPct,
         });
       }
     }
@@ -343,7 +367,75 @@ router.get('/wifi', (req, res, next) => {
     const signalByAp = [...byAp.values()]
       .map(({ signalSum, ...a }) => ({ ...a, avgSignal: a.total ? Math.round(signalSum / a.total) : null }))
       .sort((x, y) => y.total - x.total);
-    res.json({ wlans, radios, rogues, signalBuckets: buckets, signalByAp });
+
+    // Roaming & stability (24h): CLIENT-category events tagged ROAM/DISCONNECT.
+    const roamEvents = db.prepare(`
+      SELECT event_key, event_type, raw_json FROM unifi_events
+      WHERE category = 'CLIENT' AND datetime(occurred_at) >= datetime('now', '-24 hours')
+    `).all();
+    const roamMap = new Map();
+    for (const e of roamEvents) {
+      let params = {};
+      try { params = JSON.parse(e.raw_json || '{}')?.parameters || {}; } catch { params = {}; }
+      const clientParam = params.CLIENT ?? params.SRC_CLIENT ?? params.GUEST ?? null;
+      let mac = null;
+      let name = null;
+      if (clientParam != null) {
+        if (typeof clientParam === 'object') { mac = clientParam.mac || clientParam.id || null; name = clientParam.name || clientParam.hostname || null; }
+        else { mac = String(clientParam); }
+      }
+      if (!mac) continue;
+      if (!roamMap.has(mac)) roamMap.set(mac, { mac, name: name || null, roams24h: 0, disconnects24h: 0 });
+      const entry = roamMap.get(mac);
+      if (name && !entry.name) entry.name = name;
+      const key = e.event_key || e.event_type || '';
+      if (/ROAM/i.test(key)) entry.roams24h += 1;
+      if (/DISCONNECT/i.test(key)) entry.disconnects24h += 1;
+    }
+    const wirelessClients = db.prepare('SELECT mac, name, signal FROM unifi_clients WHERE is_wired = 0').all();
+    const clientByMac = new Map(wirelessClients.map((c) => [c.mac, c]));
+    const roaming = [...roamMap.values()]
+      .map((r) => {
+        const c = clientByMac.get(r.mac);
+        const signal = c ? c.signal : null;
+        return {
+          mac: r.mac, name: r.name || (c ? c.name : null), roams24h: r.roams24h, disconnects24h: r.disconnects24h,
+          signal, sticky: signal != null && signal <= -70 && r.roams24h === 0,
+        };
+      })
+      .sort((a, b) => (b.roams24h + b.disconnects24h) - (a.roams24h + a.disconnects24h))
+      .slice(0, 10);
+
+    // WiFi traffic history: live hourly report per successfully-polled source.
+    const historySources = db.prepare("SELECT * FROM unifi_sources WHERE last_poll_status = 'success'").all();
+    const deviceNameByMac = new Map(db.prepare('SELECT mac, name FROM unifi_devices').all().map((r) => [r.mac, r.name]));
+    const siteHistory = [];
+    const apHistory = [];
+    for (const s of historySources) {
+      let site = 'default';
+      try { const sites = s.sites_json ? JSON.parse(s.sites_json) : []; site = sites[0]?.internalReference || sites[0]?.id || 'default'; } catch { site = 'default'; }
+      try {
+        const rows = await cachedHourlyReport(s, site, 'site', hours);
+        for (const r of rows) {
+          siteHistory.push({
+            sourceId: s.id, sourceName: s.name, time: r.time ?? null,
+            wlanBytes: r.wlan_bytes ?? null, numSta: r.num_sta ?? null, wlanNumSta: r['wlan-num_sta'] ?? null,
+          });
+        }
+      } catch { /* per-source tolerant */ }
+      try {
+        const rows = await cachedHourlyReport(s, site, 'ap', hours);
+        for (const r of rows) {
+          const apMac = r.ap ?? r.ap_mac ?? r.mac ?? null;
+          apHistory.push({
+            sourceId: s.id, apMac, apName: apMac ? (deviceNameByMac.get(apMac) || null) : null,
+            time: r.time ?? null, bytes: r.bytes ?? null, numSta: r.num_sta ?? null,
+          });
+        }
+      } catch { /* per-source tolerant */ }
+    }
+
+    res.json({ wlans, radios, rogues, signalBuckets: buckets, signalByAp, roaming, history: { hours, site: siteHistory, aps: apHistory } });
   } catch (err) { next(err); }
 });
 
@@ -361,7 +453,106 @@ router.get('/security', (req, res, next) => {
     const events = db.prepare(`
       SELECT * FROM unifi_events WHERE category = 'SECURITY' ORDER BY occurred_at DESC LIMIT 200
     `).all();
-    res.json({ ips, rogueCounts: { total: rogueCounts.total || 0, flagged: rogueCounts.flagged || 0 }, events });
+
+    // Posture per source (from the health_json.ips snapshot the poller stamps).
+    const posture = [];
+    for (const s of db.prepare('SELECT id, name, health_json FROM unifi_sources').all()) {
+      let ipsData = null;
+      if (s.health_json) {
+        try { ipsData = JSON.parse(s.health_json)?.ips || null; } catch { ipsData = null; }
+      }
+      const enabledNetworks = ipsData?.enabledNetworks;
+      const enabledNetworksCount = Array.isArray(enabledNetworks) ? enabledNetworks.length : (typeof enabledNetworks === 'number' ? enabledNetworks : 0);
+      posture.push({
+        sourceId: s.id, sourceName: s.name,
+        mode: ipsData?.mode ?? null,
+        honeypotEnabled: !!ipsData?.honeypotEnabled,
+        dnsFiltering: !!ipsData?.dnsFiltering,
+        adBlocking: !!ipsData?.adBlocking,
+        contentFiltering: !!ipsData?.contentFiltering,
+        enabledNetworksCount,
+      });
+    }
+
+    const rules = {
+      firewall: db.prepare(`
+        SELECT f.*, s.name AS source_name FROM unifi_firewall_rules f JOIN unifi_sources s ON s.id = f.source_id
+        WHERE f.kind = 'firewall' ORDER BY s.name, f.ruleset, f.rule_index
+      `).all(),
+      traffic: db.prepare(`
+        SELECT f.*, s.name AS source_name FROM unifi_firewall_rules f JOIN unifi_sources s ON s.id = f.source_id
+        WHERE f.kind = 'traffic' ORDER BY s.name, f.name
+      `).all(),
+    };
+
+    // Threat timeline (24h) + top destinations/offenders/policy hits, all
+    // derived from SECURITY-category events' raw_json.parameters.
+    const isIpsEvent = (e) => /intrusion|ips|ids/i.test(e.event_type || '') || /intrusion/i.test(e.message || '');
+    const secEvents24 = db.prepare(`
+      SELECT event_type, message, occurred_at FROM unifi_events
+      WHERE category = 'SECURITY' AND datetime(occurred_at) >= datetime('now', '-24 hours')
+    `).all();
+    const timelineMap = new Map();
+    for (const e of secEvents24) {
+      if (!e.occurred_at) continue;
+      const hour = `${e.occurred_at.slice(0, 10)} ${e.occurred_at.slice(11, 13)}:00`;
+      if (!timelineMap.has(hour)) timelineMap.set(hour, { hour, blocks: 0, ips: 0 });
+      const bucket = timelineMap.get(hour);
+      if (isIpsEvent(e)) bucket.ips += 1; else bucket.blocks += 1;
+    }
+    const timeline = [...timelineMap.values()].sort((a, b) => (a.hour < b.hour ? -1 : 1));
+
+    const secEventsAll = db.prepare(`SELECT event_type, message, raw_json FROM unifi_events WHERE category = 'SECURITY'`).all();
+    const destCounts = new Map();
+    const srcCounts = new Map();
+    const policyCounts = new Map();
+    const ipRegex = /\b\d{1,3}(?:\.\d{1,3}){3}\b/;
+    for (const e of secEventsAll) {
+      let params = {};
+      try { params = JSON.parse(e.raw_json || '{}')?.parameters || {}; } catch { params = {}; }
+
+      const dst = params.DST_IP;
+      const dstLabel = dst == null ? null : (typeof dst === 'object' ? (dst.ip || dst.name || null) : String(dst));
+      if (dstLabel) destCounts.set(dstLabel, (destCounts.get(dstLabel) || 0) + 1);
+
+      const trig = params.TRIGGER;
+      const trigLabel = trig == null ? null : (typeof trig === 'object' ? (trig.name || null) : String(trig));
+      if (trigLabel) policyCounts.set(trigLabel, (policyCounts.get(trigLabel) || 0) + 1);
+
+      if (isIpsEvent(e)) {
+        const srcParam = params.SRC_CLIENT ?? params.SRC_IP ?? null;
+        let srcLabel = null;
+        if (srcParam != null) {
+          srcLabel = typeof srcParam === 'object' ? (srcParam.name || srcParam.hostname || srcParam.ip || null) : String(srcParam);
+        }
+        if (!srcLabel) {
+          const m = (e.message || '').match(ipRegex);
+          srcLabel = m ? m[0] : null;
+        }
+        if (srcLabel) srcCounts.set(srcLabel, (srcCounts.get(srcLabel) || 0) + 1);
+      }
+    }
+    const topN = (map, keyName) => [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, count]) => ({ [keyName]: k, count }));
+    const topDestinations = topN(destCounts, 'dst');
+    const topOffenders = topN(srcCounts, 'src');
+    const policyHits = topN(policyCounts, 'policy');
+
+    const rogueChangesRow = db.prepare(`
+      SELECT COUNT(*) n FROM unifi_rogue_aps r
+      WHERE r.first_seen_at IS NOT NULL AND r.first_seen_at >= datetime('now', '-7 days')
+        AND r.first_seen_at > (
+          SELECT datetime(MIN(r2.first_seen_at), '+1 hour') FROM unifi_rogue_aps r2 WHERE r2.source_id = r.source_id
+        )
+    `).get();
+    const rogueChanges = {
+      newThisWeek: rogueChangesRow.n || 0,
+      flagged: db.prepare('SELECT essid, bssid, first_seen_at, last_seen FROM unifi_rogue_aps WHERE is_rogue = 1').all(),
+    };
+
+    res.json({
+      ips, rogueCounts: { total: rogueCounts.total || 0, flagged: rogueCounts.flagged || 0 }, events,
+      posture, rules, timeline, topDestinations, topOffenders, policyHits, rogueChanges,
+    });
   } catch (err) { next(err); }
 });
 
@@ -538,7 +729,7 @@ router.get('/insights', (req, res, next) => {
     // 4. Security digest (24h)
     const secEvents = db.prepare(`
       SELECT event_type, message, raw_json FROM unifi_events
-      WHERE category = 'SECURITY' AND occurred_at >= datetime('now', '-24 hours')
+      WHERE category = 'SECURITY' AND datetime(occurred_at) >= datetime('now', '-24 hours')
     `).all();
     let blocks = 0, ips = 0;
     const bySource = new Map();

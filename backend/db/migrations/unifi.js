@@ -332,4 +332,39 @@ module.exports = [
       }
     },
   },
+  {
+    version: 5,
+    up(db) {
+      // WiFi/Security round: WLAN security posture snapshot, rogue-AP
+      // first-seen tracking (new-this-week), and firewall/traffic rules.
+      const wlanCols = db.prepare('PRAGMA table_info(unifi_wlans)').all().map((c) => c.name);
+      if (!wlanCols.includes('posture_json')) {
+        db.exec('ALTER TABLE unifi_wlans ADD COLUMN posture_json TEXT');
+      }
+      const rogueCols = db.prepare('PRAGMA table_info(unifi_rogue_aps)').all().map((c) => c.name);
+      if (!rogueCols.includes('first_seen_at')) {
+        db.exec('ALTER TABLE unifi_rogue_aps ADD COLUMN first_seen_at TEXT');
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS unifi_firewall_rules (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id    INTEGER NOT NULL REFERENCES unifi_sources(id) ON DELETE CASCADE,
+          rule_id      TEXT,
+          kind         TEXT NOT NULL,
+          ruleset      TEXT,
+          rule_index   INTEGER,
+          name         TEXT,
+          action       TEXT,
+          enabled      INTEGER,
+          protocol     TEXT,
+          src          TEXT,
+          dst          TEXT,
+          logging      INTEGER,
+          raw_json     TEXT,
+          UNIQUE(source_id, kind, rule_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_unifi_firewall_rules_source ON unifi_firewall_rules(source_id);
+      `);
+    },
+  },
 ];
