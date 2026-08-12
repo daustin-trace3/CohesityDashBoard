@@ -28,6 +28,19 @@ export function PlatformsProvider({ children }) {
       console.warn('Could not load plugin frontend manifest', err);
       return;
     }
+    // Disabling/uninstalling drops the entry from the manifest — prune the
+    // loaded module (restoring any same-id built-in, which then answers to
+    // the normal platform_<id>_enabled gate) and forget its id so a
+    // re-enable reloads the bundle.
+    const manifestIds = new Set((manifest || []).map(e => e?.id).filter(Boolean));
+    for (const id of [...loadedIds.current]) {
+      if (!manifestIds.has(id)) loadedIds.current.delete(id);
+    }
+    setPlatforms(prev => prev.flatMap(p => {
+      if (!p.isPlugin || manifestIds.has(p.id)) return [p];
+      const builtin = builtinPlatforms.find(b => b.id === p.id);
+      return builtin ? [builtin] : [];
+    }));
     for (const entry of manifest || []) {
       if (!entry?.id || loadedIds.current.has(entry.id)) continue;
       loadedIds.current.add(entry.id);
