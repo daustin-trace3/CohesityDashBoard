@@ -145,7 +145,7 @@ export default function Layout() {
   // Non-built-in (installed plugin) platform whose routes match the current
   // path, so plugin nav/branding shows up without special-casing each plugin.
   const activePluginPlatform = !isPlatform
-    ? allPlatforms.find(p => !builtinIds.includes(p.id) && p.isActive(pathname))
+    ? allPlatforms.find(p => p.isPlugin && !builtinIds.includes(p.id) && p.isActive(pathname))
     : null;
   const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
 
@@ -390,7 +390,10 @@ export default function Layout() {
         ...(r.data.platformAriaopsEnabled ? ['ariaops'] : []),
         ...(r.data.platformAwsEnabled ? ['aws'] : []),
         ...(r.data.platformUnifiEnabled ? ['unifi'] : []),
-        ...allPlatforms.filter(p => !builtinIds.includes(p.id)).map(p => p.id),
+        // Installed plugins are enabled by definition (the backend only serves
+        // active ones) — including when they shadow a built-in id the local
+        // backend has no platform_<id>_enabled setting for.
+        ...allPlatforms.filter(p => p.isPlugin).map(p => p.id),
       ]))
       .catch(() => {});
     loadPlatforms();
