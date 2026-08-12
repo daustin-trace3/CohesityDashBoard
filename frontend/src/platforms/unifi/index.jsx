@@ -26,8 +26,8 @@ const navGroups = [
       { label: 'Devices', route: '/unifi/devices', icon: Router, isActive: (p) => p.startsWith('/unifi/devices') },
       { label: 'Ports', route: '/unifi/ports', icon: Cable, isActive: (p) => p.startsWith('/unifi/ports') },
       { label: 'Clients', route: '/unifi/clients', icon: Users, isActive: (p) => p.startsWith('/unifi/clients') },
-      { label: 'WiFi', route: '/unifi/wifi', icon: Wifi, isActive: (p) => p.startsWith('/unifi/wifi') },
-      { label: 'Protect', route: '/unifi/protect', icon: Cctv, isActive: (p) => p.startsWith('/unifi/protect') },
+      { label: 'WiFi', route: '/unifi/wifi', icon: Wifi, isActive: (p) => p.startsWith('/unifi/wifi'), feature: 'wifi' },
+      { label: 'Protect', route: '/unifi/protect', icon: Cctv, isActive: (p) => p.startsWith('/unifi/protect'), feature: 'protect' },
     ],
   },
   {
@@ -35,7 +35,7 @@ const navGroups = [
     items: [
       { label: 'Topology', route: '/unifi/topology', icon: Share2, isActive: (p) => p.startsWith('/unifi/topology') },
       { label: 'WAN / ISP', route: '/unifi/wan', icon: Globe, isActive: (p) => p.startsWith('/unifi/wan') },
-      { label: 'Security', route: '/unifi/security', icon: ShieldCheck, isActive: (p) => p.startsWith('/unifi/security') },
+      { label: 'Security', route: '/unifi/security', icon: ShieldCheck, isActive: (p) => p.startsWith('/unifi/security'), feature: 'security' },
     ],
   },
   {

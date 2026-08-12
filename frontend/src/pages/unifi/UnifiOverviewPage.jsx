@@ -37,7 +37,9 @@ const Line11 = ({ children, warn }) => (
 
 // Insights band — every card is derived server-side in /unifi/insights from
 // data the poller already collects.
-function InsightsBand({ insights, navigate, chartOpts }) {
+function InsightsBand({ insights, navigate, chartOpts, features }) {
+  const wifiOn = features?.wifi !== false;
+  const securityOn = features?.security !== false;
   const { poe, portHealth, wanScores, security24h, wifiCongestion, reboots, newDevices, busiestHour, topTalkers, uplinks, tempTrend } = insights;
   const fmtBytes = (b) => {
     const n = Number(b) || 0;
@@ -131,16 +133,16 @@ function InsightsBand({ insights, navigate, chartOpts }) {
           ) : <Line11>No temperature sensors reported.</Line11>}
         </InsightCard>
 
-        <InsightCard icon={Shield} title="Security (24h)" onClick={() => navigate('/unifi/security')}
+        {securityOn && <InsightCard icon={Shield} title="Security (24h)" onClick={() => navigate('/unifi/security')}
           tone={security24h?.ipsDetections ? 'warn' : undefined}>
           <p className="text-lg font-semibold text-ink tnum">{(security24h?.firewallBlocks || 0) + (security24h?.ipsDetections || 0)} <span className="text-xs font-normal text-ink-faint">events</span></p>
           <Line11 warn={security24h?.ipsDetections > 0}>{security24h?.firewallBlocks || 0} firewall blocks · {security24h?.ipsDetections || 0} IPS detections · {security24h?.rogueFlagged || 0} rogue AP{security24h?.rogueFlagged === 1 ? '' : 's'}</Line11>
           {(security24h?.topBlockedSources || []).length > 0 && (
             <Line11>Noisiest: {security24h.topBlockedSources.map((t) => `${t.source} (${t.count})`).join(', ')}</Line11>
           )}
-        </InsightCard>
+        </InsightCard>}
 
-        <InsightCard icon={Wifi} title="WiFi Congestion" onClick={() => navigate('/unifi/wifi')}
+        {wifiOn && <InsightCard icon={Wifi} title="WiFi Congestion" onClick={() => navigate('/unifi/wifi')}
           tone={congested.length ? 'warn' : undefined}>
           {congested.length > 0 ? (
             <Line11 warn>2.4 GHz busy: {congested.map((r) => `${r.deviceName} ch${r.channel} @ ${r.utilization}%`).join(', ')}</Line11>
@@ -151,7 +153,7 @@ function InsightsBand({ insights, navigate, chartOpts }) {
             <Line11>Least-crowded 2.4 channel: <span className="text-ink">ch {rec.channel}</span> ({rec.neighbors} neighboring APs)</Line11>
           )}
           <Line11>Bands: {['2.4 GHz', '5 GHz', '6 GHz'].filter((b) => bands[b]).map((b) => `${bands[b]} on ${b}`).join(' · ') || '—'}</Line11>
-        </InsightCard>
+        </InsightCard>}
 
         <InsightCard icon={Zap} title="PoE Power" onClick={() => navigate('/unifi/ports')}>
           <p className="text-lg font-semibold text-ink tnum">{poe?.totalWatts ?? 0}W <span className="text-xs font-normal text-ink-faint">delivered now</span></p>
@@ -292,7 +294,7 @@ export default function UnifiOverviewPage() {
         </div>
       )}
 
-      {insights && <InsightsBand insights={insights} navigate={navigate} chartOpts={chartOpts} />}
+      {insights && <InsightsBand insights={insights} navigate={navigate} chartOpts={chartOpts} features={data?.features} />}
 
       {cameras.length > 0 && (
         <div className="mb-4">

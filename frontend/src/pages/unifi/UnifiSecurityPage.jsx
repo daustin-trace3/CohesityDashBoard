@@ -162,6 +162,10 @@ export default function UnifiSecurityPage() {
 
       {data == null ? (
         <LoadingPanel label="Loading security data…" height={160} />
+      ) : data.disabled ? (
+        <div className="panel p-6 text-sm text-ink-muted text-center">
+          The Security module is disabled for this platform. Enable it under UniFi → Settings → Feature Modules to poll IPS state, firewall rules and threat events.
+        </div>
       ) : (
         <>
           <PostureCards posture={posture} />

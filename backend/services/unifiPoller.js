@@ -8,7 +8,7 @@
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const unifiApi = require('./unifiApi');
-const { reconcileIssueHistory } = require('./unifiIssues');
+const { reconcileIssueHistory, featureEnabled } = require('./unifiIssues');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => unifiApi.errMsg(e);
@@ -283,6 +283,11 @@ async function pollSource(source) {
     let lastTopology = null;
     let gatewayParsed = null;
 
+    // Feature-module toggles: disabled modules are not queried at all.
+    const wifiOn = featureEnabled('wifi');
+    const securityOn = featureEnabled('security');
+    const protectOn = featureEnabled('protect');
+
     for (let i = 0; i < sites.length; i++) {
       const site = sites[i].internalReference || sites[i].id || 'default';
       const isFirst = i === 0;
@@ -301,22 +306,22 @@ async function pollSource(source) {
       const clients = await trySection(`clients (${site})`, () => unifiApi.fetchClients(source, site));
       if (clients) storeClients(source.id, site, clients);
 
-      const wlans = await trySection(`wlans (${site})`, () => unifiApi.fetchWlans(source, site));
+      const wlans = wifiOn ? await trySection(`wlans (${site})`, () => unifiApi.fetchWlans(source, site)) : undefined;
       if (wlans) wlanRows.push(...wlans);
 
       const networks = await trySection(`networks (${site})`, () => unifiApi.fetchNetworks(source, site));
       if (networks) networkRows.push(...networks);
 
-      const rogues = await trySection(`rogueap (${site})`, () => unifiApi.fetchRogueAps(source, site));
+      const rogues = wifiOn ? await trySection(`rogueap (${site})`, () => unifiApi.fetchRogueAps(source, site)) : undefined;
       if (rogues) rogueApRows.push(...rogues);
 
-      const ips = await trySection(`ips (${site})`, () => unifiApi.fetchIpsSettings(source, site));
+      const ips = securityOn ? await trySection(`ips (${site})`, () => unifiApi.fetchIpsSettings(source, site)) : undefined;
       if (ips) lastIps = ips;
 
       const health = await trySection(`health (${site})`, () => unifiApi.fetchHealth(source, site));
       if (health) lastHealth = health;
 
-      const firewall = await trySection(`firewall (${site})`, () => unifiApi.fetchFirewallRules(source, site));
+      const firewall = securityOn ? await trySection(`firewall (${site})`, () => unifiApi.fetchFirewallRules(source, site)) : undefined;
       if (firewall) firewallRows.push(...firewall.firewall, ...firewall.traffic);
 
       const log = await trySection(`system-log (${site})`, () => unifiApi.fetchSystemLog(source, site));
@@ -344,7 +349,9 @@ async function pollSource(source) {
     // Protect is optional per controller — a miss here is "not installed", never a
     // poll error, and an absent app clears any previously stored cameras.
     let protect = null;
-    try { protect = await unifiApi.fetchProtect(source); } catch { protect = null; }
+    if (protectOn) {
+      try { protect = await unifiApi.fetchProtect(source); } catch { protect = null; }
+    }
     storeCameras(source.id, protect ? protect.cameras : []);
 
     const wanFacts = buildWanFacts(lastHealth, gatewayParsed);

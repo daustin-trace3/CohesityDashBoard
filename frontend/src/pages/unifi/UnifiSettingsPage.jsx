@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
-  Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil,
+  Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, ToggleLeft,
 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -14,7 +14,14 @@ const iconBtn = 'flex items-center justify-center h-7 w-7 rounded-md border bord
 
 const SECTIONS = [
   { key: 'sources', label: 'Controllers', icon: Server, group: 'Connections' },
+  { key: 'features', label: 'Feature Modules', icon: ToggleLeft, group: 'Tuning' },
   { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing, group: 'Tuning' },
+];
+
+const FEATURE_FIELDS = [
+  { key: 'protect', label: 'Protect (cameras)', description: 'Poll UniFi Protect cameras, NVR arm state and live snapshots. Turn off if no controller runs Protect — the endpoints are not queried at all while disabled.' },
+  { key: 'wifi', label: 'WiFi', description: 'Poll WLANs, radios and neighboring/rogue APs; shows the WiFi page, congestion insight and WiFi issue rules.' },
+  { key: 'security', label: 'Security', description: 'Poll IPS/threat-management state and firewall rules; shows the Security page, security insight card and IPS issue rule.' },
 ];
 
 const THRESHOLD_FIELDS = [
@@ -90,6 +97,8 @@ export default function UnifiSettingsPage() {
 
   const [config, setConfig] = useState(null);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [features, setFeatures] = useState(null);
+  const [savingFeature, setSavingFeature] = useState(null);
 
   const loadSources = useCallback(() => client.get('/unifi/sources')
     .then(({ data }) => setSources(data.sources || data || []))
@@ -100,7 +109,25 @@ export default function UnifiSettingsPage() {
     client.get('/unifi/config')
       .then(({ data }) => setConfig(data.thresholds || {}))
       .catch(() => setConfig({}));
+    client.get('/unifi/features')
+      .then(({ data }) => setFeatures(data.features || {}))
+      .catch(() => setFeatures({}));
   }, [loadSources]);
+
+  const toggleFeature = async (key) => {
+    const next = !(features?.[key] !== false);
+    setSavingFeature(key);
+    try {
+      const { data } = await client.put('/unifi/features', { [key]: next });
+      setFeatures(data.features || { ...features, [key]: next });
+      window.dispatchEvent(new Event('platforms-changed'));
+      toast({ type: 'success', title: `${key.charAt(0).toUpperCase() + key.slice(1)} module ${next ? 'enabled — polls on the next cycle' : 'disabled'}` });
+    } catch {
+      toast({ type: 'error', title: 'Failed to update feature module' });
+    } finally {
+      setSavingFeature(null);
+    }
+  };
 
   const setF = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
 
@@ -310,6 +337,39 @@ export default function UnifiSettingsPage() {
                     {savingConfig ? 'Saving…' : 'Save'}
                   </button>
                 </>
+              )}
+            </div>
+          )}
+
+          {section === 'features' && (
+            <div className="panel p-4">
+              <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><ToggleLeft size={15} className="text-brand" /> Feature Modules</p>
+              <p className="text-xs text-ink-muted mb-4">
+                Turn off modules you don't use — disabled modules are not queried on the controller, their
+                pages and menu items disappear, and their insight cards and issue rules go quiet. Re-enabling
+                starts polling again on the next cycle.
+              </p>
+              {features == null ? (
+                <LoadingPanel label="Loading feature modules…" height={80} />
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {FEATURE_FIELDS.map((f) => {
+                    const on = features[f.key] !== false;
+                    return (
+                      <div key={f.key} className="flex items-start justify-between gap-4 bg-surface-overlay rounded-lg px-4 py-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-ink">{f.label}</p>
+                          <p className="text-[11px] text-ink-faint mt-0.5">{f.description}</p>
+                        </div>
+                        <button onClick={() => toggleFeature(f.key)} disabled={savingFeature === f.key}
+                          role="switch" aria-checked={on} aria-label={`Toggle ${f.label}`}
+                          className={`relative shrink-0 w-11 h-6 rounded-full transition-colors cursor-pointer disabled:opacity-50 ${on ? 'bg-brand' : 'bg-cohesity-border'}`}>
+                          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${on ? 'left-[22px]' : 'left-0.5'}`} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           )}

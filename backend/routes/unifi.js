@@ -12,6 +12,7 @@ const { unifiPoller } = require('../services/unifiPoller');
 const {
   wanLatencyWarnMs, wanAvailWarnPct, portErrDeltaWarn, portFlapWarn,
   deviceCpuWarnPct, deviceMemWarnPct, tempWarnC, satisfactionWarn, newDeviceDays,
+  featureEnabled,
   computeIssues,
 } = require('../services/unifiIssues');
 
@@ -226,6 +227,7 @@ router.get('/overview', (req, res, next) => {
       } : null,
       health,
       issueCounts,
+      features: currentFeatures(),
       spark,
     });
   } catch (err) { next(err); }
@@ -326,6 +328,7 @@ async function cachedHourlyReport(source, site, scope, hours) {
 
 router.get('/wifi', [query('hours').optional().isInt({ min: 1, max: 168 }).toInt()], validate, async (req, res, next) => {
   try {
+    if (!featureEnabled('wifi')) return res.json({ disabled: true, wlans: [], radios: [], rogues: [], signalBuckets: {}, signalByAp: [], roaming: [], history: { site: [], aps: [] } });
     const hours = req.query.hours || 24;
     const wlans = db.prepare('SELECT w.*, s.name AS source_name FROM unifi_wlans w JOIN unifi_sources s ON s.id = w.source_id ORDER BY s.name, w.name').all()
       .map((w) => {
@@ -441,6 +444,7 @@ router.get('/wifi', [query('hours').optional().isInt({ min: 1, max: 168 }).toInt
 
 router.get('/security', (req, res, next) => {
   try {
+    if (!featureEnabled('security')) return res.json({ disabled: true, ips: null, rogueCounts: { total: 0, flagged: 0 }, events: [], posture: [], rules: { firewall: [], traffic: [] }, timeline: [], topDestinations: [], topOffenders: [], policyHits: [], rogueChanges: { newThisWeek: 0, flagged: [] } });
     const sourceRow = db.prepare('SELECT health_json FROM unifi_sources ORDER BY id LIMIT 1').get();
     let ips = { enabled: false, categories: [], adBlocking: false, raw: null };
     if (sourceRow?.health_json) {
@@ -873,6 +877,7 @@ router.get('/insights', (req, res, next) => {
 
 router.get('/protect', (req, res, next) => {
   try {
+    if (!featureEnabled('protect')) return res.json({ disabled: true, cameras: [], nvrs: [] });
     const cameras = db.prepare(`
       SELECT c.*, s.name AS source_name, cl.ip AS client_ip
       FROM unifi_cameras c
@@ -904,6 +909,29 @@ router.get('/protect/cameras/:id/snapshot', [param('id').isString().notEmpty()],
       res.status(502).json({ error: 'snapshot unavailable' });
     }
   })().catch(next);
+});
+
+const currentFeatures = () => ({
+  protect: featureEnabled('protect'),
+  wifi: featureEnabled('wifi'),
+  security: featureEnabled('security'),
+});
+
+router.get('/features', (req, res, next) => {
+  try { res.json({ features: currentFeatures() }); } catch (err) { next(err); }
+});
+
+router.put('/features', [
+  body('protect').optional().isBoolean(),
+  body('wifi').optional().isBoolean(),
+  body('security').optional().isBoolean(),
+], validate, (req, res, next) => {
+  try {
+    for (const k of ['protect', 'wifi', 'security']) {
+      if (req.body[k] !== undefined) setSetting(`unifi_feature_${k}`, req.body[k] ? '1' : '0');
+    }
+    res.json({ features: currentFeatures() });
+  } catch (err) { next(err); }
 });
 
 router.get('/config', (req, res, next) => {

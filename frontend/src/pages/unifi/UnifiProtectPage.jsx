@@ -81,6 +81,10 @@ export default function UnifiProtectPage() {
 
       {data == null ? (
         <LoadingPanel label="Loading Protect data…" height={160} />
+      ) : data.disabled ? (
+        <div className="panel p-6 text-sm text-ink-muted text-center">
+          The Protect module is disabled for this platform. Enable it under UniFi → Settings → Feature Modules to poll cameras and show this page.
+        </div>
       ) : cameras.length === 0 && nvrs.length === 0 ? (
         <div className="panel p-6 text-sm text-ink-muted text-center">
           No Protect application detected on any connected controller.

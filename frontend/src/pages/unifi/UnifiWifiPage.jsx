@@ -285,6 +285,10 @@ export default function UnifiWifiPage() {
 
       {data == null ? (
         <LoadingPanel label="Loading WiFi data…" height={160} />
+      ) : data.disabled ? (
+        <div className="panel p-6 text-sm text-ink-muted text-center">
+          The WiFi module is disabled for this platform. Enable it under UniFi → Settings → Feature Modules to poll WLANs, radios and neighboring APs.
+        </div>
       ) : (
         <>
           <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Wifi size={15} className="text-brand" /> WLANs</p>

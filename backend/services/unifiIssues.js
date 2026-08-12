@@ -24,6 +24,10 @@ const tempWarnC = () => clampedInt('unifi_temp_warn_c', 80, 1, 200);
 const satisfactionWarn = () => clampedInt('unifi_satisfaction_warn', 50, 1, 100);
 const newDeviceDays = () => clampedInt('unifi_new_device_days', 7, 1, 30);
 
+// Module toggles (Settings → Feature Modules). Disabled modules poll nothing
+// and surface nothing — including their issue rules.
+const featureEnabled = (name) => getSetting(`unifi_feature_${name}`) !== '0';
+
 const thresholdGetters = {
   unifiWanLatencyWarnMs: wanLatencyWarnMs,
   unifiWanAvailWarnPct: wanAvailWarnPct,
@@ -158,17 +162,17 @@ function computeIssues() {
     }
   }
 
-  // Rule 9: rogue-ap
-  for (const r of db.prepare('SELECT * FROM unifi_rogue_aps WHERE is_rogue = 1').all()) {
+  // Rule 9: rogue-ap (WiFi module)
+  if (featureEnabled('wifi')) for (const r of db.prepare('SELECT * FROM unifi_rogue_aps WHERE is_rogue = 1').all()) {
     const source = srcName.get(r.source_id) || `source ${r.source_id}`;
     const target = r.essid || r.bssid;
     issues.push({ severity: 'warning', type: 'rogue-ap', source, target,
       message: `Rogue AP detected: ${target}` });
   }
 
-  // Rule 10: ips-disabled — one per source (site granularity not tracked in
-  // this table set), target = source name.
-  for (const src of sources) {
+  // Rule 10: ips-disabled (Security module) — one per source (site granularity
+  // not tracked in this table set), target = source name.
+  if (featureEnabled('security')) for (const src of sources) {
     if (src.health_json) {
       // Best-effort: ips settings are not persisted as their own table per
       // contract's schema; the poller stamps ips-enabled state onto the
@@ -182,16 +186,16 @@ function computeIssues() {
     }
   }
 
-  // Rule 13: camera-offline — Protect cameras/chimes not CONNECTED.
-  try {
+  // Rule 13: camera-offline (Protect module) — cameras/chimes not CONNECTED.
+  if (featureEnabled('protect')) try {
     for (const c of db.prepare("SELECT c.*, s.name AS source_name FROM unifi_cameras c JOIN unifi_sources s ON s.id = c.source_id WHERE c.state IS NOT NULL AND c.state != 'CONNECTED'").all()) {
       issues.push({ severity: 'warning', type: 'camera-offline', source: c.source_name, target: c.name || c.mac,
         message: `Protect ${c.model_key === 'chime' ? 'chime' : 'camera'} ${c.name || c.mac} is ${String(c.state).toLowerCase()}` });
     }
   } catch { /* unifi_cameras arrives in migration v2 — tolerate older DBs */ }
 
-  // Rule 14: protect-breach — NVR alarm/arm mode reports a breach.
-  for (const src of sources) {
+  // Rule 14: protect-breach (Protect module) — NVR alarm reports a breach.
+  if (featureEnabled('protect')) for (const src of sources) {
     if (!src.health_json) continue;
     let arm = null;
     try { arm = JSON.parse(src.health_json)?.protect?.nvr?.armMode ?? null; } catch { arm = null; }
@@ -223,8 +227,9 @@ function computeIssues() {
   // Rule 12: wifi-experience — >=3 wireless clients under the satisfaction
   // threshold, grouped per source/site.
   const satWarn = satisfactionWarn();
+  const wifiOn = featureEnabled('wifi');
   const bySite = new Map(); // `${source_id}|${site}` -> [clients]
-  for (const c of db.prepare('SELECT * FROM unifi_clients WHERE is_wired = 0 AND satisfaction IS NOT NULL').all()) {
+  if (wifiOn) for (const c of db.prepare('SELECT * FROM unifi_clients WHERE is_wired = 0 AND satisfaction IS NOT NULL').all()) {
     if (c.satisfaction >= satWarn) continue;
     const key = `${c.source_id}|${c.site}`;
     if (!bySite.has(key)) bySite.set(key, []);
@@ -285,6 +290,7 @@ const reconcileIssueHistory = db.transaction(() => {
 module.exports = {
   wanLatencyWarnMs, wanAvailWarnPct, portErrDeltaWarn, portFlapWarn,
   deviceCpuWarnPct, deviceMemWarnPct, tempWarnC, satisfactionWarn, newDeviceDays,
+  featureEnabled,
   thresholdGetters,
   computeIssues, reconcileIssueHistory,
   portErrorDelta24h, portFlapCount24h,

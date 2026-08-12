@@ -119,7 +119,23 @@ export default function Layout() {
   const ariaNavGroups = getPlatform('aria')?.navGroups || [];
   const ariaopsNavGroups = getPlatform('ariaops')?.navGroups || [];
   const awsNavGroups = getPlatform('aws')?.navGroups || [];
-  const unifiNavGroups = getPlatform('unifi')?.navGroups || [];
+  // UniFi feature-module toggles hide nav items for disabled modules; the
+  // flags ride the /unifi/overview payload (fetched in the header-feed effect).
+  const [unifiFeatures, setUnifiFeatures] = useState({ protect: true, wifi: true, security: true });
+  const unifiNavGroups = (getPlatform('unifi')?.navGroups || [])
+    .map((g) => ({ ...g, items: g.items.filter((it) => !it.feature || unifiFeatures[it.feature] !== false) }))
+    .filter((g) => g.items.length > 0);
+  useEffect(() => {
+    // The UniFi Settings page fires this after a feature-module toggle so the
+    // sidebar updates without a platform switch or reload.
+    const refreshUnifiFeatures = () => {
+      client.get('/unifi/features')
+        .then((r) => { if (r.data?.features) setUnifiFeatures(r.data.features); })
+        .catch(() => {});
+    };
+    window.addEventListener('platforms-changed', refreshUnifiFeatures);
+    return () => window.removeEventListener('platforms-changed', refreshUnifiFeatures);
+  }, []);
   const isActivePlatform = (id, pathname) => {
     if (id === 'ops') return pathname.startsWith('/ops');
     const platform = getPlatform(id);
@@ -337,6 +353,7 @@ export default function Layout() {
           setPlatformHealthy((r.data?.ec2?.running || 0) + (r.data?.lightsail?.running || 0));
         } else if (unifi) {
           setPlatformHealthy((r.data?.deviceCounts?.total ?? 0) - (r.data?.deviceCounts?.offline ?? 0));
+          if (r.data?.features) setUnifiFeatures(r.data.features);
         } else {
           setPlatformAlerts(rows.reduce((s, a) => s + (a.open_alerts || 0), 0));
           const healthy = rows.filter(a => {
