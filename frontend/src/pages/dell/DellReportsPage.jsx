@@ -254,7 +254,10 @@ const REPORTS = [
   },
   {
     key: 'warranty-forecast', group: 'Support', icon: CalendarClock, title: 'Warranty Forecast',
-    description: 'Renewals by quarter and coverage mix. The table is the risk overlap: active hardware faults on boxes with ≤90 days of support left.',
+    description: 'Renewals by quarter and coverage mix. The table is the risk overlap: active hardware faults on boxes with ≤90 days of support left — empty means no at-risk overlap.',
+    emptyText: (s) => (s?.contracts
+      ? `No failing hardware on boxes with ≤90 days of support — the risk overlap is clear (${fmtNum(s.tags)} service tag(s) under ${fmtNum(s.contracts)} contract(s) checked).`
+      : 'OME returned no warranty data at all — the appliance needs internet access / SupportAssist for WarrantyService to populate.'),
     columns: [
       { k: 'device_name', label: 'Device' },
       { k: 'service_tag', label: 'Service Tag' },

@@ -230,9 +230,10 @@ router.get('/firmware-currency', (req, res, next) => {
       WHERE f.status = 'noncompliant'
       ORDER BY f.noncompliant_components DESC LIMIT 2000
     `).all();
+    // LIKE, not '=': the appliance reports device_type UPPERCASE ("SERVER").
     const sprawl = db.prepare(`
       SELECT firmware_version, COUNT(*) AS devices FROM dell_devices
-      WHERE firmware_version IS NOT NULL AND device_type = 'Server'
+      WHERE firmware_version IS NOT NULL AND device_type LIKE '%server%'
       GROUP BY firmware_version ORDER BY devices DESC
     `).all();
     res.json({ rows, summary: { sprawl } });
@@ -346,6 +347,8 @@ router.get('/warranty-forecast', (req, res, next) => {
     res.json({
       rows: risk,
       summary: {
+        contracts: db.prepare('SELECT COUNT(*) AS n FROM dell_warranties').get().n,
+        tags: best.length,
         expired: best.filter((b) => b.days_remaining != null && b.days_remaining <= 0).length,
         byQuarter: Object.entries(byQuarter).sort(([a], [b]) => a.localeCompare(b)).map(([quarter, count]) => ({ quarter, count })),
         byLevel: Object.entries(byLevel).map(([level, count]) => ({ level, count })).sort((a, b) => b.count - a.count),
@@ -371,7 +374,7 @@ router.get('/refresh-planning', (req, res, next) => {
           WHERE f.ome_id = d.ome_id AND (f.service_tag = d.service_tag OR f.device_id = d.device_id)
             AND f.status = 'noncompliant') AS fw_noncompliant
       FROM dell_devices d JOIN dell_ome_instances o ON o.id = d.ome_id
-      WHERE d.device_type = 'Server'
+      WHERE d.device_type LIKE '%server%'
     `).all().map((r) => {
       const ageYears = r.ship_date ? Number(((Date.now() - new Date(r.ship_date).getTime()) / (365.25 * 864e5)).toFixed(1)) : null;
       // Simple transparent score: age + expired support + failing parts weigh a
