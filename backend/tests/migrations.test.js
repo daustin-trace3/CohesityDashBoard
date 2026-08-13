@@ -202,6 +202,8 @@ const NEW_TABLES = [
   'vcenter_networks', 'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history',
   'dell_ome_instances', 'dell_devices', 'dell_components', 'dell_alerts',
   'dell_warranties', 'dell_firmware_compliance', 'dell_metrics_history',
+  'dell_config_baselines', 'dell_config_compliance', 'dell_jobs',
+  'dell_config_profiles', 'dell_hardware_logs', 'dell_config_drift_history',
   'aria_instances', 'aria_deployments', 'aria_requests', 'aria_endpoints',
   'aria_projects', 'aria_catalog_sources', 'aria_runs', 'aria_approvals',
   'aria_metrics_history', 'aria_issue_history', 'aria_images',

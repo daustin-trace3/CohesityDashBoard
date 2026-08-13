@@ -7,6 +7,8 @@
 //   node backend/scripts/dellProbe.js            # first server device
 //   node backend/scripts/dellProbe.js 10123      # specific OME device id
 //   node backend/scripts/dellProbe.js alerts     # raw AlertService listing → dell-alerts-probe.json
+//   node backend/scripts/dellProbe.js audit      # compliance/jobs/profiles/hw-logs shapes → dell-audit-probe.json
+//   node backend/scripts/dellProbe.js audit 10123  # same, hardware logs from a specific device
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 const fs = require('fs');
@@ -27,6 +29,24 @@ const api = require('../services/dellOmeApi');
       ).get(ome.id);
     } catch (e) { out.storedLocally = { error: e.message }; }
     const file = path.join(process.cwd(), 'dell-alerts-probe.json');
+    fs.writeFileSync(file, JSON.stringify(out, null, 2));
+    console.log(`Wrote ${file}`);
+    process.exit(0);
+  }
+  if (devArg === 'audit') {
+    const hwDevArg = process.argv[3];
+    const dev = hwDevArg
+      ? db.prepare('SELECT device_id, name FROM dell_devices WHERE device_id = ?').get(Number(hwDevArg))
+      : db.prepare("SELECT device_id, name FROM dell_devices WHERE ome_id = ? AND device_type LIKE '%server%' ORDER BY name LIMIT 1").get(ome.id);
+    console.log(`Probing compliance/jobs/profiles${dev ? `/hardware-logs (${dev.name})` : ''} on ${ome.name}…`);
+    const out = await api.probeAudit(ome, dev?.device_id ?? null);
+    // What each governance table holds locally — separates API failure from no-poll-yet.
+    out.storedLocally = {};
+    for (const t of ['dell_config_baselines', 'dell_config_compliance', 'dell_jobs', 'dell_config_profiles', 'dell_hardware_logs']) {
+      try { out.storedLocally[t] = db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE ome_id = ?`).get(ome.id).c; }
+      catch (e) { out.storedLocally[t] = `error: ${e.message}`; }
+    }
+    const file = path.join(process.cwd(), 'dell-audit-probe.json');
     fs.writeFileSync(file, JSON.stringify(out, null, 2));
     console.log(`Wrote ${file}`);
     process.exit(0);

@@ -14,6 +14,9 @@ const dellAdvisor = require('../services/advisors/dellAdvisor');
 
 const router = express.Router();
 
+// Audit/operations/support reports live in their own module (15 endpoints).
+router.use('/reports', require('./dellReports'));
+
 const validate = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid parameters', details: errors.array() });
@@ -151,6 +154,20 @@ router.get('/instances/:id/inventory-probe', [
   } catch (err) { next(err); }
 });
 
+/** GET /api/dell/instances/:id/audit-probe?deviceId= — raw first items from the
+ *  compliance/jobs/profiles/hardware-log listings (live-shape debugging for
+ *  the governance features, same role as inventory-probe). */
+router.get('/instances/:id/audit-probe', [
+  param('id').isInt().toInt(),
+  query('deviceId').optional().isInt().toInt(),
+], validate, async (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM dell_ome_instances WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'OME instance not found.' });
+    res.json(await dellOmeApi.probeAudit(row, req.query.deviceId ?? null));
+  } catch (err) { next(err); }
+});
+
 // ── Data endpoints ───────────────────────────────────────────────────────────
 
 function computeIssues() {
@@ -194,6 +211,18 @@ function computeIssues() {
       message: w.days_remaining <= 0
         ? `Warranty expired on ${w.device_model || ''} ${w.service_tag}`.trim()
         : `Warranty on ${w.device_model || ''} ${w.service_tag} expires in ${w.days_remaining}d`.trim(),
+    });
+  }
+  // Configuration drift: a device out of compliance with its config baseline.
+  const drifted = db.prepare(`
+    SELECT c.device_name, c.service_tag, c.baseline_name, o.name AS ome_name
+    FROM dell_config_compliance c JOIN dell_ome_instances o ON o.id = c.ome_id
+    WHERE c.status = 'noncompliant' ORDER BY c.device_name LIMIT 200
+  `).all();
+  for (const c of drifted) {
+    issues.push({
+      severity: 'warning', type: 'config_compliance', ome: c.ome_name,
+      message: `${c.device_name || c.service_tag} is not compliant with baseline ${c.baseline_name || ''}`.trim(),
     });
   }
   const order = { critical: 0, warning: 1, info: 2 };
@@ -335,6 +364,16 @@ router.get('/overview', (req, res, next) => {
     const failingComponents = db.prepare(`
       SELECT COUNT(*) AS n FROM dell_components WHERE status IN ('critical', 'warning')
     `).get().n;
+    const configCompliance = db.prepare(`
+      SELECT COUNT(*) AS total,
+        SUM(CASE WHEN status = 'noncompliant' THEN 1 ELSE 0 END) AS noncompliant
+      FROM dell_config_compliance
+    `).get();
+    const jobs24h = db.prepare(`
+      SELECT SUM(CASE WHEN last_run_status_id = 2070 THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN last_run_status_id = 2090 THEN 1 ELSE 0 END) AS warning
+      FROM dell_jobs WHERE last_run >= datetime('now', '-1 day')
+    `).get();
     res.json({
       instances: instances.map(publicOme),
       devices: devAgg,
@@ -344,6 +383,8 @@ router.get('/overview', (req, res, next) => {
       alertsByDay, powerTrend, topUtil,
       warranty: { ...warrantyAgg, warnDays },
       firmware: firmwareAgg,
+      configCompliance,
+      jobs24h,
       failingComponents,
       issues: computeIssues(),
     });
@@ -363,9 +404,23 @@ router.get('/devices', [
     if (req.query.type) { clauses.push('d.device_type = ?'); params.push(req.query.type); }
     if (req.query.health) { clauses.push('d.health = ?'); params.push(req.query.health); }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    // Compliance rollup per device: noncompliant against ANY baseline wins,
+    // NULL when the device is in no baseline (column hidden in the UI then).
     res.json(db.prepare(`
-      SELECT d.*, o.name AS ome_name FROM dell_devices d
-      JOIN dell_ome_instances o ON o.id = d.ome_id ${where} ORDER BY d.name
+      SELECT d.*, o.name AS ome_name,
+        cc.compliance_status, cc.compliance_drift, cc.compliance_report_id
+      FROM dell_devices d
+      JOIN dell_ome_instances o ON o.id = d.ome_id
+      LEFT JOIN (
+        SELECT ome_id, device_id,
+          CASE WHEN SUM(status = 'noncompliant') > 0 THEN 'noncompliant'
+               WHEN SUM(status = 'compliant') > 0 THEN 'compliant'
+               ELSE MIN(status) END AS compliance_status,
+          SUM(CASE WHEN detail IS NULL THEN 0 ELSE json_array_length(detail) END) AS compliance_drift,
+          MAX(CASE WHEN status = 'noncompliant' THEN id END) AS compliance_report_id
+        FROM dell_config_compliance GROUP BY ome_id, device_id
+      ) cc ON cc.ome_id = d.ome_id AND cc.device_id = d.device_id
+      ${where} ORDER BY d.name
     `).all(...params));
   } catch (err) { next(err); }
 });
@@ -391,7 +446,16 @@ router.get('/devices/:id', [param('id').isInt().toInt()], validate, (req, res, n
     const firmware = db.prepare(`
       SELECT * FROM dell_firmware_compliance WHERE ome_id = ? AND (service_tag = ? OR device_id = ?)
     `).all(dev.ome_id, dev.service_tag, dev.device_id);
-    res.json({ ...dev, components, alerts, warranty, firmware });
+    const configCompliance = db.prepare(`
+      SELECT id, baseline_id, baseline_name, status, inventory_time,
+        CASE WHEN detail IS NULL THEN 0 ELSE json_array_length(detail) END AS drift_count
+      FROM dell_config_compliance WHERE ome_id = ? AND (device_id = ? OR service_tag = ?)
+    `).all(dev.ome_id, dev.device_id, dev.service_tag);
+    const hardwareLogs = db.prepare(`
+      SELECT * FROM dell_hardware_logs WHERE ome_id = ? AND device_id = ?
+      ORDER BY created_at DESC LIMIT 25
+    `).all(dev.ome_id, dev.device_id);
+    res.json({ ...dev, components, alerts, warranty, firmware, configCompliance, hardwareLogs });
   } catch (err) { next(err); }
 });
 
@@ -553,6 +617,121 @@ router.get('/governance', (req, res, next) => {
       WHERE d.connection_state = 0 ORDER BY d.name
     `).all();
     res.json({ failing, warranty, warrantyWarnDays: warnDays, firmware, disconnected });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/dell/compliance — configuration governance: baselines with their
+ *  rollups + per-device compliance rows (detail excluded; fetch per device). */
+router.get('/compliance', (req, res, next) => {
+  try {
+    const baselines = db.prepare(`
+      SELECT b.*, o.name AS ome_name FROM dell_config_baselines b
+      JOIN dell_ome_instances o ON o.id = b.ome_id
+      ORDER BY CASE b.compliance_status WHEN 'CRITICAL' THEN 0 WHEN 'WARNING' THEN 1 ELSE 2 END, b.name
+    `).all();
+    const reports = db.prepare(`
+      SELECT c.id, c.ome_id, c.baseline_id, c.baseline_name, c.device_id, c.device_name,
+        c.service_tag, c.model, c.status, c.inventory_time, c.captured_at,
+        (c.detail IS NOT NULL) AS has_detail,
+        CASE WHEN c.detail IS NULL THEN 0 ELSE json_array_length(c.detail) END AS drift_count,
+        o.name AS ome_name, d.id AS device_row_id
+      FROM dell_config_compliance c
+      JOIN dell_ome_instances o ON o.id = c.ome_id
+      LEFT JOIN dell_devices d ON d.ome_id = c.ome_id AND d.device_id = c.device_id
+      ORDER BY CASE c.status WHEN 'noncompliant' THEN 0 WHEN 'not_inventoried' THEN 1
+        WHEN 'unknown' THEN 2 ELSE 3 END, c.device_name
+    `).all();
+    const summary = db.prepare(`
+      SELECT COUNT(*) AS total,
+        SUM(CASE WHEN status = 'compliant' THEN 1 ELSE 0 END) AS compliant,
+        SUM(CASE WHEN status = 'noncompliant' THEN 1 ELSE 0 END) AS noncompliant,
+        SUM(CASE WHEN status = 'not_inventoried' THEN 1 ELSE 0 END) AS not_inventoried
+      FROM dell_config_compliance
+    `).get();
+    res.json({ baselines, reports, summary });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/dell/compliance/:id/detail — attribute-level drift for one stored
+ *  device compliance row (which components differ from the template and why). */
+router.get('/compliance/:id/detail', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const row = db.prepare(`
+      SELECT c.*, o.name AS ome_name FROM dell_config_compliance c
+      JOIN dell_ome_instances o ON o.id = c.ome_id WHERE c.id = ?
+    `).get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Compliance report not found.' });
+    // Attach the drift timeline: when the poller first observed each attribute
+    // out of compliance (OME itself reports no change timestamp).
+    const history = db.prepare(`
+      SELECT attr_group, attribute, first_seen, last_seen FROM dell_config_drift_history
+      WHERE ome_id = ? AND baseline_id = ? AND device_id = ? AND resolved_at IS NULL
+    `).all(row.ome_id, row.baseline_id, row.device_id);
+    const byKey = new Map(history.map((h) => [`${h.attr_group || ''}|${h.attribute || ''}`, h]));
+    const detail = (row.detail ? JSON.parse(row.detail) : []).map((d) => {
+      const h = byKey.get(`${d.group || ''}|${d.attribute || ''}`);
+      return { ...d, detectedAt: h?.first_seen || null, lastSeen: h?.last_seen || null };
+    });
+    res.json({ ...row, detail });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/dell/jobs — OME job inventory (console Monitor > Jobs). */
+router.get('/jobs', (req, res, next) => {
+  try {
+    res.json(db.prepare(`
+      SELECT j.*, o.name AS ome_name FROM dell_jobs j
+      JOIN dell_ome_instances o ON o.id = j.ome_id
+      ORDER BY j.last_run DESC
+    `).all());
+  } catch (err) { next(err); }
+});
+
+/** GET /api/dell/profiles — server configuration profiles (Configuration > Profiles). */
+router.get('/profiles', (req, res, next) => {
+  try {
+    res.json(db.prepare(`
+      SELECT p.*, o.name AS ome_name FROM dell_config_profiles p
+      JOIN dell_ome_instances o ON o.id = p.ome_id
+      ORDER BY p.name
+    `).all());
+  } catch (err) { next(err); }
+});
+
+/** GET /api/dell/hardware-logs?search=&days=&severity=&deviceId=&omeId= —
+ *  per-device iDRAC Lifecycle/SEL log feed, filtered server-side (the table
+ *  can hold hundreds of thousands of rows). */
+router.get('/hardware-logs', [
+  query('search').optional().isString().trim().isLength({ max: 200 }),
+  query('days').optional().isInt({ min: 1, max: 365 }).toInt(),
+  query('severity').optional().isString().trim(),
+  query('deviceId').optional().isInt().toInt(),
+  query('omeId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const clauses = [];
+    const params = [];
+    if (req.query.days) { clauses.push("l.created_at >= datetime('now', ?)"); params.push(`-${req.query.days} days`); }
+    if (req.query.severity) { clauses.push('l.severity = ?'); params.push(req.query.severity.toLowerCase()); }
+    if (req.query.deviceId) { clauses.push('l.device_id = ?'); params.push(req.query.deviceId); }
+    if (req.query.omeId) { clauses.push('l.ome_id = ?'); params.push(req.query.omeId); }
+    if (req.query.search) {
+      clauses.push('(d.name LIKE ? OR d.service_tag LIKE ? OR l.message LIKE ? OR l.message_id LIKE ? OR l.category LIKE ?)');
+      const like = `%${req.query.search}%`;
+      params.push(like, like, like, like, like);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = db.prepare(`
+      SELECT l.*, o.name AS ome_name, d.name AS device_name, d.service_tag AS device_service_tag,
+        d.id AS device_row_id
+      FROM dell_hardware_logs l
+      JOIN dell_ome_instances o ON o.id = l.ome_id
+      LEFT JOIN dell_devices d ON d.ome_id = l.ome_id AND d.device_id = l.device_id
+      ${where}
+      ORDER BY l.created_at DESC LIMIT 5000
+    `).all(...params);
+    const total = db.prepare('SELECT COUNT(*) AS n FROM dell_hardware_logs').get().n;
+    res.json({ rows, total });
   } catch (err) { next(err); }
 });
 

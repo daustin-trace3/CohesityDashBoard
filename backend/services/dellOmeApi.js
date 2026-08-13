@@ -558,6 +558,262 @@ async function probeInventory(ome, deviceId) {
   return out;
 }
 
+// ── Configuration compliance, jobs, profiles, hardware logs ─────────────────
+// Built blind from the OME 3.5/3.8 API guides + Dell's own Ansible/PowerShell
+// tooling; first live run against Doug's prod OME is the verification loop
+// (probeAudit below dumps raw shapes when parsed data looks wrong).
+
+// OME's @odata.nextLink drops the original query args on several builds
+// (github.com/dell/OpenManage-Enterprise issue #228), so page manually with
+// $top/$skip instead of trusting nextLink.
+async function oGetAllSkip(ome, path, { top = 500, maxPages = 20 } = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const rows = [];
+  for (let page = 0; page < maxPages; page++) {
+    const data = await oGet(ome, `${path}${sep}$top=${top}&$skip=${page * top}`);
+    const batch = data?.value || [];
+    rows.push(...batch);
+    if (batch.length < top) break;
+  }
+  return rows;
+}
+
+// CIM datetime ("20170907060147.000000-300", offset in minutes) → ISO-ish UTC
+// "YYYY-MM-DD HH:MM:SS". Non-CIM strings pass through unchanged.
+function cimToIso(v) {
+  if (v == null) return null;
+  const m = String(v).match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\.\d+)?([+-]\d{1,4})?$/);
+  if (!m) return String(v);
+  const [, Y, Mo, D, H, Mi, S, off] = m;
+  const utcMs = Date.UTC(+Y, +Mo - 1, +D, +H, +Mi, +S) - (off ? parseInt(off, 10) * 60000 : 0);
+  return new Date(utcMs).toISOString().replace('T', ' ').slice(0, 19);
+}
+
+// Device-level ComplianceStatus is a string on OME ≤3.4 ("COMPLIANT") and an
+// integer on 3.5+ (1 compliant / 2 noncompliant) — Dell's own modules match
+// both forms, so must we.
+function complianceStatusName(v) {
+  const s = String(v ?? '').toUpperCase();
+  if (v === 1 || s === 'COMPLIANT' || s === 'OK') return 'compliant';
+  if (v === 2 || s === 'NONCOMPLIANT') return 'noncompliant';
+  if (v === 3 || s === 'NOT_INVENTORIED') return 'not_inventoried';
+  return v == null ? 'unknown' : `unknown (${v})`;
+}
+
+/**
+ * Flatten the DeviceComplianceDetails tree (groups → sub-groups → attributes)
+ * into rows for the non-compliant entries only. Group/attribute level uses a
+ * THIRD status scheme (integer; 1 = compliant, anything else = drift) — the
+ * ComplianceReason string is the authoritative human explanation.
+ */
+function flattenComplianceDetail(detail, cap = 500) {
+  const out = [];
+  const walk = (groups, path) => {
+    for (const g of groups || []) {
+      if (out.length >= cap) return;
+      const gPath = [...path, g.DisplayName].filter(Boolean);
+      for (const a of g.Attributes || []) {
+        if (out.length >= cap) return;
+        if (a.ComplianceStatus === 1) continue;
+        out.push({
+          group: gPath.join(' > ') || null,
+          attribute: a.DisplayName || null,
+          expected: a.ExpectedValue ?? null,
+          current: a.Value ?? null, // current value field is "Value", not "CurrentValue"
+          reason: a.ComplianceReason || null,
+        });
+      }
+      walk(g.ComplianceSubAttributeGroups, gPath);
+    }
+  };
+  walk(detail?.ComplianceAttributeGroups, []);
+  return out;
+}
+
+/**
+ * Configuration compliance: all baselines, their per-device reports, and — for
+ * non-compliant devices only (capped) — the attribute-level detail of what
+ * drifted and why. Baseline listing failure throws (caller treats the sweep as
+ * unavailable); per-baseline/per-device failures degrade quietly.
+ */
+async function fetchConfigCompliance(ome, detailCap = 100) {
+  const rawBaselines = await oGetAllSkip(ome, '/api/TemplateService/Baselines');
+  const baselines = rawBaselines.map((b) => ({
+    baselineId: b.Id, name: b.Name || null, description: b.Description || null,
+    templateId: b.TemplateId ?? null, templateName: b.TemplateName || null,
+    lastRun: b.LastRun || null,
+    // Rollup summary is null until the first compliance job finishes.
+    complianceStatus: b.ConfigComplianceSummary?.ComplianceStatus || null,
+    nCritical: num(b.ConfigComplianceSummary?.NumberOfCritical),
+    nWarning: num(b.ConfigComplianceSummary?.NumberOfWarning),
+    nNormal: num(b.ConfigComplianceSummary?.NumberOfNormal),
+    nIncomplete: num(b.ConfigComplianceSummary?.NumberOfIncomplete ?? b.ConfigComplianceSummary?.NumberOfDowngrade),
+    taskId: b.TaskId ?? null,
+    percentComplete: b.PercentageComplete != null ? String(b.PercentageComplete) : null,
+  }));
+  const reports = [];
+  let detailBudget = detailCap;
+  for (const b of baselines) {
+    let rows = [];
+    try {
+      rows = await oGetAllSkip(ome, `/api/TemplateService/Baselines(${b.baselineId})/DeviceConfigComplianceReports`);
+    } catch (err) {
+      logger.debug(`[omeApi] config compliance reports failed for baseline ${b.baselineId}: ${err.message}`);
+      continue;
+    }
+    for (const r of rows) {
+      const status = complianceStatusName(r.ComplianceStatus);
+      const report = {
+        baselineId: b.baselineId, baselineName: b.name,
+        deviceId: r.Id ?? null, // report Id IS the OME device id
+        deviceName: r.DeviceName || null, serviceTag: r.ServiceTag || null,
+        model: r.Model || null, status,
+        inventoryTime: r.InventoryTime || null,
+        detail: null,
+      };
+      if (status === 'noncompliant' && detailBudget > 0) {
+        detailBudget -= 1;
+        try {
+          const d = await oGet(ome, `/api/TemplateService/Baselines(${b.baselineId})/DeviceConfigComplianceReports(${r.Id})/DeviceComplianceDetails`);
+          report.detail = flattenComplianceDetail(d);
+        } catch (err) {
+          logger.debug(`[omeApi] compliance detail failed for baseline ${b.baselineId} device ${r.Id}: ${err.message}`);
+        }
+      }
+      reports.push(report);
+    }
+  }
+  return { baselines, reports };
+}
+
+const JOB_STATUS_MAP = {
+  2020: 'Scheduled', 2030: 'Queued', 2040: 'Starting', 2050: 'Running',
+  2060: 'Completed', 2070: 'Failed', 2080: 'New', 2090: 'Warning',
+  2100: 'Aborted', 2101: 'Paused', 2102: 'Stopped', 2103: 'Canceled', 2200: 'NotRun',
+};
+const jobStatusName = (o) => o?.Name || JOB_STATUS_MAP[o?.Id ?? o] || (o != null ? String(o?.Id ?? o) : null);
+
+/** Console Monitor > Jobs. Everything is kept (Builtin/Visible stored so the
+ *  UI can default to user-relevant jobs); timestamps are appliance-local. */
+async function fetchJobs(ome) {
+  const rows = await oGetAllSkip(ome, '/api/JobService/Jobs');
+  return rows.map((j) => ({
+    jobId: j.Id,
+    name: j.JobName || null,
+    description: j.JobDescription || null,
+    jobType: j.JobType?.Name || (j.JobType?.Id != null ? String(j.JobType.Id) : null),
+    internal: j.JobType?.Internal === true ? 1 : 0,
+    state: j.State || null,
+    builtin: j.Builtin === true ? 1 : 0, // field is "Builtin" — the doc table's "BuiltIn" is a typo
+    visible: j.Visible === false ? 0 : 1,
+    lastRunStatusId: j.LastRunStatus?.Id ?? null,
+    lastRunStatus: jobStatusName(j.LastRunStatus),
+    jobStatus: jobStatusName(j.JobStatus),
+    lastRun: j.LastRun || null,
+    nextRun: j.NextRun || null,
+    startTime: j.StartTime || null,
+    endTime: j.EndTime || null,
+    schedule: j.Schedule || null,
+    createdBy: j.CreatedBy || null,
+    targets: Array.isArray(j.Targets)
+      ? j.Targets.map((t) => t?.Data).filter(Boolean).slice(0, 20).join(', ') || null
+      : null,
+  }));
+}
+
+// ProfileState values from Dell's shipping ome_profile.py: 0 unassigned,
+// 1 assigned (auto-deploy identifier), 4 deployed; 2/3 are transitional.
+const PROFILE_STATE_MAP = { 0: 'unassigned', 1: 'assigned', 2: 'assigning', 3: 'deploying', 4: 'deployed' };
+
+/** Console Configuration > Profiles (ProfileService, OME 3.4+). */
+async function fetchConfigProfiles(ome) {
+  const rows = await oGetAllSkip(ome, '/api/ProfileService/Profiles');
+  return rows.map((p) => ({
+    profileId: p.Id,
+    name: p.ProfileName || null,
+    description: p.ProfileDescription || null,
+    templateId: p.TemplateId ?? null,
+    templateName: p.TemplateName || null,
+    targetId: p.TargetId || null,
+    targetName: p.TargetName || null,
+    chassisName: p.ChassisName || null,
+    state: PROFILE_STATE_MAP[p.ProfileState] || (p.ProfileState != null ? String(p.ProfileState) : null),
+    // Profile LastRunStatus is a BARE integer, unlike jobs' {Id, Name} object.
+    lastRunStatusId: typeof p.LastRunStatus === 'object' ? (p.LastRunStatus?.Id ?? null) : (p.LastRunStatus ?? null),
+    lastRunStatus: jobStatusName(p.LastRunStatus),
+    profileModified: p.ProfileModified ? 1 : 0,
+    createdBy: p.CreatedBy || null,
+    createdDate: p.CreatedDate || null,
+    lastDeployDate: p.LastDeployDate || null,
+  }));
+}
+
+// Hardware-log severity is a THIRD scheme (not alerts' 1/2/4/8/16, not the
+// device 1000-health map): 1000 Info / 2000 Warning / 3000 Critical / 4000 Fatal.
+const HWLOG_SEVERITY_MAP = { 1000: 'info', 2000: 'warning', 3000: 'critical', 4000: 'fatal' };
+
+/** iDRAC Lifecycle/SEL log for one device (console device "Hardware Logs" tab).
+ *  No server-side $filter — dedupe happens at store time on (device, LogId). */
+async function fetchHardwareLogs(ome, deviceId, maxPages = 8) {
+  const rows = await oGetAllSkip(ome, `/api/DeviceService/Devices(${deviceId})/HardwareLogs`, { maxPages });
+  return rows.map((l) => ({
+    deviceId,
+    logId: l.LogId || (l.LogSequenceNumber != null ? `seq:${l.LogSequenceNumber}` : null),
+    seq: num(l.LogSequenceNumber),
+    severity: HWLOG_SEVERITY_MAP[l.LogSeverity] || (l.LogSeverity != null ? String(l.LogSeverity) : 'unknown'),
+    category: l.LogCategory || null,
+    messageId: l.LogMessageId || null,
+    message: l.LogMessage || null,
+    comment: l.LogComment || null,
+    createdAt: l.DateFormat === 'CIM' ? cimToIso(l.LogTimestamp) : (l.LogTimestamp || null),
+  })).filter((l) => l.logId != null);
+}
+
+/** Raw audit-domain diagnostic (compliance/jobs/profiles/hardware logs): first
+ *  raw item of each listing so the parsers can be matched to the appliance's
+ *  actual shapes — same role as probeInventory for the inventory parsers. */
+async function probeAudit(ome, deviceId = null) {
+  const out = {};
+  const attempt = async (key, fn) => {
+    try { out[key] = await fn(); } catch (err) { out[key] = { error: err.message }; }
+  };
+  await attempt('baselines', async () => {
+    const d = await oGet(ome, '/api/TemplateService/Baselines?$top=3');
+    const first = (d?.value || [])[0] || null;
+    const res = { count: d?.['@odata.count'] ?? null, first };
+    if (first) {
+      await attempt('deviceReports', async () => {
+        const r = await oGet(ome, `/api/TemplateService/Baselines(${first.Id})/DeviceConfigComplianceReports?$top=5`);
+        const rows = r?.value || [];
+        const bad = rows.find((x) => complianceStatusName(x.ComplianceStatus) === 'noncompliant');
+        const rep = { count: r?.['@odata.count'] ?? null, first: rows[0] || null };
+        if (bad) {
+          await attempt('complianceDetail', async () => oGet(ome,
+            `/api/TemplateService/Baselines(${first.Id})/DeviceConfigComplianceReports(${bad.Id})/DeviceComplianceDetails`));
+        }
+        return rep;
+      });
+    }
+    return res;
+  });
+  await attempt('jobs', async () => {
+    const d = await oGet(ome, '/api/JobService/Jobs?$top=3');
+    return { count: d?.['@odata.count'] ?? null, first: (d?.value || [])[0] || null };
+  });
+  await attempt('profiles', async () => {
+    const d = await oGet(ome, '/api/ProfileService/Profiles?$top=3');
+    return { count: d?.['@odata.count'] ?? null, first: (d?.value || [])[0] || null };
+  });
+  if (deviceId != null) {
+    await attempt('hardwareLogs', async () => {
+      const d = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/HardwareLogs?$top=3`);
+      return { count: d?.['@odata.count'] ?? null, first: (d?.value || [])[0] || null };
+    });
+    await attempt('logSeverities', () => oGet(ome, `/api/DeviceService/Devices(${deviceId})/LogSeverities`));
+  }
+  return out;
+}
+
 // ── Connection test ─────────────────────────────────────────────────────────
 
 async function testConnection(candidate) {
@@ -577,4 +833,6 @@ module.exports = {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, probeAlerts, fetchWarranties, fetchFirmwareCompliance,
   fetchDeviceMetrics, fetchDevicePowerThermal, probeInventory, testConnection, invalidateSession,
+  fetchConfigCompliance, fetchJobs, fetchConfigProfiles, fetchHardwareLogs, probeAudit,
+  cimToIso, complianceStatusName, flattenComplianceDetail,
 };

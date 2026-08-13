@@ -157,4 +157,146 @@ module.exports = [
       `);
     },
   },
+
+  // Migration: configuration governance + auditability — config compliance
+  // baselines (with per-device attribute drift detail), OME jobs, server
+  // configuration profiles, and per-device iDRAC hardware (Lifecycle/SEL)
+  // logs. Compliance/jobs/profiles are replaced per instance per poll;
+  // hardware logs append incrementally (deduped on log_id) like alerts.
+  {
+    version: 4,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS dell_config_baselines (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          ome_id            INTEGER NOT NULL REFERENCES dell_ome_instances(id) ON DELETE CASCADE,
+          baseline_id       INTEGER NOT NULL,
+          name              TEXT,
+          description       TEXT,
+          template_id       INTEGER,
+          template_name     TEXT,
+          last_run          TEXT,
+          compliance_status TEXT,                -- rollup: OK | WARNING | CRITICAL | NOT_INVENTORIED
+          n_critical        INTEGER,
+          n_warning         INTEGER,
+          n_normal          INTEGER,
+          n_incomplete      INTEGER,
+          task_id           INTEGER,
+          percent_complete  TEXT,
+          captured_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_dell_cfg_baselines_ome ON dell_config_baselines(ome_id);
+
+        CREATE TABLE IF NOT EXISTS dell_config_compliance (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          ome_id         INTEGER NOT NULL REFERENCES dell_ome_instances(id) ON DELETE CASCADE,
+          baseline_id    INTEGER NOT NULL,
+          baseline_name  TEXT,
+          device_id      INTEGER,                -- OME device Id (joins dell_devices.device_id)
+          device_name    TEXT,
+          service_tag    TEXT,
+          model          TEXT,
+          status         TEXT,                   -- compliant | noncompliant | not_inventoried | unknown
+          inventory_time TEXT,
+          detail         TEXT,                   -- JSON [{group, attribute, expected, current, reason}] for noncompliant
+          captured_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_dell_cfg_compliance_ome ON dell_config_compliance(ome_id, baseline_id);
+
+        CREATE TABLE IF NOT EXISTS dell_jobs (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          ome_id              INTEGER NOT NULL REFERENCES dell_ome_instances(id) ON DELETE CASCADE,
+          job_id              INTEGER NOT NULL,
+          name                TEXT,
+          description         TEXT,
+          job_type            TEXT,
+          internal            INTEGER,            -- JobType.Internal
+          state               TEXT,               -- Enabled | Disabled
+          builtin             INTEGER,
+          visible             INTEGER,
+          last_run_status_id  INTEGER,            -- 2060 Completed / 2070 Failed / 2200 NotRun / ...
+          last_run_status     TEXT,
+          job_status          TEXT,
+          last_run            TEXT,
+          next_run            TEXT,
+          start_time          TEXT,
+          end_time            TEXT,
+          schedule            TEXT,               -- cron string or 'startnow'
+          created_by          TEXT,
+          targets             TEXT,               -- comma-joined target names
+          captured_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_dell_jobs_ome ON dell_jobs(ome_id);
+
+        CREATE TABLE IF NOT EXISTS dell_config_profiles (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          ome_id              INTEGER NOT NULL REFERENCES dell_ome_instances(id) ON DELETE CASCADE,
+          profile_id          INTEGER NOT NULL,
+          name                TEXT,
+          description         TEXT,
+          template_id         INTEGER,
+          template_name       TEXT,
+          target_id           INTEGER,
+          target_name         TEXT,
+          chassis_name        TEXT,
+          state               TEXT,               -- unassigned | assigned | deployed | ...
+          last_run_status_id  INTEGER,
+          last_run_status     TEXT,
+          profile_modified    INTEGER,            -- 1 = drifted from its template
+          created_by          TEXT,
+          created_date        TEXT,
+          last_deploy_date    TEXT,
+          captured_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_dell_cfg_profiles_ome ON dell_config_profiles(ome_id);
+
+        CREATE TABLE IF NOT EXISTS dell_hardware_logs (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          ome_id      INTEGER NOT NULL REFERENCES dell_ome_instances(id) ON DELETE CASCADE,
+          device_id   INTEGER NOT NULL,            -- OME device Id
+          log_id      TEXT NOT NULL,               -- e.g. DCIM:LifeCycleLog:286450
+          seq         INTEGER,                     -- LogSequenceNumber (monotonic per device)
+          severity    TEXT,                        -- info | warning | critical | fatal
+          category    TEXT,                        -- Audit | Configuration | System Health | Storage | Updates
+          message_id  TEXT,                        -- iDRAC event code (USR0030, PDR16, ...)
+          message     TEXT,
+          comment     TEXT,
+          created_at  TEXT,                        -- UTC, parsed from the CIM timestamp
+          captured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_dell_hwlogs_key ON dell_hardware_logs(ome_id, device_id, log_id);
+        CREATE INDEX IF NOT EXISTS idx_dell_hwlogs_time ON dell_hardware_logs(created_at);
+      `);
+    },
+  },
+
+  // Migration: per-attribute drift timeline. OME reports only that a setting
+  // differs NOW — it carries no change timestamp — so the poller records when
+  // each drifted attribute was first/last seen and when it came back into
+  // compliance. Rows persist across polls (compliance snapshots are replaced,
+  // this table is reconciled).
+  {
+    version: 5,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS dell_config_drift_history (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          ome_id       INTEGER NOT NULL REFERENCES dell_ome_instances(id) ON DELETE CASCADE,
+          baseline_id  INTEGER NOT NULL,
+          device_id    INTEGER NOT NULL,
+          service_tag  TEXT,
+          attr_group   TEXT,
+          attribute    TEXT,
+          expected     TEXT,
+          current      TEXT,               -- value at last sighting
+          first_seen   DATETIME NOT NULL,  -- when the poller first saw this drift episode
+          last_seen    DATETIME NOT NULL,
+          resolved_at  DATETIME            -- set when the attribute stops drifting
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_dell_drift_key
+          ON dell_config_drift_history(ome_id, baseline_id, device_id, attr_group, attribute);
+        CREATE INDEX IF NOT EXISTS idx_dell_drift_dev ON dell_config_drift_history(ome_id, device_id);
+      `);
+    },
+  },
 ];

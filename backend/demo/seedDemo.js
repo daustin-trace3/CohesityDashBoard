@@ -76,7 +76,10 @@ const SEEDED_TABLES = [
   'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history', 'vcenter_vcenters',
   // dell (children before the parent)
   'dell_devices', 'dell_components', 'dell_alerts', 'dell_warranties',
-  'dell_firmware_compliance', 'dell_metrics_history', 'dell_ome_instances',
+  'dell_firmware_compliance', 'dell_metrics_history',
+  'dell_config_baselines', 'dell_config_compliance', 'dell_jobs',
+  'dell_config_profiles', 'dell_hardware_logs', 'dell_config_drift_history',
+  'dell_ome_instances',
   // aria (children before the parent)
   'aria_deployments', 'aria_requests', 'aria_endpoints', 'aria_projects',
   'aria_catalog_sources', 'aria_images', 'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints',

@@ -179,6 +179,24 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_metrics_history').get().c).toBe(8 * 31);
   });
 
+  it('seeds dell governance data: config compliance with drift detail, jobs, profiles, hardware logs', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_config_baselines').get().c).toBe(2);
+    expect(db.prepare("SELECT COUNT(*) c FROM dell_config_compliance WHERE status = 'noncompliant' AND detail IS NOT NULL").get().c).toBeGreaterThan(0);
+    // Drift detail rows carry the expected-vs-current shape the Governance modal renders.
+    const bad = db.prepare("SELECT detail FROM dell_config_compliance WHERE status = 'noncompliant' AND detail IS NOT NULL LIMIT 1").get();
+    const detail = JSON.parse(bad.detail);
+    expect(detail.length).toBeGreaterThan(0);
+    expect(detail[0]).toHaveProperty('attribute');
+    expect(detail[0]).toHaveProperty('current');
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_jobs').get().c).toBeGreaterThan(10);
+    expect(db.prepare("SELECT COUNT(*) c FROM dell_jobs WHERE last_run_status = 'Failed'").get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM dell_config_profiles WHERE state = 'deployed'").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_hardware_logs').get().c).toBeGreaterThan(500);
+    expect(db.prepare("SELECT COUNT(*) c FROM dell_hardware_logs WHERE severity IN ('critical','warning')").get().c).toBeGreaterThan(0);
+    // Drift timeline rows match the seeded noncompliant detail entries.
+    expect(db.prepare('SELECT COUNT(*) c FROM dell_config_drift_history WHERE resolved_at IS NULL AND first_seen IS NOT NULL').get().c).toBeGreaterThan(0);
+  });
+
   it('seeds the dell platform with devices, failing parts, warranty runway and firmware drift', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM dell_ome_instances').get().c).toBe(2);
     expect(db.prepare('SELECT COUNT(*) c FROM dell_devices').get().c).toBeGreaterThan(100);
