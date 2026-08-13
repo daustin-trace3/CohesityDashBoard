@@ -128,8 +128,14 @@ async function collect(ome) {
       hardwareLogs.push(...await fetchHardwareLogs(ome, d.deviceId));
     } catch (err) {
       hwlogFailures += 1;
-      logger.debug(`[DellPoller] hardware logs failed for device ${d.deviceId} (${d.name}): ${safeMsg(err)}`);
-      if (hwlogFailures >= 3 && hardwareLogs.length === 0) break;
+      // First failure at WARN — a fully-silent sweep on prod (info-level logs)
+      // cost a diagnosis round; debug for the repeat noise.
+      const log = hwlogFailures === 1 ? 'warn' : 'debug';
+      logger[log](`[DellPoller] ${ome.name}: hardware logs failed for device ${d.deviceId} (${d.name}): ${safeMsg(err)}`);
+      if (hwlogFailures >= 3 && hardwareLogs.length === 0) {
+        logger.warn(`[DellPoller] ${ome.name}: hardware-log sweep disabled for this poll after ${hwlogFailures} device failures with no rows`);
+        break;
+      }
     }
   }
 

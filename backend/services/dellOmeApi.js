@@ -589,6 +589,20 @@ function cimToIso(v) {
   return new Date(utcMs).toISOString().replace('T', ' ').slice(0, 19);
 }
 
+// Timestamps drift by OME build: the 3.5 guide documents CIM
+// ("20170907060147.000000-300", DateFormat "CIM") but Doug's prod 4.x returns
+// ISO-8601 with offset ("2026-08-13T19:15:29-07:00", DateFormat "GMT").
+// Normalize everything to UTC "YYYY-MM-DD HH:MM:SS" so SQLite date filters
+// and the retention prune compare correctly.
+function normalizeTimestamp(v) {
+  if (v == null) return null;
+  const s = String(v);
+  if (/^\d{14}/.test(s)) return cimToIso(s);
+  const d = new Date(s.includes('T') || /[+-]\d{2}:?\d{2}$|Z$/.test(s) ? s : `${s.replace(' ', 'T')}Z`);
+  if (!Number.isNaN(d.getTime())) return d.toISOString().replace('T', ' ').slice(0, 19);
+  return s;
+}
+
 // Device-level ComplianceStatus is a string on OME ≤3.4 ("COMPLIANT") and an
 // integer on 3.5+ (1 compliant / 2 noncompliant) — Dell's own modules match
 // both forms, so must we.
@@ -753,9 +767,22 @@ async function fetchConfigProfiles(ome) {
 const HWLOG_SEVERITY_MAP = { 1000: 'info', 2000: 'warning', 3000: 'critical', 4000: 'fatal' };
 
 /** iDRAC Lifecycle/SEL log for one device (console device "Hardware Logs" tab).
- *  No server-side $filter — dedupe happens at store time on (device, LogId). */
+ *  No server-side $filter — dedupe happens at store time on (device, LogId).
+ *  Page size falls back 500 → 100 → unpaged: some builds cap this endpoint's
+ *  $top (prod symptom: probe at $top=3 works, poller at 500 stored nothing). */
 async function fetchHardwareLogs(ome, deviceId, maxPages = 8) {
-  const rows = await oGetAllSkip(ome, `/api/DeviceService/Devices(${deviceId})/HardwareLogs`, { maxPages });
+  const path = `/api/DeviceService/Devices(${deviceId})/HardwareLogs`;
+  let rows;
+  try {
+    rows = await oGetAllSkip(ome, path, { maxPages });
+  } catch (errTop500) {
+    try {
+      rows = await oGetAllSkip(ome, path, { top: 100, maxPages: maxPages * 5 });
+    } catch (errTop100) {
+      const data = await oGet(ome, path); // last resort: whatever one call returns
+      rows = data?.value || [];
+    }
+  }
   return rows.map((l) => ({
     deviceId,
     logId: l.LogId || (l.LogSequenceNumber != null ? `seq:${l.LogSequenceNumber}` : null),
@@ -765,7 +792,7 @@ async function fetchHardwareLogs(ome, deviceId, maxPages = 8) {
     messageId: l.LogMessageId || null,
     message: l.LogMessage || null,
     comment: l.LogComment || null,
-    createdAt: l.DateFormat === 'CIM' ? cimToIso(l.LogTimestamp) : (l.LogTimestamp || null),
+    createdAt: normalizeTimestamp(l.LogTimestamp),
   })).filter((l) => l.logId != null);
 }
 
@@ -809,6 +836,12 @@ async function probeAudit(ome, deviceId = null) {
       const d = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/HardwareLogs?$top=3`);
       return { count: d?.['@odata.count'] ?? null, first: (d?.value || [])[0] || null };
     });
+    // The poller's ACTUAL request shape — a $top cap on this endpoint would
+    // pass the $top=3 attempt above yet fail here.
+    await attempt('hardwareLogsPage500', async () => {
+      const d = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/HardwareLogs?$top=500&$skip=0`);
+      return { returned: (d?.value || []).length, count: d?.['@odata.count'] ?? null };
+    });
     await attempt('logSeverities', () => oGet(ome, `/api/DeviceService/Devices(${deviceId})/LogSeverities`));
   }
   return out;
@@ -834,5 +867,5 @@ module.exports = {
   summarizeComponents, fetchAlerts, probeAlerts, fetchWarranties, fetchFirmwareCompliance,
   fetchDeviceMetrics, fetchDevicePowerThermal, probeInventory, testConnection, invalidateSession,
   fetchConfigCompliance, fetchJobs, fetchConfigProfiles, fetchHardwareLogs, probeAudit,
-  cimToIso, complianceStatusName, flattenComplianceDetail,
+  cimToIso, normalizeTimestamp, complianceStatusName, flattenComplianceDetail,
 };
