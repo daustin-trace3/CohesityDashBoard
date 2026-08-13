@@ -273,7 +273,8 @@ router.get('/stale-management', [daysParam], validate, (req, res, next) => {
          OR d.last_inventory_time < datetime('now', ?)
       ORDER BY d.connection_state, inventory_age_days DESC LIMIT 2000
     `).all(`-${d} days`);
-    res.json({ rows });
+    const checked = db.prepare('SELECT COUNT(*) AS n FROM dell_devices').get().n;
+    res.json({ rows, summary: { checked } });
   } catch (err) { next(err); }
 });
 
@@ -290,7 +291,10 @@ router.get('/profile-hygiene', (req, res, next) => {
       WHERE p.profile_modified = 1 OR p.last_run_status = 'Failed' OR p.state = 'unassigned'
       ORDER BY p.profile_modified DESC, p.name LIMIT 2000
     `).all();
-    res.json({ rows });
+    // checked lets the empty state say "all N profiles healthy" — an exception
+    // report with zero rows reads as broken otherwise (bit Doug on prod).
+    const checked = db.prepare('SELECT COUNT(*) AS n FROM dell_config_profiles').get().n;
+    res.json({ rows, summary: { checked } });
   } catch (err) { next(err); }
 });
 

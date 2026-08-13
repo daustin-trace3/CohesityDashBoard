@@ -219,8 +219,9 @@ const REPORTS = [
   },
   {
     key: 'stale-management', group: 'Operations', icon: EyeOff, title: 'Stale Management',
-    description: 'Monitoring blind spots: devices disconnected from OME or with an aging inventory.',
+    description: 'Monitoring blind spots: devices disconnected from OME or with an aging inventory. Exception report — empty means every device is connected and freshly inventoried.',
     days: 7,
+    emptyText: (s) => `All ${fmtNum(s?.checked)} devices are connected with fresh inventory — an empty result here is the healthy one.`,
     columns: [
       { k: 'device_name', label: 'Device' },
       { k: 'service_tag', label: 'Service Tag' },
@@ -233,7 +234,8 @@ const REPORTS = [
   },
   {
     key: 'profile-hygiene', group: 'Operations', icon: FileCog, title: 'Profile Hygiene',
-    description: 'Configuration profiles that drifted from their template, failed to deploy, or sit unassigned.',
+    description: 'Configuration profiles that drifted from their template, failed to deploy, or sit unassigned. Exception report — empty means every profile is deployed and unmodified (the full list lives on Governance).',
+    emptyText: (s) => `All ${fmtNum(s?.checked)} profile(s) are deployed and unmodified — an empty result here is the healthy one.`,
     columns: [
       { k: 'issue', label: 'Issue', kind: 'sev' },
       { k: 'name', label: 'Profile' },
@@ -470,7 +472,9 @@ export default function DellReportsPage() {
                 )}
                 {active.extras ? active.extras(data.summary) : null}
                 {rows.length === 0 ? (
-                  <div className="text-sm text-status-ok py-8 text-center">Nothing to report — clean.</div>
+                  <div className="text-sm text-status-ok py-8 text-center">
+                    {active.emptyText ? active.emptyText(data.summary) : 'Nothing to report — clean.'}
+                  </div>
                 ) : (
                   <>
                     <div className="overflow-x-auto">
