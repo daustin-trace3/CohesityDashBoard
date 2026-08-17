@@ -105,7 +105,7 @@ export default function LicenseGate({ children }) {
               <ShieldCheck size={16} className="text-brand absolute" strokeWidth={2.5} />
             </div>
             <div>
-              <p className="text-sm font-bold text-ink">Cohesity Command Center</p>
+              <p className="text-sm font-bold text-ink">Infrastructure Command Center</p>
               <p className="text-[11px] text-ink-muted">Product licensing</p>
             </div>
           </div>
