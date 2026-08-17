@@ -24,18 +24,23 @@ export default function DellHardwareLogsPage() {
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [search, setSearch] = useState('');
   const [severity, setSeverity] = useState('');
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(1);
   const [detailId, setDetailId] = useState(null);
   const debounce = useRef(null);
 
   // Filters are applied server-side — the log table can hold hundreds of
   // thousands of rows, far past what client-side filtering should chew on.
-  const load = useCallback((params) => client.get('/dell/hardware-logs', { params })
+  const load = useCallback((params) => {
+    // Longer ranges pull far more rows — stretch past the 30s client default.
+    const d = params?.days || 365;
+    const timeout = d >= 365 ? 180000 : d >= 90 ? 120000 : d >= 30 ? 60000 : undefined;
+    return client.get('/dell/hardware-logs', { params, ...(timeout ? { timeout } : {}) })
     .then(({ data }) => {
       setData({ rows: Array.isArray(data?.rows) ? data.rows : [], total: data?.total || 0 });
       setLastRefreshed(new Date());
     })
-    .catch(() => { setData({ rows: [], total: 0 }); toast({ type: 'error', title: 'Failed to load hardware logs' }); }), [toast]);
+    .catch(() => { setData({ rows: [], total: 0 }); toast({ type: 'error', title: 'Failed to load hardware logs' }); });
+  }, [toast]);
 
   useEffect(() => {
     clearTimeout(debounce.current);
