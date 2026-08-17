@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database, Cable } from 'lucide-react';
+import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database, Cable, ClipboardCheck, ScrollText } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum, fmtBytes, healthTone, severityTone, fmtWhen } from './helpers';
+import { DriftModal } from './DellGovernancePage';
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
   // Portal to <body>: the page wrapper's fade-in animation leaves a transform
@@ -154,9 +155,41 @@ export function DeviceDetailModal({ deviceId, onClose }) {
             </div>
           )}
 
+          {(dev.configCompliance || []).length > 0 && (
+            <div className="mb-4">
+              <p className="text-xs font-semibold text-ink mb-2 flex items-center gap-1.5"><ClipboardCheck size={13} className="text-brand" /> Configuration Compliance</p>
+              {dev.configCompliance.map((c) => (
+                <p key={c.id} className="text-xs text-ink-muted">
+                  {c.baseline_name || `Baseline #${c.baseline_id}`} — {c.status === 'compliant'
+                    ? <span className="text-status-ok">compliant</span>
+                    : c.status === 'noncompliant'
+                      ? <span className="text-status-crit font-semibold">not compliant{c.drift_count ? ` (${c.drift_count} drifted setting${c.drift_count === 1 ? '' : 's'})` : ''}</span>
+                      : <span className="text-ink-faint">{c.status.replace('_', ' ')}</span>}
+                </p>
+              ))}
+            </div>
+          )}
+
           {['processor', 'memory', 'raid', 'vdisk', 'disk', 'nic', 'fc', 'psu', 'os'].map((k) => (
             <ComponentSection key={k} kind={k} rows={byKind(k)} />
           ))}
+
+          {(dev.hardwareLogs || []).length > 0 && (
+            <div className="mb-4">
+              <p className="text-xs font-semibold text-ink mb-2 flex items-center gap-1.5"><ScrollText size={13} className="text-brand" /> Recent Hardware Log</p>
+              <div className="flex flex-col gap-1">
+                {dev.hardwareLogs.slice(0, 15).map((l) => (
+                  <div key={l.id} className="flex items-start gap-2 bg-surface-overlay rounded-lg px-3 py-1.5">
+                    <Badge tone={l.severity === 'critical' || l.severity === 'fatal' ? 'crit' : l.severity === 'warning' ? 'warn' : 'info'}>{l.severity}</Badge>
+                    <div className="min-w-0">
+                      <p className="text-xs text-ink-muted leading-snug">{l.message}</p>
+                      <p className="text-[10px] text-ink-faint tnum">{l.message_id ? `${l.message_id} · ` : ''}{l.category ? `${l.category} · ` : ''}{fmtWhen(l.created_at)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {(dev.alerts || []).length > 0 && (
             <div>
@@ -256,6 +289,7 @@ export default function DellDevicesPage() {
   const [rows, setRows] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [detailId, setDetailId] = useState(null);
+  const [driftReportId, setDriftReportId] = useState(null);
   const [showExport, setShowExport] = useState(false);
 
   const load = useCallback(() => client.get('/dell/devices')
@@ -268,6 +302,9 @@ export default function DellDevicesPage() {
   // Power Manager is licensed per OME — hide the Watts column entirely when
   // nothing in the estate is metered.
   const hasPm = list.some((d) => d.power_w != null);
+  // Compliance column only exists once at least one device sits in a config
+  // baseline — no empty column on estates without compliance baselines.
+  const hasCompliance = list.some((d) => d.compliance_status != null);
   const ctl = useTableControls(list, {
     searchKeys: ['name', 'service_tag', 'model', 'device_type', 'ip_address', 'ome_name', 'chassis_service_tag'],
     defaultSortKey: 'name', defaultSortDir: 'asc',
@@ -292,6 +329,7 @@ export default function DellDevicesPage() {
             { k: 'device_type', label: 'Types' },
             { k: 'model', label: 'Models' },
             { k: 'health', label: 'Health' },
+            ...(hasCompliance ? [{ k: 'compliance_status', label: 'Compliance' }] : []),
             { k: 'power_state', label: 'Power' },
           ]} />
         {rows == null ? (
@@ -309,6 +347,7 @@ export default function DellDevicesPage() {
                 <SortTh k="model" label="Model" ctl={ctl} />
                 <SortTh k="device_type" label="Type" ctl={ctl} />
                 <SortTh k="health" label="Health" ctl={ctl} />
+                {hasCompliance && <SortTh k="compliance_status" label="Compliance" ctl={ctl} />}
                 <SortTh k="power_state" label="Power" ctl={ctl} />
                 <SortTh k="core_count" label="Cores" ctl={ctl} align="right" />
                 <SortTh k="memory_bytes" label="Memory" ctl={ctl} align="right" />
@@ -326,6 +365,23 @@ export default function DellDevicesPage() {
                     <td className="py-2 pr-3 text-ink-muted max-w-[180px] truncate" title={d.model || ''}>{d.model || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px]">{d.device_type || '—'}</td>
                     <td className="py-2 pr-3"><Badge tone={healthTone(d.health)}>{d.health || '—'}</Badge></td>
+                    {hasCompliance && (
+                      <td className="py-2 pr-3">
+                        {d.compliance_status === 'noncompliant' ? (
+                          <button onClick={() => setDriftReportId(d.compliance_report_id)}
+                            title="Show drifted settings (expected vs current)"
+                            className="cursor-pointer">
+                            <Badge tone="crit">not compliant{d.compliance_drift ? ` · ${d.compliance_drift}` : ''}</Badge>
+                          </button>
+                        ) : d.compliance_status === 'compliant' ? (
+                          <Badge tone="ok">compliant</Badge>
+                        ) : d.compliance_status != null ? (
+                          <Badge tone="warn">{String(d.compliance_status).replace('_', ' ')}</Badge>
+                        ) : (
+                          <span className="text-ink-faint text-xs">—</span>
+                        )}
+                      </td>
+                    )}
                     <td className="py-2 pr-3"><Badge tone={d.power_state === 'on' ? 'ok' : 'neutral'}>{(d.power_state || '—').toUpperCase()}</Badge></td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(d.core_count)}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{d.memory_bytes ? fmtBytes(d.memory_bytes) : '—'}</td>
@@ -342,6 +398,7 @@ export default function DellDevicesPage() {
       </div>
 
       {detailId != null && <DeviceDetailModal deviceId={detailId} onClose={() => setDetailId(null)} />}
+      {driftReportId != null && <DriftModal reportId={driftReportId} onClose={() => setDriftReportId(null)} />}
       {showExport && <ExportModal devices={list} onClose={() => setShowExport(false)} />}
     </div>
   );

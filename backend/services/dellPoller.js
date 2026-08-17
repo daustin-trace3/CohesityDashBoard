@@ -10,7 +10,8 @@ const { createPoller } = require('../core/pollerFramework');
 const {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, fetchWarranties, fetchFirmwareCompliance,
-  fetchDeviceMetrics, fetchDevicePowerThermal,
+  fetchDeviceMetrics, fetchDevicePowerThermal, fetchConfigCompliance,
+  fetchJobs, fetchConfigProfiles, fetchHardwareLogs,
 } = require('./dellOmeApi');
 const logger = require('../utils/logger');
 
@@ -19,6 +20,7 @@ const safeMsg = (e) => e?.response ? `HTTP ${e.response.status}${e.message && !/
 // Per-device sweeps are capped so a 5,000-device OME can't stall the poller.
 const INVENTORY_DEVICE_CAP = 500;
 const METRICS_DEVICE_CAP = 300;
+const HWLOG_DEVICE_CAP = 300;
 
 async function collect(ome) {
   const [info, typeMap] = [await fetchApplianceInfo(ome), await fetchDeviceTypeMap(ome)];
@@ -100,10 +102,47 @@ async function collect(ome) {
     logger.debug(`[DellPoller] ${ome.name}: firmware compliance fetch failed: ${safeMsg(err)}`);
   }
 
-  return { info, devices, components, alerts, warranties, firmware };
+  // Configuration compliance (governance): baselines + per-device drift.
+  let configCompliance = null; // null = sweep unavailable, keeps prior rows
+  try { configCompliance = await fetchConfigCompliance(ome); } catch (err) {
+    logger.debug(`[DellPoller] ${ome.name}: config compliance fetch failed: ${safeMsg(err)}`);
+  }
+
+  let jobs = null;
+  try { jobs = await fetchJobs(ome); } catch (err) {
+    logger.debug(`[DellPoller] ${ome.name}: jobs fetch failed: ${safeMsg(err)}`);
+  }
+
+  let profiles = null;
+  try { profiles = await fetchConfigProfiles(ome); } catch (err) {
+    logger.debug(`[DellPoller] ${ome.name}: profiles fetch failed: ${safeMsg(err)}`);
+  }
+
+  // Per-device iDRAC hardware (Lifecycle/SEL) logs — append incrementally,
+  // so a failed sweep just means no new rows this poll. First hard failure
+  // disables the sweep for the rest of the poll (endpoint unsupported).
+  const hardwareLogs = [];
+  let hwlogFailures = 0;
+  for (const d of serverDevices.slice(0, HWLOG_DEVICE_CAP)) {
+    try {
+      hardwareLogs.push(...await fetchHardwareLogs(ome, d.deviceId));
+    } catch (err) {
+      hwlogFailures += 1;
+      // First failure at WARN — a fully-silent sweep on prod (info-level logs)
+      // cost a diagnosis round; debug for the repeat noise.
+      const log = hwlogFailures === 1 ? 'warn' : 'debug';
+      logger[log](`[DellPoller] ${ome.name}: hardware logs failed for device ${d.deviceId} (${d.name}): ${safeMsg(err)}`);
+      if (hwlogFailures >= 3 && hardwareLogs.length === 0) {
+        logger.warn(`[DellPoller] ${ome.name}: hardware-log sweep disabled for this poll after ${hwlogFailures} device failures with no rows`);
+        break;
+      }
+    }
+  }
+
+  return { info, devices, components, alerts, warranties, firmware, configCompliance, jobs, profiles, hardwareLogs };
 }
 
-const store = db.transaction((omeId, { info, devices, components, alerts, warranties, firmware }) => {
+const store = db.transaction((omeId, { info, devices, components, alerts, warranties, firmware, configCompliance, jobs, profiles, hardwareLogs }) => {
   if (info?.version) {
     db.prepare('UPDATE dell_ome_instances SET version = ? WHERE id = ?').run(info.version, omeId);
   }
@@ -174,6 +213,113 @@ const store = db.transaction((omeId, { info, devices, components, alerts, warran
         f.deviceModel, f.status, f.noncompliantComponents);
     }
   }
+
+  if (configCompliance) {
+    db.prepare('DELETE FROM dell_config_baselines WHERE ome_id = ?').run(omeId);
+    const blStmt = db.prepare(`
+      INSERT INTO dell_config_baselines (ome_id, baseline_id, name, description, template_id,
+        template_name, last_run, compliance_status, n_critical, n_warning, n_normal,
+        n_incomplete, task_id, percent_complete)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const b of configCompliance.baselines) {
+      blStmt.run(omeId, b.baselineId, b.name, b.description, b.templateId, b.templateName,
+        b.lastRun, b.complianceStatus, b.nCritical, b.nWarning, b.nNormal,
+        b.nIncomplete, b.taskId, b.percentComplete);
+    }
+    db.prepare('DELETE FROM dell_config_compliance WHERE ome_id = ?').run(omeId);
+    const ccStmt = db.prepare(`
+      INSERT INTO dell_config_compliance (ome_id, baseline_id, baseline_name, device_id,
+        device_name, service_tag, model, status, inventory_time, detail)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const r of configCompliance.reports) {
+      ccStmt.run(omeId, r.baselineId, r.baselineName, r.deviceId, r.deviceName,
+        r.serviceTag, r.model, r.status, r.inventoryTime,
+        r.detail ? JSON.stringify(r.detail) : null);
+    }
+
+    // Drift timeline reconciliation. OME carries no change timestamp, so
+    // first_seen = when THIS poller first observed the drift. A key that
+    // re-drifts after being resolved starts a new episode (first_seen resets).
+    const driftUpsert = db.prepare(`
+      INSERT INTO dell_config_drift_history (ome_id, baseline_id, device_id, service_tag,
+        attr_group, attribute, expected, current, first_seen, last_seen, resolved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), NULL)
+      ON CONFLICT(ome_id, baseline_id, device_id, attr_group, attribute) DO UPDATE SET
+        expected = excluded.expected, current = excluded.current,
+        service_tag = excluded.service_tag,
+        first_seen = CASE WHEN resolved_at IS NULL THEN first_seen ELSE excluded.first_seen END,
+        last_seen = excluded.last_seen, resolved_at = NULL
+    `);
+    const seenKeys = new Set();
+    for (const r of configCompliance.reports) {
+      for (const d of r.detail || []) {
+        const grp = d.group || '';
+        const attr = d.attribute || '';
+        seenKeys.add(`${r.baselineId}|${r.deviceId}|${grp}|${attr}`);
+        driftUpsert.run(omeId, r.baselineId, r.deviceId, r.serviceTag, grp, attr,
+          d.expected != null ? String(d.expected) : null,
+          d.current != null ? String(d.current) : null);
+      }
+    }
+    // Anything unresolved that no longer drifts (and whose device was actually
+    // evaluated this poll) is closed out. Devices missing detail (over the
+    // per-poll detail cap) keep their open episodes untouched.
+    const evaluated = new Set(configCompliance.reports
+      .filter((r) => r.status === 'compliant' || r.detail)
+      .map((r) => `${r.baselineId}|${r.deviceId}`));
+    const open = db.prepare(
+      'SELECT id, baseline_id, device_id, attr_group, attribute FROM dell_config_drift_history WHERE ome_id = ? AND resolved_at IS NULL'
+    ).all(omeId);
+    const resolveStmt = db.prepare("UPDATE dell_config_drift_history SET resolved_at = datetime('now') WHERE id = ?");
+    for (const row of open) {
+      const devKey = `${row.baseline_id}|${row.device_id}`;
+      if (!evaluated.has(devKey)) continue;
+      if (!seenKeys.has(`${devKey}|${row.attr_group}|${row.attribute}`)) resolveStmt.run(row.id);
+    }
+  }
+
+  if (jobs) {
+    db.prepare('DELETE FROM dell_jobs WHERE ome_id = ?').run(omeId);
+    const jobStmt = db.prepare(`
+      INSERT INTO dell_jobs (ome_id, job_id, name, description, job_type, internal, state,
+        builtin, visible, last_run_status_id, last_run_status, job_status, last_run,
+        next_run, start_time, end_time, schedule, created_by, targets)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const j of jobs) {
+      jobStmt.run(omeId, j.jobId, j.name, j.description, j.jobType, j.internal, j.state,
+        j.builtin, j.visible, j.lastRunStatusId, j.lastRunStatus, j.jobStatus, j.lastRun,
+        j.nextRun, j.startTime, j.endTime, j.schedule, j.createdBy, j.targets);
+    }
+  }
+
+  if (profiles) {
+    db.prepare('DELETE FROM dell_config_profiles WHERE ome_id = ?').run(omeId);
+    const profStmt = db.prepare(`
+      INSERT INTO dell_config_profiles (ome_id, profile_id, name, description, template_id,
+        template_name, target_id, target_name, chassis_name, state, last_run_status_id,
+        last_run_status, profile_modified, created_by, created_date, last_deploy_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const p of profiles) {
+      profStmt.run(omeId, p.profileId, p.name, p.description, p.templateId, p.templateName,
+        p.targetId, p.targetName, p.chassisName, p.state, p.lastRunStatusId,
+        p.lastRunStatus, p.profileModified, p.createdBy, p.createdDate, p.lastDeployDate);
+    }
+  }
+
+  const hwlogStmt = db.prepare(`
+    INSERT OR IGNORE INTO dell_hardware_logs (ome_id, device_id, log_id, seq, severity,
+      category, message_id, message, comment, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const l of hardwareLogs || []) {
+    hwlogStmt.run(omeId, l.deviceId, l.logId, l.seq, l.severity, l.category,
+      l.messageId, l.message, l.comment, l.createdAt);
+  }
+  db.prepare("DELETE FROM dell_hardware_logs WHERE created_at < datetime('now', '-365 days')").run();
 
   const isSrv = (d) => /server/i.test(d.deviceType);
   db.prepare(`

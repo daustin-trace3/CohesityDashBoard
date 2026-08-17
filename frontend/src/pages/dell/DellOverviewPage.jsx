@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Gauge, Server, ShieldAlert, Boxes, AlertTriangle, HardDrive, Cpu, MemoryStick, Zap, BadgeCheck, Thermometer, Unplug } from 'lucide-react';
+import { Gauge, Server, ShieldAlert, Boxes, AlertTriangle, HardDrive, Cpu, MemoryStick, Zap, BadgeCheck, Thermometer, Unplug, ClipboardCheck } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Bar, Doughnut, Line } from 'react-chartjs-2';
 import {
@@ -160,10 +160,16 @@ export default function DellOverviewPage() {
         </div>
       )}
 
-      <div className="grid sm:grid-cols-2 gap-3 mb-4">
+      <div className={`grid sm:grid-cols-2 ${(data?.configCompliance?.total || 0) > 0 ? 'lg:grid-cols-3' : ''} gap-3 mb-4`}>
         <StatCard icon={AlertTriangle} label="Critical Alerts (7d)" value={fmtNum(data?.alerts7d?.critical)}
           sub={`${(data?.alerts7d?.critical || 0) > (data?.alerts7d?.critical_prev || 0) ? '▲' : (data?.alerts7d?.critical || 0) < (data?.alerts7d?.critical_prev || 0) ? '▼' : '—'} vs ${fmtNum(data?.alerts7d?.critical_prev)} prior week · ${fmtNum(data?.alerts7d?.warning)} warnings`}
           tone={(data?.alerts7d?.critical || 0) > 0 ? 'crit' : 'ok'} />
+
+        {(data?.configCompliance?.total || 0) > 0 && (
+          <StatCard icon={ClipboardCheck} label="Config Compliance" value={fmtNum(data.configCompliance.noncompliant)}
+            sub={`non-compliant of ${fmtNum(data.configCompliance.total)} evaluated`}
+            tone={(data.configCompliance.noncompliant || 0) > 0 ? 'warn' : 'ok'} />
+        )}
 
         <StatCard icon={Unplug} label="Disconnected" value={fmtNum(dev.disconnected)}
           sub="devices unreachable from OME" tone={(dev.disconnected || 0) > 0 ? 'crit' : 'ok'} />
