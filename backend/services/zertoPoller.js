@@ -75,6 +75,18 @@ const replaceAlerts = db.transaction((alerts) => {
     stmt.run(a.identifier, a.type || null, a.severity || null, a.description || null,
       a.site?.name || null, a.entityType || null, a.collectionTime || null);
   }
+  // Keep the per-type notification catalog aware of every code seen live —
+  // unknown codes (not in the shipped reference) get inserted enabled.
+  const catStmt = db.prepare(`
+    INSERT INTO zerto_alert_catalog (alert_type, entity, severity, description, first_seen, last_seen)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(alert_type) DO UPDATE SET
+      last_seen = CURRENT_TIMESTAMP,
+      first_seen = COALESCE(first_seen, CURRENT_TIMESTAMP)
+  `);
+  for (const a of alerts) {
+    if (a.type) catStmt.run(a.type, a.entityType || null, a.severity || null, a.description || null);
+  }
 });
 
 const replaceVms = db.transaction((vms) => {

@@ -145,4 +145,39 @@ module.exports = [
       `);
     },
   },
+
+  // Per-alert-type SMTP notification toggles. Seeded from Zerto's official
+  // alerts reference (db/reference/zertoAlertTypes.json, 229 codes); the poller stamps
+  // first/last_seen when a code shows up live, and inserts codes the reference
+  // doesn't know. enabled=0 mutes the code in the alertNotifier collector.
+  {
+    version: 5,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS zerto_alert_catalog (
+          alert_type  TEXT PRIMARY KEY,
+          entity      TEXT,
+          severity    TEXT,
+          description TEXT,
+          enabled     INTEGER NOT NULL DEFAULT 1,
+          first_seen  DATETIME,
+          last_seen   DATETIME
+        );
+      `);
+      const seed = db.prepare(`
+        INSERT OR IGNORE INTO zerto_alert_catalog (alert_type, entity, severity, description)
+        VALUES (?, ?, ?, ?)
+      `);
+      for (const t of require('../reference/zertoAlertTypes.json')) {
+        seed.run(t.code, t.entity || null, t.severity || null, t.description || null);
+      }
+      db.exec(`
+        UPDATE zerto_alert_catalog SET first_seen = CURRENT_TIMESTAMP, last_seen = CURRENT_TIMESTAMP
+        WHERE alert_type IN (SELECT DISTINCT alert_type FROM zerto_alerts WHERE alert_type IS NOT NULL);
+        INSERT OR IGNORE INTO zerto_alert_catalog (alert_type, entity, severity, description, first_seen, last_seen)
+        SELECT alert_type, entity_type, severity, MIN(description), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM zerto_alerts WHERE alert_type IS NOT NULL GROUP BY alert_type;
+      `);
+    },
+  },
 ];

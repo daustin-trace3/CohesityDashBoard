@@ -91,10 +91,15 @@ function collectNetappAlerts() {
 /** Active Zerto alerts — zerto_alerts is wiped+reloaded every poll, but
  *  alert_identifier is Zerto's own stable id so it survives the reload. */
 function collectZertoAlerts() {
+  // Per-type toggles: a code disabled in zerto_alert_catalog is muted — it
+  // drops out of the collector entirely, which also ends its reminders.
   const rows = db.prepare(`
     SELECT alert_identifier AS alertId, severity, description, site_name AS siteName,
            collection_time AS collectionTime, captured_at AS capturedAt
-    FROM zerto_alerts
+    FROM zerto_alerts z
+    WHERE z.alert_type IS NULL OR NOT EXISTS (
+      SELECT 1 FROM zerto_alert_catalog c WHERE c.alert_type = z.alert_type AND c.enabled = 0
+    )
   `).all();
   return rows.map((r) => ({
     sourceKey: `z:${r.alertId}`,
