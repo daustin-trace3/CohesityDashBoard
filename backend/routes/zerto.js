@@ -73,6 +73,35 @@ router.get('/alerts', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** GET /api/zerto/alert-types — the per-type notification catalog: every known
+ *  Zerto alert code (official reference + codes seen live) with its SMTP
+ *  enabled flag and how many alerts of that type are currently active. */
+router.get('/alert-types', (req, res, next) => {
+  try {
+    res.json(db.prepare(`
+      SELECT c.alert_type AS code, c.entity, c.severity, c.description,
+             c.enabled, c.first_seen AS firstSeen, c.last_seen AS lastSeen,
+             (SELECT COUNT(*) FROM zerto_alerts z WHERE z.alert_type = c.alert_type) AS activeCount
+      FROM zerto_alert_catalog c
+      ORDER BY c.alert_type
+    `).all().map((r) => ({ ...r, enabled: !!r.enabled })));
+  } catch (err) { next(err); }
+});
+
+/** PUT /api/zerto/alert-types/:code — enable/disable SMTP notifications for one
+ *  alert type. Disabled codes are skipped by the alert notifier entirely. */
+router.put('/alert-types/:code', [
+  param('code').isString().trim().isLength({ min: 1, max: 32 }),
+  body('enabled').isBoolean(),
+], validate, (req, res, next) => {
+  try {
+    const info = db.prepare('UPDATE zerto_alert_catalog SET enabled = ? WHERE alert_type = ?')
+      .run(req.body.enabled ? 1 : 0, req.params.code);
+    if (info.changes === 0) return res.status(404).json({ error: 'Unknown alert type' });
+    res.json({ ok: true, code: req.params.code, enabled: !!req.body.enabled });
+  } catch (err) { next(err); }
+});
+
 /** GET /api/zerto/licenses — license entitlement/consumption from /v3/licenses,
  *  with the per-site usage breakdown parsed out of the stored JSON. */
 router.get('/licenses', (req, res, next) => {

@@ -196,7 +196,7 @@ const NEW_TABLES = [
   'plugins', 'users', 'groups', 'user_groups', 'role_grants',
   'auth_sessions', 'service_accounts', 'alert_notifications',
   'cohesity_views', 'workload_history', 'cluster_gflags', 'gflag_changes',
-  'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras', 'zerto_licenses',
+  'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras', 'zerto_licenses', 'zerto_alert_catalog',
   'pure1_arrays', 'pure1_alerts', 'pure1_pods', 'pure1_metrics_history',
   'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vms',
   'vcenter_networks', 'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history',
