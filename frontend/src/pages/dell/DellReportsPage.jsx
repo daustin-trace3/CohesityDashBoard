@@ -37,7 +37,7 @@ const REPORTS = [
   {
     key: 'idrac-access', group: 'Audit', icon: KeyRound, title: 'iDRAC Access',
     description: 'Every iDRAC login/logout captured in the hardware logs — who, from which IP, over which protocol.',
-    days: 30,
+    days: 7,
     columns: [
       { k: 'created_at', label: 'Time', kind: 'when' },
       { k: 'device_name', label: 'Device' },
@@ -61,7 +61,7 @@ const REPORTS = [
   {
     key: 'config-changes', group: 'Audit', icon: GitCompareArrows, title: 'Config Change Timeline',
     description: 'Configuration-category hardware log entries merged with config-drift detections and resolutions.',
-    days: 30,
+    days: 7,
     columns: [
       { k: 'at', label: 'Time', kind: 'when' },
       { k: 'severity', label: 'Severity', kind: 'sev' },
@@ -172,7 +172,7 @@ const REPORTS = [
   {
     key: 'hw-event-trends', group: 'Operations', icon: TrendingUp, title: 'Hardware Event Trends',
     description: 'Noisiest servers by hardware-log volume; the trend column compares the last 7 days to the 7 before.',
-    days: 90,
+    days: 7,
     columns: [
       { k: 'device_name', label: 'Device' },
       { k: 'model', label: 'Model' },
@@ -302,7 +302,7 @@ const REPORTS = [
   {
     key: 'server-timeline', group: 'Support', icon: History, title: 'Server Timeline',
     description: 'One server, one chronology: alerts, hardware log, config drift and matching jobs merged.',
-    needsDevice: true, days: 90,
+    needsDevice: true, days: 7,
     columns: [
       { k: 'at', label: 'Time', kind: 'when' },
       { k: 'severity', label: 'Severity', kind: 'sev' },
@@ -353,7 +353,9 @@ export default function DellReportsPage() {
       ...(effDays ? { days: effDays } : {}),
       ...(active.needsDevice ? { deviceId: deviceSel } : {}),
     };
-    client.get(`/dell/reports/${active.key}`, { params })
+    // Longer ranges pull far more rows — stretch past the 30s client default.
+    const timeout = effDays >= 365 ? 180000 : effDays >= 90 ? 120000 : effDays >= 30 ? 60000 : undefined;
+    client.get(`/dell/reports/${active.key}`, { params, ...(timeout ? { timeout } : {}) })
       .then(({ data }) => {
         setData({ rows: Array.isArray(data?.rows) ? data.rows : [], summary: data?.summary || null, device: data?.device || null });
         setLastRefreshed(new Date());
