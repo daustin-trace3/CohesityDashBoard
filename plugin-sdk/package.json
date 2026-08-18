@@ -9,6 +9,17 @@
     "pack": "node pack.mjs"
   },
   "devDependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1112.0",
+    "@aws-sdk/client-compute-optimizer": "^3.1112.0",
+    "@aws-sdk/client-cost-explorer": "^3.1112.0",
+    "@aws-sdk/client-dynamodb": "^3.1112.0",
+    "@aws-sdk/client-ec2": "^3.1112.0",
+    "@aws-sdk/client-ecr": "^3.1112.0",
+    "@aws-sdk/client-ecs": "^3.1112.0",
+    "@aws-sdk/client-lambda": "^3.1112.0",
+    "@aws-sdk/client-lightsail": "^3.1112.0",
+    "@aws-sdk/client-rds": "^3.1112.0",
+    "@aws-sdk/client-s3": "^3.1112.0",
     "esbuild": "^0.24.0",
     "yazl": "^2.5.1"
   }
