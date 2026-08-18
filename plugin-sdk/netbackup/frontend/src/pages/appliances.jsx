@@ -9,6 +9,17 @@ import { BRAND, fmtWhen, componentTypeLabel, componentStatusTone, fmtHwDetail, a
 
 injectStyles();
 
+
+// window.ReactDOM is react-dom/client on current hosts — it has NO
+// createPortal, so an unguarded call crashes the page (campaign trap #1).
+// Fall back to inline rendering: the overlay is position:fixed, so it
+// still covers the viewport without a portal.
+function __portalOrInline(node) {
+  const rd = typeof window !== 'undefined' ? window.ReactDOM : null;
+  if (rd && typeof rd.createPortal === 'function') return rd.createPortal(node, document.body);
+  return node;
+}
+
 const APPLIANCE_TONE = { appliance: 'brand', flex: 'info', byo: 'neutral' };
 const APPLIANCE_LABEL = { appliance: 'Appliance', flex: 'Flex', byo: 'BYO' };
 const SUMMARY_TONE = { ok: 'ok', warning: 'warn', critical: 'crit', unknown: 'neutral' };
@@ -63,7 +74,7 @@ function ModelCell({ a, editable, onSaved }) {
 }
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
-  return ReactDOM.createPortal(
+  return __portalOrInline(
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.6)' }} />
       <div className="nb-panel" style={{ position: 'relative', width: '100%', maxWidth: 760, maxHeight: '85vh', display: 'flex', flexDirection: 'column', borderTop: `3px solid ${BRAND}` }}>
@@ -79,9 +90,7 @@ function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
         </div>
         <div className="nb-scroll" style={{ padding: 16, overflowY: 'auto' }}>{children}</div>
       </div>
-    </div>,
-    document.body
-  );
+    </div>);
 }
 
 function ComponentSection({ type, rows }) {

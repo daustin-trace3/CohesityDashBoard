@@ -5,6 +5,17 @@
 // host source), so this kit installs real CSS via a single injected
 // <style> tag and exposes className-based components that consume it.
 
+
+// window.ReactDOM is react-dom/client on current hosts — it has NO
+// createPortal, so an unguarded call crashes the page (campaign trap #1).
+// Fall back to inline rendering: the overlay is position:fixed, so it
+// still covers the viewport without a portal.
+function __portalOrInline(node) {
+  const rd = typeof window !== 'undefined' ? window.ReactDOM : null;
+  if (rd && typeof rd.createPortal === 'function') return rd.createPortal(node, document.body);
+  return node;
+}
+
 const STYLE_ID = 'nx-plugin-styles';
 
 const CSS = `
@@ -610,7 +621,7 @@ export function ProgressBar({ pct, tone = 'brand', width = 128 }) {
  * position:fixed to the page div on scrolled/short pages).
  * ────────────────────────────────────────────────────────────────────── */
 export function ModalShell({ title, subtitle, icon: IconComp, onClose, children, width = 'min(720px,92vw)' }) {
-  return ReactDOM.createPortal(
+  return __portalOrInline(
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} role="dialog" aria-modal="true">
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.65)', backdropFilter: 'blur(4px)' }} onClick={onClose} />
       <div className="nx-panel" style={{ position: 'relative', width, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
@@ -628,9 +639,7 @@ export function ModalShell({ title, subtitle, icon: IconComp, onClose, children,
         </div>
         <div className="nx-scroll" style={{ padding: 16, overflowY: 'auto' }}>{children}</div>
       </div>
-    </div>,
-    document.body
-  );
+    </div>);
 }
 
 export function Fact({ label, value }) {

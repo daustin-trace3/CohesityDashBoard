@@ -10,6 +10,17 @@ import {
 
 injectStyles();
 
+
+// window.ReactDOM is react-dom/client on current hosts — it has NO
+// createPortal, so an unguarded call crashes the page (campaign trap #1).
+// Fall back to inline rendering: the overlay is position:fixed, so it
+// still covers the viewport without a portal.
+function __portalOrInline(node) {
+  const rd = typeof window !== 'undefined' ? window.ReactDOM : null;
+  if (rd && typeof rd.createPortal === 'function') return rd.createPortal(node, document.body);
+  return node;
+}
+
 const BRAND = '#E57000';
 const PROBE_SECTIONS = ['version', 'nodes', 'resources', 'guests', 'storage', 'tasks', 'backup', 'cluster', 'certificates', 'subscription'];
 
@@ -64,7 +75,7 @@ function ProbeModal({ server, onClose }) {
 
   React.useEffect(() => { runProbe(); }, [runProbe]);
 
-  return ReactDOM.createPortal(
+  return __portalOrInline(
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', padding: 16 }}>
       <div className="px-panel" onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 860, padding: 20, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
@@ -93,9 +104,7 @@ function ProbeModal({ server, onClose }) {
           )}
         </div>
       </div>
-    </div>,
-    document.body
-  );
+    </div>);
 }
 
 export default function PxSettingsPage() {

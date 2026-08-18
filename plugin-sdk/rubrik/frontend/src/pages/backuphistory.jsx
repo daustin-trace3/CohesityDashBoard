@@ -13,6 +13,17 @@ import {
   PageHeader, Badge, LoadingPanel, CalendarIcon, SearchIcon, XIcon, EmptyState,
 } from '../ui';
 
+
+// window.ReactDOM is react-dom/client on current hosts — it has NO
+// createPortal, so an unguarded call crashes the page (campaign trap #1).
+// Fall back to inline rendering: the overlay is position:fixed, so it
+// still covers the viewport without a portal.
+function __portalOrInline(node) {
+  const rd = typeof window !== 'undefined' ? window.ReactDOM : null;
+  if (rd && typeof rd.createPortal === 'function') return rd.createPortal(node, document.body);
+  return node;
+}
+
 function ArrowLeftRightIcon({ size = 16, style }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" style={style}>
@@ -241,7 +252,7 @@ export default function BackupHistoryPage() {
         </div>
       )}
 
-      {modal && ReactDOM.createPortal(
+      {modal && __portalOrInline(
         <div
           style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(4px)', padding: 16 }}
           onClick={() => setModal(null)}
@@ -340,9 +351,7 @@ export default function BackupHistoryPage() {
               ))}
             </div>
           </div>
-        </div>,
-        document.body
-      )}
+        </div>)}
     </div>
   );
 }

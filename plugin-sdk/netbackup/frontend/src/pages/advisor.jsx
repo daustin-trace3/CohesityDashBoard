@@ -10,6 +10,17 @@ import { apiGet, apiSend } from './helpers.js';
 
 injectStyles();
 
+
+// window.ReactDOM is react-dom/client on current hosts — it has NO
+// createPortal, so an unguarded call crashes the page (campaign trap #1).
+// Fall back to inline rendering: the overlay is position:fixed, so it
+// still covers the viewport without a portal.
+function __portalOrInline(node) {
+  const rd = typeof window !== 'undefined' ? window.ReactDOM : null;
+  if (rd && typeof rd.createPortal === 'function') return rd.createPortal(node, document.body);
+  return node;
+}
+
 const TABS = [
   { slug: 'backup-health', label: 'Backup Health', blurb: '7-day job stats by policy and state, failing policies, stale clients, and open issues.' },
   { slug: 'capacity-planning', label: 'Capacity Planning', blurb: 'Storage unit and disk pool usage, growth trend, and front-end capacity by workload.' },
@@ -123,7 +134,7 @@ function ReportModal({ tab, initialReport, enabled, autoRun, onClose, onUpdated 
     if (autoRun && !didAuto.current) { didAuto.current = true; run(); }
   }, [autoRun, run]);
 
-  return ReactDOM.createPortal(
+  return __portalOrInline(
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', padding: 16 }}>
       <div className="nb-panel" onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 720, maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '16px 20px', borderBottom: '1px solid var(--nb-border)' }}>
@@ -174,9 +185,7 @@ function ReportModal({ tab, initialReport, enabled, autoRun, onClose, onUpdated 
           </div>
         )}
       </div>
-    </div>,
-    document.body
-  );
+    </div>);
 }
 
 function ReportTile({ tab, state, onOpen, onRun }) {

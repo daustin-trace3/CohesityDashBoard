@@ -153,7 +153,10 @@ module.exports = {
   name: 'Nutanix',
   apiVersion: 1,
   color: '#7855FA',
-  version: '1.0.0',
+  // No hardcoded version: it overrides the packaged manifest.json, pins the
+  // plugins DB row forever, and — because the bundle cache-buster is
+  // ?v=<version> — makes CDNs serve the OLD frontend bundle after every
+  // upgrade (campaign trap #5; this exact line masked the 1.0.1 upgrade).
   migrations,
   createRouter(coreApi) {
     return createRouter(coreApi);
