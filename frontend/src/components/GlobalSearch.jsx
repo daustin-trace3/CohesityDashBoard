@@ -6,9 +6,7 @@ import client from '../api/client';
 import { useSearch } from '../context';
 
 const PLATFORM_COLORS = {
-  cohesity: '#6CB33F', pure: '#FF6B00', netapp: '#0067C5', zerto: '#EE3124',
-  vcenter: '#0091DA', dell: '#007DB8', aria: '#00A2C7', ariaops: '#78BE20',
-  nutanix: '#7855FA', unifi: '#006FFF',
+  cohesity: '#6CB33F', nutanix: '#7855FA',
 };
 
 /**

@@ -28,7 +28,6 @@ const cohesityObject360Router = require('./routes/cohesityObject360');
 const gflagsRouter = require('./routes/gflags');
 const licenseRouter = require('./routes/license');
 const releaseNotesRouter = require('./routes/releaseNotes');
-const pure1Router = require('./routes/pure1');
 const dnsRouter = require('./routes/dns');
 const searchRouter = require('./routes/search');
 const server360Router = require('./routes/server360');
@@ -195,11 +194,6 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // manage for most routes, the plugin's own namespace for bundle.js, no
   // gate for frontend-manifest) — no blanket guard here.
   app.use('/api/plugins', pluginsRouter);
-  // Seam: Pure1 cloud stays a static mount — the dispatcher only serves
-  // /api/<pluginId>/*, and pure1 is a second mount alongside the 'pure'
-  // plugin's own /api/pure/*. Folds in once its frontend paths migrate
-  // under /pure in a later WP.
-  app.use('/api/pure1', requirePermission(platformPermission('pure')), pure1Router);
   // /api/dns is reachable to any authenticated caller (no permission gate).
   app.use('/api/dns', dnsRouter);
   // /api/release-notes is reachable to any authenticated caller (no permission gate).

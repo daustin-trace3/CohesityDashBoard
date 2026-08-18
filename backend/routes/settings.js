@@ -97,7 +97,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled, dnsServer,
+      platformCohesityEnabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -106,15 +106,6 @@ router.put('/', (req, res, next) => {
     const resolve = (incoming, key) => (incoming !== undefined ? !!incoming : current[key]);
     const anyEnabled = [
       resolve(platformCohesityEnabled, 'platformCohesityEnabled'),
-      resolve(platformPureEnabled, 'platformPureEnabled'),
-      resolve(platformNetappEnabled, 'platformNetappEnabled'),
-      resolve(platformZertoEnabled, 'platformZertoEnabled'),
-      resolve(platformVcenterEnabled, 'platformVcenterEnabled'),
-      resolve(platformDellEnabled, 'platformDellEnabled'),
-      resolve(platformAriaEnabled, 'platformAriaEnabled'),
-      resolve(platformAriaopsEnabled, 'platformAriaopsEnabled'),
-      resolve(platformAwsEnabled, 'platformAwsEnabled'),
-      resolve(platformUnifiEnabled, 'platformUnifiEnabled'),
     ].some(Boolean);
     if (!anyEnabled) {
       return res.status(400).json({ error: 'At least one platform must remain enabled.' });
@@ -151,42 +142,6 @@ router.put('/', (req, res, next) => {
     if (platformCohesityEnabled !== undefined) {
       setSetting('platform_cohesity_enabled', platformCohesityEnabled ? '1' : '0');
       applyPlatformEnabled('cohesity', !!platformCohesityEnabled);
-    }
-    if (platformPureEnabled !== undefined) {
-      setSetting('platform_pure_enabled', platformPureEnabled ? '1' : '0');
-      applyPlatformEnabled('pure', !!platformPureEnabled);
-    }
-    if (platformNetappEnabled !== undefined) {
-      setSetting('platform_netapp_enabled', platformNetappEnabled ? '1' : '0');
-      applyPlatformEnabled('netapp', !!platformNetappEnabled);
-    }
-    if (platformZertoEnabled !== undefined) {
-      setSetting('platform_zerto_enabled', platformZertoEnabled ? '1' : '0');
-      applyPlatformEnabled('zerto', !!platformZertoEnabled);
-    }
-    if (platformVcenterEnabled !== undefined) {
-      setSetting('platform_vcenter_enabled', platformVcenterEnabled ? '1' : '0');
-      applyPlatformEnabled('vcenter', !!platformVcenterEnabled);
-    }
-    if (platformDellEnabled !== undefined) {
-      setSetting('platform_dell_enabled', platformDellEnabled ? '1' : '0');
-      applyPlatformEnabled('dell', !!platformDellEnabled);
-    }
-    if (platformAriaEnabled !== undefined) {
-      setSetting('platform_aria_enabled', platformAriaEnabled ? '1' : '0');
-      applyPlatformEnabled('aria', !!platformAriaEnabled);
-    }
-    if (platformAriaopsEnabled !== undefined) {
-      setSetting('platform_ariaops_enabled', platformAriaopsEnabled ? '1' : '0');
-      applyPlatformEnabled('ariaops', !!platformAriaopsEnabled);
-    }
-    if (platformAwsEnabled !== undefined) {
-      setSetting('platform_aws_enabled', platformAwsEnabled ? '1' : '0');
-      applyPlatformEnabled('aws', !!platformAwsEnabled);
-    }
-    if (platformUnifiEnabled !== undefined) {
-      setSetting('platform_unifi_enabled', platformUnifiEnabled ? '1' : '0');
-      applyPlatformEnabled('unifi', !!platformUnifiEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));

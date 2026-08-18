@@ -126,7 +126,7 @@ export default function LoginPage() {
 
           <div className="grid grid-cols-3 gap-3 mt-10 max-w-2xl">
             {[
-              { icon: Layers, title: 'Multi-Platform', text: 'Cohesity · Pure · NetApp · Zerto · vCenter · Dell · Aria' },
+              { icon: Layers, title: 'Multi-Platform', text: 'Cohesity, extensible with installable platform plugins' },
               { icon: Activity, title: 'Ops Rollup', text: 'Estate health and attention items at a glance' },
               { icon: ShieldCheck, title: 'AI Insights', text: 'Analysis with on-box anonymization' },
             ].map(({ icon: Icon, title, text }) => (

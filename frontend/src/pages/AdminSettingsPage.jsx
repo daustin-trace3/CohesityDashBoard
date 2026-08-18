@@ -13,14 +13,6 @@ const LOCAL_SECTIONS = ['ai', 'platforms', 'license', 'notifications'];
 
 const NOTIFY_PLATFORMS = [
   { key: 'cohesity', label: 'Cohesity' },
-  { key: 'pure', label: 'Pure Storage' },
-  { key: 'netapp', label: 'NetApp' },
-  { key: 'zerto', label: 'Zerto' },
-  { key: 'vcenter', label: 'VMware vCenter' },
-  { key: 'dell', label: 'Dell (OME)' },
-  { key: 'aria', label: 'Aria Automation' },
-  { key: 'aws', label: 'AWS' },
-  { key: 'unifi', label: 'Ubiquiti UniFi' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,

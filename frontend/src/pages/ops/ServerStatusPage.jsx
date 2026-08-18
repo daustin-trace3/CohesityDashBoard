@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { Crosshair, Search, Server, ShieldCheck, ArrowLeftRight, FolderTree, Package, Loader2 } from 'lucide-react';
+import { Crosshair, Search, ShieldCheck, Loader2 } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge } from '../../components/ui/primitives';
 
@@ -11,9 +11,6 @@ const fmtBytes = (b) => {
   if (b >= 1e6) return `${(b / 1e6).toLocaleString(undefined, { maximumFractionDigits: 1 })} MB`;
   return `${Number(b).toLocaleString()} B`;
 };
-const fmtMem = (mb) => mb == null ? '—' : mb >= 1024 ? `${(mb / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB` : `${mb} MB`;
-const fmtUptime = (s) => s == null ? '—' : `${(s / 86400).toLocaleString(undefined, { maximumFractionDigits: 1 })} d`;
-const statusTone = (s) => s === 'green' ? 'ok' : s === 'yellow' ? 'warn' : s === 'red' ? 'crit' : 'neutral';
 const runTone = (s) => s === 'Succeeded' || s === 'SucceededWithWarning' ? 'ok' : s === 'Failed' ? 'crit' : s ? 'warn' : 'neutral';
 const fmtAgo = (ms) => {
   const d = Math.floor((Date.now() - ms) / 86400000);
@@ -23,10 +20,6 @@ const fmtAgo = (ms) => {
 // Same brand colors as the global search dropdown's platform dots.
 const PLATFORM_META = {
   cohesity: { label: 'Cohesity', color: '#6CB33F' },
-  netapp: { label: 'NetApp', color: '#0067C5' },
-  zerto: { label: 'Zerto', color: '#EE3124' },
-  vcenter: { label: 'vCenter', color: '#0091DA' },
-  aria: { label: 'Aria Automation', color: '#00A2C7' },
 };
 
 function PlatformChip({ platform }) {
@@ -87,9 +80,8 @@ export default function ServerStatusPage() {
     return () => clearTimeout(t);
   }, [input]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const vm = data?.vcenter;
   const pluginSections = data?.plugins || [];
-  const nothingFound = data && !data.vcenter && !data.cohesity && !data.zerto && !data.netapp && !data.aria && !pluginSections.length;
+  const nothingFound = data && !data.cohesity && !pluginSections.length;
 
   return (
     <div className="animate-fade-in flex flex-col gap-4">
@@ -128,47 +120,6 @@ export default function ServerStatusPage() {
         <div className="panel p-6 text-sm text-ink-muted text-center">
           No platform has data for “{data.query}”. Check the spelling, or the server may not be inventoried yet.
         </div>
-      )}
-
-      {/* vCenter — identity & compute */}
-      {vm && (
-        <Panel title={`Compute — ${vm.vcenter_name}`} icon={Server} actions={<PlatformChip platform="vcenter" />}>
-          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
-            <Fact label="VM">{vm.name}</Fact>
-            <Fact label="Guest Hostname">{vm.guest_hostname || '—'}</Fact>
-            <Fact label="Power"><Badge tone={String(vm.power_state).includes('ON') || String(vm.power_state) === 'poweredOn' ? 'ok' : 'neutral'}>{String(vm.power_state || '—').replace(/^POWERED_/, '')}</Badge></Fact>
-            <Fact label="Health"><Badge tone={statusTone(vm.overall_status)}>{vm.overall_status || 'unknown'}</Badge></Fact>
-            <Fact label="CPU">{vm.cpu_count ?? '—'} vCPU{vm.cpu_pct != null ? ` · ${vm.cpu_pct}%` : ''}</Fact>
-            <Fact label="Memory">{fmtMem(vm.memory_mb)}{vm.mem_pct != null ? ` · ${vm.mem_pct}%` : ''}</Fact>
-            <Fact label="Guest OS">{vm.guest_os || '—'}</Fact>
-            <Fact label="ESX Host">{vm.host_name || '—'}</Fact>
-            <Fact label="Cluster">{vm.cluster_name || '—'}</Fact>
-            <Fact label="Uptime">{fmtUptime(vm.uptime_seconds)}</Fact>
-            <Fact label="Datastores">{(vm.datastores || []).join(', ') || '—'}</Fact>
-            <Fact label="Networks">{(vm.networks || []).join(', ') || '—'}</Fact>
-          </div>
-        </Panel>
-      )}
-
-      {/* vRA provenance */}
-      {data?.aria && (
-        <Panel title="Provisioning" icon={Package} actions={<PlatformChip platform="aria" />}>
-          {data.aria.deployments.map((d) => (
-            <div key={d.id} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-2">
-              <Fact label="Deployment">{d.name}</Fact>
-              <Fact label="Project">{d.project_name || '—'}</Fact>
-              <Fact label="Status"><Badge tone={String(d.status).includes('SUCCESS') || String(d.status) === 'CREATE_SUCCESSFUL' ? 'ok' : 'info'}>{d.status || '—'}</Badge></Fact>
-              <Fact label="Created By">{d.created_by || '—'}</Fact>
-              <Fact label="Created">{d.created_at_src ? String(d.created_at_src).slice(0, 10) : '—'}</Fact>
-              <Fact label="Lease Expires">{d.lease_expire_at ? String(d.lease_expire_at).slice(0, 10) : '—'}</Fact>
-            </div>
-          ))}
-          {data.aria.resources.map((r) => (
-            <p key={r.id} className="text-[11px] text-ink-faint tnum">
-              resource {r.name} · {r.type || 'unknown type'} · {r.state || '—'}{r.ip_addresses.length ? ` · ${r.ip_addresses.join(', ')}` : ''} · {r.instance_name}
-            </p>
-          ))}
-        </Panel>
       )}
 
       {/* Cohesity backup posture */}
@@ -236,38 +187,6 @@ export default function ServerStatusPage() {
           ))}
         </Panel>
       ))}
-
-      {/* Zerto DR */}
-      {data?.zerto && (
-        <Panel title="Disaster Recovery" icon={ArrowLeftRight} actions={<PlatformChip platform="zerto" />}>
-          {data.zerto.vms.map((z) => (
-            <div key={z.id} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-3">
-              <Fact label="VPG">{z.vpg_names || '—'}</Fact>
-              <Fact label="VPG Status">{z.vpg_statuses || '—'}</Fact>
-              <Fact label="Protected Site">{z.protected_site || '—'}</Fact>
-              <Fact label="Recovery Site">{z.recovery_site || '—'}</Fact>
-              <Fact label="Journal Storage">{z.used_storage_mb != null ? fmtMem(z.used_storage_mb) : '—'}</Fact>
-            </div>
-          ))}
-        </Panel>
-      )}
-
-      {/* NetApp live mounts */}
-      {data?.netapp && (
-        <Panel title="Storage Mounts" icon={FolderTree} actions={<PlatformChip platform="netapp" />}>
-          {[...data.netapp.nfs.map((m) => ({ ...m, proto: m.protocol || 'NFS' })),
-            ...data.netapp.smb.map((m) => ({ ...m, proto: m.protocol || 'SMB' }))].map((m, i) => (
-            <div key={i} className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3 mb-2 border-b border-cohesity-border/40 last:border-0 pb-2">
-              <Fact label="Protocol"><Badge tone="info">{m.proto}</Badge></Fact>
-              <Fact label="Volume">{m.volume_name || '—'}</Fact>
-              <Fact label="SVM / Cluster">{m.svm_name || '—'} · {m.array_name}</Fact>
-              <Fact label="Client IP">{m.client_ip}</Fact>
-              <Fact label={m.smb_user != null ? 'User' : 'Server IP'}>{m.smb_user ?? m.server_ip ?? '—'}</Fact>
-              <Fact label="Volume Used">{m.volume?.size_bytes != null ? `${fmtBytes(m.volume.used_bytes)} / ${fmtBytes(m.volume.size_bytes)}${m.volume.used_percent != null ? ` (${Math.round(m.volume.used_percent)}%)` : ''}` : '—'}</Fact>
-            </div>
-          ))}
-        </Panel>
-      )}
     </div>
   );
 }

@@ -4,22 +4,14 @@ const { pollCluster } = require('../services/poller');
 const { listProtectionGroupsV2, getProtectionGroupRunsV2 } = require('../services/cohesityApi');
 const pollerStatus = require('../services/pollerStatus');
 const registry = require('../core/registry');
-const { getSetting } = require('../services/settings');
 const router = express.Router();
 
 // Per-plugin metrics-history table + array-key column, for the lastCapture
-// lookup in each entity's status row. Pure/NetApp today; any future platform
-// plugin with a metrics_history table + statusTables[0] as its arrays table
-// can add an entry here.
-const PLATFORM_METRICS_HISTORY = {
-  pure: { arraysTable: 'pure_arrays', metricsTable: 'pure_metrics_history', arrayIdColumn: 'array_id' },
-  netapp: { arraysTable: 'netapp_arrays', metricsTable: 'netapp_metrics_history', arrayIdColumn: 'array_id' },
-  vcenter: { arraysTable: 'vcenter_vcenters', metricsTable: 'vcenter_metrics_history', arrayIdColumn: 'vcenter_id' },
-  dell: { arraysTable: 'dell_ome_instances', metricsTable: 'dell_metrics_history', arrayIdColumn: 'ome_id' },
-  aria: { arraysTable: 'aria_instances', metricsTable: 'aria_metrics_history', arrayIdColumn: 'instance_id' },
-  ariaops: { arraysTable: 'ariaops_instances', metricsTable: 'ariaops_metrics_history', arrayIdColumn: 'instance_id' },
-  aws: { arraysTable: 'aws_accounts', metricsTable: 'aws_metrics_history', arrayIdColumn: 'account_id' },
-};
+// lookup in each entity's status row. Any platform plugin with a
+// metrics_history table + statusTables[0] as its arrays table can add an
+// entry here (all built-in entries removed in the pluginization campaign —
+// converted platforms surface via registry.getMetricsHistoryContributors()).
+const PLATFORM_METRICS_HISTORY = {};
 
 /**
  * POST /api/poller/trigger — full poll of EVERY cluster, sequential to avoid
@@ -148,29 +140,6 @@ router.get('/status', (req, res, next) => {
       }
     }
 
-    // Pure: direct arrays (pure_arrays) build entities as above; SaaS-only
-    // deployments have no direct arrays, so fall back to the Pure1 account-
-    // global snapshot (mirrors the Zerto block below) instead of an empty
-    // entities:[] that the switcher reads as "no data" (grey).
-    const purePlugin = registry.getPlugin('pure');
-    let pureSection = platformSections.pure;
-    if (!pureSection.entities || pureSection.entities.length === 0) {
-      const pure1Row = db.prepare('SELECT MAX(captured_at) AS captured_at FROM pure1_metrics_history').get();
-      const pure1Capture = pure1Row ? pure1Row.captured_at : null;
-      const pure1Age = ageMinutes(pure1Capture);
-      const pure1State = pollerStatus.getState('pure1', 0);
-      const pure1Interval = Number(getSetting('pure1_poll_interval_minutes')) || 15;
-      pureSection = {
-        enabled: purePlugin ? purePlugin.enabled : false,
-        isSyncing: pure1State.isSyncing,
-        lastRefreshEnd: pure1State.lastPollEnd,
-        lastDataCapture: strftime(pure1Capture),
-        ageMinutes: pure1Age,
-        isStale: pure1Age !== null ? pure1Age > pure1Interval * 2 + 5 : false,
-        failedSources: pure1State.lastPollStatus === 'error' ? [{ name: 'Pure1' }] : [],
-      };
-    }
-
     // Licensing (global, no per-entity structure)
     const licenseRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM license_usage').get();
     const licenseCapture = licenseRow ? licenseRow.captured_at : null;
@@ -185,26 +154,11 @@ router.get('/status', (req, res, next) => {
     const viewsAge = ageMinutes(viewsCapture);
     const viewsState = pollerStatus.getState('views', 0);
 
-    // Zerto (account-global SaaS task — no per-entity structure)
-    const zertoPlugin = registry.getPlugin('zerto');
-    const zertoRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM zerto_metrics_history').get();
-    const zertoCapture = zertoRow ? zertoRow.captured_at : null;
-    const zertoAge = ageMinutes(zertoCapture);
-    const zertoState = pollerStatus.getState('zerto', 0);
-    const zertoInterval = Number(getSetting('zerto_poll_interval_minutes')) || 15;
-
     res.json({
       cohesity: {
         enabled: clusters.length > 0,
         entities: cohesityEntities,
       },
-      pure: pureSection,
-      netapp: platformSections.netapp,
-      vcenter: platformSections.vcenter,
-      dell: platformSections.dell,
-      aria: platformSections.aria,
-      ariaops: platformSections.ariaops,
-      aws: platformSections.aws,
       licensing: {
         enabled: true,
         isSyncing: licensingState.isSyncing,
@@ -221,15 +175,6 @@ router.get('/status', (req, res, next) => {
         lastDataCapture: strftime(viewsCapture),
         ageMinutes: viewsAge,
         isStale: viewsAge !== null ? viewsAge > licensingInterval * 2 + 5 : false,
-      },
-      zerto: {
-        enabled: zertoPlugin ? zertoPlugin.enabled : false,
-        isSyncing: zertoState.isSyncing,
-        lastRefreshEnd: zertoState.lastPollEnd,
-        lastDataCapture: strftime(zertoCapture),
-        ageMinutes: zertoAge,
-        isStale: zertoAge !== null ? zertoAge > zertoInterval * 2 + 5 : false,
-        failedSources: [],
       },
       ...extraPluginSections,
     });

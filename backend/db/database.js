@@ -4,15 +4,6 @@ const fs = require('fs');
 const { runMigrations } = require('../core/migrations');
 const coreMigrations = require('./migrations/core');
 const cohesityMigrations = require('./migrations/cohesity');
-const pureMigrations = require('./migrations/pure');
-const netappMigrations = require('./migrations/netapp');
-const zertoMigrations = require('./migrations/zerto');
-const vcenterMigrations = require('./migrations/vcenter');
-const dellMigrations = require('./migrations/dell');
-const ariaMigrations = require('./migrations/aria');
-const ariaopsMigrations = require('./migrations/ariaops');
-const awsMigrations = require('./migrations/aws');
-const unifiMigrations = require('./migrations/unifi');
 
 const DB_PATH = process.env.DASHBOARD_DB_PATH || path.join(__dirname, '..', 'data', 'cohesity.db');
 
@@ -35,14 +26,5 @@ db.pragma('busy_timeout = 5000');
 // fresh DB and an existing populated DB with an empty schema_migrations.
 runMigrations(db, 'core', coreMigrations);
 runMigrations(db, 'cohesity', cohesityMigrations);
-runMigrations(db, 'pure', pureMigrations);
-runMigrations(db, 'netapp', netappMigrations);
-runMigrations(db, 'zerto', zertoMigrations);
-runMigrations(db, 'vcenter', vcenterMigrations);
-runMigrations(db, 'dell', dellMigrations);
-runMigrations(db, 'aria', ariaMigrations);
-runMigrations(db, 'ariaops', ariaopsMigrations);
-runMigrations(db, 'aws', awsMigrations);
-runMigrations(db, 'unifi', unifiMigrations);
 
 module.exports = db;

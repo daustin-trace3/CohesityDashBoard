@@ -51,20 +51,12 @@ async function seedCore(db, { argon2, now }) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `);
 
-  const { encrypt } = require('../../services/encryption');
-
   const settings = {
-    platform_pure_enabled: '1',
-    platform_netapp_enabled: '1',
     license_entitled_dataprotect_tib: '2500',
     license_entitled_replica_tib: '1200',
     license_entitled_smartfiles_tib: '400',
     license_expiry: '2027-06-30',
     license_edition: 'DataProtect Premium',
-    pure1_app_id: 'demo-app-id',
-    pure1_private_key: encrypt('demo'),
-    netapp_aiqum_host: 'aiqum.demo.local',
-    netapp_aiqum_pass: encrypt('demo'),
   };
   for (const [key, value] of Object.entries(settings)) {
     setSetting.run(key, value);

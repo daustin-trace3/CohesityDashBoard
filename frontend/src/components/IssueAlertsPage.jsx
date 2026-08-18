@@ -6,17 +6,9 @@ import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from './u
 import { useTableControls, SortTh, TableControls, TablePager, CsvExportButton } from './ui/tableTools';
 
 // Shared Alerts page for platforms whose "alerts" are computed issues with a
-// lifecycle history (aria, vcenter) rather than vendor-raised alert rows.
-const CONFIG = {
-  aria: { brand: '#00A2C7', base: '/aria', instanceKey: 'instance', instanceLabel: 'Instance',
-    description: 'Computed issues across all registered Aria Automation instances, with open/resolved history' },
-  vcenter: { brand: '#0091DA', base: '/vcenter', instanceKey: 'vcenter', instanceLabel: 'vCenter',
-    description: 'Computed issues across all registered vCenters, with open/resolved history' },
-  aws: { brand: '#FF9900', base: '/aws', instanceKey: 'account', instanceLabel: 'Account',
-    description: 'Computed issues across AWS accounts, with open/resolved history' },
-  unifi: { brand: '#006FFF', base: '/unifi', instanceKey: 'source', instanceLabel: 'Controller',
-    description: 'Computed network issues — offline devices, PoE faults, port errors/flapping, WAN and WiFi quality.' },
-};
+// lifecycle history, rather than vendor-raised alert rows. No built-in
+// platform currently uses this (all prior consumers were removed).
+const CONFIG = {};
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];
 

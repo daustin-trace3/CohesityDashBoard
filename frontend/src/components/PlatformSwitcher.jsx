@@ -1,15 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, LayoutGrid, Check, Activity } from 'lucide-react';
-import dellLogo from '../assets/platform-logos/dell.png';
-import vcenterLogo from '../assets/platform-logos/vcenter.png';
-import netappLogo from '../assets/platform-logos/netapp.svg';
-import pureLogo from '../assets/platform-logos/pure.svg';
-import ariaLogo from '../assets/platform-logos/aria.png';
-import zertoLogo from '../assets/platform-logos/zerto.png';
 import nutanixLogo from '../assets/platform-logos/nutanix.png';
 import proxmoxLogo from '../assets/platform-logos/proxmox.png';
-import awsLogo from '../assets/platform-logos/aws.png';
-import unifiLogo from '../assets/platform-logos/unifi.png';
 import cohesityLogo from '../assets/platform-logos/cohesity.png';
 import rubrikLogo from '../assets/platform-logos/rubrik.png';
 import netbackupLogo from '../assets/platform-logos/netbackup.png';
@@ -62,7 +54,7 @@ const monogram = (label) => label.slice(0, 2);
 // Official brand marks (bundled SVGs, tinted to each platform's color).
 // Cohesity reuses the app's own hexagon+shield identity; platforms without
 // a mark (Zerto, future plugins) fall back to the monogram.
-const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, zerto: zertoLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo, rubrik: rubrikLogo, netbackup: netbackupLogo, unifi: unifiLogo };
+const LOGOS = { nutanix: nutanixLogo, proxmox: proxmoxLogo, cohesity: cohesityLogo, rubrik: rubrikLogo, netbackup: netbackupLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {

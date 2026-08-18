@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, LayoutGrid, ChevronDown, HelpCircle,
+  Bell, Server, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, LayoutGrid, ChevronDown, HelpCircle,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
@@ -63,7 +63,7 @@ export default function Layout() {
   const [clusterCount, setClusterCount] = useState(0);
   const [apiOnline, setApiOnline] = useState(true);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
-  // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
+  // Installed-plugin tabs stay hidden until the plugin is enabled.
   const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
   // Custom Dashboards ships dark — nav item hidden until enabled in Settings → Platforms.
   const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
@@ -76,12 +76,6 @@ export default function Layout() {
     window.addEventListener('switcher-mode-changed', onModeChange);
     return () => window.removeEventListener('switcher-mode-changed', onModeChange);
   }, []);
-  // Vendor-platform fleet summary, loaded only while a platform (Pure/NetApp) is active.
-  const [platformCount, setPlatformCount] = useState(0);
-  const [platformAlerts, setPlatformAlerts] = useState(0);
-  const [platformHealthy, setPlatformHealthy] = useState(0);
-  const [platformAlertList, setPlatformAlertList] = useState([]);
-
   const [networkSyncing, setNetworkSyncing] = useState(false);
   const [releaseNotes, setReleaseNotes] = useState(null);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
@@ -91,52 +85,12 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const pathname = location.pathname;
-  const isPure = pathname.startsWith('/pure');
-  const isNetapp = pathname.startsWith('/netapp');
-  const isZerto = pathname.startsWith('/zerto');
-  const isVcenter = pathname.startsWith('/vcenter');
-  const isDell = pathname.startsWith('/dell');
-  // 'ariaops' contains 'aria' — check it before/independent of isAria so a
-  // plain prefix match doesn't misfire across the two platforms.
-  const isAriaOps = pathname === '/ariaops' || pathname.startsWith('/ariaops/');
-  const isAria = !isAriaOps && (pathname === '/aria' || pathname.startsWith('/aria/'));
-  const isAws = pathname.startsWith('/aws');
-  const isUnifi = pathname.startsWith('/unifi');
   const isOps = pathname.startsWith('/ops');
-  const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell || isAria || isAriaOps || isAws || isUnifi;
-  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isAws ? 'aws' : isUnifi ? 'unifi' : null;
-  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isAws ? 'Instance' : isUnifi ? 'Device' : '';
 
   const { platforms: allPlatforms } = usePlatforms();
   const getPlatform = (id) => allPlatforms.find(p => p.id === id);
   const platforms = allPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color, logo: p.logo }));
   const navGroups = getPlatform('cohesity')?.navGroups || [];
-  const pureNavGroups = getPlatform('pure')?.navGroups || [];
-  const netappNavGroups = getPlatform('netapp')?.navGroups || [];
-  const zertoNavGroups = getPlatform('zerto')?.navGroups || [];
-  const vcenterNavGroups = getPlatform('vcenter')?.navGroups || [];
-  const dellNavGroups = getPlatform('dell')?.navGroups || [];
-  const ariaNavGroups = getPlatform('aria')?.navGroups || [];
-  const ariaopsNavGroups = getPlatform('ariaops')?.navGroups || [];
-  const awsNavGroups = getPlatform('aws')?.navGroups || [];
-  // UniFi feature-module toggles hide nav items for disabled modules; the
-  // flags ride the /unifi/overview payload (fetched in the header-feed effect).
-  // Modules ship OFF by default, so render conservatively until flags arrive.
-  const [unifiFeatures, setUnifiFeatures] = useState({ protect: false, wifi: false, security: false });
-  const unifiNavGroups = (getPlatform('unifi')?.navGroups || [])
-    .map((g) => ({ ...g, items: g.items.filter((it) => !it.feature || unifiFeatures[it.feature] !== false) }))
-    .filter((g) => g.items.length > 0);
-  useEffect(() => {
-    // The UniFi Settings page fires this after a feature-module toggle so the
-    // sidebar updates without a platform switch or reload.
-    const refreshUnifiFeatures = () => {
-      client.get('/unifi/features')
-        .then((r) => { if (r.data?.features) setUnifiFeatures(r.data.features); })
-        .catch(() => {});
-    };
-    window.addEventListener('platforms-changed', refreshUnifiFeatures);
-    return () => window.removeEventListener('platforms-changed', refreshUnifiFeatures);
-  }, []);
   const isActivePlatform = (id, pathname) => {
     if (id === 'ops') return pathname.startsWith('/ops');
     const platform = getPlatform(id);
@@ -144,10 +98,8 @@ export default function Layout() {
   };
   // Non-built-in (installed plugin) platform whose routes match the current
   // path, so plugin nav/branding shows up without special-casing each plugin.
-  const activePluginPlatform = !isPlatform
-    ? allPlatforms.find(p => p.isPlugin && !builtinIds.includes(p.id) && p.isActive(pathname))
-    : null;
-  const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
+  const activePluginPlatform = allPlatforms.find(p => p.isPlugin && !builtinIds.includes(p.id) && p.isActive(pathname));
+  const navPlatformKey = activePluginPlatform ? activePluginPlatform.id : 'cohesity';
 
   // Read the persisted open/closed map once per platform switch.
   useEffect(() => {
@@ -190,9 +142,10 @@ export default function Layout() {
   const gotoPlatform = (p) => navigate(p.route);
   const multiPlatform = visiblePlatforms.length > 1;
 
-  // Sync chip is scoped to the platform being viewed (Pure pages show Pure
-  // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
-  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(platformKey || 'cohesity');
+  // Sync chip is scoped to the platform being viewed (an installed plugin's
+  // own poller entry, or Cohesity); Cohesity pages also fold in the Helios
+  // licensing feed.
+  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(activePluginPlatform ? activePluginPlatform.id : 'cohesity');
 
   const toggleCollapsed = () => {
     setCollapsed(c => {
@@ -224,155 +177,6 @@ export default function Layout() {
     return () => clearInterval(interval);
   }, []);
 
-  // Vendor-platform fleet summary (count + open alerts + health) — only while a
-  // platform is active. Pure is backed by the Pure1 cloud fleet; NetApp uses its
-  // per-cluster overview.
-  useEffect(() => {
-    if (!platformKey) { setPlatformAlertList([]); return undefined; }
-    let cancelled = false;
-    const pureFleet = platformKey === 'pure';
-    const zerto = platformKey === 'zerto';
-    const vcenter = platformKey === 'vcenter';
-    const dell = platformKey === 'dell';
-    const aria = platformKey === 'aria';
-    const ariaops = platformKey === 'ariaops';
-    const aws = platformKey === 'aws';
-    const unifi = platformKey === 'unifi';
-    // Zerto's "entities" are sites; vCenter's are ESX hosts. Both platforms'
-    // overview endpoints are rollup objects, so entity lists come from their
-    // inventory endpoints; vCenter's "alerts" are its computed issues.
-    // Aria's "entities" are deployments, and its computed issues endpoint
-    // returns a plain array (not vCenter/Dell's {issues: [...]} rollup).
-    // Aria Operations' "entities" are polled resources (VMs/hosts/datastores),
-    // and its alerts endpoint is a flat array of raw alert rows (level/status).
-    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : dell ? '/dell/devices' : aria ? '/aria/deployments' : ariaops ? '/ariaops/resources' : aws ? '/aws/overview' : unifi ? '/unifi/overview' : `/${platformKey}/overview`;
-    const alertsUrl = pureFleet ? '/pure1/alerts' : (vcenter || dell) ? `/${platformKey}/overview` : aria ? '/aria/issues' : ariaops ? '/ariaops/alerts' : aws ? '/aws/issues' : unifi ? '/unifi/issues' : `/${platformKey}/alerts`;
-
-    const loadAlertList = () => client.get(alertsUrl)
-      .then(r => {
-        if (cancelled) return;
-        if (vcenter || dell) {
-          const rows = (r.data?.issues || []).filter(i => i.severity !== 'info');
-          setPlatformAlertList(rows.map((i, idx) => ({
-            id: idx,
-            cluster_name: i.vcenter || i.ome || '—',
-            severity: i.severity === 'critical' ? 'critical' : 'warning',
-            description: i.message,
-          })));
-          setPlatformAlerts(rows.length);
-        } else if (aria) {
-          const rows = (r.data || []).filter(i => i.severity !== 'info');
-          setPlatformAlertList(rows.map((i, idx) => ({
-            id: idx,
-            cluster_name: i.instance || '—',
-            severity: i.severity === 'error' ? 'critical' : 'warning',
-            description: i.message,
-          })));
-          setPlatformAlerts(rows.length);
-        } else if (ariaops) {
-          const rows = r.data || [];
-          setPlatformAlertList(rows.map(a => ({
-            id: `${a.instance_id}|${a.alert_id}`,
-            cluster_name: a.resource_name || a.instance_name || '—',
-            severity: (a.level === 'CRITICAL' || a.level === 'IMMEDIATE') ? 'critical' : 'warning',
-            description: a.definition_name || 'Alert',
-          })));
-          setPlatformAlerts(rows.length);
-        } else if (zerto) {
-          const rows = r.data || [];
-          setPlatformAlertList(rows.map(a => ({
-            id: a.alert_identifier,
-            cluster_name: a.site_name || '—',
-            severity: a.severity === 'Error' ? 'critical' : 'warning',
-            description: a.description || a.alert_type || 'Alert',
-          })));
-          setPlatformAlerts(rows.length);
-        } else if (pureFleet) {
-          const open = (r.data || []).filter(a => String(a.severity || '').toLowerCase() !== 'hidden');
-          setPlatformAlertList(open.map(a => ({
-            id: a.id,
-            cluster_name: a.arrayName || '—',
-            severity: a.severity,
-            description: a.summary || 'Alert',
-          })));
-          setPlatformAlerts(open.length);
-        } else if (aws) {
-          const rows = (r.data?.issues || []).filter(i => i.severity !== 'info');
-          setPlatformAlertList(rows.map((i, idx) => ({
-            id: idx,
-            cluster_name: i.account || '—',
-            severity: i.severity === 'critical' ? 'critical' : 'warning',
-            description: i.message,
-          })));
-          setPlatformAlerts(rows.length);
-        } else if (unifi) {
-          const rows = (r.data?.issues || []).filter(i => i.severity !== 'info');
-          setPlatformAlertList(rows.map((i, idx) => ({
-            id: idx,
-            cluster_name: i.source || '—',
-            severity: i.severity === 'critical' ? 'critical' : 'warning',
-            description: i.message,
-          })));
-          setPlatformAlerts(rows.length);
-        } else {
-          const rows = (r.data || []).filter(a => !a.resolved && a.state !== 'closed' && a.state !== 'resolved');
-          setPlatformAlertList(rows.map(a => ({
-            id: a.id,
-            cluster_name: a.array_name || a.cluster_name || '—',
-            severity: a.severity,
-            description: a.summary || a.message || a.description || a.alert_type || 'Alert',
-          })));
-        }
-      })
-      .catch(() => { if (!cancelled) setPlatformAlertList([]); });
-    const loadPlatform = () => client.get(overviewUrl)
-      .then(r => {
-        if (cancelled) return;
-        const rows = r.data || [];
-        setPlatformCount(aws ? ((r.data?.ec2?.total || 0) + (r.data?.lightsail?.total || 0))
-          : unifi ? (r.data?.deviceCounts?.total || 0)
-          : rows.length);
-        const now = Date.now();
-        if (zerto) {
-          setPlatformHealthy(rows.filter(s => s.connection_status === 'Connected').length);
-        } else if (vcenter) {
-          setPlatformHealthy(rows.filter(h => h.connection_state === 'CONNECTED').length);
-        } else if (dell) {
-          setPlatformHealthy(rows.filter(d => d.connection_state !== 0).length);
-        } else if (aria) {
-          setPlatformHealthy(rows.filter(d => !String(d.status || '').toUpperCase().includes('FAIL')).length);
-        } else if (ariaops) {
-          setPlatformHealthy(rows.filter(r => r.health === 'GREEN').length);
-        } else if (pureFleet) {
-          // Pure1 capacity metrics update daily; treat arrays reporting within
-          // ~3 days as operational. Alert count is set from the alerts fetch.
-          const healthy = rows.filter(a => a.capturedAt && (now - a.capturedAt) <= 3 * 86400000).length;
-          setPlatformHealthy(healthy);
-        } else if (aws) {
-          // Overview is a rollup object, not a bare entity array — count
-          // running instances (EC2 + Lightsail) as "healthy".
-          setPlatformHealthy((r.data?.ec2?.running || 0) + (r.data?.lightsail?.running || 0));
-        } else if (unifi) {
-          setPlatformHealthy((r.data?.deviceCounts?.total ?? 0) - (r.data?.deviceCounts?.offline ?? 0));
-          if (r.data?.features) setUnifiFeatures(r.data.features);
-        } else {
-          setPlatformAlerts(rows.reduce((s, a) => s + (a.open_alerts || 0), 0));
-          const healthy = rows.filter(a => {
-            if (!a.latest || !a.latest.captured_at) return false;
-            const ms = new Date(String(a.latest.captured_at).replace(' ', 'T') + 'Z').getTime();
-            const thresholdMin = (a.polling_interval_minutes || 15) * 2 + 5;
-            return Number.isFinite(ms) && (now - ms) <= thresholdMin * 60000;
-          }).length;
-          setPlatformHealthy(healthy);
-        }
-      })
-      .catch(() => {});
-    loadPlatform();
-    loadAlertList();
-    const id = setInterval(() => { loadPlatform(); loadAlertList(); }, 60000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [platformKey]);
-
   useEffect(() => {
     const loadPlatforms = () => client.get('/settings')
       .then(r => {
@@ -381,15 +185,6 @@ export default function Layout() {
       })
       .then(r => setEnabledPlatformIds([
         ...(r.data.platformCohesityEnabled !== false ? ['cohesity'] : []),
-        ...(r.data.platformPureEnabled ? ['pure'] : []),
-        ...(r.data.platformNetappEnabled ? ['netapp'] : []),
-        ...(r.data.platformZertoEnabled ? ['zerto'] : []),
-        ...(r.data.platformVcenterEnabled ? ['vcenter'] : []),
-        ...(r.data.platformDellEnabled ? ['dell'] : []),
-        ...(r.data.platformAriaEnabled ? ['aria'] : []),
-        ...(r.data.platformAriaopsEnabled ? ['ariaops'] : []),
-        ...(r.data.platformAwsEnabled ? ['aws'] : []),
-        ...(r.data.platformUnifiEnabled ? ['unifi'] : []),
         // Installed plugins are enabled by definition (the backend only serves
         // active ones) — including when they shadow a built-in id the local
         // backend has no platform_<id>_enabled setting for.
@@ -418,7 +213,6 @@ export default function Layout() {
 
   // Swap the sidebar menu to match the active vendor platform.
   const baseNavGroups = isOps ? opsNavGroups
-    : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : isAria ? ariaNavGroups : isAriaOps ? ariaopsNavGroups : isAws ? awsNavGroups : isUnifi ? unifiNavGroups
     : activePluginPlatform ? activePluginPlatform.navGroups : navGroups;
 
   // Hide items the user lacks permission for. While auth is still loading,
@@ -434,17 +228,10 @@ export default function Layout() {
     }))
     .filter(group => group.items.length > 0);
 
-  // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
-  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isAws ? 'instance' : isUnifi ? 'device' : 'array';
-  const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
-  const footerOk = isPlatform ? platformAllOk : apiOnline;
-  const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
-  const footerDot = footerOk ? 'bg-status-ok shadow-glow-green' : footerPartial ? 'bg-status-warn' : 'bg-status-crit';
-  const footerHeadline = isPlatform
-    ? (platformCount === 0 ? `No ${noun}s connected`
-      : platformAllOk ? `All ${noun}s operational`
-      : `${platformHealthy} of ${platformCount} operational`)
-    : (apiOnline ? 'All systems operational' : 'API unreachable');
+  // Sidebar footer status — API reachability.
+  const footerOk = apiOnline;
+  const footerDot = footerOk ? 'bg-status-ok shadow-glow-green' : 'bg-status-crit';
+  const footerHeadline = apiOnline ? 'All systems operational' : 'API unreachable';
 
   return (
     <div className="h-screen flex flex-row bg-transparent overflow-hidden">
@@ -456,8 +243,8 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isAws ? 'AWS' : isUnifi ? 'Ubiquiti UniFi' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isAws ? '#FF9900' : isUnifi ? '#006FFF' : activePluginPlatform ? activePluginPlatform.color : undefined}
+          label={isOps ? 'Operations' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
+          accent={activePluginPlatform ? activePluginPlatform.color : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
@@ -528,9 +315,7 @@ export default function Layout() {
               <div className="leading-tight min-w-0">
                 <p className="text-[11px] font-medium text-ink truncate">{footerHeadline}</p>
                 <p className="text-[10px] text-ink-faint tnum">
-                  {isPlatform
-                    ? `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''} monitored`
-                    : `${clusterCount} cluster${clusterCount !== 1 ? 's' : ''} monitored`}
+                  {clusterCount} cluster{clusterCount !== 1 ? 's' : ''} monitored
                 </p>
                 {newestCapture && <LastUpdated date={newestCapture} prefix="Data" />}
               </div>
@@ -559,37 +344,23 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isAws ? 'AWS Dashboard' : isUnifi ? 'Ubiquiti UniFi Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
             {/* Plugin platforms have no entity-feed endpoints — hide the count chip
                 rather than showing the Cohesity fall-through. */}
             {!activePluginPlatform && (
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
-              {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
-              {isPlatform
-                ? `${platformCount} ${platformLabel}${platformCount !== 1 ? 's' : ''}`
-                : `${clusterCount} Cohesity Cluster${clusterCount !== 1 ? 's' : ''}`}
+              <Server size={11} className="text-brand" />
+              {clusterCount} Cohesity Cluster{clusterCount !== 1 ? 's' : ''}
             </span>
             )}
-            {activePluginPlatform ? null : isPlatform ? (
-              platformAlerts > 0 && (
-                <button
-                  onClick={() => navigate(`/${platformKey}/alerts`)}
-                  className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
-                >
-                  <Bell size={11} />
-                  {platformAlerts} alert{platformAlerts !== 1 ? 's' : ''}
-                </button>
-              )
-            ) : (
-              criticalCount > 0 && (
-                <button
-                  onClick={() => navigate('/cohesity/alerts')}
-                  className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
-                >
-                  <Bell size={11} />
-                  {criticalCount} critical
-                </button>
-              )
+            {!activePluginPlatform && criticalCount > 0 && (
+              <button
+                onClick={() => navigate('/cohesity/alerts')}
+                className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
+              >
+                <Bell size={11} />
+                {criticalCount} critical
+              </button>
             )}
             {/* Poller / network sync status — scoped to the active platform;
                 hidden when that platform has nothing registered */}
@@ -623,9 +394,9 @@ export default function Layout() {
 
           <div className="flex-shrink-0">
             <NotificationBell
-              count={isPlatform ? platformAlerts : alertCount}
-              alerts={isPlatform ? platformAlertList.slice(0, 10) : alerts.slice(0, 10)}
-              viewAllRoute={isPlatform ? `/${platformKey}/alerts` : '/cohesity/alerts'}
+              count={alertCount}
+              alerts={alerts.slice(0, 10)}
+              viewAllRoute={'/cohesity/alerts'}
             />
           </div>
 
