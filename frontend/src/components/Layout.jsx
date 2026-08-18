@@ -368,7 +368,7 @@ export default function Layout() {
             {/* Plugin platforms have no entity-feed endpoints — hide the count chip
                 rather than showing the Cohesity fall-through. The cohesity fallback
                 branch below also hides when cohesity itself isn't present. */}
-            {!activePluginPlatform && (isPlatform || cohesityPresent) && (
+            {!activePluginPlatform && cohesityPresent && (
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               <Server size={11} className="text-brand" />
               {clusterCount} Cohesity Cluster{clusterCount !== 1 ? 's' : ''}
@@ -413,7 +413,7 @@ export default function Layout() {
             <ReleaseNotesModal latest={releaseNotes?.latest} onClose={() => setReleaseNotesOpen(false)} />
           )}
 
-          {(isPlatform || cohesityPresent) && (
+          {cohesityPresent && (
           <div className="flex-shrink-0">
             <NotificationBell
               count={alertCount}
