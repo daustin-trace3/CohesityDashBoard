@@ -56,7 +56,18 @@ if (require.main === module) {
   app.listen(PORT, '0.0.0.0', () => {
     logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
     if (isDemo()) {
-      logger.info('[Demo] Demo mode — pollers disabled');
+      // Plugin createPoller().init is demo-inert (seeds fixtures, never
+      // schedules), so calling it here refreshes every installed plugin's
+      // demo data with fresh relative timestamps on each boot instead of
+      // letting it age until the demo looks dead.
+      logger.info('[Demo] Demo mode — pollers disabled; refreshing plugin demo seeds');
+      for (const entry of registry.listPlugins()) {
+        if (!entry.enabled || entry.status !== 'active') continue;
+        const handle = registry.getPollerHandle(entry.id);
+        if (handle && typeof handle.init === 'function') {
+          try { handle.init(); } catch { /* a failed seed must not block boot */ }
+        }
+      }
     } else if (process.env.RUN_POLLERS_INLINE === 'true') {
       // Legacy single-process mode: pollers share the API event loop, so
       // heavy poll cycles can stall API responses. Prefer the separate
