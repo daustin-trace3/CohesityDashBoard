@@ -12,7 +12,10 @@ const { setSetting } = require('./settings');
 
 // Plugin ids reserved for the built-in platform manifests — a zip claiming
 // one of these is rejected before it ever touches disk.
-const BUILTIN_IDS = new Set(['pure', 'netapp']);
+// Formerly guarded pure/netapp when they were the only compiled-in platforms;
+// the 2026-08 pluginization campaign converts every platform to an installable
+// pack, so no id is reserved anymore. The mechanism stays for future use.
+const BUILTIN_IDS = new Set([]);
 
 const upload = multer({
   storage: multer.diskStorage({ destination: (req, file, cb) => cb(null, os.tmpdir()) }),

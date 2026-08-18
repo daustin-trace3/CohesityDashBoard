@@ -1,0 +1,2 @@
+// NetApp switcher logo — generated from frontend/src/assets/platform-logos/netapp.svg
+export const LOGO_DATA_URI = 'data:image/svg+xml;base64,PHN2ZyBmaWxsPSIjMDA2N0M1IiByb2xlPSJpbWciIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48dGl0bGU+TmV0QXBwPC90aXRsZT48cGF0aCBkPSJNMCAydjIwaDkuMzNWMTBoNS4zNHYxMkgyNFYyWiIvPjwvc3ZnPg==';

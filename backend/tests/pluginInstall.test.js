@@ -187,11 +187,13 @@ describe('plugin install lifecycle', () => {
     expect(registry.getPlugin('demo').version).toBe('0.2.0');
   });
 
-  it('rejects an install claiming a built-in platform id', async () => {
+  it('no platform id is reserved anymore (2026-08 pluginization campaign)', async () => {
+    // BUILTIN_IDS used to guard pure/netapp; the campaign converts every
+    // platform to an installable pack, so the set is empty and a pack
+    // claiming a formerly-reserved id installs normally.
     const zipPath = await buildDemoZip({ id: 'pure' });
     const res = await request(app).post('/api/plugins/install').set('x-api-key', API_KEY).attach('plugin', zipPath, 'pure-0.1.0.iccplugin');
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/built-in/);
+    expect(res.status).toBe(200);
   });
 
   it('a plugin that is not entitled is registered but stays disabled', async () => {
