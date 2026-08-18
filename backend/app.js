@@ -5,6 +5,12 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
+// WP0.1: the static cohesity router requires below only exist while the
+// built-in is compiled in — announce that so routes can distinguish
+// "built-in present" from "stripped, plugin not yet installed" (the
+// phantom-cohesity rehearsal gap). The WP-E strip removes this line with
+// the requires.
+require('./core/registry').markBuiltin('cohesity');
 const clustersRouter = require('./routes/clusters');
 const metricsRouter = require('./routes/metrics');
 const alertsRouter = require('./routes/alerts');

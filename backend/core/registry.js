@@ -325,9 +325,18 @@ function _reset() {
   isEntitledOverride = null;
 }
 
+// WP0.1: platforms compiled into core (not registry-registered) announce
+// themselves here so routes can distinguish "built-in present" from
+// "stripped and not yet installed" — the phantom-cohesity rehearsal gap.
+const builtinIds = new Set();
+function markBuiltin(id) { builtinIds.add(id); }
+function isBuiltinPresent(id) { return builtinIds.has(id); }
+
 module.exports = {
   PLUGIN_API_VERSION,
   RESERVED_IDS,
+  markBuiltin,
+  isBuiltinPresent,
   init,
   registerPlugin,
   getPlugin,

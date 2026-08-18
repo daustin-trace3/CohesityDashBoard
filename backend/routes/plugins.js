@@ -120,7 +120,8 @@ router.get('/', requirePermission('admin:plugins:view'), (req, res) => {
   // exists (mirrors the frontend-manifest-wins philosophy). Today registry
   // never has id 'cohesity', so this is byte-identical to before.
   const hasCohesityPlugin = list.some((e) => e.id === 'cohesity');
-  res.json([...(hasCohesityPlugin ? [] : [cohesityRow()]), ...list]);
+  const syntheticCohesity = !hasCohesityPlugin && registry.isBuiltinPresent('cohesity');
+  res.json([...(syntheticCohesity ? [cohesityRow()] : []), ...list]);
 });
 
 /** POST /api/plugins/install — multipart field 'plugin'. Fresh id hot-adds;
@@ -174,7 +175,7 @@ router.post('/:id/enabled', requirePermission('admin:plugins:manage'), (req, res
   // WP0: the semi-core cohesity branch only applies while cohesity isn't a
   // real registry plugin — once one is registered, it flows through the
   // normal registry-managed branch below like any other plugin.
-  if (id === 'cohesity' && !registry.getPlugin('cohesity')) {
+  if (id === 'cohesity' && !registry.getPlugin('cohesity') && registry.isBuiltinPresent('cohesity')) {
     // Semi-core: only the setting exists (nav/API gating); no registry entry
     // or registry-managed poller to flip.
     const wantEnabled = !!(req.body && req.body.enabled);

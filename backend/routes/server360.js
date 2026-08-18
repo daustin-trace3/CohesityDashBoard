@@ -19,7 +19,7 @@ const router = express.Router();
 const platformEnabled = (id) => {
   if (id === 'cohesity') {
     const entry = registry.getPlugin('cohesity');
-    return entry ? entry.enabled : true;
+    return entry ? entry.enabled : registry.isBuiltinPresent('cohesity');
   }
   return String(getSetting(`platform_${id}_enabled`) ?? '0') === '1';
 };

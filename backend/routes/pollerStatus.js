@@ -65,13 +65,20 @@ router.get('/status', (req, res, next) => {
       return val.endsWith('Z') ? val : val + 'Z';
     }
 
-    // Cohesity clusters
-    const clusters = db.prepare('SELECT id, name, polling_interval_minutes FROM clusters').all();
-    const cohesityEntities = buildEntities(
-      clusters,
-      'SELECT captured_at FROM metrics_history WHERE cluster_id = ? ORDER BY captured_at DESC LIMIT 1',
-      'cohesity'
-    );
+    // Cohesity clusters — the `clusters`/`metrics_history` tables live in the
+    // cohesity pack's migrations (WP-E), so a host with the pack not yet
+    // installed (or removed) has neither. Degrade to an empty section
+    // instead of throwing, matching the extraPluginSections pattern below.
+    let clusters = [];
+    let cohesityEntities = [];
+    try {
+      clusters = db.prepare('SELECT id, name, polling_interval_minutes FROM clusters').all();
+      cohesityEntities = buildEntities(
+        clusters,
+        'SELECT captured_at FROM metrics_history WHERE cluster_id = ? ORDER BY captured_at DESC LIMIT 1',
+        'cohesity'
+      );
+    } catch { /* degrade: cohesity pack not installed */ }
 
     // Registry-driven platform plugins (pure, netapp): entities + enabled
     // state derive from the registry; the metrics-history table for the
@@ -140,17 +147,23 @@ router.get('/status', (req, res, next) => {
       };
     }
 
-    // Licensing (global, no per-entity structure)
-    const licenseRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM license_usage').get();
-    const licenseCapture = licenseRow ? licenseRow.captured_at : null;
+    // Licensing (global, no per-entity structure) — cohesity-owned table.
+    let licenseCapture = null;
+    try {
+      const licenseRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM license_usage').get();
+      licenseCapture = licenseRow ? licenseRow.captured_at : null;
+    } catch { /* degrade: cohesity pack not installed */ }
     const licenseAge = ageMinutes(licenseCapture);
     const licensingState = pollerStatus.getState('licensing', 0);
     // Licensing interval is 60 min (hardcoded in initLicensing hourly cron).
     const licensingInterval = 60;
 
-    // Views inventory (global, hourly cron in initViews)
-    const viewsRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM cohesity_views').get();
-    const viewsCapture = viewsRow ? viewsRow.captured_at : null;
+    // Views inventory (global, hourly cron in initViews) — cohesity-owned table.
+    let viewsCapture = null;
+    try {
+      const viewsRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM cohesity_views').get();
+      viewsCapture = viewsRow ? viewsRow.captured_at : null;
+    } catch { /* degrade: cohesity pack not installed */ }
     const viewsAge = ageMinutes(viewsCapture);
     const viewsState = pollerStatus.getState('views', 0);
 

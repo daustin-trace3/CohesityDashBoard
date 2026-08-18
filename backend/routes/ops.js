@@ -330,7 +330,7 @@ function healthOf(s) {
 // `p.id !== 'cohesity'` hardcode.
 function platformGateOk(id) {
   const entry = registry.getPlugin(id);
-  if (id === 'cohesity') return entry ? entry.enabled === true : true;
+  if (id === 'cohesity') return entry ? entry.enabled === true : registry.isBuiltinPresent('cohesity');
   return entry?.enabled === true;
 }
 
