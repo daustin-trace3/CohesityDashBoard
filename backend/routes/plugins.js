@@ -115,7 +115,12 @@ router.get('/', requirePermission('admin:plugins:view'), (req, res) => {
     };
   });
 
-  res.json([cohesityRow(), ...list]);
+  // WP0: the synthetic cohesityRow() is only injected while cohesity isn't a
+  // real registry plugin row — a real installed cohesity row wins once one
+  // exists (mirrors the frontend-manifest-wins philosophy). Today registry
+  // never has id 'cohesity', so this is byte-identical to before.
+  const hasCohesityPlugin = list.some((e) => e.id === 'cohesity');
+  res.json([...(hasCohesityPlugin ? [] : [cohesityRow()]), ...list]);
 });
 
 /** POST /api/plugins/install — multipart field 'plugin'. Fresh id hot-adds;
@@ -166,7 +171,10 @@ router.post('/install-from-url', requirePermission('admin:plugins:manage'), asyn
  *  routes/settings.js applyPlatformEnabled for pure/netapp). */
 router.post('/:id/enabled', requirePermission('admin:plugins:manage'), (req, res) => {
   const { id } = req.params;
-  if (id === 'cohesity') {
+  // WP0: the semi-core cohesity branch only applies while cohesity isn't a
+  // real registry plugin — once one is registered, it flows through the
+  // normal registry-managed branch below like any other plugin.
+  if (id === 'cohesity' && !registry.getPlugin('cohesity')) {
     // Semi-core: only the setting exists (nav/API gating); no registry entry
     // or registry-managed poller to flip.
     const wantEnabled = !!(req.body && req.body.enabled);

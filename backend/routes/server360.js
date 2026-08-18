@@ -12,7 +12,17 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
-const platformEnabled = (id) => id === 'cohesity' || String(getSetting(`platform_${id}_enabled`) ?? '0') === '1';
+// WP0: cohesity is gated on registry presence rather than a literal-id
+// hardcode — a future registry-installed cohesity plugin wins on its own
+// `enabled` flag; today it's never registered, so this is identical to the
+// old `id === 'cohesity'` hardcode.
+const platformEnabled = (id) => {
+  if (id === 'cohesity') {
+    const entry = registry.getPlugin('cohesity');
+    return entry ? entry.enabled : true;
+  }
+  return String(getSetting(`platform_${id}_enabled`) ?? '0') === '1';
+};
 const parseJson = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch { return fallback; } };
 const lower = (s) => String(s || '').toLowerCase();
 

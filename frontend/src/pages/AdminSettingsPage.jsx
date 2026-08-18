@@ -6,6 +6,7 @@ import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import AdminNav from '../components/AdminNav';
 import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
+import { usePlatforms } from '../platforms/PlatformsContext';
 
 // Sections rendered by this page; Users & Access and Plugins are their own
 // routed pages sharing the same AdminNav shell.
@@ -69,17 +70,22 @@ export default function AdminSettingsPage() {
   const [savingNotify, setSavingNotify] = useState(false);
   const [testingNotify, setTestingNotify] = useState(false);
 
+  const { platforms: allPlatforms } = usePlatforms();
+  const cohesityPresent = allPlatforms.some(p => p.id === 'cohesity');
+
   // Merge API-provided plugin platforms (Phase 1 manifest-driven core hooks)
   // with the static list, keeping the static list as the fallback/ordering base.
+  // The cohesity entry is dropped when cohesity itself isn't a registered
+  // platform, so the toggle disappears cleanly once it's converted to a plugin.
   const notifyPlatforms = [
-    ...NOTIFY_PLATFORMS,
+    ...NOTIFY_PLATFORMS.filter(p => p.key !== 'cohesity' || cohesityPresent),
     ...(notify?.platforms || []).filter(p => !NOTIFY_PLATFORMS.some(np => np.key === p.key)),
   ];
 
   useEffect(() => {
     Promise.allSettled([
       client.get('/settings'),
-      client.get('/cohesity/insights/ai/config'),
+      client.get('/settings/ai-config'),
       client.get('/license/status'),
       client.get('/settings/credentials'),
     ]).then(([s, c, l, cr]) => {

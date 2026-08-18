@@ -9,7 +9,7 @@ const RESERVED_IDS = new Set([
   'license', 'licensing', 'settings', 'poller', 'dns', 'import', 'insights',
   'advisor', 'ai-audit', 'analytics', 'governance', 'dashboard', 'helios',
   'alerts', 'metrics', 'hardware', 'clusters', 'replication', 'plugins',
-  'auth', 'users', 'cohesity', 'datasets', 'user-dashboards',
+  'auth', 'users', 'datasets', 'user-dashboards',
 ]);
 
 const ID_PATTERN = /^[a-z0-9-]+$/;
@@ -297,13 +297,23 @@ function getAlertPlatformPlugins() {
     .map((e) => ({ id: e.id, name: e.manifest.name }));
 }
 
-/** Express middleware mounted at `/api/:pluginId`. */
-function dispatch(req, res, next) {
-  const entry = plugins.get(req.params.pluginId);
+/**
+ * Dispatches directly to plugin `id`'s router (WP0: used by the legacy-alias
+ * shim in app.js to forward to a registry-installed 'cohesity' pack once one
+ * exists, without going through the `/api/:pluginId` param resolution).
+ * Same fall-through/disabled/error semantics as dispatch() below.
+ */
+function dispatchTo(id, req, res, next) {
+  const entry = plugins.get(id);
   if (!entry) return next();
   if (!entry.enabled) return res.status(404).json({ error: 'platform_disabled' });
   if (entry.status === 'error') return res.status(503).json({ error: 'platform_error' });
   return entry.router(req, res, next);
+}
+
+/** Express middleware mounted at `/api/:pluginId`. */
+function dispatch(req, res, next) {
+  return dispatchTo(req.params.pluginId, req, res, next);
 }
 
 /** Test-only: clears in-memory registry state between test cases. */
@@ -333,5 +343,6 @@ module.exports = {
   isEntitled,
   setIsEntitledFn,
   dispatch,
+  dispatchTo,
   _reset,
 };

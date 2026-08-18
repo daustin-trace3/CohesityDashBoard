@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import AdminSettingsPage from '../pages/AdminSettingsPage';
+import { PlatformsProvider } from '../platforms/PlatformsContext';
 
 vi.mock('../api/client', () => ({
   default: { get: vi.fn(), put: vi.fn(), post: vi.fn() },
@@ -30,10 +31,12 @@ const notifySettings = {
 function renderPage(initialPath = '/admin') {
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route path="/admin" element={<AdminSettingsPage />} />
-        <Route path="/admin/:section" element={<AdminSettingsPage />} />
-      </Routes>
+      <PlatformsProvider>
+        <Routes>
+          <Route path="/admin" element={<AdminSettingsPage />} />
+          <Route path="/admin/:section" element={<AdminSettingsPage />} />
+        </Routes>
+      </PlatformsProvider>
     </MemoryRouter>
   );
 }

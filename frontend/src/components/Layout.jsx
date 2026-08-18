@@ -58,13 +58,19 @@ function BrandMark({ collapsed, label = 'Cohesity', accent }) {
 }
 
 export default function Layout() {
+  const { platforms: allPlatforms } = usePlatforms();
+  const getPlatform = (id) => allPlatforms.find(p => p.id === id);
+  const cohesityPresent = !!getPlatform('cohesity');
+
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState([]);
   const [clusterCount, setClusterCount] = useState(0);
   const [apiOnline, setApiOnline] = useState(true);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
   // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
-  const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
+  const [enabledPlatformIds, setEnabledPlatformIds] = useState(() =>
+    cohesityPresent ? ['cohesity'] : (allPlatforms[0] ? [allPlatforms[0].id] : [])
+  );
   // Custom Dashboards ships dark — nav item hidden until enabled in Settings → Platforms.
   const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherMode] = useState(getSwitcherMode);
@@ -107,10 +113,9 @@ export default function Layout() {
   const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isAws ? 'aws' : isUnifi ? 'unifi' : null;
   const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isAws ? 'Instance' : isUnifi ? 'Device' : '';
 
-  const { platforms: allPlatforms } = usePlatforms();
-  const getPlatform = (id) => allPlatforms.find(p => p.id === id);
   const platforms = allPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color, logo: p.logo }));
-  const navGroups = getPlatform('cohesity')?.navGroups || [];
+  const primaryPlatformId = cohesityPresent ? 'cohesity' : (enabledPlatformIds[0] || null);
+  const navGroups = getPlatform(primaryPlatformId)?.navGroups || [];
   const pureNavGroups = getPlatform('pure')?.navGroups || [];
   const netappNavGroups = getPlatform('netapp')?.navGroups || [];
   const zertoNavGroups = getPlatform('zerto')?.navGroups || [];
@@ -147,7 +152,7 @@ export default function Layout() {
   const activePluginPlatform = !isPlatform
     ? allPlatforms.find(p => p.isPlugin && !builtinIds.includes(p.id) && p.isActive(pathname))
     : null;
-  const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
+  const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : (primaryPlatformId || 'cohesity'));
 
   // Read the persisted open/closed map once per platform switch.
   useEffect(() => {
@@ -186,13 +191,13 @@ export default function Layout() {
   };
 
   const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)))];
-  const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity');
+  const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || primaryPlatformId || 'cohesity');
   const gotoPlatform = (p) => navigate(p.route);
   const multiPlatform = visiblePlatforms.length > 1;
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
-  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(platformKey || 'cohesity');
+  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(platformKey || primaryPlatformId || 'cohesity');
 
   const toggleCollapsed = () => {
     setCollapsed(c => {
@@ -202,6 +207,7 @@ export default function Layout() {
   };
 
   useEffect(() => {
+    if (!cohesityPresent) return undefined;
     const load = async () => {
       const [alertResp, clusterResp] = await Promise.allSettled([
         client.get('/cohesity/alerts?dismissed=0&resolved=0'),
@@ -222,7 +228,21 @@ export default function Layout() {
     load();
     const interval = setInterval(load, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [cohesityPresent]);
+
+  // When cohesity isn't present, the header alert/cluster poll above never
+  // runs — derive API reachability from an endpoint every deployment has
+  // instead of leaving the shell stuck on the initial apiOnline=true guess.
+  useEffect(() => {
+    if (cohesityPresent) return undefined;
+    let cancelled = false;
+    const check = () => client.get('/ops/summary')
+      .then(() => { if (!cancelled) setApiOnline(true); })
+      .catch(() => { if (!cancelled) setApiOnline(false); });
+    check();
+    const interval = setInterval(check, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [cohesityPresent]);
 
   // Vendor-platform fleet summary (count + open alerts + health) — only while a
   // platform is active. Pure is backed by the Pure1 cloud fleet; NetApp uses its
@@ -380,7 +400,7 @@ export default function Layout() {
         return r;
       })
       .then(r => setEnabledPlatformIds([
-        ...(r.data.platformCohesityEnabled !== false ? ['cohesity'] : []),
+        ...(cohesityPresent && r.data.platformCohesityEnabled !== false ? ['cohesity'] : []),
         ...(r.data.platformPureEnabled ? ['pure'] : []),
         ...(r.data.platformNetappEnabled ? ['netapp'] : []),
         ...(r.data.platformZertoEnabled ? ['zerto'] : []),
@@ -561,8 +581,9 @@ export default function Layout() {
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
             <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isAws ? 'AWS Dashboard' : isUnifi ? 'Ubiquiti UniFi Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
             {/* Plugin platforms have no entity-feed endpoints — hide the count chip
-                rather than showing the Cohesity fall-through. */}
-            {!activePluginPlatform && (
+                rather than showing the Cohesity fall-through. The cohesity fallback
+                branch below also hides when cohesity itself isn't present. */}
+            {!activePluginPlatform && (isPlatform || cohesityPresent) && (
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform
@@ -581,7 +602,7 @@ export default function Layout() {
                 </button>
               )
             ) : (
-              criticalCount > 0 && (
+              cohesityPresent && criticalCount > 0 && (
                 <button
                   onClick={() => navigate('/cohesity/alerts')}
                   className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
@@ -621,13 +642,15 @@ export default function Layout() {
             <ReleaseNotesModal latest={releaseNotes?.latest} onClose={() => setReleaseNotesOpen(false)} />
           )}
 
+          {(isPlatform || cohesityPresent) && (
           <div className="flex-shrink-0">
             <NotificationBell
               count={isPlatform ? platformAlerts : alertCount}
               alerts={isPlatform ? platformAlertList.slice(0, 10) : alerts.slice(0, 10)}
-              viewAllRoute={isPlatform ? `/${platformKey}/alerts` : '/cohesity/alerts'}
+              viewAllRoute={isPlatform ? `/${platformKey}/alerts` : `/${primaryPlatformId || 'cohesity'}/alerts`}
             />
           </div>
+          )}
 
           {/* Global settings — estate-wide admin (AI keys, platforms, product license) */}
           {(authLoading || hasPermission('admin:settings:view')) && (
