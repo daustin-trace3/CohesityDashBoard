@@ -1,4 +1,4 @@
-import { useState, Suspense } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import DataProtectionPage from './pages/DataProtectionPage';
@@ -38,6 +38,13 @@ function withBoundary(element) {
 
 function AppRoutes() {
   const { platforms } = usePlatforms();
+  const { setActivePlatform } = usePlatform();
+
+  useEffect(() => {
+    if (!platforms.length) return;
+    const cohesity = platforms.some(p => p.id === 'cohesity');
+    setActivePlatform(cohesity ? 'cohesity' : platforms[0].id);
+  }, [platforms, setActivePlatform]);
 
   return (
     <Suspense fallback={null}>

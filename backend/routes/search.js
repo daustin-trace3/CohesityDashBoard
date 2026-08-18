@@ -29,7 +29,14 @@ const CATEGORIES = [
 ];
 
 const platformEnabled = (id) => {
-  if (id === 'cohesity') return true;
+  // WP0: cohesity is no longer a hardcoded always-on exception — it's gated
+  // on registry presence, so a future registry-installed cohesity plugin
+  // wins on its own `enabled` flag. Today it's never registered, so this is
+  // identical to the old `id === 'cohesity'` hardcode.
+  if (id === 'cohesity') {
+    const entry = registry.getPlugin('cohesity');
+    return entry ? entry.enabled : registry.isBuiltinPresent('cohesity');
+  }
   return String(getSetting(`platform_${id}_enabled`) ?? '0') === '1';
 };
 

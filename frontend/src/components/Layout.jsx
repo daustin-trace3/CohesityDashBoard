@@ -58,13 +58,19 @@ function BrandMark({ collapsed, label = 'Cohesity', accent }) {
 }
 
 export default function Layout() {
+  const { platforms: allPlatforms } = usePlatforms();
+  const getPlatform = (id) => allPlatforms.find(p => p.id === id);
+  const cohesityPresent = !!getPlatform('cohesity');
+
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState([]);
   const [clusterCount, setClusterCount] = useState(0);
   const [apiOnline, setApiOnline] = useState(true);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
   // Installed-plugin tabs stay hidden until the plugin is enabled.
-  const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
+  const [enabledPlatformIds, setEnabledPlatformIds] = useState(() =>
+    cohesityPresent ? ['cohesity'] : (allPlatforms[0] ? [allPlatforms[0].id] : [])
+  );
   // Custom Dashboards ships dark — nav item hidden until enabled in Settings → Platforms.
   const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherMode] = useState(getSwitcherMode);
@@ -87,10 +93,9 @@ export default function Layout() {
   const pathname = location.pathname;
   const isOps = pathname.startsWith('/ops');
 
-  const { platforms: allPlatforms } = usePlatforms();
-  const getPlatform = (id) => allPlatforms.find(p => p.id === id);
   const platforms = allPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color, logo: p.logo }));
-  const navGroups = getPlatform('cohesity')?.navGroups || [];
+  const primaryPlatformId = cohesityPresent ? 'cohesity' : (enabledPlatformIds[0] || null);
+  const navGroups = getPlatform(primaryPlatformId)?.navGroups || [];
   const isActivePlatform = (id, pathname) => {
     if (id === 'ops') return pathname.startsWith('/ops');
     const platform = getPlatform(id);
@@ -99,7 +104,7 @@ export default function Layout() {
   // Non-built-in (installed plugin) platform whose routes match the current
   // path, so plugin nav/branding shows up without special-casing each plugin.
   const activePluginPlatform = allPlatforms.find(p => p.isPlugin && !builtinIds.includes(p.id) && p.isActive(pathname));
-  const navPlatformKey = activePluginPlatform ? activePluginPlatform.id : 'cohesity';
+  const navPlatformKey = activePluginPlatform ? activePluginPlatform.id : (primaryPlatformId || 'cohesity');
 
   // Read the persisted open/closed map once per platform switch.
   useEffect(() => {
@@ -138,14 +143,14 @@ export default function Layout() {
   };
 
   const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)))];
-  const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity');
+  const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || primaryPlatformId || 'cohesity');
   const gotoPlatform = (p) => navigate(p.route);
   const multiPlatform = visiblePlatforms.length > 1;
 
   // Sync chip is scoped to the platform being viewed (an installed plugin's
   // own poller entry, or Cohesity); Cohesity pages also fold in the Helios
   // licensing feed.
-  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(activePluginPlatform ? activePluginPlatform.id : 'cohesity');
+  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(activePluginPlatform ? activePluginPlatform.id : (primaryPlatformId || 'cohesity'));
 
   const toggleCollapsed = () => {
     setCollapsed(c => {
@@ -155,6 +160,7 @@ export default function Layout() {
   };
 
   useEffect(() => {
+    if (!cohesityPresent) return undefined;
     const load = async () => {
       const [alertResp, clusterResp] = await Promise.allSettled([
         client.get('/cohesity/alerts?dismissed=0&resolved=0'),
@@ -175,7 +181,21 @@ export default function Layout() {
     load();
     const interval = setInterval(load, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [cohesityPresent]);
+
+  // When cohesity isn't present, the header alert/cluster poll above never
+  // runs — derive API reachability from an endpoint every deployment has
+  // instead of leaving the shell stuck on the initial apiOnline=true guess.
+  useEffect(() => {
+    if (cohesityPresent) return undefined;
+    let cancelled = false;
+    const check = () => client.get('/ops/summary')
+      .then(() => { if (!cancelled) setApiOnline(true); })
+      .catch(() => { if (!cancelled) setApiOnline(false); });
+    check();
+    const interval = setInterval(check, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [cohesityPresent]);
 
   useEffect(() => {
     const loadPlatforms = () => client.get('/settings')
@@ -184,7 +204,7 @@ export default function Layout() {
         return r;
       })
       .then(r => setEnabledPlatformIds([
-        ...(r.data.platformCohesityEnabled !== false ? ['cohesity'] : []),
+        ...(cohesityPresent && r.data.platformCohesityEnabled !== false ? ['cohesity'] : []),
         // Installed plugins are enabled by definition (the backend only serves
         // active ones) — including when they shadow a built-in id the local
         // backend has no platform_<id>_enabled setting for.
@@ -346,14 +366,15 @@ export default function Layout() {
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
             <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
             {/* Plugin platforms have no entity-feed endpoints — hide the count chip
-                rather than showing the Cohesity fall-through. */}
-            {!activePluginPlatform && (
+                rather than showing the Cohesity fall-through. The cohesity fallback
+                branch below also hides when cohesity itself isn't present. */}
+            {!activePluginPlatform && (isPlatform || cohesityPresent) && (
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               <Server size={11} className="text-brand" />
               {clusterCount} Cohesity Cluster{clusterCount !== 1 ? 's' : ''}
             </span>
             )}
-            {!activePluginPlatform && criticalCount > 0 && (
+            {!activePluginPlatform && cohesityPresent && criticalCount > 0 && (
               <button
                 onClick={() => navigate('/cohesity/alerts')}
                 className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
@@ -392,13 +413,15 @@ export default function Layout() {
             <ReleaseNotesModal latest={releaseNotes?.latest} onClose={() => setReleaseNotesOpen(false)} />
           )}
 
+          {(isPlatform || cohesityPresent) && (
           <div className="flex-shrink-0">
             <NotificationBell
               count={alertCount}
               alerts={alerts.slice(0, 10)}
-              viewAllRoute={'/cohesity/alerts'}
+              viewAllRoute={`/${primaryPlatformId || 'cohesity'}/alerts`}
             />
           </div>
+          )}
 
           {/* Global settings — estate-wide admin (AI keys, platforms, product license) */}
           {(authLoading || hasPermission('admin:settings:view')) && (

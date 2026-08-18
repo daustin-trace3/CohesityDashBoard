@@ -11,7 +11,7 @@ const listeners = new Set();
 
 function fetchStatus() {
   if (inflight) return inflight;
-  inflight = client.get('/cohesity/insights/ai/config')
+  inflight = client.get('/settings/ai-config')
     .then((r) => { cached = !!r.data?.enabled; })
     .catch(() => { cached = false; })
     .finally(() => {

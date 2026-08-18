@@ -5,11 +5,18 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
+// WP0.1: the static cohesity router requires below only exist while the
+// built-in is compiled in — announce that so routes can distinguish
+// "built-in present" from "stripped, plugin not yet installed" (the
+// phantom-cohesity rehearsal gap). The WP-E strip removes this line with
+// the requires.
+require('./core/registry').markBuiltin('cohesity');
 const clustersRouter = require('./routes/clusters');
 const metricsRouter = require('./routes/metrics');
 const alertsRouter = require('./routes/alerts');
 const hardwareRouter = require('./routes/hardware');
-const pollerRouter = require('./routes/poller');
+const pollerStatusRouter = require('./routes/pollerStatus');
+const pollerTriggerRouter = require('./routes/pollerTrigger');
 const heliosRouter = require('./routes/helios');
 const importRouter = require('./routes/import');
 const analyticsRouter = require('./routes/analytics');
@@ -34,6 +41,7 @@ const server360Router = require('./routes/server360');
 const opsRouter = require('./routes/ops');
 const datasetsRouter = require('./routes/datasets');
 const userDashboardsRouter = require('./routes/userDashboards');
+const aiConfigRouter = require('./routes/aiConfig');
 require('./services/coreDatasets').registerCoreDatasets();
 const { getSetting } = require('./services/settings');
 const authRouter = require('./routes/auth');
@@ -51,6 +59,42 @@ const demoPollGuard = require('./middleware/demoPollGuard');
 /** cohesity:<name>:view|manage — same permission for a mount and its deprecated alias (contract C8.6). */
 function cohesityPermission(name) {
   return (req) => `cohesity:${name}:${req.method === 'GET' ? 'view' : 'manage'}`;
+}
+
+/**
+ * WP0: table-driven legacy alias mounts (de-risking host prep for the
+ * cohesity .iccplugin conversion). Each entry's forwarder prefers the
+ * statically-required router (today, while cohesity is a compiled-in
+ * platform) and falls back to registry.dispatchTo('cohesity', ...) — with
+ * req.url rewritten to '/<name>' + req.url, matching the sub-path shape a
+ * combined cohesity plugin router would expect — only once that static
+ * router is removed. Zero behavior change today: the pack conversion later
+ * only has to delete the static require + the `router` field below.
+ */
+const LEGACY_ALIASES = [
+  { name: 'clusters', oldPath: '/api/clusters', newPath: '/api/cohesity/clusters', router: clustersRouter },
+  { name: 'metrics', oldPath: '/api/metrics', newPath: '/api/cohesity/metrics', router: metricsRouter },
+  { name: 'alerts', oldPath: '/api/alerts', newPath: '/api/cohesity/alerts', router: alertsRouter },
+  { name: 'hardware', oldPath: '/api/hardware', newPath: '/api/cohesity/hardware', router: hardwareRouter },
+  { name: 'helios', oldPath: '/api/helios', newPath: '/api/cohesity/helios', router: heliosRouter },
+  { name: 'import', oldPath: '/api/import', newPath: '/api/cohesity/import', router: importRouter },
+  { name: 'analytics', oldPath: '/api/analytics', newPath: '/api/cohesity/analytics', router: analyticsRouter },
+  { name: 'replication', oldPath: '/api/replication', newPath: '/api/cohesity/replication', router: replicationRouter },
+  { name: 'insights', oldPath: '/api/insights', newPath: '/api/cohesity/insights', router: insightsRouter },
+  { name: 'governance', oldPath: '/api/governance', newPath: '/api/cohesity/governance', router: governanceRouter },
+  { name: 'dashboard', oldPath: '/api/dashboard', newPath: '/api/cohesity/dashboard', router: dashboardRouter },
+  { name: 'advisor', oldPath: '/api/advisor', newPath: '/api/cohesity/advisor', router: advisorRouter },
+  { name: 'licensing', oldPath: '/api/licensing', newPath: '/api/cohesity/licensing', router: licensingRouter },
+];
+
+/** Same shim mechanism as LEGACY_ALIASES, for the /api/poller trigger
+ *  endpoints (cohesity-owned; not dual-mounted under /api/cohesity today). */
+function aliasForwarder(name, staticRouter) {
+  return (req, res, next) => {
+    if (staticRouter) return staticRouter(req, res, next);
+    req.url = `/${name}${req.url}`;
+    return registry.dispatchTo('cohesity', req, res, next);
+  };
 }
 
 /**
@@ -163,32 +207,38 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/cohesity/object-360', requirePermission(cohesityPermission('workloads')), cohesityObject360Router);
   app.use('/api/cohesity/gflags', requirePermission(cohesityPermission('gflags')), gflagsRouter);
 
-  app.use('/api/clusters', deprecated('/api/clusters', '/api/cohesity/clusters'), requirePermission(cohesityPermission('clusters')), clustersRouter);
-  app.use('/api/metrics', deprecated('/api/metrics', '/api/cohesity/metrics'), requirePermission(cohesityPermission('metrics')), metricsRouter);
-  app.use('/api/alerts', deprecated('/api/alerts', '/api/cohesity/alerts'), requirePermission(cohesityPermission('alerts')), alertsRouter);
-  app.use('/api/hardware', deprecated('/api/hardware', '/api/cohesity/hardware'), requirePermission(cohesityPermission('hardware')), hardwareRouter);
-  app.use('/api/helios', deprecated('/api/helios', '/api/cohesity/helios'), requirePermission(cohesityPermission('helios')), heliosRouter);
-  app.use('/api/import', deprecated('/api/import', '/api/cohesity/import'), requirePermission(cohesityPermission('import')), importRouter);
-  app.use('/api/analytics', deprecated('/api/analytics', '/api/cohesity/analytics'), requirePermission(cohesityPermission('analytics')), analyticsRouter);
-  app.use('/api/replication', deprecated('/api/replication', '/api/cohesity/replication'), requirePermission(cohesityPermission('replication')), replicationRouter);
-  app.use('/api/insights', deprecated('/api/insights', '/api/cohesity/insights'), requirePermission(cohesityPermission('insights')), insightsRouter);
-  app.use('/api/governance', deprecated('/api/governance', '/api/cohesity/governance'), requirePermission(cohesityPermission('governance')), governanceRouter);
-  app.use('/api/dashboard', deprecated('/api/dashboard', '/api/cohesity/dashboard'), requirePermission(cohesityPermission('dashboard')), dashboardRouter);
-  app.use('/api/advisor', deprecated('/api/advisor', '/api/cohesity/advisor'), requirePermission(cohesityPermission('advisor')), advisorRouter);
-  app.use('/api/licensing', deprecated('/api/licensing', '/api/cohesity/licensing'), requirePermission(cohesityPermission('licensing')), licensingRouter);
+  for (const alias of LEGACY_ALIASES) {
+    app.use(
+      alias.oldPath,
+      deprecated(alias.oldPath, alias.newPath),
+      requirePermission(cohesityPermission(alias.name)),
+      aliasForwarder(alias.name, alias.router)
+    );
+  }
 
   // /api/poller/status is reachable to any authenticated caller; every other
-  // poller endpoint (manual trigger) requires cohesity:poller:manage.
-  app.use('/api/poller', (req, res, next) => {
-    if (req.path === '/status') return next();
-    return requirePermission(() => 'cohesity:poller:manage')(req, res, next);
-  }, pollerRouter);
+  // poller endpoint (manual trigger) requires cohesity:poller:manage. Split
+  // into two routers (WP0, pure reorganization): status is core-owned,
+  // trigger endpoints are cohesity-owned and go through the same alias-shim
+  // forwarder as LEGACY_ALIASES above.
+  app.use('/api/poller', pollerStatusRouter);
+  app.use(
+    '/api/poller',
+    requirePermission(() => 'cohesity:poller:manage'),
+    aliasForwarder('poller', pollerTriggerRouter)
+  );
 
   app.use(
     '/api/settings',
     requirePermission((req) => `admin:settings:${req.method === 'GET' ? 'view' : 'manage'}`),
     settingsRouter
   );
+  // WP0 core seam: same JSON shape as GET /api/cohesity/insights/ai/config.
+  // Reachable to any authenticated caller (like /api/dns) — the old cohesity
+  // path only needed cohesity:insights:view, and this probe gates AI nav
+  // items for EVERY user, so an admin-only permission here would hide AI
+  // from non-admin viewers.
+  app.use('/api/settings/ai-config', aiConfigRouter);
   app.use('/api/ai-audit', requirePermission(() => 'admin:ai-audit:view'), aiAuditRouter);
   // Plugins router applies permissions per-route itself (admin:plugins:view|
   // manage for most routes, the plugin's own namespace for bundle.js, no

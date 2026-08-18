@@ -79,12 +79,23 @@ function healthOf(s) {
     : num(s.objects) === 0 ? 'unknown' : 'ok';
 }
 
+// WP0: cohesity's always-on exception is gated on registry presence rather
+// than a literal-id hardcode — a future registry-installed cohesity plugin
+// falls through to the same enabled-flag check as every other platform.
+// Today it's never registered, so this is identical to the old
+// `p.id !== 'cohesity'` hardcode.
+function platformGateOk(id) {
+  const entry = registry.getPlugin(id);
+  if (id === 'cohesity') return entry ? entry.enabled === true : registry.isBuiltinPresent('cohesity');
+  return entry?.enabled === true;
+}
+
 router.get('/summary', async (req, res) => {
   const cards = [];
   for (const p of PLATFORMS) {
     // Cohesity is always-on (enabled iff clusters exist — its summarizer
     // returns null when there are none); registry drives the rest.
-    if (p.id !== 'cohesity' && registry.getPlugin(p.id)?.enabled !== true) continue;
+    if (!platformGateOk(p.id)) continue;
     const base = { id: p.id, label: p.label, color: p.color, route: p.route };
     try {
       const s = await p.fn();
