@@ -16,11 +16,7 @@ let app;
 
 beforeAll(() => {
   const registry = require('../core/registry');
-  const pureManifest = require('../platforms/pure');
-  const netappManifest = require('../platforms/netapp');
   registry.init();
-  registry.registerPlugin(pureManifest);
-  registry.registerPlugin(netappManifest);
 
   const { createApp } = require('../app');
   app = createApp({ licenseGate: (req, res, next) => next() });

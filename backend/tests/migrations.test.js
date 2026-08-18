@@ -10,21 +10,44 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { runMigrations } from '../core/migrations.js';
 import coreMigrations from '../db/migrations/core.js';
 import cohesityMigrations from '../db/migrations/cohesity.js';
-import pureMigrations from '../db/migrations/pure.js';
-import netappMigrations from '../db/migrations/netapp.js';
-import zertoMigrations from '../db/migrations/zerto.js';
-import vcenterMigrations from '../db/migrations/vcenter.js';
-import dellMigrations from '../db/migrations/dell.js';
-import ariaMigrations from '../db/migrations/aria.js';
-import ariaopsMigrations from '../db/migrations/ariaops.js';
-import awsMigrations from '../db/migrations/aws.js';
-import unifiMigrations from '../db/migrations/unifi.js';
 
+const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
+
+// These 9 platforms were removed from core as part of the 2026-08
+// pluginization campaign and now only exist as installable .iccplugin
+// packs — their db/migrations/<id>.js files are gone. Load whichever are
+// still present (none, currently) so this file keeps working unmodified
+// if/when a platform is reintroduced as a built-in, and filter their
+// tables out of the legacy-equivalence checks below when absent.
+const PLATFORM_TABLE_PREFIXES = {
+  pure: ['pure_', 'pure1_'],
+  netapp: ['netapp_'],
+  zerto: ['zerto_'],
+  vcenter: ['vcenter_'],
+  dell: ['dell_'],
+  aria: ['aria_'],
+  ariaops: ['ariaops_'],
+  aws: ['aws_'],
+  unifi: ['unifi_'],
+};
+const removedMigrations = {};
+for (const id of Object.keys(PLATFORM_TABLE_PREFIXES)) {
+  try {
+    removedMigrations[id] = require(`../db/migrations/${id}.js`);
+  } catch {
+    removedMigrations[id] = null;
+  }
+}
+const ABSENT_PREFIXES = Object.entries(PLATFORM_TABLE_PREFIXES)
+  .filter(([id]) => !removedMigrations[id])
+  .flatMap(([, prefixes]) => prefixes);
+const isAbsentPlatformTable = (r) => ABSENT_PREFIXES.some((p) => r.tbl_name.startsWith(p) || r.name.startsWith(p));
 
 /**
  * Verbatim copy of the seven inline migration blocks that used to live in
@@ -151,15 +174,9 @@ function buildNewDb() {
   db.exec('PRAGMA foreign_keys = ON');
   runMigrations(db, 'core', coreMigrations);
   runMigrations(db, 'cohesity', cohesityMigrations);
-  runMigrations(db, 'pure', pureMigrations);
-  runMigrations(db, 'netapp', netappMigrations);
-  runMigrations(db, 'zerto', zertoMigrations);
-  runMigrations(db, 'vcenter', vcenterMigrations);
-  runMigrations(db, 'dell', dellMigrations);
-  runMigrations(db, 'aria', ariaMigrations);
-  runMigrations(db, 'ariaops', ariaopsMigrations);
-  runMigrations(db, 'aws', awsMigrations);
-  runMigrations(db, 'unifi', unifiMigrations);
+  for (const [id, migrations] of Object.entries(removedMigrations)) {
+    if (migrations) runMigrations(db, id, migrations);
+  }
   return db;
 }
 
@@ -292,10 +309,11 @@ describe('runMigrations', () => {
     // Excluded objects are filtered from BOTH sides: a NEW_TABLES entry may be
     // a legacy table whose shape post-refactor migrations legitimately extend
     // (e.g. netapp_volumes after netapp v4).
-    const legacySchema = normalizeSchema(legacyDb).filter((r) => !isNewObject(r));
-    const newSchema = normalizeSchema(newDb).filter((r) => !isNewObject(r));
+    const legacySchema = normalizeSchema(legacyDb).filter((r) => !isNewObject(r) && !isAbsentPlatformTable(r));
+    const newSchema = normalizeSchema(newDb).filter((r) => !isNewObject(r) && !isAbsentPlatformTable(r));
     expect(newSchema).toEqual(legacySchema);
     for (const name of NEW_TABLES) {
+      if (ABSENT_PREFIXES.some((p) => name.startsWith(p))) continue;
       expect(normalizeSchema(newDb).some((r) => r.name === name)).toBe(true);
     }
 
@@ -310,20 +328,15 @@ describe('runMigrations', () => {
     expect(() => {
       runMigrations(db, 'core', coreMigrations);
       runMigrations(db, 'cohesity', cohesityMigrations);
-      runMigrations(db, 'pure', pureMigrations);
-      runMigrations(db, 'netapp', netappMigrations);
-      runMigrations(db, 'zerto', zertoMigrations);
-      runMigrations(db, 'vcenter', vcenterMigrations);
-      runMigrations(db, 'dell', dellMigrations);
-      runMigrations(db, 'aria', ariaMigrations);
-      runMigrations(db, 'ariaops', ariaopsMigrations);
-      runMigrations(db, 'aws', awsMigrations);
-      runMigrations(db, 'unifi', unifiMigrations);
+      for (const [id, migrations] of Object.entries(removedMigrations)) {
+        if (migrations) runMigrations(db, id, migrations);
+      }
     }).not.toThrow();
 
     const after = normalizeSchema(db);
     expect(after.filter((r) => !isNewObject(r))).toEqual(before);
     for (const name of NEW_TABLES) {
+      if (ABSENT_PREFIXES.some((p) => name.startsWith(p))) continue;
       expect(after.some((r) => r.name === name)).toBe(true);
     }
 

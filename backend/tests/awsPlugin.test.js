@@ -15,13 +15,20 @@ import request from 'supertest';
 
 const require = createRequire(import.meta.url);
 
+// aws was removed from core as part of the 2026-08 pluginization campaign
+// and now only exists as an installable .iccplugin — skip this suite when
+// its backend (db/migrations/aws.js) is absent instead of throwing on the
+// require below.
+let PLATFORM_PRESENT = true;
+try { require.resolve('../db/migrations/aws'); } catch { PLATFORM_PRESENT = false; }
+
 const db = require('../db/database');
 const { runMigrations } = require('../core/migrations');
-const awsMigrations = require('../db/migrations/aws');
+const awsMigrations = PLATFORM_PRESENT ? require('../db/migrations/aws') : null;
 const { encrypt } = require('../services/encryption');
 
 beforeAll(() => {
-  runMigrations(db, 'aws', awsMigrations);
+  if (PLATFORM_PRESENT) runMigrations(db, 'aws', awsMigrations);
 });
 
 function insertAccount(overrides = {}) {
@@ -41,7 +48,7 @@ function insertAccount(overrides = {}) {
   return info.lastInsertRowid;
 }
 
-describe('awsIssues.computeIssues + reconcileIssueHistory', () => {
+describe.skipIf(!PLATFORM_PRESENT)('awsIssues.computeIssues + reconcileIssueHistory', () => {
   it('detects every issue rule from seeded rows', () => {
     const { computeIssues, reconcileIssueHistory } = require('../services/awsIssues');
 
@@ -187,7 +194,7 @@ describe('awsIssues.computeIssues + reconcileIssueHistory', () => {
   });
 });
 
-describe('awsPoller global-collector election (Fix #0)', () => {
+describe.skipIf(!PLATFORM_PRESENT)('awsPoller global-collector election (Fix #0)', () => {
   it('elects the lowest account id among rows sharing the same effective access key', () => {
     const { isElected } = require('../services/awsPoller');
     const a = insertAccount({ name: 'elect-a', access_key_id: 'AKIASHARED' });
@@ -261,7 +268,7 @@ describe('awsPoller global-collector election (Fix #0)', () => {
   });
 });
 
-describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dispatcher)', () => {
+describe.skipIf(!PLATFORM_PRESENT)('routes/aws.js basic CRUD + data endpoints (minimal express app, no dispatcher)', () => {
   let app;
 
   beforeAll(() => {
@@ -491,8 +498,11 @@ describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dis
   });
 });
 
-describe('awsPoller optimizer heuristics (computeHeuristicRecommendations)', () => {
-  const { computeHeuristicRecommendations } = require('../services/awsPoller');
+describe.skipIf(!PLATFORM_PRESENT)('awsPoller optimizer heuristics (computeHeuristicRecommendations)', () => {
+  let computeHeuristicRecommendations;
+  beforeAll(() => {
+    ({ computeHeuristicRecommendations } = require('../services/awsPoller'));
+  });
 
   it('gp2-to-gp3: gp2 volume -> savings = size_gb * 0.02, recommended gp3', () => {
     const accountId = insertAccount({ name: 'opt-gp2' });
@@ -614,7 +624,7 @@ describe('awsPoller optimizer heuristics (computeHeuristicRecommendations)', () 
   });
 });
 
-describe('GET /api/aws/optimizer', () => {
+describe.skipIf(!PLATFORM_PRESENT)('GET /api/aws/optimizer', () => {
   let app;
 
   beforeAll(() => {
@@ -672,15 +682,15 @@ describe('GET /api/aws/optimizer', () => {
   });
 });
 
-describe('aws platform plugin dispatcher (registered via registry, like platformPlugins.test.js)', () => {
-  const registry = require('../core/registry');
-  const awsManifest = require('../platforms/aws');
-  const { createApp } = require('../app');
-
+describe.skipIf(!PLATFORM_PRESENT)('aws platform plugin dispatcher (registered via registry, like platformPlugins.test.js)', () => {
   const API_KEY = 'test-api-key';
   let app;
+  let registry;
 
   beforeEach(() => {
+    registry = require('../core/registry');
+    const awsManifest = require('../platforms/aws');
+    const { createApp } = require('../app');
     registry._reset();
     registry.init();
     registry.registerPlugin(awsManifest);

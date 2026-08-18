@@ -1,12 +1,21 @@
 /**
- * WP5/6 (T7): pure/netapp extracted into backend platform manifests
- * registered with the registry. Verifies the dispatcher path end-to-end,
- * enable-flag teeth (disabled -> 404 platform_disabled), and that
- * /api/poller/status derives its pure/netapp sections from registry state.
+ * Registry/dispatcher core mechanics (contract C4): a plugin manifest
+ * registered with the registry is reachable through the `/api/:pluginId`
+ * dispatcher, respects the enable/disable flag (404 platform_disabled when
+ * off), and its `metricsHistory` config drives its /api/poller/status
+ * section. Poller handles returned from createPoller expose a real
+ * stopAll/taskCount.
  *
- * Loaded via createRequire (not dynamic import) so registry.js, the platform
- * manifests, and app.js's own `require('./core/registry')` all resolve to
- * the SAME module instance — see the equivalent note in
+ * This used to exercise the real pure/netapp/zerto/dell/aria/ariaops/aws
+ * platform manifests as examples (WP5/6), but those 9 platforms were
+ * removed from core in the 2026-08 pluginization campaign and now only
+ * exist as installable .iccplugin packs. The mechanic under test here is
+ * generic (any manifest shape works identically), so two minimal inline
+ * fake manifests stand in for them.
+ *
+ * Loaded via createRequire (not dynamic import) so registry.js, the fake
+ * manifests' migrations, and app.js's own `require('./core/registry')` all
+ * resolve to the SAME module instance — see the equivalent note in
  * tests/pollerFramework.test.js. The app is built once; each test resets
  * the registry's in-memory state via registry._reset() and re-registers,
  * which is safe because runMigrations is idempotent against the shared
@@ -14,19 +23,46 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createRequire } from 'module';
+import express from 'express';
 import request from 'supertest';
 
 const require = createRequire(import.meta.url);
 
 const registry = require('../core/registry');
-const pureManifest = require('../platforms/pure');
-const netappManifest = require('../platforms/netapp');
-const zertoManifest = require('../platforms/zerto');
-const dellManifest = require('../platforms/dell');
-const ariaManifest = require('../platforms/aria');
-const ariaopsManifest = require('../platforms/ariaops');
-const awsManifest = require('../platforms/aws');
+const { createPoller } = require('../core/pollerFramework');
 const { createApp } = require('../app');
+
+function makeFakeManifest(id) {
+  return {
+    id,
+    name: `Fake ${id}`,
+    apiVersion: registry.PLUGIN_API_VERSION,
+    migrations: [
+      {
+        version: 1,
+        up(db) {
+          db.exec(`CREATE TABLE IF NOT EXISTS ${id}_things (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, polling_interval_minutes INTEGER
+          )`);
+          db.exec(`CREATE TABLE IF NOT EXISTS ${id}_metrics_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, thing_id INTEGER, captured_at DATETIME
+          )`);
+        },
+      },
+    ],
+    metricsHistory: { arraysTable: `${id}_things`, metricsTable: `${id}_metrics_history`, arrayIdColumn: 'thing_id' },
+    createRouter(coreApi) {
+      const router = express.Router();
+      router.get('/things', (req, res) => {
+        res.json(coreApi.db.prepare(`SELECT * FROM ${id}_things`).all());
+      });
+      return router;
+    },
+    createPoller() {
+      return createPoller({ id, loadSources: () => [], poll: async () => {} });
+    },
+  };
+}
 
 const API_KEY = 'test-api-key';
 let app;
@@ -34,208 +70,76 @@ let app;
 beforeEach(() => {
   registry._reset();
   registry.init();
-  registry.registerPlugin(pureManifest);
-  registry.registerPlugin(netappManifest);
-  registry.registerPlugin(zertoManifest);
-  registry.registerPlugin(dellManifest);
-  registry.registerPlugin(ariaManifest);
-  registry.registerPlugin(ariaopsManifest);
-  registry.registerPlugin(awsManifest);
+  registry.registerPlugin(makeFakeManifest('fakeplata'));
+  registry.registerPlugin(makeFakeManifest('fakeplatb'));
   app = createApp({ licenseGate: (req, res, next) => next() });
 });
 
-describe('platform plugin manifests (pure, netapp)', () => {
-  it('GET /api/pure/arrays and /api/netapp/arrays -> 200 [] through the dispatcher when registered+enabled', async () => {
+describe('registry-driven platform plugin dispatcher + poller/status mechanics', () => {
+  it('GET /api/<pluginId>/things -> 200 [] through the dispatcher when registered+enabled', async () => {
     const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
 
-    const pureRes = await get('/api/pure/arrays');
-    expect(pureRes.status).toBe(200);
-    expect(pureRes.body).toEqual([]);
+    const aRes = await get('/api/fakeplata/things');
+    expect(aRes.status).toBe(200);
+    expect(aRes.body).toEqual([]);
 
-    const netappRes = await get('/api/netapp/arrays');
-    expect(netappRes.status).toBe(200);
-    expect(netappRes.body).toEqual([]);
+    const bRes = await get('/api/fakeplatb/things');
+    expect(bRes.status).toBe(200);
+    expect(bRes.body).toEqual([]);
   });
 
-  it('disabling pure returns 404 platform_disabled; re-enabling restores 200', async () => {
+  it('disabling a plugin returns 404 platform_disabled; re-enabling restores 200', async () => {
     const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
 
-    registry.setEnabled('pure', false);
-    const disabledRes = await get('/api/pure/arrays');
+    registry.setEnabled('fakeplata', false);
+    const disabledRes = await get('/api/fakeplata/things');
     expect(disabledRes.status).toBe(404);
     expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
 
-    registry.setEnabled('pure', true);
-    const enabledRes = await get('/api/pure/arrays');
+    registry.setEnabled('fakeplata', true);
+    const enabledRes = await get('/api/fakeplata/things');
     expect(enabledRes.status).toBe(200);
     expect(Array.isArray(enabledRes.body)).toBe(true);
   });
 
-  it('GET /api/poller/status has pure/netapp sections reflecting registry enabled state', async () => {
+  it('GET /api/poller/status has a metricsHistory section for an enabled plugin, and omits a disabled one', async () => {
     const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
 
-    registry.setEnabled('netapp', false);
+    // getMetricsHistoryContributors() only surfaces enabled, non-errored
+    // plugins (see core/registry.js) — a disabled plugin's section is
+    // simply absent rather than present with enabled:false.
+    registry.setEnabled('fakeplatb', false);
 
     const res = await get('/api/poller/status');
     expect(res.status).toBe(200);
 
-    // Pure has no direct arrays (pure_arrays) seeded here, so /api/poller/status
-    // falls back to the Pure1 SaaS account-global shape (no `entities` key) —
-    // same pattern as the Zerto section below.
-    expect(res.body.pure).toBeTypeOf('object');
-    expect(res.body.pure.enabled).toBe(true);
-    expect(res.body.pure.entities).toBeUndefined();
-    expect(res.body.pure).toHaveProperty('lastDataCapture');
-    expect(res.body.pure).toHaveProperty('isStale');
+    expect(res.body.fakeplata).toBeTypeOf('object');
+    expect(res.body.fakeplata.enabled).toBe(true);
+    expect(Array.isArray(res.body.fakeplata.entities)).toBe(true);
 
-    expect(res.body.netapp).toBeTypeOf('object');
-    expect(res.body.netapp.enabled).toBe(false);
-    expect(Array.isArray(res.body.netapp.entities)).toBe(true);
-  });
-
-  it('zerto: dispatcher 200, disabled -> 404 platform_disabled, /status zerto section', async () => {
-    const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
-
-    const sitesRes = await get('/api/zerto/sites');
-    expect(sitesRes.status).toBe(200);
-    expect(sitesRes.body).toEqual([]);
-
-    const overviewRes = await get('/api/zerto/overview');
-    expect(overviewRes.status).toBe(200);
-    expect(overviewRes.body.configured).toBeTypeOf('boolean');
-
-    registry.setEnabled('zerto', false);
-    const disabledRes = await get('/api/zerto/sites');
-    expect(disabledRes.status).toBe(404);
-    expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
-
-    const statusRes = await get('/api/poller/status');
-    expect(statusRes.status).toBe(200);
-    expect(statusRes.body.zerto).toBeTypeOf('object');
-    expect(statusRes.body.zerto.enabled).toBe(false);
-
-    registry.setEnabled('zerto', true);
-    const enabledRes = await get('/api/zerto/sites');
-    expect(enabledRes.status).toBe(200);
-  });
-
-  it('dell: dispatcher 200, disabled -> 404 platform_disabled, /status dell section', async () => {
-    const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
-
-    const instancesRes = await get('/api/dell/instances');
-    expect(instancesRes.status).toBe(200);
-    expect(instancesRes.body).toEqual([]);
-
-    const overviewRes = await get('/api/dell/overview');
-    expect(overviewRes.status).toBe(200);
-    expect(Array.isArray(overviewRes.body.instances)).toBe(true);
-    expect(Array.isArray(overviewRes.body.issues)).toBe(true);
-    expect(overviewRes.body.warranty.warnDays).toBeTypeOf('number');
-
-    registry.setEnabled('dell', false);
-    const disabledRes = await get('/api/dell/instances');
-    expect(disabledRes.status).toBe(404);
-    expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
-
-    const statusRes = await get('/api/poller/status');
-    expect(statusRes.status).toBe(200);
-    expect(statusRes.body.dell).toBeTypeOf('object');
-    expect(statusRes.body.dell.enabled).toBe(false);
-
-    registry.setEnabled('dell', true);
-    const enabledRes = await get('/api/dell/instances');
-    expect(enabledRes.status).toBe(200);
-  });
-
-  it('aria: dispatcher 200, disabled -> 404 platform_disabled, /status aria section', async () => {
-    const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
-
-    const instancesRes = await get('/api/aria/instances');
-    expect(instancesRes.status).toBe(200);
-    expect(instancesRes.body).toEqual([]);
-
-    const overviewRes = await get('/api/aria/overview');
-    expect(overviewRes.status).toBe(200);
-    expect(Array.isArray(overviewRes.body.instances)).toBe(true);
-
-    registry.setEnabled('aria', false);
-    const disabledRes = await get('/api/aria/instances');
-    expect(disabledRes.status).toBe(404);
-    expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
-
-    const statusRes = await get('/api/poller/status');
-    expect(statusRes.status).toBe(200);
-    expect(statusRes.body.aria).toBeTypeOf('object');
-    expect(statusRes.body.aria.enabled).toBe(false);
-
-    registry.setEnabled('aria', true);
-    const enabledRes = await get('/api/aria/instances');
-    expect(enabledRes.status).toBe(200);
-  });
-
-  it('ariaops: dispatcher 200, disabled -> 404 platform_disabled, /status ariaops section', async () => {
-    const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
-
-    const instancesRes = await get('/api/ariaops/instances');
-    expect(instancesRes.status).toBe(200);
-    expect(instancesRes.body).toEqual([]);
-
-    const overviewRes = await get('/api/ariaops/overview');
-    expect(overviewRes.status).toBe(200);
-    expect(Array.isArray(overviewRes.body.instances)).toBe(true);
-
-    registry.setEnabled('ariaops', false);
-    const disabledRes = await get('/api/ariaops/instances');
-    expect(disabledRes.status).toBe(404);
-    expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
-
-    const statusRes = await get('/api/poller/status');
-    expect(statusRes.status).toBe(200);
-    expect(statusRes.body.ariaops).toBeTypeOf('object');
-    expect(statusRes.body.ariaops.enabled).toBe(false);
-
-    registry.setEnabled('ariaops', true);
-    const enabledRes = await get('/api/ariaops/instances');
-    expect(enabledRes.status).toBe(200);
-  });
-
-  it('aws: dispatcher 200, disabled -> 404 platform_disabled', async () => {
-    const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
-
-    const accountsRes = await get('/api/aws/accounts');
-    expect(accountsRes.status).toBe(200);
-    expect(accountsRes.body).toEqual([]);
-
-    registry.setEnabled('aws', false);
-    const disabledRes = await get('/api/aws/accounts');
-    expect(disabledRes.status).toBe(404);
-    expect(disabledRes.body).toEqual({ error: 'platform_disabled' });
-
-    registry.setEnabled('aws', true);
-    const enabledRes = await get('/api/aws/accounts');
-    expect(enabledRes.status).toBe(200);
+    expect(res.body.fakeplatb).toBeUndefined();
   });
 
   it('poller handles have real stopAll that cancels cron tasks', () => {
-    const pureHandle = registry.getPollerHandle('pure');
-    const netappHandle = registry.getPollerHandle('netapp');
+    const aHandle = registry.getPollerHandle('fakeplata');
+    const bHandle = registry.getPollerHandle('fakeplatb');
 
     // Both handles exist and are the real framework handles from createPoller.
-    expect(pureHandle).toBeDefined();
-    expect(netappHandle).toBeDefined();
+    expect(aHandle).toBeDefined();
+    expect(bHandle).toBeDefined();
 
     // Both have stopAll and taskCount as functions (from pollerFramework).
-    expect(typeof pureHandle.stopAll).toBe('function');
-    expect(typeof pureHandle.taskCount).toBe('function');
-    expect(typeof netappHandle.stopAll).toBe('function');
-    expect(typeof netappHandle.taskCount).toBe('function');
+    expect(typeof aHandle.stopAll).toBe('function');
+    expect(typeof aHandle.taskCount).toBe('function');
+    expect(typeof bHandle.stopAll).toBe('function');
+    expect(typeof bHandle.taskCount).toBe('function');
 
     // Calling stopAll does not throw (idempotent, even with 0 tasks).
-    expect(() => pureHandle.stopAll()).not.toThrow();
-    expect(() => netappHandle.stopAll()).not.toThrow();
+    expect(() => aHandle.stopAll()).not.toThrow();
+    expect(() => bHandle.stopAll()).not.toThrow();
 
     // After stopAll, taskCount is 0.
-    expect(pureHandle.taskCount()).toBe(0);
-    expect(netappHandle.taskCount()).toBe(0);
+    expect(aHandle.taskCount()).toBe(0);
+    expect(bHandle.taskCount()).toBe(0);
   });
 });

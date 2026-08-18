@@ -46,11 +46,7 @@ async function loginAgent(username, password) {
 
 beforeAll(async () => {
   const registry = require('../core/registry');
-  const pureManifest = require('../platforms/pure');
-  const netappManifest = require('../platforms/netapp');
   registry.init();
-  registry.registerPlugin(pureManifest);
-  registry.registerPlugin(netappManifest);
 
   db = require('../db/database');
   authService = require('../services/authService');

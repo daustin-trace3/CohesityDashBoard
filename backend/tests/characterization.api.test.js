@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createRequire } from 'module';
+import express from 'express';
 import request from 'supertest';
 
 // Loaded via createRequire (not dynamic import) so registry.js and app.js's
@@ -21,11 +22,21 @@ let app;
 
 beforeAll(() => {
   const registry = require('../core/registry');
-  const pureManifest = require('../platforms/pure');
-  const netappManifest = require('../platforms/netapp');
   registry.init();
-  registry.registerPlugin(pureManifest);
-  registry.registerPlugin(netappManifest);
+  // Minimal fake plugin manifest standing in for a real platform plugin
+  // (the pure/netapp examples this used before their removal in the 2026-08
+  // pluginization campaign) — this suite only needs SOME registered plugin
+  // reachable through the dispatcher, not platform-specific behavior.
+  registry.registerPlugin({
+    id: 'fakeplata',
+    name: 'Fake fakeplata',
+    apiVersion: registry.PLUGIN_API_VERSION,
+    createRouter() {
+      const router = express.Router();
+      router.get('/things', (req, res) => res.json([]));
+      return router;
+    },
+  });
 
   // These tests characterize ENFORCED auth. With zero users the app would
   // default to open-access mode, so pin auth on explicitly.
@@ -70,15 +81,8 @@ describe('platform endpoints on an empty database', () => {
     expect(res.body).toHaveLength(0);
   });
 
-  it('GET /api/pure/arrays → 200 empty list', async () => {
-    const res = await get('/api/pure/arrays');
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body).toHaveLength(0);
-  });
-
-  it('GET /api/netapp/arrays → 200 empty list', async () => {
-    const res = await get('/api/netapp/arrays');
+  it('GET /api/<pluginId>/things → 200 empty list, through the plugin dispatcher', async () => {
+    const res = await get('/api/fakeplata/things');
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body).toHaveLength(0);

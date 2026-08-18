@@ -15,12 +15,20 @@ import request from 'supertest';
 
 const require = createRequire(import.meta.url);
 
+// unifi was removed from core as part of the 2026-08 pluginization campaign
+// and now only exists as an installable .iccplugin — skip this suite when
+// its backend (db/migrations/unifi.js) is absent instead of throwing on the
+// require below.
+let PLATFORM_PRESENT = true;
+try { require.resolve('../db/migrations/unifi'); } catch { PLATFORM_PRESENT = false; }
+
 const db = require('../db/database');
 const { runMigrations } = require('../core/migrations');
-const unifiMigrations = require('../db/migrations/unifi');
+const unifiMigrations = PLATFORM_PRESENT ? require('../db/migrations/unifi') : null;
 const { encrypt } = require('../services/encryption');
 
 beforeAll(() => {
+  if (!PLATFORM_PRESENT) return;
   runMigrations(db, 'unifi', unifiMigrations);
   // Optional modules default OFF in shipping settings; these tests exercise
   // the fully-enabled surface, so switch them on like an operator would.
@@ -49,7 +57,7 @@ function insertSource(overrides = {}) {
   return info.lastInsertRowid;
 }
 
-describe('unifiIssues.computeIssues + reconcileIssueHistory', () => {
+describe.skipIf(!PLATFORM_PRESENT)('unifiIssues.computeIssues + reconcileIssueHistory', () => {
   it('detects every issue rule from seeded rows', () => {
     const { computeIssues, reconcileIssueHistory } = require('../services/unifiIssues');
 
@@ -212,7 +220,7 @@ describe('unifiIssues.computeIssues + reconcileIssueHistory', () => {
   });
 });
 
-describe('routes/unifi.js basic CRUD + data endpoints (minimal express app, no dispatcher)', () => {
+describe.skipIf(!PLATFORM_PRESENT)('routes/unifi.js basic CRUD + data endpoints (minimal express app, no dispatcher)', () => {
   let app;
 
   beforeAll(() => {
@@ -391,7 +399,7 @@ describe('routes/unifi.js basic CRUD + data endpoints (minimal express app, no d
   });
 });
 
-describe('WiFi/Security round (migration v5): posture, rules, roaming, timeline, rogueChanges', () => {
+describe.skipIf(!PLATFORM_PRESENT)('WiFi/Security round (migration v5): posture, rules, roaming, timeline, rogueChanges', () => {
   let app;
 
   beforeAll(() => {
@@ -495,15 +503,15 @@ describe('WiFi/Security round (migration v5): posture, rules, roaming, timeline,
   });
 });
 
-describe('unifi platform plugin dispatcher (registered via registry, like platformPlugins.test.js)', () => {
-  const registry = require('../core/registry');
-  const unifiManifest = require('../platforms/unifi');
-  const { createApp } = require('../app');
-
+describe.skipIf(!PLATFORM_PRESENT)('unifi platform plugin dispatcher (registered via registry, like platformPlugins.test.js)', () => {
   const API_KEY = 'test-api-key';
   let app;
+  let registry;
 
   beforeEach(() => {
+    registry = require('../core/registry');
+    const unifiManifest = require('../platforms/unifi');
+    const { createApp } = require('../app');
     registry._reset();
     registry.init();
     registry.registerPlugin(unifiManifest);

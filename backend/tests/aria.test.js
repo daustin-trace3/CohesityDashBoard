@@ -16,13 +16,20 @@ import request from 'supertest';
 
 const require = createRequire(import.meta.url);
 
+// aria was removed from core as part of the 2026-08 pluginization campaign
+// and now only exists as an installable .iccplugin — skip this suite when
+// its backend (db/migrations/aria.js) is absent instead of throwing on the
+// require below.
+let PLATFORM_PRESENT = true;
+try { require.resolve('../db/migrations/aria'); } catch { PLATFORM_PRESENT = false; }
+
 const db = require('../db/database');
 const { runMigrations } = require('../core/migrations');
-const ariaMigrations = require('../db/migrations/aria');
+const ariaMigrations = PLATFORM_PRESENT ? require('../db/migrations/aria') : null;
 const { encrypt } = require('../services/encryption');
 
 beforeAll(() => {
-  runMigrations(db, 'aria', ariaMigrations);
+  if (PLATFORM_PRESENT) runMigrations(db, 'aria', ariaMigrations);
 });
 
 function insertInstance(overrides = {}) {
@@ -46,7 +53,7 @@ function insertInstance(overrides = {}) {
 
 const isoIn = (days) => new Date(Date.now() + days * 86400000).toISOString();
 
-describe('ariaIssues.computeIssues + reconcileIssueHistory', () => {
+describe.skipIf(!PLATFORM_PRESENT)('ariaIssues.computeIssues + reconcileIssueHistory', () => {
   it('detects every issue type from seeded rows', () => {
     const { computeIssues, reconcileIssueHistory } = require('../services/ariaIssues');
 
@@ -146,7 +153,7 @@ describe('ariaIssues.computeIssues + reconcileIssueHistory', () => {
   });
 });
 
-describe('routes/aria.js basic CRUD (minimal express app, no dispatcher)', () => {
+describe.skipIf(!PLATFORM_PRESENT)('routes/aria.js basic CRUD (minimal express app, no dispatcher)', () => {
   let app;
 
   beforeAll(() => {

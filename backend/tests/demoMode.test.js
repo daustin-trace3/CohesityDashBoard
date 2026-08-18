@@ -14,6 +14,14 @@ import request from 'supertest';
 
 const require = createRequire(import.meta.url);
 
+// pure1 (Pure1 SaaS legacy fixtures) was removed from core along with the
+// rest of the pure platform in the 2026-08 pluginization campaign —
+// routes/pure1.js, services/pure1Api.js/pure1Poller.js, and
+// demo/pure1Fixtures.js are all gone — skip that describe block below
+// instead of throwing on the now-missing route.
+let PURE1_PRESENT = true;
+try { require.resolve('../routes/pure1'); } catch { PURE1_PRESENT = false; }
+
 const API_KEY = 'test-api-key';
 let app;
 let db;
@@ -23,11 +31,7 @@ beforeAll(() => {
   process.env.DASHBOARD_DEMO = '1';
 
   const registry = require('../core/registry');
-  const pureManifest = require('../platforms/pure');
-  const netappManifest = require('../platforms/netapp');
   registry.init();
-  registry.registerPlugin(pureManifest);
-  registry.registerPlugin(netappManifest);
 
   const { createApp } = require('../app');
   app = createApp({ licenseGate: (req, res, next) => next() });
@@ -42,7 +46,7 @@ afterAll(() => {
 
 const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
 
-describe('demo mode: pure1 fixtures', () => {
+describe.skipIf(!PURE1_PRESENT)('demo mode: pure1 fixtures', () => {
   it('GET /api/pure1/overview returns the 20-array fleet without network', async () => {
     const res = await get('/api/pure1/overview');
     expect(res.status).toBe(200);

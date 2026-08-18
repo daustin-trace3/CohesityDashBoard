@@ -1,9 +1,18 @@
 /**
  * WP14 (C10.3/C10.5): alertNotifier's collectors, severity threshold,
  * platform toggle, subject/body format, new-vs-reminder dedupe, stale
- * housekeeping, NetApp content-stable keys, and no-throw-on-send-failure.
+ * housekeeping, and no-throw-on-send-failure.
  *
  * No network: every test injects a fake transport via _setTransportFactory.
+ *
+ * netapp/zerto/vcenter/dell were removed from core in the 2026-08
+ * pluginization campaign — their db/migrations/<id>.js files are gone, so
+ * this file's tests that exercised them are guarded with an
+ * it.skipIf(!<id>Present) instead of throwing on the missing tables. The
+ * severity-threshold-across-sources and platform-toggle mechanics (which
+ * are alertNotifier's own generic logic, not platform-owned) are instead
+ * exercised against a minimal fake registry.collectAlerts contributor so
+ * that coverage doesn't depend on any specific platform existing.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'module';
@@ -12,7 +21,19 @@ const require = createRequire(import.meta.url);
 const db = require('../db/database');
 const alertNotifier = require('../services/alertNotifier');
 const { setSetting } = require('../services/settings');
-const { encrypt } = require('../services/encryption');
+const registry = require('../core/registry');
+const express = require('express');
+
+function platformPresent(id) {
+  try { require.resolve(`../db/migrations/${id}`); return true; } catch { return false; }
+}
+const ZERTO_PRESENT = platformPresent('zerto');
+const VCENTER_PRESENT = platformPresent('vcenter');
+const DELL_PRESENT = platformPresent('dell');
+
+function tryDelete(sql) {
+  try { db.exec(sql); } catch { /* table doesn't exist on this branch — fine */ }
+}
 
 let seq = 0;
 function nextName(prefix) { seq += 1; return `${prefix}-${seq}`; }
@@ -35,38 +56,6 @@ function insertCohesityAlert(clusterId, { alertId, severity, alertType = 'DiskFa
 
 function resolveCohesityAlert(clusterId, alertId) {
   db.prepare('UPDATE alerts SET resolved = 1 WHERE cluster_id = ? AND cohesity_alert_id = ?').run(clusterId, alertId);
-}
-
-function insertPureArray() {
-  const name = nextName('pure-array');
-  const info = db.prepare(`
-    INSERT INTO pure_arrays (name, mgmt_host, client_id, key_id, username, encrypted_credentials)
-    VALUES (?, 'host', 'cid', 'kid', 'user', 'x')
-  `).run(name);
-  return info.lastInsertRowid;
-}
-
-function insertPureAlert(arrayId, { alertId, severity, summary = 'pure issue', createdAtMs = Date.now(), updatedAtMs = Date.now() }) {
-  db.prepare(`
-    INSERT INTO pure_alerts (array_id, pure_alert_id, severity, summary, created_at_ms, updated_at_ms)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(arrayId, alertId, severity, summary, createdAtMs, updatedAtMs);
-}
-
-function insertNetappArray() {
-  const name = nextName('netapp-array');
-  const info = db.prepare(`
-    INSERT INTO netapp_arrays (name, mgmt_host, username, encrypted_credentials)
-    VALUES (?, 'host', 'user', 'x')
-  `).run(name);
-  return info.lastInsertRowid;
-}
-
-function insertNetappAlert(arrayId, { alertKey, severity, message = 'netapp issue', nodeName = 'node1' }) {
-  db.prepare(`
-    INSERT INTO netapp_alerts (array_id, alert_key, severity, node_name, source, message)
-    VALUES (?, ?, ?, ?, 'health', ?)
-  `).run(arrayId, alertKey, severity, nodeName, message);
 }
 
 function insertZertoAlert({ alertId, severity, description = 'zerto issue', siteName = 'site-a' }) {
@@ -99,6 +88,21 @@ function insertDellAlert(omeId, { alertId, severity, message = 'dell issue', sta
   `).run(omeId, alertId, severity, status, message, deviceName);
 }
 
+// Minimal fake registry.collectAlerts contributor, standing in for a real
+// platform plugin, to exercise alertNotifier's own generic mechanics
+// (cross-source severity threshold, the platform-toggle gate) without
+// depending on any specific platform's presence.
+let fakeAlerts = [];
+function registerFakeAlertPlugin() {
+  registry.registerPlugin({
+    id: 'fakealert',
+    name: 'Fake Alert Source',
+    apiVersion: registry.PLUGIN_API_VERSION,
+    createRouter() { return express.Router(); },
+    collectAlerts: () => fakeAlerts.map((a) => ({ ...a })),
+  });
+}
+
 function configureSmtp(overrides = {}) {
   const defaults = {
     smtp_enabled: '1',
@@ -109,7 +113,7 @@ function configureSmtp(overrides = {}) {
     smtp_from: 'alerts@example.com',
     smtp_recipients: 'ops@example.com',
     alert_email_min_severity: 'warning',
-    alert_email_platforms: JSON.stringify({ cohesity: true, pure: true, netapp: true }),
+    alert_email_platforms: JSON.stringify({ cohesity: true, fakealert: true, netapp: true }),
     alert_email_reminder_hours: '24',
   };
   for (const [k, v] of Object.entries({ ...defaults, ...overrides })) setSetting(k, v);
@@ -121,13 +125,16 @@ beforeEach(() => {
   alertNotifier._setTransportFactory(() => ({
     sendMail: async (msg) => { sent.push(msg); },
   }));
-  db.exec('DELETE FROM alert_notifications');
-  db.exec('DELETE FROM alerts');
-  db.exec('DELETE FROM pure_alerts');
-  db.exec('DELETE FROM netapp_alerts');
-  db.exec('DELETE FROM zerto_alerts');
-  db.exec('DELETE FROM vcenter_issue_history');
-  db.exec('DELETE FROM dell_alerts');
+  fakeAlerts = [];
+  registry._reset();
+  registry.init();
+  registerFakeAlertPlugin();
+  tryDelete('DELETE FROM alert_notifications');
+  tryDelete('DELETE FROM alerts');
+  tryDelete('DELETE FROM netapp_alerts');
+  tryDelete('DELETE FROM zerto_alerts');
+  tryDelete('DELETE FROM vcenter_issue_history');
+  tryDelete('DELETE FROM dell_alerts');
 });
 
 afterEach(() => {
@@ -135,11 +142,10 @@ afterEach(() => {
 });
 
 describe('alertNotifier', () => {
-  it('(a) severity threshold: info suppressed at warning threshold; netapp error passes warning, fails critical', async () => {
+  it('(a) severity threshold: info suppressed at warning threshold; a plugin-collected error passes warning, fails critical', async () => {
     const clusterId = insertCluster();
     insertCohesityAlert(clusterId, { alertId: 'a-info', severity: 'info' });
-    const netappArrayId = insertNetappArray();
-    insertNetappAlert(netappArrayId, { alertKey: '0', severity: 'error' });
+    fakeAlerts.push({ sourceKey: 'fa-1', severity: 'error', host: 'fake-host', message: 'fake issue' });
 
     configureSmtp({ alert_email_min_severity: 'warning' });
     await alertNotifier.run();
@@ -154,12 +160,11 @@ describe('alertNotifier', () => {
   });
 
   it('(b) platform toggle excludes a source entirely', async () => {
-    const netappArrayId = insertNetappArray();
-    insertNetappAlert(netappArrayId, { alertKey: '0', severity: 'critical' });
+    fakeAlerts.push({ sourceKey: 'fa-1', severity: 'critical', host: 'fake-host', message: 'fake issue' });
 
     configureSmtp({
       alert_email_min_severity: 'warning',
-      alert_email_platforms: JSON.stringify({ cohesity: true, pure: true, netapp: false }),
+      alert_email_platforms: JSON.stringify({ cohesity: true, fakealert: false }),
     });
     await alertNotifier.run();
     expect(sent).toHaveLength(0);
@@ -236,16 +241,15 @@ describe('alertNotifier', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('(h) netapp table wipe+reload with the same message does not resend (content-stable key)', async () => {
-    const arrayId = insertNetappArray();
-    insertNetappAlert(arrayId, { alertKey: '0', severity: 'critical', message: 'fan failure on shelf 2' });
+  it('(h) a source surviving underlying-storage churn with the same message does not resend (content-stable key)', async () => {
+    fakeAlerts.push({ sourceKey: '0', severity: 'critical', host: 'fake-host', message: 'fan failure on shelf 2' });
     configureSmtp();
     await alertNotifier.run();
     expect(sent).toHaveLength(1);
 
-    // Simulate the poller's wipe+reload: same alert_key, same message, new row id.
-    db.prepare('DELETE FROM netapp_alerts WHERE array_id = ?').run(arrayId);
-    insertNetappAlert(arrayId, { alertKey: '0', severity: 'critical', message: 'fan failure on shelf 2' });
+    // Simulate a poller's wipe+reload: same sourceKey, same message, but the
+    // underlying row/object identity changed.
+    fakeAlerts = [{ sourceKey: '0', severity: 'critical', host: 'fake-host', message: 'fan failure on shelf 2' }];
 
     sent.length = 0;
     await alertNotifier.run();
@@ -273,7 +277,7 @@ describe('alertNotifier', () => {
     expect(sent).toHaveLength(1);
   });
 
-  it('(j) zerto alerts send and survive the wipe+reload without resending', async () => {
+  it.skipIf(!ZERTO_PRESENT)('(j) zerto alerts send and survive the wipe+reload without resending', async () => {
     insertZertoAlert({ alertId: 'za-1', severity: 'Error', description: 'VPG rpo breached', siteName: 'nyc-zvm' });
     configureSmtp();
     await alertNotifier.run();
@@ -287,7 +291,7 @@ describe('alertNotifier', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('(k) vcenter open issues send; resolved issues stop reminding', async () => {
+  it.skipIf(!VCENTER_PRESENT)('(k) vcenter open issues send; resolved issues stop reminding', async () => {
     insertVcenterIssue({ issueKey: 'host-down|vc-01|esx-01', severity: 'critical', message: 'Host esx-01 is not responding' });
     configureSmtp({ alert_email_reminder_hours: '1' });
     await alertNotifier.run();
@@ -301,7 +305,7 @@ describe('alertNotifier', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('(l) dell acknowledged alerts are excluded and normal maps to info', async () => {
+  it.skipIf(!DELL_PRESENT)('(l) dell acknowledged alerts are excluded and normal maps to info', async () => {
     const omeId = insertDellInstance();
     insertDellAlert(omeId, { alertId: 1, severity: 'critical', status: 'acknowledged' });
     insertDellAlert(omeId, { alertId: 2, severity: 'normal', message: 'link restored' });

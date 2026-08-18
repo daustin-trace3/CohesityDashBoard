@@ -1,8 +1,19 @@
 /**
- * Per-platform AI Advisor backends (Pure, NetApp, Zerto, vCenter, Dell, Aria),
- * modeled on services/aiAdvisor.js via the shared services/platformAdvisor.js
- * engine. Verifies each advisor's REPORTS/gather/cache contract against an
- * empty test DB, and the dispatcher-mounted GET /advisor/:report route.
+ * AI Advisor contracts (REPORTS/gather/cache) and the registry-dispatcher
+ * -mounted advisor route pattern.
+ *
+ * This used to exercise the per-platform advisors (Pure, NetApp, Zerto,
+ * vCenter, Dell, Aria, AWS) built on the shared services/platformAdvisor.js
+ * engine, but those 9 platforms were removed from core in the 2026-08
+ * pluginization campaign and now only exist as installable .iccplugin
+ * packs (services/advisors/*.js deleted). Coverage is preserved two ways:
+ *  - the REPORTS/gather/cache contract is exercised against cohesity's own
+ *    advisor (services/aiAdvisor.js), which stays in core and follows the
+ *    identical contract platformAdvisor.js was modeled on;
+ *  - the registry-dispatcher-mounted route pattern (GET /api/:id/advisor/:report)
+ *    is exercised with a minimal fake manifest built on the still-present
+ *    services/platformAdvisor.js engine, since that engine is generic and
+ *    not owned by any single platform.
  *
  * Loaded via createRequire (not dynamic import) so the advisor modules and
  * app.js's own requires resolve to the SAME module instances — same pattern
@@ -10,6 +21,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createRequire } from 'module';
+import express from 'express';
 import request from 'supertest';
 
 // Force the LLM to read as unconfigured regardless of the developer's real
@@ -22,33 +34,15 @@ process.env.GITHUB_MODELS_TOKEN = '';
 const require = createRequire(import.meta.url);
 
 const registry = require('../core/registry');
-const pureManifest = require('../platforms/pure');
-const netappManifest = require('../platforms/netapp');
-const zertoManifest = require('../platforms/zerto');
-const vcenterManifest = require('../platforms/vcenter');
-const dellManifest = require('../platforms/dell');
-const ariaManifest = require('../platforms/aria');
-const awsManifest = require('../platforms/aws');
 const { createApp } = require('../app');
+const { createPlatformAdvisor } = require('../services/platformAdvisor');
 
-const pureAdvisor = require('../services/advisors/pureAdvisor');
-const netappAdvisor = require('../services/advisors/netappAdvisor');
-const zertoAdvisor = require('../services/advisors/zertoAdvisor');
-const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
-const dellAdvisor = require('../services/advisors/dellAdvisor');
-const ariaAdvisor = require('../services/advisors/ariaAdvisor');
-const awsAdvisor = require('../services/advisors/awsAdvisor');
+const cohesityAdvisor = require('../services/aiAdvisor');
 
 const API_KEY = 'test-api-key';
 
 const ADVISORS = {
-  pure: pureAdvisor,
-  netapp: netappAdvisor,
-  zerto: zertoAdvisor,
-  vcenter: vcenterAdvisor,
-  dell: dellAdvisor,
-  aria: ariaAdvisor,
-  aws: awsAdvisor,
+  cohesity: cohesityAdvisor,
 };
 
 describe('platform AI advisors: contract', () => {
@@ -81,82 +75,62 @@ describe('platform AI advisors: contract', () => {
   }
 });
 
+function makeFakeAdvisorManifest(id) {
+  const table = `${id}_ai_reports`;
+  return {
+    id,
+    name: `Fake Advisor ${id}`,
+    apiVersion: registry.PLUGIN_API_VERSION,
+    migrations: [
+      {
+        version: 1,
+        up(db) {
+          db.exec(`CREATE TABLE IF NOT EXISTS ${table} (
+            report_key TEXT PRIMARY KEY, model TEXT, content TEXT, generated_at DATETIME
+          )`);
+        },
+      },
+    ],
+    createRouter() {
+      const advisor = createPlatformAdvisor({
+        platform: id,
+        feature: `${id} AI Advisor`,
+        table,
+        reports: {
+          fake_report: { system: 'You are a test advisor.', gather: () => ({ ok: true }), noun: 'fake report' },
+        },
+      });
+      const router = express.Router();
+      const slugToKey = (slug) => String(slug).replace(/-/g, '_');
+      router.get('/advisor/:report', (req, res) => {
+        const key = slugToKey(req.params.report);
+        if (!advisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+        res.json({ enabled: advisor.isConfigured(), report: advisor.getCachedReport(key) });
+      });
+      return router;
+    },
+  };
+}
+
 describe('platform AI advisors: dispatcher routes', () => {
   let app;
 
   beforeEach(() => {
     registry._reset();
     registry.init();
-    registry.registerPlugin(pureManifest);
-    registry.registerPlugin(netappManifest);
-    registry.registerPlugin(zertoManifest);
-    registry.registerPlugin(vcenterManifest);
-    registry.registerPlugin(dellManifest);
-    registry.registerPlugin(ariaManifest);
-    registry.registerPlugin(awsManifest);
+    registry.registerPlugin(makeFakeAdvisorManifest('fakeadv'));
     app = createApp({ licenseGate: (req, res, next) => next() });
   });
 
-  const slug = (key) => key.replace(/_/g, '-');
-
-  it('GET /api/pure/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
-    const key = pureAdvisor.REPORTS[0];
-    const res = await request(app).get(`/api/pure/advisor/${slug(key)}`).set('x-api-key', API_KEY);
+  it('GET /api/<pluginId>/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
+    const res = await request(app).get('/api/fakeadv/advisor/fake-report').set('x-api-key', API_KEY);
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(false);
     expect(res.body.report).toBeNull();
   });
 
-  it('GET /api/netapp/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
-    const key = netappAdvisor.REPORTS[0];
-    const res = await request(app).get(`/api/netapp/advisor/${slug(key)}`).set('x-api-key', API_KEY);
-    expect(res.status).toBe(200);
-    expect(res.body.enabled).toBe(false);
-    expect(res.body.report).toBeNull();
-  });
-
-  it('GET /api/zerto/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
-    const key = zertoAdvisor.REPORTS[0];
-    const res = await request(app).get(`/api/zerto/advisor/${slug(key)}`).set('x-api-key', API_KEY);
-    expect(res.status).toBe(200);
-    expect(res.body.enabled).toBe(false);
-    expect(res.body.report).toBeNull();
-  });
-
-  it('GET /api/vcenter/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
-    const key = vcenterAdvisor.REPORTS[0];
-    const res = await request(app).get(`/api/vcenter/advisor/${slug(key)}`).set('x-api-key', API_KEY);
-    expect(res.status).toBe(200);
-    expect(res.body.enabled).toBe(false);
-    expect(res.body.report).toBeNull();
-  });
-
-  it('GET /api/dell/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
-    const key = dellAdvisor.REPORTS[0];
-    const res = await request(app).get(`/api/dell/advisor/${slug(key)}`).set('x-api-key', API_KEY);
-    expect(res.status).toBe(200);
-    expect(res.body.enabled).toBe(false);
-    expect(res.body.report).toBeNull();
-  });
-
-  it('GET /api/aria/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
-    const key = ariaAdvisor.REPORTS[0];
-    const res = await request(app).get(`/api/aria/advisor/${slug(key)}`).set('x-api-key', API_KEY);
-    expect(res.status).toBe(200);
-    expect(res.body.enabled).toBe(false);
-    expect(res.body.report).toBeNull();
-  });
-
-  it('GET /api/aws/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
-    const key = awsAdvisor.REPORTS[0];
-    const res = await request(app).get(`/api/aws/advisor/${slug(key)}`).set('x-api-key', API_KEY);
-    expect(res.status).toBe(200);
-    expect(res.body.enabled).toBe(false);
-    expect(res.body.report).toBeNull();
-  });
-
-  it('GET /api/pure/advisor/:report -> 404 for an unknown report slug', async () => {
-    const res = await request(app).get('/api/pure/advisor/not-a-real-report').set('x-api-key', API_KEY);
+  it('GET /api/<pluginId>/advisor/:report -> 404 for an unknown report slug', async () => {
+    const res = await request(app).get('/api/fakeadv/advisor/not-a-real-report').set('x-api-key', API_KEY);
     expect(res.status).toBe(404);
   });
 });

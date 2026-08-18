@@ -15,6 +15,14 @@ import Database from 'better-sqlite3';
 const backendDir = path.join(__dirname, '..');
 const seedScript = path.join(backendDir, 'demo', 'seedDemo.js');
 
+// The 9 platforms removed from core in the 2026-08 pluginization campaign
+// no longer have a demo/generators/<id>.js, so seedDemo.js no longer seeds
+// their tables — skip the tests below that assert on that fixture data
+// instead of throwing on the missing tables.
+function generatorPresent(id) {
+  return fs.existsSync(path.join(backendDir, 'demo', 'generators', `${id}.js`));
+}
+
 let tmpDir;
 let dbPath;
 let db;
@@ -43,12 +51,12 @@ describe('seedDemo.js', () => {
     expect(row.c).toBe(24);
   });
 
-  it('seeds 20 pure arrays', () => {
+  it.skipIf(!generatorPresent('pure'))('seeds 20 pure arrays', () => {
     const row = db.prepare('SELECT COUNT(*) c FROM pure_arrays').get();
     expect(row.c).toBe(20);
   });
 
-  it('seeds 6 netapp arrays', () => {
+  it.skipIf(!generatorPresent('netapp'))('seeds 6 netapp arrays', () => {
     const row = db.prepare('SELECT COUNT(*) c FROM netapp_arrays').get();
     expect(row.c).toBe(6);
   });
@@ -94,7 +102,7 @@ describe('seedDemo.js', () => {
     expect(['critical', 'warning', 'info']).toContain(row.severity);
   });
 
-  it('seeds platform flags as string "1"', () => {
+  it.skipIf(!generatorPresent('pure'))('seeds platform flags as string "1"', () => {
     const rows = db.prepare(
       "SELECT key, value FROM app_settings WHERE key IN ('platform_pure_enabled', 'platform_netapp_enabled', 'platform_zerto_enabled', 'platform_vcenter_enabled', 'platform_dell_enabled', 'platform_aria_enabled', 'platform_unifi_enabled')"
     ).all();
@@ -121,7 +129,7 @@ describe('seedDemo.js', () => {
     expect(views.job_count).toBeNull();
   });
 
-  it('seeds zerto inventory with valid enums and breaches', () => {
+  it.skipIf(!generatorPresent('zerto'))('seeds zerto inventory with valid enums and breaches', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM zerto_sites').get().c).toBe(6);
     expect(db.prepare('SELECT COUNT(*) c FROM zerto_vras').get().c).toBeGreaterThan(10);
     expect(db.prepare('SELECT COUNT(*) c FROM zerto_vpgs').get().c).toBeGreaterThan(30);
@@ -165,7 +173,7 @@ describe('seedDemo.js', () => {
     expect(fresh.c).toBeGreaterThanOrEqual(2);
   });
 
-  it('seeds vcenter inventory that trips every computed-issue rule', () => {
+  it.skipIf(!generatorPresent('vcenter'))('seeds vcenter inventory that trips every computed-issue rule', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vcenters').get().c).toBe(8);
     expect(db.prepare("SELECT COUNT(*) c FROM vcenter_vcenters WHERE last_poll_status = 'error'").get().c).toBe(1);
     expect(db.prepare("SELECT COUNT(*) c FROM vcenter_hosts WHERE connection_state != 'CONNECTED'").get().c).toBeGreaterThan(0);
@@ -179,7 +187,7 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_metrics_history').get().c).toBe(8 * 31);
   });
 
-  it('seeds dell governance data: config compliance with drift detail, jobs, profiles, hardware logs', () => {
+  it.skipIf(!generatorPresent('dell'))('seeds dell governance data: config compliance with drift detail, jobs, profiles, hardware logs', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM dell_config_baselines').get().c).toBe(2);
     expect(db.prepare("SELECT COUNT(*) c FROM dell_config_compliance WHERE status = 'noncompliant' AND detail IS NOT NULL").get().c).toBeGreaterThan(0);
     // Drift detail rows carry the expected-vs-current shape the Governance modal renders.
@@ -197,7 +205,7 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM dell_config_drift_history WHERE resolved_at IS NULL AND first_seen IS NOT NULL').get().c).toBeGreaterThan(0);
   });
 
-  it('seeds the dell platform with devices, failing parts, warranty runway and firmware drift', () => {
+  it.skipIf(!generatorPresent('dell'))('seeds the dell platform with devices, failing parts, warranty runway and firmware drift', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM dell_ome_instances').get().c).toBe(2);
     expect(db.prepare('SELECT COUNT(*) c FROM dell_devices').get().c).toBeGreaterThan(100);
     expect(db.prepare("SELECT COUNT(*) c FROM dell_components WHERE kind = 'disk'").get().c).toBeGreaterThan(300);
@@ -224,7 +232,7 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM dell_metrics_history').get().c).toBe(2 * 31);
   });
 
-  it('seeds vcenter governance + network data', () => {
+  it.skipIf(!generatorPresent('vcenter'))('seeds vcenter governance + network data', () => {
     // Networking inventory: pnics/vswitches/portgroups per host, DVS per vCenter.
     for (const kind of ['pnic', 'vswitch', 'portgroup', 'vmkernel', 'dvswitch', 'dvportgroup']) {
       expect(db.prepare('SELECT COUNT(*) c FROM vcenter_networks WHERE kind = ?').get(kind).c).toBeGreaterThan(0);
@@ -239,7 +247,7 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_orphaned_vmdks').get().c).toBeGreaterThan(3);
   });
 
-  it('seeds vcenter events and a consistent issue timeline', () => {
+  it.skipIf(!generatorPresent('vcenter'))('seeds vcenter events and a consistent issue timeline', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_events').get().c).toBeGreaterThan(300);
     for (const sev of ['error', 'warning', 'info']) {
       expect(db.prepare('SELECT COUNT(*) c FROM vcenter_events WHERE severity = ?').get(sev).c).toBeGreaterThan(0);
@@ -253,7 +261,7 @@ describe('seedDemo.js', () => {
     expect(db.prepare("SELECT COUNT(*) c FROM vcenter_issue_history WHERE status = 'open' AND first_seen >= last_seen").get().c).toBe(0);
   });
 
-  it('seeds the aria platform with instances, deployments, and computed issues', () => {
+  it.skipIf(!generatorPresent('aria'))('seeds the aria platform with instances, deployments, and computed issues', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM aria_instances').get().c).toBe(2);
     expect(db.prepare('SELECT COUNT(*) c FROM aria_deployments').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aria_requests').get().c).toBeGreaterThan(0);
@@ -266,7 +274,7 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM aria_issue_history').get().c).toBeGreaterThan(0);
   });
 
-  it('seeds the aws platform with inventory, cost/bedrock history, and every computed issue', () => {
+  it.skipIf(!generatorPresent('aws'))('seeds the aws platform with inventory, cost/bedrock history, and every computed issue', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM aws_accounts').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aws_ec2_instances').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aws_ecs_services').get().c).toBeGreaterThan(0);
@@ -295,7 +303,7 @@ describe('seedDemo.js', () => {
     expect(flag.value).toBe('1');
   });
 
-  it('seeds the unifi platform with sources, devices, ports, and every computed issue trigger', () => {
+  it.skipIf(!generatorPresent('unifi'))('seeds the unifi platform with sources, devices, ports, and every computed issue trigger', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM unifi_sources').get().c).toBe(2);
     expect(db.prepare('SELECT COUNT(*) c FROM unifi_devices').get().c).toBe(13);
     expect(db.prepare('SELECT COUNT(*) c FROM unifi_ports').get().c).toBeGreaterThan(0);

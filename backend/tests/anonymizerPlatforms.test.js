@@ -1,10 +1,20 @@
 /**
- * Round-trip coverage for the non-Cohesity platform dictionary sources added
- * to anonymizer.js's loadDictionary() (Pure, NetApp, Zerto, vCenter, Dell,
- * Aria) plus the key-based whole-value masking (serial/service_tag -> SERIAL,
- * user/requested_by/created_by -> USER, wwn -> MAC) and the new SERIAL token
- * category. Requires ../db/database (see tests/setup.js for the per-file temp
- * DB) so every platform migration has already run by the time this file loads.
+ * Round-trip coverage for anonymizer.js's loadDictionary() dictionary
+ * sources plus the key-based whole-value masking (serial/service_tag ->
+ * SERIAL, user/requested_by/created_by -> USER, wwn -> MAC) and the SERIAL
+ * token category.
+ *
+ * This used to seed fixture rows for the non-Cohesity platform dictionary
+ * sources (Pure, NetApp, Zerto, vCenter, Dell, Aria, AWS), but those 9
+ * platforms were removed from core in the 2026-08 pluginization campaign
+ * (their tables are gone) — loadDictionary() itself already wraps each
+ * platform's queries in a try/catch ("<platform> tables not present on this
+ * instance"), so it degrades gracefully with no test changes needed there.
+ * The "scrubs seeded platform names" and CLUSTER-token round-trip coverage
+ * is instead exercised against cohesity's own `clusters` table, which stays
+ * in core and is the identical dictionary mechanic (name -> CLUSTER token).
+ * The key-based whole-value masking tests below never touched the DB and
+ * are unchanged.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { createRequire } from 'module';
@@ -16,104 +26,13 @@ const { encrypt } = require('../services/encryption');
 const { createAnonymizer } = require('../services/anonymizer');
 
 beforeAll(() => {
-  // Pure
   db.prepare(`
-    INSERT INTO pure_arrays (name, mgmt_host, client_id, key_id, username, encrypted_credentials)
-    VALUES ('pure-array-alpha', '10.20.30.40', 'cid', 'kid', 'admin', ?)
+    INSERT INTO clusters (name, connection_type, auth_type, encrypted_credentials)
+    VALUES ('cohesity-cluster-alpha', 'direct', 'apikey', ?)
   `).run(encrypt(JSON.stringify({})));
-  db.prepare(`
-    INSERT INTO pure_hosts (array_id, name) VALUES (1, 'esx-hostgroup-01')
-  `).run();
-
-  // NetApp
-  db.prepare(`
-    INSERT INTO netapp_arrays (name, mgmt_host, username, encrypted_credentials)
-    VALUES ('netapp-cluster-beta', 'netapp-mgmt.invalid', 'admin', ?)
-  `).run(encrypt(JSON.stringify({})));
-  db.prepare(`
-    INSERT INTO netapp_svms (array_id, name) VALUES (1, 'svm-finance-01')
-  `).run();
-
-  // Zerto
-  db.prepare(`
-    INSERT INTO zerto_vpgs (vpg_identifier, name) VALUES ('vpg-1', 'vpg-payroll-replication')
-  `).run();
-
-  // vCenter
-  db.prepare(`
-    INSERT INTO vcenter_vcenters (name, host, username, encrypted_credentials)
-    VALUES ('vcenter-prod-gamma', 'vcsa.invalid', 'administrator@vsphere.local', ?)
-  `).run(encrypt(JSON.stringify({})));
-  db.prepare(`
-    INSERT INTO vcenter_hosts (vcenter_id, host_id, name) VALUES (1, 'host-1', 'esxi-rack3-node07')
-  `).run();
-
-  // Dell
-  db.prepare(`
-    INSERT INTO dell_ome_instances (name, host, username, encrypted_credentials)
-    VALUES ('dell-ome-delta', 'ome.invalid', 'admin', ?)
-  `).run(encrypt(JSON.stringify({})));
-  db.prepare(`
-    INSERT INTO dell_devices (ome_id, device_id, name, service_tag) VALUES (1, 1001, 'poweredge-r740-04', 'ABC1234')
-  `).run();
-
-  // Aria
-  db.prepare(`
-    INSERT INTO aria_instances (name, host, username, encrypted_credentials)
-    VALUES ('aria-vra-epsilon', 'aria.invalid', 'administrator', ?)
-  `).run(encrypt(JSON.stringify({})));
-  db.prepare(`
-    INSERT INTO aria_deployments (instance_id, deployment_id, name, created_by)
-    VALUES (1, 'dep-1', 'app-deployment-checkout', 'jdoe')
-  `).run();
-
-  // AWS
-  db.prepare(`
-    INSERT INTO aws_accounts (name, access_key_id) VALUES ('aws-account-lambda', 'AKIAEXAMPLE12345678')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_ec2_instances (account_id, instance_id, name) VALUES (1, 'i-0abc123mu', 'ec2-webapp-mu')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_lightsail_instances (account_id, name) VALUES (1, 'lightsail-node-nu')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_ecs_clusters (account_id, cluster_arn, cluster_name) VALUES (1, 'arn:aws:ecs:cl-1', 'ecs-cluster-xi')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_ecs_services (account_id, cluster_name, service_name) VALUES (1, 'ecs-cluster-xi', 'ecs-service-omicron')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_s3_buckets (account_id, name) VALUES (1, 'bucket-reports-pi')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_rds_instances (account_id, db_id) VALUES (1, 'rds-orders-rho')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_lambda_functions (account_id, name) VALUES (1, 'lambda-invoice-sigma')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_dynamo_tables (account_id, name) VALUES (1, 'dynamo-sessions-tau')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_ecr_repos (account_id, name) VALUES (1, 'ecr-repo-upsilon')
-  `).run();
-  db.prepare(`
-    INSERT INTO aws_vpcs (account_id, vpc_id, name) VALUES (1, 'vpc-0phichi', 'vpc-core-phi')
-  `).run();
 });
 
-const SEEDED_NAMES = [
-  'pure-array-alpha', 'esx-hostgroup-01',
-  'netapp-cluster-beta', 'svm-finance-01',
-  'vpg-payroll-replication',
-  'vcenter-prod-gamma', 'esxi-rack3-node07',
-  'dell-ome-delta', 'poweredge-r740-04',
-  'aria-vra-epsilon', 'app-deployment-checkout',
-  'aws-account-lambda', 'ec2-webapp-mu', 'lightsail-node-nu', 'ecs-cluster-xi',
-  'ecs-service-omicron', 'bucket-reports-pi', 'rds-orders-rho', 'lambda-invoice-sigma',
-  'dynamo-sessions-tau', 'ecr-repo-upsilon', 'vpc-core-phi',
-];
+const SEEDED_NAMES = ['cohesity-cluster-alpha'];
 
 describe('anonymizer platform coverage', () => {
   it('scrubs seeded platform names with zero leaks in a composed text blob', () => {
@@ -166,18 +85,18 @@ describe('anonymizer platform coverage', () => {
 
   it('restore() maps tokens back to originals, including a lowercased token', () => {
     const anon = createAnonymizer();
-    const out = anon.anonymize({ name: 'pure-array-alpha' });
+    const out = anon.anonymize({ name: 'cohesity-cluster-alpha' });
     const token = out.name;
     expect(token).toMatch(/^CLUSTER-\d+$/i);
     const restored = anon.restore(`Cluster ${token} and also ${token.toLowerCase()} had an issue.`);
-    expect(restored).toContain('pure-array-alpha');
-    expect(restored.match(/pure-array-alpha/g)).toHaveLength(2);
+    expect(restored).toContain('cohesity-cluster-alpha');
+    expect(restored.match(/cohesity-cluster-alpha/g)).toHaveLength(2);
   });
 
   it('mappings() includes the expected categories after mixed use', () => {
     const anon = createAnonymizer();
     anon.anonymize({
-      cluster: 'netapp-cluster-beta',
+      cluster: 'cohesity-cluster-alpha',
       service_tag: 'XYZ9999',
       wwn: '52:4a:93:7a:00:01:02:04',
       username: 'someuser',
