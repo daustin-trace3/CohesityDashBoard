@@ -1,0 +1,718 @@
+// Pure1 cloud REST client (fleet-wide, read-only).
+//
+// Auth: OAuth2 token-exchange. Sign a short JWT with the RSA private key
+// whose PUBLIC half is registered against the Pure1 Application ID, exchange
+// it at /oauth2/1.0/token for a Bearer access token, then call /api/1.latest/*.
+//
+// CRITICAL: the JWT header must NOT include a `kid` (Pure1 resolves the key
+// from `iss`). Payload is only { iss, iat, exp }. Matches Pure's official
+// pure_token_factory.py exactly.
+//
+// Ported from backend/services/pure1Api.js.
+//
+// DEVIATIONS FROM THE BUILT-IN:
+// 1. axios -> node `https` (api.js's rawRequest, same as the direct-array
+//    client) — no npm deps available to a bundled plugin.
+// 2. The on-disk private-key fallback (backend/data/dashboard_private.pem,
+//    resolved via __dirname) is DROPPED — a bundled plugin's __dirname does
+//    not resolve to a real backend/data directory. The settings-stored
+//    encrypted private key (Settings UI) and the PURE1_APIKEY env var for
+//    the app id remain fully supported; only the legacy on-disk key file
+//    fallback is gone. isDemo() -> process.env.DASHBOARD_DEMO === '1'
+//    (coreApi carries no demoMode module).
+// 3. getSetting/setSetting/encrypt/decrypt/logger all come from coreApi
+//    instead of direct host requires.
+const crypto = require('crypto');
+const { rawRequest } = require('./api');
+const demoFixtures = require('./pure1Fixtures');
+
+const HOST = 'https://api.pure1.purestorage.com';
+const API = '/api/1.latest';
+
+const DEFAULT_CACHE_TTL_MIN = 10;
+const DEFAULT_WARN_PCT = 75;
+const DEFAULT_CRIT_PCT = 90;
+const DEFAULT_POLL_INTERVAL_MIN = 15;
+
+const CAPACITY_METRICS = [
+  'array_total_capacity',
+  'array_volume_space',
+  'array_shared_space',
+  'array_snapshot_space',
+  'array_system_space',
+  'array_replication_space',
+  'array_data_reduction',
+];
+
+const PERF_METRICS = [
+  'array_read_iops',
+  'array_write_iops',
+  'array_read_latency_us',
+  'array_write_latency_us',
+  'array_read_bandwidth',
+  'array_write_bandwidth',
+];
+
+let tokenCache = null; // { token, expiresAt }
+let overviewCache = null; // { data, fetchedAt }
+let alertsCache = null;   // { data, fetchedAt }
+let enrichmentCache = null; // { data, fetchedAt }
+
+function isDemo() {
+  return process.env.DASHBOARD_DEMO === '1';
+}
+
+function base64url(input) {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
+  return buf.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+// ── Configuration (DB settings with env fallback) ─────────────────────────
+
+/** Pure1 Application ID: stored setting first, else PURE1_APIKEY env. */
+function getAppId(coreApi) {
+  return coreApi.settings.getSetting('pure1_app_id') || process.env.PURE1_APIKEY || '';
+}
+
+/** RSA private key PEM: encrypted DB setting only (see module header — the
+ *  legacy on-disk key file fallback does not resolve inside a plugin bundle). */
+function getPrivateKey(coreApi) {
+  const stored = coreApi.settings.getSetting('pure1_private_key');
+  if (stored) {
+    try { return coreApi.encryption.decrypt(stored); } catch { /* fall through */ }
+  }
+  const err = new Error('No Pure1 private key configured');
+  err.code = 'PURE1_NO_KEY';
+  throw err;
+}
+
+function hasPrivateKey(coreApi) {
+  return !!coreApi.settings.getSetting('pure1_private_key');
+}
+
+function keySource(coreApi) {
+  return coreApi.settings.getSetting('pure1_private_key') ? 'settings' : 'none';
+}
+
+function cacheTtlMs(coreApi) {
+  const min = Number(coreApi.settings.getSetting('pure1_cache_ttl_min')) || DEFAULT_CACHE_TTL_MIN;
+  return Math.max(1, min) * 60 * 1000;
+}
+
+/** True when Pure1 is configured (app id present + a private key available). */
+function isConfigured(coreApi) {
+  if (isDemo()) return true;
+  return !!getAppId(coreApi) && hasPrivateKey(coreApi);
+}
+
+/** Derive the public key (SPKI PEM) from the configured private key. */
+function getPublicKey(coreApi) {
+  try {
+    const priv = crypto.createPrivateKey(getPrivateKey(coreApi));
+    return crypto.createPublicKey(priv).export({ type: 'spki', format: 'pem' }).toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Clear cached token + fleet data (call after a settings change). */
+function invalidate() {
+  tokenCache = null;
+  overviewCache = null;
+  alertsCache = null;
+  enrichmentCache = null;
+}
+
+/** Build the RS256-signed JWT assertion (no kid; iss/iat/exp only). */
+function buildAssertion(coreApi) {
+  const appId = getAppId(coreApi);
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const payload = { iss: appId, iat: now, exp: now + 3600 };
+  const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
+  const signer = crypto.createSign('RSA-SHA256');
+  signer.update(signingInput);
+  signer.end();
+  return `${signingInput}.${base64url(signer.sign(getPrivateKey(coreApi)))}`;
+}
+
+/** Exchange the JWT for a Bearer access token (cached until shortly before expiry). */
+async function getAccessToken(coreApi, { force = false } = {}) {
+  if (!force && tokenCache && Date.now() < tokenCache.expiresAt) return tokenCache.token;
+  if (!isConfigured(coreApi)) {
+    const err = new Error('Pure1 is not configured (missing app ID or private key)');
+    err.code = 'PURE1_NOT_CONFIGURED';
+    throw err;
+  }
+  const resp = await rawRequest(HOST, {
+    method: 'POST', path: `/oauth2/1.0/token`, timeout: 30000, form: true,
+    headers: { accept: 'application/json', 'x-request-id': crypto.randomUUID() },
+    data: {
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+      subject_token: buildAssertion(coreApi),
+    },
+  });
+  const data = resp.data || {};
+  const token = data.access_token || (data.items && data.items[0] && data.items[0].access_token);
+  if (!token) throw new Error('Pure1 token exchange returned no access_token');
+  // Access tokens are JWTs; cache until ~1 min before their exp.
+  let expiresAt = Date.now() + 9 * 60 * 1000;
+  try {
+    const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString('utf8'));
+    if (claims.exp) expiresAt = claims.exp * 1000 - 60 * 1000;
+  } catch { /* keep default */ }
+  tokenCache = { token, expiresAt };
+  return token;
+}
+
+/** Authenticated GET against the Pure1 API (one auto-retry on 401). */
+async function apiGet(coreApi, pathStr, params, { retry = true } = {}) {
+  const token = await getAccessToken(coreApi);
+  try {
+    const resp = await rawRequest(HOST, {
+      method: 'GET', path: `${API}${pathStr}`, params, timeout: 30000,
+      headers: { Authorization: `Bearer ${token}`, 'x-request-id': crypto.randomUUID() },
+    });
+    return resp.data;
+  } catch (err) {
+    if (retry && err.response && err.response.status === 401) {
+      await getAccessToken(coreApi, { force: true });
+      return apiGet(coreApi, pathStr, params, { retry: false });
+    }
+    throw err;
+  }
+}
+
+const quoteList = (arr) => arr.map((v) => `'${v}'`).join(',');
+
+/** All arrays in the Pure1 fleet. */
+async function fetchArrays(coreApi) {
+  const out = [];
+  let offset = 0;
+  for (;;) {
+    const data = await apiGet(coreApi, '/arrays', { limit: 1000, offset });
+    const items = data.items || [];
+    out.push(...items);
+    if (items.length < 1000) break;
+    offset += 1000;
+  }
+  return out;
+}
+
+/**
+ * Latest capacity datapoint per array. Returns a map keyed by array id:
+ * { total, used, dataReduction, volumeSpace, sharedSpace, snapshotSpace,
+ *   systemSpace, replicationSpace, capturedAt }.
+ * ids are chunked to keep each metrics/history request small.
+ */
+async function fetchLatestCapacity(coreApi, ids) {
+  const result = new Map();
+  const end = Date.now();
+  const start = end - 4 * 24 * 3600 * 1000; // a few daily points; we keep the latest
+  // Pure1 caps (metrics × resources) at 32 per request. With 7 metrics that
+  // means at most 4 arrays per call.
+  const CHUNK = 4;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    let data;
+    try {
+      data = await apiGet(coreApi, '/metrics/history', {
+        names: quoteList(CAPACITY_METRICS),
+        resource_ids: quoteList(chunk),
+        aggregation: quoteList(['avg']),
+        resolution: 86400000,
+        start_time: start,
+        end_time: end,
+      });
+    } catch (err) {
+      coreApi.logger.error(`[Pure1] capacity history chunk failed: ${err.response && err.response.status} ${err.message}`);
+      continue;
+    }
+    for (const series of data.items || []) {
+      const res = (series.resources && series.resources[0]) || {};
+      const arrId = res.id;
+      if (!arrId) continue;
+      const points = series.data || [];
+      const last = points[points.length - 1];
+      if (!last) continue;
+      const [ts, value] = last;
+      const entry = result.get(arrId) || { capturedAt: null };
+      entry.capturedAt = Math.max(entry.capturedAt || 0, ts || 0);
+      switch (series.name) {
+        case 'array_total_capacity': entry.total = value; break;
+        case 'array_volume_space': entry.volumeSpace = value; break;
+        case 'array_shared_space': entry.sharedSpace = value; break;
+        case 'array_snapshot_space': entry.snapshotSpace = value; break;
+        case 'array_system_space': entry.systemSpace = value; break;
+        case 'array_replication_space': entry.replicationSpace = value; break;
+        case 'array_data_reduction': entry.dataReduction = value; break;
+        default: break;
+      }
+      result.set(arrId, entry);
+    }
+  }
+  // Physical used = volume + shared + snapshot + system + replication.
+  for (const entry of result.values()) {
+    entry.used = (entry.volumeSpace || 0) + (entry.sharedSpace || 0)
+      + (entry.snapshotSpace || 0) + (entry.systemSpace || 0) + (entry.replicationSpace || 0);
+  }
+  return result;
+}
+
+/** Latest per-array performance snapshot (IOPS/latency/bandwidth), same
+ * chunked /metrics/history pattern as fetchLatestCapacity. 6 metrics x 5
+ * arrays = 30 metric-resource pairs per call (cap 32). Best-effort. */
+async function fetchLatestPerformance(coreApi, ids) {
+  const result = new Map();
+  const end = Date.now();
+  const start = end - 2 * 24 * 3600 * 1000;
+  const CHUNK = 5;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    let data;
+    try {
+      data = await apiGet(coreApi, '/metrics/history', {
+        names: quoteList(PERF_METRICS),
+        resource_ids: quoteList(chunk),
+        aggregation: quoteList(['avg']),
+        resolution: 3600000,
+        start_time: start,
+        end_time: end,
+      });
+    } catch (err) {
+      coreApi.logger.error(`[Pure1] performance history chunk failed: ${err.response && err.response.status} ${err.message}`);
+      continue;
+    }
+    for (const series of data.items || []) {
+      const res = (series.resources && series.resources[0]) || {};
+      const arrId = res.id;
+      if (!arrId) continue;
+      const points = series.data || [];
+      const last = points[points.length - 1];
+      if (!last) continue;
+      const [ts, value] = last;
+      const entry = result.get(arrId) || { capturedAt: null };
+      entry.capturedAt = Math.max(entry.capturedAt || 0, ts || 0);
+      switch (series.name) {
+        case 'array_read_iops': entry.readIops = value; break;
+        case 'array_write_iops': entry.writeIops = value; break;
+        case 'array_read_latency_us': entry.readLatencyUs = value; break;
+        case 'array_write_latency_us': entry.writeLatencyUs = value; break;
+        case 'array_read_bandwidth': entry.readBw = value; break;
+        case 'array_write_bandwidth': entry.writeBw = value; break;
+        default: break;
+      }
+      result.set(arrId, entry);
+    }
+  }
+  return result;
+}
+
+async function fetchOpenAlerts(coreApi, limit = 200) {
+  const data = await apiGet(coreApi, '/alerts', {
+    filter: "state='open'",
+    sort: 'updated-',
+    limit,
+  });
+  return (data.items || []).map((a) => ({
+    id: a.id,
+    arrayName: (a.arrays && a.arrays[0] && a.arrays[0].name) || null,
+    arrayFqdn: (a.arrays && a.arrays[0] && a.arrays[0].fqdn) || null,
+    severity: a.severity,
+    category: a.category,
+    component: a.component_name,
+    componentType: a.component_type,
+    summary: a.summary,
+    code: a.code,
+    state: a.state,
+    created: a.created,
+    updated: a.updated,
+    knowledgeBaseUrl: a.knowledge_base_url,
+  }));
+}
+
+/** User-defined array tags from Pure1, grouped by array id. */
+async function fetchTags(coreApi) {
+  const items = [];
+  let offset = 0;
+  for (;;) {
+    const data = await apiGet(coreApi, '/arrays/tags', { limit: 1000, offset });
+    const page = data.items || [];
+    items.push(...page);
+    if (page.length < 1000) break;
+    offset += 1000;
+  }
+  const map = new Map();
+  for (const t of items) {
+    const id = t.resource && t.resource.id;
+    if (!id) continue;
+    if (!map.has(id)) map.set(id, []);
+    map.get(id).push({ key: t.key, value: t.value, namespace: t.namespace });
+  }
+  return map;
+}
+
+// Statuses that mean "fine" (empty slots / not-installed are not faults).
+const HEALTHY_STATUSES = new Set(['ok', 'healthy', 'not_installed', 'unused', 'unknown', 'normal', '']);
+
+/** Page through a list endpoint (optionally filtered to one array). */
+async function fetchAllForArray(coreApi, pathStr, arrayId, extraParams = {}) {
+  const out = [];
+  let offset = 0;
+  for (;;) {
+    const params = { limit: 1000, offset, ...extraParams };
+    if (arrayId) params.filter = `arrays[any].id='${arrayId}'`;
+    const data = await apiGet(coreApi, pathStr, params);
+    const items = data.items || [];
+    out.push(...items);
+    if (items.length < 1000) break;
+    offset += 1000;
+  }
+  return out;
+}
+
+/**
+ * Fleet-wide health rollup + provisioned totals + serials.
+ * One paginated pass each over hardware, drives and volumes, grouped by array.
+ * Returns { [arrayId]: { health, unhealthy, provisioned, chassisSerial, controllerSerials } }.
+ */
+async function fetchEnrichment(coreApi) {
+  const [hardware, drives, volumes] = await Promise.all([
+    fetchAllForArray(coreApi, '/hardware', null),
+    fetchAllForArray(coreApi, '/drives', null),
+    fetchAllForArray(coreApi, '/volumes', null),
+  ]);
+  const arrId = (item) => item.arrays && item.arrays[0] && item.arrays[0].id;
+  const byArray = new Map();
+  const ensure = (id) => { if (!byArray.has(id)) byArray.set(id, { statuses: [], provisioned: 0, chassisSerial: null, controllers: [] }); return byArray.get(id); };
+  for (const h of hardware) {
+    const id = arrId(h); if (!id) continue;
+    const e = ensure(id);
+    e.statuses.push(h.status);
+    const type = String(h.type || '').toLowerCase();
+    if (h.serial) {
+      if (type === 'chassis' && !e.chassisSerial) e.chassisSerial = h.serial;
+      else if (type === 'controller') e.controllers.push({ name: h.name, serial: h.serial });
+    }
+  }
+  for (const d of drives) { const id = arrId(d); if (id) ensure(id).statuses.push(d.status); }
+  for (const v of volumes) { if (v.destroyed || v.eradicated) continue; const id = arrId(v); if (id) ensure(id).provisioned += (v.provisioned || 0); }
+
+  const out = {};
+  for (const [id, info] of byArray) {
+    let health = 'ok';
+    let unhealthy = 0;
+    for (const s of info.statuses) {
+      const v = String(s || '').toLowerCase();
+      if (HEALTHY_STATUSES.has(v)) continue;
+      unhealthy += 1;
+      if (['critical', 'failed', 'unhealthy', 'fault', 'error'].includes(v)) health = 'crit';
+      else if (health !== 'crit') health = 'warn';
+    }
+    const controllerSerials = info.controllers
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+      .map((c) => c.serial);
+    out[id] = { health, unhealthy, provisioned: info.provisioned, chassisSerial: info.chassisSerial, controllerSerials };
+  }
+  return out;
+}
+
+/** Cached fleet enrichment (health + provisioned). */
+async function getEnrichment(coreApi, { force = false } = {}) {
+  if (isDemo()) return demoFixtures.getEnrichment();
+  if (!force && enrichmentCache && (Date.now() - enrichmentCache.fetchedAt) < cacheTtlMs(coreApi)) {
+    return enrichmentCache.data;
+  }
+  const data = await fetchEnrichment(coreApi);
+  enrichmentCache = { data, fetchedAt: Date.now() };
+  return data;
+}
+
+/** Merged fleet overview (arrays + latest capacity), cached per settings TTL. */
+async function getOverview(coreApi, { force = false } = {}) {
+  if (isDemo()) return demoFixtures.getOverview();
+  if (!force && overviewCache && (Date.now() - overviewCache.fetchedAt) < cacheTtlMs(coreApi)) {
+    return overviewCache.data;
+  }
+  const arrays = await fetchArrays(coreApi);
+  const [capacity, tagMap] = await Promise.all([
+    fetchLatestCapacity(coreApi, arrays.map((a) => a.id)),
+    fetchTags(coreApi).catch(() => new Map()),
+  ]);
+  const rows = arrays.map((a) => {
+    const cap = capacity.get(a.id) || {};
+    const total = cap.total || 0;
+    const used = cap.used || 0;
+    return {
+      id: a.id,
+      name: a.name,
+      fqdn: a.fqdn,
+      model: a.model,
+      os: a.os,
+      version: a.version,
+      total,
+      used,
+      pctUsed: total > 0 ? (used / total) * 100 : null,
+      dataReduction: cap.dataReduction || null,
+      effectiveUsed: cap.dataReduction ? used * cap.dataReduction : null,
+      volumeSpace: cap.volumeSpace || 0,
+      snapshotSpace: cap.snapshotSpace || 0,
+      sharedSpace: cap.sharedSpace || 0,
+      capturedAt: cap.capturedAt || null,
+      tags: tagMap.get(a.id) || [],
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  overviewCache = { data: rows, fetchedAt: Date.now() };
+  return rows;
+}
+
+/** Open fleet alerts, cached per settings TTL. */
+async function getAlerts(coreApi, { force = false } = {}) {
+  if (isDemo()) return demoFixtures.getAlerts();
+  if (!force && alertsCache && (Date.now() - alertsCache.fetchedAt) < cacheTtlMs(coreApi)) {
+    return alertsCache.data;
+  }
+  const data = await fetchOpenAlerts(coreApi);
+  alertsCache = { data, fetchedAt: Date.now() };
+  return data;
+}
+
+function lastRefresh() {
+  return {
+    overview: overviewCache ? overviewCache.fetchedAt : null,
+    alerts: alertsCache ? alertsCache.fetchedAt : null,
+  };
+}
+
+/** Display prefs safe to expose broadly (no secrets) — used by /status. */
+function getDisplayPrefs(coreApi) {
+  return {
+    warnPct: Number(coreApi.settings.getSetting('pure1_warn_pct')) || DEFAULT_WARN_PCT,
+    critPct: Number(coreApi.settings.getSetting('pure1_crit_pct')) || DEFAULT_CRIT_PCT,
+    showHiddenAlerts: coreApi.settings.getSetting('pure1_show_hidden_alerts') === '1',
+  };
+}
+
+// ── Settings (Pure1-only config surfaced by the Settings page) ────────────
+
+function maskAppId(id) {
+  if (!id) return '';
+  const tail = id.slice(-4);
+  return `${id.split(':').slice(0, 2).join(':')}:…${tail}`;
+}
+
+/** Non-secret view of the current Pure1 configuration for the Settings UI. */
+function getConfig(coreApi) {
+  const appId = getAppId(coreApi);
+  return {
+    configured: isConfigured(coreApi),
+    appIdSet: !!appId,
+    // Full app id is never returned — the masked form is enough to verify
+    // which key is in use without exposing it.
+    appIdMasked: maskAppId(appId),
+    appIdSource: coreApi.settings.getSetting('pure1_app_id') ? 'settings' : (process.env.PURE1_APIKEY ? 'env' : 'none'),
+    hasPrivateKey: hasPrivateKey(coreApi),
+    keySource: keySource(coreApi),
+    publicKey: getPublicKey(coreApi),
+    cacheTtlMin: Number(coreApi.settings.getSetting('pure1_cache_ttl_min')) || DEFAULT_CACHE_TTL_MIN,
+    warnPct: Number(coreApi.settings.getSetting('pure1_warn_pct')) || DEFAULT_WARN_PCT,
+    critPct: Number(coreApi.settings.getSetting('pure1_crit_pct')) || DEFAULT_CRIT_PCT,
+    showHiddenAlerts: coreApi.settings.getSetting('pure1_show_hidden_alerts') === '1',
+    pollIntervalMinutes: Number(coreApi.settings.getSetting('pure1_poll_interval_minutes')) || DEFAULT_POLL_INTERVAL_MIN,
+    lastRefresh: lastRefresh(),
+  };
+}
+
+/** Persist config changes. Private key is encrypted at rest. */
+function setConfig(coreApi, patch = {}) {
+  const { settings, encryption } = coreApi;
+  if (patch.appId != null) settings.setSetting('pure1_app_id', String(patch.appId).trim());
+  if (patch.privateKey) {
+    const pem = String(patch.privateKey).trim();
+    if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(pem)) {
+      const err = new Error('Private key must be a PEM (BEGIN PRIVATE KEY) block');
+      err.status = 400;
+      throw err;
+    }
+    // Validate it parses as a key before storing.
+    crypto.createPrivateKey(pem);
+    settings.setSetting('pure1_private_key', encryption.encrypt(pem));
+  }
+  if (patch.cacheTtlMin != null) {
+    const n = Math.min(120, Math.max(1, Number(patch.cacheTtlMin) || DEFAULT_CACHE_TTL_MIN));
+    settings.setSetting('pure1_cache_ttl_min', String(n));
+  }
+  if (patch.warnPct != null) settings.setSetting('pure1_warn_pct', String(Math.min(100, Math.max(1, Number(patch.warnPct) || DEFAULT_WARN_PCT))));
+  if (patch.critPct != null) settings.setSetting('pure1_crit_pct', String(Math.min(100, Math.max(1, Number(patch.critPct) || DEFAULT_CRIT_PCT))));
+  if (patch.showHiddenAlerts != null) settings.setSetting('pure1_show_hidden_alerts', patch.showHiddenAlerts ? '1' : '0');
+  if (patch.pollIntervalMinutes != null) {
+    const n = Math.min(1440, Math.max(5, Number(patch.pollIntervalMinutes) || DEFAULT_POLL_INTERVAL_MIN));
+    settings.setSetting('pure1_poll_interval_minutes', String(n));
+  }
+  invalidate();
+  return getConfig(coreApi);
+}
+
+/** Validate connectivity with the current (or a candidate) configuration. */
+async function testConnection(coreApi) {
+  invalidate();
+  const token = await getAccessToken(coreApi, { force: true });
+  const resp = await rawRequest(HOST, {
+    method: 'GET', path: `${API}/arrays`, params: { limit: 1 }, timeout: 30000,
+    headers: { Authorization: `Bearer ${token}`, 'x-request-id': crypto.randomUUID() },
+  });
+  return { ok: true, arrayCount: resp.data.total_item_count || 0 };
+}
+
+// ── Per-array resources ──────────────────────────────────────────────────
+
+/** Volumes on an array (newest first, tombstones excluded). */
+async function fetchVolumes(coreApi, arrayId) {
+  if (isDemo()) return demoFixtures.fetchVolumes(arrayId);
+  const items = await fetchAllForArray(coreApi, '/volumes', arrayId);
+  return items
+    .filter((v) => !v.destroyed && !v.eradicated)
+    .map((v) => ({
+      id: v.id,
+      name: v.name,
+      provisioned: v.provisioned,
+      serial: v.serial,
+      pod: v.pod && v.pod.name ? v.pod.name : (typeof v.pod === 'string' ? v.pod : null),
+      source: v.source && v.source.name ? v.source.name : null,
+      created: v.created,
+    }))
+    .sort((a, b) => (b.provisioned || 0) - (a.provisioned || 0));
+}
+
+/** Stretched pods across the fleet (ActiveCluster replication topology). */
+async function fetchPods(coreApi) {
+  if (isDemo()) return demoFixtures.fetchPods();
+  const items = await fetchAllForArray(coreApi, '/pods', null);
+  return items.map((p) => ({
+    id: p.id,
+    name: p.name,
+    mediator: p.mediator,
+    arrays: (p.arrays || []).map((a) => ({
+      id: a.id, name: a.name, status: a.status, mediatorStatus: a.mediator_status, frozenAt: a.frozen_at,
+    })),
+  })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Hardware components + controllers + drives for one array. */
+async function fetchHardware(coreApi, arrayId) {
+  if (isDemo()) return demoFixtures.fetchHardware(arrayId);
+  const [hardware, controllers, drives] = await Promise.all([
+    fetchAllForArray(coreApi, '/hardware', arrayId),
+    fetchAllForArray(coreApi, '/controllers', arrayId),
+    fetchAllForArray(coreApi, '/drives', arrayId),
+  ]);
+  // The /controllers endpoint carries no serial; the matching hardware
+  // component (type 'controller', e.g. CT0) does — merge it in by name.
+  const ctrlSerial = new Map();
+  for (const h of hardware) {
+    if (String(h.type).toLowerCase() === 'controller' && h.name) ctrlSerial.set(h.name, h.serial || null);
+  }
+  return {
+    controllers: controllers.map((c) => ({
+      id: c.id, name: c.name, mode: c.mode, model: c.model, status: c.status, type: c.type, version: c.version,
+      serial: ctrlSerial.get(c.name) || null,
+    })).sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    components: hardware.map((h) => ({
+      id: h.id, name: h.name, type: h.type, model: h.model, serial: h.serial, slot: h.slot,
+      status: h.status, speed: h.speed, temperature: h.temperature, voltage: h.voltage,
+    })).sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    drives: drives.map((d) => ({
+      id: d.id, name: d.name, capacity: d.capacity, protocol: d.protocol, status: d.status, type: d.type,
+    })).sort((a, b) => String(a.name).localeCompare(String(b.name))),
+  };
+}
+
+/** Network interfaces + ports for one array. */
+async function fetchConnectivity(coreApi, arrayId) {
+  if (isDemo()) return demoFixtures.fetchConnectivity(arrayId);
+  const [nics, ports] = await Promise.all([
+    fetchAllForArray(coreApi, '/network-interfaces', arrayId),
+    fetchAllForArray(coreApi, '/ports', arrayId),
+  ]);
+  return {
+    interfaces: nics.map((n) => ({
+      id: n.id, name: n.name, address: n.address, netmask: n.netmask, gateway: n.gateway,
+      mac: n.hwaddr, mtu: n.mtu, speed: n.speed, enabled: n.enabled,
+      services: Array.isArray(n.services) ? n.services.join(', ') : n.services,
+    })).sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    ports: ports.map((p) => ({
+      id: p.id, name: p.name, wwn: p.wwn, iqn: p.iqn, nqn: p.nqn, portal: p.portal, failover: p.failover,
+    })).sort((a, b) => String(a.name).localeCompare(String(b.name))),
+  };
+}
+
+// ── Metric history (for charts) ────────────────────────────────────────────
+
+/** Choose a resolution that keeps a request under ~300 points per series. */
+function resolutionForDays(days) {
+  if (days <= 1) return 300000;       // 5 min
+  if (days <= 7) return 3600000;      // 1 hour
+  if (days <= 35) return 86400000;    // 1 day
+  return 86400000;
+}
+
+/**
+ * Metric history for a single array. Returns { start, end, resolution, series }
+ * where series is a map { metricName: [[ts, value], ...] }.
+ */
+async function fetchMetricsHistory(coreApi, arrayId, names, { days = 30, resolution } = {}) {
+  const end = Date.now();
+  const start = end - days * 24 * 3600 * 1000;
+  const res = resolution || resolutionForDays(days);
+  const data = await apiGet(coreApi, '/metrics/history', {
+    names: quoteList(names),
+    resource_ids: quoteList([arrayId]),
+    aggregation: quoteList(['avg']),
+    resolution: res,
+    start_time: start,
+    end_time: end,
+  });
+  const series = {};
+  for (const item of data.items || []) {
+    series[item.name] = item.data || [];
+  }
+  return { start, end, resolution: res, series };
+}
+
+/** Capacity trend for one array (daily). */
+async function fetchCapacityHistory(coreApi, arrayId, days = 30) {
+  if (isDemo()) return demoFixtures.fetchCapacityHistory(arrayId, days);
+  const { series, ...meta } = await fetchMetricsHistory(coreApi, arrayId, CAPACITY_METRICS, { days, resolution: 86400000 });
+  return { ...meta, series };
+}
+
+/** Performance trend for one array (iops/latency/bandwidth). */
+async function fetchPerformanceHistory(coreApi, arrayId, days = 1) {
+  if (isDemo()) return demoFixtures.fetchPerformanceHistory(arrayId, days);
+  return fetchMetricsHistory(coreApi, arrayId, PERF_METRICS, { days });
+}
+
+module.exports = {
+  isConfigured,
+  getAccessToken,
+  fetchArrays,
+  fetchLatestCapacity,
+  fetchLatestPerformance,
+  fetchOpenAlerts,
+  getOverview,
+  getAlerts,
+  lastRefresh,
+  fetchVolumes,
+  fetchPods,
+  fetchHardware,
+  fetchConnectivity,
+  fetchCapacityHistory,
+  fetchPerformanceHistory,
+  getConfig,
+  setConfig,
+  testConnection,
+  invalidate,
+  getDisplayPrefs,
+  getEnrichment,
+};
