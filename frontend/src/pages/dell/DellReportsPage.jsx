@@ -171,14 +171,14 @@ const REPORTS = [
   },
   {
     key: 'hw-event-trends', group: 'Operations', icon: TrendingUp, title: 'Hardware Event Trends',
-    description: 'Noisiest servers by hardware-log volume; the trend column compares the last 7 days to the 7 before.',
+    description: 'Noisiest servers by warning/critical/fatal hardware-log volume (routine info entries such as OME login audits are excluded); the trend column compares the last 7 days to the 7 before.',
     days: 7,
     columns: [
       { k: 'device_name', label: 'Device' },
       { k: 'model', label: 'Model' },
       { k: 'critical', label: 'Critical', kind: 'num' },
       { k: 'warning', label: 'Warning', kind: 'num' },
-      { k: 'total', label: 'Total', kind: 'num' },
+      { k: 'total', label: 'Events', kind: 'num' },
       { k: 'bad_7d', label: 'Last 7d', kind: 'num' },
       { k: 'trend', label: 'Trend vs prior 7d', kind: 'num' },
       { k: 'ome_name', label: 'OME' },
