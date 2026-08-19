@@ -313,4 +313,19 @@ module.exports = [
       `);
     },
   },
+
+  // Migration: partial index for actionable hardware-log entries. On a real
+  // fleet 99.9% of entries are Audit|info noise (OME's own Redfish
+  // login/logout on every iDRAC, ~360k rows/day at 1000 hosts); the reports
+  // that trend problems only care about warning/critical/fatal — this index
+  // keeps them at a few thousand rows regardless of table size.
+  {
+    version: 7,
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_dell_hwlogs_bad_time ON dell_hardware_logs(created_at)
+          WHERE severity IN ('warning', 'critical', 'fatal');
+      `);
+    },
+  },
 ];
