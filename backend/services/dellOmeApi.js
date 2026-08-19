@@ -766,6 +766,20 @@ async function fetchConfigProfiles(ome) {
 // device 1000-health map): 1000 Info / 2000 Warning / 3000 Critical / 4000 Fatal.
 const HWLOG_SEVERITY_MAP = { 1000: 'info', 2000: 'warning', 3000: 'critical', 4000: 'fatal' };
 
+function mapHwlogRows(deviceId, rows) {
+  return rows.map((l) => ({
+    deviceId,
+    logId: l.LogId || (l.LogSequenceNumber != null ? `seq:${l.LogSequenceNumber}` : null),
+    seq: num(l.LogSequenceNumber),
+    severity: HWLOG_SEVERITY_MAP[l.LogSeverity] || (l.LogSeverity != null ? String(l.LogSeverity) : 'unknown'),
+    category: l.LogCategory || null,
+    messageId: l.LogMessageId || null,
+    message: l.LogMessage || null,
+    comment: l.LogComment || null,
+    createdAt: normalizeTimestamp(l.LogTimestamp),
+  })).filter((l) => l.logId != null);
+}
+
 /** iDRAC Lifecycle/SEL log for one device (console device "Hardware Logs" tab).
  *  No server-side $filter — dedupe happens at store time on (device, LogId).
  *  Page size falls back 500 → 100 → unpaged: some builds cap this endpoint's
@@ -783,17 +797,97 @@ async function fetchHardwareLogs(ome, deviceId, maxPages = 8) {
       rows = data?.value || [];
     }
   }
-  return rows.map((l) => ({
-    deviceId,
-    logId: l.LogId || (l.LogSequenceNumber != null ? `seq:${l.LogSequenceNumber}` : null),
-    seq: num(l.LogSequenceNumber),
-    severity: HWLOG_SEVERITY_MAP[l.LogSeverity] || (l.LogSeverity != null ? String(l.LogSeverity) : 'unknown'),
-    category: l.LogCategory || null,
-    messageId: l.LogMessageId || null,
-    message: l.LogMessage || null,
-    comment: l.LogComment || null,
-    createdAt: normalizeTimestamp(l.LogTimestamp),
-  })).filter((l) => l.logId != null);
+  return mapHwlogRows(deviceId, rows);
+}
+
+// One raw HardwareLogs page with the same $top fallback fetchHardwareLogs
+// established. Returns the effective page size so callers can keep stepping
+// $skip consistently (top: null = the build only answers unpaged).
+async function hwlogPage(ome, path, skip, top) {
+  try {
+    const d = await oGet(ome, `${path}?$top=${top}&$skip=${skip}`);
+    return { rows: d?.value || [], count: d?.['@odata.count'] ?? null, top };
+  } catch (err) {
+    if (top > 100) return hwlogPage(ome, path, skip, 100);
+    if (skip === 0) {
+      const d = await oGet(ome, path);
+      return { rows: d?.value || [], count: d?.['@odata.count'] ?? null, top: null };
+    }
+    throw err;
+  }
+}
+
+/** Incremental hardware-log fetch: only entries with LogSequenceNumber above
+ *  lastSeq (the caller's stored per-device cursor). The endpoint has no
+ *  server-side $filter, so this leans on page order instead:
+ *  - newest-first listing: walk from page 0, stop at the first page that
+ *    reaches back to lastSeq;
+ *  - oldest-first listing: jump to the tail via @odata.count and walk
+ *    backwards until lastSeq is reached;
+ *  - no usable seq/ordering (or lastSeq null): full walk, i.e. the backlog
+ *    download — INSERT OR IGNORE dedupes overlap either way.
+ *  A newest entry BELOW lastSeq means the iDRAC log was cleared and seq
+ *  restarted — refetch everything for the device. */
+async function fetchHardwareLogsSince(ome, deviceId, lastSeq = null, { top = 500, maxPages = 8, backlogMaxPages = 40 } = {}) {
+  const path = `/api/DeviceService/Devices(${deviceId})/HardwareLogs`;
+  const fullWalk = () => fetchHardwareLogs(ome, deviceId, backlogMaxPages);
+  if (lastSeq == null) return fullWalk();
+
+  const first = await hwlogPage(ome, path, 0, top);
+  if (!first.rows.length) return [];
+  if (first.top == null) {
+    // Unpaged build: everything is already in hand.
+    const all = mapHwlogRows(deviceId, first.rows);
+    const newest = Math.max(...all.map((l) => l.seq ?? -Infinity));
+    return newest < lastSeq ? all : all.filter((l) => l.seq == null || l.seq > lastSeq);
+  }
+
+  const size = first.top;
+  const seqOf = (r) => num(r.LogSequenceNumber);
+  const headSeq = seqOf(first.rows[0]);
+  const tailSeq = seqOf(first.rows[first.rows.length - 1]);
+  if (headSeq == null || tailSeq == null) return fullWalk(); // no seq → can't cursor
+
+  const newestFirst = headSeq >= tailSeq;
+  if (newestFirst) {
+    if (headSeq < lastSeq) return fullWalk(); // log cleared, seq restarted
+    const out = [...first.rows];
+    let page = first;
+    for (let p = 1; p < maxPages && page.rows.length === size; p++) {
+      const min = Math.min(...page.rows.map((r) => seqOf(r) ?? Infinity));
+      if (min <= lastSeq) break; // this page already reaches the cursor
+      page = await hwlogPage(ome, path, p * size, size);
+      out.push(...page.rows);
+    }
+    return mapHwlogRows(deviceId, out).filter((l) => l.seq == null || l.seq > lastSeq);
+  }
+
+  // Oldest-first: the new entries live at the tail.
+  if (first.count == null) {
+    // No total to jump with — full walk, filtered to new entries.
+    const all = await fullWalk();
+    const newest = Math.max(...all.map((l) => l.seq ?? -Infinity));
+    return newest < lastSeq ? all : all.filter((l) => l.seq == null || l.seq > lastSeq);
+  }
+  if (first.count <= size) {
+    const all = mapHwlogRows(deviceId, first.rows);
+    const newest = Math.max(...all.map((l) => l.seq ?? -Infinity));
+    return newest < lastSeq ? all : all.filter((l) => l.seq == null || l.seq > lastSeq);
+  }
+  const out = [];
+  let skip = Math.max(0, first.count - size);
+  let newestSeen = -Infinity;
+  for (let p = 0; p < maxPages; p++) {
+    const page = skip === 0 ? first : await hwlogPage(ome, path, skip, size);
+    out.push(...page.rows);
+    const min = Math.min(...page.rows.map((r) => seqOf(r) ?? Infinity));
+    const max = Math.max(...page.rows.map((r) => seqOf(r) ?? -Infinity));
+    if (max > newestSeen) newestSeen = max;
+    if (min <= lastSeq || skip === 0) break;
+    skip = Math.max(0, skip - size);
+  }
+  if (newestSeen < lastSeq) return fullWalk(); // log cleared, seq restarted
+  return mapHwlogRows(deviceId, out).filter((l) => l.seq == null || l.seq > lastSeq);
 }
 
 /** Raw audit-domain diagnostic (compliance/jobs/profiles/hardware logs): first
@@ -840,7 +934,14 @@ async function probeAudit(ome, deviceId = null) {
     // pass the $top=3 attempt above yet fail here.
     await attempt('hardwareLogsPage500', async () => {
       const d = await oGet(ome, `/api/DeviceService/Devices(${deviceId})/HardwareLogs?$top=500&$skip=0`);
-      return { returned: (d?.value || []).length, count: d?.['@odata.count'] ?? null };
+      const rows = d?.value || [];
+      // First/last seq of the page shows the listing order — the incremental
+      // fetch's ordering detection can be sanity-checked against this.
+      return {
+        returned: rows.length, count: d?.['@odata.count'] ?? null,
+        firstSeq: rows[0]?.LogSequenceNumber ?? null,
+        lastSeq: rows[rows.length - 1]?.LogSequenceNumber ?? null,
+      };
     });
     await attempt('logSeverities', () => oGet(ome, `/api/DeviceService/Devices(${deviceId})/LogSeverities`));
   }
@@ -866,6 +967,7 @@ module.exports = {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, probeAlerts, fetchWarranties, fetchFirmwareCompliance,
   fetchDeviceMetrics, fetchDevicePowerThermal, probeInventory, testConnection, invalidateSession,
-  fetchConfigCompliance, fetchJobs, fetchConfigProfiles, fetchHardwareLogs, probeAudit,
+  fetchConfigCompliance, fetchJobs, fetchConfigProfiles, fetchHardwareLogs,
+  fetchHardwareLogsSince, probeAudit,
   cimToIso, normalizeTimestamp, complianceStatusName, flattenComplianceDetail,
 };

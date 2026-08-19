@@ -4,14 +4,15 @@
 // deduped on alert id), warranties, firmware compliance, and Power Manager
 // instant metrics (skipped for the whole poll on the first plugin-absent
 // error). Inventory tables are replaced per instance; a metrics snapshot is
-// appended per poll.
+// appended per poll. Hardware logs are swept in the background after each
+// poll, incrementally from each device's stored MAX(seq).
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, fetchWarranties, fetchFirmwareCompliance,
   fetchDeviceMetrics, fetchDevicePowerThermal, fetchConfigCompliance,
-  fetchJobs, fetchConfigProfiles, fetchHardwareLogs,
+  fetchJobs, fetchConfigProfiles, fetchHardwareLogsSince,
 } = require('./dellOmeApi');
 const logger = require('../utils/logger');
 
@@ -20,7 +21,7 @@ const safeMsg = (e) => e?.response ? `HTTP ${e.response.status}${e.message && !/
 // Per-device sweeps are capped so a 5,000-device OME can't stall the poller.
 const INVENTORY_DEVICE_CAP = 500;
 const METRICS_DEVICE_CAP = 300;
-const HWLOG_DEVICE_CAP = 300;
+const HWLOG_DEVICE_CAP = 1500;
 
 async function collect(ome) {
   const [info, typeMap] = [await fetchApplianceInfo(ome), await fetchDeviceTypeMap(ome)];
@@ -118,31 +119,68 @@ async function collect(ome) {
     logger.debug(`[DellPoller] ${ome.name}: profiles fetch failed: ${safeMsg(err)}`);
   }
 
-  // Per-device iDRAC hardware (Lifecycle/SEL) logs — append incrementally,
-  // so a failed sweep just means no new rows this poll. First hard failure
-  // disables the sweep for the rest of the poll (endpoint unsupported).
-  const hardwareLogs = [];
-  let hwlogFailures = 0;
-  for (const d of serverDevices.slice(0, HWLOG_DEVICE_CAP)) {
-    try {
-      hardwareLogs.push(...await fetchHardwareLogs(ome, d.deviceId));
-    } catch (err) {
-      hwlogFailures += 1;
-      // First failure at WARN — a fully-silent sweep on prod (info-level logs)
-      // cost a diagnosis round; debug for the repeat noise.
-      const log = hwlogFailures === 1 ? 'warn' : 'debug';
-      logger[log](`[DellPoller] ${ome.name}: hardware logs failed for device ${d.deviceId} (${d.name}): ${safeMsg(err)}`);
-      if (hwlogFailures >= 3 && hardwareLogs.length === 0) {
-        logger.warn(`[DellPoller] ${ome.name}: hardware-log sweep disabled for this poll after ${hwlogFailures} device failures with no rows`);
-        break;
-      }
-    }
-  }
-
-  return { info, devices, components, alerts, warranties, firmware, configCompliance, jobs, profiles, hardwareLogs };
+  return { info, devices, components, alerts, warranties, firmware, configCompliance, jobs, profiles };
 }
 
-const store = db.transaction((omeId, { info, devices, components, alerts, warranties, firmware, configCompliance, jobs, profiles, hardwareLogs }) => {
+// Per-device iDRAC hardware (Lifecycle/SEL) logs — runs AFTER store(), outside
+// the main transaction, fire-and-forget. Each device's stored MAX(seq) is the
+// cursor: the first sweep downloads the backlog, later sweeps fetch only pages
+// holding newer entries (usually one request per device), so the sweep stays
+// cheap at 1000+ hosts and never holds the whole fleet's logs in memory.
+const hwlogSweepInFlight = new Set();
+
+async function sweepHardwareLogs(ome, serverDevices) {
+  if (hwlogSweepInFlight.has(ome.id)) {
+    logger.debug(`[DellPoller] ${ome.name}: hardware-log sweep from a previous poll still running — skipped`);
+    return;
+  }
+  hwlogSweepInFlight.add(ome.id);
+  try {
+    const maxSeqStmt = db.prepare('SELECT MAX(seq) AS s FROM dell_hardware_logs WHERE ome_id = ? AND device_id = ?');
+    const insertStmt = db.prepare(`
+      INSERT OR IGNORE INTO dell_hardware_logs (ome_id, device_id, log_id, seq, severity,
+        category, message_id, message, comment, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    // One small transaction per device keeps the event loop responsive.
+    const insertRows = db.transaction((rows) => {
+      for (const l of rows) {
+        insertStmt.run(ome.id, l.deviceId, l.logId, l.seq, l.severity, l.category,
+          l.messageId, l.message, l.comment, l.createdAt);
+      }
+    });
+    let added = 0;
+    let backlogDevices = 0;
+    let hwlogFailures = 0;
+    for (const d of serverDevices.slice(0, HWLOG_DEVICE_CAP)) {
+      try {
+        const lastSeq = maxSeqStmt.get(ome.id, d.deviceId).s;
+        if (lastSeq == null) backlogDevices += 1;
+        const rows = await fetchHardwareLogsSince(ome, d.deviceId, lastSeq);
+        if (rows.length) {
+          insertRows(rows);
+          added += rows.length;
+        }
+      } catch (err) {
+        hwlogFailures += 1;
+        // First failure at WARN — a fully-silent sweep on prod (info-level logs)
+        // cost a diagnosis round; debug for the repeat noise.
+        const log = hwlogFailures === 1 ? 'warn' : 'debug';
+        logger[log](`[DellPoller] ${ome.name}: hardware logs failed for device ${d.deviceId} (${d.name}): ${safeMsg(err)}`);
+        if (hwlogFailures >= 3 && added === 0) {
+          logger.warn(`[DellPoller] ${ome.name}: hardware-log sweep disabled for this poll after ${hwlogFailures} device failures with no rows`);
+          break;
+        }
+      }
+    }
+    db.prepare("DELETE FROM dell_hardware_logs WHERE created_at < datetime('now', '-365 days')").run();
+    logger.info(`[DellPoller] ${ome.name}: hardware-log sweep stored ${added} new entr${added === 1 ? 'y' : 'ies'}${backlogDevices ? ` (${backlogDevices} device(s) backlogged from scratch)` : ''}`);
+  } finally {
+    hwlogSweepInFlight.delete(ome.id);
+  }
+}
+
+const store = db.transaction((omeId, { info, devices, components, alerts, warranties, firmware, configCompliance, jobs, profiles }) => {
   if (info?.version) {
     db.prepare('UPDATE dell_ome_instances SET version = ? WHERE id = ?').run(info.version, omeId);
   }
@@ -310,17 +348,6 @@ const store = db.transaction((omeId, { info, devices, components, alerts, warran
     }
   }
 
-  const hwlogStmt = db.prepare(`
-    INSERT OR IGNORE INTO dell_hardware_logs (ome_id, device_id, log_id, seq, severity,
-      category, message_id, message, comment, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const l of hardwareLogs || []) {
-    hwlogStmt.run(omeId, l.deviceId, l.logId, l.seq, l.severity, l.category,
-      l.messageId, l.message, l.comment, l.createdAt);
-  }
-  db.prepare("DELETE FROM dell_hardware_logs WHERE created_at < datetime('now', '-365 days')").run();
-
   const isSrv = (d) => /server/i.test(d.deviceType);
   db.prepare(`
     INSERT INTO dell_metrics_history (ome_id, devices_total, devices_ok, devices_warning,
@@ -346,6 +373,8 @@ async function pollDell(ome) {
         last_poll_at = datetime('now') WHERE id = ?
     `).run(ome.id);
     logger.info(`[DellPoller] ${ome.name}: ${data.devices.length} device(s), ${(data.components || []).length} component(s), ${(data.alerts || []).length} alert(s) seen`);
+    sweepHardwareLogs(ome, data.devices.filter((d) => /server/i.test(d.deviceType)))
+      .catch((err) => logger.warn(`[DellPoller] ${ome.name}: hardware-log sweep failed: ${safeMsg(err)}`));
   } catch (err) {
     db.prepare(`
       UPDATE dell_ome_instances SET last_poll_status = 'error', last_poll_error = ?,

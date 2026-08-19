@@ -299,4 +299,18 @@ module.exports = [
       `);
     },
   },
+
+  // Migration: hardware-log indexes for fleet scale (1000+ hosts). (ome_id,
+  // device_id, seq) backs the incremental sweep's per-device MAX(seq) cursor;
+  // (ome_id, device_id, created_at) backs the per-device grouping/range scans
+  // in the reports (hw-event-trends, server-timeline, support-packet).
+  {
+    version: 6,
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_dell_hwlogs_dev_seq ON dell_hardware_logs(ome_id, device_id, seq);
+        CREATE INDEX IF NOT EXISTS idx_dell_hwlogs_dev_time ON dell_hardware_logs(ome_id, device_id, created_at);
+      `);
+    },
+  },
 ];
