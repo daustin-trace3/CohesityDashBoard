@@ -360,7 +360,7 @@ export default function DellReportsPage() {
         setData({ rows: Array.isArray(data?.rows) ? data.rows : [], summary: data?.summary || null, device: data?.device || null });
         setLastRefreshed(new Date());
       })
-      .catch(() => { setData({ rows: [], summary: null }); toast({ type: 'error', title: `Failed to load ${active.title}` }); })
+      .catch(() => { setData({ rows: [], summary: null, error: true }); toast({ type: 'error', title: `Failed to load ${active.title}` }); })
       .finally(() => setLoading(false));
   }, [active, effDays, deviceSel, toast]);
 
@@ -468,6 +468,12 @@ export default function DellReportsPage() {
               <div className="text-sm text-ink-muted py-8 text-center">Pick a server to build its timeline.</div>
             ) : loading || data == null ? (
               <LoadingPanel label={`Loading ${active.title}…`} height={180} />
+            ) : data.error ? (
+              // A failed fetch must NOT render the healthy "clean" empty state.
+              <div className="text-sm text-status-crit py-8 text-center">
+                Failed to load {active.title} — the request errored or timed out.{' '}
+                <button type="button" onClick={load} className="underline text-ink hover:text-brand">Retry</button>
+              </div>
             ) : (
               <>
                 {data.device && (

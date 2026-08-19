@@ -200,6 +200,9 @@ router.get('/predictive-watchlist', (req, res, next) => {
 router.get('/hw-event-trends', [daysParam], validate, (req, res, next) => {
   try {
     const d = days(req, 90);
+    // INDEXED BY: left to itself the planner can pick idx_dell_hwlogs_dev_time
+    // to satisfy the GROUP BY, which walks the ENTIRE table (millions of rows
+    // at fleet scale). Range-scan the day window, then group-sort the result.
     const rows = db.prepare(`
       SELECT dv.name AS device_name, dv.service_tag, dv.model, o.name AS ome_name,
         COUNT(*) AS total,
@@ -207,7 +210,7 @@ router.get('/hw-event-trends', [daysParam], validate, (req, res, next) => {
         SUM(CASE WHEN l.severity = 'warning' THEN 1 ELSE 0 END) AS warning,
         SUM(CASE WHEN l.created_at >= datetime('now', '-7 days') AND l.severity IN ('critical', 'fatal', 'warning') THEN 1 ELSE 0 END) AS bad_7d,
         SUM(CASE WHEN l.created_at >= datetime('now', '-14 days') AND l.created_at < datetime('now', '-7 days') AND l.severity IN ('critical', 'fatal', 'warning') THEN 1 ELSE 0 END) AS bad_prev_7d
-      FROM dell_hardware_logs l
+      FROM dell_hardware_logs l INDEXED BY idx_dell_hwlogs_time
       JOIN dell_ome_instances o ON o.id = l.ome_id
       LEFT JOIN dell_devices dv ON dv.ome_id = l.ome_id AND dv.device_id = l.device_id
       WHERE l.created_at >= datetime('now', ?)
