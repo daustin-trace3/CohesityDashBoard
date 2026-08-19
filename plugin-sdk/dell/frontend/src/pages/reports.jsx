@@ -170,14 +170,14 @@ const REPORTS = [
   },
   {
     key: 'hw-event-trends', group: 'Operations', icon: TrendingUp, title: 'Hardware Event Trends',
-    description: 'Noisiest servers by hardware-log volume; the trend column compares the last 7 days to the 7 before.',
+    description: 'Noisiest servers by warning/critical/fatal hardware-log volume (routine info entries such as OME login audits are excluded); the trend column compares the last 7 days to the 7 before.',
     days: 7,
     columns: [
       { k: 'device_name', label: 'Device' },
       { k: 'model', label: 'Model' },
       { k: 'critical', label: 'Critical', kind: 'num' },
       { k: 'warning', label: 'Warning', kind: 'num' },
-      { k: 'total', label: 'Total', kind: 'num' },
+      { k: 'total', label: 'Events', kind: 'num' },
       { k: 'bad_7d', label: 'Last 7d', kind: 'num' },
       { k: 'trend', label: 'Trend vs prior 7d', kind: 'num' },
       { k: 'ome_name', label: 'OME' },
@@ -360,7 +360,7 @@ export default function DellReportsPage() {
         setData({ rows: Array.isArray(json?.rows) ? json.rows : [], summary: json?.summary || null, device: json?.device || null });
         setLastRefreshed(new Date());
       })
-      .catch(() => setData({ rows: [], summary: null }))
+      .catch(() => setData({ rows: [], summary: null, error: true }))
       .finally(() => setLoading(false));
   }, [active, effDays, deviceSel]);
 
@@ -470,6 +470,12 @@ export default function DellReportsPage() {
               <div className="text-sm text-ink-muted py-8 text-center">Pick a server to build its timeline.</div>
             ) : loading || data == null ? (
               <LoadingPanel label={`Loading ${active.title}…`} height={180} />
+            ) : data.error ? (
+              // A failed fetch must NOT render the healthy "clean" empty state.
+              <div className="text-sm text-status-crit py-8 text-center">
+                Failed to load {active.title} — the request errored or timed out.{' '}
+                <button type="button" onClick={load} className="underline text-ink">Retry</button>
+              </div>
             ) : (
               <>
                 {data.device && (

@@ -299,4 +299,33 @@ module.exports = [
       `);
     },
   },
+
+  // Migration: hardware-log indexes for fleet scale (1000+ hosts). (ome_id,
+  // device_id, seq) backs the incremental sweep's per-device MAX(seq) cursor;
+  // (ome_id, device_id, created_at) backs the per-device grouping/range scans
+  // in the reports (hw-event-trends, server-timeline, support-packet).
+  {
+    version: 6,
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_dell_hwlogs_dev_seq ON dell_hardware_logs(ome_id, device_id, seq);
+        CREATE INDEX IF NOT EXISTS idx_dell_hwlogs_dev_time ON dell_hardware_logs(ome_id, device_id, created_at);
+      `);
+    },
+  },
+
+  // Migration: partial index for actionable hardware-log entries. On a real
+  // fleet 99.9% of entries are Audit|info noise (OME's own Redfish
+  // login/logout on every iDRAC, ~360k rows/day at 1000 hosts); the reports
+  // that trend problems only care about warning/critical/fatal — this index
+  // keeps them at a few thousand rows regardless of table size.
+  {
+    version: 7,
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_dell_hwlogs_bad_time ON dell_hardware_logs(created_at)
+          WHERE severity IN ('warning', 'critical', 'fatal');
+      `);
+    },
+  },
 ];
