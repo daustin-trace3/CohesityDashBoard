@@ -131,7 +131,7 @@ export default function OverviewPage() {
 
   const series = React.useMemo(() => (history || []).map((r) => ({
     time: new Date(r.captured_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-    usedTB: toTB(r.used_bytes), totalTB: toTB(r.total_bytes),
+    usedTB: toTB(r.used_bytes),
     eff: r.efficiency_ratio != null ? +r.efficiency_ratio.toFixed(1) : null,
     readIops: r.read_iops != null ? Math.round(r.read_iops) : null,
     writeIops: r.write_iops != null ? Math.round(r.write_iops) : null,
@@ -247,7 +247,6 @@ export default function OverviewPage() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <ChartCard title="Capacity (TB)">
                 <LineChart data={trendData(labels, [
-                  { label: 'Total', data: series.map((s) => s.totalTB), color: '#6b7280' },
                   { label: 'Used', data: series.map((s) => s.usedTB), color: BRAND, fill: true },
                 ])} />
               </ChartCard>
