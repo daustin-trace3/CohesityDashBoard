@@ -217,21 +217,22 @@ export default function OverviewPage() {
               <LoadingPanel label="Loading history…" height={80} />
             ) : !forecast.ready ? (
               <p className="text-sm text-ink-muted">Not enough history yet. Forecasts appear once at least two samples are collected (polls every 15 min).</p>
-            ) : !forecast.growing ? (
-              <p className="text-sm text-status-ok">
-                {forecast.perDay < 0
-                  ? `Capacity shrinking ${fmtBytes(-forecast.perDay)}/day — ${fmtBytes(Math.max(0, -forecast.delta))} freed over ${forecast.spanDays.toFixed(1)} day(s). No fill date projected.`
-                  : 'Flat — no net capacity growth over the selected window. No fill date projected.'}
-              </p>
             ) : (
               <>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <StatCard icon={TrendingUp} label="Growth / day" value={fmtBytes(forecast.perDay)} />
+                  <StatCard icon={TrendingUp} label="Growth / day" value={`${forecast.perDay < 0 ? '−' : ''}${fmtBytes(Math.abs(forecast.perDay))}`} tone={forecast.perDay < 0 ? 'ok' : 'default'} />
                   <StatCard icon={Database} label="Days to 80%" value={forecast.to80 != null ? `${fmtNum(forecast.to80)} d` : '—'} tone={forecast.to80 != null && forecast.to80 < 30 ? 'warn' : 'default'} />
                   <StatCard icon={Database} label="Days to 90%" value={forecast.to90 != null ? `${fmtNum(forecast.to90)} d` : '—'} tone={forecast.to90 != null && forecast.to90 < 30 ? 'warn' : 'default'} />
                   <StatCard icon={Database} label="Days to Full" value={forecast.to100 != null ? `${fmtNum(forecast.to100)} d` : '—'} tone={forecast.to100 != null && forecast.to100 < 60 ? 'crit' : 'default'} />
                 </div>
-                <p style={{ fontSize: 11, color: 'var(--na-ink-faint)', marginTop: 8 }}>Linear projection from {forecast.points} sample(s) over {forecast.spanDays.toFixed(1)} day(s).{forecast.spanDays < 3 && ' Low confidence — improves as more data is collected.'}</p>
+                {!forecast.growing && (
+                  <p className="text-sm text-status-ok mt-2">
+                    {forecast.perDay < 0
+                      ? `Capacity shrinking — ${fmtBytes(Math.max(0, -forecast.delta))} freed over ${forecast.spanDays.toFixed(1)} day(s). No fill date projected.`
+                      : 'Flat — no net capacity growth over the selected window. No fill date projected.'}
+                  </p>
+                )}
+                <p className="text-[11px] text-ink-faint mt-2">Linear projection from {forecast.points} sample(s) over {forecast.spanDays.toFixed(1)} day(s).{forecast.spanDays < 3 && ' Low confidence — improves as more data is collected.'}</p>
               </>
             )}
           </div>
