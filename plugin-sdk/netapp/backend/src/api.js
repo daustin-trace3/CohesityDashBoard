@@ -171,6 +171,28 @@ async function apiGet(array, coreApi, path, params, passwordOverride) {
 
 const records = (data) => (data && data.records) || [];
 
+/**
+ * Collection GET that follows ONTAP pagination. ONTAP stops collecting after
+ * return_timeout (default 15s) and returns a partial page + _links.next with
+ * HTTP 200, so a single apiGet silently drops records on large clusters.
+ */
+async function apiGetAll(array, coreApi, path, params) {
+  const out = [];
+  let data = await apiGet(array, coreApi, path, { return_timeout: 25, ...params });
+  out.push(...records(data));
+  let next = data && data._links && data._links.next && data._links.next.href;
+  let pages = 1;
+  while (next && pages < 200) {
+    pages += 1;
+    data = next.startsWith("/api/gateways/")
+      ? await aiqumGet(configForArray(array, coreApi), coreApi, next)
+      : await apiGet(array, coreApi, next);
+    out.push(...records(data));
+    next = data && data._links && data._links.next && data._links.next.href;
+  }
+  return out;
+}
+
 /** Clusters managed by AIQUM (discovery). */
 async function fetchManagedClusters(cfgOverride, coreApi) {
   const data = await aiqumGet(cfgOverride, coreApi, '/api/datacenter/cluster/clusters', { max_records: 1000 });
@@ -195,15 +217,13 @@ async function fetchCluster(array, coreApi) {
 }
 
 async function fetchNodes(array, coreApi) {
-  const data = await apiGet(array, coreApi, '/api/cluster/nodes', { fields: 'name,model,serial_number,state,version', max_records: 1000 });
-  return records(data);
+  return await apiGetAll(array, coreApi, '/api/cluster/nodes', { fields: 'name,model,serial_number,state,version', max_records: 1000 });
 }
 
 async function fetchAggregates(array, coreApi) {
-  const data = await apiGet(array, coreApi, '/api/storage/aggregates', {
+  return await apiGetAll(array, coreApi, '/api/storage/aggregates', {
     fields: 'name,node,state,space', max_records: 1000,
   });
-  return records(data);
 }
 
 // Extended detail first; older ONTAP versions can 400 on unknown field names
@@ -220,29 +240,25 @@ const VOLUME_FIELDS_FULL = [
 
 async function fetchVolumes(array, coreApi) {
   try {
-    const data = await apiGet(array, coreApi, '/api/storage/volumes', {
+    return await apiGetAll(array, coreApi, '/api/storage/volumes', {
       fields: VOLUME_FIELDS_FULL, max_records: 5000,
     });
-    return records(data);
   } catch (err) {
     coreApi.logger.warn(`[NetAppApi] extended volume fields rejected (${err.message}) — retrying with basic set`);
-    const data = await apiGet(array, coreApi, '/api/storage/volumes', {
+    return await apiGetAll(array, coreApi, '/api/storage/volumes', {
       fields: 'name,svm,state,aggregates,space', max_records: 5000,
     });
-    return records(data);
   }
 }
 
 async function fetchSvms(array, coreApi) {
-  const data = await apiGet(array, coreApi, '/api/svm/svms', { fields: 'name,state', max_records: 1000 });
-  return records(data);
+  return await apiGetAll(array, coreApi, '/api/svm/svms', { fields: 'name,state', max_records: 1000 });
 }
 
 async function fetchDisks(array, coreApi) {
-  const data = await apiGet(array, coreApi, '/api/storage/disks', {
+  return await apiGetAll(array, coreApi, '/api/storage/disks', {
     fields: 'name,model,vendor,state,type,usable_size', max_records: 5000,
   });
-  return records(data);
 }
 
 /** Cluster-wide performance (latest sample). */
@@ -281,11 +297,10 @@ async function fetchEmsAlerts(array, coreApi) {
 /** SnapMirror relationships (DR replication). */
 async function fetchSnapmirror(array, coreApi) {
   try {
-    const data = await apiGet(array, coreApi, '/api/snapmirror/relationships', {
+    return await apiGetAll(array, coreApi, '/api/snapmirror/relationships', {
       fields: 'source,destination,state,healthy,lag_time,transfer',
       max_records: 2000,
     });
-    return records(data);
   } catch {
     return [];
   }
@@ -294,11 +309,10 @@ async function fetchSnapmirror(array, coreApi) {
 /** Logical interfaces (LIFs). */
 async function fetchLifs(array, coreApi) {
   try {
-    const data = await apiGet(array, coreApi, '/api/network/ip/interfaces', {
+    return await apiGetAll(array, coreApi, '/api/network/ip/interfaces', {
       fields: 'name,svm,ip,enabled,state,services,location',
       max_records: 2000,
     });
-    return records(data);
   } catch {
     return [];
   }
@@ -307,11 +321,10 @@ async function fetchLifs(array, coreApi) {
 /** Quota reports (capacity governance). */
 async function fetchQuotas(array, coreApi) {
   try {
-    const data = await apiGet(array, coreApi, '/api/storage/quota/reports', {
+    return await apiGetAll(array, coreApi, '/api/storage/quota/reports', {
       fields: 'svm,volume,qtree,type,space,files',
       max_records: 5000,
     });
-    return records(data);
   } catch {
     return [];
   }
@@ -320,11 +333,10 @@ async function fetchQuotas(array, coreApi) {
 /** Live NFS connected clients (client-to-volume map). */
 async function fetchNfsClients(array, coreApi) {
   try {
-    const data = await apiGet(array, coreApi, '/api/protocols/nfs/connected-clients', {
+    return await apiGetAll(array, coreApi, '/api/protocols/nfs/connected-clients', {
       fields: 'client_ip,server_ip,node,svm,volume,protocol',
       max_records: 5000,
     });
-    return records(data);
   } catch {
     return [];
   }
@@ -333,11 +345,10 @@ async function fetchNfsClients(array, coreApi) {
 /** NFS export policies (with rules describing permitted clients). */
 async function fetchExportPolicies(array, coreApi) {
   try {
-    const data = await apiGet(array, coreApi, '/api/protocols/nfs/export-policies', {
+    return await apiGetAll(array, coreApi, '/api/protocols/nfs/export-policies', {
       fields: 'name,svm,rules',
       max_records: 2000,
     });
-    return records(data);
   } catch {
     return [];
   }
@@ -346,11 +357,10 @@ async function fetchExportPolicies(array, coreApi) {
 /** Active CIFS/SMB sessions (live client-to-volume map). */
 async function fetchCifsSessions(array, coreApi) {
   try {
-    const data = await apiGet(array, coreApi, '/api/protocols/cifs/sessions', {
+    return await apiGetAll(array, coreApi, '/api/protocols/cifs/sessions', {
       fields: 'client_ip,server_ip,node,svm,volumes,user,mapped_unix_user,protocol,authentication,smb_encryption,smb_signing,open_shares,open_files,connected_duration,idle_duration',
       max_records: 5000,
     });
-    return records(data);
   } catch {
     return [];
   }
@@ -359,11 +369,10 @@ async function fetchCifsSessions(array, coreApi) {
 /** CIFS/SMB shares (share -> volume mapping). */
 async function fetchCifsShares(array, coreApi) {
   try {
-    const data = await apiGet(array, coreApi, '/api/protocols/cifs/shares', {
+    return await apiGetAll(array, coreApi, '/api/protocols/cifs/shares', {
       fields: 'name,path,svm,volume',
       max_records: 2000,
     });
-    return records(data);
   } catch {
     return [];
   }
