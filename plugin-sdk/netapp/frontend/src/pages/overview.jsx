@@ -147,11 +147,15 @@ export default function OverviewPage() {
     const last = history[history.length - 1];
     const cap = last?.total_bytes || 0;
     const used = last?.used_bytes || 0;
-    if (!fit || fit.slope <= 0 || !cap) return { ready: true, growing: false };
+    const spanDays = pts.length ? (pts[pts.length - 1][0] - pts[0][0]) / MS_PER_DAY : 0;
+    const delta = pts.length ? pts[pts.length - 1][1] - pts[0][1] : 0;
+    if (!fit || !cap) return { ready: true, growing: false, perDay: 0, delta, points: pts.length, spanDays };
+    const perDay = fit.slope * MS_PER_DAY;
+    if (fit.slope <= 0) return { ready: true, growing: false, perDay, delta, points: pts.length, spanDays };
     return {
-      ready: true, growing: true, perDay: fit.slope * MS_PER_DAY,
+      ready: true, growing: true, perDay,
       to80: daysUntil(fit, used, cap * 0.8), to90: daysUntil(fit, used, cap * 0.9), to100: daysUntil(fit, used, cap),
-      points: pts.length, spanDays: pts.length ? (pts[pts.length - 1][0] - pts[0][0]) / MS_PER_DAY : 0,
+      points: pts.length, spanDays,
     };
   }, [history]);
 
@@ -214,7 +218,11 @@ export default function OverviewPage() {
             ) : !forecast.ready ? (
               <p className="text-sm text-ink-muted">Not enough history yet. Forecasts appear once at least two samples are collected (polls every 15 min).</p>
             ) : !forecast.growing ? (
-              <p className="text-sm text-status-ok">No net capacity growth over the selected window — no fill date projected.</p>
+              <p className="text-sm text-status-ok">
+                {forecast.perDay < 0
+                  ? `Capacity shrinking ${fmtBytes(-forecast.perDay)}/day — ${fmtBytes(Math.max(0, -forecast.delta))} freed over ${forecast.spanDays.toFixed(1)} day(s). No fill date projected.`
+                  : 'Flat — no net capacity growth over the selected window. No fill date projected.'}
+              </p>
             ) : (
               <>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
