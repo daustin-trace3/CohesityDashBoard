@@ -13,7 +13,7 @@ const {
   DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues,
 } = require('../services/vcenterIssues');
 const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
-const { writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf } = require('../services/vcenterCapacity');
+const { writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites } = require('../services/vcenterCapacity');
 
 const router = express.Router();
 
@@ -560,15 +560,24 @@ router.post('/capacity/sites', [
   } catch (err) { next(err); }
 });
 
+/** POST /api/vcenter/capacity/sites/auto — one site per unmapped cluster, named after the cluster. */
+router.post('/capacity/sites/auto', (req, res, next) => {
+  try {
+    res.json(autoCreateSites());
+  } catch (err) { next(err); }
+});
+
 /** PUT /api/vcenter/capacity/sites/members — update or delete site membership. */
 router.put('/capacity/sites/members', [
   body('vcenterId').isInt().toInt(),
   body('memberType').equals('cluster').withMessage('memberType must equal "cluster"'),
   body('memberName').isString().trim().notEmpty(),
-  body('siteId').custom((v) => v === null || Number.isInteger(v)).toInt(),
+  // null = unmap; toInt() would turn null into NaN, so sanitize by hand.
+  body('siteId').custom((v) => v === null || Number.isInteger(v) || /^\d+$/.test(String(v))),
 ], validate, (req, res, next) => {
   try {
-    const { vcenterId, memberType, memberName, siteId } = req.body;
+    const { vcenterId, memberType, memberName } = req.body;
+    const siteId = req.body.siteId === null ? null : Number(req.body.siteId);
     if (siteId !== null) {
       const siteExists = db.prepare('SELECT id FROM vcenter_sites WHERE id = ?').get(siteId);
       if (!siteExists) return res.status(404).json({ error: 'Site not found.' });
