@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Building2, Layers, Trash2 } from 'lucide-react';
+import { Building2, Layers, Trash2, ArrowLeftRight } from 'lucide-react';
 import client from '../../api/client';
 import { LoadingPanel, Badge } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls } from '../../components/ui/tableTools';
@@ -192,6 +192,102 @@ export function ClusterAssignmentsSection({ flash }) {
               </tbody>
             </table>
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function FailoverPairsSection({ flash }) {
+  const [sites, setSites] = useState(null);
+  const [pairs, setPairs] = useState([]);
+  const [form, setForm] = useState({ a: '', b: '' });
+  const [saving, setSaving] = useState(false);
+  const load = useCallback(() => Promise.all([
+    client.get('/vcenter/capacity/sites').then(({ data }) => setSites(data.sites || [])),
+    client.get('/vcenter/capacity/pairs').then(({ data }) => setPairs(Array.isArray(data) ? data : [])),
+  ]).catch(() => { setSites([]); setPairs([]); }), []);
+  useEffect(() => { load(); }, [load]);
+
+  const addPair = async () => {
+    if (!form.a || !form.b || form.a === form.b) return;
+    setSaving(true);
+    try {
+      await client.post('/vcenter/capacity/pairs', { siteAId: Number(form.a), siteBId: Number(form.b) });
+      setForm({ a: '', b: '' });
+      await load();
+      flash?.('success', 'Failover pair added');
+    } catch (err) {
+      flash?.('error', 'Failed to add pair', err?.response?.data?.error);
+    } finally { setSaving(false); }
+  };
+  const removePair = async (p) => {
+    try {
+      await client.delete(`/vcenter/capacity/pairs/${p.id}`);
+      await load();
+    } catch (err) { flash?.('error', 'Failed to remove pair', err?.response?.data?.error); }
+  };
+  const byId = new Map((sites || []).map((s) => [s.id, s]));
+  const sel = 'bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
+
+  return (
+    <div className="panel p-4" id="pairs" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><ArrowLeftRight size={15} className="text-brand" /> Failover pairs</p>
+      <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
+        Optional. Pair two sites that back each other up (two vCenters, two datacenters). Site Capacity then shows the pair's combined utilisation and whether everything could run on either side alone. Nothing is paired by default.
+      </p>
+      {sites == null ? <LoadingPanel label="Loading…" height={100} /> : sites.length < 2 ? (
+        <p className="text-sm text-ink-muted py-4 text-center">At least two sites are needed before a pair can be configured.</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-end gap-2 mb-4">
+            <div>
+              <label className="block text-xs font-semibold text-ink mb-1">Site A</label>
+              <select value={form.a} onChange={(e) => setForm((f) => ({ ...f, a: e.target.value }))} className={sel} style={{ width: 'auto', cursor: 'pointer' }}>
+                <option value="">Select…</option>
+                {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <span className="text-ink-faint pb-2">⇄</span>
+            <div>
+              <label className="block text-xs font-semibold text-ink mb-1">Site B</label>
+              <select value={form.b} onChange={(e) => setForm((f) => ({ ...f, b: e.target.value }))} className={sel} style={{ width: 'auto', cursor: 'pointer' }}>
+                <option value="">Select…</option>
+                {sites.filter((s) => String(s.id) !== form.a).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <button onClick={addPair} disabled={saving || !form.a || !form.b}
+              className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
+              {saving ? 'Adding…' : 'Add pair'}
+            </button>
+          </div>
+          {pairs.length === 0 ? (
+            <p className="text-sm text-ink-muted py-4 text-center">No failover pairs configured.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                  <th className="py-2 pr-3">Site A</th><th className="py-2 pr-3">Site B</th><th className="py-2 pr-3 text-right">Actions</th>
+                </tr></thead>
+                <tbody>
+                  {pairs.map((p) => (
+                    <tr key={p.id} className="border-b border-cohesity-border/50">
+                      <td className="py-2 pr-3 text-ink"><span className="flex items-center gap-2"><SiteDot site={byId.get(p.siteAId)} /> {p.siteAName}</span></td>
+                      <td className="py-2 pr-3 text-ink"><span className="flex items-center gap-2"><SiteDot site={byId.get(p.siteBId)} /> {p.siteBName}</span></td>
+                      <td className="py-2 pr-3">
+                        <div className="flex items-center justify-end">
+                          <button onClick={() => removePair(p)} title="Remove pair" aria-label="Remove pair"
+                            className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-status-crit hover:border-status-crit/50 transition-colors cursor-pointer">
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </div>

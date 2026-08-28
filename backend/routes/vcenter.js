@@ -13,7 +13,7 @@ const {
   DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues,
 } = require('../services/vcenterIssues');
 const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
-const { writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites } = require('../services/vcenterCapacity');
+const { writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites, pairSummary } = require('../services/vcenterCapacity');
 
 const router = express.Router();
 
@@ -664,6 +664,43 @@ router.delete('/capacity/sites/:id', [param('id').isInt().toInt()], validate, (r
   } catch (err) { next(err); }
 });
 
+/** GET /api/vcenter/capacity/pairs — configured failover pairs. */
+router.get('/capacity/pairs', (req, res, next) => {
+  try {
+    res.json(db.prepare(`
+      SELECT p.id, p.site_a_id AS siteAId, a.name AS siteAName, p.site_b_id AS siteBId, b.name AS siteBName
+      FROM vcenter_site_pairs p JOIN vcenter_sites a ON a.id = p.site_a_id JOIN vcenter_sites b ON b.id = p.site_b_id
+      ORDER BY a.name, b.name
+    `).all());
+  } catch (err) { next(err); }
+});
+
+/** POST /api/vcenter/capacity/pairs { siteAId, siteBId } — pair two sites (409 if already paired, either order). */
+router.post('/capacity/pairs', [
+  body('siteAId').isInt().toInt(),
+  body('siteBId').isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const { siteAId, siteBId } = req.body;
+    if (siteAId === siteBId) return res.status(400).json({ error: 'Pick two different sites.' });
+    const exists = db.prepare('SELECT COUNT(*) AS n FROM vcenter_sites WHERE id IN (?, ?)').get(siteAId, siteBId).n;
+    if (exists !== 2) return res.status(404).json({ error: 'Site not found.' });
+    const dup = db.prepare('SELECT id FROM vcenter_site_pairs WHERE (site_a_id = ? AND site_b_id = ?) OR (site_a_id = ? AND site_b_id = ?)').get(siteAId, siteBId, siteBId, siteAId);
+    if (dup) return res.status(409).json({ error: 'Those sites are already paired.' });
+    const info = db.prepare('INSERT INTO vcenter_site_pairs (site_a_id, site_b_id) VALUES (?, ?)').run(siteAId, siteBId);
+    res.status(201).json({ id: info.lastInsertRowid, siteAId, siteBId });
+  } catch (err) { next(err); }
+});
+
+/** DELETE /api/vcenter/capacity/pairs/:id */
+router.delete('/capacity/pairs/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const info = db.prepare('DELETE FROM vcenter_site_pairs WHERE id = ?').run(req.params.id);
+    if (!info.changes) return res.status(404).json({ error: 'Pair not found.' });
+    res.json({ deleted: true });
+  } catch (err) { next(err); }
+});
+
 /** GET /api/vcenter/capacity/overview — current per-site capacity + failover matrix (snapshot tables, no history needed). */
 router.get('/capacity/overview', (req, res, next) => {
   try {
@@ -674,12 +711,18 @@ router.get('/capacity/overview', (req, res, next) => {
     const out = sites.map((site) => {
       const mine = all.filter((c) => clusterMap.get(`${c.vcenterId}|${c.name}`) === site.id);
       const r = rollupSite(mine);
-      rollups.push({ ...r, name: site.name });
+      rollups.push({ ...r, id: site.id, name: site.name, color: site.color });
       return { id: site.id, name: site.name, color: site.color, clusters: mine.map(apiCluster), totals: apiTotals(r) };
     });
     res.json({
       sites: out,
       failover: failoverMatrix(rollups),
+      pairs: db.prepare('SELECT id, site_a_id AS a, site_b_id AS b FROM vcenter_site_pairs').all().map((p) => {
+        const a = rollups.find((r) => r.id === p.a);
+        const b = rollups.find((r) => r.id === p.b);
+        if (!a || !b) return null;
+        return { id: p.id, a: { id: a.id, name: a.name, color: a.color }, b: { id: b.id, name: b.name, color: b.color }, ...pairSummary(a, b) };
+      }).filter(Boolean),
       unmappedClusterCount: all.filter((c) => !clusterMap.has(`${c.vcenterId}|${c.name}`)).length,
       lastSampleAt: db.prepare('SELECT MAX(captured_at) AS t FROM vcenter_capacity_history').get().t,
       sampleCount: db.prepare("SELECT COUNT(DISTINCT substr(captured_at, 1, 13)) AS n FROM vcenter_capacity_history").get().n,

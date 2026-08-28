@@ -324,4 +324,21 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 9,
+    up(db) {
+      // Optional failover pairs: two sites that back each other up. Drives the
+      // "Failover Pairs" panel on Site Capacity (combined utilisation + fit in
+      // each direction). Nothing is paired by default.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vcenter_site_pairs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          site_a_id INTEGER NOT NULL REFERENCES vcenter_sites(id) ON DELETE CASCADE,
+          site_b_id INTEGER NOT NULL REFERENCES vcenter_sites(id) ON DELETE CASCADE,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE (site_a_id, site_b_id)
+        );
+      `);
+    },
+  },
 ];
