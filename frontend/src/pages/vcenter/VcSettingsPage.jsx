@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Building2, Layers } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Building2, Layers, ArrowLeftRight } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { BRAND, fmtWhen } from './helpers';
-import { SitesSection, ClusterAssignmentsSection } from './VcSitesPanel';
+import { SitesSection, ClusterAssignmentsSection, FailoverPairsSection } from './VcSitesPanel';
 
 const SECTIONS = [
   { key: 'registration', label: 'Registration', icon: Server },
   { key: 'sites', label: 'Sites', icon: Building2 },
   { key: 'clusters', label: 'Cluster assignments', icon: Layers },
+  { key: 'pairs', label: 'Failover pairs', icon: ArrowLeftRight },
   { key: 'alerts', label: 'Alert thresholds', icon: BellRing },
 ];
 const tabFromHash = () => {
@@ -295,6 +296,7 @@ export default function VcSettingsPage() {
           )}
           {tab === 'sites' && <SitesSection flash={flash} />}
           {tab === 'clusters' && <ClusterAssignmentsSection flash={flash} />}
+          {tab === 'pairs' && <FailoverPairsSection flash={flash} />}
           {tab === 'alerts' && (
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>

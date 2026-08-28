@@ -170,6 +170,29 @@ describe('vCenter site capacity routes', () => {
     await request(app).delete(`/api/vcenter/capacity/sites/${vcSite.id}`);
   });
 
+  it('failover pairs: CRUD + overview pair summary in both directions', async () => {
+    const bad = await request(app).post('/api/vcenter/capacity/pairs').send({ siteAId: siteA.id, siteBId: siteA.id });
+    expect(bad.status).toBe(400);
+    const made = await request(app).post('/api/vcenter/capacity/pairs').send({ siteAId: siteA.id, siteBId: siteB.id });
+    expect(made.status).toBe(201);
+    expect((await request(app).post('/api/vcenter/capacity/pairs').send({ siteAId: siteB.id, siteBId: siteA.id })).status).toBe(409);
+    const list = (await request(app).get('/api/vcenter/capacity/pairs')).body;
+    expect(list).toHaveLength(1);
+    expect(list[0].siteAName).toBe('DC-A');
+    const ov = (await request(app).get('/api/vcenter/capacity/overview')).body;
+    expect(ov.pairs).toHaveLength(1);
+    const p = ov.pairs[0];
+    // Used mem: A 600 GiB, B 400 GiB; usable A 1024, B 512 → combined 1000/1536 = 65.1%.
+    expect(p.combined.mem.usedPct).toBeCloseTo(65.1, 0);
+    // Everything on B (A fails): 1000/512 = 195.3% → no. Everything on A (B fails): 1000/1024 = 97.7% → fits.
+    expect(p.aToB.to).toBe('DC-B');
+    expect(p.aToB.fits).toBe(false);
+    expect(p.bToA.memUsedPct).toBeCloseTo(97.7, 0);
+    expect(p.bToA.fits).toBe(true);
+    expect((await request(app).delete(`/api/vcenter/capacity/pairs/${made.body.id}`)).body).toEqual({ deleted: true });
+    expect((await request(app).delete(`/api/vcenter/capacity/pairs/${made.body.id}`)).status).toBe(404);
+  });
+
   it('deleting a site cascades its members', async () => {
     expect((await request(app).delete(`/api/vcenter/capacity/sites/${siteB.id}`)).body).toEqual({ deleted: true });
     const res = await request(app).get('/api/vcenter/capacity/sites');
