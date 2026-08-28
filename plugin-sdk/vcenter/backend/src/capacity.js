@@ -219,7 +219,38 @@ function growthOf(points, field, usableField) {
   return { perDay: Math.round(perDay), months };
 }
 
+const SITE_PALETTE = ['#0091DA', '#6CB33F', '#D4A24E', '#9B6CD4', '#4ED4B8', '#D46CB3', '#C75D5D', '#8FA3B0'];
+
+/**
+ * One site per unmapped cluster, named after the cluster (a cluster whose
+ * name already exists as a site is mapped to it). Returns counts.
+ */
+function autoCreateSites(db) {
+  return db.transaction(() => {
+    const { clusters: mapped } = siteMap(db);
+    const unmapped = clusterStats(db).filter((c) => !mapped.has(`${c.vcenterId}|${c.name}`));
+    let created = 0;
+    const insertSite = db.prepare('INSERT OR IGNORE INTO vcenter_sites (name, color, sort_order) VALUES (?, ?, ?)');
+    const insertMember = db.prepare("INSERT OR REPLACE INTO vcenter_site_members (site_id, vcenter_id, member_type, member_name, replicated) VALUES (?, ?, 'cluster', ?, 0)");
+    for (const c of unmapped) {
+      const existing = db.prepare('SELECT id FROM vcenter_sites WHERE name = ?').get(c.name);
+      const order = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM vcenter_sites').get().n;
+      if (!existing) created += insertSite.run(c.name, SITE_PALETTE[order % SITE_PALETTE.length], order).changes;
+      const siteId = (existing || db.prepare('SELECT id FROM vcenter_sites WHERE name = ?').get(c.name)).id;
+      insertMember.run(siteId, c.vcenterId, c.name);
+    }
+    return { created, mapped: unmapped.length };
+  })();
+}
+
+/** First-run default: with no sites defined yet, every cluster becomes its own site. */
+function ensureDefaultSites(db) {
+  if (db.prepare('SELECT COUNT(*) AS n FROM vcenter_sites').get().n > 0) return { created: 0, mapped: 0 };
+  return autoCreateSites(db);
+}
+
 module.exports = {
   SAMPLE_GAP_MINUTES, CLUSTER_RETENTION_DAYS, VM_RETENTION_DAYS,
   n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf,
+  autoCreateSites, ensureDefaultSites,
 };

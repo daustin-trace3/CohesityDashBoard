@@ -15,7 +15,7 @@ const { DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues } =
 const { createVcenterAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const {
-  n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf,
+  n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf, autoCreateSites,
 } = require('./capacity');
 const {
   badRequest, fail, parseIntStrict, isNonEmptyString, isBooleanish, toBool,
@@ -626,6 +626,11 @@ function handlePostCapacitySite(req, res, coreApi) {
   res.status(201).json(siteRow(db, info.lastInsertRowid));
 }
 
+/** POST /capacity/sites/auto — one site per unmapped cluster, named after the cluster. */
+function handlePostCapacitySitesAuto(req, res, coreApi) {
+  res.json(autoCreateSites(coreApi.db));
+}
+
 /** PUT /capacity/sites/members — upsert a cluster membership; siteId null removes it. */
 function handlePutCapacityMember(req, res, coreApi) {
   const b = req.body || {};
@@ -829,6 +834,7 @@ const ROUTES = [
   { method: 'GET', ...compile('/capacity/sites'), handler: handleGetCapacitySites },
   { method: 'POST', ...compile('/capacity/sites'), handler: handlePostCapacitySite },
   // literal path MUST precede the :id sibling — the table is first-match.
+  { method: 'POST', ...compile('/capacity/sites/auto'), handler: handlePostCapacitySitesAuto },
   { method: 'PUT', ...compile('/capacity/sites/members'), handler: handlePutCapacityMember },
   { method: 'PUT', ...compile('/capacity/sites/:id'), handler: handlePutCapacitySite },
   { method: 'DELETE', ...compile('/capacity/sites/:id'), handler: handleDeleteCapacitySite },
