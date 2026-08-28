@@ -42,7 +42,7 @@ export function SitesSection({ flash }) {
     try {
       const { data } = await client.post('/vcenter/capacity/sites/auto', {});
       await load();
-      flash?.('success', `Created ${data.created} site(s)`, `${data.mapped} cluster(s) mapped to a site named after them.`);
+      flash?.('success', `Mapped ${data.mapped} cluster(s)`, `${data.created} vCenter site(s) created.`);
     } catch (err) {
       flash?.('error', 'Auto-create failed', err?.response?.data?.error);
     } finally { setSaving(false); }
@@ -61,7 +61,7 @@ export function SitesSection({ flash }) {
     <div className="panel p-4" id="sites" style={{ borderTop: `3px solid ${BRAND}` }}>
       <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Building2 size={15} className="text-brand" /> Sites</p>
       <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
-        A site is a named group of clusters — a datacenter, a room, or a single cluster. The Capacity pages roll up per site and judge failover fit against each site's N+1 usable.
+        A site is a named group of clusters. By default every registered vCenter is a site and its clusters belong to it — new clusters are mapped there automatically on the next poll. Regroup clusters under Cluster assignments (a datacenter, a room, a single cluster); manual choices are never overwritten.
       </p>
       {sites == null ? <LoadingPanel label="Loading sites…" height={100} /> : (
         <>
@@ -84,14 +84,14 @@ export function SitesSection({ flash }) {
               className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
               {saving ? 'Creating…' : 'Add site'}
             </button>
-            <button onClick={autoCreate} disabled={saving || unmappedCount === 0} title="One site per cluster that has no site yet, named after the cluster"
+            <button onClick={autoCreate} disabled={saving || unmappedCount === 0} title="Every unmapped cluster is mapped to a site named after its vCenter (created if missing)"
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
-              <Layers size={14} /> {unmappedCount ? `Create a site per unmapped cluster (${unmappedCount})` : 'All clusters mapped'}
+              <Layers size={14} /> {unmappedCount ? `Map ${unmappedCount} unmapped cluster${unmappedCount === 1 ? '' : 's'} to vCenter sites` : 'All clusters mapped'}
             </button>
           </div>
 
           {sites.length === 0 ? (
-            <p className="text-sm text-ink-muted py-4 text-center">No sites yet — add one above, or create one per cluster. The first poll after upgrading does this automatically when no sites exist.</p>
+            <p className="text-sm text-ink-muted py-4 text-center">No sites yet — the next vCenter poll creates one per vCenter automatically, or add your own above.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
