@@ -11,7 +11,7 @@ const {
   fetchInventorySoap, fetchEvents, fetchVmTags,
 } = require('./vcenterApi');
 const { reconcileIssueHistory } = require('./vcenterIssues');
-const { writeCapacitySample } = require('./vcenterCapacity');
+const { writeCapacitySample, ensureDefaultSites } = require('./vcenterCapacity');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e));
@@ -283,6 +283,8 @@ async function pollVcenter(vc) {
     await collectEvents(vc);
     try {
       writeCapacitySample(vc.id);
+      const auto = ensureDefaultSites();
+      if (auto.created) logger.info(`[VcPoller] created ${auto.created} default site(s) — one per cluster`);
     } catch (err) {
       logger.warn(`[VcPoller] capacity sample failed for ${vc.name}: ${err.message}`);
     }

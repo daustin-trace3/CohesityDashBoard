@@ -150,6 +150,25 @@ describe('vCenter site capacity routes', () => {
     expect(byName.app01.datastores).toBeUndefined();
   });
 
+  it('auto-creates one site per unmapped cluster and the first-run default only fires with zero sites', async () => {
+    const { autoCreateSites, ensureDefaultSites } = require('../services/vcenterCapacity');
+    // Two sites exist → the first-run default is a no-op.
+    expect(ensureDefaultSites()).toEqual({ created: 0, mapped: 0 });
+    // Unmap cl-b, then auto-create: a site named 'cl-b' appears and owns it.
+    await request(app).put('/api/vcenter/capacity/sites/members').send({ vcenterId: vcId, memberType: 'cluster', memberName: 'cl-b', siteId: null });
+    const res = await request(app).post('/api/vcenter/capacity/sites/auto').send({});
+    expect(res.body).toEqual({ created: 1, mapped: 1 });
+    const sites = (await request(app).get('/api/vcenter/capacity/sites')).body;
+    const clB = sites.sites.find((s) => s.name === 'cl-b');
+    expect(clB).toBeTruthy();
+    expect(sites.clusters.find((c) => c.name === 'cl-b').siteId).toBe(clB.id);
+    // Idempotent: nothing left to create.
+    expect(autoCreateSites()).toEqual({ created: 0, mapped: 0 });
+    // Restore cl-b → DC-B for the cascade test below.
+    await request(app).put('/api/vcenter/capacity/sites/members').send({ vcenterId: vcId, memberType: 'cluster', memberName: 'cl-b', siteId: siteB.id });
+    await request(app).delete(`/api/vcenter/capacity/sites/${clB.id}`);
+  });
+
   it('deleting a site cascades its members', async () => {
     expect((await request(app).delete(`/api/vcenter/capacity/sites/${siteB.id}`)).body).toEqual({ deleted: true });
     const res = await request(app).get('/api/vcenter/capacity/sites');
