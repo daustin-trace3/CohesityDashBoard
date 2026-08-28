@@ -35,14 +35,23 @@ function seedCapacityDemo(db, { now, vcenterIds }) {
   for (const cl of clusters) insertMember.run(siteIdByName.get(vcName.get(cl.vcenter_id)), cl.vcenter_id, 'cluster', cl.name, 0);
   // Demo box only: drop sites left over from an earlier narrative that no longer hold a cluster.
   db.prepare('DELETE FROM vcenter_sites WHERE id NOT IN (SELECT DISTINCT site_id FROM vcenter_site_members)').run();
+  // One showcase failover pair: the largest fixture vCenter with the smallest (fits one way only).
+  db.prepare('DELETE FROM vcenter_site_pairs').run();
+  const bySize = db.prepare(`SELECT v.id, v.name, COUNT(c.id) AS n FROM vcenter_vcenters v JOIN vcenter_clusters c ON c.vcenter_id = v.id
+    WHERE v.id IN ${inVcs} GROUP BY v.id ORDER BY n DESC, v.name`).all(...vcenterIds);
+  if (bySize.length >= 2) {
+    const big = siteIdByName.get(bySize[0].name);
+    const small = siteIdByName.get(bySize[bySize.length - 1].name);
+    if (big && small) db.prepare('INSERT INTO vcenter_site_pairs (site_a_id, site_b_id) VALUES (?, ?)').run(big, small);
+  }
 
-  // Scale memory demand so the estate runs at ~60% of its total N+1 usable —
-  // busy enough that moving a few large VMs into one cluster tips it over.
+  // Scale memory demand so the estate runs at ~45% of its total N+1 usable —
+  // a 3-cluster vCenter can then absorb a 2-cluster partner, but not the reverse.
   const stats = clusterStats(db);
   const totalUsable = rollupSite(stats).usableMemBytes;
   const totalUsed = stats.reduce((n, c) => n + c.memBytesUsed, 0);
   if (totalUsed > 0 && totalUsable > 0) {
-    const f = (totalUsable * 0.6) / totalUsed;
+    const f = (totalUsable * 0.45) / totalUsed;
     db.prepare(`UPDATE vcenter_clusters SET mem_bytes_used = CAST(mem_bytes_used * ? AS INTEGER) WHERE vcenter_id IN ${inVcs}`).run(f, ...vcenterIds);
     db.prepare(`UPDATE vcenter_hosts SET mem_bytes_used = MIN(mem_bytes_capacity, CAST(mem_bytes_used * ? AS INTEGER)) WHERE vcenter_id IN ${inVcs}`).run(f, ...vcenterIds);
     // Grow VM allocations with demand when scaling UP so used never exceeds

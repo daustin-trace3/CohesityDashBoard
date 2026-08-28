@@ -1,13 +1,14 @@
 // vCenter Settings — ported from frontend/src/pages/vcenter/VcSettingsPage.jsx.
 const { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil } = require('../icons.jsx');
 const { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, BRAND, fmtWhen } = require('../ui.jsx');
-const { SitesSection, ClusterAssignmentsSection } = require('./sitesPanel.jsx');
-const { Building2, Layers } = require('../icons.jsx');
+const { SitesSection, ClusterAssignmentsSection, FailoverPairsSection } = require('./sitesPanel.jsx');
+const { Building2, Layers, ArrowLeftRight } = require('../icons.jsx');
 
 const SECTIONS = [
   { key: 'registration', label: 'Registration', icon: Server },
   { key: 'sites', label: 'Sites', icon: Building2 },
   { key: 'clusters', label: 'Cluster assignments', icon: Layers },
+  { key: 'pairs', label: 'Failover pairs', icon: ArrowLeftRight },
   { key: 'alerts', label: 'Alert thresholds', icon: BellRing },
 ];
 
@@ -306,6 +307,7 @@ export default function VcSettingsPage() {
           )}
           {tab === 'sites' && <SitesSection flash={flash} />}
           {tab === 'clusters' && <ClusterAssignmentsSection flash={flash} />}
+          {tab === 'pairs' && <FailoverPairsSection flash={flash} />}
           {tab === 'alerts' && (
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1" style={{ display: 'flex', alignItems: 'center', gap: 8 }}><BellRing size={15} className="text-brand" /> Alert Thresholds</p>

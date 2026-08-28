@@ -69,6 +69,37 @@ function failoverMatrix(sites) {
   });
 }
 
+/**
+ * Failover pair summary from two site rollups (rollupSite output + id/name/color).
+ * combined = both sites' demand vs both sites' N+1 usable; aToB = everything
+ * running on B alone (A's demand + B's own) vs B's N+1 usable; fits on used.
+ */
+function pairSummary(a, b) {
+  const dir = (from, to) => {
+    const memUsedPct = pct((from.memBytesUsed || 0) + (to.memBytesUsed || 0), to.usableMemBytes);
+    const cpuUsedPct = pct((from.cpuMhzUsed || 0) + (to.cpuMhzUsed || 0), to.usableCpuMhz);
+    return {
+      from: from.name, to: to.name, memUsedPct, cpuUsedPct,
+      memAllocPct: pct(((from.vmemMbAllocated || 0) + (to.vmemMbAllocated || 0)) * 1024 * 1024, to.usableMemBytes),
+      vcpuPerCore: to.usableCpuCores > 0 ? Math.round((((from.vcpuAllocated || 0) + (to.vcpuAllocated || 0)) / to.usableCpuCores) * 100) / 100 : null,
+      fits: memUsedPct != null && cpuUsedPct != null && memUsedPct <= 100 && cpuUsedPct <= 100,
+    };
+  };
+  const usableMem = (a.usableMemBytes || 0) + (b.usableMemBytes || 0);
+  const usableCpu = (a.usableCpuMhz || 0) + (b.usableCpuMhz || 0);
+  const memUsed = (a.memBytesUsed || 0) + (b.memBytesUsed || 0);
+  const cpuUsed = (a.cpuMhzUsed || 0) + (b.cpuMhzUsed || 0);
+  return {
+    combined: {
+      mem: { usableBytes: usableMem, bytesUsed: memUsed, usedPct: pct(memUsed, usableMem), mbAllocated: (a.vmemMbAllocated || 0) + (b.vmemMbAllocated || 0) },
+      cpu: { usableMhz: usableCpu, mhzUsed: cpuUsed, usedPct: pct(cpuUsed, usableCpu), vcpuAllocated: (a.vcpuAllocated || 0) + (b.vcpuAllocated || 0), usableCores: (a.usableCpuCores || 0) + (b.usableCpuCores || 0) },
+      hostCount: (a.hostCount || 0) + (b.hostCount || 0), vmsOn: (a.vmsOn || 0) + (b.vmsOn || 0),
+    },
+    aToB: dir(a, b),
+    bToA: dir(b, a),
+  };
+}
+
 function siteMap(db) {
   const clusters = new Map();
   for (const m of db.prepare('SELECT site_id, vcenter_id, member_type, member_name FROM vcenter_site_members').all()) {
@@ -257,5 +288,5 @@ function ensureDefaultSites(db) {
 module.exports = {
   SAMPLE_GAP_MINUTES, CLUSTER_RETENTION_DAYS, VM_RETENTION_DAYS,
   n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf,
-  autoCreateSites, ensureDefaultSites,
+  autoCreateSites, ensureDefaultSites, pairSummary,
 };

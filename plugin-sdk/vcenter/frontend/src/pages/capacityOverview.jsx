@@ -57,6 +57,7 @@ export default function VcCapacityOverviewPage() {
 
   const sites = data?.sites || [];
   const failover = data?.failover || [];
+  const pairs = data?.pairs || [];
   const siteByName = new Map(sites.map((s) => [s.name, s]));
 
   const clusterRows = React.useMemo(() => sites.flatMap((s) => (s.clusters || []).map((c) => ({
@@ -116,6 +117,41 @@ export default function VcCapacityOverviewPage() {
               );
             })}
           </div>
+
+          {pairs.length > 0 && (
+            <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+              <PanelTitle icon={ArrowLeftRight} meta="paired sites · combined demand vs combined N+1 usable, and everything on one side alone">Failover Pairs</PanelTitle>
+              <div className={`grid md:grid-cols-2 ${pairs.length > 2 ? 'lg:grid-cols-3' : ''} gap-3`}>
+                {pairs.map((p) => {
+                  const dirs = [p.aToB, p.bToA];
+                  const worst = dirs.every((d) => d.fits) ? 'ok' : dirs.some((d) => d.fits) ? 'warn' : 'crit';
+                  return (
+                    <div key={p.id} className="rounded-lg px-4 py-3" style={{ background: 'var(--vc-surface-overlay)', border: `1px solid ${worst === 'crit' ? 'rgba(248,113,113,0.4)' : 'var(--vc-border)'}` }}>
+                      <div className="flex items-center gap-2 mb-3">
+                        <SiteDot site={p.a} /><span className="text-sm font-semibold text-ink">{p.a.name}</span>
+                        <span className="text-ink-faint">⇄</span>
+                        <SiteDot site={p.b} /><span className="text-sm font-semibold text-ink mr-auto">{p.b.name}</span>
+                        <Badge tone={worst}>{worst === 'ok' ? 'Either way' : worst === 'warn' ? 'One way' : 'Neither way'}</Badge>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-center mb-3">
+                        <BigStat value={fmtPctInt(p.combined.mem.usedPct)} label={`memory · ${fmtBytes(p.combined.mem.bytesUsed)} of ${fmtBytes(p.combined.mem.usableBytes)}`} color={p.combined.mem.usedPct > 80 ? pctColor(p.combined.mem.usedPct) : undefined} />
+                        <BigStat value={fmtPctInt(p.combined.cpu.usedPct)} label={`CPU · ${fmtMhz(p.combined.cpu.mhzUsed)} of ${fmtMhz(p.combined.cpu.usableMhz)}`} color={p.combined.cpu.usedPct > 80 ? pctColor(p.combined.cpu.usedPct) : undefined} />
+                        <BigStat value={`${fmtNum(p.combined.hostCount)} / ${fmtNum(p.combined.vmsOn)}`} label="hosts / VMs on across the pair" />
+                      </div>
+                      {dirs.map((d) => (
+                        <div key={d.from} className="flex items-center gap-2 text-xs py-1.5 border-t border-cohesity-border/50">
+                          <span className="text-ink-muted" style={{ minWidth: 0 }}>Everything on <b className="text-ink">{d.to}</b> (if {d.from} fails)</span>
+                          <span className="tnum ml-auto" style={{ color: d.memUsedPct > 80 ? pctColor(d.memUsedPct) : undefined }}>mem {fmtPctInt(d.memUsedPct)}</span>
+                          <span className="tnum" style={{ color: d.cpuUsedPct > 80 ? pctColor(d.cpuUsedPct) : undefined }}>cpu {fmtPctInt(d.cpuUsedPct)}</span>
+                          <Badge tone={d.fits ? (Math.max(d.memUsedPct, d.cpuUsedPct) > 80 ? 'warn' : 'ok') : 'crit'}>{d.fits ? 'Fits' : 'Does not fit'}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
             <PanelTitle icon={ArrowLeftRight} meta="whole-estate demand today vs each site's N+1 usable · judged on used, not allocated">Failover Fit</PanelTitle>

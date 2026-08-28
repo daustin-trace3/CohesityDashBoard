@@ -15,7 +15,7 @@ const { DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues } =
 const { createVcenterAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const {
-  n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf, autoCreateSites,
+  n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf, autoCreateSites, pairSummary,
 } = require('./capacity');
 const {
   badRequest, fail, parseIntStrict, isNonEmptyString, isBooleanish, toBool,
@@ -691,6 +691,42 @@ function handleDeleteCapacitySite(req, res, coreApi) {
   res.json({ deleted: true });
 }
 
+/** GET /capacity/pairs — configured failover pairs. */
+function handleGetCapacityPairs(req, res, coreApi) {
+  res.json(coreApi.db.prepare(`
+    SELECT p.id, p.site_a_id AS siteAId, a.name AS siteAName, p.site_b_id AS siteBId, b.name AS siteBName
+    FROM vcenter_site_pairs p JOIN vcenter_sites a ON a.id = p.site_a_id JOIN vcenter_sites b ON b.id = p.site_b_id
+    ORDER BY a.name, b.name
+  `).all());
+}
+
+/** POST /capacity/pairs { siteAId, siteBId } — 409 if already paired (either order). */
+function handlePostCapacityPair(req, res, coreApi) {
+  const b = req.body || {};
+  const siteAId = parseIntStrict(b.siteAId);
+  const siteBId = parseIntStrict(b.siteBId);
+  const errors = [];
+  if (!Number.isInteger(siteAId)) errors.push(fail('siteAId'));
+  if (!Number.isInteger(siteBId)) errors.push(fail('siteBId'));
+  if (errors.length) return badRequest(res, errors);
+  if (siteAId === siteBId) return res.status(400).json({ error: 'Pick two different sites.' });
+  const db = coreApi.db;
+  if (db.prepare('SELECT COUNT(*) AS n FROM vcenter_sites WHERE id IN (?, ?)').get(siteAId, siteBId).n !== 2) return res.status(404).json({ error: 'Site not found.' });
+  const dup = db.prepare('SELECT id FROM vcenter_site_pairs WHERE (site_a_id = ? AND site_b_id = ?) OR (site_a_id = ? AND site_b_id = ?)').get(siteAId, siteBId, siteBId, siteAId);
+  if (dup) return res.status(409).json({ error: 'Those sites are already paired.' });
+  const info = db.prepare('INSERT INTO vcenter_site_pairs (site_a_id, site_b_id) VALUES (?, ?)').run(siteAId, siteBId);
+  res.status(201).json({ id: info.lastInsertRowid, siteAId, siteBId });
+}
+
+/** DELETE /capacity/pairs/:id */
+function handleDeleteCapacityPair(req, res, coreApi) {
+  const id = requireIdParam(req, res);
+  if (id === null) return;
+  const info = coreApi.db.prepare('DELETE FROM vcenter_site_pairs WHERE id = ?').run(id);
+  if (!info.changes) return res.status(404).json({ error: 'Pair not found.' });
+  res.json({ deleted: true });
+}
+
 /** GET /capacity/overview — current per-site capacity + failover matrix (snapshot tables). */
 function handleGetCapacityOverview(req, res, coreApi) {
   const db = coreApi.db;
@@ -701,12 +737,18 @@ function handleGetCapacityOverview(req, res, coreApi) {
   const out = sites.map((site) => {
     const mine = all.filter((c) => clusterMap.get(`${c.vcenterId}|${c.name}`) === site.id);
     const r = rollupSite(mine);
-    rollups.push({ ...r, name: site.name });
+    rollups.push({ ...r, id: site.id, name: site.name, color: site.color });
     return { id: site.id, name: site.name, color: site.color, clusters: mine.map(apiCluster), totals: apiTotals(r) };
   });
   res.json({
     sites: out,
     failover: failoverMatrix(rollups),
+    pairs: db.prepare('SELECT id, site_a_id AS a, site_b_id AS b FROM vcenter_site_pairs').all().map((p) => {
+      const a = rollups.find((r) => r.id === p.a);
+      const b = rollups.find((r) => r.id === p.b);
+      if (!a || !b) return null;
+      return { id: p.id, a: { id: a.id, name: a.name, color: a.color }, b: { id: b.id, name: b.name, color: b.color }, ...pairSummary(a, b) };
+    }).filter(Boolean),
     unmappedClusterCount: all.filter((c) => !clusterMap.has(`${c.vcenterId}|${c.name}`)).length,
     lastSampleAt: db.prepare('SELECT MAX(captured_at) AS t FROM vcenter_capacity_history').get().t,
     sampleCount: db.prepare('SELECT COUNT(DISTINCT substr(captured_at, 1, 13)) AS n FROM vcenter_capacity_history').get().n,
@@ -838,6 +880,9 @@ const ROUTES = [
   { method: 'PUT', ...compile('/capacity/sites/members'), handler: handlePutCapacityMember },
   { method: 'PUT', ...compile('/capacity/sites/:id'), handler: handlePutCapacitySite },
   { method: 'DELETE', ...compile('/capacity/sites/:id'), handler: handleDeleteCapacitySite },
+  { method: 'GET', ...compile('/capacity/pairs'), handler: handleGetCapacityPairs },
+  { method: 'POST', ...compile('/capacity/pairs'), handler: handlePostCapacityPair },
+  { method: 'DELETE', ...compile('/capacity/pairs/:id'), handler: handleDeleteCapacityPair },
   { method: 'GET', ...compile('/capacity/overview'), handler: handleGetCapacityOverview },
   { method: 'GET', ...compile('/capacity/trends'), handler: handleGetCapacityTrends },
   { method: 'GET', ...compile('/capacity/vm-trends'), handler: handleGetCapacityVmTrends },
