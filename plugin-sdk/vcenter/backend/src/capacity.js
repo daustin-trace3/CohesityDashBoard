@@ -222,8 +222,11 @@ function growthOf(points, field, usableField) {
 const SITE_PALETTE = ['#0091DA', '#6CB33F', '#D4A24E', '#9B6CD4', '#4ED4B8', '#D46CB3', '#C75D5D', '#8FA3B0'];
 
 /**
- * One site per unmapped cluster, named after the cluster (a cluster whose
- * name already exists as a site is mapped to it). Returns counts.
+ * Default site model: each registered vCenter is a site named after it and
+ * owns its clusters. Only UNMAPPED clusters are touched, so a manual layout
+ * (clusters regrouped into DC-East/DC-West, etc.) is never overwritten —
+ * a newly discovered cluster simply lands on its vCenter's site until moved.
+ * Returns { created, mapped }.
  */
 function autoCreateSites(db) {
   return db.transaction(() => {
@@ -232,20 +235,22 @@ function autoCreateSites(db) {
     let created = 0;
     const insertSite = db.prepare('INSERT OR IGNORE INTO vcenter_sites (name, color, sort_order) VALUES (?, ?, ?)');
     const insertMember = db.prepare("INSERT OR REPLACE INTO vcenter_site_members (site_id, vcenter_id, member_type, member_name, replicated) VALUES (?, ?, 'cluster', ?, 0)");
+    const findSite = db.prepare('SELECT id FROM vcenter_sites WHERE name = ?');
     for (const c of unmapped) {
-      const existing = db.prepare('SELECT id FROM vcenter_sites WHERE name = ?').get(c.name);
-      const order = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM vcenter_sites').get().n;
-      if (!existing) created += insertSite.run(c.name, SITE_PALETTE[order % SITE_PALETTE.length], order).changes;
-      const siteId = (existing || db.prepare('SELECT id FROM vcenter_sites WHERE name = ?').get(c.name)).id;
-      insertMember.run(siteId, c.vcenterId, c.name);
+      let site = findSite.get(c.vcenterName);
+      if (!site) {
+        const order = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM vcenter_sites').get().n;
+        created += insertSite.run(c.vcenterName, SITE_PALETTE[order % SITE_PALETTE.length], order).changes;
+        site = findSite.get(c.vcenterName);
+      }
+      insertMember.run(site.id, c.vcenterId, c.name);
     }
     return { created, mapped: unmapped.length };
   })();
 }
 
-/** First-run default: with no sites defined yet, every cluster becomes its own site. */
+/** Poll-time hook: keep every cluster on a site (its vCenter's, unless an admin moved it). */
 function ensureDefaultSites(db) {
-  if (db.prepare('SELECT COUNT(*) AS n FROM vcenter_sites').get().n > 0) return { created: 0, mapped: 0 };
   return autoCreateSites(db);
 }
 

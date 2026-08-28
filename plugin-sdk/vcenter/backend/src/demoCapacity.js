@@ -9,20 +9,22 @@
 const { randFloat, rngFor } = require('./demoRng');
 const { clusterStats, rollupSite } = require('./capacity');
 
-// Demo narrative (Doug, 2026-08-28): every cluster is its own site, named after
-// the cluster, so the Capacity pages read per cluster.
+// Demo narrative (Doug, 2026-08-28): mirror the product default — every
+// registered vCenter is a site named after it and owns its clusters.
 const PALETTE = ['#0091DA', '#6CB33F', '#D4A24E', '#9B6CD4', '#4ED4B8', '#D46CB3', '#C75D5D', '#8FA3B0'];
 
 function seedCapacityDemo(db, { now, vcenterIds }) {
   const inVcs = vcenterIds.length ? `(${vcenterIds.map(() => '?').join(',')})` : '(NULL)';
 
-  // One site per fixture cluster, upserted by name so ids stay stable across reseeds.
+  // One site per fixture vCenter, upserted by name so ids stay stable across reseeds.
   const upsertSite = db.prepare(`
     INSERT INTO vcenter_sites (name, color, sort_order) VALUES (?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET color = excluded.color, sort_order = excluded.sort_order
   `);
+  const vcs = db.prepare(`SELECT id, name FROM vcenter_vcenters WHERE id IN ${inVcs} ORDER BY name`).all(...vcenterIds);
+  vcs.forEach((vc, idx) => upsertSite.run(vc.name, PALETTE[idx % PALETTE.length], idx));
+  const vcName = new Map(vcs.map((v) => [v.id, v.name]));
   const clusters = db.prepare(`SELECT vcenter_id, name FROM vcenter_clusters WHERE vcenter_id IN ${inVcs} ORDER BY name`).all(...vcenterIds);
-  clusters.forEach((cl, idx) => upsertSite.run(cl.name, PALETTE[idx % PALETTE.length], idx));
   const siteIdByName = new Map(db.prepare('SELECT id, name FROM vcenter_sites').all().map((s) => [s.name, s.id]));
 
   // Membership for the fixture vCenters only (a real admin-added vCenter's mapping is untouched).
@@ -30,7 +32,7 @@ function seedCapacityDemo(db, { now, vcenterIds }) {
   const insertMember = db.prepare(`
     INSERT INTO vcenter_site_members (site_id, vcenter_id, member_type, member_name, replicated) VALUES (?, ?, ?, ?, ?)
   `);
-  for (const cl of clusters) insertMember.run(siteIdByName.get(cl.name), cl.vcenter_id, 'cluster', cl.name, 0);
+  for (const cl of clusters) insertMember.run(siteIdByName.get(vcName.get(cl.vcenter_id)), cl.vcenter_id, 'cluster', cl.name, 0);
   // Demo box only: drop sites left over from an earlier narrative that no longer hold a cluster.
   db.prepare('DELETE FROM vcenter_sites WHERE id NOT IN (SELECT DISTINCT site_id FROM vcenter_site_members)').run();
 
@@ -111,7 +113,7 @@ function seedCapacityDemo(db, { now, vcenterIds }) {
       }
     }
   }
-  return { sites: clusters.length, capacityHistory: capRows, vmCapacityHistory: vmRows };
+  return { sites: vcs.length, capacityHistory: capRows, vmCapacityHistory: vmRows };
 }
 
 module.exports = { seedCapacityDemo };
