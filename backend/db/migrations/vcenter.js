@@ -268,4 +268,60 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 8,
+    up(db) {
+      // Dual-site capacity planning: site membership for clusters/datastores,
+      // hourly capacity snapshots (cluster aggregate, per-datastore, per-VM),
+      // site mapping for failover matrix and overview calculations.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vcenter_sites (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          color TEXT,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS vcenter_site_members (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          site_id INTEGER NOT NULL REFERENCES vcenter_sites(id) ON DELETE CASCADE,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          member_type TEXT NOT NULL,
+          member_name TEXT NOT NULL,
+          replicated INTEGER NOT NULL DEFAULT 0,
+          UNIQUE (vcenter_id, member_type, member_name)
+        );
+        CREATE TABLE IF NOT EXISTS vcenter_capacity_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          captured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          cluster_name TEXT NOT NULL,
+          host_count INTEGER, hosts_connected INTEGER,
+          vm_count INTEGER, vms_on INTEGER,
+          cpu_cores INTEGER, cpu_mhz_capacity INTEGER, cpu_mhz_used INTEGER,
+          mem_bytes_capacity INTEGER, mem_bytes_used INTEGER,
+          vcpu_allocated INTEGER, vmem_mb_allocated,
+          largest_host_cpu_cores INTEGER, largest_host_cpu_mhz INTEGER, largest_host_mem_bytes INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_caphist_vc ON vcenter_capacity_history(vcenter_id, cluster_name, captured_at);
+        CREATE TABLE IF NOT EXISTS vcenter_datastore_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          captured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          datastore_name TEXT NOT NULL,
+          capacity_bytes INTEGER, free_bytes INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_dshist_vc ON vcenter_datastore_history(vcenter_id, datastore_name, captured_at);
+        CREATE TABLE IF NOT EXISTS vcenter_vm_capacity_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          captured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          vm_name TEXT NOT NULL, cluster_name TEXT, power_state TEXT,
+          cpu_count INTEGER, memory_mb INTEGER,
+          cpu_usage_mhz INTEGER, mem_usage_mb INTEGER, storage_committed_bytes INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_vmhist_vc ON vcenter_vm_capacity_history(vcenter_id, vm_name, captured_at);
+      `);
+    },
+  },
 ];

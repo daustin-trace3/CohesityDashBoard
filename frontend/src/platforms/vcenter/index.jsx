@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell } from 'lucide-react';
+import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell, Building2, TrendingUp, ArrowLeftRight } from 'lucide-react';
 
 const VcOverviewPage = lazy(() => import('../../pages/vcenter/VcOverviewPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
@@ -14,6 +14,9 @@ const VcGovernancePage = lazy(() => import('../../pages/vcenter/VcGovernancePage
 const VcEventsPage = lazy(() => import('../../pages/vcenter/VcEventsPage'));
 const VcSettingsPage = lazy(() => import('../../pages/vcenter/VcSettingsPage'));
 const VcAdvisorPage = lazy(() => import('../../pages/vcenter/VcAdvisorPage'));
+const VcCapacityOverviewPage = lazy(() => import('../../pages/vcenter/VcCapacityOverviewPage'));
+const VcCapacityTrendsPage = lazy(() => import('../../pages/vcenter/VcCapacityTrendsPage'));
+const VcCapacityExplorerPage = lazy(() => import('../../pages/vcenter/VcCapacityExplorerPage'));
 
 // VMware vCenter sidebar — shown when the vCenter platform is active.
 const navGroups = [
@@ -24,6 +27,14 @@ const navGroups = [
       { label: 'Alerts', route: '/vcenter/alerts', icon: Bell, isActive: (p) => p.startsWith('/vcenter/alerts') },
       { label: 'AI Advisor', route: '/vcenter/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/vcenter/advisor'), requiresAi: true },
       { label: 'Events', route: '/vcenter/events', icon: History, isActive: (p) => p.startsWith('/vcenter/events') },
+    ],
+  },
+  {
+    label: 'Capacity',
+    items: [
+      { label: 'Site Capacity', route: '/vcenter/capacity', icon: Building2, isActive: (p) => p === '/vcenter/capacity' },
+      { label: 'Trends', route: '/vcenter/capacity/trends', icon: TrendingUp, isActive: (p) => p.startsWith('/vcenter/capacity/trends') },
+      { label: 'Failover Explorer', route: '/vcenter/capacity/explorer', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/vcenter/capacity/explorer') },
     ],
   },
   {
@@ -65,6 +76,9 @@ export default {
   routes: [
     { path: 'vcenter', Component: VcOverviewPage },
     { path: 'vcenter/alerts', Component: VcAlertsPage },
+    { path: 'vcenter/capacity', Component: VcCapacityOverviewPage },
+    { path: 'vcenter/capacity/trends', Component: VcCapacityTrendsPage },
+    { path: 'vcenter/capacity/explorer', Component: VcCapacityExplorerPage },
     { path: 'vcenter/hosts', Component: VcHostsPage },
     { path: 'vcenter/inventory', Component: VcInventoryPage },
     { path: 'vcenter/datastores', Component: VcDatastoresPage },

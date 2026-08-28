@@ -1,9 +1,21 @@
 import { useEffect, useState } from 'react';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Building2, Layers } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { BRAND, fmtWhen } from './helpers';
+import { SitesSection, ClusterAssignmentsSection } from './VcSitesPanel';
+
+const SECTIONS = [
+  { key: 'registration', label: 'Registration', icon: Server },
+  { key: 'sites', label: 'Sites', icon: Building2 },
+  { key: 'clusters', label: 'Cluster assignments', icon: Layers },
+  { key: 'alerts', label: 'Alert thresholds', icon: BellRing },
+];
+const tabFromHash = () => {
+  const h = (typeof window !== 'undefined' ? window.location.hash : '').replace('#', '');
+  return SECTIONS.some((x) => x.key === h) ? h : 'registration';
+};
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -18,6 +30,15 @@ export default function VcSettingsPage() {
   const [editingId, setEditingId] = useState(null);
   const [certWarnDays, setCertWarnDays] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
+  const flash = (type, title, message) => toast({ type, title, message });
+  // Sub-menu (Zerto settings pattern). Deep links: /vcenter/settings#sites, #clusters, #alerts.
+  const [tab, setTab] = useState(tabFromHash);
+  const selectTab = (key) => { setTab(key); try { window.history.replaceState(null, '', `#${key}`); } catch { /* ignore */ } };
+  useEffect(() => {
+    const onHash = () => setTab(tabFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   const loadVcs = () => client.get('/vcenter/vcenters')
     .then(({ data }) => setVcs(data))
@@ -133,10 +154,29 @@ export default function VcSettingsPage() {
   const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && (editingId || form.password);
 
   return (
-    <div className="animate-fade-in max-w-5xl">
-      <PageHeader icon={Settings} title="vCenter Settings" description="Register vCenter servers — each is polled directly with its own credentials" />
+    <div className="animate-fade-in">
+      <PageHeader icon={Settings} title="vCenter Settings" description="vCenter registration, capacity sites and cluster assignments, alert thresholds" />
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="flex gap-4 items-start">
+        <div className="w-56 shrink-0 panel p-2" style={{ borderTop: `3px solid ${BRAND}` }}>
+          {SECTIONS.map((sec) => {
+            const Icon = sec.icon;
+            const isActive = tab === sec.key;
+            return (
+              <button key={sec.key} onClick={() => selectTab(sec.key)}
+                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors cursor-pointer ${isActive ? 'bg-surface-overlay text-ink font-semibold' : 'text-ink-muted hover:bg-surface-overlay/60 hover:text-ink'}`}
+                style={{ border: 'none' }}>
+                <Icon size={13} className={isActive ? 'text-brand' : 'text-ink-faint'} />
+                {sec.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex-1 min-w-0 flex flex-col gap-4">
+          {tab === 'registration' && (
+            <>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'vCenter'}` : 'Add a vCenter'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           A read-only vCenter account is sufficient for inventory; certificate details additionally need the
@@ -189,24 +229,6 @@ export default function VcSettingsPage() {
               {testResult.ok ? `Connected — ${testResult.hosts} host(s) visible` : testResult.error}
             </span>
           )}
-        </div>
-      </div>
-
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
-        <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
-          How far ahead of a vCenter TLS certificate's expiry the Overview raises a warning. Expiry within 14 days (or past due) is always critical.
-        </p>
-        <div className="flex items-end gap-3">
-          <div className="w-56">
-            <label className="block text-xs font-semibold text-ink mb-1">Certificate warning (days before expiry)</label>
-            <input type="number" min={1} max={365} value={certWarnDays}
-              onChange={(e) => setCertWarnDays(e.target.value)} className={inp} />
-          </div>
-          <button onClick={saveConfig} disabled={savingConfig || !certWarnDays || Number(certWarnDays) < 1 || Number(certWarnDays) > 365}
-            className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
-            {savingConfig ? 'Saving…' : 'Save'}
-          </button>
         </div>
       </div>
 
@@ -267,6 +289,32 @@ export default function VcSettingsPage() {
         <p className="text-[11px] text-ink-faint mt-3 leading-relaxed">
           The vCenter platform tab itself is enabled from Global Settings (gear icon → Platforms).
         </p>
+      </div>
+
+            </>
+          )}
+          {tab === 'sites' && <SitesSection flash={flash} />}
+          {tab === 'clusters' && <ClusterAssignmentsSection flash={flash} />}
+          {tab === 'alerts' && (
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
+        <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
+          How far ahead of a vCenter TLS certificate's expiry the Overview raises a warning. Expiry within 14 days (or past due) is always critical.
+        </p>
+        <div className="flex items-end gap-3">
+          <div className="w-56">
+            <label className="block text-xs font-semibold text-ink mb-1">Certificate warning (days before expiry)</label>
+            <input type="number" min={1} max={365} value={certWarnDays}
+              onChange={(e) => setCertWarnDays(e.target.value)} className={inp} />
+          </div>
+          <button onClick={saveConfig} disabled={savingConfig || !certWarnDays || Number(certWarnDays) < 1 || Number(certWarnDays) > 365}
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
+            {savingConfig ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+          )}
+        </div>
       </div>
     </div>
   );
