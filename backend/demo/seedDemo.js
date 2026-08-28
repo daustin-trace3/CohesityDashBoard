@@ -71,9 +71,10 @@ const SEEDED_TABLES = [
   // zerto
   'zerto_vras', 'zerto_vms', 'zerto_alerts', 'zerto_vpgs', 'zerto_sites', 'zerto_metrics_history', 'zerto_licenses',
   // vcenter (children before the parent so FK deletes stay explicit)
+  'vcenter_site_members', 'vcenter_capacity_history', 'vcenter_datastore_history', 'vcenter_vm_capacity_history',
   'vcenter_vms', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores',
   'vcenter_certs', 'vcenter_metrics_history', 'vcenter_networks',
-  'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history', 'vcenter_vcenters',
+  'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history', 'vcenter_sites', 'vcenter_vcenters',
   // dell (children before the parent)
   'dell_devices', 'dell_components', 'dell_alerts', 'dell_warranties',
   'dell_firmware_compliance', 'dell_metrics_history',
@@ -154,6 +155,7 @@ async function main() {
     ['pure_arrays', pureResult.arrays],
     ['zerto sites/vras/vpgs/vms', `${zertoResult.sites}/${zertoResult.vras}/${zertoResult.vpgs}/${zertoResult.vms}`],
     ['vcenters/hosts/vms', `${vcenterResult.vcenters}/${vcenterResult.hosts}/${vcenterResult.vms}`],
+    ['vcenter capacity demo', `sites: 2, members: ${vcenterResult.siteMembers}, cap-hist: ${vcenterResult.capacityHistory}, ds-hist: ${vcenterResult.datastoreHistory}, vm-hist: ${vcenterResult.vmCapacityHistory}`],
     ['dell instances/devices/components', `${dellResult.instances}/${dellResult.devices}/${dellResult.components}`],
     ['aria instances/deployments/requests', `${ariaResult.instances}/${ariaResult.deployments}/${ariaResult.requests}`],
     ['netbackup sources/policies/jobs', `${netbackupResult.sources}/${netbackupResult.policies}/${netbackupResult.jobs}`],

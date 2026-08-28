@@ -11,6 +11,7 @@ const {
   fetchInventorySoap, fetchEvents, fetchVmTags,
 } = require('./vcenterApi');
 const { reconcileIssueHistory } = require('./vcenterIssues');
+const { writeCapacitySample } = require('./vcenterCapacity');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e));
@@ -280,6 +281,11 @@ async function pollVcenter(vc) {
         last_poll_at = datetime('now') WHERE id = ?
     `).run(vc.id);
     await collectEvents(vc);
+    try {
+      writeCapacitySample(vc.id);
+    } catch (err) {
+      logger.warn(`[VcPoller] capacity sample failed for ${vc.name}: ${err.message}`);
+    }
     logger.info(`[VcPoller] ${vc.name}: ${data.hosts.length} host(s), ${data.clusters.length} cluster(s), ${data.datastores.length} datastore(s), ${(data.vms || []).length} VM(s)`);
   } catch (err) {
     db.prepare(`

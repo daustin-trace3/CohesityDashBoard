@@ -200,6 +200,7 @@ const NEW_TABLES = [
   'pure1_arrays', 'pure1_alerts', 'pure1_pods', 'pure1_metrics_history',
   'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vms',
   'vcenter_networks', 'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history',
+  'vcenter_sites', 'vcenter_site_members', 'vcenter_capacity_history', 'vcenter_datastore_history', 'vcenter_vm_capacity_history',
   'dell_ome_instances', 'dell_devices', 'dell_components', 'dell_alerts',
   'dell_warranties', 'dell_firmware_compliance', 'dell_metrics_history',
   'dell_config_baselines', 'dell_config_compliance', 'dell_jobs',

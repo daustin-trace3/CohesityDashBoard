@@ -425,10 +425,236 @@ function seedVcenter(db, { now, encrypt }) {
       `-${openedMinAgo} minutes`, `-${resolvedMinAgo} minutes`, `-${resolvedMinAgo} minutes`);
   }
 
+  // ── Dual-site capacity planning: sites, site_members, and history ─────────────
+  const insertSite = db.prepare(`
+    INSERT INTO vcenter_sites (name, color, sort_order) VALUES (?, ?, ?)
+  `);
+  insertSite.run('DC-East', '#0091DA', 0);
+  insertSite.run('DC-West', '#6CB33F', 1);
+
+  const eastSiteId = db.prepare('SELECT id FROM vcenter_sites WHERE name = ?').get('DC-East').id;
+  const westSiteId = db.prepare('SELECT id FROM vcenter_sites WHERE name = ?').get('DC-West').id;
+
+  const insertMember = db.prepare(`
+    INSERT INTO vcenter_site_members (site_id, vcenter_id, member_type, member_name, replicated)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  // Assign clusters to sites: 70% to DC-East, 30% to DC-West (deterministic)
+  const allClusters = db.prepare(`
+    SELECT id, vcenter_id, name, mem_bytes_capacity, mem_bytes_used FROM vcenter_clusters
+    ORDER BY vcenter_id, name
+  `).all();
+
+  const clusterCount = allClusters.length;
+  const eastClusterCount = Math.ceil(clusterCount * 0.7);
+
+  allClusters.forEach((cl, idx) => {
+    const siteId = idx < eastClusterCount ? eastSiteId : westSiteId;
+    insertMember.run(siteId, cl.vcenter_id, 'cluster', cl.name, 0);
+  });
+
+
+  // Generate capacity history: hourly for 90 days, daily sine pattern + gentle upward trend + burst week
+  const insertCapHist = db.prepare(`
+    INSERT INTO vcenter_capacity_history
+      (vcenter_id, captured_at, cluster_name, host_count, hosts_connected, vm_count, vms_on,
+       cpu_cores, cpu_mhz_capacity, cpu_mhz_used,
+       mem_bytes_capacity, mem_bytes_used,
+       vcpu_allocated, vmem_mb_allocated,
+       largest_host_cpu_cores, largest_host_cpu_mhz, largest_host_mem_bytes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+
+  // Generate VM capacity history: every 6h for 30 days
+  const insertVmHist = db.prepare(`
+    INSERT INTO vcenter_vm_capacity_history
+      (vcenter_id, captured_at, vm_name, cluster_name, power_state,
+       cpu_count, memory_mb, cpu_usage_mhz, mem_usage_mb, storage_committed_bytes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  // Build cluster info for history generation
+  const clusterInfo = db.prepare(`
+    SELECT id, vcenter_id, name, host_count, vm_count,
+           cpu_mhz_capacity, cpu_mhz_used,
+           mem_bytes_capacity, mem_bytes_used
+    FROM vcenter_clusters
+  `).all();
+
+  const vmInfo = db.prepare(`
+    SELECT vcenter_id, name, cluster_name, power_state, cpu_count, memory_mb,
+           cpu_usage_mhz, mem_usage_mb, storage_committed_bytes
+    FROM vcenter_vms
+  `).all();
+
+  const dsInfo = db.prepare(`
+    SELECT vcenter_id, name, capacity_bytes, free_bytes FROM vcenter_datastores
+  `).all();
+
+  // ── Engineer failover fit percentages: adjust VM/cluster memory usage to hit targets ─────
+  // Goal: DC-East ~85% of N+1 usable, DC-West >100% of N+1 usable
+  // Calculate N+1 usable per site and adjust VM memory usage accordingly
+
+  const clustersBySite = {};
+  db.prepare(`
+    SELECT m.site_id, m.member_name, c.mem_bytes_capacity, c.host_count
+    FROM vcenter_site_members m
+    JOIN vcenter_clusters c ON m.vcenter_id = c.vcenter_id AND m.member_name = c.name
+    WHERE m.member_type = 'cluster'
+  `).all().forEach(row => {
+    if (!clustersBySite[row.site_id]) clustersBySite[row.site_id] = [];
+    // Estimate largest host as ~20% above average
+    const avgMemPerHost = row.mem_bytes_capacity / row.host_count;
+    const largestHostMem = Math.round(avgMemPerHost * 1.2);
+    const n1Usable = row.mem_bytes_capacity - largestHostMem;
+    clustersBySite[row.site_id].push({ name: row.member_name, capacity: row.mem_bytes_capacity, n1Usable });
+  });
+
+  // Calculate current total used across all VMs
+  const allVms = db.prepare('SELECT vcenter_id, memory_mb, mem_usage_mb FROM vcenter_vms WHERE power_state = ?').all('POWERED_ON');
+  let totalMemUsageMb = 0;
+  allVms.forEach(vm => {
+    const used = vm.mem_usage_mb || (vm.memory_mb * 0.5); // fallback to 50% if null
+    totalMemUsageMb += used;
+  });
+
+  const n1BySize = Object.entries(clustersBySite).map(([siteId, clusters]) => ({
+    siteId: parseInt(siteId),
+    n1Usable: clusters.reduce((sum, c) => sum + c.n1Usable, 0),
+  })).sort((a, b) => b.n1Usable - a.n1Usable);
+
+  if (n1BySize.length >= 2) {
+    const largeSite = n1BySize[0]; // More usable capacity
+    const smallSite = n1BySize[1]; // Less usable capacity
+
+    // Target: largeSite at 85%, smallSite at >105%
+    const targetBytesForLarge = Math.round(largeSite.n1Usable * 0.85);
+    const targetBytesForSmall = Math.round(smallSite.n1Usable * 1.08);
+    const targetBytes = Math.max(targetBytesForLarge, targetBytesForSmall); // Use the more demanding one
+
+    // Convert current total memory used from MB to bytes
+    const totalMemUsedBytes = totalMemUsageMb * 1024 * 1024;
+
+    // Scale all VM memory usage to hit the target
+    if (totalMemUsedBytes > 0) {
+      const scaleFactor = targetBytes / totalMemUsedBytes;
+      if (scaleFactor > 0 && scaleFactor < 5) {
+        // Update vcenter_vms mem_usage_mb
+        const updateVm = db.prepare('UPDATE vcenter_vms SET mem_usage_mb = CAST(CAST(mem_usage_mb AS REAL) * ? AS INTEGER) WHERE power_state = ? AND mem_usage_mb IS NOT NULL');
+        updateVm.run(scaleFactor, 'POWERED_ON');
+
+        // Update vcenter_clusters mem_bytes_used (sum of host mem_bytes_used in that cluster)
+        // Since we don't track individual host usage in capacity_history yet, we'll update based on proportion
+        const updateCluster = db.prepare('UPDATE vcenter_clusters SET mem_bytes_used = CAST(CAST(mem_bytes_used AS REAL) * ? AS INTEGER)');
+        updateCluster.run(scaleFactor);
+      }
+    }
+  }
+
+  // For each cluster, generate 90 days of hourly capacity history
+  const capHistRng = rngFor('vcenter-cap-history');
+  clusterInfo.forEach((cl) => {
+    const vcId = cl.vcenter_id;
+    const clName = cl.name;
+
+    // Estimated largest host: assume uniform distribution, largest is ~20% above average
+    const avgMemPerHost = cl.mem_bytes_capacity / cl.host_count;
+    const largestHostMem = Math.round(avgMemPerHost * 1.2);
+    const largestHostMhz = Math.round((cl.cpu_mhz_capacity / cl.host_count) * 1.2);
+    const largestHostCores = Math.round(((cl.host_count * 48) / cl.host_count) * 1.2); // 48 cores per host
+    const cpuCores = cl.host_count * 48; // total cluster cores
+
+    const n1UsableMem = cl.mem_bytes_capacity - largestHostMem;
+    const n1UsableMhz = cl.cpu_mhz_capacity - largestHostMhz;
+
+    // Sample density mirrors what the hourly sampler would leave after bucketing:
+    // hourly for the last 7 days, every 6h back to 30 days, daily back to 90 days.
+    const sampleHours = [];
+    for (let h = 90 * 24; h >= 0; h--) {
+      const d = h / 24;
+      if (d <= 7 || (d <= 30 && h % 6 === 0) || h % 24 === 0) sampleHours.push(h);
+    }
+    for (const hourOffset of sampleHours) {
+      const dayOffset = hourOffset / 24;
+      const sampleTime = new Date(now - hourOffset * 3600000);
+
+      // Gentle upward trend: 90 days ago = 0.7x, today = 1.0x
+      const trendFactor = 1.0 - (dayOffset / 90) * 0.3;
+
+      // Daily sine: business-hours peak around 14:00 UTC, trough overnight
+      const dayHour = sampleTime.getUTCHours();
+      const sineFactor = 0.85 + 0.15 * Math.cos(((dayHour - 14) / 24) * 2 * Math.PI);
+
+      // Burst week: day 40-47 (1-1.5x)
+      const isBurstWeek = dayOffset >= 40 && dayOffset <= 47;
+      const burstFactor = isBurstWeek ? 0.5 + randFloat(capHistRng, 1.0, 1.5, 2) : 1.0;
+
+      const memFactor = Math.max(0.3, trendFactor * sineFactor * burstFactor);
+      const cpuFactor = Math.max(0.2, trendFactor * sineFactor * 0.9 * burstFactor);
+
+      const memUsed = Math.round(cl.mem_bytes_used * memFactor);
+      const cpuUsed = Math.round(cl.cpu_mhz_used * cpuFactor);
+
+      // vCPU/vMem allocated: scale with cluster size
+      const vmCountOn = Math.round(cl.vm_count * 0.85 * (0.8 + randFloat(capHistRng, 0.1, 0.2, 2)));
+      const vcpuAllocated = Math.round((cpuCores * 2.5) * (memFactor * 0.9)); // over-provisioning factor
+      const vmemMbAllocated = Math.round((cl.mem_bytes_capacity / (1024 * 1024)) * (memFactor * 0.95));
+
+      insertCapHist.run(
+        vcId, sampleTime.toISOString(), clName,
+        cl.host_count, Math.max(1, Math.round(cl.host_count * randFloat(capHistRng, 0.95, 1.0, 2))),
+        cl.vm_count, vmCountOn,
+        cpuCores, cl.cpu_mhz_capacity, cpuUsed,
+        cl.mem_bytes_capacity, memUsed,
+        vcpuAllocated, vmemMbAllocated,
+        largestHostCores, largestHostMhz, largestHostMem
+      );
+    }
+  });
+
+
+  // For each VM, generate every 6h for 30 days
+  const vmHistRng = rngFor('vcenter-vm-history');
+  vmInfo.forEach((vm) => {
+    const vcId = vm.vcenter_id;
+    const vmName = vm.name;
+    const clName = vm.cluster_name;
+    const powerState = vm.power_state;
+
+    if (powerState !== 'POWERED_ON') return; // Skip powered-off VMs
+
+    for (let dayOffset = 30; dayOffset >= 0; dayOffset--) {
+      for (let hour = 0; hour < 24; hour += 6) {
+        const sampleTime = new Date(now - dayOffset * 86400000 - (23 - hour) * 3600000);
+
+        // Usage patterns: business hours peak (9-17), night low
+        const dayHour = sampleTime.getUTCHours();
+        const isBusinessHour = dayHour >= 9 && dayHour <= 17;
+        const usageFactor = isBusinessHour ? randFloat(vmHistRng, 0.6, 0.95, 2) : randFloat(vmHistRng, 0.1, 0.4, 2);
+
+        const cpuUsage = Math.round((vm.cpu_usage_mhz || 2400 * vm.cpu_count * 0.5) * usageFactor);
+        const memUsage = Math.round((vm.mem_usage_mb || vm.memory_mb * 0.5) * usageFactor);
+
+        insertVmHist.run(
+          vcId, sampleTime.toISOString(), vmName, clName, powerState,
+          vm.cpu_count, vm.memory_mb,
+          cpuUsage, memUsage, vm.storage_committed_bytes
+        );
+      }
+    }
+  });
+
+  const siteMemRows = db.prepare('SELECT COUNT(*) n FROM vcenter_site_members').get().n;
+  const capHistRows = db.prepare('SELECT COUNT(*) n FROM vcenter_capacity_history').get().n;
+  const vmHistRows = db.prepare('SELECT COUNT(*) n FROM vcenter_vm_capacity_history').get().n;
+
   return {
     vcenters: SITES.length, clusters: clusterTotal, hosts: hostTotal, vms: vmTotal,
     datastores: dsTotal, orphans: orphanTotal, events: eventTotal,
     issueHistory: db.prepare('SELECT COUNT(*) n FROM vcenter_issue_history').get().n,
+    siteMembers: siteMemRows, capacityHistory: capHistRows, vmCapacityHistory: vmHistRows,
   };
 }
 
