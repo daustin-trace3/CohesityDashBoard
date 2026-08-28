@@ -10,22 +10,26 @@
 // `requiresAi` gate, since the plugin sandbox has no such host flag (again
 // matching the Dell precedent).
 
-import { injectStyles } from './ui.jsx';
-import { LOGO_DATA_URI } from './logo.js';
-import {
+const { injectStyles } = require('./ui.jsx');
+const { LOGO_DATA_URI } = require('./logo.js');
+const {
   Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, Bell,
-} from './icons.jsx';
+  Building2, TrendingUp, ArrowLeftRight,
+} = require('./icons.jsx');
 
-import OverviewPage from './pages/overview.jsx';
-import AlertsPage from './pages/alerts.jsx';
-import HostsPage from './pages/hosts.jsx';
-import InventoryPage from './pages/inventory.jsx';
-import DatastoresPage from './pages/datastores.jsx';
-import NetworkPage from './pages/network.jsx';
-import EventsPage from './pages/events.jsx';
-import GovernancePage from './pages/governance.jsx';
-import AdvisorPage from './pages/advisor.jsx';
-import SettingsPage from './pages/settings.jsx';
+const OverviewPage = require('./pages/overview.jsx').default;
+const AlertsPage = require('./pages/alerts.jsx').default;
+const HostsPage = require('./pages/hosts.jsx').default;
+const InventoryPage = require('./pages/inventory.jsx').default;
+const DatastoresPage = require('./pages/datastores.jsx').default;
+const NetworkPage = require('./pages/network.jsx').default;
+const EventsPage = require('./pages/events.jsx').default;
+const GovernancePage = require('./pages/governance.jsx').default;
+const AdvisorPage = require('./pages/advisor.jsx').default;
+const SettingsPage = require('./pages/settings.jsx').default;
+const CapacityOverviewPage = require('./pages/capacityOverview.jsx').default;
+const CapacityTrendsPage = require('./pages/capacityTrends.jsx').default;
+const CapacityExplorerPage = require('./pages/capacityExplorer.jsx').default;
 
 const ACCENT = '#0091DA';
 
@@ -39,6 +43,14 @@ const navGroups = [
       { label: 'Alerts', route: '/vcenter/alerts', icon: Bell, isActive: (p) => p.startsWith('/vcenter/alerts') },
       { label: 'AI Advisor', route: '/vcenter/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/vcenter/advisor') },
       { label: 'Events', route: '/vcenter/events', icon: History, isActive: (p) => p.startsWith('/vcenter/events') },
+    ],
+  },
+  {
+    label: 'Capacity',
+    items: [
+      { label: 'Site Capacity', route: '/vcenter/capacity', icon: Building2, isActive: (p) => p === '/vcenter/capacity' },
+      { label: 'Trends', route: '/vcenter/capacity/trends', icon: TrendingUp, isActive: (p) => p.startsWith('/vcenter/capacity/trends') },
+      { label: 'Failover Explorer', route: '/vcenter/capacity/explorer', icon: ArrowLeftRight, isActive: (p) => p.startsWith('/vcenter/capacity/explorer') },
     ],
   },
   {
@@ -72,6 +84,9 @@ const rooted = (C) => function VcRooted() { return <div className="vc-root"><C /
 const routes = [
   { path: 'vcenter', Component: rooted(OverviewPage) },
   { path: 'vcenter/alerts', Component: rooted(AlertsPage) },
+  { path: 'vcenter/capacity', Component: rooted(CapacityOverviewPage) },
+  { path: 'vcenter/capacity/trends', Component: rooted(CapacityTrendsPage) },
+  { path: 'vcenter/capacity/explorer', Component: rooted(CapacityExplorerPage) },
   { path: 'vcenter/hosts', Component: rooted(HostsPage) },
   { path: 'vcenter/inventory', Component: rooted(InventoryPage) },
   { path: 'vcenter/datastores', Component: rooted(DatastoresPage) },

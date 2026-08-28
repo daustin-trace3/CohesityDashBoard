@@ -16,6 +16,7 @@
 // point) reuses it if router.js got there first (dell poller.js pattern).
 const api = require('./api');
 const { reconcileIssueHistory } = require('./issues');
+const { writeCapacitySample } = require('./capacity');
 
 let pollerInstance = null;
 
@@ -297,6 +298,11 @@ async function pollVcenter(vc, coreApi) {
         last_poll_at = datetime('now') WHERE id = ?
     `).run(vc.id);
     await collectEvents(vc, coreApi);
+    try {
+      writeCapacitySample(db, vc.id);
+    } catch (err) {
+      coreApi.logger.warn(`[VcPoller] capacity sample failed for ${vc.name}: ${err.message}`);
+    }
     coreApi.logger.info(`[VcPoller] ${vc.name}: ${data.hosts.length} host(s), ${data.clusters.length} cluster(s), ${data.datastores.length} datastore(s), ${(data.vms || []).length} VM(s)`);
   } catch (err) {
     db.prepare(`

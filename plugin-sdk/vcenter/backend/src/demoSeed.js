@@ -59,6 +59,7 @@ const VM_ROLES = ['app', 'db', 'web', 'dc', 'file', 'mon', 'ci', 'jump'];
 // Children->parents, scoped by vcenter_id — vcenter_vcenters itself is NEVER
 // wiped (see module header).
 const DEMO_CHILD_TABLES = [
+  'vcenter_site_members', 'vcenter_capacity_history', 'vcenter_datastore_history', 'vcenter_vm_capacity_history',
   'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_networks', 'vcenter_certs',
   'vcenter_metrics_history', 'vcenter_vms', 'vcenter_datastores', 'vcenter_clusters',
   'vcenter_hosts',
@@ -482,7 +483,13 @@ function seedVcenter(coreApi, { now, encrypt }) {
  *  the DASHBOARD_DEMO gate in poller.js. */
 function seedVcenterDemo(coreApi) {
   const db = coreApi.db;
-  return db.transaction(() => seedVcenter(coreApi, { now: Date.now(), encrypt: coreApi.encryption.encrypt }))();
+  return db.transaction(() => {
+    const now = Date.now();
+    const result = seedVcenter(coreApi, { now, encrypt: coreApi.encryption.encrypt });
+    const vcenterIds = SITES.map((site) => db.prepare('SELECT id FROM vcenter_vcenters WHERE name = ?').get(`${site}-vc-prd-01`)?.id).filter(Boolean);
+    const { seedCapacityDemo } = require('./demoCapacity');
+    return { ...result, capacity: seedCapacityDemo(db, { now, vcenterIds }) };
+  })();
 }
 
 module.exports = { seedVcenter, seedVcenterDemo };

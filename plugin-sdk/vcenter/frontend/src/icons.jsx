@@ -89,3 +89,5 @@ export const Share2 = (p) => <Icon {...p}><circle cx="18" cy="5" r="3" /><circle
 export const EthernetPort = (p) => <Icon {...p}><rect x="2" y="9" width="20" height="12" rx="1" /><path d="M8 21v-4M12 21v-4M16 21v-4" /><path d="M6 9V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4" /></Icon>;
 export const Waypoints = (p) => <Icon {...p}><circle cx="4.5" cy="19.5" r="2.5" /><circle cx="19.5" cy="4.5" r="2.5" /><path d="M7 17 17 7" /><path d="M17 17h.5a2.5 2.5 0 0 0 0-5H15" /><path d="M7 7H6.5a2.5 2.5 0 0 0 0 5H9" /></Icon>;
 export const Tag = (p) => <Icon {...p}><path d="M12.6 2H5a1 1 0 0 0-1 1v7.6a1 1 0 0 0 .3.7l9.4 9.4a1 1 0 0 0 1.4 0l7.6-7.6a1 1 0 0 0 0-1.4l-9.4-9.4a1 1 0 0 0-.7-.3Z" /><circle cx="8" cy="8" r="1.5" /></Icon>;
+export const Building2 = (p) => <Icon {...p}><path d="M3 21v-4.5M3 16.5V3.5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v13M3 16.5h18" /><path d="M7 21v-3M12 21v-3M17 21v-3M7 7h4M7 11h4M17 7h.01M17 11h.01" /></Icon>;
+export const ArrowLeftRight = (p) => <Icon {...p}><path d="M8 3 4 7l4 4" /><path d="M4 7h16" /><path d="m16 21 4-4-4-4" /><path d="M20 17H4" /></Icon>;

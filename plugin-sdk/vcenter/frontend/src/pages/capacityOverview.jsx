@@ -1,0 +1,189 @@
+// Site Capacity — per-site allocated / used / N+1 usable for CPU and memory,
+// the automatic failover-fit verdicts, and a filterable cluster table. Laid
+// out like overview.jsx: StatCard strip → accent panels → table panel.
+const { Building2, Server, MonitorSmartphone, Cpu, MemoryStick, ArrowLeftRight, Layers } = require('../icons.jsx');
+const {
+  apiFetch, PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated,
+  useTableControls, SortTh, TableControls, TablePager, BRAND, fmtNum, fmtBytes,
+} = require('../ui.jsx');
+const { fmtMhz, fmtPctInt, pctColor, pctTone, UsageBar, SiteDot, SiteBadge, fitVerdict, BigStat, PanelTitle, NoSitesState } = require('./capacityShared.jsx');
+
+const { useNavigate } = ReactRouterDOM;
+const MIB = 1024 * 1024;
+const pctOf = (n, d) => (d > 0 ? (n / d) * 100 : null);
+
+function AxisRow({ icon: IconComp, title, usable, used, allocated, fmt, ratioLabel, ratio }) {
+  const usedPct = pctOf(used, usable);
+  return (
+    <div className="pt-3 border-t border-cohesity-border/50">
+      <p className="text-xs font-semibold text-ink-muted mb-2" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconComp size={13} className="text-brand" />{title}</p>
+      <div className="grid grid-cols-3 gap-3 text-center mb-2">
+        <BigStat value={fmt(usable)} label="N+1 usable" />
+        <BigStat value={fmt(used)} label={`used · ${fmtPctInt(usedPct)} of usable`} color={usedPct != null && usedPct > 80 ? pctColor(usedPct) : undefined} />
+        <BigStat value={ratio} label={ratioLabel} />
+      </div>
+      <div className="h-1.5 rounded-full bg-surface-overlay overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${Math.min(100, usedPct || 0)}%`, backgroundColor: pctColor(usedPct) }} />
+      </div>
+    </div>
+  );
+}
+
+export default function VcCapacityOverviewPage() {
+  const navigate = useNavigate();
+  const [data, setData] = React.useState(null);
+  const [lastRefreshed, setLastRefreshed] = React.useState(null);
+  const [sampling, setSampling] = React.useState(false);
+  const [statusMsg, setStatusMsg] = React.useState(null);
+
+  const load = React.useCallback(() => apiFetch('/vcenter/capacity/overview')
+    .then((json) => { setData(json); setLastRefreshed(new Date()); })
+    .catch(() => setData({ sites: [], failover: [] })), []);
+  React.useEffect(() => { load(); }, [load]);
+
+  const sampleNow = async () => {
+    setSampling(true);
+    try {
+      const r = await apiFetch('/vcenter/capacity/sample', { method: 'POST', body: { refresh: false } });
+      setStatusMsg(`Sampled ${r.sampled} of ${r.vcenters} vCenter(s).`);
+      await load();
+    } catch (err) {
+      setStatusMsg(err?.payload?.error || 'Sample failed.');
+    } finally {
+      setSampling(false);
+      setTimeout(() => setStatusMsg(null), 5000);
+    }
+  };
+
+  const sites = data?.sites || [];
+  const failover = data?.failover || [];
+  const siteByName = new Map(sites.map((s) => [s.name, s]));
+
+  const clusterRows = React.useMemo(() => sites.flatMap((s) => (s.clusters || []).map((c) => ({
+    key: `${c.vcenterId}|${c.name}`, siteName: s.name, siteColor: s.color, name: c.name, vcenterName: c.vcenterName,
+    hostCount: c.hostCount, hostsConnected: c.hostsConnected, vmsOn: c.vmsOn, vmCount: c.vmCount,
+    cpuUsedPct: pctOf(c.cpu?.mhzUsed, c.cpu?.usableMhz), memUsedPct: pctOf(c.mem?.bytesUsed, c.mem?.usableBytes),
+    usableMem: c.mem?.usableBytes || 0, vcpuPerCore: c.cpu?.usableCores > 0 ? c.cpu.vcpuAllocated / c.cpu.usableCores : null,
+  }))), [sites]);
+  const ctl = useTableControls(clusterRows, { searchKeys: ['name', 'vcenterName', 'siteName'], defaultSortKey: 'memUsedPct', defaultSortDir: 'desc', paginate: true });
+
+  const totals = sites.reduce((a, s) => ({
+    clusters: a.clusters + (s.clusters || []).length, hosts: a.hosts + (s.totals?.hostCount || 0), connected: a.connected + (s.totals?.hostsConnected || 0),
+    vmsOn: a.vmsOn + (s.totals?.vmsOn || 0), vms: a.vms + (s.totals?.vmCount || 0),
+  }), { clusters: 0, hosts: 0, connected: 0, vmsOn: 0, vms: 0 });
+  const fitting = failover.filter((f) => f.fits).map((f) => f.target);
+  const fitSummary = failover.length === 0 ? '—' : fitting.length === failover.length ? 'Either site' : fitting.length === 0 ? 'Neither site' : `${fitting.join(', ')} only`;
+  const fitTone = failover.length === 0 ? 'default' : fitting.length === failover.length ? 'ok' : fitting.length === 0 ? 'crit' : 'warn';
+  const unmapped = data?.unmappedClusterCount || 0;
+
+  return (
+    <div className="animate-fade-in">
+      <PageHeader icon={Building2} title="Site Capacity" description="Per-site compute — allocated, used and N+1 usable — with the automatic failover fit">
+        {statusMsg && <span className="text-[11px] text-ink-muted">{statusMsg}</span>}
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} />
+        <button onClick={sampleNow} disabled={sampling} className="vc-btn-ghost" title="Write an hourly capacity sample now">{sampling ? 'Sampling…' : 'Sample now'}</button>
+      </PageHeader>
+
+      {data == null ? <LoadingPanel label="Loading site capacity…" /> : sites.length === 0 ? <NoSitesState /> : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+            <StatCard icon={Building2} label="Sites" value={fmtNum(sites.length)} sub={sites.length <= 3 ? sites.map((s) => s.name).join(' · ') : 'assigned in Settings → Sites'} tone="brand" />
+            <StatCard icon={Layers} label="Clusters mapped" value={unmapped ? `${fmtNum(totals.clusters)} / ${fmtNum(totals.clusters + unmapped)}` : fmtNum(totals.clusters)}
+              sub={unmapped ? `${unmapped} unmapped — assign in Settings` : 'all clusters assigned'} tone={unmapped ? 'warn' : 'ok'}
+              onClick={() => navigate('/vcenter/settings#sites')} />
+            <StatCard icon={Server} label="ESX Hosts" value={`${fmtNum(totals.connected)} / ${fmtNum(totals.hosts)}`} sub="connected"
+              tone={totals.connected < totals.hosts ? 'warn' : 'default'} onClick={() => navigate('/vcenter/hosts')} />
+            <StatCard icon={MonitorSmartphone} label="Running VMs" value={fmtNum(totals.vmsOn)} sub={`of ${fmtNum(totals.vms)} guests`} onClick={() => navigate('/vcenter/inventory')} />
+            <StatCard icon={ArrowLeftRight} label="Full failover fits" value={fitSummary} sub="whole estate on one site" tone={fitTone} onClick={() => navigate('/vcenter/capacity/explorer')} />
+          </div>
+
+          <div className={`grid md:grid-cols-2 ${sites.length > 4 ? 'lg:grid-cols-3' : ''} gap-4 mb-4`}>
+            {sites.map((site) => {
+              const t = site.totals || {};
+              const cpu = t.cpu || {};
+              const mem = t.mem || {};
+              return (
+                <div key={site.id} className="panel p-4" style={{ borderTop: `3px solid ${site.color || BRAND}` }}>
+                  <PanelTitle meta={`${fmtNum((site.clusters || []).length)} cluster${(site.clusters || []).length === 1 ? "" : "s"} · ${fmtNum(t.hostsConnected)}/${fmtNum(t.hostCount)} hosts up · ${fmtNum(t.vmsOn)} VMs on`}>
+                    <SiteDot site={site} /> {site.name}
+                  </PanelTitle>
+                  <AxisRow icon={MemoryStick} title="Memory" usable={mem.usableBytes} used={mem.bytesUsed} allocated={(mem.mbAllocated || 0) * MIB} fmt={fmtBytes}
+                    ratio={fmtBytes((mem.mbAllocated || 0) * MIB)} ratioLabel={`allocated · ${fmtPctInt(mem.allocPct)} of usable`} />
+                  <AxisRow icon={Cpu} title="CPU" usable={cpu.usableMhz} used={cpu.mhzUsed} allocated={cpu.vcpuAllocated} fmt={fmtMhz}
+                    ratio={cpu.usableCores > 0 ? `${(cpu.vcpuAllocated / cpu.usableCores).toFixed(2)}:1` : '—'} ratioLabel={`vCPU : usable core (${fmtNum(cpu.vcpuAllocated)} vCPU)`} />
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+            <PanelTitle icon={ArrowLeftRight} meta="whole-estate demand today vs each site's N+1 usable · judged on used, not allocated">Failover Fit</PanelTitle>
+            <div className={`grid md:grid-cols-2 ${failover.length > 4 ? 'lg:grid-cols-3' : ''} gap-3`}>
+              {failover.map((f) => {
+                const site = siteByName.get(f.target);
+                const v = fitVerdict(f);
+                return (
+                  <div key={f.target} className="rounded-lg px-4 py-3" style={{ background: 'var(--vc-surface-overlay)', border: `1px solid ${v.tone === 'crit' ? 'rgba(248,113,113,0.4)' : 'var(--vc-border)'}` }}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <SiteDot site={site} />
+                      <p className="text-sm font-semibold text-ink mr-auto">If everything ran in {f.target}</p>
+                      <Badge tone={v.tone}>{v.label}</Badge>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2 text-center">
+                      <BigStat value={fmtPctInt(f.memUsedPct)} label="memory used" color={f.memUsedPct > 80 ? pctColor(f.memUsedPct) : undefined} />
+                      <BigStat value={fmtPctInt(f.cpuUsedPct)} label="CPU used" color={f.cpuUsedPct > 80 ? pctColor(f.cpuUsedPct) : undefined} />
+                      <BigStat value={f.vcpuPerCore != null ? `${f.vcpuPerCore.toFixed(1)}:1` : '—'} label="vCPU : core" />
+                      <BigStat value={fmtPctInt(f.memAllocPct)} label="memory allocated" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+            <PanelTitle icon={Layers} meta={data.lastSampleAt ? `${fmtNum(data.sampleCount)} hourly samples on record` : 'no hourly samples yet — use Sample now'}>Clusters by Site</PanelTitle>
+            <TableControls ctl={ctl} rows={clusterRows} searchPlaceholder="Filter by cluster, vCenter or site…"
+              filters={[{ k: 'siteName', label: 'Sites' }, { k: 'vcenterName', label: 'vCenters' }]} />
+            {ctl.rows.length === 0 ? (
+              <div className="text-sm text-ink-muted py-6 text-center">No clusters match your filters.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                    <SortTh k="name" label="Cluster" ctl={ctl} />
+                    <SortTh k="siteName" label="Site" ctl={ctl} />
+                    <SortTh k="vcenterName" label="vCenter" ctl={ctl} />
+                    <SortTh k="hostCount" label="Hosts" ctl={ctl} align="right" />
+                    <SortTh k="vmsOn" label="VMs on" ctl={ctl} align="right" />
+                    <SortTh k="usableMem" label="N+1 usable mem" ctl={ctl} align="right" />
+                    <SortTh k="vcpuPerCore" label="vCPU : core" ctl={ctl} align="right" />
+                    <SortTh k="cpuUsedPct" label="CPU used" ctl={ctl} align="right" />
+                    <SortTh k="memUsedPct" label="Mem used" ctl={ctl} align="right" />
+                  </tr></thead>
+                  <tbody>
+                    {ctl.pageRows.map((c) => (
+                      <tr key={c.key} className="border-b border-cohesity-border/50">
+                        <td className="py-2 pr-3 text-ink">{c.name}</td>
+                        <td className="py-2 pr-3"><SiteBadge site={{ name: c.siteName, color: c.siteColor }} /></td>
+                        <td className="py-2 pr-3 text-ink-muted">{c.vcenterName}</td>
+                        <td className={`py-2 pr-3 text-right tnum ${c.hostsConnected < c.hostCount ? 'text-status-warn' : 'text-ink-muted'}`}>{fmtNum(c.hostsConnected)} / {fmtNum(c.hostCount)}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(c.vmsOn)} / {fmtNum(c.vmCount)}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(c.usableMem)}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{c.vcpuPerCore != null ? `${c.vcpuPerCore.toFixed(1)}:1` : '—'}</td>
+                        <td className="py-2 pr-3"><UsageBar pct={c.cpuUsedPct} /></td>
+                        <td className="py-2 pr-3"><UsageBar pct={c.memUsedPct} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <TablePager ctl={ctl} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

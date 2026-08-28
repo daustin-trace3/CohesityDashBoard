@@ -15,6 +15,9 @@ const { DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues } =
 const { createVcenterAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const {
+  n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf,
+} = require('./capacity');
+const {
   badRequest, fail, parseIntStrict, isNonEmptyString, isBooleanish, toBool,
   requireIdParam, parseQueryInt,
 } = require('./validate');
@@ -549,6 +552,256 @@ async function handlePostAdvisorReport(req, res, coreApi) {
   }
 }
 
+// ── site capacity (ported from backend/routes/vcenter.js /capacity/*) ───────
+
+const siteRow = (db, id) => db.prepare('SELECT id, name, color, sort_order AS sortOrder FROM vcenter_sites WHERE id = ?').get(id);
+
+function apiCluster(c) {
+  const u = n1Usable(c);
+  return {
+    vcenterId: c.vcenterId, vcenterName: c.vcenterName, name: c.name,
+    hostCount: c.hostCount, hostsConnected: c.hostsConnected, vmCount: c.vmCount, vmsOn: c.vmsOn,
+    cpu: { cores: c.cpuCores, mhzCapacity: c.cpuMhzCapacity, mhzUsed: c.cpuMhzUsed, vcpuAllocated: c.vcpuAllocated, usableMhz: u.cpuMhz, usableCores: u.cpuCores },
+    mem: { bytesCapacity: c.memBytesCapacity, bytesUsed: c.memBytesUsed, mbAllocated: c.vmemMbAllocated, usableBytes: u.memBytes },
+    largestHost: { cpuMhz: c.largestHostCpuMhz, memBytes: c.largestHostMemBytes, cpuCores: c.largestHostCpuCores },
+  };
+}
+
+function apiTotals(r) {
+  const pctOf = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
+  return {
+    hostCount: r.hostCount, hostsConnected: r.hostsConnected, vmCount: r.vmCount, vmsOn: r.vmsOn,
+    cpu: {
+      cores: r.cpuCores, mhzCapacity: r.cpuMhzCapacity, mhzUsed: r.cpuMhzUsed, vcpuAllocated: r.vcpuAllocated,
+      usableMhz: r.usableCpuMhz, usableCores: r.usableCpuCores,
+      usedPct: pctOf(r.cpuMhzUsed, r.usableCpuMhz), allocPct: pctOf(r.vcpuAllocated, r.usableCpuCores),
+    },
+    mem: {
+      bytesCapacity: r.memBytesCapacity, bytesUsed: r.memBytesUsed, mbAllocated: r.vmemMbAllocated, usableBytes: r.usableMemBytes,
+      usedPct: pctOf(r.memBytesUsed, r.usableMemBytes), allocPct: pctOf(r.vmemMbAllocated * 1024 * 1024, r.usableMemBytes),
+    },
+  };
+}
+
+
+/** GET /capacity/sites — sites, members, unmapped clusters only. */
+function handleGetCapacitySites(req, res, coreApi) {
+  const db = coreApi.db;
+  const sites = db.prepare('SELECT id, name, color, sort_order AS sortOrder FROM vcenter_sites ORDER BY sort_order, name').all();
+  const members = db.prepare(`
+    SELECT m.id, m.site_id AS siteId, m.vcenter_id AS vcenterId, v.name AS vcenterName,
+      m.member_type AS memberType, m.member_name AS memberName
+    FROM vcenter_site_members m JOIN vcenter_vcenters v ON v.id = m.vcenter_id
+    ORDER BY v.name, m.member_name
+  `).all();
+  const mapped = new Set(members.map((m) => `${m.memberType}|${m.vcenterId}|${m.memberName}`));
+  const siteOf = new Map(members.filter((m) => m.memberType === 'cluster').map((m) => [`${m.vcenterId}|${m.memberName}`, m.siteId]));
+  // Every cluster with its current site (null = unmapped) — what the Settings assignment table renders.
+  const clusters = db.prepare(`
+    SELECT c.vcenter_id AS vcenterId, v.name AS vcenterName, c.name, c.host_count AS hostCount, c.vm_count AS vmCount
+    FROM vcenter_clusters c JOIN vcenter_vcenters v ON v.id = c.vcenter_id ORDER BY v.name, c.name
+  `).all().map((c) => ({ ...c, siteId: siteOf.get(`${c.vcenterId}|${c.name}`) ?? null }));
+  const unmapped = {
+    clusters: db.prepare(`
+      SELECT c.vcenter_id AS vcenterId, v.name AS vcenterName, c.name, c.host_count AS hostCount, c.vm_count AS vmCount
+      FROM vcenter_clusters c JOIN vcenter_vcenters v ON v.id = c.vcenter_id ORDER BY v.name, c.name
+    `).all().filter((c) => !mapped.has(`cluster|${c.vcenterId}|${c.name}`)),
+  };
+  res.json({ sites, members, clusters, unmapped });
+}
+
+/** POST /capacity/sites — create site (409 on duplicate name). */
+function handlePostCapacitySite(req, res, coreApi) {
+  const b = req.body || {};
+  const errors = [];
+  if (!isNonEmptyString(b.name, 120)) errors.push(fail('name'));
+  if (b.color !== undefined && !(typeof b.color === 'string' && b.color.length <= 20)) errors.push(fail('color'));
+  if (errors.length) return badRequest(res, errors);
+  const db = coreApi.db;
+  const name = b.name.trim();
+  if (db.prepare('SELECT id FROM vcenter_sites WHERE name = ?').get(name)) {
+    return res.status(409).json({ error: 'A site with that name already exists.' });
+  }
+  const info = db.prepare('INSERT INTO vcenter_sites (name, color) VALUES (?, ?)').run(name, b.color?.trim() || null);
+  res.status(201).json(siteRow(db, info.lastInsertRowid));
+}
+
+/** PUT /capacity/sites/members — upsert a cluster membership; siteId null removes it. */
+function handlePutCapacityMember(req, res, coreApi) {
+  const b = req.body || {};
+  const errors = [];
+  const vcenterId = parseIntStrict(b.vcenterId);
+  if (!Number.isInteger(vcenterId)) errors.push(fail('vcenterId'));
+  if (b.memberType !== 'cluster') return badRequest(res, [fail('memberType')]);
+  if (!isNonEmptyString(b.memberName)) errors.push(fail('memberName'));
+  const siteId = b.siteId === null ? null : parseIntStrict(b.siteId);
+  if (siteId !== null && !Number.isInteger(siteId)) errors.push(fail('siteId'));
+  if (errors.length) return badRequest(res, errors);
+  const db = coreApi.db;
+  const memberName = b.memberName.trim();
+  if (siteId === null) {
+    db.prepare('DELETE FROM vcenter_site_members WHERE vcenter_id = ? AND member_type = ? AND member_name = ?').run(vcenterId, 'cluster', memberName);
+    return res.json({ removed: true });
+  }
+  if (!db.prepare('SELECT id FROM vcenter_sites WHERE id = ?').get(siteId)) return res.status(404).json({ error: 'Site not found.' });
+  db.prepare(`
+    INSERT OR REPLACE INTO vcenter_site_members (site_id, vcenter_id, member_type, member_name, replicated)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(siteId, vcenterId, 'cluster', memberName, 0);
+  res.json(db.prepare(`
+    SELECT id, site_id AS siteId, vcenter_id AS vcenterId, member_type AS memberType, member_name AS memberName
+    FROM vcenter_site_members WHERE vcenter_id = ? AND member_type = ? AND member_name = ?
+  `).get(vcenterId, 'cluster', memberName));
+}
+
+/** PUT /capacity/sites/:id — rename / recolour / reorder. */
+function handlePutCapacitySite(req, res, coreApi) {
+  const id = requireIdParam(req, res);
+  if (id === null) return;
+  const b = req.body || {};
+  const errors = [];
+  if (b.name !== undefined && !isNonEmptyString(b.name, 120)) errors.push(fail('name'));
+  if (b.color !== undefined && !(typeof b.color === 'string' && b.color.length <= 20)) errors.push(fail('color'));
+  if (b.sortOrder !== undefined && !Number.isInteger(parseIntStrict(b.sortOrder))) errors.push(fail('sortOrder'));
+  if (errors.length) return badRequest(res, errors);
+  const db = coreApi.db;
+  const row = db.prepare('SELECT * FROM vcenter_sites WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ error: 'Site not found.' });
+  const newName = b.name?.trim() || row.name;
+  if (newName !== row.name && db.prepare('SELECT id FROM vcenter_sites WHERE name = ?').get(newName)) {
+    return res.status(409).json({ error: 'A site with that name already exists.' });
+  }
+  db.prepare('UPDATE vcenter_sites SET name = ?, color = ?, sort_order = ? WHERE id = ?')
+    .run(newName, b.color !== undefined ? b.color.trim() : row.color, b.sortOrder !== undefined ? parseIntStrict(b.sortOrder) : row.sort_order, id);
+  res.json(siteRow(db, id));
+}
+
+/** DELETE /capacity/sites/:id — members cascade. */
+function handleDeleteCapacitySite(req, res, coreApi) {
+  const id = requireIdParam(req, res);
+  if (id === null) return;
+  const db = coreApi.db;
+  if (!db.prepare('SELECT id FROM vcenter_sites WHERE id = ?').get(id)) return res.status(404).json({ error: 'Site not found.' });
+  db.prepare('DELETE FROM vcenter_sites WHERE id = ?').run(id);
+  res.json({ deleted: true });
+}
+
+/** GET /capacity/overview — current per-site capacity + failover matrix (snapshot tables). */
+function handleGetCapacityOverview(req, res, coreApi) {
+  const db = coreApi.db;
+  const sites = db.prepare('SELECT id, name, color FROM vcenter_sites ORDER BY sort_order, name').all();
+  const { clusters: clusterMap } = siteMap(db);
+  const all = clusterStats(db);
+  const rollups = [];
+  const out = sites.map((site) => {
+    const mine = all.filter((c) => clusterMap.get(`${c.vcenterId}|${c.name}`) === site.id);
+    const r = rollupSite(mine);
+    rollups.push({ ...r, name: site.name });
+    return { id: site.id, name: site.name, color: site.color, clusters: mine.map(apiCluster), totals: apiTotals(r) };
+  });
+  res.json({
+    sites: out,
+    failover: failoverMatrix(rollups),
+    unmappedClusterCount: all.filter((c) => !clusterMap.has(`${c.vcenterId}|${c.name}`)).length,
+    lastSampleAt: db.prepare('SELECT MAX(captured_at) AS t FROM vcenter_capacity_history').get().t,
+    sampleCount: db.prepare('SELECT COUNT(DISTINCT substr(captured_at, 1, 13)) AS n FROM vcenter_capacity_history').get().n,
+  });
+}
+
+/** GET /capacity/trends?days&siteId|cluster=vcId|name — bucketed history + growth. */
+function handleGetCapacityTrends(req, res, coreApi) {
+  const q = req.query || {};
+  const days = parseQueryInt(q.days, 1, 365);
+  const siteId = parseQueryInt(q.siteId);
+  if (!days.ok) return badRequest(res, [fail('days')]);
+  if (!siteId.ok) return badRequest(res, [fail('siteId')]);
+  const win = days.value || 30;
+  let where = '';
+  const args = [`-${win} days`];
+  if (q.cluster) {
+    const [vcId, ...rest] = String(q.cluster).split('|');
+    where = 'AND vcenter_id = ? AND cluster_name = ?';
+    args.push(Number(vcId), rest.join('|'));
+  } else if (siteId.value !== undefined) {
+    where = `AND EXISTS (SELECT 1 FROM vcenter_site_members m WHERE m.site_id = ? AND m.member_type = 'cluster'
+      AND m.vcenter_id = vcenter_capacity_history.vcenter_id AND m.member_name = vcenter_capacity_history.cluster_name)`;
+    args.push(siteId.value);
+  }
+  const rows = coreApi.db.prepare(`
+    SELECT * FROM vcenter_capacity_history WHERE captured_at >= datetime('now', ?) ${where} ORDER BY captured_at
+  `).all(...args);
+  const points = bucketHistory(rows, win <= 7);
+  const mem = growthOf(points, 'memBytesUsedAvg', 'usableMemBytes');
+  const cpu = growthOf(points, 'cpuMhzUsedAvg', 'usableCpuMhz');
+  res.json({ points, growth: { memBytesPerDay: mem.perDay, cpuMhzPerDay: cpu.perDay, monthsUntilMemFull: mem.months, monthsUntilCpuFull: cpu.months } });
+}
+
+/** GET /capacity/vm-trends?vcenterId&vm&days — raw hourly history for one VM. */
+function handleGetCapacityVmTrends(req, res, coreApi) {
+  const q = req.query || {};
+  const vcenterId = parseIntStrict(q.vcenterId);
+  const days = parseQueryInt(q.days, 1, 365);
+  const errors = [];
+  if (!Number.isInteger(vcenterId)) errors.push(fail('vcenterId'));
+  if (!isNonEmptyString(q.vm)) errors.push(fail('vm'));
+  if (!days.ok) errors.push(fail('days'));
+  if (errors.length) return badRequest(res, errors);
+  const points = coreApi.db.prepare(`
+    SELECT captured_at AS t, cpu_usage_mhz AS cpuUsageMhz, mem_usage_mb AS memUsageMb,
+      storage_committed_bytes AS storageCommittedBytes, power_state AS powerState
+    FROM vcenter_vm_capacity_history
+    WHERE vcenter_id = ? AND vm_name = ? AND captured_at >= datetime('now', ?)
+    ORDER BY captured_at LIMIT 2200
+  `).all(vcenterId, q.vm.trim(), `-${days.value || 30} days`);
+  res.json({ points });
+}
+
+/** GET /capacity/explorer — per-site usable/used + every VM with its demand. */
+function handleGetCapacityExplorer(req, res, coreApi) {
+  const db = coreApi.db;
+  const { clusters: clusterMap } = siteMap(db);
+  const all = clusterStats(db);
+  const sites = db.prepare('SELECT id, name, color FROM vcenter_sites ORDER BY sort_order, name').all().map((site) => {
+    const r = rollupSite(all.filter((c) => clusterMap.get(`${c.vcenterId}|${c.name}`) === site.id));
+    return {
+      id: site.id, name: site.name, color: site.color,
+      cpu: { usableMhz: r.usableCpuMhz, usableCores: r.usableCpuCores, mhzUsed: r.cpuMhzUsed, vcpuAllocated: r.vcpuAllocated },
+      mem: { usableBytes: r.usableMemBytes, bytesUsed: r.memBytesUsed, mbAllocated: r.vmemMbAllocated },
+    };
+  });
+  const vms = db.prepare(`
+    SELECT v.id, v.vcenter_id AS vcenterId, vc.name AS vcenterName, v.name, v.cluster_name AS cluster,
+      v.power_state AS powerState, v.cpu_count AS cpuCount, v.memory_mb AS memoryMb,
+      v.cpu_usage_mhz AS cpuUsageMhz, v.mem_usage_mb AS memUsageMb, v.storage_committed_bytes AS storageCommittedBytes,
+      v.datastores, v.tags
+    FROM vcenter_vms v JOIN vcenter_vcenters vc ON vc.id = v.vcenter_id
+    ORDER BY vc.name, v.name
+  `).all().map((v) => {
+    let tags = [];
+    try { tags = JSON.parse(v.tags || '[]'); } catch { /* keep [] */ }
+    const { datastores: _d, ...rest } = v;
+    return { ...rest, siteId: clusterMap.get(`${v.vcenterId}|${v.cluster}`) ?? null, tags };
+  });
+  res.json({ sites, vms });
+}
+
+/** POST /capacity/sample { refresh } — force an hourly sample now (optionally re-poll first; never on a demo). */
+async function handlePostCapacitySample(req, res, coreApi) {
+  const b = req.body || {};
+  if (b.refresh !== undefined && !isBooleanish(b.refresh)) return badRequest(res, [fail('refresh')]);
+  const db = coreApi.db;
+  const vcs = db.prepare('SELECT * FROM vcenter_vcenters').all();
+  if (toBool(b.refresh) && process.env.DASHBOARD_DEMO !== '1') {
+    const poller = getPoller(coreApi);
+    for (const vc of vcs) {
+      try { await poller.trigger(vc); } catch { /* tolerate unreachable vCenters */ }
+    }
+  }
+  let sampled = 0;
+  for (const vc of vcs) if (writeCapacitySample(db, vc.id, { force: true }).sampled) sampled += 1;
+  res.json({ vcenters: vcs.length, sampled });
+}
+
 // ── route table ──────────────────────────────────────────────────────────────
 
 const ROUTES = [
@@ -573,6 +826,17 @@ const ROUTES = [
   { method: 'GET', ...compile('/datastores'), handler: handleGetDatastores },
   { method: 'GET', ...compile('/certs'), handler: handleGetCerts },
   { method: 'GET', ...compile('/trends'), handler: handleGetTrends },
+  { method: 'GET', ...compile('/capacity/sites'), handler: handleGetCapacitySites },
+  { method: 'POST', ...compile('/capacity/sites'), handler: handlePostCapacitySite },
+  // literal path MUST precede the :id sibling — the table is first-match.
+  { method: 'PUT', ...compile('/capacity/sites/members'), handler: handlePutCapacityMember },
+  { method: 'PUT', ...compile('/capacity/sites/:id'), handler: handlePutCapacitySite },
+  { method: 'DELETE', ...compile('/capacity/sites/:id'), handler: handleDeleteCapacitySite },
+  { method: 'GET', ...compile('/capacity/overview'), handler: handleGetCapacityOverview },
+  { method: 'GET', ...compile('/capacity/trends'), handler: handleGetCapacityTrends },
+  { method: 'GET', ...compile('/capacity/vm-trends'), handler: handleGetCapacityVmTrends },
+  { method: 'GET', ...compile('/capacity/explorer'), handler: handleGetCapacityExplorer },
+  { method: 'POST', ...compile('/capacity/sample'), handler: handlePostCapacitySample },
   { method: 'GET', ...compile('/advisor/:report'), handler: handleGetAdvisorReport },
   { method: 'POST', ...compile('/advisor/:report'), handler: handlePostAdvisorReport },
 ];
