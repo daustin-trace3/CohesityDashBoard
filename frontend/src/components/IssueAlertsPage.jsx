@@ -16,6 +16,8 @@ const CONFIG = {
     description: 'Computed issues across AWS accounts, with open/resolved history' },
   unifi: { brand: '#006FFF', base: '/unifi', instanceKey: 'source', instanceLabel: 'Controller',
     description: 'Computed network issues — offline devices, PoE faults, port errors/flapping, WAN and WiFi quality.' },
+  brocade: { brand: '#CC092F', base: '/brocade', instanceKey: 'source', instanceLabel: 'Source',
+    description: 'Computed fabric issues across all registered SANnav sources, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];

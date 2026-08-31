@@ -22,6 +22,7 @@ const NOTIFY_PLATFORMS = [
   { key: 'aria', label: 'Aria Automation' },
   { key: 'aws', label: 'AWS' },
   { key: 'unifi', label: 'Ubiquiti UniFi' },
+  { key: 'brocade', label: 'Brocade SAN' },
 ];
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,

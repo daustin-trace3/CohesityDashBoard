@@ -97,7 +97,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled, platformBrocadeEnabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -115,6 +115,7 @@ router.put('/', (req, res, next) => {
       resolve(platformAriaopsEnabled, 'platformAriaopsEnabled'),
       resolve(platformAwsEnabled, 'platformAwsEnabled'),
       resolve(platformUnifiEnabled, 'platformUnifiEnabled'),
+      resolve(platformBrocadeEnabled, 'platformBrocadeEnabled'),
     ].some(Boolean);
     if (!anyEnabled) {
       return res.status(400).json({ error: 'At least one platform must remain enabled.' });
@@ -187,6 +188,10 @@ router.put('/', (req, res, next) => {
     if (platformUnifiEnabled !== undefined) {
       setSetting('platform_unifi_enabled', platformUnifiEnabled ? '1' : '0');
       applyPlatformEnabled('unifi', !!platformUnifiEnabled);
+    }
+    if (platformBrocadeEnabled !== undefined) {
+      setSetting('platform_brocade_enabled', platformBrocadeEnabled ? '1' : '0');
+      applyPlatformEnabled('brocade', !!platformBrocadeEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));

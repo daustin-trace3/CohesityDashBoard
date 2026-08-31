@@ -26,6 +26,7 @@ const ariaManifest = require('./platforms/aria');
 const ariaopsManifest = require('./platforms/ariaops');
 const awsManifest = require('./platforms/aws');
 const unifiManifest = require('./platforms/unifi');
+const brocadeManifest = require('./platforms/brocade');
 
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
@@ -36,7 +37,7 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled, platformBrocadeEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
@@ -55,6 +56,8 @@ if (isDemo()) {
   registry.setEnabled('aws', platformAwsEnabled && registry.isEntitled('aws'));
   registry.registerPlugin(unifiManifest);
   registry.setEnabled('unifi', platformUnifiEnabled && registry.isEntitled('unifi'));
+  registry.registerPlugin(brocadeManifest);
+  registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();

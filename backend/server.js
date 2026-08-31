@@ -23,6 +23,7 @@ const ariaManifest = require('./platforms/aria');
 const ariaopsManifest = require('./platforms/ariaops');
 const awsManifest = require('./platforms/aws');
 const unifiManifest = require('./platforms/unifi');
+const brocadeManifest = require('./platforms/brocade');
 
 // Auth boot work (contract C8.3): prune stale sessions and (re-)check the
 // first-run claim token. authService already runs this once at module load
@@ -39,7 +40,7 @@ registry.init();
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
 // (C9.5) gates enabling regardless of the stored flag.
-const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled } = getPlatformSettings();
+const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled, platformBrocadeEnabled } = getPlatformSettings();
 registry.registerPlugin(pureManifest);
 registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
 registry.registerPlugin(netappManifest);
@@ -58,6 +59,8 @@ registry.registerPlugin(awsManifest);
 registry.setEnabled('aws', platformAwsEnabled && registry.isEntitled('aws'));
 registry.registerPlugin(unifiManifest);
 registry.setEnabled('unifi', platformUnifiEnabled && registry.isEntitled('unifi'));
+registry.registerPlugin(brocadeManifest);
+registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
 
 // Scan and register any installed (non-built-in) plugins left in plugins/
 // after the boot swap above.

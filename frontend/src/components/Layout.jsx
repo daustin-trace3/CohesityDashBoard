@@ -108,10 +108,11 @@ export default function Layout() {
   const isAria = !isAriaOps && (pathname === '/aria' || pathname.startsWith('/aria/'));
   const isAws = pathname.startsWith('/aws');
   const isUnifi = pathname.startsWith('/unifi');
+  const isBrocade = pathname.startsWith('/brocade');
   const isOps = pathname.startsWith('/ops');
-  const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell || isAria || isAriaOps || isAws || isUnifi;
-  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isAws ? 'aws' : isUnifi ? 'unifi' : null;
-  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isAws ? 'Instance' : isUnifi ? 'Device' : '';
+  const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell || isAria || isAriaOps || isAws || isUnifi || isBrocade;
+  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isAws ? 'aws' : isUnifi ? 'unifi' : isBrocade ? 'brocade' : null;
+  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isAws ? 'Instance' : isUnifi ? 'Device' : isBrocade ? 'Fabric' : '';
 
   const platforms = allPlatforms.map(p => ({ id: p.id, label: p.label, route: p.switcherRoute, color: p.color, logo: p.logo }));
   const primaryPlatformId = cohesityPresent ? 'cohesity' : (enabledPlatformIds[0] || null);
@@ -124,6 +125,7 @@ export default function Layout() {
   const ariaNavGroups = getPlatform('aria')?.navGroups || [];
   const ariaopsNavGroups = getPlatform('ariaops')?.navGroups || [];
   const awsNavGroups = getPlatform('aws')?.navGroups || [];
+  const brocadeNavGroups = getPlatform('brocade')?.navGroups || [];
   // UniFi feature-module toggles hide nav items for disabled modules; the
   // flags ride the /unifi/overview payload (fetched in the header-feed effect).
   // Modules ship OFF by default, so render conservatively until flags arrive.
@@ -258,6 +260,7 @@ export default function Layout() {
     const ariaops = platformKey === 'ariaops';
     const aws = platformKey === 'aws';
     const unifi = platformKey === 'unifi';
+    const brocade = platformKey === 'brocade';
     // Zerto's "entities" are sites; vCenter's are ESX hosts. Both platforms'
     // overview endpoints are rollup objects, so entity lists come from their
     // inventory endpoints; vCenter's "alerts" are its computed issues.
@@ -265,8 +268,10 @@ export default function Layout() {
     // returns a plain array (not vCenter/Dell's {issues: [...]} rollup).
     // Aria Operations' "entities" are polled resources (VMs/hosts/datastores),
     // and its alerts endpoint is a flat array of raw alert rows (level/status).
-    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : dell ? '/dell/devices' : aria ? '/aria/deployments' : ariaops ? '/ariaops/resources' : aws ? '/aws/overview' : unifi ? '/unifi/overview' : `/${platformKey}/overview`;
-    const alertsUrl = pureFleet ? '/pure1/alerts' : (vcenter || dell) ? `/${platformKey}/overview` : aria ? '/aria/issues' : ariaops ? '/ariaops/alerts' : aws ? '/aws/issues' : unifi ? '/unifi/issues' : `/${platformKey}/alerts`;
+    // Brocade's overview is a rollup object too (sources/fabrics/switches/...),
+    // and its alert badge reads the computed issues endpoint (issues: [...]).
+    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : dell ? '/dell/devices' : aria ? '/aria/deployments' : ariaops ? '/ariaops/resources' : aws ? '/aws/overview' : unifi ? '/unifi/overview' : brocade ? '/brocade/overview' : `/${platformKey}/overview`;
+    const alertsUrl = pureFleet ? '/pure1/alerts' : (vcenter || dell) ? `/${platformKey}/overview` : aria ? '/aria/issues' : ariaops ? '/ariaops/alerts' : aws ? '/aws/issues' : unifi ? '/unifi/issues' : brocade ? '/brocade/issues' : `/${platformKey}/alerts`;
 
     const loadAlertList = () => client.get(alertsUrl)
       .then(r => {
@@ -334,6 +339,15 @@ export default function Layout() {
             description: i.message,
           })));
           setPlatformAlerts(rows.length);
+        } else if (brocade) {
+          const rows = (r.data?.issues || []).filter(i => i.severity !== 'info');
+          setPlatformAlertList(rows.map((i, idx) => ({
+            id: idx,
+            cluster_name: i.source || '—',
+            severity: i.severity === 'critical' ? 'critical' : 'warning',
+            description: i.message,
+          })));
+          setPlatformAlerts(rows.length);
         } else {
           const rows = (r.data || []).filter(a => !a.resolved && a.state !== 'closed' && a.state !== 'resolved');
           setPlatformAlertList(rows.map(a => ({
@@ -351,6 +365,7 @@ export default function Layout() {
         const rows = r.data || [];
         setPlatformCount(aws ? ((r.data?.ec2?.total || 0) + (r.data?.lightsail?.total || 0))
           : unifi ? (r.data?.deviceCounts?.total || 0)
+          : brocade ? (r.data?.fabrics?.total || 0)
           : rows.length);
         const now = Date.now();
         if (zerto) {
@@ -375,6 +390,8 @@ export default function Layout() {
         } else if (unifi) {
           setPlatformHealthy((r.data?.deviceCounts?.total ?? 0) - (r.data?.deviceCounts?.offline ?? 0));
           if (r.data?.features) setUnifiFeatures(r.data.features);
+        } else if (brocade) {
+          setPlatformHealthy(r.data?.fabrics?.healthy ?? 0);
         } else {
           setPlatformAlerts(rows.reduce((s, a) => s + (a.open_alerts || 0), 0));
           const healthy = rows.filter(a => {
@@ -410,6 +427,7 @@ export default function Layout() {
         ...(r.data.platformAriaopsEnabled ? ['ariaops'] : []),
         ...(r.data.platformAwsEnabled ? ['aws'] : []),
         ...(r.data.platformUnifiEnabled ? ['unifi'] : []),
+        ...(r.data.platformBrocadeEnabled ? ['brocade'] : []),
         // Installed plugins are enabled by definition (the backend only serves
         // active ones) — including when they shadow a built-in id the local
         // backend has no platform_<id>_enabled setting for.
@@ -438,7 +456,7 @@ export default function Layout() {
 
   // Swap the sidebar menu to match the active vendor platform.
   const baseNavGroups = isOps ? opsNavGroups
-    : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : isAria ? ariaNavGroups : isAriaOps ? ariaopsNavGroups : isAws ? awsNavGroups : isUnifi ? unifiNavGroups
+    : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : isAria ? ariaNavGroups : isAriaOps ? ariaopsNavGroups : isAws ? awsNavGroups : isUnifi ? unifiNavGroups : isBrocade ? brocadeNavGroups
     : activePluginPlatform ? activePluginPlatform.navGroups : navGroups;
 
   // Hide items the user lacks permission for. While auth is still loading,
@@ -455,7 +473,7 @@ export default function Layout() {
     .filter(group => group.items.length > 0);
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
-  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isAws ? 'instance' : isUnifi ? 'device' : 'array';
+  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isAws ? 'instance' : isUnifi ? 'device' : isBrocade ? 'fabric' : 'array';
   const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
   const footerOk = isPlatform ? platformAllOk : apiOnline;
   const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
@@ -476,8 +494,8 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isAws ? 'AWS' : isUnifi ? 'Ubiquiti UniFi' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isAws ? '#FF9900' : isUnifi ? '#006FFF' : activePluginPlatform ? activePluginPlatform.color : undefined}
+          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isAws ? 'AWS' : isUnifi ? 'Ubiquiti UniFi' : isBrocade ? 'Brocade SAN' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
+          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isAws ? '#FF9900' : isUnifi ? '#006FFF' : isBrocade ? '#CC092F' : activePluginPlatform ? activePluginPlatform.color : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
@@ -579,7 +597,7 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isAws ? 'AWS Dashboard' : isUnifi ? 'Ubiquiti UniFi Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isAws ? 'AWS Dashboard' : isUnifi ? 'Ubiquiti UniFi Dashboard' : isBrocade ? 'Brocade SAN Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
             {/* Plugin platforms have no entity-feed endpoints — hide the count chip
                 rather than showing the Cohesity fall-through. The cohesity fallback
                 branch below also hides when cohesity itself isn't present. */}

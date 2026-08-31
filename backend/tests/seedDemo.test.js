@@ -337,4 +337,49 @@ describe('seedDemo.js', () => {
     expect(flag.value).toBe('1');
   });
 
+  it('seeds the brocade platform with sources, fabrics, switches, ports, and every computed issue trigger', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_sources').get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_fabrics').get().c).toBe(4);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_switches').get().c).toBe(14);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_switch_ports').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_device_ports').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_enclosures').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_chassis').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_events').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_health_scores').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_zone_configs').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_zones').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_zone_aliases').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_zone_changes').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_fcr_routes').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_metrics').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_issue_history').get().c).toBeGreaterThanOrEqual(8);
+
+    const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_brocade_enabled'").get();
+    expect(flag.value).toBe('1');
+
+    // cross-platform Server 360 hit: an enclosure host_name matches a vcenter/unifi demo VM name.
+    for (const name of ['vra-prod', 'vra-dr', 'vrops-nyc-01', 'vrli-nyc-01', 'nyc-esx-0101.icc.demo']) {
+      expect(db.prepare('SELECT COUNT(*) c FROM brocade_enclosures WHERE host_name = ?').get(name).c).toBeGreaterThanOrEqual(1);
+    }
+
+    // deliberate-trouble checks — one clean pass through every computed-issue rule.
+    expect(db.prepare("SELECT COUNT(*) c FROM brocade_switches WHERE operational_status = 'CRITICAL'").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_switches WHERE (management_state & 16) != 0').get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM brocade_fabrics WHERE status = 2").get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_health_scores WHERE score < 50').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_switch_ports WHERE fenced = 1').get().c).toBeGreaterThanOrEqual(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_switch_ports WHERE blocked = 1').get().c).toBeGreaterThanOrEqual(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_switches WHERE tls_cert_expiry_ms > ? AND tls_cert_expiry_ms < ?')
+      .get(Date.now(), Date.now() + 60 * 86400000).c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_chassis WHERE tls_cert_expiry_ms < ?').get(Date.now()).c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_switches WHERE eos_status = 1').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_switches WHERE maintenance_mode = 1').get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(DISTINCT firmware_version) c FROM brocade_switches WHERE fabric_name = 'PROD-A'").get().c).toBeGreaterThan(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_zone_configs WHERE default_zone_access = 1').get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM brocade_zone_changes WHERE detected_at >= datetime('now', '-1 day')").get().c).toBeGreaterThan(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM brocade_events WHERE severity_norm = 'critical' AND last_occurred_ms >= ?").get(Date.now() - 3600000).c).toBeGreaterThanOrEqual(12);
+    expect(db.prepare("SELECT COUNT(*) c FROM brocade_sources WHERE last_poll_status = 'error'").get().c).toBeGreaterThan(0);
+  });
+
 });
