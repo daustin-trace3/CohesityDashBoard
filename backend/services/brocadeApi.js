@@ -508,9 +508,13 @@ function entryNames(memberEntry, key) {
   return [v];
 }
 
-async function fetchEffectiveZoneConfig(source, { switchIp, vfId, timeout }) {
-  const resp = await fosProxyGet(source, { switchIp, vfId, uri: '/running/brocade-zone/effective-configuration', timeout });
-  const ec = resp['effective-configuration'] || {};
+// Pure parsers over an already-unwrapped FOS response body (the `Response`
+// envelope's inner object) — exported so brocadeFosApi.js (direct-FOS
+// collector, addendum 2) can reuse them: the FOS-native response shapes are
+// IDENTICAL whether the body arrives via the SANnav FOS proxy or straight
+// from a switch's own /rest API.
+function parseEffectiveConfigResponse(resp) {
+  const ec = (resp && resp['effective-configuration']) || {};
   const zones = safeArr(ec['enabled-zone']).map((z) => ({
     zoneName: strOrNull(z['zone-name']),
     zoneType: numOrNull(z['zone-type']),
@@ -528,9 +532,8 @@ async function fetchEffectiveZoneConfig(source, { switchIp, vfId, timeout }) {
   };
 }
 
-async function fetchDefinedZoneConfig(source, { switchIp, vfId, timeout }) {
-  const resp = await fosProxyGet(source, { switchIp, vfId, uri: '/running/brocade-zone/defined-configuration', timeout });
-  const dc = resp['defined-configuration'] || {};
+function parseDefinedConfigResponse(resp) {
+  const dc = (resp && resp['defined-configuration']) || {};
   const configs = safeArr(dc.cfg).map((c) => ({
     cfgName: strOrNull(c['cfg-name']),
     memberZones: entryNames(c['member-zone'], 'zone-name'),
@@ -546,6 +549,29 @@ async function fetchDefinedZoneConfig(source, { switchIp, vfId, timeout }) {
     members: entryNames(a['member-entry'], 'alias-entry-name'),
   }));
   return { configs, zones, aliases };
+}
+
+function parseFcStatsResponse(resp) {
+  const rows = pick(resp, 'fibrechannel-statistics', 'Fibrechannel-Statistics', 'fibrechannelStatistics', 'FibrechannelStatistics');
+  return rows.map((r) => ({
+    name: strOrNull(r.name),
+    inFrames: numOrNull(r['in-frames']),
+    outFrames: numOrNull(r['out-frames']),
+    inOctets: numOrNull(r['in-octets']),
+    outOctets: numOrNull(r['out-octets']),
+    crcErrors: numOrNull(r['crc-errors']),
+    invalidWords: numOrNull(r['invalid-transmission-words']),
+  }));
+}
+
+async function fetchEffectiveZoneConfig(source, { switchIp, vfId, timeout }) {
+  const resp = await fosProxyGet(source, { switchIp, vfId, uri: '/running/brocade-zone/effective-configuration', timeout });
+  return parseEffectiveConfigResponse(resp);
+}
+
+async function fetchDefinedZoneConfig(source, { switchIp, vfId, timeout }) {
+  const resp = await fosProxyGet(source, { switchIp, vfId, uri: '/running/brocade-zone/defined-configuration', timeout });
+  return parseDefinedConfigResponse(resp);
 }
 
 // ── FOS proxy (port IO statistics) — addendum 1, hyphenated FOS-native keys.
@@ -568,16 +594,7 @@ function isUnsupportedUriError(err) {
 
 async function fetchPortStats(source, { switchIp, vfId, timeout = 30000 } = {}) {
   const resp = await fosProxyGet(source, { switchIp, vfId, uri: '/running/brocade-interface/fibrechannel-statistics', timeout });
-  const rows = pick(resp, 'fibrechannel-statistics', 'Fibrechannel-Statistics', 'fibrechannelStatistics', 'FibrechannelStatistics');
-  return rows.map((r) => ({
-    name: strOrNull(r.name),
-    inFrames: numOrNull(r['in-frames']),
-    outFrames: numOrNull(r['out-frames']),
-    inOctets: numOrNull(r['in-octets']),
-    outOctets: numOrNull(r['out-octets']),
-    crcErrors: numOrNull(r['crc-errors']),
-    invalidWords: numOrNull(r['invalid-transmission-words']),
-  }));
+  return parseFcStatsResponse(resp);
 }
 
 // ── Fault events (v2, opaque cursor pagination, <=2h windows) ──────────────
@@ -690,6 +707,11 @@ module.exports = {
   fetchDefinedZoneConfig,
   fetchPortStats,
   isUnsupportedUriError,
+  // exported for reuse by brocadeFosApi.js (addendum 2 direct-FOS collector)
+  parseEffectiveConfigResponse,
+  parseDefinedConfigResponse,
+  parseFcStatsResponse,
+  entryNames,
   fetchEventsPage,
   ackEvents,
   unackEvents,

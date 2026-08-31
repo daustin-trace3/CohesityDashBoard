@@ -231,7 +231,7 @@ const NEW_TABLES = [
   'brocade_device_ports', 'brocade_enclosures', 'brocade_chassis', 'brocade_events',
   'brocade_health_scores', 'brocade_zone_configs', 'brocade_zones', 'brocade_zone_aliases',
   'brocade_zone_changes', 'brocade_fcr_routes', 'brocade_metrics', 'brocade_issue_history',
-  'brocade_port_stats',
+  'brocade_port_stats', 'brocade_fos_overrides',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.
