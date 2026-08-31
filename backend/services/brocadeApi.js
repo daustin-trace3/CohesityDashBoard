@@ -36,6 +36,10 @@ function httpClient(source, timeout) {
     timeout,
     httpsAgent: new https.Agent({ rejectUnauthorized: !!source.verify_ssl }),
     validateStatus: () => true,
+    // SANnav 415s requests without an explicit JSON Content-Type — even the
+    // body-less login POST (live finding 2026-08-31; the doc samples carry
+    // Content-Type on every call).
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
   });
 }
 
@@ -54,7 +58,9 @@ function errMsg(err) {
 async function login(source, timeout = 60000) {
   const { username, password } = creds(source);
   const client = httpClient(source, timeout);
-  const res = await client.post('/external-api/v1/login/', null, {
+  // Empty-object body (not null): axios strips Content-Type from body-less
+  // POSTs, and SANnav rejects those with 415.
+  const res = await client.post('/external-api/v1/login/', {}, {
     headers: { username: username || '', password: password || '' },
   });
   if (res.status !== 200 || !res.data?.sessionId) {
@@ -99,7 +105,7 @@ async function logout(source) {
   if (!sessionId) return;
   try {
     const client = httpClient(source, 10000);
-    await client.post('/external-api/v1/logout/', null, { headers: { Authorization: sessionId } });
+    await client.post('/external-api/v1/logout/', {}, { headers: { Authorization: sessionId } });
   } catch { /* best-effort */ }
   if (source.id != null) sessionCache.delete(source.id);
 }
