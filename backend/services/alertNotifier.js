@@ -235,6 +235,40 @@ function collectProxmoxIssues() {
   }));
 }
 
+/** Open Brocade SAN computed issues plus unacknowledged critical/alert events
+ *  from the last 24h — reconcileIssueHistory keeps brocade_issue_history
+ *  current with a stable issue_key per issue, and resolving drops the row
+ *  out of this query (which is what ends reminders). */
+function collectBrocadeIssues() {
+  const fromIssues = db.prepare(`
+    SELECT source_id, source, type, target, severity, message, first_seen AS firstSeen, last_seen AS lastSeen
+    FROM brocade_issue_history WHERE resolved_at IS NULL AND severity IN ('critical', 'warning')
+  `).all().map((r) => ({
+    sourceKey: `brocade:${r.source_id}:${r.type}:${r.target}`,
+    severity: String(r.severity || '').toLowerCase(),
+    host: r.target || r.source,
+    message: r.message || '',
+    firstSeen: toIso(r.firstSeen),
+    lastSeen: toIso(r.lastSeen),
+  }));
+
+  const fromEvents = db.prepare(`
+    SELECT e.*, s.name AS source_name FROM brocade_events e
+    LEFT JOIN brocade_sources s ON s.id = e.source_id
+    WHERE e.acknowledged = 0 AND e.severity_norm IN ('critical', 'alert')
+      AND e.last_occurred_ms >= ?
+  `).all(Date.now() - 86400000).map((e) => ({
+    sourceKey: `brocade:event:${e.source_id}:${e.event_id}`,
+    severity: 'critical',
+    host: e.source_name || e.source_address || e.fabric_name || 'unknown',
+    message: e.description || e.message_id || 'Brocade event',
+    firstSeen: toIso(e.first_occurred_ms ? new Date(e.first_occurred_ms).toISOString() : null),
+    lastSeen: toIso(e.last_occurred_ms ? new Date(e.last_occurred_ms).toISOString() : null),
+  }));
+
+  return [...fromIssues, ...fromEvents];
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -246,6 +280,7 @@ const COLLECTORS = {
   netbackup: collectNetbackupIssues,
   aws: collectAwsIssues,
   proxmox: collectProxmoxIssues,
+  brocade: collectBrocadeIssues,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({

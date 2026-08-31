@@ -369,6 +369,39 @@ function proxmoxSummary() {
   };
 }
 
+function brocadeSummary() {
+  const sourceCount = count('SELECT COUNT(*) c FROM brocade_sources');
+  if (!sourceCount) return null;
+
+  const fabricsTotal = countSafe('SELECT COUNT(*) c FROM brocade_fabrics WHERE stale = 0');
+  const switchesTotal = countSafe('SELECT COUNT(*) c FROM brocade_switches WHERE stale = 0');
+  const portsOnline = countSafe("SELECT COUNT(*) c FROM brocade_switch_ports WHERE stale = 0 AND LOWER(COALESCE(state,'')) = 'online'");
+
+  const sev = { critical: 0, warning: 0 };
+  for (const r of all("SELECT severity, COUNT(*) c FROM brocade_issue_history WHERE resolved_at IS NULL GROUP BY severity")) {
+    const s = String(r.severity || '').toLowerCase();
+    if (s === 'critical') sev.critical += num(r.c);
+    else if (s === 'warning') sev.warning += num(r.c);
+  }
+  const exceptions = [];
+  if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical issue${sev.critical === 1 ? '' : 's'}`, '/brocade/issues'));
+  if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} warning${sev.warning === 1 ? '' : 's'}`, '/brocade/issues'));
+
+  const spark = all('SELECT ports_online FROM brocade_metrics ORDER BY ts DESC LIMIT 24').reverse().map((r) => num(r.ports_online));
+
+  return {
+    objects: switchesTotal,
+    headline: [
+      { label: 'Fabrics', value: fabricsTotal },
+      { label: 'Switches', value: switchesTotal },
+      { label: 'Ports Online', value: portsOnline },
+    ],
+    exceptions,
+    spark: spark.length ? spark : null,
+    sparkLabel: 'ports online',
+  };
+}
+
 const PLATFORMS = [
   { id: 'cohesity', label: 'Cohesity', color: '#6CB33F', route: '/cohesity', fn: cohesitySummary },
   { id: 'pure', label: 'Pure', color: '#FF6B00', route: '/pure', fn: pureSummary },
@@ -380,6 +413,7 @@ const PLATFORMS = [
   { id: 'netbackup', label: 'NetBackup', color: '#B1181E', route: '/netbackup', fn: netbackupSummary },
   { id: 'aws', label: 'AWS', color: '#FF9900', route: '/aws', fn: awsSummary },
   { id: 'proxmox', label: 'Proxmox VE', color: '#E57000', route: '/proxmox', fn: proxmoxSummary },
+  { id: 'brocade', label: 'Brocade SAN', color: '#CC092F', route: '/brocade', fn: brocadeSummary },
 ];
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };

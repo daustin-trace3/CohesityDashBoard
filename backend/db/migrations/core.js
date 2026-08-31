@@ -344,4 +344,20 @@ module.exports = [
       }
     },
   },
+  // Brocade SAN platform grants — same shape as v4/v5/v8/v10/v11/v14/v15.
+  {
+    version: 16,
+    up(db) {
+      const getGroupId = db.prepare('SELECT id FROM groups WHERE name = ?');
+      const insertGrant = db.prepare(
+        'INSERT OR IGNORE INTO role_grants (subject_type, subject_id, permission, created_at) VALUES (?, ?, ?, ?)'
+      );
+      const now = new Date().toISOString();
+      const grants = { Operator: 'brocade:*:*', Viewer: 'brocade:*:view' };
+      for (const [groupName, permission] of Object.entries(grants)) {
+        const row = getGroupId.get(groupName);
+        if (row) insertGrant.run('group', row.id, permission, now);
+      }
+    },
+  },
 ];

@@ -94,6 +94,21 @@ const CATEGORIES = [
     sql: `SELECT n.name AS title, s.name AS subtitle
           FROM proxmox_nodes n JOIN proxmox_servers s ON s.id = n.server_id
           WHERE n.name LIKE ? ESCAPE '\\' ORDER BY n.name LIMIT ?` },
+  { key: 'brocade-switches', label: 'Brocade Switches', platform: 'brocade', perm: 'brocade:objects:view', base: '/brocade/switches',
+    params: 3,
+    sql: `SELECT name AS title, (COALESCE(model, '') || ' ' || COALESCE(ip_address, '')) AS subtitle FROM brocade_switches
+          WHERE (name LIKE ? ESCAPE '\\' OR wwn LIKE ? ESCAPE '\\' OR ip_address LIKE ? ESCAPE '\\') AND stale = 0 ORDER BY name LIMIT ?` },
+  { key: 'brocade-fabrics', label: 'Brocade Fabrics', platform: 'brocade', perm: 'brocade:objects:view', base: '/brocade/fabrics',
+    sql: `SELECT name AS title, COALESCE(health, '') AS subtitle FROM brocade_fabrics
+          WHERE name LIKE ? ESCAPE '\\' AND stale = 0 ORDER BY name LIMIT ?` },
+  { key: 'brocade-enclosures', label: 'Brocade Devices', platform: 'brocade', perm: 'brocade:objects:view', base: '/brocade/devices',
+    params: 2,
+    sql: `SELECT name AS title, COALESCE(host_name, '') AS subtitle FROM brocade_enclosures
+          WHERE (name LIKE ? ESCAPE '\\' OR host_name LIKE ? ESCAPE '\\') AND stale = 0 ORDER BY name LIMIT ?` },
+  { key: 'brocade-device-ports', label: 'Brocade Device Ports', platform: 'brocade', perm: 'brocade:objects:view', base: '/brocade/devices',
+    params: 2,
+    sql: `SELECT COALESCE(symbolic_name, wwn) AS title, wwn AS subtitle FROM brocade_device_ports
+          WHERE (wwn LIKE ? ESCAPE '\\' OR symbolic_name LIKE ? ESCAPE '\\') AND stale = 0 ORDER BY symbolic_name LIMIT ?` },
 ];
 
 const platformEnabled = (id) => {

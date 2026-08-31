@@ -21,6 +21,10 @@ const PLATFORM_METRICS_HISTORY = {
   netbackup: { arraysTable: 'netbackup_sources', metricsTable: 'netbackup_metrics_history', arrayIdColumn: 'source_id' },
   aws: { arraysTable: 'aws_accounts', metricsTable: 'aws_metrics_history', arrayIdColumn: 'account_id' },
   proxmox: { arraysTable: 'proxmox_servers', metricsTable: 'proxmox_metrics', arrayIdColumn: 'server_id' },
+  // brocade_metrics timestamps its rows as `ts`, not `captured_at` like every
+  // other platform's metrics-history table — aliased below so buildEntities
+  // can read metricsRow.captured_at same as everyone else.
+  brocade: { arraysTable: 'brocade_sources', metricsTable: 'brocade_metrics', arrayIdColumn: 'source_id', tsColumn: 'ts' },
 };
 
 /**
@@ -113,9 +117,10 @@ router.get('/status', (req, res, next) => {
     for (const [pluginId, cfg] of Object.entries(PLATFORM_METRICS_HISTORY)) {
       const plugin = registry.getPlugin(pluginId);
       const arrays = db.prepare(`SELECT id, name, polling_interval_minutes FROM ${cfg.arraysTable}`).all();
+      const tsColumn = cfg.tsColumn || 'captured_at';
       const entities = buildEntities(
         arrays,
-        `SELECT captured_at FROM ${cfg.metricsTable} WHERE ${cfg.arrayIdColumn} = ? ORDER BY captured_at DESC LIMIT 1`,
+        `SELECT ${tsColumn} AS captured_at FROM ${cfg.metricsTable} WHERE ${cfg.arrayIdColumn} = ? ORDER BY ${tsColumn} DESC LIMIT 1`,
         pluginId
       );
       platformSections[pluginId] = {
@@ -182,6 +187,8 @@ router.get('/status', (req, res, next) => {
       ariaops: platformSections.ariaops,
       netbackup: platformSections.netbackup,
       aws: platformSections.aws,
+      proxmox: platformSections.proxmox,
+      brocade: platformSections.brocade,
       licensing: {
         enabled: true,
         isSyncing: licensingState.isSyncing,
