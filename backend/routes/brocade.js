@@ -11,6 +11,7 @@ const {
   healthWarnScore, healthCritScore, certWarnDays, eventStormCount, eventRetentionDays,
   computeIssues,
 } = require('../services/brocadeIssues');
+const { portStatsRetentionDays } = require('../services/brocadePoller');
 
 const router = express.Router();
 
@@ -38,6 +39,7 @@ const publicSource = (row) => ({
   pollingIntervalMinutes: row.polling_interval_minutes,
   eventPollMinutes: row.event_poll_minutes,
   fosProxyEnabled: !!row.fos_proxy_enabled,
+  portStatsIntervalMinutes: row.port_stats_interval_minutes,
   sannavVersion: row.sannav_version,
   oemName: row.oem_name,
   lastPollAt: row.last_poll_at,
@@ -100,6 +102,7 @@ router.put('/sources/:id', [
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
   body('eventPollMinutes').optional().isInt({ min: 1, max: 1440 }).toInt(),
   body('fosProxyEnabled').optional().isBoolean(),
+  body('portStatsIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(req.params.id);
@@ -108,7 +111,7 @@ router.put('/sources/:id', [
     db.prepare(`
       UPDATE brocade_sources SET
         name = ?, host = ?, port = ?, username = ?, password_enc = ?, verify_ssl = ?, enabled = ?,
-        polling_interval_minutes = ?, event_poll_minutes = ?, fos_proxy_enabled = ?
+        polling_interval_minutes = ?, event_poll_minutes = ?, fos_proxy_enabled = ?, port_stats_interval_minutes = ?
       WHERE id = ?
     `).run(
       b.name?.trim() || row.name, b.host?.trim() || row.host, b.port || row.port,
@@ -119,6 +122,7 @@ router.put('/sources/:id', [
       b.pollingIntervalMinutes || row.polling_interval_minutes,
       b.eventPollMinutes || row.event_poll_minutes,
       b.fosProxyEnabled !== undefined ? (b.fosProxyEnabled ? 1 : 0) : row.fos_proxy_enabled,
+      b.portStatsIntervalMinutes || row.port_stats_interval_minutes,
       row.id
     );
     const updated = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(row.id);
@@ -180,9 +184,18 @@ router.post('/sources/:id/poll-events', [param('id').isInt().toInt()], validate,
   } catch (err) { next(err); }
 });
 
+router.post('/sources/:id/poll-port-stats', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    brocadePoller.triggerPortStats(row).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
 router.get('/sources/:id/probe', [
   param('id').isInt().toInt(),
-  query('section').isIn(['fabrics', 'switches', 'switchports', 'deviceports', 'enclosures', 'chassis', 'health', 'events', 'zoning', 'fcr', 'about']),
+  query('section').isIn(['fabrics', 'switches', 'switchports', 'deviceports', 'enclosures', 'chassis', 'health', 'events', 'zoning', 'fcr', 'about', 'portstats']),
 ], validate, async (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(req.params.id);
@@ -206,6 +219,13 @@ router.get('/sources/:id/probe', [
         }
         case 'fcr': raw = await brocadeApi.fetchFcrTopology(row, 30000); break;
         case 'about': raw = [await brocadeApi.fetchAbout(row, 30000)]; break;
+        case 'portstats': {
+          const sw = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND stale = 0 AND ip_address IS NOT NULL LIMIT 1').get(row.id);
+          if (!sw) { raw = []; break; }
+          const vfId = sw.virtual_fabric_id != null && sw.virtual_fabric_id >= 0 ? sw.virtual_fabric_id : -1;
+          raw = await brocadeApi.fetchPortStats(row, { switchIp: sw.ip_address, vfId, timeout: 30000 });
+          break;
+        }
         case 'zoning': {
           const fabric = db.prepare('SELECT * FROM brocade_fabrics WHERE source_id = ? AND stale = 0 LIMIT 1').get(row.id);
           if (!fabric || !fabric.seed_switch_ip) { raw = []; break; }
@@ -392,17 +412,27 @@ router.get('/ports', [
   query('offset').optional().isInt({ min: 0 }).toInt(),
 ], validate, (req, res, next) => {
   try {
-    const clauses = ['stale = 0'];
+    const clauses = ['sp.stale = 0'];
     const params = [];
-    if (req.query.switch) { clauses.push('switch_wwn = ?'); params.push(req.query.switch); }
-    if (req.query.fabric) { clauses.push('fabric_name = ?'); params.push(req.query.fabric); }
-    if (req.query.state) { clauses.push('LOWER(COALESCE(state,"")) = ?'); params.push(String(req.query.state).toLowerCase()); }
-    if (req.query.health) { clauses.push('health = ?'); params.push(req.query.health); }
-    if (req.query.search) { clauses.push('(name LIKE ? OR wwn LIKE ?)'); params.push(`%${req.query.search}%`, `%${req.query.search}%`); }
+    if (req.query.switch) { clauses.push('sp.switch_wwn = ?'); params.push(req.query.switch); }
+    if (req.query.fabric) { clauses.push('sp.fabric_name = ?'); params.push(req.query.fabric); }
+    if (req.query.state) { clauses.push('LOWER(COALESCE(sp.state,"")) = ?'); params.push(String(req.query.state).toLowerCase()); }
+    if (req.query.health) { clauses.push('sp.health = ?'); params.push(req.query.health); }
+    if (req.query.search) { clauses.push('(sp.name LIKE ? OR sp.wwn LIKE ?)'); params.push(`%${req.query.search}%`, `%${req.query.search}%`); }
     const limit = Math.min(req.query.limit || 5000, 5000);
     const offset = req.query.offset || 0;
     const rows = db.prepare(`
-      SELECT * FROM brocade_switch_ports WHERE ${clauses.join(' AND ')} ORDER BY switch_name, port_number LIMIT ? OFFSET ?
+      SELECT sp.*, ls.in_frames_per_sec, ls.out_frames_per_sec, ls.in_mb_per_sec, ls.out_mb_per_sec,
+        ls.crc_errors_delta, ls.stats_ts
+      FROM brocade_switch_ports sp
+      LEFT JOIN (
+        SELECT ps.port_wwn AS stat_port_wwn, ps.in_frames_per_sec, ps.out_frames_per_sec, ps.in_mb_per_sec,
+          ps.out_mb_per_sec, ps.crc_errors_delta, ps.ts AS stats_ts
+        FROM brocade_port_stats ps
+        JOIN (SELECT port_wwn, MAX(ts) AS max_ts FROM brocade_port_stats GROUP BY port_wwn) latest
+          ON latest.port_wwn = ps.port_wwn AND latest.max_ts = ps.ts
+      ) ls ON ls.stat_port_wwn = sp.wwn
+      WHERE ${clauses.join(' AND ')} ORDER BY sp.switch_name, sp.port_number LIMIT ? OFFSET ?
     `).all(...params, limit, offset);
     res.json({
       ports: rows.map((p) => ({
@@ -414,8 +444,41 @@ router.get('/ports', [
         connectedDeviceType: p.connected_device_type, trunked: !!p.trunked, fenced: !!p.fenced, blocked: !!p.blocked,
         zoneAlias: p.zone_alias, activeZoneCount: p.active_zone_count, fabricName: p.fabric_name,
         lastUpdateMs: p.last_update_ms,
+        inFramesPerSec: p.in_frames_per_sec ?? null, outFramesPerSec: p.out_frames_per_sec ?? null,
+        inMbPerSec: p.in_mb_per_sec ?? null, outMbPerSec: p.out_mb_per_sec ?? null,
+        crcErrorsDelta: p.crc_errors_delta ?? null, statsTs: p.stats_ts ?? null,
       })),
     });
+  } catch (err) { next(err); }
+});
+
+router.get('/port-stats', [
+  query('wwns').isString().notEmpty(),
+  query('hours').optional().isInt({ min: 1, max: 720 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const wwns = String(req.query.wwns).split(',').map((w) => w.trim()).filter(Boolean).slice(0, 8);
+    if (!wwns.length) return res.status(400).json({ error: 'wwns required' });
+    const hours = req.query.hours || 24;
+    const series = {};
+    const ports = {};
+    const portStmt = db.prepare('SELECT * FROM brocade_switch_ports WHERE wwn = ?');
+    const seriesStmt = db.prepare(`
+      SELECT ts, in_frames_per_sec, out_frames_per_sec, in_mb_per_sec, out_mb_per_sec, crc_errors_delta
+      FROM brocade_port_stats WHERE port_wwn = ? AND ts >= datetime('now', ?) ORDER BY ts ASC
+    `);
+    for (const w of wwns) {
+      series[w] = seriesStmt.all(w, `-${hours} hours`).map((r) => ({
+        ts: r.ts, inFramesPerSec: r.in_frames_per_sec, outFramesPerSec: r.out_frames_per_sec,
+        inMbPerSec: r.in_mb_per_sec, outMbPerSec: r.out_mb_per_sec, crcErrorsDelta: r.crc_errors_delta,
+      }));
+      const p = portStmt.get(w);
+      ports[w] = p ? {
+        name: p.name, switchName: p.switch_name, slotNumber: p.slot_number, portNumber: p.port_number,
+        remoteDevice: p.remote_device,
+      } : null;
+    }
+    res.json({ series, ports });
   } catch (err) { next(err); }
 });
 
@@ -730,6 +793,7 @@ router.get('/config', (req, res, next) => {
       certWarnDays: certWarnDays(),
       eventStormCount: eventStormCount(),
       eventRetentionDays: eventRetentionDays(),
+      portStatsRetentionDays: portStatsRetentionDays(),
     });
   } catch (err) { next(err); }
 });
@@ -740,6 +804,7 @@ router.put('/config', [
   body('certWarnDays').optional().isInt({ min: 1, max: 365 }).toInt(),
   body('eventStormCount').optional().isInt({ min: 1, max: 1000 }).toInt(),
   body('eventRetentionDays').optional().isInt({ min: 1, max: 365 }).toInt(),
+  body('portStatsRetentionDays').optional().isInt({ min: 1, max: 90 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     const { setSetting } = require('../services/settings');
@@ -749,6 +814,7 @@ router.put('/config', [
       certWarnDays: 'brocade_cert_warn_days',
       eventStormCount: 'brocade_event_storm_count',
       eventRetentionDays: 'brocade_event_retention_days',
+      portStatsRetentionDays: 'brocade_port_stats_retention_days',
     };
     for (const [k, settingKey] of Object.entries(map)) {
       if (req.body[k] !== undefined) setSetting(settingKey, String(req.body[k]));

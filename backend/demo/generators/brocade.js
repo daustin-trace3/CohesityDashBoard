@@ -513,6 +513,107 @@ function seedBrocade(db, { now, encrypt }) {
     zoneChangeTotal++;
   });
 
+  // ── Port IO statistics (Addendum 1) ─────────────────────────────────
+  // 24h of 15-min samples for ~40 online F-ports: 20 PROD + 10 DR (2880 rows
+  // total, well under the 8k cap). REQUIRED: an imbalanced pair on
+  // PROD-A-SW01 (ports 3+4 — always F-Port by construction regardless of
+  // hasDevice) zoned to the same remote enclosure name, one ~20k fr/s and
+  // the other ~200 fr/s; plus a crc_errors_delta trickle port (port 5).
+  const insertPortStat = db.prepare(`
+    INSERT INTO brocade_port_stats (source_id, port_wwn, switch_wwn, ts, in_frames, out_frames,
+      in_octets, out_octets, crc_errors, invalid_words, in_frames_per_sec, out_frames_per_sec,
+      in_mb_per_sec, out_mb_per_sec, crc_errors_delta, interval_secs)
+    VALUES (@source_id, @port_wwn, @switch_wwn, @ts, @in_frames, @out_frames,
+      @in_octets, @out_octets, @crc_errors, @invalid_words, @in_frames_per_sec, @out_frames_per_sec,
+      @in_mb_per_sec, @out_mb_per_sec, @crc_errors_delta, @interval_secs)
+  `);
+  const SAMPLES_PER_PORT = 96;
+  const PORT_STATS_INTERVAL_SECS = 900;
+  let portStatsTotal = 0;
+
+  function fPortPool(switchKeys) {
+    const list = [];
+    for (const key of switchKeys) {
+      const sw = switchByKey[key];
+      for (const p of sw.ports) {
+        if (p.type === 'F-Port' && p.state === 'Online') {
+          list.push({ wwn: p.wwn, switchWwn: sw.wwn, sourceId: sw.sourceId });
+        }
+      }
+    }
+    return list;
+  }
+
+  const sw1 = switchByKey.sw1; // PROD-A-SW01
+  const imbalHigh = sw1.ports.find((p) => p.port_number === 3);
+  const imbalLow = sw1.ports.find((p) => p.port_number === 4);
+  const crcPort = sw1.ports.find((p) => p.port_number === 5);
+  const forcePortOnline = (port, remoteDevice) => {
+    port.state = 'Online'; port.status = 'Online'; port.health = 'healthy';
+    port.occupied = 1; port.fenced = 0; port.blocked = 0;
+    db.prepare(`
+      UPDATE brocade_switch_ports SET state='Online', status='Online', health='healthy', occupied=1,
+        fenced=0, blocked=0, remote_device=? WHERE source_id=? AND wwn=?
+    `).run(remoteDevice, sw1.sourceId, port.wwn);
+  };
+  forcePortOnline(imbalHigh, 'SharedArray-01');
+  forcePortOnline(imbalLow, 'SharedArray-01');
+  forcePortOnline(crcPort, `device-${randInt(rngFor('brocade-crcport'), 1, 999)}`);
+
+  const prodPool = fPortPool(SWITCH_DEFS.filter((s) => s.fabric.startsWith('P')).map((s) => s.key))
+    .filter((p) => p.wwn !== imbalHigh.wwn && p.wwn !== imbalLow.wwn && p.wwn !== crcPort.wwn);
+  const drPool = fPortPool(SWITCH_DEFS.filter((s) => s.fabric.startsWith('D')).map((s) => s.key));
+
+  const statsPortPlan = [
+    { wwn: imbalHigh.wwn, switchWwn: sw1.wwn, sourceId: sw1.sourceId, profile: 'imbalanced_high' },
+    { wwn: imbalLow.wwn, switchWwn: sw1.wwn, sourceId: sw1.sourceId, profile: 'imbalanced_low' },
+    { wwn: crcPort.wwn, switchWwn: sw1.wwn, sourceId: sw1.sourceId, profile: 'crc_trickle' },
+    ...prodPool.slice(0, 17).map((p) => ({ ...p, profile: 'normal' })),
+    ...drPool.slice(0, 10).map((p) => ({ ...p, profile: 'normal' })),
+  ];
+
+  statsPortPlan.forEach((port) => {
+    const rng = rngFor(`brocade-portstats-${port.wwn}`);
+    let cumIn = randInt(rng, 1000000, 5000000);
+    let cumOut = randInt(rng, 1000000, 5000000);
+    let cumInOct = cumIn * 2148;
+    let cumOutOct = cumOut * 2148;
+    let cumCrc = randInt(rng, 0, 3);
+    for (let i = SAMPLES_PER_PORT; i >= 1; i--) {
+      let inFps, outFps, inMbps, outMbps, crcDelta = 0;
+      if (port.profile === 'imbalanced_high') {
+        inFps = randInt(rng, 18000, 22000); outFps = randInt(rng, 18000, 22000);
+        inMbps = randFloat(rng, 180, 220, 2); outMbps = randFloat(rng, 180, 220, 2);
+      } else if (port.profile === 'imbalanced_low') {
+        inFps = randInt(rng, 150, 250); outFps = randInt(rng, 150, 250);
+        inMbps = randFloat(rng, 2, 8, 2); outMbps = randFloat(rng, 2, 8, 2);
+      } else if (port.profile === 'crc_trickle') {
+        inFps = randInt(rng, 5000, 15000); outFps = randInt(rng, 5000, 15000);
+        inMbps = randFloat(rng, 50, 150, 2); outMbps = randFloat(rng, 50, 150, 2);
+        crcDelta = chance(rng, 0.4) ? randInt(rng, 1, 4) : 0;
+      } else {
+        inFps = randInt(rng, 5000, 40000); outFps = randInt(rng, 5000, 40000);
+        inMbps = randFloat(rng, 50, 400, 2); outMbps = randFloat(rng, 50, 400, 2);
+      }
+      cumIn += inFps * PORT_STATS_INTERVAL_SECS;
+      cumOut += outFps * PORT_STATS_INTERVAL_SECS;
+      cumInOct += Math.round(inMbps * 1e6 * PORT_STATS_INTERVAL_SECS);
+      cumOutOct += Math.round(outMbps * 1e6 * PORT_STATS_INTERVAL_SECS);
+      cumCrc += crcDelta;
+      const isFirst = i === SAMPLES_PER_PORT; // no prior sample -> null rates, like the real poller
+      insertPortStat.run({
+        source_id: port.sourceId, port_wwn: port.wwn, switch_wwn: port.switchWwn,
+        ts: ago(`-${i * 15} minutes`),
+        in_frames: cumIn, out_frames: cumOut, in_octets: cumInOct, out_octets: cumOutOct,
+        crc_errors: cumCrc, invalid_words: 0,
+        in_frames_per_sec: isFirst ? null : inFps, out_frames_per_sec: isFirst ? null : outFps,
+        in_mb_per_sec: isFirst ? null : inMbps, out_mb_per_sec: isFirst ? null : outMbps,
+        crc_errors_delta: isFirst ? null : crcDelta, interval_secs: isFirst ? null : PORT_STATS_INTERVAL_SECS,
+      });
+      portStatsTotal++;
+    }
+  });
+
   // ── FCR routes (minimal, 1 per source) ──────────────────────────────
   let fcrTotal = 0;
   SOURCES.forEach((s, i) => {
@@ -704,7 +805,7 @@ function seedBrocade(db, { now, encrypt }) {
     chassis: chassisTotal, events: eventTotal, healthScores: healthScoreTotal,
     zoneConfigs: zoneConfigTotal, zones: zoneTotal, zoneAliases: aliasTotal,
     zoneChanges: zoneChangeTotal, fcrRoutes: fcrTotal, metrics: metricsTotal,
-    issueHistory: issueHistoryTotal,
+    issueHistory: issueHistoryTotal, portStats: portStatsTotal,
   };
 }
 

@@ -529,6 +529,38 @@ async function fetchDefinedZoneConfig(source, { switchIp, vfId, timeout }) {
   return { configs, zones, aliases };
 }
 
+// ── FOS proxy (port IO statistics) — addendum 1, hyphenated FOS-native keys.
+// This URI is outside SANnav's tested list; a live server may 400 with
+// 'Invalid REST URI' (FOS-native error shape). isUnsupportedUriError lets
+// callers distinguish that from a transient/real failure. ────────────────
+
+function isUnsupportedUriError(err) {
+  const data = err?.response?.data;
+  let text = '';
+  if (data) {
+    if (Array.isArray(data.error)) text += data.error.map((e) => e['error-message'] || '').join(' ');
+    if (data.errorMessage) text += ` ${data.errorMessage}`;
+    if (data.detailedErrorMessage) text += ` ${data.detailedErrorMessage}`;
+    if (data.message) text += ` ${data.message}`;
+  }
+  text += ` ${err?.message || ''}`;
+  return /invalid rest uri/i.test(text);
+}
+
+async function fetchPortStats(source, { switchIp, vfId, timeout = 30000 } = {}) {
+  const resp = await fosProxyGet(source, { switchIp, vfId, uri: '/running/brocade-interface/fibrechannel-statistics', timeout });
+  const rows = pick(resp, 'fibrechannel-statistics', 'Fibrechannel-Statistics', 'fibrechannelStatistics', 'FibrechannelStatistics');
+  return rows.map((r) => ({
+    name: strOrNull(r.name),
+    inFrames: numOrNull(r['in-frames']),
+    outFrames: numOrNull(r['out-frames']),
+    inOctets: numOrNull(r['in-octets']),
+    outOctets: numOrNull(r['out-octets']),
+    crcErrors: numOrNull(r['crc-errors']),
+    invalidWords: numOrNull(r['invalid-transmission-words']),
+  }));
+}
+
 // ── Fault events (v2, opaque cursor pagination, <=2h windows) ──────────────
 
 function parseEvent(e) {
@@ -633,6 +665,8 @@ module.exports = {
   fetchFcrTopology,
   fetchEffectiveZoneConfig,
   fetchDefinedZoneConfig,
+  fetchPortStats,
+  isUnsupportedUriError,
   fetchEventsPage,
   ackEvents,
   unackEvents,

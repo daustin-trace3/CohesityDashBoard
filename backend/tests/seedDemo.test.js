@@ -553,4 +553,21 @@ describe('seedDemo.js', () => {
     expect(db.prepare("SELECT COUNT(*) c FROM brocade_events WHERE severity_norm = 'critical' AND last_occurred_ms >= ?").get(Date.now() - 3600000).c).toBeGreaterThanOrEqual(12);
     expect(db.prepare("SELECT COUNT(*) c FROM brocade_sources WHERE last_poll_status = 'error'").get().c).toBeGreaterThan(0);
   });
+
+  it('seeds per-port IO statistics (addendum 1) with a >10x imbalanced pair on PROD-A-SW01', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM brocade_port_stats').get().c).toBeGreaterThan(0);
+
+    const sw1 = db.prepare("SELECT wwn FROM brocade_switches WHERE name = 'PROD-A-SW01'").get();
+    expect(sw1).toBeTruthy();
+    const ports = db.prepare('SELECT wwn FROM brocade_switch_ports WHERE switch_wwn = ? AND port_number IN (3, 4)').all(sw1.wwn);
+    expect(ports.length).toBe(2);
+
+    const avgRate = (wwn) => db.prepare(`
+      SELECT AVG(in_frames_per_sec + out_frames_per_sec) r FROM brocade_port_stats
+      WHERE port_wwn = ? AND in_frames_per_sec IS NOT NULL
+    `).get(wwn).r;
+    const rates = ports.map((p) => avgRate(p.wwn)).sort((a, b) => a - b);
+    expect(rates[0]).toBeGreaterThan(0);
+    expect(rates[1] / rates[0]).toBeGreaterThan(10);
+  });
 });

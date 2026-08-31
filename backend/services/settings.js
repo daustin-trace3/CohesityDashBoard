@@ -47,6 +47,7 @@ const DEFAULTS = {
   brocade_cert_warn_days: '60',
   brocade_event_storm_count: '10',
   brocade_event_retention_days: '30',
+  brocade_port_stats_retention_days: '14',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',
