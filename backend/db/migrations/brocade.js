@@ -398,4 +398,41 @@ module.exports = [
       `);
     },
   },
+
+  // Addendum 1 (2026-08-31): per-port IO statistics via the FOS proxy.
+  // Additive only — brocade_sources gains an interval column (pragma-guarded
+  // ALTER, never re-runs against an already-migrated column), and a new
+  // brocade_port_stats table stores raw counters + poller-computed rates.
+  {
+    version: 2,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(brocade_sources)').all().map((c) => c.name);
+      if (!cols.includes('port_stats_interval_minutes')) {
+        db.exec('ALTER TABLE brocade_sources ADD COLUMN port_stats_interval_minutes INTEGER DEFAULT 15');
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS brocade_port_stats (
+          id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id            INTEGER NOT NULL REFERENCES brocade_sources(id) ON DELETE CASCADE,
+          port_wwn             TEXT,
+          switch_wwn           TEXT,
+          ts                   TEXT DEFAULT (datetime('now')),
+          in_frames            INTEGER,
+          out_frames           INTEGER,
+          in_octets            INTEGER,
+          out_octets           INTEGER,
+          crc_errors           INTEGER,
+          invalid_words        INTEGER,
+          in_frames_per_sec    REAL,
+          out_frames_per_sec   REAL,
+          in_mb_per_sec        REAL,
+          out_mb_per_sec       REAL,
+          crc_errors_delta     INTEGER,
+          interval_secs        INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_brocade_port_stats_source_port_ts ON brocade_port_stats(source_id, port_wwn, ts);
+      `);
+    },
+  },
 ];

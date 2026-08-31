@@ -276,4 +276,100 @@ describe('poller handle', () => {
     expect(() => handle.stopAll()).not.toThrow();
     expect(handle.taskCount()).toBe(0);
   });
+
+  it('addendum 1: the combined handle also exposes triggerPortStats', () => {
+    const handle = registry.getPollerHandle('brocade');
+    expect(typeof handle.triggerPortStats).toBe('function');
+  });
+});
+
+describe('port IO statistics (addendum 1)', () => {
+  it('publicSource returns portStatsIntervalMinutes and PUT can change it', async () => {
+    const created = await request(app).post('/api/brocade/sources').set('x-api-key', API_KEY).send({
+      name: 'SanNav PortStats', host: '10.11.11.11', username: 'admin', password: 'secret123',
+    });
+    expect(created.body.source.portStatsIntervalMinutes).toBe(15);
+
+    const updated = await request(app).put(`/api/brocade/sources/${created.body.source.id}`).set('x-api-key', API_KEY).send({
+      portStatsIntervalMinutes: 30,
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body.source.portStatsIntervalMinutes).toBe(30);
+  });
+
+  it('GET /ports carries the new IO-rate columns (null when no stats sampled yet)', async () => {
+    const src = seedSource({ host: '10.12.12.12' });
+    db.prepare(`
+      INSERT INTO brocade_switch_ports (source_id, wwn, switch_wwn, switch_name, name, port_number, stale)
+      VALUES (?, 'port-wwn-1', 'sw-wwn-1', 'SW-1', 'port1', 1, 0)
+    `).run(src.id);
+    const res = await request(app).get('/api/brocade/ports').set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    const row = res.body.ports.find((p) => p.wwn === 'port-wwn-1');
+    expect(row).toBeTruthy();
+    expect(row.inFramesPerSec).toBeNull();
+    expect(row.statsTs).toBeNull();
+  });
+
+  it('GET /ports surfaces the latest sampled rate for a port with stats', async () => {
+    const src = seedSource({ host: '10.13.13.13' });
+    db.prepare(`
+      INSERT INTO brocade_switch_ports (source_id, wwn, switch_wwn, switch_name, name, port_number, stale)
+      VALUES (?, 'port-wwn-2', 'sw-wwn-2', 'SW-2', 'port2', 2, 0)
+    `).run(src.id);
+    db.prepare(`
+      INSERT INTO brocade_port_stats (source_id, port_wwn, switch_wwn, ts, in_frames_per_sec, out_frames_per_sec, crc_errors_delta)
+      VALUES (?, 'port-wwn-2', 'sw-wwn-2', datetime('now', '-30 minutes'), 5000, 4800, 0)
+    `).run(src.id);
+    db.prepare(`
+      INSERT INTO brocade_port_stats (source_id, port_wwn, switch_wwn, ts, in_frames_per_sec, out_frames_per_sec, crc_errors_delta)
+      VALUES (?, 'port-wwn-2', 'sw-wwn-2', datetime('now'), 6000, 5900, 1)
+    `).run(src.id);
+    const res = await request(app).get('/api/brocade/ports').set('x-api-key', API_KEY);
+    const row = res.body.ports.find((p) => p.wwn === 'port-wwn-2');
+    expect(row.inFramesPerSec).toBe(6000);
+    expect(row.outFramesPerSec).toBe(5900);
+    expect(row.crcErrorsDelta).toBe(1);
+  });
+
+  it('GET /port-stats returns a series+ports shape and 400s with no wwns', async () => {
+    const bad = await request(app).get('/api/brocade/port-stats').set('x-api-key', API_KEY);
+    expect(bad.status).toBe(400);
+
+    const src = seedSource({ host: '10.14.14.14' });
+    db.prepare(`
+      INSERT INTO brocade_switch_ports (source_id, wwn, switch_wwn, switch_name, name, port_number, stale)
+      VALUES (?, 'port-wwn-3', 'sw-wwn-3', 'SW-3', 'port3', 3, 0)
+    `).run(src.id);
+    db.prepare(`
+      INSERT INTO brocade_port_stats (source_id, port_wwn, switch_wwn, ts, in_frames_per_sec, out_frames_per_sec)
+      VALUES (?, 'port-wwn-3', 'sw-wwn-3', datetime('now'), 1234, 1111)
+    `).run(src.id);
+    const res = await request(app).get('/api/brocade/port-stats').query({ wwns: 'port-wwn-3', hours: 24 }).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.series['port-wwn-3'].length).toBe(1);
+    expect(res.body.series['port-wwn-3'][0].inFramesPerSec).toBe(1234);
+    expect(res.body.ports['port-wwn-3'].name).toBe('port3');
+  });
+
+  it('POST /sources/:id/poll-port-stats triggers without error', async () => {
+    const src = seedSource({ host: '10.15.15.15' });
+    const res = await request(app).post(`/api/brocade/sources/${src.id}/poll-port-stats`).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+  });
+
+  it('GET /config includes portStatsRetentionDays and PUT clamps 1-90', async () => {
+    const res = await request(app).get('/api/brocade/config').set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.portStatsRetentionDays).toBe(14);
+
+    const put = await request(app).put('/api/brocade/config').set('x-api-key', API_KEY).send({ portStatsRetentionDays: 200 });
+    expect(put.status).toBe(400);
+
+    const putOk = await request(app).put('/api/brocade/config').set('x-api-key', API_KEY).send({ portStatsRetentionDays: 7 });
+    expect(putOk.status).toBe(200);
+    const after = await request(app).get('/api/brocade/config').set('x-api-key', API_KEY);
+    expect(after.body.portStatsRetentionDays).toBe(7);
+  });
 });

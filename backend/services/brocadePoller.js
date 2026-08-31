@@ -560,6 +560,94 @@ async function pollEvents(source) {
   }
 }
 
+// ── Port IO statistics poll (addendum 1) ────────────────────────────────────
+// Gated on fos_proxy_enabled — this URI is outside SANnav's tested list, so a
+// live server may 400 'Invalid REST URI'; that is recorded as a section error
+// ('portstats_unsupported') and the rest of the poll cycle is skipped
+// silently (never fails the poll / throws). Counters are cumulative since
+// port/switch reset — rates are NULL on the first sample for a port and on a
+// negative delta (counter wrap/reboot).
+
+function portStatsRetentionDays() {
+  const { getSetting } = require('./settings');
+  const n = Number(getSetting('brocade_port_stats_retention_days'));
+  return Number.isFinite(n) && n >= 1 && n <= 90 ? Math.round(n) : 14;
+}
+
+const upsertPortStats = db.transaction((sourceId, sw, statsRows) => {
+  const ports = db.prepare('SELECT wwn, slot_number, port_number FROM brocade_switch_ports WHERE source_id = ? AND switch_wwn = ?').all(sourceId, sw.wwn);
+  const portByKey = new Map(ports.map((p) => [`${p.slot_number ?? 0}/${p.port_number}`, p]));
+  const prevStmt = db.prepare(`
+    SELECT in_frames, out_frames, in_octets, out_octets, crc_errors, CAST(strftime('%s', ts) AS INTEGER) AS ts_epoch
+    FROM brocade_port_stats WHERE source_id = ? AND port_wwn = ? ORDER BY ts DESC LIMIT 1
+  `);
+  const insert = db.prepare(`
+    INSERT INTO brocade_port_stats (source_id, port_wwn, switch_wwn, ts, in_frames, out_frames, in_octets, out_octets,
+      crc_errors, invalid_words, in_frames_per_sec, out_frames_per_sec, in_mb_per_sec, out_mb_per_sec,
+      crc_errors_delta, interval_secs)
+    VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const r of statsRows) {
+    if (!r.name) continue;
+    const port = portByKey.get(r.name);
+    if (!port) continue;
+    const prev = prevStmt.get(sourceId, port.wwn);
+    let inFps = null, outFps = null, inMbps = null, outMbps = null, crcDelta = null, intervalSecs = null;
+    if (prev && prev.ts_epoch != null) {
+      intervalSecs = Math.max(1, Math.round(Date.now() / 1000) - prev.ts_epoch);
+      const delta = (cur, prior) => (cur != null && prior != null ? cur - prior : null);
+      const dIn = delta(r.inFrames, prev.in_frames);
+      const dOut = delta(r.outFrames, prev.out_frames);
+      const dInOct = delta(r.inOctets, prev.in_octets);
+      const dOutOct = delta(r.outOctets, prev.out_octets);
+      const dCrc = delta(r.crcErrors, prev.crc_errors);
+      if (dIn != null && dIn >= 0) inFps = Math.round((dIn / intervalSecs) * 100) / 100;
+      if (dOut != null && dOut >= 0) outFps = Math.round((dOut / intervalSecs) * 100) / 100;
+      if (dInOct != null && dInOct >= 0) inMbps = Math.round((dInOct / intervalSecs / 1e6) * 100) / 100;
+      if (dOutOct != null && dOutOct >= 0) outMbps = Math.round((dOutOct / intervalSecs / 1e6) * 100) / 100;
+      if (dCrc != null && dCrc >= 0) crcDelta = dCrc;
+    }
+    insert.run(sourceId, port.wwn, sw.wwn, r.inFrames, r.outFrames, r.inOctets, r.outOctets, r.crcErrors,
+      r.invalidWords, inFps, outFps, inMbps, outMbps, crcDelta, intervalSecs);
+  }
+});
+
+async function pollPortStats(source) {
+  if (!source.fos_proxy_enabled) return;
+  const timeout = 30000;
+  const switches = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND stale = 0').all(source.id);
+  let unsupported = false;
+  for (const sw of switches) {
+    if (unsupported) break;
+    if (!sw.ip_address) continue;
+    const vfId = sw.virtual_fabric_id != null && sw.virtual_fabric_id >= 0 ? sw.virtual_fabric_id : -1;
+    try {
+      const stats = await brocadeApi.fetchPortStats(source, { switchIp: sw.ip_address, vfId, timeout });
+      if (stats.length) upsertPortStats(source.id, sw, stats);
+    } catch (err) {
+      if (brocadeApi.isUnsupportedUriError(err)) {
+        unsupported = true;
+        try {
+          const row = db.prepare('SELECT section_errors FROM brocade_sources WHERE id = ?').get(source.id);
+          let existing = {};
+          try { existing = row?.section_errors ? JSON.parse(row.section_errors) : {}; } catch { existing = {}; }
+          existing.portstats = 'portstats_unsupported';
+          db.prepare('UPDATE brocade_sources SET section_errors = ? WHERE id = ?').run(JSON.stringify(existing), source.id);
+        } catch { /* best-effort */ }
+      } else {
+        logger.warn(`[BrocadePoller] portstats (${sw.name}) failed: ${safeMsg(err)}`);
+      }
+    }
+  }
+  try {
+    const retentionDays = portStatsRetentionDays();
+    db.prepare(`DELETE FROM brocade_port_stats WHERE source_id = ? AND ts < datetime('now', ?)`)
+      .run(source.id, `-${retentionDays} days`);
+  } catch (err) {
+    logger.warn(`[BrocadePoller] portstats retention prune failed: ${err.message}`);
+  }
+}
+
 // ── Poller framework instances ──────────────────────────────────────────────
 
 const loadSources = () => db.prepare('SELECT * FROM brocade_sources WHERE enabled = 1').all();
@@ -578,10 +666,18 @@ const eventsPoller = createPoller({
   poll: pollEvents,
 });
 
+const portStatsPoller = createPoller({
+  id: 'brocade-portstats',
+  loadSources,
+  intervalMinutes: (s) => s.port_stats_interval_minutes,
+  poll: pollPortStats,
+});
+
 function initBrocadePoller() {
   const inv = inventoryPoller.init();
   const evt = eventsPoller.init();
-  logger.info(`[BrocadePoller] Initialized ${inv.length} source(s) (inventory), ${evt.length} (events)`);
+  const ps = portStatsPoller.init();
+  logger.info(`[BrocadePoller] Initialized ${inv.length} source(s) (inventory), ${evt.length} (events), ${ps.length} (portstats)`);
   return inv;
 }
 
@@ -591,6 +687,7 @@ function createBrocadePollerHandle() {
     stopAll: () => {
       inventoryPoller.stopAll();
       eventsPoller.stopAll();
+      portStatsPoller.stopAll();
     },
     trigger: (sourceOrId) => {
       const source = typeof sourceOrId === 'object' ? sourceOrId : db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(sourceOrId);
@@ -600,15 +697,21 @@ function createBrocadePollerHandle() {
       const source = typeof sourceOrId === 'object' ? sourceOrId : db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(sourceOrId);
       return source ? eventsPoller.trigger(source) : Promise.resolve();
     },
+    triggerPortStats: (sourceOrId) => {
+      const source = typeof sourceOrId === 'object' ? sourceOrId : db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(sourceOrId);
+      return source ? portStatsPoller.trigger(source) : Promise.resolve();
+    },
     schedule: (source) => {
       inventoryPoller.schedule(source);
       eventsPoller.schedule(source);
+      portStatsPoller.schedule(source);
     },
     cancel: (sourceId) => {
       inventoryPoller.cancel(sourceId);
       eventsPoller.cancel(sourceId);
+      portStatsPoller.cancel(sourceId);
     },
-    taskCount: () => inventoryPoller.taskCount() + eventsPoller.taskCount(),
+    taskCount: () => inventoryPoller.taskCount() + eventsPoller.taskCount() + portStatsPoller.taskCount(),
   };
 }
 
@@ -621,9 +724,12 @@ const brocadePollerHandle = createBrocadePollerHandle();
 module.exports = {
   inventoryPoller,
   eventsPoller,
+  portStatsPoller,
   initBrocadePoller,
   createBrocadePollerHandle,
   brocadePollerHandle,
   pollInventory,
   pollEvents,
+  pollPortStats,
+  portStatsRetentionDays,
 };

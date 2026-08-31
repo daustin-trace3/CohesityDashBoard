@@ -24,13 +24,14 @@ const THRESHOLD_FIELDS = [
   { key: 'certWarnDays', label: 'Certificate expiry warn (days)', min: 1, max: 365 },
   { key: 'eventStormCount', label: 'Event storm threshold (per hour)', min: 1, max: 1000 },
   { key: 'eventRetentionDays', label: 'Event retention (days)', min: 1, max: 365 },
+  { key: 'portStatsRetentionDays', label: 'Port stats retention (days)', min: 1, max: 90 },
 ];
 
 const PROBE_SECTIONS = ['fabrics', 'switches', 'switchports', 'deviceports', 'enclosures', 'chassis', 'health', 'events', 'zoning', 'fcr', 'about'];
 
 const blankForm = () => ({
   name: '', host: '', port: 443, username: '', password: '', verifySsl: false,
-  fosProxyEnabled: true, pollingIntervalMinutes: 60, eventPollMinutes: 5,
+  fosProxyEnabled: true, pollingIntervalMinutes: 60, eventPollMinutes: 5, portStatsIntervalMinutes: 15,
 });
 
 // Portal to <body> — matches AWS/UniFi settings modal convention.
@@ -175,6 +176,7 @@ export default function BrocadeSettingsPage() {
       name: s.name, host: s.host, port: s.port || 443, username: s.username || '', password: '',
       verifySsl: !!s.verifySsl, fosProxyEnabled: s.fosProxyEnabled !== false,
       pollingIntervalMinutes: s.pollingIntervalMinutes || 60, eventPollMinutes: s.eventPollMinutes || 5,
+      portStatsIntervalMinutes: s.portStatsIntervalMinutes || 15,
     });
     setTestResult(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -205,6 +207,7 @@ export default function BrocadeSettingsPage() {
         username: form.username.trim(), verifySsl: form.verifySsl, fosProxyEnabled: form.fosProxyEnabled,
         pollingIntervalMinutes: Number(form.pollingIntervalMinutes) || 60,
         eventPollMinutes: Number(form.eventPollMinutes) || 5,
+        portStatsIntervalMinutes: Number(form.portStatsIntervalMinutes) || 15,
       };
       if (editingId) {
         // Blank password = keep the stored one (omit from the PUT body).
@@ -341,6 +344,10 @@ export default function BrocadeSettingsPage() {
                   <div>
                     <label className="block text-xs font-semibold text-ink mb-1">Event poll interval (minutes)</label>
                     <input type="number" min={1} max={60} value={form.eventPollMinutes} onChange={setF('eventPollMinutes')} className={inp} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-ink mb-1">Port stats interval (minutes)</label>
+                    <input type="number" min={5} max={1440} value={form.portStatsIntervalMinutes} onChange={setF('portStatsIntervalMinutes')} className={inp} />
                   </div>
                   <label className="flex items-end gap-2 pb-2 cursor-pointer select-none">
                     <input type="checkbox" checked={form.verifySsl} onChange={setF('verifySsl')} className="accent-brand cursor-pointer" />
