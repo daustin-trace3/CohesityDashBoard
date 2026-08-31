@@ -423,10 +423,17 @@ async function pollInventory(source) {
   const sectionErrors = {};
 
   try {
+    // Login is the connectivity/credentials gate. /about/ only exists on
+    // SANnav 2.3.1+ (live finding: 2.2.0 404s it) — best-effort version info,
+    // never fatal.
+    await brocadeApi.login(source, timeout);
     const about = await trySection('about', () => brocadeApi.fetchAbout(source, timeout));
-    if (!about.ok) throw new Error(about.error); // login/connectivity gate
-    db.prepare('UPDATE brocade_sources SET sannav_version=?, oem_name=? WHERE id=?')
-      .run(about.data.version, about.data.oemName, source.id);
+    if (about.ok) {
+      db.prepare('UPDATE brocade_sources SET sannav_version=?, oem_name=? WHERE id=?')
+        .run(about.data.version, about.data.oemName, source.id);
+    } else {
+      sectionErrors.about = about.error;
+    }
 
     const fabricsRes = await trySection('fabrics', () => brocadeApi.fetchFabrics(source, timeout));
     if (fabricsRes.ok) upsertFabrics(source.id, fabricsRes.data); else sectionErrors.fabrics = fabricsRes.error;
