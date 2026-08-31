@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, CalendarClock,
+  Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, CalendarClock, ShieldCheck, Plus,
 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -27,12 +27,15 @@ const THRESHOLD_FIELDS = [
   { key: 'portStatsRetentionDays', label: 'Port stats retention (days)', min: 1, max: 90 },
 ];
 
-const PROBE_SECTIONS = ['fabrics', 'switches', 'switchports', 'deviceports', 'enclosures', 'chassis', 'health', 'events', 'zoning', 'fcr', 'about'];
+const PROBE_SECTIONS = ['fabrics', 'switches', 'switchports', 'deviceports', 'enclosures', 'chassis', 'health', 'events', 'zoning', 'fcr', 'about', 'fos-direct'];
 
 const blankForm = () => ({
   name: '', host: '', port: 443, username: '', password: '', verifySsl: false,
   fosProxyEnabled: true, pollingIntervalMinutes: 60, eventPollMinutes: 5, portStatsIntervalMinutes: 15,
+  fosDirectEnabled: false, fosUsername: '', fosPassword: '', fosPort: 443,
 });
+
+const blankOverride = () => ({ switchWwn: '', ipAddress: '', username: '', password: '', port: '' });
 
 // Portal to <body> — matches AWS/UniFi settings modal convention.
 function ProbeModal({ source, onClose }) {
@@ -89,6 +92,122 @@ function ProbeModal({ source, onClose }) {
       </div>
     </div>,
     document.body
+  );
+}
+
+function FosOverridesPanel({ sourceId, switches, toast }) {
+  const [overrides, setOverrides] = useState(null);
+  const [form, setForm] = useState(blankOverride());
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => client.get(`/brocade/sources/${sourceId}/fos-overrides`)
+    .then(({ data }) => setOverrides(data.overrides || []))
+    .catch(() => setOverrides([])), [sourceId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setO = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const addOverride = async () => {
+    if (!form.switchWwn) return;
+    setSaving(true);
+    try {
+      const body = { switchWwn: form.switchWwn };
+      if (form.ipAddress.trim()) body.ipAddress = form.ipAddress.trim();
+      if (form.username.trim()) body.username = form.username.trim();
+      if (form.password) body.password = form.password;
+      if (form.port) body.port = Number(form.port);
+      await client.post(`/brocade/sources/${sourceId}/fos-overrides`, body);
+      setForm(blankOverride());
+      await load();
+      toast({ type: 'success', title: 'Override saved' });
+    } catch (err) {
+      toast({ type: 'error', title: 'Override save failed', message: err?.response?.data?.error });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeOverride = async (o) => {
+    if (!window.confirm(`Remove FOS override for ${o.switchWwn}?`)) return;
+    try {
+      await client.delete(`/brocade/sources/${sourceId}/fos-overrides/${o.id}`);
+      await load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Remove failed', message: err?.response?.data?.error });
+    }
+  };
+
+  return (
+    <div className="mt-4 pt-4 border-t border-cohesity-border">
+      <p className="text-xs font-semibold text-ink mb-1">Per-switch overrides</p>
+      <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">Override the shared IP/credentials/port for one switch. Blank fields inherit from above.</p>
+      {overrides == null ? (
+        <LoadingPanel label="Loading…" height={60} />
+      ) : (
+        <div className="overflow-x-auto mb-3">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+              <th className="py-1.5 pr-3">Switch</th>
+              <th className="py-1.5 pr-3">IP</th>
+              <th className="py-1.5 pr-3">Username</th>
+              <th className="py-1.5 pr-3">Password</th>
+              <th className="py-1.5 pr-3">Port</th>
+              <th className="py-1.5 pr-3 text-right">Actions</th>
+            </tr></thead>
+            <tbody>
+              {overrides.length === 0 ? (
+                <tr><td colSpan={6} className="py-3 text-center text-ink-muted text-xs">No overrides.</td></tr>
+              ) : overrides.map((o) => (
+                <tr key={o.id} className="border-b border-cohesity-border/50">
+                  <td className="py-1.5 pr-3 text-ink whitespace-nowrap">{switches.find((s) => s.wwn === o.switchWwn)?.name || o.switchWwn}</td>
+                  <td className="py-1.5 pr-3 text-ink-muted">{o.ipAddress || <span className="text-ink-faint">inherit</span>}</td>
+                  <td className="py-1.5 pr-3 text-ink-muted">{o.username || <span className="text-ink-faint">inherit</span>}</td>
+                  <td className="py-1.5 pr-3 text-ink-muted">{o.hasPassword ? '••••••' : <span className="text-ink-faint">inherit</span>}</td>
+                  <td className="py-1.5 pr-3 text-ink-muted tnum">{o.port || <span className="text-ink-faint">inherit</span>}</td>
+                  <td className="py-1.5 pr-3 text-right">
+                    <button onClick={() => removeOverride(o)} title="Remove override" aria-label={`Remove override for ${o.switchWwn}`}
+                      className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-status-crit hover:border-status-crit/50 transition-colors cursor-pointer">
+                      <Trash2 size={13} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="grid md:grid-cols-5 gap-2 items-end">
+        <div>
+          <label className="block text-[11px] font-semibold text-ink mb-1">Switch</label>
+          <select value={form.switchWwn} onChange={setO('switchWwn')}
+            className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1.5 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer">
+            <option value="">Select…</option>
+            {switches.map((s) => <option key={s.wwn} value={s.wwn}>{s.name} ({s.wwn})</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-ink mb-1">IP (optional)</label>
+          <input value={form.ipAddress} onChange={setO('ipAddress')} className={inp + ' py-1.5 text-xs'} spellCheck={false} />
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-ink mb-1">Username (optional)</label>
+          <input value={form.username} onChange={setO('username')} className={inp + ' py-1.5 text-xs'} spellCheck={false} />
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-ink mb-1">Password (optional)</label>
+          <input type="password" value={form.password} onChange={setO('password')} className={inp + ' py-1.5 text-xs'} />
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-ink mb-1">Port (optional)</label>
+          <input type="number" value={form.port} onChange={setO('port')} className={inp + ' py-1.5 text-xs'} />
+        </div>
+      </div>
+      <button onClick={addOverride} disabled={saving || !form.switchWwn}
+        className="mt-2 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer inline-flex items-center gap-1.5">
+        <Plus size={13} /> Add override
+      </button>
+    </div>
   );
 }
 
@@ -153,6 +272,9 @@ export default function BrocadeSettingsPage() {
   const [testResult, setTestResult] = useState(null);
   const [pollingId, setPollingId] = useState(null);
   const [probeSource, setProbeSource] = useState(null);
+  const [testingFos, setTestingFos] = useState(false);
+  const [fosTestResult, setFosTestResult] = useState(null);
+  const [switches, setSwitches] = useState([]);
 
   const [config, setConfig] = useState(null);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -166,6 +288,9 @@ export default function BrocadeSettingsPage() {
     client.get('/brocade/config')
       .then(({ data }) => setConfig(data))
       .catch(() => setConfig({}));
+    client.get('/brocade/switches')
+      .then(({ data }) => setSwitches(data.switches || data || []))
+      .catch(() => setSwitches([]));
   }, [loadSources]);
 
   const setF = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
@@ -177,12 +302,28 @@ export default function BrocadeSettingsPage() {
       verifySsl: !!s.verifySsl, fosProxyEnabled: s.fosProxyEnabled !== false,
       pollingIntervalMinutes: s.pollingIntervalMinutes || 60, eventPollMinutes: s.eventPollMinutes || 5,
       portStatsIntervalMinutes: s.portStatsIntervalMinutes || 15,
+      fosDirectEnabled: !!s.fosDirectEnabled, fosUsername: s.fosUsername || '', fosPassword: '',
+      fosPort: s.fosPort || 443, hasFosPassword: !!s.hasFosPassword,
     });
     setTestResult(null);
+    setFosTestResult(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const cancelEdit = () => { setEditingId(null); setForm(blankForm()); setTestResult(null); };
+  const cancelEdit = () => { setEditingId(null); setForm(blankForm()); setTestResult(null); setFosTestResult(null); };
+
+  const testFos = async () => {
+    setTestingFos(true);
+    setFosTestResult(null);
+    try {
+      const { data } = await client.post(`/brocade/sources/${editingId}/fos-test`, {});
+      setFosTestResult(data);
+    } catch (err) {
+      setFosTestResult(err?.response?.data || { ok: false, error: 'FOS test failed.' });
+    } finally {
+      setTestingFos(false);
+    }
+  };
 
   const testSource = async () => {
     setTesting(true);
@@ -208,7 +349,11 @@ export default function BrocadeSettingsPage() {
         pollingIntervalMinutes: Number(form.pollingIntervalMinutes) || 60,
         eventPollMinutes: Number(form.eventPollMinutes) || 5,
         portStatsIntervalMinutes: Number(form.portStatsIntervalMinutes) || 15,
+        fosDirectEnabled: form.fosDirectEnabled, fosUsername: form.fosUsername.trim(),
+        fosPort: Number(form.fosPort) || 443,
       };
+      // Blank FOS password = keep the stored one (omit from the request body).
+      if (form.fosPassword) body.fosPassword = form.fosPassword;
       if (editingId) {
         // Blank password = keep the stored one (omit from the PUT body).
         if (form.password) body.password = form.password;
@@ -375,6 +520,48 @@ export default function BrocadeSettingsPage() {
                   )}
                 </div>
               </div>
+
+              {editingId && (
+                <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+                  <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2">
+                    <ShieldCheck size={15} className="text-brand" /> Direct FOS access (switch REST)
+                  </p>
+                  <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
+                    Reads zoning + port IO directly from the switches — required when SanNav is older than 2.4.
+                  </p>
+                  <div className="grid md:grid-cols-2 gap-3 mb-3">
+                    <label className="flex items-end gap-2 pb-2 cursor-pointer select-none md:col-span-2">
+                      <input type="checkbox" checked={form.fosDirectEnabled} onChange={setF('fosDirectEnabled')} className="accent-brand cursor-pointer" />
+                      <span className="text-xs text-ink-muted">Enable direct FOS access</span>
+                    </label>
+                    <div>
+                      <label className="block text-xs font-semibold text-ink mb-1">Shared username</label>
+                      <input value={form.fosUsername} onChange={setF('fosUsername')} className={inp} spellCheck={false} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-ink mb-1">Shared password{form.hasFosPassword ? <span className="font-normal text-ink-faint"> — leave blank to keep current</span> : ''}</label>
+                      <input type="password" value={form.fosPassword} onChange={setF('fosPassword')} placeholder={form.hasFosPassword ? 'leave blank to keep current' : ''} className={inp} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-ink mb-1">Port</label>
+                      <input type="number" value={form.fosPort} onChange={setF('fosPort')} className={inp} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button onClick={testFos} disabled={testingFos}
+                      className={`${btnGhost} hover:border-brand/40 inline-flex items-center gap-2`}>
+                      {testingFos && <Spinner size={13} />} Test FOS
+                    </button>
+                    {fosTestResult && (
+                      <span className={`inline-flex items-center gap-1.5 text-xs ${fosTestResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
+                        {fosTestResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                        {fosTestResult.ok ? 'FOS session OK' : fosTestResult.error}
+                      </span>
+                    )}
+                  </div>
+                  <FosOverridesPanel sourceId={editingId} switches={switches} toast={toast} />
+                </div>
+              )}
 
               <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
                 <p className="text-sm font-semibold text-ink mb-3">Registered SANnav Servers</p>

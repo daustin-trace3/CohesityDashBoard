@@ -6,12 +6,14 @@ const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const brocadeApi = require('../services/brocadeApi');
-const { brocadePollerHandle: brocadePoller } = require('../services/brocadePoller');
+const brocadeFosApi = require('../services/brocadeFosApi');
+const {
+  brocadePollerHandle: brocadePoller, portStatsRetentionDays, resolveFosTarget,
+} = require('../services/brocadePoller');
 const {
   healthWarnScore, healthCritScore, certWarnDays, eventStormCount, eventRetentionDays,
   computeIssues,
 } = require('../services/brocadeIssues');
-const { portStatsRetentionDays } = require('../services/brocadePoller');
 
 const router = express.Router();
 
@@ -40,6 +42,10 @@ const publicSource = (row) => ({
   eventPollMinutes: row.event_poll_minutes,
   fosProxyEnabled: !!row.fos_proxy_enabled,
   portStatsIntervalMinutes: row.port_stats_interval_minutes,
+  fosDirectEnabled: !!row.fos_direct_enabled,
+  fosUsername: row.fos_username,
+  fosPort: row.fos_port,
+  hasFosPassword: !!row.fos_password_enc,
   sannavVersion: row.sannav_version,
   oemName: row.oem_name,
   lastPollAt: row.last_poll_at,
@@ -72,17 +78,27 @@ router.post('/sources', [
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
   body('eventPollMinutes').optional().isInt({ min: 1, max: 1440 }).toInt(),
   body('fosProxyEnabled').optional().isBoolean(),
+  body('fosDirectEnabled').optional().isBoolean(),
+  body('fosUsername').optional({ checkFalsy: true }).isString().trim().isLength({ max: 120 }),
+  body('fosPassword').optional({ checkFalsy: true }).isString().isLength({ max: 512 }),
+  body('fosPort').optional().isInt({ min: 1, max: 65535 }).toInt(),
 ], validate, (req, res, next) => {
   try {
-    const { name, host, port, username, password, verifySsl, pollingIntervalMinutes, eventPollMinutes, fosProxyEnabled } = req.body;
+    const {
+      name, host, port, username, password, verifySsl, pollingIntervalMinutes, eventPollMinutes, fosProxyEnabled,
+      fosDirectEnabled, fosUsername, fosPassword, fosPort,
+    } = req.body;
     const dup = db.prepare('SELECT id FROM brocade_sources WHERE host = ? AND port = ?').get(host.trim(), port || 443);
     if (dup) return res.status(409).json({ error: 'duplicate' });
     const info = db.prepare(`
       INSERT INTO brocade_sources (name, host, port, username, password_enc, verify_ssl,
-        polling_interval_minutes, event_poll_minutes, fos_proxy_enabled)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        polling_interval_minutes, event_poll_minutes, fos_proxy_enabled,
+        fos_direct_enabled, fos_username, fos_password_enc, fos_port)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(name.trim(), host.trim(), port || 443, username.trim(), encrypt(password), verifySsl ? 1 : 0,
-      pollingIntervalMinutes || 60, eventPollMinutes || 5, fosProxyEnabled === false ? 0 : 1);
+      pollingIntervalMinutes || 60, eventPollMinutes || 5, fosProxyEnabled === false ? 0 : 1,
+      fosDirectEnabled ? 1 : 0, fosUsername ? fosUsername.trim() : null,
+      fosPassword ? encrypt(fosPassword) : null, fosPort || 443);
     const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(info.lastInsertRowid);
     brocadePoller.schedule(row);
     brocadePoller.trigger(row).catch(() => {});
@@ -103,6 +119,10 @@ router.put('/sources/:id', [
   body('eventPollMinutes').optional().isInt({ min: 1, max: 1440 }).toInt(),
   body('fosProxyEnabled').optional().isBoolean(),
   body('portStatsIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
+  body('fosDirectEnabled').optional().isBoolean(),
+  body('fosUsername').optional({ checkFalsy: true }).isString().trim().isLength({ max: 120 }),
+  body('fosPassword').optional({ checkFalsy: true }).isString().isLength({ max: 512 }),
+  body('fosPort').optional().isInt({ min: 1, max: 65535 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(req.params.id);
@@ -111,7 +131,8 @@ router.put('/sources/:id', [
     db.prepare(`
       UPDATE brocade_sources SET
         name = ?, host = ?, port = ?, username = ?, password_enc = ?, verify_ssl = ?, enabled = ?,
-        polling_interval_minutes = ?, event_poll_minutes = ?, fos_proxy_enabled = ?, port_stats_interval_minutes = ?
+        polling_interval_minutes = ?, event_poll_minutes = ?, fos_proxy_enabled = ?, port_stats_interval_minutes = ?,
+        fos_direct_enabled = ?, fos_username = ?, fos_password_enc = ?, fos_port = ?
       WHERE id = ?
     `).run(
       b.name?.trim() || row.name, b.host?.trim() || row.host, b.port || row.port,
@@ -123,6 +144,10 @@ router.put('/sources/:id', [
       b.eventPollMinutes || row.event_poll_minutes,
       b.fosProxyEnabled !== undefined ? (b.fosProxyEnabled ? 1 : 0) : row.fos_proxy_enabled,
       b.portStatsIntervalMinutes || row.port_stats_interval_minutes,
+      b.fosDirectEnabled !== undefined ? (b.fosDirectEnabled ? 1 : 0) : row.fos_direct_enabled,
+      b.fosUsername !== undefined ? (b.fosUsername ? b.fosUsername.trim() : null) : row.fos_username,
+      b.fosPassword ? encrypt(b.fosPassword) : row.fos_password_enc,
+      b.fosPort || row.fos_port,
       row.id
     );
     const updated = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(row.id);
@@ -193,9 +218,99 @@ router.post('/sources/:id/poll-port-stats', [param('id').isInt().toInt()], valid
   } catch (err) { next(err); }
 });
 
+// ── Direct-FOS per-switch overrides (addendum 2) ────────────────────────────
+
+router.get('/sources/:id/fos-overrides', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT id FROM brocade_sources WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    const overrides = db.prepare('SELECT * FROM brocade_fos_overrides WHERE source_id = ? ORDER BY switch_wwn').all(row.id);
+    res.json({
+      overrides: overrides.map((o) => ({
+        id: o.id, switchWwn: o.switch_wwn, ipAddress: o.ip_address, username: o.username,
+        hasPassword: !!o.password_enc, port: o.port,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+router.post('/sources/:id/fos-overrides', [
+  param('id').isInt().toInt(),
+  body('switchWwn').isString().trim().notEmpty().isLength({ max: 64 }),
+  body('ipAddress').optional({ checkFalsy: true }).isString().trim().isLength({ max: 100 }),
+  body('username').optional({ checkFalsy: true }).isString().trim().isLength({ max: 120 }),
+  body('password').optional({ checkFalsy: true }).isString().isLength({ max: 512 }),
+  body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT id FROM brocade_sources WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    const { switchWwn, ipAddress, username, password, port } = req.body;
+    const wwn = switchWwn.trim();
+    const existing = db.prepare('SELECT password_enc FROM brocade_fos_overrides WHERE source_id = ? AND switch_wwn = ?').get(row.id, wwn);
+    const passwordEnc = password ? encrypt(password) : (existing ? existing.password_enc : null);
+    db.prepare(`
+      INSERT INTO brocade_fos_overrides (source_id, switch_wwn, ip_address, username, password_enc, port)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source_id, switch_wwn) DO UPDATE SET
+        ip_address = excluded.ip_address, username = excluded.username, password_enc = ?, port = excluded.port
+    `).run(row.id, wwn, ipAddress?.trim() || null, username?.trim() || null, passwordEnc, port || null, passwordEnc);
+    const saved = db.prepare('SELECT * FROM brocade_fos_overrides WHERE source_id = ? AND switch_wwn = ?').get(row.id, wwn);
+    res.json({
+      override: {
+        id: saved.id, switchWwn: saved.switch_wwn, ipAddress: saved.ip_address, username: saved.username,
+        hasPassword: !!saved.password_enc, port: saved.port,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+router.delete('/sources/:id/fos-overrides/:overrideId', [
+  param('id').isInt().toInt(),
+  param('overrideId').isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT id FROM brocade_fos_overrides WHERE id = ? AND source_id = ?').get(req.params.overrideId, req.params.id);
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    db.prepare('DELETE FROM brocade_fos_overrides WHERE id = ?').run(row.id);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// Resolves the default direct-FOS test/probe target for a source: the
+// switch row named (by wwn), else the first fabric's seed/principal switch.
+function defaultFosSwitch(sourceId, switchWwn) {
+  if (switchWwn) {
+    return db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND wwn = ?').get(sourceId, switchWwn) || null;
+  }
+  const fabric = db.prepare('SELECT * FROM brocade_fabrics WHERE source_id = ? AND stale = 0 ORDER BY id LIMIT 1').get(sourceId);
+  if (!fabric) return null;
+  const wwn = fabric.seed_switch_wwn || fabric.principal_switch_wwn;
+  if (wwn) {
+    const sw = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND wwn = ?').get(sourceId, wwn);
+    if (sw) return sw;
+  }
+  if (fabric.seed_switch_ip) return { wwn: wwn || null, ip_address: fabric.seed_switch_ip, virtual_fabric_id: fabric.virtual_fabric_id };
+  return null;
+}
+
+router.post('/sources/:id/fos-test', [
+  param('id').isInt().toInt(),
+  body('switchWwn').optional().isString().trim(),
+], validate, async (req, res) => {
+  const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'not_found' });
+  const sw = defaultFosSwitch(row.id, req.body.switchWwn);
+  if (!sw) return res.status(200).json({ ok: false, error: 'no target switch found (poll inventory first, or pass switchWwn)' });
+  const target = resolveFosTarget(row, sw);
+  if (!target) return res.status(200).json({ ok: false, error: 'no usable direct-FOS credentials/ip for target switch' });
+  const result = await brocadeFosApi.testFos(target);
+  res.status(200).json(result);
+});
+
 router.get('/sources/:id/probe', [
   param('id').isInt().toInt(),
-  query('section').isIn(['fabrics', 'switches', 'switchports', 'deviceports', 'enclosures', 'chassis', 'health', 'events', 'zoning', 'fcr', 'about', 'portstats']),
+  query('section').isIn(['fabrics', 'switches', 'switchports', 'deviceports', 'enclosures', 'chassis', 'health', 'events', 'zoning', 'fcr', 'about', 'portstats', 'fos-direct']),
 ], validate, async (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(req.params.id);
@@ -231,6 +346,20 @@ router.get('/sources/:id/probe', [
           if (!fabric || !fabric.seed_switch_ip) { raw = []; break; }
           const eff = await brocadeApi.fetchEffectiveZoneConfig(row, { switchIp: fabric.seed_switch_ip, vfId: fabric.virtual_fabric_id ?? -1, timeout: 30000 });
           raw = [eff];
+          break;
+        }
+        case 'fos-direct': {
+          const sw = defaultFosSwitch(row.id, null);
+          if (!sw) { raw = []; break; }
+          const target = resolveFosTarget(row, sw);
+          if (!target) { raw = [{ error: 'no usable direct-FOS credentials/ip', usedSwitchWwn: sw.wwn || null }]; break; }
+          const zc = await brocadeFosApi.fetchZoneConfigs(target, sw.virtual_fabric_id, 30000);
+          const stats = await brocadeFosApi.fetchPortStats(target, sw.virtual_fabric_id, 30000).catch(() => []);
+          raw = [{
+            targetIp: target.ip, targetPort: target.port, usedSwitchWwn: sw.wwn || null,
+            effectiveCfgName: zc.effective.cfgName, effectiveZoneKeys: Object.keys(zc.effective),
+            firstStat: stats[0] || null,
+          }];
           break;
         }
         default: raw = [];

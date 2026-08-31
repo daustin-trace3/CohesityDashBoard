@@ -8,10 +8,48 @@
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const brocadeApi = require('./brocadeApi');
+const brocadeFosApi = require('./brocadeFosApi');
 const { reconcileIssueHistory } = require('./brocadeIssues');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => brocadeApi.errMsg(e);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ── Direct-FOS credential resolution (addendum 2) ───────────────────────────
+// A switch row's target = its brocade_fos_overrides row (by switch_wwn) with
+// NULL fields inheriting from the shared brocade_sources fos_* columns.
+// Returns null when there is no usable ip+username+password to try.
+
+function resolveFosTarget(source, switchRow) {
+  if (!switchRow) return null;
+  let override = null;
+  if (switchRow.wwn) {
+    override = db.prepare('SELECT * FROM brocade_fos_overrides WHERE source_id = ? AND switch_wwn = ?').get(source.id, switchRow.wwn);
+  }
+  const ip = override?.ip_address || switchRow.ip_address;
+  const username = override?.username || source.fos_username;
+  const passwordEnc = override?.password_enc || source.fos_password_enc;
+  const port = override?.port || source.fos_port || 443;
+  if (!ip || !username || !passwordEnc) return null;
+  return { ip, port, username, password_enc: passwordEnc, verify_ssl: source.verify_ssl };
+}
+
+/**
+ * Zoning's primary direct-FOS target for a fabric: the fabric's
+ * seed/principal switch row (so overrides keyed by switch_wwn apply), or a
+ * synthetic row from the fabric's seedSwitchIp when that switch hasn't been
+ * inventoried yet (e.g. first-ever poll, or the SanNav proxy-only fabric
+ * data hasn't matched a brocade_switches row).
+ */
+function findSeedSwitchRow(sourceId, fabric) {
+  const wwn = fabric.seedSwitchWwn || fabric.principalSwitchWwn;
+  if (wwn) {
+    const row = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND wwn = ?').get(sourceId, wwn);
+    if (row) return row;
+  }
+  if (fabric.seedSwitchIp) return { wwn: wwn || null, ip_address: fabric.seedSwitchIp, virtual_fabric_id: fabric.virtualFabricId };
+  return null;
+}
 
 async function trySection(label, fn) {
   try {
@@ -278,15 +316,53 @@ const upsertFcrRoutes = db.transaction((sourceId, topology) => {
   }
 });
 
-// ── Zoning: fetch per fabric via FOS proxy, diff vs stored state ───────────
+// ── Zoning: fetch per fabric, diff vs stored state ──────────────────────────
+// Addendum 2: when fos_direct_enabled, direct-FOS (each switch's own /rest
+// API) is the PRIMARY zoning path per fabric, with a per-fabric fallback to
+// the SanNav FOS proxy when fos_proxy_enabled is also on. A direct-FOS
+// failure records sectionErrors[`zoning_fos_<fabric>`] but never aborts the
+// fabric outright while a proxy fallback is available.
 
-async function pollZoning(source, fabricRows, timeout) {
-  if (!source.fos_proxy_enabled) return;
-  for (const f of fabricRows) {
-    if (!f.seedSwitchIp) continue;
+async function fetchZoningForFabric(source, f, timeout, sectionErrors) {
+  if (source.fos_direct_enabled) {
+    const seedSwitch = findSeedSwitchRow(source.id, f);
+    const target = resolveFosTarget(source, seedSwitch);
+    if (target) {
+      try {
+        const vfId = f.virtualFabricId;
+        const zc = await brocadeFosApi.fetchZoneConfigs(target, vfId, timeout);
+        return { eff: zc.effective, def: zc.defined };
+      } catch (err) {
+        sectionErrors[`zoning_fos_${f.name}`] = brocadeFosApi.errMsg(err);
+        logger.warn(`[BrocadePoller] direct-FOS zoning (${f.name}) failed: ${brocadeFosApi.errMsg(err)}`);
+      }
+    } else {
+      sectionErrors[`zoning_fos_${f.name}`] = 'no usable direct-FOS credentials/ip for seed switch';
+    }
+  }
+
+  if (source.fos_proxy_enabled && f.seedSwitchIp) {
     const vfId = f.virtualFabricId != null && f.virtualFabricId >= 0 ? f.virtualFabricId : -1;
+    const eff = await brocadeApi.fetchEffectiveZoneConfig(source, { switchIp: f.seedSwitchIp, vfId, timeout });
+    let def = { configs: [], zones: [], aliases: [] };
     try {
-      const eff = await brocadeApi.fetchEffectiveZoneConfig(source, { switchIp: f.seedSwitchIp, vfId, timeout });
+      def = await brocadeApi.fetchDefinedZoneConfig(source, { switchIp: f.seedSwitchIp, vfId, timeout });
+    } catch (err) {
+      logger.warn(`[BrocadePoller] defined-zoning (${f.name}) failed: ${safeMsg(err)}`);
+    }
+    return { eff, def };
+  }
+
+  return null;
+}
+
+async function pollZoning(source, fabricRows, timeout, sectionErrors = {}) {
+  if (!source.fos_direct_enabled && !source.fos_proxy_enabled) return;
+  for (const f of fabricRows) {
+    try {
+      const result = await fetchZoningForFabric(source, f, timeout, sectionErrors);
+      if (!result) continue;
+      const { eff, def } = result;
       const prior = db.prepare('SELECT checksum, cfg_name FROM brocade_zone_configs WHERE source_id = ? AND fabric_name = ? AND is_effective = 1').get(source.id, f.name);
       if (prior && eff.checksum && prior.checksum && prior.checksum !== eff.checksum) {
         db.prepare(`INSERT INTO brocade_zone_changes (source_id, fabric_name, change_type, detail, old_value, new_value) VALUES (?, ?, 'checksum_changed', ?, ?, ?)`)
@@ -333,9 +409,10 @@ async function pollZoning(source, fabricRows, timeout) {
         zoneStmt.run(source.id, f.name, z.zoneName, z.zoneType, z.zoneTypeString, JSON.stringify(z.members || []));
       }
 
-      // Defined-only config + aliases (best-effort, do not fail the fabric on error).
+      // Defined-only config + aliases — `def` was already fetched (best-effort) by
+      // fetchZoningForFabric; a failure there yields the empty-array default and is
+      // simply a no-op here rather than a second failure point.
       try {
-        const def = await brocadeApi.fetchDefinedZoneConfig(source, { switchIp: f.seedSwitchIp, vfId, timeout });
         const definedCfgs = def.configs.filter((c) => c.cfgName && c.cfgName !== eff.cfgName);
         for (const c of definedCfgs) {
           db.prepare(`
@@ -357,7 +434,7 @@ async function pollZoning(source, fabricRows, timeout) {
           aliasStmt.run(source.id, f.name, a.aliasName, JSON.stringify(a.members || []));
         }
       } catch (err) {
-        logger.warn(`[BrocadePoller] defined-zoning (${f.name}) failed: ${safeMsg(err)}`);
+        logger.warn(`[BrocadePoller] defined-zoning store (${f.name}) failed: ${safeMsg(err)}`);
       }
     } catch (err) {
       logger.warn(`[BrocadePoller] zoning (${f.name}) failed: ${safeMsg(err)}`);
@@ -463,7 +540,7 @@ async function pollInventory(source) {
     if (fcrRes.ok) upsertFcrRoutes(source.id, fcrRes.data); else sectionErrors.fcr = fcrRes.error;
 
     if (fabricRows.length) {
-      await trySection('zoning', () => pollZoning(source, fabricRows, timeout));
+      await trySection('zoning', () => pollZoning(source, fabricRows, timeout, sectionErrors));
     }
 
     const governance = {};
@@ -619,10 +696,49 @@ const upsertPortStats = db.transaction((sourceId, sw, statsRows) => {
   }
 });
 
-async function pollPortStats(source) {
-  if (!source.fos_proxy_enabled) return;
-  const timeout = 30000;
-  const switches = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND stale = 0').all(source.id);
+// Records/clears per-switch direct-FOS portstats failures in section_errors
+// as `portstats_fos:<switch>` keys, or a single aggregated
+// `portstats_fos: {failed, first}` summary once there are more than 5 (addendum 2).
+function recordPortStatsFosErrors(sourceId, failures) {
+  try {
+    const row = db.prepare('SELECT section_errors FROM brocade_sources WHERE id = ?').get(sourceId);
+    let existing = {};
+    try { existing = row?.section_errors ? JSON.parse(row.section_errors) : {}; } catch { existing = {}; }
+    for (const k of Object.keys(existing)) {
+      if (k === 'portstats_fos' || k.startsWith('portstats_fos:')) delete existing[k];
+    }
+    if (failures.length > 5) {
+      existing.portstats_fos = { failed: failures.length, first: failures[0].msg };
+    } else {
+      for (const f of failures) existing[`portstats_fos:${f.switchName}`] = f.msg;
+    }
+    db.prepare('UPDATE brocade_sources SET section_errors = ? WHERE id = ?').run(JSON.stringify(existing), sourceId);
+  } catch { /* best-effort */ }
+}
+
+async function pollPortStatsDirect(source, switches, timeout) {
+  const seenIps = new Set();
+  const failures = [];
+  for (const sw of switches) {
+    if (!sw.ip_address || seenIps.has(sw.ip_address)) continue;
+    seenIps.add(sw.ip_address);
+    const target = resolveFosTarget(source, sw);
+    if (!target) continue; // no usable creds/ip for this switch — silently skipped
+    try {
+      const stats = await brocadeFosApi.fetchPortStats(target, sw.virtual_fabric_id, timeout);
+      if (stats.length) upsertPortStats(source.id, sw, stats);
+    } catch (err) {
+      const msg = brocadeFosApi.errMsg(err);
+      logger.warn(`[BrocadePoller] direct-FOS portstats (${sw.name}) failed: ${msg}`);
+      failures.push({ switchName: sw.name || sw.wwn || sw.ip_address, msg });
+    }
+    // FOS session caps are single-digit — space out sequential logins.
+    await sleep(250);
+  }
+  recordPortStatsFosErrors(source.id, failures);
+}
+
+async function pollPortStatsProxy(source, switches, timeout) {
   let unsupported = false;
   for (const sw of switches) {
     if (unsupported) break;
@@ -646,6 +762,19 @@ async function pollPortStats(source) {
       }
     }
   }
+}
+
+async function pollPortStats(source) {
+  if (!source.fos_proxy_enabled && !source.fos_direct_enabled) return;
+  const timeout = 30000;
+  const switches = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND stale = 0').all(source.id);
+
+  if (source.fos_direct_enabled) {
+    await pollPortStatsDirect(source, switches, timeout);
+  } else if (source.fos_proxy_enabled) {
+    await pollPortStatsProxy(source, switches, timeout);
+  }
+
   try {
     const retentionDays = portStatsRetentionDays();
     db.prepare(`DELETE FROM brocade_port_stats WHERE source_id = ? AND ts < datetime('now', ?)`)
@@ -739,4 +868,7 @@ module.exports = {
   pollEvents,
   pollPortStats,
   portStatsRetentionDays,
+  // exported for reuse by routes/brocade.js (fos-test, probe fos-direct section)
+  resolveFosTarget,
+  findSeedSwitchRow,
 };

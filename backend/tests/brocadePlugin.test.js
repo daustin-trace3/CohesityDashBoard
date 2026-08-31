@@ -373,3 +373,102 @@ describe('port IO statistics (addendum 1)', () => {
     expect(after.body.portStatsRetentionDays).toBe(7);
   });
 });
+
+describe('direct-FOS collector (addendum 2)', () => {
+  it('publicSource exposes fos fields, never the password; POST/PUT round-trip with keep-if-blank', async () => {
+    const created = await request(app).post('/api/brocade/sources').set('x-api-key', API_KEY).send({
+      name: 'SanNav DirectFOS', host: '10.20.20.20', username: 'admin', password: 'secret123',
+      fosDirectEnabled: true, fosUsername: 'fosadmin', fosPassword: 'fos-secret', fosPort: 443,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.source.fosDirectEnabled).toBe(true);
+    expect(created.body.source.fosUsername).toBe('fosadmin');
+    expect(created.body.source.fosPort).toBe(443);
+    expect(created.body.source.hasFosPassword).toBe(true);
+    expect(created.body.source.fosPassword).toBeUndefined();
+    expect(created.body.source.fos_password_enc).toBeUndefined();
+
+    const before = db.prepare('SELECT fos_password_enc FROM brocade_sources WHERE id = ?').get(created.body.source.id);
+
+    const updated = await request(app).put(`/api/brocade/sources/${created.body.source.id}`).set('x-api-key', API_KEY).send({
+      fosUsername: 'fosadmin2', fosPassword: '',
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body.source.fosUsername).toBe('fosadmin2');
+    expect(updated.body.source.hasFosPassword).toBe(true);
+    const after = db.prepare('SELECT fos_password_enc FROM brocade_sources WHERE id = ?').get(created.body.source.id);
+    expect(after.fos_password_enc).toBe(before.fos_password_enc);
+  });
+
+  it('fos-overrides: GET empty, POST upserts by switchWwn, DELETE removes it', async () => {
+    const src = seedSource({ host: '10.21.21.21' });
+
+    const empty = await request(app).get(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY);
+    expect(empty.status).toBe(200);
+    expect(empty.body.overrides).toEqual([]);
+
+    const created = await request(app).post(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY).send({
+      switchWwn: '10:00:00:00:00:00:aa:bb', ipAddress: '10.21.21.100', username: 'swadmin', password: 'swpass', port: 443,
+    });
+    expect(created.status).toBe(200);
+    expect(created.body.override.switchWwn).toBe('10:00:00:00:00:00:aa:bb');
+    expect(created.body.override.hasPassword).toBe(true);
+    expect(created.body.override.password).toBeUndefined();
+
+    // Upsert (same switchWwn) updates rather than duplicates.
+    const updated = await request(app).post(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY).send({
+      switchWwn: '10:00:00:00:00:00:aa:bb', ipAddress: '10.21.21.101',
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body.override.ipAddress).toBe('10.21.21.101');
+    expect(updated.body.override.hasPassword).toBe(true); // password kept (blank on update)
+
+    const listed = await request(app).get(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY);
+    expect(listed.body.overrides.length).toBe(1);
+
+    const del = await request(app).delete(`/api/brocade/sources/${src.id}/fos-overrides/${created.body.override.id}`).set('x-api-key', API_KEY);
+    expect(del.status).toBe(200);
+    expect(del.body).toEqual({ ok: true });
+
+    const afterDel = await request(app).get(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY);
+    expect(afterDel.body.overrides).toEqual([]);
+  });
+
+  it('POST /sources/:id/fos-test -> 200 { ok:false } when no target/creds are resolvable', async () => {
+    const src = seedSource({ host: '10.22.22.22' });
+    const res = await request(app).post(`/api/brocade/sources/${src.id}/fos-test`).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(typeof res.body.error).toBe('string');
+  });
+
+  it('POST /sources/:id/fos-test -> 200 { ok:false } against an unreachable resolvable target', async () => {
+    const src = seedSource({ host: '10.23.23.23' });
+    db.prepare(`
+      UPDATE brocade_sources SET fos_direct_enabled = 1, fos_username = 'fosadmin', fos_password_enc = ? WHERE id = ?
+    `).run(JSON.stringify({ iv: '00', authTag: '00', ciphertext: '00' }), src.id);
+    db.prepare(`
+      INSERT INTO brocade_switches (source_id, wwn, name, ip_address, stale) VALUES (?, 'sw-wwn-fos-1', 'SW-FOS-1', '203.0.113.250', 0)
+    `).run(src.id);
+    db.prepare(`
+      INSERT INTO brocade_fabrics (source_id, name, seed_switch_wwn, principal_switch_wwn, stale) VALUES (?, 'FAB-FOS', 'sw-wwn-fos-1', 'sw-wwn-fos-1', 0)
+    `).run(src.id);
+    const res = await request(app).post(`/api/brocade/sources/${src.id}/fos-test`).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+  }, 20000);
+
+  it('GET /sources/:id/probe?section=fos-direct returns 200 with a raw-shape probe result even on failure', async () => {
+    const src = seedSource({ host: '10.24.24.24' });
+    const res = await request(app).get(`/api/brocade/sources/${src.id}/probe`).query({ section: 'fos-direct' }).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.section).toBe('fos-direct');
+  });
+
+  it('migration v3 is idempotent (safe to run twice) and preserves existing rows', () => {
+    const brocadeMigrations = require('../db/migrations/brocade');
+    expect(() => brocadeMigrations[2].up(db)).not.toThrow();
+    const cols = db.prepare('PRAGMA table_info(brocade_sources)').all().map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(['fos_direct_enabled', 'fos_username', 'fos_password_enc', 'fos_port']));
+  });
+});

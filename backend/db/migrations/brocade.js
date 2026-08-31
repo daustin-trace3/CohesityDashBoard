@@ -435,4 +435,44 @@ module.exports = [
       `);
     },
   },
+
+  // Addendum 2 (2026-08-31): direct Fabric OS REST collector (each switch's
+  // OWN /rest API) as an alternative to the SanNav FOS proxy — needed on
+  // SanNav < 2.4 where zoning/port-IO proxy calls are dead. Additive only:
+  // brocade_sources gains direct-FOS credential columns (pragma-guarded
+  // ALTERs), and a new brocade_fos_overrides table lets a single switch's
+  // creds/ip/port be overridden from the shared source-level fos_* fields.
+  {
+    version: 3,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(brocade_sources)').all().map((c) => c.name);
+      if (!cols.includes('fos_direct_enabled')) {
+        db.exec('ALTER TABLE brocade_sources ADD COLUMN fos_direct_enabled INTEGER DEFAULT 0');
+      }
+      if (!cols.includes('fos_username')) {
+        db.exec('ALTER TABLE brocade_sources ADD COLUMN fos_username TEXT');
+      }
+      if (!cols.includes('fos_password_enc')) {
+        db.exec('ALTER TABLE brocade_sources ADD COLUMN fos_password_enc TEXT');
+      }
+      if (!cols.includes('fos_port')) {
+        db.exec('ALTER TABLE brocade_sources ADD COLUMN fos_port INTEGER DEFAULT 443');
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS brocade_fos_overrides (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id      INTEGER NOT NULL REFERENCES brocade_sources(id) ON DELETE CASCADE,
+          switch_wwn     TEXT NOT NULL,
+          ip_address     TEXT,
+          username       TEXT,
+          password_enc   TEXT,
+          port           INTEGER,
+          created_at     TEXT DEFAULT (datetime('now')),
+          UNIQUE(source_id, switch_wwn)
+        );
+        CREATE INDEX IF NOT EXISTS idx_brocade_fos_overrides_source ON brocade_fos_overrides(source_id);
+      `);
+    },
+  },
 ];
