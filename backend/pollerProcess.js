@@ -27,6 +27,7 @@ const ariaopsManifest = require('./platforms/ariaops');
 const netbackupManifest = require('./platforms/netbackup');
 const awsManifest = require('./platforms/aws');
 const proxmoxManifest = require('./platforms/proxmox');
+const brocadeManifest = require('./platforms/brocade');
 
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
@@ -37,7 +38,7 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled, platformProxmoxEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled, platformProxmoxEnabled, platformBrocadeEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
@@ -58,6 +59,8 @@ if (isDemo()) {
   registry.setEnabled('aws', platformAwsEnabled && registry.isEntitled('aws'));
   registry.registerPlugin(proxmoxManifest);
   registry.setEnabled('proxmox', platformProxmoxEnabled && registry.isEntitled('proxmox'));
+  registry.registerPlugin(brocadeManifest);
+  registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();

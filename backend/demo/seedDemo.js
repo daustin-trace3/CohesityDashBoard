@@ -49,6 +49,7 @@ const { seedAria } = require('./generators/aria');
 const { seedNetbackup } = require('./generators/netbackup');
 const { seedAws } = require('./generators/aws');
 const { seedProxmox } = require('./generators/proxmox');
+const { seedBrocade } = require('./generators/brocade');
 
 const SEEDED_TABLES = [
   // core
@@ -105,6 +106,11 @@ const SEEDED_TABLES = [
   'proxmox_metrics', 'proxmox_issue_history', 'proxmox_snapshots', 'proxmox_services',
   'proxmox_disks', 'proxmox_node_networks', 'proxmox_storage_content', 'proxmox_events',
   'proxmox_nodes', 'proxmox_servers',
+  // brocade (children before the parent)
+  'brocade_metrics', 'brocade_issue_history', 'brocade_zone_changes', 'brocade_zone_aliases',
+  'brocade_zones', 'brocade_zone_configs', 'brocade_fcr_routes', 'brocade_health_scores',
+  'brocade_events', 'brocade_chassis', 'brocade_enclosures', 'brocade_device_ports',
+  'brocade_switch_ports', 'brocade_switches', 'brocade_fabrics', 'brocade_sources',
 ];
 
 function wipeSeededTables(database) {
@@ -138,6 +144,7 @@ async function main() {
   const netbackupResult = db.transaction(() => seedNetbackup(db, { now, encrypt }))();
   const awsResult = db.transaction(() => seedAws(db, { now, encrypt }))();
   const proxmoxResult = db.transaction(() => seedProxmox(db, { now, encrypt }))();
+  const brocadeResult = db.transaction(() => seedBrocade(db, { now, encrypt }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -161,6 +168,7 @@ async function main() {
     ['netbackup sources/policies/jobs', `${netbackupResult.sources}/${netbackupResult.policies}/${netbackupResult.jobs}`],
     ['aws ec2/ecs services/s3/cost rows', `${awsResult.ec2}/${awsResult.ecsServices}/${awsResult.s3}/${awsResult.costRows}`],
     ['proxmox servers/nodes/guests', `${proxmoxResult.servers}/${proxmoxResult.nodes}/${proxmoxResult.guests}`],
+    ['brocade sources/fabrics/switches/ports', `${brocadeResult.sources}/${brocadeResult.fabrics}/${brocadeResult.switches}/${brocadeResult.switchPorts}`],
     ['users', 1],
   ];
 

@@ -18,6 +18,8 @@ const CONFIG = {
     description: 'Computed issues across AWS accounts, with open/resolved history' },
   proxmox: { brand: '#E57000', base: '/proxmox', instanceKey: 'source', instanceLabel: 'Server',
     description: 'Computed issues across all registered Proxmox VE servers, with open/resolved history' },
+  brocade: { brand: '#CC092F', base: '/brocade', instanceKey: 'source', instanceLabel: 'Source',
+    description: 'Computed fabric issues across all registered SANnav sources, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];

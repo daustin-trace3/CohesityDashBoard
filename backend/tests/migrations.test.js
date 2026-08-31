@@ -23,6 +23,7 @@ import ariaopsMigrations from '../db/migrations/ariaops.js';
 import netbackupMigrations from '../db/migrations/netbackup.js';
 import awsMigrations from '../db/migrations/aws.js';
 import proxmoxMigrations from '../db/migrations/proxmox.js';
+import brocadeMigrations from '../db/migrations/brocade.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -162,6 +163,7 @@ function buildNewDb() {
   runMigrations(db, 'netbackup', netbackupMigrations);
   runMigrations(db, 'aws', awsMigrations);
   runMigrations(db, 'proxmox', proxmoxMigrations);
+  runMigrations(db, 'brocade', brocadeMigrations);
   return db;
 }
 
@@ -232,6 +234,10 @@ const NEW_TABLES = [
   'proxmox_backup_jobs', 'proxmox_tasks', 'proxmox_metrics', 'proxmox_issue_history',
   'proxmox_snapshots', 'proxmox_services', 'proxmox_disks', 'proxmox_node_networks',
   'proxmox_storage_content', 'proxmox_events',
+  'brocade_sources', 'brocade_fabrics', 'brocade_switches', 'brocade_switch_ports',
+  'brocade_device_ports', 'brocade_enclosures', 'brocade_chassis', 'brocade_events',
+  'brocade_health_scores', 'brocade_zone_configs', 'brocade_zones', 'brocade_zone_aliases',
+  'brocade_zone_changes', 'brocade_fcr_routes', 'brocade_metrics', 'brocade_issue_history',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.
@@ -328,6 +334,7 @@ describe('runMigrations', () => {
   runMigrations(db, 'netbackup', netbackupMigrations);
       runMigrations(db, 'aws', awsMigrations);
       runMigrations(db, 'proxmox', proxmoxMigrations);
+      runMigrations(db, 'brocade', brocadeMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

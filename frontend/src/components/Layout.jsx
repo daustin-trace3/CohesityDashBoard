@@ -99,10 +99,11 @@ export default function Layout() {
   const isNetbackup = pathname.startsWith('/netbackup');
   const isAws = pathname.startsWith('/aws');
   const isProxmox = pathname.startsWith('/proxmox');
+  const isBrocade = pathname.startsWith('/brocade');
   const isOps = pathname.startsWith('/ops');
-  const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell || isAria || isAriaOps || isNetbackup || isAws || isProxmox;
-  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isNetbackup ? 'netbackup' : isAws ? 'aws' : isProxmox ? 'proxmox' : null;
-  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isNetbackup ? 'Server' : isAws ? 'Instance' : isProxmox ? 'Guest' : '';
+  const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell || isAria || isAriaOps || isNetbackup || isAws || isProxmox || isBrocade;
+  const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isNetbackup ? 'netbackup' : isAws ? 'aws' : isProxmox ? 'proxmox' : isBrocade ? 'brocade' : null;
+  const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isNetbackup ? 'Server' : isAws ? 'Instance' : isProxmox ? 'Guest' : isBrocade ? 'Fabric' : '';
 
   const { platforms: allPlatforms } = usePlatforms();
   const getPlatform = (id) => allPlatforms.find(p => p.id === id);
@@ -118,6 +119,7 @@ export default function Layout() {
   const netbackupNavGroups = getPlatform('netbackup')?.navGroups || [];
   const awsNavGroups = getPlatform('aws')?.navGroups || [];
   const proxmoxNavGroups = getPlatform('proxmox')?.navGroups || [];
+  const brocadeNavGroups = getPlatform('brocade')?.navGroups || [];
   const isActivePlatform = (id, pathname) => {
     if (id === 'ops') return pathname.startsWith('/ops');
     const platform = getPlatform(id);
@@ -205,6 +207,7 @@ export default function Layout() {
     const netbackup = platformKey === 'netbackup';
     const aws = platformKey === 'aws';
     const proxmox = platformKey === 'proxmox';
+    const brocade = platformKey === 'brocade';
     // Zerto's "entities" are sites; vCenter's are ESX hosts. Both platforms'
     // overview endpoints are rollup objects, so entity lists come from their
     // inventory endpoints; vCenter's "alerts" are its computed issues.
@@ -214,8 +217,10 @@ export default function Layout() {
     // and its alerts endpoint is a flat array of raw alert rows (level/status).
     // NetBackup's overview is a rollup object ({sources, stats, ...}) rather
     // than a bare entity array, so its source count comes from stats.sourceCount.
-    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : dell ? '/dell/devices' : aria ? '/aria/deployments' : ariaops ? '/ariaops/resources' : netbackup ? '/netbackup/overview' : aws ? '/aws/overview' : proxmox ? '/proxmox/overview' : `/${platformKey}/overview`;
-    const alertsUrl = pureFleet ? '/pure1/alerts' : (vcenter || dell) ? `/${platformKey}/overview` : aria ? '/aria/issues' : ariaops ? '/ariaops/alerts' : netbackup ? '/netbackup/issues' : aws ? '/aws/issues' : proxmox ? '/proxmox/issues' : `/${platformKey}/alerts`;
+    // Brocade's overview is a rollup object too (sources/fabrics/switches/...),
+    // and its alert badge reads the computed issues endpoint (issues: [...]).
+    const overviewUrl = pureFleet ? '/pure1/overview' : zerto ? '/zerto/sites' : vcenter ? '/vcenter/hosts' : dell ? '/dell/devices' : aria ? '/aria/deployments' : ariaops ? '/ariaops/resources' : netbackup ? '/netbackup/overview' : aws ? '/aws/overview' : proxmox ? '/proxmox/overview' : brocade ? '/brocade/overview' : `/${platformKey}/overview`;
+    const alertsUrl = pureFleet ? '/pure1/alerts' : (vcenter || dell) ? `/${platformKey}/overview` : aria ? '/aria/issues' : ariaops ? '/ariaops/alerts' : netbackup ? '/netbackup/issues' : aws ? '/aws/issues' : proxmox ? '/proxmox/issues' : brocade ? '/brocade/issues' : `/${platformKey}/alerts`;
 
     const loadAlertList = () => client.get(alertsUrl)
       .then(r => {
@@ -292,6 +297,15 @@ export default function Layout() {
             description: i.message,
           })));
           setPlatformAlerts(rows.length);
+        } else if (brocade) {
+          const rows = (r.data?.issues || []).filter(i => i.severity !== 'info');
+          setPlatformAlertList(rows.map((i, idx) => ({
+            id: idx,
+            cluster_name: i.source || '—',
+            severity: i.severity === 'critical' ? 'critical' : 'warning',
+            description: i.message,
+          })));
+          setPlatformAlerts(rows.length);
         } else {
           const rows = (r.data || []).filter(a => !a.resolved && a.state !== 'closed' && a.state !== 'resolved');
           setPlatformAlertList(rows.map(a => ({
@@ -315,6 +329,7 @@ export default function Layout() {
         setPlatformCount(netbackup ? (r.data?.stats?.sourceCount ?? rows.length)
           : aws ? ((r.data?.ec2?.total || 0) + (r.data?.lightsail?.total || 0))
           : proxmox ? (r.data?.totals?.guests || 0)
+          : brocade ? (r.data?.fabrics?.total || 0)
           : rows.length);
         const now = Date.now();
         if (zerto) {
@@ -341,6 +356,8 @@ export default function Layout() {
           setPlatformHealthy((r.data?.ec2?.running || 0) + (r.data?.lightsail?.running || 0));
         } else if (proxmox) {
           setPlatformHealthy(r.data?.totals?.guestsRunning || 0);
+        } else if (brocade) {
+          setPlatformHealthy(r.data?.fabrics?.healthy ?? 0);
         } else {
           setPlatformAlerts(rows.reduce((s, a) => s + (a.open_alerts || 0), 0));
           const healthy = rows.filter(a => {
@@ -377,6 +394,7 @@ export default function Layout() {
         ...(r.data.platformNetbackupEnabled ? ['netbackup'] : []),
         ...(r.data.platformAwsEnabled ? ['aws'] : []),
         ...(r.data.platformProxmoxEnabled ? ['proxmox'] : []),
+        ...(r.data.platformBrocadeEnabled ? ['brocade'] : []),
         ...allPlatforms.filter(p => !builtinIds.includes(p.id)).map(p => p.id),
       ]))
       .catch(() => {});
@@ -402,7 +420,7 @@ export default function Layout() {
 
   // Swap the sidebar menu to match the active vendor platform.
   const baseNavGroups = isOps ? opsNavGroups
-    : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : isAria ? ariaNavGroups : isAriaOps ? ariaopsNavGroups : isNetbackup ? netbackupNavGroups : isAws ? awsNavGroups : isProxmox ? proxmoxNavGroups
+    : isPure ? pureNavGroups : isNetapp ? netappNavGroups : isZerto ? zertoNavGroups : isVcenter ? vcenterNavGroups : isDell ? dellNavGroups : isAria ? ariaNavGroups : isAriaOps ? ariaopsNavGroups : isNetbackup ? netbackupNavGroups : isAws ? awsNavGroups : isProxmox ? proxmoxNavGroups : isBrocade ? brocadeNavGroups
     : activePluginPlatform ? activePluginPlatform.navGroups : navGroups;
 
   // Hide items the user lacks permission for. While auth is still loading,
@@ -419,7 +437,7 @@ export default function Layout() {
     .filter(group => group.items.length > 0);
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
-  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isNetbackup ? 'server' : isAws ? 'instance' : isProxmox ? 'guest' : 'array';
+  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isNetbackup ? 'server' : isAws ? 'instance' : isProxmox ? 'guest' : isBrocade ? 'fabric' : 'array';
   const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
   const footerOk = isPlatform ? platformAllOk : apiOnline;
   const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
@@ -440,8 +458,8 @@ export default function Layout() {
       <aside className={`${collapsed ? 'w-[60px]' : 'w-[218px]'} bg-surface-base/80 border-r border-cohesity-border flex flex-col flex-shrink-0 transition-all duration-200`}>
         <BrandMark
           collapsed={collapsed}
-          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isNetbackup ? 'NetBackup' : isAws ? 'AWS' : isProxmox ? 'Proxmox VE' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
-          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isNetbackup ? '#B1181E' : isAws ? '#FF9900' : isProxmox ? '#E57000' : activePluginPlatform ? activePluginPlatform.color : undefined}
+          label={isOps ? 'Operations' : isPure ? 'Pure' : isNetapp ? 'NetApp' : isZerto ? 'Zerto' : isVcenter ? 'vCenter' : isDell ? 'Dell' : isAria ? 'Aria' : isAriaOps ? 'Aria Ops' : isNetbackup ? 'NetBackup' : isAws ? 'AWS' : isProxmox ? 'Proxmox VE' : isBrocade ? 'Brocade SAN' : activePluginPlatform ? activePluginPlatform.label : 'Cohesity'}
+          accent={isPure ? '#FF6B00' : isNetapp ? '#0067C5' : isZerto ? '#EE3124' : isVcenter ? '#0091DA' : isDell ? '#007DB8' : isAria ? '#00A2C7' : isAriaOps ? '#78BE20' : isNetbackup ? '#B1181E' : isAws ? '#FF9900' : isProxmox ? '#E57000' : isBrocade ? '#CC092F' : activePluginPlatform ? activePluginPlatform.color : undefined}
         />
 
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
@@ -543,7 +561,7 @@ export default function Layout() {
           )}
           {/* Left group — shrinks when viewport narrows so right controls are never pushed off */}
           <div className="flex items-center gap-2 min-w-0 flex-shrink overflow-hidden">
-            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : isAws ? 'AWS Dashboard' : isProxmox ? 'Proxmox VE Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
+            <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : isAws ? 'AWS Dashboard' : isProxmox ? 'Proxmox VE Dashboard' : isBrocade ? 'Brocade SAN Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
             {/* Plugin platforms have no entity-feed endpoints — hide the count chip
                 rather than showing the Cohesity fall-through. */}
             {!activePluginPlatform && (
