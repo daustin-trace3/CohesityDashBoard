@@ -155,11 +155,24 @@ async function fetchAbout(source, timeout) {
 }
 
 async function testConnection(candidate) {
+  // Login is the actual connection test. /about/ only exists on SANnav 2.3.1+
+  // (live finding: a pre-2.3.1 server 404s it after a perfectly good login),
+  // so treat the version lookup as best-effort decoration, never a failure.
+  try {
+    await login(candidate, 15000);
+  } catch (err) {
+    return { ok: false, error: errMsg(err) };
+  }
   try {
     const about = await fetchAbout(candidate, 15000);
     return { ok: true, version: about.version, oemName: about.oemName };
   } catch (err) {
-    return { ok: false, error: errMsg(err) };
+    return {
+      ok: true,
+      version: null,
+      oemName: null,
+      note: `login ok; /about/ unavailable (${errMsg(err)}) — SANnav older than 2.3.1?`,
+    };
   }
 }
 
