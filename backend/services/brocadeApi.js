@@ -614,9 +614,13 @@ function parseEvent(e) {
 }
 
 async function fetchEventsPage(source, { startTime, endTime, pageSize = 1000, startIndex = 0, nextPageIndex = null, timeout = 30000 }) {
+  // Strict older parsers (live 2.2.0 finding) 400 on a literal null
+  // nextPageIndex — only send the cursor once we actually have one.
+  const body = { startTime, endTime, pageSize, startIndex };
+  if (nextPageIndex) body.nextPageIndex = nextPageIndex;
   const d = await authedRequest(source, {
     method: 'POST', path: '/external-api/v2/fault/events/',
-    data: { startTime, endTime, pageSize, startIndex, nextPageIndex },
+    data: body,
     timeout,
   });
   return {
