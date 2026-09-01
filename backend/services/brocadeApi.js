@@ -423,7 +423,10 @@ function parseChassis(c) {
 }
 
 async function fetchChassis(source, timeout) {
-  const d = await authedRequest(source, { path: '/external-api/v1/inventory/chassis/', timeout });
+  // basicOnly=0 required: MAPS/call-home/SNMP/syslog governance fields live in
+  // AdditionalCoreSwitchDetailsInfo (live finding: default basicOnly=1 left
+  // them all null). Chassis has no pagination; 40-item payloads are cheap.
+  const d = await authedRequest(source, { path: '/external-api/v1/inventory/chassis/', params: { basicOnly: 0 }, timeout });
   return pick(d, 'chassis').map(parseChassis);
 }
 
