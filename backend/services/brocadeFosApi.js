@@ -35,8 +35,13 @@ function fosCreds(target) {
 }
 
 function fosBaseUrl(target) {
-  const port = target.port || 443;
-  return `https://${target.ip}:${port}`;
+  // Opt-in HTTP (fos_allow_http): FOS REST ships HTTP-only until the switch
+  // has an HTTPS cert. When allowed, a still-default 443 port flips to 80 —
+  // HTTP-on-443 is never right.
+  const scheme = target.allow_http ? 'http' : 'https';
+  let port = target.port || (target.allow_http ? 80 : 443);
+  if (target.allow_http && port === 443) port = 80;
+  return `${scheme}://${target.ip}:${port}`;
 }
 
 function fosClient(target, timeout) {

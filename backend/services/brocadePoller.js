@@ -37,7 +37,10 @@ function resolveFosTarget(source, switchRow) {
   const passwordEnc = override?.password_enc || source.fos_password_enc;
   const port = override?.port || source.fos_port || 443;
   if (!ip || !username || !passwordEnc) return null;
-  return { ip: String(ip).trim(), port, username, password_enc: passwordEnc, verify_ssl: source.verify_ssl };
+  return {
+    ip: String(ip).trim(), port, username, password_enc: passwordEnc,
+    verify_ssl: source.verify_ssl, allow_http: !!source.fos_allow_http,
+  };
 }
 
 /**

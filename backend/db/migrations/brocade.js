@@ -475,4 +475,18 @@ module.exports = [
       `);
     },
   },
+
+  // v4 (2026-09-01): opt-in HTTP for direct-FOS. Live finding: FOS REST ships
+  // enabled but HTTP-only until the switch gets an HTTPS cert — Doug's estate
+  // runs HTTP-only today, certs to follow. Cleartext-credential tradeoff is
+  // surfaced in the UI; default stays HTTPS.
+  {
+    version: 4,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(brocade_sources)').all().map((c) => c.name);
+      if (!cols.includes('fos_allow_http')) {
+        db.exec('ALTER TABLE brocade_sources ADD COLUMN fos_allow_http INTEGER DEFAULT 0');
+      }
+    },
+  },
 ];
