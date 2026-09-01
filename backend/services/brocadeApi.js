@@ -279,7 +279,10 @@ function parseSwitchPort(p) {
   return {
     sannavId: numOrNull(p.id),
     wwn: strOrNull(p.wwn),
-    switchWwn: strOrNull(p.physicalSwitchWwn ?? p.virtualSwitchWwn),
+    // virtual switch WWN first — brocade_switches.wwn is the VIRTUAL WWN, and
+    // per-switch port lookups join on it (live finding: preferring physical
+    // broke the port map/switch-360 joins on real hardware).
+    switchWwn: strOrNull(p.virtualSwitchWwn ?? p.physicalSwitchWwn),
     switchName: strOrNull(p.switchName),
     name: strOrNull(p.name),
     slotNumber: numOrNull(p.slotNumber),

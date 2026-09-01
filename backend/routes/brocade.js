@@ -546,7 +546,10 @@ router.get('/switches/:id', [param('id').isInt().toInt()], validate, (req, res, 
   try {
     const sw = db.prepare('SELECT sw.*, s.name AS source_name FROM brocade_switches sw JOIN brocade_sources s ON s.id = sw.source_id WHERE sw.id = ?').get(req.params.id);
     if (!sw) return res.status(404).json({ error: 'not_found' });
-    const ports = db.prepare('SELECT * FROM brocade_switch_ports WHERE source_id = ? AND switch_wwn = ?').all(sw.source_id, sw.wwn);
+    const ports = db.prepare(`
+      SELECT * FROM brocade_switch_ports WHERE source_id = ?
+        AND (switch_wwn = ? COLLATE NOCASE OR switch_wwn = COALESCE(?, '') COLLATE NOCASE)
+    `).all(sw.source_id, sw.wwn, sw.physical_switch_wwn);
     const health = db.prepare(`SELECT * FROM brocade_health_scores WHERE source_id = ? AND entity_type = 'SWITCH' AND entity_guid = ? AND stale = 0`).get(sw.source_id, sw.wwn);
     const chassis = db.prepare('SELECT * FROM brocade_chassis WHERE source_id = ? AND wwn = ?').get(sw.source_id, sw.physical_switch_wwn);
     const { decodeMgmtState } = require('../services/brocadeIssues');
@@ -580,17 +583,19 @@ router.get('/switches/:id/portmap', [param('id').isInt().toInt()], validate, (re
         FROM brocade_port_stats ps
         JOIN (SELECT port_wwn, MAX(ts) AS max_ts FROM brocade_port_stats GROUP BY port_wwn) latest
           ON latest.port_wwn = ps.port_wwn AND latest.max_ts = ps.ts
-      ) ls ON ls.stat_port_wwn = sp.wwn
+      ) ls ON ls.stat_port_wwn = sp.wwn COLLATE NOCASE
       LEFT JOIN (
         SELECT d.* FROM brocade_device_ports d
         JOIN (SELECT switch_port_wwn, MIN(id) AS min_id FROM brocade_device_ports WHERE stale = 0 GROUP BY switch_port_wwn) first
           ON first.switch_port_wwn = d.switch_port_wwn AND first.min_id = d.id
         WHERE d.stale = 0
-      ) dp ON dp.switch_port_wwn = sp.wwn
+      ) dp ON dp.switch_port_wwn = sp.wwn COLLATE NOCASE
       LEFT JOIN brocade_enclosures enc ON enc.guid = dp.enclosure_guid
-      WHERE sp.switch_wwn = ? AND sp.stale = 0
+      WHERE sp.source_id = ?
+        AND (sp.switch_wwn = ? COLLATE NOCASE OR sp.switch_wwn = COALESCE(?, '') COLLATE NOCASE)
+        AND sp.stale = 0
       ORDER BY sp.slot_number, sp.port_number
-    `).all(sw.wwn);
+    `).all(sw.source_id, sw.wwn, sw.physical_switch_wwn);
 
     res.json({
       switch: {
