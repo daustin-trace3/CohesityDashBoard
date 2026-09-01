@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { Grid3x3, X } from 'lucide-react';
+import { Grid3x3, X, HeartPulse, LayoutGrid, Waypoints, Server, AlertTriangle, ShieldAlert } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { BRAND, statusTone, parseJsonArr } from './helpers';
+import { PageHeader, Badge, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { BRAND, fmtWhen, statusTone, severityTone, scoreTone, parseJsonArr } from './helpers';
 
 const COL_GAP_EVERY = 8;
 const SQ = 18;
@@ -45,6 +45,32 @@ function isEPort(p) {
   // Live SanNav sends hyphenated types ("E-Port"); the docs show underscores.
   const t = String(p.type || '').toUpperCase().replace(/[-\s]/g, '_');
   return t.startsWith('E_PORT') || t.startsWith('EX_PORT');
+}
+
+function normPortType(p) {
+  const t = String(p.type || '').toUpperCase().replace(/[-\s]/g, '_');
+  if (t.startsWith('F_PORT')) return 'F';
+  if (t.startsWith('E_PORT') || t.startsWith('EX_PORT')) return 'E';
+  if (t.startsWith('U_PORT')) return 'U';
+  return t ? 'Other' : 'Unknown';
+}
+
+function normPortState(p) {
+  if (isNoModule(p)) return 'No module';
+  const s = String(p.state || '').toLowerCase();
+  if (s === 'online') return 'Online';
+  if (s === 'offline') return 'Offline';
+  return s ? 'Other' : 'Unknown';
+}
+
+function speedLabel(p) {
+  return p.speed ? `${p.speed}${Number(p.speedType) === 2 ? 'G' : ''}` : 'Unknown';
+}
+
+function extractHba(symbolicName) {
+  if (!symbolicName) return null;
+  const m = String(symbolicName).match(/"([^"]+)"/);
+  return m ? m[1] : null;
 }
 
 function groupBySlot(ports, maxPort) {
@@ -318,6 +344,262 @@ function Tooltip({ port, pos }) {
   );
 }
 
+function CertChip({ ms }) {
+  if (ms == null) return <span className="text-ink tnum">—</span>;
+  const daysLeft = Math.round((Number(ms) - Date.now()) / 86400000);
+  const warn = daysLeft < 60;
+  return (
+    <span className={`tnum font-semibold ${warn ? 'text-status-warn' : 'text-ink'}`}>
+      {daysLeft < 0 ? 'Expired' : `${daysLeft}d`}
+    </span>
+  );
+}
+
+function SummaryCards({ switchInfo, healthScore, ports }) {
+  if (!switchInfo) return null;
+  const sw = switchInfo;
+  const labels = sw.managementStateLabels || [];
+  const occupied = ports.filter((p) => !p.placeholder && (p.occupied || p.status)).length;
+  const total = ports.filter((p) => !p.placeholder).length;
+
+  return (
+    <div className="mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <StatCard icon={HeartPulse} label="Health Score" value={healthScore ? healthScore.score : '—'}
+          sub={healthScore?.status || 'unknown'} tone={healthScore ? scoreTone(healthScore.score) : 'default'} />
+        <StatCard icon={Waypoints} label="Operational Status" value={sw.operational_status || sw.operationalStatus || 'Unknown'}
+          sub={sw.status_reason || sw.statusReason || ''} tone={statusTone(sw.operational_status || sw.operationalStatus) === 'ok' ? 'ok' : statusTone(sw.operational_status || sw.operationalStatus) === 'crit' ? 'crit' : statusTone(sw.operational_status || sw.operationalStatus) === 'warn' ? 'warn' : 'default'} />
+        <StatCard icon={LayoutGrid} label="Firmware" value={sw.firmware_version || sw.firmwareVersion || '—'}
+          sub={sw.eos_status || sw.eosStatus ? 'End of support' : ''} tone={(sw.eos_status || sw.eosStatus) ? 'warn' : 'default'} />
+        <StatCard icon={Server} label="Model / Serial" value={sw.model_number || sw.model || '—'}
+          sub={sw.serial_number || sw.serialNumber || '—'} />
+        <StatCard icon={ShieldAlert} label="Cert Expiry" value={<CertChip ms={sw.tls_cert_expiry_ms ?? sw.tlsCertExpiryMs} />}
+          sub="TLS certificate" tone={(() => {
+            const ms = sw.tls_cert_expiry_ms ?? sw.tlsCertExpiryMs;
+            if (ms == null) return 'default';
+            return Math.round((Number(ms) - Date.now()) / 86400000) < 60 ? 'warn' : 'ok';
+          })()} />
+        <StatCard icon={Grid3x3} label="Port Utilization" value={`${occupied} / ${total}`}
+          sub="occupied" tone={total && occupied / total > 0.9 ? 'warn' : 'default'} />
+      </div>
+      {(labels.length > 0 || sw.maintenance_mode || sw.maintenanceMode || sw.eos_status || sw.eosStatus || sw.trufos_status || sw.trufosStatus) && (
+        <div className="flex items-center gap-1.5 flex-wrap mt-2.5">
+          {labels.map((l) => <Badge key={l} tone="warn">{l}</Badge>)}
+          {(sw.maintenance_mode || sw.maintenanceMode) ? <Badge tone="info">Maintenance mode</Badge> : null}
+          {(sw.eos_status || sw.eosStatus) ? <Badge tone="warn">End of support</Badge> : null}
+          {(sw.trufos_status || sw.trufosStatus) ? <Badge tone="info">TruFOS</Badge> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Bar({ label, count, max }) {
+  const pct = max > 0 ? Math.max(4, Math.round((count / max) * 100)) : 0;
+  return (
+    <div className="flex items-center gap-2 text-[11px]">
+      <span className="w-16 shrink-0 text-ink-faint truncate">{label}</span>
+      <div className="flex-1 h-3 rounded bg-surface-overlay overflow-hidden">
+        <div className="h-full rounded" style={{ width: `${pct}%`, background: BRAND }} />
+      </div>
+      <span className="w-8 shrink-0 text-right tnum text-ink">{count}</span>
+    </div>
+  );
+}
+
+function PortBreakdown({ ports }) {
+  const real = ports.filter((p) => !p.placeholder);
+  const byType = useMemo(() => {
+    const c = {};
+    for (const p of real) c[normPortType(p)] = (c[normPortType(p)] || 0) + 1;
+    return c;
+  }, [real]);
+  const byState = useMemo(() => {
+    const c = {};
+    for (const p of real) c[normPortState(p)] = (c[normPortState(p)] || 0) + 1;
+    return c;
+  }, [real]);
+  const bySpeed = useMemo(() => {
+    const c = {};
+    for (const p of real) { const s = speedLabel(p); c[s] = (c[s] || 0) + 1; }
+    return c;
+  }, [real]);
+
+  const maxType = Math.max(1, ...Object.values(byType));
+  const maxState = Math.max(1, ...Object.values(byState));
+  const maxSpeed = Math.max(1, ...Object.values(bySpeed));
+
+  return (
+    <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <p className="text-sm font-semibold text-ink mb-3">Port Breakdown</p>
+      {real.length === 0 ? (
+        <div className="text-sm text-ink-muted py-4 text-center">No ports.</div>
+      ) : (
+        <div className="grid sm:grid-cols-3 gap-4">
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-1.5">Type</p>
+            <div className="space-y-1">
+              {Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([k, v]) => <Bar key={k} label={k} count={v} max={maxType} />)}
+            </div>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-1.5">State</p>
+            <div className="space-y-1">
+              {Object.entries(byState).sort((a, b) => b[1] - a[1]).map(([k, v]) => <Bar key={k} label={k} count={v} max={maxState} />)}
+            </div>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-1.5">Speed</p>
+            <div className="space-y-1">
+              {Object.entries(bySpeed).sort((a, b) => b[1] - a[1]).map(([k, v]) => <Bar key={k} label={k} count={v} max={maxSpeed} />)}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IslTable({ ports }) {
+  const eports = useMemo(() => ports.filter((p) => !p.placeholder && isEPort(p)), [ports]);
+  if (eports.length === 0) return null;
+  return (
+    <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <p className="text-sm font-semibold text-ink mb-3">ISL / Uplinks</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-ink-faint text-[10px] uppercase tracking-wide">
+              <th className="pb-1.5 pr-3">Port</th>
+              <th className="pb-1.5 pr-3">State</th>
+              <th className="pb-1.5 pr-3">Speed</th>
+              <th className="pb-1.5 pr-3">Remote</th>
+              <th className="pb-1.5">Trunk</th>
+            </tr>
+          </thead>
+          <tbody>
+            {eports.map((p) => (
+              <tr key={p.id} className="border-t border-cohesity-border">
+                <td className="py-1.5 pr-3 text-ink tnum">{p.slotNumber != null ? `${p.slotNumber}/` : ''}{p.portNumber}</td>
+                <td className="py-1.5 pr-3"><Badge tone={statusTone(p.state)}>{p.state || 'Unknown'}</Badge></td>
+                <td className="py-1.5 pr-3 text-ink tnum">{speedLabel(p)}</td>
+                <td className="py-1.5 pr-3 text-ink-faint truncate max-w-[160px]">{p.remoteDevice || p.remotePortWwn || '—'}</td>
+                <td className="py-1.5">{p.trunked ? <Badge tone="info">Trunked</Badge> : <span className="text-ink-faint">—</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ConnectedDevices({ ports }) {
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const p of ports) {
+      const d = p.device;
+      if (!d) continue;
+      const key = d.enclosureGuid || d.enclosureHostName || d.enclosureName || d.symbolicName || p.id;
+      if (!map.has(key)) {
+        map.set(key, {
+          name: d.enclosureHostName || d.enclosureName || d.symbolicName || d.deviceSymbolicName || '—',
+          role: d.portRole, vendor: d.vendor,
+          hba: extractHba(d.deviceSymbolicName) || extractHba(d.symbolicName),
+          ports: [], zones: new Set(),
+        });
+      }
+      const g = map.get(key);
+      g.ports.push(`${p.slotNumber != null ? `${p.slotNumber}/` : ''}${p.portNumber}`);
+      for (const z of parseJsonArr(d.activeZones)) g.zones.add(z);
+    }
+    return [...map.values()];
+  }, [ports]);
+
+  return (
+    <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <p className="text-sm font-semibold text-ink mb-3">Connected Devices</p>
+      {groups.length === 0 ? (
+        <div className="text-sm text-ink-muted py-4 text-center">No connected devices.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-ink-faint text-[10px] uppercase tracking-wide">
+                <th className="pb-1.5 pr-3">Host / Enclosure</th>
+                <th className="pb-1.5 pr-3">Role</th>
+                <th className="pb-1.5 pr-3">Vendor</th>
+                <th className="pb-1.5 pr-3">HBA</th>
+                <th className="pb-1.5 pr-3">Ports</th>
+                <th className="pb-1.5">Zones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.map((g) => (
+                <tr key={g.name} className="border-t border-cohesity-border">
+                  <td className="py-1.5 pr-3">
+                    <Link to={`/brocade/devices?search=${encodeURIComponent(g.name)}`} className="text-brand hover:underline truncate block max-w-[220px]">{g.name}</Link>
+                  </td>
+                  <td className="py-1.5 pr-3"><RoleChip role={g.role} /></td>
+                  <td className="py-1.5 pr-3 text-ink-faint">{g.vendor || '—'}</td>
+                  <td className="py-1.5 pr-3 text-ink-faint truncate max-w-[160px]">{g.hba || '—'}</td>
+                  <td className="py-1.5 pr-3 text-ink-faint tnum">{g.ports.join(', ')}</td>
+                  <td className="py-1.5 text-ink-faint tnum">{g.zones.size}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EventsPanel({ events }) {
+  return (
+    <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><AlertTriangle size={15} className="text-brand" /> Recent Events</p>
+      {events === false ? (
+        <div className="text-sm text-ink-muted py-4 text-center">—</div>
+      ) : events == null ? (
+        <LoadingPanel label="Loading events…" height={100} />
+      ) : events.length === 0 ? (
+        <div className="text-sm text-ink-muted py-4 text-center">No events in the last 24h</div>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {events.map((e) => (
+            <div key={e.id} className="flex items-center justify-between gap-3 text-xs bg-surface-overlay rounded-lg px-3 py-2">
+              <div className="min-w-0 flex items-center gap-2">
+                <Badge tone={severityTone(e.severityNorm)}>{e.severity}</Badge>
+                <span className="text-ink-faint shrink-0">{e.messageId}</span>
+                <span className="text-ink truncate">{e.description || ''}</span>
+              </div>
+              <span className="text-ink-faint tnum shrink-0">{fmtWhen(e.lastOccurredMs)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <Link to="/brocade/events" className="text-[11px] text-brand underline mt-3 inline-block">View all →</Link>
+    </div>
+  );
+}
+
+function IssuesStrip({ issues }) {
+  if (!issues || issues.length === 0) return null;
+  return (
+    <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><ShieldAlert size={15} className="text-brand" /> Open Issues</p>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {issues.map((iss, i) => (
+          <span key={i} title={iss.message}>
+            <Badge tone={severityTone(iss.severity)}>{iss.type}</Badge>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function BrocadePortMapPage() {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -328,6 +610,9 @@ export default function BrocadePortMapPage() {
   const [hover, setHover] = useState(null);
   const [hoverPos, setHoverPos] = useState(null);
   const [selectedPort, setSelectedPort] = useState(null);
+  const [switchDetail, setSwitchDetail] = useState(null);
+  const [events, setEvents] = useState(null);
+  const [issues, setIssues] = useState([]);
   const loadingRef = useRef(false);
 
   useEffect(() => {
@@ -356,7 +641,13 @@ export default function BrocadePortMapPage() {
     if (switchId) {
       setDetail(null);
       setSelectedPort(null);
+      setSwitchDetail(null);
+      setEvents(null);
+      setIssues([]);
       loadPortmap(switchId);
+      client.get(`/brocade/switches/${switchId}`)
+        .then(({ data }) => setSwitchDetail(data))
+        .catch(() => setSwitchDetail(false));
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         next.set('switch', switchId);
@@ -365,6 +656,24 @@ export default function BrocadePortMapPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [switchId]);
+
+  const switchName = useMemo(() => {
+    const s = switches?.find((x) => String(x.id) === String(switchId));
+    return s?.name || (detail && detail.switch && detail.switch.name) || '';
+  }, [switches, switchId, detail]);
+
+  useEffect(() => {
+    if (!switchName) return;
+    client.get('/brocade/events', { params: { search: switchName, hours: 24, limit: 10 } })
+      .then(({ data }) => setEvents(data.events || []))
+      .catch(() => setEvents(false));
+    client.get('/brocade/issues')
+      .then(({ data }) => {
+        const list = (data.issues || []).filter((i) => String(i.target || '').toLowerCase().includes(switchName.toLowerCase()));
+        setIssues(list);
+      })
+      .catch(() => setIssues([]));
+  }, [switchName]);
 
   const grouped = useMemo(() => {
     if (!switches) return [];
@@ -473,6 +782,27 @@ export default function BrocadePortMapPage() {
           </div>
         )}
       </div>
+
+      {detail && sw && (
+        <div className="mt-4">
+          <SummaryCards
+            switchInfo={switchDetail && switchDetail !== false ? switchDetail.switch : null}
+            healthScore={switchDetail && switchDetail !== false ? switchDetail.healthScore : null}
+            ports={ports}
+          />
+          <div className="grid lg:grid-cols-2 gap-4 mb-4">
+            <PortBreakdown ports={ports} />
+            <IslTable ports={ports} />
+          </div>
+          <div className="mb-4">
+            <ConnectedDevices ports={ports} />
+          </div>
+          <div className="grid lg:grid-cols-2 gap-4 mb-4">
+            <EventsPanel events={events} />
+            <IssuesStrip issues={issues} />
+          </div>
+        </div>
+      )}
 
       <Tooltip port={hover} pos={hoverPos} />
     </div>
