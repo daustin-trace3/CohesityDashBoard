@@ -32,7 +32,7 @@ const PROBE_SECTIONS = ['fabrics', 'switches', 'switchports', 'deviceports', 'en
 const blankForm = () => ({
   name: '', host: '', port: 443, username: '', password: '', verifySsl: false,
   fosProxyEnabled: true, pollingIntervalMinutes: 60, eventPollMinutes: 5, portStatsIntervalMinutes: 15,
-  fosDirectEnabled: false, fosUsername: '', fosPassword: '', fosPort: 443,
+  fosDirectEnabled: false, fosUsername: '', fosPassword: '', fosPort: 443, fosAllowHttp: false,
 });
 
 const blankOverride = () => ({ switchWwn: '', ipAddress: '', username: '', password: '', port: '' });
@@ -303,7 +303,7 @@ export default function BrocadeSettingsPage() {
       pollingIntervalMinutes: s.pollingIntervalMinutes || 60, eventPollMinutes: s.eventPollMinutes || 5,
       portStatsIntervalMinutes: s.portStatsIntervalMinutes || 15,
       fosDirectEnabled: !!s.fosDirectEnabled, fosUsername: s.fosUsername || '', fosPassword: '',
-      fosPort: s.fosPort || 443, hasFosPassword: !!s.hasFosPassword,
+      fosPort: s.fosPort || 443, hasFosPassword: !!s.hasFosPassword, fosAllowHttp: !!s.fosAllowHttp,
     });
     setTestResult(null);
     setFosTestResult(null);
@@ -350,7 +350,7 @@ export default function BrocadeSettingsPage() {
         eventPollMinutes: Number(form.eventPollMinutes) || 5,
         portStatsIntervalMinutes: Number(form.portStatsIntervalMinutes) || 15,
         fosDirectEnabled: form.fosDirectEnabled, fosUsername: form.fosUsername.trim(),
-        fosPort: Number(form.fosPort) || 443,
+        fosPort: Number(form.fosPort) || 443, fosAllowHttp: form.fosAllowHttp,
       };
       // Blank FOS password = keep the stored one (omit from the request body).
       if (form.fosPassword) body.fosPassword = form.fosPassword;
@@ -546,6 +546,14 @@ export default function BrocadeSettingsPage() {
                       <label className="block text-xs font-semibold text-ink mb-1">Port</label>
                       <input type="number" value={form.fosPort} onChange={setF('fosPort')} className={inp} />
                     </div>
+                    <label className="flex items-start gap-2 pt-1 cursor-pointer select-none md:col-span-2">
+                      <input type="checkbox" checked={form.fosAllowHttp} onChange={setF('fosAllowHttp')} className="accent-status-crit cursor-pointer mt-0.5" />
+                      <span className="text-xs text-ink-muted">
+                        Allow HTTP <span className="text-status-crit font-semibold">(insecure)</span> — for switches without an HTTPS
+                        certificate; switch credentials travel in cleartext on the management network. Port 443 is treated as 80 when
+                        this is on. Prefer <code className="text-[10px]">seccertmgmt generate -cert https</code> per switch, then turn this off.
+                      </span>
+                    </label>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <button onClick={testFos} disabled={testingFos}

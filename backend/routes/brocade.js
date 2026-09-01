@@ -41,6 +41,7 @@ const publicSource = (row) => ({
   pollingIntervalMinutes: row.polling_interval_minutes,
   eventPollMinutes: row.event_poll_minutes,
   fosProxyEnabled: !!row.fos_proxy_enabled,
+  fosAllowHttp: !!row.fos_allow_http,
   portStatsIntervalMinutes: row.port_stats_interval_minutes,
   fosDirectEnabled: !!row.fos_direct_enabled,
   fosUsername: row.fos_username,
@@ -82,23 +83,24 @@ router.post('/sources', [
   body('fosUsername').optional({ checkFalsy: true }).isString().trim().isLength({ max: 120 }),
   body('fosPassword').optional({ checkFalsy: true }).isString().isLength({ max: 512 }),
   body('fosPort').optional().isInt({ min: 1, max: 65535 }).toInt(),
+  body('fosAllowHttp').optional().isBoolean(),
 ], validate, (req, res, next) => {
   try {
     const {
       name, host, port, username, password, verifySsl, pollingIntervalMinutes, eventPollMinutes, fosProxyEnabled,
-      fosDirectEnabled, fosUsername, fosPassword, fosPort,
+      fosDirectEnabled, fosUsername, fosPassword, fosPort, fosAllowHttp,
     } = req.body;
     const dup = db.prepare('SELECT id FROM brocade_sources WHERE host = ? AND port = ?').get(host.trim(), port || 443);
     if (dup) return res.status(409).json({ error: 'duplicate' });
     const info = db.prepare(`
       INSERT INTO brocade_sources (name, host, port, username, password_enc, verify_ssl,
         polling_interval_minutes, event_poll_minutes, fos_proxy_enabled,
-        fos_direct_enabled, fos_username, fos_password_enc, fos_port)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        fos_direct_enabled, fos_username, fos_password_enc, fos_port, fos_allow_http)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(name.trim(), host.trim(), port || 443, username.trim(), encrypt(password), verifySsl ? 1 : 0,
       pollingIntervalMinutes || 60, eventPollMinutes || 5, fosProxyEnabled === false ? 0 : 1,
       fosDirectEnabled ? 1 : 0, fosUsername ? fosUsername.trim() : null,
-      fosPassword ? encrypt(fosPassword) : null, fosPort || 443);
+      fosPassword ? encrypt(fosPassword) : null, fosPort || 443, fosAllowHttp ? 1 : 0);
     const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(info.lastInsertRowid);
     brocadePoller.schedule(row);
     brocadePoller.trigger(row).catch(() => {});
@@ -123,6 +125,7 @@ router.put('/sources/:id', [
   body('fosUsername').optional({ checkFalsy: true }).isString().trim().isLength({ max: 120 }),
   body('fosPassword').optional({ checkFalsy: true }).isString().isLength({ max: 512 }),
   body('fosPort').optional().isInt({ min: 1, max: 65535 }).toInt(),
+  body('fosAllowHttp').optional().isBoolean(),
 ], validate, (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(req.params.id);
@@ -132,7 +135,7 @@ router.put('/sources/:id', [
       UPDATE brocade_sources SET
         name = ?, host = ?, port = ?, username = ?, password_enc = ?, verify_ssl = ?, enabled = ?,
         polling_interval_minutes = ?, event_poll_minutes = ?, fos_proxy_enabled = ?, port_stats_interval_minutes = ?,
-        fos_direct_enabled = ?, fos_username = ?, fos_password_enc = ?, fos_port = ?
+        fos_direct_enabled = ?, fos_username = ?, fos_password_enc = ?, fos_port = ?, fos_allow_http = ?
       WHERE id = ?
     `).run(
       b.name?.trim() || row.name, b.host?.trim() || row.host, b.port || row.port,
@@ -148,6 +151,7 @@ router.put('/sources/:id', [
       b.fosUsername !== undefined ? (b.fosUsername ? b.fosUsername.trim() : null) : row.fos_username,
       b.fosPassword ? encrypt(b.fosPassword) : row.fos_password_enc,
       b.fosPort || row.fos_port,
+      b.fosAllowHttp !== undefined ? (b.fosAllowHttp ? 1 : 0) : row.fos_allow_http,
       row.id
     );
     const updated = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(row.id);
