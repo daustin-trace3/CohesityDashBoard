@@ -13,10 +13,32 @@ const TIER_LABEL = { backup: 'Backup', compute: 'Compute', san: 'SAN', storage: 
 
 const NODE_W = 180;
 const NODE_H = 54;
-const COL_GAP = 220;
-const ROW_GAP = 20;
-const PAD_X = 40;
-const PAD_Y = 60;
+const H_GAP = 56;          // gap between nodes in a row
+const RANK_GAP = 92;       // vertical gap between ranks (room for edge labels)
+const SUBROW_GAP = 26;     // gap between wrapped rows inside one rank
+const MAX_PER_ROW = 7;
+const PAD_X = 130;         // left margin holds the tier band labels
+const PAD_Y = 48;
+
+// Top-down hierarchy: each node type gets a vertical rank so the graph reads
+// backup → device → host/vcenter → HBAs → switches → fabric → targets →
+// volumes/datastores → arrays. Unknown types fall back to their tier's rank.
+const RANK_ORDER = [
+  ['protection', 'vpg', 'policy'],
+  ['cluster'],
+  ['vm'],
+  ['host'],
+  ['vcenter'],
+  ['hba'],
+  ['switch'],
+  ['fabric'],
+  ['targetPort'],
+  ['datastore', 'volume'],
+  ['array'],
+];
+const TIER_FALLBACK_RANK = { backup: 0, compute: 2, san: 6, storage: 9 };
+const TYPE_RANK = new Map();
+RANK_ORDER.forEach((types, i) => types.forEach((t) => TYPE_RANK.set(t, i)));
 
 const TYPE_ICON = {
   vm: Server, host: Server, vcenter: Building2, hba: Cable, switch: Waypoints, fabric: Network,
@@ -39,54 +61,91 @@ function statusRingClass(status) {
   return '';
 }
 
-/** Deterministic left→right tiered layout — no physics lib. Orders each
- * column by the barycenter of its already-placed left-neighbors so edges
- * don't cross more than necessary, falling back to input order. */
+/** Deterministic TOP-DOWN ranked layout — no physics lib. Node types map to
+ * vertical ranks (RANK_ORDER); each rank's nodes spread horizontally, centered,
+ * ordered by the barycenter of their already-placed upper neighbors, wrapping
+ * into sub-rows when a rank is wide. Returns tier band extents for labels. */
 function layout(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const byTier = new Map(TIERS.map((t) => [t, []]));
+  nodes.forEach((n) => { if (byTier.has(n.tier)) byTier.get(n.tier).push(n); });
+
+  const rankOf = (n) => TYPE_RANK.get(n.type) ?? TIER_FALLBACK_RANK[n.tier] ?? 6;
+  const byRank = new Map();
   nodes.forEach((n) => {
-    if (byTier.has(n.tier)) byTier.get(n.tier).push(n);
+    const r = rankOf(n);
+    if (!byRank.has(r)) byRank.set(r, []);
+    byRank.get(r).push(n);
   });
+  const ranks = [...byRank.keys()].sort((a, b) => a - b);
 
   const positions = new Map();
-  TIERS.forEach((tier, colIdx) => {
-    const colNodes = byTier.get(tier) || [];
-    if (colIdx > 0) {
-      const scored = colNodes.map((n, i) => {
-        const neighborYs = edges
-          .filter((e) => e.to === n.id || e.from === n.id)
-          .map((e) => positions.get(e.to === n.id ? e.from : e.to))
-          .filter((p) => p != null)
-          .map((p) => p.y);
-        const bary = neighborYs.length ? neighborYs.reduce((a, b) => a + b, 0) / neighborYs.length : i * 1e6;
-        return { n, bary, i };
-      });
-      scored.sort((a, b) => a.bary - b.bary || a.i - b.i);
-      colNodes.splice(0, colNodes.length, ...scored.map((s) => s.n));
-    }
-    colNodes.forEach((n, rowIdx) => {
-      positions.set(n.id, {
-        x: PAD_X + colIdx * COL_GAP,
-        y: PAD_Y + rowIdx * (NODE_H + ROW_GAP),
-      });
+  let y = PAD_Y;
+  const rankMeta = [];
+  ranks.forEach((r) => {
+    const rankNodes = byRank.get(r);
+    // order horizontally by average x of neighbors placed in higher ranks
+    const scored = rankNodes.map((n, i) => {
+      const neighborXs = edges
+        .filter((e) => e.to === n.id || e.from === n.id)
+        .map((e) => positions.get(e.to === n.id ? e.from : e.to))
+        .filter((p) => p != null)
+        .map((p) => p.x);
+      const bary = neighborXs.length ? neighborXs.reduce((a, b) => a + b, 0) / neighborXs.length : i * 1e9;
+      return { n, bary, i };
     });
+    scored.sort((a, b) => a.bary - b.bary || a.i - b.i);
+    const ordered = scored.map((s) => s.n);
+
+    const rows = [];
+    for (let i = 0; i < ordered.length; i += MAX_PER_ROW) rows.push(ordered.slice(i, i + MAX_PER_ROW));
+    const yStart = y;
+    rows.forEach((row, ri) => {
+      const rowW = row.length * NODE_W + (row.length - 1) * H_GAP;
+      row.forEach((n, ci) => {
+        positions.set(n.id, { x: -rowW / 2 + ci * (NODE_W + H_GAP), y, rowW });
+      });
+      y += NODE_H + (ri < rows.length - 1 ? SUBROW_GAP : 0);
+    });
+    rankMeta.push({ rank: r, tier: byRank.get(r)[0].tier, yStart, yEnd: y });
+    y += RANK_GAP;
+  });
+  const totalH = y - RANK_GAP + PAD_Y;
+
+  // shift x from centered-at-0 to absolute, computing canvas width
+  let maxRowW = NODE_W;
+  positions.forEach((p) => { if (p.rowW > maxRowW) maxRowW = p.rowW; });
+  const width = PAD_X * 2 + maxRowW;
+  const centerX = PAD_X + maxRowW / 2;
+  positions.forEach((p) => { p.x = centerX + p.x; });
+
+  // tier band extents (first/last rank of each tier actually present, in rank order)
+  const tierBands = [];
+  rankMeta.forEach((m) => {
+    // majority tier of the rank (a rank holds one type family, so first node's tier is representative)
+    const last = tierBands[tierBands.length - 1];
+    if (last && last.tier === m.tier) last.yEnd = m.yEnd;
+    else tierBands.push({ tier: m.tier, yStart: m.yStart, yEnd: m.yEnd });
   });
 
-  const width = PAD_X * 2 + (TIERS.length - 1) * COL_GAP + NODE_W;
-  const maxRows = Math.max(1, ...TIERS.map((t) => (byTier.get(t) || []).length));
-  const height = PAD_Y * 2 + maxRows * (NODE_H + ROW_GAP);
-
-  return { positions, byId, width, height, byTier };
+  return { positions, byId, width, height: totalH, byTier, tierBands };
 }
 
 function edgePath(from, to) {
-  const x1 = from.x + NODE_W;
-  const y1 = from.y + NODE_H / 2;
-  const x2 = to.x;
-  const y2 = to.y + NODE_H / 2;
-  const dx = Math.max(40, (x2 - x1) / 2);
-  return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+  let a = from, b = to;
+  if (a.y > b.y) { a = to; b = from; }
+  if (Math.abs(a.y - b.y) < NODE_H) {
+    // same rank: arc between side midpoints
+    const [l, r] = a.x <= b.x ? [a, b] : [b, a];
+    const x1 = l.x + NODE_W, y1 = l.y + NODE_H / 2;
+    const x2 = r.x, y2 = r.y + NODE_H / 2;
+    const dx = Math.max(24, (x2 - x1) / 2);
+    return `M ${x1} ${y1} C ${x1 + dx} ${y1 - 18}, ${x2 - dx} ${y2 - 18}, ${x2} ${y2}`;
+  }
+  const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H;
+  const x2 = b.x + NODE_W / 2, y2 = b.y;
+  const dy = Math.max(30, (y2 - y1) / 2);
+  return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
 }
 
 function Tooltip({ node, x, y }) {
@@ -153,7 +212,16 @@ export default function TopologyPage() {
 
   const nodes = data?.nodes || [];
   const edges = data?.edges || [];
-  const { positions, byId, width, height, byTier } = useMemo(() => layout(nodes, edges), [nodes, edges]);
+  const { positions, byId, width, height, byTier, tierBands } = useMemo(() => layout(nodes, edges), [nodes, edges]);
+
+  // Fit the whole graph into the viewport whenever a new graph loads.
+  useEffect(() => {
+    if (!data || !nodes.length) return;
+    const rect = svgWrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const scale = Math.min(1, (rect.width - 24) / width, (rect.height - 24) / height);
+    setView({ scale, x: (rect.width - width * scale) / 2, y: Math.max(8, (rect.height - height * scale) / 2) });
+  }, [data, width, height]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const neighborIds = useMemo(() => {
     if (!hoverId) return null;
@@ -265,7 +333,7 @@ export default function TopologyPage() {
           <div
             ref={svgWrapRef}
             className="relative overflow-hidden bg-surface-base/40"
-            style={{ height: '560px', cursor: dragRef.current ? 'grabbing' : 'grab' }}
+            style={{ height: 'max(560px, calc(100vh - 340px))', cursor: dragRef.current ? 'grabbing' : 'grab' }}
             onWheel={onWheel}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
@@ -275,20 +343,32 @@ export default function TopologyPage() {
             <svg width="100%" height="100%">
               <g transform={`translate(${view.x},${view.y}) scale(${view.scale})`}>
                 <svg width={width} height={height} overflow="visible">
+                  {(tierBands || []).map((b, i) => (
+                    <g key={b.tier + i}>
+                      {i > 0 && (
+                        <line x1={8} x2={width - 8} y1={b.yStart - RANK_GAP / 2} y2={b.yStart - RANK_GAP / 2}
+                          stroke="#2E3440" strokeWidth={1} strokeDasharray="2 6" />
+                      )}
+                      <text x={14} y={(b.yStart + b.yEnd) / 2} fontSize="11" fontWeight="700"
+                        fill="#6B7A88" letterSpacing="0.14em" style={{ textTransform: 'uppercase' }}>
+                        {TIER_LABEL[b.tier] || b.tier}
+                      </text>
+                    </g>
+                  ))}
                   {edges.map((e, i) => {
                     const from = positions.get(e.from);
                     const to = positions.get(e.to);
                     if (!from || !to) return null;
                     const dimmed = neighborIds && !(neighborIds.has(e.from) && neighborIds.has(e.to));
                     const color = e.kind === 'zoned' ? '#22d3ee' : GREEN_EDGE_KINDS.has(e.kind) ? '#22c55e' : '#4A5568';
-                    const midX = (from.x + NODE_W + to.x) / 2;
+                    const midX = (from.x + to.x) / 2 + NODE_W / 2;
                     const midY = (from.y + to.y) / 2 + NODE_H / 2;
                     return (
                       <g key={`${e.from}|${e.to}|${i}`} opacity={dimmed ? 0.35 : 1}>
                         <path d={edgePath(from, to)} fill="none" stroke={color}
                           strokeWidth={1.5} strokeDasharray={e.kind === 'zoned' ? '4 3' : undefined} />
                         {e.label && (
-                          <text x={midX} y={midY - 4} textAnchor="middle" fontSize="10" fill="#8FA3B0">{e.label}</text>
+                          <text x={midX + 6} y={midY} textAnchor="start" fontSize="10" fill="#8FA3B0">{e.label}</text>
                         )}
                       </g>
                     );
