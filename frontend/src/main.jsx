@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { createPortal } from 'react-dom';
 import * as ReactRouterDOM from 'react-router-dom';
 import {
   Chart as ChartJS,
@@ -12,7 +13,12 @@ import './index.css';
 // Expose globals for runtime-loaded plugin bundles (IIFE, no ESM imports)
 // before anything renders — see ICC Phase 2 contract C9.4.
 window.React = React;
-window.ReactDOM = ReactDOM;
+// react-dom/client only exports createRoot/hydrateRoot — plugin modals probe
+// window.ReactDOM.createPortal (portalOrInline guard) and were silently falling
+// back to inline fixed overlays, which mis-center inside the page container's
+// retained fade-in transform. Publish createPortal alongside the client API so
+// every installed plugin's modals portal to <body> without a republish.
+window.ReactDOM = { ...ReactDOM, createPortal };
 window.ReactRouterDOM = ReactRouterDOM;
 
 // Registers the same controllers/elements/scales/plugins the host's own
