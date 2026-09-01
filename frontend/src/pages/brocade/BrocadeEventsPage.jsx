@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, CheckCircle2, Undo2, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -167,7 +168,7 @@ export default function BrocadeEventsPage() {
         <TablePager ctl={ctl} />
       </div>
 
-      {detailEvent && (
+      {detailEvent && createPortal(
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4"
           onClick={() => setDetailEvent(null)}
@@ -208,7 +209,8 @@ export default function BrocadeEventsPage() {
               ))}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
