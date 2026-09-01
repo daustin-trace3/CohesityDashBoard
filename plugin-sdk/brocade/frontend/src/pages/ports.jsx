@@ -1,0 +1,151 @@
+import { Cable, GitCompare } from '../icons.jsx';
+import client from '../api.js';
+import {
+  useToast, PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated,
+  useTableControls, SortTh, TableControls, TablePager,
+  BRAND, fmtNum, statusTone,
+} from '../ui.jsx';
+import BrocadePortCompareModal from './portCompareModal.jsx';
+
+const MAX_COMPARE = 8;
+
+function fmtRate(n) {
+  return n == null ? '—' : Math.round(Number(n)).toLocaleString();
+}
+
+function fmtMb(n) {
+  return n == null ? '—' : Number(n).toFixed(1);
+}
+
+export default function BrocadePortsPage() {
+  const { toast } = useToast();
+  const [rows, setRows] = React.useState(null);
+  const [lastRefreshed, setLastRefreshed] = React.useState(null);
+  const [selected, setSelected] = React.useState(() => new Set());
+  const [compareOpen, setCompareOpen] = React.useState(false);
+
+  const load = React.useCallback(() => client.get('/brocade/ports')
+    .then(({ data }) => { setRows(data.ports || []); setLastRefreshed(new Date()); })
+    .catch(() => { setRows([]); toast({ type: 'error', title: 'Failed to load ports' }); }), [toast]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const list = (rows || []).map((p) => ({
+    ...p,
+    flagged: p.fenced || p.blocked ? 'Fenced/Blocked' : '',
+  }));
+  const ctl = useTableControls(list, {
+    searchKeys: ['name', 'switchName', 'fabricName', 'remoteDevice', 'wwn', 'zoneAlias'],
+    defaultSortKey: 'switchName', defaultSortDir: 'asc',
+    paginate: true, defaultPageSize: 50,
+  });
+
+  const toggleSelected = (wwn) => {
+    if (!wwn) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(wwn)) {
+        next.delete(wwn);
+      } else if (next.size < MAX_COMPARE) {
+        next.add(wwn);
+      }
+      return next;
+    });
+  };
+
+  const selectedWwns = React.useMemo(() => Array.from(selected), [selected]);
+
+  return (
+    <div className="animate-fade-in">
+      <PageHeader icon={Cable} title="Ports" description="Switch ports across all Brocade fabrics">
+        <LastUpdated date={lastRefreshed} prefix="Updated" />
+        <RefreshButton onClick={load} />
+      </PageHeader>
+
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+          <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by port, switch, fabric, WWN or remote device…"
+            filters={[
+              { k: 'fabricName', label: 'Fabrics' },
+              { k: 'switchName', label: 'Switches' },
+              { k: 'state', label: 'States' },
+              { k: 'health', label: 'Health' },
+              { k: 'type', label: 'Types' },
+            ]} />
+          {selectedWwns.length >= 2 && (
+            <button onClick={() => setCompareOpen(true)}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity cursor-pointer inline-flex items-center gap-1.5 shrink-0">
+              <GitCompare size={13} /> Compare ({selectedWwns.length})
+            </button>
+          )}
+        </div>
+        {rows == null ? (
+          <LoadingPanel label="Loading ports…" height={200} />
+        ) : list.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No ports found.</div>
+        ) : ctl.rows.length === 0 ? (
+          <div className="text-sm text-ink-muted py-6 text-center">No ports match your filters.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3 w-8"><span className="sr-only">Select</span></th>
+                <SortTh k="switchName" label="Switch" ctl={ctl} />
+                <SortTh k="portNumber" label="Port" ctl={ctl} />
+                <SortTh k="name" label="Name" ctl={ctl} />
+                <SortTh k="fabricName" label="Fabric" ctl={ctl} />
+                <SortTh k="type" label="Type" ctl={ctl} />
+                <SortTh k="state" label="State" ctl={ctl} />
+                <SortTh k="health" label="Health" ctl={ctl} />
+                <SortTh k="speed" label="Speed" ctl={ctl} />
+                <SortTh k="inFramesPerSec" label="IO In (fr/s)" ctl={ctl} />
+                <SortTh k="outFramesPerSec" label="IO Out (fr/s)" ctl={ctl} />
+                <SortTh k="inMbPerSec" label="MB/s In" ctl={ctl} />
+                <SortTh k="outMbPerSec" label="MB/s Out" ctl={ctl} />
+                <SortTh k="remoteDevice" label="Remote Device" ctl={ctl} />
+                <SortTh k="zoneAlias" label="Zone/Alias" ctl={ctl} />
+              </tr></thead>
+              <tbody>
+                {ctl.pageRows.map((p) => {
+                  const isSelected = selected.has(p.wwn);
+                  const disableCheckbox = !p.wwn || (!isSelected && selected.size >= MAX_COMPARE);
+                  return (
+                    <tr key={p.id} className={`border-b border-cohesity-border/50 ${(p.fenced || p.blocked) ? 'bg-status-crit/5' : ''}`}>
+                      <td className="py-2 pr-3">
+                        <input type="checkbox" checked={isSelected} disabled={disableCheckbox}
+                          onChange={() => toggleSelected(p.wwn)} aria-label={`Select ${p.name || p.portId} for compare`}
+                          className="accent-brand cursor-pointer disabled:cursor-not-allowed disabled:opacity-40" />
+                      </td>
+                      <td className="py-2 pr-3 text-ink">{p.switchName}</td>
+                      <td className="py-2 pr-3 text-ink-muted tnum">{p.slotNumber != null && p.portNumber != null ? `${p.slotNumber}/${p.portNumber}` : (p.portNumber ?? p.portIndex ?? '—')}</td>
+                      <td className="py-2 pr-3 text-ink-faint max-w-[200px] truncate" title={p.name || ''}>{p.name || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-faint">{p.fabricName || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-faint">{p.type || '—'}</td>
+                      <td className="py-2 pr-3"><Badge tone={statusTone(p.state)}>{p.state || 'Unknown'}</Badge></td>
+                      <td className="py-2 pr-3">
+                        <Badge tone={statusTone(p.health)}>{p.health || 'Unknown'}</Badge>
+                        {(p.fenced || p.blocked) && <Badge tone="crit" className="ml-1">{p.fenced ? 'Fenced' : 'Blocked'}</Badge>}
+                      </td>
+                      <td className="py-2 pr-3 text-ink-muted tnum">{p.speed || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-faint tnum">{fmtRate(p.inFramesPerSec)}</td>
+                      <td className="py-2 pr-3 text-ink-faint tnum">{fmtRate(p.outFramesPerSec)}</td>
+                      <td className="py-2 pr-3 text-ink-faint tnum">{fmtMb(p.inMbPerSec)}</td>
+                      <td className="py-2 pr-3 text-ink-faint tnum">{fmtMb(p.outMbPerSec)}</td>
+                      <td className="py-2 pr-3 text-ink-faint max-w-[220px] truncate" title={p.remoteDevice || ''}>{p.remoteDevice || '—'}</td>
+                      <td className="py-2 pr-3 text-ink-faint">{p.zoneAlias || '—'}{p.activeZoneCount ? ` (${fmtNum(p.activeZoneCount)})` : ''}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <TablePager ctl={ctl} />
+      </div>
+
+      {compareOpen && (
+        <BrocadePortCompareModal wwns={selectedWwns} onClose={() => setCompareOpen(false)} />
+      )}
+    </div>
+  );
+}
