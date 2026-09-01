@@ -1,13 +1,14 @@
 import { lazy } from 'react';
 import {
   Gauge, Waypoints, Router, Cable, HardDrive, Network, AlertTriangle, ClipboardCheck,
-  LineChart, ShieldCheck, Settings,
+  LineChart, ShieldCheck, Settings, Grid3x3,
 } from 'lucide-react';
 
 const BrocadeOverviewPage = lazy(() => import('../../pages/brocade/BrocadeOverviewPage'));
 const BrocadeFabricsPage = lazy(() => import('../../pages/brocade/BrocadeFabricsPage'));
 const BrocadeSwitchesPage = lazy(() => import('../../pages/brocade/BrocadeSwitchesPage'));
 const BrocadePortsPage = lazy(() => import('../../pages/brocade/BrocadePortsPage'));
+const BrocadePortMapPage = lazy(() => import('../../pages/brocade/BrocadePortMapPage'));
 const BrocadeDevicesPage = lazy(() => import('../../pages/brocade/BrocadeDevicesPage'));
 const BrocadeZoningPage = lazy(() => import('../../pages/brocade/BrocadeZoningPage'));
 const BrocadeEventsPage = lazy(() => import('../../pages/brocade/BrocadeEventsPage'));
@@ -30,6 +31,7 @@ const navGroups = [
       { label: 'Fabrics', route: '/brocade/fabrics', icon: Waypoints, isActive: (p) => p.startsWith('/brocade/fabrics') },
       { label: 'Switches', route: '/brocade/switches', icon: Router, isActive: (p) => p.startsWith('/brocade/switches') },
       { label: 'Ports', route: '/brocade/ports', icon: Cable, isActive: (p) => p.startsWith('/brocade/ports') },
+      { label: 'Port Map', route: '/brocade/portmap', icon: Grid3x3, isActive: (p) => p.startsWith('/brocade/portmap') },
       { label: 'Devices & Enclosures', route: '/brocade/devices', icon: HardDrive, isActive: (p) => p.startsWith('/brocade/devices') },
     ],
   },
@@ -78,6 +80,7 @@ export default {
     { path: 'brocade/fabrics', Component: BrocadeFabricsPage },
     { path: 'brocade/switches', Component: BrocadeSwitchesPage },
     { path: 'brocade/ports', Component: BrocadePortsPage },
+    { path: 'brocade/portmap', Component: BrocadePortMapPage },
     { path: 'brocade/devices', Component: BrocadeDevicesPage },
     { path: 'brocade/zoning', Component: BrocadeZoningPage },
     { path: 'brocade/events', Component: BrocadeEventsPage },

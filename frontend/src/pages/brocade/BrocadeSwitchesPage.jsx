@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
-import { Router, X, Cable, ShieldCheck } from 'lucide-react';
+import { useSearchParams, Link } from 'react-router-dom';
+import { Router, X, Cable, ShieldCheck, Grid3x3 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -23,7 +23,7 @@ function decodeManagementState(v) {
   return MGMT_BITS.filter((b) => (n & b.bit) === b.bit).map((b) => b.label);
 }
 
-function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
+function ModalShell({ title, subtitle, icon: Icon, onClose, children, switchId }) {
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
@@ -36,10 +36,18 @@ function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
               {subtitle && <p className="text-[11px] text-ink-faint truncate">{subtitle}</p>}
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close"
-            className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer shrink-0">
-            <X size={15} />
-          </button>
+          <div className="flex items-center gap-3 shrink-0">
+            {switchId != null && (
+              <Link to={`/brocade/portmap?switch=${switchId}`}
+                className="text-xs text-brand hover:underline inline-flex items-center gap-1">
+                <Grid3x3 size={13} /> Port map →
+              </Link>
+            )}
+            <button onClick={onClose} aria-label="Close"
+              className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer">
+              <X size={15} />
+            </button>
+          </div>
         </div>
         <div className="p-4 overflow-y-auto">{children}</div>
       </div>
@@ -84,7 +92,7 @@ function SwitchDetailModal({ id, onClose }) {
   const mgmtLabels = sw.managementStateLabels || decodeManagementState(sw.managementState);
 
   return (
-    <ModalShell title={sw.name} subtitle={[sw.ipAddress, sw.model, sw.fabricName].filter(Boolean).join(' · ')} icon={Router} onClose={onClose}>
+    <ModalShell title={sw.name} subtitle={[sw.ipAddress, sw.model, sw.fabricName].filter(Boolean).join(' · ')} icon={Router} onClose={onClose} switchId={id}>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <Badge tone={statusTone(sw.operationalStatus)}>{sw.operationalStatus || sw.status}</Badge>
         <Badge tone={statusTone(sw.health)}>{sw.health || 'Unknown'}</Badge>

@@ -472,3 +472,68 @@ describe('direct-FOS collector (addendum 2)', () => {
     expect(cols).toEqual(expect.arrayContaining(['fos_direct_enabled', 'fos_username', 'fos_password_enc', 'fos_port']));
   });
 });
+
+describe('GET /switches/:id/portmap (addendum 3)', () => {
+  it('404 not_found for an unknown switch id', async () => {
+    const res = await request(app).get('/api/brocade/switches/999999/portmap').set('x-api-key', API_KEY);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'not_found' });
+  });
+
+  it('returns switch + ports ordered by slot/port, with device+enclosure enrichment', async () => {
+    const src = seedSource({ host: '10.30.30.30' });
+    const swInfo = db.prepare(`
+      INSERT INTO brocade_switches (source_id, wwn, name, model_number, fabric_name, ip_address, max_port,
+        discovered_port_count, operational_status, health, firmware_version, stale)
+      VALUES (?, 'sw-wwn-pm-1', 'SW-PM-1', 'BR-G630', 'FAB-PM', '10.30.30.100', 96, 2, 'HEALTHY', 'Healthy', 'v9.2', 0)
+    `).run(src.id);
+    const swId = swInfo.lastInsertRowid;
+
+    db.prepare(`
+      INSERT INTO brocade_switch_ports (source_id, wwn, switch_wwn, switch_name, name, slot_number, port_number,
+        type, state, status, health, speed, occupied, stale)
+      VALUES (?, 'port-wwn-pm-2', 'sw-wwn-pm-1', 'SW-PM-1', 'port2', 0, 2, 'F_Port', 'Online', 'OK', 'Healthy', '16G', 1, 0)
+    `).run(src.id);
+    db.prepare(`
+      INSERT INTO brocade_switch_ports (source_id, wwn, switch_wwn, switch_name, name, slot_number, port_number,
+        type, state, status, health, speed, occupied, stale)
+      VALUES (?, 'port-wwn-pm-1', 'sw-wwn-pm-1', 'SW-PM-1', 'port1', 0, 1, 'F_Port', 'Online', 'OK', 'Healthy', '16G', 1, 0)
+    `).run(src.id);
+
+    db.prepare(`
+      INSERT INTO brocade_port_stats (source_id, port_wwn, switch_wwn, ts, in_frames_per_sec, out_frames_per_sec)
+      VALUES (?, 'port-wwn-pm-1', 'sw-wwn-pm-1', datetime('now'), 100, 200)
+    `).run(src.id);
+
+    db.prepare(`
+      INSERT INTO brocade_enclosures (source_id, guid, name, type, host_name, stale)
+      VALUES (?, 'encl-guid-pm-1', 'Host-Encl-1', 'Host', 'demo-host-01', 0)
+    `).run(src.id);
+    db.prepare(`
+      INSERT INTO brocade_device_ports (source_id, wwn, symbolic_name, vendor, port_role, switch_port_wwn,
+        enclosure_guid, enclosure_name, active_zones, stale)
+      VALUES (?, 'dev-wwn-pm-1', 'HBA Port 1', 'Emulex', 'Initiator', 'port-wwn-pm-1', 'encl-guid-pm-1', 'Host-Encl-1', '["zoneA"]', 0)
+    `).run(src.id);
+
+    const res = await request(app).get(`/api/brocade/switches/${swId}/portmap`).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.switch).toMatchObject({
+      id: swId, wwn: 'sw-wwn-pm-1', name: 'SW-PM-1', model: 'BR-G630', fabricName: 'FAB-PM',
+      ipAddress: '10.30.30.100', maxPort: 96, discoveredPortCount: 2, operationalStatus: 'HEALTHY',
+      health: 'Healthy', firmwareVersion: 'v9.2',
+    });
+    expect(res.body.ports.map((p) => p.portNumber)).toEqual([1, 2]);
+
+    const port1 = res.body.ports.find((p) => p.wwn === 'port-wwn-pm-1');
+    expect(port1.inFramesPerSec).toBe(100);
+    expect(port1.outFramesPerSec).toBe(200);
+    expect(port1.device).toBeTruthy();
+    expect(port1.device.enclosureHostName).toBe('demo-host-01');
+    expect(port1.device.enclosureType).toBe('Host');
+    expect(port1.device.portRole).toBe('Initiator');
+    expect(port1.device.activeZones).toEqual(['zoneA']);
+
+    const port2 = res.body.ports.find((p) => p.wwn === 'port-wwn-pm-2');
+    expect(port2.device).toBeNull();
+  });
+});
