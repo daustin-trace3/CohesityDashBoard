@@ -91,7 +91,8 @@ export default function BrocadePortsPage() {
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
                 <th className="py-2 pr-3 w-8"><span className="sr-only">Select</span></th>
                 <SortTh k="switchName" label="Switch" ctl={ctl} />
-                <SortTh k="name" label="Port" ctl={ctl} />
+                <SortTh k="portNumber" label="Port" ctl={ctl} />
+                <SortTh k="name" label="Name" ctl={ctl} />
                 <SortTh k="fabricName" label="Fabric" ctl={ctl} />
                 <SortTh k="type" label="Type" ctl={ctl} />
                 <SortTh k="state" label="State" ctl={ctl} />
@@ -116,7 +117,8 @@ export default function BrocadePortsPage() {
                           className="accent-brand cursor-pointer disabled:cursor-not-allowed disabled:opacity-40" />
                       </td>
                       <td className="py-2 pr-3 text-ink">{p.switchName}</td>
-                      <td className="py-2 pr-3 text-ink-muted">{p.name || p.portId}</td>
+                      <td className="py-2 pr-3 text-ink-muted tnum">{p.slotNumber != null && p.portNumber != null ? `${p.slotNumber}/${p.portNumber}` : (p.portNumber ?? p.portIndex ?? '—')}</td>
+                      <td className="py-2 pr-3 text-ink-faint max-w-[200px] truncate" title={p.name || ''}>{p.name || '—'}</td>
                       <td className="py-2 pr-3 text-ink-faint">{p.fabricName || '—'}</td>
                       <td className="py-2 pr-3 text-ink-faint">{p.type || '—'}</td>
                       <td className="py-2 pr-3"><Badge tone={statusTone(p.state)}>{p.state || 'Unknown'}</Badge></td>
