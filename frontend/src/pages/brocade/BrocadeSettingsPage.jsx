@@ -515,7 +515,9 @@ export default function BrocadeSettingsPage() {
                   {testResult && (
                     <span className={`inline-flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
                       {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                      {testResult.ok ? `Connected — v${testResult.version || '—'}${testResult.oemName ? ` (${testResult.oemName})` : ''}` : testResult.error}
+                      {testResult.ok
+                        ? `Connected${testResult.version ? ` — v${testResult.version}` : ' — login OK (version reporting needs SANnav 2.3.1+)'}${testResult.oemName ? ` (${testResult.oemName})` : ''}`
+                        : testResult.error}
                     </span>
                   )}
                 </div>
