@@ -283,7 +283,7 @@ module.exports = {
   opsSummary,
   collectAlerts,
   searchCategories,
-  metricsHistory: { arraysTable: 'brocade_sources', metricsTable: 'brocade_metrics', arrayIdColumn: 'source_id' },
+  metricsHistory: { arraysTable: 'brocade_sources', metricsTable: 'brocade_metrics', arrayIdColumn: 'source_id', tsColumn: 'ts' },
   server360,
   server360Suggest,
 };

@@ -113,9 +113,11 @@ router.get('/status', (req, res, next) => {
       const plugin = registry.getPlugin(pluginId);
       try {
         const arrays = db.prepare(`SELECT id, name, polling_interval_minutes FROM ${cfg.arraysTable}`).all();
+        // tsColumn: metrics tables that use a column other than captured_at (e.g. brocade_metrics.ts)
+        const tsCol = /^[a-z_]+$/.test(cfg.tsColumn || '') ? cfg.tsColumn : 'captured_at';
         const entities = buildEntities(
           arrays,
-          `SELECT captured_at FROM ${cfg.metricsTable} WHERE ${cfg.arrayIdColumn} = ? ORDER BY captured_at DESC LIMIT 1`,
+          `SELECT ${tsCol} AS captured_at FROM ${cfg.metricsTable} WHERE ${cfg.arrayIdColumn} = ? ORDER BY ${tsCol} DESC LIMIT 1`,
           pluginId
         );
         extraPluginSections[pluginId] = { enabled: plugin ? plugin.enabled : false, entities };
