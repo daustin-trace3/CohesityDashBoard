@@ -39,6 +39,7 @@ const pure1Router = require('./routes/pure1');
 const dnsRouter = require('./routes/dns');
 const searchRouter = require('./routes/search');
 const server360Router = require('./routes/server360');
+const topologyRouter = require('./routes/topology');
 const opsRouter = require('./routes/ops');
 const datasetsRouter = require('./routes/datasets');
 const userDashboardsRouter = require('./routes/userDashboards');
@@ -258,6 +259,8 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api/search', searchRouter);
   // Server 360 correlated view — per-section RBAC inside the handler.
   app.use('/api/server360', server360Router);
+  // Cross-platform Topology Map — per-section RBAC inside the handler.
+  app.use('/api/topology', topologyRouter);
   // Cross-platform ops summary (landing page) — read-only rollup, reachable
   // to any authenticated caller like /api/poller/status.
   app.use('/api/ops', opsRouter);
