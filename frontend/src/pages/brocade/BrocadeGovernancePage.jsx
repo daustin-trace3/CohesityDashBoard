@@ -29,6 +29,7 @@ export default function BrocadeGovernancePage() {
   const [data, setData] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [rawSection, setSection] = useState(searchParams.get('section') || 'firmware');
+  const [fabricDetail, setFabricDetail] = useState(null);
   const section = ['firmware', 'eos', 'certs', 'zoning', 'maps', 'server'].includes(rawSection) ? rawSection : 'firmware';
 
   const load = useCallback(() => client.get('/brocade/governance')
@@ -48,6 +49,7 @@ export default function BrocadeGovernancePage() {
 
   const firmware = data?.firmware || [];
   const eos = data?.eos || [];
+  const fosLifecycle = data?.fosLifecycle || [];
   const certs = data?.certs || [];
   const zoneAccess = data?.zoneAccess || [];
   const mapsCallhome = data?.mapsCallhome || [];
@@ -62,15 +64,17 @@ export default function BrocadeGovernancePage() {
     const certWarn = certs.filter((c) => c.daysLeft <= 60).length;
     const certCrit = certs.some((c) => c.daysLeft < 0);
     const mapsOff = mapsCallhome.filter((m) => !m.mapsEnabled).length;
+    const eosPast = fosLifecycle.filter((s) => s.status === 'eos' || s.status === 'lsa').length || eos.length;
+    const eosNearing = fosLifecycle.filter((s) => s.status === 'nearing').length;
     return [
       { id: 'firmware', label: 'Firmware Compliance', icon: GitCommitVertical, count: driftCount, tone: driftCount ? 'warn' : 'default' },
-      { id: 'eos', label: 'End-of-Support', icon: ShieldAlert, count: eos.length, tone: eos.length ? 'warn' : 'default' },
+      { id: 'eos', label: 'End-of-Support', icon: ShieldAlert, count: eosPast + eosNearing, tone: eosPast ? 'crit' : eosNearing ? 'warn' : 'default' },
       { id: 'certs', label: 'Certificates', icon: Lock, count: certWarn, tone: certCrit ? 'crit' : certWarn ? 'warn' : 'default' },
       { id: 'zoning', label: 'Zone Security', icon: ShieldCheck, count: zoneAccess.length, tone: zoneAccess.length ? 'warn' : 'default' },
       { id: 'maps', label: 'MAPS / Call-home', icon: Radio, count: mapsOff, tone: mapsOff ? 'warn' : 'default' },
       { id: 'server', label: 'SANnav Server', icon: KeyRound, count: 0, tone: 'default' },
     ];
-  }, [firmware, eos, certs, zoneAccess, mapsCallhome]);
+  }, [firmware, eos, fosLifecycle, certs, zoneAccess, mapsCallhome]);
 
   if (data == null) {
     return (
@@ -108,41 +112,116 @@ export default function BrocadeGovernancePage() {
 
         <div className="flex-1 min-w-0">
           {section === 'firmware' && (
-            <Section icon={GitCommitVertical} title="Firmware Compliance">
-              {firmware.length === 0 ? (
-                <p className="text-sm text-ink-muted py-4 text-center">No fabric firmware data.</p>
-              ) : (
-                <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-1.5">
-                  {firmware.map((f) => (
-                    <div key={f.fabricName} className="text-xs bg-surface-overlay rounded-lg px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-ink truncate">{f.fabricName}</span>
-                        {f.drift && <Badge tone="info">Drift</Badge>}
+            <>
+              <Section icon={GitCommitVertical} title="Firmware Compliance">
+                {firmware.length === 0 ? (
+                  <p className="text-sm text-ink-muted py-4 text-center">No fabric firmware data.</p>
+                ) : (
+                  <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-1.5">
+                    {firmware.map((f) => (
+                      <button
+                        key={f.fabricName}
+                        type="button"
+                        onClick={() => setFabricDetail(fabricDetail === f.fabricName ? null : f.fabricName)}
+                        className={`text-left text-xs rounded-lg px-3 py-2 transition-colors cursor-pointer ${
+                          fabricDetail === f.fabricName ? 'bg-surface-overlay ring-1 ring-brand/60' : 'bg-surface-overlay hover:ring-1 hover:ring-cohesity-border'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-ink truncate">{f.fabricName}</span>
+                          {f.drift && <Badge tone="info">Drift</Badge>}
+                        </div>
+                        <p className="text-ink-faint mt-0.5">{(f.versions || []).map((v) => `${v.version} (${v.count})`).join(', ')}</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </Section>
+              {fabricDetail && (() => {
+                const f = firmware.find((x) => x.fabricName === fabricDetail);
+                if (!f) return null;
+                const baseline = (f.versions || [])[0];
+                return (
+                  <div className="mt-4">
+                    <Section icon={GitCommitVertical} title={`${f.fabricName} — switches by firmware`}>
+                      <div className="flex flex-col gap-2.5">
+                        {(f.versions || []).map((v, vi) => (
+                          <div key={v.version || vi}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs text-ink tnum font-semibold">{v.version || 'Unknown'}</span>
+                              <span className="text-[11px] text-ink-faint tnum">{v.count} switch{v.count === 1 ? '' : 'es'}</span>
+                              {vi === 0 && f.drift ? <Badge tone="ok">Baseline (majority)</Badge>
+                                : vi > 0 ? <Badge tone="warn">Out of compliance</Badge> : null}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {(v.switches || []).map((name) => (
+                                <span key={name} className={`chip ${vi > 0 ? 'bg-status-warn/10 text-status-warn border-status-warn/25' : 'bg-surface-overlay text-ink-muted border-cohesity-border'}`}>{name}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <p className="text-ink-faint mt-0.5">{(f.versions || []).map((v) => `${v.version} (${v.count})`).join(', ')}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Section>
+                    </Section>
+                  </div>
+                );
+              })()}
+            </>
           )}
 
-          {section === 'eos' && (
-            <Section icon={ShieldAlert} title="End-of-Support Switches">
-              {eos.length === 0 ? (
-                <p className="text-sm text-status-ok py-4 text-center">No EOS switches.</p>
-              ) : (
-                <div className="grid md:grid-cols-2 gap-1.5">
-                  {eos.map((s) => (
-                    <div key={s.wwn || s.name} className="flex items-center justify-between text-xs bg-surface-overlay rounded-lg px-3 py-2">
-                      <span className="text-ink">{s.name}</span>
-                      <span className="text-ink-faint">{s.model || s.firmware_version || '—'}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Section>
-          )}
+          {section === 'eos' && (() => {
+            const groups = [
+              { key: 'eos', title: 'Past end of support', tone: 'crit', items: fosLifecycle.filter((s) => s.status === 'eos') },
+              { key: 'lsa', title: 'Legacy Support & Availability (LSA)', tone: 'warn', items: fosLifecycle.filter((s) => s.status === 'lsa') },
+              { key: 'nearing', title: 'Nearing end of support (≤ 12 months)', tone: 'warn', items: fosLifecycle.filter((s) => s.status === 'nearing') },
+              { key: 'supported', title: 'Supported', tone: 'ok', items: fosLifecycle.filter((s) => s.status === 'supported') },
+              { key: 'unknown', title: 'Unknown firmware train', tone: 'neutral', items: fosLifecycle.filter((s) => s.status === 'unknown') },
+            ].filter((g) => g.items.length > 0);
+            return (
+              <Section icon={ShieldAlert} title="Firmware End-of-Support (FOS lifecycle)">
+                {fosLifecycle.length === 0 ? (
+                  <p className="text-sm text-ink-muted py-4 text-center">No switch firmware data.</p>
+                ) : (
+                  <div className="flex flex-col gap-4">
+                    {groups.map((g) => (
+                      <div key={g.key}>
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <p className="text-[11px] uppercase tracking-wide text-ink-faint">{g.title}</p>
+                          <Badge tone={g.tone}>{g.items.length}</Badge>
+                        </div>
+                        <div className="grid md:grid-cols-2 gap-1.5">
+                          {g.items.map((s) => (
+                            <div key={s.id} className="flex items-center justify-between gap-2 text-xs bg-surface-overlay rounded-lg px-3 py-2">
+                              <div className="min-w-0">
+                                <span className="text-ink truncate block">{s.name}</span>
+                                <span className="text-ink-faint">{s.firmware || '—'}{s.fabricName ? ` · ${s.fabricName}` : ''}</span>
+                              </div>
+                              <div className="text-right shrink-0">
+                                {s.status === 'eos' && s.eosDate && (
+                                  <><Badge tone="crit">EOS {s.eosDate}</Badge>
+                                  <p className="text-[10px] text-ink-faint tnum mt-0.5">{Math.abs(s.eosDays)}d ago</p></>
+                                )}
+                                {s.status === 'eos' && !s.eosDate && <Badge tone="crit">EOS (SANnav)</Badge>}
+                                {s.status === 'lsa' && <Badge tone="warn">LSA since {s.lsaDate}</Badge>}
+                                {s.status === 'nearing' && (
+                                  <><Badge tone="warn">EOS {s.eosDate}</Badge>
+                                  <p className="text-[10px] text-ink-faint tnum mt-0.5">in {s.eosDays}d</p></>
+                                )}
+                                {s.status === 'supported' && (s.eosDate ? <Badge tone="ok">until {s.eosDate}</Badge> : <Badge tone="ok">Supported</Badge>)}
+                                {s.status === 'unknown' && <Badge tone="neutral">—</Badge>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-ink-faint pt-2 border-t border-cohesity-border">
+                      Dates from Broadcom's FOS release lifecycle (Brocade-SW-Support-RM); firmware end of support, not hardware EOL. SANnav's own EOS flag is honored where the train is unmapped.
+                    </p>
+                  </div>
+                )}
+              </Section>
+            );
+          })()}
 
           {section === 'certs' && (
             <Section icon={Lock} title="Certificate Expiry">
@@ -164,33 +243,39 @@ export default function BrocadeGovernancePage() {
           )}
 
           {section === 'zoning' && (
-            <Section icon={ShieldCheck} title="Zone Security">
-              {zoneAccess.length === 0 ? (
-                <p className="text-sm text-status-ok py-4 text-center">No default-access configs found.</p>
-              ) : (
-                <div className="flex flex-col gap-1.5 mb-3">
-                  {zoneAccess.map((z, i) => (
-                    <div key={i} className="flex items-center justify-between text-xs bg-status-warn/10 rounded-lg px-3 py-2">
-                      <span className="text-ink">{z.fabricName} — {z.cfgName}</span>
-                      <Badge tone="warn">All Access</Badge>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {recentZoneChanges.length > 0 && (
-                <>
-                  <p className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">Recent Changes</p>
-                  <div className="flex flex-col gap-1 max-h-72 overflow-y-auto">
-                    {recentZoneChanges.map((c, i) => (
-                      <div key={i} className="flex items-center justify-between text-[11px] text-ink-faint">
-                        <span>{c.fabricName} — {c.changeType}</span>
-                        <span className="tnum">{fmtWhen(c.detectedAt)}</span>
+            <div className="grid xl:grid-cols-2 gap-4 items-start">
+              <Section icon={ShieldCheck} title="Zone Security">
+                {zoneAccess.length === 0 ? (
+                  <p className="text-sm text-status-ok py-4 text-center">No default-access configs found.</p>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {zoneAccess.map((z, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs bg-status-warn/10 rounded-lg px-3 py-2">
+                        <span className="text-ink">{z.fabricName} — {z.cfgName}</span>
+                        <Badge tone="warn">All Access</Badge>
                       </div>
                     ))}
                   </div>
-                </>
-              )}
-            </Section>
+                )}
+              </Section>
+              <Section icon={GitCommitVertical} title="Recent Zone Changes">
+                {recentZoneChanges.length === 0 ? (
+                  <p className="text-sm text-ink-muted py-4 text-center">No zone changes detected.</p>
+                ) : (
+                  <div className="flex flex-col gap-1 max-h-[28rem] overflow-y-auto">
+                    {recentZoneChanges.map((c, i) => (
+                      <div key={i} className="flex items-center justify-between gap-3 text-xs bg-surface-overlay rounded-lg px-3 py-2">
+                        <div className="min-w-0">
+                          <span className="text-ink">{c.fabricName} — {c.changeType}</span>
+                          {c.detail && <p className="text-[11px] text-ink-faint truncate">{c.detail}</p>}
+                        </div>
+                        <span className="text-ink-faint tnum shrink-0">{fmtWhen(c.detectedAt)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Section>
+            </div>
           )}
 
           {section === 'maps' && (
