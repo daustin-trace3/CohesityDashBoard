@@ -937,15 +937,59 @@ router.get('/issue-history', [query('limit').optional().isInt({ min: 1, max: 200
   } catch (err) { next(err); }
 });
 
+// Broadcom FOS release lifecycle (docs.broadcom.com/doc/Brocade-SW-Support-RM).
+// eos = End of Support date; lsa = Legacy Support & Availability transition.
+const FOS_LIFECYCLE = {
+  '7.4': { eos: '2020-02-22' },
+  '8.0': { eos: '2020-11-30' },
+  '8.1': { eos: '2022-02-28' },
+  '8.2': { lsa: '2023-07-28' },
+  '9.0': { eos: '2025-04-30' },
+  '9.1': { eos: '2025-12-30' },
+  '9.2': {},
+};
+
+function fosTrain(firmwareVersion) {
+  const m = String(firmwareVersion || '').match(/v?(\d+)\.(\d+)/);
+  return m ? `${m[1]}.${m[2]}` : null;
+}
+
 router.get('/governance', (req, res, next) => {
   try {
     const firmware = [];
     const fabricNames = db.prepare('SELECT DISTINCT fabric_name FROM brocade_switches WHERE stale = 0 AND fabric_name IS NOT NULL').all().map((r) => r.fabric_name);
     for (const fabricName of fabricNames) {
-      const versions = db.prepare('SELECT firmware_version, COUNT(*) n FROM brocade_switches WHERE stale = 0 AND fabric_name = ? GROUP BY firmware_version').all(fabricName);
-      firmware.push({ fabricName, versions: versions.map((v) => ({ version: v.firmware_version, count: v.n })), drift: versions.length > 1 });
+      const versions = db.prepare(`
+        SELECT firmware_version, COUNT(*) n, json_group_array(name) names
+        FROM brocade_switches WHERE stale = 0 AND fabric_name = ?
+        GROUP BY firmware_version ORDER BY n DESC
+      `).all(fabricName);
+      firmware.push({
+        fabricName,
+        versions: versions.map((v) => ({ version: v.firmware_version, count: v.n, switches: parseJson(v.names, []) })),
+        drift: versions.length > 1,
+      });
     }
     const eos = db.prepare('SELECT * FROM brocade_switches WHERE stale = 0 AND eos_status = 1').all();
+    const nowMs = Date.now();
+    const fosLifecycle = db.prepare('SELECT id, name, fabric_name, firmware_version, eos_status FROM brocade_switches WHERE stale = 0').all()
+      .map((sw) => {
+        const train = fosTrain(sw.firmware_version);
+        const lc = train ? FOS_LIFECYCLE[train] : null;
+        const eosMs = lc?.eos ? Date.parse(lc.eos) : null;
+        const lsaMs = lc?.lsa ? Date.parse(lc.lsa) : null;
+        let status = 'unknown';
+        if (eosMs != null) status = eosMs <= nowMs ? 'eos' : (eosMs - nowMs) <= 365 * 86400000 ? 'nearing' : 'supported';
+        else if (lsaMs != null) status = 'lsa';
+        else if (lc) status = 'supported';
+        if (status === 'supported' && sw.eos_status === 1) status = 'eos';
+        return {
+          id: sw.id, name: sw.name, fabricName: sw.fabric_name, firmware: sw.firmware_version,
+          train, status, sannavEos: sw.eos_status === 1,
+          eosDate: lc?.eos || null, lsaDate: lc?.lsa || null,
+          eosDays: eosMs != null ? Math.round((eosMs - nowMs) / 86400000) : null,
+        };
+      });
     const now = Date.now();
     const certs = [];
     for (const sw of db.prepare('SELECT * FROM brocade_switches WHERE stale = 0 AND tls_cert_expiry_ms IS NOT NULL').all()) {
@@ -976,6 +1020,7 @@ router.get('/governance', (req, res, next) => {
     res.json({
       firmware,
       eos: eos.map((sw) => ({ id: sw.id, name: sw.name, wwn: sw.wwn, fabricName: sw.fabric_name, eosStatus: sw.eos_status })),
+      fosLifecycle,
       certs,
       zoneAccess,
       mapsCallhome,
