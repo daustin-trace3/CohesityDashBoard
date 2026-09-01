@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { AlertTriangle, CheckCircle2, Undo2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Undo2, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -17,6 +17,7 @@ export default function BrocadeEventsPage() {
   const [ackFilter, setAckFilter] = useState('');
   const [selected, setSelected] = useState(new Set());
   const [acting, setActing] = useState(false);
+  const [detailEvent, setDetailEvent] = useState(null);
   const timerRef = useRef(null);
 
   const load = useCallback(() => {
@@ -143,7 +144,16 @@ export default function BrocadeEventsPage() {
                     <td className="py-2 pr-3 text-ink-faint">{e.eventCategory || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{e.sourceName || '—'}</td>
                     <td className="py-2 pr-3 text-ink-faint">{e.fabricName || '—'}</td>
-                    <td className="py-2 pr-3 text-ink max-w-[360px] truncate" title={e.description || ''}>{e.description || e.messageId || '—'}</td>
+                    <td className="py-2 pr-3 max-w-[360px]">
+                      <button
+                        type="button"
+                        onClick={() => setDetailEvent(e)}
+                        className="block w-full text-left text-ink truncate hover:text-brand hover:underline cursor-pointer"
+                        title="Click for full details"
+                      >
+                        {e.description || e.messageId || '—'}
+                      </button>
+                    </td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(e.lastOccurredMs)}</td>
                     <td className="py-2 pr-3">
                       <Badge tone={e.acknowledged ? 'ok' : 'neutral'}>{e.acknowledged ? 'Ack' : 'Open'}</Badge>
@@ -156,6 +166,50 @@ export default function BrocadeEventsPage() {
         )}
         <TablePager ctl={ctl} />
       </div>
+
+      {detailEvent && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setDetailEvent(null)}
+        >
+          <div
+            className="panel p-4 w-full max-w-lg max-h-[80vh] overflow-y-auto shadow-xl"
+            style={{ borderTop: `3px solid ${BRAND}` }}
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Badge tone={severityTone(detailEvent.severityNorm)}>{detailEvent.severity}</Badge>
+                <p className="text-xs font-semibold text-ink-faint uppercase tracking-wide">Event Details</p>
+              </div>
+              <button onClick={() => setDetailEvent(null)} aria-label="Close"
+                className="flex items-center justify-center h-6 w-6 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer">
+                <X size={13} />
+              </button>
+            </div>
+            <p className="text-sm text-ink whitespace-pre-wrap break-words mb-3">{detailEvent.description || '—'}</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs pt-3 border-t border-cohesity-border">
+              {[
+                ['Message ID', detailEvent.messageId],
+                ['Event ID', detailEvent.eventId],
+                ['Category', detailEvent.eventCategory],
+                ['Source', detailEvent.sourceName],
+                ['Source Address', detailEvent.sourceAddress],
+                ['Fabric', detailEvent.fabricName],
+                ['First Seen', detailEvent.firstOccurredMs ? fmtWhen(detailEvent.firstOccurredMs) : null],
+                ['Last Seen', detailEvent.lastOccurredMs ? fmtWhen(detailEvent.lastOccurredMs) : null],
+                ['Occurrences', detailEvent.count],
+                ['Status', detailEvent.acknowledged ? 'Acknowledged' : 'Open'],
+              ].filter(([, v]) => v != null && v !== '').map(([k, v]) => (
+                <div key={k}>
+                  <p className="text-[10px] uppercase tracking-wide text-ink-faint">{k}</p>
+                  <p className="text-ink tnum break-words">{String(v)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
