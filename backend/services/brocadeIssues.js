@@ -146,11 +146,15 @@ function computeIssues() {
     }
   }
 
-  // Rule 8: switch_eos
+  // Rule 8: switch_eos — SANnav's flag OR derived from the Broadcom FOS
+  // lifecycle table (SANnav <2.3.1 never reports eosStatus).
+  const { lifecycleFor } = require('./brocadeFosLifecycle');
   for (const sw of switches) {
-    if (sw.eos_status === 1) {
+    const lc = lifecycleFor(sw.firmware_version, sw.eos_status);
+    if (lc.isEos) {
       const source = srcName.get(sw.source_id) || `source ${sw.source_id}`;
-      issues.push({ sourceId: sw.source_id, source, type: 'switch_eos', target: sw.name || sw.wwn, severity: 'warning', message: `Switch ${sw.name || sw.wwn} firmware is End of Support` });
+      const since = lc.eosDate ? ` (EOS since ${lc.eosDate})` : '';
+      issues.push({ sourceId: sw.source_id, source, type: 'switch_eos', target: sw.name || sw.wwn, severity: 'warning', message: `Switch ${sw.name || sw.wwn} firmware ${sw.firmware_version || ''} is End of Support${since}` });
     }
   }
 

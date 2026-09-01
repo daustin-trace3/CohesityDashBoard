@@ -528,16 +528,21 @@ router.get('/switches', [
       SELECT sw.*, s.name AS source_name FROM brocade_switches sw JOIN brocade_sources s ON s.id = sw.source_id
       WHERE ${clauses.join(' AND ')} ORDER BY s.name, sw.name
     `).all(...params);
+    const { lifecycleFor: lcFor } = require('../services/brocadeFosLifecycle');
     res.json({
-      switches: rows.map((sw) => ({
+      switches: rows.map((sw) => {
+        const lc = lcFor(sw.firmware_version, sw.eos_status);
+        return ({
         id: sw.id, sourceId: sw.source_id, sourceName: sw.source_name, wwn: sw.wwn, name: sw.name,
         ipAddress: sw.ip_address, model: sw.model, modelNumber: sw.model_number, firmwareVersion: sw.firmware_version,
         serialNumber: sw.serial_number, fabricName: sw.fabric_name, role: sw.role, state: sw.state, status: sw.status,
         operationalStatus: sw.operational_status, health: sw.health, statusReason: sw.status_reason,
-        portCount: sw.discovered_port_count, maxPort: sw.max_port, eosStatus: sw.eos_status,
+        portCount: sw.discovered_port_count, maxPort: sw.max_port,
+        eosStatus: lc.isEos ? 1 : 0, fosEosDate: lc.eosDate, fosLifecycleStatus: lc.status,
         maintenanceMode: !!sw.maintenance_mode, tlsCertExpiryMs: sw.tls_cert_expiry_ms,
         managementState: sw.management_state, isMissing: !!sw.is_missing, stale: !!sw.stale,
-      })),
+        });
+      }),
     });
   } catch (err) { next(err); }
 });
@@ -553,8 +558,16 @@ router.get('/switches/:id', [param('id').isInt().toInt()], validate, (req, res, 
     const health = db.prepare(`SELECT * FROM brocade_health_scores WHERE source_id = ? AND entity_type = 'SWITCH' AND entity_guid = ? AND stale = 0`).get(sw.source_id, sw.wwn);
     const chassis = db.prepare('SELECT * FROM brocade_chassis WHERE source_id = ? AND wwn = ?').get(sw.source_id, sw.physical_switch_wwn);
     const { decodeMgmtState } = require('../services/brocadeIssues');
+    const { lifecycleFor: lcDetail } = require('../services/brocadeFosLifecycle');
+    const swLc = lcDetail(sw.firmware_version, sw.eos_status);
     res.json({
-      switch: { ...sw, managementStateLabels: decodeMgmtState(sw.management_state) },
+      switch: {
+        ...sw,
+        eos_status: swLc.isEos ? 1 : 0,
+        fos_eos_date: swLc.eosDate,
+        fos_lifecycle_status: swLc.status,
+        managementStateLabels: decodeMgmtState(sw.management_state),
+      },
       ports,
       healthScore: health ? { score: health.score, status: health.status, contributors: parseJson(health.contributors_json, []) } : null,
       chassis: chassis || null,
@@ -937,22 +950,7 @@ router.get('/issue-history', [query('limit').optional().isInt({ min: 1, max: 200
   } catch (err) { next(err); }
 });
 
-// Broadcom FOS release lifecycle (docs.broadcom.com/doc/Brocade-SW-Support-RM).
-// eos = End of Support date; lsa = Legacy Support & Availability transition.
-const FOS_LIFECYCLE = {
-  '7.4': { eos: '2020-02-22' },
-  '8.0': { eos: '2020-11-30' },
-  '8.1': { eos: '2022-02-28' },
-  '8.2': { lsa: '2023-07-28' },
-  '9.0': { eos: '2025-04-30' },
-  '9.1': { eos: '2025-12-30' },
-  '9.2': {},
-};
-
-function fosTrain(firmwareVersion) {
-  const m = String(firmwareVersion || '').match(/v?(\d+)\.(\d+)/);
-  return m ? `${m[1]}.${m[2]}` : null;
-}
+const { lifecycleFor } = require('../services/brocadeFosLifecycle');
 
 router.get('/governance', (req, res, next) => {
   try {
@@ -971,23 +969,13 @@ router.get('/governance', (req, res, next) => {
       });
     }
     const eos = db.prepare('SELECT * FROM brocade_switches WHERE stale = 0 AND eos_status = 1').all();
-    const nowMs = Date.now();
     const fosLifecycle = db.prepare('SELECT id, name, fabric_name, firmware_version, eos_status FROM brocade_switches WHERE stale = 0').all()
       .map((sw) => {
-        const train = fosTrain(sw.firmware_version);
-        const lc = train ? FOS_LIFECYCLE[train] : null;
-        const eosMs = lc?.eos ? Date.parse(lc.eos) : null;
-        const lsaMs = lc?.lsa ? Date.parse(lc.lsa) : null;
-        let status = 'unknown';
-        if (eosMs != null) status = eosMs <= nowMs ? 'eos' : (eosMs - nowMs) <= 365 * 86400000 ? 'nearing' : 'supported';
-        else if (lsaMs != null) status = 'lsa';
-        else if (lc) status = 'supported';
-        if (status === 'supported' && sw.eos_status === 1) status = 'eos';
+        const lc = lifecycleFor(sw.firmware_version, sw.eos_status);
         return {
           id: sw.id, name: sw.name, fabricName: sw.fabric_name, firmware: sw.firmware_version,
-          train, status, sannavEos: sw.eos_status === 1,
-          eosDate: lc?.eos || null, lsaDate: lc?.lsa || null,
-          eosDays: eosMs != null ? Math.round((eosMs - nowMs) / 86400000) : null,
+          train: lc.train, status: lc.status, sannavEos: sw.eos_status === 1,
+          eosDate: lc.eosDate, lsaDate: lc.lsaDate, eosDays: lc.eosDays,
         };
       });
     const now = Date.now();
