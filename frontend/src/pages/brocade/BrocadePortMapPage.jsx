@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { Grid3x3, X, HeartPulse, LayoutGrid, Waypoints, Server, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { Grid3x3, X, Search, HeartPulse, LayoutGrid, Waypoints, Server, AlertTriangle, ShieldAlert } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -535,10 +535,15 @@ function IslTable({ ports }) {
   );
 }
 
-function ConnectedDevices({ ports }) {
+function ConnectedDevices({ ports, selectedPort, peerIds, onClear }) {
+  const filtered = useMemo(() => {
+    if (!selectedPort || selectedPort.placeholder) return ports;
+    return ports.filter((p) => p.id === selectedPort.id || (peerIds && peerIds.has(p.id)));
+  }, [ports, selectedPort, peerIds]);
+
   const groups = useMemo(() => {
     const map = new Map();
-    for (const p of ports) {
+    for (const p of filtered) {
       const d = p.device;
       if (!d) continue;
       const key = d.enclosureGuid || d.enclosureHostName || d.enclosureName || d.symbolicName || p.id;
@@ -555,13 +560,33 @@ function ConnectedDevices({ ports }) {
       for (const z of parseJsonArr(d.activeZones)) g.zones.add(z);
     }
     return [...map.values()];
-  }, [ports]);
+  }, [filtered]);
+
+  const isFiltered = !!selectedPort && !selectedPort.placeholder;
 
   return (
     <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-      <p className="text-sm font-semibold text-ink mb-3">Connected Devices</p>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <p className="text-sm font-semibold text-ink">
+          Connected Devices
+          {isFiltered && (
+            <span className="ml-2 text-[11px] font-normal text-ink-faint">
+              — port {selectedPort.slotNumber != null ? `${selectedPort.slotNumber}/` : ''}{selectedPort.portNumber} + zone peers
+            </span>
+          )}
+        </p>
+        {isFiltered && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-[11px] text-brand hover:underline shrink-0 cursor-pointer"
+          >
+            Show all
+          </button>
+        )}
+      </div>
       {groups.length === 0 ? (
-        <div className="text-sm text-ink-muted py-4 text-center">No connected devices.</div>
+        <div className="text-sm text-ink-muted py-4 text-center">{isFiltered ? 'No devices on the selected port.' : 'No connected devices.'}</div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -651,6 +676,8 @@ export default function BrocadePortMapPage() {
   const [hover, setHover] = useState(null);
   const [hoverPos, setHoverPos] = useState(null);
   const [selectedPort, setSelectedPort] = useState(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [switchQuery, setSwitchQuery] = useState('');
   const [switchDetail, setSwitchDetail] = useState(null);
   const [events, setEvents] = useState(null);
   const [issues, setIssues] = useState([]);
@@ -682,6 +709,7 @@ export default function BrocadePortMapPage() {
     if (switchId) {
       setDetail(null);
       setSelectedPort(null);
+      setDetailsOpen(false);
       setSwitchDetail(null);
       setEvents(null);
       setIssues([]);
@@ -718,14 +746,21 @@ export default function BrocadePortMapPage() {
 
   const grouped = useMemo(() => {
     if (!switches) return [];
+    const q = switchQuery.trim().toLowerCase();
+    const list = q
+      ? switches.filter((s) => [s.name, s.model, s.ipAddress, s.fabricName]
+          .some((v) => String(v || '').toLowerCase().includes(q)))
+      : switches;
     const byFabric = new Map();
-    for (const s of switches) {
+    for (const s of list) {
       const f = s.fabricName || 'Unassigned';
       if (!byFabric.has(f)) byFabric.set(f, []);
       byFabric.get(f).push(s);
     }
     return [...byFabric.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [switches]);
+  }, [switches, switchQuery]);
+
+  const filteredCount = useMemo(() => grouped.reduce((n, [, list]) => n + list.length, 0), [grouped]);
 
   const sw = detail && detail.switch;
   const ports = (detail && detail.ports) || [];
@@ -768,7 +803,8 @@ export default function BrocadePortMapPage() {
   };
   const handleMove = (e) => setHoverPos({ x: e.clientX, y: e.clientY });
   const handleLeave = () => { setHover(null); setHoverPos(null); };
-  const handleClick = (port) => setSelectedPort(port);
+  const handleClick = (port) => { setSelectedPort(port); setDetailsOpen(true); };
+  const clearSelection = () => { setSelectedPort(null); setDetailsOpen(false); };
 
   return (
     <div className="animate-fade-in">
@@ -783,24 +819,53 @@ export default function BrocadePortMapPage() {
         ) : switches.length === 0 ? (
           <div className="text-sm text-ink-muted py-2">No switches found.</div>
         ) : (
-          <select
-            value={switchId}
-            onChange={(e) => setSwitchId(e.target.value)}
-            className="bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink w-full max-w-md"
-          >
-            {grouped.map(([fabric, list]) => (
-              <optgroup key={fabric} label={fabric}>
-                {list.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name} — {s.model || s.ipAddress || ''}</option>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="relative w-full max-w-xs">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
+              <input
+                type="text"
+                value={switchQuery}
+                onChange={(e) => setSwitchQuery(e.target.value)}
+                placeholder="Search switches…"
+                className="bg-surface-overlay border border-cohesity-border rounded-lg pl-8 pr-3 py-2 text-sm text-ink w-full placeholder:text-ink-faint"
+              />
+            </div>
+            {filteredCount === 0 ? (
+              <span className="text-sm text-ink-muted">No switches match "{switchQuery}"</span>
+            ) : (
+              <select
+                value={switchId}
+                onChange={(e) => setSwitchId(e.target.value)}
+                className="bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink w-full max-w-md flex-1"
+              >
+                {grouped.every(([, list]) => !list.some((s) => String(s.id) === String(switchId))) && (
+                  <option value={switchId} disabled hidden>{switchName || 'Select a switch…'}</option>
+                )}
+                {grouped.map(([fabric, list]) => (
+                  <optgroup key={fabric} label={fabric}>
+                    {list.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name} — {s.model || s.ipAddress || ''}</option>
+                    ))}
+                  </optgroup>
                 ))}
-              </optgroup>
-            ))}
-          </select>
+              </select>
+            )}
+            {switchQuery && (
+              <span className="text-[11px] text-ink-faint tnum shrink-0">{filteredCount} of {switches.length}</span>
+            )}
+          </div>
         )}
       </div>
 
-      <div className="flex gap-4 items-start">
-        <div className="panel p-4 flex-1 min-w-0" style={{ borderTop: `3px solid ${BRAND}` }}>
+      {detail && sw && (
+        <SummaryCards
+          switchInfo={switchDetail && switchDetail !== false ? switchDetail.switch : null}
+          healthScore={switchDetail && switchDetail !== false ? switchDetail.healthScore : null}
+          ports={ports}
+        />
+      )}
+
+      <div className="panel p-4 min-w-0" style={{ borderTop: `3px solid ${BRAND}` }}>
           {detail === false ? (
             <div className="text-sm text-ink-muted py-6 text-center">Could not load port map.</div>
           ) : detail == null ? (
@@ -840,39 +905,45 @@ export default function BrocadePortMapPage() {
               )}
             </>
           )}
-        </div>
-
-        {selectedPort && (
-          <div className="panel p-4 w-72 shrink-0" style={{ borderTop: `3px solid ${BRAND}` }}>
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-xs font-semibold text-ink-faint uppercase tracking-wide">Port Details</p>
-              <button onClick={() => setSelectedPort(null)} aria-label="Close"
-                className="flex items-center justify-center h-6 w-6 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer">
-                <X size={13} />
-              </button>
-            </div>
-            <PortDetails port={selectedPort} peerInfo={peerInfo} onSelectPeer={handleClick} />
-          </div>
-        )}
       </div>
 
       {detail && sw && (
         <div className="mt-4">
-          <SummaryCards
-            switchInfo={switchDetail && switchDetail !== false ? switchDetail.switch : null}
-            healthScore={switchDetail && switchDetail !== false ? switchDetail.healthScore : null}
-            ports={ports}
-          />
           <div className="grid lg:grid-cols-2 gap-4 mb-4">
             <PortBreakdown ports={ports} />
             <IslTable ports={ports} />
           </div>
           <div className="mb-4">
-            <ConnectedDevices ports={ports} />
+            <ConnectedDevices ports={ports} selectedPort={selectedPort} peerIds={peerInfo?.ids} onClear={clearSelection} />
           </div>
           <div className="grid lg:grid-cols-2 gap-4 mb-4">
             <EventsPanel events={events} />
             <IssuesStrip issues={issues} />
+          </div>
+        </div>
+      )}
+
+      {detailsOpen && selectedPort && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setDetailsOpen(false)}
+        >
+          <div
+            className="panel p-4 w-full max-w-sm max-h-[80vh] overflow-y-auto shadow-xl"
+            style={{ borderTop: `3px solid ${BRAND}` }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-ink-faint uppercase tracking-wide">Port Details</p>
+              <button onClick={() => setDetailsOpen(false)} aria-label="Close"
+                className="flex items-center justify-center h-6 w-6 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer">
+                <X size={13} />
+              </button>
+            </div>
+            <PortDetails port={selectedPort} peerInfo={peerInfo} onSelectPeer={handleClick} />
+            <p className="text-[10px] text-ink-faint pt-2 mt-2 border-t border-cohesity-border">
+              Closing keeps the port selected — highlights and the Connected Devices filter stay until you clear the selection.
+            </p>
           </div>
         </div>
       )}
