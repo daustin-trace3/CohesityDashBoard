@@ -30,7 +30,7 @@ function resolveFosTarget(source, switchRow) {
     override = db.prepare('SELECT * FROM brocade_fos_overrides WHERE source_id = ? AND switch_wwn = ? COLLATE NOCASE').get(source.id, switchRow.wwn);
   }
   if (!override && switchRow.ip_address) {
-    override = db.prepare('SELECT * FROM brocade_fos_overrides WHERE source_id = ? AND TRIM(COALESCE(ip_address, "")) = ?').get(source.id, String(switchRow.ip_address).trim());
+    override = db.prepare("SELECT * FROM brocade_fos_overrides WHERE source_id = ? AND TRIM(COALESCE(ip_address, '')) = ?").get(source.id, String(switchRow.ip_address).trim());
   }
   const ip = override?.ip_address || switchRow.ip_address;
   const username = override?.username || source.fos_username;
@@ -60,7 +60,7 @@ function findSeedSwitchRow(sourceId, fabric) {
   }
   if (fabric.seedSwitchIp) {
     const ip = String(fabric.seedSwitchIp).trim();
-    const byIp = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND TRIM(COALESCE(ip_address, "")) = ?').get(sourceId, ip);
+    const byIp = db.prepare("SELECT * FROM brocade_switches WHERE source_id = ? AND TRIM(COALESCE(ip_address, '')) = ?").get(sourceId, ip);
     if (byIp) return byIp;
     return { wwn: wwn || null, ip_address: ip, virtual_fabric_id: fabric.virtualFabricId };
   }

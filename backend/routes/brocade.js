@@ -297,7 +297,7 @@ function defaultFosSwitch(sourceId, switchWwn) {
   }
   if (fabric.seed_switch_ip) {
     const ip = String(fabric.seed_switch_ip).trim();
-    const byIp = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND TRIM(COALESCE(ip_address, "")) = ?').get(sourceId, ip);
+    const byIp = db.prepare("SELECT * FROM brocade_switches WHERE source_id = ? AND TRIM(COALESCE(ip_address, '')) = ?").get(sourceId, ip);
     if (byIp) return byIp;
     return { wwn: wwn || null, ip_address: ip, virtual_fabric_id: fabric.virtual_fabric_id };
   }
@@ -307,7 +307,8 @@ function defaultFosSwitch(sourceId, switchWwn) {
 router.post('/sources/:id/fos-test', [
   param('id').isInt().toInt(),
   body('switchWwn').optional().isString().trim(),
-], validate, async (req, res) => {
+], validate, async (req, res, next) => {
+  try {
   const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'not_found' });
   const sw = defaultFosSwitch(row.id, req.body.switchWwn);
@@ -322,6 +323,7 @@ router.post('/sources/:id/fos-test', [
   }
   const result = await brocadeFosApi.testFos(target);
   res.status(200).json(result);
+  } catch (err) { next(err); }
 });
 
 router.get('/sources/:id/probe', [
