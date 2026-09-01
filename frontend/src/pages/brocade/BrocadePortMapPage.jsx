@@ -94,7 +94,9 @@ function groupBySlot(ports, maxPort) {
   return [...slots.entries()].sort((a, b) => a[0] - b[0]);
 }
 
-function PortSquare({ port, x, y, onHover, onMove, onLeave, onClick, showLabel, selected }) {
+const ZONE_PEER_COLOR = '#22d3ee';
+
+function PortSquare({ port, x, y, onHover, onMove, onLeave, onClick, showLabel, selected, isPeer, dimmed }) {
   if (port.placeholder) {
     return (
       <g>
@@ -112,6 +114,7 @@ function PortSquare({ port, x, y, onHover, onMove, onLeave, onClick, showLabel, 
   const hatchId = `hatch-${port.id || port.portId || `${port.slotNumber}-${port.portNumber}`}`;
   return (
     <g
+      opacity={dimmed ? 0.4 : 1}
       onMouseEnter={(e) => onHover(port, e)}
       onMouseMove={onMove}
       onMouseLeave={onLeave}
@@ -126,11 +129,17 @@ function PortSquare({ port, x, y, onHover, onMove, onLeave, onClick, showLabel, 
           </pattern>
         </defs>
       )}
+      {isPeer && !selected && (
+        <rect
+          x={x - 2} y={y - 2} width={SQ + 4} height={SQ + 4} rx={3}
+          fill="none" stroke={ZONE_PEER_COLOR} strokeOpacity={0.35} strokeWidth={3}
+        />
+      )}
       <rect
         x={x} y={y} width={SQ} height={SQ} rx={2}
         fill={hatch ? `url(#${hatchId})` : color}
-        stroke={selected ? '#fff' : noModule ? '#555' : 'rgba(0,0,0,0.35)'}
-        strokeWidth={selected ? 2 : 1}
+        stroke={selected ? '#fff' : isPeer ? ZONE_PEER_COLOR : noModule ? '#555' : 'rgba(0,0,0,0.35)'}
+        strokeWidth={selected || isPeer ? 2 : 1}
         strokeDasharray={noModule ? '2,2' : undefined}
       />
       {eport && <rect x={x} y={y} width={SQ} height={3} fill="#8AB4F8" opacity={0.85} />}
@@ -144,7 +153,7 @@ function PortSquare({ port, x, y, onHover, onMove, onLeave, onClick, showLabel, 
   );
 }
 
-function SlotFaceplate({ slot, ports, onHover, onMove, onLeave, onClick, selectedId }) {
+function SlotFaceplate({ slot, ports, onHover, onMove, onLeave, onClick, selectedId, peerIds }) {
   const evenPorts = ports.filter((p) => (p.portNumber % 2) === 0).sort((a, b) => a.portNumber - b.portNumber);
   const oddPorts = ports.filter((p) => (p.portNumber % 2) === 1).sort((a, b) => a.portNumber - b.portNumber);
   const cols = Math.max(evenPorts.length, oddPorts.length);
@@ -160,6 +169,9 @@ function SlotFaceplate({ slot, ports, onHover, onMove, onLeave, onClick, selecte
   const height = LABEL_H + SQ + ROW_GAP + SQ + 4;
 
   const renderRow = (list, y) => list.map((p, i) => {
+    const isSelected = !p.placeholder && selectedId != null && p.id === selectedId;
+    const isPeer = !p.placeholder && !!peerIds && peerIds.has(p.id);
+    const dimmed = !p.placeholder && selectedId != null && !isSelected && !isPeer;
     return (
       <PortSquare
         key={p.id || p.portId || `${slot}-${p.portNumber}`}
@@ -168,7 +180,9 @@ function SlotFaceplate({ slot, ports, onHover, onMove, onLeave, onClick, selecte
         y={y}
         showLabel={!manyPorts || (p.portNumber % 8 === 0)}
         onHover={onHover} onMove={onMove} onLeave={onLeave} onClick={onClick}
-        selected={selectedId != null && p.id === selectedId}
+        selected={isSelected}
+        isPeer={isPeer}
+        dimmed={dimmed}
       />
     );
   });
@@ -196,7 +210,7 @@ const LEGEND = [
   { color: COLOR.marginal, label: 'Marginal / Degraded' },
 ];
 
-function Legend({ ports }) {
+function Legend({ ports, hasSelection }) {
   const counts = useMemo(() => {
     const c = { online: 0, offline: 0, noModule: 0, fenced: 0 };
     for (const p of ports) {
@@ -216,6 +230,12 @@ function Legend({ ports }) {
           {l.label}
         </span>
       ))}
+      {hasSelection && (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block w-3 h-3 rounded-sm" style={{ background: ZONE_PEER_COLOR }} />
+          Zone peer (of selected)
+        </span>
+      )}
       <span className="ml-auto flex items-center gap-3 tnum">
         <span>Online <b className="text-ink">{counts.online}</b></span>
         <span>Offline <b className="text-ink">{counts.offline}</b></span>
@@ -236,7 +256,7 @@ function RoleChip({ role }) {
   return <span className={`chip ${cls}`}>{role}</span>;
 }
 
-function PortDetails({ port }) {
+function PortDetails({ port, peerInfo, onSelectPeer }) {
   if (!port) return null;
   const device = port.device;
   const zones = device ? parseJsonArr(device.activeZones) : [];
@@ -272,6 +292,27 @@ function PortDetails({ port }) {
             <p className="text-xs text-ink-faint">
               Zones: {zones.slice(0, 3).join(', ')}{zones.length > 3 ? ` +${zones.length - 3}` : ''}
             </p>
+          )}
+          {zones.length > 0 && peerInfo && (
+            peerInfo.peers.length > 0 ? (
+              <div className="pt-1.5">
+                <p className="text-xs font-semibold text-ink">Zone peers on this switch</p>
+                <div className="mt-1 space-y-1 max-h-32 overflow-y-auto">
+                  {peerInfo.peers.map(({ port: pp, shared }) => (
+                    <button
+                      key={pp.id}
+                      type="button"
+                      onClick={() => onSelectPeer(pp)}
+                      className="block w-full text-left text-[11px] text-ink-muted hover:text-brand hover:underline"
+                    >
+                      {pp.slotNumber != null ? `${pp.slotNumber}/` : ''}{pp.portNumber} — {pp.device?.enclosureHostName || pp.device?.enclosureName || pp.device?.symbolicName || pp.device?.deviceSymbolicName || pp.name || `Port ${pp.portNumber}`} (shared: {shared.join(', ')})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-[11px] text-ink-faint">No zone peers on this switch (peers may be on other switches)</p>
+            )
           )}
           {(device.enclosureName || device.enclosureHostName) && (
             <Link
@@ -690,6 +731,37 @@ export default function BrocadePortMapPage() {
   const ports = (detail && detail.ports) || [];
   const slots = useMemo(() => groupBySlot(ports, sw?.maxPort), [ports, sw]);
 
+  const zoneIndex = useMemo(() => {
+    const m = new Map();
+    for (const p of ports) {
+      if (p.placeholder || !p.device) continue;
+      const orig = parseJsonArr(p.device.activeZones).map(String);
+      if (orig.length === 0) continue;
+      const lower = new Set(orig.map((z) => z.toLowerCase()));
+      m.set(p.id, { orig, lower });
+    }
+    return m;
+  }, [ports]);
+
+  const peerInfo = useMemo(() => {
+    if (!selectedPort || selectedPort.placeholder) return null;
+    const selZ = zoneIndex.get(selectedPort.id);
+    if (!selZ || selZ.lower.size === 0) return null;
+    const ids = new Set();
+    const peers = [];
+    for (const p of ports) {
+      if (p.placeholder || p.id === selectedPort.id) continue;
+      const z = zoneIndex.get(p.id);
+      if (!z) continue;
+      const sharedLower = [...z.lower].filter((zl) => selZ.lower.has(zl));
+      if (sharedLower.length === 0) continue;
+      const shared = selZ.orig.filter((zo) => sharedLower.includes(zo.toLowerCase()));
+      ids.add(p.id);
+      peers.push({ port: p, shared });
+    }
+    return { ids, peers };
+  }, [selectedPort, ports, zoneIndex]);
+
   const handleHover = (port, e) => {
     setHover(port);
     setHoverPos({ x: e.clientX, y: e.clientY });
@@ -760,9 +832,10 @@ export default function BrocadePortMapPage() {
                       onLeave={handleLeave}
                       onClick={handleClick}
                       selectedId={selectedPort?.id}
+                      peerIds={peerInfo?.ids}
                     />
                   ))}
-                  <Legend ports={ports.filter((p) => !p.placeholder)} />
+                  <Legend ports={ports.filter((p) => !p.placeholder)} hasSelection={!!selectedPort} />
                 </>
               )}
             </>
@@ -778,7 +851,7 @@ export default function BrocadePortMapPage() {
                 <X size={13} />
               </button>
             </div>
-            <PortDetails port={selectedPort} />
+            <PortDetails port={selectedPort} peerInfo={peerInfo} onSelectPeer={handleClick} />
           </div>
         )}
       </div>
