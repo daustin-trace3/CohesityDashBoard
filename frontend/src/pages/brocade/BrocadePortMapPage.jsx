@@ -36,13 +36,15 @@ function portColor(p) {
 }
 
 function isNoModule(p) {
-  const status = String(p.status || '').toLowerCase();
+  // Live SanNav mixes separators/case (No_Module vs No-Module vs No Light).
+  const status = String(p.status || '').toLowerCase().replace(/[-\s]/g, '_');
   return status.includes('no_module') || status.includes('mod_inv');
 }
 
 function isEPort(p) {
-  const t = String(p.type || '').toUpperCase();
-  return t === 'E_PORT' || t === 'EX_PORT' || t.includes('E_PORT') || t.includes('EX_PORT');
+  // Live SanNav sends hyphenated types ("E-Port"); the docs show underscores.
+  const t = String(p.type || '').toUpperCase().replace(/[-\s]/g, '_');
+  return t.startsWith('E_PORT') || t.startsWith('EX_PORT');
 }
 
 function groupBySlot(ports, maxPort) {
