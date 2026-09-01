@@ -531,6 +531,72 @@ router.get('/switches/:id', [param('id').isInt().toInt()], validate, (req, res, 
   } catch (err) { next(err); }
 });
 
+router.get('/switches/:id/portmap', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const sw = db.prepare('SELECT sw.*, s.name AS source_name FROM brocade_switches sw JOIN brocade_sources s ON s.id = sw.source_id WHERE sw.id = ?').get(req.params.id);
+    if (!sw) return res.status(404).json({ error: 'not_found' });
+
+    const rows = db.prepare(`
+      SELECT sp.*, ls.in_frames_per_sec, ls.out_frames_per_sec, ls.in_mb_per_sec, ls.out_mb_per_sec,
+        ls.crc_errors_delta, ls.stats_ts,
+        dp.wwn AS dp_wwn, dp.device_node_wwn AS dp_device_node_wwn, dp.symbolic_name AS dp_symbolic_name,
+        dp.device_symbolic_name AS dp_device_symbolic_name, dp.vendor AS dp_vendor, dp.port_role AS dp_port_role,
+        dp.fdmi_host_name AS dp_fdmi_host_name, dp.enclosure_name AS dp_enclosure_name,
+        dp.enclosure_guid AS dp_enclosure_guid, dp.active_zones AS dp_active_zones,
+        dp.active_zoneset_name AS dp_active_zoneset_name, dp.speed AS dp_speed,
+        enc.type AS enc_type, enc.host_name AS enc_host_name
+      FROM brocade_switch_ports sp
+      LEFT JOIN (
+        SELECT ps.port_wwn AS stat_port_wwn, ps.in_frames_per_sec, ps.out_frames_per_sec, ps.in_mb_per_sec,
+          ps.out_mb_per_sec, ps.crc_errors_delta, ps.ts AS stats_ts
+        FROM brocade_port_stats ps
+        JOIN (SELECT port_wwn, MAX(ts) AS max_ts FROM brocade_port_stats GROUP BY port_wwn) latest
+          ON latest.port_wwn = ps.port_wwn AND latest.max_ts = ps.ts
+      ) ls ON ls.stat_port_wwn = sp.wwn
+      LEFT JOIN (
+        SELECT d.* FROM brocade_device_ports d
+        JOIN (SELECT switch_port_wwn, MIN(id) AS min_id FROM brocade_device_ports WHERE stale = 0 GROUP BY switch_port_wwn) first
+          ON first.switch_port_wwn = d.switch_port_wwn AND first.min_id = d.id
+        WHERE d.stale = 0
+      ) dp ON dp.switch_port_wwn = sp.wwn
+      LEFT JOIN brocade_enclosures enc ON enc.guid = dp.enclosure_guid
+      WHERE sp.switch_wwn = ? AND sp.stale = 0
+      ORDER BY sp.slot_number, sp.port_number
+    `).all(sw.wwn);
+
+    res.json({
+      switch: {
+        id: sw.id, wwn: sw.wwn, name: sw.name, model: sw.model_number || sw.model,
+        fabricName: sw.fabric_name, ipAddress: sw.ip_address, maxPort: sw.max_port,
+        discoveredPortCount: sw.discovered_port_count, operationalStatus: sw.operational_status,
+        health: sw.health, firmwareVersion: sw.firmware_version,
+      },
+      ports: rows.map((p) => ({
+        id: p.id, wwn: p.wwn, name: p.name, slotNumber: p.slot_number, portNumber: p.port_number,
+        portIndex: p.port_index, portId: p.port_id, type: p.type, state: p.state, status: p.status,
+        health: p.health, calculatedStatus: p.calculated_status, statusMessage: p.status_message,
+        speed: p.speed, speedType: p.speed_type, maxPortSpeed: p.max_port_speed, trunked: !!p.trunked,
+        trunkMaster: !!p.trunk_master, fenced: !!p.fenced, blocked: !!p.blocked,
+        persistentDisable: !!p.persistent_disable, occupied: !!p.occupied, licensed: !!p.licensed,
+        zoneAlias: p.zone_alias, activeZoneCount: p.active_zone_count, remoteDevice: p.remote_device,
+        remotePortWwn: p.remote_port_wwn, remoteNodeWwn: p.remote_node_wwn,
+        connectedDeviceType: p.connected_device_type,
+        inFramesPerSec: p.in_frames_per_sec ?? null, outFramesPerSec: p.out_frames_per_sec ?? null,
+        inMbPerSec: p.in_mb_per_sec ?? null, outMbPerSec: p.out_mb_per_sec ?? null,
+        crcErrorsDelta: p.crc_errors_delta ?? null, statsTs: p.stats_ts ?? null,
+        device: p.dp_wwn ? {
+          wwn: p.dp_wwn, deviceNodeWwn: p.dp_device_node_wwn, symbolicName: p.dp_symbolic_name,
+          deviceSymbolicName: p.dp_device_symbolic_name, vendor: p.dp_vendor, portRole: p.dp_port_role,
+          fdmiHostName: p.dp_fdmi_host_name, enclosureName: p.dp_enclosure_name,
+          enclosureGuid: p.dp_enclosure_guid, enclosureHostName: p.enc_host_name ?? null,
+          enclosureType: p.enc_type ?? null, activeZones: parseJson(p.dp_active_zones, []),
+          activeZonesetName: p.dp_active_zoneset_name, speed: p.dp_speed,
+        } : null,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
 router.get('/ports', [
   query('switch').optional().isString(),
   query('fabric').optional().isString(),
