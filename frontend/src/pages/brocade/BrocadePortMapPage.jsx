@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams, Link } from 'react-router-dom';
 import { Grid3x3, X, Search, HeartPulse, LayoutGrid, Waypoints, Server, AlertTriangle, ShieldAlert } from 'lucide-react';
 import client from '../../api/client';
@@ -349,6 +350,10 @@ function PortDetails({ port, peerInfo, onSelectPeer }) {
 
 function Tooltip({ port, pos }) {
   if (!port || !pos) return null;
+  return createPortal(<TooltipBody port={port} pos={pos} />, document.body);
+}
+
+function TooltipBody({ port, pos }) {
   const device = port.device;
   const zones = device ? parseJsonArr(device.activeZones) : [];
   const speedLabel = port.speed ? `${port.speed}${Number(port.speedType) === 2 ? 'G' : ''}` : '—';
@@ -923,7 +928,7 @@ export default function BrocadePortMapPage() {
         </div>
       )}
 
-      {detailsOpen && selectedPort && (
+      {detailsOpen && selectedPort && createPortal(
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4"
           onClick={() => setDetailsOpen(false)}
@@ -945,7 +950,8 @@ export default function BrocadePortMapPage() {
               Closing keeps the port selected — highlights and the Connected Devices filter stay until you clear the selection.
             </p>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       <Tooltip port={hover} pos={hoverPos} />
