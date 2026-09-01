@@ -22,16 +22,22 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function resolveFosTarget(source, switchRow) {
   if (!switchRow) return null;
+  // WWN matching must be case-insensitive (SANnav mixes cases across records),
+  // and an override may still apply by IP when the WWN key differs (live
+  // finding: fabric seed WWNs don't always match switch-row/override WWNs).
   let override = null;
   if (switchRow.wwn) {
-    override = db.prepare('SELECT * FROM brocade_fos_overrides WHERE source_id = ? AND switch_wwn = ?').get(source.id, switchRow.wwn);
+    override = db.prepare('SELECT * FROM brocade_fos_overrides WHERE source_id = ? AND switch_wwn = ? COLLATE NOCASE').get(source.id, switchRow.wwn);
+  }
+  if (!override && switchRow.ip_address) {
+    override = db.prepare('SELECT * FROM brocade_fos_overrides WHERE source_id = ? AND TRIM(COALESCE(ip_address, "")) = ?').get(source.id, String(switchRow.ip_address).trim());
   }
   const ip = override?.ip_address || switchRow.ip_address;
   const username = override?.username || source.fos_username;
   const passwordEnc = override?.password_enc || source.fos_password_enc;
   const port = override?.port || source.fos_port || 443;
   if (!ip || !username || !passwordEnc) return null;
-  return { ip, port, username, password_enc: passwordEnc, verify_ssl: source.verify_ssl };
+  return { ip: String(ip).trim(), port, username, password_enc: passwordEnc, verify_ssl: source.verify_ssl };
 }
 
 /**
@@ -44,10 +50,20 @@ function resolveFosTarget(source, switchRow) {
 function findSeedSwitchRow(sourceId, fabric) {
   const wwn = fabric.seedSwitchWwn || fabric.principalSwitchWwn;
   if (wwn) {
-    const row = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND wwn = ?').get(sourceId, wwn);
+    // SANnav fabric records may carry the seed's physical WWN or a different
+    // letter-case than the switch inventory row — match both, case-insensitive.
+    const row = db.prepare(`
+      SELECT * FROM brocade_switches WHERE source_id = ?
+        AND (wwn = ? COLLATE NOCASE OR physical_switch_wwn = ? COLLATE NOCASE)
+    `).get(sourceId, wwn, wwn);
     if (row) return row;
   }
-  if (fabric.seedSwitchIp) return { wwn: wwn || null, ip_address: fabric.seedSwitchIp, virtual_fabric_id: fabric.virtualFabricId };
+  if (fabric.seedSwitchIp) {
+    const ip = String(fabric.seedSwitchIp).trim();
+    const byIp = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND TRIM(COALESCE(ip_address, "")) = ?').get(sourceId, ip);
+    if (byIp) return byIp;
+    return { wwn: wwn || null, ip_address: ip, virtual_fabric_id: fabric.virtualFabricId };
+  }
   return null;
 }
 

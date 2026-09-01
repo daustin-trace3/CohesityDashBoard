@@ -281,16 +281,26 @@ router.delete('/sources/:id/fos-overrides/:overrideId', [
 // switch row named (by wwn), else the first fabric's seed/principal switch.
 function defaultFosSwitch(sourceId, switchWwn) {
   if (switchWwn) {
-    return db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND wwn = ?').get(sourceId, switchWwn) || null;
+    return db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND wwn = ? COLLATE NOCASE').get(sourceId, switchWwn) || null;
   }
   const fabric = db.prepare('SELECT * FROM brocade_fabrics WHERE source_id = ? AND stale = 0 ORDER BY id LIMIT 1').get(sourceId);
   if (!fabric) return null;
   const wwn = fabric.seed_switch_wwn || fabric.principal_switch_wwn;
   if (wwn) {
-    const sw = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND wwn = ?').get(sourceId, wwn);
+    // Case-insensitive + physical-WWN fallback: SANnav fabric records don't
+    // reliably carry the same WWN identity/case as the switch inventory rows.
+    const sw = db.prepare(`
+      SELECT * FROM brocade_switches WHERE source_id = ?
+        AND (wwn = ? COLLATE NOCASE OR physical_switch_wwn = ? COLLATE NOCASE)
+    `).get(sourceId, wwn, wwn);
     if (sw) return sw;
   }
-  if (fabric.seed_switch_ip) return { wwn: wwn || null, ip_address: fabric.seed_switch_ip, virtual_fabric_id: fabric.virtual_fabric_id };
+  if (fabric.seed_switch_ip) {
+    const ip = String(fabric.seed_switch_ip).trim();
+    const byIp = db.prepare('SELECT * FROM brocade_switches WHERE source_id = ? AND TRIM(COALESCE(ip_address, "")) = ?').get(sourceId, ip);
+    if (byIp) return byIp;
+    return { wwn: wwn || null, ip_address: ip, virtual_fabric_id: fabric.virtual_fabric_id };
+  }
   return null;
 }
 
@@ -303,7 +313,13 @@ router.post('/sources/:id/fos-test', [
   const sw = defaultFosSwitch(row.id, req.body.switchWwn);
   if (!sw) return res.status(200).json({ ok: false, error: 'no target switch found (poll inventory first, or pass switchWwn)' });
   const target = resolveFosTarget(row, sw);
-  if (!target) return res.status(200).json({ ok: false, error: 'no usable direct-FOS credentials/ip for target switch' });
+  if (!target) {
+    return res.status(200).json({
+      ok: false,
+      error: `no usable direct-FOS credentials/ip for target switch ${sw.name || sw.wwn || sw.ip_address || '?'} — needs an override matching its WWN/IP, or shared FOS credentials`,
+      targetSwitch: { name: sw.name || null, wwn: sw.wwn || null, ipAddress: sw.ip_address || null },
+    });
+  }
   const result = await brocadeFosApi.testFos(target);
   res.status(200).json(result);
 });
@@ -352,7 +368,13 @@ router.get('/sources/:id/probe', [
           const sw = defaultFosSwitch(row.id, null);
           if (!sw) { raw = []; break; }
           const target = resolveFosTarget(row, sw);
-          if (!target) { raw = [{ error: 'no usable direct-FOS credentials/ip', usedSwitchWwn: sw.wwn || null }]; break; }
+          if (!target) {
+            raw = [{
+              error: 'no usable direct-FOS credentials/ip — needs an override matching this switch WWN/IP, or shared FOS credentials',
+              usedSwitchWwn: sw.wwn || null, usedSwitchName: sw.name || null, usedSwitchIp: sw.ip_address || null,
+            }];
+            break;
+          }
           const zc = await brocadeFosApi.fetchZoneConfigs(target, sw.virtual_fabric_id, 30000);
           const stats = await brocadeFosApi.fetchPortStats(target, sw.virtual_fabric_id, 30000).catch(() => []);
           raw = [{

@@ -448,7 +448,7 @@ describe('direct-FOS collector (addendum 2)', () => {
       UPDATE brocade_sources SET fos_direct_enabled = 1, fos_username = 'fosadmin', fos_password_enc = ? WHERE id = ?
     `).run(JSON.stringify({ iv: '00', authTag: '00', ciphertext: '00' }), src.id);
     db.prepare(`
-      INSERT INTO brocade_switches (source_id, wwn, name, ip_address, stale) VALUES (?, 'sw-wwn-fos-1', 'SW-FOS-1', '203.0.113.250', 0)
+      INSERT INTO brocade_switches (source_id, wwn, name, ip_address, stale) VALUES (?, 'sw-wwn-fos-1', 'SW-FOS-1', '127.0.0.1', 0)
     `).run(src.id);
     db.prepare(`
       INSERT INTO brocade_fabrics (source_id, name, seed_switch_wwn, principal_switch_wwn, stale) VALUES (?, 'FAB-FOS', 'sw-wwn-fos-1', 'sw-wwn-fos-1', 0)
