@@ -523,7 +523,7 @@ router.get('/switches', [
     const params = [];
     if (req.query.fabric) { clauses.push('fabric_name = ?'); params.push(req.query.fabric); }
     if (req.query.sourceId) { clauses.push('source_id = ?'); params.push(req.query.sourceId); }
-    if (req.query.status) { clauses.push('UPPER(COALESCE(operational_status,"")) = ?'); params.push(String(req.query.status).toUpperCase()); }
+    if (req.query.status) { clauses.push("UPPER(COALESCE(operational_status,'')) = ?"); params.push(String(req.query.status).toUpperCase()); }
     const rows = db.prepare(`
       SELECT sw.*, s.name AS source_name FROM brocade_switches sw JOIN brocade_sources s ON s.id = sw.source_id
       WHERE ${clauses.join(' AND ')} ORDER BY s.name, sw.name
@@ -644,7 +644,7 @@ router.get('/ports', [
     const params = [];
     if (req.query.switch) { clauses.push('sp.switch_wwn = ?'); params.push(req.query.switch); }
     if (req.query.fabric) { clauses.push('sp.fabric_name = ?'); params.push(req.query.fabric); }
-    if (req.query.state) { clauses.push('LOWER(COALESCE(sp.state,"")) = ?'); params.push(String(req.query.state).toLowerCase()); }
+    if (req.query.state) { clauses.push("LOWER(COALESCE(sp.state,'')) = ?"); params.push(String(req.query.state).toLowerCase()); }
     if (req.query.health) { clauses.push('sp.health = ?'); params.push(req.query.health); }
     if (req.query.search) { clauses.push('(sp.name LIKE ? OR sp.wwn LIKE ?)'); params.push(`%${req.query.search}%`, `%${req.query.search}%`); }
     const limit = Math.min(req.query.limit || 5000, 5000);
@@ -718,7 +718,7 @@ router.get('/device-ports', [
   try {
     const clauses = ['stale = 0'];
     const params = [];
-    if (req.query.type) { clauses.push('LOWER(COALESCE(port_role,"")) = ?'); params.push(String(req.query.type).toLowerCase()); }
+    if (req.query.type) { clauses.push("LOWER(COALESCE(port_role,'')) = ?"); params.push(String(req.query.type).toLowerCase()); }
     if (req.query.fabric) { clauses.push('fabric_name = ?'); params.push(req.query.fabric); }
     if (req.query.search) { clauses.push('(symbolic_name LIKE ? OR wwn LIKE ?)'); params.push(`%${req.query.search}%`, `%${req.query.search}%`); }
     const rows = db.prepare(`SELECT * FROM brocade_device_ports WHERE ${clauses.join(' AND ')} ORDER BY switch_name, port_number`).all(...params);
@@ -741,7 +741,7 @@ router.get('/enclosures', [
   try {
     const clauses = ['stale = 0'];
     const params = [];
-    if (req.query.type) { clauses.push('LOWER(COALESCE(type,"")) LIKE ?'); params.push(`%${String(req.query.type).toLowerCase()}%`); }
+    if (req.query.type) { clauses.push("LOWER(COALESCE(type,'')) LIKE ?"); params.push(`%${String(req.query.type).toLowerCase()}%`); }
     if (req.query.search) { clauses.push('(name LIKE ? OR host_name LIKE ?)'); params.push(`%${req.query.search}%`, `%${req.query.search}%`); }
     const rows = db.prepare(`SELECT * FROM brocade_enclosures WHERE ${clauses.join(' AND ')} ORDER BY name`).all(...params);
     const portCount = db.prepare('SELECT COUNT(*) n FROM brocade_device_ports WHERE enclosure_guid = ? AND stale = 0');
