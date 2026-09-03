@@ -237,17 +237,21 @@ function DirectoryPicker({ kind, selected, onPick }) {
   const [results, setResults] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Nothing is listed until the admin types: the directory is filtered by
+  // what they enter (two characters minimum), debounced.
+  const term = q.trim();
   useEffect(() => {
     if (selected) return undefined;
+    if (term.length < 2) { setResults(null); setErr(null); return undefined; }
     const t = setTimeout(() => {
       setBusy(true); setErr(null);
-      client.get(`/directory/${kind}`, { params: { q } })
+      client.get(`/directory/${kind}`, { params: { q: term } })
         .then(({ data }) => setResults(data))
         .catch(e => { setResults([]); setErr(errorMessage(e, 'Directory search failed.')); })
         .finally(() => setBusy(false));
-    }, q ? 250 : 0);
+    }, 250);
     return () => clearTimeout(t);
-  }, [q, kind, selected]);
+  }, [term, kind, selected]);
   if (selected) {
     return (
       <div className="flex items-center gap-2 border border-brand/40 bg-brand/5 rounded-lg px-3 py-2">
@@ -262,11 +266,14 @@ function DirectoryPicker({ kind, selected, onPick }) {
   }
   return (
     <div className="flex flex-col gap-1.5">
-      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={kind === 'users' ? 'Start typing a username or name...' : 'Start typing a group name...'} className={inputClass} />
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={kind === 'users' ? 'Type a username or name to search the domain' : 'Type a group name to search the domain'} className={inputClass} />
       {err && <p className="text-[11px] text-status-crit">{err}</p>}
+      {term.length < 2 ? (
+        <p className="text-[11px] text-ink-faint px-1">Type at least two characters. The list narrows as you type.</p>
+      ) : (
       <div className="border border-cohesity-border rounded-lg max-h-56 overflow-y-auto">
         {busy && !results && <p className="text-[11px] text-ink-faint px-3 py-2">Searching the directory...</p>}
-        {results && results.length === 0 && <p className="text-[11px] text-ink-faint px-3 py-2">No match.</p>}
+        {results && results.length === 0 && <p className="text-[11px] text-ink-faint px-3 py-2">No {kind === 'users' ? 'user' : 'group'} matches "{term}".</p>}
         {(results || []).map(r => {
           const taken = kind === 'users' ? r.imported : r.linked;
           return (
@@ -282,6 +289,7 @@ function DirectoryPicker({ kind, selected, onPick }) {
           );
         })}
       </div>
+      )}
     </div>
   );
 }
