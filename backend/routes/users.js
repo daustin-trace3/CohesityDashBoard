@@ -47,15 +47,19 @@ function toUserRow(user) {
     username: user.username,
     displayName: user.display_name,
     isActive: !!user.is_active,
+    provider: user.auth_provider || 'local',
+    email: user.email || null,
     groups,
     lastLoginAt: user.last_login_at,
   };
 }
 
+// Only admin-managed memberships (source 'local') are replaced here; rows the
+// directory sync wrote (source 'ad') belong to the sync.
 function setUserGroups(userId, groupIds) {
-  db.prepare('DELETE FROM user_groups WHERE user_id = ?').run(userId);
+  db.prepare("DELETE FROM user_groups WHERE user_id = ? AND source = 'local'").run(userId);
   if (!Array.isArray(groupIds)) return;
-  const insert = db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)');
+  const insert = db.prepare("INSERT OR IGNORE INTO user_groups (user_id, group_id, source) VALUES (?, ?, 'local')");
   for (const gid of groupIds) {
     const id = Number(gid);
     if (Number.isInteger(id)) insert.run(userId, id);
@@ -103,6 +107,10 @@ router.put('/:id(\\d+)', async (req, res, next) => {
     if (!user) return res.status(404).json({ error: 'User not found.' });
 
     const { displayName, password, isActive, groupIds } = req.body || {};
+
+    if (password && user.auth_provider !== 'local') {
+      return res.status(400).json({ error: 'Directory accounts authenticate against the domain; their password cannot be set here.' });
+    }
 
     if (isActive === false) {
       if (isSelf(req, userId)) {
@@ -160,6 +168,8 @@ function toGroupRow(group) {
     name: group.name,
     description: group.description,
     isSystem: !!group.is_system,
+    provider: group.provider || 'local',
+    externalName: group.external_name || null,
     memberCount,
     grants,
   };

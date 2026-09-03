@@ -24,6 +24,7 @@ import netbackupMigrations from '../db/migrations/netbackup.js';
 import awsMigrations from '../db/migrations/aws.js';
 import proxmoxMigrations from '../db/migrations/proxmox.js';
 import brocadeMigrations from '../db/migrations/brocade.js';
+import directoryMigrations from '../db/migrations/directory.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -164,6 +165,7 @@ function buildNewDb() {
   runMigrations(db, 'aws', awsMigrations);
   runMigrations(db, 'proxmox', proxmoxMigrations);
   runMigrations(db, 'brocade', brocadeMigrations);
+  runMigrations(db, 'directory', directoryMigrations);
   return db;
 }
 
@@ -220,6 +222,7 @@ const NEW_TABLES = [
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
   'ai_audit_exchanges',
+  'directory_sync_log',
   'netapp_aiqum_instances',
   'user_dashboards',
   'aws_accounts', 'aws_ec2_instances', 'aws_ebs_volumes', 'aws_lightsail_instances',
@@ -336,6 +339,7 @@ describe('runMigrations', () => {
       runMigrations(db, 'aws', awsMigrations);
       runMigrations(db, 'proxmox', proxmoxMigrations);
       runMigrations(db, 'brocade', brocadeMigrations);
+      runMigrations(db, 'directory', directoryMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight } from 'lucide-react';
+import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight, Building2 } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import AdminNav from '../components/AdminNav';
+import DirectoryTab from './DirectoryTab';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
 const LEVELS = ['view', 'manage', '*'];
@@ -14,6 +15,7 @@ const TABS = [
   { key: 'users', label: 'Users', icon: Users },
   { key: 'groups', label: 'Groups', icon: Shield },
   { key: 'service-accounts', label: 'Service Accounts', icon: KeyRound },
+  { key: 'directory', label: 'Directory', icon: Building2 },
 ];
 
 function errorMessage(err, fallback) {
@@ -260,12 +262,18 @@ function UserModal({ user, groups, onClose, onSaved }) {
           <label className="text-xs font-semibold text-ink mb-1 block">Display name</label>
           <input value={displayName} onChange={e => setDisplayName(e.target.value)} className={inputClass} />
         </div>
+        {user?.provider === 'ad' ? (
+          <p className="text-[11px] text-ink-muted bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2">
+            Directory account: signs in with the domain password. Group membership from linked AD groups is managed by the sync; groups ticked here are added on top.
+          </p>
+        ) : (
         <div>
           <label className="text-xs font-semibold text-ink mb-1 block">
             Password {isEdit && <span className="text-ink-faint font-normal">(leave blank to keep current)</span>}
           </label>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} className={inputClass} autoComplete="new-password" />
         </div>
+        )}
         <div>
           <label className="text-xs font-semibold text-ink mb-1.5 block">Groups</label>
           <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto border border-cohesity-border rounded-lg p-2.5">
@@ -356,7 +364,9 @@ function UsersTab() {
           <tbody>
             {users.map(u => (
               <tr key={u.id} className="border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50">
-                <td className="px-3 py-2 text-ink font-medium">{u.username}</td>
+                <td className="px-3 py-2 text-ink font-medium">
+                  <span className="flex items-center gap-1.5">{u.username}{u.provider === 'ad' && <Badge tone="info">AD</Badge>}</span>
+                </td>
                 <td className="px-3 py-2 text-ink-muted">{u.displayName || '—'}</td>
                 <td className="px-3 py-2 text-ink-muted">{(u.groups || []).join(', ') || '—'}</td>
                 <td className="px-3 py-2">
@@ -513,7 +523,7 @@ function GroupsTab() {
                 selectedId === g.id ? 'bg-brand/10 text-brand' : 'text-ink-muted hover:bg-surface-overlay hover:text-ink'
               }`}>
               <span className="truncate">{g.name}</span>
-              {g.isSystem === 1 || g.isSystem === true ? <Badge tone="neutral">system</Badge> : null}
+              {g.isSystem === 1 || g.isSystem === true ? <Badge tone="neutral">system</Badge> : g.provider === 'ad' ? <Badge tone="info">AD</Badge> : null}
             </button>
           ))}
           {groups.length === 0 && <p className="text-[11px] text-ink-faint px-2.5 py-2">No groups yet.</p>}
@@ -530,10 +540,11 @@ function GroupsTab() {
                 <p className="text-sm font-bold text-ink flex items-center gap-2">
                   {selected.name}
                   {(selected.isSystem === 1 || selected.isSystem === true) && <Badge tone="neutral">system — rename/delete disabled</Badge>}
+                  {selected.provider === 'ad' && <Badge tone="info">AD: {selected.externalName}</Badge>}
                 </p>
                 {selected.description && <p className="text-[11px] text-ink-muted mt-0.5">{selected.description}</p>}
               </div>
-              {!(selected.isSystem === 1 || selected.isSystem === true) && (
+              {!(selected.isSystem === 1 || selected.isSystem === true) && selected.provider !== 'ad' && (
                 <button onClick={() => deleteGroup(selected)}
                   className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 text-status-crit border border-status-crit/30 rounded-lg hover:bg-status-crit/10 transition-colors cursor-pointer">
                   <Trash2 size={12} /> Delete group
@@ -881,6 +892,7 @@ export default function AdminUsersPage() {
           {tab === 'users' && <UsersTab />}
           {tab === 'groups' && <GroupsTab />}
           {tab === 'service-accounts' && <ServiceAccountsTab />}
+          {tab === 'directory' && <DirectoryTab />}
         </div>
       </div>
     </div>

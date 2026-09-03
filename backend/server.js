@@ -6,6 +6,7 @@ const pluginBoot = require('./services/pluginBoot');
 const { createApp } = require('./app');
 const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
+const directorySync = require('./services/directorySync');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
@@ -102,6 +103,7 @@ if (require.main === module) {
       // poller process (backend/pollerProcess.js).
       initPoller();
       initAlertNotifier();
+      directorySync.startScheduler();
       // Start pollers only for enabled, actively-registered plugins (Cohesity's
       // poller above is not registry-managed in Phase 1 and always starts).
       for (const entry of registry.listPlugins()) {
