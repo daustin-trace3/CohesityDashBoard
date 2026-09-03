@@ -132,7 +132,7 @@ async function runSync(trigger = 'schedule') {
     // by default, deactivate them (they can no longer log in through AD
     // anyway, since the login path checks linked-group membership too).
     const cfg = directory.getConfig();
-    const strays = db.prepare("SELECT id FROM users WHERE auth_provider = 'ad'").all().filter((r) => !seenUserIds.has(r.id));
+    const strays = db.prepare("SELECT id FROM users WHERE auth_provider = 'ad' AND directory_pinned = 0").all().filter((r) => !seenUserIds.has(r.id));
     for (const s of strays) {
       setAdMembershipsTxn.immediate(s.id, []);
       if (cfg.deactivateRemoved) {
@@ -166,10 +166,29 @@ function syncLogin(adUser, groupDns) {
   const now = new Date().toISOString();
   const wantDns = new Set(groupDns.map((d) => d.toLowerCase()));
   const linked = linkedGroups().filter((g) => g.external_dn && wantDns.has(g.external_dn.toLowerCase()));
-  if (!linked.length) return null;
+  // A user added by name (pinned) signs in on the strength of that alone;
+  // everyone else needs at least one linked group.
+  const pinned = adUser.guid ? db.prepare("SELECT id FROM users WHERE external_id = ? AND directory_pinned = 1").get(adUser.guid) : null;
+  if (!linked.length && !pinned) return null;
   const r = upsertUserTxn.immediate(adUser, now);
   if (!r.id) return null;
   setAdMembershipsTxn.immediate(r.id, linked.map((g) => g.id));
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(r.id);
+}
+
+/** Add one directory user by name: pinned, active, with the admin's group picks. */
+function importUser(adUser, groupIds = []) {
+  const now = new Date().toISOString();
+  const r = upsertUserTxn.immediate(adUser, now);
+  if (!r.id) {
+    const e = new Error(r.conflict ? `A local account named "${r.conflict}" already exists.` : 'Could not import that user.');
+    e.status = 409;
+    throw e;
+  }
+  db.prepare('UPDATE users SET directory_pinned = 1 WHERE id = ?').run(r.id);
+  db.prepare("DELETE FROM user_groups WHERE user_id = ? AND source = 'local'").run(r.id);
+  const ins = db.prepare("INSERT OR IGNORE INTO user_groups (user_id, group_id, source) VALUES (?, ?, 'local')");
+  for (const gid of groupIds || []) if (Number.isInteger(Number(gid))) ins.run(r.id, Number(gid));
   return db.prepare('SELECT * FROM users WHERE id = ?').get(r.id);
 }
 
@@ -203,4 +222,4 @@ function stopScheduler() {
   timer = null;
 }
 
-module.exports = { runSync, syncLogin, lastRuns, isRunning, startScheduler, stopScheduler, linkedGroups, AD_PASSWORD_PLACEHOLDER };
+module.exports = { runSync, syncLogin, importUser, lastRuns, isRunning, startScheduler, stopScheduler, linkedGroups, AD_PASSWORD_PLACEHOLDER };

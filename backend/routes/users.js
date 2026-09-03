@@ -227,7 +227,11 @@ router.delete('/groups/:id', (req, res) => {
   if (!group) return res.status(404).json({ error: 'Group not found.' });
   if (group.is_system) return res.status(400).json({ error: 'System groups cannot be deleted.' });
 
-  db.prepare('DELETE FROM groups WHERE id = ?').run(groupId);
+  // Deleting a directory-linked group is the unlink: its grants go too.
+  db.transaction(() => {
+    db.prepare("DELETE FROM role_grants WHERE subject_type = 'group' AND subject_id = ?").run(groupId);
+    db.prepare('DELETE FROM groups WHERE id = ?').run(groupId);
+  }).immediate();
   res.json({ ok: true });
 });
 
