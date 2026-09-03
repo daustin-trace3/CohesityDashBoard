@@ -368,9 +368,16 @@ async function fetchGflags(cluster) {
   return data;
 }
 
+// Cohesity's v2 search endpoints reject any page where from + size exceeds
+// 10000 (HTTP 400 KValidationError). With count=1000 that caps us at 10 pages;
+// requesting the 11th (offset 10000) fails and, unhandled, discards the whole
+// snapshot — so clusters with >10k objects stored nothing. Stop at the cap.
+const SEARCH_RESULT_CAP = 10000;
+const SEARCH_PAGE_SIZE = 1000;
+
 /**
  * Every indexed object (protected and unprotected) via the v2 object search,
- * paginated by cookie. Capped at 20k objects per cluster.
+ * paginated by cookie. Capped at the API's 10k from+size search limit.
  */
 async function fetchSearchObjects(cluster) {
   const client = await getAuthenticatedClient(cluster);
@@ -378,7 +385,7 @@ async function fetchSearchObjects(cluster) {
   let cookie = null;
   let pages = 0;
   do {
-    const url = `/v2/data-protect/search/objects?count=1000${cookie ? `&paginationCookie=${encodeURIComponent(cookie)}` : ''}`;
+    const url = `/v2/data-protect/search/objects?count=${SEARCH_PAGE_SIZE}${cookie ? `&paginationCookie=${encodeURIComponent(cookie)}` : ''}`;
     const { data } = await client.get(url, { timeout: 120000 });
     const batch = data?.objects || [];
     objects.push(...batch);
@@ -388,7 +395,9 @@ async function fetchSearchObjects(cluster) {
     if (!batch.length || next === cookie) break;
     cookie = next;
     pages += 1;
-  } while (cookie && objects.length < 20000 && pages < 25);
+    // Stop before the next page would push from + size past the API's cap.
+    if (objects.length + SEARCH_PAGE_SIZE > SEARCH_RESULT_CAP) break;
+  } while (cookie && pages < 25);
   return objects;
 }
 
@@ -405,7 +414,7 @@ async function fetchProtectedObjectTimes(cluster) {
   let pages = 0;
   let seen = 0;
   do {
-    const url = `/v2/data-protect/search/protected-objects?count=1000${cookie ? `&paginationCookie=${encodeURIComponent(cookie)}` : ''}`;
+    const url = `/v2/data-protect/search/protected-objects?count=${SEARCH_PAGE_SIZE}${cookie ? `&paginationCookie=${encodeURIComponent(cookie)}` : ''}`;
     const { data } = await client.get(url, { timeout: 120000 });
     const batch = data?.objects || [];
     for (const o of batch) {
@@ -418,7 +427,9 @@ async function fetchProtectedObjectTimes(cluster) {
     if (!batch.length || next === cookie) break;
     cookie = next;
     pages += 1;
-  } while (cookie && seen < 20000 && pages < 25);
+    // Stop before the next page would push from + size past the API's cap.
+    if (seen + SEARCH_PAGE_SIZE > SEARCH_RESULT_CAP) break;
+  } while (cookie && pages < 25);
   return times;
 }
 

@@ -395,7 +395,9 @@ async function syncClusters(instance) {
       }
     }
   });
-  reconcile(clusters);
+  // BEGIN IMMEDIATE: this read-then-write runs alongside the poller/API, so a
+  // deferred snapshot upgrade could fail as SQLITE_BUSY ignoring busy_timeout.
+  reconcile.immediate(clusters);
   return db.prepare("SELECT * FROM netapp_arrays WHERE source = 'aiqum' AND aiqum_instance_id = ? ORDER BY name").all(instance.id);
 }
 

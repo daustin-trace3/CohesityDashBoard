@@ -99,7 +99,7 @@ const issueKey = (i) => `${i.type}|${i.vcenter}|${i.target}`;
  * open rows whose issue is gone get resolved. Idempotent — safe to run after
  * every per-vCenter poll. Rows resolved >90 days ago are pruned.
  */
-const reconcileIssueHistory = db.transaction(() => {
+const reconcileIssueHistoryTxn = db.transaction(() => {
   const current = new Map(computeIssues().map(i => [issueKey(i), i]));
   const open = db.prepare("SELECT * FROM vcenter_issue_history WHERE status = 'open'").all();
 
@@ -129,6 +129,11 @@ const reconcileIssueHistory = db.transaction(() => {
   }
   db.prepare("DELETE FROM vcenter_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
 });
+
+// Run as BEGIN IMMEDIATE so the write lock is taken up front — a deferred
+// read→write upgrade in WAL fails as SQLITE_BUSY (snapshot) when the other
+// process writes mid-transaction, and that error ignores busy_timeout.
+const reconcileIssueHistory = () => reconcileIssueHistoryTxn.immediate();
 
 module.exports = {
   DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays,

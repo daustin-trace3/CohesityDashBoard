@@ -28,7 +28,7 @@ function normalizeGflagResponse(data) {
   return rows;
 }
 
-const applyGflagState = db.transaction((clusterId, rows) => {
+const applyGflagStateTxn = db.transaction((clusterId, rows) => {
   const current = db.prepare(
     'SELECT service_name, flag_name, flag_value FROM cluster_gflags WHERE cluster_id = ?'
   ).all(clusterId);
@@ -76,6 +76,11 @@ const applyGflagState = db.transaction((clusterId, rows) => {
   }
   return changes;
 });
+
+// BEGIN IMMEDIATE: take the write lock up front — a deferred read→write upgrade
+// in WAL fails as SQLITE_BUSY (snapshot) when the poller writes mid-transaction,
+// and that error ignores busy_timeout.
+const applyGflagState = (clusterId, rows) => applyGflagStateTxn.immediate(clusterId, rows);
 
 async function refreshGflags(cluster) {
   pollerStatus.markStart(POLLER_TYPE, cluster.id);
