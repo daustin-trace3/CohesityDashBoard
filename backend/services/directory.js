@@ -256,14 +256,25 @@ async function connect(cfg, bindDn, bindPassword) {
   const errors = [];
   for (const server of servers) {
     for (const a of attemptsFor(cfg, server)) {
-      const client = createClient(a.url, tlsOptionsFor(cfg, a.host));
+      // tlsOptions only on an ldaps:// client: handing them to a plain
+      // ldap:// client makes ldapts negotiate TLS on 389 and the DC resets it.
+      const client = createClient(a.url, a.url.startsWith('ldaps://') ? tlsOptionsFor(cfg, a.host) : undefined);
       try {
         if (a.startTls) await client.startTLS(tlsOptionsFor(cfg, a.host));
         await client.bind(bindDn, bindPassword);
         return { client, server, url: a.url, startTls: a.startTls };
       } catch (err) {
-        errors.push(`${a.url}: ${err.message}`);
+        errors.push(`${a.url}: ${describeError(err, a)}`);
         try { await client.unbind(); } catch { /* ignore */ }
+        // The DC accepted the credentials but refuses cleartext binds (LDAP
+        // signing required, the Windows Server 2025 default). Only TLS fixes
+        // this; retrying other transports or DCs will not.
+        if (isStrongAuthRequired(err)) {
+          const e = new Error(`${server} requires LDAP signing: authenticated binds must use LDAPS or StartTLS, and neither could be established (${errors.join(' | ')}). Install a server certificate on the domain controller.`);
+          e.code = 'TLS_REQUIRED';
+          e.attempts = errors;
+          throw e;
+        }
         // Wrong credentials are the same on every DC: stop instead of
         // locking the account out by retrying across the whole list.
         if (isInvalidCredentials(err)) {
@@ -279,6 +290,24 @@ async function connect(cfg, bindDn, bindPassword) {
   e.code = 'UNREACHABLE';
   e.attempts = errors;
   throw e;
+}
+
+function isStrongAuthRequired(err) {
+  return err?.constructor?.name === 'StrongAuthRequiredError' || err?.code === 8 || /integrity checking|strongerAuthRequired/i.test(String(err?.message || ''));
+}
+
+/** Turn ldapts/socket errors into something an admin can act on. */
+function describeError(err, attempt) {
+  const msg = String(err?.message || err);
+  if (/ECONNRESET/.test(msg) && attempt.url.startsWith('ldaps://')) return 'TLS handshake failed (the domain controller offered no certificate on 636?)';
+  if (/ECONNRESET/.test(msg) && attempt.startTls) return 'StartTLS failed (the domain controller offered no certificate?)';
+  if (/Error initializing SSL\/TLS|Code: 0x34/.test(msg) && attempt.startTls) return 'StartTLS refused: the domain controller has no server certificate (LDAP error 52)';
+  if (/ECONNREFUSED/.test(msg)) return 'connection refused';
+  if (/ETIMEDOUT|timeout/i.test(msg)) return 'connection timed out';
+  if (/ENOTFOUND|EAI_AGAIN/.test(msg)) return 'hostname did not resolve';
+  if (isStrongAuthRequired(err)) return 'DC requires signing/TLS for authenticated binds (LDAP error 8)';
+  if (isInvalidCredentials(err)) return 'invalid credentials';
+  return msg.replace(/\s+/g, ' ').slice(0, 160);
 }
 
 function isInvalidCredentials(err) {
