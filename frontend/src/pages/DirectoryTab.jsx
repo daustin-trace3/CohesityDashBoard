@@ -103,7 +103,7 @@ export default function DirectoryTab() {
               <Badge tone={cfg?.configured ? 'ok' : 'neutral'}>{cfg?.configured ? 'Connected' : form.enabled ? 'Incomplete' : 'Off'}</Badge>
               {cfg?.configured && cfg.domain && (
                 <span className="text-xs font-medium text-ink-muted">
-                  {cfg.domain}{cfg.bindUser ? <span className="text-ink-faint"> as {cfg.bindUser.includes('@') || cfg.bindUser.includes('\') || cfg.bindUser.includes('=') ? cfg.bindUser : `${cfg.bindUser}@${cfg.domain}`}</span> : null}
+                  {cfg.domain}{cfg.bindUser ? <span className="text-ink-faint"> as {cfg.bindUser.includes('@') || cfg.bindUser.includes('\\') || cfg.bindUser.includes('=') ? cfg.bindUser : `${cfg.bindUser}@${cfg.domain}`}</span> : null}
                 </span>
               )}
             </p>
