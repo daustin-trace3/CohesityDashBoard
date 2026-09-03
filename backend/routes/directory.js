@@ -57,6 +57,36 @@ router.get('/groups', async (req, res, next) => {
   }
 });
 
+/** Directory users by name, for the Users tab picker. */
+router.get('/users', async (req, res) => {
+  try {
+    if (!directory.isEnabled()) return res.status(400).json({ error: 'Directory is not configured.' });
+    const users = await directory.searchUsers(req.query.q || '', 50);
+    const known = new Map(db.prepare("SELECT external_id, username FROM users WHERE auth_provider = 'ad' AND external_id IS NOT NULL").all().map((r) => [r.external_id, r.username]));
+    res.json(users.map((u) => ({ dn: u.dn, sam: u.sam, upn: u.upn, displayName: u.displayName, email: u.email, disabled: u.disabled, imported: known.has(u.guid) ? known.get(u.guid) : null })));
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+/** Add one directory user by name (pinned) with optional group memberships. */
+router.post('/users', async (req, res, next) => {
+  try {
+    if (!directory.isEnabled()) return res.status(400).json({ error: 'Directory is not configured.' });
+    const dn = String(req.body?.dn || '').trim();
+    if (!dn) return res.status(400).json({ error: 'dn is required.' });
+    const ad = await directory.getUserByDn(dn);
+    if (!ad) return res.status(404).json({ error: 'Directory user not found.' });
+    if (ad.disabled) return res.status(400).json({ error: 'That account is disabled in the directory.' });
+    const user = directorySync.importUser(ad, Array.isArray(req.body?.groupIds) ? req.body.groupIds : []);
+    const groups = db.prepare('SELECT g.name FROM groups g JOIN user_groups ug ON ug.group_id = g.id WHERE ug.user_id = ? ORDER BY g.name').all(user.id).map((r) => r.name);
+    res.status(201).json({ id: user.id, username: user.username, displayName: user.display_name, isActive: !!user.is_active, provider: 'ad', email: user.email, groups, lastLoginAt: user.last_login_at });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
 router.get('/links', (req, res) => {
   res.json(directorySync.linkedGroups().map(toGroupRow));
 });

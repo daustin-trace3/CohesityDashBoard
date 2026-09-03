@@ -59,4 +59,13 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 2,
+    up(db) {
+      // A directory user an admin added by name (not via a linked group):
+      // may sign in without linked-group membership, is never deactivated
+      // by the group sync, and gets access from the groups the admin ticks.
+      addColumn(db, 'users', 'directory_pinned', 'INTEGER NOT NULL DEFAULT 0');
+    },
+  },
 ];

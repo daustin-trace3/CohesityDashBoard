@@ -391,6 +391,25 @@ async function searchGroups(query, limit = 500) {
   });
 }
 
+/** Users by name fragment (sAMAccountName, UPN, display name), for the picker. */
+async function searchUsers(query, limit = 50) {
+  const q = escapeFilter(String(query || '').trim());
+  const filter = q
+    ? `(&(objectCategory=person)(objectClass=user)(|(sAMAccountName=*${q}*)(userPrincipalName=*${q}*)(displayName=*${q}*)(cn=*${q}*)))`
+    : '(&(objectCategory=person)(objectClass=user))';
+  return withServiceClient(async (client, ctx) => {
+    const entries = await searchAll(client, ctx.baseDn, filter, USER_ATTRS);
+    return entries.map(entryToUser).sort((a, b) => a.sam.localeCompare(b.sam)).slice(0, limit);
+  });
+}
+
+async function getUserByDn(dn) {
+  return withServiceClient(async (client) => {
+    const { searchEntries } = await client.search(dn, { scope: 'base', filter: '(objectClass=user)', attributes: USER_ATTRS, explicitBufferAttributes: ['objectGUID', 'objectSid'] });
+    return searchEntries?.[0] ? entryToUser(searchEntries[0]) : null;
+  });
+}
+
 async function getGroupByDn(dn) {
   return withServiceClient(async (client) => {
     const { searchEntries } = await client.search(dn, { scope: 'base', filter: '(objectClass=group)', attributes: GROUP_ATTRS, explicitBufferAttributes: ['objectGUID', 'objectSid'] });
@@ -494,6 +513,8 @@ module.exports = {
   saveConfig,
   testConnection,
   searchGroups,
+  searchUsers,
+  getUserByDn,
   getGroupByDn,
   getGroupMembers,
   authenticate,

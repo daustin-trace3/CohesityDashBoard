@@ -1,27 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, ChevronDown, ChevronRight, Link2, Link2Off, Plug, RefreshCw, Search, Save } from 'lucide-react';
+import { Building2, ChevronDown, ChevronRight, Plug, RefreshCw, Save } from 'lucide-react';
 import client from '../api/client';
 import { Badge, LastUpdated } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 
-// Active Directory tab on Users & Access (2026-09-03). Minimal input by
-// design: domain + one approved account. Everything else (domain controllers,
-// base DN, TLS) is discovered; the Advanced block only overrides.
+// Active Directory tab on Users & Access (2026-09-03). Connection only:
+// domain + one approved account, everything else discovered. AD users and
+// groups are added from the Users and Groups tabs by name (the source
+// toggle on their create dialogs), so nothing directory-specific is listed
+// here beyond the sync status.
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
 const errorMessage = (err, fallback) => err?.response?.data?.error || fallback;
-
-function Section({ title, hint, children }) {
-  return (
-    <div className="flex flex-col gap-2">
-      <div>
-        <p className="text-xs font-semibold text-ink">{title}</p>
-        {hint && <p className="text-[11px] text-ink-muted leading-relaxed mt-0.5">{hint}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
 
 export default function DirectoryTab() {
   const { toast } = useToast();
@@ -31,12 +21,9 @@ export default function DirectoryTab() {
   const [testing, setTesting] = useState(false);
   const [report, setReport] = useState(null);
   const [advanced, setAdvanced] = useState(false);
-  const [links, setLinks] = useState([]);
   const [sync, setSync] = useState({ running: false, runs: [] });
   const [syncing, setSyncing] = useState(false);
-  const [q, setQ] = useState('');
-  const [results, setResults] = useState(null);
-  const [searching, setSearching] = useState(false);
+  const [linkCount, setLinkCount] = useState(0);
 
   const loadAll = useCallback(() => {
     client.get('/directory/config').then(({ data }) => {
@@ -48,7 +35,7 @@ export default function DirectoryTab() {
         deactivateRemoved: data.deactivateRemoved !== false,
       });
     }).catch(() => {});
-    client.get('/directory/links').then(({ data }) => setLinks(data)).catch(() => {});
+    client.get('/directory/links').then(({ data }) => setLinkCount(data.length)).catch(() => {});
     client.get('/directory/sync/status').then(({ data }) => setSync(data)).catch(() => {});
   }, []);
 
@@ -77,7 +64,6 @@ export default function DirectoryTab() {
   const test = async () => {
     setTesting(true);
     setReport(null);
-    // The test uses the SAVED account, so persist first when anything changed.
     const ok = await save();
     if (!ok) { setTesting(false); return; }
     try {
@@ -103,41 +89,6 @@ export default function DirectoryTab() {
     }
   };
 
-  const search = async () => {
-    setSearching(true);
-    try {
-      const { data } = await client.get('/directory/groups', { params: { q } });
-      setResults(data);
-    } catch (err) {
-      toast({ type: 'error', title: 'Directory search failed', message: errorMessage(err, '') });
-      setResults([]);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const link = async (g) => {
-    try {
-      await client.post('/directory/links', { dn: g.dn });
-      toast({ type: 'success', title: `Linked ${g.name}`, message: 'Members are being pulled in. Grant the group platform access on the Groups tab.' });
-      setResults((r) => (r || []).map((x) => (x.dn === g.dn ? { ...x, linked: true } : x)));
-      loadAll();
-    } catch (err) {
-      toast({ type: 'error', title: 'Could not link group', message: errorMessage(err, '') });
-    }
-  };
-
-  const unlink = async (l) => {
-    if (!window.confirm(`Unlink "${l.name}"? Its grants are removed; users stay but lose access from this group.`)) return;
-    try {
-      await client.delete(`/directory/links/${l.id}`);
-      toast({ type: 'success', title: 'Group unlinked' });
-      loadAll();
-    } catch (err) {
-      toast({ type: 'error', title: 'Could not unlink', message: errorMessage(err, '') });
-    }
-  };
-
   if (!form) return <p className="text-xs text-ink-faint">Loading...</p>;
   const lastRun = sync.runs?.[0];
 
@@ -149,11 +100,11 @@ export default function DirectoryTab() {
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-ink flex items-center gap-2">
               Active Directory
-              <Badge tone={cfg?.configured ? 'ok' : 'neutral'}>{cfg?.configured ? 'Enabled' : form.enabled ? 'Incomplete' : 'Off'}</Badge>
+              <Badge tone={cfg?.configured ? 'ok' : 'neutral'}>{cfg?.configured ? 'Connected' : form.enabled ? 'Incomplete' : 'Off'}</Badge>
             </p>
             <p className="text-[11px] text-ink-muted mt-0.5 leading-relaxed">
               Give ICC a domain name and one approved account. Domain controllers, the search base and TLS are discovered.
-              Link AD groups below, then grant them platform access on the Groups tab. Local accounts keep working as break-glass.
+              Then add domain users and groups by name from the Users and Groups tabs. Local accounts keep working as break-glass.
             </p>
           </div>
           <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-ink">
@@ -205,11 +156,11 @@ export default function DirectoryTab() {
                 <input type="checkbox" checked={form.tlsVerify} onChange={set('tlsVerify')} className="accent-brand cursor-pointer" /> Verify the domain controller certificate
               </label>
               <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-ink">
-                <input type="checkbox" checked={form.deactivateRemoved} onChange={set('deactivateRemoved')} className="accent-brand cursor-pointer" /> Deactivate users removed from every linked group
+                <input type="checkbox" checked={form.deactivateRemoved} onChange={set('deactivateRemoved')} className="accent-brand cursor-pointer" /> Deactivate group-synced users removed from every linked group
               </label>
             </div>
             <div className="md:col-span-2">
-              <label className="text-xs font-semibold text-ink mb-1 block">CA certificate (PEM) <span className="text-ink-faint font-normal">(optional, for a private CA)</span></label>
+              <label className="text-xs font-semibold text-ink mb-1 block">CA certificate (PEM) <span className="text-ink-faint font-normal">(optional, for a private CA or a self-signed DC certificate)</span></label>
               <textarea value={form.caCert} onChange={set('caCert')} rows={3} className={`${inputClass} font-mono`} placeholder="-----BEGIN CERTIFICATE-----" />
             </div>
             <div>
@@ -250,94 +201,22 @@ export default function DirectoryTab() {
         )}
       </div>
 
-      <div className="panel p-4 flex flex-col gap-4">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <Section title="Linked AD groups" hint="Each linked group becomes an ICC group whose members are pulled from the domain. Access is granted per group on the Groups tab." />
-          <div className="flex items-center gap-2">
-            {lastRun && (
-              <span className="text-[11px] text-ink-faint tnum">
-                Last sync {lastRun.status === 'ok' ? 'ok' : lastRun.status}{lastRun.finished_at ? <> <LastUpdated date={lastRun.finished_at} prefix="" /></> : ''}
-                {lastRun.status === 'ok' ? `, ${lastRun.users_seen} users` : ''}
-              </span>
-            )}
-            <button onClick={runSync} disabled={syncing || sync.running || !cfg?.configured}
-              className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 cursor-pointer">
-              <RefreshCw size={12} className={syncing || sync.running ? 'animate-spin' : ''} /> Sync now
-            </button>
-          </div>
+      <div className="panel p-4 flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-ink">Group sync</p>
+          <p className="text-[11px] text-ink-muted mt-0.5">
+            {linkCount} domain group{linkCount === 1 ? '' : 's'} mirrored from the Groups tab.
+            {lastRun ? (
+              <> Last sync {lastRun.status === 'ok' ? 'succeeded' : lastRun.status}{lastRun.finished_at ? <> <LastUpdated date={lastRun.finished_at} prefix="" /></> : ''}{lastRun.status === 'ok' ? `, ${lastRun.users_seen} users across ${lastRun.groups_synced} groups.` : '.'}</>
+            ) : ' No sync has run yet.'}
+          </p>
+          {lastRun?.status === 'error' && <p className="text-xs text-status-crit mt-1">{lastRun.message}</p>}
+          {lastRun?.status === 'ok' && lastRun.message && <p className="text-xs text-status-warn mt-1">{lastRun.message}</p>}
         </div>
-        {lastRun?.status === 'error' && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{lastRun.message}</p>}
-        {lastRun?.status === 'ok' && lastRun.message && <p className="text-xs text-status-warn bg-status-warn/10 border border-status-warn/30 rounded-lg px-3 py-2">{lastRun.message}</p>}
-
-        {links.length === 0 ? (
-          <p className="text-[11px] text-ink-faint">No AD groups linked yet.</p>
-        ) : (
-          <div className="border border-cohesity-border rounded-lg overflow-hidden">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-cohesity-border text-ink-faint text-[10px] uppercase tracking-wider">
-                  <th className="text-left px-3 py-2 font-semibold">ICC group</th>
-                  <th className="text-left px-3 py-2 font-semibold">AD group</th>
-                  <th className="text-left px-3 py-2 font-semibold">Members</th>
-                  <th className="text-left px-3 py-2 font-semibold">Synced</th>
-                  <th className="px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {links.map((l) => (
-                  <tr key={l.id} className="border-b border-cohesity-border/50 last:border-0">
-                    <td className="px-3 py-2 text-ink font-medium">{l.name}</td>
-                    <td className="px-3 py-2 text-ink-muted" title={l.externalDn}>{l.externalName}</td>
-                    <td className="px-3 py-2 text-ink-muted tnum">{l.memberCount}</td>
-                    <td className="px-3 py-2 text-ink-faint">{l.syncedAt ? <LastUpdated date={l.syncedAt} prefix="" /> : 'pending'}</td>
-                    <td className="px-3 py-2 text-right">
-                      <button onClick={() => unlink(l)} aria-label={`Unlink ${l.name}`} className="text-ink-faint hover:text-status-crit cursor-pointer"><Link2Off size={13} /></button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        <div className="border-t border-cohesity-border/60 pt-3">
-          <p className="text-xs font-semibold text-ink mb-1.5">Add an AD group</p>
-          <div className="flex items-center gap-2 max-w-lg">
-            <div className="relative flex-1">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
-              <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') search(); }}
-                placeholder="Group name contains..." className={`${inputClass} pl-8`} disabled={!cfg?.configured} />
-            </div>
-            <button onClick={search} disabled={searching || !cfg?.configured}
-              className="text-xs font-medium px-3 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 cursor-pointer">
-              {searching ? 'Searching...' : 'Search'}
-            </button>
-          </div>
-          {!cfg?.configured && <p className="text-[11px] text-ink-faint mt-1.5">Save a working connection first.</p>}
-          {results && (
-            <div className="mt-2 border border-cohesity-border rounded-lg overflow-hidden max-h-80 overflow-y-auto">
-              <p className="text-[10px] uppercase tracking-wider text-ink-faint px-3 py-1.5 border-b border-cohesity-border/60 bg-surface-overlay/40">
-                {results.length} group{results.length === 1 ? '' : 's'}{q ? ` matching "${q}"` : ' in the domain'}{results.length >= 500 ? ' (first 500, narrow the search)' : ''}
-              </p>
-              {results.length === 0 && <p className="text-[11px] text-ink-faint px-3 py-2">No groups matched.</p>}
-              {results.map((g) => (
-                <div key={g.dn} className="flex items-center gap-3 px-3 py-2 border-b border-cohesity-border/50 last:border-0">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-ink font-medium truncate">{g.name}</p>
-                    <p className="text-[10px] text-ink-faint truncate" title={g.dn}>{g.description || g.dn}</p>
-                  </div>
-                  {g.linked ? (
-                    <Badge tone="ok">linked</Badge>
-                  ) : (
-                    <button onClick={() => link(g)} className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
-                      <Link2 size={11} /> Link
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <button onClick={runSync} disabled={syncing || sync.running || !cfg?.configured}
+          className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 cursor-pointer">
+          <RefreshCw size={12} className={syncing || sync.running ? 'animate-spin' : ''} /> Sync now
+        </button>
       </div>
     </div>
   );

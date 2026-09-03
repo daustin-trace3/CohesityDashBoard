@@ -214,6 +214,13 @@ describe('directory operations through the client seam', () => {
     const erin = await directory.authenticate('erin', 'erin-pw');
     expect(erin.groupDns).toContain(`cn=Backup Admins,ou=groups,${BASE}`);
   });
+  it('searches users by name and reads one by DN', async () => {
+    const found = await directory.searchUsers('al');
+    expect(found.map((u) => u.sam)).toEqual(['alice']);
+    const one = await directory.getUserByDn(`cn=carol,ou=people,${BASE}`);
+    expect(one.sam).toBe('carol');
+    expect(one.disabled).toBe(false);
+  });
   it('a wrong service-account password stops at the first DC instead of retrying every one', async () => {
     directory.saveConfig({ bindPassword: 'bad' }, encryption.encrypt);
     wire.binds.length = 0;
@@ -313,6 +320,21 @@ describe('sync + login', () => {
 
     const dave = await request(app).post('/api/auth/login').send({ username: 'dave', password: 'dave-pw' });
     expect(dave.status).toBe(401);
+  });
+
+  it('a user added by name (pinned) signs in without any linked group and survives the sync', async () => {
+    const viewer = db.prepare("SELECT id FROM groups WHERE name = 'Viewer'").get();
+    const res = await request(app).post('/api/directory/users').set('x-api-key', process.env.DASHBOARD_API_KEY).send({ dn: `cn=carol,ou=people,${BASE}`, groupIds: [viewer.id] });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ username: 'carol', provider: 'ad', groups: ['Viewer'] });
+    const login = await request(app).post('/api/auth/login').send({ username: 'carol', password: 'carol-pw' });
+    expect(login.status).toBe(200);
+    await directorySync.runSync('manual');
+    expect(db.prepare("SELECT is_active, directory_pinned FROM users WHERE username = 'carol'").get()).toEqual({ is_active: 1, directory_pinned: 1 });
+    expect(db.prepare("SELECT COUNT(*) c FROM user_groups WHERE user_id = (SELECT id FROM users WHERE username = 'carol') AND source = 'local'").get().c).toBe(1);
+    const dup = await request(app).post('/api/directory/users').set('x-api-key', process.env.DASHBOARD_API_KEY).send({ dn: `cn=dave,ou=people,${BASE}` });
+    expect(dup.status).toBe(400);
+    expect(dup.body.error).toMatch(/disabled/);
   });
 
   it('setup-status advertises the domain once the directory is configured', async () => {
