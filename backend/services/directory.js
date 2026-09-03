@@ -382,7 +382,7 @@ async function testConnection() {
   return report;
 }
 
-async function searchGroups(query, limit = 50) {
+async function searchGroups(query, limit = 500) {
   const q = escapeFilter(String(query || '').trim());
   const filter = q ? `(&(objectClass=group)(|(cn=*${q}*)(sAMAccountName=*${q}*)))` : '(objectClass=group)';
   return withServiceClient(async (client, ctx) => {
