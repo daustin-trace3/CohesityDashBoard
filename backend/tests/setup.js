@@ -9,6 +9,7 @@ const fs = require('fs');
 const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'icc-test-db-'));
 process.env.DASHBOARD_DB_PATH = path.join(dbDir, 'test.db');
 process.env.ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+process.env.DASHBOARD_TEST_NO_RATELIMIT = '1';
 process.env.DASHBOARD_API_KEY = 'test-api-key';
 process.env.LICENSE_KEY = '';
 process.env.LOG_LEVEL = 'error';

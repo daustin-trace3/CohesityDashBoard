@@ -266,13 +266,23 @@ describe('sync + login', () => {
     expect(db.prepare('SELECT status FROM directory_sync_log ORDER BY id DESC LIMIT 1').get().status).toBe('ok');
   });
 
-  it('a local account with the same name is never overwritten by the sync', async () => {
+  it('a local account with the same name is kept; the directory user is stored under its UPN and can log in qualified', async () => {
     const now = new Date().toISOString();
     db.prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at) VALUES ('bob', 'localhash', 'Local Bob', 'local', 1, ?, ?)").run(now, now);
     const r = await directorySync.runSync('manual');
-    expect(r.message).toMatch(/clash with local accounts: bob/);
+    expect(r.message).toMatch(/share a name with a local account.*bob@lab.test/);
     expect(db.prepare("SELECT auth_provider, password_hash FROM users WHERE username = 'bob'").get()).toEqual({ auth_provider: 'local', password_hash: 'localhash' });
-    db.prepare("DELETE FROM users WHERE username = 'bob'").run();
+    const ad = db.prepare("SELECT username, auth_provider FROM users WHERE username = 'bob@lab.test'").get();
+    expect(ad).toEqual({ username: 'bob@lab.test', auth_provider: 'ad' });
+    // bare name -> local account (break-glass); qualified -> domain account
+    const local = await request(app).post('/api/auth/login').send({ username: 'bob', password: 'bob-pw' });
+    expect(local.status).toBe(401);
+    const dom = await request(app).post('/api/auth/login').send({ username: 'LAB\\bob', password: 'bob-pw' });
+    expect(dom.status).toBe(200);
+    expect(dom.body.user.username).toBe('bob@lab.test');
+    const r2 = await directorySync.runSync('manual');
+    expect(r2.created).toBe(0);
+    db.prepare("DELETE FROM users WHERE username IN ('bob', 'bob@lab.test')").run();
   });
 
   it('admin-added memberships survive a sync, AD ones are reconciled', async () => {
