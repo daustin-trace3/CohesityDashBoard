@@ -6,8 +6,8 @@ import { PlatformLogo } from '../../components/PlatformSwitcher';
 import { DriftOverview, NocturneOverview, StyleToggle, TvButton } from './OpsOverviewVariants';
 
 const CARD_ORDER_KEY = 'ops-card-order';
-// Review toggle for the designer's 2a/2b overview mockups.
-const STYLE_KEY = 'ops-overview-style';
+// Overview style: the global default comes from Global Settings
+// (ops_overview_style); the page toggle is a session-only override.
 const STYLES = ['classic', 'drift', 'nocturne'];
 
 const TONES = {
@@ -163,13 +163,17 @@ export default function OpsMonitorPage() {
   const [pollerStatus, setPollerStatus] = useState(null);
   const [countdown, setCountdown] = useState(60);
   const [tv, setTv] = useState(false);
-  const [style, setStyle] = useState(() => {
-    try { const v = localStorage.getItem(STYLE_KEY); return STYLES.includes(v) ? v : 'drift'; } catch { return 'drift'; }
-  });
-  const changeStyle = (v) => {
-    setStyle(v);
-    try { localStorage.setItem(STYLE_KEY, v); } catch { /* private mode */ }
-  };
+  const [style, setStyle] = useState(null);
+  const changeStyle = (v) => setStyle(STYLES.includes(v) ? v : 'classic');
+  useEffect(() => {
+    let cancelled = false;
+    const loadStyle = () => client.get('/settings')
+      .then((r) => { if (!cancelled) setStyle(STYLES.includes(r.data?.opsOverviewStyle) ? r.data.opsOverviewStyle : 'classic'); })
+      .catch(() => { if (!cancelled) setStyle((s) => s || 'classic'); });
+    loadStyle();
+    window.addEventListener('ops-style-changed', loadStyle);
+    return () => { cancelled = true; window.removeEventListener('ops-style-changed', loadStyle); };
+  }, []);
   const [order, setOrder] = useState(() => {
     try { return JSON.parse(localStorage.getItem(CARD_ORDER_KEY)) || []; } catch { return []; }
   });
@@ -245,6 +249,10 @@ export default function OpsMonitorPage() {
     : cards.some((c) => c.health === 'warning') ? { label: 'DEGRADED', tone: TONES.warning }
     : cards.length ? { label: 'HEALTHY', tone: TONES.ok }
     : { label: 'NO DATA', tone: TONES.unknown };
+
+  if (style == null) {
+    return <div ref={rootRef} className="ops-root animate-fade-in"><div className="panel p-8 text-center text-sm text-ink-muted">Loading estate...</div></div>;
+  }
 
   if (style !== 'classic') {
     const dark = style === 'nocturne';

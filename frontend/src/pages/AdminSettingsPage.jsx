@@ -53,6 +53,7 @@ export default function AdminSettingsPage() {
   // Platform enable/disable moved to the merged Platforms page (/admin/plugins).
   const [customDashboardsEnabled, setCustomDashboardsEnabled] = useState(false);
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
+  const [opsOverviewStyle, setOpsOverviewStyle] = useState('classic');
   const [dnsServer, setDnsServer] = useState('');
   const [license, setLicense] = useState(null);
   const [licenseKeyInput, setLicenseKeyInput] = useState('');
@@ -87,6 +88,7 @@ export default function AdminSettingsPage() {
         setLlmModel(d.llmModel || '');
         setTtlHours(d.llmAnalysisTtlHours || 24);
         setCustomDashboardsEnabled(!!d.featureCustomDashboardsEnabled);
+        setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
@@ -106,9 +108,11 @@ export default function AdminSettingsPage() {
         llmModel,
         llmAnalysisTtlHours: Number(ttlHours) || 24,
         featureCustomDashboardsEnabled: customDashboardsEnabled,
+        opsOverviewStyle,
         dnsServer,
       });
       window.dispatchEvent(new Event('platforms-changed'));
+      window.dispatchEvent(new Event('ops-style-changed'));
       toast({ type: 'success', title: 'Settings saved', message: 'Global settings updated.' });
     } catch (e) {
       toast({ type: 'error', title: 'Save failed', message: e?.response?.data?.error || 'Could not save settings. Try again.' });
@@ -448,6 +452,27 @@ export default function AdminSettingsPage() {
                   feature is still being refined — when off it is hidden from all users.
                 </span>
               </label>
+            </div>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <p className="text-xs font-semibold text-ink mb-1 mt-2">Ops Monitor default view</p>
+              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
+                The overview style every user lands on at /ops. The toggle on the page itself is a
+                temporary override for that browser session. Saved with the button below.
+              </p>
+              <div className="flex flex-col gap-1.5">
+                {[
+                  { id: 'classic', label: 'Classic', hint: 'card grid with the estate strip' },
+                  { id: 'drift', label: 'Drift', hint: 'light, floating cards, curve sparks' },
+                  { id: 'nocturne', label: 'Nocturne', hint: 'dark, estate health ring, ranked ledger' },
+                ].map(o => (
+                  <label key={o.id} className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input type="radio" name="ops-overview-style" className="accent-brand cursor-pointer"
+                      checked={opsOverviewStyle === o.id} onChange={() => setOpsOverviewStyle(o.id)} />
+                    <span className="text-xs text-ink-muted"><span className="text-ink font-medium">{o.label}</span>, {o.hint}</span>
+                  </label>
+                ))}
+              </div>
             </div>
 
             <div className="pt-2 border-t border-cohesity-border/60">

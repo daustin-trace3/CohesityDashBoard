@@ -28,6 +28,7 @@ const DEFAULTS = {
   vcenter_cert_warn_days: '60',
   platform_netbackup_enabled: '0',
   feature_custom_dashboards_enabled: '0',
+  ops_overview_style: 'classic',
   netbackup_success_warn_pct: '90',
   netbackup_storage_warn_pct: '20',
   netbackup_stale_backup_hours: '48',
@@ -151,6 +152,7 @@ function getPlatformSettings() {
     platformProxmoxEnabled: getSetting('platform_proxmox_enabled') === '1',
     platformBrocadeEnabled: getSetting('platform_brocade_enabled') === '1',
     featureCustomDashboardsEnabled: getSetting('feature_custom_dashboards_enabled') === '1',
+    opsOverviewStyle: getSetting('ops_overview_style') || 'classic',
     dnsServer: getSetting('dns_server') || '',
   };
 }

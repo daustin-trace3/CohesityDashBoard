@@ -10,6 +10,7 @@ const router = express.Router();
 const ENCRYPTION_VALUES = new Set(['none', 'starttls', 'tls']);
 const AUTH_METHOD_VALUES = new Set(['none', 'login']);
 const SEVERITY_VALUES = new Set(['info', 'warning', 'critical']);
+const OPS_STYLE_VALUES = new Set(['classic', 'drift', 'nocturne']);
 
 /** Apply an enable-flag toggle to the registry + (re)start/stop its poller.
  *  No-throw: the registry may not have the plugin registered (e.g. tests). */
@@ -203,6 +204,11 @@ router.put('/', (req, res, next) => {
     }
     if (req.body?.featureCustomDashboardsEnabled !== undefined) {
       setSetting('feature_custom_dashboards_enabled', req.body.featureCustomDashboardsEnabled ? '1' : '0');
+    }
+    if (req.body?.opsOverviewStyle !== undefined) {
+      const v = String(req.body.opsOverviewStyle);
+      if (!OPS_STYLE_VALUES.has(v)) return res.status(400).json({ error: 'opsOverviewStyle must be classic, drift or nocturne' });
+      setSetting('ops_overview_style', v);
     }
     res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings() });
   } catch (err) {
