@@ -98,9 +98,14 @@ export default function DirectoryTab() {
         <div className="flex items-start gap-3">
           <span className="w-8 h-8 rounded-lg bg-brand/10 flex items-center justify-center flex-shrink-0"><Building2 size={15} className="text-brand" /></span>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-ink flex items-center gap-2">
+            <p className="text-sm font-bold text-ink flex items-center gap-2 flex-wrap">
               Active Directory
               <Badge tone={cfg?.configured ? 'ok' : 'neutral'}>{cfg?.configured ? 'Connected' : form.enabled ? 'Incomplete' : 'Off'}</Badge>
+              {cfg?.configured && cfg.domain && (
+                <span className="text-xs font-medium text-ink-muted">
+                  {cfg.domain}{cfg.bindUser ? <span className="text-ink-faint"> as {cfg.bindUser.includes('@') || cfg.bindUser.includes('\') || cfg.bindUser.includes('=') ? cfg.bindUser : `${cfg.bindUser}@${cfg.domain}`}</span> : null}
+                </span>
+              )}
             </p>
             <p className="text-[11px] text-ink-muted mt-0.5 leading-relaxed">
               Give ICC a domain name and one approved account. Domain controllers, the search base and TLS are discovered.
@@ -203,7 +208,7 @@ export default function DirectoryTab() {
 
       <div className="panel p-4 flex items-center justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <p className="text-xs font-semibold text-ink">Group sync</p>
+          <p className="text-xs font-semibold text-ink">Group sync{cfg?.configured && cfg.domain ? <span className="text-ink-faint font-normal"> on {cfg.domain}</span> : null}</p>
           <p className="text-[11px] text-ink-muted mt-0.5">
             {linkCount} domain group{linkCount === 1 ? '' : 's'} mirrored from the Groups tab.
             {lastRun ? (
