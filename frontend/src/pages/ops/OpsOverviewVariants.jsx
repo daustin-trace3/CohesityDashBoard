@@ -351,7 +351,7 @@ export function DriftOverview({ data, pollerStatus, countdown, onNavigate, contr
               {attention.map((f, i) => (
                 <button type="button" key={i} className="ov-btn ovd-feed" onClick={() => onNavigate(f.link)}
                   style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 22px', borderRadius: 12, margin: '0 8px', width: 'calc(100% - 16px)' }}>
-                  <span style={{ fontSize: 20, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: f.severity === 'critical' ? '#F0512F' : D.amber, width: 34, textAlign: 'right', flex: 'none' }}>{fmt(f.count)}</span>
+                  <span style={{ fontSize: num(f.count) >= 10000 ? 15 : num(f.count) >= 1000 ? 17 : 20, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: f.severity === 'critical' ? '#F0512F' : D.amber, minWidth: 34, textAlign: 'right', flex: 'none', whiteSpace: 'nowrap' }}>{fmt(f.count)}</span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 12, fontWeight: 700 }}>{f.platform}</span>
                     <span style={{ display: 'block', fontSize: 11, color: '#8d877f', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.text}</span>
