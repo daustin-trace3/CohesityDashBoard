@@ -15,6 +15,8 @@ const require = createRequire(import.meta.url);
 const BASE = 'dc=lab,dc=test';
 const DOMAIN = 'lab.test';
 const guid = (n) => Buffer.from(n.toString(16).padStart(32, '0'), 'hex');
+const DOMSID = 'S-1-5-21-1111-2222-3333';
+const sid = (rid) => `${DOMSID}-${rid}`;
 
 // svc (bind account), alice in Backup Admins, bob in a nested group under
 // Backup Admins, carol in Storage Viewers only, dave disabled.
@@ -23,8 +25,10 @@ const ENTRIES = [
   { dn: `cn=alice,ou=people,${BASE}`, password: 'alice-pw', attrs: { objectClass: ['user'], objectCategory: 'person', sAMAccountName: 'alice', userPrincipalName: `alice@${DOMAIN}`, displayName: 'Alice Anders', mail: 'alice@lab.test', objectGUID: guid(2), userAccountControl: '512' } },
   { dn: `cn=bob,ou=people,${BASE}`, password: 'bob-pw', attrs: { objectClass: ['user'], objectCategory: 'person', sAMAccountName: 'bob', userPrincipalName: `bob@${DOMAIN}`, displayName: 'Bob Brown', objectGUID: guid(3), userAccountControl: '512' } },
   { dn: `cn=carol,ou=people,${BASE}`, password: 'carol-pw', attrs: { objectClass: ['user'], objectCategory: 'person', sAMAccountName: 'carol', userPrincipalName: `carol@${DOMAIN}`, displayName: 'Carol Chen', objectGUID: guid(4), userAccountControl: '512' } },
+  // erin's PRIMARY group is Backup Admins (RID 1010): no member/memberOf link exists, only primaryGroupID.
+  { dn: `cn=erin,ou=people,${BASE}`, password: 'erin-pw', attrs: { objectClass: ['user'], objectCategory: 'person', sAMAccountName: 'erin', userPrincipalName: `erin@${DOMAIN}`, displayName: 'Erin Eng', objectGUID: guid(6), objectSid: sid(2006), primaryGroupID: '1010', userAccountControl: '512' } },
   { dn: `cn=dave,ou=people,${BASE}`, password: 'dave-pw', attrs: { objectClass: ['user'], objectCategory: 'person', sAMAccountName: 'dave', userPrincipalName: `dave@${DOMAIN}`, displayName: 'Dave Disabled', objectGUID: guid(5), userAccountControl: '514' } },
-  { dn: `cn=Backup Admins,ou=groups,${BASE}`, attrs: { objectClass: ['group'], sAMAccountName: 'Backup Admins', cn: 'Backup Admins', description: 'Backup operators', objectGUID: guid(10), member: [`cn=alice,ou=people,${BASE}`, `cn=Backup Tier2,ou=groups,${BASE}`, `cn=dave,ou=people,${BASE}`] } },
+  { dn: `cn=Backup Admins,ou=groups,${BASE}`, attrs: { objectClass: ['group'], sAMAccountName: 'Backup Admins', cn: 'Backup Admins', description: 'Backup operators', objectGUID: guid(10), objectSid: sid(1010), member: [`cn=alice,ou=people,${BASE}`, `cn=Backup Tier2,ou=groups,${BASE}`, `cn=dave,ou=people,${BASE}`] } },
   { dn: `cn=Backup Tier2,ou=groups,${BASE}`, attrs: { objectClass: ['group'], sAMAccountName: 'Backup Tier2', cn: 'Backup Tier2', objectGUID: guid(11), member: [`cn=bob,ou=people,${BASE}`] } },
   { dn: `cn=Storage Viewers,ou=groups,${BASE}`, attrs: { objectClass: ['group'], sAMAccountName: 'Storage Viewers', cn: 'Storage Viewers', objectGUID: guid(12), member: [`cn=carol,ou=people,${BASE}`] } },
 ];
@@ -176,7 +180,7 @@ describe('directory operations through the client seam', () => {
     expect(r.baseDn).toBe(BASE);
     expect(r.boundAs).toBe('svc@lab.test');
     expect(wire.binds[0]).toBe('svc@lab.test');
-    expect(r.userCount).toBe(5);
+    expect(r.userCount).toBe(6);
   });
   it('an explicit server list overrides discovery and a scheme pins the transport', async () => {
     directory.saveConfig({ servers: ['starttls://dc9.lab.test'] }, encryption.encrypt);
@@ -191,7 +195,7 @@ describe('directory operations through the client seam', () => {
     expect(groups.map((g) => g.name).sort()).toEqual(['Backup Admins', 'Backup Tier2']);
     expect(groups[0].guid).toMatch(/^[0-9a-f-]{36}$/);
     const members = await directory.getGroupMembers(`cn=Backup Admins,ou=groups,${BASE}`);
-    expect(members.map((m) => m.sam).sort()).toEqual(['alice', 'bob', 'dave']);
+    expect(members.map((m) => m.sam).sort()).toEqual(['alice', 'bob', 'dave', 'erin']);
     expect(members.find((m) => m.sam === 'dave').disabled).toBe(true);
   });
   it('authenticates a domain user in every username form and rejects bad passwords', async () => {
@@ -206,6 +210,9 @@ describe('directory operations through the client seam', () => {
     const bob = await directory.authenticate('bob', 'bob-pw');
     expect(bob.groupDns).toEqual(expect.arrayContaining([`cn=Backup Tier2,ou=groups,${BASE}`, `cn=Backup Admins,ou=groups,${BASE}`]));
     expect(await directory.authenticate('dave', 'dave-pw')).toBeNull();
+    // primary-group membership surfaces on login too
+    const erin = await directory.authenticate('erin', 'erin-pw');
+    expect(erin.groupDns).toContain(`cn=Backup Admins,ou=groups,${BASE}`);
   });
   it('a wrong service-account password stops at the first DC instead of retrying every one', async () => {
     directory.saveConfig({ bindPassword: 'bad' }, encryption.encrypt);
@@ -246,13 +253,13 @@ describe('sync + login', () => {
     const r = await directorySync.runSync('manual');
     expect(r.status).toBe('ok');
     expect(r.groups).toBe(1);
-    expect(r.seen).toBe(3);
+    expect(r.seen).toBe(4);
     const users = db.prepare("SELECT username, is_active FROM users WHERE auth_provider = 'ad' ORDER BY username").all();
     expect(users).toEqual([
-      { username: 'alice', is_active: 1 }, { username: 'bob', is_active: 1 }, { username: 'dave', is_active: 0 }, { username: 'zed', is_active: 0 },
+      { username: 'alice', is_active: 1 }, { username: 'bob', is_active: 1 }, { username: 'dave', is_active: 0 }, { username: 'erin', is_active: 1 }, { username: 'zed', is_active: 0 },
     ]);
     const members = db.prepare("SELECT u.username FROM user_groups ug JOIN users u ON u.id = ug.user_id WHERE ug.group_id = ? AND ug.source = 'ad' ORDER BY u.username").all(backupGroupId);
-    expect(members.map((m) => m.username)).toEqual(['alice', 'bob', 'dave']);
+    expect(members.map((m) => m.username)).toEqual(['alice', 'bob', 'dave', 'erin']);
     expect(r.deactivated).toBe(1);
     const r2 = await directorySync.runSync('manual');
     expect(r2.created).toBe(0);

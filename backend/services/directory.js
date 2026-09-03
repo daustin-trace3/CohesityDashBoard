@@ -136,6 +136,7 @@ function guidToString(buf) {
 
 /** objectSid bytes -> "S-1-5-21-..." */
 function sidToString(buf) {
+  if (typeof buf === 'string') return /^S-\d/.test(buf) ? buf : null;
   if (!buf || buf.length < 8) return null;
   const b = Buffer.from(buf);
   const revision = b[0];
@@ -159,8 +160,15 @@ function attr(entry, name) {
 
 function entryToUser(e) {
   const uac = Number(attr(e, 'userAccountControl')) || 0;
+  const sid = sidToString(attr(e, 'objectSid'));
   return {
     dn: e.dn,
+    sid,
+    // AD keeps the primary group (default Domain Users, RID 513) in
+    // primaryGroupID, NOT in member/memberOf, so it is invisible to the
+    // matching-rule queries and has to be resolved by RID.
+    primaryGroupId: Number(attr(e, 'primaryGroupID')) || null,
+    primaryGroupSid: sid && attr(e, 'primaryGroupID') ? `${sid.slice(0, sid.lastIndexOf('-'))}-${Number(attr(e, 'primaryGroupID'))}` : null,
     sam: String(attr(e, 'sAMAccountName') || ''),
     upn: String(attr(e, 'userPrincipalName') || ''),
     displayName: String(attr(e, 'displayName') || attr(e, 'cn') || attr(e, 'sAMAccountName') || ''),
@@ -350,7 +358,7 @@ async function searchAll(client, baseDn, filter, attributes) {
 /* Operations                                                              */
 /* ----------------------------------------------------------------------- */
 
-const USER_ATTRS = ['sAMAccountName', 'userPrincipalName', 'displayName', 'cn', 'mail', 'objectGUID', 'userAccountControl'];
+const USER_ATTRS = ['sAMAccountName', 'userPrincipalName', 'displayName', 'cn', 'mail', 'objectGUID', 'objectSid', 'userAccountControl', 'primaryGroupID'];
 const GROUP_ATTRS = ['sAMAccountName', 'cn', 'description', 'objectGUID', 'objectSid'];
 
 /** Discover, connect, bind and read the RootDSE. Never throws on config; returns a report. */
@@ -390,16 +398,38 @@ async function getGroupByDn(dn) {
   });
 }
 
-/** Members of a group, nested groups flattened by the DC. */
+/** Members of a group: nested groups flattened by the DC, plus users whose
+ *  PRIMARY group it is (primaryGroupID = the group's RID), which AD does not
+ *  expose through member/memberOf at all. */
 async function getGroupMembers(groupDn) {
-  const filter = `(&(objectCategory=person)(objectClass=user)(memberOf:${IN_CHAIN}:=${escapeFilter(groupDn)}))`;
-  return withServiceClient(async (client, ctx) => (await searchAll(client, ctx.baseDn, filter, USER_ATTRS)).map(entryToUser));
+  return withServiceClient(async (client, ctx) => {
+    const { searchEntries } = await client.search(groupDn, { scope: 'base', filter: '(objectClass=group)', attributes: ['objectSid'], explicitBufferAttributes: ['objectSid'] });
+    const sid = sidToString(attr(searchEntries?.[0], 'objectSid'));
+    const rid = sid ? sid.slice(sid.lastIndexOf('-') + 1) : null;
+    const byChain = `(memberOf:${IN_CHAIN}:=${escapeFilter(groupDn)})`;
+    const filter = rid
+      ? `(&(objectCategory=person)(objectClass=user)(|${byChain}(primaryGroupID=${rid})))`
+      : `(&(objectCategory=person)(objectClass=user)${byChain})`;
+    return (await searchAll(client, ctx.baseDn, filter, USER_ATTRS)).map(entryToUser);
+  });
 }
 
-/** All group DNs a user belongs to, transitively. */
-async function getUserGroupDns(client, baseDn, userDn) {
+/** All group DNs a user belongs to, transitively, including the primary group. */
+async function getUserGroupDns(client, baseDn, user) {
+  const userDn = typeof user === 'string' ? user : user.dn;
   const filter = `(&(objectClass=group)(member:${IN_CHAIN}:=${escapeFilter(userDn)}))`;
-  return (await searchAll(client, baseDn, filter, ['distinguishedName'])).map((e) => e.dn);
+  const dns = (await searchAll(client, baseDn, filter, ['distinguishedName'])).map((e) => e.dn);
+  const pgSid = typeof user === 'string' ? null : user.primaryGroupSid;
+  if (pgSid) {
+    const pg = await searchAll(client, baseDn, `(&(objectClass=group)(objectSid=${escapeFilter(pgSid)}))`, ['distinguishedName']);
+    for (const g of pg) if (!dns.some((d) => d.toLowerCase() === g.dn.toLowerCase())) dns.push(g.dn);
+    // Nested parents of the primary group count too.
+    for (const g of pg) {
+      const parents = await searchAll(client, baseDn, `(&(objectClass=group)(member:${IN_CHAIN}:=${escapeFilter(g.dn)}))`, ['distinguishedName']);
+      for (const p of parents) if (!dns.some((d) => d.toLowerCase() === p.dn.toLowerCase())) dns.push(p.dn);
+    }
+  }
+  return dns;
 }
 
 async function findUser(client, baseDn, username, domain) {
@@ -431,7 +461,7 @@ async function authenticate(username, password) {
   return withServiceClient(async (client, ctx) => {
     const user = await findUser(client, ctx.baseDn, username, cfg.domain);
     if (!user || user.disabled) return null;
-    const groupDns = await getUserGroupDns(client, ctx.baseDn, user.dn);
+    const groupDns = await getUserGroupDns(client, ctx.baseDn, user);
     return { user, groupDns };
   });
 }
