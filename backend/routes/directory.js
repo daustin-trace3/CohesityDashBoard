@@ -49,7 +49,7 @@ router.post('/test', async (req, res, next) => {
 router.get('/groups', async (req, res, next) => {
   try {
     if (!directory.isEnabled()) return res.status(400).json({ error: 'Directory is not configured.' });
-    const groups = await directory.searchGroups(req.query.q || '', 50);
+    const groups = await directory.searchGroups(req.query.q || '', 500);
     const linkedDns = new Set(directorySync.linkedGroups().map((g) => String(g.external_dn || '').toLowerCase()));
     res.json(groups.map((g) => ({ ...g, linked: linkedDns.has(g.dn.toLowerCase()) })));
   } catch (err) {

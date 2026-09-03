@@ -315,7 +315,10 @@ export default function DirectoryTab() {
           </div>
           {!cfg?.configured && <p className="text-[11px] text-ink-faint mt-1.5">Save a working connection first.</p>}
           {results && (
-            <div className="mt-2 border border-cohesity-border rounded-lg overflow-hidden max-h-64 overflow-y-auto">
+            <div className="mt-2 border border-cohesity-border rounded-lg overflow-hidden max-h-80 overflow-y-auto">
+              <p className="text-[10px] uppercase tracking-wider text-ink-faint px-3 py-1.5 border-b border-cohesity-border/60 bg-surface-overlay/40">
+                {results.length} group{results.length === 1 ? '' : 's'}{q ? ` matching "${q}"` : ' in the domain'}{results.length >= 500 ? ' (first 500, narrow the search)' : ''}
+              </p>
               {results.length === 0 && <p className="text-[11px] text-ink-faint px-3 py-2">No groups matched.</p>}
               {results.map((g) => (
                 <div key={g.dn} className="flex items-center gap-3 px-3 py-2 border-b border-cohesity-border/50 last:border-0">
