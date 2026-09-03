@@ -4,6 +4,9 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const db = require('../db/database');
+const directory = require('../services/directory');
+const directorySync = require('../services/directorySync');
+const logger = require('../utils/logger');
 const {
   hashPassword,
   verifyPassword,
@@ -90,7 +93,12 @@ function userPayload(user, grants) {
 /** GET /api/auth/setup-status */
 router.get('/setup-status', (req, res) => {
   const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-  res.json({ needsSetup: count === 0, authEnabled: authEnabled() });
+  const dir = directory.getConfig();
+  res.json({
+    needsSetup: count === 0,
+    authEnabled: authEnabled(),
+    directory: { enabled: directory.isEnabled(), domain: directory.isEnabled() ? dir.domain : null },
+  });
 });
 
 /** POST /api/auth/setup { token, username, password } — creates the first admin. */
@@ -146,11 +154,34 @@ router.post('/login', authLimiter, async (req, res, next) => {
       return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username));
-    if (!user || !user.is_active) return invalid();
+    // Local accounts are checked here and win on a name clash (break-glass).
+    // Directory accounts always re-verify against the domain: their stored
+    // hash is a placeholder and their group membership is refreshed on login.
+    let user = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username));
+    if (user && user.auth_provider !== 'local') user = null;
 
-    const ok = await verifyPassword(user.password_hash, String(password));
-    if (!ok) return invalid();
+    if (user) {
+      if (!user.is_active) return invalid();
+      const ok = await verifyPassword(user.password_hash, String(password));
+      if (!ok) return invalid();
+    } else if (directory.isEnabled()) {
+      let result;
+      try {
+        result = await directory.authenticate(String(username), String(password));
+      } catch (err) {
+        logger.error(`[directory] login for ${directory.toSam(String(username))} failed: ${err.message}`);
+        return res.status(503).json({ error: 'The directory is unreachable. Try again, or sign in with a local account.' });
+      }
+      if (!result) return invalid();
+      user = directorySync.syncLogin(result.user, result.groupDns);
+      if (!user) {
+        recordLoginFailure(String(username));
+        return res.status(403).json({ error: 'Your domain account is not in any group that has access to this dashboard.' });
+      }
+      if (!user.is_active) return invalid();
+    } else {
+      return invalid();
+    }
     failedLogins.delete(String(username));
 
     db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), user.id);

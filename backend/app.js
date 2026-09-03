@@ -48,6 +48,7 @@ require('./services/coreDatasets').registerCoreDatasets();
 const { getSetting } = require('./services/settings');
 const authRouter = require('./routes/auth');
 const usersRouter = require('./routes/users');
+const directoryRouter = require('./routes/directory');
 const pluginsRouter = require('./routes/plugins');
 const registry = require('./core/registry');
 const authenticate = require('./middleware/authenticate');
@@ -182,6 +183,12 @@ function createApp({ licenseGate = requireLicense } = {}) {
     '/api/users',
     requirePermission((req) => `admin:users:${req.method === 'GET' ? 'view' : 'manage'}`),
     usersRouter
+  );
+  // Active Directory admin API: same gate as /api/users (linking a group is an access change).
+  app.use(
+    '/api/directory',
+    requirePermission((req) => `admin:users:${req.method === 'GET' ? 'view' : 'manage'}`),
+    directoryRouter
   );
 
   // Cohesity routes — mounted under /api/cohesity/* (WP4). New mounts first,
