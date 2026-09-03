@@ -25,3 +25,6 @@ pm2.config.js
 pm2.demo.config.js
 pure_token_factory.py
 requirements.txt
+# Live-platform probe dumps (real customer data), never commit
+backend/scripts/*-probe.json
+backend/*-probe.json
