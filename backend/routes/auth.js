@@ -28,6 +28,8 @@ const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const authLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
+  // Test suites log in many times a minute from one address.
+  skip: () => process.env.DASHBOARD_TEST_NO_RATELIMIT === '1',
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },

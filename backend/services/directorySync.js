@@ -23,15 +23,27 @@ function linkedGroups() {
 
 /** Insert or update one AD user by objectGUID (falls back to username match). */
 const upsertUserTxn = db.transaction((adUser, now) => {
-  const username = adUser.sam || directory.toSam(adUser.upn);
+  let username = adUser.sam || directory.toSam(adUser.upn);
   if (!username) return { id: null, created: false, updated: false };
   let row = adUser.guid ? db.prepare('SELECT * FROM users WHERE external_id = ?').get(adUser.guid) : null;
-  if (!row) row = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-
-  if (row && row.auth_provider === 'local') {
-    // A local account with the same name is break-glass and wins; the
-    // directory user is not imported over it.
-    return { id: null, created: false, updated: false, conflict: username };
+  let renamed = null;
+  if (!row) {
+    row = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    if (row && row.auth_provider === 'local') {
+      // A local account with the same name is break-glass and keeps the bare
+      // name (a bare login still hits it). The directory user is stored under
+      // its UPN instead, so DOMAIN\name and name@domain logins reach it.
+      if (!adUser.upn) return { id: null, created: false, updated: false, conflict: username };
+      username = adUser.upn;
+      row = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+      if (row && row.auth_provider === 'local') return { id: null, created: false, updated: false, conflict: username };
+      renamed = username;
+    }
+  } else if (row.username !== username) {
+    // Found by GUID under a different name (usually the UPN chosen above on
+    // an earlier clash): keep that name while the bare one is taken.
+    const taken = db.prepare('SELECT 1 FROM users WHERE username = ? AND id != ?').get(username, row.id);
+    if (taken) username = row.username;
   }
 
   const isActive = adUser.disabled ? 0 : 1;
@@ -42,7 +54,7 @@ const upsertUserTxn = db.transaction((adUser, now) => {
       VALUES (?, ?, ?, 'ad', ?, ?, ?, ?, ?, ?, ?)
     `).run(username, AD_PASSWORD_PLACEHOLDER, adUser.displayName || username, isActive, now, now,
       adUser.guid, adUser.upn || null, adUser.email || null, now);
-    return { id: info.lastInsertRowid, created: true, updated: false };
+    return { id: info.lastInsertRowid, created: true, updated: false, renamed };
   }
 
   const changed = row.username !== username || row.display_name !== (adUser.displayName || username)
@@ -54,7 +66,7 @@ const upsertUserTxn = db.transaction((adUser, now) => {
     WHERE id = ?
   `).run(username, adUser.displayName || username, isActive, changed ? 1 : 0, now,
     adUser.guid || row.external_id, adUser.upn || null, adUser.email || null, now, row.id);
-  return { id: row.id, created: false, updated: changed };
+  return { id: row.id, created: false, updated: changed, renamed };
 });
 
 /** Make the user's AD-sourced memberships exactly `groupIds`. */
@@ -91,6 +103,7 @@ async function runSync(trigger = 'schedule') {
   const logId = logStart(trigger);
   const counts = { groups: 0, seen: 0, created: 0, updated: 0, deactivated: 0 };
   const conflicts = new Set();
+  const renamed = new Set();
   try {
     const groups = linkedGroups();
     const now = new Date().toISOString();
@@ -104,6 +117,7 @@ async function runSync(trigger = 'schedule') {
         const r = upsertUserTxn.immediate(m, now);
         if (r.conflict) { conflicts.add(r.conflict); continue; }
         if (!r.id) continue;
+        if (r.renamed) renamed.add(r.renamed);
         seenUserIds.add(r.id);
         if (r.created) counts.created += 1; else if (r.updated) counts.updated += 1;
         if (!membershipByUser.has(r.id)) membershipByUser.set(r.id, new Set());
@@ -127,7 +141,10 @@ async function runSync(trigger = 'schedule') {
       }
     }
 
-    const msg = conflicts.size ? `Skipped ${conflicts.size} directory user(s) that clash with local accounts: ${[...conflicts].slice(0, 5).join(', ')}` : null;
+    const notes = [];
+    if (renamed.size) notes.push(`${renamed.size} directory user(s) share a name with a local account and sign in by UPN or DOMAIN\\name: ${[...renamed].slice(0, 5).join(', ')}`);
+    if (conflicts.size) notes.push(`Skipped ${conflicts.size} directory user(s) that clash with local accounts: ${[...conflicts].slice(0, 5).join(', ')}`);
+    const msg = notes.length ? notes.join('. ') : null;
     logFinish(logId, 'ok', counts, msg);
     logger.info(`[directory] sync ${trigger}: ${counts.groups} groups, ${counts.seen} users (${counts.created} new, ${counts.updated} updated, ${counts.deactivated} deactivated)`);
     return { id: logId, status: 'ok', ...counts, message: msg };
