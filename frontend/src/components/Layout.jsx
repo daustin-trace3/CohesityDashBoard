@@ -161,7 +161,22 @@ export default function Layout() {
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
-  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(platformKey || 'cohesity');
+  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(isOps ? 'all' : (platformKey || 'cohesity'));
+
+  // Ops Monitor header: estate-wide figures from /ops/summary (platform count,
+  // critical across every managed platform) instead of the Cohesity feed.
+  const [opsTotals, setOpsTotals] = useState(null);
+  useEffect(() => {
+    if (!isOps) return undefined;
+    let cancelled = false;
+    const load = () => client.get('/ops/summary')
+      .then((r) => { if (!cancelled) setOpsTotals(r.data?.totals || null); })
+      .catch(() => {});
+    load();
+    const interval = setInterval(load, 60000);
+    window.addEventListener('platforms-changed', load);
+    return () => { cancelled = true; clearInterval(interval); window.removeEventListener('platforms-changed', load); };
+  }, [isOps]);
 
   const toggleCollapsed = () => {
     setCollapsed(c => {
@@ -531,7 +546,9 @@ export default function Layout() {
               <div className="leading-tight min-w-0">
                 <p className="text-[11px] font-medium text-ink truncate">{footerHeadline}</p>
                 <p className="text-[10px] text-ink-faint tnum">
-                  {isPlatform
+                  {isOps
+                    ? `${opsTotals?.platforms ?? 0} platform${opsTotals?.platforms === 1 ? '' : 's'} monitored`
+                    : isPlatform
                     ? `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''} monitored`
                     : `${clusterCount} cluster${clusterCount !== 1 ? 's' : ''} monitored`}
                 </p>
@@ -565,7 +582,14 @@ export default function Layout() {
             <h1 className="text-sm font-semibold text-ink whitespace-nowrap hidden md:block flex-shrink-0">{isOps ? 'Ops Monitor' : isPure ? 'Pure Dashboard' : isNetapp ? 'NetApp Dashboard' : isZerto ? 'Zerto Dashboard' : isVcenter ? 'vCenter Dashboard' : isDell ? 'Dell Dashboard' : isAria ? 'Aria Automation Dashboard' : isAriaOps ? 'Aria Operations Dashboard' : isNetbackup ? 'NetBackup Dashboard' : isAws ? 'AWS Dashboard' : isProxmox ? 'Proxmox VE Dashboard' : isBrocade ? 'Brocade SAN Dashboard' : activePluginPlatform ? `${activePluginPlatform.label} Dashboard` : 'Global Cluster Dashboard'}</h1>
             {/* Plugin platforms have no entity-feed endpoints — hide the count chip
                 rather than showing the Cohesity fall-through. */}
-            {!activePluginPlatform && (
+            {isOps ? (
+              opsTotals && (
+                <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
+                  <LayoutGrid size={11} className="text-brand" />
+                  {`${opsTotals.platforms} Platform${opsTotals.platforms !== 1 ? 's' : ''}`}
+                </span>
+              )
+            ) : !activePluginPlatform && (
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform
@@ -573,7 +597,17 @@ export default function Layout() {
                 : `${clusterCount} Cohesity Cluster${clusterCount !== 1 ? 's' : ''}`}
             </span>
             )}
-            {activePluginPlatform ? null : isPlatform ? (
+            {isOps ? (
+              opsTotals?.critical > 0 && (
+                <button
+                  onClick={() => navigate('/ops')}
+                  className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
+                >
+                  <Bell size={11} />
+                  {opsTotals.critical} critical
+                </button>
+              )
+            ) : activePluginPlatform ? null : isPlatform ? (
               platformAlerts > 0 && (
                 <button
                   onClick={() => navigate(`/${platformKey}/alerts`)}

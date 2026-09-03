@@ -3,8 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { Activity, Check, ChevronRight, GripVertical, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
 import client from '../../api/client';
 import { PlatformLogo } from '../../components/PlatformSwitcher';
+import { DriftOverview, NocturneOverview, StyleToggle, TvButton } from './OpsOverviewVariants';
 
 const CARD_ORDER_KEY = 'ops-card-order';
+// Review toggle for the designer's 2a/2b overview mockups.
+const STYLE_KEY = 'ops-overview-style';
+const STYLES = ['classic', 'drift', 'nocturne'];
 
 const TONES = {
   ok: '#6CB33F',
@@ -159,6 +163,13 @@ export default function OpsMonitorPage() {
   const [pollerStatus, setPollerStatus] = useState(null);
   const [countdown, setCountdown] = useState(60);
   const [tv, setTv] = useState(false);
+  const [style, setStyle] = useState(() => {
+    try { const v = localStorage.getItem(STYLE_KEY); return STYLES.includes(v) ? v : 'drift'; } catch { return 'drift'; }
+  });
+  const changeStyle = (v) => {
+    setStyle(v);
+    try { localStorage.setItem(STYLE_KEY, v); } catch { /* private mode */ }
+  };
   const [order, setOrder] = useState(() => {
     try { return JSON.parse(localStorage.getItem(CARD_ORDER_KEY)) || []; } catch { return []; }
   });
@@ -177,6 +188,13 @@ export default function OpsMonitorPage() {
     const refresh = setInterval(load, 60000);
     const tick = setInterval(() => setCountdown((c) => Math.max(0, c - 1)), 1000);
     return () => { clearInterval(refresh); clearInterval(tick); };
+  }, [load]);
+
+  // Platform enable/disable and plugin installs fire 'platforms-changed'
+  // (Global Settings, Plugins page); refetch so the estate updates in place.
+  useEffect(() => {
+    window.addEventListener('platforms-changed', load);
+    return () => window.removeEventListener('platforms-changed', load);
   }, [load]);
 
   useEffect(() => {
@@ -228,6 +246,27 @@ export default function OpsMonitorPage() {
     : cards.length ? { label: 'HEALTHY', tone: TONES.ok }
     : { label: 'NO DATA', tone: TONES.unknown };
 
+  if (style !== 'classic') {
+    const dark = style === 'nocturne';
+    const Variant = dark ? NocturneOverview : DriftOverview;
+    return (
+      <div ref={rootRef} className="ops-root animate-fade-in">
+        <Variant
+          data={data}
+          pollerStatus={pollerStatus}
+          countdown={countdown}
+          onNavigate={navigate}
+          controls={(
+            <>
+              <StyleToggle value={style} onChange={changeStyle} dark={dark} />
+              <TvButton tv={tv} onToggle={toggleTv} dark={dark} />
+            </>
+          )}
+        />
+      </div>
+    );
+  }
+
   return (
     <div ref={rootRef} className="ops-root animate-fade-in">
       {/* Estate strip */}
@@ -258,6 +297,7 @@ export default function OpsMonitorPage() {
         </p>
         <div className="ml-auto flex items-center gap-3">
           <span className="text-[11px] text-ink-faint tnum">refresh in {countdown}s</span>
+          <StyleToggle value={style} onChange={changeStyle} dark />
           <button
             onClick={toggleTv}
             title={tv ? 'Exit TV mode' : 'TV mode (fullscreen)'}
