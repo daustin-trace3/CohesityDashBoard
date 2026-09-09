@@ -222,7 +222,7 @@ const issueKey = (i) => `${i.type}|${i.source}|${i.target}`;
  * row, still-present ones bump last_seen, and open rows whose issue is gone
  * get resolved. Idempotent — safe to run after every poll.
  */
-const reconcileIssueHistory = db.transaction(() => {
+const reconcileIssueHistoryTxn = db.transaction(() => {
   const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
   const open = db.prepare('SELECT * FROM brocade_issue_history WHERE resolved_at IS NULL').all();
 
@@ -248,6 +248,11 @@ const reconcileIssueHistory = db.transaction(() => {
     if (!openKeys.has(key)) insert.run(i.sourceId ?? null, i.source, i.type, i.target, i.severity, i.message);
   }
 });
+
+// Run as BEGIN IMMEDIATE so the write lock is taken up front — a deferred
+// read→write upgrade in WAL fails as SQLITE_BUSY (snapshot) when the other
+// process writes mid-transaction, and that error ignores busy_timeout.
+const reconcileIssueHistory = () => reconcileIssueHistoryTxn.immediate();
 
 module.exports = {
   healthWarnScore, healthCritScore, certWarnDays, eventStormCount, eventRetentionDays,

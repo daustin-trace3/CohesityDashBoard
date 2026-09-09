@@ -174,7 +174,7 @@ function reconcileIssueHistory(coreApi) {
       if (!openKeys.has(key)) insert.run(key, i.accountId ?? null, i.account, i.severity, i.type, i.target, i.message);
     }
     db.prepare("DELETE FROM aws_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
-  })();
+  }).immediate();  // BEGIN IMMEDIATE: write lock up front, see host issue services
 }
 
 module.exports = { costSpikePct, rdsStorageWarnPct, computeIssues, reconcileIssueHistory };

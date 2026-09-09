@@ -346,7 +346,9 @@ const replaceAgents = db.transaction((clusterId, agents) => {
  */
 function safeErrorMessage(err) {
   if (err?.response) {
-    return `HTTP ${err.response.status} from cluster`;
+    const data = err.response.data;
+    const detail = (data && (data.message || data.errorMessage || data.error?.message || data.errorCode)) || null;
+    return `HTTP ${err.response.status} from cluster${detail ? ` — ${String(detail).slice(0, 200)}` : ''}`;
   }
   if (err?.code) {
     return `Network error: ${err.code}`;

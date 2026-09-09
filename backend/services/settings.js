@@ -27,6 +27,7 @@ const DEFAULTS = {
   pure1_poll_interval_minutes: '15',
   vcenter_cert_warn_days: '60',
   feature_custom_dashboards_enabled: '0',
+  ops_overview_style: 'classic',
   platform_aws_enabled: '0',
   aws_cost_spike_pct: '30',
   aws_rds_storage_warn_pct: '15',
@@ -154,6 +155,7 @@ function getPlatformSettings() {
     platformUnifiEnabled: getSetting('platform_unifi_enabled') === '1',
     platformBrocadeEnabled: getSetting('platform_brocade_enabled') === '1',
     featureCustomDashboardsEnabled: getSetting('feature_custom_dashboards_enabled') === '1',
+    opsOverviewStyle: getSetting('ops_overview_style') || 'classic',
     dnsServer: getSetting('dns_server') || '',
   };
 }

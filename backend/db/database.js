@@ -31,7 +31,7 @@ db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");
 // Two processes (API + poller) share this file — wait out the other
 // process's write transactions instead of failing with SQLITE_BUSY.
-db.pragma('busy_timeout = 5000');
+db.pragma('busy_timeout = 15000');
 
 // Run versioned migrations, scope by scope. Idempotent — safe on both a
 // fresh DB and an existing populated DB with an empty schema_migrations.

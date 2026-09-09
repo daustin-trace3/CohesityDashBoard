@@ -285,7 +285,10 @@ function reconcileIssueHistory(coreApi) {
     }
     db.prepare("DELETE FROM unifi_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
   });
-  run();
+  // BEGIN IMMEDIATE: take the write lock up front. A deferred read-then-write
+  // in WAL fails as SQLITE_BUSY (snapshot) when the host API/poller writes
+  // mid-transaction, and busy_timeout does not retry that error.
+  run.immediate();
 }
 
 module.exports = {

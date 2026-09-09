@@ -246,7 +246,10 @@ function reconcileIssueHistory(coreApi) {
       if (!openKeys.has(key)) insert.run(i.sourceId ?? null, i.source, i.type, i.target, i.severity, i.message);
     }
   });
-  return run();
+  // BEGIN IMMEDIATE: take the write lock up front. A deferred read-then-write
+  // in WAL fails as SQLITE_BUSY (snapshot) when the host API/poller writes
+  // mid-transaction, and busy_timeout does not retry that error.
+  return run.immediate();
 }
 
 module.exports = {

@@ -18,6 +18,21 @@ function rollup(status, platform = 'cohesity') {
   let hasEntities = false;
   let newestCapture = null;
 
+  // 'all' rolls every enabled platform section together (Ops Monitor header),
+  // so the Live pill reflects the whole estate rather than one platform.
+  if (platform === 'all') {
+    const parts = Object.entries(status)
+      .filter(([k, v]) => k !== 'licensing' && v && typeof v === 'object' && v.enabled)
+      .map(([k]) => rollup(status, k));
+    return {
+      anySyncing: parts.some((r) => r.anySyncing),
+      anyStale: parts.some((r) => r.anyStale),
+      anyError: parts.some((r) => r.anyError),
+      hasEntities: parts.some((r) => r.hasEntities),
+      newestCapture: parts.reduce((m, r) => (r.newestCapture && (!m || r.newestCapture > m) ? r.newestCapture : m), null),
+    };
+  }
+
   const p = status[platform];
   if (p && p.enabled && p.entities) {
     for (const e of p.entities) {

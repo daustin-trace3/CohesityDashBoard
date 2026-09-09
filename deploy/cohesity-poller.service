@@ -1,29 +1,37 @@
-# Companion unit to cohesity-dashboard.service — runs the background pollers.
+# Companion unit to cohesity-dashboard.service - runs the background pollers.
 # Since the 2026-07-14 two-process split, server.js starts NO pollers; without
 # this unit (or RUN_POLLERS_INLINE=true) nothing collects data and every
 # platform goes stale.
 #
-# Install:
-#   sudo cp deploy/cohesity-poller.service /etc/systemd/system/
-#   sudo systemctl daemon-reload
-#   sudo systemctl enable --now cohesity-poller
+# deploy/install.sh writes both units with the real APP_DIR, RUN_USER and
+# node path substituted. Manual install on a box without the installer:
+#   sed -e 's|__APP_DIR__|/opt/cohesity-dashboard|g' \
+#       -e 's|__RUN_USER__|cohesity|g' \
+#       -e 's|__NODE_BIN__|/usr/bin/node|g' deploy/cohesity-poller.service \
+#     | sudo tee /etc/systemd/system/cohesity-poller.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cohesity-poller
 #
-# Adjust WorkingDirectory/ExecStart/User to match cohesity-dashboard.service
-# on this box. The poller reads the same .env (loaded by the app itself from
-# the WorkingDirectory) and shares the SQLite DB via WAL.
+# The poller reads the same .env (loaded by the app itself from the
+# WorkingDirectory) and shares the SQLite DB via WAL.
 
 [Unit]
-Description=Cohesity Dashboard — background pollers
-After=network-online.target
+Description=Infrastructure Command Center - background pollers
+After=network-online.target cohesity-dashboard.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/cohesity-dashboard
-ExecStart=/usr/bin/node backend/pollerProcess.js
+User=__RUN_USER__
+Group=__RUN_USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__NODE_BIN__ backend/pollerProcess.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=__APP_DIR__
 
 [Install]
 WantedBy=multi-user.target

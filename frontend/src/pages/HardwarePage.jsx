@@ -3,6 +3,7 @@ import { HardDrive } from 'lucide-react';
 import client from '../api/client';
 import Pagination from '../components/Pagination';
 import { PageHeader, Spinner } from '../components/ui/primitives';
+import { CsvExportButton } from '../components/ui/tableTools';
 import { useToast } from '../components/ui/Toaster';
 
 function shortVersion(v) {
@@ -244,6 +245,18 @@ export default function HardwarePage() {
         <span className="ml-auto text-xs text-gray-500">
           {filtered.length} node{filtered.length !== 1 ? 's' : ''}
         </span>
+        {/* Exports the FILTERED set (Sources convention) — unfiltered = everything. */}
+        <CsvExportButton filename="cohesity-hardware" rows={sorted} columns={[
+          { label: 'Cluster', get: 'clusterName' },
+          { label: 'Node IP Address', get: 'ip' },
+          { label: 'Model', get: 'model' },
+          { label: 'Serial Number', get: 'serial' },
+          { label: 'Chassis S/N', get: (r) => r.chassisSerial || '' },
+          { label: 'Status', get: 'state' },
+          { label: 'Slot', get: (r) => r.slotNumber ?? '' },
+          { label: 'SW Version', get: 'swVersion' },
+          { label: 'Disks', get: 'diskBreakdown' },
+        ]} />
       </div>
 
       {/* Table */}

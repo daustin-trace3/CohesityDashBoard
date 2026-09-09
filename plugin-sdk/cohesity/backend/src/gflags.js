@@ -74,7 +74,8 @@ function applyGflagState(coreApi, clusterId, rows) {
     }
     return changes;
   });
-  return tx(clusterId, rows);
+  // BEGIN IMMEDIATE: write lock up front (see host services/gflags.js).
+  return tx.immediate(clusterId, rows);
 }
 
 async function refreshGflags(cluster, coreApi) {

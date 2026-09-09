@@ -3,9 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { Activity, Check, ChevronRight, GripVertical, LayoutGrid, Maximize2, Minimize2, RotateCcw, Rows3 } from 'lucide-react';
 import client from '../../api/client';
 import { PlatformLogo } from '../../components/PlatformSwitcher';
+import { DriftOverview, NocturneOverview, StyleToggle, TvButton } from './OpsOverviewVariants';
 
 const CARD_ORDER_KEY = 'ops-card-order';
 const DENSITY_KEY = 'ops-density';
+// Overview style: the global default comes from Global Settings
+// (ops_overview_style); the page toggle is a session-only override.
+const STYLES = ['classic', 'drift', 'nocturne'];
 
 const TONES = {
   ok: '#6CB33F',
@@ -224,6 +228,17 @@ export default function OpsMonitorPage() {
   const [compact, setCompact] = useState(() => {
     try { return localStorage.getItem(DENSITY_KEY) === 'compact'; } catch { return false; }
   });
+  const [style, setStyle] = useState(null);
+  const changeStyle = (v) => setStyle(STYLES.includes(v) ? v : 'classic');
+  useEffect(() => {
+    let cancelled = false;
+    const loadStyle = () => client.get('/settings')
+      .then((r) => { if (!cancelled) setStyle(STYLES.includes(r.data?.opsOverviewStyle) ? r.data.opsOverviewStyle : 'classic'); })
+      .catch(() => { if (!cancelled) setStyle((s) => s || 'classic'); });
+    loadStyle();
+    window.addEventListener('ops-style-changed', loadStyle);
+    return () => { cancelled = true; window.removeEventListener('ops-style-changed', loadStyle); };
+  }, []);
   const [order, setOrder] = useState(() => {
     try { return JSON.parse(localStorage.getItem(CARD_ORDER_KEY)) || []; } catch { return []; }
   });
@@ -242,6 +257,13 @@ export default function OpsMonitorPage() {
     const refresh = setInterval(load, 60000);
     const tick = setInterval(() => setCountdown((c) => Math.max(0, c - 1)), 1000);
     return () => { clearInterval(refresh); clearInterval(tick); };
+  }, [load]);
+
+  // Platform enable/disable and plugin installs fire 'platforms-changed'
+  // (Global Settings, Plugins page); refetch so the estate updates in place.
+  useEffect(() => {
+    window.addEventListener('platforms-changed', load);
+    return () => window.removeEventListener('platforms-changed', load);
   }, [load]);
 
   useEffect(() => {
@@ -265,6 +287,7 @@ export default function OpsMonitorPage() {
   const cards = data?.platforms || [];
   const totals = data?.totals || {};
   const attention = data?.attention || [];
+
 
   const ids = useMemo(() => cards.map((c) => c.id), [cards]);
   const orderedIds = useMemo(() => {
@@ -300,6 +323,31 @@ export default function OpsMonitorPage() {
     : cards.length ? { label: 'HEALTHY', tone: TONES.ok }
     : { label: 'NO DATA', tone: TONES.unknown };
 
+  if (style == null) {
+    return <div ref={rootRef} className="ops-root animate-fade-in"><div className="panel p-8 text-center text-sm text-ink-muted">Loading estate...</div></div>;
+  }
+
+  if (style !== 'classic') {
+    const dark = style === 'nocturne';
+    const Variant = dark ? NocturneOverview : DriftOverview;
+    return (
+      <div ref={rootRef} className="ops-root animate-fade-in">
+        <Variant
+          data={data}
+          pollerStatus={pollerStatus}
+          countdown={countdown}
+          onNavigate={navigate}
+          controls={(
+            <>
+              <StyleToggle value={style} onChange={changeStyle} dark={dark} />
+              <TvButton tv={tv} onToggle={toggleTv} dark={dark} />
+            </>
+          )}
+        />
+      </div>
+    );
+  }
+
   return (
     <div ref={rootRef} className="ops-root animate-fade-in">
       {/* Estate strip */}
@@ -330,6 +378,7 @@ export default function OpsMonitorPage() {
         </p>
         <div className="ml-auto flex items-center gap-3">
           <span className="text-[11px] text-ink-faint tnum">refresh in {countdown}s</span>
+          <StyleToggle value={style} onChange={changeStyle} dark />
           <button
             onClick={toggleCompact}
             title={compact ? 'Comfortable cards' : 'Compact cards — fit more platforms on screen'}

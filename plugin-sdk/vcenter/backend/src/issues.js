@@ -131,7 +131,7 @@ function reconcileIssueHistory(coreApi) {
       if (!openKeys.has(key)) insert.run(key, i.vcenter, i.severity, i.type, i.target, i.message);
     }
     db.prepare("DELETE FROM vcenter_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
-  })();
+  }).immediate();  // BEGIN IMMEDIATE: write lock up front, see host issue services
 }
 
 module.exports = {
