@@ -261,8 +261,8 @@ async function fetchZones(source, timeout) {
 function deriveRrType(r) {
   const type = r.type || '';
   if (type === 'HostRecord') {
-    const addrs = safeArr(r.addresses);
-    const hasV6 = addrs.some((a) => typeof a?.address === 'string' && a.address.includes(':'));
+    const addrs = recordAddresses(r);
+    const hasV6 = addrs.some((a) => a.address.includes(':'));
     return hasV6 ? 'AAAA' : 'A';
   }
   if (type === 'AliasRecord') return 'CNAME';
@@ -270,10 +270,25 @@ function deriveRrType(r) {
   return type.replace(/Record$/, '') || null;
 }
 
+/** Host record addresses arrive inline (`addresses`, POST echoes and some
+ *  builds) or under `_embedded.addresses` (fields=embed(addresses), the HAL
+ *  contract). Read both; entries may be objects or bare strings. */
+function recordAddresses(r) {
+  const out = [];
+  const seen = new Set();
+  for (const a of [...safeArr(r.addresses), ...safeArr(r._embedded?.addresses)]) {
+    const address = typeof a === 'string' ? a : strOrNull(a?.address);
+    if (!address || seen.has(address)) continue;
+    seen.add(address);
+    out.push({ address, state: typeof a === 'object' && a ? strOrNull(a.state) : null, type: typeof a === 'object' && a ? strOrNull(a.type) : null });
+  }
+  return out;
+}
+
 function deriveRdata(r) {
   const type = r.type || '';
   if (type === 'HostRecord') {
-    const addrs = safeArr(r.addresses).map((a) => a?.address).filter(Boolean);
+    const addrs = recordAddresses(r).map((a) => a.address);
     return addrs.length ? addrs.join(',') : null;
   }
   if (type === 'AliasRecord' || type === 'MXRecord' || type === 'SRVRecord') {
@@ -297,7 +312,7 @@ function parseRecord(r) {
     rrType: deriveRrType(r),
     rdata: deriveRdata(r),
     ttl: numOrNull(r.ttl),
-    addresses: safeArr(r.addresses),
+    addresses: recordAddresses(r),
     comment: strOrNull(r.comment),
   };
 }
