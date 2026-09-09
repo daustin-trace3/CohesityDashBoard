@@ -1,0 +1,29 @@
+# API + static frontend for the Infrastructure Command Center.
+# Pollers run in the companion unit cohesity-poller.service; this unit
+# starts none (server.js only) unless RUN_POLLERS_INLINE=true is in .env.
+#
+# deploy/install.sh writes both units with the real APP_DIR, RUN_USER and
+# node path substituted. Edit /etc/systemd/system/cohesity-dashboard.service
+# on the host, not this template, then: systemctl daemon-reload.
+
+[Unit]
+Description=Infrastructure Command Center - API and web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_USER__
+WorkingDirectory=__APP_DIR__
+ExecStart=__NODE_BIN__ backend/server.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=__APP_DIR__
+
+[Install]
+WantedBy=multi-user.target
