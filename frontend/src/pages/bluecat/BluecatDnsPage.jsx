@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { Globe, Layers, FileText, Search } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -60,8 +61,16 @@ export default function BluecatDnsPage() {
   useEffect(() => { loadZones(); }, [loadZones]);
   useEffect(() => { loadRecords(); }, [loadRecords]);
 
+  const ipSortValue = (ip) => {
+    const parts = String(ip || '').split('.').map(Number);
+    return parts.length === 4 && parts.every((n) => Number.isInteger(n)) ? ((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256 + parts[3] : null;
+  };
   const ctl = useTableControls(records || [], {
     defaultSortKey: 'absoluteName', defaultSortDir: 'asc',
+    sortValues: {
+      ip: (r) => ipSortValue(r.ip),
+      networkRange: (r) => (r.network ? ipSortValue(r.network.range.split('/')[0]) : null),
+    },
   });
 
   const liveLookup = async () => {
@@ -187,6 +196,8 @@ export default function BluecatDnsPage() {
                     <SortTh k="absoluteName" label="Name" ctl={ctl} />
                     <SortTh k="rrType" label="Type" ctl={ctl} />
                     <SortTh k="rdata" label="Data" ctl={ctl} />
+                    <SortTh k="ip" label="IP" ctl={ctl} />
+                    <SortTh k="networkRange" label="IP Space" ctl={ctl} />
                     <SortTh k="ttl" label="TTL" ctl={ctl} align="right" />
                     <SortTh k="zoneName" label="Zone / View" ctl={ctl} />
                   </tr></thead>
@@ -196,6 +207,17 @@ export default function BluecatDnsPage() {
                         <td className="py-2 pr-3 text-ink tnum">{r.absoluteName || r.name}</td>
                         <td className="py-2 pr-3"><Badge tone="neutral">{r.rrType}</Badge></td>
                         <td className="py-2 pr-3 text-ink-muted tnum">{r.rdata || '—'}</td>
+                        <td className="py-2 pr-3 tnum text-ink">
+                          {r.ip || '—'}
+                          {r.ips && r.ips.length > 1 && <span className="text-ink-faint text-[11px]"> +{r.ips.length - 1}</span>}
+                        </td>
+                        <td className="py-2 pr-3 text-[12px]">
+                          {r.network ? (
+                            <Link to={`/bluecat/ipspaces?network=${r.network.id}`} className="text-brand hover:underline tnum" title={r.network.blockRange ? `Block ${r.network.blockRange}${r.network.blockName ? ` (${r.network.blockName})` : ''}` : undefined}>
+                              {r.network.range}{r.network.name ? ` (${r.network.name})` : ''}
+                            </Link>
+                          ) : r.ip ? <span className="text-ink-faint">not in a managed network</span> : '—'}
+                        </td>
                         <td className="py-2 pr-3 text-right tnum text-ink-faint">{r.ttl ?? 'inherit'}</td>
                         <td className="py-2 pr-3 text-ink-faint text-[11px]">{[r.zoneName, r.viewName].filter(Boolean).join(' / ') || '—'}</td>
                       </tr>

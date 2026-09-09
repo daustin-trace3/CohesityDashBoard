@@ -417,13 +417,35 @@ router.get('/records', [
       LEFT JOIN bluecat_views v ON v.source_id = r.source_id AND v.view_id = r.view_id
       ${where} ORDER BY r.absolute_name LIMIT ?
     `).all(...params, limit);
+    // Resolve IP + containing IP space per record (per source, cached per request).
+    const idxBySource = new Map();
+    const addrBySource = new Map();
+    const indexFor = (sid) => { if (!idxBySource.has(sid)) idxBySource.set(sid, networkIndex(sid)); return idxBySource.get(sid); };
+    const addrMapFor = (sid) => {
+      if (!addrBySource.has(sid)) {
+        const m = new Map();
+        for (const a of db.prepare('SELECT address, name FROM bluecat_addresses WHERE source_id = ? AND name IS NOT NULL').all(sid)) {
+          const k = String(a.name).toLowerCase();
+          if (!m.has(k)) m.set(k, a.address);
+        }
+        addrBySource.set(sid, m);
+      }
+      return addrBySource.get(sid);
+    };
     res.json({
-      records: rows.map((r) => ({
-        id: r.id, sourceId: r.source_id, sourceName: r.source_name, recordId: r.record_id, zoneId: r.zone_id,
-        zoneName: r.zone_name, viewId: r.view_id, viewName: r.view_name, name: r.name, absoluteName: r.absolute_name,
-        recordType: r.record_type, rrType: r.rr_type, rdata: r.rdata, ttl: r.ttl,
-        addresses: r.addresses_json ? JSON.parse(r.addresses_json) : [], comment: r.comment,
-      })),
+      records: rows.map((r) => {
+        const { ips, source: ipSource } = recordIps(r, addrMapFor(r.source_id));
+        const first = ips[0] || null;
+        const net = first ? findNetwork(indexFor(r.source_id), ipToInt(first)) : null;
+        return {
+          id: r.id, sourceId: r.source_id, sourceName: r.source_name, recordId: r.record_id, zoneId: r.zone_id,
+          zoneName: r.zone_name, viewId: r.view_id, viewName: r.view_name, name: r.name, absoluteName: r.absolute_name,
+          recordType: r.record_type, rrType: r.rr_type, rdata: r.rdata, ttl: r.ttl,
+          addresses: r.addresses_json ? JSON.parse(r.addresses_json) : [], comment: r.comment,
+          ip: first, ips, ipSource,
+          network: net ? { id: net.id, networkId: net.network_id, range: net.range, name: net.name, blockName: net.block_name, blockRange: net.block_range } : null,
+        };
+      }),
       total,
       limited: rows.length >= limit,
     });
@@ -456,6 +478,57 @@ function cidrBounds(range) {
   const size = Math.pow(2, 32 - prefix);
   const start = Math.floor(base / size) * size;
   return { start, end: start + size - 1 };
+}
+
+/** IPv4 networks of a source as sorted integer bounds, for IP -> network
+ *  lookups (643 networks is a trivial scan; cache per request). */
+function networkIndex(sourceId) {
+  const rows = db.prepare(`
+    SELECT n.id, n.network_id, n.range, n.name, n.prefix, b.name AS block_name, b.range AS block_range
+    FROM bluecat_networks n LEFT JOIN bluecat_blocks b ON b.source_id = n.source_id AND b.block_id = n.block_id
+    WHERE n.source_id = ? AND n.ip_version = 4
+  `).all(sourceId);
+  const idx = [];
+  for (const n of rows) {
+    const bnd = cidrBounds(n.range);
+    if (bnd) idx.push({ ...n, start: bnd.start, end: bnd.end });
+  }
+  // Longest prefix first so the most specific network wins.
+  idx.sort((a, b) => (b.prefix || 0) - (a.prefix || 0));
+  return idx;
+}
+
+function findNetwork(idx, ipInt) {
+  for (const n of idx) if (ipInt >= n.start && ipInt <= n.end) return n;
+  return null;
+}
+
+/** IPs a record resolves to: rdata tokens, then addresses_json, then (host
+ *  records whose poll did not inline addresses) the address table by name. */
+function recordIps(r, addrByName) {
+  const ips = [];
+  for (const part of String(r.rdata || '').split(/[,\s]+/)) { if (ipToInt(part) != null) ips.push(part); }
+  if (r.addresses_json) {
+    try { for (const a of JSON.parse(r.addresses_json)) { const v = typeof a === 'string' ? a : a?.address; if (ipToInt(v) != null && !ips.includes(v)) ips.push(v); } } catch { /* ignore */ }
+  }
+  let source = ips.length ? 'record' : null;
+  // Alias (CNAME) and MX/SRV style records point at a name: follow one hop to
+  // the target host record so the alias shows the IP it resolves to.
+  if (!ips.length && r.rdata && !ipToInt(r.rdata) && /^[a-z0-9.-]+$/i.test(String(r.rdata).replace(/\.$/, ''))) {
+    const target = db.prepare(`
+      SELECT rdata, addresses_json, record_type, name, absolute_name FROM bluecat_records
+      WHERE source_id = ? AND LOWER(absolute_name) = LOWER(?) AND (rr_type = 'A' OR record_type = 'HostRecord') LIMIT 1
+    `).get(r.source_id, String(r.rdata).replace(/\.$/, ''));
+    if (target) {
+      const t = recordIps({ ...target, source_id: r.source_id }, addrByName);
+      if (t.ips.length) { ips.push(...t.ips); source = 'alias-target'; }
+    }
+  }
+  if (!ips.length && r.record_type === 'HostRecord' && addrByName) {
+    const hit = addrByName.get(String(r.name || '').toLowerCase()) || addrByName.get(String(r.absolute_name || '').toLowerCase());
+    if (hit) { ips.push(hit); source = 'address-table'; }
+  }
+  return { ips, source };
 }
 
 function recordsInNetwork(sourceId, range, ipVersion, limit = 200) {
