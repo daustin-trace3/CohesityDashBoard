@@ -399,4 +399,63 @@ describe('seedDemo.js', () => {
     expect(rates[1] / rates[0]).toBeGreaterThan(10);
   });
 
+  it('seeds the bluecat platform with a source, views, zones, records, IPAM inventory, and every computed issue trigger', () => {
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_sources').get().c).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_views').get().c).toBe(3);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_zones').get().c).toBeGreaterThanOrEqual(12);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_zones WHERE zone_type = 'ExternalHostsZone'").get().c).toBe(3);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_zones WHERE absolute_name LIKE '%in-addr.arpa'").get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_records').get().c).toBeGreaterThanOrEqual(180);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_blocks').get().c).toBe(6);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_networks').get().c).toBeGreaterThanOrEqual(40);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_networks WHERE ip_version = 6").get().c).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_ranges').get().c).toBeGreaterThanOrEqual(14);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_addresses').get().c).toBeGreaterThan(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_devices').get().c).toBe(25);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_servers').get().c).toBe(4);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_servers WHERE connected = 0").get().c).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_servers WHERE last_deploy_status = 'FAILED'").get().c).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_network_overrides').get().c).toBe(2);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_network_overrides WHERE exclude_low_space = 1").get().c).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_metrics_history').get().c).toBe(24);
+
+    // cross-platform Server 360 hits: BlueCat host records matching vcenter demo VM names.
+    for (const name of ['vra-prod', 'vra-dr', 'vrops-nyc-01', 'vrli-nyc-01']) {
+      expect(db.prepare('SELECT COUNT(*) c FROM bluecat_records WHERE name = ?').get(name).c).toBe(1);
+    }
+
+    // free-space math sanity: at least one full network (free_static = 0), at
+    // least 3 low-space networks (free 5..15), one no-gateway, two non-.1
+    // bam gateways, and one full DHCP range (contract section 5/10).
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_networks WHERE ip_version = 4 AND free_static = 0").get().c).toBeGreaterThanOrEqual(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_networks WHERE ip_version = 4 AND free_static BETWEEN 5 AND 15").get().c).toBeGreaterThanOrEqual(3);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_networks WHERE ip_version = 4 AND gateway IS NULL AND prefix <= 30").get().c).toBeGreaterThanOrEqual(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_networks WHERE gateway LIKE '%.254' AND gateway_source = 'bam'").get().c).toBeGreaterThanOrEqual(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_networks WHERE gateway LIKE '%.129' AND gateway_source = 'bam'").get().c).toBeGreaterThanOrEqual(1);
+    expect(db.prepare("SELECT COUNT(*) c FROM bluecat_networks WHERE gateway_source = 'override'").get().c).toBeGreaterThanOrEqual(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_ranges WHERE free_dhcp = 0').get().c).toBeGreaterThanOrEqual(1);
+    expect(db.prepare('SELECT COUNT(*) c FROM bluecat_ranges WHERE free_dhcp BETWEEN 0 AND 15').get().c).toBeGreaterThanOrEqual(2);
+
+    // Verify every seeded network's free_static/free_pct agree with the
+    // contract section 5 math re-derived from the addresses actually written.
+    const nets = db.prepare("SELECT network_id, capacity, dhcp_pool, used_static, free_static FROM bluecat_networks WHERE ip_version = 4").all();
+    for (const n of nets) {
+      expect(n.free_static).toBe(Math.max(0, n.capacity - n.dhcp_pool - n.used_static));
+    }
+
+    const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_bluecat_enabled'").get();
+    expect(flag.value).toBe('1');
+
+    // Issue history: services/bluecatIssues.js may not exist yet if WP1 has
+    // not landed (WPs build in parallel) - the generator falls back to
+    // representative rows in that case, still covering every rule.
+    const openTypes = db.prepare("SELECT DISTINCT type FROM bluecat_issue_history WHERE status = 'open'").all().map((r) => r.type);
+    for (const type of [
+      'source-unreachable', 'server-disconnected', 'server-deploy-failed', 'network-full',
+      'network-low-space', 'network-low-pct', 'dhcp-range-full', 'dhcp-range-low-space', 'gateway-unknown',
+    ]) {
+      expect(openTypes).toContain(type);
+    }
+  });
+
 });

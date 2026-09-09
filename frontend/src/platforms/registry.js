@@ -8,9 +8,10 @@ import aria from './aria/index.jsx';
 import ariaops from './ariaops/index.jsx';
 import aws from './aws/index.jsx';
 import unifi from './unifi/index.jsx';
+import bluecat from './bluecat/index.jsx';
 import brocade from './brocade/index.jsx';
 
-export const platforms = [cohesity, pure, netapp, zerto, vcenter, dell, aria, ariaops, aws, unifi, brocade];
+export const platforms = [cohesity, pure, netapp, zerto, vcenter, dell, aria, ariaops, aws, unifi, bluecat, brocade];
 
 export function getPlatform(id) {
   return platforms.find(p => p.id === id);

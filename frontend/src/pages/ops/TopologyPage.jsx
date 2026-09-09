@@ -51,7 +51,7 @@ const TYPE_ICON = {
 const PLATFORM_COLOR = {
   cohesity: '#6CB33F', netapp: '#0067C5', zerto: '#EE3124', vcenter: '#0091DA',
   aria: '#00A2C7', ariaops: '#78BE20', dell: '#007DB8', pure: '#FF6B00',
-  aws: '#FF9900', unifi: '#006FFF', brocade: '#CC092F',
+  aws: '#FF9900', unifi: '#006FFF', brocade: '#CC092F', bluecat: '#0057B8',
 };
 const OPS_GRAY = '#8FA3B0';
 

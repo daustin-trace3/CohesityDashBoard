@@ -22,6 +22,7 @@ const NOTIFY_PLATFORMS = [
   { key: 'aria', label: 'Aria Automation' },
   { key: 'aws', label: 'AWS' },
   { key: 'unifi', label: 'Ubiquiti UniFi' },
+  { key: 'bluecat', label: 'BlueCat Address Manager' },
   { key: 'brocade', label: 'Brocade SAN' },
 ];
 

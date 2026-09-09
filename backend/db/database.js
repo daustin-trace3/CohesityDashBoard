@@ -14,6 +14,7 @@ const ariaopsMigrations = require('./migrations/ariaops');
 const awsMigrations = require('./migrations/aws');
 const unifiMigrations = require('./migrations/unifi');
 const brocadeMigrations = require('./migrations/brocade');
+const bluecatMigrations = require('./migrations/bluecat');
 const directoryMigrations = require('./migrations/directory');
 
 const DB_PATH = process.env.DASHBOARD_DB_PATH || path.join(__dirname, '..', 'data', 'cohesity.db');
@@ -47,6 +48,7 @@ runMigrations(db, 'ariaops', ariaopsMigrations);
 runMigrations(db, 'aws', awsMigrations);
 runMigrations(db, 'unifi', unifiMigrations);
 runMigrations(db, 'brocade', brocadeMigrations);
+runMigrations(db, 'bluecat', bluecatMigrations);
 runMigrations(db, 'directory', directoryMigrations);
 
 module.exports = db;
