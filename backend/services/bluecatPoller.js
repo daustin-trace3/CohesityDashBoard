@@ -284,16 +284,44 @@ async function pollInventory(source) {
 
       const allRanges = [];
       const dhcpPoolByNetwork = new Map();
-      for (const n of networks) {
-        if (n.ipVersion !== 4) continue;
-        const rangesRes = await trySection(`ranges(${n.id})`, () => fetchRangesForNetwork(source, n.id, timeout));
-        if (rangesRes.ok) {
-          allRanges.push(...rangesRes.data);
-          dhcpPoolByNetwork.set(n.id, rangesRes.data.reduce((sum, r) => sum + (r.size || 0), 0));
-        } else if (priorByNetworkId.has(n.id)) {
-          dhcpPoolByNetwork.set(n.id, priorByNetworkId.get(n.id).dhcp_pool ?? 0);
-        }
+      const networkIds = new Set(networks.filter((n) => n.ipVersion === 4).map((n) => n.id));
+      // One flat /ranges call beats 600+ per-network calls; fall back to the
+      // per-network subcollection only when the flat call fails or returns
+      // rows without a parent link.
+      const flat = await trySection('ranges(flat)', () => bluecatApi.fetchAllRanges(source, timeout));
+      const flatUsable = flat.ok && flat.data.length > 0 && flat.data.every((r) => r.networkId != null);
+      if (flat.ok && !flatUsable) {
+        logger.info(`[BluecatPoller] ${source.name}: flat /ranges returned ${flat.data.length} row(s) (${flat.data.filter((r) => r.networkId == null).length} without a network link); using per-network ranges`);
       }
+      if (flatUsable) {
+        for (const r of flat.data) {
+          if (!networkIds.has(r.networkId)) continue;
+          allRanges.push(r);
+          dhcpPoolByNetwork.set(r.networkId, (dhcpPoolByNetwork.get(r.networkId) || 0) + (r.size || 0));
+        }
+        for (const id of networkIds) if (!dhcpPoolByNetwork.has(id)) dhcpPoolByNetwork.set(id, 0);
+      } else {
+        let failures = 0;
+        for (const n of networks) {
+          if (n.ipVersion !== 4) continue;
+          let rangesRes;
+          try {
+            rangesRes = { ok: true, data: await fetchRangesForNetwork(source, n.id, timeout) };
+          } catch (err) {
+            failures += 1;
+            if (failures <= 3) logger.warn(`[BluecatPoller] ranges(${n.id}) failed: ${safeMsg(err)}`);
+            rangesRes = { ok: false };
+          }
+          if (rangesRes.ok) {
+            allRanges.push(...rangesRes.data);
+            dhcpPoolByNetwork.set(n.id, rangesRes.data.reduce((sum, r) => sum + (r.size || 0), 0));
+          } else if (priorByNetworkId.has(n.id)) {
+            dhcpPoolByNetwork.set(n.id, priorByNetworkId.get(n.id).dhcp_pool ?? 0);
+          }
+        }
+        if (failures > 3) logger.warn(`[BluecatPoller] ranges: ${failures} per-network calls failed (first 3 logged)`);
+      }
+      logger.info(`[BluecatPoller] ${source.name}: ${allRanges.length} DHCP range(s) across ${dhcpPoolByNetwork.size} network(s)`);
 
       for (const n of networks) {
         const override = overridesByNetworkId.get(n.id);
