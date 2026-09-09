@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Network, Box, AlertTriangle } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -50,7 +51,24 @@ export default function BluecatIpSpacesPage() {
   const [ipVersion, setIpVersion] = useState('');
   const [lowSpaceOnly, setLowSpaceOnly] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
-  const [detailId, setDetailId] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [detailId, setDetailId] = useState(() => {
+    const v = Number(searchParams.get('network'));
+    return Number.isInteger(v) && v > 0 ? v : null;
+  });
+  // Deep link from the DNS page: /bluecat/ipspaces?network=<row id>.
+  useEffect(() => {
+    const v = Number(searchParams.get('network'));
+    if (Number.isInteger(v) && v > 0) setDetailId(v);
+  }, [searchParams]);
+  const closeDetail = () => {
+    setDetailId(null);
+    if (searchParams.has('network')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('network');
+      setSearchParams(next, { replace: true });
+    }
+  };
 
   const loadBlocks = useCallback(() => client.get('/bluecat/blocks')
     .then(({ data }) => setBlocks(Array.isArray(data) ? data : []))
@@ -181,7 +199,7 @@ export default function BluecatIpSpacesPage() {
       </div>
 
       {detailId != null && (
-        <NetworkDetailModal networkId={detailId} onClose={() => setDetailId(null)} onChanged={loadNetworks} />
+        <NetworkDetailModal networkId={detailId} onClose={closeDetail} onChanged={loadNetworks} />
       )}
     </div>
   );
