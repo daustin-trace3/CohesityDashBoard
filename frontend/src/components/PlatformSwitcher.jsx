@@ -5,6 +5,7 @@ import vcenterLogo from '../assets/platform-logos/vcenter.svg';
 import netappLogo from '../assets/platform-logos/netapp.svg';
 import pureLogo from '../assets/platform-logos/pure.svg';
 import ariaLogo from '../assets/platform-logos/aria.svg';
+import bluecatLogo from '../assets/platform-logos/bluecat.svg';
 
 // Three experimental platform-switcher styles (dropdown | rail | grid), trialed
 // side-by-side against the original tab row. The active style is a per-browser
@@ -54,7 +55,7 @@ const monogram = (label) => label.slice(0, 2);
 // Official brand marks (bundled SVGs, tinted to each platform's color).
 // Cohesity reuses the app's own hexagon+shield identity; platforms without
 // a mark (Zerto, future plugins) fall back to the monogram.
-const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo };
+const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, bluecat: bluecatLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {
@@ -69,6 +70,17 @@ export function PlatformLogo({ platform, size = 18 }) {
     );
   }
   const src = LOGOS[platform.id];
+  if (platform.id === 'bluecat' && src) {
+    // BlueCat ships a 6:1 navy wordmark, not a square glyph. Render it on a
+    // white tile so it reads on dark backgrounds, letting it run wider than
+    // the square slot; below 18px the wordmark is illegible, use the monogram.
+    if (size < 18) return <>{monogram(platform.label)}</>;
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: size, width: size * 3, background: '#fff', borderRadius: 4, padding: '0 3px', boxSizing: 'border-box' }}>
+        <img src={src} alt="" style={{ width: '100%', height: 'auto' }} draggable={false} />
+      </span>
+    );
+  }
   if (src) return <img src={src} alt="" style={{ width: size, height: size }} draggable={false} />;
   return <>{monogram(platform.label)}</>;
 }

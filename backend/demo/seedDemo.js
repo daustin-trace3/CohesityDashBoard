@@ -50,6 +50,7 @@ const { seedNetbackup } = require('./generators/netbackup');
 const { seedAws } = require('./generators/aws');
 const { seedProxmox } = require('./generators/proxmox');
 const { seedBrocade } = require('./generators/brocade');
+const { seedBluecat } = require('./generators/bluecat');
 
 const SEEDED_TABLES = [
   // core
@@ -111,6 +112,11 @@ const SEEDED_TABLES = [
   'brocade_zones', 'brocade_zone_configs', 'brocade_fcr_routes', 'brocade_health_scores',
   'brocade_events', 'brocade_chassis', 'brocade_enclosures', 'brocade_device_ports',
   'brocade_switch_ports', 'brocade_switches', 'brocade_fabrics', 'brocade_sources',
+  // bluecat (children before the parent)
+  'bluecat_metrics_history', 'bluecat_issue_history', 'bluecat_network_overrides',
+  'bluecat_addresses', 'bluecat_ranges', 'bluecat_networks', 'bluecat_blocks',
+  'bluecat_records', 'bluecat_zones', 'bluecat_views', 'bluecat_servers', 'bluecat_devices',
+  'bluecat_sources',
 ];
 
 function wipeSeededTables(database) {
@@ -145,6 +151,7 @@ async function main() {
   const awsResult = db.transaction(() => seedAws(db, { now, encrypt }))();
   const proxmoxResult = db.transaction(() => seedProxmox(db, { now, encrypt }))();
   const brocadeResult = db.transaction(() => seedBrocade(db, { now, encrypt }))();
+  const bluecatResult = db.transaction(() => seedBluecat(db, { now, encrypt }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -169,6 +176,7 @@ async function main() {
     ['aws ec2/ecs services/s3/cost rows', `${awsResult.ec2}/${awsResult.ecsServices}/${awsResult.s3}/${awsResult.costRows}`],
     ['proxmox servers/nodes/guests', `${proxmoxResult.servers}/${proxmoxResult.nodes}/${proxmoxResult.guests}`],
     ['brocade sources/fabrics/switches/ports', `${brocadeResult.sources}/${brocadeResult.fabrics}/${brocadeResult.switches}/${brocadeResult.switchPorts}`],
+    ['bluecat views/zones/records/networks/devices/servers', `${bluecatResult.views}/${bluecatResult.zones}/${bluecatResult.records}/${bluecatResult.networks}/${bluecatResult.devices}/${bluecatResult.servers}`],
     ['users', 1],
   ];
 

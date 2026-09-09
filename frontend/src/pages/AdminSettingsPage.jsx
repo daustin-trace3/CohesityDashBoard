@@ -22,6 +22,7 @@ const NOTIFY_PLATFORMS = [
   { key: 'netbackup', label: 'Veritas NetBackup' },
   { key: 'aws', label: 'AWS' },
   { key: 'proxmox', label: 'Proxmox VE' },
+  { key: 'bluecat', label: 'BlueCat Address Manager' },
   { key: 'brocade', label: 'Brocade SAN' },
 ];
 

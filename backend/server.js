@@ -26,6 +26,7 @@ const netbackupManifest = require('./platforms/netbackup');
 const awsManifest = require('./platforms/aws');
 const proxmoxManifest = require('./platforms/proxmox');
 const brocadeManifest = require('./platforms/brocade');
+const bluecatManifest = require('./platforms/bluecat');
 
 // Auth boot work (contract C8.3): prune stale sessions and (re-)check the
 // first-run claim token. authService already runs this once at module load
@@ -42,7 +43,7 @@ registry.init();
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
 // (C9.5) gates enabling regardless of the stored flag.
-const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled, platformProxmoxEnabled, platformBrocadeEnabled } = getPlatformSettings();
+const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled, platformProxmoxEnabled, platformBrocadeEnabled, platformBluecatEnabled } = getPlatformSettings();
 registry.registerPlugin(pureManifest);
 registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
 registry.registerPlugin(netappManifest);
@@ -65,6 +66,8 @@ registry.registerPlugin(proxmoxManifest);
 registry.setEnabled('proxmox', platformProxmoxEnabled && registry.isEntitled('proxmox'));
 registry.registerPlugin(brocadeManifest);
 registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
+registry.registerPlugin(bluecatManifest);
+registry.setEnabled('bluecat', platformBluecatEnabled && registry.isEntitled('bluecat'));
 
 // Scan and register any installed (non-built-in) plugins left in plugins/
 // after the boot swap above.

@@ -49,6 +49,9 @@ const DEFAULTS = {
   brocade_event_storm_count: '10',
   brocade_event_retention_days: '30',
   brocade_port_stats_retention_days: '14',
+  platform_bluecat_enabled: '0',
+  bluecat_low_free_warn: '20',
+  bluecat_low_free_pct: '10',
   dns_server: '',
   smtp_enabled: '0',
   smtp_host: '',
@@ -60,7 +63,7 @@ const DEFAULTS = {
   smtp_from: '',
   smtp_recipients: '',
   alert_email_min_severity: 'warning',
-  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true,"netbackup":true,"aws":true,"proxmox":true,"brocade":true}',
+  alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true,"netbackup":true,"aws":true,"proxmox":true,"brocade":true,"bluecat":true}',
   alert_email_reminder_hours: '24',
 };
 
@@ -151,6 +154,7 @@ function getPlatformSettings() {
     platformAwsEnabled: getSetting('platform_aws_enabled') === '1',
     platformProxmoxEnabled: getSetting('platform_proxmox_enabled') === '1',
     platformBrocadeEnabled: getSetting('platform_brocade_enabled') === '1',
+    platformBluecatEnabled: getSetting('platform_bluecat_enabled') === '1',
     featureCustomDashboardsEnabled: getSetting('feature_custom_dashboards_enabled') === '1',
     opsOverviewStyle: getSetting('ops_overview_style') || 'classic',
     dnsServer: getSetting('dns_server') || '',
@@ -162,7 +166,7 @@ function getPlatformSettings() {
 function getNotificationSettings() {
   // Merge over defaults so platforms added after a DB stored its JSON come
   // through enabled instead of silently missing (collector gate reads keys).
-  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, netbackup: true, aws: true, proxmox: true, brocade: true };
+  const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, netbackup: true, aws: true, proxmox: true, brocade: true, bluecat: true };
   let alertPlatforms;
   try {
     alertPlatforms = { ...platformDefaults, ...JSON.parse(getSetting('alert_email_platforms')) };

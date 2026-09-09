@@ -15,6 +15,7 @@ const netbackupMigrations = require('./migrations/netbackup');
 const awsMigrations = require('./migrations/aws');
 const proxmoxMigrations = require('./migrations/proxmox');
 const brocadeMigrations = require('./migrations/brocade');
+const bluecatMigrations = require('./migrations/bluecat');
 const directoryMigrations = require('./migrations/directory');
 
 const DB_PATH = process.env.DASHBOARD_DB_PATH || path.join(__dirname, '..', 'data', 'cohesity.db');
@@ -49,6 +50,7 @@ runMigrations(db, 'netbackup', netbackupMigrations);
 runMigrations(db, 'aws', awsMigrations);
 runMigrations(db, 'proxmox', proxmoxMigrations);
 runMigrations(db, 'brocade', brocadeMigrations);
+runMigrations(db, 'bluecat', bluecatMigrations);
 runMigrations(db, 'directory', directoryMigrations);
 
 module.exports = db;
