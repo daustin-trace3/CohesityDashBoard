@@ -318,7 +318,15 @@ function parseRecord(r) {
 }
 
 async function fetchResourceRecords(source, timeout) {
-  const fields = 'id,type,name,absoluteName,ttl,comment,recordType,rdata,linkedRecord,embed(addresses)';
+  // With a fields list BAM returns ONLY those fields: _links (parent zone via
+  // up) and the embedded subcollection must be named explicitly, per the doc
+  // example `fields=id,name,_embedded.interfaces.type,embed(interfaces)`.
+  // Learned live 2026-09-09: without _links every record lost its zone.
+  const fields = [
+    'id', 'type', 'name', 'absoluteName', 'ttl', 'comment', 'recordType', 'rdata', 'linkedRecord', 'view', 'dynamic',
+    '_links', '_embedded.addresses.id', '_embedded.addresses.address', '_embedded.addresses.state', '_embedded.addresses.type',
+    'embed(addresses)',
+  ].join(',');
   const rows = await pagedGet(source, '/resourceRecords', { fields, limit: 1000, timeout });
   return rows.map(parseRecord);
 }
@@ -528,7 +536,7 @@ function parseAddress(a) {
  *  unless the network prefix is >= /22). Falls back state:in -> state:ne ->
  *  unfiltered (guarded by prefix). */
 async function fetchNetworkAddresses(source, networkId, prefix, timeout) {
-  const fields = 'id,address,state,name,macAddress';
+  const fields = 'id,address,state,name,macAddress,device,_links';
   try {
     const filter = `state:in('${ADDRESS_STATES.join("','")}')`;
     const rows = await pagedGet(source, `/networks/${networkId}/addresses`, { filter, fields, limit: 1000, timeout });
@@ -567,7 +575,8 @@ function parseDevice(d) {
 
 async function fetchDevices(source, configId, timeout) {
   try {
-    const rows = await pagedGet(source, `/configurations/${configId}/devices`, { fields: 'embed(addresses)', limit: 1000, timeout });
+    const fields = 'id,type,name,description,deviceType,deviceSubtype,configuration,userDefinedFields,_links,_embedded.addresses.address,_embedded.addresses.state,_embedded.addresses.type,embed(addresses)';
+    const rows = await pagedGet(source, `/configurations/${configId}/devices`, { fields, limit: 1000, timeout });
     return rows.map(parseDevice);
   } catch (err) {
     logger.warn(`[BluecatApi] devices embed(addresses) failed for config ${configId}: ${errMsg(err)}`);
@@ -601,7 +610,8 @@ function parseServer(s) {
 
 async function fetchServers(source, timeout) {
   try {
-    const rows = await pagedGet(source, '/servers', { fields: 'embed(interfaces)', limit: 1000, timeout });
+    const fields = 'id,type,name,profile,connected,state,address,defaultInterfaceAddress,fullHostName,version,configuration,userDefinedFields,_links,_embedded.interfaces.type,_embedded.interfaces.managementAddress,_embedded.interfaces.address,_embedded.interfaces.name,embed(interfaces)';
+    const rows = await pagedGet(source, '/servers', { fields, limit: 1000, timeout });
     return rows.map(parseServer);
   } catch (err) {
     logger.warn(`[BluecatApi] servers embed(interfaces) failed: ${errMsg(err)}`);
