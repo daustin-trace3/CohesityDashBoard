@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
-  Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil,
+  Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, ListTree,
 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -27,7 +27,7 @@ const blankForm = () => ({
   pollingIntervalMinutes: 30, enumerateIntervalMinutes: 60,
 });
 
-function SourceTable({ sources, onEdit, onDelete, onPoll, pollingId }) {
+function SourceTable({ sources, onEdit, onDelete, onPoll, onEnumerate, pollingId, enumeratingId }) {
   if (sources.length === 0) return <div className="text-sm text-ink-muted py-6 text-center">No Address Managers registered.</div>;
   return (
     <div className="overflow-x-auto">
@@ -37,6 +37,7 @@ function SourceTable({ sources, onEdit, onDelete, onPoll, pollingId }) {
           <th className="py-2 pr-3">Host</th>
           <th className="py-2 pr-3">Status</th>
           <th className="py-2 pr-3">Last Poll</th>
+          <th className="py-2 pr-3">Last Enumerate</th>
           <th className="py-2 pr-3 text-right">Actions</th>
         </tr></thead>
         <tbody>
@@ -53,11 +54,20 @@ function SourceTable({ sources, onEdit, onDelete, onPoll, pollingId }) {
                 )}
               </td>
               <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(s.lastPollAt)}</td>
+              <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">
+                {fmtWhen(s.lastEnumerateAt)}
+                {s.lastEnumerateError && (
+                  <p className="text-[10px] text-status-warn mt-0.5 max-w-[260px] truncate" title={s.lastEnumerateError}>{s.lastEnumerateError}</p>
+                )}
+              </td>
               <td className="py-2 pr-3">
                 <div className="flex items-center justify-end gap-1.5">
                   <button onClick={() => onEdit(s)} title="Edit connection" aria-label={`Edit ${s.name}`} className={iconBtn}><Pencil size={13} /></button>
                   <button onClick={() => onPoll(s)} disabled={pollingId === s.id} title="Poll now" aria-label={`Poll ${s.name} now`} className={iconBtn}>
                     <RefreshCw size={13} className={pollingId === s.id ? 'animate-spin' : ''} />
+                  </button>
+                  <button onClick={() => onEnumerate(s)} disabled={enumeratingId === s.id} title="Enumerate addresses now (per-network address listing; several minutes on large estates)" aria-label={`Enumerate ${s.name} addresses now`} className={iconBtn}>
+                    <ListTree size={13} className={enumeratingId === s.id ? 'animate-pulse' : ''} />
                   </button>
                   <button onClick={() => onDelete(s)} title="Remove" aria-label={`Remove ${s.name}`}
                     className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-status-crit hover:border-status-crit/50 transition-colors cursor-pointer">
@@ -168,6 +178,19 @@ export default function BluecatSettingsPage() {
       toast({ type: 'success', title: `Removed ${s.name}` });
     } catch (err) {
       toast({ type: 'error', title: 'Remove failed', message: err?.response?.data?.error });
+    }
+  };
+
+  const [enumeratingId, setEnumeratingId] = useState(null);
+  const enumerateSource = async (s) => {
+    setEnumeratingId(s.id);
+    try {
+      await client.post(`/bluecat/sources/${s.id}/enumerate`, {}, { timeout: 30000 });
+      toast({ type: 'success', title: `${s.name} address enumeration started`, message: 'Runs in the background; counts update as each network completes.' });
+    } catch (err) {
+      toast({ type: 'error', title: `Enumerate failed for ${s.name}`, message: err?.response?.data?.error });
+    } finally {
+      setEnumeratingId(null);
     }
   };
 
@@ -293,7 +316,7 @@ export default function BluecatSettingsPage() {
                 {sources == null ? (
                   <LoadingPanel label="Loading…" height={100} />
                 ) : (
-                  <SourceTable sources={sources} onEdit={startEdit} onDelete={deleteSource} onPoll={pollSource} pollingId={pollingId} />
+                  <SourceTable sources={sources} onEdit={startEdit} onDelete={deleteSource} onPoll={pollSource} onEnumerate={enumerateSource} pollingId={pollingId} enumeratingId={enumeratingId} />
                 )}
               </div>
             </>
