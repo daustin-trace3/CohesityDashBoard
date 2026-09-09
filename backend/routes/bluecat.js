@@ -455,14 +455,40 @@ router.get('/blocks', (req, res, next) => {
       FROM bluecat_blocks b JOIN bluecat_sources s ON s.id = b.source_id ORDER BY s.name, b.range
     `).all();
     const warn = lowFreeWarn();
+    // Roll network counts up the block tree so a parent block shows the total
+    // beneath it, matching what /networks?blockId= lists for that block.
+    const lowByBlock = new Map();
+    for (const r of db.prepare(`
+      SELECT source_id, block_id, COUNT(*) n FROM bluecat_networks
+      WHERE free_static IS NOT NULL AND free_static < ? GROUP BY source_id, block_id
+    `).all(warn)) lowByBlock.set(`${r.source_id}:${r.block_id}`, r.n);
+    const children = new Map();
+    for (const b of rows) {
+      const key = `${b.source_id}:${b.parent_block_id}`;
+      if (!children.has(key)) children.set(key, []);
+      children.get(key).push(b);
+    }
+    const totals = new Map();
+    const rollup = (b) => {
+      const key = `${b.source_id}:${b.block_id}`;
+      if (totals.has(key)) return totals.get(key);
+      let networks = b.network_count || 0;
+      let low = lowByBlock.get(key) || 0;
+      for (const c of children.get(key) || []) {
+        const t = rollup(c);
+        networks += t.networks;
+        low += t.low;
+      }
+      const t = { networks, low };
+      totals.set(key, t);
+      return t;
+    };
     res.json(rows.map((b) => {
-      const lowSpaceCount = db.prepare(`
-        SELECT COUNT(*) n FROM bluecat_networks WHERE source_id = ? AND block_id = ? AND free_static IS NOT NULL AND free_static < ?
-      `).get(b.source_id, b.block_id, warn).n;
+      const t = rollup(b);
       return {
         id: b.id, sourceId: b.source_id, sourceName: b.source_name, blockId: b.block_id, parentBlockId: b.parent_block_id,
         configurationId: b.configuration_id, name: b.name, range: b.range, prefix: b.prefix, ipVersion: b.ip_version,
-        locationName: b.location_name, networkCount: b.network_count, lowSpaceCount,
+        locationName: b.location_name, networkCount: t.networks, directNetworkCount: b.network_count, lowSpaceCount: t.low,
       };
     }));
   } catch (err) { next(err); }
@@ -478,7 +504,18 @@ router.get('/networks', [
   try {
     const clauses = [];
     const params = [];
-    if (req.query.blockId != null) { clauses.push('nw.block_id = ?'); params.push(req.query.blockId); }
+    // A block selected in the tree must list the networks of every block
+    // beneath it, not only its direct children (networks usually live two or
+    // three block levels down from the top).
+    let cte = '';
+    if (req.query.blockId != null) {
+      cte = `WITH RECURSIVE sub(block_id) AS (
+        SELECT ? UNION ALL
+        SELECT b.block_id FROM bluecat_blocks b JOIN sub ON b.parent_block_id = sub.block_id
+      ) `;
+      params.push(req.query.blockId);
+      clauses.push('nw.block_id IN (SELECT block_id FROM sub)');
+    }
     if (req.query.sourceId != null) { clauses.push('nw.source_id = ?'); params.push(req.query.sourceId); }
     if (req.query.ipVersion != null) { clauses.push('nw.ip_version = ?'); params.push(req.query.ipVersion); }
     if (req.query.q) { clauses.push("(nw.range LIKE ? ESCAPE '\\' OR nw.name LIKE ? ESCAPE '\\')"); const like = `%${req.query.q.replace(/[%_]/g, '\\$&')}%`; params.push(like, like); }
@@ -492,7 +529,7 @@ router.get('/networks', [
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const rows = db.prepare(`
-      SELECT nw.*, s.name AS source_name,
+      ${cte}SELECT nw.*, s.name AS source_name,
         (SELECT COUNT(*) FROM bluecat_ranges rg WHERE rg.source_id = nw.source_id AND rg.network_id = nw.network_id) range_count,
         o.gateway AS o_gateway, o.exclude_low_space AS o_exclude, o.note AS o_note, o.updated_by AS o_updated_by, o.updated_at AS o_updated_at
       FROM bluecat_networks nw
