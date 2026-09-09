@@ -7,7 +7,7 @@ const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const bluecatApi = require('../services/bluecatApi');
-const { bluecatPollerHandle } = require('../services/bluecatPoller');
+const { bluecatPollerHandle, ipToInt } = require('../services/bluecatPoller');
 const { lowFreeWarn, lowFreePct, computeIssues } = require('../services/bluecatIssues');
 
 const router = express.Router();
@@ -447,6 +447,41 @@ router.get('/records/lookup', [
   } catch (err) { next(err); }
 });
 
+function cidrBounds(range) {
+  const m = String(range || '').match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/);
+  if (!m) return null;
+  const base = ipToInt(m[1]);
+  const prefix = Number(m[2]);
+  if (base == null || prefix > 32) return null;
+  const size = Math.pow(2, 32 - prefix);
+  const start = Math.floor(base / size) * size;
+  return { start, end: start + size - 1 };
+}
+
+function recordsInNetwork(sourceId, range, ipVersion, limit = 200) {
+  if (ipVersion !== 4) return [];
+  const b = cidrBounds(range);
+  if (!b) return [];
+  const out = [];
+  const seen = new Set();
+  const rows = db.prepare(`
+    SELECT * FROM bluecat_records WHERE source_id = ? AND (rr_type = 'A' OR record_type = 'HostRecord' OR rdata LIKE '%.%.%.%')
+  `).all(sourceId);
+  for (const r of rows) {
+    const ips = [];
+    for (const part of String(r.rdata || '').split(/[,\s]+/)) { const v = ipToInt(part); if (v != null) ips.push(v); }
+    if (r.addresses_json) {
+      try { for (const a of JSON.parse(r.addresses_json)) { const v = ipToInt(typeof a === 'string' ? a : a?.address); if (v != null) ips.push(v); } } catch { /* ignore */ }
+    }
+    if (ips.some((v) => v >= b.start && v <= b.end) && !seen.has(r.id)) {
+      seen.add(r.id);
+      out.push(r);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
 router.get('/blocks', (req, res, next) => {
   try {
     const rows = db.prepare(`
@@ -570,14 +605,10 @@ router.get('/networks/:id', [param('id').isInt().toInt()], validate, (req, res, 
         CAST(substr(address, 1, instr(address, '.') - 1) AS INTEGER) * 16777216
       ) LIMIT 2000
     `).all(n.source_id, n.network_id);
-    const records = db.prepare(`
-      SELECT DISTINCT r.* FROM bluecat_records r
-      WHERE r.source_id = ? AND (
-        r.rdata IN (SELECT address FROM bluecat_addresses WHERE source_id = ? AND network_id = ?)
-        OR r.addresses_json LIKE '%"' || (SELECT address FROM bluecat_addresses WHERE source_id = ? AND network_id = ? LIMIT 1) || '"%'
-      )
-      LIMIT 200
-    `).all(n.source_id, n.source_id, n.network_id, n.source_id, n.network_id);
+    // Records "in" a network = A/host records whose address falls inside the
+    // network CIDR. Computed from the record data itself, so it works before
+    // the address enumeration has run.
+    const records = recordsInNetwork(n.source_id, n.range, n.ip_version);
     res.json({
       network: {
         id: n.id, sourceId: n.source_id, sourceName: n.source_name, networkId: n.network_id, blockId: n.block_id,

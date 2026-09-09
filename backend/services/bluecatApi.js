@@ -443,12 +443,17 @@ function parseRange(r) {
     if (dash) {
       startIp = dash[1];
       endIp = dash[2];
+      const a = ipv4ToInt(startIp);
+      const b = ipv4ToInt(endIp);
+      if (a != null && b != null && b >= a) size = b - a + 1;
     } else if (cidr) {
       startIp = cidr[1];
       const prefix = Number(cidr[2]);
       size = ipVersionOf(raw) === 4 && prefix <= 32 ? Math.pow(2, 32 - prefix) : null;
     }
   }
+  const upHref = strOrNull(r._links?.up?.href);
+  const networkId = upHref ? numOrNull((upHref.match(/\/networks\/(\d+)/) || [])[1]) : null;
   return {
     id: numOrNull(r.id),
     type: strOrNull(r.type),
@@ -457,12 +462,36 @@ function parseRange(r) {
     startIp,
     endIp,
     size,
+    networkId,
   };
 }
 
+function ipv4ToInt(ip) {
+  if (typeof ip !== 'string') return null;
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const p of parts) {
+    const v = Number(p);
+    if (!Number.isInteger(v) || v < 0 || v > 255) return null;
+    n = n * 256 + v;
+  }
+  return n;
+}
+
+/** Ranges of one network. Every row under /networks/{id}/ranges is a DHCP
+ *  range whatever its type string (9.5 docs: DHCPv4Range; 9.6 may use
+ *  IPv4DHCPRange), so no type filter here. */
 async function fetchRanges(source, networkId, timeout) {
   const rows = await pagedGet(source, `/networks/${networkId}/ranges`, { limit: 1000, timeout });
-  return rows.filter((r) => /^DHCP/.test(r.type || '')).map(parseRange);
+  return rows.map(parseRange).map((r) => ({ ...r, networkId: r.networkId ?? networkId }));
+}
+
+/** All DHCP ranges of the BAM in one paged call (flat collection); each row
+ *  carries networkId from _links.up. Preferred over one call per network. */
+async function fetchAllRanges(source, timeout) {
+  const rows = await pagedGet(source, '/ranges', { limit: 1000, timeout });
+  return rows.map(parseRange).filter((r) => /DHCP/i.test(r.type || '') || r.networkId != null);
 }
 
 const ADDRESS_STATES = "STATIC,RESERVED,DHCP_RESERVED,DHCP_ALLOCATED,DHCP_ABANDONED,DHCP_EXCLUDED,DHCP_LEASED,GATEWAY".split(',');
@@ -635,7 +664,7 @@ module.exports = {
   apiGet, pagedGet, getWithFieldsFallback,
   fetchVersion, fetchConfigurations, fetchViews,
   fetchZones, fetchResourceRecords, searchRecords,
-  fetchBlocks, fetchNetworks, probeNetworkUsage, fetchRanges, fetchNetworkAddresses,
+  fetchBlocks, fetchNetworks, probeNetworkUsage, fetchRanges, fetchAllRanges, fetchNetworkAddresses,
   fetchDevices, fetchServers, fetchDeploymentRoles, fetchLatestDeployment,
   testConnection,
   promisePool,
