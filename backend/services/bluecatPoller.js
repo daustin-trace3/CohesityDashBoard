@@ -495,13 +495,18 @@ function ipToInt(ip) {
   return n >>> 0;
 }
 
-async function enumerateNetwork(source, network) {
+async function enumerateNetwork(source, network, mode = 'filtered') {
   const timeout = 60000;
   if (network.prefix != null && network.prefix < 16) {
     logger.info(`[BluecatPoller] skipping enumeration for ${network.range} (prefix < 16)`);
-    return;
+    return null;
   }
-  const addresses = await bluecatApi.fetchNetworkAddresses(source, network.network_id, network.prefix, timeout);
+  let addresses;
+  if (mode === 'unfiltered' && network.prefix != null && network.prefix >= 22) {
+    addresses = await bluecatApi.fetchNetworkAddressesUnfiltered(source, network.network_id, timeout);
+  } else {
+    addresses = await bluecatApi.fetchNetworkAddresses(source, network.network_id, network.prefix, timeout);
+  }
   for (const a of addresses) a._ipInt = ipToInt(a.address);
 
   const ranges = db.prepare('SELECT * FROM bluecat_ranges WHERE source_id = ? AND network_id = ?').all(source.id, network.network_id)
@@ -541,19 +546,56 @@ async function enumerateNetwork(source, network) {
         .run(gw.address, source.id, network.network_id);
     }
   }
+  return addresses.length;
 }
 
+const KNOWN_STATES = new Set([...ADDRESS_STATE_COUNTED, ...ADDRESS_STATE_FREE, 'DHCP_EXCLUDED', 'DHCP_ALLOCATED', 'DHCP_ABANDONED', 'DHCP_LEASED']);
+
 async function pollEnumerate(source) {
+  const started = Date.now();
   try {
-    const networks = db.prepare('SELECT * FROM bluecat_networks WHERE source_id = ? AND ip_version = 4').all(source.id);
+    const networks = db.prepare('SELECT * FROM bluecat_networks WHERE source_id = ? AND ip_version = 4 ORDER BY prefix DESC').all(source.id);
+    // Diagnostic sample from the largest small network: which state strings
+    // does THIS BAM use, and does an unfiltered listing synthesize UNASSIGNED
+    // rows? Logged every run so a 9.6 enum mismatch is visible in pm2 logs.
+    let mode = 'filtered';
+    let sampleNote = '';
+    const probeNet = networks.find((n) => n.prefix != null && n.prefix >= 22 && n.prefix <= 24) || networks.find((n) => n.prefix != null && n.prefix >= 22);
+    if (probeNet) {
+      const sample = await bluecatApi.sampleNetworkAddresses(source, probeNet.network_id, 30000, 200);
+      if (sample) {
+        const states = {};
+        for (const a of sample) states[a.state || 'null'] = (states[a.state || 'null'] || 0) + 1;
+        const unknown = Object.keys(states).filter((st) => !KNOWN_STATES.has(st) && st !== 'null');
+        sampleNote = `sample ${probeNet.range}: ${sample.length} row(s) unfiltered, states ${JSON.stringify(states)}`;
+        logger.info(`[BluecatPoller] ${source.name}: ${sampleNote}${unknown.length ? `, UNKNOWN states ${unknown.join(',')}` : ''}`);
+        let filtered = null;
+        try { filtered = await bluecatApi.fetchNetworkAddresses(source, probeNet.network_id, probeNet.prefix, 30000); } catch { filtered = null; }
+        const sampleHasUsed = sample.some((a) => a.state && !ADDRESS_STATE_FREE.has(a.state));
+        if (sampleHasUsed && (!filtered || filtered.length === 0)) {
+          mode = 'unfiltered';
+          logger.warn(`[BluecatPoller] ${source.name}: state filter returned 0 rows but the unfiltered sample has ${sample.filter((a) => a.state && !ADDRESS_STATE_FREE.has(a.state)).length} used address(es); this run lists /22 and smaller networks unfiltered. Send the state list above to fix the filter.`);
+        }
+      }
+    }
+    let done = 0;
+    let stored = 0;
+    let failed = 0;
+    let skipped = 0;
     await bluecatApi.promisePool(networks, 4, async (n) => {
       try {
-        await enumerateNetwork(source, n);
+        const c = await enumerateNetwork(source, n, mode);
+        if (c == null) skipped += 1; else { done += 1; stored += c; }
       } catch (err) {
-        logger.warn(`[BluecatPoller] enumerate ${n.range} failed: ${safeMsg(err)}`);
+        failed += 1;
+        if (failed <= 3) logger.warn(`[BluecatPoller] enumerate ${n.range} failed: ${safeMsg(err)}`);
       }
     });
-    db.prepare(`UPDATE bluecat_sources SET last_enumerate_at = datetime('now'), last_enumerate_error = NULL WHERE id = ?`).run(source.id);
+    const secs = Math.round((Date.now() - started) / 1000);
+    const summary = `enumerated ${done} network(s), stored ${stored} address(es), ${failed} failed, ${skipped} skipped, ${secs}s, mode ${mode}`;
+    logger.info(`[BluecatPoller] ${source.name}: ${summary}`);
+    const note = stored === 0 && done > 0 ? `${summary}. ${sampleNote || 'no sample network available'}` : null;
+    db.prepare(`UPDATE bluecat_sources SET last_enumerate_at = datetime('now'), last_enumerate_error = ? WHERE id = ?`).run(note, source.id);
   } catch (err) {
     db.prepare(`UPDATE bluecat_sources SET last_enumerate_error = ? WHERE id = ?`).run(safeMsg(err), source.id);
     throw err;
@@ -566,7 +608,14 @@ async function pollEnumerate(source) {
 
 // ── Poller framework instances ──────────────────────────────────────────────
 
-const loadSources = () => db.prepare('SELECT * FROM bluecat_sources').all();
+// Config columns only: the framework reschedules a source whenever its row
+// snapshot changes, and the inventory poll writes last_poll_* every run. With
+// SELECT * that reset the 60 min enumeration timer every 30 min so it never
+// fired (seen live 2026-09-09).
+const loadSources = () => db.prepare(`
+  SELECT id, name, host, port, encrypted_credentials, ssl_verify, polling_interval_minutes, enumerate_interval_minutes
+  FROM bluecat_sources
+`).all();
 
 const inventoryPoller = createPoller({
   id: 'bluecat',

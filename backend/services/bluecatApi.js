@@ -558,6 +558,26 @@ async function fetchNetworkAddresses(source, networkId, prefix, timeout) {
   throw new Error(`no usable address filter for network ${networkId} (prefix ${prefix})`);
 }
 
+/** One unfiltered page (limit N) of a network's addresses, for diagnostics:
+ *  which state strings this BAM actually uses. Never throws. */
+async function sampleNetworkAddresses(source, networkId, timeout, limit = 200) {
+  try {
+    const d = await apiGet(source, `/networks/${networkId}/addresses`, { params: { limit, fields: 'id,address,state,name,_links' }, timeout });
+    return safeArr(d?.data).map(parseAddress);
+  } catch (err) {
+    logger.warn(`[BluecatApi] address sample failed for network ${networkId}: ${errMsg(err)}`);
+    return null;
+  }
+}
+
+/** Unfiltered full listing of a network's addresses. Only safe on small
+ *  networks (the caller guards on prefix) because BAM may synthesize a row
+ *  per unassigned address. */
+async function fetchNetworkAddressesUnfiltered(source, networkId, timeout) {
+  const rows = await pagedGet(source, `/networks/${networkId}/addresses`, { fields: 'id,address,state,name,macAddress,device,_links', limit: 1000, timeout });
+  return rows.map(parseAddress);
+}
+
 // ── Devices / servers / roles / deployments ─────────────────────────────────
 
 function parseDevice(d) {
@@ -689,7 +709,7 @@ module.exports = {
   apiGet, pagedGet, getWithFieldsFallback,
   fetchVersion, fetchConfigurations, fetchViews,
   fetchZones, fetchResourceRecords, searchRecords,
-  fetchBlocks, fetchNetworks, probeNetworkUsage, fetchRanges, fetchAllRanges, fetchNetworkAddresses,
+  fetchBlocks, fetchNetworks, probeNetworkUsage, fetchRanges, fetchAllRanges, fetchNetworkAddresses, sampleNetworkAddresses, fetchNetworkAddressesUnfiltered,
   fetchDevices, fetchServers, fetchDeploymentRoles, fetchLatestDeployment,
   testConnection,
   promisePool,
