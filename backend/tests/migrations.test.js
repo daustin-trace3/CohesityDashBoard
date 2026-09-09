@@ -24,6 +24,8 @@ import netbackupMigrations from '../db/migrations/netbackup.js';
 import awsMigrations from '../db/migrations/aws.js';
 import proxmoxMigrations from '../db/migrations/proxmox.js';
 import brocadeMigrations from '../db/migrations/brocade.js';
+import bluecatMigrations from '../db/migrations/bluecat.js';
+import directoryMigrations from '../db/migrations/directory.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
@@ -164,6 +166,8 @@ function buildNewDb() {
   runMigrations(db, 'aws', awsMigrations);
   runMigrations(db, 'proxmox', proxmoxMigrations);
   runMigrations(db, 'brocade', brocadeMigrations);
+  runMigrations(db, 'bluecat', bluecatMigrations);
+  runMigrations(db, 'directory', directoryMigrations);
   return db;
 }
 
@@ -220,6 +224,7 @@ const NEW_TABLES = [
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
   'ai_audit_exchanges',
+  'directory_sync_log',
   'netapp_aiqum_instances',
   'user_dashboards',
   'aws_accounts', 'aws_ec2_instances', 'aws_ebs_volumes', 'aws_lightsail_instances',
@@ -239,6 +244,10 @@ const NEW_TABLES = [
   'brocade_health_scores', 'brocade_zone_configs', 'brocade_zones', 'brocade_zone_aliases',
   'brocade_zone_changes', 'brocade_fcr_routes', 'brocade_metrics', 'brocade_issue_history',
   'brocade_port_stats', 'brocade_fos_overrides',
+  'bluecat_sources', 'bluecat_views', 'bluecat_zones', 'bluecat_records',
+  'bluecat_blocks', 'bluecat_networks', 'bluecat_ranges', 'bluecat_addresses',
+  'bluecat_devices', 'bluecat_servers', 'bluecat_network_overrides',
+  'bluecat_metrics_history', 'bluecat_issue_history',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.
@@ -336,6 +345,8 @@ describe('runMigrations', () => {
       runMigrations(db, 'aws', awsMigrations);
       runMigrations(db, 'proxmox', proxmoxMigrations);
       runMigrations(db, 'brocade', brocadeMigrations);
+      runMigrations(db, 'bluecat', bluecatMigrations);
+      runMigrations(db, 'directory', directoryMigrations);
     }).not.toThrow();
 
     const after = normalizeSchema(db);

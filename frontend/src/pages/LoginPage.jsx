@@ -38,6 +38,7 @@ export default function LoginPage() {
   const [setupUsername, setSetupUsername] = useState('');
   const [setupPassword, setSetupPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [directory, setDirectory] = useState(null);
 
   useEffect(() => {
     client.get('/auth/setup-status')
@@ -48,6 +49,7 @@ export default function LoginPage() {
           return;
         }
         setNeedsSetup(!!r.data.needsSetup);
+        setDirectory(r.data.directory?.enabled ? r.data.directory : null);
       })
       .catch(() => setNeedsSetup(false))
       .finally(() => setCheckingSetup(false));
@@ -189,6 +191,9 @@ export default function LoginPage() {
             <div>
               <label className="text-xs font-semibold text-ink mb-1 block">Username</label>
               <input type="text" value={username} onChange={e => setUsername(e.target.value)} className={inputClass} autoComplete="username" required autoFocus />
+              {directory && (
+                <p className="text-[11px] text-ink-faint mt-1">Domain accounts on {directory.domain} sign in with their usual username, or as DOMAIN\user.</p>
+              )}
             </div>
             <div>
               <label className="text-xs font-semibold text-ink mb-1 block">Password</label>

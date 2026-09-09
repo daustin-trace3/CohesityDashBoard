@@ -20,6 +20,8 @@ const CONFIG = {
     description: 'Computed issues across all registered Proxmox VE servers, with open/resolved history' },
   brocade: { brand: '#CC092F', base: '/brocade', instanceKey: 'source', instanceLabel: 'Source',
     description: 'Computed fabric issues across all registered SANnav sources, with open/resolved history' },
+  bluecat: { brand: '#0057B8', base: '/bluecat', instanceKey: 'source', instanceLabel: 'Address Manager',
+    description: 'Computed IPAM and DNS issues across all registered BlueCat Address Managers, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];

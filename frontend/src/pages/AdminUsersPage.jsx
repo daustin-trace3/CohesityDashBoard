@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight } from 'lucide-react';
+import { Users, UserPlus, Shield, KeyRound, Pencil, Trash2, Plus, X, Copy, Check, Power, ChevronDown, ChevronRight, Building2 } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LastUpdated } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import AdminNav from '../components/AdminNav';
+import DirectoryTab from './DirectoryTab';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
 const LEVELS = ['view', 'manage', '*'];
@@ -14,6 +15,7 @@ const TABS = [
   { key: 'users', label: 'Users', icon: Users },
   { key: 'groups', label: 'Groups', icon: Shield },
   { key: 'service-accounts', label: 'Service Accounts', icon: KeyRound },
+  { key: 'directory', label: 'Directory', icon: Building2 },
 ];
 
 function errorMessage(err, fallback) {
@@ -207,6 +209,91 @@ function PermissionChip({ perm, onRemove }) {
   );
 }
 
+/* ── Directory object picker (shared by the user and group dialogs) ──────── */
+function useDirectoryEnabled() {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    client.get('/directory/config').then(({ data }) => setEnabled(!!data.configured)).catch(() => setEnabled(false));
+  }, []);
+  return enabled;
+}
+
+function SourceToggle({ value, onChange }) {
+  return (
+    <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
+      {[{ id: 'local', label: 'Local' }, { id: 'ad', label: 'Active Directory' }].map(o => (
+        <button key={o.id} type="button" onClick={() => onChange(o.id)}
+          className={`px-3 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${value === o.id ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'}`}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Type a name, pick the AD object. kind = 'users' | 'groups'. */
+function DirectoryPicker({ kind, selected, onPick }) {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  // Nothing is listed until the admin types: the directory is filtered by
+  // what they enter (two characters minimum), debounced.
+  const term = q.trim();
+  useEffect(() => {
+    if (selected) return undefined;
+    if (term.length < 2) { setResults(null); setErr(null); return undefined; }
+    const t = setTimeout(() => {
+      setBusy(true); setErr(null);
+      client.get(`/directory/${kind}`, { params: { q: term } })
+        .then(({ data }) => setResults(data))
+        .catch(e => { setResults([]); setErr(errorMessage(e, 'Directory search failed.')); })
+        .finally(() => setBusy(false));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [term, kind, selected]);
+  if (selected) {
+    return (
+      <div className="flex items-center gap-2 border border-brand/40 bg-brand/5 rounded-lg px-3 py-2">
+        <Badge tone="info">AD</Badge>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs text-ink font-medium truncate">{kind === 'users' ? `${selected.displayName || selected.sam} (${selected.upn || selected.sam})` : selected.name}</p>
+          <p className="text-[10px] text-ink-faint truncate" title={selected.dn}>{selected.dn}</p>
+        </div>
+        <button type="button" onClick={() => onPick(null)} aria-label="Clear selection" className="text-ink-faint hover:text-ink cursor-pointer"><X size={13} /></button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={kind === 'users' ? 'Type a username or name to search the domain' : 'Type a group name to search the domain'} className={inputClass} />
+      {err && <p className="text-[11px] text-status-crit">{err}</p>}
+      {term.length < 2 ? (
+        <p className="text-[11px] text-ink-faint px-1">Type at least two characters. The list narrows as you type.</p>
+      ) : (
+      <div className="border border-cohesity-border rounded-lg max-h-56 overflow-y-auto">
+        {busy && !results && <p className="text-[11px] text-ink-faint px-3 py-2">Searching the directory...</p>}
+        {results && results.length === 0 && <p className="text-[11px] text-ink-faint px-3 py-2">No {kind === 'users' ? 'user' : 'group'} matches "{term}".</p>}
+        {(results || []).map(r => {
+          const taken = kind === 'users' ? r.imported : r.linked;
+          return (
+            <button key={r.dn} type="button" disabled={!!taken || r.disabled} onClick={() => onPick(r)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-cohesity-border/50 last:border-0 hover:bg-brand/10 disabled:opacity-50 disabled:cursor-default cursor-pointer">
+              <span className="flex-1 min-w-0">
+                <span className="block text-xs text-ink truncate">{kind === 'users' ? `${r.displayName || r.sam}` : r.name}</span>
+                <span className="block text-[10px] text-ink-faint truncate">{kind === 'users' ? (r.upn || r.sam) : (r.description || r.dn)}</span>
+              </span>
+              {taken && <Badge tone="neutral">{kind === 'users' ? `added as ${r.imported}` : 'already added'}</Badge>}
+              {r.disabled && <Badge tone="neutral">disabled in AD</Badge>}
+            </button>
+          );
+        })}
+      </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Users tab ───────────────────────────────────────────────────────────── */
 function UserModal({ user, groups, onClose, onSaved }) {
   const isEdit = !!user;
@@ -222,6 +309,9 @@ function UserModal({ user, groups, onClose, onSaved }) {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const directoryEnabled = useDirectoryEnabled();
+  const [source, setSource] = useState('local');
+  const [adUser, setAdUser] = useState(null);
 
   const toggleGroup = (id) => {
     setGroupIds(prev => prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]);
@@ -235,10 +325,12 @@ function UserModal({ user, groups, onClose, onSaved }) {
         const payload = { displayName, isActive, groupIds };
         if (password) payload.password = password;
         await client.put(`/users/${user.id}`, payload);
+      } else if (source === 'ad') {
+        await client.post('/directory/users', { dn: adUser.dn, groupIds });
       } else {
         await client.post('/users', { username, password, displayName, groupIds });
       }
-      toast({ type: 'success', title: isEdit ? 'User updated' : 'User created' });
+      toast({ type: 'success', title: isEdit ? 'User updated' : source === 'ad' ? 'Directory user added' : 'User created' });
       onSaved();
       onClose();
     } catch (err) {
@@ -251,21 +343,40 @@ function UserModal({ user, groups, onClose, onSaved }) {
   return (
     <Modal title={isEdit ? `Edit ${user.username}` : 'Create user'} onClose={onClose}>
       <div className="flex flex-col gap-3">
+        {!isEdit && directoryEnabled && <SourceToggle value={source} onChange={(v) => { setSource(v); setAdUser(null); }} />}
+        {!isEdit && source === 'ad' ? (
+          <div>
+            <label className="text-xs font-semibold text-ink mb-1 block">Directory user</label>
+            <DirectoryPicker kind="users" selected={adUser} onPick={setAdUser} />
+            <p className="text-[10px] text-ink-faint mt-1">Signs in with the domain password. Access comes from the groups ticked below plus any mirrored domain groups the user is in.</p>
+          </div>
+        ) : (
         <div>
           <label className="text-xs font-semibold text-ink mb-1 block">Username</label>
           <input value={username} onChange={e => setUsername(e.target.value)} disabled={isEdit}
             className={`${inputClass} ${isEdit ? 'opacity-60' : ''}`} autoComplete="username" />
         </div>
+        )}
+        {(isEdit || source !== 'ad') && (
         <div>
           <label className="text-xs font-semibold text-ink mb-1 block">Display name</label>
           <input value={displayName} onChange={e => setDisplayName(e.target.value)} className={inputClass} />
         </div>
+        )}
+        {user?.provider === 'ad' || (!isEdit && source === 'ad') ? (
+          user?.provider === 'ad' ? (
+          <p className="text-[11px] text-ink-muted bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2">
+            Directory account: signs in with the domain password. Membership in mirrored domain groups is managed by the sync; groups ticked here are added on top.
+          </p>
+          ) : null
+        ) : (
         <div>
           <label className="text-xs font-semibold text-ink mb-1 block">
             Password {isEdit && <span className="text-ink-faint font-normal">(leave blank to keep current)</span>}
           </label>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} className={inputClass} autoComplete="new-password" />
         </div>
+        )}
         <div>
           <label className="text-xs font-semibold text-ink mb-1.5 block">Groups</label>
           <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto border border-cohesity-border rounded-lg p-2.5">
@@ -284,9 +395,9 @@ function UserModal({ user, groups, onClose, onSaved }) {
           <span className="text-xs text-ink">Active</span>
         </label>
         {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
-        <button onClick={save} disabled={saving || (!isEdit && (!username || !password))}
+        <button onClick={save} disabled={saving || (!isEdit && (source === 'ad' ? !adUser : (!username || !password)))}
           className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer">
-          {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Create user'}
+          {saving ? 'Saving…' : isEdit ? 'Save changes' : source === 'ad' ? 'Add directory user' : 'Create user'}
         </button>
       </div>
     </Modal>
@@ -356,7 +467,9 @@ function UsersTab() {
           <tbody>
             {users.map(u => (
               <tr key={u.id} className="border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50">
-                <td className="px-3 py-2 text-ink font-medium">{u.username}</td>
+                <td className="px-3 py-2 text-ink font-medium">
+                  <span className="flex items-center gap-1.5">{u.username}{u.provider === 'ad' && <Badge tone="info">AD</Badge>}</span>
+                </td>
                 <td className="px-3 py-2 text-ink-muted">{u.displayName || '—'}</td>
                 <td className="px-3 py-2 text-ink-muted">{(u.groups || []).join(', ') || '—'}</td>
                 <td className="px-3 py-2">
@@ -393,13 +506,17 @@ function CreateGroupModal({ onClose, onSaved }) {
   const [description, setDescription] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const directoryEnabled = useDirectoryEnabled();
+  const [source, setSource] = useState('local');
+  const [adGroup, setAdGroup] = useState(null);
 
   const save = async () => {
     setError(null);
     setSaving(true);
     try {
-      await client.post('/users/groups', { name, description });
-      toast({ type: 'success', title: 'Group created' });
+      if (source === 'ad') await client.post('/directory/links', { dn: adGroup.dn });
+      else await client.post('/users/groups', { name, description });
+      toast({ type: 'success', title: source === 'ad' ? 'Domain group added' : 'Group created', message: source === 'ad' ? 'Members are being pulled in. Grant it platform access below.' : undefined });
       onSaved();
       onClose();
     } catch (err) {
@@ -412,18 +529,29 @@ function CreateGroupModal({ onClose, onSaved }) {
   return (
     <Modal title="Create group" onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <div>
-          <label className="text-xs font-semibold text-ink mb-1 block">Name</label>
-          <input value={name} onChange={e => setName(e.target.value)} className={inputClass} />
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-ink mb-1 block">Description</label>
-          <input value={description} onChange={e => setDescription(e.target.value)} className={inputClass} />
-        </div>
+        {directoryEnabled && <SourceToggle value={source} onChange={(v) => { setSource(v); setAdGroup(null); }} />}
+        {source === 'ad' ? (
+          <div>
+            <label className="text-xs font-semibold text-ink mb-1 block">Directory group</label>
+            <DirectoryPicker kind="groups" selected={adGroup} onPick={setAdGroup} />
+            <p className="text-[10px] text-ink-faint mt-1">Its members (nested groups included) are mirrored and kept current. Grant it platform access after adding.</p>
+          </div>
+        ) : (
+          <>
+            <div>
+              <label className="text-xs font-semibold text-ink mb-1 block">Name</label>
+              <input value={name} onChange={e => setName(e.target.value)} className={inputClass} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-ink mb-1 block">Description</label>
+              <input value={description} onChange={e => setDescription(e.target.value)} className={inputClass} />
+            </div>
+          </>
+        )}
         {error && <p className="text-xs text-status-crit bg-status-crit/10 border border-status-crit/30 rounded-lg px-3 py-2">{error}</p>}
-        <button onClick={save} disabled={saving || !name.trim()}
+        <button onClick={save} disabled={saving || (source === 'ad' ? !adGroup : !name.trim())}
           className="mt-1 flex items-center justify-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-40 cursor-pointer">
-          {saving ? 'Creating…' : 'Create group'}
+          {saving ? 'Saving…' : source === 'ad' ? 'Add domain group' : 'Create group'}
         </button>
       </div>
     </Modal>
@@ -485,7 +613,7 @@ function GroupsTab() {
   };
 
   const deleteGroup = async (g) => {
-    if (!window.confirm(`Delete group "${g.name}"?`)) return;
+    if (!window.confirm(g.provider === 'ad' ? `Remove domain group "${g.name}" from ICC? Its access grants go with it; users stay.` : `Delete group "${g.name}"?`)) return;
     try {
       await client.delete(`/users/groups/${g.id}`);
       toast({ type: 'success', title: 'Group deleted' });
@@ -513,7 +641,7 @@ function GroupsTab() {
                 selectedId === g.id ? 'bg-brand/10 text-brand' : 'text-ink-muted hover:bg-surface-overlay hover:text-ink'
               }`}>
               <span className="truncate">{g.name}</span>
-              {g.isSystem === 1 || g.isSystem === true ? <Badge tone="neutral">system</Badge> : null}
+              {g.isSystem === 1 || g.isSystem === true ? <Badge tone="neutral">system</Badge> : g.provider === 'ad' ? <Badge tone="info">AD</Badge> : null}
             </button>
           ))}
           {groups.length === 0 && <p className="text-[11px] text-ink-faint px-2.5 py-2">No groups yet.</p>}
@@ -530,13 +658,14 @@ function GroupsTab() {
                 <p className="text-sm font-bold text-ink flex items-center gap-2">
                   {selected.name}
                   {(selected.isSystem === 1 || selected.isSystem === true) && <Badge tone="neutral">system — rename/delete disabled</Badge>}
+                  {selected.provider === 'ad' && <Badge tone="info">AD: {selected.externalName}</Badge>}
                 </p>
                 {selected.description && <p className="text-[11px] text-ink-muted mt-0.5">{selected.description}</p>}
               </div>
               {!(selected.isSystem === 1 || selected.isSystem === true) && (
                 <button onClick={() => deleteGroup(selected)}
                   className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 text-status-crit border border-status-crit/30 rounded-lg hover:bg-status-crit/10 transition-colors cursor-pointer">
-                  <Trash2 size={12} /> Delete group
+                  <Trash2 size={12} /> {selected.provider === 'ad' ? 'Remove domain group' : 'Delete group'}
                 </button>
               )}
             </div>
@@ -881,6 +1010,7 @@ export default function AdminUsersPage() {
           {tab === 'users' && <UsersTab />}
           {tab === 'groups' && <GroupsTab />}
           {tab === 'service-accounts' && <ServiceAccountsTab />}
+          {tab === 'directory' && <DirectoryTab />}
         </div>
       </div>
     </div>
