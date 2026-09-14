@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ShieldCheck, KeyRound, RefreshCw, LogIn, Layers, Activity, Lock } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../auth/AuthContext';
-import t3Logo from '../assets/t3_logo_dark.png';
+import iccLogo from '../assets/icc-logo-dark.svg';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -109,7 +109,7 @@ export default function LoginPage() {
         <div className="absolute right-0 -bottom-32 w-[420px] h-[420px] rounded-full bg-brand/5 blur-3xl pointer-events-none" />
 
         <div className="flex flex-col gap-3">
-          <img src={t3Logo} alt="Trace3" width={200} height={67} className="h-[67px] w-auto self-start select-none" draggable={false} />
+          <img src={iccLogo} alt="Infrastructure Command Center" width={300} height={67} className="h-[67px] w-auto self-start select-none" draggable={false} />
           <div className="inline-flex items-center gap-2 rounded-full px-4 py-1 text-base font-medium border border-cohesity-border text-ink-muted w-fit">
             <span className={`w-2.5 h-2.5 rounded-full ${health === null ? 'bg-ink-faint animate-pulse' : health ? 'bg-status-ok animate-pulse' : 'bg-status-crit'}`} />
             {health === null ? 'Checking status…' : health ? 'Platform Online' : 'Platform Offline'}
