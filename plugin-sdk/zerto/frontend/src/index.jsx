@@ -1,3 +1,7 @@
+// NOTE (2026-09-14): the host DOES apply `requiresAi` to plugin nav groups
+// (Layout.jsx filters activePluginPlatform.navGroups), so AI Advisor is gated
+// on a configured AI token exactly like the built-in. Older comments below
+// saying the sandbox has no such flag are outdated.
 // Zerto plugin frontend module. Bundled as an IIFE with no ESM imports at
 // runtime — React/ReactDOM/ReactRouterDOM/Chart come from window globals
 // (injected by the build banner, see plugin-sdk/build.mjs). Mirrors
@@ -34,7 +38,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/zerto', icon: Gauge, isActive: (p) => p === '/zerto' },
-      { label: 'AI Advisor', route: '/zerto/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/zerto/advisor') },
+      { label: 'AI Advisor', route: '/zerto/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/zerto/advisor'), requiresAi: true },
       { label: 'Alerts', route: '/zerto/alerts', icon: Bell, isActive: (p) => p.startsWith('/zerto/alerts') },
     ],
   },

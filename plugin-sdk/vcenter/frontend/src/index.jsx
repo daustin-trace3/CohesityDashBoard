@@ -1,3 +1,7 @@
+// NOTE (2026-09-14): the host DOES apply `requiresAi` to plugin nav groups
+// (Layout.jsx filters activePluginPlatform.navGroups), so AI Advisor is gated
+// on a configured AI token exactly like the built-in. Older comments below
+// saying the sandbox has no such flag are outdated.
 // vCenter plugin frontend module. Bundled as an IIFE with no ESM imports at
 // runtime — React/ReactDOM/ReactRouterDOM/Chart come from window globals
 // (injected by the build banner, see plugin-sdk/build.mjs). Mirrors
@@ -41,7 +45,7 @@ const navGroups = [
     items: [
       { label: 'Overview', route: '/vcenter', icon: Gauge, isActive: (p) => p === '/vcenter' },
       { label: 'Alerts', route: '/vcenter/alerts', icon: Bell, isActive: (p) => p.startsWith('/vcenter/alerts') },
-      { label: 'AI Advisor', route: '/vcenter/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/vcenter/advisor') },
+      { label: 'AI Advisor', route: '/vcenter/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/vcenter/advisor'), requiresAi: true },
       { label: 'Events', route: '/vcenter/events', icon: History, isActive: (p) => p.startsWith('/vcenter/events') },
     ],
   },

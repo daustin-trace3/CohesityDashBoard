@@ -1,3 +1,7 @@
+// NOTE (2026-09-14): the host DOES apply `requiresAi` to plugin nav groups
+// (Layout.jsx filters activePluginPlatform.navGroups), so AI Advisor is gated
+// on a configured AI token exactly like the built-in. Older comments below
+// saying the sandbox has no such flag are outdated.
 // Dell plugin frontend module. Bundled as an IIFE with no ESM imports at
 // runtime — React/ReactDOM/ReactRouterDOM/Chart come from window globals
 // (injected by the build banner, see plugin-sdk/build.mjs). Mirrors
@@ -38,7 +42,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/dell', icon: Gauge, isActive: (p) => p === '/dell' },
-      { label: 'AI Advisor', route: '/dell/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/dell/advisor') },
+      { label: 'AI Advisor', route: '/dell/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/dell/advisor'), requiresAi: true },
       { label: 'Alerts', route: '/dell/alerts', icon: AlertTriangle, isActive: (p) => p.startsWith('/dell/alerts') },
       { label: 'Jobs', route: '/dell/jobs', icon: ListChecks, isActive: (p) => p.startsWith('/dell/jobs') },
     ],

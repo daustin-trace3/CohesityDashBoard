@@ -1,3 +1,7 @@
+// NOTE (2026-09-14): the host DOES apply `requiresAi` to plugin nav groups
+// (Layout.jsx filters activePluginPlatform.navGroups), so AI Advisor is gated
+// on a configured AI token exactly like the built-in. Older comments below
+// saying the sandbox has no such flag are outdated.
 // Cohesity plugin frontend module. Bundled as an IIFE with no ESM imports at
 // runtime — React/ReactDOM/ReactRouterDOM/Chart come from window globals
 // (injected by the build banner, see plugin-sdk/build.mjs). Mirrors
@@ -67,7 +71,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/cohesity', icon: Gauge, isActive: (p) => p === '/cohesity' },
-      { label: 'AI Advisor', route: '/cohesity/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/cohesity/ai-advisor') },
+      { label: 'AI Advisor', route: '/cohesity/ai-advisor', icon: Sparkles, isActive: (p) => p.startsWith('/cohesity/ai-advisor'), requiresAi: true },
       { label: 'Alerts', route: '/cohesity/alerts', icon: Bell, isActive: (p) => p.startsWith('/cohesity/alerts') },
       { label: 'Licensing', route: '/cohesity/licensing', icon: BadgeCheck, isActive: (p) => p.startsWith('/cohesity/licensing') },
     ],

@@ -1,3 +1,7 @@
+// NOTE (2026-09-14): the host DOES apply `requiresAi` to plugin nav groups
+// (Layout.jsx filters activePluginPlatform.navGroups), so AI Advisor is gated
+// on a configured AI token exactly like the built-in. Older comments below
+// saying the sandbox has no such flag are outdated.
 // Veritas NetBackup plugin frontend module (ICC contract C9.1). Bundled as
 // an IIFE with no ESM imports at runtime — React/ReactDOM/ReactRouterDOM
 // come from window globals (injected by the build banner + host, see
@@ -47,7 +51,7 @@ window.__ICC_REGISTER_PLUGIN__({
       label: 'Monitor',
       items: [
         { label: 'Overview', route: '/netbackup', isActive: (p) => p === '/netbackup' },
-        { label: 'AI Advisor', route: '/netbackup/advisor', isActive: (p) => p.startsWith('/netbackup/advisor') },
+        { label: 'AI Advisor', route: '/netbackup/advisor', isActive: (p) => p.startsWith('/netbackup/advisor'), requiresAi: true },
         { label: 'Alerts', route: '/netbackup/alerts', isActive: (p) => p.startsWith('/netbackup/alerts') },
       ],
     },
