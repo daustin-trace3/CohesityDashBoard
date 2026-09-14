@@ -11,6 +11,7 @@ const { getSetting, setSetting } = require('../services/settings');
 const dellOmeApi = require('../services/dellOmeApi');
 const { dellPoller } = require('../services/dellPoller');
 const dellAdvisor = require('../services/advisors/dellAdvisor');
+const { fingerprint: varianceFingerprint } = require('../services/dellVariance');
 
 const router = express.Router();
 
@@ -29,6 +30,16 @@ const publicOme = (row) => ({
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
   version: row.version,
 });
+
+// Accepted-variance join used by every compliance read. A variance is keyed
+// on (ome, baseline, device); only state 'active' hides a device from the
+// not-compliant views. 'stale' means the drift changed after acceptance.
+const VARIANCE_JOIN = `LEFT JOIN dell_config_variances v
+  ON v.ome_id = c.ome_id AND v.baseline_id = c.baseline_id AND v.device_id = c.device_id`;
+const EFFECTIVE_STATUS = `CASE WHEN c.status = 'noncompliant' AND v.state = 'active' THEN 'accepted' ELSE c.status END AS effective_status`;
+const VARIANCE_COLS = `v.id AS variance_id, v.state AS variance_state, v.reason AS variance_reason,
+  v.accepted_by AS variance_by, v.accepted_at AS variance_at, v.stale_at AS variance_stale_at,
+  v.drift_count AS variance_drift_count`;
 
 function warrantyWarnDays() {
   const n = parseInt(getSetting('dell_warranty_warn_days'), 10);
@@ -217,7 +228,8 @@ function computeIssues() {
   const drifted = db.prepare(`
     SELECT c.device_name, c.service_tag, c.baseline_name, o.name AS ome_name
     FROM dell_config_compliance c JOIN dell_ome_instances o ON o.id = c.ome_id
-    WHERE c.status = 'noncompliant' ORDER BY c.device_name LIMIT 200
+    ${VARIANCE_JOIN}
+    WHERE c.status = 'noncompliant' AND v.state IS NOT 'active' ORDER BY c.device_name LIMIT 200
   `).all();
   for (const c of drifted) {
     issues.push({
@@ -366,8 +378,9 @@ router.get('/overview', (req, res, next) => {
     `).get().n;
     const configCompliance = db.prepare(`
       SELECT COUNT(*) AS total,
-        SUM(CASE WHEN status = 'noncompliant' THEN 1 ELSE 0 END) AS noncompliant
-      FROM dell_config_compliance
+        SUM(CASE WHEN c.status = 'noncompliant' AND v.state IS NOT 'active' THEN 1 ELSE 0 END) AS noncompliant,
+        SUM(CASE WHEN c.status = 'noncompliant' AND v.state = 'active' THEN 1 ELSE 0 END) AS accepted
+      FROM dell_config_compliance c ${VARIANCE_JOIN}
     `).get();
     const jobs24h = db.prepare(`
       SELECT SUM(CASE WHEN last_run_status_id = 2070 THEN 1 ELSE 0 END) AS failed,
@@ -412,13 +425,14 @@ router.get('/devices', [
       FROM dell_devices d
       JOIN dell_ome_instances o ON o.id = d.ome_id
       LEFT JOIN (
-        SELECT ome_id, device_id,
-          CASE WHEN SUM(status = 'noncompliant') > 0 THEN 'noncompliant'
-               WHEN SUM(status = 'compliant') > 0 THEN 'compliant'
-               ELSE MIN(status) END AS compliance_status,
-          SUM(CASE WHEN detail IS NULL THEN 0 ELSE json_array_length(detail) END) AS compliance_drift,
-          MAX(CASE WHEN status = 'noncompliant' THEN id END) AS compliance_report_id
-        FROM dell_config_compliance GROUP BY ome_id, device_id
+        SELECT c.ome_id, c.device_id,
+          CASE WHEN SUM(c.status = 'noncompliant' AND v.state IS NOT 'active') > 0 THEN 'noncompliant'
+               WHEN SUM(c.status = 'noncompliant' AND v.state = 'active') > 0 THEN 'accepted'
+               WHEN SUM(c.status = 'compliant') > 0 THEN 'compliant'
+               ELSE MIN(c.status) END AS compliance_status,
+          SUM(CASE WHEN c.detail IS NULL THEN 0 ELSE json_array_length(c.detail) END) AS compliance_drift,
+          MAX(CASE WHEN c.status = 'noncompliant' THEN c.id END) AS compliance_report_id
+        FROM dell_config_compliance c ${VARIANCE_JOIN} GROUP BY c.ome_id, c.device_id
       ) cc ON cc.ome_id = d.ome_id AND cc.device_id = d.device_id
       ${where} ORDER BY d.name
     `).all(...params));
@@ -447,9 +461,11 @@ router.get('/devices/:id', [param('id').isInt().toInt()], validate, (req, res, n
       SELECT * FROM dell_firmware_compliance WHERE ome_id = ? AND (service_tag = ? OR device_id = ?)
     `).all(dev.ome_id, dev.service_tag, dev.device_id);
     const configCompliance = db.prepare(`
-      SELECT id, baseline_id, baseline_name, status, inventory_time,
-        CASE WHEN detail IS NULL THEN 0 ELSE json_array_length(detail) END AS drift_count
-      FROM dell_config_compliance WHERE ome_id = ? AND (device_id = ? OR service_tag = ?)
+      SELECT c.id, c.baseline_id, c.baseline_name, c.status, c.inventory_time,
+        CASE WHEN c.detail IS NULL THEN 0 ELSE json_array_length(c.detail) END AS drift_count,
+        ${EFFECTIVE_STATUS}, ${VARIANCE_COLS}
+      FROM dell_config_compliance c ${VARIANCE_JOIN}
+      WHERE c.ome_id = ? AND (c.device_id = ? OR c.service_tag = ?)
     `).all(dev.ome_id, dev.device_id, dev.service_tag);
     const hardwareLogs = db.prepare(`
       SELECT * FROM dell_hardware_logs WHERE ome_id = ? AND device_id = ?
@@ -634,19 +650,23 @@ router.get('/compliance', (req, res, next) => {
         c.service_tag, c.model, c.status, c.inventory_time, c.captured_at,
         (c.detail IS NOT NULL) AS has_detail,
         CASE WHEN c.detail IS NULL THEN 0 ELSE json_array_length(c.detail) END AS drift_count,
-        o.name AS ome_name, d.id AS device_row_id
+        o.name AS ome_name, d.id AS device_row_id,
+        ${EFFECTIVE_STATUS}, ${VARIANCE_COLS}
       FROM dell_config_compliance c
       JOIN dell_ome_instances o ON o.id = c.ome_id
       LEFT JOIN dell_devices d ON d.ome_id = c.ome_id AND d.device_id = c.device_id
-      ORDER BY CASE c.status WHEN 'noncompliant' THEN 0 WHEN 'not_inventoried' THEN 1
-        WHEN 'unknown' THEN 2 ELSE 3 END, c.device_name
+      ${VARIANCE_JOIN}
+      ORDER BY CASE WHEN c.status = 'noncompliant' AND v.state = 'active' THEN 3
+        WHEN c.status = 'noncompliant' THEN 0 WHEN c.status = 'not_inventoried' THEN 1
+        WHEN c.status = 'unknown' THEN 2 ELSE 4 END, c.device_name
     `).all();
     const summary = db.prepare(`
       SELECT COUNT(*) AS total,
-        SUM(CASE WHEN status = 'compliant' THEN 1 ELSE 0 END) AS compliant,
-        SUM(CASE WHEN status = 'noncompliant' THEN 1 ELSE 0 END) AS noncompliant,
-        SUM(CASE WHEN status = 'not_inventoried' THEN 1 ELSE 0 END) AS not_inventoried
-      FROM dell_config_compliance
+        SUM(CASE WHEN c.status = 'compliant' THEN 1 ELSE 0 END) AS compliant,
+        SUM(CASE WHEN c.status = 'noncompliant' AND v.state IS NOT 'active' THEN 1 ELSE 0 END) AS noncompliant,
+        SUM(CASE WHEN c.status = 'noncompliant' AND v.state = 'active' THEN 1 ELSE 0 END) AS accepted,
+        SUM(CASE WHEN c.status = 'not_inventoried' THEN 1 ELSE 0 END) AS not_inventoried
+      FROM dell_config_compliance c ${VARIANCE_JOIN}
     `).get();
     res.json({ baselines, reports, summary });
   } catch (err) { next(err); }
@@ -657,8 +677,9 @@ router.get('/compliance', (req, res, next) => {
 router.get('/compliance/:id/detail', [param('id').isInt().toInt()], validate, (req, res, next) => {
   try {
     const row = db.prepare(`
-      SELECT c.*, o.name AS ome_name FROM dell_config_compliance c
-      JOIN dell_ome_instances o ON o.id = c.ome_id WHERE c.id = ?
+      SELECT c.*, o.name AS ome_name, ${EFFECTIVE_STATUS}, ${VARIANCE_COLS}
+      FROM dell_config_compliance c
+      JOIN dell_ome_instances o ON o.id = c.ome_id ${VARIANCE_JOIN} WHERE c.id = ?
     `).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Compliance report not found.' });
     // Attach the drift timeline: when the poller first observed each attribute
@@ -673,6 +694,67 @@ router.get('/compliance/:id/detail', [param('id').isInt().toInt()], validate, (r
       return { ...d, detectedAt: h?.first_seen || null, lastSeen: h?.last_seen || null };
     });
     res.json({ ...row, detail });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/dell/compliance/variances — accept one or many non-compliant
+ *  device reports as an approved variance. Body: { reportIds: [..], reason }.
+ *  Re-accepting an existing (or stale) variance re-pins it to the current
+ *  drift and replaces the reason. Rows without stored detail cannot be
+ *  fingerprinted and are skipped. */
+router.post('/compliance/variances', [
+  body('reportIds').isArray({ min: 1, max: 1000 }),
+  body('reportIds.*').isInt().toInt(),
+  body('reason').isString().trim().isLength({ min: 3, max: 1000 }),
+], validate, (req, res, next) => {
+  try {
+    const by = req.auth?.user?.username || req.user?.username || 'unknown';
+    const get = db.prepare('SELECT * FROM dell_config_compliance WHERE id = ?');
+    const upsert = db.prepare(`
+      INSERT INTO dell_config_variances (ome_id, baseline_id, device_id, service_tag, device_name,
+        reason, accepted_by, accepted_at, fingerprint, drift_count, state, stale_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, 'active', NULL)
+      ON CONFLICT(ome_id, baseline_id, device_id) DO UPDATE SET
+        service_tag = excluded.service_tag, device_name = excluded.device_name,
+        reason = excluded.reason, accepted_by = excluded.accepted_by, accepted_at = excluded.accepted_at,
+        fingerprint = excluded.fingerprint, drift_count = excluded.drift_count,
+        state = 'active', stale_at = NULL
+    `);
+    const skipped = [];
+    let accepted = 0;
+    db.transaction(() => {
+      for (const id of [...new Set(req.body.reportIds)]) {
+        const row = get.get(id);
+        if (!row) { skipped.push({ id, why: 'report not found' }); continue; }
+        if (row.status !== 'noncompliant') { skipped.push({ id, why: 'device is not non-compliant' }); continue; }
+        if (!row.detail) { skipped.push({ id, why: 'no drift detail stored yet (over the per-poll detail cap); wait for a later poll' }); continue; }
+        const detail = JSON.parse(row.detail);
+        upsert.run(row.ome_id, row.baseline_id, row.device_id, row.service_tag, row.device_name,
+          req.body.reason, by, varianceFingerprint(detail), detail.length);
+        accepted += 1;
+      }
+    })();
+    res.json({ accepted, skipped });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/dell/compliance/variances/revoke — remove accepted variances
+ *  for the given compliance report ids; the devices return to the
+ *  not-compliant report on the next read. */
+router.post('/compliance/variances/revoke', [
+  body('reportIds').isArray({ min: 1, max: 1000 }),
+  body('reportIds.*').isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const del = db.prepare(`
+      DELETE FROM dell_config_variances WHERE id IN (
+        SELECT v.id FROM dell_config_variances v
+        JOIN dell_config_compliance c ON c.ome_id = v.ome_id AND c.baseline_id = v.baseline_id AND c.device_id = v.device_id
+        WHERE c.id = ?)
+    `);
+    let revoked = 0;
+    db.transaction(() => { for (const id of [...new Set(req.body.reportIds)]) revoked += del.run(id).changes; })();
+    res.json({ revoked });
   } catch (err) { next(err); }
 });
 

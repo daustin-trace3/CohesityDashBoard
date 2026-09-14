@@ -5,6 +5,7 @@
 // metrics on one site only (the other shows the "plugin not installed"
 // experience), and 30 days of metrics history.
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
+const { fingerprint } = require('../../services/dellVariance');
 
 const MODELS = [
   { model: 'PowerEdge R650', sockets: 2, coresPer: 24, memGb: 512, gen: 'current' },
@@ -29,6 +30,13 @@ const SVC_LEVELS = ['ProSupport Plus with Next Business Day Onsite', 'ProSupport
 
 // Attribute drift shapes for non-compliant config devices (BIOS/iDRAC settings
 // that commonly drift from a golden template).
+const VARIANCE_REASONS = [
+  'Boot mode left on BIOS for legacy imaging appliance; change ticket CHG0041877.',
+  'SR-IOV disabled on purpose: host runs the backup proxy role, vendor guidance.',
+  'Power profile set to performance for the database tier per capacity review.',
+  'iDRAC alert destination points at the DC-local collector by design.',
+  'Pending decommission Q4; not worth re-templating.',
+];
 const DRIFT_TEMPLATES = [
   { group: 'BIOS > System Profile Settings', attribute: 'SysProfile', expected: 'PerfOptimized', currents: ['PerfPerWattOptimizedDapc', 'Custom'] },
   { group: 'BIOS > System Security', attribute: 'AcPwrRcvry', expected: 'Last', currents: ['On', 'Off'] },
@@ -325,6 +333,7 @@ function seedDell(db, { now, encrypt }) {
     const baselineId = 1;
     const baselineName = `${inst.name.split(' ')[0]} Golden Config`;
     let nBad = 0; let nOk = 0; let nMissing = 0;
+    const drifted = [];
     for (const s of servers) {
       const roll = randFloat(cfgRng, 0, 1);
       const status = roll > 0.97 ? 'not_inventoried' : roll > 0.84 ? 'noncompliant' : 'compliant';
@@ -364,11 +373,32 @@ function seedDell(db, { now, encrypt }) {
             String(pick(cfgRng, t.currents)), iso(firstMs), iso(resolvedMs), iso(resolvedMs));
         }
       }
+      if (detail) drifted.push({ dev: s, detail });
       cfgComplianceStmt.run(omeId, baselineId, baselineName, s.device_id, s.name,
         s.service_tag, s.model, status,
         status === 'not_inventoried' ? null : new Date(now - randInt(cfgRng, 10, 600) * 60000).toISOString().replace('T', ' ').slice(0, 19),
         detail ? JSON.stringify(detail) : null);
       totals.compliance += 1;
+    }
+    // Accepted variances: roughly a third of the drifted boxes carry an
+    // operator acceptance; one of them went stale because its drift changed
+    // after acceptance (fingerprint deliberately mismatched).
+    const varianceStmt = db.prepare(`
+      INSERT INTO dell_config_variances (ome_id, baseline_id, device_id, service_tag, device_name,
+        reason, accepted_by, accepted_at, fingerprint, drift_count, state, stale_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const iso = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+    let staleDone = false;
+    for (const { dev, detail } of drifted) {
+      if (!chance(cfgRng, 0.35)) continue;
+      const acceptedMs = now - randInt(cfgRng, 2, 60) * 86400000;
+      const stale = !staleDone && chance(cfgRng, 0.5);
+      if (stale) staleDone = true;
+      varianceStmt.run(omeId, baselineId, dev.device_id, dev.service_tag, dev.name,
+        pick(cfgRng, VARIANCE_REASONS), pick(cfgRng, ['dgomez', 'ops.admin', 'mchen']), iso(acceptedMs),
+        stale ? `stale-${fingerprint(detail).slice(6)}` : fingerprint(detail), detail.length,
+        stale ? 'stale' : 'active', stale ? iso(acceptedMs + randInt(cfgRng, 1, 5) * 86400000) : null);
     }
     cfgBaselineStmt.run(omeId, baselineId, baselineName, 'Golden configuration for production PowerEdge fleet',
       12, 'PowerEdge Production Template', new Date(now - randInt(cfgRng, 10, 120) * 60000).toISOString().replace('T', ' ').slice(0, 19),
