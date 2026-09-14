@@ -82,6 +82,7 @@ const SEEDED_TABLES = [
   'dell_firmware_compliance', 'dell_metrics_history',
   'dell_config_baselines', 'dell_config_compliance', 'dell_jobs',
   'dell_config_profiles', 'dell_hardware_logs', 'dell_config_drift_history',
+  'dell_config_variances',
   'dell_ome_instances',
   // aria (children before the parent)
   'aria_deployments', 'aria_requests', 'aria_endpoints', 'aria_projects',

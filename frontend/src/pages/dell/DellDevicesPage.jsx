@@ -162,8 +162,10 @@ export function DeviceDetailModal({ deviceId, onClose }) {
                 <p key={c.id} className="text-xs text-ink-muted">
                   {c.baseline_name || `Baseline #${c.baseline_id}`} — {c.status === 'compliant'
                     ? <span className="text-status-ok">compliant</span>
+                    : c.effective_status === 'accepted'
+                      ? <span className="text-status-info font-semibold" title={c.variance_reason || ''}>accepted variance{c.drift_count ? ` (${c.drift_count} drifted setting${c.drift_count === 1 ? '' : 's'})` : ''}{c.variance_by ? <span className="text-ink-faint font-normal"> — {c.variance_by}</span> : null}</span>
                     : c.status === 'noncompliant'
-                      ? <span className="text-status-crit font-semibold">not compliant{c.drift_count ? ` (${c.drift_count} drifted setting${c.drift_count === 1 ? '' : 's'})` : ''}</span>
+                      ? <span className="text-status-crit font-semibold">not compliant{c.drift_count ? ` (${c.drift_count} drifted setting${c.drift_count === 1 ? '' : 's'})` : ''}{c.variance_state === 'stale' ? <span className="text-status-warn font-normal"> — changed since variance accepted</span> : null}</span>
                       : <span className="text-ink-faint">{c.status.replace('_', ' ')}</span>}
                 </p>
               ))}
@@ -373,6 +375,12 @@ export default function DellDevicesPage() {
                             className="cursor-pointer">
                             <Badge tone="crit">not compliant{d.compliance_drift ? ` · ${d.compliance_drift}` : ''}</Badge>
                           </button>
+                        ) : d.compliance_status === 'accepted' ? (
+                          <button onClick={() => setDriftReportId(d.compliance_report_id)}
+                            title="Approved variance — click for the drifted settings and the reason"
+                            className="cursor-pointer">
+                            <Badge tone="info">accepted variance{d.compliance_drift ? ` · ${d.compliance_drift}` : ''}</Badge>
+                          </button>
                         ) : d.compliance_status === 'compliant' ? (
                           <Badge tone="ok">compliant</Badge>
                         ) : d.compliance_status != null ? (
@@ -398,7 +406,7 @@ export default function DellDevicesPage() {
       </div>
 
       {detailId != null && <DeviceDetailModal deviceId={detailId} onClose={() => setDetailId(null)} />}
-      {driftReportId != null && <DriftModal reportId={driftReportId} onClose={() => setDriftReportId(null)} />}
+      {driftReportId != null && <DriftModal reportId={driftReportId} onClose={() => setDriftReportId(null)} onChanged={load} />}
       {showExport && <ExportModal devices={list} onClose={() => setShowExport(false)} />}
     </div>
   );
