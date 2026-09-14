@@ -50,6 +50,7 @@ export default function DellSettingsPage() {
     setTestResult(null);
     try {
       const { data } = await client.post('/dell/instances/test', {
+        id: editingId || undefined,
         host: form.host.trim(), username: form.username.trim(),
         password: form.password || undefined, sslVerify: form.sslVerify,
       });
