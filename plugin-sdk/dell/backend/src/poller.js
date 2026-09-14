@@ -18,6 +18,7 @@
 // not yet created, and createDellPoller() (the manifest.createPoller entry
 // point) reuses it if router.js got there first (unifi poller.js pattern).
 const api = require('./api');
+const { syncVariances } = require('./variance');
 
 let pollerInstance = null;
 
@@ -284,6 +285,10 @@ function buildStore(coreApi) {
           r.serviceTag, r.model, r.status, r.inventoryTime,
           r.detail ? JSON.stringify(r.detail) : null);
       }
+      // Accepted variances: flip to stale when the drift changed since
+      // acceptance, back to active when it returns to the accepted shape.
+      const vs = syncVariances(db, omeId, configCompliance.reports);
+      if (vs.stale || vs.reactivated) coreApi.logger.info(`[DellPoller] variances: ${vs.stale} went stale, ${vs.reactivated} reactivated`);
 
       // Drift timeline reconciliation. OME carries no change timestamp, so
       // first_seen = when THIS poller first observed the drift. A key that

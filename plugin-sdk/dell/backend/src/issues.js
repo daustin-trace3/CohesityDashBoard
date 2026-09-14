@@ -57,7 +57,9 @@ function computeIssues(coreApi) {
   const drifted = db.prepare(`
     SELECT c.device_name, c.service_tag, c.baseline_name, o.name AS ome_name
     FROM dell_config_compliance c JOIN dell_ome_instances o ON o.id = c.ome_id
-    WHERE c.status = 'noncompliant' ORDER BY c.device_name LIMIT 200
+    LEFT JOIN dell_config_variances v
+      ON v.ome_id = c.ome_id AND v.baseline_id = c.baseline_id AND v.device_id = c.device_id
+    WHERE c.status = 'noncompliant' AND v.state IS NOT 'active' ORDER BY c.device_name LIMIT 200
   `).all();
   for (const c of drifted) {
     issues.push({

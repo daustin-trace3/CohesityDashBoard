@@ -25,6 +25,7 @@
 // reseeding, children before parents — any independently-registered real
 // instance's data is untouched.
 const { randInt, randFloat, pick, chance, rngFor } = require('./demoRng');
+const { fingerprint } = require('./variance');
 
 const MODELS = [
   { model: 'PowerEdge R650', sockets: 2, coresPer: 24, memGb: 512, gen: 'current' },
@@ -85,6 +86,13 @@ const JOB_TEMPLATES = [
   { name: 'Monthly Compliance Re-check', type: 'Device_Config_Task', schedule: '0 0 4 1 1/1 ? *', builtin: 0 },
 ];
 
+const VARIANCE_REASONS = [
+  'Boot mode left on BIOS for legacy imaging appliance; change ticket CHG0041877.',
+  'SR-IOV disabled on purpose: host runs the backup proxy role, vendor guidance.',
+  'Power profile set to performance for the database tier per capacity review.',
+  'iDRAC alert destination points at the DC-local collector by design.',
+  'Pending decommission Q4; not worth re-templating.',
+];
 const FIXTURE_INSTANCES = [
   { name: 'DC1 OME', host: 'ome-dc1.demo.local', version: '4.2.0', servers: 64, powerManager: true },
   { name: 'DC2 OME', host: 'ome-dc2.demo.local', version: '4.1.1', servers: 38, powerManager: false },
@@ -93,7 +101,7 @@ const FIXTURE_INSTANCES = [
 // Children->parents, scoped by ome_id — dell_ome_instances itself is NEVER
 // wiped (see module header).
 const DEMO_CHILD_TABLES = [
-  'dell_config_drift_history', 'dell_hardware_logs', 'dell_config_profiles', 'dell_jobs',
+  'dell_config_variances', 'dell_config_drift_history', 'dell_hardware_logs', 'dell_config_profiles', 'dell_jobs',
   'dell_config_compliance', 'dell_config_baselines', 'dell_metrics_history',
   'dell_firmware_compliance', 'dell_warranties', 'dell_alerts', 'dell_components', 'dell_devices',
 ];
@@ -377,6 +385,7 @@ function seedDell(db, { now, encrypt }) {
     const baselineId = 1;
     const baselineName = `${inst.name.split(' ')[0]} Golden Config`;
     let nBad = 0; let nOk = 0; let nMissing = 0;
+    const drifted = [];
     for (const s of servers) {
       const roll = randFloat(cfgRng, 0, 1);
       const status = roll > 0.97 ? 'not_inventoried' : roll > 0.84 ? 'noncompliant' : 'compliant';
@@ -416,11 +425,32 @@ function seedDell(db, { now, encrypt }) {
             String(pick(cfgRng, t.currents)), iso(firstMs), iso(resolvedMs), iso(resolvedMs));
         }
       }
+      if (detail) drifted.push({ dev: s, detail });
       cfgComplianceStmt.run(omeId, baselineId, baselineName, s.device_id, s.name,
         s.service_tag, s.model, status,
         status === 'not_inventoried' ? null : new Date(now - randInt(cfgRng, 10, 600) * 60000).toISOString().replace('T', ' ').slice(0, 19),
         detail ? JSON.stringify(detail) : null);
       totals.compliance += 1;
+    }
+    // Accepted variances: roughly a third of the drifted boxes carry an
+    // operator acceptance; one per instance went stale because its drift
+    // changed after acceptance (fingerprint deliberately mismatched).
+    const varianceStmt = db.prepare(`
+      INSERT INTO dell_config_variances (ome_id, baseline_id, device_id, service_tag, device_name,
+        reason, accepted_by, accepted_at, fingerprint, drift_count, state, stale_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const vIso = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+    let staleDone = false;
+    for (const { dev, detail } of drifted) {
+      if (!chance(cfgRng, 0.35)) continue;
+      const acceptedMs = now - randInt(cfgRng, 2, 60) * 86400000;
+      const stale = !staleDone && chance(cfgRng, 0.5);
+      if (stale) staleDone = true;
+      varianceStmt.run(omeId, baselineId, dev.device_id, dev.service_tag, dev.name,
+        pick(cfgRng, VARIANCE_REASONS), pick(cfgRng, ['dgomez', 'ops.admin', 'mchen']), vIso(acceptedMs),
+        stale ? `stale-${fingerprint(detail).slice(6)}` : fingerprint(detail), detail.length,
+        stale ? 'stale' : 'active', stale ? vIso(acceptedMs + randInt(cfgRng, 1, 5) * 86400000) : null);
     }
     cfgBaselineStmt.run(omeId, baselineId, baselineName, 'Golden configuration for production PowerEdge fleet',
       12, 'PowerEdge Production Template', new Date(now - randInt(cfgRng, 10, 120) * 60000).toISOString().replace('T', ' ').slice(0, 19),

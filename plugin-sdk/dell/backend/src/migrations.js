@@ -328,4 +328,35 @@ module.exports = [
       `);
     },
   },
+
+  // Migration: accepted configuration variances. An operator can accept that
+  // a device is intentionally out of compliance with a baseline and record
+  // why. The acceptance is pinned to a fingerprint of the drift as it was
+  // when accepted (attribute + expected + current); the poller flips the row
+  // to 'stale' when the drift changes again, which puts the device back on
+  // the not-compliant report until someone re-accepts it.
+  {
+    version: 8,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS dell_config_variances (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          ome_id       INTEGER NOT NULL REFERENCES dell_ome_instances(id) ON DELETE CASCADE,
+          baseline_id  INTEGER NOT NULL,
+          device_id    INTEGER NOT NULL,
+          service_tag  TEXT,
+          device_name  TEXT,
+          reason       TEXT NOT NULL,
+          accepted_by  TEXT,
+          accepted_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          fingerprint  TEXT NOT NULL,      -- sha1 over sorted group|attribute|expected|current
+          drift_count  INTEGER,            -- drifted settings covered by the acceptance
+          state        TEXT NOT NULL DEFAULT 'active',  -- active | stale (drift changed since acceptance)
+          stale_at     DATETIME
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_dell_variance_key
+          ON dell_config_variances(ome_id, baseline_id, device_id);
+      `);
+    },
+  },
 ];
