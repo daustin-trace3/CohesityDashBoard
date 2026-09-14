@@ -17,6 +17,7 @@ const POWER_MANAGER_PLUGIN_ID = '2F6D05BE-EE4B-4B0E-B873-C8D2F64A4625';
 
 function creds(ome) {
   if (ome.password) return { username: ome.username, password: ome.password };
+  if (!ome.encrypted_credentials) throw new Error('No stored credentials for this OME instance.');
   const c = JSON.parse(decrypt(ome.encrypted_credentials));
   return { username: ome.username, password: c.password };
 }
