@@ -60,6 +60,17 @@ describe('registerPlugin validation', () => {
     expect(() => registry.registerPlugin(okManifest('widgets'))).toThrow(/already registered/);
   });
 
+  it('unregisterPlugin frees the id so an installed pack can replace a built-in', async () => {
+    const registry = await freshRegistry();
+    registry.init();
+    registry.registerPlugin(okManifest('widgets'));
+    expect(registry.unregisterPlugin('widgets')).toBe(true);
+    expect(registry.getPlugin('widgets')).toBeUndefined();
+    registry.registerPlugin(okManifest('widgets', { version: '1.0.2' }));
+    expect(registry.getPlugin('widgets').version).toBe('1.0.2');
+    expect(registry.unregisterPlugin('nope')).toBe(false);
+  });
+
   it('rejects a manifest with the wrong apiVersion', async () => {
     const registry = await freshRegistry();
     registry.init();

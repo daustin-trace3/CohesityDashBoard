@@ -106,6 +106,16 @@ function scanAndRegisterInstalled({ registry, settings } = {}) {
       pluginModule.color = pluginModule.color || manifest.color;
     } catch { /* cosmetic only — version/color simply won't show */ }
 
+    // An installed pack shadows a same-id built-in platform module: the
+    // built-in registered first, so drop it and let the pack take the id.
+    // Without this the pack's backend was rejected ('already registered')
+    // while its frontend bundle still served, leaving the built-in routes
+    // and a null version behind the plugin's pages.
+    if (reg.getPlugin(id) && typeof reg.unregisterPlugin === 'function') {
+      reg.unregisterPlugin(id);
+      logger.info(`[pluginBoot] installed plugin '${id}' ${pluginModule.version || ''} replaces the built-in module`.trim());
+    }
+
     try {
       reg.registerPlugin(pluginModule);
     } catch (err) {

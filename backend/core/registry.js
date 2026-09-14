@@ -180,6 +180,25 @@ function listPlugins() {
 }
 
 /**
+ * Drops a registered plugin so a same-id manifest can take its place. Used
+ * at boot when an installed .iccplugin shadows a built-in platform module:
+ * the built-in registers first (server.js / pollerProcess.js), then
+ * pluginBoot.scanAndRegisterInstalled() replaces it. Pollers have not been
+ * started at that point, but a handle with stopAll() is stopped anyway
+ * so a late call cannot leave an orphaned schedule behind. Returns true
+ * when something was removed.
+ */
+function unregisterPlugin(id) {
+  const entry = plugins.get(id);
+  if (!entry) return false;
+  const h = entry.poller;
+  if (h && typeof h.stopAll === 'function') { try { h.stopAll(); } catch { /* best effort */ } }
+  datasetCatalog.unregisterNamespace(id);
+  plugins.delete(id);
+  return true;
+}
+
+/**
  * Server 360 contributions (2026-08-03): a plugin manifest may export
  *   server360(coreApi, { query, names, ips }) -> displaySection | null
  *   server360Suggest(coreApi, q) -> [names]
@@ -339,6 +358,7 @@ module.exports = {
   isBuiltinPresent,
   init,
   registerPlugin,
+  unregisterPlugin,
   getPlugin,
   getPollerHandle,
   listPlugins,
