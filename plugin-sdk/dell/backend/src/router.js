@@ -150,6 +150,9 @@ async function handlePostInstancesTest(req, res, coreApi) {
     const row = coreApi.db.prepare('SELECT * FROM dell_ome_instances WHERE id = ?').get(parseIntStrict(id));
     if (row) candidate = { ...row, host: candidate.host, username: candidate.username, ssl_verify: candidate.ssl_verify };
   }
+  if (!candidate.password && !candidate.encrypted_credentials) {
+    return res.status(400).json({ ok: false, message: 'Enter the password to test this connection.' });
+  }
   const result = await api.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);
 }
