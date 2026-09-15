@@ -382,6 +382,24 @@ router.get('/', (req, res, next) => {
       } catch (err) { logger.warn('[topology] netbackup section failed:', err.message); }
     }
 
+    // ── Plugin contributions (manifest.topology) ─────────────────────────
+    // Installed or built-in plugins add their own nodes/edges against the
+    // same identity set; the host fills platform/color/defaults and gates
+    // each on <plugin>:objects:view, mirroring server360.
+    for (const p of registry.getTopologyProviders()) {
+      if (!can(`${p.id}:objects:view`)) continue;
+      try {
+        const out = p.run({ query, names: nameList, ips: ipList, anchorId }) || {};
+        for (const n of out.nodes || []) {
+          if (!n || !n.id) continue;
+          addNode({ platform: p.id, color: p.color, sublabel: '', route: null, status: 'unknown', ...n });
+        }
+        for (const e of out.edges || []) {
+          if (e) addEdge(e.from, e.to, e.kind || 'related', e.label || '');
+        }
+      } catch (err) { logger.warn(`[topology] plugin '${p.id}' section failed:`, err.message); }
+    }
+
     // ── Dedupe + drop dangling edges ─────────────────────────────────────
     const finalNodes = [...nodes.values()];
     const finalEdges = edges.filter((e) => nodes.has(e.from) && nodes.has(e.to));

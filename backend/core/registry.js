@@ -201,6 +201,23 @@ function getServer360Providers() {
     }));
 }
 
+/**
+ * Topology Map contributors (2026-09-15). A plugin manifest may export
+ *   topology(coreApi, { query, names, ips, anchorId }) -> { nodes, edges } | null
+ * and routes/topology.js merges the result into the anchored graph, stamping
+ * platform id + manifest color and gating on <id>:objects:view.
+ */
+function getTopologyProviders() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.topology === 'function')
+    .map((e) => ({
+      id: e.id,
+      name: e.manifest.name,
+      color: e.manifest.color || null,
+      run: (ctx) => e.manifest.topology(coreApiRef, ctx),
+    }));
+}
+
 /** Refused (returns false, no state change) when turning ON a plugin that
  *  isn't entitled (contract C9.5). Disabling is always allowed. */
 function setEnabled(id, enabled) {
@@ -239,6 +256,7 @@ module.exports = {
   getPollerHandle,
   listPlugins,
   getServer360Providers,
+  getTopologyProviders,
   setEnabled,
   isEntitled,
   setIsEntitledFn,
