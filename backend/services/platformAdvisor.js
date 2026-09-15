@@ -38,25 +38,44 @@ function parseUtcMs(ts) {
  * @param {string} opts.platform - platform id, e.g. 'pure' (used in error logs only)
  * @param {string} opts.feature - audit label, e.g. 'Pure AI Advisor'
  * @param {string} opts.table - dedicated cache table name, e.g. 'pure_ai_reports'
- * @param {Record<string, {system: string, gather: () => object, noun: string}>} opts.reports
+ * @param {Record<string, {system: string, gather: (params?: object) => object, noun: string|Function, scoped?: boolean}>} opts.reports
+ *   A report with `scoped: true` analyses ONE object (a device, a host): callers pass
+ *   { scope } (its identifier), gather(params) receives it and returns null when the
+ *   object does not exist, and the cache row is keyed `<reportKey>:<scope>` so every
+ *   object keeps its own report. `noun` may be a function of params for the label.
  */
 function createPlatformAdvisor({ platform, feature, table, reports }) {
   const REPORTS = Object.keys(reports);
+  const SCOPED = REPORTS.filter((k) => reports[k].scoped);
+  const isScoped = (reportKey) => !!(reports[reportKey] && reports[reportKey].scoped);
 
-  async function generateReport(reportKey) {
+  function cacheKey(reportKey, params) {
     const spec = reports[reportKey];
     if (!spec) { const e = new Error('Unknown report.'); e.code = 'BAD_REPORT'; throw e; }
+    if (!spec.scoped) return reportKey;
+    const scope = String((params && params.scope) || '').trim();
+    if (!scope) { const e = new Error('This report needs a scope (the object to analyse).'); e.code = 'BAD_SCOPE'; throw e; }
+    return `${reportKey}:${scope}`;
+  }
+
+  async function generateReport(reportKey, params = {}) {
+    const spec = reports[reportKey];
+    const key = cacheKey(reportKey, params);
     if (!isConfigured()) { const e = new Error('LLM not configured.'); e.code = 'LLM_NOT_CONFIGURED'; throw e; }
     const { model: MODEL } = resolveProvider();
 
+    const raw = spec.scoped ? spec.gather(params) : spec.gather();
+    if (spec.scoped && raw == null) { const e = new Error('Nothing found for that scope.'); e.code = 'SCOPE_NOT_FOUND'; throw e; }
+    const noun = typeof spec.noun === 'function' ? spec.noun(params) : spec.noun;
+
     const anon = createAnonymizer();
-    const context = anon.anonymize(spec.gather());
+    const context = anon.anonymize(raw);
     let system = spec.system + PROMPT_NOTE;
     const ec = estateContext();
     if (ec) system += ' Operator context describing what is NORMAL for this estate — treat as authoritative and do NOT flag anything it says is expected: ' + anon.anonymize(ec);
 
     const userPrompt =
-      `Estate data (JSON):\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\nProduce the ${spec.noun}.`;
+      `Estate data (JSON):\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\`\n\nProduce the ${anon.anonymize(noun)}.`;
 
     const messages = [
       { role: 'system', content: system },
@@ -65,7 +84,7 @@ function createPlatformAdvisor({ platform, feature, table, reports }) {
     const auditId = recordExchange({
       platform,
       feature,
-      label: spec.noun,
+      label: noun,
       model: MODEL,
       messages,
       mappings: anon.mappings(),
@@ -88,23 +107,28 @@ function createPlatformAdvisor({ platform, feature, table, reports }) {
       INSERT INTO ${table} (report_key, model, content, generated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(report_key) DO UPDATE SET model = excluded.model, content = excluded.content, generated_at = excluded.generated_at
-    `).run(reportKey, MODEL, content, generatedAt);
+    `).run(key, MODEL, content, generatedAt);
 
-    return { reportKey, model: MODEL, content, generatedAt, stale: false, ttlHours: getAnalysisTtlHours() };
+    return { reportKey, scope: spec.scoped ? params.scope : undefined, model: MODEL, content, generatedAt, stale: false, ttlHours: getAnalysisTtlHours() };
   }
 
-  function getCachedReport(reportKey) {
+  function getCachedReport(reportKey, params = {}) {
+    if (!reports[reportKey]) return null;
+    let key;
+    try { key = cacheKey(reportKey, params); } catch { return null; }
     const row = db.prepare(
       `SELECT report_key AS reportKey, model, content, generated_at AS generatedAt FROM ${table} WHERE report_key = ?`
-    ).get(reportKey);
+    ).get(key);
     if (!row) return null;
+    row.reportKey = reportKey;
+    if (reports[reportKey].scoped) row.scope = params.scope;
     const ttlHours = getAnalysisTtlHours();
     row.stale = (Date.now() - new Date(row.generatedAt).getTime()) > ttlHours * 60 * 60 * 1000;
     row.ttlHours = ttlHours;
     return row;
   }
 
-  return { REPORTS, generateReport, getCachedReport, isConfigured };
+  return { REPORTS, SCOPED, isScoped, generateReport, getCachedReport, isConfigured };
 }
 
 module.exports = { createPlatformAdvisor, linReg, parseUtcMs, fmtBytes };
