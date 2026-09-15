@@ -1,6 +1,6 @@
 import { lazy } from 'react';
 import {
-  Gauge, Network, Globe, HardDrive, Server, ClipboardCheck, Settings,
+  Gauge, Network, Globe, HardDrive, Server, ClipboardCheck, Settings, Sparkles, ShieldCheck,
 } from 'lucide-react';
 
 const BluecatOverviewPage = lazy(() => import('../../pages/bluecat/BluecatOverviewPage'));
@@ -9,9 +9,13 @@ const BluecatDnsPage = lazy(() => import('../../pages/bluecat/BluecatDnsPage'));
 const BluecatDevicesPage = lazy(() => import('../../pages/bluecat/BluecatDevicesPage'));
 const BluecatServersPage = lazy(() => import('../../pages/bluecat/BluecatServersPage'));
 const BluecatSettingsPage = lazy(() => import('../../pages/bluecat/BluecatSettingsPage'));
+const BluecatAdvisorPage = lazy(() => import('../../pages/bluecat/BluecatAdvisorPage'));
 
 const IssueAlertsPage = lazy(() => import('../../components/IssueAlertsPage'));
 const BluecatIssuesPage = () => <IssueAlertsPage platform="bluecat" />;
+
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const BluecatPrivacyPage = () => <PrivacyInspectorPage platform="bluecat" />;
 
 // BlueCat Address Manager sidebar - shown when the BlueCat platform is active.
 const navGroups = [
@@ -19,6 +23,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/bluecat', icon: Gauge, isActive: (p) => p === '/bluecat' },
+      { label: 'AI Advisor', route: '/bluecat/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/bluecat/advisor'), requiresAi: true },
       { label: 'IP Spaces', route: '/bluecat/ipspaces', icon: Network, isActive: (p) => p.startsWith('/bluecat/ipspaces') },
       { label: 'DNS', route: '/bluecat/dns', icon: Globe, isActive: (p) => p.startsWith('/bluecat/dns') },
       { label: 'Devices', route: '/bluecat/devices', icon: HardDrive, isActive: (p) => p.startsWith('/bluecat/devices') },
@@ -34,6 +39,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/bluecat/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/bluecat/privacy'), requiresAi: true },
       { label: 'Settings', route: '/bluecat/settings', icon: Settings, isActive: (p) => p.startsWith('/bluecat/settings') },
     ],
   },
@@ -58,6 +64,8 @@ export default {
     { path: 'bluecat/devices', Component: BluecatDevicesPage },
     { path: 'bluecat/servers', Component: BluecatServersPage },
     { path: 'bluecat/alerts', Component: BluecatIssuesPage },
+    { path: 'bluecat/advisor', Component: BluecatAdvisorPage },
+    { path: 'bluecat/privacy', Component: BluecatPrivacyPage },
     { path: 'bluecat/settings', Component: BluecatSettingsPage },
   ],
 };

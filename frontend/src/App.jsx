@@ -15,6 +15,7 @@ import AdminSettingsPage from './pages/AdminSettingsPage';
 import AdminUsersPage from './pages/AdminUsersPage';
 import AdminPluginsPage from './pages/AdminPluginsPage';
 import AIAdvisorPage from './pages/AIAdvisorPage';
+import PrivacyInspectorRoute from './components/PrivacyInspectorRoute';
 import OpsMonitorPage from './pages/ops/OpsMonitorPage';
 import ServerStatusPage from './pages/ops/ServerStatusPage';
 import TopologyPage from './pages/ops/TopologyPage';
@@ -78,6 +79,7 @@ function AppRoutes() {
           <Route path="reporting"       element={withBoundary(<ReportingPage />)} />
           <Route path="licensing"       element={withBoundary(<LicensingPage />)} />
           <Route path="ai-advisor"      element={withBoundary(<AIAdvisorPage />)} />
+          <Route path="ai/privacy/:platform" element={withBoundary(<PrivacyInspectorRoute />)} />
           <Route path="settings"        element={withBoundary(<SettingsPage />)} />
           <Route path="admin"           element={withBoundary(<AdminSettingsPage />)} />
           <Route path="admin/users"     element={withBoundary(<AdminUsersPage />)} />

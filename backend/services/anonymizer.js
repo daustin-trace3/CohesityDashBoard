@@ -207,6 +207,22 @@ function loadDictionary() {
     add(db.prepare("SELECT host AS name FROM nutanix_move_conns WHERE host IS NOT NULL AND host != ''").all(), 'SOURCE');
   } catch { /* Nutanix tables not present on this instance */ }
 
+  try {
+    add(db.prepare("SELECT name FROM bluecat_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM bluecat_sources WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM bluecat_views WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT DISTINCT absolute_name AS name FROM bluecat_zones WHERE absolute_name IS NOT NULL AND absolute_name != ''").all(), 'JOB');
+    // Record names are unbounded on a large BAM; the FQDN regex pass masks the rest.
+    add(db.prepare("SELECT DISTINCT absolute_name AS name FROM bluecat_records WHERE absolute_name IS NOT NULL AND absolute_name != '' LIMIT 5000").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM bluecat_blocks WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT range AS name FROM bluecat_blocks WHERE range IS NOT NULL AND range != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM bluecat_networks WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT range AS name FROM bluecat_networks WHERE range IS NOT NULL AND range != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM bluecat_devices WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT name FROM bluecat_servers WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    addHostOrIp(db.prepare("SELECT address AS name FROM bluecat_servers WHERE address IS NOT NULL AND address != ''").all());
+  } catch { /* BlueCat tables not present on this instance */ }
+
   return entries;
 }
 

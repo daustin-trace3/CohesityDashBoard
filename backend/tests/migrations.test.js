@@ -217,6 +217,7 @@ const NEW_TABLES = [
   'ariaops_instances', 'ariaops_resources', 'ariaops_alerts', 'ariaops_metrics_history',
   'pure_ai_reports', 'netapp_ai_reports', 'zerto_ai_reports',
   'vcenter_ai_reports', 'dell_ai_reports', 'aria_ai_reports',
+  'bluecat_ai_reports', 'ariaops_ai_reports', 'unifi_ai_reports', 'brocade_ai_reports',
   'ai_audit_exchanges',
   'directory_sync_log',
   'netapp_aiqum_instances',
