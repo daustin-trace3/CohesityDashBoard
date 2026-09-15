@@ -20,4 +20,5 @@ module.exports = {
     };
   },
   statusTables: ['ariaops_instances'],
+  navSections: ['overview', 'resources', 'alerts', 'advisor', 'privacy', 'settings'],
 };

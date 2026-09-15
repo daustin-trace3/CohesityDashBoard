@@ -141,6 +141,20 @@ beforeAll(() => {
   db.prepare(`
     INSERT INTO bluecat_servers (source_id, server_id, name, address) VALUES (1, 1, 'talwynd-dns-01', '10.44.1.5')
   `).run();
+
+  // Aria Operations
+  db.prepare(`
+    INSERT INTO ariaops_instances (name, host, username, encrypted_credentials)
+    VALUES ('ariaops-vrops-zeta', 'vrops.invalid', 'admin', ?)
+  `).run(encrypt(JSON.stringify({})));
+  db.prepare(`
+    INSERT INTO ariaops_resources (instance_id, resource_id, name, kind, health)
+    VALUES (1, 'res-1', 'vm-checkout-eta', 'VirtualMachine', 'RED')
+  `).run();
+  db.prepare(`
+    INSERT INTO ariaops_alerts (instance_id, alert_id, level, status, resource_name, definition_name)
+    VALUES (1, 'alert-1', 'CRITICAL', 'active', 'esxi-host-theta', 'CPU contention')
+  `).run();
 });
 
 const SEEDED_NAMES = [
@@ -156,6 +170,7 @@ const SEEDED_NAMES = [
   'ecs-service-omicron', 'bucket-reports-pi', 'rds-orders-rho', 'lambda-invoice-sigma',
   'dynamo-sessions-tau', 'ecr-repo-upsilon', 'vpc-core-phi',
   'bluecat-bam-echo', 'marrow-view', 'brontide.echo.corp', 'vespera-net', 'quillon-block', 'corvid-switch-01', 'talwynd-dns-01',
+  'ariaops-vrops-zeta', 'vm-checkout-eta', 'esxi-host-theta',
 ];
 
 describe('anonymizer platform coverage', () => {
