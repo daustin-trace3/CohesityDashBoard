@@ -12,6 +12,7 @@
 // that only the accent color tells you which platform you're on.
 
 import { injectStyles } from './ui';
+import { Sparkles, ShieldCheck } from './icons';
 
 import OverviewPage from './pages/overview';
 import AlertsPage from './pages/alerts';
@@ -33,6 +34,7 @@ import JobsPage from './pages/jobs';
 import ClustersPage from './pages/clusters';
 import ForecastPage from './pages/forecast';
 import RbkSettingsPage from './pages/settings';
+import AdvisorPage from './pages/advisor';
 
 const ACCENT = '#00B388';
 
@@ -50,6 +52,7 @@ window.__ICC_REGISTER_PLUGIN__({
       label: 'Monitor',
       items: [
         { label: 'Overview', route: '/rubrik', isActive: (p) => p === '/rubrik' },
+        { label: 'AI Advisor', route: '/rubrik/advisor', icon: Sparkles, isActive: (p) => p === '/rubrik/advisor', requiresAi: true },
         { label: 'Alerts', route: '/rubrik/alerts', isActive: (p) => p === '/rubrik/alerts' },
         { label: 'Licensing', route: '/rubrik/licensing', isActive: (p) => p === '/rubrik/licensing' },
       ],
@@ -91,11 +94,15 @@ window.__ICC_REGISTER_PLUGIN__({
     },
     {
       label: 'System',
-      items: [{ label: 'Settings', route: '/rubrik/settings', isActive: (p) => p === '/rubrik/settings' }],
+      items: [
+        { label: 'Settings', route: '/rubrik/settings', isActive: (p) => p === '/rubrik/settings' },
+        { label: 'Privacy Inspector', route: '/ai/privacy/rubrik', icon: ShieldCheck, isActive: (p) => p === '/ai/privacy/rubrik', requiresAi: true },
+      ],
     },
   ],
   routes: [
     { path: 'rubrik', Component: OverviewPage },
+    { path: 'rubrik/advisor', Component: AdvisorPage },
     { path: 'rubrik/alerts', Component: AlertsPage },
     { path: 'rubrik/licensing', Component: LicensingPage },
     { path: 'rubrik/data-protection', Component: DataProtectionPage },

@@ -9,6 +9,49 @@ const { pollConnection } = require('./poller');
 const https = require('https');
 const { URL } = require('url');
 const { isoDate, CHRONIC_NAMES } = require('./migrations');
+const { createRubrikAdvisor } = require('./advisor');
+
+// ── AI Advisor ───────────────────────────────────────────────────────────────
+let advisorInstance = null;
+function getAdvisor(coreApi) {
+  if (!advisorInstance) advisorInstance = createRubrikAdvisor(coreApi);
+  return advisorInstance;
+}
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /advisor/:report — cached Rubrik AI Advisor report. */
+function handleGetAdvisorReport(req, res, coreApi, slug) {
+  const rubrikAdvisor = getAdvisor(coreApi);
+  const key = advisorReportKey(slug);
+  if (!rubrikAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  res.json({ enabled: rubrikAdvisor.isConfigured(), report: rubrikAdvisor.getCachedReport(key) });
+}
+
+/** POST /advisor/:report — (re)generate and cache a Rubrik AI Advisor report. */
+async function handlePostAdvisorReport(req, res, coreApi, slug) {
+  const rubrikAdvisor = getAdvisor(coreApi);
+  const key = advisorReportKey(slug);
+  if (!rubrikAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  try {
+    const result = await rubrikAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    throw err;
+  }
+}
 
 function connectionToJson(row) {
   return {
@@ -565,6 +608,16 @@ function createRouter(coreApi) {
         }
         throw err;
       }
+      return;
+    }
+
+    const advisorMatch = req.path.match(/^\/advisor\/([^/]+)$/);
+    if (advisorMatch && req.method === 'GET') {
+      handleGetAdvisorReport(req, res, coreApi, advisorMatch[1]);
+      return;
+    }
+    if (advisorMatch && req.method === 'POST') {
+      handlePostAdvisorReport(req, res, coreApi, advisorMatch[1]).catch(next);
       return;
     }
 

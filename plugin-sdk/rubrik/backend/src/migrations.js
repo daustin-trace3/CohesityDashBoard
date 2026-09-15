@@ -1061,6 +1061,21 @@ const migrations = [
       }
     },
   },
+  // AI Advisor cached report content, one row per report key. Schema only,
+  // no seed (mirrors the dell/nutanix pack's *_ai_reports migration).
+  {
+    version: 10,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS rubrik_ai_reports (
+          report_key    TEXT PRIMARY KEY,
+          model         TEXT,
+          content       TEXT NOT NULL,
+          generated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    },
+  },
 ];
 
 module.exports = {

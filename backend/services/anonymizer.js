@@ -232,6 +232,29 @@ function loadDictionary() {
     add(db.prepare("SELECT DISTINCT resource_name AS name FROM ariaops_alerts WHERE resource_name IS NOT NULL AND resource_name != ''").all(), 'OBJECT');
   } catch { /* Aria Operations tables not present on this instance */ }
 
+  // Rubrik ships only as an installed pack; its tables exist wherever the pack does.
+  try {
+    add(db.prepare("SELECT name FROM rubrik_clusters WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT name FROM rubrik_protected_objects WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM rubrik_sla_domains WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+    add(db.prepare("SELECT name FROM rubrik_sources WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT name FROM rubrik_archival_locations WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT name FROM rubrik_connections WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT endpoint AS name FROM rubrik_connections WHERE endpoint IS NOT NULL AND endpoint != ''").all());
+  } catch { /* Rubrik tables not present on this instance */ }
+
+  // Proxmox ships only as an installed pack.
+  try {
+    add(db.prepare("SELECT name FROM proxmox_servers WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM proxmox_servers WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM proxmox_nodes WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT name FROM proxmox_guests WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT storage AS name FROM proxmox_storage WHERE storage IS NOT NULL AND storage != ''").all(), 'VIEW');
+  } catch { /* Proxmox tables not present on this instance */ }
+  try {
+    add(db.prepare("SELECT DISTINCT guest_name AS name FROM proxmox_snapshots WHERE guest_name IS NOT NULL AND guest_name != ''").all(), 'OBJECT');
+  } catch { /* Proxmox v2 tables not present on this instance */ }
+
   return entries;
 }
 
