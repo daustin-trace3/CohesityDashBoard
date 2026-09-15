@@ -19,6 +19,7 @@ const {
   healthWarnScore, healthCritScore, certWarnDays, eventStormCount, eventRetentionDays,
   computeIssues, decodeMgmtState,
 } = require('./issues');
+const { createBrocadeAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const {
   badRequest, fail, parseIntStrict, isNonEmptyString, isBooleanish, toBool,
@@ -1117,6 +1118,51 @@ function handlePutConfig(req, res, coreApi) {
   res.json({ ok: true });
 }
 
+// ── AI Advisor ───────────────────────────────────────────────────────────────
+
+let advisorInstance = null;
+function getAdvisor(coreApi) {
+  if (!advisorInstance) advisorInstance = createBrocadeAdvisor(coreApi);
+  return advisorInstance;
+}
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /advisor/:report — cached Brocade AI Advisor report. */
+function handleGetAdvisorReport(req, res, coreApi) {
+  if (!isNonEmptyString(req.params.report)) return badRequest(res, [fail('report')]);
+  const brocadeAdvisor = getAdvisor(coreApi);
+  const key = advisorReportKey(req.params.report);
+  if (!brocadeAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  res.json({ enabled: brocadeAdvisor.isConfigured(), report: brocadeAdvisor.getCachedReport(key) });
+}
+
+/** POST /advisor/:report — (re)generate and cache a Brocade AI Advisor report. */
+async function handlePostAdvisorReport(req, res, coreApi) {
+  if (!isNonEmptyString(req.params.report)) return badRequest(res, [fail('report')]);
+  const brocadeAdvisor = getAdvisor(coreApi);
+  const key = advisorReportKey(req.params.report);
+  if (!brocadeAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  try {
+    const result = await brocadeAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    throw err;
+  }
+}
+
 // ── route table ──────────────────────────────────────────────────────────────
 
 const ROUTES = [
@@ -1158,6 +1204,8 @@ const ROUTES = [
   { method: 'GET', ...compile('/trends'), handler: handleGetTrends },
   { method: 'GET', ...compile('/config'), handler: handleGetConfig },
   { method: 'PUT', ...compile('/config'), handler: handlePutConfig },
+  { method: 'GET', ...compile('/advisor/:report'), handler: handleGetAdvisorReport },
+  { method: 'POST', ...compile('/advisor/:report'), handler: handlePostAdvisorReport },
 ];
 
 // createRouter must return a BARE (req, res, next) function — installed

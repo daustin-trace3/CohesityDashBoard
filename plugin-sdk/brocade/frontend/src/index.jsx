@@ -9,10 +9,11 @@ import { injectStyles, ToastHost } from './ui.jsx';
 import { LOGO_DATA_URI } from './logo.js';
 import {
   Gauge, Waypoints, Router, Cable, HardDrive, Network, AlertTriangle, ClipboardCheck,
-  LineChart, ShieldCheck, Settings, Grid3x3,
+  LineChart, ShieldCheck, Settings, Grid3x3, Sparkles,
 } from './icons.jsx';
 
 import OverviewPage from './pages/overview.jsx';
+import AdvisorPage from './pages/advisor.jsx';
 import FabricsPage from './pages/fabrics.jsx';
 import SwitchesPage from './pages/switches.jsx';
 import PortsPage from './pages/ports.jsx';
@@ -34,6 +35,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/brocade', icon: Gauge, isActive: (p) => p === '/brocade' },
+      { label: 'AI Advisor', route: '/brocade/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/brocade/advisor'), requiresAi: true },
     ],
   },
   {
@@ -69,6 +71,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/ai/privacy/brocade', icon: ShieldCheck, isActive: (p) => p.startsWith('/ai/privacy/brocade'), requiresAi: true },
       { label: 'Settings', route: '/brocade/settings', icon: Settings, isActive: (p) => p.startsWith('/brocade/settings') },
     ],
   },
@@ -90,6 +93,7 @@ const rooted = (C) => function BcRooted() {
 
 const routes = [
   { path: 'brocade', Component: rooted(OverviewPage) },
+  { path: 'brocade/advisor', Component: rooted(AdvisorPage) },
   { path: 'brocade/fabrics', Component: rooted(FabricsPage) },
   { path: 'brocade/switches', Component: rooted(SwitchesPage) },
   { path: 'brocade/ports', Component: rooted(PortsPage) },
