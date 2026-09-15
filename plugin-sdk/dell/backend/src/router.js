@@ -19,6 +19,7 @@ const { computeIssues, warrantyWarnDays } = require('./issues');
 const { createDellAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const { fingerprint: varianceFingerprint } = require('./variance');
+const { vcenterHostUtilization } = require('./vcenterUtil');
 const { REPORT_ROUTES } = require('./reports');
 const {
   badRequest, fail, parseIntStrict, isNonEmptyString, isBooleanish, toBool,
@@ -248,28 +249,23 @@ function handleGetOverview(req, res, coreApi) {
   `).get();
   // No Power Manager anywhere? Derive CPU/memory utilization from vCenter:
   // Dell servers running ESXi are matched to vcenter_hosts via the OS
-  // hostname OME reports, and their quickstats stand in for the plugin.
+  // hostname OME reports (exact, then short-name fallback — see
+  // vcenterUtil.js), and their quickstats stand in for the plugin.
+  let vcUtil = null;
+  const vcenterUtil = () => {
+    if (vcUtil === null) {
+      try { vcUtil = vcenterHostUtilization(db); } catch { vcUtil = []; /* vCenter tables unavailable */ }
+    }
+    return vcUtil;
+  };
   if (!utilization.metered) {
-    try {
-      const vc = db.prepare(`
-        SELECT AVG(v.cpu_pct) AS cpu_avg, AVG(v.mem_pct) AS mem_avg, COUNT(*) AS metered
-        FROM (
-          SELECT (CAST(h.cpu_mhz_used AS REAL) / h.cpu_mhz_capacity) * 100 AS cpu_pct,
-                 (CAST(h.mem_bytes_used AS REAL) / h.mem_bytes_capacity) * 100 AS mem_pct
-          FROM dell_components c
-          JOIN vcenter_hosts h ON LOWER(h.name) = LOWER(json_extract(c.extra, '$.hostname'))
-          WHERE c.kind = 'os'
-            AND h.cpu_mhz_used IS NOT NULL AND h.cpu_mhz_capacity > 0
-            AND h.mem_bytes_used IS NOT NULL AND h.mem_bytes_capacity > 0
-        ) v
-      `).get();
-      if (vc?.metered) {
-        utilization.cpu_avg = vc.cpu_avg;
-        utilization.mem_avg = vc.mem_avg;
-        utilization.metered = vc.metered;
-        utilization.source = 'vcenter';
-      }
-    } catch { /* vCenter platform tables unavailable — keep PM-only view */ }
+    const vc = vcenterUtil();
+    if (vc.length) {
+      utilization.cpu_avg = vc.reduce((s, r) => s + r.cpu_util_pct, 0) / vc.length;
+      utilization.mem_avg = vc.reduce((s, r) => s + r.mem_util_pct, 0) / vc.length;
+      utilization.metered = vc.length;
+      utilization.source = 'vcenter';
+    }
   }
   const alertsByDay = db.prepare(`
     SELECT date(created_at) AS day,
@@ -291,21 +287,10 @@ function handleGetOverview(req, res, coreApi) {
     ORDER BY MAX(COALESCE(cpu_util_pct, 0), COALESCE(mem_util_pct, 0)) DESC LIMIT 30
   `).all();
   if (!topUtil.length) {
-    try {
-      topUtil = db.prepare(`
-        SELECT * FROM (
-          SELECT d.name,
-            (CAST(h.cpu_mhz_used AS REAL) / h.cpu_mhz_capacity) * 100 AS cpu_util_pct,
-            (CAST(h.mem_bytes_used AS REAL) / h.mem_bytes_capacity) * 100 AS mem_util_pct
-          FROM dell_components c
-          JOIN dell_devices d ON d.ome_id = c.ome_id AND d.device_id = c.device_id
-          JOIN vcenter_hosts h ON LOWER(h.name) = LOWER(json_extract(c.extra, '$.hostname'))
-          WHERE c.kind = 'os'
-            AND h.cpu_mhz_used IS NOT NULL AND h.cpu_mhz_capacity > 0
-            AND h.mem_bytes_used IS NOT NULL AND h.mem_bytes_capacity > 0
-        ) ORDER BY MAX(COALESCE(cpu_util_pct, 0), COALESCE(mem_util_pct, 0)) DESC LIMIT 30
-      `).all();
-    } catch { /* vCenter tables unavailable */ }
+    topUtil = vcenterUtil()
+      .map(({ name, cpu_util_pct, mem_util_pct }) => ({ name, cpu_util_pct, mem_util_pct }))
+      .sort((a, b) => Math.max(b.cpu_util_pct, b.mem_util_pct) - Math.max(a.cpu_util_pct, a.mem_util_pct))
+      .slice(0, 30);
   }
   const warnDays = warrantyWarnDays(coreApi);
   const warrantyAgg = db.prepare(`
