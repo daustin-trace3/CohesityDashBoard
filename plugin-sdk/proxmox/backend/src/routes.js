@@ -14,6 +14,7 @@ const { getPoller } = require('./poller');
 const {
   storageWarnPct, storageCritPct, backupStaleDays, certWarnDays, snapshotAgeDays, computeIssues,
 } = require('./issues');
+const { createProxmoxAdvisor } = require('./advisor');
 
 // ── hand-rolled validation helpers ──────────────────────────────────────────
 
@@ -700,6 +701,51 @@ function handleGetSnapshots(req, res, coreApi) {
   })));
 }
 
+// -- AI Advisor --------------------------------------------------------------
+
+let advisorInstance = null;
+function getAdvisor(coreApi) {
+  if (!advisorInstance) advisorInstance = createProxmoxAdvisor(coreApi);
+  return advisorInstance;
+}
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /advisor/:report - cached Proxmox AI Advisor report. */
+function handleGetAdvisorReport(req, res, coreApi) {
+  if (!isNonEmptyString(req.params.report)) return badRequest(res, [fail('report')]);
+  const proxmoxAdvisor = getAdvisor(coreApi);
+  const key = advisorReportKey(req.params.report);
+  if (!proxmoxAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  res.json({ enabled: proxmoxAdvisor.isConfigured(), report: proxmoxAdvisor.getCachedReport(key) });
+}
+
+/** POST /advisor/:report - (re)generate and cache a Proxmox AI Advisor report. */
+async function handlePostAdvisorReport(req, res, coreApi) {
+  if (!isNonEmptyString(req.params.report)) return badRequest(res, [fail('report')]);
+  const proxmoxAdvisor = getAdvisor(coreApi);
+  const key = advisorReportKey(req.params.report);
+  if (!proxmoxAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  try {
+    const result = await proxmoxAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    throw err;
+  }
+}
+
 // ── route table ──────────────────────────────────────────────────────────────
 
 function compile(template) {
@@ -743,6 +789,8 @@ const ROUTES = [
   { method: 'GET', ...compile('/storage-content'), handler: handleGetStorageContent },
   { method: 'GET', ...compile('/events'), handler: handleGetEvents },
   { method: 'GET', ...compile('/snapshots'), handler: handleGetSnapshots },
+  { method: 'GET', ...compile('/advisor/:report'), handler: handleGetAdvisorReport },
+  { method: 'POST', ...compile('/advisor/:report'), handler: handlePostAdvisorReport },
 ];
 
 // createRouter must return a BARE (req, res, next) function — installed

@@ -10,7 +10,7 @@
 // frontend/src/platforms/proxmox/index.jsx (host, pre-removal) for the
 // source of truth this was ported from.
 
-import { injectStyles } from './ui.jsx';
+import { injectStyles, SparklesIcon, ShieldCheckIcon } from './ui.jsx';
 
 import OverviewPage from './pages/overview.jsx';
 import AlertsPage from './pages/alerts.jsx';
@@ -21,6 +21,7 @@ import StoragePage from './pages/storage.jsx';
 import BackupsPage from './pages/backups.jsx';
 import NetworkPage from './pages/network.jsx';
 import EventsPage from './pages/events.jsx';
+import AdvisorPage from './pages/advisor.jsx';
 import SettingsPage from './pages/settings.jsx';
 
 const ACCENT = '#E57000';
@@ -39,6 +40,7 @@ window.__ICC_REGISTER_PLUGIN__({
       label: 'Monitor',
       items: [
         { label: 'Overview', route: '/proxmox', isActive: (p) => p === '/proxmox' },
+        { label: 'AI Advisor', route: '/proxmox/advisor', icon: SparklesIcon, isActive: (p) => p.startsWith('/proxmox/advisor'), requiresAi: true },
         { label: 'Alerts', route: '/proxmox/alerts', isActive: (p) => p.startsWith('/proxmox/alerts') },
       ],
     },
@@ -67,11 +69,13 @@ window.__ICC_REGISTER_PLUGIN__({
       label: 'System',
       items: [
         { label: 'Settings', route: '/proxmox/settings', isActive: (p) => p.startsWith('/proxmox/settings') },
+        { label: 'Privacy Inspector', route: '/ai/privacy/proxmox', icon: ShieldCheckIcon, isActive: (p) => p.startsWith('/ai/privacy/proxmox'), requiresAi: true },
       ],
     },
   ],
   routes: [
     { path: 'proxmox', Component: OverviewPage },
+    { path: 'proxmox/advisor', Component: AdvisorPage },
     { path: 'proxmox/alerts', Component: AlertsPage },
     { path: 'proxmox/nodes', Component: NodesPage },
     { path: 'proxmox/guests', Component: GuestsPage },

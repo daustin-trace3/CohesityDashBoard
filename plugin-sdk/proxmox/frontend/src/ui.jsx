@@ -262,6 +262,9 @@ export const CameraIcon = (p) => <Icon {...p}><path d="M23 19a2 2 0 0 1-2 2H3a2 
 export const ArchiveIcon = (p) => <Icon {...p}><rect x="2" y="3" width="20" height="5" rx="1" /><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4" /></Icon>;
 export const CrosshairIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="10" /><path d="M22 12h-4M6 12H2M12 6V2M12 22v-4" /></Icon>;
 export const AlertTriangleIcon = (p) => <Icon {...p}><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" /><path d="M12 9v4M12 17h.01" /></Icon>;
+export const SparklesIcon = (p) => <Icon {...p}><path d="M12 3v4M12 17v4M3 12h4M17 12h4" /><path d="M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /><circle cx="12" cy="12" r="2.5" /></Icon>;
+export const ShieldCheckIcon = (p) => <Icon {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="M9 12l2 2 4-4" /></Icon>;
+export const BadgeCheckIcon = (p) => <Icon {...p}><path d="M12 2 9.5 4.2 6.2 4l-.7 3.2L2.8 9l1.7 2.9L3.8 15l3 1.1.4 3.2 3.3-.5L12 21l1.5-2.2 3.3.5.4-3.2 3-1.1-1.7-2.9L20.2 9l-2.7-1.8L16.8 4l-3.3.2Z" /><path d="M9 12l2 2 4-4" /></Icon>;
 
 /* ────────────────────────────────────────────────────────────────────────
  * Primitives — mirror host frontend/src/components/ui/primitives.jsx
