@@ -59,3 +59,5 @@ export const MousePointerClick = (p) => <Icon {...p}><path d="M9 9l5 12 1.8-5.2L
 export const ShieldAlert = (p) => <Icon {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="M12 8v4M12 15h.01" /></Icon>;
 export const Radio = (p) => <Icon {...p}><circle cx="12" cy="12" r="2" /><path d="M16.24 7.76a6 6 0 0 1 0 8.48M7.76 16.24a6 6 0 0 1 0-8.48M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14" /></Icon>;
 export const ToggleLeft = (p) => <Icon {...p}><rect x="1" y="5" width="22" height="14" rx="7" /><circle cx="8" cy="12" r="3" /></Icon>;
+export const Sparkles = (p) => <Icon {...p}><path d="M12 3v4M12 17v4M3 12h4M17 12h4" /><path d="M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /><circle cx="12" cy="12" r="2.5" /></Icon>;
+export const FileText = (p) => <Icon {...p}><path d="M14 3v5h5" /><path d="M6 21h12a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2Z" /><path d="M8 13h8M8 17h5" /></Icon>;

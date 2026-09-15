@@ -175,7 +175,7 @@ module.exports = {
   },
   statusTables: ['unifi_sources'],
   settingsFields: [],
-  navSections: ['overview', 'devices', 'ports', 'clients', 'wifi', 'protect', 'topology', 'wan', 'security', 'alerts', 'settings'],
+  navSections: ['overview', 'devices', 'ports', 'clients', 'wifi', 'protect', 'topology', 'wan', 'security', 'alerts', 'settings', 'advisor', 'privacy'],
   datasets: [
     {
       id: 'unifi.devices',

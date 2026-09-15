@@ -10,10 +10,11 @@
 import { injectStyles } from './ui.jsx';
 import { LOGO_DATA_URI } from './logo.js';
 import {
-  Gauge, Router, Cable, Users, Wifi, Share2, Globe, ShieldCheck, ClipboardCheck, Settings, Cctv,
+  Gauge, Router, Cable, Users, Wifi, Share2, Globe, ShieldCheck, ClipboardCheck, Settings, Cctv, Sparkles,
 } from './icons.jsx';
 
 import OverviewPage from './pages/overview.jsx';
+import AdvisorPage from './pages/advisor.jsx';
 import DevicesPage from './pages/devices.jsx';
 import PortsPage from './pages/ports.jsx';
 import ClientsPage from './pages/clients.jsx';
@@ -37,6 +38,7 @@ function navGroups(features) {
 
   const monitorItems = [
     { label: 'Overview', route: '/unifi', icon: Gauge, isActive: (p) => p === '/unifi' },
+    { label: 'AI Advisor', route: '/unifi/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/unifi/advisor'), requiresAi: true },
     { label: 'Devices', route: '/unifi/devices', icon: Router, isActive: (p) => p.startsWith('/unifi/devices') },
     { label: 'Ports', route: '/unifi/ports', icon: Cable, isActive: (p) => p.startsWith('/unifi/ports') },
     { label: 'Clients', route: '/unifi/clients', icon: Users, isActive: (p) => p.startsWith('/unifi/clients') },
@@ -62,6 +64,7 @@ function navGroups(features) {
     {
       label: 'System',
       items: [
+        { label: 'Privacy Inspector', route: '/ai/privacy/unifi', icon: ShieldCheck, isActive: (p) => p.startsWith('/ai/privacy/unifi'), requiresAi: true },
         { label: 'Settings', route: '/unifi/settings', icon: Settings, isActive: (p) => p.startsWith('/unifi/settings') },
       ],
     },
@@ -75,6 +78,7 @@ const rooted = (C) => function UfRooted() { return <div className="uf-root"><C /
 
 const routes = [
   { path: 'unifi', Component: rooted(OverviewPage) },
+  { path: 'unifi/advisor', Component: rooted(AdvisorPage) },
   { path: 'unifi/devices', Component: rooted(DevicesPage) },
   { path: 'unifi/ports', Component: rooted(PortsPage) },
   { path: 'unifi/clients', Component: rooted(ClientsPage) },
