@@ -835,11 +835,53 @@ function advisorReportKey(slug) {
   return String(slug).replace(/-/g, '_');
 }
 
+const SCOPE_NEEDED_ERROR = { error: 'This report needs a device scope. Use /advisor/device-360/:serviceTag.' };
+
+/** GET /api/dell/advisor/device-360/:serviceTag — cached per-device 360 AI Advisor report. */
+router.get('/advisor/device-360/:serviceTag', [
+  param('serviceTag').isString().isLength({ min: 3, max: 64 }),
+], validate, (req, res, next) => {
+  try {
+    const scope = req.params.serviceTag;
+    res.json({ enabled: dellAdvisor.isConfigured(), report: dellAdvisor.getCachedReport('device_360', { scope }) });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/dell/advisor/device-360/:serviceTag — (re)generate the per-device 360 report. */
+router.post('/advisor/device-360/:serviceTag', [
+  param('serviceTag').isString().isLength({ min: 3, max: 64 }),
+], validate, async (req, res, next) => {
+  try {
+    const scope = req.params.serviceTag;
+    const result = await dellAdvisor.generateReport('device_360', { scope });
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'SCOPE_NOT_FOUND') {
+      return res.status(404).json({ error: 'No device with that service tag.' });
+    }
+    if (err.code === 'BAD_SCOPE') {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    next(err);
+  }
+});
+
 /** GET /api/dell/advisor/:report — cached Dell AI Advisor report. */
 router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
   try {
     const key = advisorReportKey(req.params.report);
     if (!dellAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    if (dellAdvisor.isScoped(key)) return res.status(400).json(SCOPE_NEEDED_ERROR);
     res.json({ enabled: dellAdvisor.isConfigured(), report: dellAdvisor.getCachedReport(key) });
   } catch (err) { next(err); }
 });
@@ -849,6 +891,7 @@ router.post('/advisor/:report', [param('report').isString()], validate, async (r
   try {
     const key = advisorReportKey(req.params.report);
     if (!dellAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    if (dellAdvisor.isScoped(key)) return res.status(400).json(SCOPE_NEEDED_ERROR);
     const result = await dellAdvisor.generateReport(key);
     res.json(result);
   } catch (err) {
