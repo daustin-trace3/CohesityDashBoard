@@ -7,10 +7,11 @@
 // hand-matches req.method/req.path against a route table (compile.js) and
 // re-implements the validation express-validator did inline (validate.js),
 // preserving the same status codes (400 invalid params, 404 missing, 409
-// duplicate, 502 upstream/test-connection failure) and JSON response shapes
-// exactly.
+// duplicate, 502 upstream/test-connection failure, 503/429 advisor errors)
+// and JSON response shapes exactly.
 const api = require('./api');
 const { getPoller } = require('./poller');
+const { createAriaopsAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const {
   badRequest, fail, parseIntStrict, isNonEmptyString, isBooleanish, toBool,
@@ -277,6 +278,51 @@ function handleGetMetricsHistory(req, res, coreApi) {
   `).all(...params));
 }
 
+// ── AI Advisor ───────────────────────────────────────────────────────────────
+
+let advisorInstance = null;
+function getAdvisor(coreApi) {
+  if (!advisorInstance) advisorInstance = createAriaopsAdvisor(coreApi);
+  return advisorInstance;
+}
+
+function advisorReportKey(slug) {
+  return String(slug).replace(/-/g, '_');
+}
+
+/** GET /advisor/:report — cached Aria Operations AI Advisor report. */
+function handleGetAdvisorReport(req, res, coreApi) {
+  if (!isNonEmptyString(req.params.report)) return badRequest(res, [fail('report')]);
+  const ariaopsAdvisor = getAdvisor(coreApi);
+  const key = advisorReportKey(req.params.report);
+  if (!ariaopsAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  res.json({ enabled: ariaopsAdvisor.isConfigured(), report: ariaopsAdvisor.getCachedReport(key) });
+}
+
+/** POST /advisor/:report — (re)generate and cache an Aria Operations AI Advisor report. */
+async function handlePostAdvisorReport(req, res, coreApi) {
+  if (!isNonEmptyString(req.params.report)) return badRequest(res, [fail('report')]);
+  const ariaopsAdvisor = getAdvisor(coreApi);
+  const key = advisorReportKey(req.params.report);
+  if (!ariaopsAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  try {
+    const result = await ariaopsAdvisor.generateReport(key);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    throw err;
+  }
+}
+
 // ── route table ──────────────────────────────────────────────────────────────
 
 const ROUTES = [
@@ -291,6 +337,8 @@ const ROUTES = [
   { method: 'GET', ...compile('/resources'), handler: handleGetResources },
   { method: 'GET', ...compile('/alerts'), handler: handleGetAlerts },
   { method: 'GET', ...compile('/metrics-history'), handler: handleGetMetricsHistory },
+  { method: 'GET', ...compile('/advisor/:report'), handler: handleGetAdvisorReport },
+  { method: 'POST', ...compile('/advisor/:report'), handler: handlePostAdvisorReport },
 ];
 
 // createRouter must return a BARE (req, res, next) function — installed
