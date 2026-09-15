@@ -138,7 +138,25 @@ const VERSION_STATUS = { 1: 'Current', 2: 'Current', 3: 'Update Available' };
 
 // The two v1 objects already flagged compliant:false get chronic misses in
 // the /compliance matrix so the story is consistent end to end.
-const CHRONIC_NAMES = new Set(['file-vm-dev-01', 'SQL-HR-DR']);
+// Demo VM objects are renamed (migration v9) onto vCenter demo VMs the host
+// seeds in its Chicago site and Cohesity leaves unprotected, so the Topology
+// Map and Server 360 connect them. Keys are the original seed names.
+const DEMO_VM_RENAMES = {
+  'web-prd-01': 'chi-app-01115',
+  'web-prd-02': 'chi-app-01116',
+  'web-prd-03': 'chi-app-01203',
+  'app-prd-01': 'chi-app-01315',
+  'app-prd-02': 'chi-app-01410',
+  'db-vm-prd-01': 'chi-db-01108',
+  'db-vm-dr-01': 'chi-db-01113',
+  'db-vm-dr-02': 'chi-db-01119',
+  'web-dr-01': 'chi-app-01414',
+  'file-vm-dev-01': 'chi-ci-01102',
+  'file-vm-dev-02': 'chi-ci-01106',
+  'file-vm-dev-03': 'chi-ci-01112',
+};
+
+const CHRONIC_NAMES = new Set(['file-vm-dev-01', DEMO_VM_RENAMES['file-vm-dev-01'], 'SQL-HR-DR']);
 
 const ANOMALY_EVENTS = [
   { id: 1, hoursAgo: 3, cluster: 'rbk-dr-01', objectName: 'SQL-BILLING-DR', objectType: 'MSSQL DB', probability: 0.97, encryption: 1, fileChanges: 48213, severity: 'Critical', status: 'Open', quarantined: 1 },
@@ -1010,6 +1028,39 @@ const migrations = [
       ensureColumn(db, 'rubrik_connections', 'last_test_at', 'DATETIME');
     },
   },
+  {
+    // Demo estate only: the seeded VM objects carried invented names
+    // (web-prd-01, app-prd-01, ...) that matched nothing in the host's
+    // vCenter demo inventory, so the Topology Map and Server 360 never
+    // linked a Rubrik object to a compute node. Rename them onto real demo
+    // vCenter VMs that Cohesity does not protect (DEMO_VM_RENAMES), across
+    // every table that carries an object name. Runs after the v1-v4 seeds
+    // on a fresh demo DB and once on an existing one; a no-op off demo.
+    version: 9,
+    up(db) {
+      if (!isDemo()) return;
+      const exact = [
+        ['rubrik_protected_objects', 'name'],
+        ['rubrik_jobs', 'object_name'],
+        ['rubrik_alerts', 'object_name'],
+        ['rubrik_protection_runs', 'object_name'],
+        ['rubrik_anomaly_events', 'object_name'],
+      ];
+      const embedded = [
+        ['rubrik_protection_runs', 'job_name'],
+        ['rubrik_replication_runs', 'job_name'],
+      ];
+      const hasTable = (t) => !!db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(t);
+      for (const [from, to] of Object.entries(DEMO_VM_RENAMES)) {
+        for (const [table, col] of exact) {
+          if (hasTable(table)) db.prepare(`UPDATE ${table} SET ${col} = ? WHERE ${col} = ?`).run(to, from);
+        }
+        for (const [table, col] of embedded) {
+          if (hasTable(table)) db.prepare(`UPDATE ${table} SET ${col} = REPLACE(${col}, ?, ?) WHERE ${col} LIKE ?`).run(from, to, `%${from}%`);
+        }
+      }
+    },
+  },
 ];
 
 module.exports = {
@@ -1019,4 +1070,5 @@ module.exports = {
   JOBS,
   isoDate,
   CHRONIC_NAMES,
+  DEMO_VM_RENAMES,
 };

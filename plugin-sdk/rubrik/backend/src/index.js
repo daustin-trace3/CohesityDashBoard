@@ -9,6 +9,7 @@
 const { migrations } = require('./migrations');
 const { createRouter } = require('./routes');
 const { server360, server360Suggest } = require('./server360');
+const { topology } = require('./topology');
 const { createRubrikPoller: createPoller } = require('./poller');
 
 // Ops landing page contribution (host getOpsSummaryProviders). Same shape as
@@ -82,6 +83,9 @@ module.exports = {
   // for any Rubrik protected object matching the pivot identity.
   server360,
   server360Suggest,
+  // Host Topology Map contribution (/ops/topology): protected-by / on-cluster /
+  // replicated-to nodes for any matching protected object.
+  topology,
   // Live RSC polling, one task per registered 'rsc' connection. Demo
   // instances keep their seeded estate and skip polling entirely.
   createPoller,
