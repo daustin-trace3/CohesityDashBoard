@@ -205,7 +205,7 @@ module.exports = {
   },
   statusTables: ['brocade_sources'],
   settingsFields: [],
-  navSections: ['overview', 'fabrics', 'switches', 'ports', 'devices', 'zoning', 'events', 'issues', 'trends', 'governance', 'settings'],
+  navSections: ['overview', 'fabrics', 'switches', 'ports', 'devices', 'zoning', 'events', 'issues', 'trends', 'governance', 'settings', 'advisor', 'privacy'],
   datasets: [
     {
       id: 'brocade.switches',

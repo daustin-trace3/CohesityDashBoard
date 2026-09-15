@@ -155,6 +155,14 @@ beforeAll(() => {
     INSERT INTO ariaops_alerts (instance_id, alert_id, level, status, resource_name, definition_name)
     VALUES (1, 'alert-1', 'CRITICAL', 'active', 'esxi-host-theta', 'CPU contention')
   `).run();
+
+  // Brocade
+  db.prepare(`
+    INSERT INTO brocade_sources (name, host, username, password_enc) VALUES ('brocade-sannav-zeta', 'sannav.invalid', 'admin', '')
+  `).run();
+  db.prepare(`
+    INSERT INTO brocade_switches (source_id, wwn, name, ip_address) VALUES (1, '10:00:00:00:00:00:00:01', 'sw-core-eta', '10.50.60.70')
+  `).run();
 });
 
 const SEEDED_NAMES = [
@@ -171,6 +179,7 @@ const SEEDED_NAMES = [
   'dynamo-sessions-tau', 'ecr-repo-upsilon', 'vpc-core-phi',
   'bluecat-bam-echo', 'marrow-view', 'brontide.echo.corp', 'vespera-net', 'quillon-block', 'corvid-switch-01', 'talwynd-dns-01',
   'ariaops-vrops-zeta', 'vm-checkout-eta', 'esxi-host-theta',
+  'brocade-sannav-zeta', 'sw-core-eta',
 ];
 
 describe('anonymizer platform coverage', () => {

@@ -1,10 +1,13 @@
 import { lazy } from 'react';
 import {
   Gauge, Waypoints, Router, Cable, HardDrive, Network, AlertTriangle, ClipboardCheck,
-  LineChart, ShieldCheck, Settings, Grid3x3,
+  LineChart, ShieldCheck, Settings, Grid3x3, Sparkles,
 } from 'lucide-react';
 
 const BrocadeOverviewPage = lazy(() => import('../../pages/brocade/BrocadeOverviewPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const BrocadePrivacyPage = () => <PrivacyInspectorPage platform="brocade" />;
+const BrocadeAdvisorPage = lazy(() => import('../../pages/brocade/BrocadeAdvisorPage'));
 const BrocadeFabricsPage = lazy(() => import('../../pages/brocade/BrocadeFabricsPage'));
 const BrocadeSwitchesPage = lazy(() => import('../../pages/brocade/BrocadeSwitchesPage'));
 const BrocadePortsPage = lazy(() => import('../../pages/brocade/BrocadePortsPage'));
@@ -23,6 +26,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/brocade', icon: Gauge, isActive: (p) => p === '/brocade' },
+      { label: 'AI Advisor', route: '/brocade/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/brocade/advisor'), requiresAi: true },
     ],
   },
   {
@@ -58,6 +62,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/brocade/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/brocade/privacy'), requiresAi: true },
       { label: 'Settings', route: '/brocade/settings', icon: Settings, isActive: (p) => p.startsWith('/brocade/settings') },
     ],
   },
@@ -77,6 +82,8 @@ export default {
   navGroups,
   routes: [
     { path: 'brocade', Component: BrocadeOverviewPage },
+    { path: 'brocade/advisor', Component: BrocadeAdvisorPage },
+    { path: 'brocade/privacy', Component: BrocadePrivacyPage },
     { path: 'brocade/fabrics', Component: BrocadeFabricsPage },
     { path: 'brocade/switches', Component: BrocadeSwitchesPage },
     { path: 'brocade/ports', Component: BrocadePortsPage },
