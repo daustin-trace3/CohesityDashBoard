@@ -209,6 +209,81 @@ function loadDictionary() {
     add(db.prepare("SELECT name FROM aws_vpcs WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
   } catch { /* AWS v2 tables not present until migration v2 lands */ }
 
+  try {
+    add(db.prepare("SELECT name FROM bluecat_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM bluecat_sources WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM bluecat_views WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT DISTINCT absolute_name AS name FROM bluecat_zones WHERE absolute_name IS NOT NULL AND absolute_name != ''").all(), 'JOB');
+    // Record names are unbounded on a large BAM; the FQDN regex pass masks the rest.
+    add(db.prepare("SELECT DISTINCT absolute_name AS name FROM bluecat_records WHERE absolute_name IS NOT NULL AND absolute_name != '' LIMIT 5000").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM bluecat_blocks WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT range AS name FROM bluecat_blocks WHERE range IS NOT NULL AND range != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM bluecat_networks WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT range AS name FROM bluecat_networks WHERE range IS NOT NULL AND range != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM bluecat_devices WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT name FROM bluecat_servers WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    addHostOrIp(db.prepare("SELECT address AS name FROM bluecat_servers WHERE address IS NOT NULL AND address != ''").all());
+  } catch { /* BlueCat tables not present on this instance */ }
+
+  try {
+    add(db.prepare('SELECT name FROM ariaops_instances').all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM ariaops_instances WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM ariaops_resources WHERE kind = 'VirtualMachine' AND name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT name FROM ariaops_resources WHERE kind = 'HostSystem' AND name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT name FROM ariaops_resources WHERE kind = 'Datastore' AND name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT DISTINCT resource_name AS name FROM ariaops_alerts WHERE resource_name IS NOT NULL AND resource_name != ''").all(), 'OBJECT');
+  } catch { /* Aria Operations tables not present on this instance */ }
+
+  // Rubrik ships only as an installed pack; its tables exist wherever the pack does.
+  try {
+    add(db.prepare("SELECT name FROM rubrik_clusters WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT name FROM rubrik_protected_objects WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT name FROM rubrik_sla_domains WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+    add(db.prepare("SELECT name FROM rubrik_sources WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT name FROM rubrik_archival_locations WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT name FROM rubrik_connections WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT endpoint AS name FROM rubrik_connections WHERE endpoint IS NOT NULL AND endpoint != ''").all());
+  } catch { /* Rubrik tables not present on this instance */ }
+
+  // Proxmox ships only as an installed pack.
+  try {
+    add(db.prepare("SELECT name FROM proxmox_servers WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM proxmox_servers WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM proxmox_nodes WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT name FROM proxmox_guests WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT storage AS name FROM proxmox_storage WHERE storage IS NOT NULL AND storage != ''").all(), 'VIEW');
+  } catch { /* Proxmox tables not present on this instance */ }
+  try {
+    add(db.prepare("SELECT DISTINCT guest_name AS name FROM proxmox_snapshots WHERE guest_name IS NOT NULL AND guest_name != ''").all(), 'OBJECT');
+  } catch { /* Proxmox v2 tables not present on this instance */ }
+
+  try {
+    add(db.prepare("SELECT name FROM brocade_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM brocade_sources WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM brocade_fabrics WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT DISTINCT name FROM brocade_switches WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    addHostOrIp(db.prepare("SELECT ip_address AS name FROM brocade_switches WHERE ip_address IS NOT NULL AND ip_address != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM brocade_enclosures WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    addHostOrIp(db.prepare("SELECT host_name AS name FROM brocade_enclosures WHERE host_name IS NOT NULL AND host_name != ''").all());
+    add(db.prepare("SELECT DISTINCT symbolic_name AS name FROM brocade_device_ports WHERE symbolic_name IS NOT NULL AND symbolic_name != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT name FROM brocade_chassis WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT zone_name AS name FROM brocade_zones WHERE zone_name IS NOT NULL AND zone_name != ''").all(), 'JOB');
+  } catch { /* Brocade tables not present on this instance */ }
+
+  try {
+    add(db.prepare("SELECT name FROM unifi_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM unifi_sources WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM unifi_devices WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    addHostOrIp(db.prepare("SELECT DISTINCT ip AS name FROM unifi_devices WHERE ip IS NOT NULL AND ip != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM unifi_clients WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT hostname AS name FROM unifi_clients WHERE hostname IS NOT NULL AND hostname != ''").all(), 'OBJECT');
+    addHostOrIp(db.prepare("SELECT DISTINCT ip AS name FROM unifi_clients WHERE ip IS NOT NULL AND ip != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM unifi_wlans WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+  } catch { /* UniFi tables not present on this instance */ }
+  try {
+    add(db.prepare("SELECT DISTINCT name FROM unifi_cameras WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+  } catch { /* unifi_cameras (v2) not present on this instance */ }
+
   return entries;
 }
 
