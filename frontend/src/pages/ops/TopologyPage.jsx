@@ -52,7 +52,10 @@ const PLATFORM_COLOR = {
   cohesity: '#6CB33F', netapp: '#0067C5', zerto: '#EE3124', vcenter: '#0091DA',
   aria: '#00A2C7', ariaops: '#78BE20', dell: '#007DB8', pure: '#FF6B00',
   aws: '#FF9900', unifi: '#006FFF', brocade: '#CC092F', bluecat: '#0057B8',
+  rubrik: '#00B388',
 };
+// Plugin-contributed nodes carry their manifest color; built-ins map by platform id.
+const nodeColor = (n) => n.color || PLATFORM_COLOR[n.platform] || OPS_GRAY;
 const OPS_GRAY = '#8FA3B0';
 
 const GREEN_EDGE_KINDS = new Set(['protected-by', 'replicated-by', 'backed-up-by']);
@@ -165,7 +168,7 @@ function edgePath(from, to) {
 
 function Tooltip({ node, x, y }) {
   if (!node) return null;
-  const color = PLATFORM_COLOR[node.platform] || OPS_GRAY;
+  const color = nodeColor(node);
   return createPortal(
     <div
       className="fixed z-[999] pointer-events-none bg-cohesity-gray border border-cohesity-border rounded-lg shadow-xl px-3 py-2 max-w-xs"
@@ -465,7 +468,7 @@ export default function TopologyPage() {
                     const pos = positions.get(n.id);
                     if (!pos || pos.folded) return null;
                     const Icon = TYPE_ICON[n.type] || HelpCircle;
-                    const color = PLATFORM_COLOR[n.platform] || OPS_GRAY;
+                    const color = nodeColor(n);
                     const dimmed = neighborIds && !neighborIds.has(n.id);
                     const selected = pinnedId === n.id;
                     const onPath = neighborIds && neighborIds.has(n.id) && !selected;

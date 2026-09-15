@@ -13,7 +13,26 @@ const require = createRequire(import.meta.url);
 
 const db = require('../db/database');
 const { setSetting } = require('../services/settings');
+const registry = require('../core/registry');
 const topologyRouter = require('../routes/topology');
+
+// Fake installed plugins exercising the manifest `topology` hook: one that
+// contributes a protection node against the anchor, one that throws (must
+// degrade to a warning, never a 500).
+const topoPlugin = {
+  id: 'topotest', name: 'TopoTest', apiVersion: 1, color: '#123456', migrations: [],
+  createRouter: () => (req, res, next) => next(),
+  topology: (coreApi, { names, anchorId }) => (names.includes('topo-web01') ? {
+    nodes: [{ id: 'protection:topotest:sla-gold', type: 'protection', tier: 'backup', label: 'sla-gold', status: 'ok' }],
+    edges: [{ from: anchorId, to: 'protection:topotest:sla-gold', kind: 'protected-by' },
+      { from: 'protection:topotest:sla-gold', to: 'cluster:topotest:missing', kind: 'on-cluster' }],
+  } : null),
+};
+const brokenPlugin = {
+  id: 'topobroken', name: 'TopoBroken', apiVersion: 1, migrations: [],
+  createRouter: () => (req, res, next) => next(),
+  topology: () => { throw new Error('boom'); },
+};
 
 let app;
 let clusterId;
@@ -78,6 +97,9 @@ beforeAll(() => {
       sla_violated, logical_bytes)
     VALUES (?, 'topo-web01', 'kVMware', 'kVirtualMachine', 'Linux', 'vc1', 1, ?, ?, 'kSuccess', 0, 12345)
   `).run(clusterId, JSON.stringify(['topo-group']), JSON.stringify(['policy-a']));
+
+  registry.registerPlugin(topoPlugin);
+  registry.registerPlugin(brokenPlugin);
 });
 
 describe('GET /api/topology', () => {
@@ -122,6 +144,13 @@ describe('GET /api/topology', () => {
     expect(byId['protection:topo-group']).toMatchObject({ type: 'protection', tier: 'backup', platform: 'cohesity', status: 'ok' });
     expect(byId['cluster:cluster1']).toMatchObject({ type: 'cluster', tier: 'backup', platform: 'cohesity' });
 
+    // Plugin contribution: host stamps platform + manifest color + defaults.
+    expect(byId['protection:topotest:sla-gold']).toMatchObject({
+      type: 'protection', tier: 'backup', platform: 'topotest', color: '#123456', status: 'ok', sublabel: '', route: null,
+    });
+    // The broken plugin contributed nothing and did not fail the request.
+    expect(res.body.nodes.some((n) => n.platform === 'topobroken')).toBe(false);
+
     // Edges, hand-computed
     const edgeSet = res.body.edges.map((e) => `${e.from}->${e.to}:${e.kind}`);
     expect(edgeSet).toEqual(expect.arrayContaining([
@@ -135,7 +164,10 @@ describe('GET /api/topology', () => {
       'targetPort:20:00:00:00:aa:bb:cc:02->array:array-1:belongs-to',
       'vm:topo-web01->protection:topo-group:protected-by',
       'protection:topo-group->cluster:cluster1:on-cluster',
+      'vm:topo-web01->protection:topotest:sla-gold:protected-by',
     ]));
+    // A plugin edge to a node it never declared is dropped as dangling.
+    expect(edgeSet).not.toContain('protection:topotest:sla-gold->cluster:topotest:missing:on-cluster');
 
     // No dangling edges: every edge endpoint must be a known node id.
     const ids = new Set(res.body.nodes.map((n) => n.id));

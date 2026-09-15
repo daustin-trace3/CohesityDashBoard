@@ -222,6 +222,23 @@ function getServer360Providers() {
 }
 
 /**
+ * Topology Map contributors (2026-09-15). A plugin manifest may export
+ *   topology(coreApi, { query, names, ips, anchorId }) -> { nodes, edges } | null
+ * and routes/topology.js merges the result into the anchored graph, stamping
+ * platform id + manifest color and gating on <id>:objects:view.
+ */
+function getTopologyProviders() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.topology === 'function')
+    .map((e) => ({
+      id: e.id,
+      name: e.manifest.name,
+      color: e.manifest.color || null,
+      run: (ctx) => e.manifest.topology(coreApiRef, ctx),
+    }));
+}
+
+/**
  * Phase 1 manifest-driven core hooks (2026-08-03): seeds Operator/Viewer
  * role_grants for a plugin id the first time it's enabled, mirroring the
  * per-platform INSERTs core migrations v4+ write (contract: idempotent via
@@ -363,6 +380,7 @@ module.exports = {
   getPollerHandle,
   listPlugins,
   getServer360Providers,
+  getTopologyProviders,
   getOpsSummaryProviders,
   getAlertCollectors,
   getSearchCategoryContributors,
