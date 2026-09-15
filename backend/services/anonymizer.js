@@ -255,6 +255,19 @@ function loadDictionary() {
     add(db.prepare("SELECT DISTINCT guest_name AS name FROM proxmox_snapshots WHERE guest_name IS NOT NULL AND guest_name != ''").all(), 'OBJECT');
   } catch { /* Proxmox v2 tables not present on this instance */ }
 
+  try {
+    add(db.prepare("SELECT name FROM brocade_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM brocade_sources WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT name FROM brocade_fabrics WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+    add(db.prepare("SELECT DISTINCT name FROM brocade_switches WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    addHostOrIp(db.prepare("SELECT ip_address AS name FROM brocade_switches WHERE ip_address IS NOT NULL AND ip_address != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM brocade_enclosures WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    addHostOrIp(db.prepare("SELECT host_name AS name FROM brocade_enclosures WHERE host_name IS NOT NULL AND host_name != ''").all());
+    add(db.prepare("SELECT DISTINCT symbolic_name AS name FROM brocade_device_ports WHERE symbolic_name IS NOT NULL AND symbolic_name != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT name FROM brocade_chassis WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT zone_name AS name FROM brocade_zones WHERE zone_name IS NOT NULL AND zone_name != ''").all(), 'JOB');
+  } catch { /* Brocade tables not present on this instance */ }
+
   return entries;
 }
 
