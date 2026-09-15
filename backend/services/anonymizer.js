@@ -223,6 +223,15 @@ function loadDictionary() {
     addHostOrIp(db.prepare("SELECT address AS name FROM bluecat_servers WHERE address IS NOT NULL AND address != ''").all());
   } catch { /* BlueCat tables not present on this instance */ }
 
+  try {
+    add(db.prepare('SELECT name FROM ariaops_instances').all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM ariaops_instances WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM ariaops_resources WHERE kind = 'VirtualMachine' AND name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT name FROM ariaops_resources WHERE kind = 'HostSystem' AND name IS NOT NULL AND name != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT name FROM ariaops_resources WHERE kind = 'Datastore' AND name IS NOT NULL AND name != ''").all(), 'VIEW');
+    add(db.prepare("SELECT DISTINCT resource_name AS name FROM ariaops_alerts WHERE resource_name IS NOT NULL AND resource_name != ''").all(), 'OBJECT');
+  } catch { /* Aria Operations tables not present on this instance */ }
+
   return entries;
 }
 
