@@ -173,7 +173,7 @@ module.exports = {
   },
   statusTables: ['bluecat_sources'],
   settingsFields: [],
-  navSections: ['overview', 'ipspaces', 'dns', 'devices', 'servers', 'alerts', 'settings'],
+  navSections: ['overview', 'ipspaces', 'dns', 'devices', 'servers', 'alerts', 'advisor', 'privacy', 'settings'],
   datasets: [
     {
       id: 'bluecat.networks',

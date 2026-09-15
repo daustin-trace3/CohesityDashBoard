@@ -122,6 +122,25 @@ beforeAll(() => {
   db.prepare(`
     INSERT INTO aws_vpcs (account_id, vpc_id, name) VALUES (1, 'vpc-0phichi', 'vpc-core-phi')
   `).run();
+
+  // BlueCat
+  db.prepare(`
+    INSERT INTO bluecat_sources (name, host, encrypted_credentials) VALUES ('bluecat-bam-echo', 'bam.invalid', ?)
+  `).run(encrypt(JSON.stringify({})));
+  db.prepare(`INSERT INTO bluecat_views (source_id, view_id, name) VALUES (1, 1, 'marrow-view')`).run();
+  db.prepare(`
+    INSERT INTO bluecat_zones (source_id, zone_id, absolute_name, zone_type) VALUES (1, 1, 'brontide.echo.corp', 'Forward')
+  `).run();
+  db.prepare(`
+    INSERT INTO bluecat_networks (source_id, network_id, name, range) VALUES (1, 1, 'vespera-net', '10.44.0.0/24')
+  `).run();
+  db.prepare(`
+    INSERT INTO bluecat_blocks (source_id, block_id, name, range) VALUES (1, 1, 'quillon-block', '10.44.0.0/16')
+  `).run();
+  db.prepare(`INSERT INTO bluecat_devices (source_id, device_id, name) VALUES (1, 1, 'corvid-switch-01')`).run();
+  db.prepare(`
+    INSERT INTO bluecat_servers (source_id, server_id, name, address) VALUES (1, 1, 'talwynd-dns-01', '10.44.1.5')
+  `).run();
 });
 
 const SEEDED_NAMES = [
@@ -136,6 +155,7 @@ const SEEDED_NAMES = [
   'aws-account-lambda', 'ec2-webapp-mu', 'lightsail-node-nu', 'ecs-cluster-xi',
   'ecs-service-omicron', 'bucket-reports-pi', 'rds-orders-rho', 'lambda-invoice-sigma',
   'dynamo-sessions-tau', 'ecr-repo-upsilon', 'vpc-core-phi',
+  'bluecat-bam-echo', 'marrow-view', 'brontide.echo.corp', 'vespera-net', 'quillon-block', 'corvid-switch-01', 'talwynd-dns-01',
 ];
 
 describe('anonymizer platform coverage', () => {
