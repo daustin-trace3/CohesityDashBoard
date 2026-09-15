@@ -36,7 +36,7 @@ const TOKEN_RE_TEST = /^(?:CLUSTER|JOB|POLICY|SOURCE|HOST|IP|VIEW|USER|MAC|OBJEC
 // are opaque identifiers (serials) or bare usernames/WWNs that the pattern
 // scrubbers below cannot recognize on their own.
 const SERIAL_KEY_RE = /serial|service_tag/i;
-const USER_KEY_RE = /^user(_?name)?$|requested_by|created_by/i;
+const USER_KEY_RE = /^user(_?name)?$|requested_by|created_by|accepted_by|acknowledged_by|resolved_by/i;
 const WWN_KEY_RE = /wwn/i;
 
 // Keys whose values are version strings — exempt from IP/FQDN scrubbing so

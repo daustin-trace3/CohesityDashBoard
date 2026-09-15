@@ -1,14 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database, Cable, ClipboardCheck, ScrollText } from 'lucide-react';
+import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database, Cable, ClipboardCheck, ScrollText, Sparkles } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum, fmtBytes, healthTone, severityTone, fmtWhen } from './helpers';
 import { DriftModal } from './DellGovernancePage';
+import AdvisorReportModal from '../../components/AdvisorReportModal';
 
-function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
+function ModalShell({ title, subtitle, icon: Icon, onClose, children, headerActions }) {
   // Portal to <body>: the page wrapper's fade-in animation leaves a transform
   // applied (fill-mode: both), which would re-anchor position:fixed to the
   // page div and push the modal's top off-screen on scrolled/short pages.
@@ -24,10 +25,13 @@ function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
               {subtitle && <p className="text-[11px] text-ink-faint truncate">{subtitle}</p>}
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close"
-            className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer shrink-0">
-            <X size={15} />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {headerActions}
+            <button onClick={onClose} aria-label="Close"
+              className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer">
+              <X size={15} />
+            </button>
+          </div>
         </div>
         <div className="p-4 overflow-y-auto">{children}</div>
       </div>
@@ -100,21 +104,54 @@ function ComponentSection({ kind, rows }) {
 export function DeviceDetailModal({ deviceId, onClose }) {
   const [dev, setDev] = useState(null);
   const [failed, setFailed] = useState(false);
+  const [advisor, setAdvisor] = useState(null); // { enabled, report } once loaded
+  const [showAdvisor, setShowAdvisor] = useState(false);
 
   useEffect(() => {
-    setDev(null); setFailed(false);
+    setDev(null); setFailed(false); setAdvisor(null); setShowAdvisor(false);
     client.get(`/dell/devices/${deviceId}`)
       .then(({ data }) => setDev(data))
       .catch(() => setFailed(true));
   }, [deviceId]);
 
+  useEffect(() => {
+    if (!dev?.service_tag) return;
+    client.get(`/dell/advisor/device-360/${encodeURIComponent(dev.service_tag)}`)
+      .then(({ data }) => setAdvisor({ enabled: data.enabled, report: data.report || null }))
+      .catch(() => setAdvisor({ enabled: false, report: null }));
+  }, [dev?.service_tag]);
+
   const byKind = (kind) => (dev?.components || []).filter((c) => c.kind === kind);
+
+  const advisorTab = dev ? {
+    slug: dev.service_tag,
+    label: `AI analysis: ${dev.name}`,
+    icon: Sparkles,
+    blurb: 'Health verdict, likely root causes and next actions for this server, from everything ICC knows about it.',
+  } : null;
 
   return (
     <ModalShell
       title={dev?.name || 'Device details'}
       subtitle={dev ? `${dev.model || ''} · ${dev.service_tag || ''} · ${dev.ome_name}` : null}
-      icon={Server} onClose={onClose}>
+      icon={Server} onClose={onClose}
+      headerActions={dev && dev.service_tag && advisor?.enabled !== false && (
+        <button onClick={() => setShowAdvisor(true)}
+          className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors cursor-pointer">
+          <Sparkles size={13} /> AI analysis
+        </button>
+      )}>
+      {showAdvisor && advisorTab && (
+        <AdvisorReportModal
+          tab={advisorTab}
+          basePath="/dell/advisor/device-360"
+          initialReport={advisor?.report || null}
+          enabled={advisor?.enabled !== false}
+          autoRun={false}
+          onClose={() => setShowAdvisor(false)}
+          onUpdated={(data) => setAdvisor((a) => ({ ...a, report: data }))}
+        />
+      )}
       {failed ? (
         <div className="text-sm text-status-crit py-6 text-center">Failed to load device.</div>
       ) : dev == null ? (
