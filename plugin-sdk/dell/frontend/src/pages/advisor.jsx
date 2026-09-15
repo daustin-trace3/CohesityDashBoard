@@ -6,7 +6,9 @@
 // behavior, just apiFetch + inline styles instead of axios + Tailwind
 // component imports. No anonymizer call is made from the frontend — the
 // built-in page didn't make one either; anonymization (if any) is backend-side.
-import { Sparkles, FileText, Clock, HardDrive, BadgeCheck, BellRing } from '../icons.jsx';
+import {
+  Sparkles, FileText, Clock, HardDrive, BadgeCheck, BellRing, Thermometer, GitCompare, ListChecks, ScrollText, Boxes, LifeBuoy,
+} from '../icons.jsx';
 import { apiFetch, PageHeader, LoadingPanel, Modal } from '../ui.jsx';
 
 const BRAND = '#007DB8';
@@ -18,6 +20,18 @@ const TABS = [
     blurb: 'Warranty expiry and firmware-version drift, with an ordered remediation plan.' },
   { slug: 'alert-triage', label: 'Alert Triage', icon: BellRing,
     blurb: 'Cross-device alert patterns — systemic issues vs noise, and a prioritized triage order.' },
+  { slug: 'power-thermal', label: 'Power & Thermal', icon: Thermometer,
+    blurb: 'Power trend, inlet temperature outliers and utilization hot spots across the fleet.' },
+  { slug: 'config-drift', label: 'Config Drift', icon: GitCompare,
+    blurb: 'Baseline compliance, stale accepted variances and the most common drifting settings.' },
+  { slug: 'job-health', label: 'Job Health', icon: ListChecks,
+    blurb: 'Failed, long-running and repeatedly failing OME jobs over the last 30 days.' },
+  { slug: 'hardware-log-forensics', label: 'Hardware Log Forensics', icon: ScrollText,
+    blurb: 'iDRAC/lifecycle log patterns and pre-failure signals across the fleet.' },
+  { slug: 'capacity-consolidation', label: 'Capacity & Consolidation', icon: Boxes,
+    blurb: 'Idle and hot devices, powered-off assets with warranty left, and model/generation mix.' },
+  { slug: 'support-case-prep', label: 'Support Case Prep', icon: LifeBuoy,
+    blurb: 'Case-ready summaries for every device in critical health.' },
 ];
 
 function timeAgoShort(ts) {
@@ -181,7 +195,10 @@ function ReportTile({ tab, state, onOpen, onRun }) {
 }
 
 /* ── report modal ────────────────────────────────────────────────────── */
-function AdvisorReportModal({ tab, initialReport, enabled, autoRun = false, onClose, onUpdated }) {
+// Exported so devices.jsx can reuse it for the scoped device-360 report
+// (basePath '/dell/advisor/device-360', tab.slug = the device's service tag)
+// instead of duplicating the run/poll/markdown machinery.
+export function AdvisorReportModal({ tab, initialReport, enabled, autoRun = false, basePath = '/dell/advisor', onClose, onUpdated }) {
   const [report, setReport] = React.useState(initialReport || null);
   const [running, setRunning] = React.useState(false);
   const [error, setError] = React.useState(null);
@@ -191,7 +208,7 @@ function AdvisorReportModal({ tab, initialReport, enabled, autoRun = false, onCl
     setRunning(true);
     setError(null);
     try {
-      const json = await apiFetch(`/dell/advisor/${tab.slug}`, { method: 'POST', body: {} });
+      const json = await apiFetch(`${basePath}/${tab.slug}`, { method: 'POST', body: {} });
       setReport(json);
       onUpdated?.(json);
     } catch (e) {
@@ -201,7 +218,7 @@ function AdvisorReportModal({ tab, initialReport, enabled, autoRun = false, onCl
     } finally {
       setRunning(false);
     }
-  }, [tab.slug, onUpdated]);
+  }, [tab.slug, basePath, onUpdated]);
 
   const didAuto = React.useRef(false);
   React.useEffect(() => {

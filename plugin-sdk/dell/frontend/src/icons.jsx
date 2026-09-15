@@ -78,3 +78,7 @@ export const FileDown = (p) => <Icon {...p}><path d="M14 3v5h5" /><path d="M6 21
 export const CalendarClock = (p) => <Icon {...p}><path d="M8 2v4M16 2v4" /><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M3 10h18" /><circle cx="15" cy="16" r="3.5" /><path d="M15 14.5v1.5l1 1" /></Icon>;
 export const Recycle = (p) => <Icon {...p}><path d="M7 19H4.5a2 2 0 0 1-1.7-3l3-5" /><path d="M9.5 2.5 6 8.5l3 2" /><path d="M17.5 12.5 21 18.5l-6.5.5" /><path d="M13 19.5h5.5a2 2 0 0 0 1.7-3l-1.2-2" /><path d="M13 2.5H8.5l-1 6" /></Icon>;
 export const BellRing = (p) => <Icon {...p}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /><path d="M4 4l-1 2M20 4l1 2" /></Icon>;
+
+/* ── Dell AI Advisor fleet-report tabs ─────────────────────────────────── */
+export const GitCompare = (p) => <Icon {...p}><circle cx="6" cy="6" r="3" /><circle cx="18" cy="18" r="3" /><path d="M13 6h3a2 2 0 0 1 2 2v7" /><path d="M11 18H8a2 2 0 0 1-2-2V9" /></Icon>;
+export const LifeBuoy = (p) => <Icon {...p}><circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="4" /><path d="m4.93 4.93 4.24 4.24" /><path d="m14.83 9.17 4.24-4.24" /><path d="m14.83 14.83 4.24 4.24" /><path d="m9.17 14.83-4.24 4.24" /></Icon>;

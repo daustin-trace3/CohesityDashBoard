@@ -1,10 +1,11 @@
-import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database, Cable, ClipboardCheck, ScrollText } from '../icons.jsx';
+import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database, Cable, ClipboardCheck, ScrollText, Sparkles } from '../icons.jsx';
 import {
   apiFetch, apiFetchBlob, PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner,
   useTableControls, SortTh, TableControls, TablePager, Modal, portalOrInline,
   BRAND, fmtNum, fmtBytes, healthTone, severityTone, fmtWhen,
 } from '../ui.jsx';
 import { DriftModal } from './governance.jsx';
+import { AdvisorReportModal } from './advisor.jsx';
 
 const Fact = ({ label, value }) => (
   <div>
@@ -70,27 +71,62 @@ function ComponentSection({ kind, rows }) {
 export function DeviceDetailModal({ deviceId, onClose }) {
   const [dev, setDev] = React.useState(null);
   const [failed, setFailed] = React.useState(false);
+  const [advisor, setAdvisor] = React.useState(null); // { enabled, report } once loaded
+  const [showAdvisor, setShowAdvisor] = React.useState(false);
 
   React.useEffect(() => {
-    setDev(null); setFailed(false);
+    setDev(null); setFailed(false); setAdvisor(null); setShowAdvisor(false);
     apiFetch(`/dell/devices/${deviceId}`)
       .then((json) => setDev(json))
       .catch(() => setFailed(true));
   }, [deviceId]);
 
+  React.useEffect(() => {
+    if (!dev?.service_tag) return;
+    apiFetch(`/dell/advisor/device-360/${encodeURIComponent(dev.service_tag)}`)
+      .then((json) => setAdvisor({ enabled: json.enabled, report: json.report || null }))
+      .catch(() => setAdvisor({ enabled: false, report: null }));
+  }, [dev?.service_tag]);
+
   const byKind = (kind) => (dev?.components || []).filter((c) => c.kind === kind);
+
+  const advisorTab = dev ? {
+    slug: dev.service_tag,
+    label: `AI analysis: ${dev.name}`,
+    icon: Sparkles,
+    blurb: 'Health verdict, likely root causes and next actions for this server, from everything ICC knows about it.',
+  } : null;
 
   return (
     <Modal
       title={dev?.name || 'Device details'}
       subtitle={dev ? `${dev.model || ''} · ${dev.service_tag || ''} · ${dev.ome_name}` : null}
       icon={Server} onClose={onClose} maxWidth="min(768px,92vw)">
+      {showAdvisor && advisorTab && (
+        <AdvisorReportModal
+          tab={advisorTab}
+          basePath="/dell/advisor/device-360"
+          initialReport={advisor?.report || null}
+          enabled={advisor?.enabled !== false}
+          autoRun={false}
+          onClose={() => setShowAdvisor(false)}
+          onUpdated={(json) => setAdvisor((a) => ({ ...a, report: json }))}
+        />
+      )}
       {failed ? (
         <div className="text-sm text-status-crit py-6 text-center">Failed to load device.</div>
       ) : dev == null ? (
         <div className="flex items-center justify-center py-10"><Spinner size={20} /></div>
       ) : (
         <>
+          {dev.service_tag && advisor?.enabled !== false && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+              <button onClick={() => setShowAdvisor(true)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 500, padding: '6px 10px', background: 'rgba(0,125,184,0.1)', border: '1px solid rgba(0,125,184,0.3)', color: BRAND, borderRadius: 8, cursor: 'pointer' }}>
+                <Sparkles size={13} /> AI analysis
+              </button>
+            </div>
+          )}
           <div className="flex items-center gap-2 mb-3 flex-wrap">
             <Badge tone={healthTone(dev.health)}>{dev.health}</Badge>
             <Badge tone={dev.power_state === 'on' ? 'ok' : 'neutral'}>{(dev.power_state || 'unknown').toUpperCase()}</Badge>

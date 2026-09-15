@@ -776,12 +776,64 @@ function advisorReportKey(slug) {
   return String(slug).replace(/-/g, '_');
 }
 
+const SCOPE_NEEDED_ERROR = { error: 'This report needs a device scope. Use /advisor/device-360/:serviceTag.' };
+
+// isScoped is only present on a host whose coreApi.advisor engine supports
+// scoped reports; an older host's createPlatformAdvisor predates it.
+function isServiceTag(v) {
+  return typeof v === 'string' && v.length >= 3 && v.length <= 64;
+}
+
+/** GET /advisor/device-360/:serviceTag — cached per-device 360 AI Advisor report. */
+function handleGetAdvisorDevice360(req, res, coreApi) {
+  if (!isServiceTag(req.params.serviceTag)) return badRequest(res, [fail('serviceTag')]);
+  const dellAdvisor = getAdvisor(coreApi);
+  if (typeof dellAdvisor.isScoped !== 'function') {
+    return res.status(501).json({ error: 'This ICC host does not support per-device analysis yet. Upgrade the host.' });
+  }
+  const scope = req.params.serviceTag;
+  res.json({ enabled: dellAdvisor.isConfigured(), report: dellAdvisor.getCachedReport('device_360', { scope }) });
+}
+
+/** POST /advisor/device-360/:serviceTag — (re)generate the per-device 360 report. */
+async function handlePostAdvisorDevice360(req, res, coreApi) {
+  if (!isServiceTag(req.params.serviceTag)) return badRequest(res, [fail('serviceTag')]);
+  const dellAdvisor = getAdvisor(coreApi);
+  if (typeof dellAdvisor.isScoped !== 'function') {
+    return res.status(501).json({ error: 'This ICC host does not support per-device analysis yet. Upgrade the host.' });
+  }
+  const scope = req.params.serviceTag;
+  try {
+    const result = await dellAdvisor.generateReport('device_360', { scope });
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'LLM_NOT_CONFIGURED') {
+      return res.status(503).json({ error: 'AI analysis is not configured. Add an OpenAI or GitHub Models token under Settings → Credentials.' });
+    }
+    if (err.code === 'SCOPE_NOT_FOUND') {
+      return res.status(404).json({ error: 'No device with that service tag.' });
+    }
+    if (err.code === 'BAD_SCOPE') {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err.code === 'LLM_RATE_LIMITED') {
+      if (err.retryAfter) res.set('Retry-After', String(err.retryAfter));
+      return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
+    }
+    if (err.code === 'LLM_REQUEST_FAILED' || err.code === 'LLM_EMPTY') {
+      return res.status(502).json({ error: err.message });
+    }
+    throw err;
+  }
+}
+
 /** GET /advisor/:report — cached Dell AI Advisor report. */
 function handleGetAdvisorReport(req, res, coreApi) {
   if (!isNonEmptyString(req.params.report)) return badRequest(res, [fail('report')]);
   const dellAdvisor = getAdvisor(coreApi);
   const key = advisorReportKey(req.params.report);
   if (!dellAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  if (typeof dellAdvisor.isScoped === 'function' && dellAdvisor.isScoped(key)) return res.status(400).json(SCOPE_NEEDED_ERROR);
   res.json({ enabled: dellAdvisor.isConfigured(), report: dellAdvisor.getCachedReport(key) });
 }
 
@@ -791,6 +843,7 @@ async function handlePostAdvisorReport(req, res, coreApi) {
   const dellAdvisor = getAdvisor(coreApi);
   const key = advisorReportKey(req.params.report);
   if (!dellAdvisor.REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+  if (typeof dellAdvisor.isScoped === 'function' && dellAdvisor.isScoped(key)) return res.status(400).json(SCOPE_NEEDED_ERROR);
   try {
     const result = await dellAdvisor.generateReport(key);
     res.json(result);
@@ -838,6 +891,8 @@ const ROUTES = [
   { method: 'GET', ...compile('/trends'), handler: handleGetTrends },
   { method: 'GET', ...compile('/config'), handler: handleGetConfig },
   { method: 'PUT', ...compile('/config'), handler: handlePutConfig },
+  { method: 'GET', ...compile('/advisor/device-360/:serviceTag'), handler: handleGetAdvisorDevice360 },
+  { method: 'POST', ...compile('/advisor/device-360/:serviceTag'), handler: handlePostAdvisorDevice360 },
   { method: 'GET', ...compile('/advisor/:report'), handler: handleGetAdvisorReport },
   { method: 'POST', ...compile('/advisor/:report'), handler: handlePostAdvisorReport },
   ...REPORT_ROUTES,
