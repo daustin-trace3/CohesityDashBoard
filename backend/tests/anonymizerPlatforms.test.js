@@ -142,6 +142,14 @@ beforeAll(() => {
   db.prepare(`
     INSERT INTO brocade_switches (source_id, wwn, name, ip_address) VALUES (1, '10:00:00:00:00:00:00:01', 'sw-core-eta', '10.50.60.70')
   `).run();
+
+  // UniFi
+  db.prepare(`
+    INSERT INTO unifi_sources (name, host, encrypted_credentials) VALUES ('unifi-site-echo', 'unifi.invalid', ?)
+  `).run(encrypt(JSON.stringify({})));
+  db.prepare(`INSERT INTO unifi_devices (source_id, mac, name) VALUES (1, 'aa:bb:cc:dd:ee:01', 'usw-corelink-08')`).run();
+  db.prepare(`INSERT INTO unifi_clients (source_id, mac, name) VALUES (1, 'aa:bb:cc:dd:ee:02', 'laptop-finance-12')`).run();
+  db.prepare(`INSERT INTO unifi_wlans (source_id, wlan_id, name) VALUES (1, 'wlan-1', 'ssid-guest-lobby')`).run();
 });
 
 const SEEDED_NAMES = [
@@ -157,6 +165,7 @@ const SEEDED_NAMES = [
   'bluecat-bam-echo', 'marrow-view', 'brontide.echo.corp', 'vespera-net', 'quillon-block', 'corvid-switch-01', 'talwynd-dns-01',
   'ariaops-vrops-zeta', 'vm-checkout-eta', 'esxi-host-theta',
   'brocade-sannav-zeta', 'sw-core-eta',
+  'unifi-site-echo', 'usw-corelink-08', 'laptop-finance-12', 'ssid-guest-lobby',
 ];
 
 describe('anonymizer platform coverage', () => {

@@ -32,6 +32,7 @@ const awsManifest = require('../platforms/aws');
 const bluecatManifest = require('../platforms/bluecat');
 const ariaopsManifest = require('../platforms/ariaops');
 const brocadeManifest = require('../platforms/brocade');
+const unifiManifest = require('../platforms/unifi');
 const { createApp } = require('../app');
 
 const pureAdvisor = require('../services/advisors/pureAdvisor');
@@ -44,6 +45,7 @@ const awsAdvisor = require('../services/advisors/awsAdvisor');
 const bluecatAdvisor = require('../services/advisors/bluecatAdvisor');
 const ariaopsAdvisor = require('../services/advisors/ariaopsAdvisor');
 const brocadeAdvisor = require('../services/advisors/brocadeAdvisor');
+const unifiAdvisor = require('../services/advisors/unifiAdvisor');
 
 const API_KEY = 'test-api-key';
 
@@ -58,6 +60,7 @@ const ADVISORS = {
   bluecat: bluecatAdvisor,
   ariaops: ariaopsAdvisor,
   brocade: brocadeAdvisor,
+  unifi: unifiAdvisor,
 };
 
 describe('platform AI advisors: contract', () => {
@@ -106,6 +109,7 @@ describe('platform AI advisors: dispatcher routes', () => {
     registry.registerPlugin(bluecatManifest);
     registry.registerPlugin(ariaopsManifest);
     registry.registerPlugin(brocadeManifest);
+    registry.registerPlugin(unifiManifest);
     app = createApp({ licenseGate: (req, res, next) => next() });
   });
 
@@ -170,6 +174,14 @@ describe('platform AI advisors: dispatcher routes', () => {
   it('GET /api/brocade/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
     const key = brocadeAdvisor.REPORTS[0];
     const res = await request(app).get(`/api/brocade/advisor/${slug(key)}`).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.enabled).toBe(false);
+    expect(res.body.report).toBeNull();
+  });
+
+  it('GET /api/unifi/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
+    const key = unifiAdvisor.REPORTS[0];
+    const res = await request(app).get(`/api/unifi/advisor/${slug(key)}`).set('x-api-key', API_KEY);
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(false);
     expect(res.body.report).toBeNull();

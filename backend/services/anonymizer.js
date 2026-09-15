@@ -268,6 +268,20 @@ function loadDictionary() {
     add(db.prepare("SELECT DISTINCT zone_name AS name FROM brocade_zones WHERE zone_name IS NOT NULL AND zone_name != ''").all(), 'JOB');
   } catch { /* Brocade tables not present on this instance */ }
 
+  try {
+    add(db.prepare("SELECT name FROM unifi_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+    addHostOrIp(db.prepare("SELECT host AS name FROM unifi_sources WHERE host IS NOT NULL AND host != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM unifi_devices WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+    addHostOrIp(db.prepare("SELECT DISTINCT ip AS name FROM unifi_devices WHERE ip IS NOT NULL AND ip != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM unifi_clients WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT hostname AS name FROM unifi_clients WHERE hostname IS NOT NULL AND hostname != ''").all(), 'OBJECT');
+    addHostOrIp(db.prepare("SELECT DISTINCT ip AS name FROM unifi_clients WHERE ip IS NOT NULL AND ip != ''").all());
+    add(db.prepare("SELECT DISTINCT name FROM unifi_wlans WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+  } catch { /* UniFi tables not present on this instance */ }
+  try {
+    add(db.prepare("SELECT DISTINCT name FROM unifi_cameras WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
+  } catch { /* unifi_cameras (v2) not present on this instance */ }
+
   return entries;
 }
 

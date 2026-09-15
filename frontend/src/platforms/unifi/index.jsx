@@ -1,9 +1,12 @@
 import { lazy } from 'react';
 import {
-  Gauge, Router, Cable, Users, Wifi, Share2, Globe, ShieldCheck, ClipboardCheck, Settings, Cctv,
+  Gauge, Router, Cable, Users, Wifi, Share2, Globe, ShieldCheck, ClipboardCheck, Settings, Cctv, Sparkles,
 } from 'lucide-react';
 
 const UnifiOverviewPage = lazy(() => import('../../pages/unifi/UnifiOverviewPage'));
+const UnifiAdvisorPage = lazy(() => import('../../pages/unifi/UnifiAdvisorPage'));
+const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
+const UnifiPrivacyPage = () => <PrivacyInspectorPage platform="unifi" />;
 const UnifiDevicesPage = lazy(() => import('../../pages/unifi/UnifiDevicesPage'));
 const UnifiPortsPage = lazy(() => import('../../pages/unifi/UnifiPortsPage'));
 const UnifiClientsPage = lazy(() => import('../../pages/unifi/UnifiClientsPage'));
@@ -23,6 +26,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: '/unifi', icon: Gauge, isActive: (p) => p === '/unifi' },
+      { label: 'AI Advisor', route: '/unifi/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/unifi/advisor'), requiresAi: true },
       { label: 'Devices', route: '/unifi/devices', icon: Router, isActive: (p) => p.startsWith('/unifi/devices') },
       { label: 'Ports', route: '/unifi/ports', icon: Cable, isActive: (p) => p.startsWith('/unifi/ports') },
       { label: 'Clients', route: '/unifi/clients', icon: Users, isActive: (p) => p.startsWith('/unifi/clients') },
@@ -47,6 +51,7 @@ const navGroups = [
   {
     label: 'System',
     items: [
+      { label: 'Privacy Inspector', route: '/unifi/privacy', icon: ShieldCheck, isActive: (p) => p.startsWith('/unifi/privacy'), requiresAi: true },
       { label: 'Settings', route: '/unifi/settings', icon: Settings, isActive: (p) => p.startsWith('/unifi/settings') },
     ],
   },
@@ -66,6 +71,8 @@ export default {
   navGroups,
   routes: [
     { path: 'unifi', Component: UnifiOverviewPage },
+    { path: 'unifi/advisor', Component: UnifiAdvisorPage },
+    { path: 'unifi/privacy', Component: UnifiPrivacyPage },
     { path: 'unifi/devices', Component: UnifiDevicesPage },
     { path: 'unifi/ports', Component: UnifiPortsPage },
     { path: 'unifi/clients', Component: UnifiClientsPage },
