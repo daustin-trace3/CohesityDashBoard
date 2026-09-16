@@ -212,6 +212,13 @@ describe('deriveVerdict (pure function)', () => {
     expect(v).toMatchObject({ verdict: 'degraded', confidence: 'low' });
     expect(v.reason).toMatch(/no inventory record/i);
   });
+
+  it('3b) own-platform record with no live up/down field -> degraded, medium, names the record', () => {
+    const known = { hostRecords: [{ platform: 'cohesity', name: 'nyc-coh-prd-01', up: null, fields: {} }], platformPolls: [] };
+    const v = svc.deriveVerdict({ source_key: 'k1', platform: 'cohesity' }, known);
+    expect(v).toMatchObject({ verdict: 'degraded', confidence: 'medium' });
+    expect(v.reason).toMatch(/inventory record for this system/i);
+  });
 });
 
 describe('isCriticalSeverity', () => {
