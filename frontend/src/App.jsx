@@ -19,6 +19,7 @@ import PrivacyInspectorRoute from './components/PrivacyInspectorRoute';
 import OpsMonitorPage from './pages/ops/OpsMonitorPage';
 import ServerStatusPage from './pages/ops/ServerStatusPage';
 import TopologyPage from './pages/ops/TopologyPage';
+import ServiceStatusPage from './pages/ops/ServiceStatusPage';
 import CustomDashboardsPage from './pages/dashboards/CustomDashboardsPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import LicenseGate from './components/LicenseGate';
@@ -57,6 +58,7 @@ function AppRoutes() {
           <Route path="ops" element={withBoundary(<OpsMonitorPage />)} />
           <Route path="ops/server360" element={withBoundary(<ServerStatusPage />)} />
           <Route path="ops/topology" element={withBoundary(<TopologyPage />)} />
+          <Route path="ops/status" element={withBoundary(<ServiceStatusPage />)} />
           <Route path="ops/dashboards" element={withBoundary(<CustomDashboardsPage />)} />
           <Route path="dashboard" element={<Navigate to="/cohesity" replace />} />
           <Route path="alerts" element={<Navigate to="/cohesity/alerts" replace />} />

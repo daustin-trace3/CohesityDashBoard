@@ -406,6 +406,53 @@ async function run() {
   }
 }
 
+/** Same always-on-cohesity / registry-enabled gate as routes/ops.js's
+ *  platformGateOk — kept as a private copy here (Service Status needs the
+ *  identical rule but must not import from routes/). */
+function platformGateOk(id) {
+  const entry = registry.getPlugin(id);
+  if (id === 'cohesity') return entry ? entry.enabled === true : registry.isBuiltinPresent('cohesity');
+  return entry?.enabled === true;
+}
+
+/**
+ * Service Status (contract): every currently-open alert across every
+ * enabled platform, gated on platform enablement (NOT the email toggles the
+ * rest of this module uses) so the status board reflects reality even when
+ * SMTP notifications are off. Each collector is isolated — a throwing
+ * collector's platform id is reported in `failed` instead of aborting the
+ * whole sweep, and its previously-recorded events are left untouched by the
+ * caller rather than cleared.
+ */
+function collectOpenAlerts() {
+  const items = [];
+  const failed = [];
+
+  for (const [platform, collect] of Object.entries(COLLECTORS)) {
+    if (!platformGateOk(platform)) continue;
+    try {
+      for (const item of collect()) items.push({ platform, ...item });
+    } catch (err) {
+      logger.error(`[ServiceStatus] Failed to collect ${platform} alerts:`, err.message);
+      failed.push(platform);
+    }
+  }
+
+  for (const contributor of registry.getAlertCollectors()) {
+    const platform = contributor.id;
+    if (COLLECTORS[platform]) continue;
+    if (!platformGateOk(platform)) continue;
+    try {
+      for (const item of contributor.collect()) items.push({ platform, ...item });
+    } catch (err) {
+      logger.error(`[ServiceStatus] Failed to collect ${platform} alerts:`, err.message);
+      failed.push(platform);
+    }
+  }
+
+  return { items, failed };
+}
+
 let cronTask = null;
 
 function initAlertNotifier() {
@@ -426,6 +473,7 @@ module.exports = {
   sendTestEmail,
   initAlertNotifier,
   stopAlertNotifier,
+  collectOpenAlerts,
   _setTransportFactory,
   _reset,
 };

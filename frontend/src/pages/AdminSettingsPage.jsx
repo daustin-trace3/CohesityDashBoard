@@ -48,6 +48,9 @@ export default function AdminSettingsPage() {
   const [flagUnprotected, setFlagUnprotected] = useState(false);
   const [llmModel, setLlmModel] = useState('');
   const [ttlHours, setTtlHours] = useState(24);
+  const [serviceStatusAiEnabled, setServiceStatusAiEnabled] = useState(true);
+  const [serviceStatusAnalysesPerMinute, setServiceStatusAnalysesPerMinute] = useState(3);
+  const [serviceStatusDedupeMinutes, setServiceStatusDedupeMinutes] = useState(60);
   const [modelList, setModelList] = useState(null);   // { provider, models, default } | null
   const [modelsError, setModelsError] = useState(null);
   const [aiEnabled, setAiEnabled] = useState(true);
@@ -100,6 +103,9 @@ export default function AdminSettingsPage() {
         setFlagUnprotected(!!d.llmFlagUnprotected);
         setLlmModel(d.llmModel || '');
         setTtlHours(d.llmAnalysisTtlHours || 24);
+        setServiceStatusAiEnabled(d.serviceStatusAiEnabled !== false);
+        setServiceStatusAnalysesPerMinute(d.serviceStatusAnalysesPerMinute || 3);
+        setServiceStatusDedupeMinutes(d.serviceStatusDedupeMinutes ?? 60);
         setCustomDashboardsEnabled(!!d.featureCustomDashboardsEnabled);
         setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
@@ -120,6 +126,9 @@ export default function AdminSettingsPage() {
         llmFlagUnprotected: flagUnprotected,
         llmModel,
         llmAnalysisTtlHours: Number(ttlHours) || 24,
+        serviceStatusAiEnabled,
+        serviceStatusAnalysesPerMinute: Number(serviceStatusAnalysesPerMinute) || 3,
+        serviceStatusDedupeMinutes: Number(serviceStatusDedupeMinutes) || 0,
         featureCustomDashboardsEnabled: customDashboardsEnabled,
         opsOverviewStyle,
         dnsServer,
@@ -381,6 +390,46 @@ export default function AdminSettingsPage() {
                   onChange={e => setTtlHours(e.target.value)}
                   className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum"
                 />
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-ink mb-1">Service Status AI analysis</p>
+              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
+                Each critical alert on the Service Status page gets one AI analysis. The cap limits how many run per minute; the rest wait in a queue.
+              </p>
+              <label className="flex items-start gap-2.5 cursor-pointer select-none mb-3">
+                <input
+                  type="checkbox"
+                  checked={serviceStatusAiEnabled}
+                  onChange={e => setServiceStatusAiEnabled(e.target.checked)}
+                  className="accent-brand mt-0.5 cursor-pointer"
+                />
+                <span className="text-xs text-ink-muted leading-relaxed">
+                  <span className="font-semibold text-ink">Analyze critical alerts automatically</span>
+                </span>
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="service-status-rate" className="block text-xs font-semibold text-ink mb-1">AI analyses per minute</label>
+                  <input
+                    id="service-status-rate"
+                    type="number" min="1" max="30" step="1"
+                    value={serviceStatusAnalysesPerMinute}
+                    onChange={e => setServiceStatusAnalysesPerMinute(e.target.value)}
+                    className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="service-status-dedupe" className="block text-xs font-semibold text-ink mb-1">Reuse an identical analysis within (minutes)</label>
+                  <input
+                    id="service-status-dedupe"
+                    type="number" min="0" max="1440" step="1"
+                    value={serviceStatusDedupeMinutes}
+                    onChange={e => setServiceStatusDedupeMinutes(e.target.value)}
+                    className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum"
+                  />
+                </div>
               </div>
             </div>
 
