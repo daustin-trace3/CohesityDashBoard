@@ -34,7 +34,11 @@ function isCriticalSeverity(platform, severity) {
  *  platformGateOk (and alertNotifier's private copy of the same rule). */
 function platformGateOk(id) {
   const entry = registry.getPlugin(id);
-  if (id === 'cohesity') return entry ? entry.enabled === true : registry.isBuiltinPresent('cohesity');
+  if (id === 'cohesity') {
+    if (entry) return entry.enabled === true;
+    // Older registries (icc-phase1) have no isBuiltinPresent; cohesity is always-on there.
+    return typeof registry.isBuiltinPresent === 'function' ? registry.isBuiltinPresent('cohesity') : true;
+  }
   return entry?.enabled === true;
 }
 

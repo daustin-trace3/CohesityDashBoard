@@ -469,7 +469,11 @@ async function run() {
  *  identical rule but must not import from routes/). */
 function platformGateOk(id) {
   const entry = registry.getPlugin(id);
-  if (id === 'cohesity') return entry ? entry.enabled === true : registry.isBuiltinPresent('cohesity');
+  if (id === 'cohesity') {
+    if (entry) return entry.enabled === true;
+    // Older registries (icc-phase1) have no isBuiltinPresent; cohesity is always-on there.
+    return typeof registry.isBuiltinPresent === 'function' ? registry.isBuiltinPresent('cohesity') : true;
+  }
   return entry?.enabled === true;
 }
 
@@ -496,7 +500,9 @@ function collectOpenAlerts() {
     }
   }
 
-  for (const contributor of registry.getAlertCollectors()) {
+  // Manifest-hook collectors exist only on registries that expose them.
+  const contributors = typeof registry.getAlertCollectors === 'function' ? registry.getAlertCollectors() : [];
+  for (const contributor of contributors) {
     const platform = contributor.id;
     if (COLLECTORS[platform]) continue;
     if (!platformGateOk(platform)) continue;
