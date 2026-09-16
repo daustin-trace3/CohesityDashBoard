@@ -525,7 +525,33 @@ function seedDell(db, { now, encrypt }) {
     }
   }
 
+  applySanBootPathDownScenario(db);
+
   return totals;
+}
+
+/** Cross-platform incident story shared with the host demo (see
+ *  backend/demo/scenarios/sanBootPathDown.js, duplicated here because the
+ *  pack cannot require host modules and reseeds its own tables every boot):
+ *  dc1-esx-002 becomes nyc-esx-0102.icc.demo, a boot-from-SAN PowerEdge that
+ *  failed to boot after both of its Brocade links dropped. vCenter and Brocade
+ *  carry the matching host-down / host_link_down rows on the host side. */
+function applySanBootPathDownScenario(db) {
+  const HOST = 'nyc-esx-0102.icc.demo';
+  const from = db.prepare('SELECT ome_id, device_id, service_tag FROM dell_devices WHERE name = ?').get('dc1-esx-002.demo.local');
+  if (!from) return;
+  db.prepare(`
+    UPDATE dell_devices SET name = ?, model = 'PowerEdge R760', health = 'critical', health_raw = 4000, power_state = 'on',
+      connection_state = 1, cpu_util_pct = NULL, mem_util_pct = NULL WHERE ome_id = ? AND device_id = ?
+  `).run(HOST, from.ome_id, from.device_id);
+  const createdAt = new Date(Date.now() - 35 * 60000).toISOString().replace('T', ' ').slice(0, 19);
+  db.prepare(`
+    INSERT OR IGNORE INTO dell_alerts (ome_id, alert_id, severity, status, category, subcategory, message_id, message,
+      device_name, service_tag, created_at)
+    VALUES (?, 990001, 'critical', 'not-acknowledged', 'System Health', 'Boot', 'SYS1003', ?, ?, ?, ?)
+  `).run(from.ome_id,
+    `System failed to boot: no bootable device found on the Fibre Channel boot path (HBA slot 3, ports 1 and 2) of ${HOST}. Server is powered on with no operating system running.`,
+    HOST, from.service_tag, createdAt);
 }
 
 /** Demo-only entry point. Upserts the two fixture instances (id stable

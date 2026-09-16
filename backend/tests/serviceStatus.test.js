@@ -431,3 +431,82 @@ describe('routes', () => {
     expect(res.body).toEqual({ ok: true });
   });
 });
+
+// Cross-platform root cause: a Dell alert whose host is down in vCenter and
+// whose Brocade fabric logins are missing. Mirrors demo/scenarios/sanBootPathDown.js.
+describe('cross-platform evidence (SAN path down)', () => {
+  const HOST = 'ut-esx-0102.icc.demo';
+  let brocadeSourceId;
+
+  function seedSanScenario() {
+    db.exec("DELETE FROM brocade_device_ports; DELETE FROM brocade_switch_ports; DELETE FROM brocade_switches; DELETE FROM brocade_issue_history");
+    db.exec("DELETE FROM brocade_sources WHERE name = 'SanNav UT'");
+    brocadeSourceId = db.prepare(`
+      INSERT INTO brocade_sources (name, host, port, username, password_enc, verify_ssl, enabled,
+        polling_interval_minutes, event_poll_minutes, fos_proxy_enabled, sannav_version)
+      VALUES ('SanNav UT', '10.0.0.9', 443, 'admin', 'x', 0, 1, 60, 5, 0, '2.3.0')
+    `).run().lastInsertRowid;
+    db.prepare(`INSERT INTO brocade_switches (source_id, wwn, name, fabric_name, operational_status, stale) VALUES (?, ?, ?, 'PROD-A', 'HEALTHY', 0)`)
+      .run(brocadeSourceId, '10:00:00:00:00:00:aa:02', 'UT-SW02');
+    db.prepare(`
+      INSERT INTO brocade_switch_ports (source_id, switch_wwn, switch_name, port_number, state, status, status_message, occupied, stale)
+      VALUES (?, '10:00:00:00:00:00:aa:02', 'UT-SW02', 18, 'Offline', 'No_Light', 'no sync on port group 16-19', 1, 0)
+    `).run(brocadeSourceId);
+    db.prepare(`
+      INSERT INTO brocade_device_ports (source_id, wwn, port_role, fabric_name, switch_wwn, switch_name, port_number,
+        enclosure_name, fdmi_host_name, is_missing, stale)
+      VALUES (?, '10:00:00:10:9b:ut:00:18', 'Initiator', 'PROD-A', '10:00:00:00:00:00:aa:02', 'UT-SW02', 18, 'ut-esx-0102', ?, 1, 0)
+    `).run(brocadeSourceId, HOST);
+    db.exec("DELETE FROM vcenter_hosts WHERE name LIKE 'ut-esx-%'");
+    const vc = db.prepare('SELECT id FROM vcenter_vcenters LIMIT 1').get();
+    const vcId = vc ? vc.id : db.prepare(`INSERT INTO vcenter_vcenters (name, host, username, encrypted_credentials) VALUES ('ut-vc', 'ut-vc.local', 'u', 'x')`).run().lastInsertRowid;
+    db.prepare(`INSERT INTO vcenter_hosts (vcenter_id, host_id, name, cluster_name, connection_state, power_state) VALUES (?, 'host-ut', ?, 'ut-cl', 'NOT_RESPONDING', 'POWERED_ON')`).run(vcId, HOST);
+  }
+
+  it('brocadeIssues rule host_link_down fires once per host and names the switch port state', () => {
+    seedSanScenario();
+    const { computeIssues } = require('../services/brocadeIssues');
+    const hits = computeIssues().filter((i) => i.type === 'host_link_down');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ severity: 'critical', target: HOST, source: 'SanNav UT' });
+    expect(hits[0].message).toContain('UT-SW02 port 18 (No_Light)');
+    expect(hits[0].message).toContain('no sync on port group 16-19');
+  });
+
+  it('deriveVerdict: management-plane up on the alerting platform but another platform reports down -> offline, medium', () => {
+    const evidence = {
+      hostRecords: [
+        { platform: 'dell', up: true, fields: {} },
+        { platform: 'vcenter', up: false, fields: {} },
+      ],
+      platformPolls: [],
+    };
+    const v = svc.deriveVerdict({ source_key: 'k1', platform: 'dell' }, evidence);
+    expect(v).toMatchObject({ verdict: 'offline', confidence: 'medium' });
+    expect(v.reason).toMatch(/vCenter reports this host as down/);
+  });
+
+  it('a Dell alert gathers SAN paths and the open Brocade/vCenter events for the same host into its evidence', async () => {
+    seedSanScenario();
+    // dell_devices row: iDRAC reachable, server powered on (management plane says up).
+    const ome = db.prepare(`INSERT INTO dell_ome_instances (name, host, username, encrypted_credentials) VALUES ('OME UT', 'ome-ut', 'u', 'x')`).run().lastInsertRowid;
+    db.prepare(`INSERT INTO dell_devices (ome_id, device_id, service_tag, name, device_type, health, power_state, connection_state) VALUES (?, 1, 'UTTAG01', ?, 'Server', 'critical', 'on', 1)`).run(ome, HOST);
+    svc._setCollector(() => ({
+      items: [
+        makeItem('brocade', { sourceKey: `host_link_down|SanNav UT|${HOST}`, host: HOST, message: `Host ${HOST} lost its fabric login on UT-SW02 port 18 (No_Light); link down` }),
+        makeItem('dell', { sourceKey: 'd1:990001', host: `${HOST} (UTTAG01)`, message: `System failed to boot: no bootable device on the FC boot path of ${HOST}` }),
+      ],
+      failed: [],
+    }));
+    await svc.sweep();
+    const dellEvent = db.prepare("SELECT * FROM service_alert_events WHERE platform = 'dell'").get();
+    const analysis = db.prepare('SELECT * FROM service_alert_analyses WHERE event_id = ?').get(dellEvent.id);
+    expect(analysis.evidence_verdict).toBe('offline');
+    const evidence = JSON.parse(analysis.evidence_json);
+    expect(evidence.sanPaths).toHaveLength(1);
+    expect(evidence.sanPaths[0]).toMatchObject({ switch_name: 'UT-SW02', port_number: 18, is_missing: true, switch_port_status: 'No_Light', linkState: 'lost fabric login' });
+    expect(evidence.relatedOtherPlatformEvents.map((e) => e.platform)).toEqual(['brocade']);
+    expect(evidence.hostRecords.some((r) => r.platform === 'vcenter' && r.up === false)).toBe(true);
+    expect(lastTimeline('dell').state).toBe('offline');
+  });
+});

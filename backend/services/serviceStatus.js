@@ -443,6 +443,57 @@ function metricsFreshnessFor(platform) {
   }
 }
 
+/** SAN paths for the host: Brocade fabric logins (device ports) matched the
+ *  same way the topology map does, joined to the switch port's live state. */
+function sanPathsFor(candidates) {
+  if (!candidates.length) return [];
+  try {
+    const ph = candidates.map(() => '?').join(',');
+    return db.prepare(`
+      SELECT dp.wwn, dp.port_role, dp.fabric_name, dp.switch_name, dp.port_number, dp.switch_port_name,
+             dp.is_missing, dp.speed, dp.zone_alias, dp.active_zones,
+             COALESCE(dp.fdmi_host_name, dp.enclosure_name) AS host,
+             sp.state AS switch_port_state, sp.status AS switch_port_status,
+             sp.status_message AS switch_port_message, sp.health AS switch_port_health
+      FROM brocade_device_ports dp
+      LEFT JOIN brocade_switch_ports sp
+        ON sp.switch_wwn = dp.switch_wwn AND sp.port_number = dp.port_number AND sp.stale = 0
+      WHERE dp.stale = 0 AND (lower(dp.enclosure_name) IN (${ph}) OR lower(dp.fdmi_host_name) IN (${ph}))
+      ORDER BY dp.switch_name, dp.port_number LIMIT 16
+    `).all(...candidates, ...candidates).map((r) => ({
+      ...r,
+      is_missing: !!r.is_missing,
+      active_zones: (() => { try { return JSON.parse(r.active_zones || '[]'); } catch { return []; } })(),
+      linkState: r.is_missing ? 'lost fabric login' : 'logged in',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Open events on OTHER platforms that name this host (by host or in the
+ *  message), so a Brocade link-down or a vCenter host-down shows up in a
+ *  Dell alert's evidence. */
+function relatedOtherPlatformEventsFor(event, candidates) {
+  if (!candidates.length) return [];
+  try {
+    const ph = candidates.map(() => '?').join(',');
+    // Message match uses the host's own short name (not the parenthetical
+    // service tag, which would be the shortest candidate for Dell hosts).
+    const shortName = String(event.host || '').split(' (')[0].split('.')[0].trim().toLowerCase();
+    if (!shortName || shortName.length < 3) return [];
+    return db.prepare(`
+      SELECT id, platform, severity, host, message, detected_at AS detectedAt
+      FROM service_alert_events
+      WHERE platform != ? AND cleared_at IS NULL
+        AND (lower(host) IN (${ph}) OR lower(message) LIKE ?)
+      ORDER BY detected_at DESC LIMIT 10
+    `).all(event.platform, ...candidates, `%${shortName}%`);
+  } catch {
+    return [];
+  }
+}
+
 function relatedOpenEventsFor(event) {
   try {
     return db.prepare(`
@@ -487,8 +538,10 @@ function gatherEvidence(event) {
     platformPolls: platformPollsFor(event.platform),
     sources: sourcesFor(event.platform),
     hostRecords,
+    sanPaths: sanPathsFor(candidates),
     metricsFreshness: metricsFreshnessFor(event.platform),
     relatedOpenEvents: relatedOpenEventsFor(event),
+    relatedOtherPlatformEvents: relatedOtherPlatformEventsFor(event, candidates),
   };
 
   const dv = deriveVerdict(event, evidence);
@@ -512,6 +565,12 @@ function deriveVerdict(event, evidence) {
   if (ownRecords.some((r) => r.up === false)) {
     return { verdict: 'offline', reason: 'ICC inventory shows this host as down or unreachable', confidence: 'high' };
   }
+  // An explicit down signal from any other platform beats a management-plane
+  // "up" (a Dell iDRAC answering OME says nothing about the OS or its storage).
+  const otherDown = otherRecords.find((r) => r.up === false);
+  if (otherDown) {
+    return { verdict: 'offline', reason: `${platformMeta(otherDown.platform).label} reports this host as down or not responding`, confidence: ownRecords.some((r) => r.up === true) ? 'medium' : 'medium' };
+  }
   if (ownRecords.some((r) => r.up === true)) {
     return { verdict: 'degraded', reason: 'ICC inventory shows this host is still up', confidence: 'high' };
   }
@@ -521,9 +580,6 @@ function deriveVerdict(event, evidence) {
     return { verdict: 'degraded', reason: 'ICC has an inventory record for this system but no live up/down state; alert is open, treating as degraded', confidence: 'medium' };
   }
   if (ownRecords.length === 0 && otherRecords.length > 0) {
-    if (otherRecords.some((r) => r.up === false)) {
-      return { verdict: 'offline', reason: 'Another platform reports this host as down', confidence: 'medium' };
-    }
     if (otherRecords.some((r) => r.up === true)) {
       return { verdict: 'degraded', reason: 'Another platform reports this host as up', confidence: 'medium' };
     }
@@ -575,7 +631,11 @@ function buildMessages(event, evidence, evidenceVerdict, anon) {
     `likely cause of this alert), "actions": string[] (2-4 concrete ordered steps), "current_state": ` +
     `string (1-2 sentences on the system state as of the poll times in the evidence), ` +
     `"confidence": "high"|"medium"|"low"}. offline means the system that raised the alert is not ` +
-    `reachable or not running; degraded means it is still up but impaired. Do not invent data.`;
+    `reachable or not running; degraded means it is still up but impaired. The evidence may include ` +
+    `SAN paths (Brocade fabric logins with the switch port state), inventory from other platforms, and ` +
+    `open alerts on other platforms for the same host. When evidence from another platform explains ` +
+    `this alert, name that specific component (switch, port, link, datastore) as the likely root cause ` +
+    `and say which platform reported it. Do not invent data.`;
   const ec = (getSetting('llm_estate_context') || '').trim();
   if (ec) system += ` Operator context: ${ec}`;
   system += PROMPT_NOTE;
@@ -587,8 +647,10 @@ function buildMessages(event, evidence, evidenceVerdict, anon) {
     platform_polls: evidence.platformPolls,
     sources: evidence.sources,
     host_records: evidence.hostRecords,
+    san_paths: evidence.sanPaths,
     metrics_freshness: evidence.metricsFreshness,
     related_open_events: evidence.relatedOpenEvents,
+    related_other_platform_events: evidence.relatedOtherPlatformEvents,
   };
   const user = `Alert and evidence (JSON):\n${JSON.stringify(anon.anonymize(payload))}`;
 

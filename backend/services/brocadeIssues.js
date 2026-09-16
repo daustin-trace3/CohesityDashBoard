@@ -211,6 +211,41 @@ function computeIssues() {
     issues.push({ sourceId: r.source_id, source, type: 'event_storm', target: source, severity: 'warning', message: `${r.n} critical/alert events in the last hour on ${source}` });
   }
 
+  // Rule 15: host_link_down. An initiator (host HBA) that SANnav still lists
+  // for a known host but flags missing has dropped its fabric login: the link
+  // to that switch port is down. One issue per host naming every lost port.
+  // Tunable if a real estate keeps decommissioned HBAs around as "missing".
+  try {
+    const lost = db.prepare(`
+      SELECT dp.source_id, dp.wwn, dp.switch_name, dp.switch_wwn, dp.port_number,
+             COALESCE(dp.fdmi_host_name, dp.enclosure_name) AS host,
+             sp.state AS sp_state, sp.status AS sp_status, sp.status_message AS sp_message
+      FROM brocade_device_ports dp
+      LEFT JOIN brocade_switch_ports sp
+        ON sp.switch_wwn = dp.switch_wwn AND sp.port_number = dp.port_number AND sp.stale = 0
+      WHERE dp.stale = 0 AND dp.is_missing = 1 AND dp.port_role = 'Initiator'
+        AND COALESCE(dp.fdmi_host_name, dp.enclosure_name) IS NOT NULL
+      ORDER BY host, dp.switch_name, dp.port_number
+    `).all();
+    const byHost = new Map();
+    for (const r of lost) {
+      if (!byHost.has(r.host)) byHost.set(r.host, []);
+      byHost.get(r.host).push(r);
+    }
+    for (const [host, rows] of byHost) {
+      const source = srcName.get(rows[0].source_id) || `source ${rows[0].source_id}`;
+      const ports = rows.map((r) => {
+        const state = r.sp_status || r.sp_state;
+        return `${r.switch_name || r.switch_wwn} port ${r.port_number}${state ? ` (${state})` : ''}`;
+      });
+      const detail = rows.find((r) => r.sp_message)?.sp_message;
+      issues.push({
+        sourceId: rows[0].source_id, source, type: 'host_link_down', target: host, severity: 'critical',
+        message: `Host ${host} lost its fabric login on ${ports.join(', ')}; link down${detail ? `: ${detail}` : ''}`,
+      });
+    }
+  } catch { /* device/switch port tables absent on this instance */ }
+
   const order = { critical: 0, warning: 1, info: 2 };
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);
 }
