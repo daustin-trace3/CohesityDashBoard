@@ -126,6 +126,7 @@ export function DeviceDetailModal({ deviceId, onClose }) {
   const advisorTab = dev ? {
     slug: dev.service_tag,
     label: `AI analysis: ${dev.name}`,
+    subject: dev.name || dev.service_tag,
     icon: Sparkles,
     blurb: 'Health verdict, likely root causes and next actions for this server, from everything ICC knows about it.',
   } : null;

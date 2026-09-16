@@ -75,7 +75,7 @@ export default function AdvisorReportModal({ tab, initialReport, enabled, autoRu
               <code className="text-brand"> GITHUB_MODELS_TOKEN</code>) and restart.
             </p>
           ) : running ? (
-            <LoadingPanel label="Analyzing the estate…" height={180} />
+            <LoadingPanel label={tab.subject ? `Analyzing ${tab.subject}…` : 'Analyzing the estate…'} height={180} />
           ) : report?.content ? (
             <>
               {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
