@@ -984,6 +984,12 @@ let timeoutHandle = null;
 
 function initServiceStatus() {
   if (intervalHandle) return;
+  // A restart mid-analysis would otherwise leave events parked as 'running'.
+  try {
+    db.prepare("UPDATE service_alert_events SET analysis_status = 'pending' WHERE analysis_status = 'running'").run();
+  } catch (err) {
+    logger.error('[ServiceStatus] could not requeue running events:', err.message);
+  }
   intervalHandle = setInterval(() => { sweep(); }, 60000);
   timeoutHandle = setTimeout(() => { sweep(); }, 15000);
 }
