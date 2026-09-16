@@ -245,7 +245,7 @@ export function AdvisorReportModal({ tab, initialReport, enabled, autoRun = fals
           <code style={{ color: BRAND }}> GITHUB_MODELS_TOKEN</code>) and restart.
         </p>
       ) : running ? (
-        <LoadingPanel label="Analyzing the estate…" height={180} />
+        <LoadingPanel label={tab.subject ? `Analyzing ${tab.subject}…` : 'Analyzing the estate…'} height={180} />
       ) : report?.content ? (
         <>
           {error && <p style={{ color: 'var(--dl-crit)', fontSize: 12, marginBottom: 8 }}>{error}</p>}
