@@ -511,6 +511,11 @@ function deriveVerdict(event, evidence) {
   if (ownRecords.some((r) => r.up === true)) {
     return { verdict: 'degraded', reason: 'ICC inventory shows this host is still up', confidence: 'high' };
   }
+  if (ownRecords.length > 0) {
+    // Known to ICC (cluster / array / account record) but the platform gives
+    // no live up/down field; the open alert alone means degraded.
+    return { verdict: 'degraded', reason: 'ICC has an inventory record for this system but no live up/down state; alert is open, treating as degraded', confidence: 'medium' };
+  }
   if (ownRecords.length === 0 && otherRecords.length > 0) {
     if (otherRecords.some((r) => r.up === false)) {
       return { verdict: 'offline', reason: 'Another platform reports this host as down', confidence: 'medium' };
