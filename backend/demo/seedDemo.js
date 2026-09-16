@@ -153,6 +153,10 @@ async function main() {
   const proxmoxResult = db.transaction(() => seedProxmox(db, { now, encrypt }))();
   const brocadeResult = db.transaction(() => seedBrocade(db, { now, encrypt }))();
   const bluecatResult = db.transaction(() => seedBluecat(db, { now, encrypt }))();
+  // Cross-platform incident story (Dell host down because its Brocade links
+  // dropped) layered over the generated estate; see scenarios/sanBootPathDown.js.
+  const { applySanBootPathDown } = require('./scenarios/sanBootPathDown');
+  const scenarioResult = db.transaction(() => applySanBootPathDown(db))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -178,6 +182,7 @@ async function main() {
     ['proxmox servers/nodes/guests', `${proxmoxResult.servers}/${proxmoxResult.nodes}/${proxmoxResult.guests}`],
     ['brocade sources/fabrics/switches/ports', `${brocadeResult.sources}/${brocadeResult.fabrics}/${brocadeResult.switches}/${brocadeResult.switchPorts}`],
     ['bluecat views/zones/records/networks/devices/servers', `${bluecatResult.views}/${bluecatResult.zones}/${bluecatResult.records}/${bluecatResult.networks}/${bluecatResult.devices}/${bluecatResult.servers}`],
+    ['scenario san-boot-path-down (vcenter/brocade/dell)', `${scenarioResult.vcenter.applied}/${scenarioResult.brocade.applied}/${scenarioResult.dell.applied}`],
     ['users', 1],
   ];
 
