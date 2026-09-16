@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HeartPulse,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
@@ -25,6 +25,7 @@ const opsNavGroups = [{
   label: 'Estate',
   items: [
     { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p === '/ops', permission: 'cohesity:*:view' },
+    { label: 'Service Status', route: '/ops/status', icon: HeartPulse, isActive: p => p.startsWith('/ops/status'), permission: 'cohesity:*:view' },
     { label: 'Server 360', route: '/ops/server360', icon: Crosshair, isActive: p => p.startsWith('/ops/server360'), permission: 'cohesity:*:view' },
     { label: 'Topology', route: '/ops/topology', icon: Waypoints, isActive: p => p.startsWith('/ops/topology'), permission: 'cohesity:*:view' },
     { label: 'Custom Dashboards', route: '/ops/dashboards', icon: LayoutGrid, isActive: p => p.startsWith('/ops/dashboards'), permission: 'cohesity:*:view', requiresCustomDashboards: true },

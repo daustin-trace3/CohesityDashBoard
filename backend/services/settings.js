@@ -65,6 +65,9 @@ const DEFAULTS = {
   alert_email_min_severity: 'warning',
   alert_email_platforms: '{"cohesity":true,"pure":true,"netapp":true,"zerto":true,"vcenter":true,"dell":true,"aria":true,"netbackup":true,"aws":true,"proxmox":true,"brocade":true,"bluecat":true}',
   alert_email_reminder_hours: '24',
+  service_status_ai_enabled: '1',
+  service_status_analyses_per_minute: '3',
+  service_status_dedupe_minutes: '60',
 };
 
 function getSetting(key) {
@@ -191,6 +194,17 @@ function getNotificationSettings() {
   };
 }
 
+/** Service Status page (contract: critical-alert board + AI analysis cap). */
+function getServiceStatusSettings() {
+  const perMinute = Number(getSetting('service_status_analyses_per_minute'));
+  const dedupe = Number(getSetting('service_status_dedupe_minutes'));
+  return {
+    serviceStatusAiEnabled: getSetting('service_status_ai_enabled') !== '0',
+    serviceStatusAnalysesPerMinute: (perMinute >= 1 && perMinute <= 30) ? Math.round(perMinute) : 3,
+    serviceStatusDedupeMinutes: (dedupe >= 0 && dedupe <= 1440) ? Math.round(dedupe) : 60,
+  };
+}
+
 /** Decrypted SMTP password, or '' if none stored. */
 function getSmtpPassword() {
   const stored = getSetting('smtp_password');
@@ -205,5 +219,5 @@ function getSmtpPassword() {
 module.exports = {
   getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
   getAnalysisTtlHours, getAiSettings, getLicenseSettings, getPlatformSettings,
-  getNotificationSettings, getSmtpPassword,
+  getNotificationSettings, getSmtpPassword, getServiceStatusSettings,
 };

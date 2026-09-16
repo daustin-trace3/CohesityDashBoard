@@ -1,5 +1,5 @@
 const express = require('express');
-const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, setSetting, secretSource } = require('../services/settings');
+const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, getServiceStatusSettings, setSetting, secretSource } = require('../services/settings');
 const { encrypt } = require('../services/encryption');
 const { listModels } = require('../services/llmProvider');
 const alertNotifier = require('../services/alertNotifier');
@@ -85,7 +85,7 @@ router.put('/credentials', (req, res, next) => {
 /** GET /api/settings — current AI + licensing settings. */
 router.get('/', (req, res, next) => {
   try {
-    res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings() });
+    res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings() });
   } catch (err) {
     next(err);
   }
@@ -215,7 +215,18 @@ router.put('/', (req, res, next) => {
       if (!OPS_STYLE_VALUES.has(v)) return res.status(400).json({ error: 'opsOverviewStyle must be classic, drift or nocturne' });
       setSetting('ops_overview_style', v);
     }
-    res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings() });
+    if (req.body?.serviceStatusAiEnabled !== undefined) {
+      setSetting('service_status_ai_enabled', req.body.serviceStatusAiEnabled ? '1' : '0');
+    }
+    if (req.body?.serviceStatusAnalysesPerMinute !== undefined) {
+      const n = Number(req.body.serviceStatusAnalysesPerMinute);
+      if (n >= 1 && n <= 30) setSetting('service_status_analyses_per_minute', String(Math.round(n)));
+    }
+    if (req.body?.serviceStatusDedupeMinutes !== undefined) {
+      const n = Number(req.body.serviceStatusDedupeMinutes);
+      if (n >= 0 && n <= 1440) setSetting('service_status_dedupe_minutes', String(Math.round(n)));
+    }
+    res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings() });
   } catch (err) {
     next(err);
   }

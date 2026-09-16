@@ -360,4 +360,54 @@ module.exports = [
       }
     },
   },
+  // Service Status page: per-platform critical-alert events, one AI analysis
+  // per event, and a per-platform state timeline the board carries forward.
+  {
+    version: 17,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS service_alert_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          platform TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          host TEXT,
+          message TEXT,
+          first_seen TEXT,
+          detected_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          cleared_at TEXT,
+          analysis_status TEXT NOT NULL DEFAULT 'pending',
+          UNIQUE(platform, source_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sae_platform_open ON service_alert_events(platform, cleared_at);
+        CREATE INDEX IF NOT EXISTS idx_sae_detected ON service_alert_events(detected_at);
+        CREATE TABLE IF NOT EXISTS service_alert_analyses (
+          event_id INTEGER PRIMARY KEY REFERENCES service_alert_events(id) ON DELETE CASCADE,
+          evidence_verdict TEXT NOT NULL,
+          ai_verdict TEXT,
+          verdict TEXT NOT NULL,
+          verdict_reason TEXT,
+          why TEXT,
+          actions_json TEXT,
+          current_state TEXT,
+          confidence TEXT,
+          evidence_json TEXT NOT NULL,
+          model TEXT,
+          error TEXT,
+          reused_from INTEGER,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS service_status_timeline (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          platform TEXT NOT NULL,
+          state TEXT NOT NULL,
+          at TEXT NOT NULL,
+          reason TEXT,
+          event_ids_json TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS idx_sst_platform_at ON service_status_timeline(platform, at);
+      `);
+    },
+  },
 ];

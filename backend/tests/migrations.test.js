@@ -250,6 +250,7 @@ const NEW_TABLES = [
   'bluecat_blocks', 'bluecat_networks', 'bluecat_ranges', 'bluecat_addresses',
   'bluecat_devices', 'bluecat_servers', 'bluecat_network_overrides',
   'bluecat_metrics_history', 'bluecat_issue_history',
+  'service_alert_events', 'service_alert_analyses', 'service_status_timeline',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
   // post-migration SQL no longer matches the schema.sql original.

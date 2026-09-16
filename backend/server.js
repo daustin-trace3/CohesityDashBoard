@@ -6,6 +6,7 @@ const pluginBoot = require('./services/pluginBoot');
 const { createApp } = require('./app');
 const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
+const { initServiceStatus } = require('./services/serviceStatus');
 const directorySync = require('./services/directorySync');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
@@ -100,12 +101,16 @@ if (require.main === module) {
     logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
     if (isDemo()) {
       logger.info('[Demo] Demo mode — pollers disabled');
+      // The demo's poller process idles (pollers disabled above), so the API
+      // process is the only place Service Status can run its 1-minute sweep.
+      initServiceStatus();
     } else if (process.env.RUN_POLLERS_INLINE === 'true') {
       // Legacy single-process mode: pollers share the API event loop, so
       // heavy poll cycles can stall API responses. Prefer the separate
       // poller process (backend/pollerProcess.js).
       initPoller();
       initAlertNotifier();
+      initServiceStatus();
       directorySync.startScheduler();
       // Start pollers only for enabled, actively-registered plugins (Cohesity's
       // poller above is not registry-managed in Phase 1 and always starts).
