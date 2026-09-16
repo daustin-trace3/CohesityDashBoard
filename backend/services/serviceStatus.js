@@ -451,7 +451,7 @@ function sanPathsFor(candidates) {
     const ph = candidates.map(() => '?').join(',');
     return db.prepare(`
       SELECT dp.wwn, dp.port_role, dp.fabric_name, dp.switch_name, dp.port_number, dp.switch_port_name,
-             dp.is_missing, dp.speed, dp.zone_alias, dp.active_zones,
+             dp.is_missing, dp.speed,
              COALESCE(dp.fdmi_host_name, dp.enclosure_name) AS host,
              sp.state AS switch_port_state, sp.status AS switch_port_status,
              sp.status_message AS switch_port_message, sp.health AS switch_port_health
@@ -461,9 +461,11 @@ function sanPathsFor(candidates) {
       WHERE dp.stale = 0 AND (lower(dp.enclosure_name) IN (${ph}) OR lower(dp.fdmi_host_name) IN (${ph}))
       ORDER BY dp.switch_name, dp.port_number LIMIT 16
     `).all(...candidates, ...candidates).map((r) => ({
+      // Zone names and aliases are left out on purpose: they embed host and
+      // fabric names, and the anonymizer cannot restore tokens glued inside
+      // an identifier (SOURCE-1_zone_OBJECT-1 came back verbatim once).
       ...r,
       is_missing: !!r.is_missing,
-      active_zones: (() => { try { return JSON.parse(r.active_zones || '[]'); } catch { return []; } })(),
       linkState: r.is_missing ? 'lost fabric login' : 'logged in',
     }));
   } catch {

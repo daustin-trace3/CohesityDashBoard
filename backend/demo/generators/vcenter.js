@@ -139,7 +139,10 @@ function seedVcenter(db, { now, encrypt }) {
       for (let h = 1; h <= hostCount; h++) {
         const hostName = `${site}-esx-${String(c).padStart(2, '0')}${String(h).padStart(2, '0')}.icc.demo`;
         // One down host (lon) and one maintenance host (nyc) for the issues feed.
-        const down = site === 'lon' && c === 1 && h === hostCount;
+        // nyc-esx-0102 is the SAN-boot-path-down incident host (see
+        // demo/scenarios/sanBootPathDown.js): down here so the real reconcile
+        // opens its host-down issue.
+        const down = (site === 'lon' && c === 1 && h === hostCount) || hostName === 'nyc-esx-0102.icc.demo';
         const maintenance = !down && site === 'nyc' && c === 1 && h === hostCount;
         const cpuCap = 2 * 24 * 2400; // 2 sockets × 24 cores × 2.4 GHz, in MHz
         const memCap = pick(rng, [512, 768, 1024]) * GIB;
