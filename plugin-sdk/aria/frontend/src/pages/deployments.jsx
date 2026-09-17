@@ -15,6 +15,7 @@ function DetailModal({ detail, loading, onClose }) {
     { label: 'Project', value: detail.project_name || detail.project_id },
     { label: 'Deployment ID', value: detail.deployment_id },
     { label: 'Created By', value: detail.created_by },
+    { label: 'Owned By', value: detail.owned_by },
     { label: 'Created', value: detail.created_at_src ? fmtWhen(detail.created_at_src) : null },
     { label: 'Updated', value: detail.updated_at_src ? fmtWhen(detail.updated_at_src) : null },
     { label: 'Lease Expires', value: detail.lease_expire_at ? fmtWhen(detail.lease_expire_at) : null },
@@ -95,7 +96,7 @@ export default function AriaDeploymentsPage() {
 
   const list = rows || [];
   const ctl = useTableControls(list, {
-    searchKeys: ['name', 'instance_name', 'project_name', 'created_by', 'resource_names'],
+    searchKeys: ['name', 'instance_name', 'project_name', 'created_by', 'owned_by', 'resource_names'],
     defaultSortKey: 'created_at_src', defaultSortDir: 'desc',
     paginate: true,
   });
@@ -128,6 +129,7 @@ export default function AriaDeploymentsPage() {
                 <SortTh k="resource_count" label="Resources" ctl={ctl} align="right" />
                 <SortTh k="lease_days_left" label="Lease" ctl={ctl} align="right" />
                 <SortTh k="created_by" label="Created By" ctl={ctl} />
+                <SortTh k="owned_by" label="Owned By" ctl={ctl} />
                 <SortTh k="created_at_src" label="Created" ctl={ctl} />
               </tr></thead>
               <tbody>
@@ -149,6 +151,7 @@ export default function AriaDeploymentsPage() {
                       )}
                     </td>
                     <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{d.created_by || '—'}</td>
+                    <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{d.owned_by || '—'}</td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(d.created_at_src)}</td>
                   </tr>
                 ))}

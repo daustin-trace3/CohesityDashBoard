@@ -293,4 +293,15 @@ module.exports = [
       if (!cols.includes('raw_json')) db.exec('ALTER TABLE aria_deployments ADD COLUMN raw_json TEXT');
     },
   },
+  {
+    version: 7,
+    up(db) {
+      // Deployment owner (vRA ownedBy) as its own column; created_by kept
+      // its createdBy-or-ownedBy fallback. Backfilled from raw_json so live
+      // instances show owners before their next poll.
+      const cols = db.prepare("PRAGMA table_info('aria_deployments')").all().map((c) => c.name);
+      if (!cols.includes('owned_by')) db.exec('ALTER TABLE aria_deployments ADD COLUMN owned_by TEXT');
+      db.exec("UPDATE aria_deployments SET owned_by = json_extract(raw_json, '$.ownedBy') WHERE owned_by IS NULL AND raw_json IS NOT NULL AND json_valid(raw_json)");
+    },
+  },
 ];

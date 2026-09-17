@@ -164,8 +164,8 @@ function buildStore(coreApi) {
       const stmt = db.prepare(`
         INSERT INTO aria_deployments (instance_id, deployment_id, name, project_name, status,
           created_by, created_at_src, updated_at_src, lease_expire_at, resource_count,
-          raw_status_detail, project_id, raw_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          raw_status_detail, project_id, raw_json, owned_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       // Live vRA (2026-07-28): deployments carry projectId only — resolve names
       // through the projects fetch from the same poll.
@@ -187,7 +187,8 @@ function buildStore(coreApi) {
           d?.createdBy ?? d?.ownedBy ?? null, d?.createdAt ?? null, d?.lastUpdatedAt ?? d?.updatedAt ?? null,
           d?.leaseExpireAt ?? d?.leaseExpiration ?? null, count,
           d?.statusDetail ? JSON.stringify(d.statusDetail) : null,
-          projectId, JSON.stringify(d));
+          projectId, JSON.stringify(d),
+        d?.ownedBy ?? (typeof d?.owner === 'string' ? d.owner : d?.owner?.name) ?? null);
       }
     }
 
