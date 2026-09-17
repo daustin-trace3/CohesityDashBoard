@@ -240,4 +240,28 @@ describe('routes/aria.js basic CRUD (minimal express app, no dispatcher)', () =>
       expect(Array.isArray(res.body), `GET /api/aria/${path} body`).toBe(true);
     }
   });
+
+  it('GET /api/aria/deployments filters by project (name or id), ownedBy and status, combined with AND', async () => {
+    const inst = db.prepare("SELECT id FROM aria_instances ORDER BY id LIMIT 1").get().id;
+    db.exec("DELETE FROM aria_deployments WHERE deployment_id LIKE 'flt-%'");
+    const ins = db.prepare(`
+      INSERT INTO aria_deployments (instance_id, deployment_id, name, project_name, project_id, status, owned_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    ins.run(inst, 'flt-1', 'web-prod', 'Web Platform', 'proj-web', 'CREATE_SUCCESSFUL', 'alice@corp.local');
+    ins.run(inst, 'flt-2', 'web-fail', 'Web Platform', 'proj-web', 'CREATE_FAILED', 'bob@corp.local');
+    ins.run(inst, 'flt-3', 'db-prod', 'Data Platform', 'proj-data', 'CREATE_SUCCESSFUL', 'alice@corp.local');
+    const names = (res) => res.body.map((d) => d.name).sort();
+
+    const byName = await request(app).get('/api/aria/deployments').query({ project: 'web platform' });
+    expect(names(byName)).toEqual(['web-fail', 'web-prod']);
+    const byId = await request(app).get('/api/aria/deployments').query({ project: 'proj-data' });
+    expect(names(byId)).toEqual(['db-prod']);
+    const both = await request(app).get('/api/aria/deployments').query({ project: 'Web Platform', status: 'create_failed' });
+    expect(names(both)).toEqual(['web-fail']);
+    const owner = await request(app).get('/api/aria/deployments').query({ ownedBy: 'alice@corp.local', status: 'CREATE_SUCCESSFUL' });
+    expect(names(owner)).toEqual(['db-prod', 'web-prod']);
+    const none = await request(app).get('/api/aria/deployments').query({ project: 'Nope' });
+    expect(none.body).toEqual([]);
+  });
 });
