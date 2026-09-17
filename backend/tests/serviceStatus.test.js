@@ -173,7 +173,72 @@ describe('sweep', () => {
     const row = db.prepare("SELECT * FROM service_alert_events WHERE platform = 'dell' AND source_key = 'poll:5'").get();
     expect(row).toBeTruthy();
     expect(row.host).toBe('ome-prod-05');
+    // The platform's only source is unreachable, so the platform is offline.
     expect(lastTimeline('dell').state).toBe('offline');
+    expect(lastTimeline('dell').reason).toBe('1 open critical alert, source unreachable');
+  });
+
+  it('12) one of two sources unreachable -> platform degraded; both unreachable -> offline; board counts sources', async () => {
+    const ins = db.prepare(`
+      INSERT INTO dell_ome_instances (id, name, host, username, encrypted_credentials)
+      VALUES (?, ?, ?, 'admin', 'enc')
+    `);
+    ins.run(7, 'ome-east', 'ome-east.corp.local');
+    ins.run(8, 'ome-west', 'ome-west.corp.local');
+    pollerStatus.markEnd('dell', 7, 'error');
+    pollerStatus.markEnd('dell', 8, 'success');
+    svc._setCollector(() => ({ items: [], failed: [] }));
+
+    await svc.sweep();
+    expect(openEvents('dell').map((e) => e.host)).toEqual(['ome-east']);
+    expect(lastTimeline('dell').state).toBe('degraded');
+    expect(lastTimeline('dell').reason).toBe('1 open critical alert, 1 of 2 sources unreachable');
+
+    const board = svc.getBoard({ days: 7 }).platforms.find((p) => p.id === 'dell');
+    expect(board.current).toMatchObject({ state: 'degraded', openEvents: 1, sourcesPolled: 2, sourcesUnreachable: 1, openOffline: 0 });
+
+    pollerStatus.markEnd('dell', 8, 'error');
+    await svc.sweep();
+    expect(lastTimeline('dell').state).toBe('offline');
+    expect(lastTimeline('dell').reason).toBe('2 open critical alerts, all 2 sources unreachable');
+  });
+
+  it('13) a poller_status row left behind by a deleted source raises no event and clears an existing one', async () => {
+    db.prepare(`
+      INSERT INTO dell_ome_instances (id, name, host, username, encrypted_credentials)
+      VALUES (9, 'ome-old', 'ome-old.corp.local', 'admin', 'enc')
+    `).run();
+    pollerStatus.markEnd('dell', 9, 'error');
+    svc._setCollector(() => ({ items: [], failed: [] }));
+    await svc.sweep();
+    expect(openEvents('dell')).toHaveLength(1);
+    expect(lastTimeline('dell').state).toBe('offline');
+
+    // Doug removes the OME instance; its poller_status row survives with 'error'.
+    db.prepare('DELETE FROM dell_ome_instances WHERE id = 9').run();
+    await svc.sweep();
+    expect(openEvents('dell')).toHaveLength(0);
+    expect(lastTimeline('dell').state).toBe('ok');
+    const evidence = svc.deriveVerdict({ source_key: 'k1', platform: 'dell' }, { hostRecords: [], platformPolls: svc._platformPollsFor('dell') });
+    expect(evidence.verdict).toBe('degraded'); // the stale key no longer reads as "every poll errored"
+  });
+
+  it('14) a host analysed as offline leaves the platform degraded while its sources still answer', async () => {
+    db.prepare(`
+      INSERT INTO dell_ome_instances (id, name, host, username, encrypted_credentials)
+      VALUES (10, 'ome-live', 'ome-live.corp.local', 'admin', 'enc')
+    `).run();
+    pollerStatus.markEnd('dell', 10, 'success');
+    svc._setCollector(() => ({ items: [makeItem('dell', { sourceKey: 'dell-host-down', host: 'esx-99' })], failed: [] }));
+    await svc.sweep();
+    const ev = openEvents('dell')[0];
+    // The sweep already wrote the evidence-only analysis (AI off); flip its verdict.
+    db.prepare("UPDATE service_alert_analyses SET verdict = 'offline' WHERE event_id = ?").run(ev.id);
+    await svc.sweep();
+    // Still degraded, so no new timeline row; the board's live counters carry the verdict count.
+    expect(lastTimeline('dell').state).toBe('degraded');
+    const board = svc.getBoard({ days: 7 }).platforms.find((p) => p.id === 'dell');
+    expect(board.current).toMatchObject({ state: 'degraded', openOffline: 1, sourcesPolled: 1, sourcesUnreachable: 0 });
   });
 });
 
@@ -245,7 +310,7 @@ describe('runPending (AI analysis)', () => {
     });
   }
 
-  it('6) AI verdict offline WITH a reason: stored, timeline flips offline, an audit exchange is recorded', async () => {
+  it('6) AI verdict offline WITH a reason: stored, platform stays degraded (its sources still answer), an audit exchange is recorded', async () => {
     const id = await seedPendingEvent({ sourceKey: 'e6', host: 'r740-06' });
     setSetting('service_status_ai_enabled', '1');
     process.env.OPENAI_API_KEY = 'test-token';
@@ -260,7 +325,8 @@ describe('runPending (AI analysis)', () => {
     expect(analysis.ai_verdict).toBe('offline');
     expect(analysis.verdict).toBe('offline');
     expect(analysis.verdict_reason).toMatch(/IPMI/);
-    expect(lastTimeline('dell').state).toBe('offline');
+    // One host judged offline does not take the whole platform red.
+    expect(lastTimeline('dell').state).toBe('degraded');
 
     const audit = db.prepare("SELECT * FROM ai_audit_exchanges WHERE feature = 'Service Status'").all();
     expect(audit.length).toBeGreaterThan(0);
@@ -507,6 +573,7 @@ describe('cross-platform evidence (SAN path down)', () => {
     expect(evidence.sanPaths[0]).toMatchObject({ switch_name: 'UT-SW02', port_number: 18, is_missing: true, switch_port_status: 'No_Light', linkState: 'lost fabric login' });
     expect(evidence.relatedOtherPlatformEvents.map((e) => e.platform)).toEqual(['brocade']);
     expect(evidence.hostRecords.some((r) => r.platform === 'vcenter' && r.up === false)).toBe(true);
-    expect(lastTimeline('dell').state).toBe('offline');
+    // The host is judged offline, but Dell's own OME source still answers, so the platform is degraded.
+    expect(lastTimeline('dell').state).toBe('degraded');
   });
 });

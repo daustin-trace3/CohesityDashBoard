@@ -11,10 +11,10 @@ const DAY_OPTIONS = [30, 60, 90];
 const REFRESH_MS = 60_000;
 
 const STATE_META = {
-  ok: { label: 'Operational', color: '#22C55E' },
-  degraded: { label: 'Degraded', color: '#F59E0B' },
-  offline: { label: 'Offline', color: '#EF4444' },
-  unknown: { label: 'No data', color: '#94A3B3' },
+  ok: { label: 'Operational', color: '#22C55E', hint: 'No open critical alerts' },
+  degraded: { label: 'Degraded', color: '#F59E0B', hint: 'Open critical alerts, some sources unreachable, or a host judged offline, while ICC still reaches the platform' },
+  offline: { label: 'Offline', color: '#EF4444', hint: 'ICC cannot reach any source of this platform' },
+  unknown: { label: 'No data', color: '#94A3B3', hint: 'No sweep recorded for this day' },
 };
 
 function stateMeta(state) {
@@ -327,7 +327,8 @@ function PlatformRow({ platform, onOpenDay }) {
             {(cur.openEvents > 0) && (
               <p className="text-[11px] text-ink-faint mt-0.5">
                 {cur.openEvents} open critical alert{cur.openEvents === 1 ? '' : 's'}
-                {cur.openOffline > 0 && `, ${cur.openOffline} offline`}
+                {cur.sourcesUnreachable > 0 && `, ${cur.sourcesUnreachable} of ${cur.sourcesPolled} source${cur.sourcesPolled === 1 ? '' : 's'} unreachable`}
+                {cur.openOffline > 0 && `, ${cur.openOffline} host${cur.openOffline === 1 ? '' : 's'} offline`}
               </p>
             )}
           </div>
@@ -349,7 +350,7 @@ function Legend() {
       {['ok', 'degraded', 'offline', 'unknown'].map((s) => {
         const m = stateMeta(s);
         return (
-          <span key={s} className="inline-flex items-center gap-1.5">
+          <span key={s} className="inline-flex items-center gap-1.5 cursor-help" title={m.hint}>
             <span
               className="h-2.5 w-2.5 rounded-full flex-shrink-0"
               style={s === 'unknown' ? { backgroundColor: 'transparent', border: `1px solid ${m.color}` } : { backgroundColor: m.color }}
