@@ -264,12 +264,20 @@ router.get('/overview', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/aria/deployments?instanceId? */
+/** GET /api/aria/deployments?instanceId&project&ownedBy&status (all optional). */
 router.get('/deployments', [query('instanceId').optional().isInt().toInt()], validate, (req, res, next) => {
   try {
     const clauses = [];
     const params = [];
     if (req.query.instanceId) { clauses.push('d.instance_id = ?'); params.push(req.query.instanceId); }
+    // ?project= matches the project name or id (case-insensitive); ?ownedBy= and
+    // ?status= match their columns case-insensitively; ?instanceId= as before.
+    if (req.query.project) {
+      clauses.push("(LOWER(COALESCE(d.project_name, '')) = LOWER(?) OR LOWER(COALESCE(d.project_id, '')) = LOWER(?))");
+      params.push(String(req.query.project), String(req.query.project));
+    }
+    if (req.query.ownedBy) { clauses.push("LOWER(COALESCE(d.owned_by, '')) = LOWER(?)"); params.push(String(req.query.ownedBy)); }
+    if (req.query.status) { clauses.push("LOWER(COALESCE(d.status, '')) = LOWER(?)"); params.push(String(req.query.status)); }
     const rows = db.prepare(`
       SELECT d.*, i.name AS instance_name, res.resource_names
       FROM aria_deployments d
