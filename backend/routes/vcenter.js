@@ -392,6 +392,17 @@ router.get('/vms', (req, res, next) => {
       clauses.push('m.vcenter_id = ?');
       params.push(Number(req.query.vcenterId));
     }
+    // ?tag=Category: Name (repeatable) with ?match=any|all, and ?untagged=1.
+    // Tags are stored as a JSON array of "Category: Name" strings.
+    const tags = [].concat(req.query.tag || []).map(String).filter(Boolean);
+    if (tags.length) {
+      const cond = tags.map(() => "EXISTS (SELECT 1 FROM json_each(COALESCE(m.tags, '[]')) jt WHERE jt.value = ?)");
+      clauses.push(`(${cond.join(String(req.query.match || 'any') === 'all' ? ' AND ' : ' OR ')})`);
+      params.push(...tags);
+    }
+    if (String(req.query.untagged || '') === '1') {
+      clauses.push("(m.tags IS NULL OR json_array_length(COALESCE(m.tags, '[]')) = 0)");
+    }
     const rows = db.prepare(`
       SELECT m.*, v.name AS vcenter_name,
              h.cpu_mhz_capacity AS host_cpu_mhz_capacity, h.cpu_cores AS host_cpu_cores
@@ -402,6 +413,34 @@ router.get('/vms', (req, res, next) => {
       ORDER BY v.name, m.name
     `).all(...params);
     res.json(rows.map(withVmPerfPct));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/tags — every vSphere tag seen on a VM with its VM count,
+ *  split into category and name, plus the untagged count. Feed for the Tags
+ *  page and for scripts (pair with GET /vms?tag=...). */
+router.get('/tags', (req, res, next) => {
+  try {
+    const rows = db.prepare(`
+      SELECT jt.value AS tag, COUNT(*) AS vms
+      FROM vcenter_vms m, json_each(COALESCE(m.tags, '[]')) jt
+      GROUP BY jt.value ORDER BY jt.value
+    `).all();
+    const totals = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN m.tags IS NULL OR json_array_length(COALESCE(m.tags, '[]')) = 0 THEN 1 ELSE 0 END) AS untagged
+      FROM vcenter_vms m
+    `).get();
+    const tags = rows.map((r) => {
+      const i = r.tag.indexOf(':');
+      return {
+        tag: r.tag,
+        category: i === -1 ? 'Uncategorized' : r.tag.slice(0, i).trim(),
+        name: i === -1 ? r.tag.trim() : r.tag.slice(i + 1).trim(),
+        vms: r.vms,
+      };
+    });
+    res.json({ tags, untagged: Number(totals?.untagged) || 0, totalVms: Number(totals?.total) || 0 });
   } catch (err) { next(err); }
 });
 
