@@ -128,7 +128,18 @@ function Pure1SaaSTab() {
 
   const copyPublicKey = () => {
     if (!cfg?.publicKey) return;
-    navigator.clipboard.writeText(cfg.publicKey).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+    // navigator.clipboard exists only on HTTPS/localhost; fall back to execCommand over http.
+    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
+    const fallback = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = cfg.publicKey; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select(); const ok = document.execCommand('copy'); document.body.removeChild(ta);
+        if (ok) done();
+      } catch { /* nothing to do */ }
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(cfg.publicKey).then(done).catch(fallback);
+    else fallback();
   };
 
   if (cfg == null) {
