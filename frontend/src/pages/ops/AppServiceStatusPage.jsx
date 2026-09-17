@@ -251,6 +251,7 @@ function ExpandedDetail({ usageId }) {
   }
 
   const findings = detail.findings || [];
+  const sections = buildSections(detail);
 
   return (
     <div className="flex flex-col gap-3">
@@ -261,12 +262,82 @@ function ExpandedDetail({ usageId }) {
           ))}
         </div>
       )}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Panel title="Servers"><ServersSection servers={detail.servers} /></Panel>
-        <Panel title="ESX hosts"><HostsSection hosts={detail.hosts} /></Panel>
-        <Panel title="Storage"><StorageSection storage={detail.storage} /></Panel>
-        <Panel title="Backup"><BackupSection backup={detail.backup} /></Panel>
+      <div className="flex flex-col divide-y divide-cohesity-border/60 border border-cohesity-border rounded-lg">
+        {sections.map((s) => <SectionRow key={s.key} section={s} />)}
       </div>
+    </div>
+  );
+}
+
+/* Worst state across a list of component states. */
+const SECTION_RANK = { ok: 0, unknown: 1, degraded: 2, critical: 3 };
+function worstState(states) {
+  return states.reduce((acc, s) => ((SECTION_RANK[s] || 0) > (SECTION_RANK[acc] || 0) ? s : acc), 'ok');
+}
+
+/* One summary row per component group. Groups with nothing mapped (no backup
+ * configured, no storage found) are left out entirely; a group that is
+ * configured but unhealthy (backup older than 24 h) stays and shows it. */
+function buildSections(detail) {
+  const counts = detail.counts || {};
+  const servers = detail.servers || [];
+  const hosts = detail.hosts || [];
+  const storage = detail.storage || [];
+  const backup = detail.backup || [];
+  const out = [];
+
+  if (servers.length) {
+    const offline = counts.vmsOffline || 0;
+    const serverState = offline === 0 ? 'ok' : (offline / servers.length > 0.10 ? 'critical' : 'degraded');
+    out.push({
+      key: 'servers', title: 'Servers', state: serverState,
+      summary: offline ? `${servers.length - offline} of ${servers.length} online, ${offline} offline` : `${servers.length} online`,
+      body: <ServersSection servers={servers} />,
+    });
+  }
+  if (hosts.length) {
+    const bad = hosts.filter((h) => h.state !== 'ok').length;
+    out.push({
+      key: 'hosts', title: 'ESX hosts', state: worstState(hosts.map((h) => h.state)),
+      summary: `${hosts.length} host${hosts.length === 1 ? '' : 's'}${bad ? `, ${bad} with issues` : ''}${counts.pathsTotal ? `, SAN paths ${counts.pathsMissing || 0}/${counts.pathsTotal} lost` : ''}`,
+      body: <HostsSection hosts={hosts} />,
+    });
+  }
+  if (storage.length) {
+    const bad = storage.filter((s) => s.state !== 'ok').length;
+    out.push({
+      key: 'storage', title: 'Storage', state: worstState(storage.map((s) => s.state)),
+      summary: `${storage.length} datastore${storage.length === 1 ? '' : 's'} and volume${storage.length === 1 ? '' : 's'}${bad ? `, ${bad} with issues` : ''}`,
+      body: <StorageSection storage={storage} />,
+    });
+  }
+  if (backup.length) {
+    const stale = backup.filter((b) => b.state !== 'ok').length;
+    out.push({
+      key: 'backup', title: 'Backup', state: worstState(backup.map((b) => b.state)),
+      summary: `${backup.length} protected server${backup.length === 1 ? '' : 's'}${stale ? `, ${stale} without a backup in 24 h` : ''}`,
+      body: <BackupSection backup={backup} />,
+    });
+  }
+  return out;
+}
+
+function SectionRow({ section }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="px-3 py-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2.5 text-left cursor-pointer"
+        aria-expanded={open}
+      >
+        <span className="text-ink-faint flex-shrink-0">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+        <StatePill state={section.state} />
+        <span className="text-xs font-semibold text-ink">{section.title}</span>
+        <span className="text-[11px] text-ink-faint truncate">{section.summary}</span>
+      </button>
+      {open && <div className="mt-2 ml-6">{section.body}</div>}
     </div>
   );
 }
@@ -296,10 +367,16 @@ function AppRow({ app, onOpenAnalysis }) {
           {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-baseline gap-2">
             <StatePill state={app.state} />
-            <span className="text-sm font-semibold text-ink">{app.displayId}</span>
-            <span className="text-xs text-ink-muted truncate">{app.label}</span>
+            {app.label ? (
+              <>
+                <span className="text-sm font-semibold text-ink truncate">{app.label}</span>
+                <span className="text-[11px] text-ink-faint font-mono">{app.displayId}</span>
+              </>
+            ) : (
+              <span className="text-sm font-semibold text-ink font-mono">{app.displayId}</span>
+            )}
           </div>
           {app.reason && <p className="text-xs text-ink-muted mt-1 truncate">{app.reason}</p>}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-ink-faint">
