@@ -221,6 +221,29 @@ describe('rollup rules', () => {
     expect(d.counts.backupsStale).toBe(1);
   });
 
+  it('backup rows fold per server: copies on two clusters and a guest-hostname match make one row, newest backup wins', () => {
+    host('esx-a.corp.local');
+    vm('bk-vm-01', 'esx-a.corp.local', { tags: ['usage-id: BB00002210'] });
+    db.prepare("UPDATE vcenter_vms SET guest_hostname = 'bk-vm-01-guest.corp.local' WHERE name = 'bk-vm-01'").run();
+    const cluster2 = db.prepare(`
+      INSERT INTO clusters (name, connection_type, auth_type, encrypted_credentials)
+      VALUES ('app-coh-dr', 'direct', 'userpass', 'enc')
+    `).run().lastInsertRowid;
+    cohesityObject('bk-vm-01', { ageHours: 40 });                       // primary cluster copy, stale
+    db.prepare(`
+      INSERT INTO cohesity_objects (cluster_id, object_id, name, is_protected, last_backup_ms, last_backup_status)
+      VALUES (?, 'obj-dr', 'bk-vm-01', 1, ?, 'kSuccess')
+    `).run(cluster2, Date.now() - 3 * 3600000);                          // DR cluster copy, fresh
+    cohesityObject('bk-vm-01-guest', { protectedFlag: 0, ageHours: null }); // agent object by guest hostname
+
+    const d = appSvc.evaluate('bb00002210');
+    expect(d.backup).toHaveLength(1);
+    expect(d.backup[0]).toMatchObject({ vm: 'bk-vm-01', platform: 'cohesity', protected: true, state: 'ok', copies: 3 });
+    expect(d.backup[0].clusters.sort()).toEqual(['app-coh', 'app-coh-dr']);
+    expect(d.backup[0].ageHours).toBe(3);
+    expect(d.state).toBe('ok');
+  });
+
   it('a usage-id no VM carries -> unknown', () => {
     const d = appSvc.evaluate('zz00000000');
     expect(d.state).toBe('unknown');
