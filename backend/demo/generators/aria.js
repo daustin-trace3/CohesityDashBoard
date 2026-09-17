@@ -77,8 +77,8 @@ function seedAria(db, { now, encrypt }) {
   `);
   const depStmt = db.prepare(`
     INSERT INTO aria_deployments (instance_id, deployment_id, name, project_name, status,
-      created_by, created_at_src, updated_at_src, lease_expire_at, resource_count, raw_status_detail, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      created_by, created_at_src, updated_at_src, lease_expire_at, resource_count, raw_status_detail, captured_at, owned_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const reqStmt = db.prepare(`
     INSERT OR IGNORE INTO aria_requests (instance_id, request_id, deployment_id, name, status,
@@ -177,7 +177,8 @@ function seedAria(db, { now, encrypt }) {
       depStmt.run(instanceId, deploymentId, name, project, status,
         pick(rng, ['alice@demo.local', 'bob@demo.local', 'svc-provisioner@demo.local']),
         createdAt, nowIso, leaseExpireAt, randInt(rng, 1, 12),
-        failed ? 'Provisioning failed: resource quota exceeded' : null, nowIso);
+        failed ? 'Provisioning failed: resource quota exceeded' : null, nowIso,
+        pick(rng, ['alice@demo.local', 'bob@demo.local', 'carol@demo.local', 'platform-team@demo.local']));
       totals.deployments += 1;
       deployments.push({ deploymentId, name });
     }
