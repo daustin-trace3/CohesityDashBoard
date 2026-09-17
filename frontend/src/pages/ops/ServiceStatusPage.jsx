@@ -314,8 +314,8 @@ function PlatformRow({ platform, onOpenDay }) {
   return (
     <Panel className="!mb-0">
       <div className="flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-6">
-        <div className="flex items-center gap-2.5 lg:w-56 flex-shrink-0">
-          <span className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: platform.color || '#8FA3B0' }} />
+        <div className="flex items-center lg:w-56 flex-shrink-0">
+          {/* No platform brand-colour dot here: next to red/yellow/green state it reads as a status. */}
           <div className="min-w-0">
             <Link to={platform.route} className="text-sm font-semibold text-ink hover:text-brand truncate block">
               {platform.label}
