@@ -209,7 +209,9 @@ function BackupSection({ backup }) {
             <tr key={`${b.platform}-${b.vm}`} className="border-t border-cohesity-border/60">
               <td className="py-1.5 pr-2"><StateDot state={b.state} /></td>
               <td className="py-1.5 pr-2 text-ink truncate max-w-[140px]" title={b.vm}>{b.vm}</td>
-              <td className="py-1.5 pr-2 text-ink-muted">{b.platform}</td>
+              <td className="py-1.5 pr-2 text-ink-muted" title={(b.clusters || []).join(', ') || undefined}>
+                {b.platform}{b.clusters && b.clusters.length > 1 ? ` (${b.clusters.length} clusters)` : ''}
+              </td>
               <td className="py-1.5 pr-2 text-ink-muted">{yesNo(b.protected)}</td>
               <td className="py-1.5 pr-2 text-ink-muted">
                 {b.lastBackupAt ? `${timeAgo(b.lastBackupAt)}${b.ageHours != null ? ` (${Math.round(b.ageHours)}h)` : ''}` : 'Never'}

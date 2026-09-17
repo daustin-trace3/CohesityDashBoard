@@ -189,35 +189,80 @@ function netappVolumesForIps(ips) {
   }));
 }
 
+/** One backup row per server per platform. A VM is usually known to more
+ *  than one Cohesity object (a copy per cluster, a VMware object plus an agent
+ *  object, or a match on both VM name and guest hostname), so the matches are
+ *  folded per VM and the newest backup decides whether it is stale. */
 function backupRowsFor(vms, nowMs) {
   const out = [];
-  const names = [...new Set(vms.flatMap((vm) => [lower(vm.name), shortName(vm.guest_hostname || '')]).filter(Boolean))];
+  // candidate name -> VM; a VM's own name wins over another VM's guest hostname.
+  const byName = new Map();
+  for (const vm of vms) {
+    const guest = shortName(vm.guest_hostname || '');
+    if (guest && !byName.has(guest)) byName.set(guest, vm);
+  }
+  for (const vm of vms) {
+    if (vm.name) byName.set(lower(vm.name), vm);
+  }
+  const names = [...byName.keys()].filter(Boolean);
   if (!names.length) return out;
   const ph = names.map(() => '?').join(',');
+
   if (tableExists('cohesity_objects')) {
-    const rows = db.prepare(`SELECT name, is_protected, last_backup_ms, last_backup_status FROM cohesity_objects WHERE lower(name) IN (${ph})`).all(...names);
+    const rows = db.prepare(`
+      SELECT o.name, o.is_protected, o.last_backup_ms, o.last_backup_status, c.name AS cluster_name
+      FROM cohesity_objects o LEFT JOIN clusters c ON c.id = o.cluster_id
+      WHERE lower(o.name) IN (${ph})
+    `).all(...names);
+    const perVm = new Map();
     for (const r of rows) {
-      const protectedFlag = !!r.is_protected;
-      const ageHours = r.last_backup_ms ? Math.round((nowMs - Number(r.last_backup_ms)) / 3600000) : null;
-      const stale = protectedFlag && (ageHours === null || ageHours > BACKUP_STALE_HOURS);
+      const vm = byName.get(lower(r.name));
+      if (!vm) continue;
+      const cur = perVm.get(vm.name) || { vm: vm.name, protected: false, lastBackupMs: null, status: null, copies: 0, clusters: new Set() };
+      cur.copies += 1;
+      if (r.cluster_name) cur.clusters.add(r.cluster_name);
+      if (r.is_protected) cur.protected = true;
+      const ms = r.last_backup_ms ? Number(r.last_backup_ms) : null;
+      if (ms && (cur.lastBackupMs === null || ms > cur.lastBackupMs)) {
+        cur.lastBackupMs = ms;
+        cur.status = r.last_backup_status || null;
+      } else if (cur.status === null && !cur.lastBackupMs) {
+        cur.status = r.last_backup_status || null;
+      }
+      perVm.set(vm.name, cur);
+    }
+    for (const cur of perVm.values()) {
+      const ageHours = cur.lastBackupMs ? Math.round((nowMs - cur.lastBackupMs) / 3600000) : null;
+      const stale = cur.protected && (ageHours === null || ageHours > BACKUP_STALE_HOURS);
       out.push({
-        vm: r.name, platform: 'cohesity', protected: protectedFlag,
-        lastBackupAt: r.last_backup_ms ? new Date(Number(r.last_backup_ms)).toISOString() : null,
-        ageHours, status: r.last_backup_status || null, state: stale ? 'degraded' : 'ok',
+        vm: cur.vm, platform: 'cohesity', protected: cur.protected,
+        lastBackupAt: cur.lastBackupMs ? new Date(cur.lastBackupMs).toISOString() : null,
+        ageHours, status: cur.status, state: stale ? 'degraded' : 'ok',
+        copies: cur.copies, clusters: [...cur.clusters],
       });
     }
   }
   if (tableExists('zerto_vms')) {
     const rows = db.prepare(`SELECT name, vpg_names, vpg_statuses FROM zerto_vms WHERE lower(name) IN (${ph})`).all(...names);
+    const perVm = new Map();
     for (const r of rows) {
-      const statuses = parseJson(r.vpg_statuses, []);
-      const bad = statuses.some((s) => !/meeting ?sla|^ok$|protected/i.test(String(s)));
+      const vm = byName.get(lower(r.name));
+      if (!vm) continue;
+      const cur = perVm.get(vm.name) || { vm: vm.name, statuses: new Set(), vpgs: new Set() };
+      for (const s of parseJson(r.vpg_statuses, [])) cur.statuses.add(String(s));
+      for (const v of parseJson(r.vpg_names, [])) cur.vpgs.add(String(v));
+      perVm.set(vm.name, cur);
+    }
+    for (const cur of perVm.values()) {
+      const statuses = [...cur.statuses];
+      const bad = statuses.some((s) => !/meeting ?sla|^ok$|protected/i.test(s));
       out.push({
-        vm: r.name, platform: 'zerto', protected: true, lastBackupAt: null, ageHours: null,
-        status: statuses.join(', ') || parseJson(r.vpg_names, []).join(', ') || null, state: bad ? 'degraded' : 'ok',
+        vm: cur.vm, platform: 'zerto', protected: true, lastBackupAt: null, ageHours: null,
+        status: statuses.join(', ') || [...cur.vpgs].join(', ') || null, state: bad ? 'degraded' : 'ok',
       });
     }
   }
+  out.sort((a, b) => a.vm.localeCompare(b.vm) || a.platform.localeCompare(b.platform));
   return out;
 }
 
