@@ -98,7 +98,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled, platformProxmoxEnabled, platformBrocadeEnabled, platformBluecatEnabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -114,11 +114,7 @@ router.put('/', (req, res, next) => {
       resolve(platformDellEnabled, 'platformDellEnabled'),
       resolve(platformAriaEnabled, 'platformAriaEnabled'),
       resolve(platformAriaopsEnabled, 'platformAriaopsEnabled'),
-      resolve(platformNetbackupEnabled, 'platformNetbackupEnabled'),
-      resolve(platformAwsEnabled, 'platformAwsEnabled'),
-      resolve(platformProxmoxEnabled, 'platformProxmoxEnabled'),
       resolve(platformBrocadeEnabled, 'platformBrocadeEnabled'),
-      resolve(platformBluecatEnabled, 'platformBluecatEnabled'),
     ].some(Boolean);
     if (!anyEnabled) {
       return res.status(400).json({ error: 'At least one platform must remain enabled.' });
@@ -184,25 +180,9 @@ router.put('/', (req, res, next) => {
       setSetting('platform_ariaops_enabled', platformAriaopsEnabled ? '1' : '0');
       applyPlatformEnabled('ariaops', !!platformAriaopsEnabled);
     }
-    if (platformNetbackupEnabled !== undefined) {
-      setSetting('platform_netbackup_enabled', platformNetbackupEnabled ? '1' : '0');
-      applyPlatformEnabled('netbackup', !!platformNetbackupEnabled);
-    }
-    if (platformAwsEnabled !== undefined) {
-      setSetting('platform_aws_enabled', platformAwsEnabled ? '1' : '0');
-      applyPlatformEnabled('aws', !!platformAwsEnabled);
-    }
-    if (platformProxmoxEnabled !== undefined) {
-      setSetting('platform_proxmox_enabled', platformProxmoxEnabled ? '1' : '0');
-      applyPlatformEnabled('proxmox', !!platformProxmoxEnabled);
-    }
     if (platformBrocadeEnabled !== undefined) {
       setSetting('platform_brocade_enabled', platformBrocadeEnabled ? '1' : '0');
       applyPlatformEnabled('brocade', !!platformBrocadeEnabled);
-    }
-    if (platformBluecatEnabled !== undefined) {
-      setSetting('platform_bluecat_enabled', platformBluecatEnabled ? '1' : '0');
-      applyPlatformEnabled('bluecat', !!platformBluecatEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));

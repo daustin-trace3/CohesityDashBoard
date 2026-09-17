@@ -2,17 +2,13 @@ import cohesity from './cohesity/index.jsx';
 import pure from './pure/index.jsx';
 import netapp from './netapp/index.jsx';
 import zerto from './zerto/index.jsx';
-import netbackup from './netbackup/index.jsx';
 import vcenter from './vcenter/index.jsx';
 import dell from './dell/index.jsx';
 import aria from './aria/index.jsx';
 import ariaops from './ariaops/index.jsx';
-import aws from './aws/index.jsx';
-import proxmox from './proxmox/index.jsx';
 import brocade from './brocade/index.jsx';
-import bluecat from './bluecat/index.jsx';
 
-export const platforms = [cohesity, pure, netapp, zerto, netbackup, vcenter, dell, aria, ariaops, aws, proxmox, brocade, bluecat];
+export const platforms = [cohesity, pure, netapp, zerto, vcenter, dell, aria, ariaops, brocade];
 
 export function getPlatform(id) {
   return platforms.find(p => p.id === id);

@@ -423,11 +423,7 @@ export default function Layout() {
         ...(r.data.platformDellEnabled ? ['dell'] : []),
         ...(r.data.platformAriaEnabled ? ['aria'] : []),
         ...(r.data.platformAriaopsEnabled ? ['ariaops'] : []),
-        ...(r.data.platformNetbackupEnabled ? ['netbackup'] : []),
-        ...(r.data.platformAwsEnabled ? ['aws'] : []),
-        ...(r.data.platformProxmoxEnabled ? ['proxmox'] : []),
         ...(r.data.platformBrocadeEnabled ? ['brocade'] : []),
-        ...(r.data.platformBluecatEnabled ? ['bluecat'] : []),
         ...allPlatforms.filter(p => !builtinIds.includes(p.id)).map(p => p.id),
       ]))
       .catch(() => {});

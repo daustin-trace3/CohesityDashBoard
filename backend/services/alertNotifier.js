@@ -277,9 +277,6 @@ const COLLECTORS = {
   vcenter: collectVcenterIssues,
   dell: collectDellAlerts,
   aria: collectAriaIssues,
-  netbackup: collectNetbackupIssues,
-  aws: collectAwsIssues,
-  proxmox: collectProxmoxIssues,
   brocade: collectBrocadeIssues,
 };
 

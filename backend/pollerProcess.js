@@ -25,11 +25,7 @@ const vcenterManifest = require('./platforms/vcenter');
 const dellManifest = require('./platforms/dell');
 const ariaManifest = require('./platforms/aria');
 const ariaopsManifest = require('./platforms/ariaops');
-const netbackupManifest = require('./platforms/netbackup');
-const awsManifest = require('./platforms/aws');
-const proxmoxManifest = require('./platforms/proxmox');
 const brocadeManifest = require('./platforms/brocade');
-const bluecatManifest = require('./platforms/bluecat');
 
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
@@ -40,7 +36,7 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformNetbackupEnabled, platformAwsEnabled, platformProxmoxEnabled, platformBrocadeEnabled, platformBluecatEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
@@ -55,16 +51,8 @@ if (isDemo()) {
   registry.setEnabled('aria', platformAriaEnabled && registry.isEntitled('aria'));
   registry.registerPlugin(ariaopsManifest);
   registry.setEnabled('ariaops', platformAriaopsEnabled && registry.isEntitled('ariaops'));
-  registry.registerPlugin(netbackupManifest);
-  registry.setEnabled('netbackup', platformNetbackupEnabled && registry.isEntitled('netbackup'));
-  registry.registerPlugin(awsManifest);
-  registry.setEnabled('aws', platformAwsEnabled && registry.isEntitled('aws'));
-  registry.registerPlugin(proxmoxManifest);
-  registry.setEnabled('proxmox', platformProxmoxEnabled && registry.isEntitled('proxmox'));
   registry.registerPlugin(brocadeManifest);
   registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
-  registry.registerPlugin(bluecatManifest);
-  registry.setEnabled('bluecat', platformBluecatEnabled && registry.isEntitled('bluecat'));
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();
