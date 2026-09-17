@@ -37,6 +37,15 @@ const GUEST_OS = [
   'Other Linux (64-bit)',
 ];
 const VM_ROLES = ['app', 'db', 'web', 'dc', 'file', 'mon', 'ci', 'jump'];
+// App Services demo tag pool: mixed-case usage-ids matching Doug's estate
+// convention (AA/BB/PP prefixes). Assignment is deterministic from values
+// already in scope (see vmTags below), not a fresh random draw.
+const USAGE_IDS = [
+  'AA00001721', 'aa00001722', 'AA00001730', 'BB00002210', 'bb00002211', 'BB00002245',
+  'PP00003101', 'pp00003102', 'PP00003117', 'aa00001790', 'bb00002290', 'PP00003190',
+  'AA00001745', 'aa00001761', 'AA00001803', 'BB00002302', 'bb00002318', 'BB00002340',
+  'PP00003204', 'pp00003211', 'PP00003260', 'aa00001812', 'bb00002355', 'PP00003277',
+];
 
 function seedVcenter(db, { now, encrypt }) {
   const nowIso = new Date(now).toISOString();
@@ -149,7 +158,10 @@ function seedVcenter(db, { now, encrypt }) {
         const usedFrac = tight ? randFloat(rng, 0.82, 0.9, 2) : randFloat(rng, 0.35, 0.7, 2);
         const cpuUsed = down ? null : Math.round(cpuCap * usedFrac * randFloat(rng, 0.7, 0.95, 2));
         const memUsed = down ? null : Math.round(memCap * usedFrac);
-        const hostVms = down || maintenance ? (down ? 0 : randInt(rng, 2, 5)) : randInt(rng, 10, 22);
+        // A NOT_RESPONDING host still has its VMs registered in vCenter (they
+        // show as powered off / disconnected), which is what the App Services
+        // page needs to see for the incident app.
+        const hostVms = down || maintenance ? randInt(rng, 2, 5) : randInt(rng, 10, 22);
 
         // Deliberate cluster drift (Governance page): one dal host on stale
         // NTP, one chi host on an older ESX build + BIOS, one fra host with
@@ -189,7 +201,8 @@ function seedVcenter(db, { now, encrypt }) {
 
         for (let v = 1; v <= hostVms; v++) {
           const role = pick(rng, VM_ROLES);
-          const poweredOn = chance(rng, 0.9);
+          // Same rng draw as before so nothing else shifts; VMs on the down host are off.
+          const poweredOn = chance(rng, 0.9) && !down;
           const guestOs = pick(rng, GUEST_OS);
           // ~8% of VMs run outdated Tools so Governance has action items.
           const outdated = chance(rng, 0.08);
@@ -205,6 +218,16 @@ function seedVcenter(db, { now, encrypt }) {
             `App: ${role.toUpperCase()}`,
           ];
           if (chance(rng, 0.5)) vmTags.push('Backup: Protected');
+          // App Services usage-id: nyc-esx-0102 (the SAN-boot-path-down host)
+          // always carries AA00001721 so that app shows offline servers and
+          // lost SAN paths; about a quarter of the other VMs get a
+          // deterministic id, so each id spans roughly 10-25 servers.
+          if (hostName === 'nyc-esx-0102.icc.demo') {
+            vmTags.push(`usage-id: ${USAGE_IDS[0]}`);
+          } else if ((v + h) % 4 === 0) {
+            const usageIdx = (vcIdx * 5 + c * 3 + (role === 'db' ? 1 : 0) + Math.floor(v / 4)) % USAGE_IDS.length;
+            vmTags.push(`usage-id: ${USAGE_IDS[usageIdx]}`);
+          }
           const mac = `00:50:56:${String(80 + vcIdx).padStart(2, '0')}:${String(c * 10 + h).padStart(2, '0')}:${String(v).padStart(2, '0')}`;
           const vmName = `${site}-${role}-${String(c).padStart(2, '0')}${String(h)}${String(v).padStart(2, '0')}`;
           const vmCpus = pick(rng, [2, 2, 4, 4, 8, 16]);
