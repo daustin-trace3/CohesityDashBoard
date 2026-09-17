@@ -7,6 +7,7 @@ import { useAuth } from '../auth/AuthContext';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import AdminNav from '../components/AdminNav';
 import DirectoryTab from './DirectoryTab';
+import { copyText } from '../utils/clipboard';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
 const LEVELS = ['view', 'manage', '*'];
@@ -715,12 +716,14 @@ function CreateServiceAccountModal({ onClose, onSaved }) {
     }
   };
 
-  const copyKey = () => {
+  const copyKey = async () => {
     if (!issuedKey) return;
-    navigator.clipboard?.writeText(issuedKey).then(() => {
+    if (await copyText(issuedKey)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    } else {
+      toast({ type: 'error', title: 'Could not copy', message: 'Select the key and copy it manually.' });
+    }
   };
 
   if (issuedKey) {

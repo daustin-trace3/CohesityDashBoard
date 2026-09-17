@@ -5,6 +5,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
 import { BRAND, timeAgo } from './helpers';
 import PureDirectArraysTab from './PureDirectArraysTab';
+import { copyText } from '../../utils/clipboard';
 
 export const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -116,9 +117,9 @@ function Pure1SaaSTab() {
     } finally { setTesting(false); }
   };
 
-  const copyPublicKey = () => {
+  const copyPublicKey = async () => {
     if (!cfg?.publicKey) return;
-    navigator.clipboard.writeText(cfg.publicKey).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+    if (await copyText(cfg.publicKey)) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
 
   if (cfg == null) {
