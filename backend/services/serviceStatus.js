@@ -58,40 +58,62 @@ const SOURCE_TABLES = {
   brocade: 'brocade_sources', bluecat: 'bluecat_sources',
 };
 
-function sourceNameFor(platform, entityId) {
+/** The source row behind a poller_status key, or null when the platform has a
+ *  source table and the row is gone (a source that was deleted or re-added
+ *  leaves its poller_status row behind forever) or the lookup failed. Platforms
+ *  without a source table poll one global target and always resolve. */
+function sourceRowFor(platform, entityId) {
   const table = SOURCE_TABLES[platform];
-  if (!table) return platform;
+  if (!table) return { name: platform };
   try {
     const row = db.prepare(`SELECT name FROM ${table} WHERE id = ?`).get(entityId);
-    return row?.name || `source #${entityId}`;
+    return row ? { name: row.name || null } : null;
   } catch {
-    return `source #${entityId}`;
+    return null;
   }
 }
 
-/** Poll-reachability items: an id whose last poll errored is treated as an
- *  always-critical event, same shape as a collected alert. */
-function gatherReachabilityItems(enabledIds) {
-  const items = [];
-  const enabled = new Set(enabledIds);
+function sourceNameFor(platform, entityId) {
+  return sourceRowFor(platform, entityId)?.name ?? null;
+}
+
+/** The platform's live polled sources: every poller_status key of this type
+ *  whose source row still exists (entity 0 is not a real instance for tabled
+ *  platforms). Stale keys for deleted sources are dropped here, so they can
+ *  neither raise a reachability event nor count toward "all sources down". */
+function polledSourcesFor(platform) {
+  const rows = [];
   for (const [key, state] of pollerStatus.getAll()) {
     const idx = key.indexOf(':');
     const type = idx === -1 ? key : key.slice(0, idx);
+    if (type !== platform) continue;
     const entityId = Number(key.slice(idx + 1));
-    if (!enabled.has(type)) continue;
-    if (state.lastPollStatus !== 'error') continue;
-    const hasSourceTable = !!SOURCE_TABLES[type];
-    if (entityId === 0 && hasSourceTable) continue; // 0 isn't a real instance for these
-    const host = hasSourceTable ? sourceNameFor(type, entityId) : type;
-    items.push({
-      platform: type,
-      sourceKey: `poll:${entityId}`,
-      severity: 'critical',
-      host,
-      message: `ICC could not reach this source on its last poll (${state.lastPollEnd})`,
-      firstSeen: state.lastPollEnd,
-      lastSeen: state.lastPollEnd,
-    });
+    const hasSourceTable = !!SOURCE_TABLES[platform];
+    if (entityId === 0 && hasSourceTable) continue;
+    const source = sourceRowFor(platform, entityId);
+    if (!source) continue;
+    rows.push({ entityId, sourceName: source.name, ...state });
+  }
+  return rows;
+}
+
+/** Poll-reachability items: a live source whose last poll errored is treated
+ *  as an always-critical event, same shape as a collected alert. */
+function gatherReachabilityItems(enabledIds) {
+  const items = [];
+  for (const platform of enabledIds) {
+    for (const source of polledSourcesFor(platform)) {
+      if (source.lastPollStatus !== 'error') continue;
+      items.push({
+        platform,
+        sourceKey: `poll:${source.entityId}`,
+        severity: 'critical',
+        host: source.sourceName,
+        message: `ICC could not reach this source on its last poll (${source.lastPollEnd})`,
+        firstSeen: source.lastPollEnd,
+        lastSeen: source.lastPollEnd,
+      });
+    }
   }
   return items;
 }
@@ -111,23 +133,56 @@ function upsertEvent(item, now) {
     return;
   }
 
+  // COALESCE keeps the last known host when this sweep could not resolve one.
   if (existing.cleared_at) {
     db.prepare(`
       UPDATE service_alert_events
       SET cleared_at = NULL, detected_at = ?, last_seen_at = ?, analysis_status = 'pending',
-          severity = ?, host = ?, message = ?
+          severity = ?, host = COALESCE(?, host), message = ?
       WHERE id = ?
     `).run(now, now, severity, item.host || null, item.message || null, existing.id);
     return;
   }
 
   db.prepare(`
-    UPDATE service_alert_events SET last_seen_at = ?, severity = ?, host = ?, message = ? WHERE id = ?
+    UPDATE service_alert_events SET last_seen_at = ?, severity = ?, host = COALESCE(?, host), message = ? WHERE id = ?
   `).run(now, severity, item.host || null, item.message || null, existing.id);
 }
 
-/** Per-platform state = worst open-event condition, with a new timeline row
- *  written only when the state actually changed since the last row. */
+/** Platform-level rollup of the open events: how many sources ICC polls for
+ *  the platform, how many of those are unreachable, and how many analyses
+ *  judged a host offline. Shared by recomputeStates and getBoard. */
+function summarizeOpenEvents(platform, openEvents) {
+  const unreachable = openEvents.filter((e) => e.sourceKey.startsWith('poll:')).length;
+  const offlineVerdicts = openEvents.filter((e) => !e.sourceKey.startsWith('poll:') && e.verdict === 'offline').length;
+  const polled = polledSourcesFor(platform).length;
+  return { openEvents: openEvents.length, polled, unreachable, offlineVerdicts };
+}
+
+/** Platform state (Doug, 2026-09-17): red (offline) only when ICC has lost
+ *  every polled source of the platform; one unreachable source among several,
+ *  or a host judged offline by its analysis, leaves the platform degraded.
+ *  Per-event verdicts are untouched by this rollup. */
+function platformStateFor(summary) {
+  if (summary.openEvents === 0) return 'ok';
+  if (summary.unreachable > 0 && summary.unreachable >= summary.polled) return 'offline';
+  return 'degraded';
+}
+
+function platformReasonFor(state, s) {
+  if (state === 'ok') return 'No open critical alerts';
+  let reason = `${s.openEvents} open critical alert${s.openEvents === 1 ? '' : 's'}`;
+  if (state === 'offline') {
+    reason += s.polled > 1 ? `, all ${s.polled} sources unreachable` : ', source unreachable';
+  } else if (s.unreachable) {
+    reason += `, ${s.unreachable} of ${s.polled} sources unreachable`;
+  }
+  if (s.offlineVerdicts) reason += `, ${s.offlineVerdicts} offline verdict${s.offlineVerdicts === 1 ? '' : 's'}`;
+  return reason;
+}
+
+/** Per-platform state from the open events, with a new timeline row written
+ *  only when the state actually changed since the last row. */
 function recomputeStates(now, platformIds) {
   for (const platform of platformIds) {
     const openEvents = db.prepare(`
@@ -137,10 +192,8 @@ function recomputeStates(now, platformIds) {
       WHERE sae.platform = ? AND sae.cleared_at IS NULL
     `).all(platform);
 
-    const isOffline = (e) => e.sourceKey.startsWith('poll:') || e.verdict === 'offline';
-    let state;
-    if (openEvents.length === 0) state = 'ok';
-    else state = openEvents.some(isOffline) ? 'offline' : 'degraded';
+    const summary = summarizeOpenEvents(platform, openEvents);
+    const state = platformStateFor(summary);
 
     const last = db.prepare(
       'SELECT state FROM service_status_timeline WHERE platform = ? ORDER BY at DESC, id DESC LIMIT 1'
@@ -148,14 +201,7 @@ function recomputeStates(now, platformIds) {
 
     if (last && last.state === state) continue;
 
-    let reason;
-    if (state === 'ok') {
-      reason = 'No open critical alerts';
-    } else {
-      const offlineCount = openEvents.filter(isOffline).length;
-      reason = `${openEvents.length} open critical alert${openEvents.length === 1 ? '' : 's'}`;
-      if (offlineCount) reason += `, ${offlineCount} offline verdict${offlineCount === 1 ? '' : 's'}`;
-    }
+    const reason = platformReasonFor(state, summary);
 
     db.prepare(`
       INSERT INTO service_status_timeline (platform, state, at, reason, event_ids_json)
@@ -394,16 +440,15 @@ function sourcesFor(platform) {
 }
 
 function platformPollsFor(platform) {
-  const rows = [];
-  for (const [key, state] of pollerStatus.getAll()) {
-    const idx = key.indexOf(':');
-    const type = idx === -1 ? key : key.slice(0, idx);
-    if (type !== platform) continue;
-    const entityId = Number(key.slice(idx + 1));
-    const sourceName = SOURCE_TABLES[platform] ? sourceNameFor(platform, entityId) : platform;
-    rows.push({ entityId, sourceName, lastPollEnd: state.lastPollEnd, lastPollStatus: state.lastPollStatus, isSyncing: state.isSyncing });
-  }
-  return rows;
+  // Live sources only: a stale key for a deleted source would read as a failed
+  // poll and push deriveVerdict toward "every platform poll errored".
+  return polledSourcesFor(platform).map((s) => ({
+    entityId: s.entityId,
+    sourceName: s.sourceName || `source #${s.entityId}`,
+    lastPollEnd: s.lastPollEnd,
+    lastPollStatus: s.lastPollStatus,
+    isSyncing: s.isSyncing,
+  }));
 }
 
 // table/timestamp-column per platform's metrics history, for the alerting
@@ -1025,8 +1070,8 @@ function getBoard({ days = 30 } = {}) {
 
     const lastRow = timeline.length ? timeline[timeline.length - 1] : null;
     const current = lastRow
-      ? { state: lastRow.state, since: lastRow.at, reason: lastRow.reason, openEvents: 0, openOffline: 0 }
-      : { state: 'unknown', since: null, reason: null, openEvents: 0, openOffline: 0 };
+      ? { state: lastRow.state, since: lastRow.at, reason: lastRow.reason }
+      : { state: 'unknown', since: null, reason: null };
 
     const openRows = db.prepare(`
       SELECT sae.source_key AS sourceKey, saa.verdict AS verdict
@@ -1034,8 +1079,11 @@ function getBoard({ days = 30 } = {}) {
       LEFT JOIN service_alert_analyses saa ON saa.event_id = sae.id
       WHERE sae.platform = ? AND sae.cleared_at IS NULL
     `).all(id);
-    current.openEvents = openRows.length;
-    current.openOffline = openRows.filter((r) => r.sourceKey.startsWith('poll:') || r.verdict === 'offline').length;
+    const summary = summarizeOpenEvents(id, openRows);
+    current.openEvents = summary.openEvents;
+    current.sourcesPolled = summary.polled;
+    current.sourcesUnreachable = summary.unreachable;
+    current.openOffline = summary.offlineVerdicts;
 
     return { id, label: meta.label, color: meta.color, route: meta.route, alertsRoute: meta.alertsRoute, current, days: dayRows };
   });
@@ -1074,6 +1122,7 @@ module.exports = {
   stopServiceStatus,
   deriveVerdict,
   isCriticalSeverity,
+  _platformPollsFor: platformPollsFor,
   _setCollector,
   _setChat,
   _resetTestSeams,
