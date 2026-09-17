@@ -219,6 +219,11 @@ describe('sweep', () => {
     await svc.sweep();
     expect(openEvents('dell')).toHaveLength(0);
     expect(lastTimeline('dell').state).toBe('ok');
+    // The cleared event says why it cleared, and a second sweep does not stack the suffix.
+    await svc.sweep();
+    const cleared = db.prepare("SELECT host, cleared_at FROM service_alert_events WHERE platform = 'dell' AND source_key = 'poll:9'").get();
+    expect(cleared.cleared_at).toBeTruthy();
+    expect(cleared.host).toBe('ome-old (source removed)');
     const evidence = svc.deriveVerdict({ source_key: 'k1', platform: 'dell' }, { hostRecords: [], platformPolls: svc._platformPollsFor('dell') });
     expect(evidence.verdict).toBe('degraded'); // the stale key no longer reads as "every poll errored"
   });

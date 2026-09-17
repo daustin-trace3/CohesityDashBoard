@@ -271,6 +271,19 @@ async function sweep() {
         if (failed.includes(ev.platform)) continue;
         if (seen.has(`${ev.platform}:${ev.sourceKey}`)) continue;
         db.prepare('UPDATE service_alert_events SET cleared_at = ? WHERE id = ?').run(now, ev.id);
+        // A reachability event whose source is gone from its table clears for
+        // that reason, not because the source came back; say so in the label
+        // that past-day modals will keep showing.
+        if (ev.sourceKey.startsWith('poll:') && SOURCE_TABLES[ev.platform]) {
+          const entityId = Number(ev.sourceKey.slice(5));
+          if (!sourceRowFor(ev.platform, entityId)) {
+            db.prepare(`
+              UPDATE service_alert_events
+              SET host = COALESCE(host, 'source #' || ?) || ' (source removed)'
+              WHERE id = ? AND host NOT LIKE '% (source removed)'
+            `).run(String(entityId), ev.id);
+          }
+        }
       }
 
       recomputeStates(now, enabledIds);
