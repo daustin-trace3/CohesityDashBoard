@@ -42,6 +42,7 @@ const server360Router = require('./routes/server360');
 const topologyRouter = require('./routes/topology');
 const opsRouter = require('./routes/ops');
 const serviceStatusRouter = require('./routes/serviceStatus');
+const appServicesRouter = require('./routes/appServices');
 const datasetsRouter = require('./routes/datasets');
 const userDashboardsRouter = require('./routes/userDashboards');
 const aiConfigRouter = require('./routes/aiConfig');
@@ -275,6 +276,7 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // Service Status page — read-only board + per-event AI analysis, reachable
   // to any authenticated caller like /api/ops.
   app.use('/api/service-status', serviceStatusRouter);
+  app.use('/api/app-services', appServicesRouter);
   // Custom dashboards ship dark: both mounts 404 until the feature is
   // switched on in Global Settings → Platforms (feature_custom_dashboards_enabled).
   const requireCustomDashboards = (req, res, next) => {

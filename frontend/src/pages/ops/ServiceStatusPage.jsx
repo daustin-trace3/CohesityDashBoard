@@ -455,3 +455,5 @@ export default function ServiceStatusPage() {
     </div>
   );
 }
+
+export { AnalysisModal };

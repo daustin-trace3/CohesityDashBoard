@@ -19,7 +19,12 @@ const BUILTIN = {
   bluecat: { label: 'BlueCat', color: '#0057B8', route: '/bluecat', alertsRoute: '/bluecat/alerts' },
 };
 
+// Not a polled platform, so it stays out of BUILTIN (which drives the platform
+// board) and only resolves here for its events and analyses.
+const APP_SERVICE = { label: 'App Services', color: '#7C3AED', route: '/ops/app-status', alertsRoute: '/ops/app-status' };
+
 function platformMeta(id) {
+  if (id === 'appservice') return APP_SERVICE;
   if (BUILTIN[id]) return BUILTIN[id];
   const entry = registry.getPlugin(id);
   if (entry) {

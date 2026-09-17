@@ -394,4 +394,29 @@ module.exports = [
       `);
     },
   },
+  // App Service Status: the watched usage-ids (global list) and the last
+  // computed state per app; critical apps also flow into service_alert_events.
+  {
+    version: 17,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS app_service_watch (
+          usage_id TEXT PRIMARY KEY,
+          display_id TEXT NOT NULL,
+          label TEXT,
+          check_port INTEGER,
+          created_by TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS app_service_state (
+          usage_id TEXT PRIMARY KEY,
+          state TEXT NOT NULL,
+          reason TEXT,
+          since TEXT NOT NULL,
+          computed_at TEXT NOT NULL,
+          summary_json TEXT NOT NULL DEFAULT '{}'
+        );
+      `);
+    },
+  },
 ];

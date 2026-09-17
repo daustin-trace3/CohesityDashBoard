@@ -16,6 +16,9 @@ const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
 const { getSetting, getServiceStatusSettings } = require('./settings');
 const { BUILTIN, platformMeta } = require('./platformMeta');
+// App Service Status feeds critical apps into the same event tables and takes
+// over evidence + prompt building for platform 'appservice'.
+const appSvc = require('./appServiceStatus');
 
 // Per-platform critical severity sets (normalized lowercase). Zerto's top
 // severity is 'error' , it has no 'critical' level of its own.
@@ -254,7 +257,13 @@ async function sweep() {
     }
 
     const reachability = gatherReachabilityItems(enabledIds);
-    const allItems = [...items, ...reachability];
+    let appItems = [];
+    try {
+      appItems = appSvc.collectItems(now);
+    } catch (err) {
+      logger.error('[ServiceStatus] app service evaluation failed:', err.message);
+    }
+    const allItems = [...items, ...reachability, ...appItems];
 
     db.transaction(() => {
       const seen = new Set();
@@ -570,6 +579,7 @@ function relatedOpenEventsFor(event) {
 /** Small, JSON-able evidence bundle for one event , every DB probe here is
  *  isolated so a missing table on this instance never breaks the gather. */
 function gatherEvidence(event) {
+  if (event.platform === 'appservice') return appSvc.gatherEvidence(event);
   const candidates = hostCandidates(event.host);
   const hostRecords = [];
 
@@ -612,6 +622,7 @@ function gatherEvidence(event) {
 
 /** Pure function, unit-testable in isolation. */
 function deriveVerdict(event, evidence) {
+  if ((event?.platform || evidence?.alert?.platform) === 'appservice') return appSvc.deriveVerdict(evidence);
   const sourceKey = event?.source_key || event?.sourceKey || evidence?.alert?.sourceKey || '';
   if (String(sourceKey).startsWith('poll:')) {
     return { verdict: 'offline', reason: 'ICC could not reach the source on its last poll', confidence: 'high' };
@@ -680,6 +691,16 @@ function parseModelJson(content) {
 }
 
 function buildMessages(event, evidence, evidenceVerdict, anon) {
+  if (event.platform === 'appservice') {
+    let appSystem = appSvc.systemPrompt();
+    const appCtx = (getSetting('llm_estate_context') || '').trim();
+    if (appCtx) appSystem += ` Operator context: ${appCtx}`;
+    appSystem += PROMPT_NOTE;
+    return [
+      { role: 'system', content: appSystem },
+      { role: 'user', content: `App service and evidence (JSON):\n${JSON.stringify(anon.anonymize(appSvc.buildPayload(evidence, evidenceVerdict)))}` },
+    ];
+  }
   const meta = platformMeta(event.platform);
   let system =
     `You are a senior infrastructure operations engineer reviewing one CRITICAL monitoring ` +
