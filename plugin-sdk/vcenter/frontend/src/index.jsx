@@ -18,13 +18,14 @@ const { injectStyles } = require('./ui.jsx');
 const { LOGO_DATA_URI } = require('./logo.js');
 const {
   Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, Bell,
-  Building2, TrendingUp, ArrowLeftRight,
+  Building2, TrendingUp, ArrowLeftRight, Tag,
 } = require('./icons.jsx');
 
 const OverviewPage = require('./pages/overview.jsx').default;
 const AlertsPage = require('./pages/alerts.jsx').default;
 const HostsPage = require('./pages/hosts.jsx').default;
 const InventoryPage = require('./pages/inventory.jsx').default;
+const TagsPage = require('./pages/tags.jsx').default;
 const DatastoresPage = require('./pages/datastores.jsx').default;
 const NetworkPage = require('./pages/network.jsx').default;
 const EventsPage = require('./pages/events.jsx').default;
@@ -62,6 +63,7 @@ const navGroups = [
     items: [
       { label: 'ESX Hosts', route: '/vcenter/hosts', icon: Server, isActive: (p) => p.startsWith('/vcenter/hosts') },
       { label: 'VM Inventory', route: '/vcenter/inventory', icon: MonitorSmartphone, isActive: (p) => p.startsWith('/vcenter/inventory') },
+      { label: 'Tags', route: '/vcenter/tags', icon: Tag, isActive: (p) => p.startsWith('/vcenter/tags') },
       { label: 'Datastores', route: '/vcenter/datastores', icon: Database, isActive: (p) => p.startsWith('/vcenter/datastores') },
       { label: 'Network', route: '/vcenter/network', icon: Network, isActive: (p) => p.startsWith('/vcenter/network') },
     ],
@@ -93,6 +95,7 @@ const routes = [
   { path: 'vcenter/capacity/explorer', Component: rooted(CapacityExplorerPage) },
   { path: 'vcenter/hosts', Component: rooted(HostsPage) },
   { path: 'vcenter/inventory', Component: rooted(InventoryPage) },
+  { path: 'vcenter/tags', Component: rooted(TagsPage) },
   { path: 'vcenter/datastores', Component: rooted(DatastoresPage) },
   { path: 'vcenter/network', Component: rooted(NetworkPage) },
   { path: 'vcenter/events', Component: rooted(EventsPage) },

@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell, Building2, TrendingUp, ArrowLeftRight } from 'lucide-react';
+import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell, Building2, TrendingUp, ArrowLeftRight, Tag } from 'lucide-react';
 
 const VcOverviewPage = lazy(() => import('../../pages/vcenter/VcOverviewPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
@@ -9,6 +9,7 @@ const VcAlertsPage = () => <IssueAlertsPage platform="vcenter" />;
 const VcHostsPage = lazy(() => import('../../pages/vcenter/VcHostsPage'));
 const VcDatastoresPage = lazy(() => import('../../pages/vcenter/VcDatastoresPage'));
 const VcInventoryPage = lazy(() => import('../../pages/vcenter/VcInventoryPage'));
+const VcTagsPage = lazy(() => import('../../pages/vcenter/VcTagsPage'));
 const VcNetworkPage = lazy(() => import('../../pages/vcenter/VcNetworkPage'));
 const VcGovernancePage = lazy(() => import('../../pages/vcenter/VcGovernancePage'));
 const VcEventsPage = lazy(() => import('../../pages/vcenter/VcEventsPage'));
@@ -42,6 +43,7 @@ const navGroups = [
     items: [
       { label: 'ESX Hosts', route: '/vcenter/hosts', icon: Server, isActive: (p) => p.startsWith('/vcenter/hosts') },
       { label: 'VM Inventory', route: '/vcenter/inventory', icon: MonitorSmartphone, isActive: (p) => p.startsWith('/vcenter/inventory') },
+      { label: 'Tags', route: '/vcenter/tags', icon: Tag, isActive: (p) => p.startsWith('/vcenter/tags') },
       { label: 'Datastores', route: '/vcenter/datastores', icon: Database, isActive: (p) => p.startsWith('/vcenter/datastores') },
       { label: 'Network', route: '/vcenter/network', icon: Network, isActive: (p) => p.startsWith('/vcenter/network') },
     ],
@@ -81,6 +83,7 @@ export default {
     { path: 'vcenter/capacity/explorer', Component: VcCapacityExplorerPage },
     { path: 'vcenter/hosts', Component: VcHostsPage },
     { path: 'vcenter/inventory', Component: VcInventoryPage },
+    { path: 'vcenter/tags', Component: VcTagsPage },
     { path: 'vcenter/datastores', Component: VcDatastoresPage },
     { path: 'vcenter/network', Component: VcNetworkPage },
     { path: 'vcenter/events', Component: VcEventsPage },
