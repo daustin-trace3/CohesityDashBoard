@@ -252,18 +252,12 @@ function ExpandedDetail({ usageId }) {
     return <LoadingPanel label="Loading app details" height={120} />;
   }
 
-  const findings = detail.findings || [];
+  // The findings text stays available to the AI analysis and the API; the
+  // section rows below carry the state on the page.
   const sections = buildSections(detail);
 
   return (
     <div className="flex flex-col gap-3">
-      {findings.length > 0 && (
-        <div className="flex flex-col gap-1">
-          {findings.map((f, i) => (
-            <p key={i} className={`text-xs ${f.level === 'critical' ? 'text-status-crit' : 'text-status-warn'}`}>{f.text}</p>
-          ))}
-        </div>
-      )}
       <div className="flex flex-col divide-y divide-cohesity-border/60 border border-cohesity-border rounded-lg">
         {sections.map((s) => <SectionRow key={s.key} section={s} />)}
       </div>
@@ -380,8 +374,7 @@ function AppRow({ app, onOpenAnalysis }) {
               <span className="text-sm font-semibold text-ink font-mono">{app.displayId}</span>
             )}
           </div>
-          {app.reason && <p className="text-xs text-ink-muted mt-1 truncate">{app.reason}</p>}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-ink-faint">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-ink-faint" title={app.reason || undefined}>
             {app.since && <span>since {timeAgo(app.since)}</span>}
             {parts.map((p, i) => <span key={i}>{p}</span>)}
           </div>
