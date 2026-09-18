@@ -135,7 +135,15 @@ function detectColumns(header) {
 function importCatalog(text, { user = null } = {}) {
   const rows = parseCsv(text);
   if (rows.length < 2) throw Object.assign(new Error('The file needs a header row and at least one data row'), { status: 400 });
-  const cols = detectColumns(rows[0]);
+  let cols = detectColumns(rows[0]);
+  let positional = false;
+  if (cols.id === undefined && rows[0].length >= 3) {
+    // Doug's export layout: column B is the application number, column C the
+    // name. Used when the header text is not recognised; extra columns are
+    // ignored either way.
+    cols = { id: 1, name: 2 };
+    positional = true;
+  }
   if (cols.id === undefined) {
     throw Object.assign(new Error(`Could not find the ATM ID column. Headers seen: ${rows[0].map((h) => String(h).trim()).join(', ')}`), { status: 400 });
   }
@@ -181,6 +189,7 @@ function importCatalog(text, { user = null } = {}) {
     rowsRead: rows.length - 1, imported: merged.size, skippedBlankId: skipped, withoutName,
     matchedToVmTags: matched, taggedWithoutCatalogEntry: [...taggedAll].filter((t) => !merged.has(t)).length,
     columns: Object.fromEntries(Object.entries(cols).map(([k, i]) => [k, String(rows[0][i]).trim()])),
+    columnsByPosition: positional, ignoredColumns: rows[0].length - Object.keys(cols).length,
     importedAt: now,
   };
 }

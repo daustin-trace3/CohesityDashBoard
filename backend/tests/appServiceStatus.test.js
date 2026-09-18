@@ -203,6 +203,29 @@ describe('application catalog import', () => {
     expect(appSvc.getBoard().apps.find((a) => a.usageId === 'aa00001721').label).toBe('Trading v2');
   });
 
+  it("reads Doug's real 12-column export as is, using only the application number and name", () => {
+    const real = [
+      'Life Cycle Stage,Business Application number,Name,Platform,Business owner,ITG Manager,Portfolio Stweard,Primary SME,Created,Created By,Updated,Last updated by',
+      'Operational,AA00001721,Trading Platform,Distributed,"Owner, Olivia",Mgr Mike,Steward Sam,Sme Sue,2019-03-01,svc_import,2026-08-30,Owner Olivia',
+      'Retired,pp00003101,Wire Transfers,Mainframe,Owner Two,Mgr Two,Steward Two,Sme Two,2015-01-01,svc_import,2026-01-02,Mgr Two',
+    ].join('\r\n');
+    const res = appSvc.importCatalog(real);
+    expect(res).toMatchObject({
+      rowsRead: 2, imported: 2, columnsByPosition: false,
+      columns: { id: 'Business Application number', name: 'Name', lifecycle: 'Life Cycle Stage', platform: 'Platform' },
+    });
+    expect(res.ignoredColumns).toBe(8);
+    const row = db.prepare("SELECT * FROM app_service_catalog WHERE usage_id = 'aa00001721'").get();
+    expect(row).toMatchObject({ atm_id: 'AA00001721', name: 'Trading Platform', lifecycle: 'Operational', platform: 'Distributed' });
+  });
+
+  it('falls back to column B = id and column C = name when the headers are not recognised', () => {
+    const odd = 'Stage,App Nbr,Title of thing,Other\nLive,DD00005001,Ledger Core,x\n';
+    const res = appSvc.importCatalog(odd);
+    expect(res).toMatchObject({ imported: 1, columnsByPosition: true, columns: { id: 'App Nbr', name: 'Title of thing' } });
+    expect(db.prepare("SELECT name FROM app_service_catalog WHERE usage_id = 'dd00005001'").get().name).toBe('Ledger Core');
+  });
+
   it('rejects a file with no ATM ID column and an Excel workbook', async () => {
     const bad = await request(app).post('/api/app-services/catalog/import').attach('file', Buffer.from('Foo,Bar\n1,2\n'), 'x.csv');
     expect(bad.status).toBe(400);

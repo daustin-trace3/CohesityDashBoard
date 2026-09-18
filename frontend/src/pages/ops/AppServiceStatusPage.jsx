@@ -520,6 +520,9 @@ function ManageListModal({ onClose }) {
               , {importResult.matchedToVmTags} match a usage-id tag on a VM
               {importResult.taggedWithoutCatalogEntry > 0 && `, ${importResult.taggedWithoutCatalogEntry} tagged usage-ids are not in the file`}
               {importResult.skippedBlankId > 0 && `, ${importResult.skippedBlankId} rows had no ID`}.
+              {' '}ID column: {importResult.columns?.id || '-'}, name column: {importResult.columns?.name || '-'}
+              {importResult.columnsByPosition ? ' (headers not recognised, used columns B and C)' : ''}
+              {importResult.ignoredColumns > 0 && `, ${importResult.ignoredColumns} other columns ignored`}.
             </p>
           )}
         </div>
