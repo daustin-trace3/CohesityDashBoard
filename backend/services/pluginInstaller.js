@@ -91,6 +91,15 @@ async function installPlugin(zipPath, opts = {}) {
     fail(`plugin '${id}' backend/index.cjs does not match manifest.json`);
   }
 
+  // A built-in platform with the same id is already registered in this
+  // process, so the pack cannot hot-add over it (registerPlugin would throw
+  // "already registered" with the files half-installed). pluginBoot swaps the
+  // built-in for the installed pack at the next boot, so keep the verified
+  // files in place and report a pending restart, like a same-id upgrade.
+  if (registry.getPlugin(id)) {
+    return { id, pendingAction: 'restart-upgrade', hotAdded: false, replacesBuiltin: true };
+  }
+
   pluginModule.version = pluginModule.version || manifest.version;
   pluginModule.color = pluginModule.color || manifest.color;
 

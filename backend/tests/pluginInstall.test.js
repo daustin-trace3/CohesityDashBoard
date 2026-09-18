@@ -187,6 +187,27 @@ describe('plugin install lifecycle', () => {
     expect(registry.getPlugin('demo').version).toBe('0.2.0');
   });
 
+  it('installing a pack over a registered same-id built-in stages it for the next boot instead of failing half-installed', async () => {
+    const builtin = { id: 'demo', name: 'Demo Built-in', apiVersion: registry.PLUGIN_API_VERSION, migrations: [], createRouter: () => (req, res, next) => next() };
+    registry.registerPlugin(builtin);
+
+    const zipPath = await buildDemoZip({ version: '0.3.0' });
+    const res = await request(app).post('/api/plugins/install').set('x-api-key', API_KEY).attach('plugin', zipPath, 'demo-0.3.0.iccplugin');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'demo', pendingAction: 'restart-upgrade', hotAdded: false, replacesBuiltin: true });
+    expect(fs.existsSync(path.join(pluginsDir, 'demo', 'backend', 'index.cjs'))).toBe(true);
+    expect(registry.getPlugin('demo').name).toBe('Demo Built-in'); // untouched until the restart
+
+    // Next boot: built-ins register first, then the installed pack replaces the same-id built-in.
+    registry._reset();
+    registry.init();
+    registry.setIsEntitledFn(() => true);
+    registry.registerPlugin(builtin);
+    pluginBoot.runBootSwap();
+    pluginBoot.scanAndRegisterInstalled();
+    expect(registry.getPlugin('demo').version).toBe('0.3.0');
+  });
+
   it('no platform id is reserved anymore (2026-08 pluginization campaign)', async () => {
     // BUILTIN_IDS used to guard pure/netapp; the campaign converts every
     // platform to an installable pack, so the set is empty and a pack
