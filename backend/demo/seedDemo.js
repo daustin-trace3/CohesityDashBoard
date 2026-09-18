@@ -15,10 +15,19 @@ const args = process.argv.slice(2);
 const force = args.includes('--force');
 const dbFlagIdx = args.indexOf('--db');
 const dbArg = dbFlagIdx !== -1 ? args[dbFlagIdx + 1] : null;
+const confirmWipe = args.includes('--i-know-this-wipes-the-database');
 
 const DEFAULT_DB_PATH = path.join(__dirname, '..', 'data', 'demo.db');
 const dbPath = dbArg ? path.resolve(dbArg) : (process.env.DASHBOARD_DB_PATH || DEFAULT_DB_PATH);
 process.env.DASHBOARD_DB_PATH = dbPath;
+
+// Safety guard: refuse to run unless db filename contains "demo" or explicit flag is passed
+const dbBasename = path.basename(dbPath);
+if (!dbBasename.includes('demo') && !confirmWipe) {
+  console.error('[seedDemo] SAFETY: refusing to run. Target database filename must contain "demo" or pass --i-know-this-wipes-the-database');
+  console.error(`[seedDemo] Requested path: ${dbPath}`);
+  process.exit(1);
+}
 
 // Same .env resolution as backend/server.js (backend/demo/.. -> backend/.. -> Dashboard/.env).
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });

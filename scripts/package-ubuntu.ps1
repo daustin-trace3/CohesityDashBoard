@@ -98,8 +98,8 @@ if ($WithDeps) {
 
 # 4. Collect files. Working tree, not HEAD, so uncommitted fixes ship.
 $excludeDirNames = @('node_modules', 'logs', '.git', '.agents', '.gstack', 'node_modules.ubuntu')
-$excludePaths    = @('backend/data', 'backend/plugins', 'frontend/node_modules')
-$excludeGlobs    = @('.env', '.env.local', '*.db', '*.db-shm', '*.db-wal', '*.sqlite', '*.sqlite3', '*.iccplugin', '*.tar.gz')
+$excludePaths    = @('backend/data', 'backend/plugins', 'frontend/node_modules', 'backend/tests', 'backend/scripts', 'docs')
+$excludeGlobs    = @('.env', '.env.local', '.env.demo', '*.db', '*.db-shm', '*.db-wal', '*.sqlite', '*.sqlite3', '*.iccplugin', '*.tar.gz', '*.pem', '*.key', '*.p12', '*.pfx', 'SECURITY-AUDIT.md', 'TODOS.md', 'README-DEMO.md')
 
 function Test-Excluded {
   param([string]$RelPath)
@@ -117,7 +117,10 @@ Push-Location $RepoRoot
 try {
   $files = Get-ChildItem -Recurse -File -Force | ForEach-Object {
     $rel = $_.FullName.Substring($RepoRoot.Length).TrimStart('\', '/')
-    if (-not (Test-Excluded $rel)) {
+    # Zero-byte files with no extension are shell-redirect accidents (a ">" in
+    # a command line), never product files.
+    $junk = ($_.Length -eq 0 -and $_.Extension -eq '')
+    if (-not $junk -and -not (Test-Excluded $rel)) {
       # Vendored deps ride in the tarball at backend/node_modules/ so the
       # installer's "vendored" branch finds them.
       ($rel -replace '\\', '/') -replace '^backend/node_modules\.ubuntu/', 'backend/node_modules/'

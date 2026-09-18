@@ -23,7 +23,7 @@ beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'icc-seed-demo-test-'));
   dbPath = path.join(tmpDir, 'seed-test.db');
 
-  execFileSync(process.execPath, [seedScript, '--db', dbPath, '--force'], {
+  execFileSync(process.execPath, [seedScript, '--db', dbPath, '--force', '--i-know-this-wipes-the-database'], {
     cwd: backendDir,
     env: process.env,
     stdio: 'pipe',
@@ -38,6 +38,20 @@ afterAll(() => {
 });
 
 describe('seedDemo.js', () => {
+  it('refuses to run on non-demo database without --i-know-this-wipes-the-database flag', () => {
+    const tmpDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'icc-seed-demo-test-'));
+    const dbPath2 = path.join(tmpDir2, 'production.db');
+    expect(() => {
+      execFileSync(process.execPath, [seedScript, '--db', dbPath2], {
+        cwd: backendDir,
+        env: process.env,
+        stdio: 'pipe',
+      });
+    }).toThrow();
+    try { fs.rmSync(tmpDir2, { recursive: true, force: true }); } catch { /* win file locks */ }
+  });
+
+
   it('seeds 24 cohesity clusters', () => {
     const row = db.prepare('SELECT COUNT(*) c FROM clusters').get();
     expect(row.c).toBe(24);
@@ -172,8 +186,10 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE in_maintenance = 1').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_datastores WHERE free_bytes < capacity_bytes * 0.2').get().c).toBeGreaterThan(0);
     // vm rows match the per-host counts, and version/BIOS columns are filled.
+    // Disconnected/maintenance hosts now keep 2-5 powered-off VMs, so vcenter_vms
+    // count should be >= the sum of vm_count (extra VMs from disconnected hosts).
     const hostVms = db.prepare('SELECT SUM(vm_count) s FROM vcenter_hosts').get().s;
-    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vms').get().c).toBe(hostVms);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vms').get().c).toBeGreaterThanOrEqual(hostVms);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE esx_version IS NULL OR bios_version IS NULL').get().c).toBe(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vcenters WHERE version IS NULL').get().c).toBe(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_metrics_history').get().c).toBe(8 * 31);

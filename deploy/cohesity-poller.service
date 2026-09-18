@@ -24,6 +24,25 @@ ExecStart=/usr/bin/node backend/pollerProcess.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
+# Hardening. Run this unit as the same unprivileged user as
+# cohesity-dashboard.service (add a User= line; without one systemd runs it
+# as root). Directives an older systemd does not know are ignored with a
+# warning, they do not stop the unit.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/cohesity-dashboard
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
