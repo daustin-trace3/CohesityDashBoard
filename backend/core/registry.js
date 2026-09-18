@@ -10,6 +10,11 @@ const RESERVED_IDS = new Set([
   'advisor', 'ai-audit', 'analytics', 'governance', 'dashboard', 'helios',
   'alerts', 'metrics', 'hardware', 'clusters', 'replication', 'plugins',
   'auth', 'users', 'datasets', 'user-dashboards',
+  // Core namespaces and mounts. 'admin' matters most: seedRoleGrants would
+  // hand Operator admin:*:* for a plugin that claimed it.
+  'admin', 'ops', 'search', 'topology', 'server360', 'directory', 'pure1',
+  'service-status', 'app-services', 'appservice', 'release-notes', 'app-version',
+  'health', 'api', 'core', 'system',
 ]);
 
 const ID_PATTERN = /^[a-z0-9-]+$/;

@@ -4,6 +4,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const ID_PATTERN = /^[a-z0-9-]+$/;
+
 function getPluginsDir() {
   return process.env.ICC_PLUGINS_DIR || path.join(__dirname, '..', 'plugins');
 }
@@ -21,7 +23,11 @@ function rmFile(file) {
  *  not block boot. */
 function purgePluginData(db, id) {
   try {
-    const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ?").all(`${id}_%`);
+    // "_" is a single-character wildcard in LIKE: unescaped, purging 'aria'
+    // also matched every ariaops_* table and 'pure' every pure1_* table.
+    // Plugin ids are [a-z0-9-] so only the separator needs escaping.
+    const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ? ESCAPE '!'")
+      .all(`${id.replace(/[!%_]/g, '!$&')}!_%`);
     const run = db.transaction(() => {
       for (const row of rows) {
         db.prepare(`DROP TABLE IF EXISTS "${row.name}"`).run();
@@ -48,6 +54,13 @@ function runBootSwap({ db } = {}) {
   for (const entry of entries) {
     if (!entry.endsWith('.remove')) continue;
     const id = entry.slice(0, -'.remove'.length);
+    // The id becomes a path that is deleted recursively. A marker named
+    // "...remove" yields id ".." and would delete the parent of the plugins
+    // dir, so anything that is not a plain plugin id is dropped untouched.
+    if (!ID_PATTERN.test(id)) {
+      rmFile(path.join(pluginsDir, entry));
+      continue;
+    }
     const purgeMarker = path.join(pluginsDir, `${id}.purge`);
     const purge = fs.existsSync(purgeMarker);
 
@@ -66,6 +79,7 @@ function runBootSwap({ db } = {}) {
   for (const entry of remaining) {
     if (!entry.endsWith('.staged')) continue;
     const id = entry.slice(0, -'.staged'.length);
+    if (!ID_PATTERN.test(id)) continue;
     rmDir(path.join(pluginsDir, id));
     fs.renameSync(path.join(pluginsDir, entry), path.join(pluginsDir, id));
   }

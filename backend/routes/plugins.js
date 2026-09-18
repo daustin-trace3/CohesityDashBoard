@@ -14,20 +14,83 @@ const registry = require('../core/registry');
 const pluginBoot = require('../services/pluginBoot');
 const { upload, installPlugin, BUILTIN_IDS } = require('../services/pluginInstaller');
 
+const { assertSafeHost } = require('../utils/hostGuard');
+const { getSetting } = require('../services/settings');
+
 const router = express.Router();
 
 const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+const DOWNLOAD_DEADLINE_MS = 120000;
+const ID_PATTERN = /^[a-z0-9-]+$/;
+const DEFAULT_PLUGIN_HOSTS = ['marketplace.austihome.com'];
+
+/** Every :id route builds a filesystem path from the id, so anything that is
+ *  not a plain plugin id ("..", ".", encoded separators) is refused before
+ *  the handler runs. */
+function requireValidId(req, res, next) {
+  if (!ID_PATTERN.test(String(req.params.id || ''))) {
+    return res.status(404).json({ error: 'unknown plugin' });
+  }
+  next();
+}
+
+/** Hosts install-from-url may download from: the marketplace plus the
+ *  comma-separated plugin_install_allowed_hosts setting or
+ *  PLUGIN_INSTALL_ALLOWED_HOSTS env var. "*" allows any host. */
+function allowedPluginHosts() {
+  const extra = `${getSetting('plugin_install_allowed_hosts') || ''},${process.env.PLUGIN_INSTALL_ALLOWED_HOSTS || ''}`;
+  return DEFAULT_PLUGIN_HOSTS.concat(extra.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean));
+}
+
+/** Validates one hop of a plugin download. https only (http is accepted only
+ *  when PLUGIN_INSTALL_ALLOW_HTTP=1, which the test suite sets), host on the
+ *  allowlist, and never a loopback, link-local or metadata address. */
+async function assertDownloadUrl(rawUrl) {
+  const fail = (msg) => Object.assign(new Error(msg), { status: 400 });
+  let u;
+  try { u = new URL(rawUrl); } catch { throw fail('url is not valid'); }
+  const insecureOk = process.env.PLUGIN_INSTALL_ALLOW_HTTP === '1';
+  if (u.protocol !== 'https:' && !(insecureOk && u.protocol === 'http:')) throw fail('url must be https');
+  if (u.username || u.password) throw fail('url must not carry credentials');
+  const hosts = allowedPluginHosts();
+  if (!hosts.includes('*') && !hosts.includes(u.hostname.toLowerCase())) {
+    throw fail(`host '${u.hostname}' is not an allowed plugin source`);
+  }
+  if (!insecureOk) await assertSafeHost(u.hostname);
+  return u;
+}
 
 /** Streams `url` to a temp file, enforcing a 100MB cap and a 60s timeout.
  *  Trusts the marketplace's signature verification (installPlugin) rather
  *  than the URL shape, so no `.iccplugin` extension is required here. */
 async function downloadToTemp(url) {
   const dest = path.join(os.tmpdir(), `icc-plugin-url-${crypto.randomUUID()}.iccplugin`);
-  const response = await axios.get(url, {
-    responseType: 'stream',
-    timeout: 60000,
-    maxRedirects: 5,
-  });
+  // Redirects are followed by hand so every hop is re-validated, and one
+  // deadline covers the whole transfer (axios' timeout stops once headers
+  // arrive, so a slow-drip body would otherwise never end).
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), DOWNLOAD_DEADLINE_MS);
+  let response;
+  try {
+    let current = (await assertDownloadUrl(url)).toString();
+    for (let hop = 0; ; hop += 1) {
+      response = await axios.get(current, {
+        responseType: 'stream',
+        timeout: 60000,
+        maxRedirects: 0,
+        signal: controller.signal,
+        validateStatus: (s) => (s >= 200 && s < 300) || (s >= 300 && s < 400),
+      });
+      if (response.status < 300) break;
+      response.data.destroy();
+      const location = response.headers.location;
+      if (!location || hop >= 3) throw Object.assign(new Error('too many redirects'), { status: 400 });
+      current = (await assertDownloadUrl(new URL(location, current).toString())).toString();
+    }
+  } catch (err) {
+    clearTimeout(deadline);
+    throw err;
+  }
 
   const declaredLength = Number(response.headers['content-length']);
   if (declaredLength && declaredLength > MAX_DOWNLOAD_BYTES) {
@@ -55,7 +118,7 @@ async function downloadToTemp(url) {
     writeStream.on('error', (err) => { if (!settled) { settled = true; reject(err); } });
     writeStream.on('finish', () => { if (!settled) { settled = true; resolve(); } });
     response.data.pipe(writeStream);
-  });
+  }).finally(() => clearTimeout(deadline));
 
   return dest;
 }
@@ -132,7 +195,8 @@ router.post('/install', requirePermission('admin:plugins:manage'), (req, res) =>
     if (!req.file) return res.status(400).json({ error: "no file uploaded (multipart field must be 'plugin')" });
 
     try {
-      const result = await installPlugin(req.file.path);
+      const allowDowngrade = String((req.body && req.body.allowDowngrade) || req.query.allowDowngrade || '') === 'true';
+      const result = await installPlugin(req.file.path, { allowDowngrade });
       res.json(result);
     } catch (err) {
       res.status(err.status || 400).json({ error: err.message });
@@ -155,11 +219,13 @@ router.post('/install-from-url', requirePermission('admin:plugins:manage'), asyn
   let tmpPath;
   try {
     tmpPath = await downloadToTemp(url);
-    const result = await installPlugin(tmpPath);
+    const result = await installPlugin(tmpPath, { allowDowngrade: req.body.allowDowngrade === true });
     res.json(result);
   } catch (err) {
-    if (err.isAxiosError) {
-      return res.status(502).json({ error: `failed to download plugin: ${err.message}` });
+    if (err.isAxiosError || err.name === 'CanceledError' || err.name === 'AbortError') {
+      // One generic message: the axios text differs by failure type (refused,
+      // timeout, TLS, DNS) and would let a caller map hosts and ports.
+      return res.status(502).json({ error: 'failed to download plugin from that URL' });
     }
     res.status(err.status || 400).json({ error: err.message });
   } finally {
@@ -170,7 +236,7 @@ router.post('/install-from-url', requirePermission('admin:plugins:manage'), asyn
 /** POST /api/plugins/:id/enabled — flips the platform_<id>_enabled setting
  *  and the registry state, starting/stopping the poller (mirrors
  *  routes/settings.js applyPlatformEnabled for pure/netapp). */
-router.post('/:id/enabled', requirePermission('admin:plugins:manage'), (req, res) => {
+router.post('/:id/enabled', requirePermission('admin:plugins:manage'), requireValidId, (req, res) => {
   const { id } = req.params;
   // WP0: the semi-core cohesity branch only applies while cohesity isn't a
   // real registry plugin — once one is registered, it flows through the
@@ -210,7 +276,7 @@ router.post('/:id/enabled', requirePermission('admin:plugins:manage'), (req, res
 
 /** DELETE /api/plugins/:id { purgeData? } — installed plugins only; writes a
  *  removal marker processed at next boot (contract C9.3). */
-router.delete('/:id', requirePermission('admin:plugins:manage'), (req, res) => {
+router.delete('/:id', requirePermission('admin:plugins:manage'), requireValidId, (req, res) => {
   const { id } = req.params;
   if (BUILTIN_IDS.has(id)) return res.status(400).json({ error: `plugin '${id}' is a built-in platform, not an installed plugin` });
 
@@ -229,7 +295,7 @@ router.delete('/:id', requirePermission('admin:plugins:manage'), (req, res) => {
 
 /** GET /api/plugins/:id/bundle.js — the plugin's own namespace gates this,
  *  same as its API routes. */
-router.get('/:id/bundle.js', requirePermission((req) => `${req.params.id}:*:view`), (req, res) => {
+router.get('/:id/bundle.js', requireValidId, requirePermission((req) => `${req.params.id}:*:view`), (req, res) => {
   const bundlePath = path.join(pluginBoot.getPluginsDir(), req.params.id, 'frontend', 'bundle.js');
   if (!fs.existsSync(bundlePath)) return res.status(404).end();
   // no-cache: CDNs (Cloudflare) cache .js by extension regardless of the /api

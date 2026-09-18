@@ -108,6 +108,9 @@ afterAll(async () => {
 beforeEach(() => {
   pluginsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'icc-plugins-url-test-'));
   process.env.ICC_PLUGINS_DIR = pluginsDir;
+  // The fixture server is plain http on loopback; production refuses both.
+  process.env.PLUGIN_INSTALL_ALLOW_HTTP = '1';
+  process.env.PLUGIN_INSTALL_ALLOWED_HOSTS = '127.0.0.1';
 
   registry._reset();
   registry.init();
@@ -120,6 +123,8 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.ICC_PLUGINS_DIR;
+  delete process.env.PLUGIN_INSTALL_ALLOW_HTTP;
+  delete process.env.PLUGIN_INSTALL_ALLOWED_HOSTS;
 });
 
 describe('POST /api/plugins/install-from-url', () => {
