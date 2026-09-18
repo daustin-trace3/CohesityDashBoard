@@ -24,6 +24,16 @@ const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}\b/g;
 const DOMAIN_USER_RE = /\b[A-Za-z][A-Za-z0-9_-]{1,15}\\[A-Za-z][A-Za-z0-9._-]+\b/g;
 const UNC_RE = /\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9$._-]+/g;
 const MAC_RE = /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g;
+// A3: 8-octet WWN/WWPN format (xx:xx:xx:xx:xx:xx:xx:xx, case-insensitive)
+const WWN_RE = /\b(?:[0-9A-Fa-f]{2}:){7}[0-9A-Fa-f]{2}\b/g;
+// A3: AWS ARNs (arn:aws[a-z-]*:service:region:account:resource...)
+const AWS_ARN_RE = /\barn:aws[a-z\-]*:[A-Za-z0-9\-]+:[A-Za-z0-9\-]*:\d*:[^\s]+\b/g;
+// A3: AWS resource IDs (i-, vol-, snap-, sg-, subnet-, vpc-, eni-, ami- followed by 8-17 alphanumeric chars)
+const AWS_RESOURCE_RE = /\b(?:i|vol|snap|sg|subnet|vpc|eni|ami)-[0-9A-Za-z]{8,17}\b/g;
+// A3: AWS account ID (bare 12-digit number when preceded by "account" keyword within 10 chars)
+const AWS_ACCOUNT_RE = /\baccount\s+(\d{12})\b/g;
+// A3: URL userinfo (scheme://user:pass@host) - strip the userinfo part
+const URL_USERINFO_RE = /\b([A-Za-z][A-Za-z0-9+\-.]*):\/\/[^\s:@]+:[^\s@]+@/g;
 // Protected object/VM names named inline in Cohesity messages ("Restore for
 // object symantecmanagementplatform_cpz in job ..."). Only tokenize candidates
 // that look like machine names (contain a digit, dot, hyphen or underscore) so
@@ -282,6 +292,41 @@ function loadDictionary() {
     add(db.prepare("SELECT DISTINCT name FROM unifi_cameras WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
   } catch { /* unifi_cameras (v2) not present on this instance */ }
 
+  // A1: Dell service_tag (identified by serial number)
+  try {
+    add(db.prepare("SELECT DISTINCT service_tag AS name FROM dell_devices WHERE service_tag IS NOT NULL AND service_tag != ''").all(), 'SERIAL');
+  } catch { /* Dell devices table not present on this instance */ }
+
+  // A1: Brocade zone configuration names
+  try {
+    add(db.prepare("SELECT DISTINCT active_zoneset_name AS name FROM brocade_fabrics WHERE active_zoneset_name IS NOT NULL AND active_zoneset_name != ''").all(), 'TAG');
+    add(db.prepare("SELECT DISTINCT zone_name AS name FROM brocade_zones WHERE zone_name IS NOT NULL AND zone_name != ''").all(), 'JOB');
+  } catch { /* Brocade tables may not have zoneset data on this instance */ }
+
+  // A1: BlueCat configuration names and block location names
+  try {
+    add(db.prepare("SELECT DISTINCT configuration_name AS name FROM bluecat_views WHERE configuration_name IS NOT NULL AND configuration_name != ''").all(), 'CLUSTER');
+    add(db.prepare("SELECT DISTINCT location_name AS name FROM bluecat_blocks WHERE location_name IS NOT NULL AND location_name != ''").all(), 'OBJECT');
+  } catch { /* BlueCat tables not fully populated on this instance */ }
+
+  // A1: App Services display_id, label, and catalog entries
+  try {
+    add(db.prepare("SELECT DISTINCT display_id AS name FROM app_service_watch WHERE display_id IS NOT NULL AND display_id != ''").all(), 'HOST');
+    add(db.prepare("SELECT DISTINCT label AS name FROM app_service_watch WHERE label IS NOT NULL AND label != ''").all(), 'TAG');
+    add(db.prepare("SELECT DISTINCT name FROM app_service_catalog WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT atm_id AS name FROM app_service_catalog WHERE atm_id IS NOT NULL AND atm_id != ''").all(), 'TAG');
+  } catch { /* App Service tables not present on this instance */ }
+
+  // A1: AWS EBS volume IDs
+  try {
+    add(db.prepare("SELECT DISTINCT volume_id AS name FROM aws_ebs_volumes WHERE volume_id IS NOT NULL AND volume_id != ''").all(), 'OBJECT');
+  } catch { /* AWS EBS tables not present on this instance */ }
+
+  // A1: vCenter VM guest hostnames
+  try {
+    add(db.prepare("SELECT DISTINCT guest_hostname AS name FROM vcenter_vms WHERE guest_hostname IS NOT NULL AND guest_hostname != ''").all(), 'HOST');
+  } catch { /* vCenter guest_hostname not present on this instance */ }
+
   return entries;
 }
 
@@ -312,6 +357,12 @@ function createAnonymizer() {
     ? new RegExp(`(?<![A-Za-z0-9])(?:${names.map(escapeRe).join('|')})(?![A-Za-z0-9])`, 'gi')
     : null;
 
+  // Values first seen under a recognised key (a serial, a WWN, a username)
+  // and not in the dictionary. scrubText re-applies them to free text so the
+  // same value is not sent in the clear one field later. Patterns are compiled
+  // once and kept longest-first so a value never clobbers a longer one.
+  const learned = [];
+
   function token(category, real) {
     const key = real.toLowerCase();
     const existing = forward.get(key);
@@ -320,6 +371,13 @@ function createAnonymizer() {
     const t = `${category}-${counters[category]}`;
     forward.set(key, t);
     reverse.set(t, real);
+    // Skip dictionary names (nameRe already covers them), very short values,
+    // and anything shaped like a token or a category word ("serial", "HOST-3"),
+    // which would corrupt tokens already placed in the text.
+    if (key.length >= 4 && !categoryOf.has(key) && !/^[a-z]+(?:-\d+)?$/.test(key)) {
+      learned.push({ len: key.length, re: new RegExp(`(?<![A-Za-z0-9])${escapeRe(key)}(?![A-Za-z0-9])`, 'gi'), tok: t });
+      learned.sort((a, b) => b.len - a.len);
+    }
     return t;
   }
 
@@ -335,6 +393,21 @@ function createAnonymizer() {
       if (USER_KEY_RE.test(key) && !TOKEN_RE_TEST.test(out)) return token('USER', out);
     }
     if (key && VERSION_KEY_RE.test(key)) return out;
+    // A4: values learned under a key earlier in this payload, in free text.
+    for (const l of learned) out = out.replace(l.re, l.tok);
+    // A3: Process new regexes before existing ones to avoid conflicts
+    // 8-octet WWN (processed before 6-octet MAC to avoid partial eating)
+    out = out.replace(WWN_RE, (m) => token('MAC', m));
+    // AWS ARNs and resources (processed before generic patterns)
+    out = out.replace(AWS_ARN_RE, (m) => token('OBJECT', m));
+    out = out.replace(AWS_RESOURCE_RE, (m) => token('OBJECT', m));
+    // AWS account ID when preceded by "account" keyword
+    out = out.replace(AWS_ACCOUNT_RE, (match, accountId) => {
+      token('OBJECT', accountId);
+      return `account ${forward.get(accountId.toLowerCase())}`;
+    });
+    // A3: URL userinfo - strip credentials, never tokenize (no password restorable)
+    out = out.replace(URL_USERINFO_RE, '$1://');
     out = out.replace(UNC_RE, (m) => token('HOST', m));
     out = out.replace(EMAIL_RE, (m) => token('USER', m));
     out = out.replace(DOMAIN_USER_RE, (m) => token('USER', m));
@@ -361,7 +434,20 @@ function createAnonymizer() {
 
   /** Deep-walk any value, scrubbing every string. Non-strings pass through. */
   function anonymize(value, key) {
-    if (typeof value === 'string') return scrubText(value, key);
+    if (typeof value === 'string') {
+      // A5: If the string is JSON, parse and anonymize the structure, then re-stringify
+      if ((value.startsWith('{') || value.startsWith('[')) && value.length >= 2) {
+        try {
+          const parsed = JSON.parse(value);
+          const anonObj = anonymize(parsed, key);
+          return JSON.stringify(anonObj);
+        } catch {
+          // Not valid JSON or truncated - fall back to scrubText
+          return scrubText(value, key);
+        }
+      }
+      return scrubText(value, key);
+    }
     if (Array.isArray(value)) return value.map((v) => anonymize(v, key));
     if (value && typeof value === 'object') {
       const out = {};
