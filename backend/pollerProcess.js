@@ -16,6 +16,7 @@ const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
 const { initDnsPrewarm } = require('./services/dnsResolve');
+const directorySync = require('./services/directorySync');
 const { getPlatformSettings } = require('./services/settings');
 const { isDemo } = require('./services/demoMode');
 const pureManifest = require('./platforms/pure');
@@ -58,6 +59,11 @@ if (isDemo()) {
   initPoller();
   initAlertNotifier();
   initServiceStatus();
+  // Scheduled AD group sync. It was only ever started in the legacy
+  // single-process mode, so in the default two-process deployment a user
+  // removed from a linked AD group (or disabled in AD) kept ICC access until
+  // someone ran a manual sync.
+  directorySync.startScheduler();
   for (const entry of registry.listPlugins()) {
     if (!entry.enabled || entry.status !== 'active') continue;
     const handle = registry.getPollerHandle(entry.id);

@@ -18,6 +18,8 @@ import {
   destroySession,
   pruneExpired,
   getClaimToken,
+  sessionKey,
+  destroyUserSessions,
 } from '../services/authService.js';
 
 function insertUser(username) {
@@ -73,7 +75,7 @@ describe('session lifecycle', () => {
     expect(session.id).toMatch(/^[0-9a-f]{64}$/);
     expect(session.csrfToken).toMatch(/^[0-9a-f]{64}$/);
 
-    const row = db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(session.id);
+    const row = db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(sessionKey(session.id));
     expect(row).toBeTruthy();
     expect(row.user_id).toBe(userId);
     expect(row.csrf_token).toBe(session.csrfToken);
@@ -96,10 +98,10 @@ describe('session lifecycle', () => {
   it('expired sessions are lazily deleted and validate to null', () => {
     const session = createSession(userId);
     const past = new Date(Date.now() - 60 * 1000).toISOString(); // 1 minute ago
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, session.id);
+    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, sessionKey(session.id));
 
     expect(validateSession(session.id)).toBeNull();
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(sessionKey(session.id))).toBeUndefined();
   });
 
   it('destroySession removes the session; subsequent validate returns null', () => {
@@ -109,21 +111,21 @@ describe('session lifecycle', () => {
     destroySession(session.id);
 
     expect(validateSession(session.id)).toBeNull();
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(sessionKey(session.id))).toBeUndefined();
   });
 
   it('slides expiry forward when less than 6 days remain', () => {
     const session = createSession(userId);
     // 5 days left — inside the <6d refresh window.
     const nearExpiry = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(nearExpiry, session.id);
+    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(nearExpiry, sessionKey(session.id));
 
-    const before = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(session.id);
+    const before = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(sessionKey(session.id));
     expect(before.expires_at).toBe(nearExpiry);
 
     expect(validateSession(session.id)).not.toBeNull();
 
-    const after = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(session.id);
+    const after = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(sessionKey(session.id));
     const remainingMs = new Date(after.expires_at).getTime() - Date.now();
     // Refreshed back out to ~7 days (allow a little slack for test runtime).
     expect(remainingMs).toBeGreaterThan(6.9 * 24 * 60 * 60 * 1000);
@@ -133,11 +135,11 @@ describe('session lifecycle', () => {
     const session = createSession(userId);
     // ~6.5 days left — outside the <6d refresh window.
     const farExpiry = new Date(Date.now() + 6.5 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(farExpiry, session.id);
+    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(farExpiry, sessionKey(session.id));
 
     expect(validateSession(session.id)).not.toBeNull();
 
-    const after = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(session.id);
+    const after = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(sessionKey(session.id));
     expect(after.expires_at).toBe(farExpiry);
   });
 
@@ -147,24 +149,61 @@ describe('session lifecycle', () => {
     db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(otherUserId);
 
     expect(validateSession(session.id)).toBeNull();
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(sessionKey(session.id))).toBeUndefined();
   });
 
   it('pruneExpired removes only expired sessions', () => {
     const live = createSession(userId);
     const dead = createSession(userId);
     const past = new Date(Date.now() - 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, dead.id);
+    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, sessionKey(dead.id));
 
     pruneExpired();
 
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(dead.id)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(live.id)).toBeTruthy();
+    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(sessionKey(dead.id))).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(sessionKey(live.id))).toBeTruthy();
   });
 });
 
 describe('claim token — after a user exists', () => {
   it('becomes null once the users table is non-empty', () => {
     expect(getClaimToken()).toBeNull();
+  });
+});
+
+describe('session storage hardening', () => {
+  it('stores a hash of the session id, never the id itself', () => {
+    const userId = insertUser('hash-at-rest');
+    const session = createSession(userId);
+    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
+    const row = db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(sessionKey(session.id));
+    expect(row).toBeTruthy();
+    expect(row.id).not.toBe(session.id);
+    // A row id copied out of the database is not a usable cookie value.
+    expect(validateSession(row.id)).toBeNull();
+    expect(validateSession(session.id)).not.toBeNull();
+  });
+
+  it('ends a session 30 days after sign-in even if it was used every week', () => {
+    const userId = insertUser('absolute-cap');
+    const session = createSession(userId);
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+    const future = new Date(Date.now() + 6 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare('UPDATE auth_sessions SET created_at = ?, expires_at = ? WHERE id = ?').run(old, future, sessionKey(session.id));
+    expect(validateSession(session.id)).toBeNull();
+    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(sessionKey(session.id))).toBeUndefined();
+  });
+
+  it('destroyUserSessions ends every session of a user except the one kept', () => {
+    const userId = insertUser('multi-session');
+    const a = createSession(userId);
+    const b = createSession(userId);
+    const c = createSession(userId);
+    destroyUserSessions(userId, sessionKey(b.id));
+    expect(validateSession(a.id)).toBeNull();
+    expect(validateSession(c.id)).toBeNull();
+    expect(validateSession(b.id)).not.toBeNull();
+    destroyUserSessions(userId);
+    expect(validateSession(b.id)).toBeNull();
   });
 });

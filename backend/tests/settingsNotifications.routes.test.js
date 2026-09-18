@@ -81,8 +81,22 @@ describe('GET/PUT /api/settings/notifications', () => {
     expect(afterSet.body.smtpPasswordSet).toBe(true);
     expect(afterSet.body.smtpPassword).toBeUndefined();
 
-    const untouched = await put({ smtpHost: 'still.example.com' });
+    const untouched = await put({ smtpFrom: 'icc@example.com' });
     expect(untouched.body.smtpPasswordSet).toBe(true);
+
+    // A saved password never follows the mail server somewhere new: changing
+    // the host, the port or dropping encryption needs the password again.
+    const moved = await put({ smtpHost: 'attacker.example.com' });
+    expect(moved.status).toBe(400);
+    expect(moved.body.error).toMatch(/SMTP password again/);
+    const plain = await put({ smtpEncryption: 'none' });
+    expect(plain.status).toBe(400);
+    expect((await get()).body.smtpHost).not.toBe('attacker.example.com');
+    const movedWithSecret = await put({ smtpHost: 'new.example.com', smtpPassword: 'typed-again' });
+    expect(movedWithSecret.status).toBe(200);
+    expect(movedWithSecret.body.smtpHost).toBe('new.example.com');
+    const loopback = await put({ smtpHost: '127.0.0.1', smtpPassword: 'typed-again' });
+    expect(loopback.status).toBe(400);
 
     const cleared = await put({ smtpPassword: '' });
     expect(cleared.body.smtpPasswordSet).toBe(false);

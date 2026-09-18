@@ -2,6 +2,7 @@
 // from middleware/authenticate.js — these endpoints are how a caller gets
 // (or checks) a session in the first place.
 const express = require('express');
+const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const db = require('../db/database');
 const directory = require('../services/directory');
@@ -35,24 +36,99 @@ const authLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later.' },
 });
 
+// Per-username lockout on repeated failures — the per-IP limiter alone is
+// weak against distributed guessing, and behind a tunnel/proxy all clients
+// can share one IP. Keyed on the attempted name whether or not it exists,
+// so the 429 leaks nothing about which accounts are real.
+const FAIL_LIMIT = 8;
+const FAIL_WINDOW_MS = 15 * 60 * 1000;
+const failedLogins = new Map(); // account key -> { count, first, lockedUntil }
+
+/** One lockout bucket per ACCOUNT, not per spelling. Usernames are
+ *  case-insensitive in the users table and a directory login accepts
+ *  "DOMAIN\bob", "other\bob" and "bob@domain" for the same account, so keying
+ *  on the raw string gave an attacker a fresh set of tries per variant. */
+function lockKey(username) {
+  let sam = String(username || '');
+  try { sam = directory.toSam(sam); } catch { /* fall back to the raw name */ }
+  return String(sam || username || '').trim().toLowerCase().slice(0, 256);
+}
+
+function loginLocked(username) {
+  const key = lockKey(username);
+  const entry = failedLogins.get(key);
+  if (!entry) return false;
+  if (entry.lockedUntil && Date.now() < entry.lockedUntil) return true;
+  if (Date.now() - entry.first > FAIL_WINDOW_MS) failedLogins.delete(key);
+  return false;
+}
+
+function recordLoginFailure(username) {
+  const key = lockKey(username);
+  const now = Date.now();
+  let entry = failedLogins.get(key);
+  if (!entry || (now - entry.first > FAIL_WINDOW_MS && !(entry.lockedUntil > now))) {
+    entry = { count: 0, first: now, lockedUntil: 0 };
+  }
+  entry.count += 1;
+  if (entry.count >= FAIL_LIMIT) entry.lockedUntil = now + FAIL_WINDOW_MS;
+  failedLogins.delete(key);
+  failedLogins.set(key, entry);
+  // Evict the oldest entry rather than clearing the map: clear() let anyone
+  // wipe every lockout by spraying 10,000 made-up names.
+  while (failedLogins.size > 10000) failedLogins.delete(failedLogins.keys().next().value);
+}
+
+function timingSafeEqualStr(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+const MIN_PASSWORD_LENGTH = 8;
+function passwordProblem(password) {
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+    return `Passwords need at least ${MIN_PASSWORD_LENGTH} characters.`;
+  }
+  if (password.length > 256) return 'Passwords can be at most 256 characters.';
+  return null;
+}
+
+// Verified against when the account does not exist, is inactive or is not a
+// local account, so every failed login costs one argon2 verify. Without it an
+// unknown name answered in microseconds and a real one in tens of
+// milliseconds, which is a username oracle.
+let dummyHashPromise = null;
+function dummyVerify(password) {
+  if (!dummyHashPromise) dummyHashPromise = hashPassword(crypto.randomBytes(24).toString('hex'));
+  return dummyHashPromise.then((h) => verifyPassword(h, String(password || ''))).catch(() => false);
+}
+
 function parseCookie(header, name) {
   if (!header) return null;
   const match = header.split(';').map((s) => s.trim()).find((s) => s.startsWith(`${name}=`));
   return match ? decodeURIComponent(match.slice(name.length + 1)) : null;
 }
 
+// Secure is set whenever the request arrived over TLS (req.secure honours
+// TRUST_PROXY). COOKIE_SECURE=1 forces it for deployments whose proxy hop is
+// not declared, so the session cookie can never travel in clear.
+const cookieSecure = (req) => process.env.COOKIE_SECURE === '1' || !!req.secure;
+
 function setSessionCookie(req, res, sessionId) {
   res.cookie(COOKIE_NAME, sessionId, {
     httpOnly: true,
     sameSite: 'lax',
     path: '/',
-    secure: !!req.secure,
+    secure: cookieSecure(req),
     maxAge: COOKIE_MAX_AGE_MS,
   });
 }
 
 function clearSessionCookie(req, res) {
-  res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'lax', path: '/', secure: !!req.secure });
+  res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'lax', path: '/', secure: cookieSecure(req) });
 }
 
 function userPayload(user, grants) {
@@ -83,13 +159,15 @@ router.post('/setup', authLimiter, async (req, res, next) => {
     if (count !== 0) return res.status(403).json({ error: 'Setup has already been completed.' });
 
     const expected = getClaimToken();
-    if (!expected || !token || token !== expected) {
+    if (!expected || !token || !timingSafeEqualStr(String(token), expected)) {
       return res.status(403).json({ error: 'Invalid or expired setup token.' });
     }
     const cleanUsername = String(username || '').trim();
     if (!cleanUsername || !password) {
       return res.status(400).json({ error: 'username and password are required.' });
     }
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ error: pwProblem });
 
     const now = new Date().toISOString();
     const passwordHash = await hashPassword(String(password));
@@ -119,8 +197,14 @@ router.post('/setup', authLimiter, async (req, res, next) => {
 router.post('/login', authLimiter, async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
-    const invalid = () => res.status(401).json({ error: 'Invalid username or password.' });
+    const invalid = () => {
+      recordLoginFailure(String(username || ''));
+      return res.status(401).json({ error: 'Invalid username or password.' });
+    };
     if (!username || !password) return invalid();
+    if (loginLocked(String(username))) {
+      return res.status(429).json({ error: 'Too many failed attempts. Try again later.' });
+    }
 
     // Local accounts are checked here and win on a name clash (break-glass).
     // Directory accounts always re-verify against the domain: their stored
@@ -129,7 +213,7 @@ router.post('/login', authLimiter, async (req, res, next) => {
     if (user && user.auth_provider !== 'local') user = null;
 
     if (user) {
-      if (!user.is_active) return invalid();
+      if (!user.is_active) { await dummyVerify(password); return invalid(); }
       const ok = await verifyPassword(user.password_hash, String(password));
       if (!ok) return invalid();
     } else if (directory.isEnabled()) {
@@ -147,8 +231,10 @@ router.post('/login', authLimiter, async (req, res, next) => {
       }
       if (!user.is_active) return invalid();
     } else {
+      await dummyVerify(password);
       return invalid();
     }
+    failedLogins.delete(lockKey(username));
 
     db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), user.id);
 
@@ -216,6 +302,8 @@ router.post('/enable', authLimiter, async (req, res, next) => {
     if (!cleanUsername || !password) {
       return res.status(400).json({ error: 'username and password are required to create the first admin.' });
     }
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ error: pwProblem });
 
     const now = new Date().toISOString();
     const passwordHash = await hashPassword(String(password));
@@ -246,10 +334,14 @@ router.post('/disable', (req, res) => {
   const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
   const session = sessionId ? validateSession(sessionId) : null;
   if (!session) return res.status(401).json({ error: 'unauthorized' });
-  if (req.headers['x-csrf-token'] !== session.csrfToken) return res.status(403).json({ error: 'csrf' });
-  if (!hasPermission(session.grants, 'admin:users:manage')) {
-    return res.status(403).json({ error: 'forbidden', required: 'admin:users:manage' });
+  if (!timingSafeEqualStr(String(req.headers['x-csrf-token'] || ''), session.csrfToken)) return res.status(403).json({ error: 'csrf' });
+  // Turning sign-in off makes every caller a full administrator, so only a
+  // full administrator may do it. admin:users:manage alone used to be enough,
+  // which made that grant a one-request path to *:*:*.
+  if (!hasPermission(session.grants, '*:*:*')) {
+    return res.status(403).json({ error: 'forbidden', required: '*:*:*' });
   }
+  logger.warn(`[auth] Sign-in was switched OFF by ${session.user.username}. Every caller now has full access.`);
   setSetting('auth_enabled', '0');
   res.json({ ok: true });
 });
