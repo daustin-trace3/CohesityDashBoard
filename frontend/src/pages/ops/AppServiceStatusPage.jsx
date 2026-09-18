@@ -342,12 +342,6 @@ function SectionRow({ section }) {
 function AppRow({ app, onOpenAnalysis }) {
   const [expanded, setExpanded] = useState(false);
 
-  const counts = app.counts || {};
-  const parts = [];
-  if (counts.vms > 0) parts.push(`servers ${counts.vmsOnline || 0}/${counts.vms} online`);
-  if (counts.pathsTotal > 0) parts.push(`paths ${counts.pathsMissing || 0}/${counts.pathsTotal} lost`);
-  if (counts.datastoresInaccessible > 0) parts.push(`storage ${counts.datastoresInaccessible} issue${counts.datastoresInaccessible === 1 ? '' : 's'}`);
-  if (counts.backupsStale > 0) parts.push(`backup ${counts.backupsStale} stale`);
 
   const showAnalysis = app.eventId != null;
   const analysisPending = app.analysisStatus === 'pending' || app.analysisStatus === 'running';
@@ -363,7 +357,7 @@ function AppRow({ app, onOpenAnalysis }) {
           {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-baseline gap-2">
+          <div className="flex flex-wrap items-baseline gap-2" title={app.reason || undefined}>
             <StatePill state={app.state} />
             {app.label ? (
               <>
@@ -373,10 +367,6 @@ function AppRow({ app, onOpenAnalysis }) {
             ) : (
               <span className="text-sm font-semibold text-ink font-mono">{app.displayId}</span>
             )}
-          </div>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[11px] text-ink-faint" title={app.reason || undefined}>
-            {app.since && <span>since {timeAgo(app.since)}</span>}
-            {parts.map((p, i) => <span key={i}>{p}</span>)}
           </div>
         </div>
         {showAnalysis && (
