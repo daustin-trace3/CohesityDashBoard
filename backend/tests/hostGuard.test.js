@@ -18,7 +18,8 @@ describe('hostGuard', () => {
 
   it('checks the typed host in every accepted shape', () => {
     for (const v of ['localhost', 'LOCALHOST', 'foo.localhost', 'localhost:8443', 'https://localhost/x', '127.0.0.1:443',
-      'https://127.0.0.1:9000/a', '[::1]:443', 'http://[::1]/', 'metadata.google.internal', '2130706433', '0x7f.0.0.1', '', '   ']) {
+      'https://127.0.0.1:9000/a', '[::1]:443', 'http://[::1]/', 'metadata.google.internal', '2130706433', '0x7f.0.0.1', '', '   ',
+      'name@127.0.0.1', 'x@localhost', 'https://user:pw@vcenter01.corp.example', 'host name', 'a\\b']) {
       expect(isBlockedHost(v), JSON.stringify(v)).toBe(true);
     }
     for (const v of ['vcenter01.corp.example', 'cafe.example.com', '10.20.30.40', 'https://sannav.corp.example:443/x', 'ome-01', 'a1b2.example.org']) {
