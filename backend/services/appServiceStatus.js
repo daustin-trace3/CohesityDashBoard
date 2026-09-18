@@ -353,8 +353,15 @@ function backupRowsFor(vms, nowMs) {
     if (guest && !byName.has(guest)) byName.set(guest, vm);
   }
   for (const vm of vms) {
-    if (vm.name) byName.set(lower(vm.name), vm);
+    if (vm.name) {
+      byName.set(lower(vm.name), vm);
+      // A VM named by FQDN is also known by its short name (and the other way
+      // round below: an object registered by FQDN matches the short name).
+      const short = shortName(vm.name);
+      if (short && !byName.has(short)) byName.set(short, vm);
+    }
   }
+  const vmFor = (objectName) => byName.get(lower(objectName)) || byName.get(shortName(objectName));
   const names = [...byName.keys()].filter(Boolean);
   if (!names.length) return out;
   const ph = names.map(() => '?').join(',');
@@ -364,16 +371,20 @@ function backupRowsFor(vms, nowMs) {
       SELECT o.name, o.is_protected, o.last_backup_ms, o.last_backup_status, c.name AS cluster_name
       FROM cohesity_objects o LEFT JOIN clusters c ON c.id = o.cluster_id
       WHERE lower(o.name) IN (${ph})
-    `).all(...names);
+         OR (instr(o.name, '.') > 0 AND lower(substr(o.name, 1, instr(o.name, '.') - 1)) IN (${ph}))
+    `).all(...names, ...names);
     const perVm = new Map();
     for (const r of rows) {
-      const vm = byName.get(lower(r.name));
+      const vm = vmFor(r.name);
       if (!vm) continue;
-      const cur = perVm.get(vm.name) || { vm: vm.name, protected: false, lastBackupMs: null, status: null, copies: 0, clusters: new Set() };
+      const cur = perVm.get(vm.name) || { vm: vm.name, protected: false, lastBackupMs: null, status: null, copies: 0, staleCopies: 0, clusters: new Set() };
       cur.copies += 1;
       if (r.cluster_name) cur.clusters.add(r.cluster_name);
       if (r.is_protected) cur.protected = true;
       const ms = r.last_backup_ms ? Number(r.last_backup_ms) : null;
+      // Informational only: the newest copy decides the state (Doug, 2026-09-18:
+      // protected at least once in 24 h is Operational, whatever the other copies say).
+      if (r.is_protected && (!ms || (nowMs - ms) / 3600000 > BACKUP_STALE_HOURS)) cur.staleCopies += 1;
       if (ms && (cur.lastBackupMs === null || ms > cur.lastBackupMs)) {
         cur.lastBackupMs = ms;
         cur.status = r.last_backup_status || null;
@@ -389,7 +400,7 @@ function backupRowsFor(vms, nowMs) {
         vm: cur.vm, platform: 'cohesity', protected: cur.protected,
         lastBackupAt: cur.lastBackupMs ? new Date(cur.lastBackupMs).toISOString() : null,
         ageHours, status: cur.status, state: stale ? 'degraded' : 'ok',
-        copies: cur.copies, clusters: [...cur.clusters],
+        copies: cur.copies, staleCopies: cur.staleCopies, clusters: [...cur.clusters],
       });
     }
   }
@@ -397,7 +408,7 @@ function backupRowsFor(vms, nowMs) {
     const rows = db.prepare(`SELECT name, vpg_names, vpg_statuses FROM zerto_vms WHERE lower(name) IN (${ph})`).all(...names);
     const perVm = new Map();
     for (const r of rows) {
-      const vm = byName.get(lower(r.name));
+      const vm = vmFor(r.name);
       if (!vm) continue;
       const cur = perVm.get(vm.name) || { vm: vm.name, statuses: new Set(), vpgs: new Set() };
       for (const s of parseJson(r.vpg_statuses, [])) cur.statuses.add(String(s));
