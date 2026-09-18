@@ -37,6 +37,25 @@ function writeFiles(dir, files) {
   }
 }
 
+/** -1 / 0 / 1 for dotted numeric versions; non-numeric parts compare as 0. */
+function compareVersions(a, b) {
+  const pa = String(a || '').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '').split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+function installedVersion(liveDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(liveDir, 'manifest.json'), 'utf8')).version || null;
+  } catch {
+    return null;
+  }
+}
+
 function requireFresh(absPath) {
   const resolved = require.resolve(absPath);
   delete require.cache[resolved];
@@ -61,6 +80,13 @@ async function installPlugin(zipPath, opts = {}) {
   const liveDir = path.join(pluginsDir, id);
 
   if (fs.existsSync(liveDir)) {
+    // Every old pack stays validly signed forever, so without this check an
+    // admin session (or a stolen one) could roll a platform back to a build
+    // with a known hole. Downgrades need an explicit flag.
+    const current = installedVersion(liveDir);
+    if (current && compareVersions(manifest.version, current) < 0 && !opts.allowDowngrade) {
+      fail(`plugin '${id}' ${manifest.version} is older than the installed ${current}; pass allowDowngrade to install it anyway`, 409);
+    }
     const stagedDir = path.join(pluginsDir, `${id}.staged`);
     rmDir(stagedDir);
     writeFiles(stagedDir, files);
@@ -113,4 +139,4 @@ async function installPlugin(zipPath, opts = {}) {
   return { id, status: entry ? entry.status : 'active', hotAdded: true };
 }
 
-module.exports = { upload, installPlugin, writeFiles, rmDir, BUILTIN_IDS };
+module.exports = { upload, installPlugin, writeFiles, rmDir, BUILTIN_IDS, compareVersions };

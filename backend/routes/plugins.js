@@ -13,6 +13,18 @@ const { upload, installPlugin, BUILTIN_IDS } = require('../services/pluginInstal
 
 const router = express.Router();
 
+const ID_PATTERN = /^[a-z0-9-]+$/;
+
+/** Every :id route builds a filesystem path from the id, so anything that is
+ *  not a plain plugin id ("..", ".", encoded separators) is refused before
+ *  the handler runs. */
+function requireValidId(req, res, next) {
+  if (!ID_PATTERN.test(String(req.params.id || ''))) {
+    return res.status(404).json({ error: 'unknown plugin' });
+  }
+  next();
+}
+
 function installedIds() {
   const pluginsDir = pluginBoot.getPluginsDir();
   const ids = new Set();
@@ -79,7 +91,8 @@ router.post('/install', requirePermission('admin:plugins:manage'), (req, res) =>
     if (!req.file) return res.status(400).json({ error: "no file uploaded (multipart field must be 'plugin')" });
 
     try {
-      const result = await installPlugin(req.file.path);
+      const allowDowngrade = String((req.body && req.body.allowDowngrade) || req.query.allowDowngrade || '') === 'true';
+      const result = await installPlugin(req.file.path, { allowDowngrade });
       res.json(result);
     } catch (err) {
       res.status(err.status || 400).json({ error: err.message });
@@ -92,7 +105,7 @@ router.post('/install', requirePermission('admin:plugins:manage'), (req, res) =>
 /** POST /api/plugins/:id/enabled — flips the platform_<id>_enabled setting
  *  and the registry state, starting/stopping the poller (mirrors
  *  routes/settings.js applyPlatformEnabled for pure/netapp). */
-router.post('/:id/enabled', requirePermission('admin:plugins:manage'), (req, res) => {
+router.post('/:id/enabled', requirePermission('admin:plugins:manage'), requireValidId, (req, res) => {
   const { id } = req.params;
   if (id === 'cohesity') {
     // Semi-core: only the setting exists (nav/API gating); no registry entry
@@ -129,7 +142,7 @@ router.post('/:id/enabled', requirePermission('admin:plugins:manage'), (req, res
 
 /** DELETE /api/plugins/:id { purgeData? } — installed plugins only; writes a
  *  removal marker processed at next boot (contract C9.3). */
-router.delete('/:id', requirePermission('admin:plugins:manage'), (req, res) => {
+router.delete('/:id', requirePermission('admin:plugins:manage'), requireValidId, (req, res) => {
   const { id } = req.params;
   if (BUILTIN_IDS.has(id)) return res.status(400).json({ error: `plugin '${id}' is a built-in platform, not an installed plugin` });
 
@@ -148,7 +161,7 @@ router.delete('/:id', requirePermission('admin:plugins:manage'), (req, res) => {
 
 /** GET /api/plugins/:id/bundle.js — the plugin's own namespace gates this,
  *  same as its API routes. */
-router.get('/:id/bundle.js', requirePermission((req) => `${req.params.id}:*:view`), (req, res) => {
+router.get('/:id/bundle.js', requireValidId, requirePermission((req) => `${req.params.id}:*:view`), (req, res) => {
   const bundlePath = path.join(pluginBoot.getPluginsDir(), req.params.id, 'frontend', 'bundle.js');
   if (!fs.existsSync(bundlePath)) return res.status(404).end();
   // no-cache: CDNs (Cloudflare) cache .js by extension regardless of the /api
