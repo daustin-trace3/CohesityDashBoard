@@ -106,7 +106,7 @@ router.post('/history', express.text({ type: 'text/csv', limit: '10mb' }), (req,
     return res.json({ imported, overwritten, skipped, unmatched: [...unmatched] });
   } catch (err) {
     logger.error('CSV import error:', err);
-    return res.status(500).json({ error: 'Import failed', detail: err.message });
+    return res.status(500).json({ error: 'Import failed' });
   }
 });
 
