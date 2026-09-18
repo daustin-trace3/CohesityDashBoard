@@ -435,4 +435,23 @@ module.exports = [
       `);
     },
   },
+  // App Services: imported application catalog (ATM ID -> name, lifecycle,
+  // platform). Supplies the display name; a manual label on the watch row wins.
+  {
+    version: 19,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS app_service_catalog (
+          usage_id TEXT PRIMARY KEY,
+          atm_id TEXT NOT NULL,
+          name TEXT,
+          lifecycle TEXT,
+          platform TEXT,
+          source_rows INTEGER NOT NULL DEFAULT 1,
+          imported_at TEXT NOT NULL,
+          imported_by TEXT
+        );
+      `);
+    },
+  },
 ];

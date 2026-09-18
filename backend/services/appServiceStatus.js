@@ -42,34 +42,173 @@ function tableExists(name) {
 // Catalog + watch list
 // ---------------------------------------------------------------------------
 
+/** Every usage-id seen on a VM tag, with the imported catalog name when there
+ *  is one. q matches the id or the catalog name. */
 function listUsageIds({ q = '', limit = 200 } = {}) {
   const watched = new Set(db.prepare('SELECT usage_id FROM app_service_watch').all().map((r) => r.usage_id));
   const params = [`${TAG_PREFIX}%`];
   let filter = '';
   if (q && String(q).trim()) {
-    filter = "AND lower(jt.value) LIKE '%' || ? || '%' ESCAPE '\\'";
-    params.push(lower(q).trim().replace(/[\\%_]/g, (c) => `\\${c}`));
+    filter = "WHERE t.tagLower LIKE '%' || ? || '%' ESCAPE '\\' OR lower(COALESCE(c.name, '')) LIKE '%' || ? || '%' ESCAPE '\\'";
+    const needle = lower(q).trim().replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    params.push(needle, needle);
   }
   const rows = db.prepare(`
-    SELECT lower(jt.value) AS tagLower, MIN(jt.value) AS tag, COUNT(*) AS vmCount
-    FROM vcenter_vms m, json_each(COALESCE(m.tags, '[]')) jt
-    WHERE lower(jt.value) LIKE ? ${filter}
-    GROUP BY lower(jt.value)
-    ORDER BY lower(jt.value)
+    SELECT t.tagLower, t.tag, t.vmCount, c.name AS catalogName, c.lifecycle, c.platform
+    FROM (
+      SELECT lower(jt.value) AS tagLower, MIN(jt.value) AS tag, COUNT(*) AS vmCount
+      FROM vcenter_vms m, json_each(COALESCE(m.tags, '[]')) jt
+      WHERE lower(jt.value) LIKE ?
+      GROUP BY lower(jt.value)
+    ) t
+    LEFT JOIN app_service_catalog c ON c.usage_id = substr(t.tagLower, ${TAG_PREFIX.length + 1})
+    ${filter}
+    ORDER BY t.tagLower
     LIMIT ?
   `).all(...params, Math.max(1, Math.min(1000, Number(limit) || 200)));
   return rows.map((r) => {
     const usageId = r.tagLower.slice(TAG_PREFIX.length);
-    return { usageId, displayId: r.tag.slice(TAG_PREFIX.length), vmCount: r.vmCount, watched: watched.has(usageId) };
+    return {
+      usageId, displayId: r.tag.slice(TAG_PREFIX.length), vmCount: r.vmCount, watched: watched.has(usageId),
+      name: r.catalogName || null, lifecycle: r.lifecycle || null, platform: r.platform || null,
+    };
   });
 }
 
-function shapeWatch(row) {
-  return row ? { usageId: row.usage_id, displayId: row.display_id, label: row.label || null, createdAt: row.created_at, createdBy: row.created_by || null } : null;
+// ---------------------------------------------------------------------------
+// Application catalog import (ATM ID -> name, lifecycle, platform)
+// ---------------------------------------------------------------------------
+
+/** Minimal RFC 4180 reader: quoted fields, doubled quotes, CR/LF, and a
+ *  delimiter sniffed from the header line (comma, semicolon or tab). */
+function parseCsv(text) {
+  const src = String(text || '').replace(/^﻿/, '');
+  const firstLine = src.split(/\r?\n/, 1)[0] || '';
+  const delim = [',', ';', '\t'].map((d) => [d, firstLine.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') { field += '"'; i += 1; } else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === delim) { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && src[i + 1] === '\n') i += 1;
+      row.push(field); field = '';
+      if (row.some((f) => f.trim() !== '')) rows.push(row);
+      row = [];
+    } else field += ch;
+  }
+  row.push(field);
+  if (row.some((f) => f.trim() !== '')) rows.push(row);
+  return rows;
 }
 
+const CATALOG_COLUMNS = {
+  id: [/atm/i, /business\s*app/i, /usage[\s_-]*id/i, /^app(lication)?[\s_-]*id$/i, /^id$/i],
+  name: [/^name$/i, /app(lication)?\s*name/i, /^title$/i],
+  lifecycle: [/life\s*cycle/i, /^status$/i],
+  platform: [/^platform$/i],
+};
+
+function detectColumns(header) {
+  const found = {};
+  for (const [key, patterns] of Object.entries(CATALOG_COLUMNS)) {
+    for (const p of patterns) {
+      const idx = header.findIndex((h, i) => p.test(String(h).trim()) && !Object.values(found).includes(i));
+      if (idx !== -1) { found[key] = idx; break; }
+    }
+  }
+  return found;
+}
+
+/** Import an application list. Every ATM ID becomes a catalog row keyed by the
+ *  lower-cased id; re-importing replaces name / lifecycle / platform. Manual
+ *  labels on the watch list are never touched. */
+function importCatalog(text, { user = null } = {}) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) throw Object.assign(new Error('The file needs a header row and at least one data row'), { status: 400 });
+  const cols = detectColumns(rows[0]);
+  if (cols.id === undefined) {
+    throw Object.assign(new Error(`Could not find the ATM ID column. Headers seen: ${rows[0].map((h) => String(h).trim()).join(', ')}`), { status: 400 });
+  }
+  const now = new Date().toISOString();
+  const merged = new Map();
+  let skipped = 0;
+  for (const r of rows.slice(1)) {
+    const atmId = String(r[cols.id] || '').trim();
+    if (!atmId) { skipped += 1; continue; }
+    const key = normId(atmId);
+    const cell = (k) => (cols[k] === undefined ? '' : String(r[cols[k]] || '').trim());
+    const cur = merged.get(key) || { atmId, name: '', lifecycle: '', platforms: new Set(), rows: 0 };
+    cur.rows += 1;
+    if (!cur.name && cell('name')) cur.name = cell('name');
+    if (!cur.lifecycle && cell('lifecycle')) cur.lifecycle = cell('lifecycle');
+    if (cell('platform')) cur.platforms.add(cell('platform'));
+    merged.set(key, cur);
+  }
+  const upsert = db.prepare(`
+    INSERT INTO app_service_catalog (usage_id, atm_id, name, lifecycle, platform, source_rows, imported_at, imported_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(usage_id) DO UPDATE SET
+      atm_id = excluded.atm_id, name = excluded.name, lifecycle = excluded.lifecycle, platform = excluded.platform,
+      source_rows = excluded.source_rows, imported_at = excluded.imported_at, imported_by = excluded.imported_by
+  `);
+  db.transaction(() => {
+    for (const [key, c] of merged) {
+      upsert.run(key, c.atmId, c.name || null, c.lifecycle || null, [...c.platforms].join(', ') || null, c.rows, now, user);
+    }
+  })();
+
+  // Every usage-id currently on a VM tag, to report how much of the file matched.
+  const taggedAll = new Set(db.prepare(`
+    SELECT DISTINCT lower(jt.value) AS t FROM vcenter_vms m, json_each(COALESCE(m.tags, '[]')) jt WHERE lower(jt.value) LIKE ?
+  `).all(`${TAG_PREFIX}%`).map((r) => r.t.slice(TAG_PREFIX.length)));
+  let matched = 0;
+  let withoutName = 0;
+  for (const [key, c] of merged) {
+    if (taggedAll.has(key)) matched += 1;
+    if (!c.name) withoutName += 1;
+  }
+  return {
+    rowsRead: rows.length - 1, imported: merged.size, skippedBlankId: skipped, withoutName,
+    matchedToVmTags: matched, taggedWithoutCatalogEntry: [...taggedAll].filter((t) => !merged.has(t)).length,
+    columns: Object.fromEntries(Object.entries(cols).map(([k, i]) => [k, String(rows[0][i]).trim()])),
+    importedAt: now,
+  };
+}
+
+function catalogSummary() {
+  const row = db.prepare('SELECT COUNT(*) AS total, SUM(CASE WHEN name IS NOT NULL THEN 1 ELSE 0 END) AS named, MAX(imported_at) AS importedAt FROM app_service_catalog').get();
+  return { total: row.total || 0, named: row.named || 0, importedAt: row.importedAt || null };
+}
+
+function catalogRow(usageId) {
+  return db.prepare('SELECT * FROM app_service_catalog WHERE usage_id = ?').get(normId(usageId)) || null;
+}
+
+// label = what the operator typed (wins); catalogName = the imported name that
+// shows when no label is set.
+function shapeWatch(row) {
+  return row ? {
+    usageId: row.usage_id, displayId: row.display_id, label: row.label || null,
+    catalogName: row.catalog_name || null, lifecycle: row.lifecycle || null, platform: row.platform || null,
+    createdAt: row.created_at, createdBy: row.created_by || null,
+  } : null;
+}
+
+const WATCH_SELECT = `
+  SELECT w.*, c.name AS catalog_name, c.lifecycle, c.platform
+  FROM app_service_watch w LEFT JOIN app_service_catalog c ON c.usage_id = w.usage_id
+`;
+
 function listWatch() {
-  return db.prepare('SELECT * FROM app_service_watch ORDER BY display_id').all().map(shapeWatch);
+  return db.prepare(`${WATCH_SELECT} ORDER BY COALESCE(w.label, c.name, w.display_id)`).all().map(shapeWatch);
 }
 
 function displayIdFor(usageId) {
@@ -84,7 +223,7 @@ function displayIdFor(usageId) {
 function addWatch({ usageId, label, user }) {
   const id = normId(usageId);
   if (!id) throw Object.assign(new Error('usageId is required'), { status: 400 });
-  const displayId = displayIdFor(id) || String(usageId).trim();
+  const displayId = displayIdFor(id) || catalogRow(id)?.atm_id || String(usageId).trim();
   const now = new Date().toISOString();
   db.prepare(`
     INSERT INTO app_service_watch (usage_id, display_id, label, created_by, created_at)
@@ -92,15 +231,16 @@ function addWatch({ usageId, label, user }) {
     ON CONFLICT(usage_id) DO UPDATE SET label = COALESCE(excluded.label, app_service_watch.label)
   `).run(id, displayId, label ? String(label).trim() || null : null, user || null, now);
   persistState(evaluate(id), now);
-  return shapeWatch(db.prepare('SELECT * FROM app_service_watch WHERE usage_id = ?').get(id));
+  return shapeWatch(db.prepare(`${WATCH_SELECT} WHERE w.usage_id = ?`).get(id));
 }
 
+/** An empty label clears the manual name, so the imported catalog name shows again. */
 function updateWatch(usageId, { label }) {
   const id = normId(usageId);
   const info = db.prepare('UPDATE app_service_watch SET label = ? WHERE usage_id = ?')
     .run(label == null ? null : String(label).trim() || null, id);
   if (!info.changes) return null;
-  return shapeWatch(db.prepare('SELECT * FROM app_service_watch WHERE usage_id = ?').get(id));
+  return shapeWatch(db.prepare(`${WATCH_SELECT} WHERE w.usage_id = ?`).get(id));
 }
 
 function removeWatch(usageId) {
@@ -271,9 +411,11 @@ function evaluate(usageId, { now = new Date() } = {}) {
   const id = normId(usageId);
   const watch = db.prepare('SELECT * FROM app_service_watch WHERE usage_id = ?').get(id);
   const vms = vmsFor(id);
-  const displayId = watch?.display_id || displayIdFor(id) || String(usageId);
+  const catalog = catalogRow(id);
+  const displayId = watch?.display_id || displayIdFor(id) || catalog?.atm_id || String(usageId);
   const base = {
-    usageId: id, displayId, label: watch?.label || null,
+    usageId: id, displayId, label: watch?.label || catalog?.name || null,
+    catalogName: catalog?.name || null, lifecycle: catalog?.lifecycle || null, platform: catalog?.platform || null,
     computedAt: now.toISOString(),
   };
   if (!vms.length) {
@@ -451,9 +593,11 @@ function collectItems(nowIso) {
 
 function getBoard() {
   const rows = db.prepare(`
-    SELECT w.usage_id, w.display_id, w.label, s.state, s.reason, s.since, s.computed_at, s.summary_json,
+    SELECT w.usage_id, w.display_id, w.label, c.name AS catalog_name, c.lifecycle, c.platform,
+           s.state, s.reason, s.since, s.computed_at, s.summary_json,
            e.id AS event_id, e.analysis_status, a.verdict
     FROM app_service_watch w
+    LEFT JOIN app_service_catalog c ON c.usage_id = w.usage_id
     LEFT JOIN app_service_state s ON s.usage_id = w.usage_id
     LEFT JOIN service_alert_events e ON e.platform = 'appservice' AND e.source_key = 'usage:' || w.usage_id AND e.cleared_at IS NULL
     LEFT JOIN service_alert_analyses a ON a.event_id = e.id
@@ -463,7 +607,8 @@ function getBoard() {
   return {
     generatedAt: new Date().toISOString(),
     apps: rows.map((r) => ({
-      usageId: r.usage_id, displayId: r.display_id, label: r.label || null,
+      usageId: r.usage_id, displayId: r.display_id, label: r.label || r.catalog_name || null,
+      manualLabel: r.label || null, catalogName: r.catalog_name || null, lifecycle: r.lifecycle || null, platform: r.platform || null,
       state: r.state || 'unknown', reason: r.reason || 'Not evaluated yet', since: r.since || null, computedAt: r.computed_at || null,
       counts: { ...empty, ...parseJson(r.summary_json, {}) },
       eventId: r.event_id || null, analysisStatus: r.analysis_status || null, verdict: r.verdict || null,
@@ -548,6 +693,7 @@ function buildPayload(evidence, evidenceVerdict) {
 module.exports = {
   TAG_PREFIX,
   listUsageIds, listWatch, addWatch, updateWatch, removeWatch,
+  importCatalog, catalogSummary, parseCsv,
   evaluate, evaluateAll, collectItems, getBoard,
   gatherEvidence, deriveVerdict, systemPrompt, buildPayload,
   _resetTableCache: () => tableCache.clear(),
