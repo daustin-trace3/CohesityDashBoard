@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/database');
 const registry = require('../core/registry');
 const { getSetting } = require('../services/settings');
+const { canViewPlatform } = require('../services/rbac');
 
 const router = express.Router();
 
@@ -335,11 +336,16 @@ function platformGateOk(id) {
 }
 
 router.get('/summary', async (req, res) => {
+  // The rollup spans every platform (object counts, alert and failure counts,
+  // AWS spend), so each card is built only for callers who hold that platform.
+  // Totals and the attention list are computed from the cards that remain.
+  const grants = (req.auth && req.auth.grants) || [];
   const cards = [];
   for (const p of PLATFORMS) {
     // Cohesity is always-on (enabled iff clusters exist — its summarizer
     // returns null when there are none); registry drives the rest.
     if (!platformGateOk(p.id)) continue;
+    if (!canViewPlatform(grants, p.id)) continue;
     const base = { id: p.id, label: p.label, color: p.color, route: p.route };
     try {
       const s = await p.fn();
@@ -355,6 +361,7 @@ router.get('/summary', async (req, res) => {
   const builtinIds = new Set(PLATFORMS.map((p) => p.id));
   for (const provider of registry.getOpsSummaryProviders()) {
     if (builtinIds.has(provider.id)) continue;
+    if (!canViewPlatform(grants, provider.id)) continue;
     const base = { id: provider.id, label: provider.name, color: provider.color, route: `/${provider.id}` };
     try {
       const s = await provider.run();

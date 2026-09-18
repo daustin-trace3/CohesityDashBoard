@@ -6,6 +6,7 @@ const db = require('../db/database');
 const pollerStatus = require('../services/pollerStatus');
 const registry = require('../core/registry');
 const { getSetting } = require('../services/settings');
+const { canViewPlatform } = require('../services/rbac');
 const router = express.Router();
 
 // Per-plugin metrics-history table + array-key column, for the lastCapture
@@ -21,6 +22,23 @@ const PLATFORM_METRICS_HISTORY = {
   ariaops: { arraysTable: 'ariaops_instances', metricsTable: 'ariaops_metrics_history', arrayIdColumn: 'instance_id' },
   aws: { arraysTable: 'aws_accounts', metricsTable: 'aws_metrics_history', arrayIdColumn: 'account_id' },
 };
+
+// Sections carry source names (clusters, arrays, vCenters, accounts) and poll
+// health, so each one is served only to callers holding that platform. A
+// hidden section becomes a neutral stub, not a missing key, because the UI
+// indexes this object by platform id.
+const SECTION_NAMESPACE = { licensing: 'cohesity', views: 'cohesity' };
+
+function restrictTo(req, sections) {
+  const grants = (req.auth && req.auth.grants) || [];
+  const out = {};
+  for (const [key, section] of Object.entries(sections)) {
+    out[key] = canViewPlatform(grants, SECTION_NAMESPACE[key] || key)
+      ? section
+      : { enabled: false, entities: [], failedSources: [], restricted: true };
+  }
+  return out;
+}
 
 router.get('/status', (req, res, next) => {
   try {
@@ -177,7 +195,7 @@ router.get('/status', (req, res, next) => {
     const zertoState = pollerStatus.getState('zerto', 0);
     const zertoInterval = Number(getSetting('zerto_poll_interval_minutes')) || 15;
 
-    res.json({
+    res.json(restrictTo(req, {
       cohesity: {
         enabled: clusters.length > 0,
         entities: cohesityEntities,
@@ -216,7 +234,7 @@ router.get('/status', (req, res, next) => {
         failedSources: [],
       },
       ...extraPluginSections,
-    });
+    }));
   } catch (err) {
     next(err);
   }

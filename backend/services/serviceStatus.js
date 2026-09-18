@@ -16,6 +16,7 @@ const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
 const { getSetting, getServiceStatusSettings } = require('./settings');
 const { BUILTIN, platformMeta } = require('./platformMeta');
+const { canViewPlatform } = require('./rbac');
 // App Service Status feeds critical apps into the same event tables and takes
 // over evidence + prompt building for platform 'appservice'.
 const appSvc = require('./appServiceStatus');
@@ -238,6 +239,8 @@ let chatFn = (messages, opts) => chatCompletion(messages, opts);
 function _setCollector(fn) { collectorFn = fn; }
 function _setChat(fn) { chatFn = fn; }
 function _resetTestSeams() {
+  manualLastRun.clear();
+  manualRunTimes = [];
   collectorFn = () => alertNotifier.collectOpenAlerts();
   chatFn = (messages, opts) => chatCompletion(messages, opts);
 }
@@ -694,7 +697,7 @@ function buildMessages(event, evidence, evidenceVerdict, anon) {
   if (event.platform === 'appservice') {
     let appSystem = appSvc.systemPrompt();
     const appCtx = (getSetting('llm_estate_context') || '').trim();
-    if (appCtx) appSystem += ` Operator context: ${appCtx}`;
+    if (appCtx) appSystem += ` Operator context: ${anon.anonymize(appCtx)}`;
     appSystem += PROMPT_NOTE;
     return [
       { role: 'system', content: appSystem },
@@ -718,7 +721,7 @@ function buildMessages(event, evidence, evidenceVerdict, anon) {
     `this alert, name that specific component (switch, port, link, datastore) as the likely root cause ` +
     `and say which platform reported it. Do not invent data.`;
   const ec = (getSetting('llm_estate_context') || '').trim();
-  if (ec) system += ` Operator context: ${ec}`;
+  if (ec) system += ` Operator context: ${anon.anonymize(ec)}`;
   system += PROMPT_NOTE;
 
   const payload = {
@@ -777,7 +780,13 @@ async function callLLM(event, evidence, evidenceVerdict) {
     if (['high', 'medium', 'low'].includes(parsed.confidence)) confidence = parsed.confidence;
   }
 
-  const finalVerdict = (aiVerdict && (aiVerdict === evidenceVerdict.verdict || (verdictReason && verdictReason.trim())))
+  // The model may override ICC's verdict only where ICC itself is unsure. The
+  // prompt carries untrusted platform text (alert bodies, VM names, DNS
+  // records), so a stated reason alone is not enough: no override of ICC's own
+  // reachability events (poll:*) and none against high-confidence evidence.
+  const overrideAllowed = !String(event.source_key || '').startsWith('poll:') && evidenceVerdict.confidence !== 'high';
+  const finalVerdict = (aiVerdict && (aiVerdict === evidenceVerdict.verdict
+    || (overrideAllowed && verdictReason && verdictReason.trim())))
     ? aiVerdict
     : evidenceVerdict.verdict;
 
@@ -941,6 +950,30 @@ async function runPending() {
 
 /** Manual re-run from the UI: bypasses the cap and dedupe, requires AI
  *  configured. Error codes mirror the platform advisor routes. */
+// Manual runs skip the dedupe (that is the point of a re-run) but not the
+// spend controls: the Service Status AI switch, a per-event cooldown and the
+// same per-minute ceiling the background worker obeys.
+const MANUAL_COOLDOWN_MS = 60000;
+const manualLastRun = new Map(); // event id -> ms
+let manualRunTimes = []; // ms timestamps inside the last minute
+
+function claimManualRun(id, perMinute, nowMs = Date.now()) {
+  const fail = (code, message, retryAfter) => Object.assign(new Error(message), { code, retryAfter });
+  const last = manualLastRun.get(id);
+  if (last && nowMs - last < MANUAL_COOLDOWN_MS) {
+    const wait = Math.ceil((MANUAL_COOLDOWN_MS - (nowMs - last)) / 1000);
+    throw fail('ANALYZE_COOLDOWN', `This alert was analysed a moment ago. Try again in ${wait} s.`, wait);
+  }
+  manualRunTimes = manualRunTimes.filter((t) => nowMs - t < 60000);
+  if (manualRunTimes.length >= perMinute) {
+    const wait = Math.ceil((60000 - (nowMs - manualRunTimes[0])) / 1000);
+    throw fail('ANALYZE_COOLDOWN', `The per-minute analysis limit (${perMinute}) is used up. Try again in ${wait} s.`, wait);
+  }
+  manualRunTimes.push(nowMs);
+  manualLastRun.set(id, nowMs);
+  if (manualLastRun.size > 2000) manualLastRun.delete(manualLastRun.keys().next().value);
+}
+
 async function analyzeEvent(id, { force = false } = {}) {
   void force;
   const event = db.prepare('SELECT * FROM service_alert_events WHERE id = ?').get(id);
@@ -954,6 +987,13 @@ async function analyzeEvent(id, { force = false } = {}) {
     err.code = 'LLM_NOT_CONFIGURED';
     throw err;
   }
+  const ssSettings = getServiceStatusSettings();
+  if (!ssSettings.serviceStatusAiEnabled) {
+    const err = new Error('AI analysis for Service Status is switched off in Global Settings.');
+    err.code = 'AI_DISABLED';
+    throw err;
+  }
+  claimManualRun(id, ssSettings.serviceStatusAnalysesPerMinute);
 
   const evidence = gatherEvidence(event);
   const evidenceVerdict = deriveVerdict(event, evidence);
@@ -994,6 +1034,72 @@ const EVENT_SELECT = `
   FROM service_alert_events sae
   LEFT JOIN service_alert_analyses saa ON saa.event_id = sae.id
 `;
+
+// ---------------------------------------------------------------------------
+// Per-caller visibility. This page spans platforms, so nothing here is served
+// on the strength of "authenticated" alone.
+// ---------------------------------------------------------------------------
+
+/** The RBAC namespace that guards a board row. App services are sets of
+ *  vCenter VMs, so the vcenter namespace guards them. */
+function accessNamespace(platform) {
+  return platform === 'appservice' ? 'vcenter' : String(platform || '');
+}
+
+function canSeePlatform(grants, platform) {
+  return canViewPlatform(grants, accessNamespace(platform));
+}
+
+/** Platforms a stored evidence bundle draws on besides the event's own. */
+function evidencePlatforms(evidence) {
+  const out = new Set();
+  if (!evidence) return out;
+  for (const h of evidence.hostRecords || []) if (h && h.platform) out.add(h.platform);
+  if (Array.isArray(evidence.sanPaths) && evidence.sanPaths.length) out.add('brocade');
+  for (const r of evidence.relatedOtherPlatformEvents || []) if (r && r.platform) out.add(r.platform);
+  if (evidence.app) for (const p of appSvc.platformsIn(evidence.app)) out.add(p);
+  return out;
+}
+
+const RESTRICTED_NOTE = 'Part of this analysis draws on platforms your account cannot view, so the narrative is hidden.';
+
+/** Strips everything the caller has no grant for from one event (list row or
+ *  full detail). Evidence slices from other platforms are dropped, and when
+ *  the AI narrative was written from evidence the caller cannot see, the
+ *  narrative is withheld too (it names those components). */
+function redactEventFor(grants, event) {
+  if (!event) return event;
+  const out = { ...event };
+  const isApp = out.platform === 'appservice';
+  if (isApp && !appSvc.hasFullView(grants)) {
+    out.message = appSvc.genericReason(out.verdict === 'degraded' ? 'degraded' : 'critical');
+  }
+  if (!out.analysis) return out;
+
+  const analysis = { ...out.analysis };
+  const evidence = analysis.evidence ? { ...analysis.evidence } : null;
+  const hidden = [...evidencePlatforms(evidence)].filter((p) => p !== out.platform && !canViewPlatform(grants, p));
+  if (evidence) {
+    const can = (p) => p === out.platform || canViewPlatform(grants, p);
+    if (evidence.hostRecords) evidence.hostRecords = evidence.hostRecords.filter((h) => can(h.platform));
+    if (evidence.relatedOtherPlatformEvents) evidence.relatedOtherPlatformEvents = evidence.relatedOtherPlatformEvents.filter((r) => can(r.platform));
+    if (evidence.sanPaths && !can('brocade')) evidence.sanPaths = [];
+    if (evidence.relatedOpenEvents && isApp) evidence.relatedOpenEvents = evidence.relatedOpenEvents.filter((r) => can(r.platform));
+    if (evidence.app) evidence.app = appSvc.redactDetail(evidence.app, grants);
+    if (isApp && evidence.alert && !appSvc.hasFullView(grants)) evidence.alert = { ...evidence.alert, message: out.message };
+    if (isApp && !appSvc.hasFullView(grants)) evidence.evidenceReason = out.message;
+    analysis.evidence = evidence;
+  }
+  if (hidden.length) {
+    analysis.restricted = true;
+    analysis.why = RESTRICTED_NOTE;
+    analysis.actions = [];
+    analysis.currentState = null;
+    analysis.verdictReason = null;
+  }
+  out.analysis = analysis;
+  return out;
+}
 
 function shapeEventRow(row) {
   const meta = platformMeta(row.platform);
@@ -1156,6 +1262,9 @@ module.exports = {
   stopServiceStatus,
   deriveVerdict,
   isCriticalSeverity,
+  accessNamespace,
+  canSeePlatform,
+  redactEventFor,
   _platformPollsFor: platformPollsFor,
   _setCollector,
   _setChat,

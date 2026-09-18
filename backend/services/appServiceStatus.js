@@ -15,6 +15,7 @@
 const db = require('../db/database');
 const logger = require('../utils/logger');
 const pollerStatus = require('./pollerStatus');
+const { canViewPlatform } = require('./rbac');
 
 const TAG_PREFIX = 'usage-id: ';
 const OFFLINE_CRITICAL_RATIO = 0.10;
@@ -448,9 +449,11 @@ function evaluate(usageId, { now = new Date() } = {}) {
     };
   }
 
+  // Every finding names the platform whose data it was derived from, so the
+  // route layer can drop findings the caller has no grant for.
   const findings = [];
-  const critical = (text) => findings.push({ level: 'critical', text });
-  const degraded = (text) => findings.push({ level: 'degraded', text });
+  const critical = (text, platform = 'vcenter') => findings.push({ level: 'critical', text, platform });
+  const degraded = (text, platform = 'vcenter') => findings.push({ level: 'degraded', text, platform });
 
   // Hosts (deduped per vCenter + name), with connection state and SAN paths.
   const hostMap = new Map();
@@ -500,9 +503,9 @@ function evaluate(usageId, { now = new Date() } = {}) {
   for (const h of hosts) {
     if (h.connected === false) degraded(`ESX host ${h.name} is ${h.connectionState || 'not connected'}`);
     if (h.sanPaths.total > 0 && h.sanPaths.missing === h.sanPaths.total) {
-      critical(`all ${h.sanPaths.total} SAN path${h.sanPaths.total === 1 ? '' : 's'} lost on host ${h.name} (${h.sanPaths.ports.map((p) => `${p.switchName} port ${p.portNumber}`).join(', ')})`);
+      critical(`all ${h.sanPaths.total} SAN path${h.sanPaths.total === 1 ? '' : 's'} lost on host ${h.name} (${h.sanPaths.ports.map((p) => `${p.switchName} port ${p.portNumber}`).join(', ')})`, 'brocade');
     } else if (h.sanPaths.missing > 0) {
-      degraded(`${h.sanPaths.missing} of ${h.sanPaths.total} SAN paths lost on host ${h.name} (${h.sanPaths.ports.filter((p) => p.isMissing).map((p) => `${p.switchName} port ${p.portNumber}`).join(', ')})`);
+      degraded(`${h.sanPaths.missing} of ${h.sanPaths.total} SAN paths lost on host ${h.name} (${h.sanPaths.ports.filter((p) => p.isMissing).map((p) => `${p.switchName} port ${p.portNumber}`).join(', ')})`, 'brocade');
     }
   }
 
@@ -533,7 +536,7 @@ function evaluate(usageId, { now = new Date() } = {}) {
     v.state = v.arrayPoll === 'error' ? 'degraded' : 'ok';
     if (v.arrayPoll === 'error' && !arraysFlagged.has(`${v.platform}:${v.array}`)) {
       arraysFlagged.add(`${v.platform}:${v.array}`);
-      degraded(`ICC could not reach ${v.platform === 'pure' ? 'Pure' : 'NetApp'} array ${v.array} on its last poll`);
+      degraded(`ICC could not reach ${v.platform === 'pure' ? 'Pure' : 'NetApp'} array ${v.array} on its last poll`, v.platform);
     }
     delete v.arrayId;
     storage.push(v);
@@ -543,15 +546,13 @@ function evaluate(usageId, { now = new Date() } = {}) {
   const backup = backupRowsFor(vms, now.getTime());
   for (const b of backup) {
     if (b.state !== 'degraded') continue;
-    if (b.platform === 'cohesity') degraded(b.ageHours === null ? `no completed Cohesity backup recorded for ${b.vm}` : `last Cohesity backup of ${b.vm} is ${b.ageHours} h old`);
-    else degraded(`Zerto replication for ${b.vm} is ${b.status || 'not meeting SLA'}`);
+    if (b.platform === 'cohesity') degraded(b.ageHours === null ? `no completed Cohesity backup recorded for ${b.vm}` : `last Cohesity backup of ${b.vm} is ${b.ageHours} h old`, 'cohesity');
+    else degraded(`Zerto replication for ${b.vm} is ${b.status || 'not meeting SLA'}`, 'zerto');
   }
 
   const state = findings.length ? worst(findings.map((f) => f.level)) : 'ok';
   const ordered = [...findings.filter((f) => f.level === 'critical'), ...findings.filter((f) => f.level === 'degraded')];
-  const reason = ordered.length
-    ? ordered.slice(0, 2).map((f) => f.text).join('; ') + (ordered.length > 2 ? `; +${ordered.length - 2} more` : '')
-    : `All ${servers.length} server${servers.length === 1 ? '' : 's'} online, no mapped component issues`;
+  const reason = reasonFrom(ordered, servers.length);
 
   for (const s of servers) delete s.vcenterId;
   return {
@@ -564,6 +565,84 @@ function evaluate(usageId, { now = new Date() } = {}) {
       backupsStale: backup.filter((b) => b.state === 'degraded').length,
     },
     findings: ordered, servers, hosts: hosts.map(({ connected, ...h }) => ({ ...h, connected })), storage, backup,
+  };
+}
+
+function reasonFrom(ordered, serverCount) {
+  return ordered.length
+    ? ordered.slice(0, 2).map((f) => f.text).join('; ') + (ordered.length > 2 ? `; +${ordered.length - 2} more` : '')
+    : `All ${serverCount} server${serverCount === 1 ? '' : 's'} online, no mapped component issues`;
+}
+
+// ---------------------------------------------------------------------------
+// Per-caller visibility. An app is a set of vCenter VMs (the route requires a
+// vcenter grant to read anything); every other slice is another platform's
+// data and is served only to callers who hold that platform too.
+// ---------------------------------------------------------------------------
+
+const COMPONENT_PLATFORMS = ['brocade', 'pure', 'netapp', 'cohesity', 'zerto'];
+
+function hasFullView(grants) {
+  return canViewPlatform(grants, 'vcenter') && COMPONENT_PLATFORMS.every((p) => canViewPlatform(grants, p));
+}
+
+function genericReason(state) {
+  if (state === 'critical') return 'Critical: a mapped component is down. Detail is limited to the platforms your account can view.';
+  if (state === 'degraded') return 'Degraded: a mapped component is impaired. Detail is limited to the platforms your account can view.';
+  return 'No mapped component issues';
+}
+
+/** Platforms whose data appears in an evaluated app detail. */
+function platformsIn(detail) {
+  const out = new Set(['vcenter']);
+  if (!detail) return out;
+  for (const h of detail.hosts || []) if (h.sanPaths && h.sanPaths.total > 0) out.add('brocade');
+  for (const s of detail.storage || []) if (s.platform) out.add(s.platform);
+  for (const b of detail.backup || []) if (b.platform) out.add(b.platform);
+  for (const f of detail.findings || []) if (f.platform) out.add(f.platform);
+  return out;
+}
+
+/** Copy of an evaluated app with every slice the caller cannot view removed.
+ *  The rolled-up state stays (it is the point of the page); the reason is
+ *  rebuilt from the findings that remain. */
+function redactDetail(detail, grants) {
+  if (!detail || hasFullView(grants)) return detail;
+  const can = (p) => canViewPlatform(grants, p);
+  const out = { ...detail };
+  if (!can('brocade')) {
+    out.hosts = (detail.hosts || []).map((h) => ({ ...h, sanPaths: { total: 0, missing: 0, ports: [] }, state: h.connected === false ? 'critical' : (h.connected === null ? 'unknown' : 'ok') }));
+  }
+  out.storage = (detail.storage || []).filter((s) => can(s.platform || 'vcenter'));
+  out.backup = (detail.backup || []).filter((b) => can(b.platform));
+  const before = (detail.findings || []).length;
+  out.findings = (detail.findings || []).filter((f) => can(f.platform || 'vcenter'));
+  const serverCount = (detail.servers || []).length;
+  if (out.findings.length) out.reason = reasonFrom(out.findings, serverCount);
+  else if (before > 0) out.reason = genericReason(detail.state);
+  if (detail.counts) {
+    out.counts = { ...detail.counts };
+    if (!can('brocade')) { out.counts.pathsTotal = 0; out.counts.pathsMissing = 0; }
+    if (!can('cohesity') && !can('zerto')) out.counts.backupsStale = 0;
+  }
+  return out;
+}
+
+/** Board rows carry the stored reason text, which can name SAN ports, arrays
+ *  and backup state. Callers without the full component view get the generic
+ *  line and zeroed counters for what they cannot see. */
+function redactBoard(board, grants) {
+  if (hasFullView(grants)) return board;
+  const can = (p) => canViewPlatform(grants, p);
+  return {
+    ...board,
+    apps: board.apps.map((a) => {
+      const counts = { ...a.counts };
+      if (!can('brocade')) { counts.pathsTotal = 0; counts.pathsMissing = 0; }
+      if (!can('cohesity') && !can('zerto')) counts.backupsStale = 0;
+      const serversOnly = a.state === 'ok' || a.state === 'unknown';
+      return { ...a, counts, reason: serversOnly ? a.reason : genericReason(a.state) };
+    }),
   };
 }
 
@@ -718,5 +797,6 @@ module.exports = {
   importCatalog, catalogSummary, parseCsv,
   evaluate, evaluateAll, collectItems, getBoard,
   gatherEvidence, deriveVerdict, systemPrompt, buildPayload,
+  hasFullView, genericReason, platformsIn, redactDetail, redactBoard,
   _resetTableCache: () => tableCache.clear(),
 };

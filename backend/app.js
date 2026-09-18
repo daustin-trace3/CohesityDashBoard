@@ -239,6 +239,10 @@ function createApp({ licenseGate = requireLicense } = {}) {
     aliasForwarder('poller', pollerTriggerRouter)
   );
 
+  // Mounted BEFORE the /api/settings admin gate below. It used to sit after it,
+  // so the gate answered 403 first and non-admin users never saw the AI pages
+  // they were entitled to (fail closed, but not what the comment promised).
+  app.use('/api/settings/ai-config', aiConfigRouter);
   app.use(
     '/api/settings',
     requirePermission((req) => `admin:settings:${req.method === 'GET' ? 'view' : 'manage'}`),
@@ -249,7 +253,6 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // path only needed cohesity:insights:view, and this probe gates AI nav
   // items for EVERY user, so an admin-only permission here would hide AI
   // from non-admin viewers.
-  app.use('/api/settings/ai-config', aiConfigRouter);
   app.use('/api/ai-audit', requirePermission(() => 'admin:ai-audit:view'), aiAuditRouter);
   // Plugins router applies permissions per-route itself (admin:plugins:view|
   // manage for most routes, the plugin's own namespace for bundle.js, no
