@@ -15,7 +15,8 @@ const STATE_META = {
   unknown: { label: 'No data', color: '#94A3B3' },
 };
 
-const STATE_ORDER = { critical: 0, degraded: 1, unknown: 2, ok: 3 };
+// Apps with issues first: critical, degraded, operational, then the ones with no data.
+const STATE_ORDER = { critical: 0, degraded: 1, ok: 2, unknown: 3 };
 const STATE_FILTERS = ['all', 'critical', 'degraded', 'ok', 'unknown'];
 
 function stateMeta(state) {
@@ -674,7 +675,7 @@ export default function AppServiceStatusPage() {
       const oa = STATE_ORDER[a.state] ?? 4;
       const ob = STATE_ORDER[b.state] ?? 4;
       if (oa !== ob) return oa - ob;
-      return (a.displayId || '').localeCompare(b.displayId || '');
+      return (a.label || a.displayId || '').localeCompare(b.label || b.displayId || '', undefined, { sensitivity: 'base' });
     });
 
   return (
