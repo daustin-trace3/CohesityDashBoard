@@ -35,24 +35,58 @@ function renderCostTooltip(context) {
     el.style.opacity = 0;
     return;
   }
-  const rows = tooltip.dataPoints.map((p) => {
+  // Clear existing content and rebuild safely with textContent
+  el.innerHTML = '';
+
+  // Title row
+  const titleDiv = document.createElement('div');
+  titleDiv.style.cssText = 'font-weight:700;margin-bottom:6px';
+  titleDiv.textContent = tooltip.title?.[0] ?? '';
+  el.appendChild(titleDiv);
+
+  // Data rows
+  tooltip.dataPoints.forEach((p) => {
     const color = p.dataset.backgroundColor;
-    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:18px;padding:1.5px 0">
-      <span style="display:inline-flex;align-items:center;gap:6px;min-width:0">
-        <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${color};flex-shrink:0"></span>
-        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px">${p.dataset.label}</span>
-      </span>
-      <span style="font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0">$${(p.parsed?.y || 0).toFixed(2)}</span>
-    </div>`;
-  }).join('');
+    const rowDiv = document.createElement('div');
+    rowDiv.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:18px;padding:1.5px 0';
+
+    const labelSpan = document.createElement('span');
+    labelSpan.style.cssText = 'display:inline-flex;align-items:center;gap:6px;min-width:0';
+
+    const colorSpan = document.createElement('span');
+    colorSpan.style.cssText = `display:inline-block;width:9px;height:9px;border-radius:2px;background:${color};flex-shrink:0`;
+    labelSpan.appendChild(colorSpan);
+
+    const textSpan = document.createElement('span');
+    textSpan.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px';
+    textSpan.textContent = p.dataset.label;
+    labelSpan.appendChild(textSpan);
+
+    const valueSpan = document.createElement('span');
+    valueSpan.style.cssText = 'font-variant-numeric:tabular-nums;text-align:right;flex-shrink:0';
+    valueSpan.textContent = `$${(p.parsed?.y || 0).toFixed(2)}`;
+
+    rowDiv.appendChild(labelSpan);
+    rowDiv.appendChild(valueSpan);
+    el.appendChild(rowDiv);
+  });
+
+  // Total row
   const total = tooltip.dataPoints.reduce((s, p) => s + (p.parsed?.y || 0), 0);
-  el.innerHTML = `
-    <div style="font-weight:700;margin-bottom:6px">${tooltip.title?.[0] ?? ''}</div>
-    ${rows}
-    <div style="display:flex;justify-content:space-between;gap:18px;margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.14);font-weight:700">
-      <span>Total</span>
-      <span style="font-variant-numeric:tabular-nums">$${total.toFixed(2)}</span>
-    </div>`;
+  const totalDiv = document.createElement('div');
+  totalDiv.style.cssText = 'display:flex;justify-content:space-between;gap:18px;margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.14);font-weight:700';
+
+  const totalLabelSpan = document.createElement('span');
+  totalLabelSpan.textContent = 'Total';
+
+  const totalValueSpan = document.createElement('span');
+  totalValueSpan.style.cssText = 'font-variant-numeric:tabular-nums';
+  totalValueSpan.textContent = `$${total.toFixed(2)}`;
+
+  totalDiv.appendChild(totalLabelSpan);
+  totalDiv.appendChild(totalValueSpan);
+  el.appendChild(totalDiv);
+
   const maxLeft = parent.clientWidth - el.offsetWidth - 4;
   el.style.left = `${Math.max(4, Math.min(tooltip.caretX + 12, maxLeft))}px`;
   el.style.top = `${Math.max(4, Math.min(tooltip.caretY - el.offsetHeight / 2, parent.clientHeight - el.offsetHeight - 4))}px`;
