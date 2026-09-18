@@ -337,6 +337,31 @@ describe('rollup rules', () => {
     expect(d.state).toBe('ok');
   });
 
+  it('protected at least once in 24 h is Operational even when other copies are stale or failed, including an FQDN-registered copy', () => {
+    host('esx-a.corp.local');
+    vm('bk2', 'esx-a.corp.local', { tags: ['usage-id: BB00002211'] });
+    const drCluster = db.prepare(`
+      INSERT INTO clusters (name, connection_type, auth_type, encrypted_credentials)
+      VALUES ('app-coh-dr2', 'direct', 'userpass', 'enc')
+    `).run().lastInsertRowid;
+    cohesityObject('bk2', { ageHours: 72 });
+    db.prepare("UPDATE cohesity_objects SET last_backup_status = 'kFailure' WHERE name = 'bk2'").run();
+    db.prepare(`
+      INSERT INTO cohesity_objects (cluster_id, object_id, name, is_protected, last_backup_ms, last_backup_status)
+      VALUES (?, 'obj-fqdn', 'BK2.corp.local', 1, ?, 'kSuccess')
+    `).run(drCluster, Date.now() - 5 * 3600000);
+
+    const d = appSvc.evaluate('bb00002211');
+    expect(d.backup).toHaveLength(1);
+    expect(d.backup[0]).toMatchObject({ vm: 'bk2', state: 'ok', ageHours: 5, status: 'kSuccess', copies: 2, staleCopies: 1 });
+    expect(d.state).toBe('ok');
+    expect(d.counts.backupsStale).toBe(0);
+
+    // Every copy older than 24 h -> degraded.
+    db.prepare('UPDATE cohesity_objects SET last_backup_ms = ?').run(Date.now() - 30 * 3600000);
+    expect(appSvc.evaluate('bb00002211').backup[0]).toMatchObject({ state: 'degraded', staleCopies: 2 });
+  });
+
   it('a usage-id no VM carries -> unknown', () => {
     const d = appSvc.evaluate('zz00000000');
     expect(d.state).toBe('unknown');
