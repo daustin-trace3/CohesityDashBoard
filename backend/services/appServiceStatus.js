@@ -82,7 +82,9 @@ function listUsageIds({ q = '', limit = 200 } = {}) {
 /** Minimal RFC 4180 reader: quoted fields, doubled quotes, CR/LF, and a
  *  delimiter sniffed from the header line (comma, semicolon or tab). */
 function parseCsv(text) {
-  const src = String(text || '').replace(/^﻿/, '');
+  const raw = String(text || '');
+  // Excel's "CSV UTF-8" export starts with a byte order mark (char code 0xFEFF).
+  const src = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
   const firstLine = src.split(/\r?\n/, 1)[0] || '';
   const delim = [',', ';', '\t'].map((d) => [d, firstLine.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
   const rows = [];

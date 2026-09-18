@@ -211,7 +211,7 @@ describe('application catalog import', () => {
     expect(xlsx.status).toBe(400);
     expect(xlsx.body.error).toMatch(/CSV/);
     // Semicolon-delimited export with a BOM still parses.
-    const semi = appSvc.importCatalog('﻿ATM ID;Name\nCC00000001;Ledger\n');
+    const semi = appSvc.importCatalog(`${String.fromCharCode(0xFEFF)}ATM ID;Name\nCC00000001;Ledger\n`);
     expect(semi).toMatchObject({ imported: 1, columns: { id: 'ATM ID', name: 'Name' } });
   });
 });
