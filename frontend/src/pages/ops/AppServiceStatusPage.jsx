@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Layers, Sparkles, X, ChevronDown, ChevronRight, Search, Plus, Trash2 } from 'lucide-react';
+import { Layers, Sparkles, X, ChevronDown, ChevronRight, Search, Plus, Trash2, Upload } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import { AnalysisModal } from './ServiceStatusPage';
@@ -450,23 +450,87 @@ function ManageListModal({ onClose }) {
 
   const saveLabel = async (usageId, label) => {
     try {
-      await client.put(`/app-services/watch/${encodeURIComponent(usageId)}`, { label });
-      setWatchList((list) => (list || []).map((w) => (w.usageId === usageId ? { ...w, label } : w)));
+      const { data } = await client.put(`/app-services/watch/${encodeURIComponent(usageId)}`, { label });
+      setWatchList((list) => (list || []).map((w) => (w.usageId === usageId ? { ...w, ...data } : w)));
     } catch (e) {
       setWatchError(e.response?.data?.error || 'Could not save this label.');
+    }
+  };
+
+  // Application catalog import (CSV with an ATM ID column plus Name, Lifecycle, Platform).
+  const [catalog, setCatalog] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [importError, setImportError] = useState(null);
+  const fileRef = useRef(null);
+
+  const loadCatalog = useCallback(() => {
+    client.get('/app-services/catalog').then((r) => setCatalog(r.data)).catch(() => setCatalog(null));
+  }, []);
+  useEffect(() => { loadCatalog(); }, [loadCatalog]);
+
+  const importFile = async (file) => {
+    if (!file) return;
+    setImporting(true);
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const { data } = await client.post('/app-services/catalog/import', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setImportResult(data);
+      loadCatalog();
+      loadWatch();
+      loadResults(query);
+    } catch (e) {
+      setImportError(e.response?.data?.error || 'Import failed.');
+    } finally {
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = '';
     }
   };
 
   return (
     <ModalShell title="Manage list" subtitle="Choose the usage-ids to watch" icon={Layers} onClose={onClose} wide>
       <div className="flex flex-col gap-5">
+        <div className="border border-cohesity-border rounded-lg p-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-ink">Application names</p>
+              <p className="text-[11px] text-ink-faint">
+                {catalog && catalog.total > 0
+                  ? `${catalog.total} ATM IDs imported, ${catalog.named} with a name, last import ${timeAgo(catalog.importedAt)}`
+                  : 'Import a CSV with an ATM ID column plus Name, Lifecycle and Platform to name the apps. A label typed below always wins.'}
+              </p>
+            </div>
+            <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => importFile(e.target.files?.[0])} />
+            <button
+              onClick={() => fileRef.current && fileRef.current.click()}
+              disabled={importing}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand border border-brand/30 rounded px-2.5 py-1.5 hover:bg-brand/10 disabled:opacity-50 cursor-pointer flex-shrink-0"
+            >
+              <Upload size={12} /> {importing ? 'Importing...' : 'Import CSV'}
+            </button>
+          </div>
+          {importError && <p className="text-xs text-status-crit mt-2">{importError}</p>}
+          {importResult && (
+            <p className="text-[11px] text-ink-muted mt-2">
+              Read {importResult.rowsRead} rows, imported {importResult.imported} ATM IDs
+              {importResult.withoutName > 0 && ` (${importResult.withoutName} without a name)`}
+              , {importResult.matchedToVmTags} match a usage-id tag on a VM
+              {importResult.taggedWithoutCatalogEntry > 0 && `, ${importResult.taggedWithoutCatalogEntry} tagged usage-ids are not in the file`}
+              {importResult.skippedBlankId > 0 && `, ${importResult.skippedBlankId} rows had no ID`}.
+            </p>
+          )}
+        </div>
+
         <div>
           <div className="relative mb-2">
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search usage-id or label"
+              placeholder="Search usage-id or imported name"
               className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded border border-cohesity-border bg-surface-overlay text-ink placeholder:text-ink-faint focus:outline-none focus:border-brand/50"
             />
           </div>
@@ -482,6 +546,7 @@ function ManageListModal({ onClose }) {
                 <thead>
                   <tr className="text-left text-ink-faint">
                     <th className="font-medium pb-1.5 pr-2">Usage-id</th>
+                    <th className="font-medium pb-1.5 pr-2">Name</th>
                     <th className="font-medium pb-1.5 pr-2">VMs</th>
                     <th className="font-medium pb-1.5"></th>
                   </tr>
@@ -491,7 +556,13 @@ function ManageListModal({ onClose }) {
                     const watched = watchedIds.has(item.usageId);
                     return (
                       <tr key={item.usageId} className="border-t border-cohesity-border/60">
-                        <td className="py-1.5 pr-2 text-ink truncate max-w-[220px]" title={item.displayId}>{item.displayId}</td>
+                        <td className="py-1.5 pr-2 text-ink font-mono whitespace-nowrap" title={item.displayId}>{item.displayId}</td>
+                        <td
+                          className="py-1.5 pr-2 text-ink-muted truncate max-w-[240px]"
+                          title={[item.name, item.lifecycle, item.platform].filter(Boolean).join(' - ') || undefined}
+                        >
+                          {item.name || <span className="text-ink-faint">-</span>}
+                        </td>
                         <td className="py-1.5 pr-2 text-ink-muted">{item.vmCount}</td>
                         <td className="py-1.5 text-right">
                           {watched ? (
@@ -535,7 +606,8 @@ function ManageListModal({ onClose }) {
                     defaultValue={w.label || ''}
                     onBlur={(e) => saveLabel(w.usageId, e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
-                    placeholder="Label"
+                    placeholder={w.catalogName ? `${w.catalogName} (imported, type to override)` : 'Name this app'}
+                    title={w.catalogName ? `Imported name: ${w.catalogName}. Clear the box to go back to it.` : undefined}
                     className="flex-1 min-w-0 px-2 py-1 rounded border border-cohesity-border bg-surface-overlay text-ink placeholder:text-ink-faint focus:outline-none focus:border-brand/50"
                   />
                   <button

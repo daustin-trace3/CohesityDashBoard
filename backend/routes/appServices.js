@@ -5,8 +5,11 @@ const express = require('express');
 const svc = require('../services/appServiceStatus');
 const { requirePermission } = require('../middleware/requirePermission');
 
+const multer = require('multer');
+
 const router = express.Router();
 const manage = requirePermission('admin:settings:manage');
+const catalogUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 
 router.get('/board', (req, res, next) => {
   try {
@@ -79,6 +82,38 @@ router.delete('/watch/:usageId', manage, (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// Application catalog: CSV with an ATM ID column plus optional Name, Lifecycle
+// and Platform columns. Upload as multipart field "file", or send JSON { csv }.
+router.get('/catalog', (req, res, next) => {
+  try {
+    res.json(svc.catalogSummary());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/catalog/import', manage, (req, res, next) => {
+  catalogUpload.single('file')(req, res, (uploadErr) => {
+    if (uploadErr) return res.status(400).json({ error: uploadErr.message });
+    try {
+      let text = null;
+      if (req.file) {
+        if (/\.xlsx?$/i.test(req.file.originalname || '')) {
+          return res.status(400).json({ error: 'Save the sheet as CSV (Excel: File, Save As, CSV UTF-8) and upload that file' });
+        }
+        text = req.file.buffer.toString('utf8');
+      } else if (req.body && typeof req.body.csv === 'string') {
+        text = req.body.csv;
+      }
+      if (!text || !text.trim()) return res.status(400).json({ error: "no file uploaded (multipart field must be 'file')" });
+      res.json(svc.importCatalog(text, { user: req.auth?.user?.username || null }));
+    } catch (err) {
+      if (err.status) return res.status(err.status).json({ error: err.message });
+      next(err);
+    }
+  });
 });
 
 router.get('/apps/:usageId', (req, res, next) => {

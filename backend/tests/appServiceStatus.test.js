@@ -23,7 +23,7 @@ let clusterId;
 function clearAll() {
   for (const t of [
     'service_alert_analyses', 'service_alert_events', 'service_status_timeline',
-    'app_service_state', 'app_service_watch',
+    'app_service_state', 'app_service_watch', 'app_service_catalog',
     'vcenter_vms', 'vcenter_hosts', 'vcenter_datastores', 'vcenter_vcenters',
     'brocade_device_ports', 'brocade_sources', 'cohesity_objects', 'clusters', 'poller_status',
   ]) db.exec(`DELETE FROM ${t}`);
@@ -143,6 +143,76 @@ describe('usage-id catalog and watch list', () => {
     expect((await request(app).get('/api/app-services/board')).body.apps).toEqual([]);
     expect((await request(app).delete('/api/app-services/watch/AA00001721')).status).toBe(404);
     expect((await request(app).post('/api/app-services/watch').send({})).status).toBe(400);
+  });
+});
+
+describe('application catalog import', () => {
+  const CSV = [
+    'Lifecycle,Business App (ATM ID),Name,Platform',
+    'Production,AA00001721,"Trading, Core",Windows',
+    'Production,aa00001721,Trading duplicate row,Linux',
+    'Retired,PP00003101,Payroll,Windows',
+    'Production,BB00009999,,Mainframe',
+    'Production,,Row with no id,Windows',
+  ].join('\r\n');
+
+  it('imports by ATM ID (case-insensitive), folds duplicate rows, reports matches, and names the apps', async () => {
+    host('esx-a.corp.local');
+    vm('v1', 'esx-a.corp.local', { tags: ['usage-id: aa00001721'] });
+    vm('v2', 'esx-a.corp.local', { tags: ['usage-id: PP00003101'] });
+    vm('v3', 'esx-a.corp.local', { tags: ['usage-id: ZZ00000001'] });
+
+    const res = await request(app).post('/api/app-services/catalog/import').attach('file', Buffer.from(CSV, 'utf8'), 'apps.csv');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      rowsRead: 5, imported: 3, skippedBlankId: 1, withoutName: 1, matchedToVmTags: 2, taggedWithoutCatalogEntry: 1,
+      columns: { id: 'Business App (ATM ID)', name: 'Name', lifecycle: 'Lifecycle', platform: 'Platform' },
+    });
+    expect((await request(app).get('/api/app-services/catalog')).body).toMatchObject({ total: 3, named: 2 });
+
+    // Catalog name shows in the picker and is searchable; first row wins the name, platforms are merged.
+    const byName = appSvc.listUsageIds({ q: 'trading' });
+    expect(byName).toHaveLength(1);
+    expect(byName[0]).toMatchObject({ usageId: 'aa00001721', name: 'Trading, Core', lifecycle: 'Production', platform: 'Windows, Linux' });
+    expect(appSvc.listUsageIds().find((u) => u.usageId === 'zz00000001').name).toBeNull();
+  });
+
+  it('name precedence: imported name by default, a typed label wins, clearing the label falls back to the import', async () => {
+    host('esx-a.corp.local');
+    vm('v1', 'esx-a.corp.local', { tags: ['usage-id: AA00001721'] });
+    vm('v3', 'esx-a.corp.local', { tags: ['usage-id: ZZ00000001'] });
+    appSvc.importCatalog(CSV, { user: 'tester' });
+    appSvc.addWatch({ usageId: 'AA00001721' });
+    appSvc.addWatch({ usageId: 'ZZ00000001' });
+
+    let board = appSvc.getBoard().apps;
+    expect(board.find((a) => a.usageId === 'aa00001721')).toMatchObject({ label: 'Trading, Core', manualLabel: null, catalogName: 'Trading, Core', lifecycle: 'Production' });
+    expect(board.find((a) => a.usageId === 'zz00000001')).toMatchObject({ label: null, catalogName: null }); // not in the file: blank until someone types one
+
+    await request(app).put('/api/app-services/watch/aa00001721').send({ label: 'Trading (ops name)' });
+    board = appSvc.getBoard().apps;
+    expect(board.find((a) => a.usageId === 'aa00001721')).toMatchObject({ label: 'Trading (ops name)', manualLabel: 'Trading (ops name)', catalogName: 'Trading, Core' });
+    expect(appSvc.evaluate('aa00001721').label).toBe('Trading (ops name)');
+
+    // Re-import never overwrites a typed label.
+    appSvc.importCatalog(CSV.replace('"Trading, Core"', 'Trading v2'), { user: 'tester' });
+    expect(appSvc.getBoard().apps.find((a) => a.usageId === 'aa00001721').label).toBe('Trading (ops name)');
+
+    const cleared = await request(app).put('/api/app-services/watch/aa00001721').send({ label: '' });
+    expect(cleared.body).toMatchObject({ label: null, catalogName: 'Trading v2' });
+    expect(appSvc.getBoard().apps.find((a) => a.usageId === 'aa00001721').label).toBe('Trading v2');
+  });
+
+  it('rejects a file with no ATM ID column and an Excel workbook', async () => {
+    const bad = await request(app).post('/api/app-services/catalog/import').attach('file', Buffer.from('Foo,Bar\n1,2\n'), 'x.csv');
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toMatch(/ATM ID column/);
+    const xlsx = await request(app).post('/api/app-services/catalog/import').attach('file', Buffer.from('PK'), 'apps.xlsx');
+    expect(xlsx.status).toBe(400);
+    expect(xlsx.body.error).toMatch(/CSV/);
+    // Semicolon-delimited export with a BOM still parses.
+    const semi = appSvc.importCatalog('﻿ATM ID;Name\nCC00000001;Ledger\n');
+    expect(semi).toMatchObject({ imported: 1, columns: { id: 'ATM ID', name: 'Name' } });
   });
 });
 
