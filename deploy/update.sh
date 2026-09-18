@@ -37,6 +37,7 @@ MAX_BACKUPS="${MAX_BACKUPS:-5}"
 if [ -d "${APP_DIR}/backend/data" ]; then
   log "Backing up backend/data -> backend/data.bak-${STAMP}"
   cp -a "${APP_DIR}/backend/data" "${APP_DIR}/backend/data.bak-${STAMP}"
+  chmod 700 "${APP_DIR}/backend/data.bak-${STAMP}"
 
   # Keep only the newest ${MAX_BACKUPS} backups (newest first by mtime).
   mapfile -t _backups < <(ls -1dt "${APP_DIR}"/backend/data.bak-* 2>/dev/null || true)
@@ -63,14 +64,26 @@ else
   log "No frontend/dist in package (backend-only update; UI unchanged)."
 fi
 
-# 3. Ownership
+# 3. File permissions
+chmod 600 "${APP_DIR}/.env" 2>/dev/null || true
+chmod 700 "${APP_DIR}/backend/data" 2>/dev/null || true
+for db in "${APP_DIR}"/backend/data/*.db "${APP_DIR}"/backend/data/*.db-wal "${APP_DIR}"/backend/data/*.db-shm; do
+  if [ -f "$db" ]; then chmod 600 "$db"; fi
+done
+for bak in "${APP_DIR}"/backend/data.bak-*; do
+  if [ -d "$bak" ]; then chmod 700 "$bak"; fi
+done
+chmod 700 "${APP_DIR}/backend/plugins" 2>/dev/null || true
+chmod 700 "${APP_DIR}/logs" 2>/dev/null || true
+
+# 4. Ownership
 chown -R "${RUN_USER}:${RUN_USER}" "${APP_DIR}"
 
-# 4. Restart (backend applies idempotent DB migrations on start)
+# 5. Restart (backend applies idempotent DB migrations on start)
 log "Restarting services"
 systemctl restart cohesity-dashboard.service cohesity-poller.service
 
-# 5. Health check
+# 6. Health check
 PORT="$(grep -E '^PORT=' "${APP_DIR}/.env" 2>/dev/null | head -n1 | cut -d= -f2-)"
 PORT="${PORT:-3001}"
 log "Waiting for health check on http://localhost:${PORT}/health"

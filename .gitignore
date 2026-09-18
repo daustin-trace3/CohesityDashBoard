@@ -1,11 +1,17 @@
 node_modules/
 dist/
 .env
+.env.*
+!.env.example
 frontend/.env.local
 *.db
 *.sqlite
 *.db-shm
 *.db-wal
+*.pem
+*.key
+*.p12
+*.pfx
 backend/data/
 backend/plugins/
 logs/
@@ -16,7 +22,6 @@ yarn-debug.log*
 yarn-error.log*
 .agents/
 .agent*
-.env.local
 .gstack/
 *.iccplugin
 CohesityDashboard.code-workspace

@@ -168,12 +168,23 @@ if [ ${have_node} -eq 0 ]; then
     log "Using bundled Node runtime $(basename "${tarball}")"
   else
     log "Resolving latest Node ${NODE_MAJOR}.x from nodejs.org"
-    fname="$(curl -fsSL "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/SHASUMS256.txt" \
-              | awk '{print $2}' | grep -E "^node-v[0-9.]+-linux-${narch}\.tar\.xz$" | head -n1 || true)"
+    SHASUMS="$(mktemp /tmp/node-sums.XXXXXX.txt)"
+    curl -fsSL -o "${SHASUMS}" "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/SHASUMS256.txt" || die "Failed to download Node SHASUMS256.txt"
+    fname="$(grep -E "^[a-f0-9]+  node-v[0-9.]+-linux-${narch}\.tar\.xz$" "${SHASUMS}" | awk '{print $2}' | head -n1 || true)"
     [ -n "${fname}" ] || die "Could not resolve a Node ${NODE_MAJOR}.x linux-${narch} build. Bundle one with package-ubuntu.ps1 -BundleNode for offline installs."
     tarball="$(mktemp /tmp/node-XXXXXX.tar.xz)"
     log "Downloading ${fname}"
     curl -fsSL -o "${tarball}" "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/${fname}"
+    log "Verifying Node tarball checksum"
+    # The download is saved under a temp name, so compare hashes directly
+    # instead of sha256sum -c (which looks the file up by its listed name).
+    want="$(awk -v f="${fname}" '$2 == f {print $1}' "${SHASUMS}" | head -n1)"
+    have="$(sha256sum "${tarball}" | awk '{print $1}')"
+    rm -f "${SHASUMS}"
+    if [ -z "${want}" ] || [ "${want}" != "${have}" ]; then
+      rm -f "${tarball}"
+      die "Node tarball checksum mismatch for ${fname} (expected ${want:-none}, got ${have}). Refusing to install it."
+    fi
   fi
   rm -rf "${NODE_DIR}"
   mkdir -p "${NODE_DIR}"
@@ -212,6 +223,8 @@ fi
 # ---------------------------------------------------------------------------
 if [ ${UPGRADE} -eq 0 ]; then
   log "Writing ${APP_DIR}/.env with generated keys"
+  old_umask="$(umask)"
+  umask 077   # the file must never exist with a wider mode, even briefly
   enc="$(openssl rand -hex 32 2>/dev/null || node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
   api="$(openssl rand -hex 24 2>/dev/null || node -e "console.log(require('crypto').randomBytes(24).toString('hex'))")"
   {
@@ -224,10 +237,22 @@ if [ ${UPGRADE} -eq 0 ]; then
     echo "# HELIOS_API_KEY="
     echo "# GITHUB_MODELS_TOKEN="
   } > "${APP_DIR}/.env"
+  umask "${old_umask}"
   chmod 600 "${APP_DIR}/.env"
 else
   log "Keeping existing .env"
 fi
+
+chmod 600 "${APP_DIR}/.env" 2>/dev/null || true
+chmod 700 "${APP_DIR}/backend/data" 2>/dev/null || true
+for db in "${APP_DIR}"/backend/data/*.db "${APP_DIR}"/backend/data/*.db-wal "${APP_DIR}"/backend/data/*.db-shm; do
+  if [ -f "$db" ]; then chmod 600 "$db"; fi
+done
+for bak in "${APP_DIR}"/backend/data.bak-*; do
+  if [ -d "$bak" ]; then chmod 700 "$bak"; fi
+done
+chmod 700 "${APP_DIR}/backend/plugins" 2>/dev/null || true
+chmod 700 "${APP_DIR}/logs" 2>/dev/null || true
 
 chown -R "${RUN_USER}:${RUN_USER}" "${APP_DIR}"
 
