@@ -1,6 +1,7 @@
 const express = require('express');
-const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, getServiceStatusSettings, setSetting, secretSource } = require('../services/settings');
+const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, getServiceStatusSettings, getSmtpPassword, setSetting, secretSource } = require('../services/settings');
 const { encrypt } = require('../services/encryption');
+const { isBlockedHost } = require('../utils/hostGuard');
 const { listModels } = require('../services/llmProvider');
 const alertNotifier = require('../services/alertNotifier');
 const registry = require('../core/registry');
@@ -272,6 +273,27 @@ router.put('/notifications', (req, res, next) => {
       if (!Number.isInteger(hours) || hours < 0 || hours > 168) {
         return res.status(400).json({ error: 'reminderHours must be an integer between 0 and 168' });
       }
+    }
+
+    // The saved SMTP password goes to smtp_host:smtp_port on the next mail or
+    // test, in clear when encryption is 'none'. Pointing those somewhere else,
+    // or dropping encryption, therefore needs the password typed again: a
+    // saved credential is only ever sent to the address it was saved for.
+    const savedPassword = !!getSmtpPassword();
+    const typedPassword = body.smtpPassword !== undefined && String(body.smtpPassword) !== '';
+    if (savedPassword && !typedPassword && body.smtpPassword !== '') {
+      const now = getNotificationSettings();
+      // Clearing the host sends the password nowhere, so that is always allowed.
+      const hostChanged = body.smtpHost !== undefined && String(body.smtpHost).trim() !== ''
+        && String(body.smtpHost).trim().toLowerCase() !== String(now.smtpHost || '').trim().toLowerCase();
+      const portChanged = body.smtpPort !== undefined && Math.round(Number(body.smtpPort)) !== Number(now.smtpPort);
+      const weakened = body.smtpEncryption !== undefined && body.smtpEncryption === 'none' && now.smtpEncryption !== 'none';
+      if (hostChanged || portChanged || weakened) {
+        return res.status(400).json({ error: 'Enter the SMTP password again when changing the mail server, its port or turning encryption off. A saved credential is only ever sent to the address it was saved for.' });
+      }
+    }
+    if (body.smtpHost !== undefined && String(body.smtpHost).trim() && isBlockedHost(String(body.smtpHost).trim())) {
+      return res.status(400).json({ error: 'smtpHost is not allowed' });
     }
 
     if (body.smtpEnabled !== undefined) setSetting('smtp_enabled', body.smtpEnabled ? '1' : '0');

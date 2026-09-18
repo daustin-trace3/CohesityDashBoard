@@ -4,11 +4,67 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../db/database');
-const { hashPassword } = require('../services/authService');
+const { hashPassword, destroyUserSessions } = require('../services/authService');
+const { hasPermission, resolveGrants } = require('../services/rbac');
 
 const router = express.Router();
 
 const PERMISSION_PATTERN = /^[a-z0-9*-]+:[a-z0-9*-]+:(view|manage|\*)$/;
+const MIN_PASSWORD_LENGTH = 8;
+
+// ── No privilege escalation ──────────────────────────────────────────────
+// admin:users:manage lets someone run user administration. It must not let
+// them become a full admin. Every route below that hands out or changes access
+// checks that the caller already holds everything involved:
+//   - a permission can only be granted (to a user, a group or a service
+//     account) by someone who holds that permission;
+//   - a user can only be put into a group whose grants the caller holds;
+//   - an account that holds more than the caller cannot be edited, have its
+//     password reset, be deactivated or be deleted by that caller.
+// A full admin (*:*:*) passes every check.
+
+const callerGrants = (req) => (req.auth && req.auth.grants) || [];
+
+/** First permission in `perms` the caller does not hold, or null. */
+function firstNotHeld(req, perms) {
+  const grants = callerGrants(req);
+  for (const p of perms) if (!hasPermission(grants, p)) return p;
+  return null;
+}
+
+function groupGrants(groupId) {
+  return db.prepare("SELECT permission FROM role_grants WHERE subject_type = 'group' AND subject_id = ?")
+    .all(groupId).map((r) => r.permission);
+}
+
+function forbidEscalation(res, permission, what) {
+  return res.status(403).json({
+    error: `${what} needs a permission you do not hold yourself (${permission}). Ask a full administrator.`,
+    required: permission,
+  });
+}
+
+function passwordProblem(password) {
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+    return `Passwords need at least ${MIN_PASSWORD_LENGTH} characters.`;
+  }
+  if (password.length > 256) return 'Passwords can be at most 256 characters.';
+  return null;
+}
+
+/** Local group ids the request would ADD to the user (not already a member). */
+function groupsBeingAdded(userId, groupIds) {
+  if (!Array.isArray(groupIds)) return [];
+  const current = new Set(userId
+    ? db.prepare('SELECT group_id FROM user_groups WHERE user_id = ?').all(userId).map((r) => r.group_id)
+    : []);
+  return groupIds.map(Number).filter((id) => Number.isInteger(id) && !current.has(id));
+}
+
+function adminGroupId() {
+  const row = db.prepare("SELECT id FROM groups WHERE name = 'Admin'").get();
+  return row ? row.id : null;
+}
 
 function isSelf(req, userId) {
   return req.auth && req.auth.kind === 'session' && req.auth.user && req.auth.user.id === userId;
@@ -80,8 +136,14 @@ router.post('/', async (req, res, next) => {
     if (!cleanUsername || !password) {
       return res.status(400).json({ error: 'username and password are required.' });
     }
+    const pwProblem = passwordProblem(password);
+    if (pwProblem) return res.status(400).json({ error: pwProblem });
     const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(cleanUsername);
     if (existing) return res.status(409).json({ error: 'A user with that username already exists.' });
+    for (const gid of groupsBeingAdded(null, groupIds)) {
+      const missing = firstNotHeld(req, groupGrants(gid));
+      if (missing) return forbidEscalation(res, missing, 'Adding a user to that group');
+    }
 
     const now = new Date().toISOString();
     const passwordHash = await hashPassword(String(password));
@@ -111,6 +173,25 @@ router.put('/:id(\\d+)', async (req, res, next) => {
     if (password && user.auth_provider !== 'local') {
       return res.status(400).json({ error: 'Directory accounts authenticate against the domain; their password cannot be set here.' });
     }
+    if (password) {
+      const pwProblem = passwordProblem(password);
+      if (pwProblem) return res.status(400).json({ error: pwProblem });
+    }
+
+    // Changing someone's password, state or groups is acting AS that account
+    // in all but name, so the caller must already hold everything it holds.
+    const targetMissing = firstNotHeld(req, resolveGrants(db, userId));
+    if (targetMissing) return forbidEscalation(res, targetMissing, 'Changing that account');
+    for (const gid of groupsBeingAdded(userId, groupIds)) {
+      const missing = firstNotHeld(req, groupGrants(gid));
+      if (missing) return forbidEscalation(res, missing, 'Adding a user to that group');
+    }
+    // Taking the last active Admin out of the Admin group locks everyone out.
+    const adminGid = adminGroupId();
+    if (Array.isArray(groupIds) && adminGid !== null && isInAdminGroup(userId)
+      && !groupIds.map(Number).includes(adminGid) && activeAdminCountExcluding(userId) === 0) {
+      return res.status(409).json({ error: 'Cannot remove the last active Admin from the Admin group.' });
+    }
 
     if (isActive === false) {
       if (isSelf(req, userId)) {
@@ -133,6 +214,13 @@ router.put('/:id(\\d+)', async (req, res, next) => {
 
     if (groupIds !== undefined) setUserGroups(userId, groupIds);
 
+    // A new password (or a deactivation) ends every existing session of that
+    // account. Without this, resetting a compromised account's password left
+    // the intruder signed in. The caller's own current session survives.
+    if (password || isActive === false) {
+      destroyUserSessions(userId, isSelf(req, userId) ? (req.auth.sessionKey || null) : null);
+    }
+
     const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     res.json(toUserRow(updated));
   } catch (err) {
@@ -148,6 +236,8 @@ router.delete('/:id(\\d+)', (req, res) => {
   if (isSelf(req, userId)) {
     return res.status(400).json({ error: 'You cannot delete your own account.' });
   }
+  const targetMissing = firstNotHeld(req, resolveGrants(db, userId));
+  if (targetMissing) return forbidEscalation(res, targetMissing, 'Deleting that account');
   if (isInAdminGroup(userId) && activeAdminCountExcluding(userId) === 0) {
     return res.status(409).json({ error: 'Cannot delete the last active Admin.' });
   }
@@ -266,6 +356,8 @@ router.post('/grants', (req, res, next) => {
     if (!PERMISSION_PATTERN.test(String(permission || ''))) {
       return res.status(400).json({ error: 'permission must be of the form <namespace>:<section>:<view|manage|*>.' });
     }
+    const missing = firstNotHeld(req, [String(permission)]);
+    if (missing) return forbidEscalation(res, missing, 'Granting that permission');
 
     const now = new Date().toISOString();
     db.prepare(`
@@ -287,6 +379,11 @@ router.delete('/grants', (req, res) => {
   const id = Number(subjectId);
   if (!Number.isInteger(id) || !permission) {
     return res.status(400).json({ error: 'subjectId and permission are required.' });
+  }
+  const missing = firstNotHeld(req, [String(permission)]);
+  if (missing) return forbidEscalation(res, missing, 'Revoking that permission');
+  if (subjectType === 'group' && id === adminGroupId() && String(permission) === '*:*:*') {
+    return res.status(409).json({ error: 'The Admin group keeps its full-access grant; without it nobody can administer ICC.' });
   }
 
   db.prepare(
@@ -322,6 +419,8 @@ router.post('/service-accounts', (req, res, next) => {
     if (grants.some((p) => !PERMISSION_PATTERN.test(p))) {
       return res.status(400).json({ error: 'permissions must each be of the form <namespace>:<section>:<view|manage|*>.' });
     }
+    const missing = firstNotHeld(req, grants);
+    if (missing) return forbidEscalation(res, missing, 'Creating a key with that permission');
 
     const key = `icc_${crypto.randomBytes(20).toString('hex')}`;
     const keyHash = crypto.createHash('sha256').update(key).digest('hex');
@@ -348,12 +447,18 @@ router.put('/service-accounts/:id', (req, res, next) => {
     if (!row) return res.status(404).json({ error: 'Service account not found.' });
 
     const { permissions, isActive } = req.body || {};
+    let currentGrants = [];
+    try { currentGrants = JSON.parse(row.permissions) || []; } catch { currentGrants = []; }
+    const heldMissing = firstNotHeld(req, currentGrants);
+    if (heldMissing) return forbidEscalation(res, heldMissing, 'Changing that key');
     let nextPermissions = row.permissions;
     if (permissions !== undefined) {
       const grants = Array.isArray(permissions) ? permissions.map(String) : [];
       if (grants.some((p) => !PERMISSION_PATTERN.test(p))) {
         return res.status(400).json({ error: 'permissions must each be of the form <namespace>:<section>:<view|manage|*>.' });
       }
+      const missing = firstNotHeld(req, grants);
+      if (missing) return forbidEscalation(res, missing, 'Giving a key that permission');
       nextPermissions = JSON.stringify(grants);
     }
     const nextIsActive = isActive !== undefined ? (isActive ? 1 : 0) : row.is_active;
@@ -371,6 +476,10 @@ router.delete('/service-accounts/:id', (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare('SELECT * FROM service_accounts WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'Service account not found.' });
+  let heldGrants = [];
+  try { heldGrants = JSON.parse(row.permissions) || []; } catch { heldGrants = []; }
+  const missing = firstNotHeld(req, heldGrants);
+  if (missing) return forbidEscalation(res, missing, 'Deleting that key');
 
   db.prepare('DELETE FROM service_accounts WHERE id = ?').run(id);
   res.json({ ok: true });

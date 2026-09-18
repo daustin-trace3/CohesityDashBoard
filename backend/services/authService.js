@@ -43,6 +43,19 @@ function toPublicUser(row) {
  * @param {number} userId
  * @returns {{id: string, csrfToken: string}}
  */
+// The database stores sha256(session id), never the id itself, the same way
+// service-account keys are stored. The cookie value is 256 bits of CSPRNG
+// output, so an unsalted hash is enough. Anyone who can read the database
+// file (a backup, a world-readable data dir, a SQL read primitive) used to be
+// able to copy a row's id into a cookie and become that user.
+function sessionKey(sessionId) {
+  return crypto.createHash('sha256').update(String(sessionId)).digest('hex');
+}
+
+// Sliding expiry alone never ends a session that is used once a week. This is
+// the hard stop, measured from sign-in.
+const SESSION_ABSOLUTE_MS = 30 * 24 * 60 * 60 * 1000;
+
 function createSession(userId) {
   const id = generateToken(32);
   const csrfToken = generateToken(32);
@@ -52,7 +65,7 @@ function createSession(userId) {
   db.prepare(`
     INSERT INTO auth_sessions (id, user_id, csrf_token, created_at, expires_at, last_seen_at)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, userId, csrfToken, now.toISOString(), expiresAt.toISOString(), now.toISOString());
+  `).run(sessionKey(id), userId, csrfToken, now.toISOString(), expiresAt.toISOString(), now.toISOString());
 
   return { id, csrfToken };
 }
@@ -65,19 +78,22 @@ function createSession(userId) {
  * @returns {{user: object, grants: string[], csrfToken: string} | null}
  */
 function validateSession(sessionId) {
-  const session = db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(sessionId);
+  const key = sessionKey(sessionId);
+  const session = db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(key);
   if (!session) return null;
 
   const now = new Date();
   const expiresAt = new Date(session.expires_at);
-  if (expiresAt.getTime() <= now.getTime()) {
-    db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(sessionId);
+  const createdAt = new Date(session.created_at);
+  const tooOld = Number.isFinite(createdAt.getTime()) && now.getTime() - createdAt.getTime() > SESSION_ABSOLUTE_MS;
+  if (expiresAt.getTime() <= now.getTime() || tooOld) {
+    db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(key);
     return null;
   }
 
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.user_id);
   if (!user || !user.is_active) {
-    db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(sessionId);
+    db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(key);
     return null;
   }
 
@@ -85,17 +101,23 @@ function validateSession(sessionId) {
   if (remainingMs < REFRESH_THRESHOLD_MS) {
     const newExpiresAt = new Date(now.getTime() + SESSION_TTL_MS);
     db.prepare('UPDATE auth_sessions SET expires_at = ?, last_seen_at = ? WHERE id = ?')
-      .run(newExpiresAt.toISOString(), now.toISOString(), sessionId);
+      .run(newExpiresAt.toISOString(), now.toISOString(), key);
   } else {
-    db.prepare('UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?').run(now.toISOString(), sessionId);
+    db.prepare('UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?').run(now.toISOString(), key);
   }
 
   const grants = resolveGrants(db, user.id);
-  return { user: toPublicUser(user), grants, csrfToken: session.csrf_token };
+  return { user: toPublicUser(user), grants, csrfToken: session.csrf_token, sessionKey: key };
 }
 
 function destroySession(sessionId) {
-  db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(sessionId);
+  db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(sessionKey(sessionId));
+}
+
+/** Ends every session of a user, optionally keeping one (by stored key). */
+function destroyUserSessions(userId, keepSessionKey = null) {
+  if (keepSessionKey) db.prepare('DELETE FROM auth_sessions WHERE user_id = ? AND id != ?').run(userId, keepSessionKey);
+  else db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(userId);
 }
 
 function pruneExpired() {
@@ -155,6 +177,8 @@ module.exports = {
   createSession,
   validateSession,
   destroySession,
+  destroyUserSessions,
+  sessionKey,
   pruneExpired,
   getClaimToken,
   authEnabled,

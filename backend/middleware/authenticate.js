@@ -28,7 +28,7 @@ function authenticateFromRequest(req) {
   if (sessionId) {
     const session = validateSession(sessionId);
     if (session) {
-      return { kind: 'session', user: session.user, grants: session.grants, csrfToken: session.csrfToken };
+      return { kind: 'session', user: session.user, grants: session.grants, csrfToken: session.csrfToken, sessionKey: session.sessionKey };
     }
   }
 

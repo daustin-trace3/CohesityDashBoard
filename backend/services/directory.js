@@ -460,6 +460,38 @@ async function findUser(client, baseDn, username, domain) {
 }
 
 /**
+ * The directory entry for the identity that just bound, and only that one.
+ * findUser() matches sAMAccountName OR userPrincipalName and takes the first
+ * hit, which is fine for admin lookups but not for sign-in: in a forest with
+ * more than one domain or alternate UPN suffixes, "victim@other.suffix" binds
+ * as the attacker's own account while the sAMAccountName half of the filter
+ * returns the victim's entry, and the attacker is signed in with the victim's
+ * groups. So: a typed UPN is looked up by UPN; only a bare name or a UPN in
+ * the configured domain (whose implicit UPN is sAMAccountName@domain) may be
+ * looked up by sAMAccountName; and anything but exactly one match is refused.
+ */
+async function findBoundUser(client, baseDn, username, domain) {
+  const typed = String(username || '').trim();
+  const isDn = /^[a-z]+=[^,]+,/i.test(typed);
+  const explicitUpn = !isDn && !typed.includes('\\') && typed.includes('@');
+  const search = async (clause) => searchAll(client, baseDn, `(&(objectCategory=person)(objectClass=user)${clause})`, USER_ATTRS);
+
+  let entries;
+  if (explicitUpn) {
+    entries = await search(`(userPrincipalName=${escapeFilter(typed)})`);
+    const suffix = typed.slice(typed.lastIndexOf('@') + 1).toLowerCase();
+    if (!entries.length && domain && suffix === String(domain).toLowerCase()) {
+      entries = await search(`(sAMAccountName=${escapeFilter(toSam(typed))})`);
+    }
+  } else if (isDn) {
+    entries = await search(`(distinguishedName=${escapeFilter(typed)})`);
+  } else {
+    entries = await search(`(sAMAccountName=${escapeFilter(toSam(typed))})`);
+  }
+  return entries.length === 1 ? entryToUser(entries[0]) : null;
+}
+
+/**
  * Verify a domain login. Binds AS THE USER on a fresh connection (that is the
  * password check), then uses the service account to read the user record and
  * transitive group DNs. Returns null on bad credentials, throws on outage.
@@ -478,7 +510,7 @@ async function authenticate(username, password) {
   try { await userConn.client.unbind(); } catch { /* ignore */ }
 
   return withServiceClient(async (client, ctx) => {
-    const user = await findUser(client, ctx.baseDn, username, cfg.domain);
+    const user = await findBoundUser(client, ctx.baseDn, username, cfg.domain);
     if (!user || user.disabled) return null;
     const groupDns = await getUserGroupDns(client, ctx.baseDn, user);
     return { user, groupDns };
@@ -491,6 +523,25 @@ async function authenticate(username, password) {
 
 function saveConfig(body, encrypt) {
   const s = (v) => (v === undefined || v === null ? undefined : String(v));
+  // The bind password (and after it every signing-in user's password) goes to
+  // whatever `servers` names, in clear if the scheme is ldap:// or TLS checks
+  // are off. So where those point may only change together with the bind
+  // password being typed again: a saved secret is never sent somewhere new.
+  const current = getConfig();
+  const typedSecret = s(body.bindPassword) !== undefined && s(body.bindPassword) !== '';
+  const hasSavedSecret = !!getSetting(SETTING_KEYS.bindPassword);
+  if (hasSavedSecret && !typedSecret) {
+    const norm = (v) => parseServers(Array.isArray(v) ? v.join(',') : String(v || '')).join(',').toLowerCase();
+    const serversChanged = body.servers !== undefined && norm(body.servers) !== norm(current.servers || []);
+    const tlsWeakened = (body.tlsVerify !== undefined && !body.tlsVerify && current.tlsVerify)
+      || (s(body.tlsMode) !== undefined && s(body.tlsMode) !== current.tlsMode);
+    // With no explicit servers the DCs are discovered from the domain's DNS,
+    // so the domain decides where the bind goes just as much as the list does.
+    const domainChanged = s(body.domain) !== undefined && s(body.domain).trim().toLowerCase() !== String(current.domain || '').toLowerCase();
+    if (serversChanged || domainChanged || tlsWeakened) {
+      throw Object.assign(new Error('Enter the bind password again when changing the directory servers or their TLS settings. A saved credential is only ever sent to the address it was saved for.'), { status: 400, code: 'SECRET_REQUIRED' });
+    }
+  }
   if (body.enabled !== undefined) setSetting(SETTING_KEYS.enabled, body.enabled ? '1' : '0');
   if (s(body.domain) !== undefined) setSetting(SETTING_KEYS.domain, s(body.domain).trim().toLowerCase());
   if (s(body.bindUser) !== undefined) setSetting(SETTING_KEYS.bindUser, s(body.bindUser).trim());

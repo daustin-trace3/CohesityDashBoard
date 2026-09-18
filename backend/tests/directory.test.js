@@ -183,12 +183,17 @@ describe('directory operations through the client seam', () => {
     expect(r.userCount).toBe(6);
   });
   it('an explicit server list overrides discovery and a scheme pins the transport', async () => {
-    directory.saveConfig({ servers: ['starttls://dc9.lab.test'] }, encryption.encrypt);
+    directory.saveConfig({ servers: ['starttls://dc9.lab.test'], bindPassword: 'svc-pw' }, encryption.encrypt);
     wire.urls.length = 0;
     const r = await directory.testConnection();
     expect(r.ok).toBe(true);
     expect(r.url).toBe('ldap://dc9.lab.test:389');
-    directory.saveConfig({ servers: [] }, encryption.encrypt);
+    // The saved bind password never follows a change of servers, domain or a
+    // weaker TLS setting; typing it again is what allows the change.
+    expect(() => directory.saveConfig({ servers: ['ldap://attacker.example'] }, encryption.encrypt)).toThrow(/bind password again/);
+    expect(() => directory.saveConfig({ domain: 'attacker.example' }, encryption.encrypt)).toThrow(/bind password again/);
+    expect(directory.getConfig().servers).toEqual(['starttls://dc9.lab.test']);
+    directory.saveConfig({ servers: [], bindPassword: 'svc-pw' }, encryption.encrypt);
   });
   it('searches groups by fragment and reads nested members', async () => {
     const groups = await directory.searchGroups('backup');
@@ -343,10 +348,10 @@ describe('sync + login', () => {
   });
 
   it('directory unreachable -> 503 with a clear message', async () => {
-    directory.saveConfig({ servers: ['ldap://127.0.0.1:1'] }, encryption.encrypt);
+    directory.saveConfig({ servers: ['ldap://127.0.0.1:1'], bindPassword: 'svc-pw' }, encryption.encrypt);
     const r = await request(app).post('/api/auth/login').send({ username: 'alice', password: 'alice-pw' });
     expect(r.status).toBe(503);
     expect(r.body.error).toMatch(/unreachable/);
-    directory.saveConfig({ servers: [] }, encryption.encrypt);
+    directory.saveConfig({ servers: [], bindPassword: 'svc-pw' }, encryption.encrypt);
   });
 });
