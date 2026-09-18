@@ -1,19 +1,32 @@
 // App Service Status: catalog of usage-id tags, the watched list, the board
-// and per-app detail. Reads are open to any authenticated caller (same as
-// /api/service-status); changing the watched list needs admin:settings:manage.
+// and per-app detail. An app is a set of vCenter VMs, so every read needs a
+// vcenter grant; the SAN, storage and backup slices are other platforms' data
+// and are removed for callers who do not hold those platforms (see
+// redactDetail / redactBoard). Changing the watched list needs
+// admin:settings:manage.
 const express = require('express');
 const svc = require('../services/appServiceStatus');
 const { requirePermission } = require('../middleware/requirePermission');
 
 const multer = require('multer');
 
+const { canViewPlatform } = require('../services/rbac');
+
 const router = express.Router();
 const manage = requirePermission('admin:settings:manage');
+const grantsOf = (req) => (req.auth && req.auth.grants) || [];
+
+router.use((req, res, next) => {
+  if (!canViewPlatform(grantsOf(req), 'vcenter')) {
+    return res.status(403).json({ error: 'forbidden', required: 'vcenter:*:view' });
+  }
+  next();
+});
 const catalogUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 
 router.get('/board', (req, res, next) => {
   try {
-    res.json(svc.getBoard());
+    res.json(svc.redactBoard(svc.getBoard(), grantsOf(req)));
   } catch (err) {
     next(err);
   }
@@ -22,7 +35,7 @@ router.get('/board', (req, res, next) => {
 router.post('/evaluate', manage, (req, res, next) => {
   try {
     svc.evaluateAll();
-    res.json(svc.getBoard());
+    res.json(svc.redactBoard(svc.getBoard(), grantsOf(req)));
   } catch (err) {
     next(err);
   }
@@ -118,7 +131,7 @@ router.post('/catalog/import', manage, (req, res, next) => {
 
 router.get('/apps/:usageId', (req, res, next) => {
   try {
-    res.json(svc.evaluate(req.params.usageId));
+    res.json(svc.redactDetail(svc.evaluate(req.params.usageId), grantsOf(req)));
   } catch (err) {
     next(err);
   }

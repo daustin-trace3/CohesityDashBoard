@@ -31,6 +31,9 @@ export function matches(grant, required) {
   const g = parse(grant);
   const r = parse(required);
   if (!g || !r) return false;
+  // Mirrors backend/services/rbac.js: the admin namespace is never reached
+  // through a namespace wildcard, except the full *:*:* grant.
+  if (r.namespace === 'admin' && g.namespace === '*' && !(g.section === '*' && g.level === '*')) return false;
   return (
     segmentMatches(g.namespace, r.namespace) &&
     segmentMatches(g.section, r.section) &&

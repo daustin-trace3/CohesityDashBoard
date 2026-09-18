@@ -238,7 +238,10 @@ function setEnabled(id, enabled) {
 function dispatch(req, res, next) {
   const entry = plugins.get(req.params.pluginId);
   if (!entry) return next();
-  if (!entry.enabled) return res.status(404).json({ error: 'platform_disabled' });
+  // Entitlement is folded into `enabled` only at boot and install. A licence
+  // swapped at runtime for a narrower one must stop serving the platform now,
+  // not at the next restart.
+  if (!entry.enabled || !isEntitled(entry.id || req.params.pluginId)) return res.status(404).json({ error: 'platform_disabled' });
   if (entry.status === 'error') return res.status(503).json({ error: 'platform_error' });
   return entry.router(req, res, next);
 }

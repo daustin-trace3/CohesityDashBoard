@@ -5,7 +5,25 @@ const { listProtectionGroupsV2, getProtectionGroupRunsV2 } = require('../service
 const pollerStatus = require('../services/pollerStatus');
 const registry = require('../core/registry');
 const { getSetting } = require('../services/settings');
+const { canViewPlatform } = require('../services/rbac');
 const router = express.Router();
+
+// Status sections carry source names (clusters, arrays, vCenters, accounts)
+// and poll health, so each one is served only to callers holding that
+// platform. A hidden section becomes a neutral stub, not a missing key,
+// because the UI indexes this object by platform id.
+const SECTION_NAMESPACE = { licensing: 'cohesity', views: 'cohesity' };
+
+function restrictTo(req, sections) {
+  const grants = (req.auth && req.auth.grants) || [];
+  const out = {};
+  for (const [key, section] of Object.entries(sections)) {
+    out[key] = canViewPlatform(grants, SECTION_NAMESPACE[key] || key)
+      ? section
+      : { enabled: false, entities: [], failedSources: [], restricted: true };
+  }
+  return out;
+}
 
 // Per-plugin metrics-history table + array-key column, for the lastCapture
 // lookup in each entity's status row. Pure/NetApp today; any future platform
@@ -174,7 +192,7 @@ router.get('/status', (req, res, next) => {
     const zertoState = pollerStatus.getState('zerto', 0);
     const zertoInterval = Number(getSetting('zerto_poll_interval_minutes')) || 15;
 
-    res.json({
+    res.json(restrictTo(req, {
       cohesity: {
         enabled: clusters.length > 0,
         entities: cohesityEntities,
@@ -215,7 +233,7 @@ router.get('/status', (req, res, next) => {
         isStale: zertoAge !== null ? zertoAge > zertoInterval * 2 + 5 : false,
         failedSources: [],
       },
-    });
+    }));
   } catch (err) {
     next(err);
   }

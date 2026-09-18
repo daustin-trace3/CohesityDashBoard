@@ -44,6 +44,13 @@ function matches(grant, required) {
   const [gNs, gSection, gLevel] = g;
   const [rNs, rSection, rLevel] = r;
 
+  // The admin namespace (users, settings, plugins, AI audit with its
+  // de-anonymisation map) is never reached through a namespace wildcard,
+  // except the full *:*:* grant. "*:*:view" means every platform read-only,
+  // which is what an external AI agent key is meant to hold; it must not also
+  // read the user list, the settings or the audit store.
+  if (rNs === 'admin' && gNs === '*' && !(gSection === '*' && gLevel === '*')) return false;
+
   if (!segmentMatches(gNs, rNs)) return false;
   if (!segmentMatches(gSection, rSection)) return false;
   return levelMatches(gLevel, rLevel);
@@ -86,4 +93,26 @@ function resolveGrants(db, userId) {
   return Array.from(new Set([...userGrants, ...groupGrants]));
 }
 
-module.exports = { matches, hasPermission, resolveGrants };
+/**
+ * True when the caller holds ANY grant inside the platform's namespace at the
+ * given level or above. Cross-platform views (ops summary, service status,
+ * app services, poller status) use this to decide whether a platform's slice
+ * may be shown: default roles hold `<ns>:*:view`, a narrowly scoped key holds
+ * nothing for the platforms it was not given.
+ * @param {string[]} grantList
+ * @param {string} ns platform id
+ * @param {'view'|'manage'} [level]
+ */
+function canAccessPlatform(grantList, ns, level = 'view') {
+  if (!Array.isArray(grantList) || !ns || ns === 'admin') return false;
+  return grantList.some((grant) => {
+    const g = splitPermission(grant);
+    if (!g) return false;
+    return segmentMatches(g[0], ns) && levelMatches(g[2], level);
+  });
+}
+
+const canViewPlatform = (grantList, ns) => canAccessPlatform(grantList, ns, 'view');
+const canManagePlatform = (grantList, ns) => canAccessPlatform(grantList, ns, 'manage');
+
+module.exports = { matches, hasPermission, resolveGrants, canAccessPlatform, canViewPlatform, canManagePlatform };

@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db/database');
 const registry = require('../core/registry');
 const { getSetting } = require('../services/settings');
+const { canViewPlatform } = require('../services/rbac');
 
 const router = express.Router();
 
@@ -419,11 +420,16 @@ const PLATFORMS = [
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };
 
 router.get('/summary', async (req, res) => {
+  // The rollup spans every platform (object counts, alert and failure counts,
+  // AWS spend), so each card is built only for callers who hold that platform.
+  // Totals and the attention list are computed from the cards that remain.
+  const grants = (req.auth && req.auth.grants) || [];
   const cards = [];
   for (const p of PLATFORMS) {
     // Cohesity is always-on (enabled iff clusters exist — its summarizer
     // returns null when there are none); registry drives the rest.
     if (p.id !== 'cohesity' && registry.getPlugin(p.id)?.enabled !== true) continue;
+    if (!canViewPlatform(grants, p.id)) continue;
     const base = { id: p.id, label: p.label, color: p.color, route: p.route };
     try {
       const s = await p.fn();

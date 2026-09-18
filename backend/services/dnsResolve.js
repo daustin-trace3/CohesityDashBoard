@@ -25,6 +25,12 @@ const PREWARM_INTERVAL_MS = 30 * 60 * 1000;
 const PREWARM_INITIAL_DELAY_MS = 2 * 60 * 1000;
 const PREWARM_MAX_IPS = 10000;
 const LOOKUP_CHUNK = 25;
+// One API call may trigger at most this many live lookups (the rest come back
+// null and resolve on a later call or through the prewarm). Without a cap a
+// single request for 5000 cold addresses held a connection for ten minutes
+// and let any caller walk the internal reverse zones a /16 at a time.
+const MAX_COLD_PER_CALL = 500;
+const CACHE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 const selectCached = db.prepare('SELECT name, resolved_at AS resolvedAt FROM dns_cache WHERE ip = ?');
 const upsert = db.prepare(`
@@ -65,15 +71,19 @@ function reverse(resolver, ip) {
  * Resolve a list of IPs to hostnames, serving fresh cache rows from SQLite
  * and reverse-resolving the rest. Returns { ip: hostname|null }.
  */
-async function resolveIps(ips) {
+async function resolveIps(ips, { maxCold = MAX_COLD_PER_CALL } = {}) {
   const valid = [...new Set(ips.map(String).filter((ip) => net.isIP(ip)))];
   const map = {};
   const now = Date.now();
-  const toLookup = [];
+  let toLookup = [];
   for (const ip of valid) {
     const row = selectCached.get(ip);
     if (row && now - Date.parse(row.resolvedAt) < TTL_MS) map[ip] = row.name;
     else toLookup.push(ip);
+  }
+  if (toLookup.length > maxCold) {
+    for (const ip of toLookup.slice(maxCold)) map[ip] = null;
+    toLookup = toLookup.slice(0, maxCold);
   }
 
   if (toLookup.length) {
@@ -123,6 +133,11 @@ async function prewarmOnce() {
   if (prewarmRunning) return;
   prewarmRunning = true;
   try {
+    // The cache only ever grew (every looked-up address is a row); drop rows
+    // nobody has refreshed in a week.
+    try {
+      db.prepare('DELETE FROM dns_cache WHERE resolved_at < ?').run(new Date(Date.now() - CACHE_RETENTION_MS).toISOString());
+    } catch { /* table absent */ }
     const ips = collectInventoryIps();
     if (!ips.length) return;
     const now = Date.now();
@@ -131,7 +146,7 @@ async function prewarmOnce() {
       return !row || now - Date.parse(row.resolvedAt) >= TTL_MS;
     });
     if (!cold.length) return;
-    await resolveIps(cold);
+    await resolveIps(cold, { maxCold: PREWARM_MAX_IPS });
     logger.info(`[DNS prewarm] Resolved ${cold.length} inventory IPs (${ips.length} known).`);
   } catch (err) {
     logger.warn(`[DNS prewarm] Failed: ${err?.message || err}`);
