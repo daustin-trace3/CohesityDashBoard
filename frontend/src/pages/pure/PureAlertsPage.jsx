@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, ExternalLink } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { safeHttpsUrl } from '../../utils/safeUrl';
 import { BRAND, timeAgo, severityTone } from './helpers';
 
 export default function PureAlertsPage() {
@@ -91,8 +92,8 @@ export default function PureAlertsPage() {
                     <td className="py-2 pr-3 text-ink-muted">{a.category || '—'}</td>
                     <td className="py-2 pr-3 text-right text-ink-faint tnum">{a.updated ? timeAgo(a.updated) : '—'}</td>
                     <td className="py-2 pr-3">
-                      {a.knowledgeBaseUrl
-                        ? <a href={a.knowledgeBaseUrl} target="_blank" rel="noreferrer" className="text-brand hover:underline inline-flex items-center gap-1 text-[11px]">KB <ExternalLink size={11} /></a>
+                      {a.knowledgeBaseUrl && safeHttpsUrl(a.knowledgeBaseUrl)
+                        ? <a href={safeHttpsUrl(a.knowledgeBaseUrl)} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline inline-flex items-center gap-1 text-[11px]">KB <ExternalLink size={11} /></a>
                         : <span className="text-ink-faint">—</span>}
                     </td>
                   </tr>

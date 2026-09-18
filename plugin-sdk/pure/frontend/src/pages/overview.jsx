@@ -13,6 +13,17 @@ import {
 const USED_PARTS = ['array_volume_space', 'array_shared_space', 'array_snapshot_space', 'array_system_space', 'array_replication_space'];
 const fmtIops = (v) => (v == null ? '—' : `${Math.round(v).toLocaleString()}`);
 
+// Return the URL string if it is https, otherwise null.
+function safeHttpsUrl(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function pctBarColor(pct, warn = 75, crit = 90) {
   if (pct == null) return '#334155';
   if (pct >= crit) return '#EF4444';
@@ -253,8 +264,8 @@ export default function PureOverviewPage() {
                     <td className="py-2 pr-3 text-ink-muted text-[11px]">{a.component || '—'}{a.componentType ? ` (${a.componentType})` : ''}</td>
                     <td className="py-2 pr-3 text-ink-muted text-[11px] tnum">{a.updated ? timeAgo(a.updated) : '—'}</td>
                     <td className="py-2 pr-3">
-                      {a.knowledgeBaseUrl
-                        ? <a href={a.knowledgeBaseUrl} target="_blank" rel="noreferrer" className="text-brand hover:underline inline-flex items-center gap-1 text-[11px]">KB <ExternalLink size={11} /></a>
+                      {a.knowledgeBaseUrl && safeHttpsUrl(a.knowledgeBaseUrl)
+                        ? <a href={safeHttpsUrl(a.knowledgeBaseUrl)} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline inline-flex items-center gap-1 text-[11px]">KB <ExternalLink size={11} /></a>
                         : <span className="text-ink-faint">—</span>}
                     </td>
                   </tr>

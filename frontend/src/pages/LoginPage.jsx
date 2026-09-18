@@ -4,6 +4,7 @@ import { ShieldCheck, KeyRound, RefreshCw, LogIn, Layers, Activity, Lock } from 
 import client from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import iccLogo from '../assets/icc-logo-dark.svg';
+import { safeReturnTo } from '../utils/safeUrl';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -11,7 +12,7 @@ export default function LoginPage() {
   const { login, refresh } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const returnTo = searchParams.get('returnTo') || '/cohesity';
+  const returnTo = safeReturnTo(searchParams.get('returnTo'), '/cohesity');
 
   const [checkingSetup, setCheckingSetup] = useState(true);
   const [health, setHealth] = useState(null); // null = checking, true/false = result

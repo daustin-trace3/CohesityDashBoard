@@ -2,6 +2,17 @@
 import { AlertTriangle, CheckCircle2 } from '../icons.jsx';
 import { apiFetch, PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated, BRAND, timeAgo, severityTone } from '../ui.jsx';
 
+// Return the URL string if it is https, otherwise null.
+function safeHttpsUrl(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function PureAlertsPage() {
   const [alerts, setAlerts] = React.useState(null);
   const [showHidden, setShowHidden] = React.useState(false);
@@ -86,8 +97,8 @@ export default function PureAlertsPage() {
                     <td className="py-2 pr-3 text-ink-muted">{a.category || '—'}</td>
                     <td className="py-2 pr-3 text-right text-ink-faint tnum">{a.updated ? timeAgo(a.updated) : '—'}</td>
                     <td className="py-2 pr-3">
-                      {a.knowledgeBaseUrl
-                        ? <a href={a.knowledgeBaseUrl} target="_blank" rel="noreferrer" className="text-brand hover:underline text-[11px]">KB</a>
+                      {a.knowledgeBaseUrl && safeHttpsUrl(a.knowledgeBaseUrl)
+                        ? <a href={safeHttpsUrl(a.knowledgeBaseUrl)} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline text-[11px]">KB</a>
                         : <span className="text-ink-faint">—</span>}
                     </td>
                   </tr>
