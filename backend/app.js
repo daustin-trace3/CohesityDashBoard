@@ -74,33 +74,55 @@ function createApp({ licenseGate = requireLicense } = {}) {
     app.set('trust proxy', trustProxy === 'true' ? 1 : (Number(trustProxy) || trustProxy));
   }
 
-  // Security headers
-  // Non-HTTPS/public-IP testing: avoid forced HTTPS asset upgrades and COOP/OAC warnings; harden these behind HTTPS.
+  // Security headers. Scripts, connections and images are same-origin only.
+  // The one external dependency is Google Fonts (Inter, JetBrains Mono,
+  // Archivo), so style-src and font-src name those two hosts instead of the
+  // blanket "https:" helmet ships with. style-src keeps 'unsafe-inline'
+  // because React inline styles and the chart library need it.
+  // HTTPS_ONLY=1 (set it wherever ICC is only ever reached over TLS, for
+  // example behind a reverse proxy or tunnel) adds upgrade-insecure-requests,
+  // COOP and origin-agent-cluster; on plain http those three only produce
+  // console warnings, which is why they are opt-in.
+  const httpsOnly = process.env.HTTPS_ONLY === '1';
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
-        upgradeInsecureRequests: null
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
+        connectSrc: ["'self'"],
+        // blob: for object-URL images (UniFi Protect camera snapshots are
+        // fetched as authenticated blobs and rendered via URL.createObjectURL)
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        workerSrc: ["'self'", 'blob:'],
+        manifestSrc: ["'self'"],
+        frameAncestors: ["'self'"],
+        upgradeInsecureRequests: httpsOnly ? [] : null,
       }
     },
-    crossOriginOpenerPolicy: false,
-    originAgentCluster: false
+    crossOriginOpenerPolicy: httpsOnly ? { policy: 'same-origin' } : false,
+    originAgentCluster: httpsOnly,
   }));
+  // Helmet does not set Permissions-Policy; scanners flag its absence. ICC
+  // uses none of these browser features.
+  app.use((req, res, next) => {
+    res.setHeader('Permissions-Policy', 'accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=(), browsing-topics=()');
+    next();
+  });
 
-  // CORS — restrict to localhost origins only
+  // CORS: the UI is served by this same process, so cross-origin access is
+  // only for a developer running the Vite dev server. Localhost by default;
+  // CORS_ORIGINS (comma separated) adds more. A LAN address used to be
+  // hardcoded here.
+  const corsOrigins = [
+    'http://localhost:5173', 'http://localhost:3001', 'http://localhost:3000',
+    'http://127.0.0.1:5173', 'http://127.0.0.1:3001', 'http://127.0.0.1:3000',
+  ].concat(String(process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean));
   app.use(cors({
-    origin: [
-      'http://localhost:5173',
-      'http://localhost:3001',
-      'http://localhost:3000',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:3001',
-      'http://127.0.0.1:3000',
-      'http://172.17.16.113:5173',
-      'http://172.17.16.113:3001',
-      'http://172.17.16.113:3000'
-    ],
+    origin: corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-csrf-token']
   }));
 
   // Rate limiting: 1000 requests per minute per IP (dashboard loads many per-cluster requests)
@@ -275,7 +297,16 @@ function createApp({ licenseGate = requireLicense } = {}) {
         }
       },
     }));
+    // SPA fallback for page routes only. Answering 200 with the app shell for
+    // /.env, /.git/config, /backup.zip or /wp-login.php is harmless, but every
+    // scanner reports it as an exposed file because the status is 200. Unknown
+    // API paths, dotfiles and anything that looks like a file get a real 404.
     app.get('*', (req, res) => {
+      const p = req.path;
+      if (p === '/api' || p.startsWith('/api/')) return res.status(404).json({ error: 'not found' });
+      if (/(^|\/)\.[^/]/.test(p) || /\.[A-Za-z0-9]{1,8}$/.test(p)) {
+        return res.status(404).type('text/plain').send('Not found');
+      }
       res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distPath, 'index.html'));
     });

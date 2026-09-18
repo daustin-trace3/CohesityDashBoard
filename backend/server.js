@@ -72,8 +72,22 @@ try {
 } catch (e) {
   logger.error('[Fatal] ENCRYPTION_KEY validation failed:', e.message);
 }
-if (!process.env.DASHBOARD_API_KEY) {
-  logger.error('[Fatal] DASHBOARD_API_KEY is not set — all API requests will fail.');
+// DASHBOARD_API_KEY is a full-access (*:*:*) key. The placeholder from
+// .env.example and anything short enough to guess would be accepted as that
+// key by middleware/authenticate.js, so such a value is dropped at boot and
+// the env-key lane stays closed (sessions and service-account keys still work).
+{
+  const key = process.env.DASHBOARD_API_KEY || '';
+  const placeholder = /^(your_|change_?me|example|test|password|secret)/i.test(key) || key === 'your_dashboard_api_key_here';
+  if (!key) {
+    logger.warn('DASHBOARD_API_KEY is not set: the full-access env key is disabled. Sessions and service-account keys are unaffected.');
+  } else if (placeholder) {
+    logger.error('[Security] DASHBOARD_API_KEY is a placeholder value and has been IGNORED. Generate one with: openssl rand -hex 24');
+    delete process.env.DASHBOARD_API_KEY;
+  } else if (key.length < 24) {
+    // Not dropped: existing automation may depend on it. But say so.
+    logger.warn('[Security] DASHBOARD_API_KEY is shorter than 24 characters. It is a full-access key; replace it with: openssl rand -hex 24');
+  }
 }
 if (!require('./services/settings').getHeliosApiKey()) {
   logger.warn('Helios API key is not configured (Settings → Credentials or HELIOS_API_KEY) — Helios discovery will be unavailable.');
@@ -84,9 +98,35 @@ if (getLicenseStatus().state === 'missing') {
 
 // Only listen + start pollers when run directly (pm2/node server.js).
 // Tests build the app via createApp() without side effects.
+// Sign-in can be off in two ways: an administrator switched it off, or this is
+// a fresh install with no accounts (open to callers on this machine only).
+// Either way it is said loudly, at boot and every hour, because a forgotten
+// open instance is the worst state this product can be left in.
+function warnIfOpenAccess() {
+  try {
+    const { getSetting } = require('./services/settings');
+    const db = require('./db/database');
+    const explicitOff = getSetting('auth_enabled') === '0';
+    const noUsers = db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0;
+    if (explicitOff) {
+      logger.error('[Security] Sign-in is switched OFF (auth_enabled=0): EVERY caller that can reach this port has full administrator access. Turn it back on under Global Settings.');
+    } else if (noUsers && getSetting('auth_enabled') !== '1') {
+      logger.warn('[Security] No administrator account exists yet. Open access is limited to callers on this machine; everyone else must complete first-run setup with the claim token printed above.');
+    }
+  } catch { /* never block boot */ }
+}
+
+// BIND_ADDRESS limits which interface the API listens on. The default stays
+// 0.0.0.0 so existing deployments keep working; set 127.0.0.1 when a reverse
+// proxy or tunnel on this host is the only intended way in.
+const BIND_ADDRESS = (process.env.BIND_ADDRESS || '0.0.0.0').trim();
+
 if (require.main === module) {
-  app.listen(PORT, '0.0.0.0', () => {
-    logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
+  app.listen(PORT, BIND_ADDRESS, () => {
+    logger.info(`Backend listening on ${BIND_ADDRESS}:${PORT} (local: http://localhost:${PORT})`);
+    warnIfOpenAccess();
+    const openTimer = setInterval(warnIfOpenAccess, 60 * 60 * 1000);
+    if (openTimer.unref) openTimer.unref();
     if (isDemo()) {
       logger.info('[Demo] Demo mode — pollers disabled');
       // The demo's poller process idles (pollers disabled above), so the API
