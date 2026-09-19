@@ -12,7 +12,7 @@ const router = express.Router();
 const PERMISSION_PATTERN = /^[a-z0-9*-]+:[a-z0-9*-]+:(view|manage|\*)$/;
 const MIN_PASSWORD_LENGTH = 8;
 
-// ── No privilege escalation ──────────────────────────────────────────────
+// No privilege escalation
 // admin:users:manage lets someone run user administration. It must not let
 // them become a full admin. Every route below that hands out or changes access
 // checks that the caller already holds everything involved:
