@@ -17,7 +17,7 @@ const axios = require('axios');
 const https = require('https');
 const { decrypt } = require('./encryption');
 const {
-  parseEffectiveConfigResponse, parseDefinedConfigResponse, parseFcStatsResponse,
+  parseEffectiveConfigResponse, parseDefinedConfigResponse, parseFcStatsResponse, testFailure,
 } = require('./brocadeApi');
 
 // ── Credentials / client plumbing ───────────────────────────────────────────
@@ -49,6 +49,9 @@ function fosClient(target, timeout) {
     baseURL: fosBaseUrl(target),
     timeout,
     httpsAgent: new https.Agent({ rejectUnauthorized: !!target.verify_ssl }),
+    // Never follow a redirect: login sends Basic credentials and every other
+    // call sends the FOS session key.
+    maxRedirects: 0,
     validateStatus: () => true,
     headers: { Accept: 'application/yang-data+json', 'Content-Type': 'application/yang-data+json' },
   });
@@ -175,7 +178,7 @@ async function testFos(target, timeout = 15000) {
     await withFosSession(target, async () => {}, timeout);
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: errMsg(err) };
+    return { ok: false, error: testFailure(err) };
   }
 }
 

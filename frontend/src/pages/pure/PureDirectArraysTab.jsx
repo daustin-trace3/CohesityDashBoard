@@ -87,10 +87,11 @@ function ArrayForm({ mode, initial, onCancel, onSaved }) {
     try {
       const payload = buildPayload(form);
       delete payload.name;
+      if (mode === 'edit' && initial?.id) payload.id = initial.id;
       const { data } = await client.post('/pure/arrays/test', payload);
-      setTestResult(data.ok ? { ok: true, msg: 'Connection succeeded' } : { ok: false, msg: data.error || 'Connection failed' });
+      setTestResult(data.ok ? { ok: true, msg: 'Connection succeeded' } : { ok: false, msg: data.error || data.message || 'Connection failed' });
     } catch (err) {
-      setTestResult({ ok: false, msg: err?.response?.data?.error || 'Connection failed' });
+      setTestResult({ ok: false, msg: err?.response?.data?.error || err?.response?.data?.message || 'Connection failed' });
     } finally {
       setTesting(false);
     }
@@ -107,7 +108,7 @@ function ArrayForm({ mode, initial, onCancel, onSaved }) {
         : await client.post('/pure/arrays', payload);
       onSaved(data, mode);
     } catch (err) {
-      setSubmitError(err?.response?.data?.error || err?.response?.data?.errors?.[0]?.msg || 'Save failed');
+      setSubmitError(err?.response?.data?.error || err?.response?.data?.message || err?.response?.data?.errors?.[0]?.msg || 'Save failed');
     } finally {
       setSubmitting(false);
     }
@@ -123,7 +124,7 @@ function ArrayForm({ mode, initial, onCancel, onSaved }) {
         <Field label="Name">
           <input required value={form.name} onChange={(e) => set('name', e.target.value)} className={inp} />
         </Field>
-        <Field label="Management host">
+        <Field label="Management host" hint={mode === 'edit' ? 'Changing the address needs the password (or token) entered again.' : undefined}>
           <input required value={form.mgmt_host} onChange={(e) => set('mgmt_host', e.target.value)}
             placeholder="e.g. flasharray1.company.com" className={inp} />
         </Field>

@@ -15,6 +15,8 @@ const awsAdvisor = require('../services/advisors/awsAdvisor');
 
 const router = express.Router();
 
+const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/;
+
 const validate = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid parameters', details: errors.array() });
@@ -42,7 +44,10 @@ router.post('/accounts', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
   body('accessKeyId').optional({ nullable: true }).isString().trim().isLength({ max: 128 }),
   body('secretAccessKey').optional({ nullable: true }).isString().isLength({ max: 256 }),
-  body('region').optional().isString().trim().isLength({ max: 32 }),
+  body('region').optional().isString().trim().isLength({ max: 32 }).custom((v) => {
+    if (v && !AWS_REGION_RE.test(v.toLowerCase())) throw new Error('invalid AWS region format');
+    return true;
+  }),
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
 ], validate, (req, res, next) => {
   try {
@@ -70,7 +75,10 @@ router.put('/accounts/:id', [
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
   body('accessKeyId').optional({ nullable: true }).isString().trim().isLength({ max: 128 }),
   body('secretAccessKey').optional({ nullable: true }).isString().isLength({ max: 256 }),
-  body('region').optional().isString().trim().isLength({ max: 32 }),
+  body('region').optional().isString().trim().isLength({ max: 32 }).custom((v) => {
+    if (v && !AWS_REGION_RE.test(v.toLowerCase())) throw new Error('invalid AWS region format');
+    return true;
+  }),
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
 ], validate, (req, res, next) => {
   try {

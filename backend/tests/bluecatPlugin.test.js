@@ -6,7 +6,7 @@
  * helpers, the route dispatcher, and the plugin registry end-to-end.
  * Mirrors backend/tests/unifiPlugin.test.js.
  */
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { createRequire } from 'module';
 import express from 'express';
 import request from 'supertest';
@@ -14,6 +14,15 @@ import request from 'supertest';
 const require = createRequire(import.meta.url);
 
 const db = require('../db/database');
+
+// Loopback is refused as a connection target, so the "bogus credentials"
+// tests use an ordinary name and a transport that refuses the connection.
+// Nothing leaves the process.
+function refuseConnections() {
+  const axios = require('axios');
+  const refused = async () => { throw Object.assign(new Error('connect ECONNREFUSED 10.9.9.9:65533'), { code: 'ECONNREFUSED' }); };
+  return vi.spyOn(axios, 'create').mockReturnValue({ get: refused, post: refused, patch: refused, request: refused });
+}
 const { runMigrations } = require('../core/migrations');
 const bluecatMigrations = require('../db/migrations/bluecat');
 const { encrypt } = require('../services/encryption');
@@ -294,20 +303,33 @@ describe('routes/bluecat.js basic CRUD + data endpoints (minimal express app, no
   });
 
   it('POST /api/bluecat/sources/:id/test works with a nonexistent id when full creds are in the body', async () => {
+    const spy = refuseConnections();
+    try {
+      const res = await request(app).post('/api/bluecat/sources/999999/test').send({
+        host: 'bam.corp.example', port: 65533, username: 'admin', password: 'not-a-real-password',
+      });
+      expect(res.status).toBe(502);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toBe('Could not reach the address.');
+    } finally { spy.mockRestore(); }
+  }, 20000);
+
+  it('POST /api/bluecat/sources/:id/test refuses a loopback target', async () => {
     const res = await request(app).post('/api/bluecat/sources/999999/test').send({
       host: '127.0.0.1', port: 65533, username: 'admin', password: 'not-a-real-password',
     });
-    expect(res.status).toBe(502);
-    expect(res.body.ok).toBe(false);
-    expect(typeof res.body.error).toBe('string');
-  }, 20000);
+    expect(res.status).toBe(400);
+  });
 
   it('POST /api/bluecat/sources/test never throws with bogus credentials (no id)', async () => {
-    const res = await request(app).post('/api/bluecat/sources/test').send({
-      host: '127.0.0.1', port: 65533, username: 'admin', password: 'nope',
-    });
-    expect(res.status).toBe(502);
-    expect(res.body.ok).toBe(false);
+    const spy = refuseConnections();
+    try {
+      const res = await request(app).post('/api/bluecat/sources/test').send({
+        host: 'bam.corp.example', port: 65533, username: 'admin', password: 'nope',
+      });
+      expect(res.status).toBe(502);
+      expect(res.body.ok).toBe(false);
+    } finally { spy.mockRestore(); }
   }, 20000);
 
   it('POST /api/bluecat/sources/:id/poll 404s for an unknown id', async () => {

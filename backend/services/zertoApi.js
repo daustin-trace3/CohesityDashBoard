@@ -29,11 +29,23 @@ function zertoConfigured() {
 
 let cachedToken = null; // { token, fetchedAt, username }
 
+// The username and password (and afterwards the bearer) go to baseUrl. Refuse
+// anything that is not plain https without userinfo, so a base URL saved before
+// the route validation existed cannot send them in cleartext.
+function assertSafeBase(baseUrl) {
+  let url = null;
+  try { url = new URL(baseUrl); } catch { url = null; }
+  if (!url || url.protocol !== 'https:' || url.username || url.password) {
+    throw Object.assign(new Error('The Zerto base URL must be an https address.'), { code: 'ZERTO_BASE_URL' });
+  }
+}
+
 async function fetchToken(cfg) {
+  assertSafeBase(cfg.baseUrl);
   const { data } = await axios.post(`${cfg.baseUrl}/v2/auth/token`, {
     username: cfg.username,
     password: cfg.password,
-  }, { timeout: 30000, headers: { 'Content-Type': 'application/json' } });
+  }, { timeout: 30000, maxRedirects: 0, headers: { 'Content-Type': 'application/json' } });
   if (!data?.token) throw new Error('Zerto auth succeeded but returned no token');
   return data.token;
 }
@@ -56,9 +68,11 @@ function invalidateToken() {
 async function zGet(path, params = {}) {
   const cfg = getZertoConfig();
   if (!cfg.username || !cfg.password) throw new Error('Zerto Analytics credentials are not configured');
+  assertSafeBase(cfg.baseUrl);
   let token = await getToken(cfg);
   const doGet = (t) => axios.get(`${cfg.baseUrl}${path}`, {
     timeout: 60000,
+    maxRedirects: 0,
     params,
     headers: { Authorization: `Bearer ${t}`, accept: 'application/json' },
   });
@@ -105,29 +119,47 @@ const fetchLicenses = async () => (await zGet('/v3/licenses')) || [];
  */
 async function testConnection(candidate = null) {
   const saved = getZertoConfig();
-  const cfg = {
-    baseUrl: candidate?.baseUrl?.replace(/\/+$/, '') || saved.baseUrl,
-    username: candidate?.username || saved.username,
-    password: candidate?.password || saved.password,
-  };
+  // A saved password only ever goes to the saved base URL with the saved
+  // username. The caller's base URL and username are used only together with a
+  // password typed for this test.
+  const typed = !!(candidate?.password && String(candidate.password).trim());
+  const cfg = typed ? {
+    baseUrl: candidate.baseUrl?.replace(/\/+$/, '') || saved.baseUrl,
+    username: candidate.username || saved.username,
+    password: candidate.password,
+  } : { baseUrl: saved.baseUrl, username: saved.username, password: saved.password };
   if (!cfg.username || !cfg.password) return { ok: false, error: 'Username and password are required.' };
   try {
     const token = await fetchToken(cfg);
     const { data } = await axios.get(`${cfg.baseUrl}/v2/monitoring/sites`, {
       timeout: 30000,
+      maxRedirects: 0,
       headers: { Authorization: `Bearer ${token}`, accept: 'application/json' },
     });
     const sites = Array.isArray(data) ? data : [];
     return { ok: true, sites: sites.length };
   } catch (err) {
-    const status = err.response?.status;
-    const error = status === 401 ? 'Authentication failed — check the myZerto username and password.'
-      : (err.response?.data?.message || err.message);
-    return { ok: false, error };
+    return { ok: false, error: testFailure(err) };
   }
 }
 
+// Fixed, caller-safe text for a failed connection test. The transport error
+// text names addresses and ports, and the upstream body is whatever the far
+// end chose to send, so neither is ever returned.
+function testFailure(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || '');
+  if (code === 'ZERTO_BASE_URL') return err.message;
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the myZerto username and password.';
+  if (status) return 'Unexpected response from the server.';
+  if (/TIMEDOUT|ECONNABORTED/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'The connection timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the server.';
+}
+
 module.exports = {
+  DEFAULT_BASE_URL,
   getZertoConfig, zertoConfigured, zGet, invalidateToken,
   fetchAccountStats, fetchSites, fetchSitesTopology, fetchVpgs, fetchAlerts, fetchProtectedVms,
   fetchLicenses,

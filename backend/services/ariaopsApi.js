@@ -1,5 +1,5 @@
 // VMware Aria Operations (vROps Suite API) client. Doug has no live vROps to
-// test against, so every upstream response shape below is UNVERIFIED —
+// test against, so every upstream response shape below is UNVERIFIED -
 // fetchers parse defensively (optional chaining, accept either of several
 // candidate field/wrapper names) and the probe route (routes/ariaops.js)
 // exists specifically to see the real shapes against a live instance.
@@ -25,6 +25,9 @@ function baseClient(row, headers = {}) {
   return axios.create({
     baseURL: `https://${row.host}/suite-api/api`,
     timeout: 60000,
+    // Every call through this client carries the password or the session
+    // token. A redirect would resend them to whatever host it names.
+    maxRedirects: 0,
     headers: { Accept: 'application/json', ...headers },
     httpsAgent: new https.Agent({ rejectUnauthorized: !!row.ssl_verify }),
   });
@@ -73,11 +76,11 @@ async function aGet(row, path, params = {}) {
 const fetchVersion = (row) => aGet(row, '/versions/current');
 const fetchNodeStatus = (row) => aGet(row, '/deployment/node/status');
 
-// Response shapes are unverified — vROps typically wraps resource lists as
+// Response shapes are unverified - vROps typically wraps resource lists as
 // { resourceList: [...] } but some deployments use { resources: [...] }.
 const unwrapResources = (d) => d?.resourceList ?? d?.resources ?? [];
 
-/** GET /resources?resourceKind=<kind> — paged, capped at 5000 rows. */
+/** GET /resources?resourceKind=<kind> - paged, capped at 5000 rows. */
 async function fetchResourcesByKind(row, kind) {
   const pageSize = 1000;
   const cap = 5000;
@@ -95,7 +98,7 @@ async function fetchResourcesByKind(row, kind) {
 
 const unwrapAlerts = (d) => (Array.isArray(d) ? d : (d?.alerts ?? []));
 
-/** GET /alerts?activeOnly=true — capped at 5000. */
+/** GET /alerts?activeOnly=true - capped at 5000. */
 async function fetchAlerts(row) {
   const pageSize = 1000;
   const cap = 5000;
@@ -118,7 +121,7 @@ function chunk(arr, size) {
 /**
  * GET /resources/stats/latest?resourceId=...&statKey=cpu|usage_average&statKey=mem|usage_average
  * Chunked at <=50 resourceIds per call. Returns a Map keyed by resourceId to
- * { cpuPct, memPct, capturedAt } — the last data point per statKey.
+ * { cpuPct, memPct, capturedAt } - the last data point per statKey.
  */
 async function fetchLatestStats(row, resourceIds) {
   const out = new Map();
@@ -161,7 +164,7 @@ async function fetchLatestStats(row, resourceIds) {
 }
 
 /**
- * TLS certificate off the raw handshake (host:443) — vROps has no documented
+ * TLS certificate off the raw handshake (host:443) - vROps has no documented
  * cert-management REST endpoint, so this reads the socket's peer certificate
  * directly instead. Best-effort; never assumed available.
  */
@@ -190,19 +193,33 @@ function fetchTlsCert(row) {
 async function testConnection(rowLike) {
   const testId = `test-${rowLike.host}`;
   try {
-    await getToken({ id: testId, ...rowLike }, true);
-    const version = await fetchVersion({ id: testId, ...rowLike }).catch(() => null);
+    // The temporary id goes AFTER the spread so a row that carries a real id
+    // can never overwrite that instance's cached token.
+    await getToken({ ...rowLike, id: testId }, true);
+    const version = await fetchVersion({ ...rowLike, id: testId }).catch(() => null);
     tokens.delete(testId);
     return { ok: true, version: version?.releaseName || version?.apiVersion || version?.humanReadable || undefined };
   } catch (err) {
     tokens.delete(testId);
-    const status = err.response?.status;
     return {
       ok: false,
-      error: status === 401 ? 'Authentication failed — check the Aria Operations username, password and auth source.'
-        : (err.response?.data?.message || err.message),
+      error: testFailure(err, false, 'Sign-in was refused. Check the Aria Operations username, password and auth source.'),
     };
   }
+}
+
+// Fixed, caller-safe text for a failed connection test. The transport error
+// text names addresses and ports, and the upstream body is whatever the far
+// end chose to send, so neither is ever returned.
+function testFailure(err, authFailed, authMessage) {
+  const status = err?.response?.status;
+  const code = String(err?.code || '');
+  if (authFailed || status === 401 || status === 403) return authMessage;
+  if (status) return 'Unexpected response from the server.';
+  if (/TIMEDOUT|ECONNABORTED/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'The connection timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the server.';
 }
 
 module.exports = {

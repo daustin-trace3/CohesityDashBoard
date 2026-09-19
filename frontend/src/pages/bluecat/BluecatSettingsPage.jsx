@@ -164,7 +164,7 @@ export default function BluecatSettingsPage() {
       cancelEdit();
       await loadSources();
     } catch (err) {
-      toast({ type: 'error', title: editingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error });
+      toast({ type: 'error', title: editingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error || err?.response?.data?.message });
     } finally {
       setSaving(false);
     }
@@ -267,6 +267,7 @@ export default function BluecatSettingsPage() {
                   <div>
                     <label className="block text-xs font-semibold text-ink mb-1">Host / IP</label>
                     <input value={form.host} onChange={setF('host')} placeholder="bam.example.com" className={inp} spellCheck={false} />
+                    {editingId && <p className="text-[11px] text-ink-faint mt-1">Changing the address needs the password (or token) entered again.</p>}
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-ink mb-1">Port</label>
@@ -305,7 +306,7 @@ export default function BluecatSettingsPage() {
                   {testResult && (
                     <span className={`inline-flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
                       {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                      {testResult.ok ? `Connected — v${testResult.bamVersion || 'unknown'} · ${testResult.configurations?.length ?? 0} configuration(s)` : testResult.error}
+                      {testResult.ok ? `Connected — v${testResult.bamVersion || 'unknown'} · ${testResult.configurations?.length ?? 0} configuration(s)` : (testResult.error || testResult.message)}
                     </span>
                   )}
                 </div>

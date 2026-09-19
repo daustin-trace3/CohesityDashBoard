@@ -26,9 +26,12 @@ function base64url(input) {
 
 /** Normalize a user-entered host into an https origin with no trailing slash. */
 function normalizeHost(host) {
-  let h = String(host || '').trim().replace(/\/+$/, '');
-  if (!/^https?:\/\//i.test(h)) h = `https://${h}`;
-  return h;
+  const h = String(host || '').trim().replace(/\/+$/, '');
+  // Tokens and signed assertions only ever travel over TLS: a typed or stored
+  // http:// is upgraded, never kept (and never thrown on, the poller
+  // normalizes stored rows on every call).
+  if (/^https:\/\//i.test(h)) return h;
+  return `https://${h.replace(/^http:\/\//i, '')}`;
 }
 
 function agentFor(array) {
@@ -98,6 +101,7 @@ async function getAccessToken(array, { force = false } = {}) {
   const resp = await axios.post(`${host}/oauth2/1.0/token`, body.toString(), {
     httpsAgent: agentFor(array),
     timeout: 30000,
+    maxRedirects: 0, // the signed assertion never follows a redirect to another host
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   });
 
@@ -133,6 +137,7 @@ async function getSessionToken(array, { force = false } = {}) {
   const resp = await axios.post(`${host}/api/${version}/login`, null, {
     httpsAgent: agentFor(array),
     timeout: 30000,
+    maxRedirects: 0, // the API token never follows a redirect to another host
     headers: { 'api-token': apiToken },
   });
 
@@ -167,6 +172,7 @@ async function getApiVersion(array) {
   const resp = await axios.get(`${host}/api/api_version`, {
     httpsAgent: agentFor(array),
     timeout: 15000,
+    maxRedirects: 0,
   });
   const versions = (resp.data && resp.data.version) || [];
   const v2 = versions
@@ -186,6 +192,7 @@ async function apiGet(array, path, params, { _retry = false } = {}) {
     const resp = await axios.get(`${host}/api/${version}${path}`, {
       httpsAgent: agentFor(array),
       timeout: 30000,
+      maxRedirects: 0, // session and bearer headers never follow a redirect
       params,
       headers,
     });
@@ -198,6 +205,7 @@ async function apiGet(array, path, params, { _retry = false } = {}) {
         const resp = await axios.get(`${host}/api/${version}${path}`, {
           httpsAgent: agentFor(array),
           timeout: 30000,
+          maxRedirects: 0,
           params,
           headers: fresh,
         });

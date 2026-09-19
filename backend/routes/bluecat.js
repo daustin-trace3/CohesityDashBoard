@@ -5,7 +5,9 @@
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
-const { encrypt } = require('../services/encryption');
+const { encrypt, decrypt } = require('../services/encryption');
+const { assertSecretOnTargetChange, notBlockedHost } = require('../utils/connectionGuard');
+const { isBlockedHost } = require('../utils/hostGuard');
 const bluecatApi = require('../services/bluecatApi');
 const { bluecatPollerHandle, ipToInt } = require('../services/bluecatPoller');
 const { lowFreeWarn, lowFreePct, computeIssues } = require('../services/bluecatIssues');
@@ -52,7 +54,7 @@ router.get('/sources', (req, res, next) => {
 
 router.post('/sources', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').isString().trim().notEmpty().isLength({ max: 253 }).custom(notBlockedHost),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('username').isString().trim().notEmpty().isLength({ max: 255 }),
   body('password').isString().notEmpty().isLength({ max: 512 }),
@@ -79,7 +81,10 @@ router.post('/sources', [
 router.put('/sources/:id', [
   param('id').isInt().toInt(),
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }).custom((h) => {
+    if (h && isBlockedHost(h)) throw new Error('host is not allowed');
+    return true;
+  }),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('username').optional().isString().trim().notEmpty().isLength({ max: 255 }),
   body('password').optional({ checkFalsy: true }).isString().isLength({ max: 512 }),
@@ -91,6 +96,17 @@ router.put('/sources/:id', [
     const row = db.prepare('SELECT * FROM bluecat_sources WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'BlueCat source not found.' });
     const b = req.body;
+    const secretSupplied = !!b.password;
+    try {
+      assertSecretOnTargetChange({
+        stored: row,
+        incoming: b,
+        fields: ['host', 'port'],
+        secretSupplied,
+      });
+    } catch (err) {
+      return res.status(err.status || 400).json({ error: err.message });
+    }
     let encryptedCredentials = row.encrypted_credentials;
     if (b.password) {
       let existingUsername = b.username;
@@ -118,6 +134,9 @@ router.put('/sources/:id', [
     );
     const updated = db.prepare('SELECT * FROM bluecat_sources WHERE id = ?').get(row.id);
     bluecatPollerHandle.schedule(updated);
+    // Drop the cached BAM session. Log out against the OLD row: the cached
+    // token belongs to the old address and must not be sent to a new one.
+    bluecatApi.logout(row).catch(() => {});
     res.json(publicSource(updated));
   } catch (err) { next(err); }
 });
@@ -132,11 +151,34 @@ router.delete('/sources/:id', [param('id').isInt().toInt()], validate, (req, res
   } catch (err) { next(err); }
 });
 
+// Test candidate for a SAVED source. No typed password: the saved
+// credentials are used, so the saved host, port, username and TLS flag go with
+// them and the body's are ignored. A typed password is a "try new settings"
+// test: the body's target with the typed password, the saved blob left out.
+// The temporary id comes AFTER the spread so the test never touches the live
+// session cache entry of the real source.
+function testCandidate(row, b) {
+  const tempId = `test-${row.id}-${Date.now()}`;
+  if (!b.password) return { ...row, id: tempId };
+  let username = b.username;
+  if (!username) {
+    try { username = JSON.parse(decrypt(row.encrypted_credentials)).username; } catch { username = null; }
+  }
+  return {
+    id: tempId,
+    host: (b.host && b.host.trim()) || row.host,
+    port: b.port || row.port || 443,
+    username,
+    password: b.password,
+    ssl_verify: b.sslVerify !== undefined ? (b.sslVerify ? 1 : 0) : row.ssl_verify,
+  };
+}
+
 // Literal /sources/test must be registered before the /sources/:id/test
 // param sibling.
 router.post('/sources/test', [
   body('id').optional().isInt().toInt(),
-  body('host').optional().isString().trim().notEmpty(),
+  body('host').optional().isString().trim().notEmpty().custom(notBlockedHost),
   body('username').optional().isString(),
   body('password').optional().isString(),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
@@ -147,7 +189,7 @@ router.post('/sources/test', [
   if (id) {
     const row = db.prepare('SELECT * FROM bluecat_sources WHERE id = ?').get(id);
     if (!row) return res.status(404).json({ error: 'BlueCat source not found.' });
-    candidate = { ...row, ...(username ? { username } : {}), ...(password ? { password } : {}) };
+    candidate = testCandidate(row, req.body);
   } else {
     if (!host || !username || !password) {
       return res.status(400).json({ error: 'Invalid parameters', details: [{ msg: 'host, username, and password required' }] });
@@ -164,25 +206,22 @@ router.post('/sources/:id/test', [
   param('id').isInt().toInt(),
   body('username').optional().isString(),
   body('password').optional().isString(),
-  body('host').optional().isString().trim(),
+  body('host').optional().isString().trim().custom((h) => {
+    if (h && isBlockedHost(h)) throw new Error('host is not allowed');
+    return true;
+  }),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('sslVerify').optional().isBoolean(),
 ], validate, async (req, res) => {
   const { username, password, host, port, sslVerify } = req.body;
   const row = db.prepare('SELECT * FROM bluecat_sources WHERE id = ?').get(req.params.id);
   let candidate;
-  if (username && password) {
-    candidate = {
-      id: row ? row.id : req.params.id,
-      host: host?.trim() || row?.host,
-      username, password,
-      port: port || row?.port || 443,
-      ssl_verify: sslVerify !== undefined ? (sslVerify ? 1 : 0) : (row ? row.ssl_verify : 0),
-    };
-    if (!candidate.host) return res.status(400).json({ error: 'Invalid parameters', details: [{ msg: 'host required' }] });
+  if (row) {
+    candidate = testCandidate(row, req.body);
   } else {
-    if (!row) return res.status(404).json({ error: 'BlueCat source not found.' });
-    candidate = row;
+    if (!username || !password) return res.status(404).json({ error: 'BlueCat source not found.' });
+    if (!host) return res.status(400).json({ error: 'Invalid parameters', details: [{ msg: 'host required' }] });
+    candidate = { host: host.trim(), username, password, port: port || 443, ssl_verify: sslVerify ? 1 : 0 };
   }
   const result = await bluecatApi.testConnection(candidate);
   res.status(result.ok ? 200 : 502).json(result);

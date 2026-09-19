@@ -1,5 +1,5 @@
 // Aria Automation (vRA 8.x on-prem) API client. Doug has no live vRA to test
-// against, so every upstream response shape below is UNVERIFIED — fetchers
+// against, so every upstream response shape below is UNVERIFIED - fetchers
 // parse defensively (optional chaining, String()/Number() coercion) and the
 // probe route (routes/aria.js) exists specifically to see the real shapes
 // against a live instance. Auth is a two-step exchange: CSP gateway login
@@ -26,6 +26,9 @@ function baseClient(row, headers = {}) {
   return axios.create({
     baseURL: `https://${row.host}`,
     timeout: 60000,
+    // Every call through this client carries the password, the refresh token
+    // or the bearer. A redirect would resend them to whatever host it names.
+    maxRedirects: 0,
     headers,
     httpsAgent: new https.Agent({ rejectUnauthorized: !!row.ssl_verify }),
   });
@@ -64,7 +67,7 @@ async function fullLogin(row) {
 }
 
 /**
- * Cached bearer per instance (~20 min TTL — vRA bearers are short-lived).
+ * Cached bearer per instance (~20 min TTL - vRA bearers are short-lived).
  * On expiry, re-exchange the cached refresh token first (refresh tokens are
  * valid ~90d); only fall back to a full CSP re-login if that fails.
  */
@@ -79,7 +82,7 @@ async function getBearer(row, force = false) {
       sessions.set(row.id, next);
       return next.bearer;
     } catch {
-      // Refresh token stale/revoked — fall through to a full re-login.
+      // Refresh token stale/revoked - fall through to a full re-login.
     }
   }
   const session = await fullLogin(row);
@@ -110,7 +113,7 @@ async function aGet(row, path, params = {}) {
 
 const aGetV = (row, path, params = {}) => aGet(row, path, { apiVersion: API_VERSION, ...params });
 
-// Response shapes are unverified — vRA typically wraps lists as
+// Response shapes are unverified - vRA typically wraps lists as
 // { content: [...] } (Spring Data) but some endpoints use { value: [...] } or
 // a bare array. Accept whichever shows up.
 const unwrap = (d) => {
@@ -123,7 +126,7 @@ const unwrap = (d) => {
   return [];
 };
 
-/** GET /deployment/api/deployments — paged, capped at 2000 rows total. */
+/** GET /deployment/api/deployments - paged, capped at 2000 rows total. */
 async function fetchDeployments(row, cap = 2000) {
   const size = Math.min(200, cap);
   const all = [];
@@ -138,7 +141,7 @@ async function fetchDeployments(row, cap = 2000) {
 
 /**
  * Child resources for each deployment (machine names, IPs). One request per
- * deployment, capped, sequential — shapes unverified: resources may expose
+ * deployment, capped, sequential - shapes unverified: resources may expose
  * IPs at properties.address / properties.networks[].address / networks[].
  */
 async function fetchDeploymentResources(row, deployments) {
@@ -168,7 +171,7 @@ async function fetchDeploymentResources(row, deployments) {
         resourceId: r.id != null ? String(r.id) : null,
         // properties.resourceName is the actual machine name (vRA UI "Resource
         // Name", e.g. w283328); r.name is the blueprint component label
-        // (Cloud_vSphere_Machine_1) — verified live 2026-07-28.
+        // (Cloud_vSphere_Machine_1) - verified live 2026-07-28.
         name: props.resourceName || props.hostName || r.name || null,
         type: r.type || null,
         state: r.state || r.syncStatus || null,
@@ -213,7 +216,7 @@ async function fetchCatalogSources(row) {
   }
 }
 
-/** GET /iaas/api/fabric-images — paged with $top/$skip, capped at 2000. */
+/** GET /iaas/api/fabric-images - paged with $top/$skip, capped at 2000. */
 async function fetchFabricImages(row, cap = 2000) {
   const top = Math.min(200, cap);
   const all = [];
@@ -232,7 +235,7 @@ const fetchFlavorProfiles = async (row) => unwrap(await aGetV(row, '/iaas/api/fl
 /**
  * Blueprints (Cloud Assembly templates) with their image references. The list
  * endpoint omits YAML content, so each blueprint is fetched individually
- * (capped at 200) and its content scanned for `image:` property values —
+ * (capped at 200) and its content scanned for `image:` property values -
  * these are image MAPPING names, the indirection blueprints use. A blueprint
  * whose content fetch fails still appears, with refs null.
  */
@@ -249,7 +252,7 @@ async function fetchBlueprints(row, detailCap = 200) {
         const refs = new Set();
         for (const m of content.matchAll(/^\s*image:\s*['"]?([^\s'"#]+)/gm)) refs.add(m[1]);
         // Parameterized refs (image: '${input.x}') can't be traced to a
-        // specific image — drop them (live blueprints produced refs of "${").
+        // specific image - drop them (live blueprints produced refs of "${").
         imageRefs = [...refs].filter((v) => !v.includes('${'));
       }
     } catch { /* keep the blueprint row, refs unknown */ }
@@ -260,7 +263,7 @@ async function fetchBlueprints(row, detailCap = 200) {
 
 const fetchAbxRuns = async (row) => unwrap(await aGet(row, '/abx/api/resources/action-runs', { $top: 100 }));
 const fetchPipelineExecutions = async (row) => unwrap(await aGet(row, '/pipeline/api/executions', { $top: 100 }));
-/** approval-requests 404s on some builds (seen live) — fall back to /approvals. */
+/** approval-requests 404s on some builds (seen live) - fall back to /approvals. */
 const fetchApprovals = async (row) => {
   try {
     return unwrap(await aGetV(row, '/approval/api/approval-requests', { size: 100 }));
@@ -272,8 +275,8 @@ const fetchApprovals = async (row) => {
 const fetchAbout = async (row) => aGetV(row, '/iaas/api/about');
 
 /** Reachability probe via GET /health (no auth). Only LB/VIP deployments
- *  actually serve /health — single-node appliances 404 it (seen live
- *  2026-07-28) — so ANY HTTP response counts as reachable; only network-level
+ *  actually serve /health - single-node appliances 404 it (seen live
+ *  2026-07-28) - so ANY HTTP response counts as reachable; only network-level
  *  failures (DNS, refused, timeout) throw "unreachable". */
 async function fetchHealth(row) {
   try {
@@ -285,7 +288,7 @@ async function fetchHealth(row) {
 }
 
 /**
- * TLS certificate off the raw handshake (host:443), not a vRA REST endpoint —
+ * TLS certificate off the raw handshake (host:443), not a vRA REST endpoint -
  * vCenter's fetchTlsCert calls a dedicated cert-management API that vRA has
  * no documented equivalent for, so this reads the socket's peer certificate
  * directly instead. Best-effort; never assumed available.
@@ -314,31 +317,40 @@ function fetchTlsCert(row) {
 /** Validate an Aria instance (saved row or unsaved candidate). Never throws. */
 async function testConnection(rowLike) {
   try {
-    const bearer = await getBearer({ id: `test-${rowLike.host}`, ...rowLike }, true);
-    const deployments = await aGetV({ ...rowLike, id: `test-${rowLike.host}` }, '/deployment/api/deployments', { size: 1 })
+    const testId = `test-${rowLike.host}`;
+    const bearer = await getBearer({ ...rowLike, id: testId }, true);
+    const deployments = await aGetV({ ...rowLike, id: testId }, '/deployment/api/deployments', { size: 1 })
       .then((d) => unwrap(d).length).catch(() => undefined);
-    const about = await fetchAbout({ ...rowLike, id: `test-${rowLike.host}` }).catch(() => null);
-    sessions.delete(`test-${rowLike.host}`);
+    const about = await fetchAbout({ ...rowLike, id: testId }).catch(() => null);
+    sessions.delete(testId);
     void bearer;
     return { ok: true, version: about?.latestApiVersion || about?.supportedApis || undefined, deployments };
   } catch (err) {
-    const status = err.response?.status;
-    // vRA error bodies vary (message / serverMessage / HTML) — pass through a
-    // snippet of whatever came back so failures are diagnosable from the UI.
+    // vIDM rejects bad credentials with an OAuth-style 400 invalid_grant, not
+    // a 401 - treat both as an auth failure. The body is only read to
+    // classify the failure, it is never returned.
     const body = err.response?.data;
-    const detail = body == null ? null
-      : (typeof body === 'string' ? body : JSON.stringify(body)).slice(0, 300);
-    const hop = err.config?.url ? ` at ${err.config.url}` : '';
-    // vIDM rejects bad credentials with an OAuth-style 400 invalid_grant,
-    // not a 401 — treat both as an auth failure.
-    const authFail = status === 401 || (status === 400 && /invalid_grant/i.test(detail || ''));
+    const bodyText = body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body));
+    const authFail = err.response?.status === 400 && /invalid_grant/i.test(bodyText);
     return {
       ok: false,
-      error: authFail ? 'Authentication failed — check the Aria username, password and domain. AD/LDAP accounts: bare username + the identity-source domain exactly as vRA’s login page lists it; local accounts: leave domain empty.'
-        : status ? `vRA responded ${status}${hop}${detail ? ` — ${detail}` : ''}`
-          : err.message,
+      error: testFailure(err, authFail, 'Sign-in was refused. Check the Aria username, password and domain. AD/LDAP accounts: bare username + the identity-source domain exactly as the vRA login page lists it; local accounts: leave domain empty.'),
     };
   }
+}
+
+// Fixed, caller-safe text for a failed connection test. The transport error
+// text names addresses and ports, and the upstream body is whatever the far
+// end chose to send, so neither is ever returned.
+function testFailure(err, authFailed, authMessage) {
+  const status = err?.response?.status;
+  const code = String(err?.code || '');
+  if (authFailed || status === 401 || status === 403) return authMessage;
+  if (status) return 'Unexpected response from the server.';
+  if (/TIMEDOUT|ECONNABORTED/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'The connection timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the server.';
 }
 
 module.exports = {

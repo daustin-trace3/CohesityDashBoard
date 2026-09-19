@@ -1,14 +1,35 @@
-// Zerto Analytics routes. Mounted by the plugin dispatcher at /api/zerto —
+// Zerto Analytics routes. Mounted by the plugin dispatcher at /api/zerto -
 // all paths here are relative. Data is served from the polled zerto_* tables;
 // /account manages the SaaS credential (encrypted in app_settings).
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { getSetting, setSetting } = require('../services/settings');
-const { encrypt } = require('../services/encryption');
+const { encrypt, decrypt } = require('../services/encryption');
 const zertoApi = require('../services/zertoApi');
 const { refreshAll, zertoTask } = require('../services/zertoPoller');
 const zertoAdvisor = require('../services/advisors/zertoAdvisor');
+const { isBlockedHost } = require('../utils/hostGuard');
+const { assertSecretOnTargetChange } = require('../utils/connectionGuard');
+
+function validateZertoBaseUrl(value) {
+  if (!value) return true;
+  try {
+    // An empty "?", "#" or "@" parses to nothing but would still be saved and
+    // glued in front of every API path, so the raw text is checked as well.
+    if (/[?#@\\\s]/.test(String(value))) throw new Error('only https://host[:port] is allowed');
+    const url = new URL(value);
+    if (url.protocol !== 'https:') throw new Error('https required');
+    if (url.username || url.password) throw new Error('userinfo not allowed');
+    if (url.search) throw new Error('query not allowed');
+    if (url.hash) throw new Error('fragment not allowed');
+    if (url.pathname !== '/' && url.pathname !== '') throw new Error('paths not allowed');
+    if (isBlockedHost(url.hostname)) throw new Error('that address is not allowed');
+    return true;
+  } catch (err) {
+    throw new Error(`Invalid baseUrl: ${err.message}`);
+  }
+}
 
 const router = express.Router();
 
@@ -22,7 +43,7 @@ function latestSnapshot() {
   return db.prepare('SELECT * FROM zerto_metrics_history ORDER BY captured_at DESC LIMIT 1').get() || null;
 }
 
-/** GET /api/zerto/overview — account rollup + latest snapshot. */
+/** GET /api/zerto/overview - account rollup + latest snapshot. */
 router.get('/overview', (req, res, next) => {
   try {
     const vpgHealth = db.prepare(`
@@ -49,21 +70,21 @@ router.get('/overview', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/sites — discovered site inventory. */
+/** GET /api/zerto/sites - discovered site inventory. */
 router.get('/sites', (req, res, next) => {
   try {
     res.json(db.prepare('SELECT * FROM zerto_sites ORDER BY name').all());
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/vpgs — VPGs with RPO/health/journal detail. */
+/** GET /api/zerto/vpgs - VPGs with RPO/health/journal detail. */
 router.get('/vpgs', (req, res, next) => {
   try {
     res.json(db.prepare('SELECT * FROM zerto_vpgs ORDER BY name').all());
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/alerts — current alerts. */
+/** GET /api/zerto/alerts - current alerts. */
 router.get('/alerts', (req, res, next) => {
   try {
     res.json(db.prepare(`
@@ -73,7 +94,7 @@ router.get('/alerts', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/alert-types — the per-type notification catalog: every known
+/** GET /api/zerto/alert-types - the per-type notification catalog: every known
  *  Zerto alert code (official reference + codes seen live) with its SMTP
  *  enabled flag and how many alerts of that type are currently active. */
 router.get('/alert-types', (req, res, next) => {
@@ -88,7 +109,7 @@ router.get('/alert-types', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** PUT /api/zerto/alert-types/:code — enable/disable SMTP notifications for one
+/** PUT /api/zerto/alert-types/:code - enable/disable SMTP notifications for one
  *  alert type. Disabled codes are skipped by the alert notifier entirely. */
 router.put('/alert-types/:code', [
   param('code').isString().trim().isLength({ min: 1, max: 32 }),
@@ -102,7 +123,7 @@ router.put('/alert-types/:code', [
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/licenses — license entitlement/consumption from /v3/licenses,
+/** GET /api/zerto/licenses - license entitlement/consumption from /v3/licenses,
  *  with the per-site usage breakdown parsed out of the stored JSON. */
 router.get('/licenses', (req, res, next) => {
   try {
@@ -121,7 +142,7 @@ router.get('/licenses', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/vras — VRA appliances per site (from the topology feed). */
+/** GET /api/zerto/vras - VRA appliances per site (from the topology feed). */
 router.get('/vras', (req, res, next) => {
   try {
     res.json(db.prepare('SELECT * FROM zerto_vras ORDER BY site_name, name').all());
@@ -129,7 +150,7 @@ router.get('/vras', (req, res, next) => {
 });
 
 /**
- * GET /api/zerto/replication — replication flows between site pairs, derived
+ * GET /api/zerto/replication - replication flows between site pairs, derived
  * from the stored VPGs: one flow per (protected_site → recovery_site) with a
  * health rollup and its VPG list, ready for the flow-map visualization.
  */
@@ -165,14 +186,14 @@ router.get('/replication', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/vms — protected VMs. */
+/** GET /api/zerto/vms - protected VMs. */
 router.get('/vms', (req, res, next) => {
   try {
     res.json(db.prepare('SELECT * FROM zerto_vms ORDER BY name').all());
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/trends?days= — account snapshot series. */
+/** GET /api/zerto/trends?days= - account snapshot series. */
 router.get('/trends', [
   query('days').optional().isInt({ min: 1, max: 365 }).toInt(),
 ], (req, res, next) => {
@@ -188,7 +209,7 @@ router.get('/trends', [
   } catch (err) { next(err); }
 });
 
-/** GET /api/zerto/account — credential/config status (never returns the password). */
+/** GET /api/zerto/account - credential/config status (never returns the password). */
 router.get('/account', (req, res, next) => {
   try {
     const cfg = zertoApi.getZertoConfig();
@@ -205,17 +226,31 @@ router.get('/account', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** PUT /api/zerto/account — save credentials (password encrypted at rest). */
+/** PUT /api/zerto/account - save credentials (password encrypted at rest). */
 router.put('/account', [
   body('username').optional().isString().trim().isLength({ max: 256 }),
   body('password').optional().isString().isLength({ max: 512 }),
-  body('baseUrl').optional().isString().trim().isLength({ max: 512 }),
+  body('baseUrl').optional().isString().trim().custom(validateZertoBaseUrl),
   body('pollIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
 ], (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid parameters' });
   try {
     const { username, password, baseUrl, pollIntervalMinutes } = req.body;
+    const saved = zertoApi.getZertoConfig();
+    const secretSupplied = !!(password && String(password).trim());
+    try {
+      // A blank baseUrl means "back to the default address", which is still a
+      // change of target when another address is saved.
+      assertSecretOnTargetChange({
+        stored: { baseUrl: saved.baseUrl },
+        incoming: baseUrl != null ? { baseUrl: String(baseUrl).trim() || zertoApi.DEFAULT_BASE_URL } : {},
+        fields: ['baseUrl'],
+        secretSupplied,
+      });
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
     if (username != null) setSetting('zerto_username', String(username).trim());
     if (password) setSetting('zerto_password', encrypt(String(password)));
     if (baseUrl != null) setSetting('zerto_base_url', String(baseUrl).trim().replace(/\/+$/, ''));
@@ -229,19 +264,21 @@ router.put('/account', [
   } catch (err) { next(err); }
 });
 
-/** POST /api/zerto/account/test — validate saved or candidate credentials. */
+/** POST /api/zerto/account/test - validate saved or candidate credentials. */
 router.post('/account/test', [
   body('username').optional().isString().trim(),
   body('password').optional().isString(),
-  body('baseUrl').optional().isString().trim(),
+  body('baseUrl').optional().isString().trim().custom(validateZertoBaseUrl),
 ], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid parameters' });
   const result = await zertoApi.testConnection({
     username: req.body?.username, password: req.body?.password, baseUrl: req.body?.baseUrl,
   });
   res.status(result.ok ? 200 : 502).json(result);
 });
 
-/** POST /api/zerto/refresh — force a poll now. */
+/** POST /api/zerto/refresh - force a poll now. */
 router.post('/refresh', async (req, res, next) => {
   try {
     if (!zertoApi.zertoConfigured()) {
@@ -256,7 +293,7 @@ function advisorReportKey(slug) {
   return String(slug).replace(/-/g, '_');
 }
 
-/** GET /api/zerto/advisor/:report — cached Zerto AI Advisor report. */
+/** GET /api/zerto/advisor/:report - cached Zerto AI Advisor report. */
 router.get('/advisor/:report', [param('report').isString()], validate, (req, res, next) => {
   try {
     const key = advisorReportKey(req.params.report);
@@ -265,7 +302,7 @@ router.get('/advisor/:report', [param('report').isString()], validate, (req, res
   } catch (err) { next(err); }
 });
 
-/** POST /api/zerto/advisor/:report — (re)generate and cache a Zerto AI Advisor report. */
+/** POST /api/zerto/advisor/:report - (re)generate and cache a Zerto AI Advisor report. */
 router.post('/advisor/:report', [param('report').isString()], validate, async (req, res, next) => {
   try {
     const key = advisorReportKey(req.params.report);

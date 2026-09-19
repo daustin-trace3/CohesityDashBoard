@@ -41,7 +41,10 @@ function rawClient(source, timeout = 30000) {
     baseURL: `${baseUrl(source)}/api/v2`,
     timeout,
     httpsAgent: new https.Agent({ rejectUnauthorized: !!source.ssl_verify }),
-    validateStatus: (s) => s >= 200 && s < 500,
+    // Never follow a redirect: login posts the password and every other call
+    // sends the session's Basic credentials.
+    maxRedirects: 0,
+    validateStatus: (s) => (s >= 200 && s < 300) || (s >= 400 && s < 500),
   });
 }
 
@@ -79,6 +82,19 @@ function errMsg(err) {
     return `HTTP ${err.response.status}${msg ? `: ${msg}` : ''}`;
   }
   return err?.message || String(err);
+}
+
+// Wording for test-connection results. A fixed set: no transport text (it
+// names internal addresses and ports) and no upstream response body.
+function testFailure(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the username and password.';
+  if (status) return 'Unexpected response from the address.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_|ERR_TLS|ERR_SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ETIMEDOUT|ECONNABORTED|ESOCKETTIMEDOUT/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the address.';
 }
 
 function errCode(err) {
@@ -133,6 +149,9 @@ async function logout(source) {
   try {
     const session = sessions.get(source.id);
     if (!session) return;
+    // Forget it BEFORE the network call so nothing reuses it while the logout
+    // is in flight (a PUT may have just changed the address).
+    invalidateSession(source.id);
     const client = rawClient(source);
     await client.patch('/sessions/current', { state: 'LOGGED_OUT' }, {
       headers: { Authorization: `Basic ${session.basicAuthCredentials}`, Accept: 'application/hal+json' },
@@ -679,7 +698,7 @@ async function testConnection(candidate) {
     const configurations = await fetchConfigurations(candidate, 15000);
     return { ok: true, bamVersion: version, configurations };
   } catch (err) {
-    return { ok: false, error: errMsg(err) };
+    return { ok: false, error: testFailure(err) };
   } finally {
     invalidateSession(candidate.id);
   }
@@ -703,7 +722,7 @@ async function promisePool(items, concurrency, worker) {
 }
 
 module.exports = {
-  errMsg, errCode,
+  errMsg, errCode, testFailure,
   numOrNull, strOrNull, boolToInt, jsonOrNull,
   login, getSession, invalidateSession, logout,
   apiGet, pagedGet, getWithFieldsFallback,

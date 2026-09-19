@@ -26,6 +26,9 @@ function baseClient(vc, headers = {}) {
     baseURL: `https://${vc.host}`,
     timeout: 60000,
     headers,
+    // Basic auth, the session token and the SOAP cookie all ride this client:
+    // never follow a redirect to another host with them.
+    maxRedirects: 0,
     httpsAgent: new https.Agent({ rejectUnauthorized: !!vc.ssl_verify }),
   });
 }
@@ -692,10 +695,26 @@ async function fetchEvents(vc, sinceIso) {
   }
 }
 
+// Fixed, caller-safe text for a failed connection test. Raw transport text
+// ("connect ECONNREFUSED 10.1.2.3:443") and upstream response bodies are never
+// returned: a test against a typed address would otherwise read them back.
+function testFailureMessage(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the username and password.';
+  if (status) return 'Unexpected response from the address.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_|ERR_TLS|ERR_SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ETIMEDOUT|ECONNABORTED|ESOCKETTIMEDOUT/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the address.';
+}
+
 /** Validate a vCenter (saved row or unsaved candidate). Never throws. */
 async function testConnection(vcLike) {
   try {
-    const token = await getSession({ id: `test-${vcLike.host}`, ...vcLike }, true);
+    // Temporary id AFTER the spread so a saved row's id can never win and the
+    // test can never overwrite the live session cache entry.
+    const token = await getSession({ ...vcLike, id: `test-${vcLike.host}` }, true);
     const hosts = unwrap(await (async () => {
       const { data } = await baseClient(vcLike, { 'vmware-api-session-id': token }).get('/api/vcenter/host');
       return data;
@@ -703,12 +722,9 @@ async function testConnection(vcLike) {
     sessions.delete(`test-${vcLike.host}`);
     return { ok: true, hosts: hosts.length };
   } catch (err) {
-    const status = err.response?.status;
-    return {
-      ok: false,
-      error: status === 401 ? 'Authentication failed — check the vCenter username and password.'
-        : (err.response?.data?.messages?.[0]?.default_message || err.message),
-    };
+    sessions.delete(`test-${vcLike.host}`);
+    logger.debug(`[vcenterApi] connection test failed for ${vcLike.host}: ${err.message}`);
+    return { ok: false, error: testFailureMessage(err) };
   }
 }
 

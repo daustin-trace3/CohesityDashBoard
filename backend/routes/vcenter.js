@@ -8,6 +8,8 @@ const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
 const { setSetting } = require('../services/settings');
 const vcenterApi = require('../services/vcenterApi');
+const { testTarget, assertSecretOnTargetChange, notBlockedHost } = require('../utils/connectionGuard');
+const { isBlockedHost } = require('../utils/hostGuard');
 const { vcenterPoller } = require('../services/vcenterPoller');
 const {
   DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues,
@@ -40,7 +42,7 @@ router.get('/vcenters', (req, res, next) => {
 /** POST /api/vcenter/vcenters — register a vCenter. */
 router.post('/vcenters', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').isString().trim().notEmpty().isLength({ max: 253 }).custom(notBlockedHost),
   body('username').isString().trim().notEmpty().isLength({ max: 256 }),
   body('password').isString().notEmpty().isLength({ max: 512 }),
   body('sslVerify').optional().isBoolean(),
@@ -66,7 +68,7 @@ router.post('/vcenters', [
 router.put('/vcenters/:id', [
   param('id').isInt().toInt(),
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }).custom(notBlockedHost),
   body('username').optional().isString().trim().notEmpty().isLength({ max: 256 }),
   body('password').optional().isString().isLength({ max: 512 }),
   body('sslVerify').optional().isBoolean(),
@@ -76,6 +78,13 @@ router.put('/vcenters/:id', [
     const row = db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'vCenter not found.' });
     const b = req.body;
+    const secretSupplied = b.password !== undefined && b.password !== '';
+    try {
+      assertSecretOnTargetChange({ stored: row, incoming: b, fields: ['host'], secretSupplied });
+    } catch (err) {
+      if (err.status === 400) return res.status(400).json({ error: err.message });
+      throw err;
+    }
     db.prepare(`
       UPDATE vcenter_vcenters SET
         name = ?, host = ?, username = ?, encrypted_credentials = ?,
@@ -109,18 +118,32 @@ router.delete('/vcenters/:id', [param('id').isInt().toInt()], validate, (req, re
 
 /** POST /api/vcenter/vcenters/test — validate saved or candidate credentials. */
 router.post('/vcenters/test', [
-  body('host').isString().trim().notEmpty(),
+  body('host').isString().trim().notEmpty().custom(notBlockedHost),
   body('username').isString().trim().notEmpty(),
   body('password').optional().isString(),
   body('id').optional().isInt().toInt(),
   body('sslVerify').optional().isBoolean(),
 ], validate, async (req, res) => {
   const { id, host, username, password, sslVerify } = req.body;
-  let candidate = { host: host.trim(), username: username.trim(), password, ssl_verify: sslVerify ? 1 : 0 };
-  if (!password && id) {
-    const row = db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(id);
-    if (row) candidate = { ...row, host: candidate.host, username: candidate.username, ssl_verify: candidate.ssl_verify };
+  const secretSupplied = password !== undefined && password !== '';
+  const stored = id ? db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(id) : null;
+  const testFields = testTarget({ stored, incoming: req.body, fields: ['host'], secretSupplied });
+  const candidate = {
+    host: testFields.host,
+    username: secretSupplied ? username.trim() : (stored?.username || username.trim()),
+    password: secretSupplied ? password : undefined,
+    // The saved secret only travels with the saved TLS setting: a caller must
+    // not be able to switch certificate checking off for a saved password.
+    ssl_verify: (stored && !secretSupplied) ? (stored.ssl_verify ? 1 : 0) : (sslVerify ? 1 : 0),
+    id: `test-${testFields.host}`,
+  };
+  if (!secretSupplied && stored?.encrypted_credentials) {
+    candidate.encrypted_credentials = stored.encrypted_credentials;
   }
+  if (!candidate.password && !candidate.encrypted_credentials) {
+    return res.status(400).json({ ok: false, error: 'Enter the password to test this connection.' });
+  }
+  if (isBlockedHost(candidate.host)) return res.status(400).json({ ok: false, error: 'that address is not allowed' });
   const result = await vcenterApi.testConnection(candidate);
   res.status(result.ok ? 200 : 502).json(result);
 });
