@@ -27,7 +27,7 @@ router.use((req, res, next) => {
   next();
 });
 
-// GET /api/dns/status — whether a DNS server is configured. The server
+// GET /api/dns/status: whether a DNS server is configured. The server
 // address itself is a setting, shown only to callers who can view settings.
 router.get('/status', (req, res) => {
   const server = String(getSetting('dns_server') || '').trim();
