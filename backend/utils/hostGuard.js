@@ -65,6 +65,12 @@ function hostOf(value) {
 /** Synchronous check on the typed value only (names and IP literals). Use in
  *  express-validator chains; pair with assertSafeHost before dialling. */
 function isBlockedHost(value) {
+  // Userinfo ("name@127.0.0.1" dials 127.0.0.1), whitespace, backslashes and
+  // URL punctuation have no place in a host field; "x@loopback" used to pass
+  // because the text before the @ made it look like a DNS name.
+  const rawValue = String(value || '').trim();
+  const bare = rawValue.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/)[0];
+  if (/[@\s\\]/.test(bare)) return true;
   const h = hostOf(value).toLowerCase().replace(/\.$/, '');
   if (!h) return true;
   if (BLOCKED_NAMES.has(h) || h.endsWith('.localhost')) return true;
