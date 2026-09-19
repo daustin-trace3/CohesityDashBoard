@@ -57,7 +57,7 @@ describe('NetApp credential forwarding (HOLE A + B)', () => {
   });
 
   describe('R1: POST /api/netapp/arrays/test (direct cluster, HOLE A)', () => {
-    it('test with no id and no secret still returns 400', async () => {
+    it('test with no id and no secret dials nothing and reports ok:false', async () => {
       const res = await request(app).post('/api/netapp/arrays/test')
         .send({ mgmt_host: 'new.example' });
       expect(res.status).toBe(200);
