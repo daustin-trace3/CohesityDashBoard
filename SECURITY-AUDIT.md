@@ -3,6 +3,9 @@
 Date: 2026-09-18 and 2026-09-19. Branch audited: feat/plugin-touchpoints at dff1f44. Fixes are on
 sec/hardening-2026-09, with a port for production on sec/hardening-icc-phase1.
 
+On this branch (the icc-phase1 port) NetBackup is a built-in router and was fixed here directly; plugin
+pack changes, UniFi and the demo guard do not apply because this branch does not carry them.
+
 This file replaces the audit dated 2026-07-22. Most of that audit's list was still open when this one
 started; the status of each old item is in the last section. This file is excluded from the customer
 package.
