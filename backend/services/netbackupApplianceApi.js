@@ -56,6 +56,10 @@ function baseClient(conn, headers = {}) {
     timeout: 30000,
     headers: { Accept: 'application/json', ...headers },
     httpsAgent: new https.Agent({ rejectUnauthorized: !!conn.sslVerify }),
+    // Every request from this client carries the password (login, or Basic
+    // auth in the fallback) or the session token, so a redirect is never
+    // followed: it would deliver that secret to the host the answer names.
+    maxRedirects: 0,
   });
 }
 
@@ -216,6 +220,18 @@ async function fetchHardware(rawConn) {
   return [];
 }
 
+/** Fixed, caller-safe text for a failed test. Never echoes transport text
+ *  (which names addresses and ports) or an upstream response body. */
+function testFailureMessage(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused.';
+  if (code === 'ETIMEDOUT' || code === 'ECONNABORTED' || /timed out|timeout/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|TLS|SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'EPIPE'].includes(code)) return 'Could not reach the address.';
+  return 'Unexpected response.';
+}
+
 /** Validate a connection (saved row or unsaved candidate). Never throws. */
 async function testConnection(rawCandidate) {
   const conn = normConn(rawCandidate);
@@ -227,7 +243,7 @@ async function testConnection(rawCandidate) {
       const status = loginErr.response?.status;
       return {
         ok: false,
-        error: status === 401 ? 'Authentication failed — check the appliance credentials.' : safeMsg(loginErr),
+        error: status === 401 ? 'Authentication failed — check the appliance credentials.' : testFailureMessage(loginErr),
       };
     }
     for (const path of CANDIDATE_PATHS) {

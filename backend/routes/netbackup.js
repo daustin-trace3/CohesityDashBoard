@@ -6,6 +6,8 @@ const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
+const { assertSecretOnTargetChange, notBlockedHost } = require('../utils/connectionGuard');
+const { isBlockedHost } = require('../utils/hostGuard');
 const { setSetting, getSetting } = require('../services/settings');
 const netbackupApi = require('../services/netbackupApi');
 const netbackupApplianceApi = require('../services/netbackupApplianceApi');
@@ -25,6 +27,31 @@ const validate = (req, res, next) => {
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid parameters', details: errors.array() });
   next();
 };
+
+const nonEmpty = (v) => typeof v === 'string' && v.length > 0;
+
+/** Only the secret this request will actually store and use counts as supplied:
+ *  an apiKey typed on a password-mode source is discarded below, so it must not
+ *  unlock a new address for the saved password. */
+const secretFor = (authMode, b) => (authMode === 'apikey' ? nonEmpty(b.apiKey) : nonEmpty(b.password));
+
+/** An Alta source's host is a full base URL: https only, no userinfo. Returns the problem or null. */
+function altaHostProblem(host) {
+  let u;
+  try { u = new URL(String(host).trim()); } catch { return 'an Alta host must be a full https URL'; }
+  if (u.protocol !== 'https:') return 'an Alta host must use https';
+  if (u.username || u.password) return 'an Alta host must not contain credentials';
+  return null;
+}
+
+/** Address checks shared by create, update and test. Returns the problem or null. */
+function sourceHostProblem(sourceType, host) {
+  if (sourceType === 'alta') {
+    const problem = altaHostProblem(host);
+    if (problem) return problem;
+  }
+  return isBlockedHost(host) ? 'that address is not allowed' : null;
+}
 
 const publicSource = (row) => ({
   id: row.id, name: row.name, sourceType: row.source_type, host: row.host, port: row.port,
@@ -74,7 +101,7 @@ router.get('/sources', (req, res, next) => {
 router.post('/sources', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
   body('sourceType').optional().isIn(['primary', 'alta']),
-  body('host').isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').isString().trim().notEmpty().isLength({ max: 253 }).custom(notBlockedHost),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('authMode').optional().isIn(['password', 'apikey']),
   body('username').optional({ nullable: true }).isString().trim().isLength({ max: 256 }),
@@ -90,6 +117,8 @@ router.post('/sources', [
     const sourceType = req.body.sourceType || 'primary';
     const authMode = req.body.authMode || 'password';
     const port = req.body.port || 1556;
+    const hostProblem = sourceHostProblem(sourceType, host);
+    if (hostProblem) return res.status(400).json({ error: hostProblem });
     if (authMode === 'password' && !req.body.password) {
       return res.status(400).json({ error: 'password is required for password auth mode.' });
     }
@@ -121,7 +150,7 @@ router.put('/sources/:id', [
   param('id').isInt().toInt(),
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
   body('sourceType').optional().isIn(['primary', 'alta']),
-  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }).custom(notBlockedHost),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('authMode').optional().isIn(['password', 'apikey']),
   body('username').optional({ nullable: true }).isString().trim().isLength({ max: 256 }),
@@ -137,6 +166,28 @@ router.put('/sources/:id', [
     if (!row) return res.status(404).json({ error: 'NetBackup source not found.' });
     const b = req.body;
     const authMode = b.authMode || row.auth_mode;
+    if (b.host !== undefined || b.sourceType !== undefined) {
+      const hostProblem = sourceHostProblem(b.sourceType || row.source_type, b.host !== undefined ? b.host : row.host);
+      if (hostProblem) return res.status(400).json({ error: hostProblem });
+    }
+    try {
+      // The saved secret stays with the saved address. sourceType is part of
+      // that address: it decides how host becomes a URL. Turning certificate
+      // verification off hands the secret to anyone on the path, so that is a
+      // target change too; turning it back on is always allowed.
+      const sslOff = b.sslVerify !== undefined && !b.sslVerify && !!row.ssl_verify;
+      assertSecretOnTargetChange({
+        stored: row,
+        incoming: { ...b, sslVerify: sslOff ? 0 : undefined },
+        fields: {
+          host: 'host', port: 'port', sourceType: 'source_type', sslVerify: 'ssl_verify',
+        },
+        secretSupplied: secretFor(authMode, b),
+      });
+    } catch (err) {
+      if (err.status === 400) return res.status(400).json({ error: err.message });
+      throw err;
+    }
     let encryptedCreds = row.encrypted_credentials;
     if (authMode === 'apikey' && b.apiKey) encryptedCreds = encrypt(JSON.stringify({ apiKey: b.apiKey }));
     else if (authMode === 'password' && b.password) encryptedCreds = encrypt(JSON.stringify({ password: b.password }));
@@ -179,7 +230,7 @@ router.delete('/sources/:id', [param('id').isInt().toInt()], validate, (req, res
 router.post('/sources/test', [
   body('id').optional().isInt().toInt(),
   body('sourceType').optional().isIn(['primary', 'alta']),
-  body('host').optional().isString().trim(),
+  body('host').optional().isString().trim().custom(notBlockedHost),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('authMode').optional().isIn(['password', 'apikey']),
   body('username').optional({ nullable: true }).isString(),
@@ -194,12 +245,31 @@ router.post('/sources/test', [
   if (b.id) {
     const row = db.prepare('SELECT * FROM netbackup_sources WHERE id = ?').get(b.id);
     if (!row) return res.status(404).json({ error: 'NetBackup source not found.' });
-    candidate = { ...row };
-    if (b.host) candidate.host = b.host.trim();
-    if (b.port) candidate.port = b.port;
-    if (b.sslVerify !== undefined) candidate.ssl_verify = b.sslVerify ? 1 : 0;
-    if (b.password) candidate.password = b.password;
-    if (b.apiKey) candidate.apiKey = b.apiKey;
+    const authMode = b.authMode || row.auth_mode;
+    if (!secretFor(authMode, b)) {
+      // The saved secret is tested against the saved address, the saved TLS
+      // flag and the saved account. Nothing from the body is used. The id is
+      // dropped (after the spread) so a test never touches the live session.
+      candidate = { ...row, id: undefined };
+    } else {
+      // A typed secret tests the typed settings. The saved secret and the
+      // saved session stay out of it.
+      candidate = {
+        ...row,
+        id: undefined,
+        encrypted_credentials: undefined,
+        source_type: b.sourceType || row.source_type,
+        auth_mode: authMode,
+        host: b.host ? b.host.trim() : row.host,
+        port: b.port || row.port,
+        username: b.username !== undefined ? b.username : row.username,
+        domain_name: b.domainName !== undefined ? b.domainName : row.domain_name,
+        domain_type: b.domainType !== undefined ? b.domainType : row.domain_type,
+        ssl_verify: b.sslVerify !== undefined ? (b.sslVerify ? 1 : 0) : row.ssl_verify,
+        password: authMode === 'apikey' ? undefined : b.password,
+        apiKey: authMode === 'apikey' ? b.apiKey : undefined,
+      };
+    }
   } else {
     if (!b.host) return res.status(400).json({ error: 'host is required.' });
     candidate = {
@@ -208,6 +278,8 @@ router.post('/sources/test', [
       password: b.password, apiKey: b.apiKey, sslVerify: b.sslVerify ? 1 : 0,
     };
   }
+  const hostProblem = sourceHostProblem(candidate.source_type || candidate.sourceType, candidate.host);
+  if (hostProblem) return res.status(400).json({ error: hostProblem });
   const result = await netbackupApi.testConnection(candidate);
   res.status(result.ok ? 200 : 502).json(result);
 });
@@ -250,7 +322,7 @@ router.get('/appliance-connections', (req, res, next) => {
 /** POST /api/netbackup/appliance-connections — register a 52xx/53xx appliance. */
 router.post('/appliance-connections', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').isString().trim().notEmpty().isLength({ max: 253 }).custom(notBlockedHost),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('username').optional({ nullable: true }).isString().trim().isLength({ max: 256 }),
   body('password').isString().notEmpty().isLength({ max: 512 }),
@@ -280,7 +352,7 @@ router.post('/appliance-connections', [
 router.put('/appliance-connections/:id', [
   param('id').isInt().toInt(),
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }).custom(notBlockedHost),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('username').optional({ nullable: true }).isString().trim().isLength({ max: 256 }),
   body('password').optional({ nullable: true }).isString().isLength({ max: 512 }),
@@ -291,6 +363,20 @@ router.put('/appliance-connections/:id', [
     const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'NetBackup appliance connection not found.' });
     const b = req.body;
+    try {
+      // The saved password stays with the saved address, on the saved port,
+      // and only while certificate verification stays on.
+      const sslOff = b.sslVerify !== undefined && !b.sslVerify && !!row.ssl_verify;
+      assertSecretOnTargetChange({
+        stored: row,
+        incoming: { ...b, sslVerify: sslOff ? 0 : undefined },
+        fields: { host: 'host', port: 'port', sslVerify: 'ssl_verify' },
+        secretSupplied: nonEmpty(b.password),
+      });
+    } catch (err) {
+      if (err.status === 400) return res.status(400).json({ error: err.message });
+      throw err;
+    }
     const encryptedCreds = b.password ? encrypt(JSON.stringify({ password: b.password })) : row.encrypted_credentials;
     db.prepare(`
       UPDATE netbackup_appliance_conns SET
@@ -327,7 +413,7 @@ router.delete('/appliance-connections/:id', [param('id').isInt().toInt()], valid
 /** POST /api/netbackup/appliance-connections/test — validate a saved conn ({id}) or a candidate. */
 router.post('/appliance-connections/test', [
   body('id').optional().isInt().toInt(),
-  body('host').optional().isString().trim(),
+  body('host').optional().isString().trim().custom(notBlockedHost),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('username').optional({ nullable: true }).isString(),
   body('password').optional({ nullable: true }).isString(),
@@ -338,12 +424,24 @@ router.post('/appliance-connections/test', [
   if (b.id) {
     const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(b.id);
     if (!row) return res.status(404).json({ error: 'NetBackup appliance connection not found.' });
-    candidate = { ...row };
-    if (b.host) candidate.host = b.host.trim();
-    if (b.port) candidate.port = b.port;
-    if (b.username !== undefined) candidate.username = b.username;
-    if (b.sslVerify !== undefined) candidate.ssl_verify = b.sslVerify ? 1 : 0;
-    if (b.password) candidate.password = b.password;
+    if (!nonEmpty(b.password)) {
+      // The saved password is tested against the saved address, the saved TLS
+      // flag and the saved account. The id is dropped (after the spread) so a
+      // test never touches the live session.
+      candidate = { ...row, id: undefined };
+    } else {
+      // A typed password tests the typed settings; the saved one stays out of it.
+      candidate = {
+        ...row,
+        id: undefined,
+        encrypted_credentials: undefined,
+        host: b.host ? b.host.trim() : row.host,
+        port: b.port || row.port,
+        username: b.username !== undefined ? b.username : row.username,
+        ssl_verify: b.sslVerify !== undefined ? (b.sslVerify ? 1 : 0) : row.ssl_verify,
+        password: b.password,
+      };
+    }
   } else {
     if (!b.host) return res.status(400).json({ error: 'host is required.' });
     candidate = {
@@ -351,6 +449,7 @@ router.post('/appliance-connections/test', [
       password: b.password, sslVerify: b.sslVerify ? 1 : 0,
     };
   }
+  if (isBlockedHost(candidate.host)) return res.status(400).json({ error: 'that address is not allowed' });
   const result = await netbackupApplianceApi.testConnection(candidate);
   res.status(result.ok ? 200 : 502).json(result);
 });

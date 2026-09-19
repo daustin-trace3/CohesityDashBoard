@@ -8,20 +8,37 @@
  * Loaded via createRequire (not ESM import) so every service module below
  * resolves the SAME db/database.js singleton instance as app.js.
  */
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { createRequire } from 'module';
 import express from 'express';
 import request from 'supertest';
 
 const require = createRequire(import.meta.url);
 
+const axios = require('axios');
 const db = require('../db/database');
 const { runMigrations } = require('../core/migrations');
 const netbackupMigrations = require('../db/migrations/netbackup');
 const { encrypt } = require('../services/encryption');
 
+// No test here may dial a real address. The unreachable-host cases below used
+// to sit in the resolver until the test timed out; both NetBackup clients build
+// their transport with axios.create, so one stub answers every outbound call
+// the way an unresolvable host does, instantly and deterministically.
+let axiosCreateSpy;
+
 beforeAll(() => {
+  const unreachable = () => Promise.reject(
+    Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' })
+  );
+  axiosCreateSpy = vi.spyOn(axios, 'create').mockImplementation(() => ({
+    request: unreachable, post: unreachable, get: unreachable,
+  }));
   runMigrations(db, 'netbackup', netbackupMigrations);
+});
+
+afterAll(() => {
+  axiosCreateSpy.mockRestore();
 });
 
 function insertSource(overrides = {}) {
