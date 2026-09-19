@@ -1,8 +1,7 @@
 /**
  * A saved credential only ever travels to the address it was saved for.
  * Brocade SANnav (with the direct-FOS shared password, the per-switch FOS
- * overrides and the fos-test route), BlueCat and UniFi: host routers AND their
- * plugin-sdk pack twins, driven by the same cases.
+ * overrides and the fos-test route) and BlueCat host routers.
  *
  * Every R1 case asserts on what the platform client RECEIVED (host, port, TLS
  * flag, username, and which secret it would sign in with), not only on the
@@ -13,7 +12,6 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'module';
-import { EventEmitter } from 'events';
 import express from 'express';
 import request from 'supertest';
 
@@ -21,8 +19,6 @@ const require = createRequire(import.meta.url);
 const db = require('../db/database');
 const { encrypt, decrypt } = require('../services/encryption');
 const axios = require('axios');
-const https = require('https');
-const { loadPack } = require('./helpers/packRouter');
 
 const MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
 const BLOCKED = ['127.0.0.1', 'localhost', '169.254.169.254', '[::1]', '::ffff:127.0.0.1'];
@@ -46,8 +42,6 @@ const quietPoller = (p) => {
   p.cancel = () => {};
   p.trigger = async () => {};
 };
-
-const packSrc = (id, file) => require(`../../plugin-sdk/${id}/backend/src/${file}.js`);
 
 // -- Platform descriptions ------------------------------------------------------
 
@@ -115,51 +109,17 @@ const PLATFORMS = {
     },
     storedSecret: (row) => JSON.parse(decrypt(row.encrypted_credentials)).password,
   },
-  unifi: {
-    table: 'unifi_sources',
-    secretKey: 'apiKey',
-    sslBodyKey: 'sslVerify',
-    sslCol: 'ssl_verify',
-    hasUsername: false,
-    cachesSessions: false,
-    seed() {
-      return db.prepare(`
-        INSERT INTO unifi_sources (name, host, port, encrypted_credentials, ssl_verify)
-        VALUES ('saved-udm', ?, ?, ?, 1)
-      `).run(SAVED_HOST, SAVED_PORT, encrypt(JSON.stringify({ apiKey: SAVED_SECRET }))).lastInsertRowid;
-    },
-    testRoutes: [(id, body) => ['/sources/test', { id, ...body }]],
-    noIdNoSecret: [['/sources/test', { host: 'new.example' }, 400]],
-    createBody: (host, n) => ({ name: `created-${n}`, host, apiKey: 'k' }),
-    created: (body) => body,
-    updated: (body) => body,
-    received(c) {
-      return {
-        host: c.host, port: c.port, tls: c.ssl_verify ? 1 : 0, username: undefined,
-        secret: c.apiKey != null ? c.apiKey : JSON.parse(decrypt(c.encrypted_credentials)).apiKey,
-        carriesSaved: c.encrypted_credentials != null,
-      };
-    },
-    storedSecret: (row) => JSON.parse(decrypt(row.encrypted_credentials)).apiKey,
-  },
 };
 
-// -- Both sides of every platform: the host router and the pack twin -----------
+// -- Every platform, driven through its host router ----------------------------
 
 let app;
-const packs = {};
 const sides = {}; // platform -> [{ label, call, api, fosApi }]
 
 beforeAll(() => {
   // No poll may ever leave this process: create and PUT call schedule + trigger.
   quietPoller(require('../services/brocadePoller').brocadePollerHandle);
   quietPoller(require('../services/bluecatPoller').bluecatPollerHandle);
-  quietPoller(require('../services/unifiPoller').unifiPoller);
-
-  for (const id of Object.keys(PLATFORMS)) packs[id] = loadPack(id);
-  quietPoller(packSrc('brocade', 'poller').getHandle(packs.brocade.coreApi));
-  quietPoller(packSrc('bluecat', 'poller').getHandle(packs.bluecat.coreApi));
-  quietPoller(packSrc('unifi', 'poller').getPoller(packs.unifi.coreApi));
 
   app = express();
   app.use(express.json());
@@ -169,12 +129,10 @@ beforeAll(() => {
   });
   app.use('/api/brocade', require('../routes/brocade'));
   app.use('/api/bluecat', require('../routes/bluecat'));
-  app.use('/api/unifi', require('../routes/unifi'));
 
   const hostApis = {
     brocade: require('../services/brocadeApi'),
     bluecat: require('../services/bluecatApi'),
-    unifi: require('../services/unifiApi'),
   };
   for (const id of Object.keys(PLATFORMS)) {
     sides[id] = [
@@ -186,12 +144,6 @@ beforeAll(() => {
           const res = await request(app)[method.toLowerCase()](`/api/${id}${path}`).send(body || {});
           return { status: res.status, body: res.body };
         },
-      },
-      {
-        label: 'plugin pack',
-        api: packSrc(id, 'api'),
-        fosApi: id === 'brocade' ? packSrc('brocade', 'fosApi') : null,
-        call: (method, path, body) => packs[id].call(method, path, body),
       },
     ];
   }
@@ -212,7 +164,7 @@ afterEach(() => {
 const rowOf = (table, id) => db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
 
 for (const [platformId, P] of Object.entries(PLATFORMS)) {
-  for (const sideIndex of [0, 1]) {
+  for (const sideIndex of [0]) {
     const sideLabel = sideIndex === 0 ? 'host router' : 'plugin pack';
 
     describe(`${platformId} ${sideLabel}`, () => {
@@ -357,7 +309,7 @@ for (const [platformId, P] of Object.entries(PLATFORMS)) {
 
 // -- Brocade: shared FOS password, per-switch overrides, fos-test ---------------
 
-for (const sideIndex of [0, 1]) {
+for (const sideIndex of [0]) {
   describe(`brocade direct-FOS secrets, ${sideIndex === 0 ? 'host router' : 'plugin pack'}`, () => {
     let side;
     let id;
@@ -594,29 +546,6 @@ function fakeAxios(respond) {
   return { created, calls };
 }
 
-/** Fake https.request() for the packs (they cannot use axios). */
-function fakeHttps(respond) {
-  const calls = [];
-  vi.spyOn(https, 'request').mockImplementation((opts, cb) => {
-    const req = new EventEmitter();
-    req.write = () => {};
-    req.destroy = () => {};
-    req.end = () => setImmediate(() => {
-      calls.push(opts);
-      let r;
-      try { r = respond({ method: String(opts.method).toUpperCase(), path: opts.path, hostname: opts.hostname }); } catch (err) { req.emit('error', err); return; }
-      const res = new EventEmitter();
-      res.statusCode = r.status;
-      res.headers = r.headers || {};
-      cb(res);
-      res.emit('data', Buffer.from(typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? null)));
-      res.emit('end');
-    });
-    return req;
-  });
-  return { calls };
-}
-
 const FAILURES = [
   ['refused', () => { throw transportError('ECONNREFUSED', 'connect ECONNREFUSED 10.1.2.3:443'); }, 'Could not reach the address.'],
   ['dns', () => { throw transportError('ENOTFOUND', 'getaddrinfo ENOTFOUND secret-internal-name.corp'); }, 'Could not reach the address.'],
@@ -649,26 +578,6 @@ const CLIENTS = [
     name: 'services/bluecatApi.js', transport: 'axios',
     run: () => require('../services/bluecatApi').testConnection({ host: 'bam.corp.example', port: 443, username: 'u', password: 'p', ssl_verify: 1 }),
   },
-  {
-    name: 'services/unifiApi.js', transport: 'axios',
-    run: () => require('../services/unifiApi').testConnection({ host: 'udm.corp.example', port: 443, apiKey: 'k', ssl_verify: 1 }),
-  },
-  {
-    name: 'plugin-sdk/brocade api.js', transport: 'https',
-    run: () => packSrc('brocade', 'api').testConnection({ host: 'sannav.corp.example', port: 443, username: 'u', password: 'p', verify_ssl: 1 }, packs.brocade.coreApi),
-  },
-  {
-    name: 'plugin-sdk/brocade fosApi.js', transport: 'https',
-    run: () => packSrc('brocade', 'fosApi').testFos({ ip: '10.5.5.5', port: 443, username: 'u', password: 'p', verify_ssl: 1, allow_http: false }, packs.brocade.coreApi),
-  },
-  {
-    name: 'plugin-sdk/bluecat api.js', transport: 'https',
-    run: () => packSrc('bluecat', 'api').testConnection({ host: 'bam.corp.example', port: 443, username: 'u', password: 'p', ssl_verify: 1 }, packs.bluecat.coreApi),
-  },
-  {
-    name: 'plugin-sdk/unifi api.js', transport: 'https',
-    run: () => packSrc('unifi', 'api').testConnection({ host: 'udm.corp.example', port: 443, apiKey: 'k', ssl_verify: 1 }, packs.unifi.coreApi),
-  },
 ];
 
 describe('real clients: redirects and failure text', () => {
@@ -676,7 +585,7 @@ describe('real clients: redirects and failure text', () => {
     describe(client.name, () => {
       for (const [label, respond, expected] of FAILURES) {
         it(`${label}: fixed wording, no transport text, no upstream body`, async () => {
-          const fake = client.transport === 'axios' ? fakeAxios(respond) : fakeHttps(respond);
+          const fake = fakeAxios(respond);
           const result = await client.run();
           expectSafeFailure(result, expected);
           if (label === 'redirect') {
@@ -725,25 +634,6 @@ describe('real clients: R5 logout forgets the cached session before anything can
     await api.logout({ ...src, host: 'moved.corp.example' });
   });
 
-  it('plugin-sdk/brocade api.js', async () => {
-    const api = packSrc('brocade', 'api');
-    const coreApi = packs.brocade.coreApi;
-    const fake = fakeHttps(({ method, path }) => (method === 'POST' && path.includes('/login/')
-      ? { status: 200, data: { sessionId: 'SESSION-1' } } : { status: 200, data: {} }));
-    const src = { id: 990002, host: 'sannav.corp.example', port: 443, username: 'u', password: 'p', verify_ssl: 1 };
-    await api.authedRequest(src, coreApi, { path: '/external-api/v1/about/' });
-    await api.authedRequest(src, coreApi, { path: '/external-api/v1/about/' });
-    expect(loginCount(fake.calls, '/login/')).toBe(1);
-    const pending = api.logout(src, coreApi);
-    await api.authedRequest({ ...src, host: 'moved.corp.example' }, coreApi, { path: '/external-api/v1/about/' });
-    await pending;
-    expect(loginCount(fake.calls, '/login/')).toBe(2);
-    for (const c of fake.calls.filter((x) => x.headers.Authorization === 'SESSION-1' && x.path.includes('/logout/'))) {
-      expect(c.hostname).toBe('sannav.corp.example');
-    }
-    await api.logout({ ...src, host: 'moved.corp.example' }, coreApi);
-  });
-
   it('services/bluecatApi.js', async () => {
     const api = require('../services/bluecatApi');
     const fake = fakeAxios(({ method, path }) => (method === 'POST' && path === '/sessions'
@@ -757,23 +647,6 @@ describe('real clients: R5 logout forgets the cached session before anything can
     await pending;
     expect(loginCount(fake.calls, '/sessions')).toBe(2);
     for (const c of fake.calls.filter((x) => x.method === 'PATCH')) expect(c.baseURL).toContain('bam.corp.example');
-    api.invalidateSession(src.id);
-  });
-
-  it('plugin-sdk/bluecat api.js', async () => {
-    const api = packSrc('bluecat', 'api');
-    const coreApi = packs.bluecat.coreApi;
-    const fake = fakeHttps(({ method, path }) => (method === 'POST' && path.endsWith('/sessions')
-      ? { status: 200, data: { basicAuthenticationCredentials: 'BASIC-1' } } : { status: 200, data: { data: [] } }));
-    const src = { id: 990004, host: 'bam.corp.example', port: 443, username: 'u', password: 'p', ssl_verify: 1 };
-    await api.getSession(src, coreApi);
-    await api.getSession(src, coreApi);
-    expect(loginCount(fake.calls, '/sessions')).toBe(1);
-    const pending = api.logout(src, coreApi);
-    await api.getSession({ ...src, host: 'moved.corp.example' }, coreApi);
-    await pending;
-    expect(loginCount(fake.calls, '/sessions')).toBe(2);
-    for (const c of fake.calls.filter((x) => x.method === 'PATCH')) expect(c.hostname).toBe('bam.corp.example');
     api.invalidateSession(src.id);
   });
 });

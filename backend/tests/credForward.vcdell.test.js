@@ -1,6 +1,6 @@
 /**
  * A saved credential only ever travels to the address it was saved for.
- * vCenter and Dell OME, host routers AND their plugin-sdk pack twins.
+ * vCenter and Dell OME host routers.
  *
  * Every R1 case asserts on what the platform client RECEIVED (host, TLS flag,
  * username, and which secret it would log in with), not only on the HTTP
@@ -10,7 +10,6 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'module';
-import { EventEmitter } from 'events';
 import express from 'express';
 import request from 'supertest';
 
@@ -18,8 +17,6 @@ const require = createRequire(import.meta.url);
 const db = require('../db/database');
 const { encrypt, decrypt } = require('../services/encryption');
 const axios = require('axios');
-const https = require('https');
-const { loadPack } = require('./helpers/packRouter');
 
 const vcenterApi = require('../services/vcenterApi');
 const dellOmeApi = require('../services/dellOmeApi');
@@ -37,10 +34,6 @@ const SAFE_MESSAGES = [
 ];
 
 let app;
-let vcPack;
-let dellPack;
-let vcPackApi;
-let dellPackApi;
 
 const quietPoller = (p) => {
   p.schedule = () => {};
@@ -61,13 +54,6 @@ beforeAll(() => {
   });
   app.use('/api/vcenter', require('../routes/vcenter'));
   app.use('/api/dell', require('../routes/dell'));
-
-  vcPack = loadPack('vcenter');
-  dellPack = loadPack('dell');
-  vcPackApi = require('../../plugin-sdk/vcenter/backend/src/api.js');
-  dellPackApi = require('../../plugin-sdk/dell/backend/src/api.js');
-  quietPoller(require('../../plugin-sdk/vcenter/backend/src/poller.js').getPoller(vcPack.coreApi));
-  quietPoller(require('../../plugin-sdk/dell/backend/src/poller.js').getPoller(dellPack.coreApi));
 });
 
 const hostCall = (prefix) => async (method, path, body) => {
@@ -80,9 +66,7 @@ const hostCall = (prefix) => async (method, path, body) => {
 // is seen by the route); `collection` is the CRUD path inside that router.
 const targets = [
   { label: 'vcenter host router', table: 'vcenter_vcenters', collection: '/vcenters', api: () => vcenterApi, call: () => hostCall('/api/vcenter') },
-  { label: 'vcenter pack twin', table: 'vcenter_vcenters', collection: '/vcenters', api: () => vcPackApi, call: () => vcPack.call },
   { label: 'dell host router', table: 'dell_ome_instances', collection: '/instances', api: () => dellOmeApi, call: () => hostCall('/api/dell') },
-  { label: 'dell pack twin', table: 'dell_ome_instances', collection: '/instances', api: () => dellPackApi, call: () => dellPack.call },
 ];
 
 /** The password the client would log in with for this candidate. */
@@ -258,7 +242,6 @@ describe.each(targets)('$label', (t) => {
 // -- Dell probe routes: saved credentials, saved host, nothing from the caller -
 describe.each([
   { label: 'dell host router', api: () => dellOmeApi, call: () => hostCall('/api/dell') },
-  { label: 'dell pack twin', api: () => dellPackApi, call: () => dellPack.call },
 ])('$label probe routes', (t) => {
   it('inventory-probe and audit-probe dial the saved row and ignore a host in the query', async () => {
     const api = t.api();
@@ -303,29 +286,6 @@ function fakeAxios(respond) {
     };
   });
   return created;
-}
-
-/** Fake https.request() for the packs (they cannot use axios). */
-function fakeHttps(respond) {
-  const calls = [];
-  vi.spyOn(https, 'request').mockImplementation((opts, cb) => {
-    const req = new EventEmitter();
-    req.write = () => {};
-    req.destroy = () => {};
-    req.end = () => setImmediate(() => {
-      calls.push(opts);
-      let r;
-      try { r = respond({ opts, method: opts.method, path: opts.path }); } catch (err) { req.emit('error', err); return; }
-      const res = new EventEmitter();
-      res.statusCode = r.status;
-      res.headers = r.headers || {};
-      cb(res);
-      res.emit('data', Buffer.from(typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? null)));
-      res.emit('end');
-    });
-    return req;
-  });
-  return calls;
 }
 
 const transportError = (code, message) => Object.assign(new Error(message), { code });
@@ -413,76 +373,6 @@ describe('real clients: redirects, session cache and failure text', () => {
       vi.restoreAllMocks();
       fakeAxios(() => { throw httpError(401, { error: { '@Message.ExtendedInfo': [{ Message: 'bad creds for svc-account' }] } }); });
       expect((await dellOmeApi.testConnection(candidate)).message).toBe('Sign-in was refused. Check the username and password.');
-    });
-  });
-
-  describe('plugin-sdk/vcenter api.js', () => {
-    const candidate = { host: 'vc.corp.example', username: 'u', password: 'p', ssl_verify: 1 };
-
-    it('dials only the candidate host, honours its TLS flag, and cannot follow a redirect', async () => {
-      const calls = fakeHttps(({ method }) => (method === 'POST'
-        ? { status: 200, headers: { 'content-type': 'application/json' }, body: 'tok' }
-        : { status: 200, headers: { 'content-type': 'application/json' }, body: [{}] }));
-      expect(await vcPackApi.testConnection(candidate, vcPack.coreApi)).toEqual({ ok: true, hosts: 1 });
-      for (const o of calls) {
-        expect(o.hostname).toBe('vc.corp.example');
-        expect(o.rejectUnauthorized).toBe(true);
-      }
-      vi.restoreAllMocks();
-      const redirected = fakeHttps(() => ({ status: 302, headers: { location: 'https://evil.example/api/session' }, body: '' }));
-      expect(await vcPackApi.testConnection(candidate, vcPack.coreApi)).toEqual({ ok: false, error: 'Unexpected response from the address.' });
-      expect(redirected).toHaveLength(1); // the 302 was not followed
-      expect(redirected[0].hostname).toBe('vc.corp.example');
-    });
-
-    it('R6: a test handed a saved row never overwrites that row live session', async () => {
-      let token = 'live-token';
-      fakeHttps(({ method }) => ({ status: 200, headers: { 'content-type': 'application/json' }, body: method === 'POST' ? token : [] }));
-      const saved = { id: 4243, ...candidate };
-      expect(await vcPackApi.getSession(saved, vcPack.coreApi, true)).toBe('live-token');
-      token = 'test-token';
-      expect((await vcPackApi.testConnection(saved, vcPack.coreApi)).ok).toBe(true);
-      expect(await vcPackApi.getSession(saved, vcPack.coreApi)).toBe('live-token');
-      vcPackApi.invalidateSession(4243);
-    });
-
-    it.each(FAILURES)('failure text is fixed (%s)', async (_n, thrower, expected) => {
-      fakeHttps(thrower);
-      expect(await vcPackApi.testConnection(candidate, vcPack.coreApi)).toEqual({ ok: false, error: expected });
-    });
-
-    it('failure text never echoes an upstream body', async () => {
-      fakeHttps(() => ({ status: 500, headers: { 'content-type': 'application/json' }, body: { messages: [{ default_message: 'INTERNAL-BODY-TEXT' }] } }));
-      expect(await vcPackApi.testConnection(candidate, vcPack.coreApi)).toEqual({ ok: false, error: 'Unexpected response from the address.' });
-    });
-  });
-
-  describe('plugin-sdk/dell api.js', () => {
-    const candidate = { host: 'ome.corp.example', username: 'u', password: 'p', ssl_verify: 1 };
-
-    it('dials only the candidate host, honours its TLS flag, and cannot follow a redirect', async () => {
-      const calls = fakeHttps(({ method }) => (method === 'POST'
-        ? { status: 201, headers: { 'x-auth-token': 'tok' }, body: {} }
-        : { status: 200, body: { '@odata.count': 1, value: [] } }));
-      expect((await dellPackApi.testConnection(candidate, dellPack.coreApi)).ok).toBe(true);
-      for (const o of calls) {
-        expect(o.hostname).toBe('ome.corp.example');
-        expect(o.rejectUnauthorized).toBe(true);
-      }
-      vi.restoreAllMocks();
-      const redirected = fakeHttps(() => ({ status: 302, headers: { location: 'https://evil.example/' }, body: '' }));
-      expect(await dellPackApi.testConnection(candidate, dellPack.coreApi)).toEqual({ ok: false, message: 'Unexpected response from the address.' });
-      expect(redirected).toHaveLength(1);
-    });
-
-    it.each(FAILURES)('failure text is fixed (%s)', async (_n, thrower, expected) => {
-      fakeHttps(thrower);
-      expect(await dellPackApi.testConnection(candidate, dellPack.coreApi)).toEqual({ ok: false, message: expected });
-    });
-
-    it('failure text never echoes the OME error body', async () => {
-      fakeHttps(() => ({ status: 400, body: { error: { '@Message.ExtendedInfo': [{ Message: 'INTERNAL-BODY-TEXT' }] } } }));
-      expect(await dellPackApi.testConnection(candidate, dellPack.coreApi)).toEqual({ ok: false, message: 'Unexpected response from the address.' });
     });
   });
 

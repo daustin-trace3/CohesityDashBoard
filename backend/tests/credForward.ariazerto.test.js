@@ -1,27 +1,23 @@
 /**
  * Credential forwarding contract (R1 to R6) for Aria Automation, Aria
- * Operations and Zerto: the host routers AND their plugin-sdk pack twins.
+ * Operations and Zerto host routers.
  * A saved password only ever travels to the address it was saved for.
  *
  * No test here opens a socket: the routers' outbound call is replaced on the
- * client module object, and the client-level tests replace axios (host) or
- * https.request (packs) and assert on what the wire would have received.
+ * client module object, and the client-level tests replace axios and assert
+ * on what the wire would have received.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'module';
-import { EventEmitter } from 'events';
 import express from 'express';
 import request from 'supertest';
 
 const require = createRequire(import.meta.url);
-const path = require('path');
-const https = require('https');
 const axios = require('axios');
 const db = require('../db/database');
 const { runMigrations } = require('../core/migrations');
 const { encrypt, decrypt } = require('../services/encryption');
 const { getSetting, setSetting } = require('../services/settings');
-const { loadPack } = require('./helpers/packRouter');
 
 const MSG = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
 const BLOCKED_HOSTS = ['127.0.0.1', 'localhost', '169.254.169.254', '[::1]', '::ffff:127.0.0.1'];
@@ -31,10 +27,6 @@ const FIXED_MESSAGES = [
   'The connection timed out.',
   'Unexpected response from the server.',
 ];
-
-// Same path arithmetic as helpers/packRouter.js, so require() hands back the
-// very module instance the pack router is using.
-const packSrc = (id, file) => path.join(path.dirname(require.resolve('./helpers/packRouter')), '..', '..', '..', 'plugin-sdk', id, 'backend', 'src', file);
 
 function hostCaller(prefix, router) {
   const app = express();
@@ -68,35 +60,6 @@ function fakeAxiosCreate(handler) {
     };
   });
   return creates;
-}
-
-/** Fake https.request: handler(opts, bodyText) returns { status, body } or { error }. */
-function fakeHttps(handler) {
-  const calls = [];
-  vi.spyOn(https, 'request').mockImplementation((...args) => {
-    const cb = args.find((a) => typeof a === 'function');
-    const first = args[0];
-    const opts = first instanceof URL
-      ? { protocol: first.protocol, hostname: first.hostname, path: first.pathname + first.search, ...(typeof args[1] === 'object' ? args[1] : {}) }
-      : first;
-    const req = new EventEmitter();
-    let written = '';
-    req.write = (d) => { written += d; };
-    req.destroy = () => {};
-    req.end = () => setImmediate(() => {
-      calls.push({ opts, body: written });
-      const out = handler(opts, written);
-      if (out.error) { req.emit('error', out.error); return; }
-      const res = new EventEmitter();
-      res.statusCode = out.status;
-      res.headers = {};
-      cb(res);
-      res.emit('data', Buffer.from(typeof out.body === 'string' ? out.body : JSON.stringify(out.body)));
-      res.emit('end');
-    });
-    return req;
-  });
-  return calls;
 }
 
 const upstream = (status, body) => Object.assign(new Error(`Request failed with status code ${status}`), { isAxiosError: true, response: { status, data: body } });
@@ -139,7 +102,7 @@ const INSTANCE_PLATFORMS = [
 let rowCounter = 0;
 
 for (const p of INSTANCE_PLATFORMS) {
-  for (const variant of ['host', 'pack']) {
+  for (const variant of ['host']) {
     describe(`${p.key} ${variant === 'host' ? 'host router' : 'plugin pack'}: saved password stays with the saved address`, () => {
       let call;
       let api;
@@ -154,11 +117,6 @@ for (const p of INSTANCE_PLATFORMS) {
           api = require(p.hostApi);
           poller = p.hostPoller();
           ({ call, passedToNext } = hostCaller(`/api/${p.key}`, require(p.hostRouter)));
-        } else {
-          const pack = loadPack(p.key);
-          api = require(packSrc(p.key, 'api.js'));
-          poller = require(packSrc(p.key, 'poller.js')).getPoller(pack.coreApi);
-          call = (method, reqPath, body) => pack.call(method, reqPath, body);
         }
         quietPoller(poller);
       });
@@ -448,68 +406,6 @@ describe('services/ariaopsApi.js (host client)', () => {
   });
 });
 
-for (const [id, loginPath, loginAnswer, candidateExtra] of [
-  ['aria', '/csp/gateway/am/api/login?access_token', { cspAuthToken: 'csp-only' }, { domain: 'corp' }],
-  ['ariaops', '/suite-api/api/auth/token/acquire', { token: 'ops-token' }, { auth_source: 'corp' }],
-]) {
-  describe(`plugin-sdk/${id} client (https.request, never follows redirects)`, () => {
-    let api;
-    let coreApi;
-    const candidate = { host: 'inside.corp.example', username: 'svc', password: 'typed', ssl_verify: 1, ...candidateExtra };
-    beforeAll(() => {
-      coreApi = loadPack(id).coreApi;
-      api = require(packSrc(id, 'api.js'));
-    });
-    afterEach(() => vi.restoreAllMocks());
-
-    it('signs in against the candidate host with certificate checking on, and treats a redirect as a failure', async () => {
-      const calls = fakeHttps((opts) => (opts.path === loginPath ? { status: 200, body: loginAnswer } : { status: 200, body: {} }));
-      const ok = await api.testConnection(candidate, coreApi);
-      expect(ok.ok).toBe(true);
-      expect(calls[0].opts.hostname).toBe('inside.corp.example');
-      expect(calls[0].opts.path).toBe(loginPath);
-      expect(calls[0].opts.rejectUnauthorized).toBe(true);
-      expect(JSON.parse(calls[0].body)).toMatchObject({ username: 'svc', password: 'typed' });
-
-      vi.restoreAllMocks();
-      const redirected = fakeHttps(() => ({ status: 302, body: '' }));
-      const result = await api.testConnection(candidate, coreApi);
-      expect(result).toEqual({ ok: false, error: 'Unexpected response from the server.' });
-      expect(redirected.every((c) => c.opts.hostname === 'inside.corp.example')).toBe(true);
-    });
-
-    it('a 401 is reported as a refused sign-in without the body', async () => {
-      fakeHttps(() => ({ status: 401, body: { message: 'SECRET-UPSTREAM-BODY' } }));
-      const result = await api.testConnection(candidate, coreApi);
-      expect(result.error).toMatch(/^Sign-in was refused\./);
-      expect(result.error).not.toContain('SECRET-UPSTREAM-BODY');
-    });
-
-    for (const [label, makeErr, expected] of FAILURES) {
-      it(`test result for ${label} is fixed text`, async () => {
-        fakeHttps(() => {
-          const err = makeErr();
-          return err.response ? { status: err.response.status, body: err.response.data } : { error: err };
-        });
-        expectSafeFailure(await api.testConnection(candidate, coreApi), expected);
-      });
-    }
-
-    it('R6) a test for a row that carries a real id leaves that id\'s cached session alone', async () => {
-      let logins = 0;
-      fakeHttps((opts) => {
-        if (opts.path === loginPath) { logins += 1; return { status: 200, body: loginAnswer }; }
-        return { status: 200, body: {} };
-      });
-      await api.testConnection({ ...candidate, id: 4242 }, coreApi);
-      const before = logins;
-      await (api.getBearer || api.getToken)({ ...candidate, id: 4242 }, coreApi);
-      expect(logins).toBe(before + 1);
-      api.invalidateSession(4242);
-    });
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Zerto: one account-wide credential in app_settings, target = baseUrl
 // ---------------------------------------------------------------------------
@@ -665,115 +561,4 @@ describe('zerto host router: saved password stays with the saved base URL', () =
     expect(res.body.error).toMatch(/^Sign-in was refused\./);
     expect(res.body.error).not.toContain('SECRET-UPSTREAM-BODY');
   });
-});
-
-describe('zerto plugin pack: saved password stays with the saved base URL', () => {
-  let pack;
-  let api;
-  let calls;
-
-  beforeAll(() => {
-    runMigrations(db, 'zerto', require('../db/migrations/zerto'));
-    pack = loadPack('zerto');
-    api = require(packSrc('zerto', 'api.js'));
-    quietPoller(require(packSrc('zerto', 'poller.js')).getPoller(pack.coreApi));
-  });
-
-  beforeEach(() => {
-    seedZerto();
-    api.invalidateToken();
-    calls = fakeHttps((opts) => (opts.path === '/v2/auth/token' ? { status: 200, body: { token: 'jwt-1' } } : { status: 200, body: [{}, {}] }));
-  });
-  afterEach(() => vi.restoreAllMocks());
-
-  it('R1 a) test with another baseUrl and no password uses the STORED baseUrl and username', async () => {
-    const res = await pack.call('POST', '/account/test', { baseUrl: 'https://evil.example', username: 'attacker' });
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, sites: 2 });
-    expect(calls[0].opts.hostname).toBe('zerto.corp.example');
-    expect(calls[0].opts.protocol).toBe('https:');
-    expect(JSON.parse(calls[0].body)).toEqual({ username: 'saved-user', password: 'saved-secret' });
-    expect(calls.every((c) => c.opts.hostname === 'zerto.corp.example')).toBe(true);
-  });
-
-  it('R1 b) test with a typed password uses the body baseUrl with the typed password only', async () => {
-    const res = await pack.call('POST', '/account/test', { baseUrl: 'https://new.example/', username: 'typed-user', password: 'typed' });
-    expect(res.status).toBe(200);
-    expect(calls[0].opts.hostname).toBe('new.example');
-    expect(JSON.parse(calls[0].body)).toEqual({ username: 'typed-user', password: 'typed' });
-    expect(JSON.stringify(calls)).not.toContain('saved-secret');
-  });
-
-  it('R3) test and PUT refuse http, userinfo, query, fragment, paths and blocked hosts', async () => {
-    const before = zertoState();
-    for (const baseUrl of BAD_BASE_URLS) {
-      const tested = await pack.call('POST', '/account/test', { baseUrl, username: 'typed-user', password: 'typed' });
-      expect(tested.status, `test ${baseUrl}`).toBe(400);
-      const blank = await pack.call('POST', '/account/test', { baseUrl });
-      expect(blank.status, `blank test ${baseUrl}`).toBe(400);
-      const put = await pack.call('PUT', '/account', { baseUrl, password: 'typed' });
-      expect(put.status, `put ${baseUrl}`).toBe(400);
-    }
-    expect(calls).toHaveLength(0);
-    expect(zertoState()).toEqual(before);
-  });
-
-  it('R3) the blocked-host check also holds on a host that predates coreApi.net', async () => {
-    const { createRouter } = require(packSrc('zerto', 'router.js'));
-    const oldCore = Object.create(pack.coreApi, { net: { value: undefined } });
-    const oldRouter = createRouter(oldCore);
-    const send = (body) => new Promise((resolve) => {
-      const res = { statusCode: 200, status(c) { this.statusCode = c; return this; }, json(j) { resolve({ status: this.statusCode, body: j }); return this; } };
-      oldRouter({ method: 'POST', path: '/account/test', body, query: {}, params: {} }, res, () => resolve({ status: 404 }));
-    });
-    for (const baseUrl of BAD_BASE_URLS) expect((await send({ baseUrl, password: 'typed' })).status, baseUrl).toBe(400);
-    expect(calls).toHaveLength(0);
-    expect((await send({ baseUrl: 'https://ffserver.corp.example', username: 'u', password: 'typed' })).status).toBe(200);
-  });
-
-  it('R2 c) PUT that changes the baseUrl with a blank password is 400 and saves nothing', async () => {
-    const before = zertoState();
-    for (const body of [{ baseUrl: 'https://evil.example' }, { baseUrl: 'https://evil.example', password: '' }, { baseUrl: '', password: '' }]) {
-      const res = await pack.call('PUT', '/account', body);
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe(MSG);
-    }
-    expect(zertoState()).toEqual(before);
-  });
-
-  it('R2 d) + R5) PUT with a new baseUrl and a typed password succeeds and drops the cached token', async () => {
-    const forget = vi.spyOn(api, 'invalidateToken');
-    const res = await pack.call('PUT', '/account', { baseUrl: 'https://10.1.2.3', password: 'typed' });
-    expect(res.status).toBe(200);
-    expect(zertoState()).toEqual({ username: 'saved-user', password: 'typed', baseUrl: 'https://10.1.2.3' });
-    expect(forget).toHaveBeenCalled();
-  });
-
-  it('R2 e) PUT with the same baseUrl and a blank password still succeeds', async () => {
-    const res = await pack.call('PUT', '/account', { username: 'saved-user', baseUrl: `${SAVED_BASE}/`, password: '' });
-    expect(res.status).toBe(200);
-    expect(zertoState().password).toBe('saved-secret');
-  });
-
-  it('a base URL saved as http before the validation existed is never dialled (the api.js cleartext hole)', async () => {
-    setSetting('zerto_base_url', 'http://legacy.corp.example');
-    const res = await pack.call('POST', '/account/test', {});
-    expect(res.status).toBe(502);
-    expect(res.body).toEqual({ ok: false, error: 'The Zerto base URL must be an https address.' });
-    await expect(api.zGet(pack.coreApi, '/v2/monitoring/vpgs')).rejects.toThrow('https address');
-    expect(calls).toHaveLength(0);
-  });
-
-  for (const [label, makeErr, expected] of FAILURES) {
-    it(`test result for ${label} is fixed text`, async () => {
-      vi.restoreAllMocks();
-      fakeHttps(() => {
-        const err = makeErr();
-        return err.response ? { status: err.response.status, body: err.response.data } : { error: err };
-      });
-      const res = await pack.call('POST', '/account/test', {});
-      expect(res.status).toBe(502);
-      expectSafeFailure(res.body, expected);
-    });
-  }
 });

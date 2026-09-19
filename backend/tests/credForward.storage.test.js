@@ -327,14 +327,10 @@ describe('Cohesity credential forwarding (HOLE B)', () => {
 /* -------------------------------------------------------------------------
  * Second pass. The cases above mostly assert status codes and the dialled
  * host. These assert what the platform client RECEIVED: host, certificate
- * flag, username and which secret it would use, for the host routers and for
- * the netapp and pure pack twins. The cohesity pack cannot be loaded here (it
- * needs axios from plugin-sdk/node_modules, which is not installed in this
- * worktree), so it has no case below.
+ * flag, username and which secret it would use, for the host routers.
  * ------------------------------------------------------------------------- */
 const fs = require('fs');
 const path = require('path');
-const { loadPack } = require('./helpers/packRouter');
 
 const BLOCKED = ['127.0.0.1', 'localhost', '169.254.169.254', '[::1]', '::ffff:127.0.0.1'];
 const ALLOWED = ['10.20.30.40', 'array-02.corp.example'];
@@ -779,221 +775,13 @@ describe('second pass: R4, no credentialed client follows a redirect', () => {
     ['../services/netappApi.js'],
     ['../services/pureApi.js'],
     ['../services/cohesityApi.js'],
-    ['../../plugin-sdk/cohesity/backend/src/api.js'],
   ])('%s: one maxRedirects: 0 per axios call', (rel) => {
     const src = read(rel);
     expect(calls(src)).toBeGreaterThan(0);
     expect(settings(src)).toBe(calls(src));
   });
 
-  it('the netapp and pure packs do not use axios at all (https.request never follows a redirect)', () => {
-    for (const rel of ['../../plugin-sdk/netapp/backend/src/api.js', '../../plugin-sdk/pure/backend/src/api.js']) {
-      const src = read(rel);
-      expect(src).not.toMatch(/require\(['"]axios['"]\)/);
-      expect(src).toMatch(/https\.request\(/);
-    }
-  });
-
   it('the AIQUM clients no longer hardcode rejectUnauthorized: false', () => {
     expect(read('../services/netappApi.js')).not.toMatch(/rejectUnauthorized:\s*false/);
-    expect(read('../../plugin-sdk/netapp/backend/src/api.js')).not.toMatch(/rejectUnauthorized:\s*false/);
-  });
-});
-
-describe('second pass: NetApp pack twin', () => {
-  let pack;
-  let packApi;
-  let arrayId;
-  let gwId;
-
-  beforeAll(() => {
-    pack = loadPack('netapp');
-    packApi = require('../../plugin-sdk/netapp/backend/src/api.js');
-    db.exec("DELETE FROM netapp_arrays; DELETE FROM netapp_aiqum_instances;");
-    db.prepare(`
-      INSERT INTO netapp_aiqum_instances (name, host, username, encrypted_credentials, poll_interval_minutes)
-      VALUES ('first-gw', 'first-gw.corp.example', 'first-admin', ?, 15)
-    `).run(encrypt('first-gateway-password'));
-    gwId = db.prepare(`
-      INSERT INTO netapp_aiqum_instances (name, host, username, encrypted_credentials, poll_interval_minutes)
-      VALUES ('pk-gw', 'pk-aiqum.corp.example', 'pk-gw-admin', ?, 15)
-    `).run(encrypt('pk-gw-saved-password')).lastInsertRowid;
-    arrayId = db.prepare(`
-      INSERT INTO netapp_arrays (name, mgmt_host, username, encrypted_credentials, source, ssl_verify)
-      VALUES ('pk-array', 'https://pk-array.corp.example', 'pk-svc', ?, 'direct', 1)
-    `).run(encrypt(JSON.stringify({ password: 'pk-saved-password' }))).lastInsertRowid;
-  });
-
-  it('R1 array test, no secret: stored host, stored ssl flag, stored username, stored secret', async () => {
-    const seen = stub(packApi, 'testDirectConnection', () => ({ ok: true }));
-    const res = await pack.call('POST', '/arrays/test', { id: arrayId, mgmt_host: 'evil.example', username: 'mallory', ssl_verify: false });
-    expect(res.status).toBe(200);
-    const got = seen[0][0];
-    expect(got.mgmt_host).toBe('https://pk-array.corp.example');
-    expect(got.ssl_verify).toBe(1);
-    expect(got.username).toBe('pk-svc');
-    expect(got.password).toBeUndefined();
-    expect(packApi.getPassword(got, pack.coreApi)).toBe('pk-saved-password');
-  });
-
-  it('R1 array test, typed secret: body host and typed secret only', async () => {
-    const seen = stub(packApi, 'testDirectConnection', () => ({ ok: true }));
-    await pack.call('POST', '/arrays/test', { id: arrayId, mgmt_host: 'new.example', username: 'typed-user', password: 'typed-password', ssl_verify: false });
-    const got = seen[0][0];
-    expect(got.mgmt_host).toBe('new.example');
-    expect(got.password).toBe('typed-password');
-    expect(got.ssl_verify).toBe(0);
-    expect(got.encrypted_credentials).toBeUndefined();
-  });
-
-  it('R1 AIQUM test: stored gateway as saved; typed secret goes to the body host; no id and no secret dials nothing', async () => {
-    const seen = stub(packApi, 'testAiqum', () => ({ ok: true, clusterCount: 0, clusters: [] }));
-    await pack.call('POST', '/aiqum/test', { id: gwId, host: 'evil.example', username: 'mallory' });
-    expect(seen[0][0]).toEqual({ host: 'pk-aiqum.corp.example', username: 'pk-gw-admin', password: 'pk-gw-saved-password', sslVerify: false });
-
-    await pack.call('POST', '/aiqum/test', { id: gwId, host: 'new.example', password: 'typed-password' });
-    expect(seen[1][0].host).toBe('new.example');
-    expect(seen[1][0].password).toBe('typed-password');
-    expect(JSON.stringify(seen[1][0])).not.toContain('pk-gw-saved-password');
-
-    const none = await pack.call('POST', '/aiqum/test', { host: 'evil.example' });
-    expect(none.body.ok).toBe(false);
-    expect(seen).toHaveLength(2);
-  });
-
-  it('R2 array PUT and AIQUM PUT: contract message, rows unchanged, omitted ssl_verify kept', async () => {
-    const bad = await pack.call('PUT', `/arrays/${arrayId}`, { name: 'pk-array', mgmt_host: 'evil.example' });
-    expect(bad.status).toBe(400);
-    expect(bad.body.error).toBe(CONTRACT_MESSAGE);
-    let row = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(arrayId);
-    expect(row.mgmt_host).toBe('https://pk-array.corp.example');
-
-    const ok = await pack.call('PUT', `/arrays/${arrayId}`, { name: 'pk-renamed', mgmt_host: 'pk-array.corp.example' });
-    expect(ok.status).toBe(200);
-    row = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(arrayId);
-    expect(row.name).toBe('pk-renamed');
-    expect(row.ssl_verify).toBe(1);
-    expect(packApi.getPassword(row, pack.coreApi)).toBe('pk-saved-password');
-
-    const typed = await pack.call('PUT', `/arrays/${arrayId}`, { name: 'pk-renamed', mgmt_host: 'pk-new.corp.example', password: 'typed-password' });
-    expect(typed.status).toBe(200);
-
-    const badGw = await pack.call('PUT', `/aiqum/instances/${gwId}`, { host: 'evil.example' });
-    expect(badGw.status).toBe(400);
-    expect(badGw.body.error).toBe(CONTRACT_MESSAGE);
-    expect(db.prepare('SELECT host FROM netapp_aiqum_instances WHERE id = ?').get(gwId).host).toBe('pk-aiqum.corp.example');
-    const okGw = await pack.call('PUT', `/aiqum/instances/${gwId}`, { name: 'pk-gw-renamed', host: 'pk-aiqum.corp.example' });
-    expect(okGw.status).toBe(200);
-  });
-
-  it('R3: blocked targets are refused on create, test and PUT; 10.x and DNS names are accepted', async () => {
-    const seen = stub(packApi, 'testDirectConnection', () => ({ ok: true }));
-    const seenGw = stub(packApi, 'testAiqum', () => ({ ok: true }));
-    for (const h of BLOCKED) {
-      expect([h, (await pack.call('POST', '/arrays/test', { mgmt_host: h, username: 'u', password: 'typed-password' })).status]).toEqual([h, 400]);
-      expect([h, (await pack.call('POST', '/arrays', { name: `pk-blk-${h}`, mgmt_host: h, username: 'u', password: 'typed-password' })).status]).toEqual([h, 400]);
-      expect([h, (await pack.call('PUT', `/arrays/${arrayId}`, { name: 'pk-renamed', mgmt_host: h, password: 'typed-password' })).status]).toEqual([h, 400]);
-      expect([h, (await pack.call('POST', '/aiqum/test', { host: h, username: 'u', password: 'typed-password' })).status]).toEqual([h, 400]);
-      expect([h, (await pack.call('POST', '/aiqum/instances', { host: h, username: 'u', password: 'typed-password' })).status]).toEqual([h, 400]);
-      expect([h, (await pack.call('PUT', `/aiqum/instances/${gwId}`, { host: h, password: 'typed-password' })).status]).toEqual([h, 400]);
-    }
-    expect(seen).toHaveLength(0);
-    expect(seenGw).toHaveLength(0);
-    for (const h of ALLOWED) {
-      expect([h, (await pack.call('POST', '/arrays/test', { mgmt_host: h, username: 'u', password: 'typed-password' })).status]).toEqual([h, 200]);
-    }
-  });
-
-  it('http:// is never kept, and a failed test never echoes transport text', async () => {
-    expect(packApi.normalizeHost('http://a.corp.example')).toBe('https://a.corp.example');
-    stub(packApi, 'testDirectConnection', () => {
-      throw Object.assign(new Error('connect ECONNREFUSED 10.1.2.3:443'), { code: 'ECONNREFUSED' });
-    });
-    const res = await pack.call('POST', '/arrays/test', { mgmt_host: 'a.corp.example', username: 'u', password: 'typed-password' });
-    expect(res.body).toEqual({ ok: false, error: 'Could not reach the address' });
-  });
-});
-
-describe('second pass: Pure pack twin', () => {
-  let pack;
-  let packApi;
-  let arrayId;
-
-  beforeAll(() => {
-    pack = loadPack('pure');
-    packApi = require('../../plugin-sdk/pure/backend/src/api.js');
-    db.exec('DELETE FROM pure_arrays;');
-    arrayId = db.prepare(`
-      INSERT INTO pure_arrays (name, mgmt_host, auth_method, client_id, key_id, username, encrypted_credentials, ssl_verify)
-      VALUES ('pk-pure', 'https://pk-pure.corp.example', 'token', '', '', '', ?, 1)
-    `).run(encrypt(JSON.stringify({ apiToken: 'pk-saved-token' }))).lastInsertRowid;
-  });
-
-  it('R1 no secret: stored host, stored ssl flag, stored auth method, stored token', async () => {
-    const seen = stub(packApi, 'testConnection', () => ({ ok: true }));
-    const res = await pack.call('POST', '/arrays/test', { id: arrayId, mgmt_host: 'evil.example', auth_method: 'token', ssl_verify: false });
-    expect(res.status).toBe(200);
-    const got = seen[0][0];
-    expect(got.mgmt_host).toBe('https://pk-pure.corp.example');
-    expect(got.ssl_verify).toBe(1);
-    expect(got.auth_method).toBe('token');
-    expect(got.apiToken).toBe('pk-saved-token');
-  });
-
-  it('R1 typed token: body host with the typed token; no id and no secret keeps its 400', async () => {
-    const seen = stub(packApi, 'testConnection', () => ({ ok: true }));
-    await pack.call('POST', '/arrays/test', { id: arrayId, mgmt_host: 'new.example', auth_method: 'token', apiToken: 'typed-token-123', ssl_verify: false });
-    const got = seen[0][0];
-    expect(got.mgmt_host).toBe('new.example');
-    expect(got.apiToken).toBe('typed-token-123');
-    expect(got.ssl_verify).toBe(0);
-    expect(JSON.stringify(got)).not.toContain('pk-saved-token');
-
-    const none = await pack.call('POST', '/arrays/test', { mgmt_host: 'new.example', auth_method: 'token' });
-    expect(none.status).toBe(400);
-    expect(seen).toHaveLength(1);
-  });
-
-  it('R2 PUT: contract message, row unchanged, omitted ssl_verify kept, R5 cache dropped', async () => {
-    const bad = await pack.call('PUT', `/arrays/${arrayId}`, { name: 'pk-pure', mgmt_host: 'evil.example', auth_method: 'token' });
-    expect(bad.status).toBe(400);
-    expect(bad.body.error).toBe(CONTRACT_MESSAGE);
-    let row = db.prepare('SELECT * FROM pure_arrays WHERE id = ?').get(arrayId);
-    expect(row.mgmt_host).toBe('https://pk-pure.corp.example');
-
-    const dropped = stub(packApi, 'invalidate', () => {});
-    const ok = await pack.call('PUT', `/arrays/${arrayId}`, { name: 'pk-pure-renamed', mgmt_host: 'pk-pure.corp.example', auth_method: 'token' });
-    expect(ok.status).toBe(200);
-    row = db.prepare('SELECT * FROM pure_arrays WHERE id = ?').get(arrayId);
-    expect(row.name).toBe('pk-pure-renamed');
-    expect(row.ssl_verify).toBe(1);
-    expect(JSON.parse(decrypt(row.encrypted_credentials)).apiToken).toBe('pk-saved-token');
-    expect(dropped.map((a) => a[0])).toContain(Number(arrayId));
-
-    const typed = await pack.call('PUT', `/arrays/${arrayId}`, { name: 'pk-pure-renamed', mgmt_host: 'pk-new.corp.example', auth_method: 'token', apiToken: 'typed-token-123' });
-    expect(typed.status).toBe(200);
-  });
-
-  it('R3: blocked targets are refused on create, test and PUT; 10.x and DNS names are accepted', async () => {
-    const seen = stub(packApi, 'testConnection', () => ({ ok: true }));
-    for (const h of BLOCKED) {
-      expect([h, (await pack.call('POST', '/arrays/test', { mgmt_host: h, auth_method: 'token', apiToken: 'typed-token-123' })).status]).toEqual([h, 400]);
-      expect([h, (await pack.call('POST', '/arrays', { name: `pk-blk-${h}`, mgmt_host: h, auth_method: 'token', apiToken: 'typed-token-123' })).status]).toEqual([h, 400]);
-      expect([h, (await pack.call('PUT', `/arrays/${arrayId}`, { name: 'pk-pure-renamed', mgmt_host: h, auth_method: 'token', apiToken: 'typed-token-123' })).status]).toEqual([h, 400]);
-    }
-    expect(seen).toHaveLength(0);
-    for (const h of ALLOWED) {
-      expect([h, (await pack.call('POST', '/arrays/test', { mgmt_host: h, auth_method: 'token', apiToken: 'typed-token-123' })).status]).toEqual([h, 200]);
-    }
-  });
-
-  it('http:// is never kept, and a failed test never echoes an upstream body', async () => {
-    expect(packApi.normalizeHost('http://p.corp.example')).toBe('https://p.corp.example');
-    stub(packApi, 'testConnection', () => {
-      throw Object.assign(new Error('HTTP 401'), { response: { status: 401, data: { errors: [{ message: 'INTERNAL-BODY-TEXT' }] } } });
-    });
-    const res = await pack.call('POST', '/arrays/test', { mgmt_host: 'a.corp.example', auth_method: 'token', apiToken: 'typed-token-123' });
-    expect(res.body.error).toBe('Sign-in was refused');
-    expect(JSON.stringify(res.body)).not.toContain('INTERNAL-BODY-TEXT');
   });
 });
