@@ -47,6 +47,28 @@ function toBool(v) {
   return v === true || v === 'true' || v === 1 || v === '1';
 }
 
+// Credential-forwarding guards. A saved token secret only ever travels to the
+// address it was saved for. Implemented inline so the pack is safe on hosts
+// that predate coreApi.net; coreApi.net is used only for the blocked-host check.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const normTarget = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+
+/** True when a body key in `fields` ({ bodyKey: column }) is present and differs from the stored row. */
+function targetChanged(row, body, fields) {
+  return Object.entries(fields).some(([key, col]) => body[key] !== undefined && normTarget(body[key]) !== normTarget(row[col]));
+}
+
+/** Turning certificate verification OFF lets someone on the path read the saved secret. */
+function sslVerifyTurnedOff(row, body) {
+  return body.sslVerify !== undefined && !!row.ssl_verify && !toBool(body.sslVerify);
+}
+
+/** Loopback, link-local and metadata targets are never a platform address. */
+function hostBlocked(coreApi, host) {
+  const net = coreApi.net || null;
+  return !!(net && net.isBlockedHost(host));
+}
+
 /** Validates :id is a positive integer. Returns the number, or null after
  *  writing a 400 response. */
 function requireIdParam(req, res) {
@@ -122,6 +144,7 @@ function handlePostServers(req, res, coreApi) {
     if (!Number.isInteger(n) || n < 5 || n > 1440) errors.push(fail('pollingIntervalMinutes'));
   }
   if (errors.length) return badRequest(res, errors);
+  if (hostBlocked(coreApi, b.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
 
   const db = coreApi.db;
   const name = b.name.trim();
@@ -166,6 +189,16 @@ function handlePutServer(req, res, coreApi) {
   const db = coreApi.db;
   const row = db.prepare('SELECT * FROM proxmox_servers WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'Proxmox server not found.' });
+
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
+
+  // R2: the saved token secret stays with the saved address. The token id is
+  // an account name, not an address, so it may change on its own.
+  const secretSupplied = typeof b.tokenSecret === 'string' && b.tokenSecret.length > 0;
+  if (!secretSupplied && (targetChanged(row, b, { host: 'host', port: 'port' }) || sslVerifyTurnedOff(row, b))) {
+    return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+  }
+
   db.prepare(`
     UPDATE proxmox_servers SET
       name = ?, host = ?, port = ?, token_id = ?, encrypted_credentials = ?,
@@ -199,25 +232,42 @@ async function handlePostServersTest(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
   if (b.id !== undefined && !Number.isInteger(parseIntStrict(b.id))) errors.push(fail('id'));
-  if (!isNonEmptyString(b.host)) errors.push(fail('host'));
+  if (b.host !== undefined && !isNonEmptyString(b.host)) errors.push(fail('host'));
   if (b.port !== undefined) {
     const p = parseIntStrict(b.port);
     if (!Number.isInteger(p) || p < 1 || p > 65535) errors.push(fail('port'));
   }
-  if (!isNonEmptyString(b.tokenId)) errors.push(fail('tokenId'));
+  if (b.tokenId !== undefined && !isNonEmptyString(b.tokenId)) errors.push(fail('tokenId'));
   if (b.tokenSecret !== undefined && typeof b.tokenSecret !== 'string') errors.push(fail('tokenSecret'));
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) errors.push(fail('sslVerify'));
   if (errors.length) return badRequest(res, errors);
 
   const { id, host, port, tokenId, tokenSecret, sslVerify } = b;
-  const candidate = { host: host.trim(), port: port ? parseIntStrict(port) : 8006, tokenId: tokenId.trim(), tokenSecret, sslVerify: toBool(sslVerify) ? 1 : 0 };
-  if (!tokenSecret && id) {
+  const secretSupplied = typeof tokenSecret === 'string' && tokenSecret.length > 0;
+
+  let candidate;
+  if (id) {
     const row = coreApi.db.prepare('SELECT * FROM proxmox_servers WHERE id = ?').get(parseIntStrict(id));
-    if (row && row.encrypted_credentials) {
+    if (!row) return res.status(404).json({ error: 'Proxmox server not found.' });
+    // R1: if no secret in body, use stored host/port/tokenId/sslVerify
+    candidate = {
+      host: secretSupplied && host ? host.trim() : row.host,
+      port: secretSupplied && port !== undefined ? parseIntStrict(port) : row.port,
+      tokenId: secretSupplied && tokenId ? tokenId.trim() : row.token_id,
+      sslVerify: secretSupplied && sslVerify !== undefined ? toBool(sslVerify) ? 1 : 0 : row.ssl_verify,
+      tokenSecret: secretSupplied ? tokenSecret : null,
+    };
+    if (!secretSupplied && row.encrypted_credentials) {
       const c = JSON.parse(coreApi.encryption.decrypt(row.encrypted_credentials));
       candidate.tokenSecret = c.tokenSecret;
     }
+  } else {
+    if (!host || !tokenId || !tokenSecret) {
+      return badRequest(res, [fail('host, tokenId, tokenSecret required when testing without id')]);
+    }
+    candidate = { host: host.trim(), port: port ? parseIntStrict(port) : 8006, tokenId: tokenId.trim(), tokenSecret, sslVerify: toBool(sslVerify) ? 1 : 0 };
   }
+  if (hostBlocked(coreApi, candidate.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
   const result = await proxmoxApi.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);
 }

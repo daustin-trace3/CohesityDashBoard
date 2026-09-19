@@ -11,7 +11,7 @@ import { useToast } from '../components/ui/Toaster';
 // here beyond the sync status.
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
-const errorMessage = (err, fallback) => err?.response?.data?.error || fallback;
+const errorMessage = (err, fallback) => err?.response?.data?.error || err?.response?.data?.message || fallback;
 
 export default function DirectoryTab() {
   const { toast } = useToast();
@@ -143,6 +143,7 @@ export default function DirectoryTab() {
               <label className="text-xs font-semibold text-ink mb-1 block">Domain controllers <span className="text-ink-faint font-normal">(optional, comma separated)</span></label>
               <input value={form.servers} onChange={set('servers')} placeholder="dc1.corp.example.com, ldaps://dc2.corp.example.com:636" className={inputClass} />
               <p className="text-[10px] text-ink-faint mt-1">Blank = DNS SRV discovery. A scheme pins transport: ldaps://, starttls://, or ldap:// for plain (lab only).</p>
+              {cfg?.bindPasswordSource === 'settings' && <p className="text-[10px] text-ink-faint mt-1">Changing the servers, domain or TLS settings needs the bind password entered again.</p>}
             </div>
             <div>
               <label className="text-xs font-semibold text-ink mb-1 block">Search base DN <span className="text-ink-faint font-normal">(optional)</span></label>

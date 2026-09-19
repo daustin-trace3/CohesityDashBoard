@@ -39,9 +39,12 @@ function base64url(input) {
 
 /** Normalize a user-entered host into an https origin with no trailing slash. */
 function normalizeHost(host) {
-  let h = String(host || '').trim().replace(/\/+$/, '');
-  if (!/^https?:\/\//i.test(h)) h = `https://${h}`;
-  return h;
+  const h = String(host || '').trim().replace(/\/+$/, '');
+  // Tokens and signed assertions only ever travel over TLS: a typed or stored
+  // http:// is upgraded, never kept. (rawRequest is built on https.request,
+  // which never follows a redirect, so there is no redirect setting to add.)
+  if (/^https:\/\//i.test(h)) return h;
+  return `https://${h.replace(/^http:\/\//i, '')}`;
 }
 
 /** Raw HTTPS call against a Pure array/Pure1. Resolves with { status, data,

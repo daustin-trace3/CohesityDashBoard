@@ -8,7 +8,7 @@
  * Loaded via createRequire (not ESM import) so every service module below
  * resolves the SAME db/database.js singleton instance as app.js.
  */
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { createRequire } from 'module';
 import express from 'express';
 import request from 'supertest';
@@ -16,6 +16,15 @@ import request from 'supertest';
 const require = createRequire(import.meta.url);
 
 const db = require('../db/database');
+
+// Loopback is refused as a connection target, so the "bogus credentials"
+// tests use an ordinary name and a transport that refuses the connection.
+// Nothing leaves the process.
+function refuseConnections() {
+  const axios = require('axios');
+  const refused = async () => { throw Object.assign(new Error('connect ECONNREFUSED 10.9.9.9:65533'), { code: 'ECONNREFUSED' }); };
+  return vi.spyOn(axios, 'create').mockReturnValue({ get: refused, post: refused, patch: refused, request: refused });
+}
 const { runMigrations } = require('../core/migrations');
 const unifiMigrations = require('../db/migrations/unifi');
 const { encrypt } = require('../services/encryption');
@@ -375,15 +384,23 @@ describe('routes/unifi.js basic CRUD + data endpoints (minimal express app, no d
   });
 
   it('POST /api/unifi/sources/test never throws with bogus credentials', async () => {
-    // 127.0.0.1 on a port nothing listens on -> fast ECONNREFUSED instead of
-    // a 30s connect-timeout hang (203.0.113.1/TEST-NET-3 blackholes silently).
+    const spy = refuseConnections();
+    try {
+      const res = await request(app).post('/api/unifi/sources/test').send({
+        host: 'udm.corp.example', port: 65533, apiKey: 'not-a-real-key',
+      });
+      expect(res.status).toBe(502);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toBe('Could not reach the address.');
+    } finally { spy.mockRestore(); }
+  }, 20000);
+
+  it('POST /api/unifi/sources/test refuses a loopback target', async () => {
     const res = await request(app).post('/api/unifi/sources/test').send({
       host: '127.0.0.1', port: 65533, apiKey: 'not-a-real-key',
     });
-    expect(res.status).toBe(502);
-    expect(res.body.ok).toBe(false);
-    expect(typeof res.body.error).toBe('string');
-  }, 20000);
+    expect(res.status).toBe(400);
+  });
 
   it('POST /api/unifi/sources/:id/poll 404s for an unknown id', async () => {
     const res = await request(app).post('/api/unifi/sources/999999/poll');

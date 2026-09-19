@@ -191,7 +191,7 @@ function fmtWhen(ts) {
 function ConnectionRow({ c, onEdit, onRemove, onTest, testing, result }) {
   // A just-run test wins over the stored one so the badge reacts immediately.
   const status = result ? (result.ok ? 'success' : 'error') : c.lastTestStatus;
-  const error = result ? (result.ok ? null : result.error || 'unreachable') : c.lastTestError;
+  const error = result ? (result.ok ? null : result.error || result.message || 'unreachable') : c.lastTestError;
   return (
     <tr className="rbk-row">
       <td style={tdStyle}><KindBadge kind={c.kind} /></td>
@@ -306,7 +306,7 @@ export default function RbkSettingsPage() {
       });
       if (!res.ok) {
         const payload = await res.json().catch(() => ({}));
-        throw new Error(payload.error === 'duplicate' ? 'A connection with that name already exists.' : `Save failed (${res.status})`);
+        throw new Error(payload.error === 'duplicate' ? 'A connection with that name already exists.' : (payload.error || payload.message || `Save failed (${res.status})`));
       }
       resetForm();
       load();
@@ -410,7 +410,7 @@ export default function RbkSettingsPage() {
         <div style={{ marginTop: 14 }}>
           {kind === 'rsc' ? (
             <div style={fieldGridStyle}>
-              <Field label="RSC URL">
+              <Field label="RSC URL" hint={editingId ? 'Changing the address needs the password (or token) entered again.' : undefined}>
                 <PlainInput value={form.endpoint} onChange={setField('endpoint')} placeholder="https://<org>.my.rubrik.com" />
               </Field>
               <Field label="Client ID">
@@ -434,7 +434,7 @@ export default function RbkSettingsPage() {
             </div>
           ) : (
             <div style={fieldGridStyle}>
-              <Field label="Cluster Address">
+              <Field label="Cluster Address" hint={editingId ? 'Changing the address needs the password (or token) entered again.' : undefined}>
                 <PlainInput value={form.endpoint} onChange={setField('endpoint')} placeholder="https://rbk-cluster.corp.local" />
               </Field>
               <Field label="Username">

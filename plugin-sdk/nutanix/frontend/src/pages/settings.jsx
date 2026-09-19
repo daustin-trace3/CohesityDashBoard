@@ -163,6 +163,7 @@ export default function SettingsPage() {
       const data = await apiSend('/sources/test', 'POST', {
         sourceType: form.sourceType, host: form.host.trim(), port: Number(form.port) || 9440,
         username: form.username.trim(), password: form.password || undefined, sslVerify: form.sslVerify,
+        id: editingId || undefined,
       });
       setTestResult(data);
     } catch (err) {
@@ -209,7 +210,7 @@ export default function SettingsPage() {
       setTestResult(null);
       await loadSources();
     } catch (err) {
-      setSaveError(err.message);
+      setSaveError(err.payload?.error || err.payload?.message || err.message);
     } finally {
       setSaving(false);
     }
@@ -265,7 +266,7 @@ export default function SettingsPage() {
       cancelEditMove();
       await loadMoveConns();
     } catch (err) {
-      setMoveSaveError(err.message);
+      setMoveSaveError(err.payload?.error || err.payload?.message || err.message);
     } finally {
       setMoveSaving(false);
     }
@@ -372,7 +373,7 @@ export default function SettingsPage() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 12, marginBottom: 12 }} className="nx-form-grid">
                 <style>{`@media (max-width: 560px) { .nx-form-grid { grid-template-columns: 1fr !important; } }`}</style>
                 <div><label style={labelStyle}>Display name</label><input value={form.name} onChange={setF('name')} placeholder="Prod Prism Central" style={inputStyle} spellCheck={false} /></div>
-                <div><label style={labelStyle}>Host / IP</label><input value={form.host} onChange={setF('host')} placeholder="prism.company.com" style={inputStyle} spellCheck={false} /></div>
+                <div><label style={labelStyle}>Host / IP</label><input value={form.host} onChange={setF('host')} placeholder="prism.company.com" style={inputStyle} spellCheck={false} />{editingId && <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--nx-ink-muted)', lineHeight: 1.5 }}>Changing the address needs the password (or token) entered again.</p>}</div>
                 <div><label style={labelStyle}>Port</label><input type="number" value={form.port} onChange={setF('port')} style={inputStyle} /></div>
                 <div><label style={labelStyle}>Poll interval (minutes)</label><input type="number" min={5} max={1440} value={form.pollingIntervalMinutes} onChange={setF('pollingIntervalMinutes')} style={inputStyle} /></div>
                 <div><label style={labelStyle}>Username</label><input value={form.username} onChange={setF('username')} placeholder="monitor" style={inputStyle} spellCheck={false} /></div>
@@ -397,7 +398,7 @@ export default function SettingsPage() {
                 {testResult && (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: testResult.ok ? 'var(--nx-ok)' : 'var(--nx-crit)' }}>
                     {testResult.ok ? <CheckCircleIcon size={14} /> : <XCircleIcon size={14} />}
-                    {testResult.ok ? `Connected${testResult.productVersion ? ` — ${testResult.apiFlavor || ''} ${testResult.productVersion}` : ''}` : testResult.error}
+                    {testResult.ok ? `Connected${testResult.productVersion ? ` — ${testResult.apiFlavor || ''} ${testResult.productVersion}` : ''}` : (testResult.error || testResult.message)}
                   </span>
                 )}
               </div>
@@ -420,7 +421,7 @@ export default function SettingsPage() {
               {moveSaveError && <p style={{ color: 'var(--nx-crit)', fontSize: 12, marginBottom: 12 }}>{moveSaveError}</p>}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 12, marginBottom: 12 }} className="nx-form-grid">
                 <div><label style={labelStyle}>Display name</label><input value={moveForm.name} onChange={setMoveF('name')} placeholder="Move Appliance" style={inputStyle} spellCheck={false} /></div>
-                <div><label style={labelStyle}>Host / IP</label><input value={moveForm.host} onChange={setMoveF('host')} style={inputStyle} spellCheck={false} /></div>
+                <div><label style={labelStyle}>Host / IP</label><input value={moveForm.host} onChange={setMoveF('host')} style={inputStyle} spellCheck={false} />{moveEditingId && <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--nx-ink-muted)', lineHeight: 1.5 }}>Changing the address needs the password (or token) entered again.</p>}</div>
                 <div><label style={labelStyle}>Username</label><input value={moveForm.username} onChange={setMoveF('username')} placeholder="admin" style={inputStyle} spellCheck={false} /></div>
                 <div>
                   <label style={labelStyle}>Password{moveEditingId ? <span style={{ fontWeight: 400, color: 'var(--nx-ink-faint)' }}> — stored, leave blank to keep</span> : ''}</label>

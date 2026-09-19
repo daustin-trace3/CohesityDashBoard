@@ -367,7 +367,7 @@ export default function BrocadeSettingsPage() {
       cancelEdit();
       await loadSources();
     } catch (err) {
-      toast({ type: 'error', title: editingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error });
+      toast({ type: 'error', title: editingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error || err?.response?.data?.message });
     } finally {
       setSaving(false);
     }
@@ -469,6 +469,7 @@ export default function BrocadeSettingsPage() {
                   <div>
                     <label className="block text-xs font-semibold text-ink mb-1">Host / IP</label>
                     <input value={form.host} onChange={setF('host')} placeholder="sannav.example.com" className={inp} spellCheck={false} />
+                    {editingId && <p className="text-[11px] text-ink-faint mt-1">Changing the address needs the password (or token) entered again.</p>}
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-ink mb-1">Port</label>
@@ -517,7 +518,7 @@ export default function BrocadeSettingsPage() {
                       {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
                       {testResult.ok
                         ? `Connected${testResult.version ? ` — v${testResult.version}` : ' — login OK (version reporting needs SANnav 2.3.1+)'}${testResult.oemName ? ` (${testResult.oemName})` : ''}`
-                        : testResult.error}
+                        : (testResult.error || testResult.message)}
                     </span>
                   )}
                 </div>
@@ -565,7 +566,7 @@ export default function BrocadeSettingsPage() {
                     {fosTestResult && (
                       <span className={`inline-flex items-center gap-1.5 text-xs ${fosTestResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
                         {fosTestResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                        {fosTestResult.ok ? 'FOS session OK' : fosTestResult.error}
+                        {fosTestResult.ok ? 'FOS session OK' : (fosTestResult.error || fosTestResult.message)}
                       </span>
                     )}
                   </div>

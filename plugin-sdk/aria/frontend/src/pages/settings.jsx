@@ -167,7 +167,7 @@ export default function AriaSettingsPage() {
       blankForm();
       await loadInstances();
     } catch (err) {
-      flash('error', editingId ? 'Update failed' : 'Registration failed', err?.payload?.error);
+      flash('error', editingId ? 'Update failed' : 'Registration failed', err?.payload?.error || err?.payload?.message);
     } finally {
       setSaving(false);
     }
@@ -223,6 +223,7 @@ export default function AriaSettingsPage() {
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Host / FQDN</label>
             <input value={form.host} onChange={set('host')} placeholder="aria.company.com" className={inp} spellCheck={false} />
+            {editingId && <p className="text-[11px] text-ink-faint mt-1">Changing the address needs the password (or token) entered again.</p>}
           </div>
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Poll interval (minutes)</label>
@@ -259,7 +260,7 @@ export default function AriaSettingsPage() {
           {testResult && (
             <span className={`inline-flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
               {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-              {testResult.ok ? `Connected${testResult.version ? ` — v${testResult.version}` : ''}${testResult.deployments != null ? ` · ${testResult.deployments} deployment(s)` : ''}` : testResult.error}
+              {testResult.ok ? `Connected${testResult.version ? ` — v${testResult.version}` : ''}${testResult.deployments != null ? ` · ${testResult.deployments} deployment(s)` : ''}` : (testResult.error || testResult.message)}
             </span>
           )}
         </div>

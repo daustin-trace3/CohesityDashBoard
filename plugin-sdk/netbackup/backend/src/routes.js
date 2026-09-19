@@ -61,6 +61,47 @@ function isInEnum(v, allowed) {
   return v === undefined || allowed.includes(v);
 }
 
+// Credential-forwarding guards. A saved password or API key only ever travels
+// to the address it was saved for. Implemented inline so the pack is safe on
+// hosts that predate coreApi.net; coreApi.net is used only for the blocked-host check.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const normTarget = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+const nonEmpty = (v) => typeof v === 'string' && v.length > 0;
+
+/** True when a body key in `fields` ({ bodyKey: column }) is present and differs from the stored row. */
+function targetChanged(row, body, fields) {
+  return Object.entries(fields).some(([key, col]) => body[key] !== undefined && normTarget(body[key]) !== normTarget(row[col]));
+}
+
+/** Turning certificate verification OFF lets someone on the path read the saved secret. */
+function sslVerifyTurnedOff(row, body) {
+  return body.sslVerify !== undefined && !!row.ssl_verify && !toBool(body.sslVerify);
+}
+
+/** Loopback, link-local and metadata targets are never a platform address. */
+function hostBlocked(coreApi, host) {
+  const net = coreApi.net || null;
+  return !!(net && net.isBlockedHost(host));
+}
+
+/** An Alta source's host is a full base URL: https only, no userinfo. Returns the problem or null. */
+function altaHostProblem(host) {
+  let u;
+  try { u = new URL(String(host).trim()); } catch { return 'an Alta host must be a full https URL'; }
+  if (u.protocol !== 'https:') return 'an Alta host must use https';
+  if (u.username || u.password) return 'an Alta host must not contain credentials';
+  return null;
+}
+
+/** Address checks shared by create, update and test. Returns the problem or null. */
+function sourceHostProblem(coreApi, sourceType, host) {
+  if (sourceType === 'alta') {
+    const problem = altaHostProblem(host);
+    if (problem) return problem;
+  }
+  return hostBlocked(coreApi, host) ? 'that address is not allowed' : null;
+}
+
 function requireIdParam(req, res) {
   const id = parseIntStrict(req.params.id);
   if (!Number.isInteger(id)) {
@@ -180,6 +221,8 @@ function handlePostSources(req, res, coreApi) {
   const sourceType = b.sourceType || 'primary';
   const authMode = b.authMode || 'password';
   const port = b.port ? parseIntStrict(b.port) : 1556;
+  const hostProblem = sourceHostProblem(coreApi, sourceType, host);
+  if (hostProblem) return badRequest(res, [fail('host', hostProblem)]);
   if (authMode === 'password' && !b.password) {
     return res.status(400).json({ error: 'password is required for password auth mode.' });
   }
@@ -217,13 +260,13 @@ function handlePutSource(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
   if (b.name !== undefined && !isNonEmptyString(b.name, 120)) errors.push(fail('name'));
-  if (!isInEnum(b.sourceType, ['primary', 'alta'])) errors.push(fail('sourceType'));
+  if (b.sourceType !== undefined && !isInEnum(b.sourceType, ['primary', 'alta'])) errors.push(fail('sourceType'));
   if (b.host !== undefined && !isNonEmptyString(b.host, 253)) errors.push(fail('host'));
   if (b.port !== undefined) {
     const p = parseIntStrict(b.port);
     if (!Number.isInteger(p) || p < 1 || p > 65535) errors.push(fail('port'));
   }
-  if (!isInEnum(b.authMode, ['password', 'apikey'])) errors.push(fail('authMode'));
+  if (b.authMode !== undefined && !isInEnum(b.authMode, ['password', 'apikey'])) errors.push(fail('authMode'));
   if (!isOptionalString(b.username, 256)) errors.push(fail('username'));
   if (!isOptionalString(b.domainName, 256)) errors.push(fail('domainName'));
   if (!isOptionalString(b.domainType, 64)) errors.push(fail('domainType'));
@@ -237,6 +280,20 @@ function handlePutSource(req, res, coreApi) {
   if (errors.length) return badRequest(res, errors);
 
   const authMode = b.authMode || row.auth_mode;
+  if (b.host !== undefined || b.sourceType !== undefined) {
+    const hostProblem = sourceHostProblem(coreApi, b.sourceType || row.source_type, b.host !== undefined ? b.host : row.host);
+    if (hostProblem) return badRequest(res, [fail('host', hostProblem)]);
+  }
+
+  // R2: the saved secret stays with the saved address. Only the secret that
+  // this request will actually store counts as supplied (an apiKey typed on a
+  // password-mode source is ignored below, so it must not unlock a new host).
+  // sourceType decides how host becomes a URL, so it is part of the address.
+  const secretSupplied = authMode === 'apikey' ? nonEmpty(b.apiKey) : nonEmpty(b.password);
+  if (!secretSupplied && (targetChanged(row, b, { host: 'host', port: 'port', sourceType: 'source_type' }) || sslVerifyTurnedOff(row, b))) {
+    return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+  }
+
   let encryptedCreds = row.encrypted_credentials;
   if (authMode === 'apikey' && b.apiKey) encryptedCreds = coreApi.encryption.encrypt(JSON.stringify({ apiKey: b.apiKey }));
   else if (authMode === 'password' && b.password) encryptedCreds = coreApi.encryption.encrypt(JSON.stringify({ password: b.password }));
@@ -280,13 +337,13 @@ async function handlePostSourcesTest(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
   if (b.id !== undefined && !Number.isInteger(parseIntStrict(b.id))) errors.push(fail('id'));
-  if (!isInEnum(b.sourceType, ['primary', 'alta'])) errors.push(fail('sourceType'));
+  if (b.sourceType !== undefined && !isInEnum(b.sourceType, ['primary', 'alta'])) errors.push(fail('sourceType'));
   if (b.host !== undefined && typeof b.host !== 'string') errors.push(fail('host'));
   if (b.port !== undefined) {
     const p = parseIntStrict(b.port);
     if (!Number.isInteger(p) || p < 1 || p > 65535) errors.push(fail('port'));
   }
-  if (!isInEnum(b.authMode, ['password', 'apikey'])) errors.push(fail('authMode'));
+  if (b.authMode !== undefined && !isInEnum(b.authMode, ['password', 'apikey'])) errors.push(fail('authMode'));
   if (b.username !== undefined && b.username !== null && typeof b.username !== 'string') errors.push(fail('username'));
   if (b.domainName !== undefined && b.domainName !== null && typeof b.domainName !== 'string') errors.push(fail('domainName'));
   if (b.domainType !== undefined && b.domainType !== null && typeof b.domainType !== 'string') errors.push(fail('domainType'));
@@ -298,22 +355,44 @@ async function handlePostSourcesTest(req, res, coreApi) {
   const db = coreApi.db;
   let candidate;
   if (b.id) {
-    const row = db.prepare('SELECT * FROM netbackup_sources WHERE id = ?').get(b.id);
+    const row = db.prepare('SELECT * FROM netbackup_sources WHERE id = ?').get(parseIntStrict(b.id));
     if (!row) return res.status(404).json({ error: 'NetBackup source not found.' });
-    candidate = { ...row };
-    if (b.host) candidate.host = b.host.trim();
-    if (b.port) candidate.port = b.port;
-    if (b.sslVerify !== undefined) candidate.ssl_verify = b.sslVerify ? 1 : 0;
-    if (b.password) candidate.password = b.password;
-    if (b.apiKey) candidate.apiKey = b.apiKey;
+    const authMode = b.authMode || row.auth_mode;
+    const secretSupplied = authMode === 'apikey' ? nonEmpty(b.apiKey) : nonEmpty(b.password);
+    if (!secretSupplied) {
+      // R1: the saved secret is tested against the saved address, saved TLS
+      // flag and saved account. Nothing from the body is used. The id is
+      // dropped (after the spread) so a test never touches the live session cache.
+      candidate = { ...row, id: undefined };
+    } else {
+      // A typed secret tests the typed settings. The saved secret and the
+      // saved session stay out of it.
+      candidate = {
+        ...row,
+        id: undefined,
+        encrypted_credentials: undefined,
+        source_type: b.sourceType || row.source_type,
+        auth_mode: authMode,
+        host: b.host ? b.host.trim() : row.host,
+        port: b.port ? parseIntStrict(b.port) : row.port,
+        username: b.username !== undefined ? b.username : row.username,
+        domain_name: b.domainName !== undefined ? b.domainName : row.domain_name,
+        domain_type: b.domainType !== undefined ? b.domainType : row.domain_type,
+        ssl_verify: b.sslVerify !== undefined ? (toBool(b.sslVerify) ? 1 : 0) : row.ssl_verify,
+        password: authMode === 'apikey' ? undefined : b.password,
+        apiKey: authMode === 'apikey' ? b.apiKey : undefined,
+      };
+    }
   } else {
     if (!b.host) return res.status(400).json({ error: 'host is required.' });
     candidate = {
-      sourceType: b.sourceType || 'primary', host: b.host.trim(), port: b.port || 1556,
+      sourceType: b.sourceType || 'primary', host: b.host.trim(), port: b.port ? parseIntStrict(b.port) : 1556,
       authMode: b.authMode || 'password', username: b.username, domainName: b.domainName, domainType: b.domainType,
-      password: b.password, apiKey: b.apiKey, sslVerify: b.sslVerify ? 1 : 0,
+      password: b.password, apiKey: b.apiKey, sslVerify: toBool(b.sslVerify) ? 1 : 0,
     };
   }
+  const hostProblem = sourceHostProblem(coreApi, candidate.source_type || candidate.sourceType, candidate.host);
+  if (hostProblem) return badRequest(res, [fail('host', hostProblem)]);
   const result = await netbackupApi.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);
 }
@@ -368,6 +447,7 @@ function handlePostApplianceConnections(req, res, coreApi) {
   const name = b.name;
   const host = b.host;
   const port = b.port ? parseIntStrict(b.port) : 443;
+  if (hostBlocked(coreApi, host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
   const dup = db.prepare('SELECT id FROM netbackup_appliance_conns WHERE name = ? OR (host = ? AND port = ?)')
     .get(name.trim(), host.trim(), port);
   if (dup) return res.status(409).json({ error: 'A NetBackup appliance connection with that name or host/port is already registered.' });
@@ -408,6 +488,14 @@ function handlePutApplianceConnection(req, res, coreApi) {
     if (!Number.isInteger(n) || n < 5 || n > 1440) errors.push(fail('pollingIntervalMinutes'));
   }
   if (errors.length) return badRequest(res, errors);
+
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
+
+  // R2: the saved password stays with the saved address.
+  const secretSupplied = nonEmpty(b.password);
+  if (!secretSupplied && (targetChanged(row, b, { host: 'host', port: 'port' }) || sslVerifyTurnedOff(row, b))) {
+    return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+  }
 
   const encryptedCreds = b.password ? coreApi.encryption.encrypt(JSON.stringify({ password: b.password })) : row.encrypted_credentials;
   db.prepare(`
@@ -460,21 +548,34 @@ async function handlePostApplianceConnectionsTest(req, res, coreApi) {
   const db = coreApi.db;
   let candidate;
   if (b.id) {
-    const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(b.id);
+    const row = db.prepare('SELECT * FROM netbackup_appliance_conns WHERE id = ?').get(parseIntStrict(b.id));
     if (!row) return res.status(404).json({ error: 'NetBackup appliance connection not found.' });
-    candidate = { ...row };
-    if (b.host) candidate.host = b.host.trim();
-    if (b.port) candidate.port = b.port;
-    if (b.username !== undefined) candidate.username = b.username;
-    if (b.sslVerify !== undefined) candidate.ssl_verify = b.sslVerify ? 1 : 0;
-    if (b.password) candidate.password = b.password;
+    if (!nonEmpty(b.password)) {
+      // R1: the saved password is tested against the saved address, saved TLS
+      // flag and saved account. The id is dropped (after the spread) so a
+      // test never touches the live session cache.
+      candidate = { ...row, id: undefined };
+    } else {
+      // A typed password tests the typed settings; the saved one stays out of it.
+      candidate = {
+        ...row,
+        id: undefined,
+        encrypted_credentials: undefined,
+        host: b.host ? b.host.trim() : row.host,
+        port: b.port ? parseIntStrict(b.port) : row.port,
+        username: b.username !== undefined ? b.username : row.username,
+        ssl_verify: b.sslVerify !== undefined ? (toBool(b.sslVerify) ? 1 : 0) : row.ssl_verify,
+        password: b.password,
+      };
+    }
   } else {
     if (!b.host) return res.status(400).json({ error: 'host is required.' });
     candidate = {
-      host: b.host.trim(), port: b.port || 443, username: b.username,
-      password: b.password, sslVerify: b.sslVerify ? 1 : 0,
+      host: b.host.trim(), port: b.port ? parseIntStrict(b.port) : 443, username: b.username,
+      password: b.password, sslVerify: toBool(b.sslVerify) ? 1 : 0,
     };
   }
+  if (hostBlocked(coreApi, candidate.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
   const result = await netbackupApplianceApi.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);
 }

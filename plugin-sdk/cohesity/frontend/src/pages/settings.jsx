@@ -193,7 +193,7 @@ export function DirectClusterForm({ initial, onSaved, onCancel }) {
         await apiFetch('/cohesity/clusters', { method: 'POST', body: payload });
       }
       onSaved();
-    } catch (err) { setError(err.payload?.error || err.payload?.errors?.[0]?.msg || 'Save failed.'); }
+    } catch (err) { setError(err.payload?.error || err.payload?.message || err.payload?.errors?.[0]?.msg || 'Save failed.'); }
     finally { setSubmitting(false); }
   };
 
@@ -203,7 +203,7 @@ export function DirectClusterForm({ initial, onSaved, onCancel }) {
     try {
       const data = await apiFetch('/cohesity/clusters/test', { method: 'POST', body: { connection_type: 'direct', vip: vip.trim(), auth_type: authType, credentials: buildCredentials() || {}, ssl_verify: sslVerify } });
       setTestResult(data);
-    } catch (err) { setTestResult({ ok: false, error: err.payload?.error || err.payload?.errors?.[0]?.msg || 'Connection failed' }); }
+    } catch (err) { setTestResult({ ok: false, error: err.payload?.error || err.payload?.message || err.payload?.errors?.[0]?.msg || 'Connection failed' }); }
     finally { setTesting(false); }
   };
 
@@ -213,7 +213,7 @@ export function DirectClusterForm({ initial, onSaved, onCancel }) {
       {error && <p style={{ fontSize: 12, color: 'var(--co-crit)', marginBottom: 8 }}>{error}</p>}
       <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 12 }}>
         <div><label style={{ display: 'block', fontSize: 11, color: 'var(--co-ink-faint)', marginBottom: 4 }}>Cluster name</label><input value={name} onChange={(e) => setName(e.target.value)} className="co-input" /></div>
-        <div><label style={{ display: 'block', fontSize: 11, color: 'var(--co-ink-faint)', marginBottom: 4 }}>VIP / Hostname</label><input value={vip} onChange={(e) => setVip(e.target.value)} placeholder="e.g. 192.168.1.100 or mycluster.company.com" className="co-input" spellCheck={false} /></div>
+        <div><label style={{ display: 'block', fontSize: 11, color: 'var(--co-ink-faint)', marginBottom: 4 }}>VIP / Hostname</label><input value={vip} onChange={(e) => setVip(e.target.value)} placeholder="e.g. 192.168.1.100 or mycluster.company.com" className="co-input" spellCheck={false} />{isEdit && <p style={{ fontSize: 11, color: 'var(--co-ink-muted)', margin: '2px 0 0' }}>Changing the address needs the password (or token) entered again.</p>}</div>
         <div className="sm:col-span-2">
           <label style={{ display: 'block', fontSize: 11, color: 'var(--co-ink-faint)', marginBottom: 4 }}>Auth type</label>
           <div style={{ display: 'flex', gap: 16 }}>

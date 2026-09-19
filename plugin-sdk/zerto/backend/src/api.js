@@ -41,7 +41,7 @@ function zertoConfigured(coreApi) {
 /** Raw HTTPS call against the Zerto Analytics SaaS API. Resolves with
  *  { status, data, headers }. Rejects with an Error carrying
  *  `.response = { status, data, headers }`. */
-function rawRequest(baseUrl, { method = 'GET', path, params, data, headers = {}, timeout = 60000 } = {}) {
+function httpsRequest(baseUrl, { method = 'GET', path, params, data, headers = {}, timeout = 60000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, baseUrl);
     if (params) {
@@ -79,6 +79,19 @@ function rawRequest(baseUrl, { method = 'GET', path, params, data, headers = {},
     if (body !== undefined) req.write(body);
     req.end();
   });
+}
+
+// The username and password (and afterwards the bearer) go to baseUrl. Refuse
+// anything that is not plain https without userinfo, so a base URL saved before
+// the route validation existed cannot send them in cleartext. Node's
+// https.request never follows a redirect, so a 3xx answer is simply an error.
+async function rawRequest(baseUrl, options) {
+  let url = null;
+  try { url = new URL(baseUrl); } catch { url = null; }
+  if (!url || url.protocol !== 'https:' || url.username || url.password) {
+    throw Object.assign(new Error('The Zerto base URL must be an https address.'), { code: 'ZERTO_BASE_URL' });
+  }
+  return httpsRequest(baseUrl, options);
 }
 
 async function fetchToken(cfg) {
@@ -155,11 +168,15 @@ const fetchLicenses = async (coreApi) => (await zGet(coreApi, '/v3/licenses')) |
  */
 async function testConnection(coreApi, candidate = null) {
   const saved = getZertoConfig(coreApi);
-  const cfg = {
-    baseUrl: candidate?.baseUrl?.replace(/\/+$/, '') || saved.baseUrl,
-    username: candidate?.username || saved.username,
-    password: candidate?.password || saved.password,
-  };
+  // A saved password only ever goes to the saved base URL with the saved
+  // username. The caller's base URL and username are used only together with a
+  // password typed for this test.
+  const typed = !!(candidate?.password && String(candidate.password).trim());
+  const cfg = typed ? {
+    baseUrl: candidate.baseUrl?.replace(/\/+$/, '') || saved.baseUrl,
+    username: candidate.username || saved.username,
+    password: candidate.password,
+  } : { baseUrl: saved.baseUrl, username: saved.username, password: saved.password };
   if (!cfg.username || !cfg.password) return { ok: false, error: 'Username and password are required.' };
   try {
     const token = await fetchToken(cfg);
@@ -169,14 +186,27 @@ async function testConnection(coreApi, candidate = null) {
     const sites = Array.isArray(data) ? data : [];
     return { ok: true, sites: sites.length };
   } catch (err) {
-    const status = err.response?.status;
-    const error = status === 401 ? 'Authentication failed — check the myZerto username and password.'
-      : (err.response?.data?.message || err.message);
-    return { ok: false, error };
+    return { ok: false, error: testFailure(err) };
   }
 }
 
+// Fixed, caller-safe text for a failed connection test. The transport error
+// text names addresses and ports, and the upstream body is whatever the far
+// end chose to send, so neither is ever returned.
+function testFailure(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || '');
+  if (code === 'ZERTO_BASE_URL') return err.message;
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the myZerto username and password.';
+  if (status) return 'Unexpected response from the server.';
+  if (/TIMEDOUT|ECONNABORTED/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'The connection timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the server.';
+}
+
 module.exports = {
+  DEFAULT_BASE_URL,
   getZertoConfig, zertoConfigured, zGet, invalidateToken,
   fetchAccountStats, fetchSites, fetchSitesTopology, fetchVpgs, fetchAlerts, fetchProtectedVms,
   fetchLicenses,

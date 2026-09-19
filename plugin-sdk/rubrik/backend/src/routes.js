@@ -68,6 +68,40 @@ function connectionToJson(row) {
   };
 }
 
+// Credential-forwarding guards. A saved client secret only ever travels to the
+// endpoint it was saved for. Implemented inline so the pack is safe on hosts
+// that predate coreApi.net; coreApi.net is used only for the blocked-host check.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const normTarget = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+
+/** Why `endpoint` cannot be used, or null when it is fine. */
+function endpointProblem(coreApi, endpoint) {
+  let url;
+  try {
+    url = new URL(String(endpoint));
+  } catch (e) {
+    return 'endpoint must be a valid URL';
+  }
+  if (url.protocol !== 'https:') return 'endpoint must use https';
+  if (url.username || url.password) return 'endpoint must not contain credentials';
+  if (url.search || url.hash || /[?#]/.test(String(endpoint))) return 'endpoint must not contain query or fragment';
+  const net = coreApi.net || null;
+  if (net && net.isBlockedHost(url.hostname)) return 'that address is not allowed';
+  return null;
+}
+
+/** A typed-secret test runs under its own id so it never reads or replaces the live token. */
+let testSeq = 0;
+
+/** Fixed text for a failed reachability check. Never echoes transport text. */
+function reachFailureMessage(err) {
+  const code = String((err && (err.code || (err.cause && err.cause.code))) || '');
+  if (code === 'ETIMEDOUT') return 'Timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|TLS|SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'EPIPE'].includes(code)) return 'Could not reach the address.';
+  return 'Unexpected response.';
+}
+
 // Honest reachability check: HEAD to the endpoint root, falling back to GET
 // if the server rejects HEAD, 5s timeout, self-signed certs tolerated. Never
 // claims auth success — that's future live-polling work.
@@ -96,15 +130,18 @@ function testEndpointReachable(endpoint) {
           resolve({ ok: true, statusCode: res.statusCode });
         }
       );
+      let failed = false; // destroy() after a timeout also fires 'error'
+      const failWith = (message) => {
+        if (failed) return;
+        failed = true;
+        if (onFail) onFail(message);
+        else resolve({ ok: false, error: message });
+      };
       req.on('timeout', () => {
+        failWith('Timed out.');
         req.destroy();
-        if (onFail) onFail('Connection timed out');
-        else resolve({ ok: false, error: 'Connection timed out' });
       });
-      req.on('error', (err) => {
-        if (onFail) onFail(err.message);
-        else resolve({ ok: false, error: err.message });
-      });
+      req.on('error', (err) => failWith(reachFailureMessage(err)));
       req.end();
     };
     attempt('HEAD', () => attempt('GET', (err) => resolve({ ok: false, error: err })));
@@ -478,6 +515,12 @@ function createRouter(coreApi) {
         res.status(400).json({ error: "kind must be 'rsc' or 'cdm'" });
         return;
       }
+      // R3: https only, no userinfo, no query, no fragment, no loopback/metadata host.
+      const endpointError = endpointProblem(coreApi, endpoint);
+      if (endpointError) {
+        res.status(400).json({ error: endpointError });
+        return;
+      }
       const encryptedCredentials = secret ? coreApi.encryption.encrypt(JSON.stringify({ secret })) : null;
       try {
         const result = coreApi.db
@@ -499,22 +542,44 @@ function createRouter(coreApi) {
     }
 
     if (req.method === 'POST' && req.path === '/connections/test') {
-      const { endpoint, id } = req.body || {};
-      let target = endpoint;
+      const { endpoint, id, secret, identity } = req.body || {};
+      const secretSupplied = typeof secret === 'string' && secret.length > 0;
       let stored = null;
       if (id != null) {
         stored = coreApi.db.prepare('SELECT * FROM rubrik_connections WHERE id = ?').get(id);
-        if (!target && stored) target = stored.endpoint;
+        if (!stored) {
+          res.status(404).json({ error: 'Connection not found.' });
+          return;
+        }
       }
+      // R1: the saved secret is only ever tested against the saved endpoint.
+      // A typed secret tests the typed endpoint, and the saved secret and the
+      // cached token stay out of it.
+      const target = stored && !secretSupplied ? stored.endpoint : (endpoint || (stored ? stored.endpoint : null));
       if (!target) {
         res.status(200).json({ ok: false, error: 'No endpoint provided' });
+        return;
+      }
+      const endpointError = endpointProblem(coreApi, target);
+      if (endpointError) {
+        res.status(400).json({ error: endpointError });
         return;
       }
 
       // A stored RSC connection can be tested for real: request a token and
       // list clusters. Reachability alone says nothing about the credentials.
-      if (stored && stored.kind === 'rsc' && stored.encrypted_credentials) {
-        rscApi.verifyCredentials(coreApi, stored).then((result) => {
+      if (stored && stored.kind === 'rsc' && (secretSupplied || stored.encrypted_credentials)) {
+        const testRow = secretSupplied
+          ? {
+            ...stored,
+            endpoint: target,
+            identity: identity != null ? identity : stored.identity,
+            encrypted_credentials: coreApi.encryption.encrypt(JSON.stringify({ secret })),
+            id: `test-${stored.id}-${++testSeq}`,
+          }
+          : stored;
+        rscApi.verifyCredentials(coreApi, testRow).then((result) => {
+          if (secretSupplied) rscApi.forgetToken(testRow.id);
           try {
             coreApi.db.prepare(
               `UPDATE rubrik_connections
@@ -583,6 +648,27 @@ function createRouter(coreApi) {
         res.status(400).json({ error: "kind must be 'rsc' or 'cdm'" });
         return;
       }
+
+      // R3: https only, no userinfo, no query, no fragment, no loopback/metadata host.
+      if (endpoint != null) {
+        const endpointError = endpointProblem(coreApi, endpoint);
+        if (endpointError) {
+          res.status(400).json({ error: endpointError });
+          return;
+        }
+      }
+
+      // R2: the saved secret stays with the saved endpoint. kind counts too:
+      // a 'cdm' row is never dialled with the secret, an 'rsc' row is, so
+      // flipping kind changes which URL receives it.
+      const secretSupplied = typeof secret === 'string' && secret.length > 0;
+      const endpointChanged = endpoint != null && normTarget(endpoint) !== normTarget(existing.endpoint);
+      const kindChanged = kind != null && kind !== existing.kind;
+      if ((endpointChanged || kindChanged) && !secretSupplied && existing.encrypted_credentials) {
+        res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+        return;
+      }
+
       const encryptedCredentials = secret ? coreApi.encryption.encrypt(JSON.stringify({ secret })) : existing.encrypted_credentials;
       try {
         coreApi.db
@@ -599,6 +685,9 @@ function createRouter(coreApi) {
             encryptedCredentials,
             id
           );
+        // R5: a bearer cached for the old endpoint, identity or secret must
+        // never be sent after an edit.
+        rscApi.forgetToken(id);
         const row = coreApi.db.prepare('SELECT * FROM rubrik_connections WHERE id = ?').get(id);
         res.json(connectionToJson(row));
       } catch (err) {

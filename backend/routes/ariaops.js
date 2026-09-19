@@ -7,12 +7,17 @@
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
-const { encrypt } = require('../services/encryption');
+const { encrypt, decrypt } = require('../services/encryption');
 const ariaopsApi = require('../services/ariaopsApi');
 const { ariaopsPoller } = require('../services/ariaopsPoller');
 const ariaopsAdvisor = require('../services/advisors/ariaopsAdvisor');
+const { testTarget, assertSecretOnTargetChange, notBlockedHost } = require('../utils/connectionGuard');
 
 const router = express.Router();
+
+// The host is glued into https://<host>, so "name@127.0.0.1" or "name/path"
+// would dial somewhere other than the name the blocked-host check looked at.
+const HOST_RE = /^[A-Za-z0-9._:[\]-]+$/;
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
@@ -39,7 +44,7 @@ router.get('/instances', (req, res, next) => {
 /** POST /api/ariaops/instances — register an Aria Operations instance. */
 router.post('/instances', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').isString().trim().notEmpty().isLength({ max: 253 }).matches(HOST_RE).custom(notBlockedHost),
   body('username').isString().trim().notEmpty().isLength({ max: 256 }),
   body('password').isString().notEmpty().isLength({ max: 512 }),
   body('authSource').optional().isString().trim().isLength({ max: 256 }),
@@ -66,7 +71,7 @@ router.post('/instances', [
 router.put('/instances/:id', [
   param('id').isInt().toInt(),
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }).matches(HOST_RE).custom(notBlockedHost),
   body('username').optional().isString().trim().notEmpty().isLength({ max: 256 }),
   body('password').optional().isString().isLength({ max: 512 }),
   body('authSource').optional().isString().trim().isLength({ max: 256 }),
@@ -77,6 +82,12 @@ router.put('/instances/:id', [
     const row = db.prepare('SELECT * FROM ariaops_instances WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Aria Operations instance not found.' });
     const b = req.body;
+    const secretSupplied = !!(b.password && String(b.password).trim());
+    try {
+      assertSecretOnTargetChange({ stored: row, incoming: b, fields: ['host'], secretSupplied });
+    } catch (err) {
+      return res.status(err.status || 400).json({ error: err.message });
+    }
     db.prepare(`
       UPDATE ariaops_instances SET
         name = ?, host = ?, username = ?, auth_source = ?, encrypted_credentials = ?,
@@ -111,19 +122,39 @@ router.delete('/instances/:id', [param('id').isInt().toInt()], validate, (req, r
 
 /** POST /api/ariaops/instances/test — validate saved or candidate credentials. */
 router.post('/instances/test', [
-  body('host').isString().trim().notEmpty(),
+  body('host').isString().trim().notEmpty().isLength({ max: 253 }).matches(HOST_RE).custom(notBlockedHost),
   body('username').isString().trim().notEmpty(),
   body('password').optional().isString(),
   body('authSource').optional().isString(),
   body('id').optional().isInt().toInt(),
   body('sslVerify').optional().isBoolean(),
 ], validate, async (req, res) => {
-  const { id, host, username, password, authSource, sslVerify } = req.body;
-  let candidate = { host: host.trim(), username: username.trim(), password, auth_source: authSource, ssl_verify: sslVerify ? 1 : 0 };
-  if (!password && id) {
-    const row = db.prepare('SELECT * FROM ariaops_instances WHERE id = ?').get(id);
-    if (row) candidate = { ...row, host: candidate.host, username: candidate.username, auth_source: candidate.auth_source ?? row.auth_source, ssl_verify: candidate.ssl_verify };
+  const { id, password } = req.body;
+  const secretSupplied = !!(password && String(password).trim());
+  const saved = id ? db.prepare('SELECT * FROM ariaops_instances WHERE id = ?').get(id) : null;
+  if (!secretSupplied && !saved) {
+    return res.status(400).json({ error: 'Enter the password to test a connection that is not saved yet.' });
   }
+  let storedPassword = null;
+  if (!secretSupplied) {
+    try { storedPassword = JSON.parse(decrypt(saved.encrypted_credentials)).password; } catch { storedPassword = null; }
+    if (!storedPassword) return res.status(400).json({ error: 'The saved password could not be read. Enter it again.' });
+  }
+  // With no typed password the saved one is used, and then every value that
+  // decides where and how it is sent comes from the saved row, not the body.
+  const target = testTarget({
+    stored: saved,
+    incoming: req.body,
+    fields: { host: 'host', username: 'username', authSource: 'auth_source', sslVerify: 'ssl_verify' },
+    secretSupplied,
+  });
+  const candidate = {
+    host: target.host,
+    username: target.username,
+    password: secretSupplied ? password : storedPassword,
+    auth_source: target.authSource,
+    ssl_verify: [true, 1, 'true', '1'].includes(target.sslVerify) ? 1 : 0,
+  };
   const result = await ariaopsApi.testConnection(candidate);
   res.status(result.ok ? 200 : 502).json(result);
 });
@@ -135,7 +166,14 @@ router.post('/instances/:id/refresh', [param('id').isInt().toInt()], validate, a
     if (!row) return res.status(404).json({ error: 'Aria Operations instance not found.' });
     await ariaopsPoller.trigger(row);
     res.json(publicInstance(db.prepare('SELECT * FROM ariaops_instances WHERE id = ?').get(row.id)));
-  } catch (err) { next(err); }
+  } catch (err) {
+    // A raw axios error carries the request config (login body, token
+    // header). It never goes to next(); the poller already recorded the cause.
+    if (err && (err.isAxiosError || err.config || err.response)) {
+      return res.status(502).json({ error: 'The platform did not answer as expected.' });
+    }
+    next(err);
+  }
 });
 
 // Each probe section runs the same fetcher the poller uses, live against the

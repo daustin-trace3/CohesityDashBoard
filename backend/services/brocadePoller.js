@@ -6,6 +6,7 @@
 // stay in place (marked stale only when the section itself succeeded and
 // omitted them).
 const db = require('../db/database');
+const { isBlockedHost } = require('../utils/hostGuard');
 const { createPoller } = require('../core/pollerFramework');
 const brocadeApi = require('./brocadeApi');
 const brocadeFosApi = require('./brocadeFosApi');
@@ -37,6 +38,9 @@ function resolveFosTarget(source, switchRow) {
   const passwordEnc = override?.password_enc || source.fos_password_enc;
   const port = override?.port || source.fos_port || 443;
   if (!ip || !username || !passwordEnc) return null;
+  // The switch address comes from SANnav inventory (or an override). A FOS
+  // password is never sent to loopback, link-local or metadata space.
+  if (isBlockedHost(String(ip).trim())) return null;
   return {
     ip: String(ip).trim(), port, username, password_enc: passwordEnc,
     verify_ssl: source.verify_ssl, allow_http: !!source.fos_allow_http,

@@ -988,16 +988,31 @@ async function probeAudit(ome, coreApi, deviceId = null) {
 
 // ── Connection test ─────────────────────────────────────────────────────────
 
+// Fixed, caller-safe text for a failed connection test. Raw transport text
+// ("connect ECONNREFUSED 10.1.2.3:443") and upstream response bodies are never
+// returned: a test against a typed address would otherwise read them back.
+function testFailureMessage(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the username and password.';
+  if (status) return 'Unexpected response from the address.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_|ERR_TLS|ERR_SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ETIMEDOUT|ECONNABORTED|ESOCKETTIMEDOUT/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the address.';
+}
+
 async function testConnection(candidate, coreApi) {
+  const probe = { ...candidate, id: `test-${candidate.host}` };
   try {
-    const probe = { ...candidate, id: `test-${candidate.host}` };
     await getSession(probe, coreApi, true);
     const data = await oGet(probe, coreApi, '/api/DeviceService/Devices?$top=1');
     sessions.delete(probe.id);
     const count = data?.['@odata.count'] ?? (data?.value?.length ?? 0);
     return { ok: true, message: `Connected — ${count} managed device(s) visible.` };
   } catch (err) {
-    return { ok: false, message: omeErrorMessage(err) || err.message || 'Connection failed' };
+    sessions.delete(probe.id);
+    return { ok: false, message: testFailureMessage(err) };
   }
 }
 

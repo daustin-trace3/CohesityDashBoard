@@ -89,6 +89,34 @@ function publicMoveConn(coreApi, row) {
   };
 }
 
+// Credential-forwarding guards. A saved password only ever travels to the
+// address it was saved for. Implemented inline so the pack is safe on hosts
+// that predate coreApi.net; coreApi.net is used only for the blocked-host check.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const normTarget = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+const nonEmpty = (v) => typeof v === 'string' && v.length > 0;
+
+/** True when a body key in `fields` ({ bodyKey: column }) is present and differs from the stored row. */
+function targetChanged(row, body, fields) {
+  return Object.entries(fields).some(([key, col]) => body[key] !== undefined && normTarget(body[key]) !== normTarget(row[col]));
+}
+
+/** Turning certificate verification OFF lets someone on the path read the saved secret. */
+function sslVerifyTurnedOff(row, body) {
+  return body.sslVerify !== undefined && !!row.ssl_verify && !toBool(body.sslVerify);
+}
+
+/** Loopback, link-local and metadata targets are never a platform address. */
+function hostBlocked(coreApi, host) {
+  const net = coreApi.net || null;
+  return !!(net && net.isBlockedHost(host));
+}
+
+/** A Move test runs under its own id so it never reads or replaces a live token
+ *  (moveApi keys its token cache by id alone). */
+let testSeq = 0;
+const tempTestId = () => `test-${++testSeq}`;
+
 // ── source registration CRUD ────────────────────────────────────────────────
 
 function handleGetSources(req, res, coreApi) {
@@ -113,6 +141,7 @@ function handlePostSources(req, res, coreApi) {
     if (!Number.isInteger(n) || n < 5 || n > 1440) errors.push(fail('pollingIntervalMinutes'));
   }
   if (errors.length) return badRequest(res, errors);
+  if (hostBlocked(coreApi, b.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
 
   const db = coreApi.db;
   const name = b.name.trim();
@@ -158,6 +187,15 @@ function handlePutSource(req, res, coreApi) {
   const db = coreApi.db;
   const row = db.prepare('SELECT * FROM nutanix_sources WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'Nutanix source not found.' });
+
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
+
+  // R2: the saved password stays with the saved address. The username is an
+  // account name, not an address, so it may change on its own.
+  if (!nonEmpty(b.password) && (targetChanged(row, b, { host: 'host', port: 'port' }) || sslVerifyTurnedOff(row, b))) {
+    return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+  }
+
   db.prepare(`
     UPDATE nutanix_sources SET
       name = ?, source_type = ?, host = ?, port = ?, username = ?, encrypted_credentials = ?,
@@ -208,13 +246,33 @@ async function handlePostSourcesTest(req, res, coreApi) {
   if (id) {
     const row = coreApi.db.prepare('SELECT * FROM nutanix_sources WHERE id = ?').get(parseIntStrict(id));
     if (!row) return res.status(404).json({ error: 'Nutanix source not found.' });
-    candidate = { ...row, ...(password ? { password } : {}) };
+    if (!nonEmpty(password)) {
+      // R1: the saved password is tested against the saved address, saved TLS
+      // flag and saved account. Nothing from the body is used. The id is
+      // dropped (after the spread) so the client keys its session by
+      // "test-<host>" and a test never reads or replaces the live session.
+      candidate = { ...row, id: undefined };
+    } else {
+      // A typed password tests the typed settings; the saved one stays out of it.
+      candidate = {
+        ...row,
+        encrypted_credentials: undefined,
+        host: host ? host.trim() : row.host,
+        port: port ? parseIntStrict(port) : row.port,
+        source_type: sourceType || row.source_type,
+        username: username ? username.trim() : row.username,
+        ssl_verify: sslVerify !== undefined ? (toBool(sslVerify) ? 1 : 0) : row.ssl_verify,
+        password,
+        id: undefined,
+      };
+    }
   } else {
     if (!host || !sourceType || !username || !password) {
       return badRequest(res, [fail('host, sourceType, username, password required')]);
     }
     candidate = { host: host.trim(), source_type: sourceType, username: username.trim(), password, port: port ? parseIntStrict(port) : 9440, ssl_verify: toBool(sslVerify) ? 1 : 0 };
   }
+  if (hostBlocked(coreApi, candidate.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
   const result = await api.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);
 }
@@ -522,6 +580,7 @@ function handlePostMoveConnections(req, res, coreApi) {
   if (!(typeof b.password === 'string' && b.password.length > 0 && b.password.length <= 512)) errors.push(fail('password'));
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) errors.push(fail('sslVerify'));
   if (errors.length) return badRequest(res, errors);
+  if (hostBlocked(coreApi, b.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
 
   const db = coreApi.db;
   const name = b.name.trim();
@@ -554,6 +613,13 @@ function handlePutMoveConnection(req, res, coreApi) {
   const db = coreApi.db;
   const row = db.prepare('SELECT * FROM nutanix_move_conns WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'Move connection not found.' });
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
+
+  // R2: the saved password stays with the saved address (Move always uses port 443).
+  if (!nonEmpty(b.password) && (targetChanged(row, b, { host: 'host' }) || sslVerifyTurnedOff(row, b))) {
+    return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+  }
+
   db.prepare(`
     UPDATE nutanix_move_conns SET name = ?, host = ?, username = ?, encrypted_credentials = ?,
       ssl_verify = ?, updated_at = datetime('now') WHERE id = ?
@@ -595,11 +661,26 @@ async function handlePostMoveConnectionsTest(req, res, coreApi) {
   if (id) {
     const row = coreApi.db.prepare('SELECT * FROM nutanix_move_conns WHERE id = ?').get(parseIntStrict(id));
     if (!row) return res.status(404).json({ error: 'Move connection not found.' });
-    candidate = { ...row, ...(password ? { password } : {}) };
+    if (!nonEmpty(password)) {
+      // R1: saved password, saved address, saved TLS flag, saved account.
+      candidate = { ...row, id: tempTestId() };
+    } else {
+      // A typed password tests the typed settings; the saved one stays out of it.
+      candidate = {
+        ...row,
+        encrypted_credentials: undefined,
+        host: host ? host.trim() : row.host,
+        username: username ? username.trim() : row.username,
+        ssl_verify: sslVerify !== undefined ? (toBool(sslVerify) ? 1 : 0) : row.ssl_verify,
+        password,
+        id: tempTestId(),
+      };
+    }
   } else {
     if (!host || !username || !password) return badRequest(res, [fail('host, username, password required')]);
-    candidate = { host: host.trim(), username: username.trim(), password, ssl_verify: toBool(sslVerify) ? 1 : 0 };
+    candidate = { host: host.trim(), username: username.trim(), password, ssl_verify: toBool(sslVerify) ? 1 : 0, id: tempTestId() };
   }
+  if (hostBlocked(coreApi, candidate.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
   const result = await moveApi.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);
 }

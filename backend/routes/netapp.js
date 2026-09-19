@@ -1,11 +1,13 @@
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
-const { encrypt } = require('../services/encryption');
+const { encrypt, decrypt } = require('../services/encryption');
 const netappApi = require('../services/netappApi');
 const { syncAndPollAll, syncAndPollInstance, triggerPoll, reschedule, scheduleArray, cancelArray } = require('../services/netappPoller');
 const cacheControl = require('../middleware/cache');
 const netappAdvisor = require('../services/advisors/netappAdvisor');
+const { isBlockedHost } = require('../utils/hostGuard');
+const { testTarget, assertSecretOnTargetChange } = require('../utils/connectionGuard');
 
 const router = express.Router();
 
@@ -13,16 +15,6 @@ function validate(req, res, next) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
   next();
-}
-
-// SSRF guard on the management host.
-function isBlockedHost(host) {
-  const h = String(host || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').split(':')[0];
-  const blocked = [
-    /^127\./, /^0\.0\.0\.0$/, /^169\.254\./, /^::1$/,
-    /^localhost$/i, /^metadata\.google\.internal$/i, /^169\.254\.169\.254$/,
-  ];
-  return blocked.some((p) => p.test(h));
 }
 
 // Read-only view of a cluster (AIQUM-managed or direct). Credential values —
@@ -71,17 +63,32 @@ function buildDirectCredentials(reqBody) {
   return encrypt(JSON.stringify({ password: String(reqBody.password) }));
 }
 
+// Test-connection failures map to a small fixed set of messages. Raw transport
+// text ("connect ECONNREFUSED 10.1.2.3:443") and upstream response bodies are
+// never echoed: they turn the test button into a port scanner and a reader of
+// whatever answers at the address.
+const TLS_CODES = new Set([
+  'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID', 'HOSTNAME_MISMATCH',
+]);
 function describeApiError(err) {
-  if (err?.response) {
-    const status = err.response.status;
-    const detail = err.response.data?.error?.message || '';
-    if (status === 401 || status === 403) return `Authentication failed (HTTP ${status})${detail ? `: ${detail}` : ''}`;
-    return `Cluster returned HTTP ${status}${detail ? `: ${detail}` : ''}`;
-  }
-  if (err?.code === 'NETAPP_NO_PASSWORD') return 'No password provided';
-  if (err?.code) return `Network error: ${err.code}`;
-  return err?.message || 'Connection failed';
+  const status = err?.response?.status;
+  if (status === 401 || status === 403) return 'Sign-in was refused';
+  if (status) return `Unexpected response (HTTP ${status})`;
+  const code = err?.code;
+  if (code === 'NETAPP_NO_PASSWORD') return 'No password provided';
+  if (code === 'AIQUM_NOT_CONFIGURED') return 'Host, username and password are required';
+  if (TLS_CODES.has(code)) return 'The TLS certificate was not trusted';
+  if (code === 'ECONNABORTED' || code === 'ETIMEDOUT' || /timed? ?out/i.test(err?.message || '')) return 'Timed out';
+  if (code) return 'Could not reach the address';
+  return 'Unexpected response';
 }
+
+// The origin form the clients dial, so "array.corp.local" and the stored
+// "https://array.corp.local" count as the same target.
+const sameHostForm = (v) => (v === undefined || v === null || v === '' ? v : netappApi.normalizeHost(v));
+const sslFlag = (v) => (v === true || v === 'true' || v === 1 || v === '1' ? 1 : 0);
 
 /* ── AIQUM connection + discovered clusters ──────────────────────────────── */
 
@@ -154,6 +161,20 @@ router.put('/aiqum/instances/:id', [param('id').isInt().toInt(), ...aiqumInstanc
     if (isBlockedHost(h)) return res.status(400).json({ error: 'host is not allowed' });
     const dup = db.prepare('SELECT id FROM netapp_aiqum_instances WHERE LOWER(host) = LOWER(?) AND id != ?').get(h, row.id);
     if (dup) return res.status(409).json({ error: 'A gateway with that host already exists' });
+
+    const secretSupplied = !!password;
+    try {
+      assertSecretOnTargetChange({
+        stored: { host: sameHostForm(row.host) },
+        incoming: { host: sameHostForm(h) },
+        fields: ['host'],
+        secretSupplied
+      });
+    } catch (err) {
+      if (err.status === 400) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+
     db.prepare(`
       UPDATE netapp_aiqum_instances SET name = ?, host = ?, username = ?, encrypted_credentials = ?,
         poll_interval_minutes = ?, updated_at = datetime('now') WHERE id = ?
@@ -192,27 +213,49 @@ router.post('/aiqum/instances/:id/poll', [param('id').isInt().toInt()], validate
   } catch (err) { next(err); }
 });
 
-// Validate AIQUM connectivity. Accepts posted creds; `id` fills blanks from
-// that stored gateway (edit-form testing without retyping the password).
-router.post('/aiqum/test', async (req, res) => {
+// Validate AIQUM connectivity. With a typed password the posted host is
+// tested with it. With `id` and no password the STORED gateway is tested as
+// saved (host, username, certificate setting): a saved password is never sent
+// to a host that came in the request body.
+router.post('/aiqum/test', [
+  body('id').optional({ nullable: true }).isInt().toInt(),
+  body('host').optional({ nullable: true }).isString().trim().isLength({ max: 512 })
+    .custom((v) => !v || !isBlockedHost(v)).withMessage('host is not allowed'),
+  body('username').optional({ nullable: true }).isString().trim().isLength({ max: 256 }),
+  body('password').optional({ nullable: true }).isString().isLength({ max: 1024 }),
+  body('ssl_verify').optional().isBoolean(),
+], validate, async (req, res) => {
   try {
     const b = req.body || {};
-    let stored = { host: '', username: '', password: '' };
-    if (b.id) {
-      const row = db.prepare('SELECT * FROM netapp_aiqum_instances WHERE id = ?').get(Number(b.id));
-      if (row) stored = netappApi.instanceConfig(row);
-    } else {
-      stored = netappApi.getAiqumConfig();
+    const stored = b.id
+      ? (db.prepare('SELECT * FROM netapp_aiqum_instances WHERE id = ?').get(b.id) || null)
+      : null;
+
+    const secretSupplied = !!b.password;
+    if (!secretSupplied && !stored) {
+      return res.status(200).json({ ok: false, error: b.id ? 'Gateway not found' : 'No password provided' });
     }
-    const override = {
-      host: b.host || stored.host,
-      username: b.username || stored.username,
-      password: b.password || stored.password,
-    };
-    res.json(await netappApi.testAiqum(override));
+    const target = testTarget({ stored, incoming: b, fields: ['host'], secretSupplied });
+    if (!target.host) return res.status(200).json({ ok: false, error: 'No host provided' });
+    if (isBlockedHost(target.host)) return res.status(400).json({ error: 'host is not allowed' });
+
+    const config = secretSupplied
+      ? {
+        host: target.host,
+        username: b.username || stored?.username || '',
+        password: b.password,
+        sslVerify: b.ssl_verify !== undefined ? !!sslFlag(b.ssl_verify) : !!stored?.ssl_verify,
+      }
+      : {
+        host: stored.host,
+        username: stored.username,
+        password: decrypt(stored.encrypted_credentials),
+        sslVerify: !!stored.ssl_verify,
+      };
+
+    res.json(await netappApi.testAiqum(config));
   } catch (err) {
-    const status = err.response && err.response.status;
-    res.status(200).json({ ok: false, error: status ? `HTTP ${status}` : (err.message || 'Connection failed') });
+    res.status(200).json({ ok: false, error: describeApiError(err) });
   }
 });
 
@@ -232,8 +275,6 @@ router.post(
   validate,
   async (req, res) => {
     try {
-      // Username/password are write-only in the UI, so an edit-mode test may
-      // leave either blank — fall back to the stored row when an id is given.
       let stored = null;
       if (req.body.id) {
         stored = db.prepare("SELECT * FROM netapp_arrays WHERE id = ? AND source = 'direct'").get(req.body.id);
@@ -241,18 +282,38 @@ router.post(
           return res.status(200).json({ ok: false, error: 'Cluster not found' });
         }
       }
-      const username = (req.body.username || '').trim() || stored?.username;
-      if (!username) return res.status(200).json({ ok: false, error: 'No username provided' });
-      if (!req.body.password && !stored) {
-        return res.status(200).json({ ok: false, error: 'No password provided' });
-      }
-      const result = await netappApi.testDirectConnection({
-        mgmt_host: req.body.mgmt_host,
-        username,
-        password: req.body.password || undefined,
-        encrypted_credentials: req.body.password ? undefined : stored?.encrypted_credentials,
-        ssl_verify: req.body.ssl_verify ? 1 : 0,
+
+      // A typed password tests the posted host with it. No password means the
+      // saved one, and the saved one only ever goes to the saved row: stored
+      // host, stored username, stored certificate setting.
+      const secretSupplied = !!req.body.password;
+      const target = testTarget({
+        stored,
+        incoming: req.body,
+        fields: ['mgmt_host'],
+        secretSupplied
       });
+      if (isBlockedHost(target.mgmt_host)) return res.status(400).json({ error: 'mgmt_host is not allowed' });
+
+      const username = secretSupplied
+        ? ((req.body.username || '').trim() || stored?.username || '')
+        : (stored?.username || (req.body.username || '').trim());
+      if (!username) return res.status(200).json({ ok: false, error: 'No username provided' });
+      if (!secretSupplied && !stored) return res.status(200).json({ ok: false, error: 'No password provided' });
+
+      const result = await netappApi.testDirectConnection(secretSupplied
+        ? {
+          mgmt_host: target.mgmt_host,
+          username,
+          password: req.body.password,
+          ssl_verify: req.body.ssl_verify !== undefined ? sslFlag(req.body.ssl_verify) : (stored ? stored.ssl_verify : 0),
+        }
+        : {
+          mgmt_host: stored.mgmt_host,
+          username: stored.username,
+          encrypted_credentials: stored.encrypted_credentials,
+          ssl_verify: stored.ssl_verify,
+        });
       res.json(result);
     } catch (err) {
       res.status(200).json({ ok: false, error: describeApiError(err) });
@@ -297,6 +358,20 @@ router.put('/arrays/:id', [param('id').isInt(), ...directArrayUpdateValidators],
     if (existing.source === 'aiqum') {
       return res.status(403).json({ error: 'AIQUM-managed clusters are updated automatically' });
     }
+
+    const secretSupplied = !!req.body.password;
+    try {
+      assertSecretOnTargetChange({
+        stored: { mgmt_host: sameHostForm(existing.mgmt_host) },
+        incoming: { mgmt_host: sameHostForm(req.body.mgmt_host) },
+        fields: ['mgmt_host'],
+        secretSupplied
+      });
+    } catch (err) {
+      if (err.status === 400) return res.status(400).json({ error: err.message });
+      throw err;
+    }
+
     const encrypted = req.body.password ? buildDirectCredentials(req.body) : existing.encrypted_credentials;
     db.prepare(`
       UPDATE netapp_arrays SET name = ?, mgmt_host = ?, username = ?, encrypted_credentials = ?,
@@ -308,7 +383,7 @@ router.put('/arrays/:id', [param('id').isInt(), ...directArrayUpdateValidators],
       (req.body.username || '').trim() || existing.username,
       encrypted,
       req.body.polling_interval_minutes || existing.polling_interval_minutes,
-      req.body.ssl_verify ? 1 : 0,
+      req.body.ssl_verify !== undefined ? (req.body.ssl_verify ? 1 : 0) : existing.ssl_verify,
       req.params.id
     );
     const row = db.prepare('SELECT * FROM netapp_arrays WHERE id = ?').get(req.params.id);

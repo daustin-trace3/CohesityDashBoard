@@ -54,6 +54,11 @@ function handlePostVcenters(req, res, coreApi) {
   const db = coreApi.db;
   const name = b.name.trim();
   const host = b.host.trim();
+
+  if (coreApi.net && coreApi.net.isBlockedHost(host)) {
+    return res.status(400).json({ error: 'that address is not allowed' });
+  }
+
   const dup = db.prepare('SELECT id FROM vcenter_vcenters WHERE name = ? OR host = ?').get(name, host);
   if (dup) return res.status(409).json({ error: 'A vCenter with that name or host is already registered.' });
   const info = db.prepare(`
@@ -89,13 +94,25 @@ function handlePutVcenter(req, res, coreApi) {
   const db = coreApi.db;
   const row = db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'vCenter not found.' });
+
+  const secretSupplied = b.password !== undefined && b.password !== '';
+  const hostChanged = b.host !== undefined && (b.host || '').trim().toLowerCase() !== (row.host || '').toLowerCase();
+  if (hostChanged && !secretSupplied) {
+    return res.status(400).json({ error: 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.' });
+  }
+
+  const newHost = b.host?.trim() || row.host;
+  if (coreApi.net && coreApi.net.isBlockedHost(newHost)) {
+    return res.status(400).json({ error: 'that address is not allowed' });
+  }
+
   db.prepare(`
     UPDATE vcenter_vcenters SET
       name = ?, host = ?, username = ?, encrypted_credentials = ?,
       ssl_verify = ?, polling_interval_minutes = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(
-    b.name?.trim() || row.name, b.host?.trim() || row.host, b.username?.trim() || row.username,
+    b.name?.trim() || row.name, newHost, b.username?.trim() || row.username,
     b.password ? coreApi.encryption.encrypt(JSON.stringify({ password: b.password })) : row.encrypted_credentials,
     b.sslVerify !== undefined ? (toBool(b.sslVerify) ? 1 : 0) : row.ssl_verify,
     b.pollingIntervalMinutes ? parseIntStrict(b.pollingIntervalMinutes) : row.polling_interval_minutes,
@@ -132,10 +149,32 @@ async function handlePostVcentersTest(req, res, coreApi) {
   if (errors.length) return badRequest(res, errors);
 
   const { id, host, username, password, sslVerify } = b;
-  let candidate = { host: host.trim(), username: username.trim(), password, ssl_verify: toBool(sslVerify) ? 1 : 0 };
-  if (!password && id) {
-    const row = coreApi.db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(parseIntStrict(id));
-    if (row) candidate = { ...row, host: candidate.host, username: candidate.username, ssl_verify: candidate.ssl_verify };
+  const secretSupplied = password !== undefined && password !== '';
+  const stored = id ? coreApi.db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(parseIntStrict(id)) : null;
+
+  // R1: the saved secret only ever travels to the saved host, with the saved
+  // username and the saved TLS setting. The body's target is used only when
+  // the caller typed a secret for this test.
+  const useStored = !!stored && !secretSupplied;
+  const testHost = String(useStored ? stored.host : host).trim();
+  const testUsername = String(useStored ? (stored.username || username) : username).trim();
+
+  if (coreApi.net && (coreApi.net.isBlockedHost(testHost) || coreApi.net.isBlockedHost(host))) {
+    return res.status(400).json({ error: 'that address is not allowed' });
+  }
+
+  const candidate = {
+    host: testHost,
+    username: testUsername,
+    password: secretSupplied ? password : undefined,
+    ssl_verify: useStored ? (stored.ssl_verify ? 1 : 0) : (toBool(sslVerify) ? 1 : 0),
+    id: `test-${testHost}`,
+  };
+  if (!secretSupplied && stored?.encrypted_credentials) {
+    candidate.encrypted_credentials = stored.encrypted_credentials;
+  }
+  if (!candidate.password && !candidate.encrypted_credentials) {
+    return res.status(400).json({ ok: false, error: 'Enter the password to test this connection.' });
   }
   const result = await api.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);

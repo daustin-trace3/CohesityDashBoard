@@ -248,6 +248,18 @@ async function fetchHardware(rawConn, coreApi) {
 }
 
 /** Validate a connection (saved row or unsaved candidate). Never throws. */
+/** Fixed, caller-safe text for a failed test. Never echoes transport text
+ *  (which names addresses and ports) or an upstream response body. */
+function testFailureMessage(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused.';
+  if (code === 'ETIMEDOUT' || /timed out/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|TLS|SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'EPIPE'].includes(code)) return 'Could not reach the address.';
+  return 'Unexpected response.';
+}
+
 async function testConnection(rawCandidate, coreApi) {
   const conn = normConn(rawCandidate);
   try {
@@ -258,7 +270,7 @@ async function testConnection(rawCandidate, coreApi) {
       const status = loginErr.response?.status;
       return {
         ok: false,
-        error: status === 401 ? 'Authentication failed — check the appliance credentials.' : safeMsg(loginErr),
+        error: status === 401 ? 'Authentication failed — check the appliance credentials.' : testFailureMessage(loginErr),
       };
     }
     for (const path of CANDIDATE_PATHS) {

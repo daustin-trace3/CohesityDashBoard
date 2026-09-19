@@ -58,7 +58,12 @@ function cache(res, seconds) {
 
 // ── clusters ─────────────────────────────────────────────────────────────
 
-function isBlockedVip(vip) {
+// The host's shared guard (coreApi.net) decides when it exists: it also
+// catches [::1], ::ffff:127.0.0.1 and numeric shorthand. The short list below
+// only runs on a host that predates coreApi.net.
+function isBlockedVip(vip, coreApi) {
+  const net = (coreApi && coreApi.net) || null;
+  if (net) return net.isBlockedHost(vip);
   const blocked = [
     /^127\./,
     /^0\.0\.0\.0/,
@@ -71,7 +76,25 @@ function isBlockedVip(vip) {
   return blocked.some((pattern) => pattern.test(vip));
 }
 
-function validateClusterBody(b, { partial = false } = {}) {
+// A saved credential is only ever sent to the address it was saved for.
+// Implemented inline (not through coreApi.net) so the pack holds the rule on
+// an older host too. Same text as the host routers.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const normTarget = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+
+// A failed Cohesity call is an axios error whose config carries the request:
+// for a login that is the username and password (err.config.data), for every
+// other call the apiKey or bearer header. Hand the host a plain Error with
+// nothing but a status and a code on it.
+function plainUpstreamError(err) {
+  const upstream = err && err.response && err.response.status;
+  const out = new Error(upstream ? `Cluster returned HTTP ${upstream}` : 'Cluster request failed');
+  out.status = 502;
+  if (err && err.code) out.code = err.code;
+  return out;
+}
+
+function validateClusterBody(b, { partial = false, coreApi = null } = {}) {
   const errors = [];
   if (!partial || b.name !== undefined) {
     if (!isNonEmptyString(b.name, 253)) errors.push(vfail('name', 'name is required'));
@@ -117,7 +140,7 @@ function validateClusterBody(b, { partial = false } = {}) {
     if (!vip) errors.push(vfail('vip', 'VIP/hostname is required for direct connections'));
     else if (!/^[a-zA-Z0-9._-]+$/.test(vip)) errors.push(vfail('vip', 'VIP contains invalid characters'));
     else if (vip.length > 253) errors.push(vfail('vip', 'VIP too long'));
-    else if (isBlockedVip(vip)) errors.push(vfail('vip', 'VIP address not allowed'));
+    else if (isBlockedVip(vip, coreApi)) errors.push(vfail('vip', 'VIP address not allowed'));
   } else if (b.connection_type === 'helios') {
     const vip = typeof b.vip === 'string' ? b.vip.trim() : b.vip;
     if (!vip) errors.push(vfail('vip', 'Helios cluster ID is required'));
@@ -158,7 +181,7 @@ function handleGetClusters(req, res, coreApi) {
 
 function handlePostClusters(req, res, coreApi) {
   const b = req.body || {};
-  const errors = validateClusterBody(b);
+  const errors = validateClusterBody(b, { coreApi });
   if (errors.length) return badReq(res, errors);
 
   const {
@@ -169,7 +192,7 @@ function handlePostClusters(req, res, coreApi) {
   if (connection_type === 'direct' && !vip) {
     return res.status(400).json({ error: 'vip is required for direct connections' });
   }
-  if (connection_type === 'direct' && vip && isBlockedVip(vip)) {
+  if (connection_type === 'direct' && vip && isBlockedVip(vip, coreApi)) {
     return res.status(400).json({ error: 'Invalid VIP address.' });
   }
 
@@ -199,12 +222,12 @@ function handlePostClusters(req, res, coreApi) {
 
 async function handlePostClustersTest(req, res, coreApi) {
   const b = req.body || {};
-  const errors = validateClusterBody(b);
+  const errors = validateClusterBody(b, { coreApi });
   if (b.ssl_verify !== undefined && !isBooleanish(b.ssl_verify) && typeof b.ssl_verify !== 'boolean') errors.push(vfail('ssl_verify'));
   if (errors.length) return badReq(res, errors);
 
   const { connection_type, vip, auth_type, credentials, ssl_verify = false } = b;
-  if (connection_type === 'direct' && vip && isBlockedVip(vip)) {
+  if (connection_type === 'direct' && vip && isBlockedVip(vip, coreApi)) {
     return res.status(400).json({ error: 'Invalid VIP address.' });
   }
 
@@ -218,6 +241,8 @@ async function handlePostClustersTest(req, res, coreApi) {
       message = 'Connection timed out.';
     } else if (status === 401 || status === 403) {
       message = 'Authentication failed. Check credentials.';
+    } else if (/CERT|SELF_SIGNED|ALTNAME/.test(String(err.code || ''))) {
+      message = 'The TLS certificate was not trusted.';
     } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'EHOSTUNREACH') {
       message = 'Cluster unreachable. Check the VIP/hostname.';
     } else if (status) {
@@ -231,7 +256,7 @@ function handlePutCluster(req, res, coreApi) {
   const id = reqIntParam(req, res);
   if (id === null) return;
   const b = req.body || {};
-  const errors = validateClusterBody(b, { partial: true });
+  const errors = validateClusterBody(b, { partial: true, coreApi });
   if (errors.length) return badReq(res, errors);
 
   const db = coreApi.db;
@@ -246,8 +271,27 @@ function handlePutCluster(req, res, coreApi) {
   const updatedType = connection_type !== undefined ? connection_type : existing.connection_type;
   const updatedVip = vip !== undefined ? vip : existing.vip;
 
-  if (updatedType === 'direct' && updatedVip && isBlockedVip(updatedVip)) {
+  if (updatedType === 'direct' && updatedVip && isBlockedVip(updatedVip, coreApi)) {
     return res.status(400).json({ error: 'Invalid VIP address.' });
+  }
+  // validateClusterBody only checks vip when the body also names
+  // connection_type, so a body with vip alone skipped the character check and
+  // "127.0.0.1#@x" parsed as loopback once it was put in a URL.
+  if (updatedType === 'direct' && vip !== undefined && !/^[a-zA-Z0-9._-]+$/.test(String(vip).trim())) {
+    return res.status(400).json({ error: 'Invalid VIP address.' });
+  }
+
+  // The saved credential is kept exactly when `credentials` is absent. Where
+  // it is sent is decided by connection_type (Helios or the cluster) and, for
+  // a direct cluster, the vip. Helios to Helios is exempt: vip is then only
+  // the cluster id header and the key still goes to Helios.
+  const bothHelios = existing.connection_type === 'helios' && updatedType === 'helios';
+  const targetChanged = !bothHelios && (
+    (connection_type !== undefined && normTarget(connection_type) !== normTarget(existing.connection_type))
+    || (vip !== undefined && normTarget(vip) !== normTarget(existing.vip))
+  );
+  if (targetChanged && credentials === undefined) {
+    return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
   }
 
   const updatedName = name !== undefined ? name.trim() : existing.name;
@@ -266,7 +310,7 @@ function handlePutCluster(req, res, coreApi) {
       WHERE id = ?
     `).run(updatedName, updatedType, updatedVip, updatedAuthType, updatedCreds, updatedInterval, updatedSslVerify, updatedTags, id);
 
-    if (credentials !== undefined) api.invalidateSession(Number(id));
+    if (credentials !== undefined || targetChanged) api.invalidateSession(Number(id));
 
     const updated = db.prepare('SELECT * FROM clusters WHERE id = ?').get(id);
     poller.getCohesityPoller(coreApi).schedule(updated);
@@ -298,7 +342,8 @@ async function handleGetClusterStatus(req, res, coreApi) {
   if (id === null) return;
   const cluster = coreApi.db.prepare('SELECT * FROM clusters WHERE id = ?').get(id);
   if (!cluster) return res.status(404).json({ error: 'Cluster not found' });
-  const data = await api.fetchClusterStatus(cluster, coreApi);
+  let data;
+  try { data = await api.fetchClusterStatus(cluster, coreApi); } catch (err) { throw plainUpstreamError(err); }
   res.json(data);
 }
 
@@ -307,7 +352,8 @@ async function handleGetClusterHardware(req, res, coreApi) {
   if (id === null) return;
   const cluster = coreApi.db.prepare('SELECT * FROM clusters WHERE id = ?').get(id);
   if (!cluster) return res.status(404).json({ error: 'Cluster not found' });
-  const data = await api.fetchNodes(cluster, coreApi);
+  let data;
+  try { data = await api.fetchNodes(cluster, coreApi); } catch (err) { throw plainUpstreamError(err); }
   res.json(data);
 }
 

@@ -234,7 +234,7 @@ export default function AdminSettingsPage() {
       setNotifyPasswordCleared(false);
       toast({ type: 'success', title: 'Settings saved', message: 'Alert notification settings updated.' });
     } catch (err) {
-      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Could not save notification settings. Try again.' });
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || err?.response?.data?.message || 'Could not save notification settings. Try again.' });
     } finally {
       setSavingNotify(false);
     }
@@ -246,7 +246,7 @@ export default function AdminSettingsPage() {
       await client.post('/settings/notifications/test');
       toast({ type: 'success', title: 'Test email sent', message: 'Check the configured recipients.' });
     } catch (err) {
-      toast({ type: 'error', title: 'Test email failed', message: err?.response?.data?.error || 'Could not send the test email.' });
+      toast({ type: 'error', title: 'Test email failed', message: err?.response?.data?.error || err?.response?.data?.message || 'Could not send the test email.' });
     } finally {
       setTestingNotify(false);
     }
@@ -688,6 +688,9 @@ export default function AdminSettingsPage() {
                   onChange={e => setNotify(s => ({ ...s, smtpHost: e.target.value }))}
                   className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none"
                 />
+                {notify.smtpPasswordSet && !notifyPasswordCleared && (
+                  <p className="text-[10px] text-ink-faint mt-1">Changing the mail server, port or turning encryption off needs the SMTP password entered again.</p>
+                )}
               </div>
               <div>
                 <label htmlFor="smtp-port" className="block text-xs font-semibold text-ink mb-1">Port</label>

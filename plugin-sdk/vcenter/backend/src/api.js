@@ -760,10 +760,26 @@ async function fetchEvents(vc, coreApi, sinceIso) {
   }
 }
 
+// Fixed, caller-safe text for a failed connection test. Raw transport text
+// ("connect ECONNREFUSED 10.1.2.3:443") and upstream response bodies are never
+// returned: a test against a typed address would otherwise read them back.
+function testFailureMessage(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the username and password.';
+  if (status) return 'Unexpected response from the address.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_|ERR_TLS|ERR_SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ETIMEDOUT|ECONNABORTED|ESOCKETTIMEDOUT/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the address.';
+}
+
 /** Validate a vCenter (saved row or unsaved candidate). Never throws. */
 async function testConnection(vcLike, coreApi) {
+  // Temporary id AFTER the spread so a saved row's id can never win and the
+  // test can never overwrite the live session cache entry.
+  const probe = { ...vcLike, id: `test-${vcLike.host}` };
   try {
-    const probe = { id: `test-${vcLike.host}`, ...vcLike };
     const token = await getSession(probe, coreApi, true);
     const hosts = unwrap(await (async () => {
       const { data } = await rawRequest(probe, { method: 'GET', path: '/api/vcenter/host', headers: { 'vmware-api-session-id': token } });
@@ -772,11 +788,8 @@ async function testConnection(vcLike, coreApi) {
     sessions.delete(probe.id);
     return { ok: true, hosts: hosts.length };
   } catch (err) {
-    const status = err.response?.status;
-    return {
-      ok: false,
-      error: status === 401 ? 'Authentication failed — check the vCenter username and password.' : errMsg(err),
-    };
+    sessions.delete(probe.id);
+    return { ok: false, error: testFailureMessage(err) };
   }
 }
 

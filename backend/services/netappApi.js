@@ -13,9 +13,12 @@ const logger = require('../utils/logger');
 
 /** Normalize a host into an https origin with no trailing slash. */
 function normalizeHost(host) {
-  let h = String(host || '').trim().replace(/\/+$/, '');
-  if (!/^https?:\/\//i.test(h)) h = `https://${h}`;
-  return h;
+  const h = String(host || '').trim().replace(/\/+$/, '');
+  // Basic credentials only ever travel over TLS: a typed or stored http://
+  // is upgraded, never kept (and never thrown on, the poller normalizes
+  // stored rows on every call).
+  if (/^https:\/\//i.test(h)) return h;
+  return `https://${h.replace(/^http:\/\//i, '')}`;
 }
 
 function getPassword(array) {
@@ -35,6 +38,7 @@ function clientFor(array, passwordOverride) {
     baseURL: normalizeHost(array.mgmt_host),
     httpsAgent: new https.Agent({ rejectUnauthorized: !!array.ssl_verify }),
     timeout: 30000,
+    maxRedirects: 0, // Basic credentials never follow a redirect to another host
     auth: { username: array.username, password },
     headers: { accept: 'application/json' },
   });
@@ -52,7 +56,9 @@ function aiqumInstances() {
 function instanceConfig(row) {
   let password = '';
   try { password = decrypt(row.encrypted_credentials); } catch { password = ''; }
-  return { host: normalizeHost(row.host), username: row.username, password };
+  // sslVerify follows the row's ssl_verify column. Rows without that column
+  // (every schema up to netapp v5) read as off, which is the old behaviour.
+  return { host: normalizeHost(row.host), username: row.username, password, sslVerify: !!row.ssl_verify };
 }
 
 /**
@@ -89,10 +95,11 @@ function configForArray(array) {
   return getAiqumConfig();
 }
 
-/** Axios client pointed at AIQUM (basic auth, self-signed cert tolerated). */
+/** Axios client pointed at AIQUM (basic auth). Certificate checking follows
+ *  the config's sslVerify flag instead of being switched off for everyone. */
 function aiqumClient(cfgOverride) {
   const c = cfgOverride && cfgOverride.host
-    ? { host: normalizeHost(cfgOverride.host), username: cfgOverride.username, password: cfgOverride.password }
+    ? { host: normalizeHost(cfgOverride.host), username: cfgOverride.username, password: cfgOverride.password, sslVerify: cfgOverride.sslVerify }
     : getAiqumConfig();
   if (!c.host || !c.username || !c.password) {
     const err = new Error('AIQUM is not configured (host/user/password)');
@@ -101,8 +108,9 @@ function aiqumClient(cfgOverride) {
   }
   return axios.create({
     baseURL: c.host,
-    httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    httpsAgent: new https.Agent({ rejectUnauthorized: !!c.sslVerify }),
     timeout: 60000,
+    maxRedirects: 0, // Basic credentials never follow a redirect to another host
     auth: { username: c.username, password: c.password },
     headers: { accept: 'application/json' },
   });

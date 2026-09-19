@@ -5,6 +5,8 @@ const { encrypt, decrypt } = require('../services/encryption');
 const { invalidateSession, testClusterConnection } = require('../services/cohesityApi');
 const { scheduleCluster, cancelCluster } = require('../services/poller');
 const cacheControl = require('../middleware/cache');
+const { isBlockedHost } = require('../utils/hostGuard');
+const { assertSecretOnTargetChange } = require('../utils/connectionGuard');
 
 const router = express.Router();
 
@@ -17,16 +19,19 @@ function validate(req, res, next) {
 }
 
 function isBlockedVip(vip) {
-  const blocked = [
-    /^127\./,
-    /^0\.0\.0\.0/,
-    /^169\.254\./,
-    /^::1$/,
-    /^localhost$/i,
-    /^metadata\.google\.internal$/i,
-    /^169\.254\.169\.254$/
-  ];
-  return blocked.some((pattern) => pattern.test(vip));
+  return isBlockedHost(vip);
+}
+
+// A failed Cohesity call is an axios error whose config carries the request:
+// for a login that is the username and password (err.config.data), for every
+// other call the apiKey or bearer header. Hand the error handler a plain Error
+// with nothing but a status and a code on it.
+function plainUpstreamError(err) {
+  const upstream = err && err.response && err.response.status;
+  const out = new Error(upstream ? `Cluster returned HTTP ${upstream}` : 'Cluster request failed');
+  out.status = 502;
+  if (err && err.code) out.code = err.code;
+  return out;
 }
 
 /**
@@ -266,6 +271,8 @@ router.post(
         message = 'Connection timed out.';
       } else if (status === 401 || status === 403) {
         message = 'Authentication failed. Check credentials.';
+      } else if (/CERT|SELF_SIGNED|ALTNAME/.test(String(err.code || ''))) {
+        message = 'The TLS certificate was not trusted.';
       } else if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'EHOSTUNREACH') {
         message = 'Cluster unreachable. Check the VIP/hostname.';
       } else if (status) {
@@ -372,6 +379,31 @@ router.put(
       if (updatedType === 'direct' && updatedVip && isBlockedVip(updatedVip)) {
         return res.status(400).json({ error: 'Invalid VIP address.' });
       }
+      // The vip validators above only run when the body also names
+      // connection_type, so a body with vip alone skipped the character check
+      // and "127.0.0.1#@x" parsed as loopback once it was put in a URL.
+      if (updatedType === 'direct' && vip !== undefined && !/^[a-zA-Z0-9._-]+$/.test(String(vip).trim())) {
+        return res.status(400).json({ error: 'Invalid VIP address.' });
+      }
+
+      // The saved credential is kept exactly when `credentials` is absent.
+      // Where it is sent is decided by connection_type (Helios or the cluster)
+      // and, for a direct cluster, the vip. Helios to Helios is exempt: vip is
+      // then only the cluster id header and the key still goes to Helios.
+      const secretSupplied = credentials !== undefined;
+      const bothHelios = existing.connection_type === 'helios' && updatedType === 'helios';
+      let targetChanged = [];
+      try {
+        targetChanged = assertSecretOnTargetChange({
+          stored: existing,
+          incoming: req.body,
+          fields: bothHelios ? [] : ['connection_type', 'vip'],
+          secretSupplied
+        });
+      } catch (err) {
+        if (err.status === 400) return res.status(400).json({ error: err.message });
+        throw err;
+      }
 
       const updatedName = name !== undefined ? name.trim() : existing.name;
       const updatedAuthType = auth_type !== undefined ? auth_type : existing.auth_type;
@@ -391,7 +423,7 @@ router.put(
         WHERE id = ?
       `).run(updatedName, updatedType, updatedVip, updatedAuthType, updatedCreds, updatedInterval, updatedSslVerify, updatedTags, id);
 
-      if (credentials !== undefined) {
+      if (credentials !== undefined || targetChanged.length) {
         invalidateSession(Number(id));
       }
 
@@ -450,7 +482,7 @@ router.get(
       const data = await fetchClusterStatus(cluster);
       res.json(data);
     } catch (err) {
-      next(err);
+      next(plainUpstreamError(err));
     }
   }
 );
@@ -472,7 +504,7 @@ router.get(
       const data = await fetchNodes(cluster);
       res.json(data);
     } catch (err) {
-      next(err);
+      next(plainUpstreamError(err));
     }
   }
 );

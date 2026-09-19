@@ -6,6 +6,8 @@ const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
+const { assertSecretOnTargetChange, notBlockedHost } = require('../utils/connectionGuard');
+const { isBlockedHost } = require('../utils/hostGuard');
 const { setSetting } = require('../services/settings');
 const unifiApi = require('../services/unifiApi');
 const { unifiPoller } = require('../services/unifiPoller');
@@ -52,7 +54,7 @@ router.get('/sources', (req, res, next) => {
 
 router.post('/sources', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').isString().trim().notEmpty().isLength({ max: 253 }).custom(notBlockedHost),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('apiKey').isString().trim().notEmpty().isLength({ max: 512 }),
   body('sslVerify').optional().isBoolean(),
@@ -77,7 +79,10 @@ router.post('/sources', [
 router.put('/sources/:id', [
   param('id').isInt().toInt(),
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
-  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }),
+  body('host').optional().isString().trim().notEmpty().isLength({ max: 253 }).custom((h) => {
+    if (h && isBlockedHost(h)) throw new Error('host is not allowed');
+    return true;
+  }),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
   body('apiKey').optional({ checkFalsy: true }).isString().isLength({ max: 512 }),
   body('sslVerify').optional().isBoolean(),
@@ -87,6 +92,17 @@ router.put('/sources/:id', [
     const row = db.prepare('SELECT * FROM unifi_sources WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'UniFi source not found.' });
     const b = req.body;
+    const secretSupplied = !!b.apiKey;
+    try {
+      assertSecretOnTargetChange({
+        stored: row,
+        incoming: b,
+        fields: ['host', 'port'],
+        secretSupplied,
+      });
+    } catch (err) {
+      return res.status(err.status || 400).json({ error: err.message });
+    }
     db.prepare(`
       UPDATE unifi_sources SET
         name = ?, host = ?, port = ?, encrypted_credentials = ?, ssl_verify = ?, polling_interval_minutes = ?
@@ -115,7 +131,10 @@ router.delete('/sources/:id', [param('id').isInt().toInt()], validate, (req, res
 });
 
 router.post('/sources/test', [
-  body('host').optional().isString().trim().notEmpty(),
+  body('host').optional().isString().trim().notEmpty().custom((h) => {
+    if (h && isBlockedHost(h)) throw new Error('host is not allowed');
+    return true;
+  }),
   body('apiKey').optional().isString(),
   body('id').optional().isInt().toInt(),
   body('port').optional().isInt({ min: 1, max: 65535 }).toInt(),
@@ -126,7 +145,15 @@ router.post('/sources/test', [
   if (id) {
     const row = db.prepare('SELECT * FROM unifi_sources WHERE id = ?').get(id);
     if (!row) return res.status(404).json({ error: 'UniFi source not found.' });
-    candidate = { ...row, ...(apiKey ? { apiKey } : {}) };
+    // No typed key: the saved key is used, so the saved host, port and TLS
+    // flag go with it and the body's are ignored. A typed key is a "try new
+    // settings" test: the body's target with the typed key, saved blob left out.
+    candidate = !apiKey ? row : {
+      host: (host && host.trim()) || row.host,
+      port: port || row.port || 443,
+      apiKey,
+      ssl_verify: sslVerify !== undefined ? (sslVerify ? 1 : 0) : row.ssl_verify,
+    };
   } else {
     if (!host || !apiKey) {
       return res.status(400).json({ error: 'Invalid parameters', details: [{ msg: 'host and apiKey required' }] });

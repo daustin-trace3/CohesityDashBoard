@@ -38,6 +38,8 @@ function baseHost(source) {
 }
 
 /** Raw HTTPS call against a SANnav server. Resolves { status, data, headers }.
+ *  Node's https never follows a redirect, and any non-2xx answer (a 3xx
+ *  included) rejects, so credentials are never re-sent to a redirect target.
  *  Rejects with an Error carrying `.response = { status, data, headers }`. */
 function rawRequest(source, { method = 'GET', path, params, data, headers = {}, timeout = 60000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -102,6 +104,19 @@ function errMsg(err) {
   return err?.message || String(err);
 }
 
+// Wording for test-connection results. A fixed set: no transport text (it
+// names internal addresses and ports) and no upstream response body.
+function testFailure(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the username and password.';
+  if (status) return 'Unexpected response from the address.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_|ERR_TLS|ERR_SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ETIMEDOUT|ECONNABORTED|ESOCKETTIMEDOUT/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the address.';
+}
+
 async function login(source, coreApi, timeout = 60000) {
   const { username, password } = creds(source, coreApi);
   const res = await rawRequest(source, {
@@ -114,7 +129,7 @@ async function login(source, coreApi, timeout = 60000) {
     err.response = res;
     throw err;
   }
-  sessionCache.set(source.id, res.data.sessionId);
+  if (source.id != null) sessionCache.set(source.id, res.data.sessionId);
   return res.data.sessionId;
 }
 
@@ -149,13 +164,15 @@ async function authedRequest(source, coreApi, { method = 'GET', path, params, da
 async function logout(source, coreApi) {
   const sessionId = source.id != null ? sessionCache.get(source.id) : null;
   if (!sessionId) return;
+  // Forget the session BEFORE the network call so nothing can reuse it while
+  // the logout is in flight (a PUT may have just changed the address).
+  sessionCache.delete(source.id);
   try {
     await rawRequest(source, {
       method: 'POST', path: '/external-api/v1/logout/', data: {},
       headers: { Authorization: sessionId }, timeout: 10000,
     });
   } catch { /* best-effort */ }
-  if (source.id != null) sessionCache.delete(source.id);
 }
 
 // ── Tolerant parsing helpers ────────────────────────────────────────────────
@@ -207,7 +224,7 @@ async function testConnection(candidate, coreApi) {
   try {
     await login(candidate, coreApi, 15000);
   } catch (err) {
-    return { ok: false, error: errMsg(err) };
+    return { ok: false, error: testFailure(err) };
   }
   try {
     const about = await fetchAbout(candidate, coreApi, 15000);
@@ -217,7 +234,7 @@ async function testConnection(candidate, coreApi) {
       ok: true,
       version: null,
       oemName: null,
-      note: `login ok; /about/ unavailable (${errMsg(err)}) — SANnav older than 2.3.1?`,
+      note: `login ok; /about/ unavailable (${testFailure(err)}), SANnav older than 2.3.1?`,
     };
   }
 }
@@ -745,6 +762,7 @@ module.exports = {
   logout,
   authedRequest,
   errMsg,
+  testFailure,
   testConnection,
   fetchAbout,
   fetchFabrics,

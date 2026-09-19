@@ -421,6 +421,18 @@ async function fetchProbe(rawSource, coreApi) {
   return out;
 }
 
+/** Fixed, caller-safe text for a failed test. Never echoes transport text
+ *  (which names addresses and ports) or an upstream response body. */
+function testFailureMessage(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused.';
+  if (code === 'ETIMEDOUT' || /timed out/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|TLS|SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'EPIPE'].includes(code)) return 'Could not reach the address.';
+  return 'Unexpected response.';
+}
+
 /** Validate a source (saved row or unsaved candidate). Never throws. */
 async function testConnection(rawCandidate, coreApi) {
   const source = normSource(rawCandidate);
@@ -428,7 +440,8 @@ async function testConnection(rawCandidate, coreApi) {
     let version = null;
     try {
       const resp = await apiRequest(source, coreApi, 'get', '/ping');
-      version = typeof resp.data === 'string' ? resp.data : null;
+      // Digits and dots only: the caller must never get an upstream body back.
+      version = typeof resp.data === 'string' && /^\d[\d.]{0,31}$/.test(resp.data.trim()) ? resp.data.trim() : null;
     } catch {
       await apiRequest(source, coreApi, 'get', '/admin/hosts', { params: { 'page[limit]': 1 } });
     }
@@ -437,7 +450,7 @@ async function testConnection(rawCandidate, coreApi) {
     const status = err.response?.status;
     return {
       ok: false,
-      error: status === 401 ? 'Authentication failed — check the NetBackup credentials.' : safeMsg(err),
+      error: status === 401 ? 'Authentication failed — check the NetBackup credentials.' : testFailureMessage(err),
     };
   } finally {
     if (source.id == null) invalidateSession(sessionKey(source));

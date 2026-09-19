@@ -415,13 +415,31 @@ describe('direct-FOS collector (addendum 2)', () => {
     expect(created.body.override.hasPassword).toBe(true);
     expect(created.body.override.password).toBeUndefined();
 
-    // Upsert (same switchWwn) updates rather than duplicates.
+    // Upsert (same switchWwn, same address) updates rather than duplicates,
+    // and a blank password keeps the saved one.
+    const renamed = await request(app).post(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY).send({
+      switchWwn: '10:00:00:00:00:00:aa:bb', ipAddress: '10.21.21.100', username: 'swadmin2', port: 443,
+    });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.override.username).toBe('swadmin2');
+    expect(renamed.body.override.hasPassword).toBe(true); // password kept (blank on update)
+
+    // A new address with a blank password would send the saved password to
+    // that address: refused, row untouched.
+    const moved = await request(app).post(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY).send({
+      switchWwn: '10:00:00:00:00:00:aa:bb', ipAddress: '10.21.21.101', username: 'swadmin2', port: 443,
+    });
+    expect(moved.status).toBe(400);
+    expect(moved.body.error).toMatch(/^Enter the password or token again when changing the address\./);
+    expect(db.prepare('SELECT ip_address FROM brocade_fos_overrides WHERE id = ?').get(created.body.override.id).ip_address).toBe('10.21.21.100');
+
+    // The same move with the password typed again is fine.
     const updated = await request(app).post(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY).send({
-      switchWwn: '10:00:00:00:00:00:aa:bb', ipAddress: '10.21.21.101',
+      switchWwn: '10:00:00:00:00:00:aa:bb', ipAddress: '10.21.21.101', username: 'swadmin2', password: 'swpass', port: 443,
     });
     expect(updated.status).toBe(200);
     expect(updated.body.override.ipAddress).toBe('10.21.21.101');
-    expect(updated.body.override.hasPassword).toBe(true); // password kept (blank on update)
+    expect(updated.body.override.hasPassword).toBe(true);
 
     const listed = await request(app).get(`/api/brocade/sources/${src.id}/fos-overrides`).set('x-api-key', API_KEY);
     expect(listed.body.overrides.length).toBe(1);

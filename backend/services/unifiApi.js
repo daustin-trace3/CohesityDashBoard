@@ -38,6 +38,8 @@ function baseClient(source, timeout = 30000) {
     timeout,
     headers: apiKey ? { 'X-API-KEY': apiKey } : {},
     httpsAgent: new https.Agent({ rejectUnauthorized: !!source.ssl_verify }),
+    // Never follow a redirect: every call carries the API key header.
+    maxRedirects: 0,
     validateStatus: (s) => s >= 200 && s < 300,
   });
 }
@@ -146,12 +148,25 @@ function errMsg(err) {
   return err?.response ? `HTTP ${err.response.status}${err.response.data?.message ? `: ${err.response.data.message}` : ''}` : (err?.message || String(err));
 }
 
+// Wording for test-connection results. A fixed set: no transport text (it
+// names internal addresses and ports) and no upstream response body.
+function testFailure(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the API key.';
+  if (status) return 'Unexpected response from the address.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_|ERR_TLS|ERR_SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ETIMEDOUT|ECONNABORTED|ESOCKETTIMEDOUT/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the address.';
+}
+
 async function testConnection(candidate) {
   try {
     const [sites, info] = await Promise.all([fetchSites(candidate), fetchInfo(candidate)]);
     return { ok: true, sites, applicationVersion: info.applicationVersion };
   } catch (err) {
-    return { ok: false, error: errMsg(err) };
+    return { ok: false, error: testFailure(err) };
   }
 }
 

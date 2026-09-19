@@ -248,19 +248,33 @@ function fetchTlsCert(row) {
 async function testConnection(rowLike, coreApi) {
   const testId = `test-${rowLike.host}`;
   try {
-    await getToken({ id: testId, ...rowLike }, coreApi, true);
-    const version = await fetchVersion({ id: testId, ...rowLike }, coreApi).catch(() => null);
+    // The temporary id goes AFTER the spread so a row that carries a real id
+    // can never overwrite that instance's cached token.
+    await getToken({ ...rowLike, id: testId }, coreApi, true);
+    const version = await fetchVersion({ ...rowLike, id: testId }, coreApi).catch(() => null);
     tokens.delete(testId);
     return { ok: true, version: version?.releaseName || version?.apiVersion || version?.humanReadable || undefined };
   } catch (err) {
     tokens.delete(testId);
-    const status = err.response?.status;
     return {
       ok: false,
-      error: status === 401 ? 'Authentication failed — check the Aria Operations username, password and auth source.'
-        : (err.response?.data?.message || err.message),
+      error: testFailure(err, false, 'Sign-in was refused. Check the Aria Operations username, password and auth source.'),
     };
   }
+}
+
+// Fixed, caller-safe text for a failed connection test. The transport error
+// text names addresses and ports, and the upstream body is whatever the far
+// end chose to send, so neither is ever returned.
+function testFailure(err, authFailed, authMessage) {
+  const status = err?.response?.status;
+  const code = String(err?.code || '');
+  if (authFailed || status === 401 || status === 403) return authMessage;
+  if (status) return 'Unexpected response from the server.';
+  if (/TIMEDOUT|ECONNABORTED/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'The connection timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the server.';
 }
 
 function errMsg(e) {

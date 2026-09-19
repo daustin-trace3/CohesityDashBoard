@@ -93,7 +93,7 @@ export default function SettingsPage() {
       setAiqumMode(null);
       load();
     } catch (err) {
-      flash('error', 'Save failed', err?.payload?.error || 'Could not save.');
+      flash('error', 'Save failed', err?.payload?.error || err?.payload?.message || 'Could not save.');
     } finally { setSaving(false); }
   };
 
@@ -103,9 +103,9 @@ export default function SettingsPage() {
       const payload = { host: aiqumForm.host.trim(), username: aiqumForm.username.trim() || undefined, password: aiqumForm.password || undefined };
       if (isAiqumEdit && !aiqumForm.password) payload.id = aiqumMode.edit.id;
       const data = await apiFetch('/netapp/aiqum/test', { method: 'POST', body: payload });
-      setTestResult(data.ok ? { ok: true, msg: `Connected · ${data.clusterCount} clusters managed (${(data.clusters || []).join(', ')})` } : { ok: false, msg: data.error });
+      setTestResult(data.ok ? { ok: true, msg: `Connected · ${data.clusterCount} clusters managed (${(data.clusters || []).join(', ')})` } : { ok: false, msg: data.error || data.message });
     } catch (err) {
-      setTestResult({ ok: false, msg: err?.payload?.error || 'Connection failed' });
+      setTestResult({ ok: false, msg: err?.payload?.error || err?.payload?.message || 'Connection failed' });
     } finally { setTesting(false); }
   };
 
@@ -175,7 +175,7 @@ export default function SettingsPage() {
       setDirectMode(null);
       load();
     } catch (err) {
-      setDirectError(err?.payload?.error || 'Save failed.');
+      setDirectError(err?.payload?.error || err?.payload?.message || 'Save failed.');
     } finally { setDirectSaving(false); }
   };
 
@@ -188,9 +188,9 @@ export default function SettingsPage() {
       };
       if (directMode !== 'add' && !directForm.password) payload.id = directMode.edit.id;
       const data = await apiFetch('/netapp/arrays/test', { method: 'POST', body: payload });
-      setDirectTestResult(data.ok ? { ok: true, msg: `Connected · ONTAP ${data.version || '—'} (${data.name || directForm.name})` } : { ok: false, msg: data.error });
+      setDirectTestResult(data.ok ? { ok: true, msg: `Connected · ONTAP ${data.version || '—'} (${data.name || directForm.name})` } : { ok: false, msg: data.error || data.message });
     } catch (err) {
-      setDirectTestResult({ ok: false, msg: err?.payload?.error || 'Connection failed' });
+      setDirectTestResult({ ok: false, msg: err?.payload?.error || err?.payload?.message || 'Connection failed' });
     } finally { setDirectTesting(false); }
   };
 
@@ -260,7 +260,7 @@ export default function SettingsPage() {
                   <Field label="Name" hint="Friendly label (defaults to the host).">
                     <input value={aiqumForm.name} onChange={(e) => setAF('name', e.target.value)} className={inp} />
                   </Field>
-                  <Field label="AIQUM host" hint="Base URL of the Unified Manager appliance.">
+                  <Field label="AIQUM host" hint={isAiqumEdit ? 'Base URL of the Unified Manager appliance. Changing the address needs the password (or token) entered again.' : 'Base URL of the Unified Manager appliance.'}>
                     <input value={aiqumForm.host} onChange={(e) => setAF('host', e.target.value)} placeholder="https://aiqum.example.com" className={inp} spellCheck={false} />
                   </Field>
                   <Field label="Username" hint={isAiqumEdit ? 'Leave blank to keep the stored username.' : 'AIQUM account (Operator/read-only is sufficient).'}>
@@ -376,7 +376,7 @@ export default function SettingsPage() {
               {directError && <p style={{ fontSize: 12, color: 'var(--na-crit)', marginBottom: 8 }}>{directError}</p>}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <Field label="Name"><input value={directForm.name} onChange={(e) => setDF('name', e.target.value)} className={inp} /></Field>
-                <Field label="Management host"><input value={directForm.mgmt_host} onChange={(e) => setDF('mgmt_host', e.target.value)} placeholder="https://cluster-mgmt.example.com" className={inp} spellCheck={false} /></Field>
+                <Field label="Management host" hint={directMode !== 'add' ? 'Changing the address needs the password (or token) entered again.' : undefined}><input value={directForm.mgmt_host} onChange={(e) => setDF('mgmt_host', e.target.value)} placeholder="https://cluster-mgmt.example.com" className={inp} spellCheck={false} /></Field>
                 <Field label="Username" hint={directMode !== 'add' ? 'Leave blank to keep the stored username.' : undefined}>
                   <input value={directForm.username} onChange={(e) => setDF('username', e.target.value)} placeholder={directMode !== 'add' ? '•••••• (stored — leave blank to keep)' : ''} className={inp} autoComplete="off" spellCheck={false} />
                 </Field>

@@ -23,6 +23,12 @@ const {
   requireIdParam, parseQueryInt,
 } = require('./validate');
 
+const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/;
+
+function isValidAwsRegion(value) {
+  return value == null || (typeof value === 'string' && AWS_REGION_RE.test(value.toLowerCase()));
+}
+
 const publicAccount = (row, coreApi) => ({
   id: row.id, name: row.name, accessKeyId: row.access_key_id, region: row.region,
   pollingIntervalMinutes: row.polling_interval_minutes,
@@ -44,7 +50,7 @@ function handlePostAccounts(req, res, coreApi) {
   if (!isNonEmptyString(b.name, 120)) errors.push(fail('name'));
   if (!isNullableString(b.accessKeyId, 128)) errors.push(fail('accessKeyId'));
   if (!isNullableString(b.secretAccessKey, 256)) errors.push(fail('secretAccessKey'));
-  if (!isNullableString(b.region, 32)) errors.push(fail('region'));
+  if (!isNullableString(b.region, 32) || !isValidAwsRegion(b.region)) errors.push(fail('region'));
   if (b.pollingIntervalMinutes !== undefined) {
     const n = parseIntStrict(b.pollingIntervalMinutes);
     if (!Number.isInteger(n) || n < 5 || n > 1440) errors.push(fail('pollingIntervalMinutes'));
@@ -78,7 +84,7 @@ function handlePutAccount(req, res, coreApi) {
   if (b.name !== undefined && !isNonEmptyString(b.name, 120)) errors.push(fail('name'));
   if (!isNullableString(b.accessKeyId, 128)) errors.push(fail('accessKeyId'));
   if (!isNullableString(b.secretAccessKey, 256)) errors.push(fail('secretAccessKey'));
-  if (!isNullableString(b.region, 32)) errors.push(fail('region'));
+  if (!isNullableString(b.region, 32) || !isValidAwsRegion(b.region)) errors.push(fail('region'));
   if (b.pollingIntervalMinutes !== undefined) {
     const n = parseIntStrict(b.pollingIntervalMinutes);
     if (!Number.isInteger(n) || n < 5 || n > 1440) errors.push(fail('pollingIntervalMinutes'));

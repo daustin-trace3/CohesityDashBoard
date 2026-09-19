@@ -105,7 +105,7 @@ export default function DellSettingsPage() {
       blankForm();
       await loadInstances();
     } catch (err) {
-      flash('error', editingId ? 'Update failed' : 'Registration failed', err?.payload?.error);
+      flash('error', editingId ? 'Update failed' : 'Registration failed', err?.payload?.error || err?.payload?.message);
     } finally {
       setSaving(false);
     }
@@ -161,6 +161,7 @@ export default function DellSettingsPage() {
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Host / FQDN</label>
             <input value={form.host} onChange={set('host')} placeholder="ome.company.com" className={inp} spellCheck={false} />
+            {editingId && <p className="text-[11px] text-ink-faint mt-1">Changing the address needs the password (or token) entered again.</p>}
           </div>
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Poll interval (minutes)</label>

@@ -33,8 +33,13 @@ const {
   requireIdParam, parseQueryInt,
 } = require('./validate');
 
-// SSRF guard on the management host (strip scheme first).
-function isBlockedHost(host) {
+// SSRF guard on the management host. The host's shared guard (coreApi.net)
+// decides when it exists: it also catches [::1], ::ffff:127.0.0.1 and numeric
+// shorthand. The short list below only runs on a host that predates
+// coreApi.net.
+function isBlockedHost(host, coreApi) {
+  const net = (coreApi && coreApi.net) || null;
+  if (net) return net.isBlockedHost(host);
   const h = String(host || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').split(':')[0];
   const blocked = [
     /^127\./, /^0\.0\.0\.0$/, /^169\.254\./, /^::1$/,
@@ -42,6 +47,12 @@ function isBlockedHost(host) {
   ];
   return blocked.some((p) => p.test(h));
 }
+
+// A saved credential is only ever sent to the address it was saved for.
+// Implemented inline (not through coreApi.net) so the pack holds the rule on
+// an older host too. Same text as the host routers.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const sameTarget = (a, b) => api.normalizeHost(a).toLowerCase() === api.normalizeHost(b).toLowerCase();
 
 const PEM_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+-----END [A-Z ]*PRIVATE KEY-----/;
 
@@ -96,26 +107,33 @@ function buildCredentials(coreApi, body) {
   return coreApi.encryption.encrypt(JSON.stringify({ privateKey: body.privateKey }));
 }
 
+// Test-connection failures map to a small fixed set of messages. Raw transport
+// text ("connect ECONNREFUSED 10.1.2.3:443") and upstream response bodies are
+// never echoed.
+const TLS_CODES = new Set([
+  'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID', 'HOSTNAME_MISMATCH',
+]);
 function describeApiError(err) {
-  if (err?.response) {
-    const status = err.response.status;
-    const detail = err.response.data?.errors?.[0]?.message
-      || err.response.data?.error_description
-      || err.response.data?.error
-      || '';
-    if (status === 400 || status === 401) return `Authentication failed (HTTP ${status})${detail ? `: ${detail}` : ''}`;
-    return `Array returned HTTP ${status}${detail ? `: ${detail}` : ''}`;
-  }
-  if (err?.code === 'PURE_NO_KEY') return 'No private key provided';
-  if (err?.code === 'PURE_NO_TOKEN') return 'No API token provided';
-  if (err?.code) return `Network error: ${err.code}`;
-  return err?.message || 'Connection failed';
+  const status = err?.response?.status;
+  // The token exchange answers a bad assertion with 400, so 400 counts as refused.
+  if (status === 400 || status === 401 || status === 403) return 'Sign-in was refused';
+  if (status) return `Unexpected response (HTTP ${status})`;
+  const code = err?.code;
+  if (code === 'PURE_NO_KEY') return 'No private key provided';
+  if (code === 'PURE_NO_TOKEN') return 'No API token provided';
+  if (code === 'PURE_AUTH_FAILED') return 'Sign-in was refused';
+  if (TLS_CODES.has(code)) return 'The TLS certificate was not trusted';
+  if (code === 'ECONNABORTED' || code === 'ETIMEDOUT' || /timed? ?out/i.test(err?.message || '')) return 'Timed out';
+  if (code) return 'Could not reach the address';
+  return 'Unexpected response';
 }
 
-const arrayFieldErrors = (b) => {
+const arrayFieldErrors = (b, coreApi) => {
   const errors = [];
   if (!isNonEmptyString(b.name, 253)) errors.push(fail('name'));
-  if (!isNonEmptyString(b.mgmt_host, 253) || isBlockedHost(b.mgmt_host)) errors.push(fail('mgmt_host'));
+  if (!isNonEmptyString(b.mgmt_host, 253) || isBlockedHost(b.mgmt_host, coreApi)) errors.push(fail('mgmt_host'));
   if (b.auth_method !== undefined && !['client', 'token'].includes(b.auth_method)) errors.push(fail('auth_method'));
   if (b.polling_interval_minutes !== undefined) {
     const n = parseIntStrict(b.polling_interval_minutes);
@@ -142,24 +160,59 @@ function handleGetDefaults(req, res) {
 async function handlePostArraysTest(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
-  if (!isNonEmptyString(b.mgmt_host) || isBlockedHost(b.mgmt_host)) errors.push(fail('mgmt_host'));
+  if (!isNonEmptyString(b.mgmt_host) || isBlockedHost(b.mgmt_host, coreApi)) errors.push(fail('mgmt_host'));
   if (b.auth_method !== undefined && !['client', 'token'].includes(b.auth_method)) errors.push(fail('auth_method'));
   if (b.ssl_verify !== undefined && !isBooleanish(b.ssl_verify)) errors.push(fail('ssl_verify'));
+  if (b.id !== undefined && b.id !== null && !Number.isInteger(parseIntStrict(b.id))) errors.push(fail('id'));
   if (errors.length) return badRequest(res, errors);
-  const credErr = checkCredentials(b, { requireSecret: true });
-  if (credErr) return res.status(400).json({ ok: false, error: credErr });
+
+  const id = parseIntStrict(b.id);
+  const stored = Number.isInteger(id)
+    ? (coreApi.db.prepare('SELECT * FROM pure_arrays WHERE id = ?').get(id) || null)
+    : null;
+  // "Secret supplied" means whichever secret the posted auth method uses: the
+  // API token, or the private key of the API client flow.
+  const method = b.auth_method === 'token' ? 'token' : 'client';
+  const secretSupplied = method === 'token' ? !!b.apiToken : !!b.privateKey;
+  const useStored = !!stored && !secretSupplied;
+  // A test with no saved row to fall back on still needs a typed secret (400).
+  if (!useStored) {
+    const credErr = checkCredentials(b, { requireSecret: true });
+    if (credErr) return res.status(400).json({ ok: false, error: credErr });
+  }
   try {
-    const result = await api.testConnection({
-      mgmt_host: b.mgmt_host,
-      auth_method: b.auth_method === 'token' ? 'token' : 'client',
-      client_id: b.client_id,
-      key_id: b.key_id,
-      username: b.username,
-      issuer: b.issuer || null,
-      ssl_verify: b.ssl_verify ? 1 : 0,
-      privateKey: b.privateKey,
-      apiToken: b.apiToken,
-    }, coreApi);
+    let probe;
+    if (useStored) {
+      // The saved secret only ever goes to the saved row: stored host, stored
+      // auth method and identifiers, stored certificate setting. Nothing in
+      // the body can redirect it.
+      const creds = JSON.parse(coreApi.encryption.decrypt(stored.encrypted_credentials));
+      probe = {
+        mgmt_host: stored.mgmt_host,
+        auth_method: stored.auth_method === 'token' ? 'token' : 'client',
+        client_id: stored.client_id,
+        key_id: stored.key_id,
+        username: stored.username,
+        issuer: stored.issuer || null,
+        ssl_verify: stored.ssl_verify,
+        privateKey: creds.privateKey,
+        apiToken: creds.apiToken,
+      };
+    } else {
+      probe = {
+        mgmt_host: b.mgmt_host,
+        auth_method: method,
+        client_id: b.client_id,
+        key_id: b.key_id,
+        username: b.username,
+        issuer: b.issuer || null,
+        ssl_verify: b.ssl_verify !== undefined ? (toBool(b.ssl_verify) ? 1 : 0) : (stored ? stored.ssl_verify : 0),
+        privateKey: b.privateKey,
+        apiToken: b.apiToken,
+      };
+    }
+    if (isBlockedHost(probe.mgmt_host, coreApi)) return res.status(400).json({ ok: false, error: 'mgmt_host is not allowed' });
+    const result = await api.testConnection(probe, coreApi);
     res.json(result);
   } catch (err) {
     res.status(400).json({ ok: false, error: describeApiError(err) });
@@ -168,7 +221,7 @@ async function handlePostArraysTest(req, res, coreApi) {
 
 function handlePostArrays(req, res, coreApi) {
   const b = req.body || {};
-  const errors = arrayFieldErrors(b);
+  const errors = arrayFieldErrors(b, coreApi);
   if (errors.length) return badRequest(res, errors);
   const credErr = checkCredentials(b, { requireSecret: true });
   if (credErr) return res.status(400).json({ error: credErr });
@@ -202,7 +255,7 @@ function handlePutArray(req, res, coreApi) {
   const id = requireIdParam(req, res);
   if (id === null) return;
   const b = req.body || {};
-  const errors = arrayFieldErrors(b);
+  const errors = arrayFieldErrors(b, coreApi);
   if (errors.length) return badRequest(res, errors);
   const credErr = checkCredentials(b, { requireSecret: false });
   if (credErr) return res.status(400).json({ error: credErr });
@@ -213,6 +266,11 @@ function handlePutArray(req, res, coreApi) {
 
     const method = b.auth_method === 'token' ? 'token' : 'client';
     const hasNewSecret = method === 'token' ? !!b.apiToken : !!b.privateKey;
+    // Keeping the saved token or key while moving the array would hand it to
+    // the new host on the next poll.
+    if (!hasNewSecret && !sameTarget(b.mgmt_host, existing.mgmt_host)) {
+      return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+    }
     const encrypted = hasNewSecret ? buildCredentials(coreApi, b) : existing.encrypted_credentials;
 
     db.prepare(`
@@ -224,7 +282,8 @@ function handlePutArray(req, res, coreApi) {
     `).run(
       b.name, api.normalizeHost(b.mgmt_host), method, b.client_id || '', b.key_id || '', b.username || '',
       b.issuer || null, encrypted, b.polling_interval_minutes || existing.polling_interval_minutes,
-      b.ssl_verify ? 1 : 0, id
+      // An omitted ssl_verify keeps the stored value (it used to reset to off).
+      b.ssl_verify !== undefined ? (toBool(b.ssl_verify) ? 1 : 0) : existing.ssl_verify, id
     );
 
     const row = db.prepare('SELECT * FROM pure_arrays WHERE id = ?').get(id);

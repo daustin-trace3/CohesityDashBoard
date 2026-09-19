@@ -172,7 +172,7 @@ export default function AwsSettingsPage() {
       blankForm();
       await loadAccounts();
     } catch (err) {
-      toast({ type: 'error', title: editingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error });
+      toast({ type: 'error', title: editingId ? 'Update failed' : 'Registration failed', message: err?.response?.data?.error || err?.response?.data?.message });
     } finally {
       setSaving(false);
     }
@@ -259,7 +259,7 @@ export default function AwsSettingsPage() {
           {testResult && (
             <span className={`inline-flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
               {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-              {testResult.ok ? `Connected — ${testResult.instanceCount} instance(s) visible` : testResult.error}
+              {testResult.ok ? `Connected — ${testResult.instanceCount} instance(s) visible` : (testResult.error || testResult.message)}
             </span>
           )}
         </div>

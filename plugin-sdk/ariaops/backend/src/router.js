@@ -18,6 +18,18 @@ const {
   requireIdParam, parseQueryInt,
 } = require('./validate');
 
+// R3. The host is glued into the https request, so "name@127.0.0.1" or
+// "name/path" would dial somewhere other than the name that was checked.
+// Loopback, link-local and metadata targets are refused through the host's
+// coreApi.net seam (absent on an older host, which then only gets the shape check).
+const HOST_RE = /^[A-Za-z0-9._:[\]-]+$/;
+function hostNotAllowed(coreApi, host) {
+  const h = String(host || '').trim();
+  if (!HOST_RE.test(h)) return true;
+  const net = coreApi.net || null;
+  return !!(net && net.isBlockedHost(h));
+}
+
 const publicInstance = (row) => ({
   id: row.id, name: row.name, host: row.host, username: row.username, authSource: row.auth_source,
   sslVerify: !!row.ssl_verify, pollingIntervalMinutes: row.polling_interval_minutes,
@@ -37,7 +49,7 @@ function handlePostInstances(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
   if (!isNonEmptyString(b.name, 120)) errors.push(fail('name'));
-  if (!isNonEmptyString(b.host, 253)) errors.push(fail('host'));
+  if (!isNonEmptyString(b.host, 253) || hostNotAllowed(coreApi, b.host)) errors.push(fail('host'));
   if (!isNonEmptyString(b.username, 256)) errors.push(fail('username'));
   if (!isNonEmptyString(b.password, 512)) errors.push(fail('password'));
   if (b.authSource !== undefined && !(typeof b.authSource === 'string' && b.authSource.length <= 256)) errors.push(fail('authSource'));
@@ -73,7 +85,7 @@ function handlePutInstance(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
   if (b.name !== undefined && !isNonEmptyString(b.name, 120)) errors.push(fail('name'));
-  if (b.host !== undefined && !isNonEmptyString(b.host, 253)) errors.push(fail('host'));
+  if (b.host !== undefined && (!isNonEmptyString(b.host, 253) || hostNotAllowed(coreApi, b.host))) errors.push(fail('host'));
   if (b.username !== undefined && !isNonEmptyString(b.username, 256)) errors.push(fail('username'));
   if (b.password !== undefined && b.password !== '' && !(typeof b.password === 'string' && b.password.length <= 512)) errors.push(fail('password'));
   if (b.authSource !== undefined && b.authSource !== null && !(typeof b.authSource === 'string' && b.authSource.length <= 256)) errors.push(fail('authSource'));
@@ -87,6 +99,15 @@ function handlePutInstance(req, res, coreApi) {
   const db = coreApi.db;
   const row = db.prepare('SELECT * FROM ariaops_instances WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'Aria Operations instance not found.' });
+
+  // R2: the host decides where the saved password is sent. Changing it means
+  // typing the password again. Inline so the pack is safe on any host version.
+  const secretSupplied = !!(b.password && String(b.password).trim());
+  const normalize = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+  if (b.host !== undefined && normalize(b.host) !== normalize(row.host) && !secretSupplied) {
+    return res.status(400).json({ error: 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.' });
+  }
+
   db.prepare(`
     UPDATE ariaops_instances SET
       name = ?, host = ?, username = ?, auth_source = ?, encrypted_credentials = ?,
@@ -123,7 +144,7 @@ function handleDeleteInstance(req, res, coreApi) {
 async function handlePostInstancesTest(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
-  if (!isNonEmptyString(b.host)) errors.push(fail('host'));
+  if (!isNonEmptyString(b.host, 253) || hostNotAllowed(coreApi, b.host)) errors.push(fail('host'));
   if (!isNonEmptyString(b.username)) errors.push(fail('username'));
   if (b.password !== undefined && typeof b.password !== 'string') errors.push(fail('password'));
   if (b.authSource !== undefined && b.authSource !== null && typeof b.authSource !== 'string') errors.push(fail('authSource'));
@@ -132,11 +153,32 @@ async function handlePostInstancesTest(req, res, coreApi) {
   if (errors.length) return badRequest(res, errors);
 
   const { id, host, username, password, authSource, sslVerify } = b;
-  let candidate = { host: host.trim(), username: username.trim(), password, auth_source: authSource, ssl_verify: toBool(sslVerify) ? 1 : 0 };
-  if (!password && id) {
-    const row = coreApi.db.prepare('SELECT * FROM ariaops_instances WHERE id = ?').get(parseIntStrict(id));
-    if (row) candidate = { ...row, host: candidate.host, username: candidate.username, auth_source: candidate.auth_source ?? row.auth_source, ssl_verify: candidate.ssl_verify };
+  const secretSupplied = !!(password && String(password).trim());
+  const saved = id ? coreApi.db.prepare('SELECT * FROM ariaops_instances WHERE id = ?').get(parseIntStrict(id)) : null;
+
+  if (!secretSupplied && !saved) {
+    return res.status(400).json({ error: 'Enter the password to test a connection that is not saved yet.' });
   }
+  let storedPassword = null;
+  if (!secretSupplied) {
+    try { storedPassword = JSON.parse(coreApi.encryption.decrypt(saved.encrypted_credentials)).password; } catch { storedPassword = null; }
+    if (!storedPassword) return res.status(400).json({ error: 'The saved password could not be read. Enter it again.' });
+  }
+  // R1: with no typed password the saved one is used, and then every value
+  // that decides where and how it is sent comes from the saved row.
+  const candidate = secretSupplied ? {
+    host: host.trim(),
+    username: username.trim(),
+    password,
+    auth_source: authSource !== undefined ? authSource : saved?.auth_source,
+    ssl_verify: (sslVerify !== undefined ? toBool(sslVerify) : !!saved?.ssl_verify) ? 1 : 0,
+  } : {
+    host: saved.host,
+    username: saved.username,
+    password: storedPassword,
+    auth_source: saved.auth_source,
+    ssl_verify: saved.ssl_verify ? 1 : 0,
+  };
   const result = await api.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);
 }

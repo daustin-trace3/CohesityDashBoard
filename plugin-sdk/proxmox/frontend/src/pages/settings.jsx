@@ -222,7 +222,7 @@ export default function PxSettingsPage() {
       blankForm();
       await loadServers();
     } catch (err) {
-      setSaveMsg({ ok: false, text: err.body?.error || (editingId ? 'Update failed' : 'Registration failed') });
+      setSaveMsg({ ok: false, text: err.body?.error || err.body?.message || (editingId ? 'Update failed' : 'Registration failed') });
     } finally {
       setSaving(false);
     }
@@ -272,6 +272,7 @@ export default function PxSettingsPage() {
           <div>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--px-ink)', marginBottom: 4 }}>Host / IP</label>
             <input value={form.host} onChange={set('host')} placeholder="192.168.1.10" style={inputStyle} spellCheck={false} />
+            {editingId && <p style={{ fontSize: 11, color: 'var(--px-ink-muted)', margin: '2px 0 0' }}>Changing the address needs the password (or token) entered again.</p>}
           </div>
           <div>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--px-ink)', marginBottom: 4 }}>Port</label>
@@ -307,7 +308,7 @@ export default function PxSettingsPage() {
           {testResult && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: testResult.ok ? 'var(--px-ok)' : 'var(--px-crit)' }}>
               {testResult.ok ? <CheckCircleIcon size={14} /> : <XCircleIcon size={14} />}
-              {testResult.ok ? `Connected — PVE ${testResult.version}` : testResult.error}
+              {testResult.ok ? `Connected — PVE ${testResult.version}` : (testResult.error || testResult.message)}
             </span>
           )}
           {saveMsg && (

@@ -12,7 +12,15 @@
 const tokenCache = new Map(); // connectionId -> { token, expiresAt }
 
 function baseUrl(connection) {
-  return String(connection.endpoint || '').replace(/\/+$/, '');
+  const base = String(connection.endpoint || '').replace(/\/+$/, '');
+  // The client secret and the bearer only ever travel over TLS, whatever an
+  // older row may hold.
+  if (!/^https:\/\//i.test(base)) {
+    const e = new Error('The endpoint must use https.');
+    e.code = 'RSC_ENDPOINT_NOT_HTTPS';
+    throw e;
+  }
+  return base;
 }
 
 function credentials(coreApi, connection) {
@@ -35,10 +43,11 @@ async function getToken(coreApi, connection) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    redirect: 'error', // the client secret never follows a redirect to another host
   });
   const text = await res.text();
   if (!res.ok) {
-    const e = new Error(`Token request failed: ${res.status} ${text.slice(0, 200)}`);
+    const e = new Error(`Token request failed: ${res.status}`);
     e.code = res.status === 401 || res.status === 403 ? 'RSC_AUTH_FAILED' : 'RSC_TOKEN_FAILED';
     throw e;
   }
@@ -70,6 +79,7 @@ async function gql(coreApi, connection, query, variables) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ query, variables: variables || {} }),
+    redirect: 'error', // the bearer never follows a redirect to another host
   });
   const text = await res.text();
   if (res.status === 401) {
@@ -165,6 +175,20 @@ async function fetchAllPages(coreApi, connection, query, root, maxPages = 25) {
 const fetchVms = (coreApi, connection) => fetchAllPages(coreApi, connection, VMS_QUERY, 'vSphereVmNewConnection');
 const fetchActivity = (coreApi, connection) => fetchAllPages(coreApi, connection, ACTIVITY_QUERY, 'activitySeriesConnection', 5);
 
+/** Fixed, caller-safe text for a failed test. Never echoes transport text
+ *  (which names addresses and ports) or an upstream response body. */
+function testFailureMessage(err) {
+  const code = String(err?.code || '');
+  const cause = String(err?.cause?.code || '');
+  if (code === 'RSC_NO_CREDENTIALS') return 'No client secret stored for this connection.';
+  if (code === 'RSC_ENDPOINT_NOT_HTTPS') return 'The endpoint must use https.';
+  if (code === 'RSC_AUTH_FAILED') return 'Sign-in was refused.';
+  if (cause === 'ETIMEDOUT' || /TIMEOUT/.test(cause) || err?.name === 'TimeoutError' || err?.name === 'AbortError') return 'Timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|TLS|SSL/.test(cause)) return 'The TLS certificate was not trusted.';
+  if (['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'EPIPE'].includes(cause)) return 'Could not reach the address.';
+  return 'Unexpected response.';
+}
+
 /** Credential check used by the Settings "Test" action. */
 async function verifyCredentials(coreApi, connection) {
   try {
@@ -175,7 +199,7 @@ async function verifyCredentials(coreApi, connection) {
       connected: clusters.filter((c) => c.state?.connectedState === 'Connected').length,
     };
   } catch (err) {
-    return { ok: false, error: err.message, code: err.code || 'RSC_REQUEST_FAILED' };
+    return { ok: false, error: testFailureMessage(err), code: err.code || 'RSC_REQUEST_FAILED' };
   }
 }
 

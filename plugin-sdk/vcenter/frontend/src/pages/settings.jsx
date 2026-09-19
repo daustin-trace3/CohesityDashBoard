@@ -78,6 +78,7 @@ export default function VcSettingsPage() {
         body: {
           host: form.host.trim(), username: form.username.trim(),
           password: form.password || undefined, sslVerify: form.sslVerify,
+          id: editingId || undefined,
         },
       });
       setTestResult(json);
@@ -127,7 +128,7 @@ export default function VcSettingsPage() {
       blankForm();
       await loadVcs();
     } catch (err) {
-      flash('error', editingId ? 'Update failed' : 'Registration failed', err?.payload?.error);
+      flash('error', editingId ? 'Update failed' : 'Registration failed', err?.payload?.error || err?.payload?.message);
     } finally {
       setSaving(false);
     }
@@ -202,6 +203,7 @@ export default function VcSettingsPage() {
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Host / FQDN</label>
             <input value={form.host} onChange={set('host')} placeholder="vcenter.company.com" className={inp} spellCheck={false} />
+            {editingId && <p className="text-[11px] text-ink-faint mt-1">Changing the address needs the password (or token) entered again.</p>}
           </div>
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Poll interval (minutes)</label>
@@ -238,7 +240,7 @@ export default function VcSettingsPage() {
           {testResult && (
             <span className={`inline-flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
               {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-              {testResult.ok ? `Connected — ${testResult.hosts} host(s) visible` : testResult.error}
+              {testResult.ok ? `Connected — ${testResult.hosts} host(s) visible` : (testResult.error || testResult.message)}
             </span>
           )}
         </div>

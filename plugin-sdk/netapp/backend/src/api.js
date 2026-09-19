@@ -15,9 +15,11 @@ const { URLSearchParams } = require('url');
 
 /** Normalize a host into an https origin with no trailing slash. */
 function normalizeHost(host) {
-  let h = String(host || '').trim().replace(/\/+$/, '');
-  if (!/^https?:\/\//i.test(h)) h = `https://${h}`;
-  return h;
+  const h = String(host || '').trim().replace(/\/+$/, '');
+  // Basic credentials only ever travel over TLS: a typed or stored http://
+  // is upgraded, never kept.
+  if (/^https:\/\//i.test(h)) return h;
+  return `https://${h.replace(/^http:\/\//i, '')}`;
 }
 
 /** Raw HTTPS GET against a basic-auth JSON API. Resolves with parsed JSON.
@@ -98,7 +100,9 @@ function aiqumInstances(coreApi) {
 function instanceConfig(row, coreApi) {
   let password = '';
   try { password = coreApi.encryption.decrypt(row.encrypted_credentials); } catch { password = ''; }
-  return { host: normalizeHost(row.host), username: row.username, password };
+  // sslVerify follows the row's ssl_verify column. Rows without that column
+  // (every schema up to netapp v5) read as off, which is the old behaviour.
+  return { host: normalizeHost(row.host), username: row.username, password, sslVerify: !!row.ssl_verify };
 }
 
 /**
@@ -137,15 +141,18 @@ function configForArray(array, coreApi) {
 
 function aiqumGet(cfgOverride, coreApi, path, params) {
   const c = cfgOverride && cfgOverride.host
-    ? { host: normalizeHost(cfgOverride.host), username: cfgOverride.username, password: cfgOverride.password }
+    ? { host: normalizeHost(cfgOverride.host), username: cfgOverride.username, password: cfgOverride.password, sslVerify: cfgOverride.sslVerify }
     : getAiqumConfig(coreApi);
   if (!c.host || !c.username || !c.password) {
     const err = new Error('AIQUM is not configured (host/user/password)');
     err.code = 'AIQUM_NOT_CONFIGURED';
     throw err;
   }
+  // Certificate checking follows the config's sslVerify flag instead of being
+  // switched off for every gateway while Basic credentials are on the wire.
+  // (rawGet is built on https.request, which never follows a redirect.)
   return rawGet(c.host, path, {
-    params, username: c.username, password: c.password, rejectUnauthorized: false, timeout: 60000,
+    params, username: c.username, password: c.password, rejectUnauthorized: !!c.sslVerify, timeout: 60000,
   });
 }
 

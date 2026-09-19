@@ -20,7 +20,7 @@ const https = require('https');
 const http = require('http');
 const { URLSearchParams } = require('url');
 const {
-  parseEffectiveConfigResponse, parseDefinedConfigResponse, parseFcStatsResponse,
+  parseEffectiveConfigResponse, parseDefinedConfigResponse, parseFcStatsResponse, testFailure,
 } = require('./api');
 
 // ── Credentials / client plumbing ───────────────────────────────────────────
@@ -68,7 +68,9 @@ function errMsg(err) {
   return err?.message || String(err);
 }
 
-/** Raw HTTP(S) call against a switch's own FOS REST API. */
+/** Raw HTTP(S) call against a switch's own FOS REST API. Node's http/https
+ *  never follows a redirect, and any non-2xx answer (a 3xx included) rejects,
+ *  so credentials are never re-sent to a redirect target. */
 function rawRequest(target, coreApi, { method = 'GET', path, params, data, headers = {}, timeout = 30000 } = {}) {
   return new Promise((resolve, reject) => {
     const { allowHttp, hostname, port } = fosTarget(target);
@@ -221,7 +223,7 @@ async function testFos(target, coreApi, timeout = 15000) {
     await withFosSession(target, coreApi, async () => {}, timeout);
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: errMsg(err) };
+    return { ok: false, error: testFailure(err) };
   }
 }
 

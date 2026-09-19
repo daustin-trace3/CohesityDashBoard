@@ -172,7 +172,7 @@ export default function ZertoSettingsPage() {
       await loadStatus();
       toast({ type: 'success', title: 'Zerto credentials saved' });
     } catch (err) {
-      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error });
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || err?.response?.data?.message });
     } finally {
       setSaving(false);
     }
@@ -252,6 +252,7 @@ export default function ZertoSettingsPage() {
               <div>
                 <label className="block text-xs font-semibold text-ink mb-1">API base URL <span className="text-ink-faint font-normal">(optional)</span></label>
                 <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://analytics.api.zerto.com" className={inp} spellCheck={false} />
+                {status.hasPassword && <p className="text-[11px] text-ink-faint mt-1">Changing the address needs the password (or token) entered again.</p>}
               </div>
               <div>
                 <label className="block text-xs font-semibold text-ink mb-1">Poll interval (minutes)</label>
@@ -271,7 +272,7 @@ export default function ZertoSettingsPage() {
               {testResult && (
                 <span className={`inline-flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
                   {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                  {testResult.ok ? `Connected — ${testResult.sites} site(s) visible` : testResult.error}
+                  {testResult.ok ? `Connected — ${testResult.sites} site(s) visible` : (testResult.error || testResult.message)}
                 </span>
               )}
             </div>

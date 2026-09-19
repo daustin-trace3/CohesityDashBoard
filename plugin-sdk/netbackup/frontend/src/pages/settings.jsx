@@ -107,7 +107,7 @@ function SourcesTab({ sourceType }) {
     setTesting(true);
     setTestResult(null);
     try {
-      const data = await apiSend('/sources/test', 'POST', buildBody());
+      const data = await apiSend('/sources/test', 'POST', editingId ? { id: editingId, ...buildBody() } : buildBody());
       setTestResult(data);
     } catch (err) {
       setTestResult(err.body || { ok: false, error: 'Connection test failed.' });
@@ -134,7 +134,7 @@ function SourcesTab({ sourceType }) {
       blankForm();
       await load();
     } catch (err) {
-      setSaveMsg({ ok: false, text: err.body?.error || (editingId ? 'Update failed' : 'Registration failed') });
+      setSaveMsg({ ok: false, text: err.body?.error || err.body?.message || (editingId ? 'Update failed' : 'Registration failed') });
     } finally {
       setSaving(false);
     }
@@ -189,6 +189,7 @@ function SourcesTab({ sourceType }) {
           <div>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--nb-ink)', marginBottom: 4 }}>{sourceType === 'alta' ? 'Tenant URL' : 'Host / FQDN'}</label>
             <input value={form.host} onChange={set('host')} placeholder={sourceType === 'alta' ? 'https://<tenant>.netbackup.alta.veritas.com/netbackup' : 'netbackup.company.com'} className="nb-input" spellCheck={false} />
+            {editingId && <p style={{ fontSize: 11, color: 'var(--nb-ink-muted)', marginTop: 4, lineHeight: 1.5 }}>Changing the address needs the password (or token) entered again.</p>}
           </div>
 
           {sourceType === 'alta' ? (
@@ -260,7 +261,7 @@ function SourcesTab({ sourceType }) {
           {testResult && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: testResult.ok ? 'var(--nb-ok)' : 'var(--nb-crit)' }}>
               {testResult.ok ? <CheckCircleIcon size={14} /> : <XCircleIcon size={14} />}
-              {testResult.ok ? `Connected${testResult.version ? ` — v${testResult.version}` : ''}` : testResult.error}
+              {testResult.ok ? `Connected${testResult.version ? ` — v${testResult.version}` : ''}` : (testResult.error || testResult.message)}
             </span>
           )}
           {saveMsg && <span style={{ fontSize: 12, color: saveMsg.ok ? 'var(--nb-ok)' : 'var(--nb-crit)' }}>{saveMsg.text}</span>}
@@ -381,7 +382,7 @@ function ApplianceHardwareTab() {
       blankForm();
       await load();
     } catch (err) {
-      setSaveMsg({ ok: false, text: err.body?.error || (editingId ? 'Update failed' : 'Registration failed') });
+      setSaveMsg({ ok: false, text: err.body?.error || err.body?.message || (editingId ? 'Update failed' : 'Registration failed') });
     } finally {
       setSaving(false);
     }
@@ -433,6 +434,7 @@ function ApplianceHardwareTab() {
           <div>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--nb-ink)', marginBottom: 4 }}>Host / FQDN</label>
             <input value={form.host} onChange={set('host')} placeholder="appliance.company.com" className="nb-input" spellCheck={false} />
+            {editingId && <p style={{ fontSize: 11, color: 'var(--nb-ink-muted)', marginTop: 4, lineHeight: 1.5 }}>Changing the address needs the password (or token) entered again.</p>}
           </div>
           <div>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--nb-ink)', marginBottom: 4 }}>Port</label>
@@ -467,7 +469,7 @@ function ApplianceHardwareTab() {
           {testResult && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: testResult.ok ? 'var(--nb-ok)' : 'var(--nb-crit)' }}>
               {testResult.ok ? <CheckCircleIcon size={14} /> : <XCircleIcon size={14} />}
-              {testResult.ok ? 'Connected' : testResult.error}
+              {testResult.ok ? 'Connected' : (testResult.error || testResult.message)}
             </span>
           )}
           {saveMsg && <span style={{ fontSize: 12, color: saveMsg.ok ? 'var(--nb-ok)' : 'var(--nb-crit)' }}>{saveMsg.text}</span>}

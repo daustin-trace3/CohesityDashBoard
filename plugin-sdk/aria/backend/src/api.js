@@ -368,7 +368,9 @@ function fetchTlsCert(row) {
 /** Validate an Aria instance (saved row or unsaved candidate). Never throws. */
 async function testConnection(rowLike, coreApi) {
   try {
-    const probe = { id: `test-${rowLike.host}`, ...rowLike };
+    // The temporary id goes AFTER the spread so a row that carries a real id
+    // can never overwrite that instance's cached session.
+    const probe = { ...rowLike, id: `test-${rowLike.host}` };
     const bearer = await getBearer(probe, coreApi, true);
     const deployments = await aGetV(probe, coreApi, '/deployment/api/deployments', { size: 1 })
       .then((d) => unwrap(d).length).catch(() => undefined);
@@ -377,22 +379,31 @@ async function testConnection(rowLike, coreApi) {
     void bearer;
     return { ok: true, version: about?.latestApiVersion || about?.supportedApis || undefined, deployments };
   } catch (err) {
-    const status = err.response?.status;
-    // vRA error bodies vary (message / serverMessage / HTML) — pass through a
-    // snippet of whatever came back so failures are diagnosable from the UI.
+    // vIDM rejects bad credentials with an OAuth-style 400 invalid_grant, not
+    // a 401 - treat both as an auth failure. The body is only read to
+    // classify the failure, it is never returned.
     const body = err.response?.data;
-    const detail = body == null ? null
-      : (typeof body === 'string' ? body : JSON.stringify(body)).slice(0, 300);
-    // vIDM rejects bad credentials with an OAuth-style 400 invalid_grant,
-    // not a 401 — treat both as an auth failure.
-    const authFail = status === 401 || (status === 400 && /invalid_grant/i.test(detail || ''));
+    const bodyText = body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body));
+    const authFail = err.response?.status === 400 && /invalid_grant/i.test(bodyText);
     return {
       ok: false,
-      error: authFail ? 'Authentication failed — check the Aria username, password and domain. AD/LDAP accounts: bare username + the identity-source domain exactly as vRA’s login page lists it; local accounts: leave domain empty.'
-        : status ? `vRA responded ${status}${detail ? ` — ${detail}` : ''}`
-          : err.message,
+      error: testFailure(err, authFail, 'Sign-in was refused. Check the Aria username, password and domain. AD/LDAP accounts: bare username + the identity-source domain exactly as the vRA login page lists it; local accounts: leave domain empty.'),
     };
   }
+}
+
+// Fixed, caller-safe text for a failed connection test. The transport error
+// text names addresses and ports, and the upstream body is whatever the far
+// end chose to send, so neither is ever returned.
+function testFailure(err, authFailed, authMessage) {
+  const status = err?.response?.status;
+  const code = String(err?.code || '');
+  if (authFailed || status === 401 || status === 403) return authMessage;
+  if (status) return 'Unexpected response from the server.';
+  if (/TIMEDOUT|ECONNABORTED/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'The connection timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the server.';
 }
 
 module.exports = {

@@ -92,6 +92,19 @@ function publicSource(coreApi, row) {
 
 // ── source registration CRUD ────────────────────────────────────────────────
 
+// -- Saved credential rule (mirrors backend/utils/connectionGuard.js) --------
+// A saved secret only ever travels to the address it was saved for. A pack
+// cannot require host files and must also run on hosts that predate
+// coreApi.net, so the test-route and PUT rules are inline here; coreApi.net is
+// only used to refuse loopback / link-local / metadata addresses.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const normTarget = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+const targetChanged = (stored, incoming) => incoming !== undefined && normTarget(incoming) !== normTarget(stored);
+function hostBlocked(coreApi, host) {
+  const net = coreApi.net || null;
+  return !!(net && host && net.isBlockedHost(host));
+}
+
 function handleGetSources(req, res, coreApi) {
   res.json(coreApi.db.prepare('SELECT * FROM unifi_sources ORDER BY name').all().map((r) => publicSource(coreApi, r)));
 }
@@ -106,6 +119,7 @@ function handlePostSources(req, res, coreApi) {
     if (!Number.isInteger(p) || p < 1 || p > 65535) errors.push(fail('port'));
   }
   if (!isNonEmptyString(b.apiKey, 512)) errors.push(fail('apiKey'));
+  if (hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) errors.push(fail('sslVerify'));
   if (b.pollingIntervalMinutes !== undefined) {
     const n = parseIntStrict(b.pollingIntervalMinutes);
@@ -142,6 +156,7 @@ function handlePutSource(req, res, coreApi) {
     if (!Number.isInteger(p) || p < 1 || p > 65535) errors.push(fail('port'));
   }
   if (b.apiKey !== undefined && b.apiKey !== '' && !(typeof b.apiKey === 'string' && b.apiKey.length <= 512)) errors.push(fail('apiKey'));
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) errors.push(fail('sslVerify'));
   if (b.pollingIntervalMinutes !== undefined) {
     const n = parseIntStrict(b.pollingIntervalMinutes);
@@ -152,6 +167,9 @@ function handlePutSource(req, res, coreApi) {
   const db = coreApi.db;
   const row = db.prepare('SELECT * FROM unifi_sources WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'UniFi source not found.' });
+  if (!b.apiKey && (targetChanged(row.host, b.host) || targetChanged(row.port, b.port))) {
+    return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+  }
   db.prepare(`
     UPDATE unifi_sources SET
       name = ?, host = ?, port = ?, encrypted_credentials = ?, ssl_verify = ?, polling_interval_minutes = ?
@@ -189,6 +207,7 @@ async function handlePostSourcesTest(req, res, coreApi) {
     if (!Number.isInteger(p) || p < 1 || p > 65535) errors.push(fail('port'));
   }
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) errors.push(fail('sslVerify'));
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (errors.length) return badRequest(res, errors);
 
   const { id, host, apiKey, port, sslVerify } = b;
@@ -196,7 +215,15 @@ async function handlePostSourcesTest(req, res, coreApi) {
   if (id) {
     const row = coreApi.db.prepare('SELECT * FROM unifi_sources WHERE id = ?').get(parseIntStrict(id));
     if (!row) return res.status(404).json({ error: 'UniFi source not found.' });
-    candidate = { ...row, ...(apiKey ? { apiKey } : {}) };
+    // No typed key: the saved key is used, so the saved host, port and TLS
+    // flag go with it and the body's are ignored. A typed key is a "try new
+    // settings" test: the body's target with the typed key, saved blob left out.
+    candidate = !apiKey ? row : {
+      host: (host && String(host).trim()) || row.host,
+      port: port ? parseIntStrict(port) : (row.port || 443),
+      apiKey,
+      ssl_verify: sslVerify !== undefined ? (toBool(sslVerify) ? 1 : 0) : row.ssl_verify,
+    };
   } else {
     if (!host || !apiKey) {
       return badRequest(res, [fail('host, apiKey required')]);

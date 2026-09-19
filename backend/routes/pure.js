@@ -1,11 +1,13 @@
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
-const { encrypt } = require('../services/encryption');
+const { encrypt, decrypt } = require('../services/encryption');
 const pureApi = require('../services/pureApi');
 const { scheduleArray, cancelArray, triggerPoll } = require('../services/purePoller');
 const cacheControl = require('../middleware/cache');
 const pureAdvisor = require('../services/advisors/pureAdvisor');
+const { isBlockedHost } = require('../utils/hostGuard');
+const { testTarget, assertSecretOnTargetChange } = require('../utils/connectionGuard');
 
 const router = express.Router();
 
@@ -15,16 +17,6 @@ function validate(req, res, next) {
     return res.status(400).json({ errors: errors.array() });
   }
   next();
-}
-
-// SSRF guard on the management host (strip scheme first).
-function isBlockedHost(host) {
-  const h = String(host || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').split(':')[0];
-  const blocked = [
-    /^127\./, /^0\.0\.0\.0$/, /^169\.254\./, /^::1$/,
-    /^localhost$/i, /^metadata\.google\.internal$/i, /^169\.254\.169\.254$/,
-  ];
-  return blocked.some((p) => p.test(h));
 }
 
 const PEM_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+-----END [A-Z ]*PRIVATE KEY-----/;
@@ -120,6 +112,7 @@ router.get('/defaults', (req, res) => {
 router.post(
   '/arrays/test',
   [
+    body('id').optional().isInt().toInt(),
     body('mgmt_host').trim().notEmpty().custom((v) => !isBlockedHost(v)).withMessage('mgmt_host is not allowed'),
     body('auth_method').optional().isIn(['client', 'token']),
     body('client_id').optional({ nullable: true }).trim(),
@@ -127,23 +120,70 @@ router.post(
     body('username').optional({ nullable: true }).trim(),
     body('issuer').optional({ nullable: true }).trim(),
     body('ssl_verify').optional().isBoolean(),
+    body('privateKey').optional().isString(),
+    body('apiToken').optional().isString(),
   ],
   validate,
   async (req, res) => {
-    const credErr = checkCredentials(req.body, { requireSecret: true });
-    if (credErr) return res.status(400).json({ ok: false, error: credErr });
+    let stored = null;
+    if (req.body.id) {
+      stored = db.prepare('SELECT * FROM pure_arrays WHERE id = ?').get(req.body.id);
+    }
+
+    // "Secret supplied" means whichever secret the posted auth method uses: the
+    // API token, or the private key of the API client flow.
+    const method = req.body.auth_method === 'token' ? 'token' : 'client';
+    const secretSupplied = method === 'token' ? !!req.body.apiToken : !!req.body.privateKey;
+    const useStored = !!stored && !secretSupplied;
+    // A test with no saved row to fall back on still needs a typed secret (400).
+    if (!useStored) {
+      const credErr = checkCredentials(req.body, { requireSecret: true });
+      if (credErr) return res.status(400).json({ ok: false, error: credErr });
+    }
+
     try {
-      const result = await pureApi.testConnection({
-        mgmt_host: req.body.mgmt_host,
-        auth_method: req.body.auth_method === 'token' ? 'token' : 'client',
-        client_id: req.body.client_id,
-        key_id: req.body.key_id,
-        username: req.body.username,
-        issuer: req.body.issuer || null,
-        ssl_verify: req.body.ssl_verify ? 1 : 0,
-        privateKey: req.body.privateKey,
-        apiToken: req.body.apiToken,
+      const target = testTarget({
+        stored,
+        incoming: req.body,
+        fields: ['mgmt_host'],
+        secretSupplied
       });
+      if (isBlockedHost(target.mgmt_host)) return res.status(400).json({ ok: false, error: 'mgmt_host is not allowed' });
+
+      let probe;
+      if (useStored) {
+        // The saved secret only ever goes to the saved row: stored host, stored
+        // auth method and identifiers, stored certificate setting. Nothing in
+        // the body can redirect it.
+        const creds = JSON.parse(decrypt(stored.encrypted_credentials));
+        probe = {
+          mgmt_host: stored.mgmt_host,
+          auth_method: stored.auth_method === 'token' ? 'token' : 'client',
+          client_id: stored.client_id,
+          key_id: stored.key_id,
+          username: stored.username,
+          issuer: stored.issuer || null,
+          ssl_verify: stored.ssl_verify,
+          privateKey: creds.privateKey,
+          apiToken: creds.apiToken,
+        };
+      } else {
+        probe = {
+          mgmt_host: target.mgmt_host,
+          auth_method: method,
+          client_id: req.body.client_id,
+          key_id: req.body.key_id,
+          username: req.body.username,
+          issuer: req.body.issuer || null,
+          ssl_verify: req.body.ssl_verify !== undefined
+            ? (req.body.ssl_verify === true || req.body.ssl_verify === 'true' || req.body.ssl_verify === 1 || req.body.ssl_verify === '1' ? 1 : 0)
+            : (stored ? stored.ssl_verify : 0),
+          privateKey: req.body.privateKey,
+          apiToken: req.body.apiToken,
+        };
+      }
+
+      const result = await pureApi.testConnection(probe);
       res.json(result);
     } catch (err) {
       res.status(400).json({ ok: false, error: describeApiError(err) });
@@ -207,6 +247,21 @@ router.put(
 
       const method = req.body.auth_method === 'token' ? 'token' : 'client';
       const hasNewSecret = method === 'token' ? !!req.body.apiToken : !!req.body.privateKey;
+
+      try {
+        // Compare the origin form the client dials, so "pure.corp.local" and the
+        // stored "https://pure.corp.local" count as the same target.
+        assertSecretOnTargetChange({
+          stored: { mgmt_host: pureApi.normalizeHost(existing.mgmt_host) },
+          incoming: { mgmt_host: pureApi.normalizeHost(req.body.mgmt_host) },
+          fields: ['mgmt_host'],
+          secretSupplied: hasNewSecret
+        });
+      } catch (err) {
+        if (err.status === 400) return res.status(400).json({ error: err.message });
+        throw err;
+      }
+
       const encrypted = hasNewSecret ? buildCredentials(req.body) : existing.encrypted_credentials;
 
       db.prepare(`
@@ -225,7 +280,7 @@ router.put(
         req.body.issuer || null,
         encrypted,
         req.body.polling_interval_minutes || existing.polling_interval_minutes,
-        req.body.ssl_verify ? 1 : 0,
+        req.body.ssl_verify !== undefined ? (req.body.ssl_verify ? 1 : 0) : existing.ssl_verify,
         req.params.id
       );
 
@@ -599,20 +654,28 @@ router.post('/advisor/:report', [param('report').isString()], validate, async (r
   }
 });
 
+// Test-connection failures map to a small fixed set of messages. Raw transport
+// text ("connect ECONNREFUSED 10.1.2.3:443") and upstream response bodies are
+// never echoed: they turn the test button into a port scanner and a reader of
+// whatever answers at the address.
+const TLS_CODES = new Set([
+  'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID', 'HOSTNAME_MISMATCH',
+]);
 function describeApiError(err) {
-  if (err?.response) {
-    const status = err.response.status;
-    const detail = err.response.data?.errors?.[0]?.message
-      || err.response.data?.error_description
-      || err.response.data?.error
-      || '';
-    if (status === 400 || status === 401) return `Authentication failed (HTTP ${status})${detail ? `: ${detail}` : ''}`;
-    return `Array returned HTTP ${status}${detail ? `: ${detail}` : ''}`;
-  }
-  if (err?.code === 'PURE_NO_KEY') return 'No private key provided';
-  if (err?.code === 'PURE_NO_TOKEN') return 'No API token provided';
-  if (err?.code) return `Network error: ${err.code}`;
-  return err?.message || 'Connection failed';
+  const status = err?.response?.status;
+  // The token exchange answers a bad assertion with 400, so 400 counts as refused.
+  if (status === 400 || status === 401 || status === 403) return 'Sign-in was refused';
+  if (status) return `Unexpected response (HTTP ${status})`;
+  const code = err?.code;
+  if (code === 'PURE_NO_KEY') return 'No private key provided';
+  if (code === 'PURE_NO_TOKEN') return 'No API token provided';
+  if (code === 'PURE_AUTH_FAILED') return 'Sign-in was refused';
+  if (TLS_CODES.has(code)) return 'The TLS certificate was not trusted';
+  if (code === 'ECONNABORTED' || code === 'ETIMEDOUT' || /timed? ?out/i.test(err?.message || '')) return 'Timed out';
+  if (code) return 'Could not reach the address';
+  return 'Unexpected response';
 }
 
 module.exports = router;

@@ -45,6 +45,9 @@ function resolveFosTarget(coreApi, source, switchRow) {
   const passwordEnc = override?.password_enc || source.fos_password_enc;
   const port = override?.port || source.fos_port || 443;
   if (!ip || !username || !passwordEnc) return null;
+  // The switch address comes from SANnav inventory (or an override). A FOS
+  // password is never sent to loopback, link-local or metadata space.
+  if (coreApi.net && coreApi.net.isBlockedHost(String(ip).trim())) return null;
   return {
     ip: String(ip).trim(), port, username, password_enc: passwordEnc,
     verify_ssl: source.verify_ssl, allow_http: !!source.fos_allow_http,

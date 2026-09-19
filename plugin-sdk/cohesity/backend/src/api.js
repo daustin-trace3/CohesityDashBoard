@@ -22,7 +22,8 @@ function buildAxiosInstance(baseURL, sslVerify = false) {
   return axios.create({
     baseURL,
     httpsAgent: agent,
-    timeout: 30000
+    timeout: 30000,
+    maxRedirects: 0 // apiKey and bearer headers never follow a redirect to another host
   });
 }
 
@@ -64,15 +65,31 @@ async function getAuthenticatedClient(cluster, coreApi) {
 
   // Authenticate and cache
   const loginAgent = new https.Agent({ rejectUnauthorized: !!cluster.ssl_verify });
-  const loginResp = await axios.post(
-    `${baseURL}/login`,
-    {
-      domain: credentials.domain || 'local',
-      username: credentials.username,
-      password: credentials.password
-    },
-    { httpsAgent: loginAgent, timeout: 30000 }
-  );
+  let loginResp;
+  try {
+    loginResp = await axios.post(
+      `${baseURL}/login`,
+      {
+        domain: credentials.domain || 'local',
+        username: credentials.username,
+        password: credentials.password
+      },
+      { httpsAgent: loginAgent, timeout: 30000, maxRedirects: 0 } // a 307 would replay the password to the new host
+    );
+  } catch (err) {
+    // A failed login is an axios error carrying the username and password in
+    // err.config.data. Throw a plain Error instead. Its own status is 502: the
+    // upstream 401 must never become an ICC 401, which the browser reads as an
+    // expired ICC session. A bare response.status (no body, no config) stays
+    // so the poller can still say "HTTP 401 from cluster".
+    const status = err.response?.status;
+    const msg = status === 401 || status === 403 ? 'Authentication failed' : 'Login failed';
+    const wrappedErr = new Error(msg);
+    wrappedErr.status = 502;
+    wrappedErr.code = err.code || 'COHESITY_LOGIN_FAILED';
+    if (status) wrappedErr.response = { status };
+    throw wrappedErr;
+  }
 
   const { accessToken, tokenType } = loginResp.data;
   if (sessionCache.size >= MAX_SESSION_CACHE) {
@@ -116,7 +133,8 @@ async function testClusterConnection(config, coreApi) {
     client = axios.create({
       baseURL: 'https://helios.cohesity.com',
       httpsAgent: agent,
-      timeout: TEST_CONNECTION_TIMEOUT_MS
+      timeout: TEST_CONNECTION_TIMEOUT_MS,
+      maxRedirects: 0
     });
     client.defaults.headers.common['apiKey'] = apiKey;
     if (vip) {
@@ -127,7 +145,7 @@ async function testClusterConnection(config, coreApi) {
     const agent = new https.Agent({ rejectUnauthorized: !!ssl_verify });
 
     if (auth_type === 'apikey') {
-      client = axios.create({ baseURL, httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS });
+      client = axios.create({ baseURL, httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS, maxRedirects: 0 });
       client.defaults.headers.common['apiKey'] = credentials.apiKey;
     } else {
       const loginResp = await axios.post(
@@ -137,10 +155,10 @@ async function testClusterConnection(config, coreApi) {
           username: credentials.username,
           password: credentials.password
         },
-        { httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS }
+        { httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS, maxRedirects: 0 }
       );
       const { accessToken, tokenType } = loginResp.data;
-      client = axios.create({ baseURL, httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS });
+      client = axios.create({ baseURL, httpsAgent: agent, timeout: TEST_CONNECTION_TIMEOUT_MS, maxRedirects: 0 });
       client.defaults.headers.common['Authorization'] = `${tokenType} ${accessToken}`;
     }
   }
@@ -476,6 +494,7 @@ async function heliosAllClusters(apiKey) {
   const client = axios.create({
     baseURL: 'https://helios.cohesity.com',
     timeout: 30000,
+    maxRedirects: 0,
     headers: { apiKey }
   });
   const { data } = await client.get('/mcm/clusters/connectionStatus');

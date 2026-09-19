@@ -17,6 +17,47 @@ const { createZertoAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const { badRequest, fail, isNonEmptyString, isBooleanish, parseQueryInt } = require('./validate');
 
+// Fallback for a host that predates coreApi.net. `hostname` comes out of the
+// WHATWG URL parser, which has already turned decimal, hex and short IPv4
+// forms into a dotted quad and kept the brackets on an IPv6 literal.
+function inlineBlockedHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost') || h === 'metadata' || h === 'metadata.google.internal' || h === 'instance-data') return true;
+  if (h.includes(':')) {
+    // IPv6 literal: loopback, unspecified, every IPv4-mapped or NAT64 form,
+    // link-local, multicast and the AWS metadata address.
+    return h === '::' || h === '::1' || h.startsWith('::ffff:') || h.startsWith('64:ff9b:')
+      || /^fe[89ab]/.test(h) || /^ff/.test(h) || h === 'fd00:ec2::254';
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+    const first = Number(h.split('.')[0]);
+    return first === 127 || first === 0 || h.startsWith('169.254.') || (first >= 224 && first <= 239)
+      || h === '255.255.255.255' || h === '100.100.100.200';
+  }
+  return false;
+}
+
+function validateZertoBaseUrl(value, coreApi) {
+  if (!value) return true;
+  try {
+    // An empty "?", "#" or "@" parses to nothing but would still be saved and
+    // glued in front of every API path, so the raw text is checked as well.
+    if (/[?#@\\\s]/.test(String(value).trim())) throw new Error('only https://host[:port] is allowed');
+    const url = new URL(value);
+    if (url.protocol !== 'https:') throw new Error('https required');
+    if (url.username || url.password) throw new Error('userinfo not allowed');
+    if (url.search) throw new Error('query not allowed');
+    if (url.hash) throw new Error('fragment not allowed');
+    if (url.pathname !== '/' && url.pathname !== '') throw new Error('paths not allowed');
+    const net = coreApi.net || null;
+    if (net ? net.isBlockedHost(url.hostname) : inlineBlockedHost(url.hostname)) throw new Error('that address is not allowed');
+    return true;
+  } catch (err) {
+    throw new Error(`Invalid baseUrl: ${err.message}`);
+  }
+}
+
 function latestSnapshot(coreApi) {
   return coreApi.db.prepare('SELECT * FROM zerto_metrics_history ORDER BY captured_at DESC LIMIT 1').get() || null;
 }
@@ -189,7 +230,25 @@ function handlePutAccount(req, res, coreApi) {
     const n = Number(b.pollIntervalMinutes);
     if (!Number.isInteger(n) || n < 5 || n > 1440) errors.push(fail('pollIntervalMinutes'));
   }
+  // R3: Validate baseUrl format
+  if (b.baseUrl !== undefined) {
+    try {
+      validateZertoBaseUrl(b.baseUrl, coreApi);
+    } catch (err) {
+      errors.push(fail('baseUrl'));
+    }
+  }
   if (errors.length) return badRequest(res, errors);
+
+  const saved = api.getZertoConfig(coreApi);
+  const secretSupplied = !!(b.password && String(b.password).trim());
+  // R2: Check baseUrl changed without new secret
+  const normalize = (v) => String(v || '').trim().toLowerCase().replace(/\/+$/, '');
+  // A blank baseUrl means "back to the default address", which is still a
+  // change of target when another address is saved.
+  if (b.baseUrl !== undefined && normalize(b.baseUrl || api.DEFAULT_BASE_URL) !== normalize(saved.baseUrl) && !secretSupplied) {
+    return res.status(400).json({ error: 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.' });
+  }
 
   const settings = coreApi.settings;
   if (b.username != null) settings.setSetting('zerto_username', String(b.username).trim());
@@ -207,6 +266,14 @@ function handlePutAccount(req, res, coreApi) {
 /** POST /account/test — validate saved or candidate credentials. */
 async function handlePostAccountTest(req, res, coreApi) {
   const b = req.body || {};
+  // R3: Validate baseUrl format
+  if (b.baseUrl !== undefined && typeof b.baseUrl === 'string') {
+    try {
+      validateZertoBaseUrl(b.baseUrl, coreApi);
+    } catch (err) {
+      return res.status(400).json({ error: 'Invalid parameters' });
+    }
+  }
   const result = await api.testConnection(coreApi, {
     username: typeof b.username === 'string' ? b.username.trim() : undefined,
     password: typeof b.password === 'string' ? b.password : undefined,

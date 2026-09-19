@@ -76,6 +76,19 @@ function errMsg(err) {
   return err?.message || String(err);
 }
 
+// Wording for test-connection results. A fixed set: no transport text (it
+// names internal addresses and ports) and no upstream response body.
+function testFailure(err) {
+  const status = err?.response?.status;
+  const code = String(err?.code || err?.cause?.code || '');
+  if (status === 401 || status === 403) return 'Sign-in was refused. Check the username and password.';
+  if (status) return 'Unexpected response from the address.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_|ERR_TLS|ERR_SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (/ETIMEDOUT|ECONNABORTED|ESOCKETTIMEDOUT/.test(code) || /timed out|timeout/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE/.test(code)) return 'Could not reach the address.';
+  return 'Unexpected response from the address.';
+}
+
 function errCode(err) {
   return err?.response?.data?.code || null;
 }
@@ -129,7 +142,9 @@ function rawRequest(source, method, path, { params, data, timeout = 30000, heade
             try { parsed = JSON.parse(raw); } catch { parsed = raw; }
           }
           const response = { status: res.statusCode, data: parsed };
-          if (res.statusCode >= 500) {
+          // Node's https never follows a redirect. A 3xx is a failure here,
+          // never something to chase with the credentials attached.
+          if (res.statusCode >= 500 || (res.statusCode >= 300 && res.statusCode < 400)) {
             const err = new Error(`HTTP ${res.statusCode}`);
             err.response = response;
             reject(err);
@@ -196,6 +211,9 @@ async function logout(source, coreApi) {
   try {
     const session = sessions.get(source.id);
     if (!session) return;
+    // Forget it BEFORE the network call so nothing reuses it while the logout
+    // is in flight (a PUT may have just changed the address).
+    invalidateSession(source.id);
     await rawRequest(source, 'patch', '/sessions/current', {
       data: { state: 'LOGGED_OUT' }, timeout: 30000,
       headers: { Authorization: `Basic ${session.basicAuthCredentials}`, Accept: 'application/hal+json' },
@@ -741,7 +759,7 @@ async function testConnection(candidate, coreApi) {
     const configurations = await fetchConfigurations(candidate, coreApi, 15000);
     return { ok: true, bamVersion: version, configurations };
   } catch (err) {
-    return { ok: false, error: errMsg(err) };
+    return { ok: false, error: testFailure(err) };
   } finally {
     invalidateSession(candidate.id);
   }
@@ -765,7 +783,7 @@ async function promisePool(items, concurrency, worker) {
 }
 
 module.exports = {
-  errMsg, errCode,
+  errMsg, errCode, testFailure,
   numOrNull, strOrNull, boolToInt, jsonOrNull,
   login, getSession, invalidateSession, logout,
   apiGet, pagedGet, getWithFieldsFallback,

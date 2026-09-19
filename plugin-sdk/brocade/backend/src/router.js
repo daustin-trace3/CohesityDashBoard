@@ -26,6 +26,19 @@ const {
   requireIdParam, parseQueryInt,
 } = require('./validate');
 
+// -- Saved credential rule (mirrors backend/utils/connectionGuard.js) --------
+// A saved secret only ever travels to the address it was saved for. A pack
+// cannot require host files and must also run on hosts that predate
+// coreApi.net, so the test-route and PUT rules are inline here; coreApi.net is
+// only used to refuse loopback / link-local / metadata addresses.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const normTarget = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+const targetChanged = (stored, incoming) => incoming !== undefined && normTarget(incoming) !== normTarget(stored);
+function hostBlocked(coreApi, host) {
+  const net = coreApi.net || null;
+  return !!(net && host && net.isBlockedHost(host));
+}
+
 const parseJson = (s, fallback = null) => {
   if (!s) return fallback;
   try { return JSON.parse(s); } catch { return fallback; }
@@ -103,6 +116,7 @@ function handlePostSources(req, res, coreApi) {
     if (!Number.isInteger(fosPort) || fosPort < 1 || fosPort > 65535) errors.push(fail('fosPort'));
   }
   if (b.fosAllowHttp !== undefined && !isBooleanish(b.fosAllowHttp)) errors.push(fail('fosAllowHttp'));
+  if (hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (errors.length) return badRequest(res, errors);
 
   const db = coreApi.db;
@@ -166,11 +180,42 @@ function handlePutSource(req, res, coreApi) {
     if (!Number.isInteger(fosPort) || fosPort < 1 || fosPort > 65535) errors.push(fail('fosPort'));
   }
   if (b.fosAllowHttp !== undefined && !isBooleanish(b.fosAllowHttp)) errors.push(fail('fosAllowHttp'));
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (errors.length) return badRequest(res, errors);
 
   const db = coreApi.db;
   const row = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'not_found' });
+  // The SANnav password travels to host:port.
+  const sannavMoved = targetChanged(row.host, b.host) || targetChanged(row.port, port);
+  // The shared FOS password travels to the switch addresses THIS SANnav server
+  // reports, on fos_port, and in clear text once plain http is on. So the
+  // SANnav address, the FOS port and turning http ON are all targets of that
+  // secret. Typing the SANnav password does not count: it is a different
+  // secret. Turning http off is always allowed.
+  const httpOn = b.fosAllowHttp !== undefined && toBool(b.fosAllowHttp) && !row.fos_allow_http;
+  const fosMoved = sannavMoved || targetChanged(row.fos_port, fosPort) || httpOn;
+  // A per-switch override with its own saved password but NO pinned address is
+  // dialled at whatever switch IP this SANnav reports. Pointing the source at
+  // another SANnav would let that server name any address and collect those
+  // passwords, and they cannot be retyped here. So the SANnav address cannot
+  // change while such overrides exist.
+  if (sannavMoved && db.prepare("SELECT 1 FROM brocade_fos_overrides WHERE source_id = ? AND password_enc IS NOT NULL AND TRIM(COALESCE(ip_address, '')) = '' LIMIT 1").get(row.id)) {
+    return res.status(400).json({
+      error: TARGET_CHANGE_MESSAGE,
+      detail: 'Some per-switch FOS overrides have a saved password but no pinned IP address, so they follow the switch addresses SANnav reports. Pin an IP address on those overrides (or remove them) before changing the SANnav address.',
+    });
+  }
+  // Per-switch overrides keep their own saved passwords and cannot be retyped
+  // in this request, so they must not exist when http goes on.
+  const overrideSecrets = httpOn
+    && !!db.prepare('SELECT 1 FROM brocade_fos_overrides WHERE source_id = ? AND password_enc IS NOT NULL LIMIT 1').get(row.id);
+  if ((sannavMoved && !b.password) || (fosMoved && row.fos_password_enc && !b.fosPassword) || overrideSecrets) {
+    return res.status(400).json({
+      error: TARGET_CHANGE_MESSAGE,
+      detail: 'Per-switch FOS overrides with a saved password have to be removed before plain http is turned on, and added again afterwards.',
+    });
+  }
   db.prepare(`
     UPDATE brocade_sources SET
       name = ?, host = ?, port = ?, username = ?, password_enc = ?, verify_ssl = ?, enabled = ?,
@@ -196,6 +241,9 @@ function handlePutSource(req, res, coreApi) {
   );
   const updated = db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(row.id);
   getHandle(coreApi).schedule(updated);
+  // Drop the cached SANnav session. Log out against the OLD row: the cached
+  // session id belongs to the old address and must not be posted to a new one.
+  api.logout(row, coreApi).catch(() => {});
   res.json({ source: publicSource(updated) });
 }
 
@@ -223,6 +271,7 @@ async function handlePostSourceTest(req, res, coreApi) {
   }
   if (b.username !== undefined && typeof b.username !== 'string') errors.push(fail('username'));
   if (b.password !== undefined && typeof b.password !== 'string') errors.push(fail('password'));
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (errors.length) return badRequest(res, errors);
 
   const row = coreApi.db.prepare('SELECT * FROM brocade_sources WHERE id = ?').get(id);
@@ -231,14 +280,19 @@ async function handlePostSourceTest(req, res, coreApi) {
   if (!row && !(b.host && b.username && b.password)) {
     return res.status(404).json({ error: 'not_found' });
   }
-  const base = row || { verify_ssl: 0 };
-  const candidate = {
-    ...base,
-    host: b.host?.trim() || base.host,
-    port: port || base.port || 443,
-    username: b.username?.trim() || base.username,
-    password: b.password || undefined,
-  };
+  // No typed password: the saved one is used, so the saved host, port,
+  // username and TLS flag are used with it and the body's are ignored. The
+  // candidate never carries the source id (it would overwrite the live
+  // session cache entry with a session from the address under test).
+  const candidate = (row && !b.password)
+    ? { host: row.host, port: row.port || 443, username: row.username, password_enc: row.password_enc, verify_ssl: row.verify_ssl }
+    : {
+      host: b.host?.trim() || row?.host,
+      port: port || row?.port || 443,
+      username: b.username?.trim() || row?.username,
+      password: b.password,
+      verify_ssl: row ? row.verify_ssl : 0,
+    };
   const result = await api.testConnection(candidate, coreApi);
   res.status(200).json(result);
 }
@@ -301,13 +355,33 @@ function handlePostFosOverrides(req, res, coreApi) {
     port = parseIntStrict(b.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) errors.push(fail('port'));
   }
+  if (b.ipAddress && hostBlocked(coreApi, b.ipAddress)) errors.push(fail('ipAddress', 'that address is not allowed'));
   if (errors.length) return badRequest(res, errors);
 
   const db = coreApi.db;
-  const row = db.prepare('SELECT id FROM brocade_sources WHERE id = ?').get(id);
+  const row = db.prepare('SELECT id, fos_password_enc, fos_port FROM brocade_sources WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'not_found' });
   const wwn = b.switchWwn.trim();
-  const existing = db.prepare('SELECT password_enc FROM brocade_fos_overrides WHERE source_id = ? AND switch_wwn = ?').get(row.id, wwn);
+  const existing = db.prepare('SELECT password_enc, ip_address, port FROM brocade_fos_overrides WHERE source_id = ? AND switch_wwn = ?').get(row.id, wwn);
+  // A blank password keeps a saved one: the override's own, else the shared
+  // FOS password (resolveFosTarget falls back to it). Either way the saved
+  // secret must keep going where it already goes. This upsert rewrites every
+  // column, so compare the EFFECTIVE address before and after: a blank
+  // ipAddress means the inventory address, a blank port means fos_port.
+  if (!b.password && (existing?.password_enc || row.fos_password_enc)) {
+    const sw = db.prepare('SELECT ip_address FROM brocade_switches WHERE source_id = ? AND wwn = ? COLLATE NOCASE').get(row.id, wwn);
+    const before = { ip: existing?.ip_address || sw?.ip_address || '', port: existing?.port || row.fos_port || 443 };
+    const after = { ip: b.ipAddress?.trim() || sw?.ip_address || '', port: port || row.fos_port || 443 };
+    // The shared password already goes to every switch address in this
+    // source's inventory, so pointing at one of those is not a new target.
+    if (!existing?.password_enc && after.ip
+      && db.prepare("SELECT 1 FROM brocade_switches WHERE source_id = ? AND TRIM(COALESCE(ip_address, '')) = ?").get(row.id, after.ip)) {
+      before.ip = after.ip;
+    }
+    if (targetChanged(before.ip, after.ip) || targetChanged(before.port, after.port)) {
+      return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+    }
+  }
   const passwordEnc = b.password ? coreApi.encryption.encrypt(b.password) : (existing ? existing.password_enc : null);
   db.prepare(`
     INSERT INTO brocade_fos_overrides (source_id, switch_wwn, ip_address, username, password_enc, port)

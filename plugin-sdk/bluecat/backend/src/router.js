@@ -46,6 +46,42 @@ function currentUsername(req) {
 
 // -- Source registration CRUD ------------------------------------------------
 
+// -- Saved credential rule (mirrors backend/utils/connectionGuard.js) --------
+// A saved secret only ever travels to the address it was saved for. A pack
+// cannot require host files and must also run on hosts that predate
+// coreApi.net, so the test-route and PUT rules are inline here; coreApi.net is
+// only used to refuse loopback / link-local / metadata addresses.
+const TARGET_CHANGE_MESSAGE = 'Enter the password or token again when changing the address. A saved credential is only ever sent to the address it was saved for.';
+const normTarget = (v) => String(v === undefined || v === null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+const targetChanged = (stored, incoming) => incoming !== undefined && normTarget(incoming) !== normTarget(stored);
+function hostBlocked(coreApi, host) {
+  const net = coreApi.net || null;
+  return !!(net && host && net.isBlockedHost(host));
+}
+
+// Test candidate for a SAVED source. No typed password: the saved credentials
+// are used, so the saved host, port, username and TLS flag go with them and
+// the body's are ignored. A typed password is a "try new settings" test: the
+// body's target with the typed password, the saved blob left out. The
+// temporary id comes AFTER the spread so the test never touches the live
+// session cache entry of the real source.
+function testCandidate(coreApi, row, b) {
+  const tempId = `test-${row.id}-${Date.now()}`;
+  if (!b.password) return { ...row, id: tempId };
+  let username = b.username;
+  if (!username) {
+    try { username = JSON.parse(coreApi.encryption.decrypt(row.encrypted_credentials)).username; } catch { username = null; }
+  }
+  return {
+    id: tempId,
+    host: (typeof b.host === 'string' && b.host.trim()) || row.host,
+    port: b.port ? parseIntStrict(b.port) : (row.port || 443),
+    username,
+    password: b.password,
+    ssl_verify: b.sslVerify !== undefined ? (toBool(b.sslVerify) ? 1 : 0) : row.ssl_verify,
+  };
+}
+
 function handleGetSources(req, res, coreApi) {
   res.json(coreApi.db.prepare('SELECT * FROM bluecat_sources ORDER BY name').all().map(publicSource));
 }
@@ -61,6 +97,7 @@ function handlePostSources(req, res, coreApi) {
   }
   if (!isNonEmptyString(b.username, 255)) errors.push(fail('username'));
   if (!isNonEmptyString(b.password, 512)) errors.push(fail('password'));
+  if (hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) errors.push(fail('sslVerify'));
   if (b.pollingIntervalMinutes !== undefined) {
     const n = parseIntStrict(b.pollingIntervalMinutes);
@@ -108,6 +145,7 @@ function handlePutSource(req, res, coreApi) {
   }
   if (b.username !== undefined && !isNonEmptyString(b.username, 255)) errors.push(fail('username'));
   if (b.password !== undefined && b.password !== '' && (typeof b.password !== 'string' || b.password.length > 512)) errors.push(fail('password'));
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) errors.push(fail('sslVerify'));
   if (b.pollingIntervalMinutes !== undefined) {
     const n = parseIntStrict(b.pollingIntervalMinutes);
@@ -118,6 +156,10 @@ function handlePutSource(req, res, coreApi) {
     if (!Number.isInteger(n) || n < 5 || n > 1440) errors.push(fail('enumerateIntervalMinutes'));
   }
   if (errors.length) return badRequest(res, errors);
+
+  if (!b.password && (targetChanged(row.host, b.host) || targetChanged(row.port, b.port))) {
+    return res.status(400).json({ error: TARGET_CHANGE_MESSAGE });
+  }
 
   let encryptedCredentials = row.encrypted_credentials;
   if (b.password) {
@@ -146,6 +188,9 @@ function handlePutSource(req, res, coreApi) {
   );
   const updated = db.prepare('SELECT * FROM bluecat_sources WHERE id = ?').get(row.id);
   getHandle(coreApi).schedule(updated);
+  // Drop the cached BAM session. Log out against the OLD row: the cached
+  // token belongs to the old address and must not be sent to a new one.
+  api.logout(row, coreApi).catch(() => {});
   res.json(publicSource(updated));
 }
 
@@ -174,6 +219,7 @@ async function handlePostSourcesTest(req, res, coreApi) {
     if (!Number.isInteger(p) || p < 1 || p > 65535) errors.push(fail('port'));
   }
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) errors.push(fail('sslVerify'));
+  if (b.host !== undefined && hostBlocked(coreApi, b.host)) errors.push(fail('host', 'that address is not allowed'));
   if (errors.length) return badRequest(res, errors);
 
   const { id, host, username, password, port, sslVerify } = b;
@@ -182,7 +228,7 @@ async function handlePostSourcesTest(req, res, coreApi) {
   if (id) {
     const row = db.prepare('SELECT * FROM bluecat_sources WHERE id = ?').get(parseIntStrict(id));
     if (!row) return res.status(404).json({ error: 'BlueCat source not found.' });
-    candidate = { ...row, ...(username ? { username } : {}), ...(password ? { password } : {}) };
+    candidate = testCandidate(coreApi, row, b);
   } else {
     if (!host || !username || !password) {
       return res.status(400).json({ error: 'Invalid parameters', details: [{ msg: 'host, username, and password required' }] });
@@ -204,23 +250,19 @@ async function handlePostSourceTest(req, res, coreApi) {
     if (!Number.isInteger(p) || p < 1 || p > 65535) return badRequest(res, [fail('port')]);
   }
   if (b.sslVerify !== undefined && !isBooleanish(b.sslVerify)) return badRequest(res, [fail('sslVerify')]);
+  if (b.host !== undefined && typeof b.host !== 'string') return badRequest(res, [fail('host')]);
+  if (hostBlocked(coreApi, b.host)) return badRequest(res, [fail('host', 'that address is not allowed')]);
 
   const { username, password, host, port, sslVerify } = b;
   const db = coreApi.db;
   const row = db.prepare('SELECT * FROM bluecat_sources WHERE id = ?').get(id);
   let candidate;
-  if (username && password) {
-    candidate = {
-      id: row ? row.id : id,
-      host: host?.trim() || row?.host,
-      username, password,
-      port: port ? parseIntStrict(port) : (row?.port || 443),
-      ssl_verify: sslVerify !== undefined ? (toBool(sslVerify) ? 1 : 0) : (row ? row.ssl_verify : 0),
-    };
-    if (!candidate.host) return res.status(400).json({ error: 'Invalid parameters', details: [{ msg: 'host required' }] });
+  if (row) {
+    candidate = testCandidate(coreApi, row, b);
   } else {
-    if (!row) return res.status(404).json({ error: 'BlueCat source not found.' });
-    candidate = row;
+    if (!username || !password) return res.status(404).json({ error: 'BlueCat source not found.' });
+    if (!host || !host.trim()) return res.status(400).json({ error: 'Invalid parameters', details: [{ msg: 'host required' }] });
+    candidate = { host: host.trim(), username, password, port: port ? parseIntStrict(port) : 443, ssl_verify: toBool(sslVerify) ? 1 : 0 };
   }
   const result = await api.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);

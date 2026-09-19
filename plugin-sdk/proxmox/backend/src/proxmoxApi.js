@@ -120,6 +120,16 @@ const fetchClusterLog = (server, coreApi, max = 200) => pveGetSafe(server, coreA
 const fetchNodeRrdData = (server, coreApi, node, timeframe = 'hour', cf = 'AVERAGE') => pveGetSafe(server, coreApi, `/nodes/${node}/rrddata`, { timeframe, cf }, []);
 const fetchGuestRrdData = (server, coreApi, node, type, vmid, timeframe = 'hour', cf = 'AVERAGE') => pveGetSafe(server, coreApi, `/nodes/${node}/${type}/${vmid}/rrddata`, { timeframe, cf }, []);
 
+/** Fixed, caller-safe text for a failed test. Never echoes transport text
+ *  (which names addresses and ports) or an upstream response body. */
+function testFailureMessage(err) {
+  const code = String(err?.code || err?.cause?.code || '');
+  if (code === 'ETIMEDOUT' || /timed out/i.test(String(err?.message || ''))) return 'Timed out.';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|TLS|SSL/.test(code)) return 'The TLS certificate was not trusted.';
+  if (['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNRESET', 'EPIPE'].includes(code)) return 'Could not reach the address.';
+  return 'Unexpected response.';
+}
+
 /** Validate a Proxmox server (saved row or unsaved candidate). Never throws. */
 async function testConnection(serverLike, coreApi) {
   try {
@@ -131,7 +141,7 @@ async function testConnection(serverLike, coreApi) {
       ok: false,
       error: status === 401 || status === 403
         ? 'Authentication failed — check the token ID and secret.'
-        : (err.response?.data?.message || err.message),
+        : testFailureMessage(err),
     };
   }
 }
