@@ -42,12 +42,17 @@ function decrypt(encryptedJson) {
   const key = getKey();
   const { iv, authTag, ciphertext } = JSON.parse(encryptedJson);
 
+  // GCM accepts truncated tags unless told otherwise; a 4 byte tag can be
+  // forged with about 2^32 tries. Only the full 16 byte tag is accepted.
+  const tag = Buffer.from(authTag, 'hex');
+  if (tag.length !== 16) throw new Error('Invalid ciphertext: bad authentication tag length');
   const decipher = crypto.createDecipheriv(
     ALGORITHM,
     key,
-    Buffer.from(iv, 'hex')
+    Buffer.from(iv, 'hex'),
+    { authTagLength: 16 }
   );
-  decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+  decipher.setAuthTag(tag);
 
   const decrypted = Buffer.concat([
     decipher.update(Buffer.from(ciphertext, 'hex')),
