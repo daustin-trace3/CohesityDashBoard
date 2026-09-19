@@ -166,6 +166,36 @@ function authEnabled() {
   return userCount() > 0;
 }
 
+/** True only for a caller on this machine that did not arrive through a
+ *  proxy. A reverse proxy or tunnel on the same host makes every remote user
+ *  look like 127.0.0.1, so any forwarding header disqualifies the request. */
+function isLocalRequest(req) {
+  if (!req) return false;
+  const h = req.headers || {};
+  if (h['x-forwarded-for'] || h.forwarded || h['x-real-ip'] || h['cf-connecting-ip'] || h['true-client-ip']) return false;
+  const addr = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/i, '');
+  return addr === '::1' || /^127\./.test(addr);
+}
+
+/**
+ * Per-request form of authEnabled(). The difference is the fresh-install
+ * state (no users, no explicit setting): that used to be open access for
+ * EVERY caller, which on a server listening on all interfaces meant anyone
+ * who could reach the port was a full administrator until someone created the
+ * first account. Now only a caller on the box itself gets that; everyone else
+ * is sent to first-run setup, which needs the claim token from the server log
+ * (the installer prints it). An explicit auth_enabled=0, set by a full
+ * administrator, still means open access for all.
+ */
+function authEnabledFor(req) {
+  const { getSetting } = require('./settings');
+  const v = getSetting('auth_enabled');
+  if (v === '0') return false;
+  if (v === '1') return true;
+  if (userCount() > 0) return true;
+  return !isLocalRequest(req);
+}
+
 /** The identity every request gets while auth is disabled. */
 function anonymousAuth() {
   return { kind: 'anonymous', name: 'open-access', grants: ['*:*:*'] };
@@ -182,5 +212,7 @@ module.exports = {
   pruneExpired,
   getClaimToken,
   authEnabled,
+  authEnabledFor,
+  isLocalRequest,
   anonymousAuth,
 };

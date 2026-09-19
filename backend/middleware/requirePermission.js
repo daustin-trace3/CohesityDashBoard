@@ -30,7 +30,12 @@ function platformPermission(nsOrFn) {
   return (req) => {
     const ns = typeof nsOrFn === 'function' ? nsOrFn(req) : nsOrFn;
     const section = req.path.split('/').filter(Boolean)[0] || '*';
-    const level = req.method === 'GET' ? 'view' : 'manage';
+    // The view / manage split follows the HTTP method, so a GET that DOES
+    // something needs the exception here: .../probe makes live vendor calls
+    // with the stored credentials (the AWS cost probe is billable) and
+    // ?refresh=1 triggers a poll. Both are manage-level, like POST /refresh.
+    const acts = /\/probe(\/|$)/i.test(req.path) || (req.query && req.query.refresh === '1');
+    const level = req.method === 'GET' && !acts ? 'view' : 'manage';
     return `${ns}:${section}:${level}`;
   };
 }

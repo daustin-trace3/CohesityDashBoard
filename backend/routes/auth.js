@@ -15,7 +15,7 @@ const {
   validateSession,
   destroySession,
   getClaimToken,
-  authEnabled,
+  authEnabledFor,
 } = require('../services/authService');
 const { resolveGrants, hasPermission } = require('../services/rbac');
 const { setSetting } = require('../services/settings');
@@ -146,7 +146,7 @@ router.get('/setup-status', (req, res) => {
   const dir = directory.getConfig();
   res.json({
     needsSetup: count === 0,
-    authEnabled: authEnabled(),
+    authEnabled: authEnabledFor(req),
     directory: { enabled: directory.isEnabled(), domain: directory.isEnabled() ? dir.domain : null },
   });
 });
@@ -267,7 +267,7 @@ router.get('/session', (req, res) => {
   const sessionId = parseCookie(req.headers.cookie, COOKIE_NAME);
   const session = sessionId ? validateSession(sessionId) : null;
   if (!session) {
-    if (!authEnabled()) {
+    if (!authEnabledFor(req)) {
       return res.json({
         authEnabled: false,
         user: { id: null, username: 'anonymous', displayName: 'Open access', permissions: ['*:*:*'] },
@@ -278,7 +278,7 @@ router.get('/session', (req, res) => {
   }
 
   res.json({
-    authEnabled: authEnabled(),
+    authEnabled: authEnabledFor(req),
     user: userPayload(session.user, session.grants),
     csrfToken: session.csrfToken,
   });
@@ -290,7 +290,7 @@ router.get('/session', (req, res) => {
  *  and the caller signs in normally. */
 router.post('/enable', authLimiter, async (req, res, next) => {
   try {
-    if (authEnabled()) return res.status(403).json({ error: 'Authentication is already enabled.' });
+    if (authEnabledFor(req)) return res.status(403).json({ error: 'Authentication is already enabled.' });
 
     const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
     if (count > 0) {
