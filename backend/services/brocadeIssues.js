@@ -4,6 +4,7 @@
 // changes. Contract §5 (14 rules).
 const db = require('../db/database');
 const { getSetting } = require('./settings');
+const { supersededMissingSql } = require('./brocadePaths');
 
 function clampedInt(key, def, min, max) {
   const n = Number(getSetting(key));
@@ -224,6 +225,7 @@ function computeIssues() {
       LEFT JOIN brocade_switch_ports sp
         ON sp.switch_wwn = dp.switch_wwn AND sp.port_number = dp.port_number AND sp.stale = 0
       WHERE dp.stale = 0 AND dp.is_missing = 1 AND dp.port_role = 'Initiator'
+        AND NOT ${supersededMissingSql('dp')}
         AND COALESCE(dp.fdmi_host_name, dp.enclosure_name) IS NOT NULL
       ORDER BY host, dp.switch_name, dp.port_number
     `).all();
