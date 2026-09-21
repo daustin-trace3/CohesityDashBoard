@@ -40,7 +40,11 @@ router.get('/', (req, res, next) => {
     const nodes = new Map();
     const edges = [];
     const addNode = (n) => { if (!nodes.has(n.id)) nodes.set(n.id, n); return nodes.get(n.id); };
-    const addEdge = (from, to, kind, label = '') => { if (from && to) edges.push({ from, to, kind, label }); };
+    // problem = { status: 'crit' | 'warn', issue: 'plain sentence' } marks a link
+    // that is down or degraded; the map draws it red and shows the sentence on hover.
+    const addEdge = (from, to, kind, label = '', problem = null) => {
+      if (from && to) edges.push({ from, to, kind, label, ...(problem ? { status: problem.status, issue: problem.issue } : {}) });
+    };
 
     // ── Anchor: vCenter VM (same match as server360) ────────────────────
     let vm = null;
@@ -90,12 +94,22 @@ router.get('/', (req, res, next) => {
       if (vm.host_name) {
         anchorHostName = vm.host_name;
         const hostId = `host:${vm.host_name}`;
+        let hostProblem = null;
+        let hostStatus = 'unknown';
+        try {
+          const h = db.prepare('SELECT connection_state FROM vcenter_hosts WHERE vcenter_id = ? AND name = ? LIMIT 1').get(vm.vcenter_id, vm.host_name);
+          if (h && h.connection_state) {
+            const connected = /^connected$/i.test(h.connection_state);
+            hostStatus = connected ? 'ok' : 'crit';
+            if (!connected) hostProblem = { status: 'crit', issue: `ESX host ${vm.host_name} is ${h.connection_state} in vCenter, so this VM cannot be reached through it.` };
+          }
+        } catch { /* host inventory not available */ }
         addNode({
           id: hostId, type: 'host', tier: 'compute', platform: 'vcenter',
           label: vm.host_name, sublabel: vm.cluster_name || '',
-          route: `/vcenter/hosts?q=${q(vm.host_name)}`, status: 'unknown',
+          route: `/vcenter/hosts?q=${q(vm.host_name)}`, status: hostStatus,
         });
-        addEdge(anchorId, hostId, 'runs-on', '');
+        addEdge(anchorId, hostId, 'runs-on', '', hostProblem);
         const vcenterId = `vcenter:${vm.vcenter_name}`;
         addNode({
           id: vcenterId, type: 'vcenter', tier: 'compute', platform: 'vcenter',
@@ -107,11 +121,20 @@ router.get('/', (req, res, next) => {
         const dsName = typeof ds === 'string' ? ds : (ds?.name || null);
         if (!dsName) continue;
         const dsId = `datastore:${dsName}`;
+        let dsProblem = null;
+        let dsStatus = 'unknown';
+        try {
+          const d = db.prepare('SELECT accessible FROM vcenter_datastores WHERE vcenter_id = ? AND name = ? LIMIT 1').get(vm.vcenter_id, dsName);
+          if (d && d.accessible != null) {
+            dsStatus = d.accessible ? 'ok' : 'crit';
+            if (!d.accessible) dsProblem = { status: 'crit', issue: `Datastore ${dsName} is reported inaccessible by vCenter.` };
+          }
+        } catch { /* datastore inventory not available */ }
         addNode({
           id: dsId, type: 'datastore', tier: 'storage', platform: 'vcenter',
-          label: dsName, sublabel: '', route: `/vcenter/datastores?q=${q(dsName)}`, status: 'unknown',
+          label: dsName, sublabel: '', route: `/vcenter/datastores?q=${q(dsName)}`, status: dsStatus,
         });
-        addEdge(anchorId, dsId, 'stores-on', '');
+        addEdge(anchorId, dsId, 'stores-on', '', dsProblem);
       }
     } else {
       anchorId = `device:${query}`;
@@ -137,12 +160,28 @@ router.get('/', (req, res, next) => {
           const allZoneNames = new Set();
           for (const hba of hbaRows) {
             const hbaId = `hba:${hba.wwn}`;
+            const portText = `${hba.switch_name || 'the fabric'}${hba.port_number != null ? ` port ${hba.slot_number ? `${hba.slot_number}/` : ''}${hba.port_number}` : ''}`;
+            // A missing login is a lost path. Otherwise the switch port the HBA
+            // sits on decides: not online is a lost path, poor health a degraded one.
+            let pathProblem = null;
+            if (hba.is_missing) {
+              pathProblem = { status: 'crit', issue: `SAN path down: HBA ${hba.wwn} is no longer logged in on ${portText}.` };
+            } else if (hba.switch_wwn && hba.port_number != null) {
+              try {
+                const sp = db.prepare('SELECT state, status, health, status_message FROM brocade_switch_ports WHERE switch_wwn = ? AND port_number = ? AND stale = 0 LIMIT 1').get(hba.switch_wwn, hba.port_number);
+                if (sp && sp.state && !/^online$/i.test(sp.state)) {
+                  pathProblem = { status: 'crit', issue: `SAN path down: switch ${portText} is ${sp.state}${sp.status && sp.status !== sp.state ? ` (${sp.status})` : ''}.${sp.status_message ? ` ${sp.status_message}` : ''}` };
+                } else if (sp && /marginal|degrad|down|fault|error|critical|unhealthy/i.test(sp.health || '')) {
+                  pathProblem = { status: 'warn', issue: `SAN path degraded: switch ${portText} health is ${sp.health}.${sp.status_message ? ` ${sp.status_message}` : ''}` };
+                }
+              } catch { /* switch port inventory not available */ }
+            }
             addNode({
               id: hbaId, type: 'hba', tier: 'san', platform: 'brocade',
               label: hba.wwn, sublabel: hba.zone_alias || hba.symbolic_name || hba.device_symbolic_name || '',
-              route: `/brocade/devices?q=${q(hba.wwn)}`, status: hba.is_missing ? 'warn' : 'ok',
+              route: `/brocade/devices?q=${q(hba.wwn)}`, status: pathProblem ? pathProblem.status : 'ok',
             });
-            addEdge(anchorId, hbaId, 'attached-to', '');
+            addEdge(anchorId, hbaId, 'attached-to', '', pathProblem);
 
             if (hba.switch_name) {
               const switchId = `switch:${hba.switch_wwn || hba.switch_name}`;
@@ -151,7 +190,7 @@ router.get('/', (req, res, next) => {
                 label: hba.switch_name, sublabel: hba.fabric_name || '',
                 route: `/brocade/switches?q=${q(hba.switch_name)}`, status: 'unknown',
               });
-              addEdge(hbaId, switchId, 'connected', `${hba.slot_number ?? ''}/${hba.port_number ?? ''}`.replace(/^\/|\/$/g, '') || '');
+              addEdge(hbaId, switchId, 'connected', `${hba.slot_number ?? ''}/${hba.port_number ?? ''}`.replace(/^\/|\/$/g, '') || '', pathProblem);
 
               if (hba.fabric_name) {
                 const fabricId = `fabric:${hba.fabric_name}`;
@@ -190,14 +229,17 @@ router.get('/', (req, res, next) => {
               addNode({
                 id: targetId, type: 'targetPort', tier: 'san', platform: 'brocade',
                 label: t.wwn, sublabel: t.enclosure_name || '',
-                route: `/brocade/devices?q=${q(t.wwn)}`, status: t.is_missing ? 'warn' : 'ok',
+                route: `/brocade/devices?q=${q(t.wwn)}`, status: t.is_missing ? 'crit' : 'ok',
               });
+              const targetProblem = t.is_missing
+                ? { status: 'crit', issue: `Storage path down: target port ${t.wwn}${t.enclosure_name ? ` on ${t.enclosure_name}` : ''} is no longer logged in to the fabric.` }
+                : null;
               const zoneLabel = shared.length > 2 ? `${shared.slice(0, 2).join(', ')} +${shared.length - 2}` : shared.join(', ');
               // edge from whichever anchor hba shares a zone with this target
               for (const hba of hbaRows) {
                 const hz = hbaZones.get(hba.wwn);
                 if ([...hz].some((z) => tZones.has(z))) {
-                  addEdge(`hba:${hba.wwn}`, targetId, 'zoned', zoneLabel);
+                  addEdge(`hba:${hba.wwn}`, targetId, 'zoned', zoneLabel, targetProblem);
                 }
               }
               if (t.enclosure_name) {
@@ -206,7 +248,7 @@ router.get('/', (req, res, next) => {
                   id: arrId, type: 'array', tier: 'storage', platform: 'brocade',
                   label: t.enclosure_name, sublabel: '', route: `/brocade/devices?q=${q(t.enclosure_name)}`, status: 'unknown',
                 });
-                addEdge(targetId, arrId, 'belongs-to', '');
+                addEdge(targetId, arrId, 'belongs-to', '', targetProblem);
               }
             }
             if (capped) {
@@ -395,7 +437,7 @@ router.get('/', (req, res, next) => {
           addNode({ platform: p.id, color: p.color, sublabel: '', route: null, status: 'unknown', ...n });
         }
         for (const e of out.edges || []) {
-          if (e) addEdge(e.from, e.to, e.kind || 'related', e.label || '');
+          if (e) addEdge(e.from, e.to, e.kind || 'related', e.label || '', e.issue ? { status: e.status === 'warn' ? 'warn' : 'crit', issue: String(e.issue) } : null);
         }
       } catch (err) { logger.warn(`[topology] plugin '${p.id}' section failed:`, err.message); }
     }

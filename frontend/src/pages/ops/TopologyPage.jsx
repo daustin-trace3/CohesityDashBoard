@@ -166,6 +166,26 @@ function edgePath(from, to) {
   return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
 }
 
+// A link the backend marked down (crit) or degraded (warn) draws bright red.
+const PROBLEM_EDGE_COLOR = '#FF2D2D';
+
+function EdgeTooltip({ edge, fromLabel, toLabel, x, y }) {
+  if (!edge) return null;
+  return createPortal(
+    <div
+      className="fixed z-[999] pointer-events-none bg-cohesity-gray border rounded-lg shadow-xl px-3 py-2 max-w-sm"
+      style={{ left: x + 14, top: y + 14, borderColor: PROBLEM_EDGE_COLOR }}
+    >
+      <p className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: PROBLEM_EDGE_COLOR }}>
+        {edge.status === 'warn' ? 'Path degraded' : 'Path down'}
+      </p>
+      <p className="text-xs text-ink mt-1 leading-snug">{edge.issue}</p>
+      <p className="text-[10px] text-ink-faint mt-1 truncate">{fromLabel} to {toLabel}</p>
+    </div>,
+    document.body
+  );
+}
+
 function Tooltip({ node, x, y }) {
   if (!node) return null;
   const color = nodeColor(node);
@@ -193,6 +213,7 @@ export default function TopologyPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [hoverId, setHoverId] = useState(null);
+  const [hoverEdge, setHoverEdge] = useState(null);
   // Click pins a node's path so it survives mouse-out; hover previews it.
   const [pinnedId, setPinnedId] = useState(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
@@ -397,6 +418,12 @@ export default function TopologyPage() {
                   <X size={10} className="text-ink-faint" />
                 </button>
               )}
+              {edges.some((e) => e.issue) && (
+                <span className="flex items-center gap-1 font-semibold" style={{ color: PROBLEM_EDGE_COLOR }}>
+                  <span className="inline-block w-4 h-0 border-t-2" style={{ borderColor: PROBLEM_EDGE_COLOR }} />
+                  {edges.filter((e) => e.issue).length} path{edges.filter((e) => e.issue).length === 1 ? '' : 's'} down or degraded, hover for detail
+                </span>
+              )}
               <span className="flex items-center gap-1"><span className="inline-block w-4 h-0 border-t border-dashed" style={{ borderColor: '#22d3ee' }} /> zoned</span>
               <span className="flex items-center gap-1"><span className="inline-block w-4 h-0 border-t" style={{ borderColor: '#22c55e' }} /> protected / replicated</span>
               <span className="flex items-center gap-1"><span className="inline-block w-4 h-0 border-t" style={{ borderColor: '#4A5568' }} /> other</span>
@@ -448,16 +475,26 @@ export default function TopologyPage() {
                     if (from.folded && to.folded) return null;
                     const intoFold = from.folded || to.folded;
                     const onPath = !intoFold && neighborIds && neighborIds.has(e.from) && neighborIds.has(e.to);
-                    const dimmed = intoFold || (neighborIds && !onPath);
+                    // A down or degraded link stays lit when the rest of the map dims.
+                    const problem = !!e.issue && !intoFold;
+                    const dimmed = intoFold || (neighborIds && !onPath && !problem);
                     const baseColor = e.kind === 'zoned' ? '#22d3ee' : GREEN_EDGE_KINDS.has(e.kind) ? '#22c55e' : '#4A5568';
-                    const color = onPath && baseColor === '#4A5568' ? '#94A3B3' : baseColor;
+                    const color = problem ? PROBLEM_EDGE_COLOR : onPath && baseColor === '#4A5568' ? '#94A3B3' : baseColor;
+                    const d = edgePath(from.folded ? { ...from, x: width / 2 - NODE_W / 2, y: from.y - (NODE_H - COLLAPSED_H) / 2 } : from, to.folded ? { ...to, x: width / 2 - NODE_W / 2, y: to.y - (NODE_H - COLLAPSED_H) / 2 } : to);
                     const midX = (from.x + to.x) / 2 + NODE_W / 2;
                     const midY = (from.y + to.y) / 2 + NODE_H / 2;
                     return (
                       <g key={`${e.from}|${e.to}|${i}`} opacity={dimmed ? dimOpacity : 1}
-                        style={onPath ? { filter: `drop-shadow(0 0 4px ${color})` } : undefined}>
-                        <path d={edgePath(from.folded ? { ...from, x: width / 2 - NODE_W / 2, y: from.y - (NODE_H - COLLAPSED_H) / 2 } : from, to.folded ? { ...to, x: width / 2 - NODE_W / 2, y: to.y - (NODE_H - COLLAPSED_H) / 2 } : to)} fill="none" stroke={color}
-                          strokeWidth={onPath ? 3 : 1.5} strokeDasharray={e.kind === 'zoned' ? (onPath ? '6 4' : '4 3') : undefined} />
+                        style={onPath || problem ? { filter: `drop-shadow(0 0 ${problem ? 5 : 4}px ${color})` } : undefined}>
+                        <path d={d} fill="none" stroke={color}
+                          strokeWidth={onPath || problem ? 3 : 1.5} strokeDasharray={e.kind === 'zoned' ? (onPath || problem ? '6 4' : '4 3') : undefined} />
+                        {problem && (
+                          // Wide invisible stroke so a thin line is easy to hover.
+                          <path d={d} fill="none" stroke="transparent" strokeWidth={14} style={{ pointerEvents: 'stroke', cursor: 'help' }}
+                            onMouseEnter={(ev) => { setHoverEdge(e); setTooltipPos({ x: ev.clientX, y: ev.clientY }); }}
+                            onMouseMove={(ev) => setTooltipPos({ x: ev.clientX, y: ev.clientY })}
+                            onMouseLeave={() => setHoverEdge(null)} />
+                        )}
                         {e.label && !intoFold && (
                           <text x={midX + 6} y={midY} textAnchor="start" fontSize={onPath ? 11 : 10} fontWeight={onPath ? 700 : 400} fill={onPath ? '#E8EDF2' : '#8FA3B0'}>{e.label}</text>
                         )}
@@ -504,6 +541,10 @@ export default function TopologyPage() {
       )}
 
       {hoverId && <Tooltip node={byId.get(hoverId)} x={tooltipPos.x} y={tooltipPos.y} />}
+      {hoverEdge && !hoverId && (
+        <EdgeTooltip edge={hoverEdge} fromLabel={byId.get(hoverEdge.from)?.label || hoverEdge.from}
+          toLabel={byId.get(hoverEdge.to)?.label || hoverEdge.to} x={tooltipPos.x} y={tooltipPos.y} />
+      )}
     </div>
   );
 }

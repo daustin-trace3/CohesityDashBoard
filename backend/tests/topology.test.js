@@ -175,5 +175,58 @@ describe('GET /api/topology', () => {
       expect(ids.has(e.from)).toBe(true);
       expect(ids.has(e.to)).toBe(true);
     }
+    // A healthy estate marks no link.
+    expect(res.body.edges.filter((e) => e.issue)).toEqual([]);
+  });
+
+  it('marks down and degraded links with a status and a sentence', async () => {
+    const edgeOf = (body, kind) => body.edges.find((e) => e.kind === kind);
+    const get = () => request(app).get('/api/topology?name=topo-web01');
+    const srcId = db.prepare('SELECT id FROM brocade_sources LIMIT 1').get().id;
+    const port = (state, health) => {
+      db.exec("DELETE FROM brocade_switch_ports WHERE switch_wwn = 'sw-wwn-1'");
+      db.prepare(`
+        INSERT INTO brocade_switch_ports (source_id, switch_wwn, switch_name, slot_number, port_number, state, status, health, status_message, stale)
+        VALUES (?, 'sw-wwn-1', 'switch1', 1, 5, ?, ?, ?, 'SFP rx power low', 0)
+      `).run(srcId, state, state === 'Online' ? 'Online' : 'No_Light', health);
+    };
+
+    // Switch port online but marginal: degraded path.
+    port('Online', 'MARGINAL');
+    let body = (await get()).body;
+    expect(edgeOf(body, 'connected')).toMatchObject({ status: 'warn' });
+    expect(edgeOf(body, 'connected').issue).toMatch(/SAN path degraded: switch switch1 port 1\/5 health is MARGINAL\. SFP rx power low/);
+
+    // Switch port offline: path down, on both the HBA links.
+    port('Offline', 'healthy');
+    body = (await get()).body;
+    expect(edgeOf(body, 'connected')).toMatchObject({ status: 'crit' });
+    expect(edgeOf(body, 'connected').issue).toMatch(/SAN path down: switch switch1 port 1\/5 is Offline \(No_Light\)/);
+    expect(edgeOf(body, 'attached-to').status).toBe('crit');
+    expect(body.nodes.find((n) => n.type === 'hba').status).toBe('crit');
+
+    // Healthy port again, but the HBA login and the target port are gone, the
+    // host is not responding and the datastore is inaccessible.
+    port('Online', 'healthy');
+    db.exec("UPDATE brocade_device_ports SET is_missing = 1 WHERE wwn IN ('10:00:00:00:aa:bb:cc:01', '20:00:00:00:aa:bb:cc:02')");
+    db.prepare(`
+      INSERT INTO vcenter_hosts (vcenter_id, host_id, name, cluster_name, connection_state, power_state)
+      VALUES (?, 'host-topo', 'esx1.corp.local', 'Cluster1', 'NOT_RESPONDING', 'POWERED_ON')
+    `).run(vcenterId);
+    db.prepare("INSERT INTO vcenter_datastores (vcenter_id, datastore_id, name, ds_type, accessible) VALUES (?, 'ds-topo', 'ds1', 'VMFS', 0)").run(vcenterId);
+    body = (await get()).body;
+    db.exec("UPDATE brocade_device_ports SET is_missing = 0 WHERE wwn IN ('10:00:00:00:aa:bb:cc:01', '20:00:00:00:aa:bb:cc:02')");
+    db.exec("DELETE FROM vcenter_hosts WHERE host_id = 'host-topo'");
+    db.exec("DELETE FROM vcenter_datastores WHERE datastore_id = 'ds-topo'");
+    db.exec("DELETE FROM brocade_switch_ports WHERE switch_wwn = 'sw-wwn-1'");
+
+    expect(edgeOf(body, 'connected').issue).toMatch(/HBA 10:00:00:00:aa:bb:cc:01 is no longer logged in on switch1 port 1\/5/);
+    expect(edgeOf(body, 'zoned').issue).toMatch(/target port 20:00:00:00:aa:bb:cc:02 on array-1 is no longer logged in/);
+    expect(edgeOf(body, 'belongs-to').status).toBe('crit');
+    expect(edgeOf(body, 'runs-on').issue).toMatch(/ESX host esx1\.corp\.local is NOT_RESPONDING/);
+    expect(edgeOf(body, 'stores-on').issue).toMatch(/Datastore ds1 is reported inaccessible/);
+    // Links ICC has no bad news about stay unmarked.
+    expect(edgeOf(body, 'managed-by').issue).toBeUndefined();
+    expect(edgeOf(body, 'member-of').issue).toBeUndefined();
   });
 });
