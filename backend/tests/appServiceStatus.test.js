@@ -349,6 +349,21 @@ describe('rollup rules', () => {
     expect(d.findings.map((f) => f.text)).toEqual(['last Cohesity backup of app-vm-01 is 60 h old']);
   });
 
+  it('Zerto rows are a DR replication component, apart from backup; a VPG not meeting SLA -> degraded', () => {
+    seedHealthyApp();
+    cohesityObject('app-vm-01', { ageHours: 2 });
+    db.exec('DELETE FROM zerto_vms');
+    const z = db.prepare('INSERT INTO zerto_vms (vm_identifier, name, vpg_names, vpg_statuses) VALUES (?, ?, ?, ?)');
+    z.run('zvm-1', 'app-vm-01', '["VPG-App"]', '["MeetingSLA"]');
+    z.run('zvm-2', 'app-vm-02', '["VPG-App"]', '["NotMeetingSLA"]');
+    const d = appSvc.evaluate('aa00001721');
+    db.exec('DELETE FROM zerto_vms');
+    expect(d.backup.map((b) => b.platform)).toEqual(['cohesity']);
+    expect(d.replication.map((r) => [r.vm, r.state, r.vpgs])).toEqual([['app-vm-01', 'ok', ['VPG-App']], ['app-vm-02', 'degraded', ['VPG-App']]]);
+    expect(d.counts).toMatchObject({ backupsStale: 0, replicationIssues: 1 });
+    expect(d.state).toBe('degraded');
+  });
+
   it('backup rows fold per server: copies on two clusters and a guest-hostname match make one row, newest backup wins', () => {
     host('esx-a.corp.local');
     vm('bk-vm-01', 'esx-a.corp.local', { tags: ['usage-id: BB00002210'] });

@@ -232,6 +232,36 @@ function BackupSection({ backup, staleHours = 24 }) {
   );
 }
 
+/* ---- Expanded detail: DR Replication section ---- */
+function ReplicationSection({ replication }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-left text-ink-faint">
+            <th className="font-medium pb-1.5 pr-2"></th>
+            <th className="font-medium pb-1.5 pr-2">VM</th>
+            <th className="font-medium pb-1.5 pr-2">Platform</th>
+            <th className="font-medium pb-1.5 pr-2">VPG</th>
+            <th className="font-medium pb-1.5">Replication status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {replication.map((r) => (
+            <tr key={`${r.platform}-${r.vm}`} className="border-t border-cohesity-border/60">
+              <td className="py-1.5 pr-2"><StateDot state={r.state} /></td>
+              <td className="py-1.5 pr-2 text-ink truncate max-w-[140px]" title={r.vm}>{r.vm}</td>
+              <td className="py-1.5 pr-2 text-ink-muted">{r.platform}</td>
+              <td className="py-1.5 pr-2 text-ink-muted">{(r.vpgs || []).join(', ') || '-'}</td>
+              <td className="py-1.5 text-ink-muted">{r.status || '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /* ---- Expanded row detail ---- */
 function ExpandedDetail({ usageId }) {
   const [detail, setDetail] = useState(null);
@@ -286,7 +316,9 @@ function buildSections(detail) {
   const servers = detail.servers || [];
   const hosts = detail.hosts || [];
   const storage = detail.storage || [];
-  const backup = detail.backup || [];
+  // Older API answers carried Zerto rows inside backup; keep them apart either way.
+  const backup = (detail.backup || []).filter((b) => b.platform !== 'zerto');
+  const replication = detail.replication || (detail.backup || []).filter((b) => b.platform === 'zerto');
   const out = [];
 
   if (servers.length) {
@@ -321,6 +353,14 @@ function buildSections(detail) {
       key: 'backup', title: 'Backup', state: worstState(backup.map((b) => b.state)),
       summary: `${backup.length} protected server${backup.length === 1 ? '' : 's'}${stale ? `, ${stale} without a backup in ${staleHours} h` : ''}`,
       body: <BackupSection backup={backup} staleHours={staleHours} />,
+    });
+  }
+  if (replication.length) {
+    const bad = replication.filter((r) => r.state !== 'ok').length;
+    out.push({
+      key: 'replication', title: 'DR Replication', state: worstState(replication.map((r) => r.state)),
+      summary: `${replication.length} replicated server${replication.length === 1 ? '' : 's'}${bad ? `, ${bad} not meeting SLA` : ''}`,
+      body: <ReplicationSection replication={replication} />,
     });
   }
   return out;
