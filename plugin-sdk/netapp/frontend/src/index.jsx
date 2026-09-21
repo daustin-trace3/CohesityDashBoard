@@ -18,7 +18,7 @@ import { injectStyles } from './ui.jsx';
 import { LOGO_DATA_URI } from './logo.js';
 import {
   Gauge, Sparkles, Database, Layers, AlertTriangle, Network, FolderTree, Cable,
-  ArrowLeftRight, HardDrive, Settings,
+  ArrowLeftRight, HardDrive, Settings, ShieldCheck,
 } from './icons.jsx';
 
 import OverviewPage from './pages/overview.jsx';
@@ -30,6 +30,7 @@ import MountsPage from './pages/mounts.jsx';
 import ReplicationPage from './pages/replication.jsx';
 import AlertsPage from './pages/alerts.jsx';
 import HardwarePage from './pages/hardware.jsx';
+import GovernancePage from './pages/governance.jsx';
 import AdvisorPage from './pages/advisor.jsx';
 import SettingsPage from './pages/settings.jsx';
 
@@ -66,6 +67,7 @@ const navGroups = [
     label: 'Infrastructure',
     items: [
       { label: 'Hardware', route: '/netapp/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/netapp/hardware') },
+      { label: 'Governance', route: '/netapp/governance', icon: ShieldCheck, isActive: (p) => p.startsWith('/netapp/governance') },
     ],
   },
   {
@@ -91,6 +93,7 @@ const routes = [
   { path: 'netapp/replication', Component: rooted(ReplicationPage) },
   { path: 'netapp/alerts', Component: rooted(AlertsPage) },
   { path: 'netapp/hardware', Component: rooted(HardwarePage) },
+  { path: 'netapp/governance', Component: rooted(GovernancePage) },
   { path: 'netapp/advisor', Component: rooted(AdvisorPage) },
   { path: 'netapp/settings', Component: rooted(SettingsPage) },
 ];

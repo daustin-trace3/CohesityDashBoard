@@ -137,6 +137,7 @@ const CSS = `
 .flex-1 { flex: 1 1 0%; }
 .shrink-0 { flex-shrink: 0; }
 .min-w-0 { min-width: 0; }
+.ml-auto { margin-left: auto; }
 .min-w-\\[10rem\\] { min-width: 10rem; }
 .min-w-\\[220px\\] { min-width: 220px; }
 .grid { display: grid; }
@@ -205,6 +206,7 @@ const CSS = `
 .max-w-\\[240px\\] { max-width: 240px; }
 .max-w-\\[260px\\] { max-width: 260px; }
 .max-w-\\[280px\\] { max-width: 280px; }
+.max-w-\\[320px\\] { max-width: 320px; }
 .max-w-\\[420px\\] { max-width: 420px; }
 
 /* text */
@@ -263,6 +265,7 @@ const CSS = `
 
 /* hover / focus / disabled */
 .hover\\:bg-surface-overlay:hover { background: var(--na-surface-overlay); }
+.hover\\:bg-surface-overlay\\/60:hover { background: rgba(30,42,54,.6); }
 .hover\\:bg-brand\\/10:hover { background: rgba(0,103,197,.1); }
 .hover\\:bg-brand\\/20:hover { background: rgba(0,103,197,.2); }
 .hover\\:border-brand\\/40:hover { border-color: rgba(0,103,197,.4); }

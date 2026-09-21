@@ -95,3 +95,4 @@ export const ChevronUp = (p) => <Icon {...p}><path d="M18 15l-6-6-6 6" /></Icon>
 export const ChevronDown = (p) => <Icon {...p}><path d="M6 9l6 6 6-6" /></Icon>;
 export const SlidersHorizontal = (p) => <Icon {...p}><path d="M4 6h6M14 6h6M4 12h11M19 12h1M4 18h4M12 18h8" /><circle cx="12" cy="6" r="2" /><circle cx="17" cy="12" r="2" /><circle cx="10" cy="18" r="2" /></Icon>;
 export const Bell = (p) => <Icon {...p}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></Icon>;
+export const GitCommitVertical = (p) => <Icon {...p}><path d="M12 3v6" /><circle cx="12" cy="12" r="3" /><path d="M12 15v6" /></Icon>;
