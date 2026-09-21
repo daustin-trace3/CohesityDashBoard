@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Lock, Cloud, RefreshCw, Plus } from 'lucide-react';
+import { Save, Lock, Cloud, RefreshCw, Plus, Trash2 } from 'lucide-react';
 import client from '../../api/client';
 import { Badge } from '../ui/primitives';
 import { useToast } from '../ui/Toaster';
@@ -26,6 +26,7 @@ export default function HeliosConnectTab() {
   const [selected, setSelected] = useState([]);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [adding, setAdding] = useState(false);
+  const [removingId, setRemovingId] = useState(null);
 
   const loadCreds = () => {
     setCredsLoading(true);
@@ -92,6 +93,22 @@ export default function HeliosConnectTab() {
 
   const toggleSelected = (clusterId) => {
     setSelected(prev => prev.includes(clusterId) ? prev.filter(id => id !== clusterId) : [...prev, clusterId]);
+  };
+
+  // A decommissioned or repurposed cluster stays registered until someone
+  // removes it; Helios discovery only ever adds.
+  const handleRemove = async (row) => {
+    if (!window.confirm(`Remove ${row.name} from the dashboard? This stops polling it and deletes the history collected for it. The cluster itself is not touched.`)) return;
+    setRemovingId(row.id);
+    try {
+      await client.delete(`/cohesity/clusters/${row.id}`);
+      toast({ type: 'success', title: 'Cluster removed', message: row.name });
+      loadClusters();
+    } catch (err) {
+      toast({ type: 'error', title: 'Remove failed', message: err.response?.data?.error || 'Remove failed.' });
+    } finally {
+      setRemovingId(null);
+    }
   };
 
   const handleAddSelected = async () => {
@@ -207,6 +224,31 @@ export default function HeliosConnectTab() {
         </div>
 
         {discoverError && <p className="text-[12px] text-status-crit mb-2">{discoverError}</p>}
+
+        {registeredClusters.length > 0 && (
+          <div className="border border-cohesity-border rounded-lg max-h-72 overflow-y-auto divide-y divide-cohesity-border mb-3">
+            {registeredClusters.map((r) => {
+              // Only known after a discovery: Helios no longer lists this cluster.
+              const goneFromHelios = heliosClusters.length > 0 && !heliosClusters.some((c) => String(c.clusterId) === String(r.vip));
+              return (
+                <div key={r.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                  <span className="font-medium text-ink">{r.name}</span>
+                  <span className="text-ink-faint text-xs">ID: {r.vip}</span>
+                  {goneFromHelios && <Badge tone="warn">Not reported by Helios</Badge>}
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(r)}
+                    disabled={removingId === r.id}
+                    title="Remove this cluster from the dashboard"
+                    className="ml-auto flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 border border-cohesity-border text-ink-muted rounded-lg hover:text-status-crit hover:border-status-crit/50 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <Trash2 size={12} /> {removingId === r.id ? 'Removing' : 'Remove'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {heliosClusters.length > 0 && (
           <div className="flex flex-col gap-3">
