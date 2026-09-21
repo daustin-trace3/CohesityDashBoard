@@ -17,6 +17,7 @@ const db = require('../db/database');
 const logger = require('../utils/logger');
 const pollerStatus = require('./pollerStatus');
 const { getServiceStatusSettings } = require('./settings');
+const { supersededMissingSql } = require('./brocadePaths');
 
 const TAG_PREFIX = 'usage-id: ';
 const OFFLINE_CRITICAL_RATIO = 0.10;
@@ -292,6 +293,7 @@ function sanPathsForHost(hostName) {
     FROM brocade_device_ports dp
     ${hasSwitchPorts ? 'LEFT JOIN brocade_switch_ports sp ON sp.switch_wwn = dp.switch_wwn AND sp.port_number = dp.port_number AND sp.stale = 0' : ''}
     WHERE dp.stale = 0
+      AND NOT ${supersededMissingSql('dp')}
       AND lower(COALESCE(dp.port_role, '')) NOT LIKE '%target%'
       AND (lower(dp.enclosure_name) IN (${ph}) OR lower(dp.fdmi_host_name) IN (${ph}))
     ORDER BY dp.switch_name, dp.port_number

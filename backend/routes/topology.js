@@ -11,6 +11,7 @@ const { hasPermission } = require('../services/rbac');
 const { getSetting } = require('../services/settings');
 const registry = require('../core/registry');
 const logger = require('../utils/logger');
+const { supersededMissingSql } = require('../services/brocadePaths');
 
 const router = express.Router();
 
@@ -152,8 +153,9 @@ router.get('/', (req, res, next) => {
         const sanList = [...sanNames];
         const sanPh = sanList.map(() => '?').join(',');
         const hbaRows = db.prepare(`
-          SELECT * FROM brocade_device_ports
-          WHERE stale = 0 AND (lower(enclosure_name) IN (${sanPh}) OR lower(fdmi_host_name) IN (${sanPh}))
+          SELECT * FROM brocade_device_ports dp
+          WHERE dp.stale = 0 AND NOT ${supersededMissingSql('dp')}
+            AND (lower(dp.enclosure_name) IN (${sanPh}) OR lower(dp.fdmi_host_name) IN (${sanPh}))
         `).all(...sanList, ...sanList);
 
         if (hbaRows.length) {

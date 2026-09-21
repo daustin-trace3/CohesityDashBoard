@@ -291,6 +291,28 @@ describe('rollup rules', () => {
     expect(d.hosts.find((h) => h.name === 'esx-a.corp.local').sanPaths.ports).toHaveLength(2);
   });
 
+  it('a missing record whose switch port carries another live login is a leftover, not a lost path', () => {
+    seedHealthyApp();
+    const port = db.prepare(`
+      INSERT INTO brocade_device_ports (source_id, wwn, port_role, switch_wwn, switch_name, slot_number, port_number, enclosure_name, is_missing, stale)
+      VALUES (?, ?, 'Initiator', ?, ?, 0, ?, ?, ?, 0)
+    `);
+    // Three live paths, plus the old WWN of a replaced HBA still remembered on port 18.
+    port.run(brocadeSourceId, '10:00:00:00:00:00:0a:01', 'sw-a', 'PROD-A-SW01', 18, 'esx-a', 0);
+    port.run(brocadeSourceId, '10:00:00:00:00:00:0a:02', 'sw-b', 'PROD-B-SW01', 18, 'esx-a', 0);
+    port.run(brocadeSourceId, '10:00:00:00:00:00:0a:03', 'sw-a', 'PROD-A-SW01', 19, 'esx-a', 0);
+    port.run(brocadeSourceId, '10:00:00:00:00:00:0a:99', 'sw-a', 'PROD-A-SW01', 18, 'esx-a', 1);
+    let d = appSvc.evaluate('aa00001721');
+    expect(d.counts).toMatchObject({ pathsTotal: 3, pathsMissing: 0 });
+    expect(d.state).toBe('ok');
+
+    // The same missing record on a port nobody else is logged in on is a real lost path.
+    db.prepare("UPDATE brocade_device_ports SET port_number = 20 WHERE wwn = '10:00:00:00:00:00:0a:99'").run();
+    d = appSvc.evaluate('aa00001721');
+    expect(d.counts).toMatchObject({ pathsTotal: 4, pathsMissing: 1 });
+    expect(d.state).toBe('degraded');
+  });
+
   it('an inaccessible datastore -> critical; storage rows list who uses it', () => {
     seedHealthyApp();
     db.prepare("UPDATE vcenter_datastores SET accessible = 0 WHERE name = 'ds-app-01'").run();
