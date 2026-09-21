@@ -4,6 +4,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { BRAND, fmtWhen } from './helpers';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -225,7 +226,10 @@ export default function ZertoSettingsPage() {
 
           <div className="flex-1 min-w-0 flex flex-col gap-4">
           {tab === 'alerts' ? (
-            <AlertTypesSection />
+            <>
+              <PlatformAlertNotifications platform="zerto" label="Zerto" hideTypes />
+              <AlertTypesSection />
+            </>
           ) : (
           <>
           <div className="panel p-4 max-w-3xl" style={{ borderTop: `3px solid ${BRAND}` }}>

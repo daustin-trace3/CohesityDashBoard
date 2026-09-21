@@ -25,11 +25,17 @@ function toIso(value) {
   return String(value);
 }
 
+/** Cohesity's alertCategory is a k-prefixed camelCase enum (kBackupRestore,
+ *  kDisk, ...) - human label strips the leading k and spaces the words out. */
+function cohesityTypeLabel(category) {
+  return category.replace(/^k/, '').replace(/([A-Z])/g, ' $1').trim();
+}
+
 /** Active Cohesity alerts (not resolved, not dismissed). */
 function collectCohesityAlerts() {
   const rows = db.prepare(`
     SELECT a.cohesity_alert_id AS alertId, a.cluster_id AS clusterId, a.severity AS severity,
-           a.alert_type AS alertType, a.description AS description,
+           a.alert_type AS alertType, a.alert_category AS alertCategory, a.description AS description,
            a.first_seen AS firstSeen, a.last_updated AS lastSeen, c.name AS hostName
     FROM alerts a JOIN clusters c ON a.cluster_id = c.id
     WHERE a.resolved = 0 AND a.dismissed = 0
@@ -41,6 +47,7 @@ function collectCohesityAlerts() {
     message: `${r.alertType ? `${r.alertType}: ` : ''}${r.description || ''}`.trim(),
     firstSeen: toIso(r.firstSeen),
     lastSeen: toIso(r.lastSeen),
+    ...(r.alertCategory ? { type: r.alertCategory, typeLabel: cohesityTypeLabel(r.alertCategory) } : {}),
   }));
 }
 
@@ -48,20 +55,25 @@ function collectCohesityAlerts() {
 function collectPureAlerts() {
   const rows = db.prepare(`
     SELECT p.pure_alert_id AS alertId, p.array_id AS arrayId, p.severity AS severity,
+           p.category AS category, p.component_type AS componentType,
            p.summary AS summary, p.created_at_ms AS createdAtMs, p.updated_at_ms AS updatedAtMs,
            a.name AS arrayName
     FROM pure_alerts p JOIN pure_arrays a ON p.array_id = a.id
   `).all();
   return rows
     .filter((r) => String(r.severity || '').toLowerCase() !== 'hidden')
-    .map((r) => ({
-      sourceKey: `a${r.arrayId}:${r.alertId}`,
-      severity: String(r.severity || '').toLowerCase(),
-      host: r.arrayName,
-      message: r.summary || '',
-      firstSeen: toIso(r.createdAtMs),
-      lastSeen: toIso(r.updatedAtMs),
-    }));
+    .map((r) => {
+      const type = r.componentType || r.category || undefined;
+      return {
+        sourceKey: `a${r.arrayId}:${r.alertId}`,
+        severity: String(r.severity || '').toLowerCase(),
+        host: r.arrayName,
+        message: r.summary || '',
+        firstSeen: toIso(r.createdAtMs),
+        lastSeen: toIso(r.updatedAtMs),
+        ...(type ? { type, typeLabel: type } : {}),
+      };
+    });
 }
 
 /** Active NetApp alerts — netapp_alerts is wiped+reloaded every poll, so the
@@ -69,7 +81,7 @@ function collectPureAlerts() {
 function collectNetappAlerts() {
   const rows = db.prepare(`
     SELECT n.id AS rowId, n.array_id AS arrayId, n.alert_key AS alertKey, n.severity AS severity,
-           n.node_name AS nodeName, n.message AS message, n.captured_at AS capturedAt,
+           n.node_name AS nodeName, n.source AS source, n.message AS message, n.captured_at AS capturedAt,
            a.name AS arrayName
     FROM netapp_alerts n JOIN netapp_arrays a ON n.array_id = a.id
   `).all();
@@ -84,6 +96,7 @@ function collectNetappAlerts() {
       message: r.message || '',
       firstSeen: toIso(r.capturedAt),
       lastSeen: toIso(r.capturedAt),
+      ...(r.source ? { type: r.source, typeLabel: r.source } : {}),
     };
   });
 }
@@ -116,7 +129,7 @@ function collectZertoAlerts() {
  *  resolving drops the row out of this query (which is what ends reminders). */
 function collectVcenterIssues() {
   const rows = db.prepare(`
-    SELECT issue_key AS issueKey, vcenter, severity, message,
+    SELECT issue_key AS issueKey, vcenter, severity, type, message,
            first_seen AS firstSeen, last_seen AS lastSeen
     FROM vcenter_issue_history WHERE status = 'open'
   `).all();
@@ -127,6 +140,7 @@ function collectVcenterIssues() {
     message: r.message || '',
     firstSeen: toIso(r.firstSeen),
     lastSeen: toIso(r.lastSeen),
+    ...(r.type ? { type: r.type, typeLabel: r.type } : {}),
   }));
 }
 
@@ -135,6 +149,7 @@ function collectVcenterIssues() {
 function collectDellAlerts() {
   const rows = db.prepare(`
     SELECT d.ome_id AS omeId, d.alert_id AS alertId, d.severity, d.message,
+           d.category AS category, d.subcategory AS subcategory,
            d.device_name AS deviceName, d.service_tag AS serviceTag,
            d.created_at AS createdAt, d.captured_at AS capturedAt, o.name AS omeName
     FROM dell_alerts d JOIN dell_ome_instances o ON d.ome_id = o.id
@@ -143,6 +158,7 @@ function collectDellAlerts() {
   return rows.map((r) => {
     let severity = String(r.severity || '').toLowerCase();
     if (severity === 'normal') severity = 'info';
+    const type = r.category ? (r.subcategory ? `${r.category} / ${r.subcategory}` : r.category) : undefined;
     return {
       sourceKey: `d${r.omeId}:${r.alertId}`,
       severity,
@@ -150,6 +166,7 @@ function collectDellAlerts() {
       message: r.message || '',
       firstSeen: toIso(r.createdAt || r.capturedAt),
       lastSeen: toIso(r.capturedAt),
+      ...(type ? { type, typeLabel: type } : {}),
     };
   });
 }
@@ -159,7 +176,7 @@ function collectDellAlerts() {
  *  resolving drops the row out of this query (which is what ends reminders). */
 function collectAriaIssues() {
   const rows = db.prepare(`
-    SELECT issue_key AS issueKey, instance, severity, message,
+    SELECT issue_key AS issueKey, instance, severity, type, message,
            first_seen AS firstSeen, last_seen AS lastSeen
     FROM aria_issue_history WHERE status = 'open'
   `).all();
@@ -170,6 +187,7 @@ function collectAriaIssues() {
     message: r.message || '',
     firstSeen: toIso(r.firstSeen),
     lastSeen: toIso(r.lastSeen),
+    ...(r.type ? { type: r.type, typeLabel: r.type } : {}),
   }));
 }
 
@@ -179,7 +197,7 @@ function collectAriaIssues() {
 function collectAwsIssues() {
   const rows = db.prepare(`
     SELECT i.issue_key AS issueKey, COALESCE(a.name, i.account, 'estate') AS account,
-           i.severity, i.message, i.first_seen AS firstSeen, i.last_seen AS lastSeen
+           i.severity, i.type, i.message, i.first_seen AS firstSeen, i.last_seen AS lastSeen
     FROM aws_issue_history i LEFT JOIN aws_accounts a ON i.account_id = a.id
     WHERE i.status = 'open'
   `).all();
@@ -190,6 +208,7 @@ function collectAwsIssues() {
     message: r.message || '',
     firstSeen: toIso(r.firstSeen),
     lastSeen: toIso(r.lastSeen),
+    ...(r.type ? { type: r.type, typeLabel: r.type } : {}),
   }));
 }
 
@@ -266,16 +285,78 @@ async function sendTestEmail() {
   });
 }
 
+/** Recipients a platform's alerts would actually go to: its own override
+ *  when set, else the Global Settings default (rule shared with run()). */
+function resolvePlatformRecipients(platform, config) {
+  const override = db.prepare('SELECT recipients FROM alert_notify_platform WHERE platform = ?').get(platform);
+  return (override?.recipients || '').trim() || config.smtpRecipients;
+}
+
+/** Send a one-off test email to a single platform's resolved recipients
+ *  (used by Settings - platform - Alert Notifications - Send test email). */
+async function sendPlatformTestEmail(platform) {
+  const config = getNotificationSettings();
+  if (!config.smtpHost || !config.smtpFrom) {
+    const err = new Error('SMTP is not fully configured (host and from address are required - see Global Settings, Notifications).');
+    err.code = 'SMTP_NOT_CONFIGURED';
+    throw err;
+  }
+  const recipients = resolvePlatformRecipients(platform, config);
+  if (!recipients) {
+    const err = new Error('No recipients are set for this platform and no default recipients are configured.');
+    err.code = 'NO_RECIPIENTS';
+    throw err;
+  }
+  const transport = transportFactory(config);
+  await transport.sendMail({
+    from: config.smtpFrom,
+    to: recipients,
+    subject: `INFO | ICC | ${platform} SMTP test`,
+    text: `This is a test email from ICC Alert Notifications for the ${platform} platform. Your SMTP configuration is working.`,
+  });
+}
+
+/** One prepared statement, one transaction: upsert alert_notify_types for
+ *  every (platform, type) seen this run - new types default enabled, seen
+ *  types just refresh label/last_seen. Muted stays muted (enabled untouched). */
+function upsertTypeCatalog(items) {
+  const run_ = db.transaction((rows) => {
+    const stmt = db.prepare(`
+      INSERT INTO alert_notify_types (platform, type, label, enabled, first_seen, last_seen)
+      VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+      ON CONFLICT(platform, type) DO UPDATE SET
+        label = excluded.label,
+        last_seen = datetime('now')
+    `);
+    const seen = new Set();
+    for (const item of rows) {
+      if (!item.type) continue;
+      const key = `${item.source}:${item.type}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      stmt.run(item.source, item.type, item.typeLabel || item.type);
+    }
+  });
+  run_(items);
+}
+
 /** Core run loop, shared by the cron job and any manual trigger. */
 async function run() {
   try {
     const config = getNotificationSettings();
-    if (!config.smtpEnabled || !config.smtpHost || !config.smtpFrom || !config.smtpRecipients) return;
+    if (!config.smtpEnabled || !config.smtpHost || !config.smtpFrom) return;
 
-    const thresholdRank = THRESHOLD_RANK[config.alertMinSeverity] ?? THRESHOLD_RANK.warning;
+    const platformOverrides = new Map(
+      db.prepare('SELECT platform, recipients, min_severity FROM alert_notify_platform').all()
+        .map((r) => [r.platform, r])
+    );
+    const mutedTypes = new Set(
+      db.prepare("SELECT platform, type FROM alert_notify_types WHERE enabled = 0").all()
+        .map((r) => `${r.platform}:${r.type}`)
+    );
 
     const activeKeys = new Set();
-    const candidates = [];
+    const collected = [];
     for (const [source, collect] of Object.entries(COLLECTORS)) {
       if (!config.alertPlatforms[source]) continue;
       let items;
@@ -287,8 +368,7 @@ async function run() {
       }
       for (const item of items) {
         activeKeys.add(`${source}:${item.sourceKey}`);
-        if (normalizedRank(item.severity) < thresholdRank) continue;
-        candidates.push({ source, ...item });
+        collected.push({ source, ...item });
       }
     }
 
@@ -308,9 +388,32 @@ async function run() {
       }
       for (const item of items) {
         activeKeys.add(`${source}:${item.sourceKey}`);
-        if (normalizedRank(item.severity) < thresholdRank) continue;
-        candidates.push({ source, ...item });
+        collected.push({ source, ...item });
       }
+    }
+
+    try {
+      upsertTypeCatalog(collected);
+    } catch (err) {
+      logger.error('[AlertNotifier] Alert-type catalog upkeep failed:', err.message);
+    }
+
+    // Per-candidate: muted (platform, type) is skipped; threshold and
+    // recipients come from the platform's own override, falling back to the
+    // global default - a candidate with no resolved recipients sends nothing
+    // and writes no alert_notifications row (so it is retried, not dropped).
+    const candidates = [];
+    for (const item of collected) {
+      if (item.type && mutedTypes.has(`${item.source}:${item.type}`)) continue;
+
+      const override = platformOverrides.get(item.source);
+      const thresholdRank = THRESHOLD_RANK[override?.min_severity] ?? THRESHOLD_RANK[config.alertMinSeverity] ?? THRESHOLD_RANK.warning;
+      if (normalizedRank(item.severity) < thresholdRank) continue;
+
+      const recipients = (override?.recipients || '').trim() || config.smtpRecipients;
+      if (!recipients) continue;
+
+      candidates.push({ ...item, recipients });
     }
 
     let transport;
@@ -363,7 +466,7 @@ async function run() {
         });
         await transport.sendMail({
           from: config.smtpFrom,
-          to: config.smtpRecipients,
+          to: candidate.recipients,
           subject,
           text: body,
         });
@@ -477,6 +580,7 @@ function stopAlertNotifier() {
 module.exports = {
   run,
   sendTestEmail,
+  sendPlatformTestEmail,
   initAlertNotifier,
   stopAlertNotifier,
   collectOpenAlerts,

@@ -46,7 +46,7 @@ function opsSummary() {
 function collectAlerts() {
   const db = require('../../db/database');
   return db.prepare(`
-    SELECT issue_key, severity, source, target, message, first_seen, last_seen
+    SELECT issue_key, severity, source, type, target, message, first_seen, last_seen
     FROM bluecat_issue_history WHERE status = 'open'
   `).all().map((row) => ({
     sourceKey: row.issue_key,
@@ -55,6 +55,7 @@ function collectAlerts() {
     message: row.message,
     firstSeen: row.first_seen,
     lastSeen: row.last_seen,
+    ...(row.type ? { type: row.type, typeLabel: row.type } : {}),
   }));
 }
 

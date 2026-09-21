@@ -6,6 +6,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { BRAND, fmtWhen } from './helpers';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 const btnPrimary = 'px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer';
@@ -16,6 +17,7 @@ const SECTIONS = [
   { key: 'sources', label: 'Controllers', icon: Server, group: 'Connections' },
   { key: 'features', label: 'Feature Modules', icon: ToggleLeft, group: 'Tuning' },
   { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing, group: 'Tuning' },
+  { key: 'notify', label: 'Alert Notifications', icon: BellRing, group: 'Tuning' },
 ];
 
 const FEATURE_FIELDS = [
@@ -340,6 +342,8 @@ export default function UnifiSettingsPage() {
               )}
             </div>
           )}
+
+          {section === 'notify' && <PlatformAlertNotifications platform="unifi" label="UniFi" />}
 
           {section === 'features' && (
             <div className="panel p-4">

@@ -1,11 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Settings, Save, PlugZap, KeyRound, Copy, Check, Cloud, Clock, Gauge, Server } from 'lucide-react';
+import { BellRing } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
 import { BRAND, timeAgo } from './helpers';
 import PureDirectArraysTab from './PureDirectArraysTab';
 import { copyText } from '../../utils/clipboard';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
 export const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -22,6 +24,7 @@ export function Field({ label, hint, children }) {
 const TABS = [
   { key: 'saas', label: 'Pure1 (SaaS)', icon: Cloud },
   { key: 'direct', label: 'Direct Arrays', icon: Server },
+  { key: 'alerts', label: 'Alert Notifications', icon: BellRing },
 ];
 
 export default function PureSettingsPage() {
@@ -42,7 +45,9 @@ export default function PureSettingsPage() {
           );
         })}
       </div>
-      {tab === 'saas' ? <Pure1SaaSTab /> : <PureDirectArraysTab />}
+      {tab === 'saas' && <Pure1SaaSTab />}
+      {tab === 'direct' && <PureDirectArraysTab />}
+      {tab === 'alerts' && <PlatformAlertNotifications platform="pure" label="Pure" />}
     </div>
   );
 }

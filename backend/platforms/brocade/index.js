@@ -65,6 +65,7 @@ function collectAlerts() {
     message: row.message,
     firstSeen: row.first_seen,
     lastSeen: row.last_seen,
+    ...(row.type ? { type: row.type, typeLabel: row.type } : {}),
   }));
 
   const fromEvents = db.prepare(`

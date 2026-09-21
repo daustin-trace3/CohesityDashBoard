@@ -806,8 +806,11 @@ export default function AdminSettingsPage() {
                 />
               </div>
               <div>
-                <label htmlFor="smtp-recipients" className="block text-xs font-semibold text-ink mb-1">Recipients</label>
-                <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">Comma-separated email addresses</p>
+                <label htmlFor="smtp-recipients" className="block text-xs font-semibold text-ink mb-1">Default recipients</label>
+                <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">
+                  Comma-separated email addresses. Used by any platform that has not set its own recipients
+                  on its Settings page, under Alert Notifications.
+                </p>
                 <input
                   id="smtp-recipients"
                   type="text"
@@ -835,8 +838,11 @@ export default function AdminSettingsPage() {
 
         <div className="flex flex-col gap-4 mt-4">
           <div>
-            <label htmlFor="alert-min-severity" className="block text-xs font-semibold text-ink mb-1">Minimum severity</label>
-            <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">Alerts below this severity are not emailed</p>
+            <label htmlFor="alert-min-severity" className="block text-xs font-semibold text-ink mb-1">Default minimum severity</label>
+            <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">
+              Alerts below this severity are not emailed, for any platform that has not set its own minimum
+              severity on its Settings page.
+            </p>
             <select
               id="alert-min-severity"
               value={notify.alertMinSeverity}
