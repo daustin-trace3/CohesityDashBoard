@@ -179,6 +179,11 @@ function listPlugins() {
   return Array.from(plugins.values()).map(toPublic);
 }
 
+/** Test-only: the raw routers, so a route walk can cover platform routes. */
+function _routers() {
+  return Array.from(plugins.entries()).map(([id, e]) => [id, e.router]).filter(([, r]) => r);
+}
+
 /**
  * Drops a registered plugin so a same-id manifest can take its place. Used
  * at boot when an installed .iccplugin shadows a built-in platform module:
@@ -369,6 +374,7 @@ function markBuiltin(id) { builtinIds.add(id); }
 function isBuiltinPresent(id) { return builtinIds.has(id); }
 
 module.exports = {
+  _routers,
   PLUGIN_API_VERSION,
   RESERVED_IDS,
   markBuiltin,

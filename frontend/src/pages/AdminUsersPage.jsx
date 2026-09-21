@@ -8,6 +8,7 @@ import { usePlatforms } from '../platforms/PlatformsContext';
 import AdminNav from '../components/AdminNav';
 import DirectoryTab from './DirectoryTab';
 import { copyText } from '../utils/clipboard';
+import { routerBasename } from '../tenant';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
 const LEVELS = ['view', 'manage', '*'];
@@ -896,7 +897,7 @@ function AuthModePanel() {
       await client.post('/auth/enable', needsSetup ? { username: username.trim(), password } : {});
       // Full reload picks up the new session (first-admin path) or bounces
       // through /login (existing-users path).
-      window.location.assign('/');
+      window.location.assign(`${routerBasename()}/`);
     } catch (err) {
       setError(errorMessage(err, 'Could not enable authentication.'));
       setBusy(false);
@@ -907,7 +908,7 @@ function AuthModePanel() {
     if (!window.confirm('Disable authentication? The dashboard becomes open access for anyone who can reach it. Users, groups, and grants are kept and take effect again when re-enabled.')) return;
     try {
       await client.post('/auth/disable');
-      window.location.assign('/');
+      window.location.assign(`${routerBasename()}/`);
     } catch (err) {
       toast({ type: 'error', title: 'Could not disable authentication', message: errorMessage(err, '') });
     }

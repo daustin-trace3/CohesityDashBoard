@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { currentTenant, routerBasename } from '../tenant';
 
 const client = axios.create({
   baseURL: '/api',
@@ -7,6 +8,13 @@ const client = axios.create({
   headers: {
     'Content-Type': 'application/json'
   }
+});
+
+// Every request names the tenant this tab is looking at (see ../tenant.js).
+client.interceptors.request.use((config) => {
+  const tenant = currentTenant();
+  if (tenant) config.headers['x-icc-tenant'] = tenant;
+  return config;
 });
 
 // ── CSRF token ────────────────────────────────────────────────────────────
@@ -69,10 +77,10 @@ client.interceptors.response.use(
     inFlight = Math.max(0, inFlight - 1);
     notify();
     if (error?.response?.status === 401 && !isAuthExempt(error?.config?.url)) {
-      const onLoginPage = typeof window !== 'undefined' && window.location.pathname === '/login';
+      const onLoginPage = typeof window !== 'undefined' && window.location.pathname === `${routerBasename()}/login`;
       if (!onLoginPage && typeof window !== 'undefined') {
         const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
-        window.location.assign(`/login?returnTo=${returnTo}`);
+        window.location.assign(`${routerBasename()}/login?returnTo=${returnTo}`);
       }
     }
     return Promise.reject(error);

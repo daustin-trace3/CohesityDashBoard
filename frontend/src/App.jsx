@@ -1,5 +1,6 @@
 import { useState, useEffect, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { routerBasename } from './tenant';
 import Layout from './components/Layout';
 import DataProtectionPage from './pages/DataProtectionPage';
 import AnalyticsPage from './pages/AnalyticsPage';
@@ -104,7 +105,7 @@ export default function App() {
       <SearchContext.Provider value={{ search, setSearch }}>
         <ToastProvider>
           <GlobalLoadingBar />
-          <BrowserRouter>
+          <BrowserRouter basename={routerBasename()}>
           <AuthProvider>
           <PlatformsProvider>
           <LicenseGate>

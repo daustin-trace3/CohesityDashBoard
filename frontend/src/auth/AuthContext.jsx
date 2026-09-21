@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import client, { setCsrfToken } from '../api/client';
 import { hasPermission as checkPermission } from './permissions';
+import { routerBasename } from '../tenant';
 
 const AuthContext = createContext(null);
 
@@ -43,7 +44,7 @@ export function AuthProvider({ children }) {
       setUser(null);
       setPermissions([]);
       setCsrfToken(null);
-      window.location.assign('/login');
+      window.location.assign(`${routerBasename()}/login`);
     }
   }, []);
 

@@ -65,6 +65,7 @@ function createSession(userId) {
  * @returns {{user: object, grants: string[], csrfToken: string} | null}
  */
 function validateSession(sessionId) {
+  bootOnce();
   const session = db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(sessionId);
   if (!session) return null;
 
@@ -122,13 +123,23 @@ function bootClaimTokenCheck() {
  * @returns {string | null} the claim token, only while no users exist yet.
  */
 function getClaimToken() {
+  bootOnce();
   return userCount() === 0 ? claimToken : null;
 }
 
-// Boot-time work, run once when the module first loads: prune stale
-// sessions and generate the first-run claim token if needed.
-pruneExpired();
-bootClaimTokenCheck();
+// Boot-time work: prune stale sessions and generate the first-run claim
+// token if needed. Users and sessions still live in the tenant database
+// (they move to the global database in multi-tenant phase 2), so this runs
+// inside the first request of each tenant instead of at module load, where
+// there is no tenant.
+const booted = new Set();
+function bootOnce() {
+  const tenant = require('../core/tenantScoped').resolveTenantId();
+  if (booted.has(tenant)) return;
+  booted.add(tenant);
+  pruneExpired();
+  bootClaimTokenCheck();
+}
 
 /**
  * Whether authentication is required (contract: optional-auth mode).
@@ -137,6 +148,7 @@ bootClaimTokenCheck();
  * someone enables auth, an established install keeps requiring login.
  */
 function authEnabled() {
+  bootOnce();
   const { getSetting } = require('./settings');
   const v = getSetting('auth_enabled');
   if (v === '0') return false;

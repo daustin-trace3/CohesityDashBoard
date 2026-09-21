@@ -9,6 +9,11 @@ import {
 } from 'chart.js';
 import App from './App';
 import './index.css';
+import { installTenantFetch } from './tenant';
+
+// Before any plugin bundle loads: their own fetch('/api/...') calls must carry
+// the tenant this tab is looking at.
+installTenantFetch();
 
 // Expose globals for runtime-loaded plugin bundles (IIFE, no ESM imports)
 // before anything renders — see ICC Phase 2 contract C9.4.

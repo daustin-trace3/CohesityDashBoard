@@ -47,6 +47,8 @@ const datasetsRouter = require('./routes/datasets');
 const userDashboardsRouter = require('./routes/userDashboards');
 const aiConfigRouter = require('./routes/aiConfig');
 const alertNotifyRouter = require('./routes/alertNotify');
+const tenantsRouter = require('./routes/tenants');
+const tenantScope = require('./middleware/tenantScope');
 require('./services/coreDatasets').registerCoreDatasets();
 const { getSetting } = require('./services/settings');
 const authRouter = require('./routes/auth');
@@ -165,6 +167,10 @@ function createApp({ licenseGate = requireLicense } = {}) {
 
   app.use(express.json({ limit: '1mb' }));
 
+  // Tenant first: everything below, authentication included, runs inside the
+  // tenant named by the request (middleware/tenantScope.js).
+  app.use('/api', tenantScope);
+
   // Authentication (contract C8.5): session cookie, env API key, or a scoped
   // service-account key. Replaces the old blanket x-api-key check. /api/auth/*
   // and (mostly) /api/license/* are exempt — see middleware/authenticate.js.
@@ -181,6 +187,7 @@ function createApp({ licenseGate = requireLicense } = {}) {
 
   // Routes
   app.use('/api/auth', authRouter);
+  app.use('/api/tenants', tenantsRouter);
   app.use('/api/license', licenseRouter);
   app.use(
     '/api/users',
