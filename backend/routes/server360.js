@@ -101,7 +101,7 @@ router.get('/', (req, res, next) => {
     // ── Cohesity: protection posture + agent ──────────────────────────────
     let cohesity = null;
     if (can('cohesity:workloads:view')) {
-      const objects = db.prepare(`
+      let objects = db.prepare(`
         SELECT o.*, c.name AS cluster_name FROM cohesity_objects o
         JOIN clusters c ON c.id = o.cluster_id
         WHERE lower(o.name) IN (${namePh}) ORDER BY o.is_protected DESC
@@ -115,7 +115,13 @@ router.get('/', (req, res, next) => {
         JOIN clusters c ON c.id = a.cluster_id
         WHERE lower(a.name) IN (${namePh})
       `).all(...nameList);
-      if (objects.length || agents.length) cohesity = { objects, agents };
+      // A server is often known to several clusters (replica, old registration)
+      // while only one holds its backups. When any entry has a backup time, the
+      // ones without are left out; with no time anywhere they all stay.
+      const withBackup = objects.filter((o) => o.last_backup_ms);
+      const hiddenObjects = withBackup.length ? objects.length - withBackup.length : 0;
+      if (withBackup.length) objects = withBackup;
+      if (objects.length || agents.length) cohesity = { objects, agents, hiddenObjects };
     }
 
     // ── Zerto: DR posture ─────────────────────────────────────────────────
