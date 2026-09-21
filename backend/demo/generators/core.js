@@ -65,6 +65,8 @@ async function seedCore(db, { argon2, now }) {
     pure1_private_key: encrypt('demo'),
     netapp_aiqum_host: 'aiqum.demo.local',
     netapp_aiqum_pass: encrypt('demo'),
+    // Demo instances analyse a critical alert only when someone asks for it.
+    service_status_ai_enabled: '0',
   };
   for (const [key, value] of Object.entries(settings)) {
     setSetting.run(key, value);
