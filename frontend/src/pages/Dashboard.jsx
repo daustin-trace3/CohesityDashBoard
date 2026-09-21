@@ -446,6 +446,7 @@ export default function Dashboard() {
   const [clusterHistory, setClusterHistory] = useState({});
   const [activeAlertCount, setActiveAlertCount] = useState(null);
   const [criticalAlertCount, setCriticalAlertCount] = useState(0);
+  const [warningAlertCount, setWarningAlertCount] = useState(0);
   const [protectionSummary, setProtectionSummary] = useState(null);
   const [alertSummaryMap, setAlertSummaryMap] = useState({});
   const [recentCriticalAlerts, setRecentCriticalAlerts] = useState(null);
@@ -477,6 +478,7 @@ export default function Dashboard() {
       setAlertSummaryMap(data.alertSummary || {});
       setActiveAlertCount(data.activeAlertCount ?? null);
       setCriticalAlertCount(data.criticalAlertCount ?? 0);
+      setWarningAlertCount(data.warningAlertCount ?? 0);
       setProtectionSummary(data.protectionSummary ?? null);
       setRecentCriticalAlerts(data.recentCriticalAlerts || []);
       setInsightsData(data.insights ?? null);
@@ -643,10 +645,10 @@ export default function Dashboard() {
         />
         <StatCard
           icon={Bell}
-          label="Active Alerts"
+          label="Critical Alerts"
           value={activeAlertCount ?? '—'}
-          sub={criticalAlertCount > 0 ? `${criticalAlertCount} critical` : 'No criticals'}
-          tone={criticalAlertCount > 0 ? 'crit' : (activeAlertCount ?? 0) > 0 ? 'warn' : 'ok'}
+          sub={warningAlertCount > 0 ? `${warningAlertCount.toLocaleString()} warning${warningAlertCount === 1 ? '' : 's'}` : 'No warnings'}
+          tone={criticalAlertCount > 0 ? 'crit' : warningAlertCount > 0 ? 'warn' : 'ok'}
           loading={activeAlertCount === null && loading}
         />
         <StatCard
