@@ -15,6 +15,7 @@ const {
   leaseWarnDays, certWarnDays, requestFailLookbackHours, computeIssues,
 } = require('../services/ariaIssues');
 const ariaAdvisor = require('../services/advisors/ariaAdvisor');
+const { tenantMap } = require('../core/tenantScoped');
 
 const router = express.Router();
 
@@ -374,7 +375,7 @@ const SUITE_VM_PATTERNS = ['vra%', 'vrops%', 'vrli%', 'vrlcm%', 'vrslcm%', 'vrni
 // Registered hosts are often LB/DNS aliases, not the appliance VM's own name
 // (prod, 2026-07-28) — resolve the alias to its IPs and match VMs by address.
 const dns = require('dns');
-const dnsCache = new Map(); // host -> { ips, at }
+const dnsCache = tenantMap(); // host -> { ips, at }
 async function resolveHostIps(host) {
   if (!host || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host ? [host] : [];
   const cached = dnsCache.get(host);

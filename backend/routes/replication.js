@@ -3,10 +3,11 @@ const { query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { listProtectionGroupsV2, getProtectionGroupRunsV2, getAuthenticatedClient } = require('../services/cohesityApi');
 const { isDemo } = require('../services/demoMode');
+const { tenantMap } = require('../core/tenantScoped');
 
 const router = express.Router();
 
-const replicationCache = new Map();
+const replicationCache = tenantMap();
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
 /**

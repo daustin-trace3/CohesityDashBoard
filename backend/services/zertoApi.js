@@ -5,6 +5,7 @@ const axios = require('axios');
 const { getSetting } = require('./settings');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
+const { tenantCell } = require('../core/tenantScoped');
 
 const DEFAULT_BASE_URL = 'https://analytics.api.zerto.com';
 // The JWT lifetime is not documented; cache conservatively and re-auth on 401.
@@ -27,7 +28,7 @@ function zertoConfigured() {
   return !!(username && password);
 }
 
-let cachedToken = null; // { token, fetchedAt, username }
+const tokenCache = tenantCell(null); // { token, fetchedAt, username }, one per tenant
 
 async function fetchToken(cfg) {
   const { data } = await axios.post(`${cfg.baseUrl}/v2/auth/token`, {
@@ -39,17 +40,18 @@ async function fetchToken(cfg) {
 }
 
 async function getToken(cfg, force = false) {
+  const cachedToken = tokenCache.get();
   const fresh = cachedToken
     && cachedToken.username === cfg.username
     && (Date.now() - cachedToken.fetchedAt) < TOKEN_TTL_MS;
   if (!force && fresh) return cachedToken.token;
   const token = await fetchToken(cfg);
-  cachedToken = { token, fetchedAt: Date.now(), username: cfg.username };
+  tokenCache.set({ token, fetchedAt: Date.now(), username: cfg.username });
   return token;
 }
 
 function invalidateToken() {
-  cachedToken = null;
+  tokenCache.set(null);
 }
 
 /** GET a Zerto Analytics path (e.g. '/v2/monitoring/vpgs'); re-auths once on 401. */

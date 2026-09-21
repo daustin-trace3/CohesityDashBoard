@@ -10,6 +10,7 @@ const axios = require('axios');
 const https = require('https');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
+const { tenantMap } = require('../core/tenantScoped');
 
 // ── Credentials / client plumbing ───────────────────────────────────────────
 
@@ -44,7 +45,7 @@ function httpClient(source, timeout) {
 }
 
 // sourceId -> sessionId (in-memory; best-effort logout on poller shutdown).
-const sessionCache = new Map();
+const sessionCache = tenantMap();
 
 function errMsg(err) {
   if (err?.response) {

@@ -10,6 +10,7 @@ const { setSetting } = require('../services/settings');
 const unifiApi = require('../services/unifiApi');
 const { unifiPoller } = require('../services/unifiPoller');
 const unifiAdvisor = require('../services/advisors/unifiAdvisor');
+const { tenantMap } = require('../core/tenantScoped');
 const {
   wanLatencyWarnMs, wanAvailWarnPct, portErrDeltaWarn, portFlapWarn,
   deviceCpuWarnPct, deviceMemWarnPct, tempWarnC, satisfactionWarn, newDeviceDays,
@@ -315,7 +316,7 @@ router.get('/clients', (req, res, next) => {
 
 // Hourly-report (site/AP) fetches hit the controller live — cache briefly so
 // repeated Overview/WiFi loads within the window don't hammer it.
-const hourlyReportCache = new Map(); // `${sourceId}:${scope}:${hours}` -> {at, data}
+const hourlyReportCache = tenantMap(); // `${sourceId}:${scope}:${hours}` -> {at, data}
 const HOURLY_CACHE_MS = 5 * 60 * 1000;
 
 async function cachedHourlyReport(source, site, scope, hours) {

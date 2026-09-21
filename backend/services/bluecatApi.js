@@ -10,8 +10,9 @@ const axios = require('axios');
 const https = require('https');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
+const { tenantMap } = require('../core/tenantScoped');
 
-const sessions = new Map(); // source.id -> { basicAuthCredentials, expiresAt }
+const sessions = tenantMap(); // source.id -> { basicAuthCredentials, expiresAt }
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 // ── Credentials / client plumbing ───────────────────────────────────────────

@@ -7,6 +7,7 @@ const { getSetting, setSetting } = require('./settings');
 const { encrypt, decrypt } = require('./encryption');
 const { isDemo } = require('./demoMode');
 const demoFixtures = require('../demo/pure1Fixtures');
+const { tenantCell } = require('../core/tenantScoped');
 
 // Pure1 cloud REST client (fleet-wide, read-only).
 //
@@ -50,10 +51,11 @@ const PERF_METRICS = [
   'array_write_bandwidth',
 ];
 
-let tokenCache = null; // { token, expiresAt }
-let overviewCache = null; // { data, fetchedAt }
-let alertsCache = null;   // { data, fetchedAt }
-let enrichmentCache = null; // { data, fetchedAt }
+// One value per tenant: each tenant has its own Pure1 account and estate.
+const tokenCache = tenantCell(null); // { token, expiresAt }
+const overviewCache = tenantCell(null); // { data, fetchedAt }
+const alertsCache = tenantCell(null);   // { data, fetchedAt }
+const enrichmentCache = tenantCell(null); // { data, fetchedAt }
 
 function base64url(input) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(String(input));
@@ -112,10 +114,10 @@ function getPublicKey() {
 
 /** Clear cached token + fleet data (call after a settings change). */
 function invalidate() {
-  tokenCache = null;
-  overviewCache = null;
-  alertsCache = null;
-  enrichmentCache = null;
+  tokenCache.set(null);
+  overviewCache.set(null);
+  alertsCache.set(null);
+  enrichmentCache.set(null);
 }
 
 /** Build the RS256-signed JWT assertion (no kid; iss/iat/exp only). */
@@ -133,7 +135,8 @@ function buildAssertion() {
 
 /** Exchange the JWT for a Bearer access token (cached until shortly before expiry). */
 async function getAccessToken({ force = false } = {}) {
-  if (!force && tokenCache && Date.now() < tokenCache.expiresAt) return tokenCache.token;
+  const cachedToken = tokenCache.get();
+  if (!force && cachedToken && Date.now() < cachedToken.expiresAt) return cachedToken.token;
   if (!isConfigured()) {
     const err = new Error('Pure1 is not configured (missing app ID or private key)');
     err.code = 'PURE1_NOT_CONFIGURED';
@@ -160,7 +163,7 @@ async function getAccessToken({ force = false } = {}) {
     const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString('utf8'));
     if (claims.exp) expiresAt = claims.exp * 1000 - 60 * 1000;
   } catch { /* keep default */ }
-  tokenCache = { token, expiresAt };
+  tokenCache.set({ token, expiresAt });
   return token;
 }
 
@@ -405,19 +408,21 @@ async function fetchEnrichment() {
 /** Cached fleet enrichment (health + provisioned). */
 async function getEnrichment({ force = false } = {}) {
   if (isDemo()) return demoFixtures.getEnrichment();
-  if (!force && enrichmentCache && (Date.now() - enrichmentCache.fetchedAt) < cacheTtlMs()) {
-    return enrichmentCache.data;
+  const cachedEnrichment = enrichmentCache.get();
+  if (!force && cachedEnrichment && (Date.now() - cachedEnrichment.fetchedAt) < cacheTtlMs()) {
+    return cachedEnrichment.data;
   }
   const data = await fetchEnrichment();
-  enrichmentCache = { data, fetchedAt: Date.now() };
+  enrichmentCache.set({ data, fetchedAt: Date.now() });
   return data;
 }
 
 /** Merged fleet overview (arrays + latest capacity), cached per settings TTL. */
 async function getOverview({ force = false } = {}) {
   if (isDemo()) return demoFixtures.getOverview();
-  if (!force && overviewCache && (Date.now() - overviewCache.fetchedAt) < cacheTtlMs()) {
-    return overviewCache.data;
+  const cachedOverview = overviewCache.get();
+  if (!force && cachedOverview && (Date.now() - cachedOverview.fetchedAt) < cacheTtlMs()) {
+    return cachedOverview.data;
   }
   const arrays = await fetchArrays();
   const [capacity, tagMap] = await Promise.all([
@@ -447,25 +452,26 @@ async function getOverview({ force = false } = {}) {
       tags: tagMap.get(a.id) || [],
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
-  overviewCache = { data: rows, fetchedAt: Date.now() };
+  overviewCache.set({ data: rows, fetchedAt: Date.now() });
   return rows;
 }
 
 /** Open fleet alerts, cached per settings TTL. */
 async function getAlerts({ force = false } = {}) {
   if (isDemo()) return demoFixtures.getAlerts();
-  if (!force && alertsCache && (Date.now() - alertsCache.fetchedAt) < cacheTtlMs()) {
-    return alertsCache.data;
+  const cachedAlerts = alertsCache.get();
+  if (!force && cachedAlerts && (Date.now() - cachedAlerts.fetchedAt) < cacheTtlMs()) {
+    return cachedAlerts.data;
   }
   const data = await fetchOpenAlerts();
-  alertsCache = { data, fetchedAt: Date.now() };
+  alertsCache.set({ data, fetchedAt: Date.now() });
   return data;
 }
 
 function lastRefresh() {
   return {
-    overview: overviewCache ? overviewCache.fetchedAt : null,
-    alerts: alertsCache ? alertsCache.fetchedAt : null,
+    overview: overviewCache.get() ? overviewCache.get().fetchedAt : null,
+    alerts: alertsCache.get() ? alertsCache.get().fetchedAt : null,
   };
 }
 

@@ -2,6 +2,7 @@ const axios = require('axios');
 const https = require('https');
 const crypto = require('crypto');
 const { decrypt } = require('./encryption');
+const { tenantMap } = require('../core/tenantScoped');
 
 // Pure FlashArray REST 2.x client.
 //
@@ -12,8 +13,8 @@ const { decrypt } = require('./encryption');
 // Access tokens are cached in-memory per array until shortly before expiry.
 // The negotiated REST version is discovered once per array from /api/api_version.
 
-const tokenCache = new Map();   // arrayId -> { token, expiresAt }
-const versionCache = new Map(); // arrayId -> { version, expiresAt }
+const tokenCache = tenantMap();   // arrayId -> { token, expiresAt }
+const versionCache = tenantMap(); // arrayId -> { version, expiresAt }
 
 const TOKEN_SKEW_MS = 60 * 1000;          // refresh a minute early
 const TOKEN_MAX_TTL_MS = 50 * 60 * 1000;  // never cache longer than 50 min

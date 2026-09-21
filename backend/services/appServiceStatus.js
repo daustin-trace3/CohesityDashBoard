@@ -18,6 +18,7 @@ const logger = require('../utils/logger');
 const pollerStatus = require('./pollerStatus');
 const { getServiceStatusSettings } = require('./settings');
 const { supersededMissingSql } = require('./brocadePaths');
+const { tenantMap } = require('../core/tenantScoped');
 
 const TAG_PREFIX = 'usage-id: ';
 const OFFLINE_CRITICAL_RATIO = 0.10;
@@ -31,7 +32,7 @@ const isOn = (s) => /^powered_?on$/i.test(String(s || ''));
 const isConnected = (s) => /^connected$/i.test(String(s || ''));
 const worst = (states) => states.reduce((acc, s) => ((RANK[s] || 0) > (RANK[acc] || 0) ? s : acc), 'ok');
 
-const tableCache = new Map();
+const tableCache = tenantMap();
 function tableExists(name) {
   if (!tableCache.has(name)) {
     const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);

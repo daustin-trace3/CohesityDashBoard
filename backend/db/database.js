@@ -10,16 +10,11 @@
 //   transaction defined once works for whichever tenant is current.
 // - Work that names no tenant fails once the install has more than one tenant.
 //   It never falls back to some tenant's data.
-const { currentTenantId } = require('../core/tenantContext');
 const registry = require('../core/tenantRegistry');
+const { resolveTenantId } = require('../core/tenantScoped');
 
 function currentHandle() {
-  const tenantId = currentTenantId();
-  if (tenantId) return registry.getHandle(tenantId);
-  if (registry.isStrict()) {
-    throw new Error('Database used outside a tenant context. Wrap the work in runAsTenant(tenantId, ...).');
-  }
-  return registry.getHandle(registry.DEFAULT_TENANT);
+  return registry.getHandle(resolveTenantId());
 }
 
 function tenantTransaction(fn) {

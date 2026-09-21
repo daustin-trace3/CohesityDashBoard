@@ -97,6 +97,32 @@ describe('data stays in its tenant', () => {
   });
 });
 
+describe('in-memory state stays in its tenant', () => {
+  const { tenantMap, tenantSet, tenantCell } = require('../core/tenantScoped');
+
+  it('a scoped map keyed by row id does not hand one tenant another tenant session', () => {
+    const sessions = tenantMap();
+    runAsTenant('acme', () => sessions.set(1, 'acme-token'));
+    runAsTenant('globex', () => sessions.set(1, 'globex-token'));
+    expect(runAsTenant('acme', () => sessions.get(1))).toBe('acme-token');
+    expect(runAsTenant('globex', () => sessions.get(1))).toBe('globex-token');
+    expect(runAsTenant('default', () => sessions.has(1))).toBe(false);
+    runAsTenant('acme', () => sessions.clear());
+    expect(runAsTenant('acme', () => sessions.size)).toBe(0);
+    expect(runAsTenant('globex', () => [...sessions.entries()])).toEqual([[1, 'globex-token']]);
+  });
+
+  it('a scoped cell and set behave the same way', () => {
+    const token = tenantCell(null);
+    const inFlight = tenantSet();
+    runAsTenant('acme', () => { token.set('a'); inFlight.add(9); });
+    expect(runAsTenant('globex', () => token.get())).toBe(null);
+    expect(runAsTenant('globex', () => inFlight.has(9))).toBe(false);
+    expect(runAsTenant('acme', () => token.get())).toBe('a');
+    expect(runAsTenant('acme', () => inFlight.has(9))).toBe(true);
+  });
+});
+
 describe('work that names no tenant', () => {
   it('fails once the install has more than one tenant, and never reads the default tenant', () => {
     expect(registry.isStrict()).toBe(true);

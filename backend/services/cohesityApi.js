@@ -2,9 +2,10 @@ const axios = require('axios');
 const https = require('https');
 const { decrypt } = require('./encryption');
 const { getHeliosApiKey } = require('./settings');
+const { tenantMap } = require('../core/tenantScoped');
 
 // In-memory session cache for userpass auth: clusterId -> { token, tokenType, expiresAt }
-const sessionCache = new Map();
+const sessionCache = tenantMap();
 const SESSION_TTL_MS = 20 * 60 * 1000; // 20 minutes
 const MAX_SESSION_CACHE = 200;
 

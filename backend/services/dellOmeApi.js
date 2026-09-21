@@ -8,9 +8,10 @@ const axios = require('axios');
 const https = require('https');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
+const { tenantMap } = require('../core/tenantScoped');
 
 const SESSION_TTL_MS = 25 * 60 * 1000;
-const sessions = new Map(); // ome.id -> { token, fetchedAt }
+const sessions = tenantMap(); // ome.id -> { token, fetchedAt }
 
 // Power Manager plugin id is fixed across installs (Dell-published constant).
 const POWER_MANAGER_PLUGIN_ID = '2F6D05BE-EE4B-4B0E-B873-C8D2F64A4625';

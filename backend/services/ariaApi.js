@@ -10,10 +10,11 @@ const https = require('https');
 const tls = require('tls');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
+const { tenantMap } = require('../core/tenantScoped');
 
 const API_VERSION = '2021-07-15';
 const SESSION_TTL_MS = 20 * 60 * 1000;
-const sessions = new Map(); // instance.id -> { refreshToken, bearer, fetchedAt }
+const sessions = tenantMap(); // instance.id -> { refreshToken, bearer, fetchedAt }
 
 function creds(row) {
   // Unsaved candidates (test connection) carry a plaintext password;

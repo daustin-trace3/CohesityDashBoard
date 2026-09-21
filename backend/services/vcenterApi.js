@@ -9,9 +9,10 @@ const https = require('https');
 const { XMLParser } = require('fast-xml-parser');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
+const { tenantMap } = require('../core/tenantScoped');
 
 const SESSION_TTL_MS = 25 * 60 * 1000;
-const sessions = new Map(); // vcenter.id -> { token, fetchedAt }
+const sessions = tenantMap(); // vcenter.id -> { token, fetchedAt }
 
 function creds(vc) {
   // Unsaved candidates (test connection) carry a plaintext password;
@@ -159,7 +160,7 @@ function envelope(body) {
 // SOAP namespace version, negotiated from the server's own handshake document
 // (GET /sdk/vimServiceVersions.xml, unauthenticated) instead of hardcoded — a
 // 7.x vCenter faults on a newer urn:vim25 version. Cached per host.
-const vimVersions = new Map(); // vc.host -> '8.0.3.0' etc.
+const vimVersions = tenantMap(); // vc.host -> '8.0.3.0' etc.
 async function soapVersion(vc) {
   if (vimVersions.has(vc.host)) return vimVersions.get(vc.host);
   let version = '6.5'; // safe floor: every supported vCenter accepts it
