@@ -38,7 +38,9 @@ export default function HeliosConnectTab() {
 
   const loadClusters = () => {
     setClustersLoading(true);
-    client.get('/cohesity/clusters')
+    // The list endpoint is browser-cached for 30 s; a fresh stamp skips that so
+    // an add or a remove shows at once.
+    client.get('/cohesity/clusters', { params: { _: Date.now() } })
       .then(({ data }) => setRegisteredClusters(data.filter(c => c.connection_type === 'helios')))
       .catch(() => {})
       .finally(() => setClustersLoading(false));
@@ -103,8 +105,15 @@ export default function HeliosConnectTab() {
     try {
       await client.delete(`/cohesity/clusters/${row.id}`);
       toast({ type: 'success', title: 'Cluster removed', message: row.name });
+      setRegisteredClusters((prev) => prev.filter((c) => c.id !== row.id));
       loadClusters();
     } catch (err) {
+      // Already gone (removed from another tab or session): drop it from the list.
+      if (err.response?.status === 404) {
+        setRegisteredClusters((prev) => prev.filter((c) => c.id !== row.id));
+        toast({ type: 'success', title: 'Cluster already removed', message: row.name });
+        return;
+      }
       toast({ type: 'error', title: 'Remove failed', message: err.response?.data?.error || 'Remove failed.' });
     } finally {
       setRemovingId(null);
