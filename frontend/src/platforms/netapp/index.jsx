@@ -14,6 +14,7 @@ const NetAppMountsPage = lazy(() => import('../../pages/netapp/NetAppMountsPage'
 const NetAppReplicationPage = lazy(() => import('../../pages/netapp/NetAppReplicationPage'));
 const NetAppAlertsPage = lazy(() => import('../../pages/netapp/NetAppAlertsPage'));
 const NetAppHardwarePage = lazy(() => import('../../pages/netapp/NetAppHardwarePage'));
+const NetAppGovernancePage = lazy(() => import('../../pages/netapp/NetAppGovernancePage'));
 const NetAppSettingsPage = lazy(() => import('../../pages/netapp/NetAppSettingsPage'));
 const NetAppAdvisorPage = lazy(() => import('../../pages/netapp/NetAppAdvisorPage'));
 
@@ -47,6 +48,7 @@ const navGroups = [
     label: 'Infrastructure',
     items: [
       { label: 'Hardware', route: '/netapp/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/netapp/hardware') },
+      { label: 'Governance', route: '/netapp/governance', icon: ShieldCheck, isActive: (p) => p.startsWith('/netapp/governance') },
     ],
   },
   {
@@ -80,6 +82,7 @@ export default {
     { path: 'netapp/replication', Component: NetAppReplicationPage },
     { path: 'netapp/alerts', Component: NetAppAlertsPage },
     { path: 'netapp/hardware', Component: NetAppHardwarePage },
+    { path: 'netapp/governance', Component: NetAppGovernancePage },
     { path: 'netapp/advisor', Component: NetAppAdvisorPage },
     { path: 'netapp/privacy', Component: NetAppPrivacyPage },
     { path: 'netapp/settings', Component: NetAppSettingsPage },

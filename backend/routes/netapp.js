@@ -6,6 +6,7 @@ const netappApi = require('../services/netappApi');
 const { syncAndPollAll, syncAndPollInstance, triggerPoll, reschedule, scheduleArray, cancelArray } = require('../services/netappPoller');
 const cacheControl = require('../middleware/cache');
 const netappAdvisor = require('../services/advisors/netappAdvisor');
+const pollerStatus = require('../services/pollerStatus');
 
 const router = express.Router();
 
@@ -419,6 +420,247 @@ router.get('/arrays/:id/hardware', [param('id').isInt()], validate, cacheControl
       nodes: db.prepare('SELECT * FROM netapp_nodes WHERE array_id = ? ORDER BY name').all(id),
       disks: db.prepare('SELECT * FROM netapp_disks WHERE array_id = ? ORDER BY name').all(id),
       svms: db.prepare('SELECT * FROM netapp_svms WHERE array_id = ? ORDER BY name').all(id),
+    });
+  } catch (err) { next(err); }
+});
+
+// Numeric-aware compare on the dotted ONTAP version string ("9.13.1P8"
+// style: dotted release plus an optional patch letter+number). Unparsable or
+// missing versions sort lowest so junk data never throws.
+function parseOntapVersion(v) {
+  if (!v) return null;
+  const m = String(v).replace(/^NetApp Release\s*/i, '').match(/(\d+(?:\.\d+){1,4})(?:P(\d+))?/);
+  if (!m) return null;
+  return { parts: m[1].split('.').map(Number), patch: m[2] != null ? Number(m[2]) : 0 };
+}
+function compareOntapVersion(a, b) {
+  const pa = parseOntapVersion(a);
+  const pb = parseOntapVersion(b);
+  if (!pa && !pb) return 0;
+  if (!pa) return -1;
+  if (!pb) return 1;
+  const len = Math.max(pa.parts.length, pb.parts.length);
+  for (let i = 0; i < len; i += 1) {
+    const x = pa.parts[i] || 0;
+    const y = pb.parts[i] || 0;
+    if (x !== y) return x - y;
+  }
+  return pa.patch - pb.patch;
+}
+
+// SQLite DATETIME columns come back as "YYYY-MM-DD HH:MM:SS" (no zone);
+// poller_status.last_poll_end is already a full ISO string. Normalize both
+// to ISO so the frontend and the staleness check below can just parse them.
+function normalizeSqliteDate(val) {
+  if (!val) return null;
+  return /[TZ]/.test(val) ? val : `${val.replace(' ', 'T')}Z`;
+}
+
+// Canonical release label built from the parsed version, e.g. "9.13.1P8" for
+// both the AIQUM short form ("9.13.1P8") and the direct/node full form
+// ("NetApp Release 9.13.1P8: Thu Mar 14 12:00:00 UTC 2024") - so grouping,
+// filtering and "behind newest" never depend on which format a given row
+// happened to store. Falls back to the trimmed raw string when unparsable so
+// nothing is silently dropped.
+function canonicalOntapRelease(v) {
+  const p = parseOntapVersion(v);
+  if (p) return `${p.parts.join('.')}${p.patch > 0 ? `P${p.patch}` : ''}`;
+  const trimmed = v == null ? '' : String(v).trim();
+  return trimmed || null;
+}
+
+const FAILED_DISK_STATES = new Set(['failed', 'broken', 'offline', 'down', 'error', 'unreachable']);
+
+// Consolidated view of the whole NetApp estate (every cluster ICC polls, not
+// one array at a time): hardware, code levels, models and capacity rollup.
+// Read-only, no poller changes, no new tables. Each section is wrapped so a
+// degraded table drops that field instead of failing the endpoint.
+router.get('/governance', cacheControl(30), (req, res, next) => {
+  try {
+    const clusters = db.prepare('SELECT * FROM netapp_arrays ORDER BY name ASC').all();
+    const clusterById = new Map(clusters.map((c) => [c.id, c]));
+    const aiqumNames = new Map(db.prepare('SELECT id, name FROM netapp_aiqum_instances').all().map((r) => [r.id, r.name]));
+
+    let nodes = [];
+    try { nodes = db.prepare('SELECT * FROM netapp_nodes ORDER BY array_id, name').all(); } catch { /* table degraded */ }
+    const nodesByArray = new Map();
+    for (const n of nodes) {
+      if (!nodesByArray.has(n.array_id)) nodesByArray.set(n.array_id, []);
+      nodesByArray.get(n.array_id).push(n);
+    }
+
+    const capByArray = new Map();
+    try {
+      for (const r of db.prepare(`
+        SELECT array_id, SUM(size_bytes) AS size, SUM(used_bytes) AS used, COUNT(*) AS n
+        FROM netapp_aggregates GROUP BY array_id
+      `).all()) capByArray.set(r.array_id, r);
+    } catch { /* table degraded */ }
+
+    const volByArray = new Map();
+    try {
+      for (const r of db.prepare('SELECT array_id, COUNT(*) AS n FROM netapp_volumes GROUP BY array_id').all()) volByArray.set(r.array_id, r.n);
+    } catch { /* table degraded */ }
+
+    const diskByArray = new Map();
+    try {
+      for (const r of db.prepare('SELECT array_id, state, COUNT(*) AS n FROM netapp_disks GROUP BY array_id, state').all()) {
+        const cur = diskByArray.get(r.array_id) || { total: 0, failed: 0 };
+        cur.total += r.n;
+        if (FAILED_DISK_STATES.has(String(r.state || '').toLowerCase())) cur.failed += r.n;
+        diskByArray.set(r.array_id, cur);
+      }
+    } catch { /* table degraded */ }
+
+    const svmByArray = new Map();
+    try {
+      for (const r of db.prepare('SELECT array_id, COUNT(*) AS n FROM netapp_svms GROUP BY array_id').all()) svmByArray.set(r.array_id, r.n);
+    } catch { /* table degraded */ }
+
+    const alertsByArray = new Map();
+    try {
+      for (const r of db.prepare('SELECT array_id, severity, COUNT(*) AS n FROM netapp_alerts GROUP BY array_id, severity').all()) {
+        const cur = alertsByArray.get(r.array_id) || { total: 0, bySeverity: {} };
+        cur.total += r.n;
+        cur.bySeverity[String(r.severity || 'unknown').toLowerCase()] = r.n;
+        alertsByArray.set(r.array_id, cur);
+      }
+    } catch { /* table degraded */ }
+
+    const snapmirrorByArray = new Map();
+    try {
+      for (const r of db.prepare('SELECT array_id, COUNT(*) AS n FROM netapp_snapmirror GROUP BY array_id').all()) snapmirrorByArray.set(r.array_id, r.n);
+    } catch { /* table degraded */ }
+
+    // The poller framework writes poller_status keyed by ('netapp', array.id)
+    // for both direct and AIQUM-managed clusters (services/netappPoller.js
+    // routes both through the same directPoller). One read for all clusters.
+    const pollByArray = new Map();
+    try {
+      for (const [key, state] of pollerStatus.getAll()) {
+        if (!key.startsWith('netapp:')) continue;
+        pollByArray.set(Number(key.slice('netapp:'.length)), state);
+      }
+    } catch { /* poller_status degraded */ }
+
+    // Code-level + model distributions are node-granular (a cluster mid
+    // upgrade can straddle two versions; mixed_versions below flags that).
+    // Grouped by the CANONICAL release, not the raw stored string: direct
+    // clusters/nodes store the full "NetApp Release 9.13.1P8: <date>" form,
+    // AIQUM-sourced arrays and the demo generator store the short form, and
+    // without normalizing first the same release could show as two rows.
+    const versionMap = new Map();
+    const modelMap = new Map();
+    for (const n of nodes) {
+      const cluster = clusterById.get(n.array_id);
+      const release = canonicalOntapRelease(n.version);
+      if (release) {
+        let ve = versionMap.get(release);
+        if (!ve) { ve = { version: release, nodeCount: 0, clusterIds: new Set(), clusterNames: new Set() }; versionMap.set(release, ve); }
+        ve.nodeCount += 1;
+        if (cluster) { ve.clusterIds.add(cluster.id); ve.clusterNames.add(cluster.name); }
+      }
+      if (n.model) {
+        let me = modelMap.get(n.model);
+        if (!me) { me = { model: n.model, nodeCount: 0, clusterIds: new Set(), clusterNames: new Set() }; modelMap.set(n.model, me); }
+        me.nodeCount += 1;
+        if (cluster) { me.clusterIds.add(cluster.id); me.clusterNames.add(cluster.name); }
+      }
+    }
+    const versions = [...versionMap.values()]
+      .map((v) => ({ version: v.version, cluster_count: v.clusterIds.size, node_count: v.nodeCount, clusters: [...v.clusterNames].sort() }))
+      .sort((a, b) => compareOntapVersion(b.version, a.version));
+    const models = [...modelMap.values()]
+      .map((v) => ({ model: v.model, node_count: v.nodeCount, cluster_count: v.clusterIds.size, clusters: [...v.clusterNames].sort() }))
+      .sort((a, b) => b.node_count - a.node_count || a.model.localeCompare(b.model));
+
+    const newestVersion = versions.length ? versions[0].version : null;
+    const majorityVersion = versions.length ? [...versions].sort((a, b) => b.node_count - a.node_count)[0].version : null;
+
+    const clusterRows = clusters.map((c) => {
+      const myNodes = nodesByArray.get(c.id) || [];
+      const models = [...new Set(myNodes.map((n) => n.model).filter(Boolean))];
+      const serials = myNodes.map((n) => n.serial_number).filter(Boolean);
+      const nodeReleases = myNodes.map((n) => canonicalOntapRelease(n.version)).filter(Boolean);
+      const nodeVersions = [...new Set(nodeReleases)];
+      const ontapRelease = canonicalOntapRelease(c.version);
+      const cap = capByArray.get(c.id);
+      const totalBytes = cap?.size || 0;
+      const usedBytes = cap?.used || 0;
+      const disks = diskByArray.get(c.id) || { total: 0, failed: 0 };
+      const alerts = alertsByArray.get(c.id) || { total: 0, bySeverity: {} };
+      const poll = pollByArray.get(c.id);
+      const nodeMaxCaptured = myNodes.reduce((max, n) => (n.captured_at && (!max || n.captured_at > max) ? n.captured_at : max), null);
+      const lastPolled = normalizeSqliteDate(poll?.lastPollEnd || nodeMaxCaptured || null);
+      return {
+        id: c.id,
+        name: c.name,
+        mgmt_host: c.mgmt_host,
+        source: c.source === 'aiqum' ? (aiqumNames.get(c.aiqum_instance_id) || 'AIQUM') : 'direct',
+        ontap_version: c.version,
+        ontap_release: ontapRelease,
+        node_count: myNodes.length,
+        models,
+        serials,
+        node_versions: nodeVersions,
+        mixed_versions: nodeVersions.length > 1,
+        behind: ontapRelease ? ontapRelease !== newestVersion : false,
+        capacity_total_bytes: totalBytes,
+        capacity_used_bytes: usedBytes,
+        capacity_used_percent: totalBytes ? Math.round((usedBytes / totalBytes) * 1000) / 10 : null,
+        aggregate_count: cap?.n || 0,
+        volume_count: volByArray.get(c.id) || 0,
+        disk_count: disks.total,
+        disk_failed_count: disks.failed,
+        svm_count: svmByArray.get(c.id) || 0,
+        open_alert_count: alerts.total,
+        open_alerts_by_severity: alerts.bySeverity,
+        snapmirror_count: snapmirrorByArray.get(c.id) || 0,
+        last_polled: lastPolled,
+        poll_status: poll?.lastPollStatus || null,
+        poll_error: poll?.lastPollStatus === 'error',
+        polling_interval_minutes: c.polling_interval_minutes,
+      };
+    });
+
+    const now = Date.now();
+    const clustersWithPollIssue = clusterRows.filter((c) => {
+      if (c.poll_error) return true;
+      if (!c.last_polled) return true;
+      const ageMin = (now - new Date(c.last_polled).getTime()) / 60000;
+      if (isNaN(ageMin)) return false;
+      return ageMin > (c.polling_interval_minutes || 15) * 2 + 5;
+    }).length;
+
+    res.json({
+      clusters: clusterRows,
+      nodes: nodes.map((n) => {
+        const release = canonicalOntapRelease(n.version);
+        return {
+          array_id: n.array_id,
+          array_name: clusterById.get(n.array_id)?.name || null,
+          name: n.name,
+          model: n.model,
+          serial_number: n.serial_number,
+          state: n.state,
+          version: n.version,
+          release,
+          behind: release ? release !== newestVersion : false,
+        };
+      }),
+      versions,
+      models,
+      newest_version: newestVersion,
+      majority_version: majorityVersion,
+      summary: {
+        cluster_count: clusters.length,
+        node_count: nodes.length,
+        distinct_versions: versionMap.size,
+        distinct_models: modelMap.size,
+        clusters_with_mixed_versions: clusterRows.filter((c) => c.mixed_versions).length,
+        clusters_behind_newest: clusterRows.filter((c) => c.behind).length,
+        clusters_with_poll_issue: clustersWithPollIssue,
+      },
     });
   } catch (err) { next(err); }
 });
