@@ -156,6 +156,41 @@ Findings:
   test, the other 42 caches are unaudited), schedulers, the plugin registry,
   encryption keys, anything in the frontend, and a cap on open handles.
 
+## Phase 1 result (2026-09-21)
+
+Commits 893880d and 56b4a6f.
+
+- Caches: 17 module-level caches held tenant data or credentials keyed by row
+  id (row ids restart in every tenant database, so tenant A's saved session
+  for row 1 would have been handed to tenant B). core/tenantScoped.js gives
+  tenantMap, tenantSet and tenantCell, one store per tenant behind the same
+  interface, so the call sites did not change. Left global on purpose: the
+  plugin registry (packs are installed once), the dataset catalog (definitions
+  only), login lockout by username and the claim token (users are global from
+  phase 2), release notes. Poller-side state (poller.js, dellPoller.js) is
+  isolated by the worker per tenant in phase 3.
+- Tenant in the request: middleware/tenantScope.js accepts /api/t/<tenant>/...
+  or the x-icc-tenant header; path wins. REFINEMENT of decision 2: plugin
+  packs call fetch('/api/...') themselves and are built and signed separately,
+  so a path prefix alone would have forced a rebuild of every pack. The
+  frontend adds the header from the page URL through a wrapper installed
+  before any pack bundle loads, so packs need no change. The page URL is still
+  /t/<tenant>/... and two tabs can show two tenants.
+- Frontend: src/tenant.js; router basename /t/<tenant>; the API client and
+  the four absolute redirects (login, logout, two after account changes) keep
+  the prefix. No switcher yet, no landing page when the URL names no tenant.
+- Strict rule caught one real case: services/authService.js pruned sessions
+  and generated the claim token at module load with no tenant. It now runs
+  once per tenant on the first auth call. Anything else that touches the
+  database at load will fail the same way the first time an install has two
+  tenants; the full suite passes under TENANT_STRICT=1 for the leak test only.
+- Leak test tests/tenantLeak.test.js: 257 GET routes called as another
+  tenant (path form, header form and the default tenant), 0 leaks, 0 server
+  errors. 62 routes with path parameters are not called; extending the walk to
+  those with seeded ids is future work.
+- GET /api/tenants lists every tenant for any authenticated caller; phase 2
+  filters by membership.
+
 ## Build order
 
 0. Spike: tenant context, registry, database proxy that fails closed, the
