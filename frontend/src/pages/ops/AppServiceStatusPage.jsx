@@ -216,7 +216,10 @@ function BackupSection({ backup, staleHours = 24 }) {
               <td className="py-1.5 pr-2 text-ink-muted">{yesNo(b.protected)}</td>
               <td
                 className="py-1.5 pr-2 text-ink-muted"
-                title={b.copies > 1 ? `${b.copies} copies${b.staleCopies ? `, ${b.staleCopies} older than ${staleHours} h` : ''}; the newest one decides the status` : undefined}
+                title={[
+                  b.timeSource === 'group' ? "Cohesity gave no snapshot time for this server, so this is its protection group's last good run" : null,
+                  b.copies > 1 ? `${b.copies} copies${b.staleCopies ? `, ${b.staleCopies} older than ${staleHours} h` : ''}; the newest one decides the status` : null,
+                ].filter(Boolean).join('. ') || undefined}
               >
                 {b.lastBackupAt ? `${timeAgo(b.lastBackupAt)}${b.ageHours != null ? ` (${Math.round(b.ageHours)}h)` : ''}` : 'No time on record'}
               </td>

@@ -341,6 +341,29 @@ function netappVolumesForIps(ips) {
   }));
 }
 
+// protection_runs.start_time holds epoch seconds (old pollers) or ISO strings.
+const RUN_START_EPOCH = "CAST(CASE WHEN start_time LIKE '20%' THEN strftime('%s', start_time) ELSE start_time END AS INTEGER)";
+
+/** Newest good run of any of an object's protection groups on its cluster, in
+ *  ms. Used when Cohesity gave no snapshot time for the object itself; it is
+ *  what Object 360 and Backup History show for the same server. Run history
+ *  sometimes carries the vCenter's 'vc' prefix on the job name. */
+function lastGroupRunMs(clusterId, groupsJson, cache) {
+  const groups = parseJson(groupsJson, []).filter(Boolean);
+  if (!groups.length || !tableExists('protection_runs')) return null;
+  const key = `${clusterId}|${groups.join('|')}`;
+  if (!cache.has(key)) {
+    const jobNames = groups.flatMap((g) => [g, `vc${g}`]);
+    const row = db.prepare(`
+      SELECT MAX(${RUN_START_EPOCH}) AS newest FROM protection_runs
+      WHERE cluster_id = ? AND status IN ('kSuccess', 'kWarning')
+        AND job_name IN (${jobNames.map(() => '?').join(',')})
+    `).get(clusterId, ...jobNames);
+    cache.set(key, row?.newest ? row.newest * 1000 : null);
+  }
+  return cache.get(key);
+}
+
 /** One backup row per server per platform. A VM is usually known to more
  *  than one Cohesity object (a copy per cluster, a VMware object plus an agent
  *  object, or a match on both VM name and guest hostname), so the matches are
@@ -369,26 +392,33 @@ function backupRowsFor(vms, nowMs, staleHours) {
 
   if (tableExists('cohesity_objects')) {
     const rows = db.prepare(`
-      SELECT o.name, o.is_protected, o.last_backup_ms, o.last_backup_status, c.name AS cluster_name
+      SELECT o.name, o.is_protected, o.last_backup_ms, o.last_backup_status, o.cluster_id, o.protection_groups, c.name AS cluster_name
       FROM cohesity_objects o LEFT JOIN clusters c ON c.id = o.cluster_id
       WHERE lower(o.name) IN (${ph})
          OR (instr(o.name, '.') > 0 AND lower(substr(o.name, 1, instr(o.name, '.') - 1)) IN (${ph}))
     `).all(...names, ...names);
     const perVm = new Map();
+    const groupRunCache = new Map();
     for (const r of rows) {
       const vm = vmFor(r.name);
       if (!vm) continue;
-      const cur = perVm.get(vm.name) || { vm: vm.name, protected: false, lastBackupMs: null, status: null, copies: 0, staleCopies: 0, clusters: new Set() };
+      const cur = perVm.get(vm.name) || { vm: vm.name, protected: false, lastBackupMs: null, timeSource: null, status: null, copies: 0, staleCopies: 0, clusters: new Set() };
       cur.copies += 1;
       if (r.cluster_name) cur.clusters.add(r.cluster_name);
       if (r.is_protected) cur.protected = true;
-      const ms = r.last_backup_ms ? Number(r.last_backup_ms) : null;
+      let ms = r.last_backup_ms ? Number(r.last_backup_ms) : null;
+      let source = ms ? 'object' : null;
+      if (!ms && r.is_protected) {
+        ms = lastGroupRunMs(r.cluster_id, r.protection_groups, groupRunCache);
+        if (ms) source = 'group';
+      }
       // Informational only: the newest copy decides the state (Doug, 2026-09-18:
       // protected at least once inside the acceptable age is Operational, whatever
       // the other copies say).
       if (r.is_protected && (!ms || (nowMs - ms) / 3600000 > staleHours)) cur.staleCopies += 1;
       if (ms && (cur.lastBackupMs === null || ms > cur.lastBackupMs)) {
         cur.lastBackupMs = ms;
+        cur.timeSource = source;
         cur.status = r.last_backup_status || null;
       } else if (cur.status === null && !cur.lastBackupMs) {
         cur.status = r.last_backup_status || null;
@@ -401,7 +431,7 @@ function backupRowsFor(vms, nowMs, staleHours) {
       out.push({
         vm: cur.vm, platform: 'cohesity', protected: cur.protected,
         lastBackupAt: cur.lastBackupMs ? new Date(cur.lastBackupMs).toISOString() : null,
-        ageHours, status: cur.status, state: stale ? 'degraded' : 'ok',
+        timeSource: cur.timeSource, ageHours, status: cur.status, state: stale ? 'degraded' : 'ok',
         copies: cur.copies, staleCopies: cur.staleCopies, clusters: [...cur.clusters],
       });
     }

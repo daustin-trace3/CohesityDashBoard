@@ -25,7 +25,7 @@ function clearAll() {
     'service_alert_analyses', 'service_alert_events', 'service_status_timeline',
     'app_service_state', 'app_service_watch', 'app_service_catalog',
     'vcenter_vms', 'vcenter_hosts', 'vcenter_datastores', 'vcenter_vcenters',
-    'brocade_device_ports', 'brocade_sources', 'cohesity_objects', 'clusters', 'poller_status',
+    'brocade_device_ports', 'brocade_sources', 'cohesity_objects', 'protection_runs', 'clusters', 'poller_status',
   ]) db.exec(`DELETE FROM ${t}`);
 }
 
@@ -329,6 +329,24 @@ describe('rollup rules', () => {
     // An out-of-range value falls back to 24 h.
     setSetting('app_service_backup_stale_hours', '0');
     expect(appSvc.evaluate('aa00001721').backupStaleHours).toBe(24);
+  });
+
+  it('no snapshot time on the object: the last good run of its protection group gives the age, failed runs do not count', () => {
+    seedHealthyApp();
+    setSetting('app_service_backup_stale_hours', '48');
+    db.prepare(`
+      INSERT INTO cohesity_objects (cluster_id, object_id, name, is_protected, last_backup_ms, last_backup_status, protection_groups)
+      VALUES (?, 'obj-g1', 'app-vm-01', 1, NULL, 'kSuccess', '["prod-vms"]'), (?, 'obj-g2', 'app-vm-02', 1, NULL, 'kSuccess', '["other-vms"]')
+    `).run(clusterId, clusterId);
+    const run = db.prepare('INSERT INTO protection_runs (cluster_id, job_id, job_name, run_type, status, start_time) VALUES (?, ?, ?, ?, ?, ?)');
+    run.run(clusterId, 1, 'vcprod-vms', 'kRegular', 'kSuccess', new Date(Date.now() - 60 * 3600000).toISOString());
+    run.run(clusterId, 1, 'vcprod-vms', 'kRegular', 'kFailure', new Date(Date.now() - 2 * 3600000).toISOString());
+    run.run(clusterId, 2, 'other-vms', 'kRegular', 'kSuccess', String(Math.floor(Date.now() / 1000) - 5 * 3600));
+    const d = appSvc.evaluate('aa00001721');
+    const byVm = Object.fromEntries(d.backup.map((b) => [b.vm, b]));
+    expect(byVm['app-vm-01']).toMatchObject({ ageHours: 60, timeSource: 'group', state: 'degraded' });
+    expect(byVm['app-vm-02']).toMatchObject({ ageHours: 5, timeSource: 'group', state: 'ok' });
+    expect(d.findings.map((f) => f.text)).toEqual(['last Cohesity backup of app-vm-01 is 60 h old']);
   });
 
   it('backup rows fold per server: copies on two clusters and a guest-hostname match make one row, newest backup wins', () => {
