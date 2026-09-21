@@ -246,10 +246,11 @@ const NEW_TABLES = [
   'service_alert_events', 'service_alert_analyses', 'service_status_timeline',
   'app_service_watch', 'app_service_state', 'app_service_catalog',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
-  // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms) — their
+  // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms, cohesity
+  // v12 alerts.closed_reason), so their
   // post-migration SQL no longer matches the schema.sql original.
   'netapp_volumes', 'netapp_arrays',
-  'cohesity_objects', 'cohesity_agents',
+  'cohesity_objects', 'cohesity_agents', 'alerts',
 ];
 
 // Indexes added on legacy tables by post-refactor migrations (no legacy

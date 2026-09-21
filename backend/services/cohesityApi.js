@@ -165,10 +165,17 @@ async function fetchNodes(cluster) {
 /**
  * Fetch active alerts.
  */
-async function fetchAlerts(cluster) {
+// Verified live 2026-09-21: maxAlerts=100 handed back the 100 newest open
+// alerts, which on one cluster were 93 info and none of its 290 criticals.
+// maxAlerts=1000 is honoured, and startDateUsecs filters on the alert's LATEST
+// occurrence, so a window keeps the list to alerts that are still firing.
+const ALERTS_FETCH_MAX = 1000;
+
+async function fetchAlerts(cluster, windowDays = 0) {
   const client = await getAuthenticatedClient(cluster);
+  const since = windowDays > 0 ? `&startDateUsecs=${(Date.now() - windowDays * 86400000) * 1000}` : '';
   const { data } = await client.get(
-    '/irisservices/api/v1/public/alerts?maxAlerts=100&alertStateList=kOpen'
+    `/irisservices/api/v1/public/alerts?maxAlerts=${ALERTS_FETCH_MAX}&alertStateList=kOpen${since}`
   );
   return data;
 }
@@ -534,5 +541,6 @@ module.exports = {
   fetchSearchObjects,
   fetchProtectedObjectTimes,
   localProtectionInfos,
+  ALERTS_FETCH_MAX,
   fetchPhysicalAgents
 };

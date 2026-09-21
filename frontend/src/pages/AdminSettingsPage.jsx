@@ -60,6 +60,7 @@ export default function AdminSettingsPage() {
   const [switcherMode, setSwitcherModeState] = useState(getSwitcherMode);
   const [opsOverviewStyle, setOpsOverviewStyle] = useState('classic');
   const [dnsServer, setDnsServer] = useState('');
+  const [cohesityAlertWindowDays, setCohesityAlertWindowDays] = useState(5);
   const [license, setLicense] = useState(null);
   const [licenseKeyInput, setLicenseKeyInput] = useState('');
   const [activating, setActivating] = useState(false);
@@ -111,6 +112,7 @@ export default function AdminSettingsPage() {
         setCustomDashboardsEnabled(!!d.featureCustomDashboardsEnabled);
         setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
+        setCohesityAlertWindowDays(d.cohesityAlertWindowDays ?? 5);
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
     }).finally(() => setLoading(false));
@@ -135,6 +137,7 @@ export default function AdminSettingsPage() {
         featureCustomDashboardsEnabled: customDashboardsEnabled,
         opsOverviewStyle,
         dnsServer,
+        cohesityAlertWindowDays: Number(cohesityAlertWindowDays) || 0,
       });
       window.dispatchEvent(new Event('platforms-changed'));
       window.dispatchEvent(new Event('ops-style-changed'));
@@ -584,6 +587,16 @@ export default function AdminSettingsPage() {
               <input id="dns-server" type="text" value={dnsServer} onChange={e => setDnsServer(e.target.value)}
                 placeholder="e.g. 172.17.0.10"
                 className="w-full max-w-xs bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none tnum" />
+            </div>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <label htmlFor="cohesity-alert-window" className="block text-xs font-semibold text-ink mb-1 mt-2">Cohesity alert window (days)</label>
+              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
+                A Cohesity alert counts only while it has fired within this many days. Older open alerts that nobody resolved on the cluster drop off every page at the next poll, and come back if they fire again. 0 keeps every open alert.
+              </p>
+              <input id="cohesity-alert-window" type="number" min="0" max="365" step="1" value={cohesityAlertWindowDays}
+                onChange={e => setCohesityAlertWindowDays(e.target.value)}
+                className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum" />
             </div>
 
             <div className="flex items-center gap-2 pt-1">

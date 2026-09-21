@@ -57,6 +57,7 @@ const DEFAULTS = {
   bluecat_low_free_warn: '20',
   bluecat_low_free_pct: '10',
   dns_server: '',
+  cohesity_alert_window_days: '5',
   smtp_enabled: '0',
   smtp_host: '',
   smtp_port: '587',
@@ -164,6 +165,7 @@ function getPlatformSettings() {
     featureCustomDashboardsEnabled: getSetting('feature_custom_dashboards_enabled') === '1',
     opsOverviewStyle: getSetting('ops_overview_style') || 'classic',
     dnsServer: getSetting('dns_server') || '',
+    cohesityAlertWindowDays: getCohesityAlertWindowDays(),
   };
 }
 
@@ -208,6 +210,15 @@ function getNotificationSettings() {
 }
 
 /** Service Status page (contract: critical-alert board + AI analysis cap). */
+/** Cohesity alerts count only while they fired inside this many days. Open
+ *  alerts nobody resolves on a cluster otherwise pile up for months (verified
+ *  live 2026-09-21: 290 open criticals on one cluster, 282 older than 30 days).
+ *  0 turns the window off. */
+function getCohesityAlertWindowDays() {
+  const n = Number(getSetting('cohesity_alert_window_days'));
+  return (n >= 0 && n <= 365) ? Math.round(n) : 5;
+}
+
 function getServiceStatusSettings() {
   const perMinute = Number(getSetting('service_status_analyses_per_minute'));
   const dedupe = Number(getSetting('service_status_dedupe_minutes'));
@@ -236,5 +247,5 @@ function getSmtpPassword() {
 module.exports = {
   getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
   getAnalysisTtlHours, getAiSettings, getLicenseSettings, getPlatformSettings,
-  getNotificationSettings, getSmtpPassword, getServiceStatusSettings,
+  getNotificationSettings, getSmtpPassword, getServiceStatusSettings, getCohesityAlertWindowDays,
 };

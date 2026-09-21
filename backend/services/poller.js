@@ -3,12 +3,13 @@ const db = require('../db/database');
 const {
   fetchClusterInfo, fetchAlerts, fetchProtectionRuns, fetchProtectionJobs,
   fetchProtectionPolicies, fetchSourceRegistrations, fetchSearchObjects,
-  fetchProtectedObjectTimes, fetchPhysicalAgents, localProtectionInfos,
+  fetchProtectedObjectTimes, fetchPhysicalAgents, localProtectionInfos, ALERTS_FETCH_MAX,
 } = require('./cohesityApi');
 const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
 const { fetchWorkloads, insertWorkloadSnapshot } = require('./workloads');
 const logger = require('../utils/logger');
 const { createPoller } = require('../core/pollerFramework');
+const { getCohesityAlertWindowDays } = require('./settings');
 
 // Retention: delete metrics older than 90 days — runs daily at 02:00
 cron.schedule('0 2 * * *', () => {
@@ -109,13 +110,16 @@ function upsertAlerts(cluster, alertList) {
       alert_type = excluded.alert_type,
       description = excluded.description,
       resolved = excluded.resolved,
+      closed_reason = NULL,
       last_updated = datetime('now')
   `);
+  const reported = new Set();
 
   for (const alert of alerts) {
     const alertId = alert.id || alert.alertId || alert.alertDocumentId;
     if (!alertId) continue;
 
+    reported.add(String(alertId));
     const severity = (alert.severity || 'kInfo').replace(/^k/, '').toLowerCase();
     const resolved = alert.alertState === 'kResolved' ? 1 : 0;
     const firstSeen = alert.firstTimestampUsecs
@@ -131,6 +135,18 @@ function upsertAlerts(cluster, alertList) {
       resolved,
       firstSeen
     );
+  }
+
+  // The fetch only ever returns open alerts, so an alert that was resolved on
+  // the cluster, or that has not fired inside the window, simply stops coming
+  // back and used to stay open here for good. When the answer was not cut off
+  // at the fetch limit, anything still open locally that the cluster no longer
+  // reports is closed and marked as such. It reopens by itself if it fires again.
+  if (alerts.length < ALERTS_FETCH_MAX) {
+    const close = db.prepare("UPDATE alerts SET resolved = 1, closed_reason = 'not_reported', last_updated = datetime('now') WHERE id = ?");
+    for (const row of db.prepare('SELECT id, cohesity_alert_id FROM alerts WHERE cluster_id = ? AND resolved = 0').all(cluster.id)) {
+      if (!reported.has(String(row.cohesity_alert_id))) close.run(row.id);
+    }
   }
 }
 
@@ -417,7 +433,7 @@ async function doPollCluster(cluster) {
     const window = runsFetchWindow(cluster.id);
     const [clusterInfo, alertData, protectionData, policyData, sourceData, workloadData, objectData, agentData] = await Promise.allSettled([
       fetchClusterInfo(cluster),
-      fetchAlerts(cluster),
+      fetchAlerts(cluster, getCohesityAlertWindowDays()),
       fetchProtectionRuns(cluster, window.numRuns, window.sinceUsecs),
       fetchProtectionPolicies(cluster),
       fetchSourceRegistrations(cluster),
@@ -638,4 +654,4 @@ async function triggerPoll(clusterId) {
   await pollCluster(cluster);
 }
 
-module.exports = { initPoller, scheduleCluster, cancelCluster, pollCluster, triggerPoll };
+module.exports = { initPoller, scheduleCluster, cancelCluster, pollCluster, triggerPoll, _upsertAlerts: upsertAlerts };
