@@ -97,6 +97,7 @@ beforeEach(() => {
   db.exec('DELETE FROM alert_notifications');
   db.exec('DELETE FROM alerts');
   db.exec('DELETE FROM netapp_alerts');
+  db.exec('DELETE FROM vcenter_issue_history');
   db.exec('DELETE FROM alert_notify_platform');
   db.exec('DELETE FROM alert_notify_types');
 });
@@ -207,5 +208,49 @@ describe('Service Status is unaffected by mutes, severity or recipients', () => 
 
     const { items } = alertNotifier.collectOpenAlerts();
     expect(items.some((i) => i.platform === 'cohesity' && i.sourceKey === `c${clusterId}:a1`)).toBe(true);
+  });
+});
+
+describe('refreshTypeCatalog (backfill from full stored history)', () => {
+  it('run() with SMTP disabled still fills the catalog from stored rows, including a resolved cohesity alert and a resolved issue-history type', async () => {
+    const clusterId = insertCluster();
+    insertCohesityAlert(clusterId, { alertId: 'a1', severity: 'critical', alertCategory: 'kDisk', description: 'disk fault' });
+    db.prepare('UPDATE alerts SET resolved = 1 WHERE cluster_id = ? AND cohesity_alert_id = ?').run(clusterId, 'a1');
+
+    db.prepare(`
+      INSERT INTO vcenter_issue_history (issue_key, vcenter, severity, type, target, message, status)
+      VALUES ('host-down|vc-01|esx-02', 'vc-01', 'critical', 'host-down', 'esx-02', 'Host is down', 'resolved')
+    `).run();
+
+    configureSmtp({ smtp_enabled: '0' });
+    await alertNotifier.run();
+
+    expect(sent).toHaveLength(0);
+    expect(typeRow('cohesity', 'kDisk')).toMatchObject({ enabled: 1, label: 'Disk' });
+    expect(typeRow('vcenter', 'host-down')).toMatchObject({ enabled: 1, label: 'host-down' });
+  });
+
+  it('never re-enables a muted type and keeps the older first_seen', () => {
+    const clusterId = insertCluster();
+    insertCohesityAlert(clusterId, { alertId: 'a1', severity: 'critical', alertCategory: 'kDisk' });
+
+    alertNotifier.refreshTypeCatalog('cohesity');
+    expect(typeRow('cohesity', 'kDisk').enabled).toBe(1);
+
+    muteType('cohesity', 'kDisk');
+    db.prepare("UPDATE alert_notify_types SET first_seen = '2020-01-01 00:00:00' WHERE platform = 'cohesity' AND type = 'kDisk'").run();
+
+    alertNotifier.refreshTypeCatalog('cohesity');
+    const after = typeRow('cohesity', 'kDisk');
+    expect(after.enabled).toBe(0);
+    expect(after.first_seen).toBe('2020-01-01 00:00:00');
+  });
+
+  it('a missing platform table does not throw', () => {
+    // Real seam, not a bogus table: drop a table refreshTypeCatalog reads
+    // (aws is untouched by every other test in this file) so the aws query
+    // throws for real, and confirm the overall call still returns cleanly.
+    db.exec('DROP TABLE aws_issue_history');
+    expect(() => alertNotifier.refreshTypeCatalog()).not.toThrow();
   });
 });

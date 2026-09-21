@@ -53,6 +53,22 @@ describe('GET /api/alert-notify/:platform', () => {
       types: [],
     });
   });
+
+  it('returns backfilled types on a fresh catalog', async () => {
+    db.exec('DELETE FROM alerts');
+    const clusterId = db.prepare(`
+      INSERT INTO clusters (name, connection_type, auth_type, encrypted_credentials)
+      VALUES ('routes-backfill-cluster', 'direct', 'apikey', 'x')
+    `).run().lastInsertRowid;
+    db.prepare(`
+      INSERT INTO alerts (cluster_id, cohesity_alert_id, severity, alert_type, alert_category, description, resolved, dismissed, first_seen, last_updated)
+      VALUES (?, 'a1', 'critical', 'kTest', 'kDisk', 'disk fault', 0, 0, datetime('now'), datetime('now'))
+    `).run(clusterId);
+
+    const res = await get('cohesity');
+    expect(res.status).toBe(200);
+    expect(res.body.types).toEqual([expect.objectContaining({ type: 'kDisk', label: 'Disk', enabled: true })]);
+  });
 });
 
 describe('PUT /api/alert-notify/:platform validation', () => {
