@@ -12,6 +12,7 @@ const db = require('../db/database');
 const { getNotificationSettings, setSetting } = require('../services/settings');
 const { requirePermission } = require('../middleware/requirePermission');
 const alertNotifier = require('../services/alertNotifier');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -63,6 +64,13 @@ function currentView(platform) {
 router.get('/:platform', requirePermission(viewPermission), (req, res, next) => {
   try {
     const platform = req.params.platform;
+    // Backfill from stored alerts so the list is populated the moment the
+    // owner opens the tab, not just after the next 5-minute cron tick.
+    try {
+      alertNotifier.refreshTypeCatalog(platform);
+    } catch (err) {
+      logger.error(`[AlertNotify] Type-catalog backfill failed for ${platform}:`, err.message);
+    }
     const types = db.prepare(`
       SELECT type, label, enabled, first_seen AS firstSeen, last_seen AS lastSeen
       FROM alert_notify_types WHERE platform = ? ORDER BY label

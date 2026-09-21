@@ -420,10 +420,130 @@ function upsertTypeCatalog(items) {
   run_(items);
 }
 
+/** Per-platform full-history query for refreshTypeCatalog(): same type/label
+ *  derivation each collector above uses, but over every stored row (any
+ *  resolved/open/dismissed state) instead of only the currently-open ones,
+ *  so the owner can mute a type before it ever fires again. Each query
+ *  returns { type, typeLabel, firstSeen, lastSeen } rows, timestamps already
+ *  normalized to the 'YYYY-MM-DD HH:MM:SS' UTC text upsertTypeCatalog writes
+ *  with datetime('now') (epoch-ms columns converted via unixepoch). */
+const CATALOG_BACKFILL = {
+  // Mirrors collectCohesityAlerts' type/label rule (alert_category + cohesityTypeLabel).
+  cohesity: () => db.prepare(`
+    SELECT alert_category AS type, datetime(MIN(first_seen)) AS firstSeen, datetime(MAX(last_updated)) AS lastSeen
+    FROM alerts WHERE alert_category IS NOT NULL AND alert_category != ''
+    GROUP BY alert_category
+  `).all().map((r) => ({ type: r.type, typeLabel: cohesityTypeLabel(r.type), firstSeen: r.firstSeen, lastSeen: r.lastSeen })),
+
+  // Mirrors collectPureAlerts' type rule (componentType || category, 'hidden' severity excluded).
+  pure: () => db.prepare(`
+    SELECT COALESCE(NULLIF(component_type, ''), NULLIF(category, '')) AS type,
+           datetime(MIN(created_at_ms) / 1000, 'unixepoch') AS firstSeen,
+           datetime(MAX(updated_at_ms) / 1000, 'unixepoch') AS lastSeen
+    FROM pure_alerts WHERE LOWER(COALESCE(severity, '')) != 'hidden'
+    GROUP BY type HAVING type IS NOT NULL
+  `).all(),
+
+  // Mirrors collectNetappAlerts' type rule (source, when non-empty).
+  netapp: () => db.prepare(`
+    SELECT source AS type, datetime(MIN(captured_at)) AS firstSeen, datetime(MAX(captured_at)) AS lastSeen
+    FROM netapp_alerts WHERE source IS NOT NULL AND source != ''
+    GROUP BY source
+  `).all(),
+
+  // Mirrors collectDellAlerts' type rule ("category / subcategory", falling
+  // back to category, no type when category is empty).
+  dell: () => db.prepare(`
+    SELECT CASE WHEN category IS NULL OR category = '' THEN NULL
+                WHEN subcategory IS NULL OR subcategory = '' THEN category
+                ELSE category || ' / ' || subcategory END AS type,
+           datetime(MIN(COALESCE(created_at, captured_at))) AS firstSeen,
+           datetime(MAX(captured_at)) AS lastSeen
+    FROM dell_alerts
+    GROUP BY type HAVING type IS NOT NULL
+  `).all(),
+
+  // vcenter/aria/aws collectors read <x>_issue_history.type off open rows only;
+  // the backfill reads every status so a resolved issue's type is caught too.
+  vcenter: () => issueHistoryBackfill('vcenter_issue_history'),
+  aria: () => issueHistoryBackfill('aria_issue_history'),
+  aws: () => issueHistoryBackfill('aws_issue_history'),
+
+  // unifi/bluecat platforms/*/index.js collectAlerts() and brocade's
+  // fromIssues half read their own issue_history.type off open rows only;
+  // the backfill reads every row. Brocade's fromEvents half (brocade_events)
+  // has no type column and is intentionally left out.
+  unifi: () => issueHistoryBackfill('unifi_issue_history'),
+  brocade: () => issueHistoryBackfill('brocade_issue_history'),
+  bluecat: () => issueHistoryBackfill('bluecat_issue_history'),
+
+  // zerto keeps its own zerto_alert_catalog (per-code toggles) - no entry here.
+};
+
+/** Shared by vcenter/aria/aws/unifi/brocade/bluecat: their issue_history
+ *  tables all share the same type/first_seen/last_seen shape. */
+function issueHistoryBackfill(table) {
+  return db.prepare(`
+    SELECT type, datetime(MIN(first_seen)) AS firstSeen, datetime(MAX(last_seen)) AS lastSeen
+    FROM ${table} WHERE type IS NOT NULL AND type != ''
+    GROUP BY type
+  `).all();
+}
+
+/** Fills alert_notify_types from the full stored alert tables (any
+ *  resolved/open/dismissed state), not just currently-open alerts, so the
+ *  owner can mute a type before it ever fires again. `platform` narrows to
+ *  one platform; omitted, every known platform is refreshed. One transaction
+ *  per call; each platform's query is isolated so a missing table (an
+ *  install without that platform) can't break the others. Never touches
+ *  `enabled` on conflict - only widens the first/last-seen range and
+ *  refreshes the label. */
+function refreshTypeCatalog(platform) {
+  const platforms = platform ? [platform] : Object.keys(CATALOG_BACKFILL);
+  const upsert = db.prepare(`
+    INSERT INTO alert_notify_types (platform, type, label, enabled, first_seen, last_seen)
+    VALUES (?, ?, ?, 1, ?, ?)
+    ON CONFLICT(platform, type) DO UPDATE SET
+      label = excluded.label,
+      first_seen = MIN(first_seen, excluded.first_seen),
+      last_seen = MAX(last_seen, excluded.last_seen)
+  `);
+  // Fallback for the rare row whose stored timestamps didn't resolve to
+  // anything - same 'YYYY-MM-DD HH:MM:SS' UTC text datetime('now') writes.
+  const now = db.prepare("SELECT datetime('now') AS now").get().now;
+  const run_ = db.transaction((platformList) => {
+    for (const p of platformList) {
+      const query = CATALOG_BACKFILL[p];
+      if (!query) continue;
+      let rows;
+      try {
+        rows = query();
+      } catch (err) {
+        // Expected on an install/branch without this platform's table(s) -
+        // debug only, not warn, so it doesn't repeat every 5 minutes.
+        logger.debug(`[AlertNotifier] Type-catalog backfill skipped for ${p}: ${err.message}`);
+        continue;
+      }
+      for (const r of rows) {
+        if (!r.type) continue;
+        upsert.run(p, r.type, r.typeLabel || r.type, r.firstSeen || now, r.lastSeen || now);
+      }
+    }
+  });
+  run_(platforms);
+}
+
 /** Core run loop, shared by the cron job and any manual trigger. */
 async function run() {
   try {
     const config = getNotificationSettings();
+
+    try {
+      refreshTypeCatalog();
+    } catch (err) {
+      logger.error('[AlertNotifier] Type-catalog backfill failed:', err.message);
+    }
+
     if (!config.smtpEnabled || !config.smtpHost || !config.smtpFrom) return;
 
     const platformOverrides = new Map(
@@ -644,6 +764,7 @@ module.exports = {
   initAlertNotifier,
   stopAlertNotifier,
   collectOpenAlerts,
+  refreshTypeCatalog,
   _setTransportFactory,
   _reset,
 };

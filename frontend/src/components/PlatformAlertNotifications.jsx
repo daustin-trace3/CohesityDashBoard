@@ -177,8 +177,8 @@ export default function PlatformAlertNotifications({ platform, label, hideTypes 
             <p className="text-sm font-semibold text-ink">Alert types</p>
           </div>
           <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
-            Which alert types on this platform may send email. A new type appears here, enabled, the
-            first time ICC sees it. A disabled type still shows on the dashboard and Service Status -
+            This list holds every alert type ICC has on record for this platform. New types are added
+            as they are seen. A disabled type still shows on the dashboard and Service Status -
             it just does not send email.{mutedCount > 0 && <> <b className="text-ink">{mutedCount}</b> type(s) currently muted.</>}
           </p>
 
@@ -192,7 +192,10 @@ export default function PlatformAlertNotifications({ platform, label, hideTypes 
           )}
 
           {types.length === 0 ? (
-            <p className="text-xs text-ink-faint py-6 text-center">Alert types appear here after ICC has seen them from this platform.</p>
+            <p className="text-xs text-ink-faint py-6 text-center">
+              No alert types on record yet for this platform.
+              {platform === 'cohesity' && ' Cohesity types fill in after each cluster\'s next poll (the category column is new).'}
+            </p>
           ) : (
             <div className="overflow-x-auto max-h-[420px] overflow-y-auto border border-cohesity-border/60 rounded-lg">
               <table className="w-full text-sm">
