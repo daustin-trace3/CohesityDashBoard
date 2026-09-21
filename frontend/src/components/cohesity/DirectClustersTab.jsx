@@ -250,7 +250,8 @@ export default function DirectClustersTab() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   const load = () => {
-    client.get('/cohesity/clusters')
+    // Skip the 30 s browser cache on the list so an add or a remove shows at once.
+    client.get('/cohesity/clusters', { params: { _: Date.now() } })
       .then(({ data }) => setClusters(data.filter(c => c.connection_type === 'direct')))
       .catch(() => setClusters([]));
   };
