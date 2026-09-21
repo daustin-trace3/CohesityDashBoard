@@ -74,6 +74,35 @@ function ModalShell({ title, subtitle, icon: Icon, onClose, children, footer, wi
   );
 }
 
+/* A component's items with the ones needing attention first (critical, then
+ * degraded) and the operational ones folded behind their own toggle. With
+ * nothing wrong the full list shows as is. */
+function IssuesFirst({ items, render }) {
+  const [showOk, setShowOk] = useState(false);
+  const rank = { critical: 0, degraded: 1 };
+  const issues = items.filter((i) => i.state !== 'ok').sort((a, b) => (rank[a.state] ?? 2) - (rank[b.state] ?? 2));
+  const ok = items.filter((i) => i.state === 'ok');
+  if (!issues.length || !ok.length) return render(items);
+  return (
+    <div className="flex flex-col gap-2">
+      {render(issues)}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowOk((v) => !v)}
+          className="flex items-center gap-1.5 text-[11px] font-semibold text-ink-muted hover:text-ink cursor-pointer"
+          aria-expanded={showOk}
+        >
+          {showOk ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <StateDot state="ok" />
+          {ok.length} operational
+        </button>
+        {showOk && <div className="mt-2">{render(ok)}</div>}
+      </div>
+    </div>
+  );
+}
+
 /* ---- Expanded detail: Servers section ---- */
 function ServersSection({ servers }) {
   if (!servers || servers.length === 0) {
@@ -327,7 +356,7 @@ function buildSections(detail) {
     out.push({
       key: 'servers', title: 'Servers', state: serverState,
       summary: offline ? `${servers.length - offline} of ${servers.length} online, ${offline} offline` : `${servers.length} online`,
-      body: <ServersSection servers={servers} />,
+      body: <IssuesFirst items={servers} render={(rows) => <ServersSection servers={rows} />} />,
     });
   }
   if (hosts.length) {
@@ -335,7 +364,7 @@ function buildSections(detail) {
     out.push({
       key: 'hosts', title: 'ESX hosts', state: worstState(hosts.map((h) => h.state)),
       summary: `${hosts.length} host${hosts.length === 1 ? '' : 's'}${bad ? `, ${bad} with issues` : ''}${counts.pathsTotal ? `, SAN paths ${counts.pathsMissing || 0}/${counts.pathsTotal} lost` : ''}`,
-      body: <HostsSection hosts={hosts} />,
+      body: <IssuesFirst items={hosts} render={(rows) => <HostsSection hosts={rows} />} />,
     });
   }
   if (storage.length) {
@@ -343,7 +372,7 @@ function buildSections(detail) {
     out.push({
       key: 'storage', title: 'Storage', state: worstState(storage.map((s) => s.state)),
       summary: `${storage.length} datastore${storage.length === 1 ? '' : 's'} and volume${storage.length === 1 ? '' : 's'}${bad ? `, ${bad} with issues` : ''}`,
-      body: <StorageSection storage={storage} />,
+      body: <IssuesFirst items={storage} render={(rows) => <StorageSection storage={rows} />} />,
     });
   }
   if (backup.length) {
@@ -352,7 +381,7 @@ function buildSections(detail) {
     out.push({
       key: 'backup', title: 'Backup', state: worstState(backup.map((b) => b.state)),
       summary: `${backup.length} protected server${backup.length === 1 ? '' : 's'}${stale ? `, ${stale} without a backup in ${staleHours} h` : ''}`,
-      body: <BackupSection backup={backup} staleHours={staleHours} />,
+      body: <IssuesFirst items={backup} render={(rows) => <BackupSection backup={rows} staleHours={staleHours} />} />,
     });
   }
   if (replication.length) {
@@ -360,7 +389,7 @@ function buildSections(detail) {
     out.push({
       key: 'replication', title: 'DR Replication', state: worstState(replication.map((r) => r.state)),
       summary: `${replication.length} replicated server${replication.length === 1 ? '' : 's'}${bad ? `, ${bad} not meeting SLA` : ''}`,
-      body: <ReplicationSection replication={replication} />,
+      body: <IssuesFirst items={replication} render={(rows) => <ReplicationSection replication={rows} />} />,
     });
   }
   return out;
