@@ -176,9 +176,26 @@ export default function GovernancePage() {
   const section = SECTIONS.includes(rawSection) ? rawSection : 'filers';
   const [filters, setFiltersState] = React.useState(() => readFilters(searchParams));
 
+  const [loadError, setLoadError] = React.useState(null);
+
+  // A failed request and an answer of the wrong shape are errors, never an
+  // empty estate.
   const load = React.useCallback(() => apiFetch('/netapp/governance')
-    .then((json) => { setData(json); setLastRefreshed(new Date()); })
-    .catch(() => { setData({}); flash('error', 'Failed to load governance data'); }), []);
+    .then((json) => {
+      if (!json || typeof json !== 'object' || !Array.isArray(json.clusters)) {
+        setData({});
+        setLoadError('The server did not return governance data. The dashboard service may need a restart.');
+        return;
+      }
+      setLoadError(null);
+      setData(json);
+      setLastRefreshed(new Date());
+    })
+    .catch((err) => {
+      setData({});
+      setLoadError(`Could not load governance data${err?.status ? ` (HTTP ${err.status})` : ''}: ${err?.message || 'request failed'}`);
+      flash('error', 'Failed to load governance data');
+    }), []);
 
   React.useEffect(() => { load(); }, [load]);
 
@@ -306,6 +323,19 @@ export default function GovernancePage() {
     );
   }
 
+  if (loadError) {
+    return (
+      <div className="animate-fade-in">
+        <PageHeader icon={ShieldCheck} title="NetApp Governance" description="Consolidated view of the whole ONTAP estate">
+          <RefreshButton onClick={load} />
+        </PageHeader>
+        <div className="panel p-8 text-center text-sm text-status-crit" style={{ borderTop: `3px solid ${BRAND}` }}>
+          {loadError}
+        </div>
+      </div>
+    );
+  }
+
   if (rawClusters.length === 0) {
     return (
       <div className="animate-fade-in">
@@ -313,7 +343,8 @@ export default function GovernancePage() {
           <RefreshButton onClick={load} />
         </PageHeader>
         <div className="panel p-8 text-center text-sm text-ink-muted" style={{ borderTop: `3px solid ${BRAND}` }}>
-          No NetApp clusters registered yet. Add one under <ReactRouterDOM.Link to="/netapp/settings" className="text-brand hover:underline">Settings</ReactRouterDOM.Link>.
+          ICC has no NetApp clusters on record yet. Clusters appear here once an AIQUM gateway or a direct
+          cluster has been added under <ReactRouterDOM.Link to="/netapp/settings" className="text-brand hover:underline">Settings</ReactRouterDOM.Link> and polled.
         </div>
       </div>
     );
