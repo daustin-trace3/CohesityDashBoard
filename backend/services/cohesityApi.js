@@ -407,9 +407,54 @@ async function fetchSearchObjects(cluster) {
  * per-cluster object id (matches objectProtectionInfos[].objectId). Verified
  * live: search/objects group entries carry status but no timestamp.
  */
-async function fetchProtectedObjectTimes(cluster) {
-  const client = await getAuthenticatedClient(cluster);
+/** Protection info entries that belong to the polled cluster. Verified live
+ *  2026-09-21: the object search returns one entry per cluster the object is
+ *  known to (own clusterId on each), so without this a cluster that merely has
+ *  the vCenter registered reads as protecting the object with another
+ *  cluster's group. Entries with no clusterId (older releases) count as local. */
+function localProtectionInfos(object, localClusterId) {
+  return (object.objectProtectionInfos || []).filter((i) => i && !i.isDeleted && (i.protectionGroups || []).length
+    && (localClusterId == null || i.clusterId == null || String(i.clusterId) === String(localClusterId)));
+}
+
+// Verified live 2026-09-21: search/protected-objects answers with at most 500
+// objects and no paginationCookie however large the cluster is, so an
+// unfiltered call dates only the first 500. protectionGroupIds (comma list)
+// narrows the search, which is how every protected object gets its time.
+const PROTECTED_OBJECTS_CAP = 500;
+const GROUP_BATCH = 10;
+
+async function fetchProtectedObjectTimes(cluster, groupIds = [], clientOverride = null) {
+  const client = clientOverride || await getAuthenticatedClient(cluster);
   const times = new Map();
+  const ids = [...new Set((groupIds || []).filter(Boolean))];
+  if (ids.length) {
+    const collect = (batch) => {
+      for (const o of batch) {
+        const usecs = Math.max(0, ...(o.latestSnapshotsInfo || [])
+          .map((s) => s.protectionRunStartTimeUsecs || 0));
+        if (o.id != null && usecs > 0) times.set(o.id, Math.max(times.get(o.id) || 0, Math.round(usecs / 1000)));
+      }
+    };
+    // A batch that fills the cap may have been cut short: halve it and ask again.
+    const queue = [];
+    for (let i = 0; i < ids.length; i += GROUP_BATCH) queue.push(ids.slice(i, i + GROUP_BATCH));
+    while (queue.length) {
+      const batchIds = queue.shift();
+      const { data } = await client.get(
+        `/v2/data-protect/search/protected-objects?protectionGroupIds=${encodeURIComponent(batchIds.join(','))}&count=1000`,
+        { timeout: 120000 }
+      );
+      const batch = data?.objects || [];
+      if (batch.length >= PROTECTED_OBJECTS_CAP && batchIds.length > 1) {
+        const mid = Math.ceil(batchIds.length / 2);
+        queue.push(batchIds.slice(0, mid), batchIds.slice(mid));
+        continue;
+      }
+      collect(batch);
+    }
+    return times;
+  }
   let cookie = null;
   let pages = 0;
   let seen = 0;
@@ -488,5 +533,6 @@ module.exports = {
   getProtectionGroupRunsV2,
   fetchSearchObjects,
   fetchProtectedObjectTimes,
+  localProtectionInfos,
   fetchPhysicalAgents
 };
