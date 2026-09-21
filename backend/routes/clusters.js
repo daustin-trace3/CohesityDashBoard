@@ -423,6 +423,9 @@ router.delete(
       if (!existing) return res.status(404).json({ error: 'Cluster not found' });
 
       db.prepare('DELETE FROM clusters WHERE id = ?').run(id);
+      // Its poll status row would otherwise linger and read as a cluster that
+      // stopped polling days ago.
+      db.prepare("DELETE FROM poller_status WHERE type = 'cohesity' AND entity_id = ?").run(id);
       cancelCluster(Number(id));
       invalidateSession(Number(id));
 
