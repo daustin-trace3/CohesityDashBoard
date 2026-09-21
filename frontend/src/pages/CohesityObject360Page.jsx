@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { Crosshair, Search, ShieldCheck, Activity, ArrowLeftRight, Bell, Users, Loader2 } from 'lucide-react';
+import { Crosshair, Search, ShieldCheck, Activity, ArrowLeftRight, Bell, Users, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Panel, Badge, LoadingPanel } from '../components/ui/primitives';
 
@@ -52,6 +52,38 @@ function Fact({ label, children }) {
 }
 
 /** Cohesity-scoped "everything the estate knows about one protected object" view. */
+/* Registrations of the same object on clusters that hold no backup of it.
+ * Folded by default; rendered only when there are any. */
+function AlsoListed({ items }) {
+  const [open, setOpen] = useState(false);
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="mt-1 pt-2 border-t border-cohesity-border/40">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-[11px] font-semibold text-ink-muted hover:text-ink cursor-pointer"
+        aria-expanded={open}
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        Also listed on {items.length} other cluster{items.length === 1 ? '' : 's'} with no backup of this object
+      </button>
+      {open && (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {items.map((o, i) => (
+            <div key={i} className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+              <Fact label="Cluster">{o.clusterName}</Fact>
+              <Fact label="Protected"><Badge tone={o.isProtected ? 'ok' : 'warn'}>{o.isProtected ? 'protected' : 'unprotected'}</Badge></Fact>
+              <Fact label="Protection Group(s)">{(o.protectionGroups || []).join(', ') || '-'}</Fact>
+              <Fact label="Last Backup">None on record</Fact>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CohesityObject360Page() {
   const [params, setParams] = useSearchParams();
   const [input, setInput] = useState(params.get('name') || '');
@@ -187,6 +219,7 @@ export default function CohesityObject360Page() {
                 {o.slaViolated ? <Fact label="SLA"><Badge tone="crit">SLA violated</Badge></Fact> : null}
               </div>
             ))}
+            <AlsoListed items={data.alsoListed} />
           </Panel>
 
           <Panel title="Backup Runs" icon={Activity}>

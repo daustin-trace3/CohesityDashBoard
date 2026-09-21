@@ -78,6 +78,35 @@ describe('GET /api/cohesity/object-360', () => {
     expect(res.body.alerts[0]).toMatchObject({ severity: 'critical', alertType: 'kDiskFailure', clusterName: 'test-cluster' });
   });
 
+  it('a second registration with no backup comes back as alsoListed and feeds no runs or alerts', async () => {
+    const otherId = db.prepare(`
+      INSERT INTO clusters (name, vip, connection_type, auth_type, encrypted_credentials)
+      VALUES ('test-cluster-idle', '10.0.0.2', 'direct', 'apikey', 'enc')
+    `).run().lastInsertRowid;
+    db.prepare(`
+      INSERT INTO cohesity_objects (cluster_id, name, environment, is_protected, protection_groups, last_backup_status, last_backup_ms)
+      VALUES (?, 'obj360-server1', 'kVMware', 1, ?, 'kSuccess', NULL)
+    `).run(otherId, JSON.stringify(['group-idle']));
+    const startEpoch = Math.floor(Date.now() / 1000) - 7200;
+    db.prepare(`
+      INSERT INTO protection_runs (cluster_id, job_id, job_name, run_type, status, start_time, end_time)
+      VALUES (?, 9, 'group-idle', 'kRegular', 'kSuccess', ?, ?)
+    `).run(otherId, startEpoch, startEpoch + 60);
+    db.prepare(`
+      INSERT INTO alerts (cluster_id, cohesity_alert_id, severity, alert_type, description, resolved, dismissed, first_seen)
+      VALUES (?, 'alert-idle', 'warning', 'kOther', 'Idle cluster alert', 0, 0, CURRENT_TIMESTAMP)
+    `).run(otherId);
+
+    const res = await request(app).get('/api/cohesity/object-360?name=obj360-server1');
+    db.prepare('DELETE FROM clusters WHERE id = ?').run(otherId);
+    db.prepare('DELETE FROM cohesity_objects WHERE cluster_id = ?').run(otherId);
+    expect(res.body.objects.map((o) => o.clusterName)).toEqual(['test-cluster']);
+    expect(res.body.alsoListed).toHaveLength(1);
+    expect(res.body.alsoListed[0]).toMatchObject({ clusterName: 'test-cluster-idle', protectionGroups: ['group-idle'], lastBackupMs: null });
+    expect(res.body.runs14d.every((r) => r.group === 'group-a')).toBe(true);
+    expect(res.body.alerts.map((a) => a.clusterName)).toEqual(['test-cluster']);
+  });
+
   it('200 with found:false for an unknown name', async () => {
     const res = await request(app).get('/api/cohesity/object-360?name=does-not-exist');
     expect(res.status).toBe(200);

@@ -113,11 +113,11 @@ router.get('/', (req, res, next) => {
       `).all(...nameList);
       // A server is often known to several clusters (replica, old registration)
       // while only one holds its backups. When any entry has a backup time, the
-      // ones without are left out; with no time anywhere they all stay.
+      // ones without move to otherObjects; with no time anywhere they all stay.
       const withBackup = objects.filter((o) => o.last_backup_ms);
-      const hiddenObjects = withBackup.length ? objects.length - withBackup.length : 0;
+      const otherObjects = withBackup.length ? objects.filter((o) => !o.last_backup_ms) : [];
       if (withBackup.length) objects = withBackup;
-      if (objects.length || agents.length) cohesity = { objects, agents, hiddenObjects };
+      if (objects.length || agents.length) cohesity = { objects, agents, otherObjects };
     }
 
     // ── Zerto: DR posture ─────────────────────────────────────────────────

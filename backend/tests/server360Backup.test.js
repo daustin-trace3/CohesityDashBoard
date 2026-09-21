@@ -43,13 +43,13 @@ beforeEach(() => {
 });
 
 describe('Server 360 Cohesity entries', () => {
-  it('keeps only the entries with a backup time and counts the rest', async () => {
+  it('keeps only the entries with a backup time and returns the rest as otherObjects', async () => {
     object(clusterA, 'srv-multi', null);
     object(clusterB, 'srv-multi', Date.now() - 50 * 3600000);
     const res = await request(app).get('/api/server-360').query({ name: 'srv-multi' });
     expect(res.status).toBe(200);
     expect(res.body.cohesity.objects.map((o) => o.cluster_name)).toEqual(['s360-b']);
-    expect(res.body.cohesity.hiddenObjects).toBe(1);
+    expect(res.body.cohesity.otherObjects.map((o) => o.cluster_name)).toEqual(['s360-a']);
   });
 
   it('with no backup time anywhere every entry stays', async () => {
@@ -57,6 +57,6 @@ describe('Server 360 Cohesity entries', () => {
     object(clusterB, 'srv-none', null);
     const res = await request(app).get('/api/server-360').query({ name: 'srv-none' });
     expect(res.body.cohesity.objects).toHaveLength(2);
-    expect(res.body.cohesity.hiddenObjects).toBe(0);
+    expect(res.body.cohesity.otherObjects).toEqual([]);
   });
 });

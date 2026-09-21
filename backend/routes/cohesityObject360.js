@@ -67,10 +67,19 @@ router.get(
       `).all(name);
 
       if (rows.length === 0) {
-        return res.json({ query: name, found: false, objects: [], runs14d: [], replication: [], agents: [], alerts: [] });
+        return res.json({ query: name, found: false, objects: [], alsoListed: [], runs14d: [], replication: [], agents: [], alerts: [] });
       }
 
-      const objects = rows.map((o) => {
+      // An object is often registered on several clusters (replica, old
+      // registration) while only one holds its backups. When any registration
+      // has a backup time, the page is about those; the rest come back as
+      // alsoListed and do not feed runs, replication, agents or alerts. With
+      // no backup time anywhere every registration counts.
+      const withBackup = rows.filter((o) => o.last_backup_ms);
+      const activeRows = withBackup.length ? withBackup : rows;
+      const otherRows = withBackup.length ? rows.filter((o) => !o.last_backup_ms) : [];
+
+      const toObject = (o) => {
         let protectionGroups = [];
         try { protectionGroups = JSON.parse(o.protection_groups || '[]'); } catch { /* malformed */ }
         let policyNames = [];
@@ -91,14 +100,16 @@ router.get(
           logicalBytes: o.logical_bytes,
           sourceName: o.source_name,
         };
-      });
+      };
+      const objects = activeRows.map(toObject);
+      const alsoListed = otherRows.map(toObject);
 
       // group -> Set(cluster_id), and cluster_id -> cluster_name, across every
       // registration of this object — same fan-out backupHistory.js uses.
       const groupClusters = new Map();
       const clusterNames = new Map();
       const clusterIds = new Set();
-      for (const o of rows) {
+      for (const o of activeRows) {
         clusterIds.add(o.cluster_id);
         clusterNames.set(o.cluster_id, o.cluster_name);
         let groups = [];
@@ -181,7 +192,7 @@ router.get(
         firstSeen: a.first_seen,
       })) : [];
 
-      res.json({ query: name, found: true, objects, runs14d, replication, agents, alerts });
+      res.json({ query: name, found: true, objects, alsoListed, runs14d, replication, agents, alerts });
     } catch (err) {
       next(err);
     }
