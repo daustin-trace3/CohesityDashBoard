@@ -84,11 +84,21 @@ only thing shared.
       archive containing the tenant database with saved credentials removed,
       plus CSV copies of the main inventories. The download link expires and the
       export is written to both audit logs.
-    - Retention: ASSUMPTION to confirm with Doug: "held for X time" means the
-      period a tenant's data is kept after the tenant is closed. It is
-      configurable per tenant. When it runs out the data is deleted
-      automatically and the deletion is written to the global audit log. Until
-      then a closed tenant can be reopened.
+    - Retention inside a live tenant (confirmed by Doug 2026-09-21): how long
+      polled history is kept is configurable per tenant. History past the
+      window (metrics history, resolved alerts and issues, timelines, audit
+      rows past their own window) is deleted on a schedule and the run is
+      written to the tenant audit log. Current inventory is never aged out.
+      Today the host has several hard-coded retention windows (for example
+      Dell hardware logs at 90 days); phase 4 collects them behind one per
+      tenant setting with per-category overrides.
+    - Retention after a tenant is closed (confirmed): when a tenant is closed
+      its database is moved out of the live pool into an archive on the same
+      system (a zip of the database plus the export CSVs, encrypted with the
+      tenant key), not reachable from the UI, so closed tenants stop costing
+      database size and open handles. The archive is kept for a configurable
+      period and then deleted, with the deletion written to the global audit
+      log. A closed tenant can be restored from its archive while it exists.
 16. Two audit logs: one per tenant (what happened inside it) and one global
     (sign-ins, tenant switches, global admin entry into tenants, tenant
     administration, exports, deletions).
