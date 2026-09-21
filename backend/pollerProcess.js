@@ -8,6 +8,12 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 
 const logger = require('./utils/logger');
 const registry = require('./core/registry');
+// app.js announces the compiled-in Cohesity built-in for the web process.
+// This process never loads app.js, and without the same announcement the
+// Service Status sweep and the alert notifier, which both run here, gate
+// Cohesity out: no status rows, no alert emails. The Cohesity poller is
+// required just below, which is the same compiled-in condition.
+registry.markBuiltin('cohesity');
 const pluginBoot = require('./services/pluginBoot');
 const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
