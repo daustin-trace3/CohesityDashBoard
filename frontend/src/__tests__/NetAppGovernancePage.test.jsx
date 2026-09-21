@@ -136,4 +136,28 @@ describe('NetAppGovernancePage', () => {
     expect(screen.getByText('cg-ontap-2')).toBeInTheDocument();
     expect(screen.getByText(/Version: 9.14.1/)).toBeInTheDocument();
   });
+
+  // Seen on the ICC box 2026-09-21: a backend still running older code answered
+  // this path with the app's HTML page and a 200, and the page called that an
+  // estate with no clusters.
+  it('an answer that is not governance data is an error, not an empty estate', async () => {
+    client.get.mockResolvedValue({ data: '<!doctype html><html></html>' });
+    renderPage();
+    expect(await screen.findByText(/did not return governance data/)).toBeInTheDocument();
+    expect(screen.queryByText(/no NetApp clusters on record/)).not.toBeInTheDocument();
+  });
+
+  it('a failed request shows the status and the server message', async () => {
+    client.get.mockRejectedValue({ response: { status: 404, data: { error: 'No API route for GET /api/netapp/governance' } } });
+    renderPage();
+    expect(await screen.findByText(/HTTP 404/)).toBeInTheDocument();
+    expect(screen.getByText(/No API route/)).toBeInTheDocument();
+  });
+
+  it('a real empty estate says so and names AIQUM as a way in', async () => {
+    client.get.mockResolvedValue({ data: { ...GOVERNANCE, clusters: [], nodes: [], versions: [], models: [] } });
+    renderPage();
+    expect(await screen.findByText(/no NetApp clusters on record/)).toBeInTheDocument();
+    expect(screen.getByText(/AIQUM gateway/)).toBeInTheDocument();
+  });
 });

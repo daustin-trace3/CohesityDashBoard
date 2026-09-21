@@ -194,9 +194,29 @@ export default function NetAppGovernancePage() {
   const section = SECTIONS.includes(rawSection) ? rawSection : 'filers';
   const [filters, setFiltersState] = useState(() => readFilters(searchParams));
 
-  const load = useCallback(() => client.get('/netapp/governance')
-    .then(({ data }) => { setData(data); setLastRefreshed(new Date()); })
-    .catch(() => { setData({}); toast({ type: 'error', title: 'Failed to load governance data' }); }), [toast]);
+  const [loadError, setLoadError] = useState(null);
+
+  // A failed request and an answer of the wrong shape are errors, never an
+  // empty estate. A backend still running older code answers this path with
+  // the app's HTML page and a 200, which used to read as "no clusters".
+  const load = useCallback(() => client.get('/netapp/governance', { params: { _: Date.now() } })
+    .then(({ data }) => {
+      if (!data || typeof data !== 'object' || !Array.isArray(data.clusters)) {
+        setData({});
+        setLoadError('The server did not return governance data. The dashboard service is probably still running the previous version and needs a restart.');
+        return;
+      }
+      setLoadError(null);
+      setData(data);
+      setLastRefreshed(new Date());
+    })
+    .catch((err) => {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.error || err?.message || 'request failed';
+      setData({});
+      setLoadError(`Could not load governance data${status ? ` (HTTP ${status})` : ''}: ${detail}`);
+      toast({ type: 'error', title: 'Failed to load governance data' });
+    }), [toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -328,6 +348,19 @@ export default function NetAppGovernancePage() {
     );
   }
 
+  if (loadError) {
+    return (
+      <div className="animate-fade-in">
+        <PageHeader icon={ShieldCheck} title="NetApp Governance" description="Consolidated view of the whole ONTAP estate">
+          <RefreshButton onClick={load} />
+        </PageHeader>
+        <div className="panel p-8 text-center text-sm text-status-crit" style={{ borderTop: `3px solid ${BRAND}` }}>
+          {loadError}
+        </div>
+      </div>
+    );
+  }
+
   if (rawClusters.length === 0) {
     return (
       <div className="animate-fade-in">
@@ -335,7 +368,8 @@ export default function NetAppGovernancePage() {
           <RefreshButton onClick={load} />
         </PageHeader>
         <div className="panel p-8 text-center text-sm text-ink-muted" style={{ borderTop: `3px solid ${BRAND}` }}>
-          No NetApp clusters registered yet. Add one under <Link to="/netapp/settings" className="text-brand hover:underline">Settings</Link>.
+          ICC has no NetApp clusters on record yet. Clusters appear here once an AIQUM gateway or a direct
+          cluster has been added under <Link to="/netapp/settings" className="text-brand hover:underline">Settings</Link> and polled.
         </div>
       </div>
     );
