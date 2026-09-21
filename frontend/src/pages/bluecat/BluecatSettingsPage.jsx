@@ -6,6 +6,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { BRAND, fmtWhen } from './helpers';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 const btnPrimary = 'px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer';
@@ -15,6 +16,7 @@ const iconBtn = 'flex items-center justify-center h-7 w-7 rounded-md border bord
 const SECTIONS = [
   { key: 'sources', label: 'Address Managers', icon: Server, group: 'Connections' },
   { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing, group: 'Tuning' },
+  { key: 'notify', label: 'Alert Notifications', icon: BellRing, group: 'Tuning' },
 ];
 
 const THRESHOLD_FIELDS = [
@@ -346,6 +348,8 @@ export default function BluecatSettingsPage() {
               )}
             </div>
           )}
+
+          {section === 'notify' && <PlatformAlertNotifications platform="bluecat" label="BlueCat" />}
 
           <p className="text-[11px] text-ink-faint mt-3 leading-relaxed">
             The BlueCat platform tab itself is enabled from Global Settings (gear icon → Platforms).

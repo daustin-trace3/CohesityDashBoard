@@ -102,12 +102,13 @@ function upsertAlerts(cluster, alertList) {
 
   const stmt = db.prepare(`
     INSERT INTO alerts
-      (cluster_id, cohesity_alert_id, severity, alert_type, description,
+      (cluster_id, cohesity_alert_id, severity, alert_type, alert_category, description,
        resolved, dismissed, first_seen, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, 0, ?, datetime('now'))
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'))
     ON CONFLICT(cluster_id, cohesity_alert_id) DO UPDATE SET
       severity = excluded.severity,
       alert_type = excluded.alert_type,
+      alert_category = excluded.alert_category,
       description = excluded.description,
       resolved = excluded.resolved,
       closed_reason = NULL,
@@ -131,6 +132,7 @@ function upsertAlerts(cluster, alertList) {
       String(alertId),
       severity,
       alert.alertType || null,
+      alert.alertCategory || null,
       alert.alertDocument?.alertDescription || alert.description || null,
       resolved,
       firstSeen

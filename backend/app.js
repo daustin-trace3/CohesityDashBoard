@@ -37,6 +37,7 @@ const serviceStatusRouter = require('./routes/serviceStatus');
 const appServicesRouter = require('./routes/appServices');
 const datasetsRouter = require('./routes/datasets');
 const userDashboardsRouter = require('./routes/userDashboards');
+const alertNotifyRouter = require('./routes/alertNotify');
 require('./services/coreDatasets').registerCoreDatasets();
 const { getSetting } = require('./services/settings');
 const authRouter = require('./routes/auth');
@@ -191,6 +192,11 @@ function createApp({ licenseGate = requireLicense } = {}) {
     settingsRouter
   );
   app.use('/api/ai-audit', requirePermission(() => 'admin:ai-audit:view'), aiAuditRouter);
+  // Per-platform alert-email settings - applies permissions per-route itself
+  // (<platform>:settings:view|manage, the same strings each platform's own
+  // Settings page already needs). Must mount before the plugin dispatcher
+  // below, which would otherwise try to resolve "alert-notify" as a pluginId.
+  app.use('/api/alert-notify', alertNotifyRouter);
   // Plugins router applies permissions per-route itself (admin:plugins:view|
   // manage for most routes, the plugin's own namespace for bundle.js, no
   // gate for frontend-manifest) — no blanket guard here.

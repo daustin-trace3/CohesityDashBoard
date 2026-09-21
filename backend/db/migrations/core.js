@@ -454,4 +454,30 @@ module.exports = [
       `);
     },
   },
+  // Per-platform alert email settings: each platform's own recipients + minimum
+  // severity override (blank/NULL = inherit the Global Settings default), and
+  // the catalog of alert types ICC has seen per platform with a per-type SMTP
+  // mute (the same idea as zerto_alert_catalog, generalized to every platform).
+  {
+    version: 20,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS alert_notify_platform (
+          platform     TEXT PRIMARY KEY,
+          recipients   TEXT NOT NULL DEFAULT '',
+          min_severity TEXT,
+          updated_at   TEXT
+        );
+        CREATE TABLE IF NOT EXISTS alert_notify_types (
+          platform     TEXT NOT NULL,
+          type         TEXT NOT NULL,
+          label        TEXT,
+          enabled      INTEGER NOT NULL DEFAULT 1,
+          first_seen   TEXT,
+          last_seen    TEXT,
+          PRIMARY KEY (platform, type)
+        );
+      `);
+    },
+  },
 ];

@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Save, BadgeCheck, Cloud, Server, RadioTower, RefreshCw } from 'lucide-react';
+import { BellRing } from 'lucide-react';
 import client from '../api/client';
 import { useToast } from '../components/ui/Toaster';
 import HeliosConnectTab from '../components/cohesity/HeliosConnectTab';
 import DirectClustersTab from '../components/cohesity/DirectClustersTab';
+import PlatformAlertNotifications from '../components/PlatformAlertNotifications';
 
 const TABS = [
   { key: 'helios', label: 'Helios (SaaS)', icon: Cloud },
   { key: 'direct', label: 'Direct Clusters', icon: Server },
   { key: 'entitlement', label: 'Licensing', icon: BadgeCheck },
   { key: 'polling', label: 'Polling', icon: RadioTower },
+  { key: 'alerts', label: 'Alert Notifications', icon: BellRing },
 ];
 
 /** Manual poll triggers — whole estate or a single cluster. */
@@ -163,6 +166,9 @@ export default function SettingsPage() {
 
       {/* Manual polling */}
       {tab === 'polling' && <PollingTab />}
+
+      {/* Alert Notifications */}
+      {tab === 'alerts' && <PlatformAlertNotifications platform="cohesity" label="Cohesity" />}
 
       {/* Licensing entitlement */}
       {tab === 'entitlement' && (

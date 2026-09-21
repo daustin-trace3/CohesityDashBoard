@@ -1,15 +1,18 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Settings, Save, PlugZap, Play, Server, Clock, Cloud, Plus, Pencil, Trash2 } from 'lucide-react';
+import { BellRing } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
 import { BRAND } from './helpers';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
 const TABS = [
   { key: 'aiqum', label: 'AIQUM (Unified Manager)', icon: Cloud },
   { key: 'direct', label: 'Direct Clusters', icon: Server },
+  { key: 'alerts', label: 'Alert Notifications', icon: BellRing },
 ];
 
 const emptyDirectForm = { name: '', mgmt_host: '', username: '', password: '', polling_interval_minutes: 15, ssl_verify: false };
@@ -504,6 +507,8 @@ export default function NetAppSettingsPage() {
           )}
         </div>
       )}
+
+      {tab === 'alerts' && <PlatformAlertNotifications platform="netapp" label="NetApp" />}
     </div>
   );
 }

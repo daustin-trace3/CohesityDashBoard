@@ -5,6 +5,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { BRAND, fmtWhen } from './helpers';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -297,6 +298,10 @@ export default function AriaSettingsPage() {
             {savingConfig ? 'Saving…' : 'Save'}
           </button>
         </div>
+      </div>
+
+      <div className="mb-4">
+        <PlatformAlertNotifications platform="aria" label="Aria Automation" />
       </div>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>

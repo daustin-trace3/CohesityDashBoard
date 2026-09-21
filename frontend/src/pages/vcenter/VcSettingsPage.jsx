@@ -5,6 +5,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { BRAND, fmtWhen } from './helpers';
 import { SitesSection, ClusterAssignmentsSection, FailoverPairsSection } from './VcSitesPanel';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
 const SECTIONS = [
   { key: 'registration', label: 'Registration', icon: Server },
@@ -12,6 +13,7 @@ const SECTIONS = [
   { key: 'clusters', label: 'Cluster assignments', icon: Layers },
   { key: 'pairs', label: 'Failover pairs', icon: ArrowLeftRight },
   { key: 'alerts', label: 'Alert thresholds', icon: BellRing },
+  { key: 'notify', label: 'Alert Notifications', icon: BellRing },
 ];
 const tabFromHash = () => {
   const h = (typeof window !== 'undefined' ? window.location.hash : '').replace('#', '');
@@ -316,6 +318,7 @@ export default function VcSettingsPage() {
         </div>
       </div>
           )}
+          {tab === 'notify' && <PlatformAlertNotifications platform="vcenter" label="vCenter" />}
         </div>
       </div>
     </div>

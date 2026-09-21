@@ -494,4 +494,16 @@ module.exports = [
       }
     },
   },
+  {
+    version: 13,
+    up(db) {
+      // Cohesity's alert payload's alertCategory (kDisk, kNode, kBackupRestore,
+      // ...) - the per-alert-type notification catalog's type source for
+      // Cohesity. NULL until the alert is re-polled after this column exists.
+      const cols = db.prepare("PRAGMA table_info('alerts')").all().map((c) => c.name);
+      if (!cols.includes('alert_category')) {
+        db.exec('ALTER TABLE alerts ADD COLUMN alert_category TEXT');
+      }
+    },
+  },
 ];
