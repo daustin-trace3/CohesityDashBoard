@@ -197,10 +197,19 @@ export default function ServerStatusPage() {
               </div>
             </div>
           ))}
-          {data.cohesity.hiddenObjects > 0 && (
-            <p className="text-[11px] text-ink-faint mb-1">
-              {data.cohesity.hiddenObjects} other {data.cohesity.hiddenObjects === 1 ? 'entry' : 'entries'} for this server hold no backup and {data.cohesity.hiddenObjects === 1 ? 'is' : 'are'} not shown.
-            </p>
+          {(data.cohesity.otherObjects || []).length > 0 && (
+            <details className="mb-1.5 text-[11px] text-ink-muted">
+              <summary className="cursor-pointer font-semibold hover:text-ink">
+                Also listed on {data.cohesity.otherObjects.length} other cluster{data.cohesity.otherObjects.length === 1 ? '' : 's'} with no backup of this server
+              </summary>
+              <div className="mt-1.5 flex flex-col gap-1">
+                {data.cohesity.otherObjects.map((o) => (
+                  <p key={o.id} className="text-ink-faint">
+                    {o.cluster_name} - {o.name} ({o.environment}) - {o.is_protected ? 'protected' : 'unprotected'}{o.protection_groups.length ? ` - ${o.protection_groups.join(', ')}` : ''}
+                  </p>
+                ))}
+              </div>
+            </details>
           )}
           {data.cohesity.agents.map((a) => (
             <p key={a.id} className="text-[11px] text-ink-faint tnum">
