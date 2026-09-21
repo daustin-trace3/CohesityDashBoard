@@ -45,12 +45,14 @@ function buildDashboardSnapshot() {
   const alertSummary = {};
   let activeAlertCount = 0;
   let criticalAlertCount = 0;
+  let warningAlertCount = 0;
   // The overview counts critical alerts only (Doug, 2026-09-21): info and
   // warning alerts stay on the Alerts page and out of the tiles and cards here.
   for (const r of alertRows) {
     alertSummary[r.cluster_id] = { count: r.criticals, level: r.criticals > 0 ? 'critical' : 'none' };
     activeAlertCount += r.criticals;
     criticalAlertCount += r.criticals;
+    warningAlertCount += r.warnings;
   }
 
   // Recent critical alerts (Dashboard "Recent Critical Alerts" panel).
@@ -89,6 +91,7 @@ function buildDashboardSnapshot() {
     alertSummary,
     activeAlertCount,
     criticalAlertCount,
+    warningAlertCount,
     recentCriticalAlerts,
     protectionSummary,
     insights: computeInsights(),
