@@ -190,10 +190,14 @@ function getNotificationSettings() {
 function getServiceStatusSettings() {
   const perMinute = Number(getSetting('service_status_analyses_per_minute'));
   const dedupe = Number(getSetting('service_status_dedupe_minutes'));
+  const staleHours = Number(getSetting('app_service_backup_stale_hours'));
   return {
     serviceStatusAiEnabled: getSetting('service_status_ai_enabled') !== '0',
     serviceStatusAnalysesPerMinute: (perMinute >= 1 && perMinute <= 30) ? Math.round(perMinute) : 3,
     serviceStatusDedupeMinutes: (dedupe >= 0 && dedupe <= 1440) ? Math.round(dedupe) : 60,
+    // App Services page only: how old the newest Cohesity backup of a protected
+    // server may be before its app shows degraded.
+    appServiceBackupStaleHours: (staleHours >= 1 && staleHours <= 720) ? Math.round(staleHours) : 24,
   };
 }
 

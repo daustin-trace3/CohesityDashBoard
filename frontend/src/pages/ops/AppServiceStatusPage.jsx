@@ -188,7 +188,7 @@ function StorageSection({ storage }) {
 }
 
 /* ---- Expanded detail: Backup section ---- */
-function BackupSection({ backup }) {
+function BackupSection({ backup, staleHours = 24 }) {
   if (!backup || backup.length === 0) {
     return <p className="text-xs text-ink-faint">Nothing mapped.</p>;
   }
@@ -216,7 +216,7 @@ function BackupSection({ backup }) {
               <td className="py-1.5 pr-2 text-ink-muted">{yesNo(b.protected)}</td>
               <td
                 className="py-1.5 pr-2 text-ink-muted"
-                title={b.copies > 1 ? `${b.copies} copies${b.staleCopies ? `, ${b.staleCopies} older than 24 h` : ''}; the newest one decides the status` : undefined}
+                title={b.copies > 1 ? `${b.copies} copies${b.staleCopies ? `, ${b.staleCopies} older than ${staleHours} h` : ''}; the newest one decides the status` : undefined}
               >
                 {b.lastBackupAt ? `${timeAgo(b.lastBackupAt)}${b.ageHours != null ? ` (${Math.round(b.ageHours)}h)` : ''}` : 'Never'}
               </td>
@@ -277,7 +277,7 @@ function worstState(states) {
 
 /* One summary row per component group. Groups with nothing mapped (no backup
  * configured, no storage found) are left out entirely; a group that is
- * configured but unhealthy (backup older than 24 h) stays and shows it. */
+ * configured but unhealthy (backup older than the acceptable age) stays and shows it. */
 function buildSections(detail) {
   const counts = detail.counts || {};
   const servers = detail.servers || [];
@@ -313,10 +313,11 @@ function buildSections(detail) {
   }
   if (backup.length) {
     const stale = backup.filter((b) => b.state !== 'ok').length;
+    const staleHours = detail.backupStaleHours || 24;
     out.push({
       key: 'backup', title: 'Backup', state: worstState(backup.map((b) => b.state)),
-      summary: `${backup.length} protected server${backup.length === 1 ? '' : 's'}${stale ? `, ${stale} without a backup in 24 h` : ''}`,
-      body: <BackupSection backup={backup} />,
+      summary: `${backup.length} protected server${backup.length === 1 ? '' : 's'}${stale ? `, ${stale} without a backup in ${staleHours} h` : ''}`,
+      body: <BackupSection backup={backup} staleHours={staleHours} />,
     });
   }
   return out;

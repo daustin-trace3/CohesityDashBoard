@@ -206,6 +206,11 @@ router.put('/', (req, res, next) => {
       const n = Number(req.body.serviceStatusDedupeMinutes);
       if (n >= 0 && n <= 1440) setSetting('service_status_dedupe_minutes', String(Math.round(n)));
     }
+    if (req.body?.appServiceBackupStaleHours !== undefined) {
+      const n = Number(req.body.appServiceBackupStaleHours);
+      if (!(n >= 1 && n <= 720)) return res.status(400).json({ error: 'appServiceBackupStaleHours must be between 1 and 720' });
+      setSetting('app_service_backup_stale_hours', String(Math.round(n)));
+    }
     res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings() });
   } catch (err) {
     next(err);

@@ -96,6 +96,7 @@ beforeEach(() => {
   appSvc._resetTableCache();
   seedBase();
   setSetting('service_status_ai_enabled', '0');
+  setSetting('app_service_backup_stale_hours', '24');
   svc._resetTestSeams();
 });
 
@@ -312,6 +313,22 @@ describe('rollup rules', () => {
     expect(d.findings[0].text).toMatch(/last Cohesity backup of app-vm-01 is 30 h old/);
     expect(d.backup.map((b) => [b.vm, b.state])).toEqual([['app-vm-01', 'degraded'], ['app-vm-02', 'ok'], ['app-vm-03', 'ok']]);
     expect(d.counts.backupsStale).toBe(1);
+  });
+
+  it('the acceptable backup age comes from Global Settings: 48 h clears a 30 h old backup, a 60 h old one stays degraded', () => {
+    seedHealthyApp();
+    cohesityObject('app-vm-01', { ageHours: 30 });
+    cohesityObject('app-vm-02', { ageHours: 60 });
+    setSetting('app_service_backup_stale_hours', '48');
+    const d = appSvc.evaluate('aa00001721');
+    expect(d.backupStaleHours).toBe(48);
+    expect(d.backup.map((b) => [b.vm, b.state])).toEqual([['app-vm-01', 'ok'], ['app-vm-02', 'degraded']]);
+    expect(d.counts.backupsStale).toBe(1);
+    setSetting('app_service_backup_stale_hours', '96');
+    expect(appSvc.evaluate('aa00001721').state).toBe('ok');
+    // An out-of-range value falls back to 24 h.
+    setSetting('app_service_backup_stale_hours', '0');
+    expect(appSvc.evaluate('aa00001721').backupStaleHours).toBe(24);
   });
 
   it('backup rows fold per server: copies on two clusters and a guest-hostname match make one row, newest backup wins', () => {

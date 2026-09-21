@@ -47,6 +47,7 @@ export default function AdminSettingsPage() {
   const [serviceStatusAiEnabled, setServiceStatusAiEnabled] = useState(true);
   const [serviceStatusAnalysesPerMinute, setServiceStatusAnalysesPerMinute] = useState(3);
   const [serviceStatusDedupeMinutes, setServiceStatusDedupeMinutes] = useState(60);
+  const [appServiceBackupStaleHours, setAppServiceBackupStaleHours] = useState(24);
   const [modelList, setModelList] = useState(null);   // { provider, models, default } | null
   const [modelsError, setModelsError] = useState(null);
   const [aiEnabled, setAiEnabled] = useState(true);
@@ -90,6 +91,7 @@ export default function AdminSettingsPage() {
         setServiceStatusAiEnabled(d.serviceStatusAiEnabled !== false);
         setServiceStatusAnalysesPerMinute(d.serviceStatusAnalysesPerMinute || 3);
         setServiceStatusDedupeMinutes(d.serviceStatusDedupeMinutes ?? 60);
+        setAppServiceBackupStaleHours(d.appServiceBackupStaleHours || 24);
         setCustomDashboardsEnabled(!!d.featureCustomDashboardsEnabled);
         setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
@@ -113,6 +115,7 @@ export default function AdminSettingsPage() {
         serviceStatusAiEnabled,
         serviceStatusAnalysesPerMinute: Number(serviceStatusAnalysesPerMinute) || 3,
         serviceStatusDedupeMinutes: Number(serviceStatusDedupeMinutes) || 0,
+        appServiceBackupStaleHours: Number(appServiceBackupStaleHours) || 24,
         featureCustomDashboardsEnabled: customDashboardsEnabled,
         opsOverviewStyle,
         dnsServer,
@@ -415,6 +418,20 @@ export default function AdminSettingsPage() {
                   />
                 </div>
               </div>
+            </div>
+
+            <div>
+              <label htmlFor="app-service-backup-hours" className="block text-xs font-semibold text-ink mb-1">App Services acceptable backup age (hours)</label>
+              <p className="text-[11px] text-ink-muted mb-2 leading-relaxed">
+                On the App Services page a protected server shows Degraded when its newest Cohesity backup is older than this. Raise it to 48 or 96 for servers backed up less often than daily. No other page uses this value.
+              </p>
+              <input
+                id="app-service-backup-hours"
+                type="number" min="1" max="720" step="1"
+                value={appServiceBackupStaleHours}
+                onChange={e => setAppServiceBackupStaleHours(e.target.value)}
+                className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum"
+              />
             </div>
 
             <div>

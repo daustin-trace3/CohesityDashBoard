@@ -7,18 +7,19 @@
 //     any offline below that = degraded (we are not probing the app itself yet)
 //   - one lost SAN path on a host = degraded (multipathed), all paths lost =
 //     critical; an inaccessible datastore = critical
-//   - an array ICC cannot reach, a Cohesity backup older than 24 h on a
-//     protected VM, or a Zerto VPG not meeting SLA = degraded
+//   - an array ICC cannot reach, a Cohesity backup older than the acceptable
+//     age on a protected VM (Global Settings, default 24 h), or a Zerto VPG not
+//     meeting SLA = degraded
 // Critical apps become 'appservice' events in the Service Status tables so the
 // existing AI worker analyses them; serviceStatus.js delegates evidence and
 // prompt building for that platform back to this module.
 const db = require('../db/database');
 const logger = require('../utils/logger');
 const pollerStatus = require('./pollerStatus');
+const { getServiceStatusSettings } = require('./settings');
 
 const TAG_PREFIX = 'usage-id: ';
 const OFFLINE_CRITICAL_RATIO = 0.10;
-const BACKUP_STALE_HOURS = 24;
 const RANK = { ok: 0, unknown: 1, degraded: 2, critical: 3 };
 
 const parseJson = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; } catch { return fallback; } };
@@ -344,7 +345,7 @@ function netappVolumesForIps(ips) {
  *  than one Cohesity object (a copy per cluster, a VMware object plus an agent
  *  object, or a match on both VM name and guest hostname), so the matches are
  *  folded per VM and the newest backup decides whether it is stale. */
-function backupRowsFor(vms, nowMs) {
+function backupRowsFor(vms, nowMs, staleHours) {
   const out = [];
   // candidate name -> VM; a VM's own name wins over another VM's guest hostname.
   const byName = new Map();
@@ -383,8 +384,9 @@ function backupRowsFor(vms, nowMs) {
       if (r.is_protected) cur.protected = true;
       const ms = r.last_backup_ms ? Number(r.last_backup_ms) : null;
       // Informational only: the newest copy decides the state (Doug, 2026-09-18:
-      // protected at least once in 24 h is Operational, whatever the other copies say).
-      if (r.is_protected && (!ms || (nowMs - ms) / 3600000 > BACKUP_STALE_HOURS)) cur.staleCopies += 1;
+      // protected at least once inside the acceptable age is Operational, whatever
+      // the other copies say).
+      if (r.is_protected && (!ms || (nowMs - ms) / 3600000 > staleHours)) cur.staleCopies += 1;
       if (ms && (cur.lastBackupMs === null || ms > cur.lastBackupMs)) {
         cur.lastBackupMs = ms;
         cur.status = r.last_backup_status || null;
@@ -395,7 +397,7 @@ function backupRowsFor(vms, nowMs) {
     }
     for (const cur of perVm.values()) {
       const ageHours = cur.lastBackupMs ? Math.round((nowMs - cur.lastBackupMs) / 3600000) : null;
-      const stale = cur.protected && (ageHours === null || ageHours > BACKUP_STALE_HOURS);
+      const stale = cur.protected && (ageHours === null || ageHours > staleHours);
       out.push({
         vm: cur.vm, platform: 'cohesity', protected: cur.protected,
         lastBackupAt: cur.lastBackupMs ? new Date(cur.lastBackupMs).toISOString() : null,
@@ -540,7 +542,8 @@ function evaluate(usageId, { now = new Date() } = {}) {
   }
 
   // Backup.
-  const backup = backupRowsFor(vms, now.getTime());
+  const backupStaleHours = getServiceStatusSettings().appServiceBackupStaleHours;
+  const backup = backupRowsFor(vms, now.getTime(), backupStaleHours);
   for (const b of backup) {
     if (b.state !== 'degraded') continue;
     if (b.platform === 'cohesity') degraded(b.ageHours === null ? `no completed Cohesity backup recorded for ${b.vm}` : `last Cohesity backup of ${b.vm} is ${b.ageHours} h old`);
@@ -563,6 +566,7 @@ function evaluate(usageId, { now = new Date() } = {}) {
       datastoresInaccessible: storage.filter((s) => s.kind === 'datastore' && s.accessible === false).length,
       backupsStale: backup.filter((b) => b.state === 'degraded').length,
     },
+    backupStaleHours,
     findings: ordered, servers, hosts: hosts.map(({ connected, ...h }) => ({ ...h, connected })), storage, backup,
   };
 }
