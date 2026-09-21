@@ -1,6 +1,7 @@
 const dns = require('dns');
 const net = require('net');
 const db = require('../db/database');
+const perTenant = require('../db/perTenant');
 const { getSetting } = require('./settings');
 const logger = require('../utils/logger');
 
@@ -11,14 +12,8 @@ const logger = require('../utils/logger');
  * 3s-timeout reverse queries. Negative results are cached too (name=null).
  */
 
-// Self-creating on require, same pattern as poller_status.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS dns_cache (
-    ip          TEXT PRIMARY KEY,
-    name        TEXT,
-    resolved_at TEXT NOT NULL
-  )
-`);
+// The dns_cache table is created when a tenant database is opened
+// (db/openTenantDb.js), same as poller_status.
 
 const TTL_MS = 6 * 60 * 60 * 1000;
 const PREWARM_INTERVAL_MS = 30 * 60 * 1000;
@@ -26,11 +21,15 @@ const PREWARM_INITIAL_DELAY_MS = 2 * 60 * 1000;
 const PREWARM_MAX_IPS = 10000;
 const LOOKUP_CHUNK = 25;
 
-const selectCached = db.prepare('SELECT name, resolved_at AS resolvedAt FROM dns_cache WHERE ip = ?');
-const upsert = db.prepare(`
-  INSERT INTO dns_cache (ip, name, resolved_at) VALUES (?, ?, ?)
-  ON CONFLICT(ip) DO UPDATE SET name = excluded.name, resolved_at = excluded.resolved_at
-`);
+const statements = perTenant((handle) => {
+  return {
+    selectCached: handle.prepare('SELECT name, resolved_at AS resolvedAt FROM dns_cache WHERE ip = ?'),
+    upsert: handle.prepare(`
+      INSERT INTO dns_cache (ip, name, resolved_at) VALUES (?, ?, ?)
+      ON CONFLICT(ip) DO UPDATE SET name = excluded.name, resolved_at = excluded.resolved_at
+    `),
+  };
+});
 
 /** Build a resolver pointed at the configured DNS server (if any). */
 async function buildResolver() {
@@ -71,7 +70,7 @@ async function resolveIps(ips) {
   const now = Date.now();
   const toLookup = [];
   for (const ip of valid) {
-    const row = selectCached.get(ip);
+    const row = statements().selectCached.get(ip);
     if (row && now - Date.parse(row.resolvedAt) < TTL_MS) map[ip] = row.name;
     else toLookup.push(ip);
   }
@@ -83,7 +82,7 @@ async function resolveIps(ips) {
       await Promise.all(chunk.map(async (ip) => {
         let name = null;
         try { name = await reverse(resolver, ip); } catch { name = null; }
-        upsert.run(ip, name, new Date().toISOString());
+        statements().upsert.run(ip, name, new Date().toISOString());
         map[ip] = name;
       }));
     }
@@ -127,7 +126,7 @@ async function prewarmOnce() {
     if (!ips.length) return;
     const now = Date.now();
     const cold = ips.filter((ip) => {
-      const row = selectCached.get(ip);
+      const row = statements().selectCached.get(ip);
       return !row || now - Date.parse(row.resolvedAt) >= TTL_MS;
     });
     if (!cold.length) return;

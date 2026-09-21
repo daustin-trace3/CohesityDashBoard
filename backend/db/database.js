@@ -1,54 +1,59 @@
-const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
-const { runMigrations } = require('../core/migrations');
-const coreMigrations = require('./migrations/core');
-const cohesityMigrations = require('./migrations/cohesity');
-const pureMigrations = require('./migrations/pure');
-const netappMigrations = require('./migrations/netapp');
-const zertoMigrations = require('./migrations/zerto');
-const vcenterMigrations = require('./migrations/vcenter');
-const dellMigrations = require('./migrations/dell');
-const ariaMigrations = require('./migrations/aria');
-const ariaopsMigrations = require('./migrations/ariaops');
-const awsMigrations = require('./migrations/aws');
-const unifiMigrations = require('./migrations/unifi');
-const brocadeMigrations = require('./migrations/brocade');
-const bluecatMigrations = require('./migrations/bluecat');
-const directoryMigrations = require('./migrations/directory');
+// What every module gets from require('../db/database'): an object with the
+// surface of a better-sqlite3 handle that always acts on the CURRENT tenant's
+// database (core/tenantContext.js). The ~200 files that call db.prepare(...)
+// and friends stay as they are.
+//
+// Rules:
+// - The tenant is resolved on every call, never when a module loads.
+// - db.transaction(fn) is commonly created once at module load (102 places on
+//   2026-09-21). The function it returns resolves the tenant when it RUNS, so a
+//   transaction defined once works for whichever tenant is current.
+// - Work that names no tenant fails once the install has more than one tenant.
+//   It never falls back to some tenant's data.
+const { currentTenantId } = require('../core/tenantContext');
+const registry = require('../core/tenantRegistry');
 
-const DB_PATH = process.env.DASHBOARD_DB_PATH || path.join(__dirname, '..', 'data', 'cohesity.db');
-
-// Ensure data directory exists
-const dataDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+function currentHandle() {
+  const tenantId = currentTenantId();
+  if (tenantId) return registry.getHandle(tenantId);
+  if (registry.isStrict()) {
+    throw new Error('Database used outside a tenant context. Wrap the work in runAsTenant(tenantId, ...).');
+  }
+  return registry.getHandle(registry.DEFAULT_TENANT);
 }
 
-const db = new Database(DB_PATH);
+function tenantTransaction(fn) {
+  const perHandle = new WeakMap();
+  const resolve = () => {
+    const handle = currentHandle();
+    let txn = perHandle.get(handle);
+    if (!txn) {
+      txn = handle.transaction(fn);
+      perHandle.set(handle, txn);
+    }
+    return txn;
+  };
+  const run = (...args) => resolve()(...args);
+  for (const mode of ['default', 'deferred', 'immediate', 'exclusive']) {
+    run[mode] = (...args) => resolve()[mode](...args);
+  }
+  return run;
+}
 
-// Enable WAL mode and foreign keys via exec
-db.exec("PRAGMA journal_mode = WAL");
-db.exec("PRAGMA foreign_keys = ON");
-// Two processes (API + poller) share this file — wait out the other
-// process's write transactions instead of failing with SQLITE_BUSY.
-db.pragma('busy_timeout = 15000');
-
-// Run versioned migrations, scope by scope. Idempotent — safe on both a
-// fresh DB and an existing populated DB with an empty schema_migrations.
-runMigrations(db, 'core', coreMigrations);
-runMigrations(db, 'cohesity', cohesityMigrations);
-runMigrations(db, 'pure', pureMigrations);
-runMigrations(db, 'netapp', netappMigrations);
-runMigrations(db, 'zerto', zertoMigrations);
-runMigrations(db, 'vcenter', vcenterMigrations);
-runMigrations(db, 'dell', dellMigrations);
-runMigrations(db, 'aria', ariaMigrations);
-runMigrations(db, 'ariaops', ariaopsMigrations);
-runMigrations(db, 'aws', awsMigrations);
-runMigrations(db, 'unifi', unifiMigrations);
-runMigrations(db, 'brocade', brocadeMigrations);
-runMigrations(db, 'bluecat', bluecatMigrations);
-runMigrations(db, 'directory', directoryMigrations);
-
-module.exports = db;
+module.exports = new Proxy({}, {
+  get(target, prop) {
+    if (prop === 'transaction') return tenantTransaction;
+    const handle = currentHandle();
+    // The real handle of the current tenant, for db/perTenant.js only.
+    if (prop === '$handle') return handle;
+    const value = handle[prop];
+    return typeof value === 'function' ? value.bind(handle) : value;
+  },
+  set(target, prop, value) {
+    currentHandle()[prop] = value;
+    return true;
+  },
+  has(target, prop) {
+    return prop in currentHandle();
+  },
+});
