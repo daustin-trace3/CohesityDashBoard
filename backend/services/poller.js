@@ -3,7 +3,7 @@ const db = require('../db/database');
 const {
   fetchClusterInfo, fetchAlerts, fetchProtectionRuns, fetchProtectionJobs,
   fetchProtectionPolicies, fetchSourceRegistrations, fetchSearchObjects,
-  fetchProtectedObjectTimes, fetchPhysicalAgents,
+  fetchProtectedObjectTimes, fetchPhysicalAgents, localProtectionInfos,
 } = require('./cohesityApi');
 const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapshot');
 const { fetchWorkloads, insertWorkloadSnapshot } = require('./workloads');
@@ -293,7 +293,7 @@ const replaceSourceRegistrations = db.transaction((clusterId, sources) => {
 // Per-object inventory from the v2 object search. A protection info entry
 // counts only when it belongs to THIS cluster's search response and is not
 // deleted; group/policy detail comes from the first live entry.
-const replaceObjects = db.transaction((clusterId, objects, backupTimes) => {
+const replaceObjects = db.transaction((clusterId, objects, backupTimes, localClusterId = null) => {
   db.prepare('DELETE FROM cohesity_objects WHERE cluster_id = ?').run(clusterId);
   const stmt = db.prepare(`
     INSERT INTO cohesity_objects
@@ -304,7 +304,7 @@ const replaceObjects = db.transaction((clusterId, objects, backupTimes) => {
   `);
   const env = (e) => String(e || 'Unknown').replace(/^k/, '');
   for (const o of objects) {
-    const infos = (o.objectProtectionInfos || []).filter((i) => i && !i.isDeleted && (i.protectionGroups || []).length);
+    const infos = localProtectionInfos(o, localClusterId);
     const groups = infos.flatMap((i) => i.protectionGroups || []);
     stmt.run(
       clusterId,
@@ -425,9 +425,16 @@ async function doPollCluster(cluster) {
       fetchSearchObjects(cluster),
       fetchPhysicalAgents(cluster)
     ]);
+    // The cluster's own Cohesity id: from cluster info, or for a Helios
+    // connection the id Helios addresses it by (stored in vip).
+    const localClusterId = (clusterInfo.status === 'fulfilled' && clusterInfo.value?.id)
+      || (cluster.connection_type === 'helios' && cluster.vip ? cluster.vip : null);
+    const groupIds = objectData.status === 'fulfilled'
+      ? objectData.value.flatMap((o) => localProtectionInfos(o, localClusterId).flatMap((i) => (i.protectionGroups || []).map((g) => g.id)))
+      : [];
     // Timestamps come from a second search endpoint; a failure here should
     // not sink the object snapshot — objects just land without dates.
-    const backupTimes = await fetchProtectedObjectTimes(cluster)
+    const backupTimes = await fetchProtectedObjectTimes(cluster, groupIds)
       .catch((err) => {
         logger.error(`[Poller] Protected-object times fetch failed for cluster ${cluster.id}:`, safeErrorMessage(err));
         return new Map();
@@ -477,7 +484,7 @@ async function doPollCluster(cluster) {
 
     if (objectData.status === 'fulfilled') {
       try {
-        replaceObjects(cluster.id, objectData.value, backupTimes);
+        replaceObjects(cluster.id, objectData.value, backupTimes, localClusterId);
       } catch (err) {
         logger.error(`[Poller] Object inventory snapshot failed for cluster ${cluster.id}:`, err.message);
       }
