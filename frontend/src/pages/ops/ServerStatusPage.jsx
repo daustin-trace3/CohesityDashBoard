@@ -199,6 +199,11 @@ export default function ServerStatusPage() {
               </div>
             </div>
           ))}
+          {data.cohesity.hiddenObjects > 0 && (
+            <p className="text-[11px] text-ink-faint mb-1">
+              {data.cohesity.hiddenObjects} other {data.cohesity.hiddenObjects === 1 ? 'entry' : 'entries'} for this server hold no backup and {data.cohesity.hiddenObjects === 1 ? 'is' : 'are'} not shown.
+            </p>
+          )}
           {data.cohesity.agents.map((a) => (
             <p key={a.id} className="text-[11px] text-ink-faint tnum">
               agent {String(a.agent_version || 'unknown').split('_release')[0]} · {a.agent_status || '—'} · {a.upgradability === 'Upgradable' ? 'upgrade available' : a.upgradability || '—'} · {a.cluster_name}
