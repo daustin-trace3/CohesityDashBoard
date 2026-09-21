@@ -202,7 +202,7 @@ function BackupSection({ backup, staleHours = 24 }) {
             <th className="font-medium pb-1.5 pr-2">Platform</th>
             <th className="font-medium pb-1.5 pr-2">Protected</th>
             <th className="font-medium pb-1.5 pr-2">Last backup</th>
-            <th className="font-medium pb-1.5">Status</th>
+            <th className="font-medium pb-1.5" title="Result of the protection group's last run. It does not prove this server was backed up in that run.">Last backup status</th>
           </tr>
         </thead>
         <tbody>
@@ -218,7 +218,7 @@ function BackupSection({ backup, staleHours = 24 }) {
                 className="py-1.5 pr-2 text-ink-muted"
                 title={b.copies > 1 ? `${b.copies} copies${b.staleCopies ? `, ${b.staleCopies} older than ${staleHours} h` : ''}; the newest one decides the status` : undefined}
               >
-                {b.lastBackupAt ? `${timeAgo(b.lastBackupAt)}${b.ageHours != null ? ` (${Math.round(b.ageHours)}h)` : ''}` : 'Never'}
+                {b.lastBackupAt ? `${timeAgo(b.lastBackupAt)}${b.ageHours != null ? ` (${Math.round(b.ageHours)}h)` : ''}` : 'No time on record'}
               </td>
               <td className="py-1.5 text-ink-muted">{b.status || '-'}</td>
             </tr>
