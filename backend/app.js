@@ -343,11 +343,19 @@ function createApp({ licenseGate = requireLicense } = {}) {
         }
       },
     }));
-    app.get('*', (req, res) => {
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api/')) return next();
       res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // An API path nothing above handled is a 404, never the app shell. Serving
+  // index.html with a 200 made a page that called a route the running backend
+  // did not have yet look like an empty answer.
+  app.use('/api', (req, res) => {
+    res.status(404).json({ error: `No API route for ${req.method} ${req.originalUrl.split('?')[0]}` });
+  });
 
   // Error handler must be last
   app.use(errorHandler);

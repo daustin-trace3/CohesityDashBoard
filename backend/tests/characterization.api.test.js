@@ -60,6 +60,27 @@ describe('api key middleware', () => {
   });
 });
 
+// An API path no route handles must answer 404 JSON. It used to fall through to
+// the app shell (index.html, 200), so a page calling a route the running backend
+// did not have yet read the HTML as an empty answer.
+describe('unknown api paths', () => {
+  const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
+
+  it('a path under a known platform answers 404 JSON', async () => {
+    const res = await get('/api/netapp/no-such-route');
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/json/);
+    expect(res.body.error).toMatch(/No API route for GET \/api\/netapp\/no-such-route/);
+  });
+
+  it('a path under no platform at all answers 404 JSON', async () => {
+    const res = await get('/api/no-such-platform/thing?x=1');
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toMatch(/json/);
+    expect(res.body.error).not.toMatch(/x=1/);
+  });
+});
+
 describe('platform endpoints on an empty database', () => {
   const get = (p) => request(app).get(p).set('x-api-key', API_KEY);
 
