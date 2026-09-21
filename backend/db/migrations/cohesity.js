@@ -483,4 +483,15 @@ module.exports = [
       }
     },
   },
+  {
+    version: 12,
+    up(db) {
+      // Why ICC closed an alert on its own: 'not_reported' = the cluster no
+      // longer lists it as open inside the alert window. NULL for everything else.
+      const cols = db.prepare("PRAGMA table_info('alerts')").all().map((c) => c.name);
+      if (!cols.includes('closed_reason')) {
+        db.exec('ALTER TABLE alerts ADD COLUMN closed_reason TEXT');
+      }
+    },
+  },
 ];

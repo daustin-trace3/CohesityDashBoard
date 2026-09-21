@@ -206,6 +206,11 @@ router.put('/', (req, res, next) => {
       const n = Number(req.body.serviceStatusDedupeMinutes);
       if (n >= 0 && n <= 1440) setSetting('service_status_dedupe_minutes', String(Math.round(n)));
     }
+    if (req.body?.cohesityAlertWindowDays !== undefined) {
+      const n = Number(req.body.cohesityAlertWindowDays);
+      if (!(n >= 0 && n <= 365)) return res.status(400).json({ error: 'cohesityAlertWindowDays must be between 0 and 365' });
+      setSetting('cohesity_alert_window_days', String(Math.round(n)));
+    }
     if (req.body?.appServiceBackupStaleHours !== undefined) {
       const n = Number(req.body.appServiceBackupStaleHours);
       if (!(n >= 1 && n <= 720)) return res.status(400).json({ error: 'appServiceBackupStaleHours must be between 1 and 720' });
