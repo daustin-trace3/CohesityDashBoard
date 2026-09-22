@@ -70,6 +70,18 @@ describe('tenant setup', () => {
     expect((await agent.get('/api/t/wayne/netapp/arrays')).status).toBe(200);
   });
 
+  it('a bad licence key at setup is refused before anything is created; the key on the row is validated too', async () => {
+    const res = await agent.post('/api/t/default/tenants').set('x-csrf-token', csrf).send({ id: 'nokey', name: 'No Key', licenseKey: 'CDBL-not-a-real-key' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/invalid/);
+    expect(tenants.getTenant('nokey')).toBe(null);
+    const row = await agent.put('/api/t/default/tenants/wayne').set('x-csrf-token', csrf).send({ licenseKey: 'CDBL-not-a-real-key' });
+    expect(row.status).toBe(400);
+    const def = await agent.put('/api/t/default/tenants/default').set('x-csrf-token', csrf).send({ licenseKey: 'CDBL-x' });
+    expect(def.status).toBe(400);
+    expect(def.body.error).toMatch(/default tenant/);
+  });
+
   it('refuses a bad platform list, an unknown admin without a password, and a duplicate id', async () => {
     expect((await agent.post('/api/t/default/tenants').set('x-csrf-token', csrf).send({ id: 'x-1', name: 'X', platforms: 'pure' })).status).toBe(400);
     expect((await agent.post('/api/t/default/tenants').set('x-csrf-token', csrf).send({ id: 'x-2', name: 'X', admin: { username: 'nobody' } })).status).toBe(400);

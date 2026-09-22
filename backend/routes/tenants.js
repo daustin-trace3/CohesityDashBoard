@@ -10,7 +10,7 @@ const pluginRegistry = require('../core/registry');
 const { runAsTenant } = require('../core/tenantContext');
 const { getSetting, setSetting } = require('../services/settings');
 const { authEnabled, hashPassword } = require('../services/authService');
-const { getLicenseStatus } = require('../services/license');
+const { getLicenseStatus, activateKey, verifySigned } = require('../services/license');
 const logger = require('../utils/logger');
 const lifecycle = require('../core/tenantLifecycle');
 const EXPORT_DIR = path.join(lifecycle.ARCHIVE_DIR, '..', 'exports');
@@ -169,8 +169,14 @@ router.post('/', requireGlobalAdmin, (req, res) => {
   }
   // Tenant setup (decision 15): name, platforms, first admin, optional demo
   // data. The first admin is an existing account (linked) or a new one.
-  const { id, name, platforms, admin, seedDemo } = req.body || {};
+  const { id, name, platforms, admin, seedDemo, licenseKey } = req.body || {};
   if (platforms !== undefined && !Array.isArray(platforms)) return res.status(400).json({ error: 'platforms must be a list of platform ids' });
+  // The key is checked before anything is created, so a typo does not leave
+  // a half-made tenant behind. It is stored once the tenant exists.
+  if (licenseKey) {
+    const parsed = verifySigned(String(licenseKey).trim());
+    if (!parsed || parsed.type !== 'CDBL') return res.status(400).json({ error: 'That license key is invalid (bad format or signature).' });
+  }
   if (admin && (!admin.username || typeof admin.username !== 'string')) return res.status(400).json({ error: 'admin.username is required when admin is given' });
   let adminAccount = null;
   if (admin) {
@@ -194,7 +200,12 @@ router.post('/', requireGlobalAdmin, (req, res) => {
       accounts.audit('tenant.seeded', { actor, tenantId: tenant.id, detail: { ok: seeded.ok } });
     }
     const picked = applyPlatforms(tenant.id, platforms === undefined ? null : platforms);
-    accounts.audit('tenant.created', { actor, tenantId: tenant.id, detail: { name: tenant.name, platforms: picked, seeded: seeded ? seeded.ok : false } });
+    if (licenseKey) {
+      const result = runAsTenant(tenant.id, () => activateKey(String(licenseKey)));
+      if (result.error) return res.status(400).json({ error: result.error });
+      accounts.audit('tenant.licensed', { actor, tenantId: tenant.id, detail: { expires: result.status && result.status.effectiveExpiry } });
+    }
+    accounts.audit('tenant.created', { actor, tenantId: tenant.id, detail: { name: tenant.name, platforms: picked, seeded: seeded ? seeded.ok : false, licensed: !!licenseKey } });
     if (admin) {
       if (!adminAccount) {
         adminAccount = accounts.createUser({ username: admin.username.trim(), passwordHash: await hashPassword(String(admin.password)), displayName: admin.displayName ? String(admin.displayName) : admin.username.trim() });
@@ -216,9 +227,15 @@ router.post('/', requireGlobalAdmin, (req, res) => {
 router.put('/:id', requireGlobalAdmin, (req, res) => {
   const tenant = registry.getTenant(req.params.id);
   if (!tenant) return res.status(404).json({ error: 'Unknown tenant' });
-  const { name, status, platforms, retentionDays } = req.body || {};
+  const { name, status, platforms, retentionDays, licenseKey } = req.body || {};
   const actor = req.auth.user || null;
   if (tenant.status === 'closed') return res.status(400).json({ error: 'Restore the tenant before changing it.' });
+  if (licenseKey !== undefined) {
+    if (tenant.id === registry.DEFAULT_TENANT) return res.status(400).json({ error: 'The default tenant takes its key on its own Product License page.' });
+    const result = runAsTenant(tenant.id, () => activateKey(String(licenseKey)));
+    if (result.error) return res.status(400).json({ error: result.error });
+    accounts.audit('tenant.licensed', { actor, tenantId: tenant.id, detail: { expires: result.status && result.status.effectiveExpiry } });
+  }
   if (retentionDays !== undefined) {
     const n = Number(retentionDays);
     if (!(n === 0 || (n >= 1 && n <= 3650))) return res.status(400).json({ error: 'retentionDays must be 0 (platform defaults) or between 1 and 3650' });

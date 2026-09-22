@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, Plus, UserPlus, Trash2, PauseCircle, PlayCircle, Download, Archive, ArchiveRestore } from 'lucide-react';
+import { Building2, Plus, UserPlus, Trash2, PauseCircle, PlayCircle, Download, Archive, ArchiveRestore, KeyRound } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LoadingPanel } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -28,6 +28,7 @@ export default function AdminTenantsPage() {
   const [adminUser, setAdminUser] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [seedDemo, setSeedDemo] = useState(false);
+  const [licenseKey, setLicenseKey] = useState('');
   const [newMember, setNewMember] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -47,10 +48,11 @@ export default function AdminTenantsPage() {
     try {
       const body = { id: newId.trim().toLowerCase(), name: newName.trim(), seedDemo };
       if (newPlatforms) body.platforms = newPlatforms;
+      if (licenseKey.trim()) body.licenseKey = licenseKey.trim();
       if (adminUser.trim()) body.admin = { username: adminUser.trim(), password: adminPassword || undefined };
       const { data } = await client.post('/tenants', body);
       toast({ type: 'success', title: `Tenant ${data.name} created`, message: data.seeded === false ? 'Demo data seeding failed; see the server log.' : undefined });
-      setNewId(''); setNewName(''); setNewPlatforms(null); setAdminUser(''); setAdminPassword(''); setSeedDemo(false);
+      setNewId(''); setNewName(''); setNewPlatforms(null); setAdminUser(''); setAdminPassword(''); setSeedDemo(false); setLicenseKey('');
       await load();
     } catch (err) {
       toast({ type: 'error', title: 'Could not create tenant', message: err?.response?.data?.error });
@@ -90,6 +92,18 @@ export default function AdminTenantsPage() {
       await load();
     } catch (err) {
       toast({ type: 'error', title: 'Could not restore tenant', message: err?.response?.data?.error });
+    }
+  };
+
+  const setLicense = async (t) => {
+    const v = window.prompt(`License key for ${t.name} (CDBL-...)`, '');
+    if (!v || !v.trim()) return;
+    try {
+      await client.put(`/tenants/${t.id}`, { licenseKey: v.trim() });
+      toast({ type: 'success', title: `License saved for ${t.name}` });
+      await load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not save license', message: err?.response?.data?.error });
     }
   };
 
@@ -170,7 +184,13 @@ export default function AdminTenantsPage() {
                         <td className="py-2 pr-3 text-ink font-medium">{t.name}</td>
                         <td className="py-2 pr-3 text-ink-muted font-mono text-xs">{t.id}</td>
                         <td className="py-2 pr-3"><Badge tone={t.status === 'active' ? 'ok' : t.status === 'closed' ? 'neutral' : 'warn'}>{t.status}</Badge></td>
-                        <td className="py-2 pr-3 text-xs text-ink-muted">{t.license?.state}{t.license?.expiry ? ` to ${t.license.expiry}` : ''}</td>
+                        <td className="py-2 pr-3 text-xs text-ink-muted whitespace-nowrap">
+                          {t.license?.state}{t.license?.expiry ? ` to ${t.license.expiry}` : ''}
+                          {t.id !== 'default' && t.status !== 'closed' && (
+                            <button onClick={(e) => { e.stopPropagation(); setLicense(t); }} title="Enter or replace this tenant's license key" aria-label={`License key for ${t.name}`}
+                              className="ml-2 text-ink-faint hover:text-ink cursor-pointer align-middle"><KeyRound size={13} /></button>
+                          )}
+                        </td>
                         <td className="py-2 pr-3 text-xs text-ink-muted" title="Click to set history retention" onClick={(e) => { e.stopPropagation(); if (t.status !== 'closed') setRetention(t); }}>
                           {(t.platforms || []).length}{t.status !== 'closed' && <span className="text-ink-faint"> / {t.retentionDays ? `${t.retentionDays}d` : 'default'}</span>}
                         </td>
@@ -238,6 +258,12 @@ export default function AdminTenantsPage() {
                 <input type="checkbox" className="accent-brand cursor-pointer" checked={seedDemo} onChange={(e) => setSeedDemo(e.target.checked)} />
                 Seed demo data
               </label>
+            </div>
+            <div className="flex flex-wrap items-end gap-2 mt-3">
+              <div className="flex-1 min-w-[280px]">
+                <label className="block text-[11px] text-ink-faint mb-1" htmlFor="tenant-license">License key (CDBL-...); the tenant is locked to its licence page until one is set</label>
+                <input id="tenant-license" value={licenseKey} onChange={(e) => setLicenseKey(e.target.value)} className={inputClass} placeholder="CDBL-..." autoComplete="off" spellCheck={false} />
+              </div>
               <button onClick={createTenant} disabled={busy || !newId.trim() || !newName.trim()} className={buttonClass}><Plus size={13} /> {busy ? 'Creating...' : 'Create tenant'}</button>
             </div>
           </div>

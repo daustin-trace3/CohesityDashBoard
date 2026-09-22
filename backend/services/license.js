@@ -223,4 +223,4 @@ function initLicense() {
   checkRenewal().then(r => { if (r.renewed) logger.info('[License] Renewed automatically via renewal server.'); });
 }
 
-module.exports = { getLicenseStatus, applyExtension, activateKey, checkRenewal, initLicense, entitlementsFromPayloads, getEntitlements };
+module.exports = { getLicenseStatus, applyExtension, activateKey, checkRenewal, initLicense, entitlementsFromPayloads, getEntitlements, verifySigned };
