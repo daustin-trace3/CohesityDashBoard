@@ -470,21 +470,27 @@ function UsersTab() {
             {users.map(u => (
               <tr key={u.id} className="border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50">
                 <td className="px-3 py-2 text-ink font-medium">
-                  <span className="flex items-center gap-1.5">{u.username}{u.provider === 'ad' && <Badge tone="info">AD</Badge>}</span>
+                  <span className="flex items-center gap-1.5">{u.username}{u.provider === 'ad' && <Badge tone="info">AD</Badge>}{u.isGlobalAdmin && <Badge tone="brand">Global admin</Badge>}</span>
                 </td>
                 <td className="px-3 py-2 text-ink-muted">{u.displayName || '—'}</td>
-                <td className="px-3 py-2 text-ink-muted">{(u.groups || []).join(', ') || '—'}</td>
+                <td className="px-3 py-2 text-ink-muted">{u.isGlobalAdmin ? 'All access in every tenant' : ((u.groups || []).join(', ') || '—')}</td>
                 <td className="px-3 py-2">
                   <Badge tone={u.isActive ? 'ok' : 'neutral'}>{u.isActive ? 'Active' : 'Disabled'}</Badge>
                 </td>
                 <td className="px-3 py-2 text-ink-faint">{u.lastLoginAt ? <LastUpdated date={u.lastLoginAt} prefix="" /> : '—'}</td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
-                  <button onClick={() => setModalUser(u)} aria-label={`Edit ${u.username}`} className="text-ink-faint hover:text-brand cursor-pointer mr-2">
-                    <Pencil size={13} />
-                  </button>
-                  <button onClick={() => remove(u)} aria-label={`Delete ${u.username}`} className="text-ink-faint hover:text-status-crit cursor-pointer">
-                    <Trash2 size={13} />
-                  </button>
+                  {u.isGlobalAdmin ? (
+                    <span className="text-[11px] text-ink-faint" title="Managed under Admin, Tenants at the install level">managed globally</span>
+                  ) : (
+                    <>
+                      <button onClick={() => setModalUser(u)} aria-label={`Edit ${u.username}`} className="text-ink-faint hover:text-brand cursor-pointer mr-2">
+                        <Pencil size={13} />
+                      </button>
+                      <button onClick={() => remove(u)} aria-label={`Delete ${u.username}`} className="text-ink-faint hover:text-status-crit cursor-pointer">
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}

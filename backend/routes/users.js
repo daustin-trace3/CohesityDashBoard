@@ -52,6 +52,9 @@ function toUserRow(user) {
     isActive: !!user.is_active,
     provider: user.auth_provider || 'local',
     email: user.email || null,
+    // A global admin is in every tenant by right (decision 7); its row here is
+    // the mirror written on first entry, managed at the install level.
+    isGlobalAdmin: !!(accounts.getUser(user.id) || {}).is_global_admin,
     groups,
     lastLoginAt: user.last_login_at,
   };
@@ -117,6 +120,9 @@ router.put('/:id(\\d+)', async (req, res, next) => {
     if (!user) return res.status(404).json({ error: 'User not found.' });
 
     const { displayName, password, isActive, groupIds } = req.body || {};
+    if ((accounts.getUser(userId) || {}).is_global_admin) {
+      return res.status(400).json({ error: 'This is a global admin account; it is managed at the install level, not inside a tenant.' });
+    }
 
     if (password && user.auth_provider !== 'local') {
       return res.status(400).json({ error: 'Directory accounts authenticate against the domain; their password cannot be set here.' });
@@ -155,6 +161,9 @@ router.delete('/:id(\\d+)', (req, res) => {
 
   if (isSelf(req, userId)) {
     return res.status(400).json({ error: 'You cannot delete your own account.' });
+  }
+  if ((accounts.getUser(userId) || {}).is_global_admin) {
+    return res.status(400).json({ error: 'This is a global admin account; it enters every tenant and cannot be removed from one.' });
   }
   if (isInAdminGroup(userId) && activeAdminCountExcluding(userId) === 0) {
     return res.status(409).json({ error: 'Cannot delete the last active Admin.' });

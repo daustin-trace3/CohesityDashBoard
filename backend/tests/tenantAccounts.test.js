@@ -148,6 +148,24 @@ describe('tenant user management', () => {
     expect((await agentBob.get('/api/t/globex/clusters')).status).toBe(403);
   });
 
+  it('a global admin shows as such in a tenant user list and cannot be edited or removed there', async () => {
+    const admin = await agentAdmin.get('/api/t/acme/auth/session');
+    const list = await agentAdmin.get('/api/t/acme/users');
+    const me = list.body.find((u) => u.username === 'admin');
+    expect(me.isGlobalAdmin).toBe(true);
+    expect(list.body.find((u) => u.username === 'alice').isGlobalAdmin).toBe(false);
+    const edit = await agentAdmin.put(`/api/t/acme/users/${me.id}`).set('x-csrf-token', admin.body.csrfToken).send({ displayName: 'x' });
+    expect(edit.status).toBe(400);
+    expect(edit.body.error).toMatch(/global admin/);
+    const aliceSession = await agentAlice.get('/api/t/acme/auth/session');
+    const aliceCsrf = aliceSession.body.csrfToken;
+    // alice is a viewer in acme, so the RBAC gate answers first; the point is
+    // that nothing removes the global admin's row.
+    const del = await agentAlice.delete(`/api/t/acme/users/${me.id}`).set('x-csrf-token', aliceCsrf);
+    expect([400, 403]).toContain(del.status);
+    expect((await agentAdmin.get('/api/t/acme/users')).body.some((u) => u.username === 'admin')).toBe(true);
+  });
+
   it('a password change applies to the account everywhere', async () => {
     const admin = await agentAdmin.get('/api/t/acme/auth/session');
     const alice = accounts.findUserByUsername('alice');
