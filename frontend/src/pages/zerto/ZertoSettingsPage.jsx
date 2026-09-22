@@ -248,7 +248,7 @@ export default function ZertoSettingsPage() {
             </>
           ) : (
           <>
-          <div className="panel p-4 max-w-3xl" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
             <div className="flex items-center gap-2 mb-1">
               <Cloud size={16} className="text-brand" />
               <p className="text-sm font-semibold text-ink">Zerto Analytics account</p>
@@ -297,7 +297,7 @@ export default function ZertoSettingsPage() {
             </div>
           </div>
 
-          <div className="panel p-4 max-w-3xl">
+          <div className="panel p-4">
             <p className="text-sm font-semibold text-ink mb-3">Status</p>
             <div className="flex flex-col gap-2 text-sm max-w-md">
               <div className="flex items-center justify-between">

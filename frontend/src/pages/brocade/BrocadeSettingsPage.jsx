@@ -434,7 +434,7 @@ export default function BrocadeSettingsPage() {
       <PageHeader icon={Settings} title="Brocade SAN Settings" description="Register SANnav Management Portal servers and tune alert thresholds" />
 
       <PlatformSettingsLayout brand={BRAND} label="Brocade" sections={SECTIONS} active={section} onSelect={setSection}>
-        <div className="max-w-3xl">
+        <div>
           {section === 'sources' && (
             <>
               <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>

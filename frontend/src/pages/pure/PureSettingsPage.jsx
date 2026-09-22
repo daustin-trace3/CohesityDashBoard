@@ -122,7 +122,7 @@ function Pure1SaaSTab() {
   }
 
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <div className="flex justify-end mb-3">
         <RefreshButton onClick={load} />
       </div>

@@ -232,7 +232,7 @@ export default function BluecatSettingsPage() {
       <PageHeader icon={Settings} title="BlueCat Settings" description="Register BlueCat Address Managers and tune alert thresholds" />
 
       <PlatformSettingsLayout brand={BRAND} label="BlueCat" sections={SECTIONS} active={section} onSelect={setSection}>
-        <div className="max-w-3xl">
+        <div>
           {section === 'sources' && (
             <>
               <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>

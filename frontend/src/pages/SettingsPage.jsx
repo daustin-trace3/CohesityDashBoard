@@ -132,7 +132,7 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4 max-w-3xl">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2.5">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
           <Server size={16} className="text-brand" />

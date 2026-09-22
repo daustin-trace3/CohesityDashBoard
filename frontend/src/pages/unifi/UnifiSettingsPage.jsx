@@ -234,7 +234,7 @@ export default function UnifiSettingsPage() {
       <PageHeader icon={Settings} title="UniFi Settings" description="Register UniFi Network controllers and tune alert thresholds" />
 
       <PlatformSettingsLayout brand={BRAND} label="UniFi" sections={SECTIONS} active={section} onSelect={setSection}>
-        <div className="max-w-3xl">
+        <div>
           {section === 'sources' && (
             <>
               <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>

@@ -214,7 +214,7 @@ export default function AriaSettingsPage() {
   ];
 
   return (
-    <div className="animate-fade-in max-w-5xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="Aria Automation Settings" description="Register vRA 8.x on-prem instances — each is polled directly with its own credentials" />
 
       <PlatformSettingsLayout brand={BRAND} label="Aria Automation" sections={SECTIONS} active={section} onSelect={setSection}>
