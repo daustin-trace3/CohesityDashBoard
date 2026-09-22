@@ -161,7 +161,7 @@ function toPublic(entry) {
     name: entry.manifest.name,
     status: entry.status,
     error: entry.error,
-    enabled: entry.enabled,
+    enabled: enabledForTenant(entry.id),
     entitled: isEntitled(entry.id),
     version: entry.manifest.version || null,
     color: entry.manifest.color || null,
@@ -227,7 +227,7 @@ function unregisterPlugin(id) {
  */
 function getServer360Providers() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.server360 === 'function')
+    .filter((e) => enabledForTenant(e.id) && e.status !== 'error' && typeof e.manifest.server360 === 'function')
     .map((e) => ({
       id: e.id,
       name: e.manifest.name,
@@ -246,7 +246,7 @@ function getServer360Providers() {
  */
 function getTopologyProviders() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.topology === 'function')
+    .filter((e) => enabledForTenant(e.id) && e.status !== 'error' && typeof e.manifest.topology === 'function')
     .map((e) => ({
       id: e.id,
       name: e.manifest.name,
@@ -307,7 +307,7 @@ function setEnabled(id, enabled) {
  */
 function getOpsSummaryProviders() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.opsSummary === 'function')
+    .filter((e) => enabledForTenant(e.id) && e.status !== 'error' && typeof e.manifest.opsSummary === 'function')
     .map((e) => ({
       id: e.id,
       name: e.manifest.name,
@@ -318,7 +318,7 @@ function getOpsSummaryProviders() {
 
 function getAlertCollectors() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.collectAlerts === 'function')
+    .filter((e) => enabledForTenant(e.id) && e.status !== 'error' && typeof e.manifest.collectAlerts === 'function')
     .map((e) => ({ id: e.id, collect: () => e.manifest.collectAlerts(coreApiRef) }));
 }
 
@@ -326,7 +326,7 @@ function getAlertCollectors() {
  *  declaring `searchCategories` merged after the static built-in list. */
 function getSearchCategoryContributors() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && Array.isArray(e.manifest.searchCategories))
+    .filter((e) => enabledForTenant(e.id) && e.status !== 'error' && Array.isArray(e.manifest.searchCategories))
     .flatMap((e) => e.manifest.searchCategories);
 }
 
@@ -335,7 +335,7 @@ function getSearchCategoryContributors() {
 function getMetricsHistoryContributors() {
   const out = {};
   for (const e of plugins.values()) {
-    if (!e.enabled || e.status === 'error') continue;
+    if (!enabledForTenant(e.id) || e.status === 'error') continue;
     const cfg = e.manifest.metricsHistory;
     if (cfg && cfg.arraysTable && cfg.metricsTable && cfg.arrayIdColumn) out[e.id] = cfg;
   }
@@ -346,7 +346,7 @@ function getMetricsHistoryContributors() {
  *  notification-settings platform toggle list and its default-on gate. */
 function getAlertPlatformPlugins() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.collectAlerts === 'function')
+    .filter((e) => enabledForTenant(e.id) && e.status !== 'error' && typeof e.manifest.collectAlerts === 'function')
     .map((e) => ({ id: e.id, name: e.manifest.name }));
 }
 
@@ -356,10 +356,30 @@ function getAlertPlatformPlugins() {
  * exists, without going through the `/api/:pluginId` param resolution).
  * Same fall-through/disabled/error semantics as dispatch() below.
  */
+/** Whether platform `id` is on for the CURRENT tenant. Install-wide the
+ *  registry flag says "installed, active and entitled by the install"; from
+ *  the second tenant on, the tenant's own platform list (set at tenant
+ *  creation, decision 12) and its platform_<id>_enabled setting decide. */
+function enabledForTenant(id) {
+  const entry = plugins.get(id);
+  if (!entry || !entry.enabled) return false;
+  const tenants = require('./tenantRegistry');
+  if (!tenants.isStrict()) return true;
+  const { getSetting } = require('../services/settings');
+  let allowed = null;
+  try { allowed = JSON.parse(getSetting('tenant_platforms') || 'null'); } catch { allowed = null; }
+  // No platform list means a tenant from before the setup flow (the default
+  // tenant of a converted install): the install-wide flag already carries
+  // its own settings.
+  if (!Array.isArray(allowed)) return true;
+  if (!allowed.includes(id)) return false;
+  return getSetting(`platform_${id}_enabled`) !== '0';
+}
+
 function dispatchTo(id, req, res, next) {
   const entry = plugins.get(id);
   if (!entry) return next();
-  if (!entry.enabled) return res.status(404).json({ error: 'platform_disabled' });
+  if (!enabledForTenant(id)) return res.status(404).json({ error: 'platform_disabled' });
   if (entry.status === 'error') return res.status(503).json({ error: 'platform_error' });
   return entry.router(req, res, next);
 }
@@ -388,6 +408,7 @@ function isBuiltinPresent(id) { return builtinIds.has(id); }
 module.exports = {
   _routers,
   migrateHandle,
+  enabledForTenant,
   PLUGIN_API_VERSION,
   RESERVED_IDS,
   markBuiltin,

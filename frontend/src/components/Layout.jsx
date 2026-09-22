@@ -13,6 +13,7 @@ import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { platforms as builtinPlatforms } from '../platforms/registry';
 import { tenantHome } from '../tenant';
+import LicenseExpiryBar from './LicenseExpiryBar';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import { useAuth } from '../auth/AuthContext';
 import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
@@ -776,6 +777,8 @@ export default function Layout() {
             </div>
           )}
         </header>
+
+        <LicenseExpiryBar />
 
         {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}
         {multiPlatform && switcherMode === 'tabs' && (

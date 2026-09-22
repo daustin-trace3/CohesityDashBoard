@@ -25,7 +25,7 @@ describe('poller supervisor', () => {
   it('starts one worker per active tenant and follows the tenant list', async () => {
     const spawned = [];
     const spawn = (script, tenantId) => { const c = new FakeChild(tenantId); spawned.push(c); return c; };
-    const sup = createSupervisor({ spawn, rescanMs: 60 * 60 * 1000 });
+    const sup = createSupervisor({ spawn, rescanMs: 60 * 60 * 1000, isLicensed: () => true });
     const running = sup.run();
     expect(running.workers().sort()).toEqual(['default', 'north', 'south']);
     expect(spawned.map((c) => c.tenantId).sort()).toEqual(['default', 'north', 'south']);

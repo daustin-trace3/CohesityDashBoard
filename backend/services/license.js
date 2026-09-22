@@ -50,9 +50,28 @@ function daysBetween(fromMs, toMs) {
   return Math.floor((toMs - fromMs) / 86400000);
 }
 
+// One licence per tenant (decision 14). The default tenant keeps reading
+// LICENSE_KEY from .env, which is how every single-tenant install is set up;
+// any other tenant holds its key in its own settings. A key entered on the
+// licence page goes to the same place.
+const KEY_SETTING = 'license_key';
+function currentTenantId() {
+  return process.env.ICC_TENANT || require('../core/tenantScoped').resolveTenantId();
+}
+function licenseKeyString() {
+  if (currentTenantId() === 'default') return process.env.LICENSE_KEY || getSetting(KEY_SETTING) || '';
+  const own = getSetting(KEY_SETTING) || '';
+  // The public demo has no customers: its extra tenants run on the install
+  // key so a demo tenant is usable the moment it is created.
+  if (!own && process.env.DASHBOARD_DEMO === '1') return process.env.LICENSE_KEY || '';
+  return own;
+}
+
 /** Full license status. Cheap enough to compute per request (Ed25519 verify is ~µs). */
 function getLicenseStatus() {
-  const keyStr = process.env.LICENSE_KEY || '';
+  const tenant = require('../core/tenantRegistry').getTenant(currentTenantId());
+  if (tenant && tenant.status === 'suspended') return { state: 'suspended' };
+  const keyStr = licenseKeyString();
   if (!keyStr.trim()) return { state: 'missing' };
 
   const key = verifySigned(keyStr);
@@ -120,6 +139,11 @@ function activateKey(keyStr) {
   const key = verifySigned(trimmed);
   if (!key || key.type !== 'CDBL') return { error: 'That license key is invalid (bad format or signature). Check for copy/paste truncation.' };
 
+  if (currentTenantId() !== 'default') {
+    setSetting(KEY_SETTING, trimmed);
+    logger.info(`[License] Key activated for tenant ${currentTenantId()} - "${key.payload.c}", expires ${key.payload.exp}.`);
+    return { status: getLicenseStatus() };
+  }
   let env = '';
   try { env = fs.readFileSync(ENV_PATH, 'utf8'); } catch { /* create fresh below */ }
   const line = `LICENSE_KEY=${trimmed}`;
@@ -171,7 +195,7 @@ function entitlementsFromPayloads(keyPayload, extPayload) {
 
 /** Entitlements for the currently configured license key + cached extension. */
 function getEntitlements() {
-  const keyStr = process.env.LICENSE_KEY || '';
+  const keyStr = licenseKeyString();
   if (!keyStr.trim()) return { all: true };
 
   const key = verifySigned(keyStr);

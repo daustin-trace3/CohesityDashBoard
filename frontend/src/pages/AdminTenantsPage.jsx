@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, Plus, UserPlus, Trash2 } from 'lucide-react';
+import { Building2, Plus, UserPlus, Trash2, PauseCircle, PlayCircle } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LoadingPanel } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -21,13 +21,18 @@ export default function AdminTenantsPage() {
   const [tenants, setTenants] = useState(null);
   const [selected, setSelected] = useState(null);
   const [members, setMembers] = useState([]);
+  const [platforms, setPlatforms] = useState([]);
   const [newId, setNewId] = useState('');
   const [newName, setNewName] = useState('');
+  const [newPlatforms, setNewPlatforms] = useState(null); // null = all
+  const [adminUser, setAdminUser] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [seedDemo, setSeedDemo] = useState(false);
   const [newMember, setNewMember] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => client.get('/tenants', { params: { _: Date.now() } })
-    .then(({ data }) => setTenants(data.tenants || []))
+  const load = useCallback(() => client.get('/tenants/manage', { params: { _: Date.now() } })
+    .then(({ data }) => { setTenants(data.tenants || []); setPlatforms(data.platforms || []); })
     .catch(() => { setTenants([]); toast({ type: 'error', title: 'Could not load tenants' }); }), [toast]);
 
   const loadMembers = useCallback((id) => client.get(`/tenants/${id}/members`, { params: { _: Date.now() } })
@@ -40,13 +45,32 @@ export default function AdminTenantsPage() {
   const createTenant = async () => {
     setBusy(true);
     try {
-      await client.post('/tenants', { id: newId.trim().toLowerCase(), name: newName.trim() });
-      toast({ type: 'success', title: `Tenant ${newName.trim()} created` });
-      setNewId(''); setNewName('');
+      const body = { id: newId.trim().toLowerCase(), name: newName.trim(), seedDemo };
+      if (newPlatforms) body.platforms = newPlatforms;
+      if (adminUser.trim()) body.admin = { username: adminUser.trim(), password: adminPassword || undefined };
+      const { data } = await client.post('/tenants', body);
+      toast({ type: 'success', title: `Tenant ${data.name} created`, message: data.seeded === false ? 'Demo data seeding failed; see the server log.' : undefined });
+      setNewId(''); setNewName(''); setNewPlatforms(null); setAdminUser(''); setAdminPassword(''); setSeedDemo(false);
       await load();
     } catch (err) {
       toast({ type: 'error', title: 'Could not create tenant', message: err?.response?.data?.error });
     } finally { setBusy(false); }
+  };
+
+  const togglePlatform = (id) => setNewPlatforms((cur) => {
+    const base = cur || platforms;
+    return base.includes(id) ? base.filter((p) => p !== id) : [...base, id];
+  });
+
+  const setStatus = async (t, status) => {
+    const verb = status === 'suspended' ? 'Suspend' : 'Resume';
+    if (!window.confirm(`${verb} ${t.name}? ${status === 'suspended' ? 'Polling stops and members only reach the licence page.' : 'Polling and access resume.'}`)) return;
+    try {
+      await client.put(`/tenants/${t.id}`, { status });
+      await load();
+    } catch (err) {
+      toast({ type: 'error', title: `Could not ${verb.toLowerCase()} tenant`, message: err?.response?.data?.error });
+    }
   };
 
   const addMember = async () => {
@@ -95,7 +119,7 @@ export default function AdminTenantsPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                    <th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Id</th><th className="py-2 pr-3">Status</th><th className="py-2 pr-3"></th>
+                    <th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Id</th><th className="py-2 pr-3">Status</th><th className="py-2 pr-3">License</th><th className="py-2 pr-3">Platforms</th><th className="py-2 pr-3">Members</th><th className="py-2 pr-3"></th>
                   </tr></thead>
                   <tbody>
                     {tenants.map((t) => (
@@ -104,7 +128,19 @@ export default function AdminTenantsPage() {
                         <td className="py-2 pr-3 text-ink font-medium">{t.name}</td>
                         <td className="py-2 pr-3 text-ink-muted font-mono text-xs">{t.id}</td>
                         <td className="py-2 pr-3"><Badge tone={t.status === 'active' ? 'ok' : 'warn'}>{t.status}</Badge></td>
-                        <td className="py-2 pr-3 text-right"><a href={tenantHome(t.id)} className="text-xs text-brand hover:underline" onClick={(e) => e.stopPropagation()}>Open</a></td>
+                        <td className="py-2 pr-3 text-xs text-ink-muted">{t.license?.state}{t.license?.expiry ? ` to ${t.license.expiry}` : ''}</td>
+                        <td className="py-2 pr-3 text-xs text-ink-muted">{(t.platforms || []).length}</td>
+                        <td className="py-2 pr-3 text-xs text-ink-muted tnum">{t.members}</td>
+                        <td className="py-2 pr-3 text-right whitespace-nowrap">
+                          {t.id !== 'default' && (
+                            <button onClick={(e) => { e.stopPropagation(); setStatus(t, t.status === 'active' ? 'suspended' : 'active'); }}
+                              title={t.status === 'active' ? 'Suspend' : 'Resume'} aria-label={`${t.status === 'active' ? 'Suspend' : 'Resume'} ${t.name}`}
+                              className="text-ink-faint hover:text-ink cursor-pointer mr-3 align-middle">
+                              {t.status === 'active' ? <PauseCircle size={14} /> : <PlayCircle size={14} />}
+                            </button>
+                          )}
+                          <a href={tenantHome(t.id)} className="text-xs text-brand hover:underline" onClick={(e) => e.stopPropagation()}>Open</a>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -120,7 +156,32 @@ export default function AdminTenantsPage() {
                 <label className="block text-[11px] text-ink-faint mb-1" htmlFor="tenant-name">Name</label>
                 <input id="tenant-name" value={newName} onChange={(e) => setNewName(e.target.value)} className={inputClass} placeholder="Acme Corp" />
               </div>
-              <button onClick={createTenant} disabled={busy || !newId.trim() || !newName.trim()} className={buttonClass}><Plus size={13} /> Create tenant</button>
+            </div>
+            <div className="mt-3">
+              <p className="text-[11px] text-ink-faint mb-1">Platforms this tenant gets (more can be added later)</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {platforms.map((id) => (
+                  <label key={id} className="inline-flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer select-none">
+                    <input type="checkbox" className="accent-brand cursor-pointer" checked={(newPlatforms || platforms).includes(id)} onChange={() => togglePlatform(id)} />
+                    {id}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-end gap-2 mt-3">
+              <div className="w-44">
+                <label className="block text-[11px] text-ink-faint mb-1" htmlFor="tenant-admin">First tenant admin (username)</label>
+                <input id="tenant-admin" value={adminUser} onChange={(e) => setAdminUser(e.target.value)} className={inputClass} placeholder="existing or new" autoComplete="off" />
+              </div>
+              <div className="w-44">
+                <label className="block text-[11px] text-ink-faint mb-1" htmlFor="tenant-admin-pw">Password (new account only)</label>
+                <input id="tenant-admin-pw" type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className={inputClass} autoComplete="new-password" />
+              </div>
+              <label className="inline-flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer select-none pb-2">
+                <input type="checkbox" className="accent-brand cursor-pointer" checked={seedDemo} onChange={(e) => setSeedDemo(e.target.checked)} />
+                Seed demo data
+              </label>
+              <button onClick={createTenant} disabled={busy || !newId.trim() || !newName.trim()} className={buttonClass}><Plus size={13} /> {busy ? 'Creating...' : 'Create tenant'}</button>
             </div>
           </div>
 

@@ -13,13 +13,15 @@ const RESCAN_MS = 60 * 1000;
 const RESTART_MIN_MS = 5 * 1000;
 const RESTART_MAX_MS = 5 * 60 * 1000;
 
-function createSupervisor({ spawn = defaultSpawn, script = path.join(__dirname, '..', 'pollerProcess.js'), rescanMs = RESCAN_MS } = {}) {
+function createSupervisor({ spawn = defaultSpawn, script = path.join(__dirname, '..', 'pollerProcess.js'), rescanMs = RESCAN_MS, isLicensed = defaultIsLicensed } = {}) {
   const workers = new Map(); // tenantId -> { child, restarts, timer }
   let timer = null;
   let stopped = false;
 
+  // Active AND licensed (valid or grace): a suspended or unlicensed tenant
+  // is not polled (decision 15).
   function wanted() {
-    return tenants.listTenants().filter((t) => t.status === 'active').map((t) => t.id);
+    return tenants.listTenants().filter((t) => t.status === 'active' && isLicensed(t.id)).map((t) => t.id);
   }
 
   function start(tenantId) {
@@ -71,6 +73,18 @@ function createSupervisor({ spawn = defaultSpawn, script = path.join(__dirname, 
   }
 
   return { run, reconcile, stopAll, workers: () => [...workers.keys()] };
+}
+
+function defaultIsLicensed(tenantId) {
+  const { runAsTenant } = require('./tenantContext');
+  const { getLicenseStatus } = require('../services/license');
+  try {
+    const state = runAsTenant(tenantId, () => getLicenseStatus().state);
+    return state === 'valid' || state === 'grace';
+  } catch (err) {
+    logger.warn(`[Poller supervisor] licence check failed for ${tenantId}: ${err.message}`);
+    return false;
+  }
 }
 
 function defaultSpawn(script, tenantId) {

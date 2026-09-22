@@ -89,12 +89,16 @@ export default function LicenseGate({ children }) {
       ? 'License key required'
       : status.state === 'invalid'
         ? 'License key is invalid'
-        : 'License expired';
+        : status.state === 'suspended'
+          ? 'This tenant is suspended'
+          : 'License expired';
     const detail = status.state === 'missing'
-      ? 'This installation has no license key. Paste the key from your welcome email below — it is saved automatically and the app unlocks immediately.'
+      ? 'This tenant has no license key. Paste the key from your welcome email below; it is saved for this tenant and the pages unlock immediately.'
       : status.state === 'invalid'
         ? 'The configured license key failed validation. Paste a correct key below, or contact support for a replacement.'
-        : `The license for ${status.customer || 'this installation'} expired on ${status.effectiveExpiry} and the grace period has ended. Renew to restore access — the same key keeps working once payment is processed.`;
+        : status.state === 'suspended'
+          ? 'Polling is stopped and sign-in is limited to this page. A global admin can resume the tenant, or paste a new license key below.'
+          : `The license for ${status.customer || 'this installation'} expired on ${status.effectiveExpiry} and the grace period has ended. Renew to restore access; the same key keeps working once payment is processed.`;
 
     return (
       <div className="h-screen overflow-auto flex items-center justify-center bg-cohesity-black px-4">

@@ -40,6 +40,13 @@ module.exports = function tenantMembership(req, res, next) {
     return next();
   }
 
-  if (accounts.isMember(tenantId, user.id)) return next();
-  return res.status(403).json({ error: 'You are not a member of this tenant.', tenant: tenantId });
+  if (!accounts.isMember(tenantId, user.id)) {
+    return res.status(403).json({ error: 'You are not a member of this tenant.', tenant: tenantId });
+  }
+  // A suspended tenant (decision 15): members only reach the licence page.
+  const tenant = require('../core/tenantRegistry').getTenant(tenantId);
+  if (tenant && tenant.status === 'suspended' && !req.path.startsWith('/license')) {
+    return res.status(403).json({ error: 'license_required', state: 'suspended', tenant: tenantId });
+  }
+  return next();
 };

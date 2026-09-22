@@ -3,12 +3,27 @@ const crypto = require('crypto');
 const ALGORITHM = 'aes-256-gcm';
 const KEY_LENGTH = 32;
 
+// One key per tenant (docs/MULTI-TENANT-DESIGN.md, decision 4): the default
+// tenant keeps the install's master key, so credentials saved before
+// multi-tenancy still decrypt; every other tenant gets a key derived from
+// the master key and its id, so a tenant database copied into another
+// tenant's slot cannot be decrypted. A seeding or worker process names its
+// tenant with ICC_TENANT.
+const derived = new Map();
 function getKey() {
   const hexKey = process.env.ENCRYPTION_KEY;
   if (!hexKey || hexKey.length !== 64) {
     throw new Error('ENCRYPTION_KEY must be a 64-character hex string (32 bytes)');
   }
-  return Buffer.from(hexKey, 'hex');
+  const master = Buffer.from(hexKey, 'hex');
+  const tenantId = process.env.ICC_TENANT || require('../core/tenantScoped').resolveTenantId();
+  if (tenantId === 'default') return master;
+  let key = derived.get(tenantId);
+  if (!key) {
+    key = Buffer.from(crypto.hkdfSync('sha256', master, 'icc-tenant-key', tenantId, KEY_LENGTH));
+    derived.set(tenantId, key);
+  }
+  return key;
 }
 
 /**
