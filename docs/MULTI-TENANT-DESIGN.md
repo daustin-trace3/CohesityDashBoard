@@ -233,6 +233,53 @@ Commits 451bceb, 390b334, 3cc8189. Deployed to local and the demo.
   per-tenant audit table; global admin user management beyond the first
   admin (a global admin flag can only be set in the database today).
 
+## Phases 3, 4 and 6 result (2026-09-21, evening)
+
+Commits a08cdc9 (phase 3), da9ad18 (phase 4), bdd01d4 (phase 6), dc30fa7,
+610bda9, ef13abc (fixes from the live checks). Deployed to local and the demo.
+
+- Phase 3: with more than one tenant pollerProcess.js only supervises
+  (core/pollerSupervisor.js): one forked worker per active, licensed tenant
+  with ICC_TENANT set, restart with growing delay, stop on suspend or close,
+  start on create. A single-tenant install runs its pollers in the one
+  process as before. Real fork verified on a scratch database with two
+  tenants: two workers, each scheduling inside its own tenant. Idle worker
+  about 80 MB.
+- Phase 4: encryption key per tenant (HKDF of the master key and the tenant
+  id; the default tenant keeps the master key); licence per tenant in its
+  settings (the default keeps LICENSE_KEY in .env; demo tenants fall back to
+  the install key); platforms per tenant (tenant_platforms plus
+  platform_<id>_enabled, decided at creation, editable; a platform not given
+  answers platform_disabled and is hidden from the hook lists and /api/
+  plugins); tenant setup takes platforms, a first admin (existing or new,
+  placed in the tenant's Admin group) and optional demo data (the seeder runs
+  as a child process against the tenant's file, then platforms and admin are
+  applied); suspended tenants stop polling and members reach only the licence
+  page while a global admin still enters; expiry bar yellow at 90 days, red
+  at 30 or in grace.
+- Phase 6: tenant_audit table (core migration v20) written for member changes,
+  export, close, restore and retention runs; retention inside a tenant
+  (tenant_retention_days, 0 = platform defaults) ages out history-style tables
+  daily and never inventory; export produces a zip with the database minus
+  every stored secret plus CSVs of the main inventories; close seals the
+  database into data/archive/<id>.db.sealed with the master key and removes
+  the live file; restore reverses it; archives past archive_retention_days
+  (global, default 365) are purged with a global audit entry.
+- Decision 18 done: tenant-a and tenant-b exist on the demo as seeded tenants
+  with admins tenant-a-admin and tenant-b-admin; icc-tenant-a, icc-tenant-b
+  and icc-portal are stopped and removed from pm2 on hermes. Their folders
+  and the Portal repo are still on disk.
+- Live checks caught, and the same evening fixed: the seeder wiped the
+  platform pick and the first admin's group (seed now runs first); per
+  platform prune crons ran without async context (context-less work now uses
+  the tenant the process started as, never another); pack bundles load
+  through a script tag with no header (the loader sends ?t=<tenant> and the
+  middleware reads it).
+- Known: the web process is still shared, so "database is locked" can show
+  while a seeder writes a tenant file the sweep is reading. Cross-tenant view
+  (decision 9), per-tenant directories (decision 10) and setting the global
+  admin flag from the UI remain open.
+
 ## Build order
 
 0. Spike: tenant context, registry, database proxy that fails closed, the
