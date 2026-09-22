@@ -9,12 +9,17 @@
 //
 // The tenant is resolved with the same rule as db/database.js: the current
 // tenant, else the default tenant while the install has only one, else throw.
-const { currentTenantId } = require('./tenantContext');
+const { currentTenantId, getBootTenantId } = require('./tenantContext');
 const registry = require('./tenantRegistry');
 
 function resolveTenantId() {
   const id = currentTenantId();
   if (id) return id;
+  // A process that entered a tenant at start-up (a poller worker, or the
+  // web process as the default tenant) keeps that tenant for work that
+  // arrives without async context, such as node-cron ticks. Requests always
+  // carry their own tenant, so this never crosses tenants.
+  if (process.env.TENANT_STRICT !== '1' && getBootTenantId()) return getBootTenantId();
   if (registry.isStrict()) {
     throw new Error('Database or tenant state used outside a tenant context. Wrap the work in runAsTenant(tenantId, ...).');
   }

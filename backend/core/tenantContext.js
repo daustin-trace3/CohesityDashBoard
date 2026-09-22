@@ -16,8 +16,16 @@ function runAsTenant(tenantId, fn) {
  *  creates, runs as tenantId unless a runAsTenant call says otherwise.
  *  Requests always get an explicit tenant from middleware/tenantScope.js;
  *  timer work that serves every tenant uses tenantRegistry.forEachTenant. */
+let bootTenantId = null;
 function enterTenantForBoot(tenantId) {
+  bootTenantId = tenantId;
   storage.enterWith({ tenantId });
+}
+
+/** The tenant start-up ran as, or null. Work reached through a scheduler
+ *  that does not carry async context (node-cron) lands here. */
+function getBootTenantId() {
+  return bootTenantId;
 }
 
 /** Current tenant id, or null when the caller is outside any tenant. */
@@ -26,4 +34,4 @@ function currentTenantId() {
   return store ? store.tenantId : null;
 }
 
-module.exports = { runAsTenant, currentTenantId, enterTenantForBoot };
+module.exports = { runAsTenant, currentTenantId, enterTenantForBoot, getBootTenantId };

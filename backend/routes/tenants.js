@@ -184,10 +184,17 @@ router.post('/', requireGlobalAdmin, (req, res) => {
     return res.status(400).json({ error: err.message });
   }
   const actor = req.auth.user || null;
-  const picked = applyPlatforms(tenant.id, platforms === undefined ? null : platforms);
-  accounts.audit('tenant.created', { actor, tenantId: tenant.id, detail: { name: tenant.name, platforms: picked } });
 
   (async () => {
+    // Demo data first: the seeder resets settings and users, so the platform
+    // pick and the first admin are applied after it.
+    let seeded = null;
+    if (seedDemo) {
+      seeded = await seedDemoData(tenant.id);
+      accounts.audit('tenant.seeded', { actor, tenantId: tenant.id, detail: { ok: seeded.ok } });
+    }
+    const picked = applyPlatforms(tenant.id, platforms === undefined ? null : platforms);
+    accounts.audit('tenant.created', { actor, tenantId: tenant.id, detail: { name: tenant.name, platforms: picked, seeded: seeded ? seeded.ok : false } });
     if (admin) {
       if (!adminAccount) {
         adminAccount = accounts.createUser({ username: admin.username.trim(), passwordHash: await hashPassword(String(admin.password)), displayName: admin.displayName ? String(admin.displayName) : admin.username.trim() });
@@ -200,12 +207,6 @@ router.post('/', requireGlobalAdmin, (req, res) => {
         if (adminGroup) tdb.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(adminAccount.id, adminGroup.id);
       });
       accounts.audit('member.added', { actor, tenantId: tenant.id, detail: { username: adminAccount.username, role: 'Admin' } });
-    }
-    let seeded = null;
-    if (seedDemo) {
-      seeded = await seedDemoData(tenant.id);
-      accounts.audit('tenant.seeded', { actor, tenantId: tenant.id, detail: { ok: seeded.ok } });
-      if (adminAccount) accounts.addMember(tenant.id, adminAccount.id, 'tenant-setup', { defaultGroup: false });
     }
     res.status(201).json({ ...tenantView(registry.getTenant(tenant.id)), seeded: seeded ? seeded.ok : null });
   })().catch((err) => res.status(500).json({ error: err.message }));
