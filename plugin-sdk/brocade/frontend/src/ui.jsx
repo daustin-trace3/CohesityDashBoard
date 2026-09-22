@@ -527,6 +527,14 @@ export function parseJsonObj(s) {
   try { return JSON.parse(s); } catch { return null; }
 }
 
+// One label style for status/health chips. SANnav mixes HEALTHY, Healthy and
+// healthy across fields; show them all as Healthy. Null shows as Unknown.
+export function fmtStatus(v, fallback = 'Unknown') {
+  const s = String(v == null ? '' : v).trim().replace(/_/g, ' ');
+  if (!s) return fallback;
+  return s.toLowerCase().replace(/(^|\s)([a-z])/g, (m, sp, c) => sp + c.toUpperCase());
+}
+
 // Status/health tone mapping — Doug's convention: healthy/online green,
 // marginal/warning amber, critical/down red, unknown/unmonitored gray.
 export function statusTone(status) {

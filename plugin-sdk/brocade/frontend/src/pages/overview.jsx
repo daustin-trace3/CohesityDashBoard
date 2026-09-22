@@ -3,7 +3,7 @@ import { LineChart } from '../charts.jsx';
 import client from '../api.js';
 import {
   useToast, PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated,
-  BRAND, fmtNum, fmtWhen, statusTone, severityTone, scoreColor,
+  BRAND, fmtNum, fmtWhen, statusTone, fmtStatus, severityTone, scoreColor,
 } from '../ui.jsx';
 
 export default function BrocadeOverviewPage() {
@@ -100,7 +100,7 @@ export default function BrocadeOverviewPage() {
                 <button key={f.id} onClick={() => navigate('/brocade/fabrics')}
                   className="flex items-center justify-between gap-3 text-xs bg-surface-overlay rounded-lg px-3 py-2 hover:ring-1 hover:ring-brand/30 transition-all cursor-pointer text-left">
                   <div className="min-w-0 flex items-center gap-2">
-                    <Badge tone={statusTone(f.statusLabel)}>{f.statusLabel || 'Unknown'}</Badge>
+                    <Badge tone={statusTone(f.statusLabel)}>{fmtStatus(f.statusLabel)}</Badge>
                     <span className="text-ink truncate">{f.name}</span>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">

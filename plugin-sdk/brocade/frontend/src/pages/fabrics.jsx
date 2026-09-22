@@ -3,7 +3,7 @@ import client from '../api.js';
 import {
   useToast, PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated,
   useTableControls, SortTh, TableControls, portalOrInline,
-  BRAND, fmtNum, fmtWhen, statusTone, scoreColor,
+  BRAND, fmtNum, fmtWhen, statusTone, fmtStatus, scoreColor,
 } from '../ui.jsx';
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
@@ -69,7 +69,7 @@ function FabricDetailModal({ id, onClose }) {
   return (
     <ModalShell title={fabric.name} subtitle={fabric.seedSwitchName || fabric.seedSwitchIp} icon={Waypoints} onClose={onClose}>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <Badge tone={statusTone(fabric.statusLabel)}>{fabric.statusLabel || 'Unknown'}</Badge>
+        <Badge tone={statusTone(fabric.statusLabel)}>{fmtStatus(fabric.statusLabel)}</Badge>
         {fabric.managed ? <Badge tone="info">Managed</Badge> : null}
         {healthScore?.score != null && (
           <span className="text-sm font-semibold tnum" style={{ color: scoreColor(healthScore.score) }}>Score {healthScore.score}</span>
@@ -135,7 +135,7 @@ function FabricDetailModal({ id, onClose }) {
                     <td className="py-1.5 pr-3 text-ink">{s.name}</td>
                     <td className="py-1.5 pr-3 text-ink-muted tnum">{s.ip_address}</td>
                     <td className="py-1.5 pr-3 text-ink-faint">{s.role}</td>
-                    <td className="py-1.5 pr-3"><Badge tone={statusTone(s.operational_status)}>{s.operational_status || s.status}</Badge></td>
+                    <td className="py-1.5 pr-3"><Badge tone={statusTone(s.operational_status)}>{fmtStatus(s.operational_status || s.status)}</Badge></td>
                     <td className="py-1.5 pr-3 text-ink-faint tnum">{s.firmware_version}</td>
                   </tr>
                 ))}
@@ -202,7 +202,7 @@ export default function BrocadeFabricsPage() {
                       <button onClick={() => setDetailId(f.id)} className="text-brand hover:underline cursor-pointer text-left">{f.name}</button>
                     </td>
                     <td className="py-2 pr-3 text-ink-muted">{f.sourceName}</td>
-                    <td className="py-2 pr-3"><Badge tone={statusTone(f.statusLabel)}>{f.statusLabel || 'Unknown'}</Badge></td>
+                    <td className="py-2 pr-3"><Badge tone={statusTone(f.statusLabel)}>{fmtStatus(f.statusLabel)}</Badge></td>
                     <td className="py-2 pr-3 text-right tnum font-semibold" style={{ color: scoreColor(f.score) }}>{f.score ?? '—'}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">
                       <button onClick={() => navigate(`/brocade/switches?fabric=${encodeURIComponent(f.name)}`)} className="text-brand hover:underline cursor-pointer">{fmtNum(f.switchCount)}</button>

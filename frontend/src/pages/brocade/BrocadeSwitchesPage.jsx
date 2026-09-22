@@ -6,7 +6,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtNum, fmtMs, statusTone } from './helpers';
+import { BRAND, fmtNum, fmtMs, statusTone, fmtStatus } from './helpers';
 
 // management_state bit decoding — per contract §2 (used both for issues and
 // the switch 360 modal's decoded labels).
@@ -94,8 +94,8 @@ function SwitchDetailModal({ id, onClose }) {
   return (
     <ModalShell title={sw.name} subtitle={[sw.ipAddress, sw.model, sw.fabricName].filter(Boolean).join(' · ')} icon={Router} onClose={onClose} switchId={id}>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <Badge tone={statusTone(sw.operationalStatus)}>{sw.operationalStatus || sw.status}</Badge>
-        <Badge tone={statusTone(sw.health)}>{sw.health || 'Unknown'}</Badge>
+        <Badge tone={statusTone(sw.operationalStatus)}>{fmtStatus(sw.operationalStatus || sw.status)}</Badge>
+        <Badge tone={statusTone(sw.health)}>{fmtStatus(sw.health)}</Badge>
         {sw.maintenanceMode ? <Badge tone="info">Maintenance mode</Badge> : null}
         {sw.eosStatus ? <Badge tone="warn">EOS</Badge> : null}
         {healthScore?.score != null && <span className="text-sm font-semibold text-ink tnum">Score {healthScore.score}</span>}
@@ -156,7 +156,7 @@ function SwitchDetailModal({ id, onClose }) {
                   <tr key={p.wwn} className="border-b border-cohesity-border/40">
                     <td className="py-1.5 pr-3 text-ink-muted">{p.name || p.port_id}</td>
                     <td className="py-1.5 pr-3 text-ink-faint">{p.type}</td>
-                    <td className="py-1.5 pr-3"><Badge tone={statusTone(p.status)}>{p.status}</Badge></td>
+                    <td className="py-1.5 pr-3"><Badge tone={statusTone(p.status)}>{fmtStatus(p.status)}</Badge></td>
                     <td className="py-1.5 pr-3 text-ink-muted tnum">{p.speed || '—'}</td>
                     <td className="py-1.5 pr-3 text-ink-faint">{p.remote_device || '—'}</td>
                   </tr>
@@ -230,7 +230,7 @@ export default function BrocadeSwitchesPage() {
                     <td className="py-2 pr-3 text-ink-muted tnum">{s.ipAddress || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{s.model || '—'}</td>
                     <td className="py-2 pr-3 text-ink-faint">{s.role || '—'}</td>
-                    <td className="py-2 pr-3"><Badge tone={statusTone(s.operationalStatus)}>{s.operationalStatus || s.status || 'Unknown'}</Badge></td>
+                    <td className="py-2 pr-3"><Badge tone={statusTone(s.operationalStatus)}>{fmtStatus(s.operationalStatus || s.status)}</Badge></td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{s.firmwareVersion || '—'}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(s.portCount)}</td>
                   </tr>

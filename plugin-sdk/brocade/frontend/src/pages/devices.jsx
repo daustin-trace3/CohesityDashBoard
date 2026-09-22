@@ -3,7 +3,7 @@ import client from '../api.js';
 import {
   useToast, PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated,
   useTableControls, SortTh, TableControls, TablePager, portalOrInline,
-  BRAND, fmtNum, statusTone, parseJsonArr,
+  BRAND, fmtNum, statusTone, fmtStatus, parseJsonArr,
 } from '../ui.jsx';
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
@@ -42,7 +42,7 @@ function EnclosureDetailModal({ enclosure, devicePorts, onClose }) {
   return (
     <ModalShell title={enclosure.name} subtitle={[enclosure.type, enclosure.hostName, enclosure.ipAddress].filter(Boolean).join(' · ')} icon={HardDrive} onClose={onClose}>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <Badge tone={statusTone(enclosure.health)}>{enclosure.health || 'Unknown'}</Badge>
+        <Badge tone={statusTone(enclosure.health)}>{fmtStatus(enclosure.health)}</Badge>
         {enclosure.type && <Badge tone="neutral">{enclosure.type}</Badge>}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -168,7 +168,7 @@ export default function BrocadeDevicesPage() {
                       <td className="py-2 pr-3 text-ink-muted tnum">{e.ipAddress || '—'}</td>
                       <td className="py-2 pr-3 text-ink-faint">{e.vendor || '—'}</td>
                       <td className="py-2 pr-3 text-ink-faint">{e.model || '—'}</td>
-                      <td className="py-2 pr-3"><Badge tone={statusTone(e.health)}>{e.health || 'Unknown'}</Badge></td>
+                      <td className="py-2 pr-3"><Badge tone={statusTone(e.health)}>{fmtStatus(e.health)}</Badge></td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(e.portCount)}</td>
                     </tr>
                   ))}
