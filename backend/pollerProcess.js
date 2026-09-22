@@ -45,6 +45,9 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
+  // Start-up reads (platform flags, entitlement, plugin boot) belong to the
+  // default tenant; per-tenant work is entered explicitly later.
+  require('./core/tenantContext').enterTenantForBoot(require('./core/tenantRegistry').DEFAULT_TENANT);
   const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled, platformBrocadeEnabled, platformBluecatEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));

@@ -12,10 +12,18 @@ function runAsTenant(tenantId, fn) {
   return storage.run({ tenantId }, fn);
 }
 
+/** Boot only: the rest of this process's start-up, and every timer it
+ *  creates, runs as tenantId unless a runAsTenant call says otherwise.
+ *  Requests always get an explicit tenant from middleware/tenantScope.js;
+ *  timer work that serves every tenant uses tenantRegistry.forEachTenant. */
+function enterTenantForBoot(tenantId) {
+  storage.enterWith({ tenantId });
+}
+
 /** Current tenant id, or null when the caller is outside any tenant. */
 function currentTenantId() {
   const store = storage.getStore();
   return store ? store.tenantId : null;
 }
 
-module.exports = { runAsTenant, currentTenantId };
+module.exports = { runAsTenant, currentTenantId, enterTenantForBoot };

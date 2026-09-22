@@ -39,6 +39,9 @@ authService.pruneExpired();
 pluginBoot.runBootSwap();
 
 registry.init();
+// Start-up reads (platform flags, entitlement, plugin boot) belong to the
+// default tenant; per-tenant work is entered explicitly later.
+require('./core/tenantContext').enterTenantForBoot(require('./core/tenantRegistry').DEFAULT_TENANT);
 
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
