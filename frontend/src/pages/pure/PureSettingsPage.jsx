@@ -123,13 +123,9 @@ function Pure1SaaSTab() {
 
   return (
     <div className="animate-fade-in">
-      <div className="flex justify-end mb-3">
-        <RefreshButton onClick={load} />
-      </div>
-
       {/* Connection status */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <div className="flex items-center gap-2 mb-3"><Cloud size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Connection</p></div>
+        <div className="flex items-center gap-2 mb-3"><Cloud size={16} style={{ color: BRAND }} /><p className="text-sm font-semibold text-ink">Connection</p><span style={{ marginLeft: 'auto' }}><RefreshButton onClick={load} /></span></div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
           <span className="flex items-center gap-2">Status: {cfg.configured ? <Badge tone="ok">Configured</Badge> : <Badge tone="crit">Not configured</Badge>}</span>
           <span className="text-ink-muted">Key source: <span className="text-ink">{cfg.keySource}</span></span>
