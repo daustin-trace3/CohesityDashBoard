@@ -91,7 +91,7 @@ function SwitchDetailModal({ id, onClose }) {
   return (
     <ModalShell title={sw.name} subtitle={[sw.ipAddress, sw.model, sw.fabricName].filter(Boolean).join(' · ')} icon={Router} onClose={onClose} switchId={id}>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <Badge tone={statusTone(sw.operationalStatus)}>{fmtStatus(sw.operationalStatus || sw.status)}</Badge>
+        <Badge tone={statusTone(sw.operationalStatus || sw.status)}>{fmtStatus(sw.operationalStatus || sw.status)}</Badge>
         <Badge tone={statusTone(sw.health)}>{fmtStatus(sw.health)}</Badge>
         {sw.maintenanceMode ? <Badge tone="info">Maintenance mode</Badge> : null}
         {sw.eosStatus ? <Badge tone="warn">EOS</Badge> : null}
