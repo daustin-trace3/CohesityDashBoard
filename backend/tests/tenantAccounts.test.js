@@ -112,6 +112,9 @@ describe('tenants and membership', () => {
     expect((await agentAlice.get('/api/auth/session')).status).toBe(200);
     expect((await agentAlice.get('/api/tenants')).status).toBe(200);
     expect((await agentAlice.get('/api/clusters')).status).toBe(400);
+    // Pack assets load through <script> tags with no header: install-wide.
+    expect((await agentAlice.get('/api/plugins/frontend-manifest')).status).not.toBe(400);
+    expect((await agentAlice.get('/api/plugins/nothere/bundle.js')).status).not.toBe(400);
   });
 });
 

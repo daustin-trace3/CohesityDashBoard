@@ -30,7 +30,9 @@ function tenantScope(req, res, next) {
     // Signing in and listing tenants are install-wide: a browser that has not
     // picked a tenant yet must still be able to do both. Everything else
     // needs a tenant once there is more than one.
-    const installWide = /^[/](auth|tenants)([/?]|$)/.test(req.url);
+    // Pack assets are install-wide too: a <script> tag carries no header.
+    const installWide = /^[/](auth|tenants)([/?]|$)/.test(req.url)
+      || /^[/]plugins[/]([^/?]+[/]bundle\.js|frontend-manifest)([/?]|$)/.test(req.url);
     if (registry.isStrict() && !installWide) {
       return res.status(400).json({ error: 'This install has more than one tenant. Name the tenant in the request path (/api/t/<tenant>/...) or the x-icc-tenant header.' });
     }
