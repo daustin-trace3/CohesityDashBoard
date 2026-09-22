@@ -209,7 +209,7 @@ router.post('/login', authLimiter, async (req, res, next) => {
     accounts.audit('login', { actor: user, detail: { provider: user.auth_provider } });
 
     const grants = user.is_global_admin ? ['*:*:*'] : resolveGrants(db, user.id);
-    res.json({ user: userPayload(user, grants), tenants: tenantsFor({ id: user.id, isGlobalAdmin: !!user.is_global_admin }) });
+    res.json({ user: userPayload(user, grants), tenants: tenantsFor({ id: user.id, isGlobalAdmin: !!user.is_global_admin }), multiTenant: tenantRegistry.isStrict() });
   } catch (err) {
     next(err);
   }

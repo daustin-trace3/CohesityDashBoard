@@ -5,6 +5,18 @@ import { routerBasename, currentTenant, tenantHome } from '../tenant';
 
 const AuthContext = createContext(null);
 
+// The URL names no tenant on an install that has several: go to the only
+// tenant this account may enter, or to the picker. `afterLogin` forces it
+// from the login page, where the URL is about to change anyway.
+function settleTenant(data, afterLogin) {
+  if (!data || !data.multiTenant || currentTenant()) return;
+  const path = window.location.pathname;
+  if (!afterLogin && (path.startsWith('/login') || path.startsWith('/tenants'))) return;
+  const list = data.tenants || [];
+  if (list.length === 1) window.location.replace(tenantHome(list[0].id) + (afterLogin ? '' : path.replace(/^[/]/, '')));
+  else window.location.replace('/tenants');
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [permissions, setPermissions] = useState([]);
@@ -24,14 +36,7 @@ export function AuthProvider({ children }) {
       setCsrfToken(data.csrfToken);
       setTenants(data.tenants || []);
       setMultiTenant(!!data.multiTenant);
-      // The URL names no tenant on an install that has several: go to the
-      // only one this account may enter, or let the picker page choose.
-      const path = window.location.pathname;
-      if (data.multiTenant && !currentTenant() && !path.startsWith('/login') && !path.startsWith('/tenants')) {
-        const list = data.tenants || [];
-        if (list.length === 1) window.location.replace(tenantHome(list[0].id) + path.replace(/^\//, ''));
-        else window.location.replace('/tenants');
-      }
+      settleTenant(data, false);
       return data.user;
     } catch {
       setUser(null);
@@ -48,8 +53,10 @@ export function AuthProvider({ children }) {
   }, [loadSession]);
 
   const login = useCallback(async (username, password) => {
-    await client.post('/auth/login', { username, password });
-    return loadSession();
+    const { data } = await client.post('/auth/login', { username, password });
+    const user = await loadSession();
+    settleTenant(data, true);
+    return user;
   }, [loadSession]);
 
   const logout = useCallback(async () => {

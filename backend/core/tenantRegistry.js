@@ -7,6 +7,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 const { openTenantDb } = require('../db/openTenantDb');
+const { runAsTenant } = require('./tenantContext');
 
 const DEFAULT_TENANT = 'default';
 const TENANT_ID_RE = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
@@ -54,7 +55,35 @@ function getHandle(tenantId) {
   if (!getTenant(tenantId)) throw new Error(`Unknown tenant: ${tenantId}`);
   handle = openTenantDb(tenantDbPath(tenantId));
   handles.set(tenantId, handle);
+  // Installed plugin packs bring their own tables; a tenant database opened
+  // after boot gets them here (core/registry.js runs them on every tenant
+  // that is already open when a pack registers).
+  try {
+    require('./registry').migrateHandle(handle);
+  } catch (err) {
+    console.error(`[tenants] pack migrations failed for ${tenantId}: ${err.message}`);
+  }
   return handle;
+}
+
+/** Open handles right now, for work that must touch every tenant database. */
+function openHandles() {
+  return Array.from(handles.entries());
+}
+
+/** Runs fn once per active tenant, each inside its own tenant context. Used by
+ *  timer-driven work (sweeps, notifier, prewarm) that has no request to take
+ *  a tenant from. One tenant's failure does not stop the others. */
+function forEachTenant(fn) {
+  for (const t of listTenants()) {
+    if (t.status !== 'active') continue;
+    try {
+      const out = runAsTenant(t.id, () => fn(t.id));
+      if (out && typeof out.catch === 'function') out.catch((err) => console.error(`[tenants] ${t.id}: ${err.message}`));
+    } catch (err) {
+      console.error(`[tenants] ${t.id}: ${err.message}`);
+    }
+  }
 }
 
 function createTenant({ id, name }) {
@@ -79,4 +108,5 @@ function isStrict() {
 
 module.exports = {
   DEFAULT_TENANT, globalDb, getTenant, listTenants, getHandle, createTenant, isStrict, tenantDbPath,
+  forEachTenant, openHandles,
 };

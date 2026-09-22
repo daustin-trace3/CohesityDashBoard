@@ -686,7 +686,8 @@ let cronTask = null;
 
 function initAlertNotifier() {
   if (cronTask) return cronTask;
-  cronTask = cron.schedule('*/5 * * * *', () => { run(); });
+  const { forEachTenant } = require('../core/tenantRegistry');
+  cronTask = cron.schedule('*/5 * * * *', () => { forEachTenant(() => run()); });
   return cronTask;
 }
 

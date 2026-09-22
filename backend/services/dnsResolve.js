@@ -141,8 +141,10 @@ async function prewarmOnce() {
 
 /** Background pre-resolution of inventory IPs — run in the poller process. */
 function initDnsPrewarm() {
-  setTimeout(prewarmOnce, PREWARM_INITIAL_DELAY_MS);
-  prewarmTimer = setInterval(prewarmOnce, PREWARM_INTERVAL_MS);
+  const { forEachTenant } = require('../core/tenantRegistry');
+  const prewarmAll = () => forEachTenant(() => prewarmOnce());
+  setTimeout(prewarmAll, PREWARM_INITIAL_DELAY_MS);
+  prewarmTimer = setInterval(prewarmAll, PREWARM_INTERVAL_MS);
   logger.info('[DNS prewarm] Scheduled (every 30 min, first run in 2 min).');
 }
 

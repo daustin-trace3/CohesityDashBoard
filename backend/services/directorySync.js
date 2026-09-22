@@ -227,13 +227,17 @@ function isRunning() { return running; }
 /** Periodic sync; interval re-read from settings on each tick so a change applies without restart. */
 function startScheduler() {
   if (isDemo() || timer) return;
+  const { forEachTenant, DEFAULT_TENANT } = require('../core/tenantRegistry');
+  const { runAsTenant } = require('../core/tenantContext');
   const tick = async () => {
     try {
-      if (directory.isEnabled()) await runSync('schedule');
+      // Directory settings are per tenant (one directory per install in this
+      // version, configured in the default tenant; decision 10).
+      forEachTenant(async () => { if (directory.isEnabled()) await runSync('schedule'); });
     } catch (err) {
       logger.error(`[directory] scheduler: ${err.message}`);
     } finally {
-      const minutes = directory.getConfig().syncIntervalMinutes;
+      const minutes = runAsTenant(DEFAULT_TENANT, () => directory.getConfig().syncIntervalMinutes);
       timer = setTimeout(tick, minutes * 60000);
       if (timer.unref) timer.unref();
     }

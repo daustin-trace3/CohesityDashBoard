@@ -1130,14 +1130,18 @@ let timeoutHandle = null;
 
 function initServiceStatus() {
   if (intervalHandle) return;
+  const { forEachTenant } = require('../core/tenantRegistry');
   // A restart mid-analysis would otherwise leave events parked as 'running'.
-  try {
-    db.prepare("UPDATE service_alert_events SET analysis_status = 'pending' WHERE analysis_status = 'running'").run();
-  } catch (err) {
-    logger.error('[ServiceStatus] could not requeue running events:', err.message);
-  }
-  intervalHandle = setInterval(() => { sweep(); }, 60000);
-  timeoutHandle = setTimeout(() => { sweep(); }, 15000);
+  forEachTenant(() => {
+    try {
+      db.prepare("UPDATE service_alert_events SET analysis_status = 'pending' WHERE analysis_status = 'running'").run();
+    } catch (err) {
+      logger.error('[ServiceStatus] could not requeue running events:', err.message);
+    }
+  });
+  // One sweep per tenant per tick; each tenant has its own board.
+  intervalHandle = setInterval(() => { forEachTenant(() => sweep()); }, 60000);
+  timeoutHandle = setTimeout(() => { forEachTenant(() => sweep()); }, 15000);
 }
 
 function stopServiceStatus() {

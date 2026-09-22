@@ -125,9 +125,13 @@ function registerPlugin(manifest) {
   plugins.set(entry.id, entry);
 
   try {
-    const db = coreApiRef && coreApiRef.db;
-    if (db && Array.isArray(manifest.migrations) && manifest.migrations.length) {
-      runMigrations(db, entry.id, manifest.migrations);
+    // Every tenant database gets the pack's tables: the ones already open
+    // now, the rest when they are opened (core/tenantRegistry.js getHandle).
+    if (coreApiRef && Array.isArray(manifest.migrations) && manifest.migrations.length) {
+      const tenants = require('./tenantRegistry');
+      const open = tenants.openHandles();
+      if (!open.length) tenants.getHandle(tenants.DEFAULT_TENANT);
+      for (const [, handle] of tenants.openHandles()) runMigrations(handle, entry.id, manifest.migrations);
     }
     entry.router = manifest.createRouter(coreApiRef);
     if (typeof manifest.createPoller === 'function') {
@@ -177,6 +181,14 @@ function getPollerHandle(id) {
 
 function listPlugins() {
   return Array.from(plugins.values()).map(toPublic);
+}
+
+/** Runs every registered pack's migrations against one tenant database. */
+function migrateHandle(handle) {
+  for (const entry of plugins.values()) {
+    const m = entry.manifest && entry.manifest.migrations;
+    if (Array.isArray(m) && m.length) runMigrations(handle, entry.id, m);
+  }
 }
 
 /** Test-only: the raw routers, so a route walk can cover platform routes. */
@@ -375,6 +387,7 @@ function isBuiltinPresent(id) { return builtinIds.has(id); }
 
 module.exports = {
   _routers,
+  migrateHandle,
   PLUGIN_API_VERSION,
   RESERVED_IDS,
   markBuiltin,
