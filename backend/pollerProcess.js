@@ -104,6 +104,7 @@ if (isDemo()) {
   initViews();
   initGflags();
   initDnsPrewarm();
+  require('./core/tenantLifecycle').initRetention();
   logger.info('[Poller process] All pollers scheduled (Cohesity, plugins, licensing, views, gflags, alert notifier, DNS prewarm).');
 }
 

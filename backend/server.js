@@ -104,6 +104,7 @@ if (require.main === module) {
       // The demo's poller process idles (pollers disabled above), so the API
       // process is the only place Service Status can run its 1-minute sweep.
       initServiceStatus();
+      require('./core/tenantLifecycle').initRetention();
     } else if (process.env.RUN_POLLERS_INLINE === 'true') {
       // Legacy single-process mode: pollers share the API event loop, so
       // heavy poll cycles can stall API responses. Prefer the separate

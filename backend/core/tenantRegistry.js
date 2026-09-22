@@ -29,6 +29,12 @@ globalDb.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
+globalDb.exec(`
+  CREATE TABLE IF NOT EXISTS global_settings (key TEXT PRIMARY KEY, value TEXT);
+`);
+if (!globalDb.prepare("PRAGMA table_info('tenants')").all().some((c) => c.name === 'closed_at')) {
+  globalDb.exec('ALTER TABLE tenants ADD COLUMN closed_at TEXT');
+}
 globalDb.prepare("INSERT OR IGNORE INTO tenants (id, name) VALUES (?, 'Default')").run(DEFAULT_TENANT);
 
 const handles = new Map();
@@ -39,11 +45,19 @@ function tenantDbPath(tenantId) {
 }
 
 function getTenant(tenantId) {
-  return globalDb.prepare('SELECT id, name, status, created_at AS createdAt FROM tenants WHERE id = ?').get(tenantId) || null;
+  return globalDb.prepare('SELECT id, name, status, created_at AS createdAt, closed_at AS closedAt FROM tenants WHERE id = ?').get(tenantId) || null;
 }
 
 function listTenants() {
-  return globalDb.prepare('SELECT id, name, status, created_at AS createdAt FROM tenants ORDER BY name').all();
+  return globalDb.prepare('SELECT id, name, status, created_at AS createdAt, closed_at AS closedAt FROM tenants ORDER BY name').all();
+}
+
+/** Closes and forgets the open handle of a tenant (close into archive). */
+function closeHandle(tenantId) {
+  const handle = handles.get(tenantId);
+  if (!handle) return;
+  handles.delete(tenantId);
+  try { handle.close(); } catch { /* already closed */ }
 }
 
 /** Open (once) and return the database handle of a tenant that exists. */
@@ -52,7 +66,9 @@ function getHandle(tenantId) {
   if (handle) return handle;
   // The id becomes part of a file path, so it is checked against the tenant
   // list before it is ever joined to one.
-  if (!getTenant(tenantId)) throw new Error(`Unknown tenant: ${tenantId}`);
+  const tenant = getTenant(tenantId);
+  if (!tenant) throw new Error(`Unknown tenant: ${tenantId}`);
+  if (tenant.status === 'closed') throw new Error(`Tenant is closed: ${tenantId}`);
   handle = openTenantDb(tenantDbPath(tenantId));
   handles.set(tenantId, handle);
   // Installed plugin packs bring their own tables; a tenant database opened
@@ -112,5 +128,5 @@ function isStrict() {
 
 module.exports = {
   DEFAULT_TENANT, globalDb, getTenant, listTenants, getHandle, createTenant, isStrict, tenantDbPath,
-  forEachTenant, openHandles,
+  forEachTenant, openHandles, closeHandle,
 };

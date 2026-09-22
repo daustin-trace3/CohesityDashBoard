@@ -464,4 +464,22 @@ module.exports = [
       `);
     },
   },
+  // Per-tenant audit log (multi-tenant decision 16): what happened inside
+  // this tenant. Sign-ins, switches and tenant administration go to the
+  // global audit log in the global database instead.
+  {
+    version: 20,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tenant_audit (
+          id      INTEGER PRIMARY KEY AUTOINCREMENT,
+          at      TEXT NOT NULL,
+          actor   TEXT,
+          action  TEXT NOT NULL,
+          detail  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_tenant_audit_at ON tenant_audit(at);
+      `);
+    },
+  },
 ];

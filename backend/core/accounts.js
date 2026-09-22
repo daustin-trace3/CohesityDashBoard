@@ -178,6 +178,7 @@ function addMember(tenantId, userId, addedBy = null, { defaultGroup = true } = {
     .run(tenantId, userId, now(), addedBy).changes === 1;
   runAsTenant(tenantId, () => {
     writeMirror(user);
+    if (fresh) tenantAudit('member.added', addedBy, { username: user.username });
     if (fresh && defaultGroup) {
       const tdb = require('../db/database');
       const viewer = tdb.prepare("SELECT id FROM groups WHERE name = 'Viewer'").get();
@@ -195,6 +196,7 @@ function removeMember(tenantId, userId) {
     const tdb = require('../db/database');
     tdb.prepare("DELETE FROM role_grants WHERE subject_type = 'user' AND subject_id = ?").run(userId);
     tdb.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    if (gone) tenantAudit('member.removed', null, { userId });
   });
   return gone;
 }
@@ -207,6 +209,13 @@ function ensureMirrorHere(user) {
 }
 
 // --- audit ---------------------------------------------------------------------
+
+/** The current tenant's own log; lazy so accounts.js stays loadable first. */
+function tenantAudit(action, actor, detail) {
+  try {
+    require('./tenantLifecycle').auditTenant(action, { actor: typeof actor === 'string' ? { username: actor } : actor, detail });
+  } catch { /* table not there yet on a very old database */ }
+}
 
 function audit(action, { actor = null, tenantId = null, detail = null } = {}) {
   g.prepare('INSERT INTO global_audit (at, actor_id, actor, action, tenant_id, detail) VALUES (?, ?, ?, ?, ?, ?)')

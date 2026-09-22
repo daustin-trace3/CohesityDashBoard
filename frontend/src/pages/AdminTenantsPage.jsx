@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, Plus, UserPlus, Trash2, PauseCircle, PlayCircle } from 'lucide-react';
+import { Building2, Plus, UserPlus, Trash2, PauseCircle, PlayCircle, Download, Archive, ArchiveRestore } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LoadingPanel } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -62,6 +62,48 @@ export default function AdminTenantsPage() {
     return base.includes(id) ? base.filter((p) => p !== id) : [...base, id];
   });
 
+  const exportTenant = async (t) => {
+    try {
+      const res = await client.post(`/tenants/${t.id}/export`, null, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${t.id}-export.zip`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast({ type: 'error', title: 'Export failed', message: err?.response?.data?.error });
+    }
+  };
+
+  const closeTenant = async (t) => {
+    if (!window.confirm(`Close ${t.name}? Its database is sealed into the archive and removed from the live pool. It can be restored while the archive is kept.`)) return;
+    try {
+      await client.post(`/tenants/${t.id}/close`);
+      await load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not close tenant', message: err?.response?.data?.error });
+    }
+  };
+
+  const restoreTenant = async (t) => {
+    try {
+      await client.post(`/tenants/${t.id}/restore`);
+      await load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not restore tenant', message: err?.response?.data?.error });
+    }
+  };
+
+  const setRetention = async (t) => {
+    const v = window.prompt(`History retention for ${t.name}, in days (0 = each platform's own default)`, String(t.retentionDays ?? 0));
+    if (v == null) return;
+    try {
+      await client.put(`/tenants/${t.id}`, { retentionDays: Number(v) });
+      await load();
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not set retention', message: err?.response?.data?.error });
+    }
+  };
+
   const setStatus = async (t, status) => {
     const verb = status === 'suspended' ? 'Suspend' : 'Resume';
     if (!window.confirm(`${verb} ${t.name}? ${status === 'suspended' ? 'Polling stops and members only reach the licence page.' : 'Polling and access resume.'}`)) return;
@@ -119,7 +161,7 @@ export default function AdminTenantsPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                    <th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Id</th><th className="py-2 pr-3">Status</th><th className="py-2 pr-3">License</th><th className="py-2 pr-3">Platforms</th><th className="py-2 pr-3">Members</th><th className="py-2 pr-3"></th>
+                    <th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Id</th><th className="py-2 pr-3">Status</th><th className="py-2 pr-3">License</th><th className="py-2 pr-3">Platforms / retention</th><th className="py-2 pr-3">Members</th><th className="py-2 pr-3"></th>
                   </tr></thead>
                   <tbody>
                     {tenants.map((t) => (
@@ -127,19 +169,34 @@ export default function AdminTenantsPage() {
                         className={`border-b border-cohesity-border/50 cursor-pointer transition-colors ${selected === t.id ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'}`}>
                         <td className="py-2 pr-3 text-ink font-medium">{t.name}</td>
                         <td className="py-2 pr-3 text-ink-muted font-mono text-xs">{t.id}</td>
-                        <td className="py-2 pr-3"><Badge tone={t.status === 'active' ? 'ok' : 'warn'}>{t.status}</Badge></td>
+                        <td className="py-2 pr-3"><Badge tone={t.status === 'active' ? 'ok' : t.status === 'closed' ? 'neutral' : 'warn'}>{t.status}</Badge></td>
                         <td className="py-2 pr-3 text-xs text-ink-muted">{t.license?.state}{t.license?.expiry ? ` to ${t.license.expiry}` : ''}</td>
-                        <td className="py-2 pr-3 text-xs text-ink-muted">{(t.platforms || []).length}</td>
+                        <td className="py-2 pr-3 text-xs text-ink-muted" title="Click to set history retention" onClick={(e) => { e.stopPropagation(); if (t.status !== 'closed') setRetention(t); }}>
+                          {(t.platforms || []).length}{t.status !== 'closed' && <span className="text-ink-faint"> / {t.retentionDays ? `${t.retentionDays}d` : 'default'}</span>}
+                        </td>
                         <td className="py-2 pr-3 text-xs text-ink-muted tnum">{t.members}</td>
                         <td className="py-2 pr-3 text-right whitespace-nowrap">
-                          {t.id !== 'default' && (
-                            <button onClick={(e) => { e.stopPropagation(); setStatus(t, t.status === 'active' ? 'suspended' : 'active'); }}
-                              title={t.status === 'active' ? 'Suspend' : 'Resume'} aria-label={`${t.status === 'active' ? 'Suspend' : 'Resume'} ${t.name}`}
-                              className="text-ink-faint hover:text-ink cursor-pointer mr-3 align-middle">
-                              {t.status === 'active' ? <PauseCircle size={14} /> : <PlayCircle size={14} />}
-                            </button>
+                          {t.status === 'closed' ? (
+                            <button onClick={(e) => { e.stopPropagation(); restoreTenant(t); }} title="Restore from archive" aria-label={`Restore ${t.name}`}
+                              className="text-ink-faint hover:text-ink cursor-pointer align-middle"><ArchiveRestore size={14} /></button>
+                          ) : (
+                            <>
+                              <button onClick={(e) => { e.stopPropagation(); exportTenant(t); }} title="Export (database without secrets, plus CSVs)" aria-label={`Export ${t.name}`}
+                                className="text-ink-faint hover:text-ink cursor-pointer mr-3 align-middle"><Download size={14} /></button>
+                              {t.id !== 'default' && (
+                                <>
+                                  <button onClick={(e) => { e.stopPropagation(); setStatus(t, t.status === 'active' ? 'suspended' : 'active'); }}
+                                    title={t.status === 'active' ? 'Suspend' : 'Resume'} aria-label={`${t.status === 'active' ? 'Suspend' : 'Resume'} ${t.name}`}
+                                    className="text-ink-faint hover:text-ink cursor-pointer mr-3 align-middle">
+                                    {t.status === 'active' ? <PauseCircle size={14} /> : <PlayCircle size={14} />}
+                                  </button>
+                                  <button onClick={(e) => { e.stopPropagation(); closeTenant(t); }} title="Close into archive" aria-label={`Close ${t.name}`}
+                                    className="text-ink-faint hover:text-status-crit cursor-pointer mr-3 align-middle"><Archive size={14} /></button>
+                                </>
+                              )}
+                              <a href={tenantHome(t.id)} className="text-xs text-brand hover:underline" onClick={(e) => e.stopPropagation()}>Open</a>
+                            </>
                           )}
-                          <a href={tenantHome(t.id)} className="text-xs text-brand hover:underline" onClick={(e) => e.stopPropagation()}>Open</a>
                         </td>
                       </tr>
                     ))}

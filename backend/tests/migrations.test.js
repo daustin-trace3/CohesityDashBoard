@@ -245,7 +245,7 @@ const NEW_TABLES = [
   'bluecat_metrics_history', 'bluecat_issue_history',
   'service_alert_events', 'service_alert_analyses', 'service_status_timeline',
   'app_service_watch', 'app_service_state', 'app_service_catalog',
-  'alert_notify_platform', 'alert_notify_types',
+  'alert_notify_platform', 'alert_notify_types', 'tenant_audit',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms, cohesity
   // v12 alerts.closed_reason), so their

@@ -12,6 +12,8 @@ const { getSetting, setSetting } = require('../services/settings');
 const { authEnabled, hashPassword } = require('../services/authService');
 const { getLicenseStatus } = require('../services/license');
 const logger = require('../utils/logger');
+const lifecycle = require('../core/tenantLifecycle');
+const EXPORT_DIR = path.join(lifecycle.ARCHIVE_DIR, '..', 'exports');
 
 /** Platform ids a tenant can be given: the built-in Cohesity plus every
  *  registered platform that the install itself is entitled to. */
@@ -33,6 +35,9 @@ function applyPlatforms(tenantId, platforms) {
 }
 
 function tenantView(t) {
+  if (t.status === 'closed') {
+    return { id: t.id, name: t.name, status: t.status, createdAt: t.createdAt, closedAt: t.closedAt, platforms: [], license: { state: 'closed' }, members: accounts.membersOf(t.id).length, retentionDays: 0 };
+  }
   return runAsTenant(t.id, () => {
     let platforms = null;
     try { platforms = JSON.parse(getSetting('tenant_platforms') || 'null'); } catch { platforms = null; }
@@ -42,6 +47,7 @@ function tenantView(t) {
       platforms: Array.isArray(platforms) ? platforms : installPlatforms(),
       license: { state: license.state, expiry: license.effectiveExpiry || null, daysLeft: license.daysLeft ?? null },
       members: accounts.membersOf(t.id).length,
+      retentionDays: lifecycle.retentionDays(),
     };
   });
 }
@@ -102,7 +108,54 @@ router.get('/manage', requireGlobalAdmin, (req, res) => {
   res.json({
     platforms: installPlatforms(),
     tenants: registry.listTenants().map(tenantView),
+    archiveRetentionDays: lifecycle.archiveRetentionDays(),
   });
+});
+
+/** Archive retention for closed tenants (global). */
+router.put('/archive-retention', requireGlobalAdmin, (req, res) => {
+  const n = Number((req.body || {}).days);
+  if (!(n >= 1 && n <= 3650)) return res.status(400).json({ error: 'days must be between 1 and 3650' });
+  lifecycle.setArchiveRetentionDays(n);
+  accounts.audit('archive.retention', { actor: req.auth.user || null, detail: { days: Math.round(n) } });
+  res.json({ archiveRetentionDays: lifecycle.archiveRetentionDays() });
+});
+
+/** The tenant's own audit log (this tenant, admin permission there). */
+router.get('/audit/tenant', (req, res) => {
+  const { hasPermission } = require('../services/rbac');
+  if (!req.auth || !hasPermission(req.auth.grants || [], 'admin:users:view')) return res.status(403).json({ error: 'forbidden', required: 'admin:users:view' });
+  res.json({ tenant: req.tenantId, entries: lifecycle.listTenantAudit(req.query.limit) });
+});
+
+/** Export: a zip with the database minus secrets plus CSVs, downloaded once. */
+router.post('/:id/export', requireGlobalAdmin, async (req, res) => {
+  if (!registry.getTenant(req.params.id)) return res.status(404).json({ error: 'Unknown tenant' });
+  try {
+    const file = await lifecycle.exportTenant(req.params.id, EXPORT_DIR, req.auth.user || null);
+    res.download(file, path.basename(file), (err) => {
+      if (err) logger.error(`[tenants] export download failed: ${err.message}`);
+      try { require('fs').unlinkSync(file); } catch { /* best effort */ }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/:id/close', requireGlobalAdmin, (req, res) => {
+  try {
+    res.json({ ok: true, ...lifecycle.closeTenant(req.params.id, req.auth.user || null) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/:id/restore', requireGlobalAdmin, (req, res) => {
+  try {
+    res.json(tenantView(lifecycle.restoreTenant(req.params.id, req.auth.user || null)));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 router.get('/audit', requireGlobalAdmin, (req, res) => {
@@ -162,8 +215,15 @@ router.post('/', requireGlobalAdmin, (req, res) => {
 router.put('/:id', requireGlobalAdmin, (req, res) => {
   const tenant = registry.getTenant(req.params.id);
   if (!tenant) return res.status(404).json({ error: 'Unknown tenant' });
-  const { name, status, platforms } = req.body || {};
+  const { name, status, platforms, retentionDays } = req.body || {};
   const actor = req.auth.user || null;
+  if (tenant.status === 'closed') return res.status(400).json({ error: 'Restore the tenant before changing it.' });
+  if (retentionDays !== undefined) {
+    const n = Number(retentionDays);
+    if (!(n === 0 || (n >= 1 && n <= 3650))) return res.status(400).json({ error: 'retentionDays must be 0 (platform defaults) or between 1 and 3650' });
+    runAsTenant(tenant.id, () => setSetting(lifecycle.RETENTION_SETTING, String(Math.round(n))));
+    accounts.audit('tenant.retention', { actor, tenantId: tenant.id, detail: { days: Math.round(n) } });
+  }
   if (status !== undefined) {
     if (!['active', 'suspended'].includes(status)) return res.status(400).json({ error: "status must be 'active' or 'suspended'" });
     if (tenant.id === registry.DEFAULT_TENANT && status === 'suspended') return res.status(400).json({ error: 'The default tenant cannot be suspended.' });
