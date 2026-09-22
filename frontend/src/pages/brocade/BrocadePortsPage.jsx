@@ -4,7 +4,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtNum, statusTone } from './helpers';
+import { BRAND, fmtNum, statusTone, fmtStatus } from './helpers';
 import BrocadePortCompareModal from './BrocadePortCompareModal';
 
 const MAX_COMPARE = 8;
@@ -121,9 +121,9 @@ export default function BrocadePortsPage() {
                       <td className="py-2 pr-3 text-ink-faint max-w-[200px] truncate" title={p.name || ''}>{p.name || '—'}</td>
                       <td className="py-2 pr-3 text-ink-faint">{p.fabricName || '—'}</td>
                       <td className="py-2 pr-3 text-ink-faint">{p.type || '—'}</td>
-                      <td className="py-2 pr-3"><Badge tone={statusTone(p.state)}>{p.state || 'Unknown'}</Badge></td>
+                      <td className="py-2 pr-3"><Badge tone={statusTone(p.state)}>{fmtStatus(p.state)}</Badge></td>
                       <td className="py-2 pr-3">
-                        <Badge tone={statusTone(p.health)}>{p.health || 'Unknown'}</Badge>
+                        <Badge tone={statusTone(p.health)}>{fmtStatus(p.health)}</Badge>
                         {(p.fenced || p.blocked) && <Badge tone="crit" className="ml-1">{p.fenced ? 'Fenced' : 'Blocked'}</Badge>}
                       </td>
                       <td className="py-2 pr-3 text-ink-muted tnum">{p.speed || '—'}</td>

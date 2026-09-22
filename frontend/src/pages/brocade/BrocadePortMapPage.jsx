@@ -5,7 +5,7 @@ import { Grid3x3, X, Search, HeartPulse, LayoutGrid, Waypoints, Server, AlertTri
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { BRAND, fmtWhen, statusTone, severityTone, scoreTone, parseJsonArr } from './helpers';
+import { BRAND, fmtWhen, statusTone, fmtStatus, severityTone, scoreTone, parseJsonArr } from './helpers';
 
 const COL_GAP_EVERY = 8;
 const SQ = 18;
@@ -271,8 +271,8 @@ function PortDetails({ port, peerInfo, onSelectPeer }) {
         <p className="text-[11px] text-ink-faint">{port.type || 'Unknown type'}</p>
       </div>
       <div className="flex items-center gap-1.5 flex-wrap">
-        <Badge tone={statusTone(port.state)}>{port.state || 'Unknown'}</Badge>
-        {port.status && <Badge tone={statusTone(port.status)}>{port.status}</Badge>}
+        <Badge tone={statusTone(port.state)}>{fmtStatus(port.state)}</Badge>
+        {port.status && <Badge tone={statusTone(port.status)}>{fmtStatus(port.status)}</Badge>}
         {(port.fenced || port.blocked) && <Badge tone="crit">{port.fenced ? 'Fenced' : 'Blocked'}</Badge>}
         {port.persistentDisable === 1 && <Badge tone="warn">Persistent disable</Badge>}
       </div>
@@ -413,7 +413,7 @@ function SummaryCards({ switchInfo, healthScore, ports }) {
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <StatCard icon={HeartPulse} label="Health Score" value={healthScore ? healthScore.score : '—'}
           sub={healthScore?.status || 'unknown'} tone={healthScore ? scoreTone(healthScore.score) : 'default'} />
-        <StatCard icon={Waypoints} label="Operational Status" value={sw.operational_status || sw.operationalStatus || 'Unknown'}
+        <StatCard icon={Waypoints} label="Operational Status" value={fmtStatus(sw.operational_status || sw.operationalStatus)}
           sub={sw.status_reason || sw.statusReason || ''} tone={statusTone(sw.operational_status || sw.operationalStatus) === 'ok' ? 'ok' : statusTone(sw.operational_status || sw.operationalStatus) === 'crit' ? 'crit' : statusTone(sw.operational_status || sw.operationalStatus) === 'warn' ? 'warn' : 'default'} />
         <StatCard icon={LayoutGrid} label="Firmware" value={sw.firmware_version || sw.firmwareVersion || '—'}
           sub={sw.eos_status || sw.eosStatus ? 'End of support' : ''} tone={(sw.eos_status || sw.eosStatus) ? 'warn' : 'default'} />
@@ -527,7 +527,7 @@ function IslTable({ ports }) {
             {eports.map((p) => (
               <tr key={p.id} className="border-t border-cohesity-border">
                 <td className="py-1.5 pr-3 text-ink tnum">{p.slotNumber != null ? `${p.slotNumber}/` : ''}{p.portNumber}</td>
-                <td className="py-1.5 pr-3"><Badge tone={statusTone(p.state)}>{p.state || 'Unknown'}</Badge></td>
+                <td className="py-1.5 pr-3"><Badge tone={statusTone(p.state)}>{fmtStatus(p.state)}</Badge></td>
                 <td className="py-1.5 pr-3 text-ink tnum">{speedLabel(p)}</td>
                 <td className="py-1.5 pr-3 text-ink-faint truncate max-w-[160px]">{p.remoteDevice || p.remotePortWwn || '—'}</td>
                 <td className="py-1.5">{p.trunked ? <Badge tone="info">Trunked</Badge> : <span className="text-ink-faint">—</span>}</td>
@@ -883,8 +883,8 @@ export default function BrocadePortMapPage() {
                   <p className="text-[11px] text-ink-faint">{[sw.model, sw.ipAddress, sw.fabricName].filter(Boolean).join(' · ')}</p>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <Badge tone={statusTone(sw.operationalStatus)}>{sw.operationalStatus || 'Unknown'}</Badge>
-                  <Badge tone={statusTone(sw.health)}>{sw.health || 'Unknown'}</Badge>
+                  <Badge tone={statusTone(sw.operationalStatus)}>{fmtStatus(sw.operationalStatus)}</Badge>
+                  <Badge tone={statusTone(sw.health)}>{fmtStatus(sw.health)}</Badge>
                 </div>
               </div>
 
