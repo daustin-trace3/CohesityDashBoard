@@ -1,10 +1,13 @@
 // Auth service (contract C8.3): password hashing, hand-rolled sessions
-// (no express-session), and the first-run claim token.
+// (no express-session), and the first-run claim token. Accounts and sessions
+// live in the global database (core/accounts.js); grants are resolved in the
+// tenant the request is in.
 const argon2 = require('argon2');
 const crypto = require('crypto');
 const db = require('../db/database');
 const logger = require('../utils/logger');
 const { resolveGrants } = require('./rbac');
+const accounts = require('../core/accounts');
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const REFRESH_THRESHOLD_MS = 6 * 24 * 60 * 60 * 1000; // sliding refresh once <6d left
@@ -36,6 +39,7 @@ function toPublicUser(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastLoginAt: row.last_login_at,
+    isGlobalAdmin: !!row.is_global_admin,
   };
 }
 
@@ -44,17 +48,7 @@ function toPublicUser(row) {
  * @returns {{id: string, csrfToken: string}}
  */
 function createSession(userId) {
-  const id = generateToken(32);
-  const csrfToken = generateToken(32);
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
-
-  db.prepare(`
-    INSERT INTO auth_sessions (id, user_id, csrf_token, created_at, expires_at, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, userId, csrfToken, now.toISOString(), expiresAt.toISOString(), now.toISOString());
-
-  return { id, csrfToken };
+  return accounts.createSession(userId, SESSION_TTL_MS);
 }
 
 /**
@@ -66,41 +60,38 @@ function createSession(userId) {
  */
 function validateSession(sessionId) {
   bootOnce();
-  const session = db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(sessionId);
+  const session = accounts.getSession(sessionId);
   if (!session) return null;
 
   const now = new Date();
   const expiresAt = new Date(session.expires_at);
   if (expiresAt.getTime() <= now.getTime()) {
-    db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(sessionId);
+    accounts.destroySession(sessionId);
     return null;
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.user_id);
+  const user = accounts.getUser(session.user_id);
   if (!user || !user.is_active) {
-    db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(sessionId);
+    accounts.destroySession(sessionId);
     return null;
   }
 
   const remainingMs = expiresAt.getTime() - now.getTime();
-  if (remainingMs < REFRESH_THRESHOLD_MS) {
-    const newExpiresAt = new Date(now.getTime() + SESSION_TTL_MS);
-    db.prepare('UPDATE auth_sessions SET expires_at = ?, last_seen_at = ? WHERE id = ?')
-      .run(newExpiresAt.toISOString(), now.toISOString(), sessionId);
-  } else {
-    db.prepare('UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?').run(now.toISOString(), sessionId);
-  }
+  accounts.touchSession(sessionId, remainingMs < REFRESH_THRESHOLD_MS ? new Date(now.getTime() + SESSION_TTL_MS).toISOString() : null);
 
-  const grants = resolveGrants(db, user.id);
+  // Grants come from the tenant the request is in. A global admin is an
+  // admin everywhere (decision 7); membership itself is checked by
+  // middleware/tenantMembership.js.
+  const grants = user.is_global_admin ? ['*:*:*'] : resolveGrants(db, user.id);
   return { user: toPublicUser(user), grants, csrfToken: session.csrf_token };
 }
 
 function destroySession(sessionId) {
-  db.prepare('DELETE FROM auth_sessions WHERE id = ?').run(sessionId);
+  accounts.destroySession(sessionId);
 }
 
 function pruneExpired() {
-  db.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?').run(new Date().toISOString());
+  accounts.pruneSessions();
 }
 
 // --- Claim token (contract C8.3) ---
@@ -108,7 +99,7 @@ let claimToken = null;
 let claimTokenGenerated = false;
 
 function userCount() {
-  return db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+  return accounts.userCount();
 }
 
 function bootClaimTokenCheck() {
@@ -127,16 +118,15 @@ function getClaimToken() {
   return userCount() === 0 ? claimToken : null;
 }
 
-// Boot-time work: prune stale sessions and generate the first-run claim
-// token if needed. Users and sessions still live in the tenant database
-// (they move to the global database in multi-tenant phase 2), so this runs
-// inside the first request of each tenant instead of at module load, where
-// there is no tenant.
-const booted = new Set();
+// Boot-time work, once per process on the first auth call: move a
+// single-tenant install's accounts into the global database, prune stale
+// sessions and generate the first-run claim token if needed.
+let booted = false;
 function bootOnce() {
-  const tenant = require('../core/tenantScoped').resolveTenantId();
-  if (booted.has(tenant)) return;
-  booted.add(tenant);
+  if (booted) return;
+  booted = true;
+  const moved = accounts.migrateFromDefaultTenant();
+  if (moved.moved) logger.info(`[auth] Moved ${moved.moved} account(s) from the default tenant into the global database`);
   pruneExpired();
   bootClaimTokenCheck();
 }
@@ -171,4 +161,5 @@ module.exports = {
   getClaimToken,
   authEnabled,
   anonymousAuth,
+  ensureBooted: bootOnce,
 };

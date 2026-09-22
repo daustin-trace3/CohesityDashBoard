@@ -15,9 +15,13 @@ const {
   destroySession,
   getClaimToken,
   authEnabled,
+  ensureBooted,
 } = require('../services/authService');
 const { resolveGrants, hasPermission } = require('../services/rbac');
 const { setSetting } = require('../services/settings');
+const accounts = require('../core/accounts');
+const tenantRegistry = require('../core/tenantRegistry');
+const { currentTenantId } = require('../core/tenantContext');
 
 const router = express.Router();
 
@@ -89,12 +93,40 @@ function userPayload(user, grants) {
     username: user.username,
     displayName: user.displayName !== undefined ? user.displayName : user.display_name,
     permissions: grants,
+    isGlobalAdmin: user.isGlobalAdmin !== undefined ? !!user.isGlobalAdmin : !!user.is_global_admin,
   };
+}
+
+// Accounts are read on every route here, so the one-time move of a
+// single-tenant install's accounts must have happened first.
+router.use((req, res, next) => { ensureBooted(); next(); });
+
+/** The install's first account: a global admin (decision 7), member of the
+ *  tenant it was created in, in that tenant's Admin group. */
+async function createFirstAdmin(cleanUsername, password) {
+  const passwordHash = await hashPassword(String(password));
+  const user = accounts.createUser({ username: cleanUsername, passwordHash, displayName: cleanUsername, isGlobalAdmin: 1 });
+  const tenantId = currentTenantId() || tenantRegistry.DEFAULT_TENANT;
+  accounts.addMember(tenantId, user.id, 'setup');
+  const adminGroup = db.prepare("SELECT id FROM groups WHERE name = 'Admin'").get();
+  if (adminGroup) {
+    db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)').run(user.id, adminGroup.id);
+  }
+  accounts.audit('account.created', { actor: user, tenantId, detail: { username: cleanUsername, globalAdmin: true, by: 'setup' } });
+  return user;
+}
+
+/** What the switcher needs: the tenants this account may enter. A global
+ *  admin may enter all of them. */
+function tenantsFor(user) {
+  const all = tenantRegistry.listTenants();
+  const ids = user.isGlobalAdmin ? new Set(all.map((t) => t.id)) : new Set(accounts.tenantsOf(user.id));
+  return all.filter((t) => ids.has(t.id)).map((t) => ({ id: t.id, name: t.name, status: t.status }));
 }
 
 /** GET /api/auth/setup-status */
 router.get('/setup-status', (req, res) => {
-  const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+  const count = accounts.userCount();
   const dir = directory.getConfig();
   res.json({
     needsSetup: count === 0,
@@ -107,8 +139,7 @@ router.get('/setup-status', (req, res) => {
 router.post('/setup', authLimiter, async (req, res, next) => {
   try {
     const { token, username, password } = req.body || {};
-    const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-    if (count !== 0) return res.status(403).json({ error: 'Setup has already been completed.' });
+    if (accounts.userCount() !== 0) return res.status(403).json({ error: 'Setup has already been completed.' });
 
     const expected = getClaimToken();
     if (!expected || !token || token !== expected) {
@@ -119,25 +150,10 @@ router.post('/setup', authLimiter, async (req, res, next) => {
       return res.status(400).json({ error: 'username and password are required.' });
     }
 
-    const now = new Date().toISOString();
-    const passwordHash = await hashPassword(String(password));
-    const info = db.prepare(`
-      INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(cleanUsername, passwordHash, cleanUsername, now, now);
-
-    const adminGroup = db.prepare("SELECT id FROM groups WHERE name = 'Admin'").get();
-    if (adminGroup) {
-      db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)')
-        .run(info.lastInsertRowid, adminGroup.id);
-    }
-
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+    const user = await createFirstAdmin(cleanUsername, password);
     const session = createSession(user.id);
     setSessionCookie(req, res, session.id);
-
-    const grants = resolveGrants(db, user.id);
-    res.json({ user: userPayload(user, grants) });
+    res.json({ user: userPayload(user, ['*:*:*']) });
   } catch (err) {
     next(err);
   }
@@ -159,7 +175,7 @@ router.post('/login', authLimiter, async (req, res, next) => {
     // Local accounts are checked here and win on a name clash (break-glass).
     // Directory accounts always re-verify against the domain: their stored
     // hash is a placeholder and their group membership is refreshed on login.
-    let user = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username));
+    let user = accounts.findUserByUsername(String(username));
     if (user && user.auth_provider !== 'local') user = null;
 
     if (user) {
@@ -186,13 +202,14 @@ router.post('/login', authLimiter, async (req, res, next) => {
     }
     failedLogins.delete(String(username));
 
-    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), user.id);
+    accounts.updateUser(user.id, { lastLoginAt: new Date().toISOString() });
 
     const session = createSession(user.id);
     setSessionCookie(req, res, session.id);
+    accounts.audit('login', { actor: user, detail: { provider: user.auth_provider } });
 
-    const grants = resolveGrants(db, user.id);
-    res.json({ user: userPayload(user, grants) });
+    const grants = user.is_global_admin ? ['*:*:*'] : resolveGrants(db, user.id);
+    res.json({ user: userPayload(user, grants), tenants: tenantsFor({ id: user.id, isGlobalAdmin: !!user.is_global_admin }) });
   } catch (err) {
     next(err);
   }
@@ -206,6 +223,7 @@ router.post('/logout', (req, res) => {
 
   destroySession(sessionId);
   clearSessionCookie(req, res);
+  accounts.audit('logout', { actor: session.user });
   res.json({ ok: true });
 });
 
@@ -230,6 +248,10 @@ router.get('/session', (req, res) => {
     authEnabled: authEnabled(),
     user: userPayload(session.user, session.grants),
     csrfToken: session.csrfToken,
+    tenant: currentTenantId(),
+    tenants: tenantsFor(session.user),
+    // More than one tenant: the page must name one (/t/<tenant>/...).
+    multiTenant: tenantRegistry.isStrict(),
   });
 });
 
@@ -241,8 +263,7 @@ router.post('/enable', authLimiter, async (req, res, next) => {
   try {
     if (authEnabled()) return res.status(403).json({ error: 'Authentication is already enabled.' });
 
-    const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-    if (count > 0) {
+    if (accounts.userCount() > 0) {
       setSetting('auth_enabled', '1');
       return res.json({ ok: true, needsLogin: true });
     }
@@ -253,24 +274,12 @@ router.post('/enable', authLimiter, async (req, res, next) => {
       return res.status(400).json({ error: 'username and password are required to create the first admin.' });
     }
 
-    const now = new Date().toISOString();
-    const passwordHash = await hashPassword(String(password));
-    const info = db.prepare(`
-      INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(cleanUsername, passwordHash, cleanUsername, now, now);
-
-    const adminGroup = db.prepare("SELECT id FROM groups WHERE name = 'Admin'").get();
-    if (adminGroup) {
-      db.prepare('INSERT OR IGNORE INTO user_groups (user_id, group_id) VALUES (?, ?)')
-        .run(info.lastInsertRowid, adminGroup.id);
-    }
+    const user = await createFirstAdmin(cleanUsername, password);
     setSetting('auth_enabled', '1');
 
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
     const session = createSession(user.id);
     setSessionCookie(req, res, session.id);
-    res.json({ ok: true, user: userPayload(user, resolveGrants(db, user.id)) });
+    res.json({ ok: true, user: userPayload(user, ['*:*:*']) });
   } catch (err) {
     next(err);
   }

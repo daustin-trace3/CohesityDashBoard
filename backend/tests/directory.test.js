@@ -11,6 +11,8 @@ import { createRequire } from 'module';
 import request from 'supertest';
 
 const require = createRequire(import.meta.url);
+let accounts;
+let globalDb;
 
 const BASE = 'dc=lab,dc=test';
 const DOMAIN = 'lab.test';
@@ -136,6 +138,8 @@ beforeAll(() => {
   db = require('../db/database');
   directory = require('../services/directory');
   directorySync = require('../services/directorySync');
+  accounts = require('../core/accounts');
+  globalDb = require('../core/tenantRegistry').globalDb;
   encryption = require('../services/encryption');
   directory.setClientFactory((url) => new FakeClient(url));
   directory._setSrvResolver(async (name) => (name.startsWith('_ldap._tcp.dc._msdcs.') ? [{ name: 'dc1.lab.test.', port: 389, priority: 0, weight: 100 }, { name: 'dc2.lab.test.', port: 389, priority: 10, weight: 100 }] : []));
@@ -245,7 +249,11 @@ describe('sync + login', () => {
     db.prepare("DELETE FROM user_groups WHERE source = 'ad'").run();
     db.prepare("DELETE FROM users WHERE auth_provider = 'ad'").run();
     db.prepare("DELETE FROM groups WHERE provider = 'ad'").run();
-    db.prepare('DELETE FROM auth_sessions').run();
+    // Accounts and sessions are global (core/accounts.js); the tenant rows
+    // above are mirrors.
+    globalDb.prepare("DELETE FROM global_users WHERE auth_provider = 'ad' OR username = 'bob'").run();
+    globalDb.prepare('DELETE FROM global_sessions').run();
+    db.prepare("DELETE FROM users WHERE username = 'bob'").run();
     const now = new Date().toISOString();
     backupGroupId = db.prepare(`
       INSERT INTO groups (name, description, is_system, created_at, provider, external_id, external_dn, external_name)
@@ -256,7 +264,8 @@ describe('sync + login', () => {
 
   it('runSync imports nested members, mirrors disabled state, and deactivates strays', async () => {
     const now = new Date().toISOString();
-    db.prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at, external_id) VALUES ('zed', '!ad', 'Zed', 'ad', 1, ?, ?, 'gone')").run(now, now);
+    const zed = accounts.createUser({ username: 'zed', passwordHash: '!ad', displayName: 'Zed', authProvider: 'ad', externalId: 'gone' });
+    accounts.addMember('default', zed.id, 'test');
     const r = await directorySync.runSync('manual');
     expect(r.status).toBe('ok');
     expect(r.groups).toBe(1);
@@ -275,10 +284,12 @@ describe('sync + login', () => {
 
   it('a local account with the same name is kept; the directory user is stored under its UPN and can log in qualified', async () => {
     const now = new Date().toISOString();
-    db.prepare("INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at) VALUES ('bob', 'localhash', 'Local Bob', 'local', 1, ?, ?)").run(now, now);
+    const localBob = accounts.createUser({ username: 'bob', passwordHash: 'localhash', displayName: 'Local Bob' });
+    accounts.addMember('default', localBob.id, 'test');
     const r = await directorySync.runSync('manual');
     expect(r.message).toMatch(/share a name with a local account.*bob@lab.test/);
-    expect(db.prepare("SELECT auth_provider, password_hash FROM users WHERE username = 'bob'").get()).toEqual({ auth_provider: 'local', password_hash: 'localhash' });
+    expect(db.prepare("SELECT auth_provider FROM users WHERE username = 'bob'").get()).toEqual({ auth_provider: 'local' });
+    expect(accounts.findUserByUsername('bob').password_hash).toBe('localhash');
     const ad = db.prepare("SELECT username, auth_provider FROM users WHERE username = 'bob@lab.test'").get();
     expect(ad).toEqual({ username: 'bob@lab.test', auth_provider: 'ad' });
     // bare name -> local account (break-glass); qualified -> domain account

@@ -5,6 +5,9 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db/database');
 const { hashPassword } = require('../services/authService');
+const accounts = require('../core/accounts');
+const tenantRegistry = require('../core/tenantRegistry');
+const { currentTenantId } = require('../core/tenantContext');
 
 const router = express.Router();
 
@@ -73,26 +76,33 @@ router.get('/', (req, res) => {
   res.json(users.map(toUserRow));
 });
 
+// Adds a member to this tenant (decision 8). A username the install already
+// knows is linked as is (no password needed, none accepted); a new username
+// creates the account. Either way the member starts in the Viewer group
+// unless groups are given.
 router.post('/', async (req, res, next) => {
   try {
     const { username, password, displayName, groupIds } = req.body || {};
     const cleanUsername = String(username || '').trim();
-    if (!cleanUsername || !password) {
-      return res.status(400).json({ error: 'username and password are required.' });
+    if (!cleanUsername) return res.status(400).json({ error: 'username is required.' });
+    const tenantId = currentTenantId() || tenantRegistry.DEFAULT_TENANT;
+
+    let account = accounts.findUserByUsername(cleanUsername);
+    if (account) {
+      if (accounts.isMember(tenantId, account.id)) return res.status(409).json({ error: 'That user is already a member of this tenant.' });
+      if (password) return res.status(409).json({ error: 'That username already exists on this install. Add the existing account without a password.' });
+    } else {
+      if (!password) return res.status(400).json({ error: 'password is required for a new account.' });
+      const passwordHash = await hashPassword(String(password));
+      account = accounts.createUser({ username: cleanUsername, passwordHash, displayName: displayName ? String(displayName) : cleanUsername });
+      accounts.audit('account.created', { actor: req.auth && req.auth.user, tenantId, detail: { username: cleanUsername } });
     }
-    const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(cleanUsername);
-    if (existing) return res.status(409).json({ error: 'A user with that username already exists.' });
+    accounts.addMember(tenantId, account.id, req.auth && req.auth.user ? req.auth.user.username : null);
+    accounts.audit('member.added', { actor: req.auth && req.auth.user, tenantId, detail: { username: cleanUsername } });
 
-    const now = new Date().toISOString();
-    const passwordHash = await hashPassword(String(password));
-    const info = db.prepare(`
-      INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(cleanUsername, passwordHash, displayName ? String(displayName) : cleanUsername, now, now);
+    if (Array.isArray(groupIds) && groupIds.length) setUserGroups(account.id, groupIds);
 
-    setUserGroups(info.lastInsertRowid, groupIds);
-
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(account.id);
     res.status(201).json(toUserRow(user));
   } catch (err) {
     next(err);
@@ -121,15 +131,13 @@ router.put('/:id(\\d+)', async (req, res, next) => {
       }
     }
 
-    const now = new Date().toISOString();
-    const nextDisplayName = displayName !== undefined ? String(displayName) : user.display_name;
-    const nextIsActive = isActive !== undefined ? (isActive ? 1 : 0) : user.is_active;
-    const nextPasswordHash = password ? await hashPassword(String(password)) : user.password_hash;
-
-    db.prepare(`
-      UPDATE users SET display_name = ?, is_active = ?, password_hash = ?, updated_at = ?
-      WHERE id = ?
-    `).run(nextDisplayName, nextIsActive, nextPasswordHash, now, userId);
+    // The account is global; display name, active flag and password change it
+    // everywhere, and the mirror rows in every tenant follow.
+    const fields = {};
+    if (displayName !== undefined) fields.displayName = String(displayName);
+    if (isActive !== undefined) fields.isActive = !!isActive;
+    if (password) fields.passwordHash = await hashPassword(String(password));
+    if (Object.keys(fields).length) accounts.updateUser(userId, fields);
 
     if (groupIds !== undefined) setUserGroups(userId, groupIds);
 
@@ -152,7 +160,10 @@ router.delete('/:id(\\d+)', (req, res) => {
     return res.status(409).json({ error: 'Cannot delete the last active Admin.' });
   }
 
-  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  // Removes the membership in this tenant, not the account (decision 8).
+  const tenantId = currentTenantId() || tenantRegistry.DEFAULT_TENANT;
+  accounts.removeMember(tenantId, userId);
+  accounts.audit('member.removed', { actor: req.auth && req.auth.user, tenantId, detail: { username: user.username } });
   res.json({ ok: true });
 });
 

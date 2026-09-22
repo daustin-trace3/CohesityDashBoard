@@ -10,6 +10,12 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import db from '../db/database.js';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+// Accounts and sessions are global (core/accounts.js); the tenant users table
+// only mirrors members.
+const accounts = require('../core/accounts');
+const gdb = require('../core/tenantRegistry').globalDb;
 import {
   hashPassword,
   verifyPassword,
@@ -21,14 +27,9 @@ import {
 } from '../services/authService.js';
 
 function insertUser(username) {
-  const now = new Date().toISOString();
-  const info = db
-    .prepare(`
-      INSERT INTO users (username, password_hash, display_name, created_at, updated_at)
-      VALUES (?, 'placeholder-hash', ?, ?, ?)
-    `)
-    .run(username, username, now, now);
-  return info.lastInsertRowid;
+  const user = accounts.createUser({ username, passwordHash: 'placeholder-hash', displayName: username });
+  accounts.addMember('default', user.id, 'test');
+  return user.id;
 }
 
 describe('claim token — before any user exists', () => {
@@ -73,7 +74,7 @@ describe('session lifecycle', () => {
     expect(session.id).toMatch(/^[0-9a-f]{64}$/);
     expect(session.csrfToken).toMatch(/^[0-9a-f]{64}$/);
 
-    const row = db.prepare('SELECT * FROM auth_sessions WHERE id = ?').get(session.id);
+    const row = gdb.prepare('SELECT * FROM global_sessions WHERE id = ?').get(session.id);
     expect(row).toBeTruthy();
     expect(row.user_id).toBe(userId);
     expect(row.csrf_token).toBe(session.csrfToken);
@@ -96,10 +97,10 @@ describe('session lifecycle', () => {
   it('expired sessions are lazily deleted and validate to null', () => {
     const session = createSession(userId);
     const past = new Date(Date.now() - 60 * 1000).toISOString(); // 1 minute ago
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, session.id);
+    gdb.prepare('UPDATE global_sessions SET expires_at = ? WHERE id = ?').run(past, session.id);
 
     expect(validateSession(session.id)).toBeNull();
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
+    expect(gdb.prepare('SELECT 1 FROM global_sessions WHERE id = ?').get(session.id)).toBeUndefined();
   });
 
   it('destroySession removes the session; subsequent validate returns null', () => {
@@ -109,21 +110,21 @@ describe('session lifecycle', () => {
     destroySession(session.id);
 
     expect(validateSession(session.id)).toBeNull();
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
+    expect(gdb.prepare('SELECT 1 FROM global_sessions WHERE id = ?').get(session.id)).toBeUndefined();
   });
 
   it('slides expiry forward when less than 6 days remain', () => {
     const session = createSession(userId);
     // 5 days left — inside the <6d refresh window.
     const nearExpiry = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(nearExpiry, session.id);
+    gdb.prepare('UPDATE global_sessions SET expires_at = ? WHERE id = ?').run(nearExpiry, session.id);
 
-    const before = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(session.id);
+    const before = gdb.prepare('SELECT expires_at FROM global_sessions WHERE id = ?').get(session.id);
     expect(before.expires_at).toBe(nearExpiry);
 
     expect(validateSession(session.id)).not.toBeNull();
 
-    const after = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(session.id);
+    const after = gdb.prepare('SELECT expires_at FROM global_sessions WHERE id = ?').get(session.id);
     const remainingMs = new Date(after.expires_at).getTime() - Date.now();
     // Refreshed back out to ~7 days (allow a little slack for test runtime).
     expect(remainingMs).toBeGreaterThan(6.9 * 24 * 60 * 60 * 1000);
@@ -133,33 +134,33 @@ describe('session lifecycle', () => {
     const session = createSession(userId);
     // ~6.5 days left — outside the <6d refresh window.
     const farExpiry = new Date(Date.now() + 6.5 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(farExpiry, session.id);
+    gdb.prepare('UPDATE global_sessions SET expires_at = ? WHERE id = ?').run(farExpiry, session.id);
 
     expect(validateSession(session.id)).not.toBeNull();
 
-    const after = db.prepare('SELECT expires_at FROM auth_sessions WHERE id = ?').get(session.id);
+    const after = gdb.prepare('SELECT expires_at FROM global_sessions WHERE id = ?').get(session.id);
     expect(after.expires_at).toBe(farExpiry);
   });
 
   it('validateSession returns null and deletes the session if the user was deactivated', () => {
     const otherUserId = insertUser('to-be-deactivated');
     const session = createSession(otherUserId);
-    db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(otherUserId);
+    accounts.updateUser(otherUserId, { isActive: false });
 
     expect(validateSession(session.id)).toBeNull();
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(session.id)).toBeUndefined();
+    expect(gdb.prepare('SELECT 1 FROM global_sessions WHERE id = ?').get(session.id)).toBeUndefined();
   });
 
   it('pruneExpired removes only expired sessions', () => {
     const live = createSession(userId);
     const dead = createSession(userId);
     const past = new Date(Date.now() - 60 * 1000).toISOString();
-    db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE id = ?').run(past, dead.id);
+    gdb.prepare('UPDATE global_sessions SET expires_at = ? WHERE id = ?').run(past, dead.id);
 
     pruneExpired();
 
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(dead.id)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM auth_sessions WHERE id = ?').get(live.id)).toBeTruthy();
+    expect(gdb.prepare('SELECT 1 FROM global_sessions WHERE id = ?').get(dead.id)).toBeUndefined();
+    expect(gdb.prepare('SELECT 1 FROM global_sessions WHERE id = ?').get(live.id)).toBeTruthy();
   });
 });
 

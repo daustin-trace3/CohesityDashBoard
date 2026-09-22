@@ -49,6 +49,7 @@ const aiConfigRouter = require('./routes/aiConfig');
 const alertNotifyRouter = require('./routes/alertNotify');
 const tenantsRouter = require('./routes/tenants');
 const tenantScope = require('./middleware/tenantScope');
+const tenantMembership = require('./middleware/tenantMembership');
 require('./services/coreDatasets').registerCoreDatasets();
 const { getSetting } = require('./services/settings');
 const authRouter = require('./routes/auth');
@@ -175,6 +176,8 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // service-account key. Replaces the old blanket x-api-key check. /api/auth/*
   // and (mostly) /api/license/* are exempt — see middleware/authenticate.js.
   app.use('/api', authenticate);
+  // Membership: after the identity is known, before anything reads data.
+  app.use('/api', tenantMembership);
   app.use('/api', csrf);
 
   // Product license gate — blocks everything except /api/license/* when unlicensed

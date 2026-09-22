@@ -1,5 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal } from 'lucide-react';
+import { Building2 } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 
 // Grouped vertical nav shared by every Global Settings page. Each item is a
@@ -30,6 +31,7 @@ const GROUPS = [
     label: 'Access',
     items: [
       { to: '/admin/users', label: 'Users & Access', icon: Users, permission: 'admin:users:view' },
+      { to: '/admin/tenants', label: 'Tenants', icon: Building2, globalAdmin: true },
     ],
   },
 ];
@@ -37,7 +39,7 @@ const GROUPS = [
 export default function AdminNav() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  const { hasPermission, loading: authLoading } = useAuth();
+  const { hasPermission, loading: authLoading, user } = useAuth();
 
   const isActive = (item) =>
     pathname === item.to || (item.aliases || []).includes(pathname);
@@ -45,7 +47,7 @@ export default function AdminNav() {
   return (
     <nav className="w-full md:w-48 shrink-0 flex flex-row md:flex-col flex-wrap gap-x-6 gap-y-4" aria-label="Global settings sections">
       {GROUPS.map(group => {
-        const items = group.items.filter(i => !i.permission || authLoading || hasPermission(i.permission));
+        const items = group.items.filter(i => (!i.permission || authLoading || hasPermission(i.permission)) && (!i.globalAdmin || user?.isGlobalAdmin));
         if (items.length === 0) return null;
         return (
           <div key={group.label} className="flex flex-col gap-0.5 min-w-[10rem]">

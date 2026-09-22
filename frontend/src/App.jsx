@@ -14,6 +14,8 @@ import GovernancePage from './pages/GovernancePage';
 import SettingsPage from './pages/SettingsPage';
 import AdminSettingsPage from './pages/AdminSettingsPage';
 import AdminUsersPage from './pages/AdminUsersPage';
+import AdminTenantsPage from './pages/AdminTenantsPage';
+import TenantPickerPage from './pages/TenantPickerPage';
 import AdminPluginsPage from './pages/AdminPluginsPage';
 import AIAdvisorPage from './pages/AIAdvisorPage';
 import PrivacyInspectorRoute from './components/PrivacyInspectorRoute';
@@ -88,6 +90,8 @@ function AppRoutes() {
           <Route path="settings"        element={withBoundary(<SettingsPage />)} />
           <Route path="admin"           element={withBoundary(<AdminSettingsPage />)} />
           <Route path="admin/users"     element={withBoundary(<AdminUsersPage />)} />
+          <Route path="admin/tenants"   element={withBoundary(<AdminTenantsPage />)} />
+          <Route path="tenants"         element={withBoundary(<TenantPickerPage />)} />
           <Route path="admin/plugins"   element={withBoundary(<AdminPluginsPage />)} />
           <Route path="admin/:section"  element={withBoundary(<AdminSettingsPage />)} />
         </Route>

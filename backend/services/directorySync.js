@@ -12,6 +12,9 @@ const db = require('../db/database');
 const directory = require('./directory');
 const { isDemo } = require('./demoMode');
 const logger = require('../utils/logger');
+const accounts = require('../core/accounts');
+const tenantRegistry = require('../core/tenantRegistry');
+const { currentTenantId } = require('../core/tenantContext');
 
 const AD_PASSWORD_PLACEHOLDER = '!ad';
 let running = false;
@@ -48,13 +51,30 @@ const upsertUserTxn = db.transaction((adUser, now) => {
 
   const isActive = adUser.disabled ? 0 : 1;
   if (!row) {
-    const info = db.prepare(`
-      INSERT INTO users (username, password_hash, display_name, auth_provider, is_active, created_at, updated_at,
+    // Accounts are global (core/accounts.js). The install may already know
+    // this person through another tenant; then this is a membership, not a
+    // new account. The tenant row is the mirror, with the AD columns only
+    // the tenant table has.
+    const tenantId = currentTenantId() || tenantRegistry.DEFAULT_TENANT;
+    let account = (adUser.guid && accounts.findUserByExternalId(adUser.guid)) || accounts.findUserByUsername(username);
+    if (account && account.auth_provider === 'local') return { id: null, created: false, updated: false, conflict: username };
+    if (!account) {
+      account = accounts.createUser({
+        username, passwordHash: AD_PASSWORD_PLACEHOLDER, displayName: adUser.displayName || username,
+        authProvider: 'ad', isActive, externalId: adUser.guid || null,
+      });
+    }
+    db.prepare(`
+      INSERT INTO users (id, username, password_hash, display_name, auth_provider, is_active, created_at, updated_at,
                          external_id, upn, email, synced_at)
-      VALUES (?, ?, ?, 'ad', ?, ?, ?, ?, ?, ?, ?)
-    `).run(username, AD_PASSWORD_PLACEHOLDER, adUser.displayName || username, isActive, now, now,
+      VALUES (?, ?, '', ?, 'ad', ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET username = excluded.username, display_name = excluded.display_name,
+        is_active = excluded.is_active, updated_at = excluded.updated_at, external_id = excluded.external_id,
+        upn = excluded.upn, email = excluded.email, synced_at = excluded.synced_at
+    `).run(account.id, username, adUser.displayName || username, isActive, now, now,
       adUser.guid, adUser.upn || null, adUser.email || null, now);
-    return { id: info.lastInsertRowid, created: true, updated: false, renamed };
+    accounts.addMember(tenantId, account.id, 'directory-sync', { defaultGroup: false });
+    return { id: account.id, created: true, updated: false, renamed };
   }
 
   const changed = row.username !== username || row.display_name !== (adUser.displayName || username)
@@ -66,6 +86,9 @@ const upsertUserTxn = db.transaction((adUser, now) => {
     WHERE id = ?
   `).run(username, adUser.displayName || username, isActive, changed ? 1 : 0, now,
     adUser.guid || row.external_id, adUser.upn || null, adUser.email || null, now, row.id);
+  if (changed) {
+    accounts.updateUser(row.id, { username, displayName: adUser.displayName || username, isActive: !!isActive, externalId: adUser.guid || row.external_id || null });
+  }
   return { id: row.id, created: false, updated: changed, renamed };
 });
 
@@ -138,6 +161,9 @@ async function runSync(trigger = 'schedule') {
       if (cfg.deactivateRemoved) {
         const res = db.prepare("UPDATE users SET is_active = 0, updated_at = ? WHERE id = ? AND is_active = 1").run(now, s.id);
         counts.deactivated += res.changes;
+        // The directory is install-wide in this version (decision 10), so the
+        // account goes inactive everywhere, not only in this tenant.
+        if (res.changes) accounts.updateUser(s.id, { isActive: false });
       }
     }
 

@@ -12,6 +12,7 @@ import { subscribeNetworkActivity } from '../api/client';
 import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
 import { platforms as builtinPlatforms } from '../platforms/registry';
+import { tenantHome } from '../tenant';
 import { usePlatforms } from '../platforms/PlatformsContext';
 import { useAuth } from '../auth/AuthContext';
 import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
@@ -179,7 +180,7 @@ export default function Layout() {
     });
   };
 
-  const { user, logout, hasPermission, loading: authLoading } = useAuth();
+  const { user, logout, hasPermission, loading: authLoading, tenants, tenant } = useAuth();
   const aiEnabled = useAiEnabled();
 
   useEffect(() => {
@@ -737,6 +738,20 @@ export default function Layout() {
             >
               <Settings size={15} />
             </button>
+          )}
+
+          {/* Tenant switcher: only when this account may enter more than one */}
+          {user && tenants.length > 1 && (
+            <select
+              value={tenant || ''}
+              onChange={(e) => { if (e.target.value) window.location.assign(tenantHome(e.target.value)); }}
+              title="Switch tenant"
+              aria-label="Switch tenant"
+              className="h-8 max-w-[160px] bg-surface-overlay border border-cohesity-border rounded-lg px-2 text-xs text-ink cursor-pointer outline-none focus:border-brand/60"
+            >
+              {!tenant && <option value="">Pick a tenant</option>}
+              {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
           )}
 
           {/* Signed-in user + sign out */}

@@ -27,7 +27,11 @@ function tenantScope(req, res, next) {
   }
 
   if (!tenantId) {
-    if (registry.isStrict()) {
+    // Signing in and listing tenants are install-wide: a browser that has not
+    // picked a tenant yet must still be able to do both. Everything else
+    // needs a tenant once there is more than one.
+    const installWide = /^[/](auth|tenants)([/?]|$)/.test(req.url);
+    if (registry.isStrict() && !installWide) {
       return res.status(400).json({ error: 'This install has more than one tenant. Name the tenant in the request path (/api/t/<tenant>/...) or the x-icc-tenant header.' });
     }
     tenantId = registry.DEFAULT_TENANT;
