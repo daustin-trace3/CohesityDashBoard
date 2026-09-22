@@ -79,8 +79,12 @@ client.interceptors.response.use(
     if (error?.response?.status === 401 && !isAuthExempt(error?.config?.url)) {
       const onLoginPage = typeof window !== 'undefined' && window.location.pathname === `${routerBasename()}/login`;
       if (!onLoginPage && typeof window !== 'undefined') {
-        const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
-        window.location.assign(`${routerBasename()}/login?returnTo=${returnTo}`);
+        // returnTo is a router path: the login page navigates inside a router whose
+        // basename is already /t/<tenant>, so the prefix must not be carried twice.
+        const base = routerBasename();
+        const path = window.location.pathname.startsWith(`${base}/`) ? window.location.pathname.slice(base.length) : window.location.pathname;
+        const returnTo = encodeURIComponent(path + window.location.search);
+        window.location.assign(`${base}/login?returnTo=${returnTo}`);
       }
     }
     return Promise.reject(error);

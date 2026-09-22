@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ShieldCheck, KeyRound, RefreshCw, LogIn, Layers, Activity, Lock } from 'lucide-react';
 import client from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { routerBasename } from '../tenant';
 import atlasLogo from '../assets/atlas-logo-dark.svg';
 import atlasMark from '../assets/atlas-mark.svg';
 
@@ -28,7 +29,10 @@ export default function LoginPage() {
   const { login, refresh } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const returnTo = searchParams.get('returnTo') || '/cohesity';
+  // Older links may still carry the tenant prefix; the router adds it again, so strip it.
+  const rawReturnTo = searchParams.get('returnTo') || '/cohesity';
+  const base = routerBasename();
+  const returnTo = base && rawReturnTo.startsWith(`${base}/`) ? rawReturnTo.slice(base.length) : rawReturnTo;
 
   const [checkingSetup, setCheckingSetup] = useState(true);
   const [health, setHealth] = useState(null); // null = checking, true/false = result
