@@ -191,6 +191,48 @@ Commits 893880d and 56b4a6f.
 - GET /api/tenants lists every tenant for any authenticated caller; phase 2
   filters by membership.
 
+## Phase 2 result (2026-09-21)
+
+Commits 451bceb, 390b334, 3cc8189. Deployed to local and the demo.
+
+- core/accounts.js: global_users, global_sessions, tenant_members and
+  global_audit in the global database. Each tenant keeps a MIRROR row per
+  member in its own users table (same id, no password) so user_groups,
+  role_grants, user_dashboards and the RBAC queries are unchanged.
+- First auth call on an install moves the default tenant's users and sessions
+  into the global database with the same ids; anyone holding *:*:* becomes a
+  global admin. The tenant rows keep their old hashes so a rollback still
+  works; the new code never reads them.
+- middleware/tenantMembership.js after authenticate: a global admin enters
+  every tenant (mirror written, first entry per session audited as
+  tenant.entered); anyone else must be a member (403). Service accounts are
+  per tenant by construction. /api/auth and /api/tenants are install-wide and
+  work with no tenant in the URL.
+- routes/users.js on a tenant adds MEMBERS: a known username is linked (no
+  password accepted), a new one creates the account; both start in Viewer.
+  Delete removes the membership, never the account. Password and active-flag
+  changes are global.
+- routes/tenants.js: list (filtered by membership), create (global admin,
+  refused while auth is off), members add and remove, GET /audit.
+- Frontend: header switcher (only with 2+ tenants), /tenants picker, /admin/
+  tenants page for global admins, sign-in lands on the only tenant or the
+  picker.
+- Directory sync creates global accounts and tenant mirrors; a stray user is
+  deactivated everywhere (one directory per install, decision 10).
+- Found on the demo with a second tenant, fixed same day: timer work (Service
+  Status sweep, notifier, DNS prewarm, directory sync) now makes one pass per
+  active tenant (tenantRegistry.forEachTenant); pack migrations run on every
+  open tenant database and on each one opened later; both processes enter
+  the default tenant for start-up (tenantContext.enterTenantForBoot), which
+  also means timers created at boot inherit the default tenant unless they
+  use forEachTenant. The Cohesity poller and the per-platform pollers are in
+  that state until phase 3.
+- The demo now has tenant "acme" (empty, member acme-viewer) beside
+  "default"; the demo admin is a global admin and lands on the picker.
+- Not done: tenant status "suspended" is stored but not enforced; the
+  per-tenant audit table; global admin user management beyond the first
+  admin (a global admin flag can only be set in the database today).
+
 ## Build order
 
 0. Spike: tenant context, registry, database proxy that fails closed, the
