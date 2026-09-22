@@ -4,8 +4,7 @@
 import {
   injectStyles, PageHeader, Badge, LoadingPanel, Spinner,
   GearIcon, ServerIcon, ArrowRightLeftIcon, BellIcon, PencilIcon, RefreshIcon, TrashIcon,
-  CheckCircleIcon, XCircleIcon, fmtWhen,
-} from '../ui.jsx';
+  CheckCircleIcon, XCircleIcon, fmtWhen, PlatformSettingsLayout } from '../ui.jsx';
 
 injectStyles();
 
@@ -321,31 +320,8 @@ export default function SettingsPage() {
         {statusMsg && <span style={{ fontSize: 12, color: 'var(--nx-brand)' }}>{statusMsg}</span>}
       </PageHeader>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 16, width: 192, flexShrink: 0 }} aria-label="Nutanix settings sections">
-          {['Connections', 'Tuning'].map((g) => (
-            <div key={g} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--nx-ink-faint)', padding: '0 8px', marginBottom: 4 }}>{g}</p>
-              {SECTIONS.filter((s) => s.group === g).map((s) => {
-                const Icon = s.icon;
-                const active = section === s.key;
-                return (
-                  <button key={s.key} onClick={() => setSection(s.key)} aria-current={active ? 'page' : undefined}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                      textAlign: 'left', cursor: 'pointer', border: 'none',
-                      background: active ? 'var(--nx-surface-overlay)' : 'transparent',
-                      color: active ? 'var(--nx-ink)' : 'var(--nx-ink-muted)',
-                    }}>
-                    <Icon size={13} style={{ color: active ? 'var(--nx-brand)' : undefined }} /> {s.label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
-
-        <div style={{ flex: 1, minWidth: 0, maxWidth: 760 }}>
+      <PlatformSettingsLayout brand={BRAND} label="Nutanix" sections={SECTIONS} active={section} onSelect={setSection}>
+        <div>
           {section === 'sources' && (<>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 12 }}>
               {PRISM_TABS.map((t) => (
@@ -507,7 +483,7 @@ export default function SettingsPage() {
             The Nutanix platform tab itself is enabled from Global Settings (gear icon → Platforms).
           </p>
         </div>
-      </div>
+      </PlatformSettingsLayout>
     </div>
   );
 }

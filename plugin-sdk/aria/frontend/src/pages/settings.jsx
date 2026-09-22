@@ -3,7 +3,7 @@
 // client (no createPortal), so this uses the ui.jsx Modal primitive
 // (portalOrInline-guarded) instead.
 import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search } from '../icons.jsx';
-import { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, Modal, BRAND, fmtWhen } from '../ui.jsx';
+import { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, Modal, BRAND, fmtWhen, PlatformSettingsLayout } from '../ui.jsx';
 
 const inp = 'ar-input';
 
@@ -199,9 +199,17 @@ export default function AriaSettingsPage() {
 
   const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && (editingId || form.password);
 
+  const [section, setSection] = React.useState('sources');
+  const SECTIONS = [
+    { key: 'sources', label: 'Instances', icon: Server },
+    { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing },
+  ];
   return (
-    <div className="animate-fade-in max-w-5xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="Aria Automation Settings" description="Register vRA 8.x on-prem instances — each is polled directly with its own credentials" />
+
+      <PlatformSettingsLayout brand={BRAND} label="Aria Automation" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'sources' && (<>
 
       {status && (
         <div className="panel p-3 mb-4 text-sm" style={{ borderLeft: `3px solid ${status.type === 'error' ? 'var(--ar-crit)' : 'var(--ar-ok)'}` }}>
@@ -210,7 +218,7 @@ export default function AriaSettingsPage() {
         </div>
       )}
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'Aria instance'}` : 'Add an Aria instance'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           A read-only Aria Automation account is sufficient for deployments, requests and inventory. The password is encrypted at rest.
@@ -265,7 +273,9 @@ export default function AriaSettingsPage() {
         </div>
       </div>
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      </>)}
+      {section === 'thresholds' && (<>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
           How far ahead of expiry deployment leases and TLS certificates raise a warning, and how far back failed requests are counted.
@@ -296,6 +306,8 @@ export default function AriaSettingsPage() {
         </div>
       </div>
 
+      </>)}
+      {section === 'sources' && (<>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Registered Aria instances</p>
         {instances == null ? (
@@ -361,6 +373,8 @@ export default function AriaSettingsPage() {
         </p>
       </div>
 
+      </>)}
+      </PlatformSettingsLayout>
       {probeInstance && <ProbeModal instance={probeInstance} onClose={() => setProbeInstance(null)} />}
     </div>
   );

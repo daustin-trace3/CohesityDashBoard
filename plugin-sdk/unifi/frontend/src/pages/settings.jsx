@@ -1,6 +1,6 @@
 // UniFi Settings — port of frontend/src/pages/unifi/UnifiSettingsPage.jsx.
 // icons.jsx has no BellRing — Bell substituted for the Tuning group icon.
-import { PageHeader, Badge, LoadingPanel, Spinner, apiFetch, fmtWhen, BRAND } from '../ui.jsx';
+import { PageHeader, Badge, LoadingPanel, Spinner, apiFetch, fmtWhen, BRAND, PlatformSettingsLayout } from '../ui.jsx';
 import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, Pencil, ToggleLeft, Bell } from '../icons.jsx';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
@@ -230,28 +230,8 @@ export default function SettingsPage() {
         {statusMsg && <span className="text-xs text-brand">{statusMsg}</span>}
       </PageHeader>
 
-      <div className="flex flex-col md:flex-row gap-6 items-start">
-        <nav className="w-full md:w-48 shrink-0 flex flex-row md:flex-col flex-wrap gap-x-6" aria-label="UniFi settings sections">
-          {['Connections', 'Tuning'].map((g) => (
-            <div key={g} className="flex flex-col gap-0.5 min-w-[10rem] mb-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint px-2 mb-1">{g}</p>
-              {SECTIONS.filter((s) => s.group === g).map((s) => {
-                const Icon = s.icon;
-                const active = section === s.key;
-                return (
-                  <button key={s.key} onClick={() => setSection(s.key)} aria-current={active ? 'page' : undefined}
-                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] font-medium text-left transition-colors duration-150 cursor-pointer ${
-                      active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-                    }`}>
-                    <Icon size={13} className={active ? 'text-brand' : ''} /> {s.label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
-
-        <div className="flex-1 min-w-0 max-w-3xl">
+      <PlatformSettingsLayout brand={BRAND} label="UniFi" sections={SECTIONS} active={section} onSelect={setSection}>
+        <div>
           {section === 'sources' && (
             <>
               <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -378,7 +358,7 @@ export default function SettingsPage() {
             The UniFi platform tab itself is enabled from Global Settings (gear icon → Platforms).
           </p>
         </div>
-      </div>
+      </PlatformSettingsLayout>
     </div>
   );
 }

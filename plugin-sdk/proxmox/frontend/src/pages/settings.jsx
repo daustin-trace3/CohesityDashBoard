@@ -5,8 +5,7 @@
 import {
   injectStyles, PageHeader, Badge, LoadingPanel, Spinner,
   GearIcon, ServerIcon, CheckCircleIcon, XCircleIcon, TrashIcon, RefreshIcon, BellIcon, PencilIcon, SearchIcon, XIcon,
-  fmtWhen,
-} from '../ui.jsx';
+  fmtWhen, PlatformSettingsLayout } from '../ui.jsx';
 
 injectStyles();
 
@@ -252,11 +251,19 @@ export default function PxSettingsPage() {
 
   const canSubmit = form.name.trim() && form.host.trim() && form.tokenId.trim() && (editingId || form.tokenSecret);
 
+  const [section, setSection] = React.useState('sources');
+  const SECTIONS = [
+    { key: 'sources', label: 'Servers', icon: ServerIcon },
+    { key: 'thresholds', label: 'Alert Thresholds', icon: BellIcon },
+  ];
   return (
-    <div className="px-root px-fade-in" style={{ maxWidth: 860 }}>
+    <div className="px-root px-fade-in">
       <PageHeader icon={GearIcon} title="Proxmox VE Settings" description="Register Proxmox VE servers — each is polled directly with its own API token" />
 
-      <div className="px-panel" style={{ padding: 16, marginBottom: 16, borderTop: `3px solid ${BRAND}` }}>
+      <PlatformSettingsLayout brand={BRAND} label="Proxmox VE" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'sources' && (<>
+
+      <div className="px-panel" style={{ padding: 16, borderTop: `3px solid ${BRAND}` }}>
         <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--px-ink)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
           <ServerIcon size={15} style={{ color: 'var(--px-brand)' }} /> {editingId ? `Edit — ${form.name || 'server'}` : 'Add a Proxmox server'}
         </p>
@@ -316,7 +323,9 @@ export default function PxSettingsPage() {
         </div>
       </div>
 
-      <div className="px-panel" style={{ padding: 16, marginBottom: 16, borderTop: `3px solid ${BRAND}` }}>
+      </>)}
+      {section === 'thresholds' && (<>
+      <div className="px-panel" style={{ padding: 16, borderTop: `3px solid ${BRAND}` }}>
         <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--px-ink)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
           <BellIcon size={15} style={{ color: 'var(--px-brand)' }} /> Alert Thresholds
         </p>
@@ -345,6 +354,8 @@ export default function PxSettingsPage() {
         )}
       </div>
 
+      </>)}
+      {section === 'sources' && (<>
       <div className="px-panel" style={{ padding: 16, borderTop: `3px solid ${BRAND}` }}>
         <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--px-ink)', marginBottom: 12 }}>Registered Servers</p>
         {servers == null ? (
@@ -407,6 +418,8 @@ export default function PxSettingsPage() {
         </p>
       </div>
 
+      </>)}
+      </PlatformSettingsLayout>
       {probeServer && <ProbeModal server={probeServer} onClose={() => setProbeServer(null)} />}
     </div>
   );

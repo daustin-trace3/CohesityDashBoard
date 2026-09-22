@@ -3,7 +3,7 @@
 // with inline status text, client.* replaced with apiFetch (auto CSRF on
 // mutating requests via window.__ICC_CSRF_TOKEN__).
 import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X } from '../icons.jsx';
-import { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, portalOrInline, BRAND, fmtWhen } from '../ui.jsx';
+import { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, portalOrInline, BRAND, fmtWhen, PlatformSettingsLayout } from '../ui.jsx';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -200,9 +200,17 @@ export default function AwsSettingsPage() {
 
   const canSubmit = form.name.trim();
 
+  const [section, setSection] = React.useState('sources');
+  const SECTIONS = [
+    { key: 'sources', label: 'Accounts', icon: Server },
+    { key: 'thresholds', label: 'Alert Thresholds', icon: BellRing },
+  ];
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="AWS Settings" description="Register AWS accounts — credentials are encrypted at rest, or fall back to the server's environment variables" />
+
+      <PlatformSettingsLayout brand={BRAND} label="AWS" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'sources' && (<>
 
       {statusMsg && (
         <div className={`panel p-3 mb-4 border ${statusMsg.type === 'err' ? 'border-status-crit/50' : 'border-status-ok/40'}`}>
@@ -211,7 +219,7 @@ export default function AwsSettingsPage() {
         </div>
       )}
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'account'}` : 'Add an AWS account'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           Leave the access key and secret blank to fall back to the server's <code>AWS_ACCESS_KEY_ID</code> / <code>AWS_SECRET_ACCESS_KEY</code> environment variables.
@@ -265,7 +273,9 @@ export default function AwsSettingsPage() {
         </div>
       </div>
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      </>)}
+      {section === 'thresholds' && (<>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
           How far above the prior day's spend yesterday's total must be (and at least $1) before the Overview raises a cost-spike warning,
@@ -291,6 +301,8 @@ export default function AwsSettingsPage() {
         </div>
       </div>
 
+      </>)}
+      {section === 'sources' && (<>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Registered Accounts</p>
         {accounts == null ? (
@@ -360,6 +372,8 @@ export default function AwsSettingsPage() {
         </p>
       </div>
 
+      </>)}
+      </PlatformSettingsLayout>
       {probeAccount && <ProbeModal account={probeAccount} onClose={() => setProbeAccount(null)} />}
     </div>
   );

@@ -5,7 +5,7 @@
 // PUT/POST below) go through ui.jsx's apiFetch, which auto-attaches
 // x-csrf-token from window.__ICC_CSRF_TOKEN__ on non-GET requests.
 import { Settings, Cloud, CheckCircle2, XCircle, BellRing, Search } from '../icons.jsx';
-import { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, BRAND, fmtWhen } from '../ui.jsx';
+import { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, BRAND, fmtWhen, PlatformSettingsLayout } from '../ui.jsx';
 
 const inp = 'zr-input';
 
@@ -215,28 +215,14 @@ export default function ZertoSettingsPage() {
       {status == null ? (
         <LoadingPanel label="Loading…" height={140} />
       ) : (
-        <div className="flex gap-4 items-start">
-          <div className="w-56 shrink-0 panel p-2" style={{ borderTop: `3px solid ${BRAND}` }}>
-            {SECTIONS.map((s) => {
-              const Icon = s.icon;
-              const isActive = tab === s.key;
-              return (
-                <button key={s.key} onClick={() => setTab(s.key)}
-                  className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors cursor-pointer ${isActive ? 'bg-surface-overlay text-ink font-semibold' : 'text-ink-muted hover:bg-surface-overlay/60 hover:text-ink'}`}
-                  style={{ border: 'none' }}>
-                  <Icon size={13} className={isActive ? 'text-brand' : 'text-ink-faint'} />
-                  {s.label}
-                </button>
-              );
-            })}
-          </div>
+        <PlatformSettingsLayout brand={BRAND} label="Zerto" sections={SECTIONS} active={tab} onSelect={setTab}>
 
           <div className="flex-1 min-w-0 flex flex-col gap-4">
           {tab === 'alerts' ? (
             <AlertTypesSection />
           ) : (
           <>
-          <div className="panel p-4 max-w-3xl" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
             <div className="flex items-center gap-2 mb-1">
               <Cloud size={16} className="text-brand" />
               <p className="text-sm font-semibold text-ink">Zerto Analytics account</p>
@@ -289,7 +275,7 @@ export default function ZertoSettingsPage() {
             </div>
           </div>
 
-          <div className="panel p-4 max-w-3xl">
+          <div className="panel p-4">
             <p className="text-sm font-semibold text-ink mb-3">Status</p>
             <div className="flex flex-col gap-2 text-sm max-w-md">
               <div className="flex items-center justify-between">
@@ -316,7 +302,7 @@ export default function ZertoSettingsPage() {
           </>
           )}
           </div>
-        </div>
+        </PlatformSettingsLayout>
       )}
     </div>
   );

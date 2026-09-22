@@ -2,7 +2,7 @@
 // Mirrors backend/routes/netapp.js's AIQUM gateway CRUD + direct-cluster CRUD
 // contract exactly (same endpoints, same payload shapes).
 import { Settings, Server, Cloud, Play, Pencil, Trash2, Plus, Save, PlugZap, Clock } from '../icons.jsx';
-import { apiFetch, PageHeader, LoadingPanel, Badge, RefreshButton, BRAND } from '../ui.jsx';
+import { apiFetch, PageHeader, LoadingPanel, Badge, RefreshButton, BRAND, PlatformSettingsLayout } from '../ui.jsx';
 
 const inp = 'na-input';
 
@@ -208,7 +208,7 @@ export default function SettingsPage() {
 
   if (cfg == null) {
     return (
-      <div className="animate-fade-in max-w-3xl">
+      <div className="animate-fade-in">
         <PageHeader icon={Settings} title="NetApp Settings" description="Active IQ Unified Manager connection" />
         <LoadingPanel label="Loading settings…" height={160} />
       </div>
@@ -216,7 +216,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="NetApp Settings" description="Manage AIQUM and direct ONTAP cluster connections">
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -227,18 +227,7 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, borderRadius: 8, background: 'var(--na-surface)', border: '1px solid var(--na-border)', padding: 4, width: 'fit-content', marginBottom: 16 }}>
-        {TABS.map((t) => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500, border: 'none', cursor: 'pointer', background: active ? 'var(--na-surface-overlay)' : 'transparent', color: active ? 'var(--na-ink)' : 'var(--na-ink-muted)' }}>
-              <Icon size={13} style={{ color: active ? BRAND : undefined }} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <PlatformSettingsLayout brand={BRAND} label="NetApp" sections={TABS} active={tab} onSelect={setTab}>
 
       {tab === 'aiqum' && (
         <>
@@ -440,6 +429,7 @@ export default function SettingsPage() {
           )}
         </div>
       )}
+    </PlatformSettingsLayout>
     </div>
   );
 }

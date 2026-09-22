@@ -5,8 +5,7 @@
 import {
   injectStyles, PageHeader, Badge, LoadingPanel, Spinner,
   GearIcon, CloudIcon, ServerIcon, HardDriveIcon, CheckCircleIcon, XCircleIcon, TrashIcon,
-  RefreshIcon, BellIcon, PencilIcon, PlusIcon, XIcon, PlugIcon, SaveIcon,
-} from '../ui.jsx';
+  RefreshIcon, BellIcon, PencilIcon, PlusIcon, XIcon, PlugIcon, SaveIcon, PlatformSettingsLayout } from '../ui.jsx';
 import { BRAND, fmtWhen, apiGet, apiSend } from './helpers.js';
 
 injectStyles();
@@ -24,26 +23,16 @@ const HW_EMPTY = { name: '', host: '', port: 443, username: '', password: '', ss
 export default function NbSettingsPage() {
   const [tab, setTab] = React.useState('alta');
   return (
-    <div className="nb-root nb-fade-in" style={{ maxWidth: 860 }}>
+    <div className="nb-root nb-fade-in">
       <PageHeader icon={GearIcon} title="NetBackup Settings" description="Register Alta (SaaS) or on-prem primary servers" />
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, borderRadius: 8, background: 'var(--nb-surface)', border: '1px solid var(--nb-border)', padding: 4, width: 'fit-content', marginBottom: 16 }}>
-        {TABS.map((t) => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500, border: 'none', cursor: 'pointer', background: active ? 'var(--nb-surface-overlay)' : 'transparent', color: active ? 'var(--nb-ink)' : 'var(--nb-ink-muted)' }}>
-              <Icon size={13} style={{ color: active ? 'var(--nb-brand)' : undefined }} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <PlatformSettingsLayout brand={BRAND} label="NetBackup" sections={TABS} active={tab} onSelect={setTab}>
 
       {tab === 'alta' && <SourcesTab sourceType="alta" />}
       {tab === 'primary' && <SourcesTab sourceType="primary" />}
       {tab === 'hardware' && <ApplianceHardwareTab />}
       {tab !== 'hardware' && <AlertThresholdsPanel />}
+    </PlatformSettingsLayout>
     </div>
   );
 }

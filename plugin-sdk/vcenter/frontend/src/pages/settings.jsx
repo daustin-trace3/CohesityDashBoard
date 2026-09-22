@@ -1,6 +1,6 @@
 // vCenter Settings — ported from frontend/src/pages/vcenter/VcSettingsPage.jsx.
 const { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil } = require('../icons.jsx');
-const { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, BRAND, fmtWhen } = require('../ui.jsx');
+const { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, BRAND, fmtWhen, PlatformSettingsLayout } = require('../ui.jsx');
 const { SitesSection, ClusterAssignmentsSection, FailoverPairsSection } = require('./sitesPanel.jsx');
 const { Building2, Layers, ArrowLeftRight } = require('../icons.jsx');
 
@@ -169,21 +169,7 @@ export default function VcSettingsPage() {
         </div>
       )}
 
-      <div className="flex gap-4 items-start">
-        <div className="w-56 shrink-0 panel p-2" style={{ borderTop: `3px solid ${BRAND}` }}>
-          {SECTIONS.map((sec) => {
-            const Icon = sec.icon;
-            const isActive = tab === sec.key;
-            return (
-              <button key={sec.key} onClick={() => selectTab(sec.key)}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors cursor-pointer ${isActive ? 'bg-surface-overlay text-ink font-semibold' : 'text-ink-muted hover:bg-surface-overlay/60 hover:text-ink'}`}
-                style={{ border: 'none' }}>
-                <Icon size={13} className={isActive ? 'text-brand' : 'text-ink-faint'} />
-                {sec.label}
-              </button>
-            );
-          })}
-        </div>
+      <PlatformSettingsLayout brand={BRAND} label="vCenter" sections={SECTIONS} active={tab} onSelect={selectTab}>
 
         <div className="flex-1 min-w-0 flex flex-col gap-4">
           {tab === 'registration' && (
@@ -328,7 +314,7 @@ export default function VcSettingsPage() {
       </div>
           )}
         </div>
-      </div>
+      </PlatformSettingsLayout>
     </div>
   );
 }

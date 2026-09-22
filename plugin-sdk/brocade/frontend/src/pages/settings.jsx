@@ -2,7 +2,7 @@ import {
   Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, CalendarClock, ShieldCheck, Plus,
 } from '../icons.jsx';
 import client from '../api.js';
-import { useToast, PageHeader, Badge, LoadingPanel, Spinner, portalOrInline, BRAND, fmtWhen } from '../ui.jsx';
+import { useToast, PageHeader, Badge, LoadingPanel, Spinner, portalOrInline, BRAND, fmtWhen, PlatformSettingsLayout } from '../ui.jsx';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 const btnPrimary = 'px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer';
@@ -425,28 +425,8 @@ export default function BrocadeSettingsPage() {
     <div className="animate-fade-in">
       <PageHeader icon={Settings} title="Brocade SAN Settings" description="Register SANnav Management Portal servers and tune alert thresholds" />
 
-      <div className="flex flex-col md:flex-row gap-6 items-start">
-        <nav className="w-full md:w-48 shrink-0 flex flex-row md:flex-col flex-wrap gap-x-6" aria-label="Brocade settings sections">
-          {['Connections', 'Tuning'].map((g) => (
-            <div key={g} className="flex flex-col gap-0.5 min-w-[10rem] mb-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint px-2 mb-1">{g}</p>
-              {SECTIONS.filter((s) => s.group === g).map((s) => {
-                const Icon = s.icon;
-                const active = section === s.key;
-                return (
-                  <button key={s.key} onClick={() => setSection(s.key)} aria-current={active ? 'page' : undefined}
-                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] font-medium text-left transition-colors duration-150 cursor-pointer ${
-                      active ? 'bg-surface-overlay text-ink' : 'text-ink-muted hover:text-ink'
-                    }`}>
-                    <Icon size={13} className={active ? 'text-brand' : ''} /> {s.label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
-
-        <div className="flex-1 min-w-0 max-w-3xl">
+      <PlatformSettingsLayout brand={BRAND} label="Brocade SAN" sections={SECTIONS} active={section} onSelect={setSection}>
+        <div>
           {section === 'sources' && (
             <>
               <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -608,7 +588,7 @@ export default function BrocadeSettingsPage() {
             The Brocade SAN platform tab itself is enabled from Global Settings (gear icon → Platforms).
           </p>
         </div>
-      </div>
+      </PlatformSettingsLayout>
 
       {probeSource && <ProbeModal source={probeSource} onClose={() => setProbeSource(null)} />}
     </div>

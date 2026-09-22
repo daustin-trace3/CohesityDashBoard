@@ -553,6 +553,38 @@ function DownloadGlyph(p) {
  * Primitives
  * ────────────────────────────────────────────────────────────────────── */
 
+// Settings rail shared by every platform Settings page (host: components/PlatformSettingsLayout.jsx).
+// Inline styles on purpose: the pack stylesheet is a Tailwind subset.
+export function PlatformSettingsLayout({ brand, sections, active, onSelect, label, children }) {
+  const grouped = sections.some((s) => s.group);
+  const groups = grouped ? [...new Set(sections.map((s) => s.group || ''))] : [''];
+  const item = (s) => {
+    const Icon = s.icon;
+    const on = active === s.key;
+    return (
+      <button key={s.key} onClick={() => onSelect(s.key)} aria-current={on ? 'page' : undefined}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 8, textAlign: 'left', fontSize: 12, fontWeight: on ? 600 : 400, border: 'none', cursor: 'pointer', background: on ? 'var(--ar-surface-overlay)' : 'transparent', color: on ? 'var(--ar-ink)' : 'var(--ar-ink-muted)' }}>
+        {Icon && <Icon size={13} style={{ color: on ? 'var(--ar-brand)' : 'var(--ar-ink-faint)' }} />}
+        {s.label}
+      </button>
+    );
+  };
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
+      <nav aria-label={label ? label + ' settings sections' : 'Settings sections'}
+        style={{ width: 224, flexShrink: 0, padding: 8, borderRadius: 12, background: 'var(--ar-surface)', border: '1px solid var(--ar-border)', borderTop: '3px solid ' + brand }}>
+        {groups.map((g) => (
+          <div key={g || 'all'} style={{ marginBottom: grouped ? 8 : 0 }}>
+            {g && <p style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--ar-ink-faint)', padding: '4px 8px 0', margin: '0 0 4px' }}>{g}</p>}
+            {sections.filter((s) => (s.group || '') === g).map(item)}
+          </div>
+        ))}
+      </nav>
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>{children}</div>
+    </div>
+  );
+}
+
 export function PageHeader({ icon: IconComp, title, description, children }) {
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 20 }}>

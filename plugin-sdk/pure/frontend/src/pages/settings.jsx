@@ -7,7 +7,7 @@ import {
   Settings, Save, PlugZap, KeyRound, Copy, Check, Cloud, Clock, Gauge, Server,
   Plus, Pencil, Trash2, X,
 } from '../icons.jsx';
-import { apiFetch, PageHeader, LoadingPanel, Badge, RefreshButton, BRAND, timeAgo } from '../ui.jsx';
+import { apiFetch, PageHeader, LoadingPanel, Badge, RefreshButton, BRAND, timeAgo, PlatformSettingsLayout } from '../ui.jsx';
 
 const inp = 'pu-input';
 
@@ -30,20 +30,10 @@ export default function PureSettingsPage() {
   const [tab, setTab] = React.useState('saas');
   return (
     <div className="animate-fade-in">
-      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start w-fit mb-4">
-        {TABS.map((t) => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className="pu-btn-ghost"
-              style={{ border: 'none', color: active ? 'var(--pu-ink)' : 'var(--pu-ink-muted)', background: active ? 'var(--pu-surface-overlay)' : 'transparent' }}>
-              <Icon size={13} style={active ? { color: BRAND } : undefined} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <PageHeader icon={Settings} title="Pure Settings" description="Pure1 cloud credentials and direct arrays" />
+      <PlatformSettingsLayout brand={BRAND} label="Pure" sections={TABS} active={tab} onSelect={setTab}>
       {tab === 'saas' ? <Pure1SaaSTab /> : <PureDirectArraysTab />}
+    </PlatformSettingsLayout>
     </div>
   );
 }
@@ -144,18 +134,15 @@ function Pure1SaaSTab() {
 
   if (cfg == null) {
     return (
-      <div className="animate-fade-in max-w-3xl">
-        <PageHeader icon={Settings} title="Pure Settings" description="Pure1 credentials and preferences" />
-        <LoadingPanel label="Loading settings…" height={160} />
-      </div>
+      <LoadingPanel label="Loading settings…" height={160} />
     );
   }
 
   return (
-    <div className="animate-fade-in max-w-3xl">
-      <PageHeader icon={Settings} title="Pure Settings" description="Pure1 cloud credentials and display preferences">
+    <div className="animate-fade-in">
+      <div className="flex justify-end mb-3">
         <RefreshButton onClick={load} />
-      </PageHeader>
+      </div>
 
       {statusMsg && (
         <div className={`panel p-3 mb-4 text-xs ${statusMsg.type === 'error' ? 'text-status-crit' : 'text-status-ok'}`} style={{ borderLeft: `3px solid ${statusMsg.type === 'error' ? '#F87171' : '#34D399'}` }}>

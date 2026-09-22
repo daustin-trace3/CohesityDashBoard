@@ -1,5 +1,5 @@
 import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, Pencil, Search, X } from '../icons.jsx';
-import { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, portalOrInline, BRAND, fmtWhen } from '../ui.jsx';
+import { apiFetch, PageHeader, Badge, LoadingPanel, Spinner, portalOrInline, BRAND, fmtWhen, PlatformSettingsLayout } from '../ui.jsx';
 
 const inp = 'ao-input';
 
@@ -178,9 +178,16 @@ export default function AriaOpsSettingsPage() {
 
   const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && (editingId || form.password);
 
+  const [section, setSection] = React.useState('sources');
+  const SECTIONS = [
+    { key: 'sources', label: 'Instances', icon: Server },
+  ];
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="Aria Operations Settings" description="Register vROps instances — each is polled directly with its own credentials" />
+
+      <PlatformSettingsLayout brand={BRAND} label="Aria Operations" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'sources' && (<>
 
       {statusMsg && (
         <div className={`panel p-3 mb-4 text-xs ${statusMsg.type === 'error' ? 'text-status-crit' : 'text-status-ok'}`} style={{ borderLeft: `3px solid ${statusMsg.type === 'error' ? '#F87171' : '#34D399'}` }}>
@@ -188,7 +195,7 @@ export default function AriaOpsSettingsPage() {
         </div>
       )}
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'Aria Operations instance'}` : 'Add an Aria Operations instance'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           A read-only Aria Operations account is sufficient for resources and alerts. The password is encrypted at rest.
@@ -247,6 +254,8 @@ export default function AriaOpsSettingsPage() {
         </div>
       </div>
 
+      </>)}
+      {section === 'sources' && (<>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Registered Aria Operations instances</p>
         {instances == null ? (
@@ -312,6 +321,8 @@ export default function AriaOpsSettingsPage() {
         </p>
       </div>
 
+      </>)}
+      </PlatformSettingsLayout>
       {probeInstance && <ProbeModal instance={probeInstance} onClose={() => setProbeInstance(null)} />}
     </div>
   );
