@@ -482,4 +482,13 @@ module.exports = [
       `);
     },
   },
+  // Alert email types start muted (Doug, 2026-09-22): a platform can carry
+  // hundreds of types, so the operator opts types in rather than muting the
+  // rest. Rows already on record are muted here to match the new default.
+  {
+    version: 21,
+    up(db) {
+      db.exec('UPDATE alert_notify_types SET enabled = 0');
+    },
+  },
 ];

@@ -4,6 +4,7 @@ import { BellRing } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, timeAgo } from './helpers';
 import PureDirectArraysTab from './PureDirectArraysTab';
 import { copyText } from '../../utils/clipboard';
@@ -31,23 +32,12 @@ export default function PureSettingsPage() {
   const [tab, setTab] = useState('saas');
   return (
     <div className="animate-fade-in">
-      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start w-fit mb-4">
-        {TABS.map(t => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-              }`}>
-              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <PageHeader icon={Settings} title="Pure Settings" description="Pure1 cloud credentials, direct arrays and alert notifications" />
+      <PlatformSettingsLayout brand={BRAND} label="Pure" sections={TABS} active={tab} onSelect={setTab}>
       {tab === 'saas' && <Pure1SaaSTab />}
       {tab === 'direct' && <PureDirectArraysTab />}
       {tab === 'alerts' && <PlatformAlertNotifications platform="pure" label="Pure" />}
+    </PlatformSettingsLayout>
     </div>
   );
 }
@@ -128,19 +118,14 @@ function Pure1SaaSTab() {
   };
 
   if (cfg == null) {
-    return (
-      <div className="animate-fade-in max-w-3xl">
-        <PageHeader icon={Settings} title="Pure Settings" description="Pure1 credentials and preferences" />
-        <LoadingPanel label="Loading settings…" height={160} />
-      </div>
-    );
+    return <LoadingPanel label="Loading settings…" height={160} />;
   }
 
   return (
     <div className="animate-fade-in max-w-3xl">
-      <PageHeader icon={Settings} title="Pure Settings" description="Pure1 cloud credentials and display preferences">
+      <div className="flex justify-end mb-3">
         <RefreshButton onClick={load} />
-      </PageHeader>
+      </div>
 
       {/* Connection status */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>

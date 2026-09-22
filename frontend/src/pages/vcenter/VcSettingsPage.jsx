@@ -3,6 +3,7 @@ import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, P
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, fmtWhen } from './helpers';
 import { SitesSection, ClusterAssignmentsSection, FailoverPairsSection } from './VcSitesPanel';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
@@ -160,21 +161,7 @@ export default function VcSettingsPage() {
     <div className="animate-fade-in">
       <PageHeader icon={Settings} title="vCenter Settings" description="vCenter registration, capacity sites and cluster assignments, alert thresholds" />
 
-      <div className="flex gap-4 items-start">
-        <div className="w-56 shrink-0 panel p-2" style={{ borderTop: `3px solid ${BRAND}` }}>
-          {SECTIONS.map((sec) => {
-            const Icon = sec.icon;
-            const isActive = tab === sec.key;
-            return (
-              <button key={sec.key} onClick={() => selectTab(sec.key)}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors cursor-pointer ${isActive ? 'bg-surface-overlay text-ink font-semibold' : 'text-ink-muted hover:bg-surface-overlay/60 hover:text-ink'}`}
-                style={{ border: 'none' }}>
-                <Icon size={13} className={isActive ? 'text-brand' : 'text-ink-faint'} />
-                {sec.label}
-              </button>
-            );
-          })}
-        </div>
+      <PlatformSettingsLayout brand={BRAND} label="vCenter" sections={SECTIONS} active={tab} onSelect={selectTab}>
 
         <div className="flex-1 min-w-0 flex flex-col gap-4">
           {tab === 'registration' && (
@@ -320,7 +307,7 @@ export default function VcSettingsPage() {
           )}
           {tab === 'notify' && <PlatformAlertNotifications platform="vcenter" label="vCenter" />}
         </div>
-      </div>
+      </PlatformSettingsLayout>
     </div>
   );
 }

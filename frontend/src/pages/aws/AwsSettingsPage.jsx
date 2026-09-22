@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -204,12 +205,21 @@ export default function AwsSettingsPage() {
   };
 
   const canSubmit = form.name.trim();
+  const [section, setSection] = useState('sources');
+  const SECTIONS = [
+    { key: 'sources', label: 'Accounts', icon: Server },
+    { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal },
+    { key: 'notify', label: 'Alert Notifications', icon: BellRing },
+  ];
 
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="AWS Settings" description="Register AWS accounts — credentials are encrypted at rest, or fall back to the server's environment variables" />
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <PlatformSettingsLayout brand={BRAND} label="AWS" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'sources' && (<>
+
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'account'}` : 'Add an AWS account'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           Leave the access key and secret blank to fall back to the server's <code>AWS_ACCESS_KEY_ID</code> / <code>AWS_SECRET_ACCESS_KEY</code> environment variables.
@@ -266,7 +276,9 @@ export default function AwsSettingsPage() {
         </div>
       </div>
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      </>)}
+      {section === 'thresholds' && (<>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
           How far above the prior day's spend yesterday's total must be (and at least $1) before the Overview raises a cost-spike warning,
@@ -292,10 +304,14 @@ export default function AwsSettingsPage() {
         </div>
       </div>
 
-      <div className="mb-4">
+      </>)}
+      {section === 'notify' && (<>
+      <div>
         <PlatformAlertNotifications platform="aws" label="AWS" />
       </div>
 
+      </>)}
+      {section === 'sources' && (<>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Registered Accounts</p>
         {accounts == null ? (
@@ -365,6 +381,8 @@ export default function AwsSettingsPage() {
         </p>
       </div>
 
+      </>)}
+      </PlatformSettingsLayout>
       {probeAccount && <ProbeModal account={probeAccount} onClose={() => setProbeAccount(null)} />}
     </div>
   );

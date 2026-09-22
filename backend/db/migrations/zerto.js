@@ -180,4 +180,12 @@ module.exports = [
       `);
     },
   },
+  // Same default as the cross-platform alert types (core v21): codes start
+  // muted and the operator opts in.
+  {
+    version: 6,
+    up(db) {
+      db.exec('UPDATE zerto_alert_catalog SET enabled = 0');
+    },
+  },
 ];

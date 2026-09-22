@@ -3,6 +3,7 @@ import { Settings, Cloud, CheckCircle2, XCircle, BellRing, Search } from 'lucide
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -57,7 +58,24 @@ function AlertTypesSection() {
     }
   };
 
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const bulk = async (on) => {
+    const codes = shown.filter((t) => t.enabled !== on).map((t) => t.code);
+    if (codes.length === 0) return;
+    setBulkBusy(true);
+    try {
+      await client.put('/zerto/alert-types', { enabled: on, codes });
+      const set = new Set(codes);
+      setTypes((prev) => prev.map((x) => (set.has(x.code) ? { ...x, enabled: on } : x)));
+    } catch (err) {
+      toast({ type: 'error', title: `Failed to update ${codes.length} alert type(s)`, message: err?.response?.data?.error });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const disabledCount = (types || []).filter((t) => !t.enabled).length;
+  const filtered = !!(search.trim() || entitySel || sevSel);
 
   return (
     <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -66,8 +84,8 @@ function AlertTypesSection() {
         <p className="text-sm font-semibold text-ink">Alert notifications</p>
       </div>
       <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
-        Which Zerto alert types may send SMTP emails. Disabled types are muted — the alert still
-        shows in the dashboard, but no email is sent and reminders stop. Codes marked Active have
+        Which Zerto alert types may send SMTP emails. Types start off; switch on the ones you want.
+        A type that is off still shows in the dashboard, but no email is sent and reminders stop. Codes marked Active have
         alerts firing right now.{disabledCount > 0 && <> <b className="text-ink">{disabledCount}</b> type(s) currently muted.</>}
       </p>
 
@@ -91,6 +109,18 @@ function AlertTypesSection() {
           <option value="Major">Major</option>
         </select>
         {types && <span className="text-[11px] text-ink-faint tnum ml-auto">{shown.length} of {types.length} types</span>}
+        {types && types.length > 0 && (
+          <>
+            <button onClick={() => bulk(true)} disabled={bulkBusy || shown.every((t) => t.enabled)}
+              className="text-xs font-medium px-3 py-1.5 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 cursor-pointer">
+              Turn on {filtered ? 'shown' : 'all'}
+            </button>
+            <button onClick={() => bulk(false)} disabled={bulkBusy || shown.every((t) => !t.enabled)}
+              className="text-xs font-medium px-3 py-1.5 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 cursor-pointer">
+              Turn off {filtered ? 'shown' : 'all'}
+            </button>
+          </>
+        )}
       </div>
 
       {types == null ? (
@@ -208,21 +238,7 @@ export default function ZertoSettingsPage() {
       {status == null ? (
         <LoadingPanel label="Loading…" height={140} />
       ) : (
-        <div className="flex gap-4 items-start">
-          {/* Section rail — same pattern as Global Settings */}
-          <div className="w-56 shrink-0 panel p-2" style={{ borderTop: `3px solid ${BRAND}` }}>
-            {SECTIONS.map((s) => {
-              const Icon = s.icon;
-              const isActive = tab === s.key;
-              return (
-                <button key={s.key} onClick={() => setTab(s.key)}
-                  className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition-colors cursor-pointer ${isActive ? 'bg-surface-overlay text-ink font-semibold' : 'text-ink-muted hover:bg-surface-overlay/60 hover:text-ink'}`}>
-                  <Icon size={13} className={isActive ? 'text-brand' : 'text-ink-faint'} />
-                  {s.label}
-                </button>
-              );
-            })}
-          </div>
+        <PlatformSettingsLayout brand={BRAND} label="Zerto" sections={SECTIONS} active={tab} onSelect={setTab}>
 
           <div className="flex-1 min-w-0 flex flex-col gap-4">
           {tab === 'alerts' ? (
@@ -308,7 +324,7 @@ export default function ZertoSettingsPage() {
           </>
           )}
           </div>
-        </div>
+        </PlatformSettingsLayout>
       )}
     </div>
   );

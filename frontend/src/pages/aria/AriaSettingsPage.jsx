@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -205,12 +206,21 @@ export default function AriaSettingsPage() {
   };
 
   const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && (editingId || form.password);
+  const [section, setSection] = useState('sources');
+  const SECTIONS = [
+    { key: 'sources', label: 'Instances', icon: Server },
+    { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal },
+    { key: 'notify', label: 'Alert Notifications', icon: BellRing },
+  ];
 
   return (
     <div className="animate-fade-in max-w-5xl">
       <PageHeader icon={Settings} title="Aria Automation Settings" description="Register vRA 8.x on-prem instances — each is polled directly with its own credentials" />
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <PlatformSettingsLayout brand={BRAND} label="Aria Automation" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'sources' && (<>
+
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'Aria instance'}` : 'Add an Aria instance'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           A read-only Aria Automation account is sufficient for deployments, requests and inventory. The password is encrypted at rest.
@@ -269,7 +279,9 @@ export default function AriaSettingsPage() {
         </div>
       </div>
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      </>)}
+      {section === 'thresholds' && (<>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
           How far ahead of expiry deployment leases and TLS certificates raise a warning, and how far back failed requests are counted.
@@ -300,10 +312,14 @@ export default function AriaSettingsPage() {
         </div>
       </div>
 
-      <div className="mb-4">
+      </>)}
+      {section === 'notify' && (<>
+      <div>
         <PlatformAlertNotifications platform="aria" label="Aria Automation" />
       </div>
 
+      </>)}
+      {section === 'sources' && (<>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Registered Aria instances</p>
         {instances == null ? (
@@ -369,6 +385,8 @@ export default function AriaSettingsPage() {
         </p>
       </div>
 
+      </>)}
+      </PlatformSettingsLayout>
       {probeInstance && <ProbeModal instance={probeInstance} onClose={() => setProbeInstance(null)} />}
     </div>
   );

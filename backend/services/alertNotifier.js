@@ -323,7 +323,7 @@ function upsertTypeCatalog(items) {
   const run_ = db.transaction((rows) => {
     const stmt = db.prepare(`
       INSERT INTO alert_notify_types (platform, type, label, enabled, first_seen, last_seen)
-      VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, 0, datetime('now'), datetime('now'))
       ON CONFLICT(platform, type) DO UPDATE SET
         label = excluded.label,
         last_seen = datetime('now')
@@ -422,7 +422,7 @@ function refreshTypeCatalog(platform) {
   const platforms = platform ? [platform] : Object.keys(CATALOG_BACKFILL);
   const upsert = db.prepare(`
     INSERT INTO alert_notify_types (platform, type, label, enabled, first_seen, last_seen)
-    VALUES (?, ?, ?, 1, ?, ?)
+    VALUES (?, ?, ?, 0, ?, ?)
     ON CONFLICT(platform, type) DO UPDATE SET
       label = excluded.label,
       first_seen = MIN(first_seen, excluded.first_seen),

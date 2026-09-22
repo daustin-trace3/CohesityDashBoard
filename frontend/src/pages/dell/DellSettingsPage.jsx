@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, SlidersHorizontal } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -133,12 +134,21 @@ export default function DellSettingsPage() {
   };
 
   const canSubmit = form.name.trim() && form.host.trim() && form.username.trim() && (editingId || form.password);
+  const [section, setSection] = useState('sources');
+  const SECTIONS = [
+    { key: 'sources', label: 'Instances', icon: Server },
+    { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal },
+    { key: 'notify', label: 'Alert Notifications', icon: BellRing },
+  ];
 
   return (
     <div className="animate-fade-in max-w-5xl">
       <PageHeader icon={Settings} title="Dell OME Settings" description="Register OpenManage Enterprise appliances — each is polled directly with its own credentials" />
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <PlatformSettingsLayout brand={BRAND} label="Dell OME" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'sources' && (<>
+
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'OME instance'}` : 'Add an OME instance'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           A VIEWER-role OME account is sufficient for inventory, alerts and warranty. Power/thermal/utilization
@@ -194,7 +204,9 @@ export default function DellSettingsPage() {
         </div>
       </div>
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      </>)}
+      {section === 'thresholds' && (<>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
           How far ahead of a device warranty's expiry the Overview and Governance pages raise a warning. Expired warranties are always critical.
@@ -212,10 +224,14 @@ export default function DellSettingsPage() {
         </div>
       </div>
 
-      <div className="mb-4">
+      </>)}
+      {section === 'notify' && (<>
+      <div>
         <PlatformAlertNotifications platform="dell" label="Dell" />
       </div>
 
+      </>)}
+      {section === 'sources' && (<>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Registered OME instances</p>
         {instances == null ? (
@@ -276,6 +292,8 @@ export default function DellSettingsPage() {
           The Dell OME platform tab itself is enabled from Global Settings (gear icon → Platforms).
         </p>
       </div>
-    </div>
+    
+      </>)}
+      </PlatformSettingsLayout></div>
   );
 }

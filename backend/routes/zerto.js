@@ -88,6 +88,21 @@ router.get('/alert-types', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** PUT /api/zerto/alert-types - enable/disable many codes at once (the
+ *  Enable/Disable shown buttons). Unknown codes are ignored. */
+router.put('/alert-types', [
+  body('enabled').isBoolean(),
+  body('codes').isArray({ min: 1, max: 5000 }),
+  body('codes.*').isString().trim().isLength({ min: 1, max: 32 }),
+], validate, (req, res, next) => {
+  try {
+    const stmt = db.prepare('UPDATE zerto_alert_catalog SET enabled = ? WHERE alert_type = ?');
+    const flag = req.body.enabled ? 1 : 0;
+    const changed = db.transaction((codes) => codes.reduce((n, c) => n + stmt.run(flag, c).changes, 0))(req.body.codes);
+    res.json({ ok: true, enabled: !!req.body.enabled, changed });
+  } catch (err) { next(err); }
+});
+
 /** PUT /api/zerto/alert-types/:code — enable/disable SMTP notifications for one
  *  alert type. Disabled codes are skipped by the alert notifier entirely. */
 router.put('/alert-types/:code', [

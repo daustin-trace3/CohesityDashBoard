@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { BellRing, Save, Send, Search, AlertTriangle } from 'lucide-react';
 import client from '../api/client';
 import { useToast } from './ui/Toaster';
-import { LoadingPanel } from './ui/primitives';
+import { LoadingPanel, Spinner } from './ui/primitives';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -79,6 +79,23 @@ export default function PlatformAlertNotifications({ platform, label, hideTypes 
       toast({ type: 'error', title: `Failed to update ${t.label || t.type}`, message: err?.response?.data?.error });
     } finally {
       setSavingType(null);
+    }
+  };
+
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // Applies to the rows currently shown (all of them, or the search matches).
+  const bulkTypes = async (on) => {
+    const keys = shownTypes.filter((t) => t.enabled !== on).map((t) => t.type);
+    if (keys.length === 0) return;
+    setBulkBusy(true);
+    try {
+      await client.put(`/alert-notify/${platform}/types`, { enabled: on, types: keys });
+      const set = new Set(keys);
+      setData((prev) => ({ ...prev, types: prev.types.map((x) => (set.has(x.type) ? { ...x, enabled: on } : x)) }));
+    } catch (err) {
+      toast({ type: 'error', title: `Failed to update ${keys.length} alert type(s)`, message: err?.response?.data?.error });
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -178,9 +195,24 @@ export default function PlatformAlertNotifications({ platform, label, hideTypes 
           </div>
           <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
             This list holds every alert type ICC has on record for this platform. New types are added
-            as they are seen. A disabled type still shows on the dashboard and Service Status -
-            it just does not send email.{mutedCount > 0 && <> <b className="text-ink">{mutedCount}</b> type(s) currently muted.</>}
+            as they are seen and start off, so only the types you switch on send email. A type that is
+            off still shows on the dashboard and Service Status.
+            {types.length > 0 && <> <b className="text-ink">{types.length - mutedCount}</b> of {types.length} on.</>}
           </p>
+
+          {types.length > 0 && (
+            <div className="flex items-center gap-2 mb-3">
+              <button onClick={() => bulkTypes(true)} disabled={bulkBusy || shownTypes.every((t) => t.enabled)}
+                className="text-xs font-medium px-3 py-1.5 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 cursor-pointer">
+                Turn on {search ? 'shown' : 'all'}
+              </button>
+              <button onClick={() => bulkTypes(false)} disabled={bulkBusy || shownTypes.every((t) => !t.enabled)}
+                className="text-xs font-medium px-3 py-1.5 rounded-lg border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40 cursor-pointer">
+                Turn off {search ? 'shown' : 'all'}
+              </button>
+              {bulkBusy && <Spinner size={13} />}
+            </div>
+          )}
 
           {types.length > 12 && (
             <div className="relative max-w-sm mb-3">

@@ -5,6 +5,7 @@ import {
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -232,28 +233,8 @@ export default function UnifiSettingsPage() {
     <div className="animate-fade-in">
       <PageHeader icon={Settings} title="UniFi Settings" description="Register UniFi Network controllers and tune alert thresholds" />
 
-      <div className="flex flex-col md:flex-row gap-6 items-start">
-        <nav className="w-full md:w-48 shrink-0 flex flex-row md:flex-col flex-wrap gap-x-6" aria-label="UniFi settings sections">
-          {['Connections', 'Tuning'].map((g) => (
-            <div key={g} className="flex flex-col gap-0.5 min-w-[10rem] mb-3">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint px-2 mb-1">{g}</p>
-              {SECTIONS.filter((s) => s.group === g).map((s) => {
-                const Icon = s.icon;
-                const active = section === s.key;
-                return (
-                  <button key={s.key} onClick={() => setSection(s.key)} aria-current={active ? 'page' : undefined}
-                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] font-medium text-left transition-colors duration-150 cursor-pointer ${
-                      active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-                    }`}>
-                    <Icon size={13} className={active ? 'text-brand' : ''} /> {s.label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
-
-        <div className="flex-1 min-w-0 max-w-3xl">
+      <PlatformSettingsLayout brand={BRAND} label="UniFi" sections={SECTIONS} active={section} onSelect={setSection}>
+        <div className="max-w-3xl">
           {section === 'sources' && (
             <>
               <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -382,7 +363,7 @@ export default function UnifiSettingsPage() {
             The UniFi platform tab itself is enabled from Global Settings (gear icon → Platforms).
           </p>
         </div>
-      </div>
+      </PlatformSettingsLayout>
     </div>
   );
 }
