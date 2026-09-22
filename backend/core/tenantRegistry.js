@@ -75,8 +75,12 @@ function openHandles() {
  *  timer-driven work (sweeps, notifier, prewarm) that has no request to take
  *  a tenant from. One tenant's failure does not stop the others. */
 function forEachTenant(fn) {
+  // A poller worker is pinned to one tenant (ICC_TENANT); it never touches
+  // the others even for install-wide timers.
+  const pinned = process.env.ICC_TENANT || null;
   for (const t of listTenants()) {
     if (t.status !== 'active') continue;
+    if (pinned && t.id !== pinned) continue;
     try {
       const out = runAsTenant(t.id, () => fn(t.id));
       if (out && typeof out.catch === 'function') out.catch((err) => console.error(`[tenants] ${t.id}: ${err.message}`));

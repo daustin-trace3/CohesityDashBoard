@@ -36,18 +36,37 @@ const unifiManifest = require('./platforms/unifi');
 const brocadeManifest = require('./platforms/brocade');
 const bluecatManifest = require('./platforms/bluecat');
 
+const tenantRegistry = require('./core/tenantRegistry');
+const WORKER_TENANT = process.env.ICC_TENANT || null;
+
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
   logger.info('[Poller process] Demo mode — pollers disabled, idling.');
   setInterval(() => {}, 60 * 60 * 1000);
+} else if (!WORKER_TENANT && tenantRegistry.isStrict()) {
+  // More than one tenant: this process only supervises, one worker process
+  // per tenant (core/pollerSupervisor.js). A single-tenant install keeps
+  // running its pollers in this process, exactly as before.
+  const { createSupervisor } = require('./core/pollerSupervisor');
+  const supervisor = createSupervisor().run();
+  logger.info(`[Poller process] Supervising ${supervisor.workers().length} tenant worker(s).`);
+  const shutdown = () => { supervisor.stopAll(); process.exit(0); };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 } else {
   // Same plugin boot sequence as server.js: swap staged upgrades before any
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  // Start-up reads (platform flags, entitlement, plugin boot) belong to the
-  // default tenant; per-tenant work is entered explicitly later.
-  require('./core/tenantContext').enterTenantForBoot(require('./core/tenantRegistry').DEFAULT_TENANT);
+  // Everything this process does belongs to one tenant: the worker's tenant,
+  // or the default tenant on a single-tenant install.
+  const bootTenant = WORKER_TENANT || tenantRegistry.DEFAULT_TENANT;
+  if (WORKER_TENANT && !tenantRegistry.getTenant(WORKER_TENANT)) {
+    logger.error(`[Poller process] Unknown tenant ${WORKER_TENANT}; exiting.`);
+    process.exit(1);
+  }
+  require('./core/tenantContext').enterTenantForBoot(bootTenant);
+  if (WORKER_TENANT) logger.info(`[Poller process] Worker for tenant ${WORKER_TENANT}`);
   const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformAwsEnabled, platformUnifiEnabled, platformBrocadeEnabled, platformBluecatEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
