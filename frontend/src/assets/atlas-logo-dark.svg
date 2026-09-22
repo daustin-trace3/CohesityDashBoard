@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 67" width="360" height="67" role="img" aria-label="Atlas, Infrastructure Command Center">
+  <defs>
+    <linearGradient id="alRing" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#82C957"/>
+      <stop offset="1" stop-color="#54932D"/>
+    </linearGradient>
+    <radialGradient id="alGlobe" cx="0.4" cy="0.35" r="0.75">
+      <stop offset="0" stop-color="#18222C"/>
+      <stop offset="1" stop-color="#0B1015"/>
+    </radialGradient>
+    <filter id="alGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="1.4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- mark, 62px -->
+  <g transform="translate(33.5 33.5) scale(0.66)">
+    <circle r="44" fill="url(#alGlobe)" stroke="url(#alRing)" stroke-width="3"/>
+    <g fill="none" stroke="#6CB33F" stroke-opacity="0.3" stroke-width="1.4">
+      <ellipse rx="20" ry="44"/>
+      <ellipse rx="36" ry="44"/>
+      <ellipse rx="44" ry="17"/>
+      <ellipse rx="44" ry="34"/>
+      <line x1="-44" y1="0" x2="44" y2="0"/>
+    </g>
+    <g transform="rotate(45)">
+      <polygon points="0,-24 4,-4 24,0 4,4 0,24 -4,4 -24,0 -4,-4" fill="#60A5FA" opacity="0.85"/>
+    </g>
+    <polygon points="0,-38 5.5,-5.5 0,0 -5.5,-5.5" fill="#82C957"/>
+    <polygon points="38,0 5.5,5.5 0,0 5.5,-5.5" fill="#54932D"/>
+    <polygon points="0,38 -5.5,5.5 0,0 5.5,5.5" fill="#82C957"/>
+    <polygon points="-38,0 -5.5,-5.5 0,0 -5.5,5.5" fill="#54932D"/>
+    <g fill="#60A5FA" filter="url(#alGlow)">
+      <circle cx="0" cy="-44" r="4"/>
+      <circle cx="44" cy="0" r="4"/>
+      <circle cx="0" cy="44" r="4"/>
+      <circle cx="-44" cy="0" r="4"/>
+    </g>
+    <circle r="7" fill="#0B1015" stroke="#6CB33F" stroke-width="2.4"/>
+    <circle r="2.8" fill="#82C957" filter="url(#alGlow)"/>
+  </g>
+
+  <!-- wordmark -->
+  <g font-family="Inter, InterVariable, 'Segoe UI', Roboto, sans-serif">
+    <text x="76" y="45" fill="#E8EDF2" font-size="34" font-weight="800" letter-spacing="-1">ATLAS</text>
+    <line x1="190" y1="19" x2="190" y2="48" stroke="#6CB33F" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+    <text x="200" y="31" fill="#E8EDF2" font-size="12" font-weight="700" letter-spacing="2.4">INFRASTRUCTURE</text>
+    <text x="200" y="46" fill="#6CB33F" font-size="12" font-weight="600" letter-spacing="2.4">COMMAND CENTER</text>
+  </g>
+</svg>
