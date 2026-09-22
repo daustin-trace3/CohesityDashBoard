@@ -1,3 +1,4 @@
+import { currentTenant } from '../tenant';
 // Loads a plugin's frontend bundle at runtime. The bundle is an IIFE that
 // calls window.__ICC_REGISTER_PLUGIN__(platformModule) once evaluated.
 const LOAD_TIMEOUT_MS = 15000;
@@ -10,7 +11,14 @@ export function load(id, version) {
     const script = document.createElement('script');
     // ?v= busts browser/CDN caches on plugin upgrades (Cloudflare caches .js
     // by extension even under /api).
-    script.src = `/api/plugins/${id}/bundle.js${version ? `?v=${encodeURIComponent(version)}` : ''}`;
+    // A script tag carries no header, so the tenant this tab is looking at
+    // travels in the query string (middleware/tenantScope.js reads ?t=).
+    const params = new URLSearchParams();
+    if (version) params.set('v', version);
+    const tenant = currentTenant();
+    if (tenant) params.set('t', tenant);
+    const qs = params.toString();
+    script.src = `/api/plugins/${id}/bundle.js${qs ? `?${qs}` : ''}`;
     script.async = true;
 
     let timer;

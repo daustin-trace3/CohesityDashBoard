@@ -112,9 +112,10 @@ describe('tenants and membership', () => {
     expect((await agentAlice.get('/api/auth/session')).status).toBe(200);
     expect((await agentAlice.get('/api/tenants')).status).toBe(200);
     expect((await agentAlice.get('/api/clusters')).status).toBe(400);
-    // Pack assets load through <script> tags with no header: install-wide.
+    // The frontend manifest is install-wide; a pack bundle names its tenant in ?t=.
     expect((await agentAlice.get('/api/plugins/frontend-manifest')).status).not.toBe(400);
-    expect((await agentAlice.get('/api/plugins/nothere/bundle.js')).status).not.toBe(400);
+    expect((await agentAlice.get('/api/plugins/nothere/bundle.js?v=1&t=acme')).status).not.toBe(400);
+    expect((await agentAlice.get('/api/plugins/nothere/bundle.js?v=1&t=globex')).status).toBe(403);
   });
 });
 
