@@ -26,6 +26,16 @@ function isBlockedHost(host) {
   return blocked.some((p) => p.test(h));
 }
 
+// A direct cluster registered before its first poll (or on an install that has
+// not polled since the version column started being written) has no version on
+// its row; its nodes usually do.
+function nodeVersionFor(arrayId) {
+  try {
+    const n = db.prepare('SELECT version FROM netapp_nodes WHERE array_id = ? AND version IS NOT NULL ORDER BY name LIMIT 1').get(arrayId);
+    return n ? n.version : null;
+  } catch { return null; }
+}
+
 // Read-only view of a cluster (AIQUM-managed or direct). Credential values —
 // including usernames — are never returned; presence only.
 function publicCluster(row) {
@@ -34,7 +44,7 @@ function publicCluster(row) {
     name: row.name,
     mgmt_host: row.mgmt_host,
     has_username: !!row.username,
-    version: row.version,
+    version: row.version || nodeVersionFor(row.id),
     management_ip: row.management_ip,
     cluster_uuid: row.cluster_uuid,
     source: row.source,
@@ -583,7 +593,8 @@ router.get('/governance', cacheControl(30), (req, res, next) => {
       const serials = myNodes.map((n) => n.serial_number).filter(Boolean);
       const nodeReleases = myNodes.map((n) => canonicalOntapRelease(n.version)).filter(Boolean);
       const nodeVersions = [...new Set(nodeReleases)];
-      const ontapRelease = canonicalOntapRelease(c.version);
+      const clusterVersion = c.version || (myNodes.find((n) => n.version) || {}).version || null;
+      const ontapRelease = canonicalOntapRelease(clusterVersion);
       const cap = capByArray.get(c.id);
       const totalBytes = cap?.size || 0;
       const usedBytes = cap?.used || 0;
@@ -597,7 +608,7 @@ router.get('/governance', cacheControl(30), (req, res, next) => {
         name: c.name,
         mgmt_host: c.mgmt_host,
         source: c.source === 'aiqum' ? (aiqumNames.get(c.aiqum_instance_id) || 'AIQUM') : 'direct',
-        ontap_version: c.version,
+        ontap_version: clusterVersion,
         ontap_release: ontapRelease,
         node_count: myNodes.length,
         models,

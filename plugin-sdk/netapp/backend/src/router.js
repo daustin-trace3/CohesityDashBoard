@@ -29,6 +29,17 @@ function isBlockedHost(host) {
   return blocked.some((p) => p.test(h));
 }
 
+// A direct cluster registered before its first poll (or on an install that has
+// not polled since the version column started being written) has no version on
+// its row; its nodes usually do.
+let routerDb = null; // set by createRouter; module-level helpers have no coreApi
+function nodeVersionFor(arrayId) {
+  try {
+    const n = routerDb && routerDb.prepare('SELECT version FROM netapp_nodes WHERE array_id = ? AND version IS NOT NULL ORDER BY name LIMIT 1').get(arrayId);
+    return n ? n.version : null;
+  } catch { return null; }
+}
+
 // Read-only view of a cluster (AIQUM-managed or direct). Credential values —
 // including usernames — are never returned; presence only.
 function publicCluster(row) {
@@ -37,7 +48,7 @@ function publicCluster(row) {
     name: row.name,
     mgmt_host: row.mgmt_host,
     has_username: !!row.username,
-    version: row.version,
+    version: row.version || nodeVersionFor(row.id),
     management_ip: row.management_ip,
     cluster_uuid: row.cluster_uuid,
     source: row.source,
@@ -855,6 +866,7 @@ const ROUTES = [
 // above; req.query/req.body are still parsed by the host's express pipeline
 // before this middleware runs.
 function createRouter(coreApi) {
+  routerDb = coreApi.db;
   return function netappRouter(req, res, next) {
     const path = req.path.length > 1 && req.path.endsWith('/') ? req.path.slice(0, -1) : req.path;
     for (const route of ROUTES) {

@@ -320,6 +320,16 @@ async function doPollArray(array) {
     const version = clusterR.status === 'fulfilled'
       ? (clusterR.value.version && clusterR.value.version.full)
       : null;
+    // The cluster row is what Settings and Governance read. AIQUM discovery
+    // writes it; a direct poll has to as well, or direct filers show no version.
+    if (version) {
+      try {
+        db.prepare("UPDATE netapp_arrays SET version = ?, updated_at = datetime('now') WHERE id = ? AND (version IS NULL OR version <> ?)")
+          .run(version, array.id, version);
+      } catch (err) {
+        logger.error(`[NetAppPoller] Version update failed for array ${array.id}:`, err.message);
+      }
+    }
     const metrics = metricsR.status === 'fulfilled' ? metricsR.value : null;
 
     try {
