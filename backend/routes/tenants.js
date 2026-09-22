@@ -276,6 +276,25 @@ router.post('/:id/members', requireGlobalAdmin, (req, res) => {
   res.status(fresh ? 201 : 200).json({ ok: true, added: fresh });
 });
 
+/** Display name and active flag of a member's account. The account is
+ *  global, so a disabled account is disabled in every tenant. Roles stay on
+ *  the tenant's own Users & Access page. */
+router.put('/:id/members/:userId', requireGlobalAdmin, (req, res) => {
+  const tenantId = req.params.id;
+  if (!registry.getTenant(tenantId)) return res.status(404).json({ error: 'Unknown tenant' });
+  const user = accounts.getUser(Number(req.params.userId));
+  if (!user || !accounts.isMember(tenantId, user.id)) return res.status(404).json({ error: 'Not a member of this tenant' });
+  const { displayName, isActive } = req.body || {};
+  const actor = req.auth.user || null;
+  if (isActive === false && actor && actor.id === user.id) return res.status(400).json({ error: 'You cannot disable your own account.' });
+  const fields = {};
+  if (displayName !== undefined) fields.displayName = String(displayName).trim() || user.username;
+  if (isActive !== undefined) fields.isActive = !!isActive;
+  const updated = accounts.updateUser(user.id, fields);
+  if (isActive !== undefined) accounts.audit(isActive ? 'account.enabled' : 'account.disabled', { actor, tenantId, detail: { username: user.username } });
+  res.json({ id: updated.id, username: updated.username, displayName: updated.display_name, isActive: !!updated.is_active, isGlobalAdmin: !!updated.is_global_admin });
+});
+
 router.delete('/:id/members/:userId', requireGlobalAdmin, (req, res) => {
   const tenantId = req.params.id;
   if (!registry.getTenant(tenantId)) return res.status(404).json({ error: 'Unknown tenant' });

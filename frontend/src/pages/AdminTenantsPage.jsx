@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, Plus, UserPlus, Trash2, PauseCircle, PlayCircle, Download, Archive, ArchiveRestore, KeyRound } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Building2, Plus, UserPlus, Trash2, PauseCircle, PlayCircle, Download, Archive, ArchiveRestore, KeyRound, Pencil, X } from 'lucide-react';
 import client from '../api/client';
 import { PageHeader, Badge, LoadingPanel } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -9,6 +10,24 @@ import { tenantHome } from '../tenant';
 
 const inputClass = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none';
 const buttonClass = 'inline-flex items-center gap-1.5 text-xs font-medium px-3 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer';
+
+function Dialog({ title, onClose, children }) {
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative panel w-full max-w-lg flex flex-col">
+        <div className="flex items-start justify-between p-4 pb-3 border-b border-cohesity-border">
+          <p className="text-sm font-semibold text-ink">{title}</p>
+          <button onClick={onClose} aria-label="Close" className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer">
+            <X size={15} />
+          </button>
+        </div>
+        <div className="p-4">{children}</div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 /**
  * Global admin only (docs/MULTI-TENANT-DESIGN.md, decisions 7 and 8): create
@@ -31,6 +50,10 @@ export default function AdminTenantsPage() {
   const [licenseKey, setLicenseKey] = useState('');
   const [newMember, setNewMember] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [editMember, setEditMember] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editActive, setEditActive] = useState(true);
 
   const load = useCallback(() => client.get('/tenants/manage', { params: { _: Date.now() } })
     .then(({ data }) => { setTenants(data.tenants || []); setPlatforms(data.platforms || []); })
@@ -44,6 +67,7 @@ export default function AdminTenantsPage() {
   useEffect(() => { if (selected) loadMembers(selected); }, [selected, loadMembers]);
 
   const createTenant = async () => {
+    setConfirming(false);
     setBusy(true);
     try {
       const body = { id: newId.trim().toLowerCase(), name: newName.trim(), seedDemo };
@@ -138,6 +162,20 @@ export default function AdminTenantsPage() {
       await loadMembers(selected);
     } catch (err) {
       toast({ type: 'error', title: 'Could not add member', message: err?.response?.data?.error });
+    } finally { setBusy(false); }
+  };
+
+  const openEdit = (m) => { setEditMember(m); setEditName(m.displayName || ''); setEditActive(!!m.isActive); };
+
+  const saveMember = async () => {
+    if (!editMember) return;
+    setBusy(true);
+    try {
+      await client.put(`/tenants/${selected}/members/${editMember.id}`, { displayName: editName, isActive: editActive });
+      setEditMember(null);
+      await loadMembers(selected);
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not save', message: err?.response?.data?.error });
     } finally { setBusy(false); }
   };
 
@@ -264,7 +302,7 @@ export default function AdminTenantsPage() {
                 <label className="block text-[11px] text-ink-faint mb-1" htmlFor="tenant-license">License key (CDBL-...); the tenant is locked to its licence page until one is set</label>
                 <input id="tenant-license" value={licenseKey} onChange={(e) => setLicenseKey(e.target.value)} className={inputClass} placeholder="CDBL-..." autoComplete="off" spellCheck={false} />
               </div>
-              <button onClick={createTenant} disabled={busy || !newId.trim() || !newName.trim()} className={buttonClass}><Plus size={13} /> {busy ? 'Creating...' : 'Create tenant'}</button>
+              <button onClick={() => setConfirming(true)} disabled={busy || !newId.trim() || !newName.trim()} className={buttonClass}><Plus size={13} /> {busy ? 'Creating...' : 'Create tenant'}</button>
             </div>
           </div>
 
@@ -285,7 +323,9 @@ export default function AdminTenantsPage() {
                         <td className="py-2 pr-3 text-ink">{m.username}</td>
                         <td className="py-2 pr-3 text-ink-muted">{m.displayName || '-'}</td>
                         <td className="py-2 pr-3"><Badge tone={m.isActive ? 'ok' : 'neutral'}>{m.isActive ? 'active' : 'inactive'}</Badge></td>
-                        <td className="py-2 pr-3 text-right">
+                        <td className="py-2 pr-3 text-right whitespace-nowrap">
+                          <button onClick={() => openEdit(m)} title="Edit name, enable or disable" aria-label={`Edit ${m.username}`}
+                            className="text-ink-faint hover:text-brand cursor-pointer mr-3"><Pencil size={14} /></button>
                           <button onClick={() => removeMember(m)} title="Remove from tenant" aria-label={`Remove ${m.username}`}
                             className="text-ink-faint hover:text-status-crit cursor-pointer"><Trash2 size={14} /></button>
                         </td>
@@ -305,6 +345,40 @@ export default function AdminTenantsPage() {
           )}
         </div>
       </div>
+
+      {confirming && (
+        <Dialog title={`Create tenant ${newName.trim()}?`} onClose={() => setConfirming(false)}>
+          <div className="text-xs text-ink-muted leading-relaxed flex flex-col gap-2">
+            <p>The tenant id <span className="font-mono text-ink">{newId.trim().toLowerCase()}</span> is permanent. It is part of the tenant's address and of its encryption key, so it cannot be renamed later. Check it now.</p>
+            <p>Everything else can be changed after creation: the display name, the platforms, the license key, the members and the retention window.</p>
+            {seedDemo && <p>Demo data will be seeded; that takes a little while.</p>}
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button onClick={() => setConfirming(false)} className="text-xs font-medium px-3 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink cursor-pointer">Go back and edit</button>
+            <button onClick={createTenant} className={buttonClass}><Plus size={13} /> Create {newName.trim()}</button>
+          </div>
+        </Dialog>
+      )}
+
+      {editMember && (
+        <Dialog title={`Edit ${editMember.username}`} onClose={() => setEditMember(null)}>
+          <div className="flex flex-col gap-3">
+            <div>
+              <label className="block text-[11px] text-ink-faint mb-1" htmlFor="member-display">Display name</label>
+              <input id="member-display" value={editName} onChange={(e) => setEditName(e.target.value)} className={inputClass} />
+            </div>
+            <label className="inline-flex items-center gap-2 text-xs text-ink-muted cursor-pointer select-none">
+              <input type="checkbox" className="accent-brand cursor-pointer" checked={editActive} onChange={(e) => setEditActive(e.target.checked)} />
+              Account enabled
+            </label>
+            <p className="text-[11px] text-ink-faint">The account is shared across tenants: disabling it here disables it everywhere. Roles inside this tenant are set on its Users &amp; Access page.</p>
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button onClick={() => setEditMember(null)} className="text-xs font-medium px-3 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink cursor-pointer">Cancel</button>
+            <button onClick={saveMember} disabled={busy} className={buttonClass}>Save</button>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }

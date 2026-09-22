@@ -166,6 +166,21 @@ describe('tenant user management', () => {
     expect((await agentAdmin.get('/api/t/acme/users')).body.some((u) => u.username === 'admin')).toBe(true);
   });
 
+  it('a global admin can rename or disable a member account from the Tenants page, and it applies everywhere', async () => {
+    const admin = await agentAdmin.get('/api/t/default/auth/session');
+    const csrf = admin.body.csrfToken;
+    const alice = accounts.findUserByUsername('alice');
+    const res = await agentAdmin.put(`/api/t/default/tenants/acme/members/${alice.id}`).set('x-csrf-token', csrf).send({ displayName: 'Alice A', isActive: false });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ displayName: 'Alice A', isActive: false });
+    expect((await agentAlice.get('/api/t/acme/clusters')).status).toBe(401);
+    const self = await agentAdmin.put(`/api/t/default/tenants/default/members/${accounts.findUserByUsername('admin').id}`).set('x-csrf-token', csrf).send({ isActive: false });
+    expect(self.status).toBe(400);
+    expect((await agentAdmin.put(`/api/t/default/tenants/acme/members/${alice.id}`).set('x-csrf-token', csrf).send({ isActive: true })).status).toBe(200);
+    await agentAlice.post('/api/auth/login').send({ username: 'alice', password: 'alice-pw' });
+    expect((await agentAlice.get('/api/t/acme/clusters')).status).toBe(200);
+  });
+
   it('a password change applies to the account everywhere', async () => {
     const admin = await agentAdmin.get('/api/t/acme/auth/session');
     const alice = accounts.findUserByUsername('alice');
