@@ -19,7 +19,7 @@ const SCAN_FILTER = 'all';
 // runs that did not complete, then successes.
 const STATUS_RANK = { Running: 0, Failed: 1, Canceled: 2, Skipped: 3, Succeeded: 4 };
 const STATUS_FILTERS = ['all', 'active', 'running', 'failed', 'canceled', 'skipped', 'succeeded'];
-const SORT_KEYS = ['default', 'jobName', 'targetCluster', 'status', 'startTime', 'duration', 'dataToSend', 'dataSent', 'percentComplete'];
+const SORT_KEYS = ['default', 'jobName', 'targetCluster', 'status', 'startTime', 'queued', 'duration', 'dataToSend', 'dataSent', 'percentComplete'];
 const PAGE_SIZE_MAX = 200;
 
 function statusRank(status) {
@@ -33,6 +33,12 @@ function durationSeconds(rep, nowUsecs) {
   const end = rep.endTimeUsecs || (rep.status === 'Running' ? nowUsecs : null);
   if (!end) return null;
   return Math.max(0, Math.round((end - rep.replicationStartTimeUsecs) / 1e6));
+}
+
+// Seconds a task waited in the queue before it started moving data.
+function queueSeconds(rep) {
+  if (!rep.queuedTimeUsecs || !rep.replicationStartTimeUsecs) return null;
+  return Math.max(0, Math.round((rep.replicationStartTimeUsecs - rep.queuedTimeUsecs) / 1e6));
 }
 
 function summarize(replications, nowUsecs) {
@@ -104,6 +110,7 @@ function sortList(replications, sortBy, sortDir, nowUsecs) {
     jobName: (a, b) => dir * text(a.jobName).localeCompare(text(b.jobName)) || byStart(a, b),
     targetCluster: (a, b) => dir * text(a.targetCluster).localeCompare(text(b.targetCluster)) || byStart(a, b),
     startTime: (a, b) => dir * ((a.replicationStartTimeUsecs || 0) - (b.replicationStartTimeUsecs || 0)),
+    queued: (a, b) => dir * (num(queueSeconds(a)) - num(queueSeconds(b))) || byStart(a, b),
     duration: (a, b) => dir * (num(durationSeconds(a, nowUsecs)) - num(durationSeconds(b, nowUsecs))) || byStart(a, b),
     dataToSend: (a, b) => dir * (num(a.logicalSizeBytes) - num(b.logicalSizeBytes)) || byStart(a, b),
     dataSent: (a, b) => dir * (num(a.logicalBytesTransferred) - num(b.logicalBytesTransferred)) || byStart(a, b),
@@ -122,7 +129,7 @@ function shapeResponse(payload, opts, scanning, cacheAgeSeconds) {
   const totalPages = Math.max(1, Math.ceil(sorted.length / opts.pageSize));
   const page = Math.min(opts.page, totalPages - 1);
   const rows = sorted.slice(page * opts.pageSize, (page + 1) * opts.pageSize)
-    .map(r => ({ ...r, durationSeconds: durationSeconds(r, nowUsecs) }));
+    .map(r => ({ ...r, durationSeconds: durationSeconds(r, nowUsecs), queueSeconds: queueSeconds(r) }));
   return {
     sourceCluster: payload.sourceCluster,
     generatedAt: payload.generatedAt,
@@ -308,7 +315,7 @@ function validate(req, res, next) {
  *  - days (optional, default 7, max 90): days back to look
  *  - numRunsPerGroup (optional, default 20, max 200): runs per protection group
  *  - sortBy (optional, default 'default'): default | jobName | targetCluster | status | startTime |
- *    duration | dataToSend | dataSent | percentComplete. 'default' is running, then failed,
+ *    queued | duration | dataToSend | dataSent | percentComplete. 'default' is running, then failed,
  *    canceled, skipped, succeeded, newest first inside each.
  *  - sortDir (optional, default 'desc')
  *  - page (optional, default 0), pageSize (optional, default 50, max 200)

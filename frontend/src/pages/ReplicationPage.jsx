@@ -5,6 +5,7 @@ import { PageHeader, Spinner, StatCard, Badge, LastUpdated, RefreshButton, human
 import { useToast } from '../components/ui/Toaster';
 import SkeletonTable from '../components/SkeletonTable';
 import Pagination from '../components/Pagination';
+import ReplicationFlows from '../components/cohesity/ReplicationFlows';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
@@ -56,6 +57,7 @@ const COLUMNS = [
   { key: 'targetCluster', label: 'Target Cluster', align: 'left' },
   { key: 'status', label: 'Status', align: 'left', tooltip: 'Running, then failed, canceled, skipped, succeeded' },
   { key: 'startTime', label: 'Start Time', align: 'left' },
+  { key: 'queued', label: 'Queued', align: 'right', tooltip: 'Time between the task being queued and starting to move data' },
   { key: 'duration', label: 'Duration', align: 'right', tooltip: 'Replication end minus start; elapsed so far for running tasks' },
   { key: 'dataToSend', label: 'Data to Send', align: 'right' },
   { key: 'dataSent', label: 'Data Sent', align: 'right' },
@@ -164,6 +166,9 @@ export default function ReplicationPage() {
   const wireRatio = summary.physicalBytesTransferred > 0
     ? (summary.logicalBytesTransferred / summary.physicalBytesTransferred).toFixed(1)
     : null;
+
+  const selectedClusterId = (clusters.find(c => c.name === selectedCluster) || {}).id || null;
+  const byTarget = summary.byTarget || [];
 
   const changeCluster = (name) => { setSelectedCluster(name); setPage(0); };
   const changeStatus = (key) => { setStatusFilter(key); setPage(0); };
@@ -331,7 +336,7 @@ export default function ReplicationPage() {
         </div>
 
         {loading && !data ? (
-          <SkeletonTable rows={6} colWidths={['w-32', 'w-28', 'w-16', 'w-28', 'w-16', 'w-20', 'w-20', 'w-24', 'w-16']} />
+          <SkeletonTable rows={6} colWidths={['w-32', 'w-28', 'w-16', 'w-28', 'w-14', 'w-16', 'w-20', 'w-20', 'w-24', 'w-16']} />
         ) : pageInfo.total === 0 ? (
           <div className="text-center py-8 text-xs text-gray-400">
             {data?.scanning ? 'Scan in progress. Data will appear shortly; use the refresh button to check.' : 'No replication data found for the selected filters.'}
@@ -378,6 +383,7 @@ export default function ReplicationPage() {
                       <td className="px-2 py-1.5 text-gray-500 text-[10px] whitespace-nowrap">
                         {formatDateTime(rep.replicationStartTimeUsecs)}
                       </td>
+                      <td className="text-right px-2 py-1.5 tnum whitespace-nowrap">{formatDuration(rep.queueSeconds)}</td>
                       <td className="text-right px-2 py-1.5 tnum whitespace-nowrap">{formatDuration(rep.durationSeconds)}</td>
                       <td className="text-right px-2 py-1.5 tnum">{formatBytes(rep.logicalSizeBytes)}</td>
                       <td className="text-right px-2 py-1.5 tnum">{formatBytes(rep.logicalBytesTransferred)}</td>
@@ -410,6 +416,44 @@ export default function ReplicationPage() {
           </>
         )}
       </div>
+
+      {/* Per-target rollup for the selected cluster, whole window */}
+      {byTarget.length > 0 && (
+        <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
+          <p className="text-xs font-semibold text-cohesity-text mb-3">By Target Cluster</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px] text-gray-400">
+              <thead>
+                <tr className="border-b border-cohesity-border">
+                  <th className="text-left px-2 py-2 font-medium">Target</th>
+                  <th className="text-right px-2 py-2 font-medium">Replications</th>
+                  <th className="text-right px-2 py-2 font-medium">Running</th>
+                  <th className="text-right px-2 py-2 font-medium" title="Failed, canceled or skipped">Not Completed</th>
+                  <th className="text-right px-2 py-2 font-medium">Succeeded</th>
+                  <th className="text-right px-2 py-2 font-medium">Data Sent</th>
+                  <th className="text-right px-2 py-2 font-medium">On the Wire</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byTarget.map((t, i) => (
+                  <tr key={t.targetCluster} className={i % 2 === 0 ? 'bg-cohesity-black/40' : ''}>
+                    <td className="px-2 py-1.5">{t.targetCluster}</td>
+                    <td className="text-right px-2 py-1.5 tnum">{t.total}</td>
+                    <td className="text-right px-2 py-1.5 tnum text-blue-400">{t.running}</td>
+                    <td className={`text-right px-2 py-1.5 tnum ${t.failed > 0 ? 'text-red-400' : ''}`}>{t.failed}</td>
+                    <td className="text-right px-2 py-1.5 tnum text-green-400">{t.succeeded}</td>
+                    <td className="text-right px-2 py-1.5 tnum">{formatBytes(t.logicalBytesTransferred)}</td>
+                    <td className="text-right px-2 py-1.5 tnum">{formatBytes(t.physicalBytesTransferred)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Flows across the estate from polled run history (moved from Analytics) */}
+      <ReplicationFlows clusterId={selectedClusterId} days={daysFilter} />
     </div>
   );
 }
