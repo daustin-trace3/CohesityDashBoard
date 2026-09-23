@@ -10,6 +10,142 @@ const router = express.Router();
 const replicationCache = tenantMap();
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
+// One unfiltered scan per cluster/window is cached; status filters, search,
+// sort and paging are applied when a page is read. A CG cluster holds 3,000+
+// rows in one window, so the browser only ever receives one page.
+const SCAN_FILTER = 'all';
+
+// Rows needing attention sort above finished ones. Running first, then the
+// runs that did not complete, then successes.
+const STATUS_RANK = { Running: 0, Failed: 1, Canceled: 2, Skipped: 3, Succeeded: 4 };
+const STATUS_FILTERS = ['all', 'active', 'running', 'failed', 'canceled', 'skipped', 'succeeded'];
+const SORT_KEYS = ['default', 'jobName', 'targetCluster', 'status', 'startTime', 'duration', 'dataToSend', 'dataSent', 'percentComplete'];
+const PAGE_SIZE_MAX = 200;
+
+function statusRank(status) {
+  const r = STATUS_RANK[status];
+  return r === undefined ? 5 : r;
+}
+
+// Seconds a replication took, or has been running so far.
+function durationSeconds(rep, nowUsecs) {
+  if (!rep.replicationStartTimeUsecs) return null;
+  const end = rep.endTimeUsecs || (rep.status === 'Running' ? nowUsecs : null);
+  if (!end) return null;
+  return Math.max(0, Math.round((end - rep.replicationStartTimeUsecs) / 1e6));
+}
+
+function summarize(replications, nowUsecs) {
+  const byStatus = {};
+  const byTarget = {};
+  let logical = 0;
+  let physical = 0;
+  let longest = null;
+  for (const rep of replications) {
+    byStatus[rep.status] = (byStatus[rep.status] || 0) + 1;
+    logical += rep.logicalBytesTransferred || 0;
+    physical += rep.physicalBytesTransferred || 0;
+    const key = rep.targetCluster || 'unknown';
+    if (!byTarget[key]) byTarget[key] = { targetCluster: key, total: 0, running: 0, failed: 0, succeeded: 0, logicalBytesTransferred: 0, physicalBytesTransferred: 0 };
+    const t = byTarget[key];
+    t.total++;
+    if (rep.status === 'Running') t.running++;
+    else if (rep.status === 'Succeeded') t.succeeded++;
+    else t.failed++;
+    t.logicalBytesTransferred += rep.logicalBytesTransferred || 0;
+    t.physicalBytesTransferred += rep.physicalBytesTransferred || 0;
+    if (rep.status === 'Running') {
+      const secs = durationSeconds(rep, nowUsecs);
+      if (secs != null && (!longest || secs > longest.seconds)) {
+        longest = { seconds: secs, jobName: rep.jobName, targetCluster: rep.targetCluster, percentComplete: rep.percentComplete };
+      }
+    }
+  }
+  return {
+    total: replications.length,
+    running: byStatus.Running || 0,
+    succeeded: byStatus.Succeeded || 0,
+    failed: byStatus.Failed || 0,
+    canceled: byStatus.Canceled || 0,
+    skipped: byStatus.Skipped || 0,
+    byStatus,
+    logicalBytesTransferred: logical,
+    physicalBytesTransferred: physical,
+    groupsWithReplication: new Set(replications.map(r => r.protectionGroupId)).size,
+    longestRunning: longest,
+    byTarget: Object.values(byTarget).sort((a, b) => b.total - a.total)
+  };
+}
+
+function applyFilter(replications, statusFilter, q) {
+  let list = replications;
+  const f = statusFilter === 'active' ? 'running' : statusFilter;
+  if (f && f !== 'all') {
+    const want = f.charAt(0).toUpperCase() + f.slice(1);
+    list = list.filter(r => r.status === want);
+  }
+  if (q) {
+    const needle = q.toLowerCase();
+    list = list.filter(r =>
+      String(r.jobName || '').toLowerCase().includes(needle) ||
+      String(r.targetCluster || '').toLowerCase().includes(needle));
+  }
+  return list;
+}
+
+function sortList(replications, sortBy, sortDir, nowUsecs) {
+  const dir = sortDir === 'asc' ? 1 : -1;
+  const text = (v) => String(v || '').toLowerCase();
+  const num = (v) => (v == null ? -1 : v);
+  const byStart = (a, b) => (b.replicationStartTimeUsecs || 0) - (a.replicationStartTimeUsecs || 0);
+  const cmp = {
+    default: (a, b) => statusRank(a.status) - statusRank(b.status) || byStart(a, b),
+    status: (a, b) => dir * (statusRank(a.status) - statusRank(b.status)) || byStart(a, b),
+    jobName: (a, b) => dir * text(a.jobName).localeCompare(text(b.jobName)) || byStart(a, b),
+    targetCluster: (a, b) => dir * text(a.targetCluster).localeCompare(text(b.targetCluster)) || byStart(a, b),
+    startTime: (a, b) => dir * ((a.replicationStartTimeUsecs || 0) - (b.replicationStartTimeUsecs || 0)),
+    duration: (a, b) => dir * (num(durationSeconds(a, nowUsecs)) - num(durationSeconds(b, nowUsecs))) || byStart(a, b),
+    dataToSend: (a, b) => dir * (num(a.logicalSizeBytes) - num(b.logicalSizeBytes)) || byStart(a, b),
+    dataSent: (a, b) => dir * (num(a.logicalBytesTransferred) - num(b.logicalBytesTransferred)) || byStart(a, b),
+    percentComplete: (a, b) => dir * (num(a.percentComplete) - num(b.percentComplete)) || byStart(a, b)
+  };
+  return [...replications].sort(cmp[sortBy] || cmp.default);
+}
+
+// Shape one response from a cached scan payload: summary over the whole
+// window, then filter, sort and slice for the requested page.
+function shapeResponse(payload, opts, scanning, cacheAgeSeconds) {
+  const nowUsecs = Date.now() * 1000;
+  const all = Array.isArray(payload.replications) ? payload.replications : [];
+  const filtered = applyFilter(all, opts.statusFilter, opts.q);
+  const sorted = sortList(filtered, opts.sortBy, opts.sortDir, nowUsecs);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / opts.pageSize));
+  const page = Math.min(opts.page, totalPages - 1);
+  const rows = sorted.slice(page * opts.pageSize, (page + 1) * opts.pageSize)
+    .map(r => ({ ...r, durationSeconds: durationSeconds(r, nowUsecs) }));
+  return {
+    sourceCluster: payload.sourceCluster,
+    generatedAt: payload.generatedAt,
+    totalGroupsScanned: payload.totalGroupsScanned || 0,
+    groupsWithActiveReplication: payload.groupsWithActiveReplication || 0,
+    scanning,
+    cacheAgeSeconds,
+    summary: summarize(all, nowUsecs),
+    page: { page, pageSize: opts.pageSize, total: sorted.length, totalPages },
+    replications: rows
+  };
+}
+
+function emptyPayload(clusterName) {
+  return {
+    sourceCluster: clusterName,
+    generatedAt: new Date().toISOString(),
+    totalGroupsScanned: 0,
+    groupsWithActiveReplication: 0,
+    replications: []
+  };
+}
+
 /**
  * Read replication status cache from database by cache_key.
  * Returns parsed payload_json and metadata, or null if not found.
@@ -43,11 +179,11 @@ function readCacheFromDb(cacheKey) {
  * Upsert replication status cache to database.
  * payload should be the scan result object (sourceCluster, generatedAt, etc).
  */
-function upsertCacheToDb(cacheKey, clusterName, statusFilter, days, numRunsPerGroup, payload, scanning, error) {
+function upsertCacheToDb(cacheKey, clusterName, days, numRunsPerGroup, payload, scanning, error) {
   try {
     const payloadJson = JSON.stringify(payload);
     db.prepare(
-      `INSERT INTO replication_status_cache 
+      `INSERT INTO replication_status_cache
        (cache_key, cluster_name, status_filter, days, num_runs_per_group, payload_json, scanning, error, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT(cache_key) DO UPDATE SET
@@ -55,13 +191,13 @@ function upsertCacheToDb(cacheKey, clusterName, statusFilter, days, numRunsPerGr
          scanning = excluded.scanning,
          error = excluded.error,
          updated_at = CURRENT_TIMESTAMP`
-    ).run(cacheKey, clusterName, statusFilter, days, numRunsPerGroup, payloadJson, scanning ? 1 : 0, error || null);
+    ).run(cacheKey, clusterName, SCAN_FILTER, days, numRunsPerGroup, payloadJson, scanning ? 1 : 0, error || null);
   } catch (err) {
     console.error('Error upserting cache to DB:', err.message);
   }
 }
 
-async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsPerGroup) {
+async function runBackgroundScan(cluster, cacheKey, days, numRunsPerGroup) {
   try {
     let protectionGroups = [];
     try {
@@ -71,7 +207,7 @@ async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsP
       // Persist early failure to DB, preserving existing payload if present
       const existing = readCacheFromDb(cacheKey);
       const existingPayload = existing?.payload || {};
-      upsertCacheToDb(cacheKey, cluster.name, statusFilter, days, numRunsPerGroup, existingPayload, false, err.message);
+      upsertCacheToDb(cacheKey, cluster.name, days, numRunsPerGroup, existingPayload, false, err.message);
       return;
     }
 
@@ -102,9 +238,6 @@ async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsP
         runs.forEach(run => {
           if (!run.replicationInfo || !run.replicationInfo.replicationTargetResults) return;
           run.replicationInfo.replicationTargetResults.forEach(target => {
-            if (statusFilter === 'active' && target.status !== 'Running') return;
-            if (statusFilter === 'failed' && target.status !== 'Failed') return;
-
             let percentComplete = null;
             if (target.status === 'Succeeded') {
               percentComplete = 100;
@@ -121,10 +254,15 @@ async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsP
               localBackupStatus: run.localBackupInfo?.status,
               targetCluster: target.clusterName,
               status: target.status,
+              message: target.message || null,
               replicationStartTimeUsecs: target.startTimeUsecs,
+              queuedTimeUsecs: target.queuedTimeUsecs || null,
+              endTimeUsecs: target.endTimeUsecs || null,
+              expiryTimeUsecs: target.expiryTimeUsecs || null,
               logicalSizeBytes: target.stats?.logicalSizeBytes,
               logicalBytesTransferred: target.stats?.logicalBytesTransferred,
               physicalBytesTransferred: target.stats?.physicalBytesTransferred,
+              percentageCompleted: target.percentageCompleted ?? null,
               percentComplete
             });
           });
@@ -133,12 +271,6 @@ async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsP
     }
 
     const groupsWithActiveReplication = new Set(replications.map(r => r.protectionGroupId)).size;
-    replications.sort((a, b) => {
-      const aPercent = a.percentComplete ?? -1;
-      const bPercent = b.percentComplete ?? -1;
-      if (aPercent !== bPercent) return bPercent - aPercent;
-      return (b.replicationStartTimeUsecs || 0) - (a.replicationStartTimeUsecs || 0);
-    });
 
     const scanResult = {
       sourceCluster: cluster.name,
@@ -149,14 +281,14 @@ async function runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsP
     };
 
     replicationCache.set(cacheKey, { data: scanResult, timestamp: Date.now(), scanning: false, error: null });
-    upsertCacheToDb(cacheKey, cluster.name, statusFilter, days, numRunsPerGroup, scanResult, false, null);
+    upsertCacheToDb(cacheKey, cluster.name, days, numRunsPerGroup, scanResult, false, null);
   } catch (err) {
     const current = replicationCache.get(cacheKey);
     replicationCache.set(cacheKey, { ...current, scanning: false, error: err.message });
     // Preserve existing payload from DB on failure; only use empty object if no prior payload exists
     const existing = readCacheFromDb(cacheKey);
     const existingPayload = existing?.payload || {};
-    upsertCacheToDb(cacheKey, cluster.name, statusFilter, days, numRunsPerGroup, existingPayload, false, err.message);
+    upsertCacheToDb(cacheKey, cluster.name, days, numRunsPerGroup, existingPayload, false, err.message);
   }
 }
 
@@ -167,12 +299,20 @@ function validate(req, res, next) {
 }
 
 /**
- * GET /api/replication/status
+ * GET /api/cohesity/replication/status
  * Query params:
  *  - clusterName (required): source cluster name
- *  - statusFilter (optional, default 'all'): 'active' | 'failed' | 'all'
+ *  - statusFilter (optional, default 'all'): all | running | failed | canceled | skipped | succeeded
+ *    ('active' is accepted as an alias of running)
+ *  - q (optional): case-insensitive match on job name or target cluster
  *  - days (optional, default 7, max 90): days back to look
  *  - numRunsPerGroup (optional, default 20, max 200): runs per protection group
+ *  - sortBy (optional, default 'default'): default | jobName | targetCluster | status | startTime |
+ *    duration | dataToSend | dataSent | percentComplete. 'default' is running, then failed,
+ *    canceled, skipped, succeeded, newest first inside each.
+ *  - sortDir (optional, default 'desc')
+ *  - page (optional, default 0), pageSize (optional, default 50, max 200)
+ * The summary covers the whole window; replications is one page.
  */
 router.get(
   '/status',
@@ -180,8 +320,9 @@ router.get(
     query('clusterName').trim().notEmpty().withMessage('clusterName is required'),
     query('statusFilter')
       .optional({ checkFalsy: true })
-      .isIn(['active', 'failed', 'all'])
-      .withMessage('statusFilter must be active, failed, or all'),
+      .isIn(STATUS_FILTERS)
+      .withMessage(`statusFilter must be one of ${STATUS_FILTERS.join(', ')}`),
+    query('q').optional({ checkFalsy: true }).isString().isLength({ max: 200 }).withMessage('q too long'),
     query('days')
       .optional({ checkFalsy: true })
       .isInt({ min: 1, max: 90 })
@@ -189,14 +330,25 @@ router.get(
     query('numRunsPerGroup')
       .optional({ checkFalsy: true })
       .isInt({ min: 1, max: 200 })
-      .withMessage('numRunsPerGroup must be 1-200')
+      .withMessage('numRunsPerGroup must be 1-200'),
+    query('sortBy').optional({ checkFalsy: true }).isIn(SORT_KEYS).withMessage(`sortBy must be one of ${SORT_KEYS.join(', ')}`),
+    query('sortDir').optional({ checkFalsy: true }).isIn(['asc', 'desc']).withMessage('sortDir must be asc or desc'),
+    query('page').optional({ checkFalsy: true }).isInt({ min: 0 }).withMessage('page must be >= 0'),
+    query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: PAGE_SIZE_MAX }).withMessage(`pageSize must be 1-${PAGE_SIZE_MAX}`)
   ],
   validate,
   async (req, res, next) => {
     const clusterName = req.query.clusterName;
-    const statusFilter = req.query.statusFilter || 'all';
     const days = parseInt(req.query.days) || 7;
     const numRunsPerGroup = parseInt(req.query.numRunsPerGroup) || 20;
+    const opts = {
+      statusFilter: req.query.statusFilter || 'all',
+      q: String(req.query.q || '').trim(),
+      sortBy: req.query.sortBy || 'default',
+      sortDir: req.query.sortDir || 'desc',
+      page: parseInt(req.query.page) || 0,
+      pageSize: parseInt(req.query.pageSize) || 50
+    };
 
     const cluster = db.prepare(
       'SELECT * FROM clusters WHERE LOWER(name) = LOWER(?)'
@@ -206,7 +358,7 @@ router.get(
       return res.status(404).json({ error: 'Cluster not found', clusterName });
     }
 
-    const cacheKey = `${clusterName}:${statusFilter}:${days}:${numRunsPerGroup}`;
+    const cacheKey = `${clusterName}:${SCAN_FILTER}:${days}:${numRunsPerGroup}`;
     const now = Date.now();
 
     // Try to read from DB cache first (authoritative source)
@@ -217,30 +369,22 @@ router.get(
     if (isDemo()) {
       if (dbCached && dbCached.payload && dbCached.payload.replications) {
         const age = Math.round((now - dbCached.updatedAt) / 1000);
-        return res.json({ ...dbCached.payload, scanning: false, cacheAgeSeconds: age });
+        return res.json(shapeResponse(dbCached.payload, opts, false, age));
       }
-      return res.json({
-        sourceCluster: clusterName,
-        generatedAt: new Date().toISOString(),
-        totalGroupsScanned: 0,
-        groupsWithActiveReplication: 0,
-        replications: [],
-        scanning: false,
-        cacheAgeSeconds: null
-      });
+      return res.json(shapeResponse(emptyPayload(clusterName), opts, false, null));
     }
 
     // Determine if cache is expired
     const dbCacheExpired = !dbCached || (now - dbCached.updatedAt > CACHE_TTL_MS);
-    
+
     // If DB cache is expired or missing, trigger background scan
     if (dbCacheExpired) {
       const memCached = replicationCache.get(cacheKey);
       replicationCache.set(cacheKey, { ...(memCached || {}), scanning: true });
       // Persist scanning state to DB, preserving existing payload if present
       const existingPayload = dbCached?.payload || {};
-      upsertCacheToDb(cacheKey, clusterName, statusFilter, days, numRunsPerGroup, existingPayload, true, null);
-      runBackgroundScan(cluster, cacheKey, statusFilter, days, numRunsPerGroup);
+      upsertCacheToDb(cacheKey, clusterName, days, numRunsPerGroup, existingPayload, true, null);
+      runBackgroundScan(cluster, cacheKey, days, numRunsPerGroup);
     }
 
     // Check in-memory cache for in-flight scan status (read after potential update above)
@@ -249,23 +393,12 @@ router.get(
     // Return cached data if available (prefer DB cache)
     if (dbCached && dbCached.payload && dbCached.payload.replications) {
       const age = Math.round((now - dbCached.updatedAt) / 1000);
-      return res.json({ 
-        ...dbCached.payload, 
-        scanning: dbCached.scanning || (memCached && memCached.scanning) || false, 
-        cacheAgeSeconds: age 
-      });
+      const scanning = dbCached.scanning || (memCached && memCached.scanning) || false;
+      return res.json(shapeResponse(dbCached.payload, opts, scanning, age));
     }
 
     // No cache yet, return empty response with scanning flag
-    return res.json({
-      sourceCluster: clusterName,
-      generatedAt: new Date().toISOString(),
-      totalGroupsScanned: 0,
-      groupsWithActiveReplication: 0,
-      replications: [],
-      scanning: true,
-      cacheAgeSeconds: null
-    });
+    return res.json(shapeResponse(emptyPayload(clusterName), opts, true, null));
   }
 );
 

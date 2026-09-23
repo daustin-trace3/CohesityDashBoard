@@ -1,9 +1,10 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import { ArrowLeftRight } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import { ArrowLeftRight, ChevronDown, ChevronUp, ChevronsUpDown, RefreshCw, Search } from 'lucide-react';
 import client from '../api/client';
-import { PageHeader, Spinner, StatCard, LastUpdated, RefreshButton, humanizeMinutes } from '../components/ui/primitives';
+import { PageHeader, Spinner, StatCard, Badge, LastUpdated, RefreshButton, humanizeMinutes } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import SkeletonTable from '../components/SkeletonTable';
+import Pagination from '../components/Pagination';
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B';
@@ -13,24 +14,26 @@ function formatBytes(bytes) {
 }
 
 function formatDateTime(usecs) {
-  if (!usecs) return '—';
-  const ms = usecs / 1000;
-  const date = new Date(ms);
-  return date.toLocaleString();
+  if (!usecs) return '-';
+  return new Date(usecs / 1000).toLocaleString();
 }
 
-function statusBadgeColor(status) {
-  if (status === 'Running') return 'bg-blue-500/20 text-blue-400';
-  if (status === 'Succeeded') return 'bg-green-500/20 text-green-400';
-  if (status === 'Failed') return 'bg-red-500/20 text-red-400';
-  if (status === 'Canceled') return 'bg-red-500/20 text-red-400';
-  return 'bg-gray-500/20 text-gray-400';
+function formatDuration(secs) {
+  if (secs == null) return '-';
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h < 48) return `${h}h ${m}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-function getProgressColor(percent) {
-  if (percent > 90) return '#6CB33F';
-  if (percent > 50) return '#FBBF24';
-  return '#EF4444';
+function statusTone(status) {
+  if (status === 'Running') return 'info';
+  if (status === 'Succeeded') return 'ok';
+  if (status === 'Failed') return 'crit';
+  if (status === 'Canceled' || status === 'Skipped') return 'warn';
+  return 'neutral';
 }
 
 function getProgressClass(percent) {
@@ -39,19 +42,48 @@ function getProgressClass(percent) {
   return 'bg-red-400';
 }
 
+const STATUS_CHIPS = [
+  { key: 'all', label: 'All' },
+  { key: 'running', label: 'Running', status: 'Running' },
+  { key: 'failed', label: 'Failed', status: 'Failed' },
+  { key: 'canceled', label: 'Canceled', status: 'Canceled' },
+  { key: 'skipped', label: 'Skipped', status: 'Skipped' },
+  { key: 'succeeded', label: 'Succeeded', status: 'Succeeded' },
+];
+
+const COLUMNS = [
+  { key: 'jobName', label: 'Job Name', align: 'left' },
+  { key: 'targetCluster', label: 'Target Cluster', align: 'left' },
+  { key: 'status', label: 'Status', align: 'left', tooltip: 'Running, then failed, canceled, skipped, succeeded' },
+  { key: 'startTime', label: 'Start Time', align: 'left' },
+  { key: 'duration', label: 'Duration', align: 'right', tooltip: 'Replication end minus start; elapsed so far for running tasks' },
+  { key: 'dataToSend', label: 'Data to Send', align: 'right' },
+  { key: 'dataSent', label: 'Data Sent', align: 'right' },
+  { key: 'progress', label: 'Progress', align: 'center', sortable: false },
+  { key: 'percentComplete', label: 'Logical Transfer Ratio', align: 'right', tooltip: 'Computed as logicalBytesTransferred / logicalSizeBytes. May differ from Cohesity UI percent.' },
+];
+
+const chipCls = (on) => `text-xs px-3 py-1.5 rounded font-medium transition-colors ${
+  on ? 'bg-cohesity-green text-white' : 'bg-cohesity-gray text-cohesity-text hover:bg-cohesity-border'
+}`;
+
 export default function ReplicationPage() {
   const { toast } = useToast();
   const [clusters, setClusters] = useState([]);
   const [selectedCluster, setSelectedCluster] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [daysFilter, setDaysFilter] = useState(7);
+  const [search, setSearch] = useState('');
+  const [q, setQ] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [sortBy, setSortBy] = useState('percentComplete');
+  const [sortBy, setSortBy] = useState('default');
   const [sortDir, setSortDir] = useState('desc');
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
 
   // Fetch clusters on mount
   useEffect(() => {
@@ -70,18 +102,30 @@ export default function ReplicationPage() {
     fetchClusters();
   }, []);
 
-  // Fetch replication data
+  // Debounce the search box into the query the server sees.
+  useEffect(() => {
+    const t = setTimeout(() => { setQ(search.trim()); setPage(0); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Fetch one page of replication data. Filtering, sorting and paging happen
+  // on the server; the summary covers the whole window.
   const fetchReplicationData = useCallback(async () => {
     if (!selectedCluster) return;
-    
+
     setLoading(true);
     setError(null);
     try {
       const params = {
         clusterName: selectedCluster,
         statusFilter,
+        q: q || undefined,
         days: daysFilter,
         numRunsPerGroup: 20,
+        sortBy,
+        sortDir,
+        page,
+        pageSize,
       };
       const res = await client.get('/cohesity/replication/status', { params, timeout: 300000 });
       setData(res.data);
@@ -93,7 +137,7 @@ export default function ReplicationPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedCluster, statusFilter, daysFilter]);
+  }, [selectedCluster, statusFilter, q, daysFilter, sortBy, sortDir, page, pageSize]);
 
   // Initial fetch and auto-refresh
   useEffect(() => {
@@ -112,59 +156,32 @@ export default function ReplicationPage() {
     return () => clearInterval(interval);
   }, [data?.scanning, fetchReplicationData]);
 
-
-  // Calculate summary metrics
-  const replications = data?.replications || [];
-  const totalCount = replications.length;
-  const activeCount = replications.filter(r => r.status === 'Running').length;
-  const completedCount = replications.filter(r => r.status === 'Succeeded').length;
-  const failedCount = replications.filter(r => r.status === 'Failed' || r.status === 'Canceled').length;
+  const summary = data?.summary || {};
+  const byStatus = summary.byStatus || {};
+  const pageInfo = data?.page || { page: 0, pageSize, total: 0, totalPages: 1 };
+  const rows = data?.replications || [];
   const groupsScanned = data?.totalGroupsScanned || 0;
+  const wireRatio = summary.physicalBytesTransferred > 0
+    ? (summary.logicalBytesTransferred / summary.physicalBytesTransferred).toFixed(1)
+    : null;
 
-  // Sort replications
-  const sortedReplications = useMemo(() => {
-    const sorted = [...replications];
-    const dir = sortDir === 'desc' ? -1 : 1;
-    sorted.sort((a, b) => {
-      let aVal, bVal;
-      if (sortBy === 'jobName') {
-        aVal = (a.jobName || '').toLowerCase();
-        bVal = (b.jobName || '').toLowerCase();
-        return dir * aVal.localeCompare(bVal);
-      }
-      if (sortBy === 'targetCluster') {
-        aVal = (a.targetCluster || '').toLowerCase();
-        bVal = (b.targetCluster || '').toLowerCase();
-        return dir * aVal.localeCompare(bVal);
-      }
-      if (sortBy === 'status') {
-        aVal = a.status || '';
-        bVal = b.status || '';
-        return dir * aVal.localeCompare(bVal);
-      }
-      if (sortBy === 'startTime') {
-        aVal = a.replicationStartTimeUsecs || 0;
-        bVal = b.replicationStartTimeUsecs || 0;
-        return dir * (aVal - bVal);
-      }
-      if (sortBy === 'percentComplete') {
-        aVal = a.percentComplete || 0;
-        bVal = b.percentComplete || 0;
-        return dir * (aVal - bVal);
-      }
-      return 0;
-    });
-    return sorted;
-  }, [replications, sortBy, sortDir]);
+  const changeCluster = (name) => { setSelectedCluster(name); setPage(0); };
+  const changeStatus = (key) => { setStatusFilter(key); setPage(0); };
+  const changeDays = (d) => { setDaysFilter(d); setPage(0); };
+  const changePageSize = (s) => { setPageSize(s); setPage(0); };
 
   const handleSort = (col) => {
-    if (sortBy === col) {
+    if (col.sortable === false) return;
+    if (sortBy === col.key) {
       setSortDir(sortDir === 'desc' ? 'asc' : 'desc');
     } else {
-      setSortBy(col);
-      setSortDir('desc');
+      setSortBy(col.key);
+      setSortDir(col.key === 'jobName' || col.key === 'targetCluster' || col.key === 'status' ? 'asc' : 'desc');
     }
+    setPage(0);
   };
+
+  const resetSort = () => { setSortBy('default'); setSortDir('desc'); setPage(0); };
 
   return (
     <div className="space-y-6">
@@ -182,7 +199,7 @@ export default function ReplicationPage() {
             <select
               className="bg-cohesity-gray border border-cohesity-border text-cohesity-text text-xs rounded px-2 py-1.5 focus:outline-none"
               value={selectedCluster}
-              onChange={e => setSelectedCluster(e.target.value)}
+              onChange={e => changeCluster(e.target.value)}
             >
               <option value="">Select cluster...</option>
               {clusters.map(c => (
@@ -192,37 +209,36 @@ export default function ReplicationPage() {
           </div>
 
           {/* Status Filter */}
-          <div className="flex gap-1">
-            {['all', 'active', 'failed'].map(status => (
-              <button
-                key={status}
-                onClick={() => setStatusFilter(status)}
-                className={`text-xs px-3 py-1.5 rounded font-medium transition-colors capitalize ${
-                  statusFilter === status
-                    ? 'bg-cohesity-green text-white'
-                    : 'bg-cohesity-gray text-cohesity-text hover:bg-cohesity-border'
-                }`}
-              >
-                {status === 'all' ? 'All' : status === 'active' ? 'Active' : 'Failed'}
-              </button>
-            ))}
+          <div className="flex gap-1 flex-wrap">
+            {STATUS_CHIPS.map(chip => {
+              const n = chip.status ? (byStatus[chip.status] || 0) : summary.total;
+              return (
+                <button key={chip.key} onClick={() => changeStatus(chip.key)} className={chipCls(statusFilter === chip.key)}>
+                  {chip.label}{n != null && data ? <span className="ml-1 opacity-70 tnum">{n}</span> : null}
+                </button>
+              );
+            })}
           </div>
 
           {/* Days Filter */}
           <div className="flex gap-1">
             {[7, 14, 30].map(d => (
-              <button
-                key={d}
-                onClick={() => setDaysFilter(d)}
-                className={`text-xs px-3 py-1.5 rounded font-medium transition-colors ${
-                  daysFilter === d
-                    ? 'bg-cohesity-green text-white'
-                    : 'bg-cohesity-gray text-cohesity-text hover:bg-cohesity-border'
-                }`}
-              >
+              <button key={d} onClick={() => changeDays(d)} className={chipCls(daysFilter === d)}>
                 {d}d
               </button>
             ))}
+          </div>
+
+          {/* Search */}
+          <div className="relative">
+            <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Job or target..."
+              className="bg-cohesity-gray border border-cohesity-border text-cohesity-text text-xs rounded pl-6 pr-2 py-1.5 w-48 focus:outline-none focus:border-cohesity-green"
+            />
           </div>
 
           {/* Auto-Refresh Toggle */}
@@ -236,7 +252,7 @@ export default function ReplicationPage() {
               }`}
               title={autoRefresh ? 'Auto-refresh on (30s)' : 'Auto-refresh off'}
             >
-              <span className={autoRefresh ? 'animate-spin' : ''}>↻</span>
+              <RefreshCw size={14} className={autoRefresh ? 'animate-spin' : ''} />
             </button>
             {autoRefresh && <span className="w-2 h-2 bg-cohesity-green rounded-full animate-pulse" />}
           </div>
@@ -249,7 +265,7 @@ export default function ReplicationPage() {
         </div>
 
         {loading && (
-          <div className="flex items-center gap-1.5 text-xs text-ink-muted" role="status"><Spinner size={13} /> Loading replication data&hellip;</div>
+          <div className="flex items-center gap-1.5 text-xs text-ink-muted" role="status"><Spinner size={13} /> Loading replication data...</div>
         )}
       </div>
 
@@ -261,97 +277,137 @@ export default function ReplicationPage() {
 
       {!error && data?.scanning && (
         <div className="bg-blue-900/30 border border-blue-700 text-blue-400 rounded-lg px-4 py-3 text-sm flex items-center gap-2">
-          <svg className="animate-spin h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+          <Spinner size={14} className="text-blue-400" />
           Scanning all protection groups for replication data. This may take a few minutes on first load.
           {data?.cacheAgeSeconds != null && ` Data is ${humanizeMinutes(Math.round(data.cacheAgeSeconds / 60))} old.`}
         </div>
       )}
 
-      {/* Summary KPI Cards */}
-      <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
-        <StatCard label="Total Replications" value={totalCount} />
-        <StatCard label="Active" value={activeCount} tone="info" />
-        <StatCard label="Completed" value={completedCount} tone="ok" />
-        <StatCard label="Failed" value={failedCount} tone={failedCount > 0 ? 'crit' : 'default'} />
-        <StatCard label="Groups Scanned" value={groupsScanned} />
+      {/* Summary KPI Cards: whole window, not just the page shown */}
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        <StatCard label="Running" value={summary.running ?? '-'} tone="info" />
+        <StatCard label="Failed" value={summary.failed ?? '-'} tone={summary.failed > 0 ? 'crit' : 'default'} />
+        <StatCard label="Canceled" value={summary.canceled ?? '-'} tone={summary.canceled > 0 ? 'warn' : 'default'} />
+        <StatCard label="Skipped" value={summary.skipped ?? '-'} tone={summary.skipped > 0 ? 'warn' : 'default'} />
+        <StatCard label="Succeeded" value={summary.succeeded ?? '-'} tone="ok" />
+        <StatCard label="Total Replications" value={summary.total ?? '-'} sub={`last ${daysFilter} days`} />
+      </div>
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        <StatCard
+          label="Data Sent"
+          value={formatBytes(summary.logicalBytesTransferred)}
+          sub="logical bytes replicated"
+          tone="brand"
+        />
+        <StatCard
+          label="On the Wire"
+          value={formatBytes(summary.physicalBytesTransferred)}
+          sub={wireRatio ? `${wireRatio} : 1 logical to physical` : 'physical bytes sent'}
+        />
+        <StatCard
+          label="Longest Running"
+          value={summary.longestRunning ? formatDuration(summary.longestRunning.seconds) : '-'}
+          sub={summary.longestRunning
+            ? `${summary.longestRunning.jobName} to ${summary.longestRunning.targetCluster}${summary.longestRunning.percentComplete != null ? `, ${summary.longestRunning.percentComplete.toFixed(0)}%` : ''}`
+            : 'nothing in flight'}
+          tone={summary.longestRunning && summary.longestRunning.seconds > 86400 ? 'warn' : 'default'}
+        />
+        <StatCard
+          label="Groups Replicating"
+          value={summary.groupsWithReplication ?? '-'}
+          sub={`of ${groupsScanned} protection groups scanned`}
+        />
       </div>
 
       {/* Replication Table */}
       <div className="bg-cohesity-gray border border-cohesity-border rounded-lg p-4">
-        <p className="text-xs font-semibold text-cohesity-text mb-3">Replication Status</p>
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <p className="text-xs font-semibold text-cohesity-text">Replication Status</p>
+          {sortBy !== 'default' && (
+            <button onClick={resetSort} className="text-[11px] text-ink-muted hover:text-brand">
+              Reset to default order
+            </button>
+          )}
+        </div>
 
         {loading && !data ? (
-          <SkeletonTable rows={6} colWidths={['w-32', 'w-28', 'w-16', 'w-28', 'w-20', 'w-20', 'w-24', 'w-16']} />
-        ) : totalCount === 0 ? (
+          <SkeletonTable rows={6} colWidths={['w-32', 'w-28', 'w-16', 'w-28', 'w-16', 'w-20', 'w-20', 'w-24', 'w-16']} />
+        ) : pageInfo.total === 0 ? (
           <div className="text-center py-8 text-xs text-gray-400">
-            {data?.scanning ? 'Scan in progress — data will appear shortly. Use the refresh button to check.' : 'No replication data found for the selected filters.'}
+            {data?.scanning ? 'Scan in progress. Data will appear shortly; use the refresh button to check.' : 'No replication data found for the selected filters.'}
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px] text-gray-400">
-              <thead className="sticky top-0 bg-cohesity-gray">
-                <tr className="border-b border-cohesity-border">
-                  {[
-                    { key: 'jobName', label: 'Job Name', align: 'left' },
-                    { key: 'targetCluster', label: 'Target Cluster', align: 'left' },
-                    { key: 'status', label: 'Status', align: 'left' },
-                    { key: 'startTime', label: 'Start Time', align: 'left' },
-                    { key: 'dataToSend', label: 'Data to Send', align: 'right' },
-                    { key: 'dataSent', label: 'Data Sent', align: 'right' },
-                    { key: 'progress', label: 'Progress', align: 'center' },
-                    { key: 'percentComplete', label: 'Logical Transfer Ratio', align: 'right', tooltip: 'Computed as logicalBytesTransferred / logicalSizeBytes. May differ from Cohesity UI percent.' },
-                  ].map(col => (
-                    <th
-                      key={col.key}
-                      className={`${col.align === 'left' ? 'text-left' : col.align === 'right' ? 'text-right' : 'text-center'} px-2 py-2 font-medium cursor-pointer hover:text-cohesity-text ${
-                        sortBy === col.key ? 'text-cohesity-green' : ''
-                      }`}
-                      onClick={() => {
-                        if (col.key !== 'progress' && col.key !== 'dataToSend' && col.key !== 'dataSent') {
-                          handleSort(col.key);
-                        }
-                      }}
-                      title={col.tooltip}
-                    >
-                      {col.label}{' '}
-                      {sortBy === col.key ? (sortDir === 'desc' ? '▼' : '▲') : <span className="text-gray-600">⇅</span>}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sortedReplications.map((rep, i) => (
-                  <tr key={`${rep.runId}`} className={i % 2 === 0 ? 'bg-cohesity-black/40' : ''}>
-                    <td className="px-2 py-1.5 truncate max-w-[150px]">{rep.jobName || '—'}</td>
-                    <td className="px-2 py-1.5 truncate max-w-[120px]">{rep.targetCluster || '—'}</td>
-                    <td className="px-2 py-1.5">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${statusBadgeColor(rep.status)}`}>
-                        {rep.status}
-                      </span>
-                    </td>
-                    <td className="px-2 py-1.5 text-gray-500 text-[10px]">
-                      {formatDateTime(rep.replicationStartTimeUsecs)}
-                    </td>
-                    <td className="text-right px-2 py-1.5">{formatBytes(rep.logicalSizeBytes)}</td>
-                    <td className="text-right px-2 py-1.5">{formatBytes(rep.logicalBytesTransferred)}</td>
-                    <td className="px-2 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-3 bg-cohesity-black/60 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full ${getProgressClass(rep.percentComplete || 0)}`}
-                            style={{ width: `${Math.min(rep.percentComplete || 0, 100)}%` }}
-                          />
-                        </div>
-                      </div>
-                    </td>
-                    <td className="text-right px-2 py-1.5 text-cohesity-green font-medium" title="logicalBytesTransferred / logicalSizeBytes">
-                      {rep.percentComplete ? `${rep.percentComplete.toFixed(2)}%` : '—'}
-                    </td>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px] text-gray-400">
+                <thead className="sticky top-0 bg-cohesity-gray">
+                  <tr className="border-b border-cohesity-border">
+                    {COLUMNS.map(col => {
+                      const sortable = col.sortable !== false;
+                      const active = sortBy === col.key;
+                      return (
+                        <th
+                          key={col.key}
+                          className={`${col.align === 'left' ? 'text-left' : col.align === 'right' ? 'text-right' : 'text-center'} px-2 py-2 font-medium ${
+                            sortable ? 'cursor-pointer hover:text-cohesity-text' : ''
+                          } ${active ? 'text-cohesity-green' : ''}`}
+                          onClick={() => handleSort(col)}
+                          title={col.tooltip}
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {col.label}
+                            {sortable && (active
+                              ? (sortDir === 'desc' ? <ChevronDown size={11} /> : <ChevronUp size={11} />)
+                              : <ChevronsUpDown size={11} className="text-gray-600" />)}
+                          </span>
+                        </th>
+                      );
+                    })}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rows.map((rep, i) => (
+                    <tr key={`${rep.runId}:${rep.targetCluster}`} className={i % 2 === 0 ? 'bg-cohesity-black/40' : ''}>
+                      <td className="px-2 py-1.5 truncate max-w-[220px]" title={rep.jobName}>{rep.jobName || '-'}</td>
+                      <td className="px-2 py-1.5 truncate max-w-[140px]">{rep.targetCluster || '-'}</td>
+                      <td className="px-2 py-1.5">
+                        <span title={rep.message || undefined} className={rep.message ? 'cursor-help' : ''}>
+                          <Badge tone={statusTone(rep.status)}>{rep.status}</Badge>
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-gray-500 text-[10px] whitespace-nowrap">
+                        {formatDateTime(rep.replicationStartTimeUsecs)}
+                      </td>
+                      <td className="text-right px-2 py-1.5 tnum whitespace-nowrap">{formatDuration(rep.durationSeconds)}</td>
+                      <td className="text-right px-2 py-1.5 tnum">{formatBytes(rep.logicalSizeBytes)}</td>
+                      <td className="text-right px-2 py-1.5 tnum">{formatBytes(rep.logicalBytesTransferred)}</td>
+                      <td className="px-2 py-1.5">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-3 bg-cohesity-black/60 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full ${getProgressClass(rep.percentComplete || 0)}`}
+                              style={{ width: `${Math.min(rep.percentComplete || 0, 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </td>
+                      <td className="text-right px-2 py-1.5 text-cohesity-green font-medium tnum" title="logicalBytesTransferred / logicalSizeBytes">
+                        {rep.percentComplete != null ? `${rep.percentComplete.toFixed(2)}%` : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Pagination
+              page={pageInfo.page}
+              totalPages={pageInfo.totalPages}
+              pageSize={pageInfo.pageSize}
+              totalItems={pageInfo.total}
+              onPage={setPage}
+              onPageSize={changePageSize}
+            />
+          </>
         )}
       </div>
     </div>
