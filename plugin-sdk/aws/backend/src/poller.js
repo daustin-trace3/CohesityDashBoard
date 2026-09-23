@@ -694,6 +694,18 @@ function appendMetricsHistory(coreApi, accountId, { ec2, lightsail, ecs, s3Rows 
 
 async function pollAccount(coreApi, txns, account) {
   const db = coreApi.db;
+  // Pasted session credentials carry an expiry; once past it every call would
+  // fail with ExpiredToken, so record the state and skip the round.
+  if (awsApi.credentialExpired(account)) {
+    db.prepare(`
+      UPDATE aws_accounts SET last_poll_status = 'error', last_poll_error = ?,
+        last_poll_at = datetime('now') WHERE id = ?
+    `).run(`Session credentials expired at ${account.credential_expires_at}; enter new ones in Settings.`, account.id);
+    try { reconcileIssueHistory(coreApi); } catch (err) {
+      coreApi.logger.warn(`[AwsPoller] issue-history reconcile failed: ${err.message}`);
+    }
+    return;
+  }
   try {
     try {
       await maybeCollectHealth(coreApi, txns);
@@ -784,7 +796,7 @@ async function pollAccount(coreApi, txns, account) {
     db.prepare(`
       UPDATE aws_accounts SET last_poll_status = 'error', last_poll_error = ?,
         last_poll_at = datetime('now') WHERE id = ?
-    `).run(safeMsg(err), account.id);
+    `).run(err?.response ? safeMsg(err) : awsApi.explainAuthError(err, account, coreApi), account.id);
     throw err;
   } finally {
     try { reconcileIssueHistory(coreApi); } catch (err) {

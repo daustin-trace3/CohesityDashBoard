@@ -27,8 +27,47 @@ const publicAccount = (row, coreApi) => ({
   id: row.id, name: row.name, accessKeyId: row.access_key_id, region: row.region,
   pollingIntervalMinutes: row.polling_interval_minutes,
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
-  credSource: awsApi.credSource(row, coreApi),
+  ...awsApi.credentialSummary(row, coreApi),
 });
+
+const AUTH_MODES = ['key', 'role', 'profile'];
+const ROLE_ARN_RE = /^arn:aws[a-z-]*:iam::\d{12}:role\/[\w+=,.@/-]+$/;
+const SESSION_NAME_RE = /^[\w+=,.@-]{2,64}$/;
+
+// Credential fields shared by register, update and test (ported from the
+// express-validator list in routes/aws.js). Pushes onto `errors`.
+function validateCredentialFields(b, errors) {
+  if (b.authMode !== undefined && !AUTH_MODES.includes(b.authMode)) errors.push(fail('authMode'));
+  if (!isNullableString(b.accessKeyId, 128)) errors.push(fail('accessKeyId'));
+  if (!isNullableString(b.secretAccessKey, 256)) errors.push(fail('secretAccessKey'));
+  if (!isNullableString(b.sessionToken, 4096)) errors.push(fail('sessionToken'));
+  if (b.credentialExpiresAt != null && b.credentialExpiresAt !== '' && !Number.isFinite(Date.parse(b.credentialExpiresAt))) errors.push(fail('credentialExpiresAt', 'credentialExpiresAt must be an ISO 8601 date'));
+  if (b.roleArn != null && b.roleArn !== '' && !ROLE_ARN_RE.test(String(b.roleArn).trim())) errors.push(fail('roleArn', 'roleArn must look like arn:aws:iam::123456789012:role/Name'));
+  if (!isNullableString(b.externalId, 1224)) errors.push(fail('externalId'));
+  if (b.roleSessionName != null && b.roleSessionName !== '' && !SESSION_NAME_RE.test(String(b.roleSessionName).trim())) errors.push(fail('roleSessionName', 'roleSessionName: 2 to 64 characters from A-Z a-z 0-9 + = , . @ _ -'));
+  if (!isNullableString(b.profileName, 64)) errors.push(fail('profileName'));
+  if (b.clearSecret !== undefined && typeof b.clearSecret !== 'boolean') errors.push(fail('clearSecret'));
+}
+
+// The stored secret blob after applying a request body to an existing row.
+function nextSecretBlob(b, row, coreApi) {
+  if (b.clearSecret) return null;
+  let current = null;
+  if (row?.encrypted_credentials) {
+    try { current = JSON.parse(coreApi.encryption.decrypt(row.encrypted_credentials)); } catch { current = null; }
+  }
+  if (!b.secretAccessKey && b.sessionToken === undefined) return row?.encrypted_credentials || null;
+  const blob = { secretAccessKey: b.secretAccessKey || current?.secretAccessKey || null };
+  if (!blob.secretAccessKey) return null;
+  const token = b.sessionToken !== undefined ? (b.sessionToken || null) : (b.secretAccessKey ? null : current?.sessionToken || null);
+  if (token) blob.sessionToken = token;
+  return coreApi.encryption.encrypt(JSON.stringify(blob));
+}
+
+const nextExternalId = (b, row, coreApi) => (b.externalId === undefined ? (row?.encrypted_external_id || null) : (b.externalId ? coreApi.encryption.encrypt(b.externalId) : null));
+const nextExpiry = (b, row) => (b.credentialExpiresAt === undefined ? (row?.credential_expires_at || null)
+  : (b.credentialExpiresAt ? new Date(b.credentialExpiresAt).toISOString() : null));
+const trimOr = (v, fallback) => (v === undefined ? fallback : (v && String(v).trim()) || null);
 
 // ── Accounts CRUD ────────────────────────────────────────────────────────────
 
@@ -42,8 +81,7 @@ function handlePostAccounts(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
   if (!isNonEmptyString(b.name, 120)) errors.push(fail('name'));
-  if (!isNullableString(b.accessKeyId, 128)) errors.push(fail('accessKeyId'));
-  if (!isNullableString(b.secretAccessKey, 256)) errors.push(fail('secretAccessKey'));
+  validateCredentialFields(b, errors);
   if (!isNullableString(b.region, 32)) errors.push(fail('region'));
   if (b.pollingIntervalMinutes !== undefined) {
     const n = parseIntStrict(b.pollingIntervalMinutes);
@@ -55,13 +93,16 @@ function handlePostAccounts(req, res, coreApi) {
   const name = b.name.trim();
   const dup = db.prepare('SELECT id FROM aws_accounts WHERE name = ?').get(name);
   if (dup) return res.status(409).json({ error: 'duplicate' });
-  const accessKeyId = b.accessKeyId?.trim() || null;
-  const encryptedCreds = b.secretAccessKey
-    ? coreApi.encryption.encrypt(JSON.stringify({ secretAccessKey: b.secretAccessKey })) : null;
+  const mode = b.authMode || 'key';
+  if (mode === 'role' && !b.roleArn) return res.status(400).json({ error: 'roleArn is required for the assume-role mode.' });
+  if (mode === 'profile' && !b.profileName) return res.status(400).json({ error: 'profileName is required for the profile mode.' });
   const info = db.prepare(`
-    INSERT INTO aws_accounts (name, access_key_id, encrypted_credentials, region, polling_interval_minutes)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(name, accessKeyId, encryptedCreds, b.region?.trim() || 'us-east-2', b.pollingIntervalMinutes ? parseIntStrict(b.pollingIntervalMinutes) : 10);
+    INSERT INTO aws_accounts (name, access_key_id, encrypted_credentials, region, polling_interval_minutes,
+      auth_mode, role_arn, encrypted_external_id, role_session_name, profile_name, credential_expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(name, trimOr(b.accessKeyId, null), nextSecretBlob(b, null, coreApi), b.region?.trim() || 'us-east-2',
+    b.pollingIntervalMinutes ? parseIntStrict(b.pollingIntervalMinutes) : 10,
+    mode, trimOr(b.roleArn, null), nextExternalId(b, null, coreApi), trimOr(b.roleSessionName, null), trimOr(b.profileName, null), nextExpiry(b, null));
   const row = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(info.lastInsertRowid);
   const poller = getPoller(coreApi);
   poller.schedule(row);
@@ -76,8 +117,7 @@ function handlePutAccount(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
   if (b.name !== undefined && !isNonEmptyString(b.name, 120)) errors.push(fail('name'));
-  if (!isNullableString(b.accessKeyId, 128)) errors.push(fail('accessKeyId'));
-  if (!isNullableString(b.secretAccessKey, 256)) errors.push(fail('secretAccessKey'));
+  validateCredentialFields(b, errors);
   if (!isNullableString(b.region, 32)) errors.push(fail('region'));
   if (b.pollingIntervalMinutes !== undefined) {
     const n = parseIntStrict(b.pollingIntervalMinutes);
@@ -92,17 +132,24 @@ function handlePutAccount(req, res, coreApi) {
     const dup = db.prepare('SELECT id FROM aws_accounts WHERE name = ? AND id != ?').get(b.name.trim(), row.id);
     if (dup) return res.status(409).json({ error: 'duplicate' });
   }
+  const mode = b.authMode || row.auth_mode || 'key';
+  const roleArn = trimOr(b.roleArn, row.role_arn);
+  const profileName = trimOr(b.profileName, row.profile_name);
+  if (mode === 'role' && !roleArn) return res.status(400).json({ error: 'roleArn is required for the assume-role mode.' });
+  if (mode === 'profile' && !profileName) return res.status(400).json({ error: 'profileName is required for the profile mode.' });
   db.prepare(`
     UPDATE aws_accounts SET
       name = ?, access_key_id = ?, encrypted_credentials = ?, region = ?,
-      polling_interval_minutes = ?, updated_at = datetime('now')
+      polling_interval_minutes = ?, auth_mode = ?, role_arn = ?, encrypted_external_id = ?,
+      role_session_name = ?, profile_name = ?, credential_expires_at = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(
     b.name?.trim() || row.name,
-    b.accessKeyId !== undefined ? (b.accessKeyId?.trim() || null) : row.access_key_id,
-    b.secretAccessKey ? coreApi.encryption.encrypt(JSON.stringify({ secretAccessKey: b.secretAccessKey })) : row.encrypted_credentials,
+    trimOr(b.accessKeyId, row.access_key_id),
+    nextSecretBlob(b, row, coreApi),
     b.region?.trim() || row.region,
     b.pollingIntervalMinutes ? parseIntStrict(b.pollingIntervalMinutes) : row.polling_interval_minutes,
+    mode, roleArn, nextExternalId(b, row, coreApi), trimOr(b.roleSessionName, row.role_session_name), profileName, nextExpiry(b, row),
     row.id
   );
   const updated = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(row.id);
@@ -127,21 +174,24 @@ async function handlePostAccountsTest(req, res, coreApi) {
   const b = req.body || {};
   const errors = [];
   if (b.id !== undefined && !Number.isInteger(parseIntStrict(b.id))) errors.push(fail('id'));
-  if (!isNullableString(b.accessKeyId)) errors.push(fail('accessKeyId'));
-  if (!isNullableString(b.secretAccessKey)) errors.push(fail('secretAccessKey'));
+  validateCredentialFields(b, errors);
   if (!isNullableString(b.region)) errors.push(fail('region'));
   if (errors.length) return badRequest(res, errors);
 
+  // Fields typed into the form override the saved row; a saved row is tested
+  // as stored when nothing is typed (the secret never leaves the server).
+  const typed = {};
+  for (const k of ['authMode', 'accessKeyId', 'secretAccessKey', 'sessionToken', 'credentialExpiresAt', 'roleArn', 'externalId', 'roleSessionName', 'profileName']) {
+    if (b[k] !== undefined && b[k] !== null && b[k] !== '') typed[k] = b[k];
+  }
   let candidate;
   if (b.id) {
     const row = coreApi.db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(parseIntStrict(b.id));
     if (!row) return res.status(404).json({ error: 'Account not found.' });
-    candidate = { ...row };
+    candidate = { ...row, ...typed };
     if (b.region) candidate.region = b.region;
-    if (b.accessKeyId) candidate.accessKeyId = b.accessKeyId;
-    if (b.secretAccessKey) candidate.secretAccessKey = b.secretAccessKey;
   } else {
-    candidate = { accessKeyId: b.accessKeyId, secretAccessKey: b.secretAccessKey, region: b.region || 'us-east-2' };
+    candidate = { authMode: 'key', region: b.region || 'us-east-2', ...typed };
   }
   const result = await awsApi.testConnection(candidate, coreApi);
   res.status(result.ok ? 200 : 502).json(result);

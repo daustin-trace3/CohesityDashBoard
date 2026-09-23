@@ -46,35 +46,147 @@ const {
   GetEBSVolumeRecommendationsCommand, GetLambdaFunctionRecommendationsCommand, GetECSServiceRecommendationsCommand,
 } = require('@aws-sdk/client-compute-optimizer');
 
-/** Resolve { accessKeyId, secretAccessKey } for an account row (or unsaved candidate). */
-function creds(account, coreApi) {
-  // Unsaved test candidates carry a plaintext secretAccessKey.
+// ── Credentials (ported from backend/services/awsApi.js; decrypt/logger via coreApi)
+// auth_mode: key (access key, optional session token + expiry), role (STS
+// AssumeRole from a stored key, a named profile or the host's chain), profile
+// (a named profile in ~/.aws on the ICC box). Nothing stored = SDK default chain.
+const { fromTemporaryCredentials, fromIni } = require('@aws-sdk/credential-providers');
+const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
+
+function readSecret(account, coreApi) {
   if (account.secretAccessKey) {
-    return { accessKeyId: account.accessKeyId || account.access_key_id, secretAccessKey: account.secretAccessKey };
+    return { secretAccessKey: account.secretAccessKey, sessionToken: account.sessionToken || null };
   }
-  if (account.access_key_id && account.encrypted_credentials) {
+  if (account.encrypted_credentials) {
     try {
       const c = JSON.parse(coreApi.encryption.decrypt(account.encrypted_credentials));
-      if (c.secretAccessKey) return { accessKeyId: account.access_key_id, secretAccessKey: c.secretAccessKey };
+      if (c.secretAccessKey) return { secretAccessKey: c.secretAccessKey, sessionToken: c.sessionToken || null };
     } catch (err) {
       coreApi.logger.warn(`[awsApi] decrypt failed for account ${account.name || account.id}: ${err.message}`);
     }
   }
-  return { accessKeyId: process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY };
+  return { secretAccessKey: null, sessionToken: null };
 }
 
-/** 'stored' | 'env' | 'none' — never the secret itself. */
-function credSource(account) {
-  if (account.access_key_id && account.encrypted_credentials) return 'stored';
+function readExternalId(account, coreApi) {
+  if (account.externalId !== undefined) return account.externalId || null;
+  if (account.encrypted_external_id) {
+    try { return coreApi.encryption.decrypt(account.encrypted_external_id) || null; } catch { return null; }
+  }
+  return null;
+}
+
+const field = (account, camel, snake) => (account[camel] !== undefined ? account[camel] : account[snake]);
+const authMode = (account) => field(account, 'authMode', 'auth_mode') || 'key';
+
+function baseSource(account, coreApi) {
+  const keyId = field(account, 'accessKeyId', 'access_key_id');
+  const { secretAccessKey, sessionToken } = readSecret(account, coreApi);
+  const profile = field(account, 'profileName', 'profile_name');
+  const mode = authMode(account);
+  if (mode !== 'profile' && keyId && secretAccessKey) return sessionToken ? 'session' : 'stored';
+  if (profile) return 'profile';
   if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) return 'env';
-  return 'none';
+  return 'host';
+}
+
+function baseCredentials(account, coreApi) {
+  const src = baseSource(account, coreApi);
+  if (src === 'stored' || src === 'session') {
+    const { secretAccessKey, sessionToken } = readSecret(account, coreApi);
+    const c = { accessKeyId: field(account, 'accessKeyId', 'access_key_id'), secretAccessKey };
+    if (sessionToken) c.sessionToken = sessionToken;
+    return c;
+  }
+  if (src === 'profile') return fromIni({ profile: field(account, 'profileName', 'profile_name') });
+  if (src === 'env') {
+    const c = { accessKeyId: process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY };
+    if (process.env.AWS_SESSION_TOKEN) c.sessionToken = process.env.AWS_SESSION_TOKEN;
+    return c;
+  }
+  return undefined;
+}
+
+const roleProviders = new Map();
+
+function credentialProvider(account, coreApi, region) {
+  const roleArn = authMode(account) === 'role' ? field(account, 'roleArn', 'role_arn') : null;
+  if (!roleArn) return baseCredentials(account, coreApi);
+  const cacheKey = account.id && account.secretAccessKey === undefined && account.externalId === undefined
+    ? `${account.id}|${account.updated_at}|${region}` : null;
+  if (cacheKey && roleProviders.has(cacheKey)) return roleProviders.get(cacheKey);
+  const externalId = readExternalId(account, coreApi);
+  const provider = fromTemporaryCredentials({
+    masterCredentials: baseCredentials(account, coreApi),
+    params: {
+      RoleArn: roleArn,
+      RoleSessionName: field(account, 'roleSessionName', 'role_session_name') || 'icc',
+      ...(externalId ? { ExternalId: externalId } : {}),
+      DurationSeconds: 3600,
+    },
+    clientConfig: { region },
+  });
+  if (cacheKey) {
+    if (roleProviders.size > 200) roleProviders.clear();
+    roleProviders.set(cacheKey, provider);
+  }
+  return provider;
+}
+
+/** Back-compat shape for callers that only want a static key pair. */
+function creds(account, coreApi) {
+  const c = baseCredentials(account, coreApi);
+  return c && typeof c === 'object' ? c : { accessKeyId: undefined, secretAccessKey: undefined };
+}
+
+/** 'role' | 'session' | 'stored' | 'profile' | 'env' | 'none' — never the secret itself. */
+function credSource(account, coreApi) {
+  if (authMode(account) === 'role' && field(account, 'roleArn', 'role_arn')) return 'role';
+  const src = baseSource(account, coreApi);
+  return src === 'host' ? 'none' : src;
+}
+
+function credentialExpired(account) {
+  const at = field(account, 'credentialExpiresAt', 'credential_expires_at');
+  if (!at) return false;
+  const ms = Date.parse(at);
+  return Number.isFinite(ms) && ms <= Date.now();
+}
+
+function credentialSummary(account, coreApi) {
+  const { sessionToken } = readSecret(account, coreApi);
+  return {
+    authMode: authMode(account),
+    credSource: credSource(account, coreApi),
+    baseSource: baseSource(account, coreApi),
+    roleArn: field(account, 'roleArn', 'role_arn') || null,
+    roleSessionName: field(account, 'roleSessionName', 'role_session_name') || null,
+    profileName: field(account, 'profileName', 'profile_name') || null,
+    hasSessionToken: !!sessionToken,
+    hasExternalId: !!readExternalId(account, coreApi),
+    credentialExpiresAt: field(account, 'credentialExpiresAt', 'credential_expires_at') || null,
+    credentialExpired: credentialExpired(account),
+  };
 }
 
 function clientConfig(account, coreApi, region) {
-  const { accessKeyId, secretAccessKey } = creds(account, coreApi);
   const cfg = { region: region || account.region || 'us-east-2' };
-  if (accessKeyId && secretAccessKey) cfg.credentials = { accessKeyId, secretAccessKey };
+  const credentials = credentialProvider(account, coreApi, cfg.region);
+  if (credentials) cfg.credentials = credentials;
   return cfg;
+}
+
+function explainAuthError(err, account, coreApi) {
+  const name = String(err?.name || err?.Code || '');
+  const msg = err?.message || String(err);
+  if (/ExpiredToken/i.test(name) || /expired/i.test(msg)) return `Credentials have expired: ${msg}`;
+  if (/InvalidClientTokenId|UnrecognizedClientException/i.test(name)) {
+    return `AWS did not recognise the access key${readSecret(account, coreApi).sessionToken ? '' : ' (temporary keys need their session token)'}: ${msg}`;
+  }
+  if (/AccessDenied/i.test(name) && /AssumeRole/i.test(msg)) {
+    return `sts:AssumeRole was denied: check the role trust policy and external ID. ${msg}`;
+  }
+  return msg;
 }
 
 const ec2Client = (account, coreApi) => new EC2Client(clientConfig(account, coreApi));
@@ -1081,18 +1193,29 @@ async function fetchCoEcsRecommendations(account, coreApi) {
 
 /** Validate a saved or candidate account. Never throws. */
 async function testConnection(account, coreApi) {
+  if (credentialExpired(account)) {
+    return { ok: false, error: `Session credentials expired at ${field(account, 'credentialExpiresAt', 'credential_expires_at')}.` };
+  }
+  let identity = null;
+  try {
+    const sts = new STSClient(clientConfig(account, coreApi));
+    const who = await sts.send(new GetCallerIdentityCommand({}));
+    identity = { account: who?.Account || null, arn: who?.Arn || null, userId: who?.UserId || null };
+  } catch (err) {
+    return { ok: false, error: explainAuthError(err, account, coreApi), identity };
+  }
   try {
     const client = ec2Client(account, coreApi);
     const resp = await client.send(new DescribeInstancesCommand({ MaxResults: 5 }));
     const instanceCount = (resp?.Reservations || []).reduce((n, r) => n + (r.Instances || []).length, 0);
-    return { ok: true, instanceCount };
+    return { ok: true, instanceCount, identity };
   } catch (err) {
-    return { ok: false, error: err.message || String(err) };
+    return { ok: false, error: explainAuthError(err, account, coreApi), identity };
   }
 }
 
 module.exports = {
-  creds, credSource,
+  creds, credSource, credentialSummary, credentialExpired, credentialProvider, explainAuthError,
   ec2Client, lightsailClient, ecsClient, s3Client, cloudwatchClient, costExplorerClient,
   rdsClient, lambdaClient, dynamoClient, ecrClient,
   fetchEc2Instances, fetchEbsVolumes, fetchEc2Metrics,

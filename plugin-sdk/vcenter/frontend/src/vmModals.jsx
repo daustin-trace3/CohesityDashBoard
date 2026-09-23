@@ -140,6 +140,67 @@ export function VmDetailModal({ vmId, onClose }) {
           )}
 
           <div>
+            <p className="text-xs font-semibold text-ink mb-1.5" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><HardDrive size={13} style={{ color: 'var(--vc-brand)' }} /> Storage</p>
+            {!vm.storage || (vm.storage.disks.length === 0 && vm.storage.filesystems.length === 0) ? (
+              <p className="text-xs text-ink-faint">No disk data collected yet (fills on the next vCenter poll).</p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {vm.storage.disks.length > 0 && (
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                      <th className="py-1 pr-3">Virtual Disk</th><th className="py-1 pr-3">Datastore</th>
+                      <th className="py-1 pr-3 text-right">Provisioned</th><th className="py-1 pr-3 text-right">On Datastore</th><th className="py-1 pr-3">Type</th>
+                    </tr></thead>
+                    <tbody>
+                      {vm.storage.disks.map((d) => (
+                        <tr key={d.id} className="border-b border-cohesity-border/40">
+                          <td className="py-1.5 pr-3 text-ink">{d.label || `disk ${d.disk_key ?? ''}`}</td>
+                          <td className="py-1.5 pr-3 text-ink-muted">{d.datastore || '-'}</td>
+                          <td className="py-1.5 pr-3 text-right tnum">{fmtBytes(d.capacity_bytes)}</td>
+                          <td className="py-1.5 pr-3 text-right tnum">{d.used_bytes != null ? `${fmtBytes(d.used_bytes)}${d.used_pct != null ? ` (${d.used_pct.toFixed(0)}%)` : ''}` : '-'}</td>
+                          <td className="py-1.5 pr-3">{d.thin == null ? <span className="text-ink-faint">-</span> : <Badge tone={d.thin ? 'info' : 'neutral'}>{d.thin ? 'thin' : 'thick'}</Badge>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {vm.storage.filesystems.length > 0 ? (
+                  <table className="w-full text-xs">
+                    <thead><tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                      <th className="py-1 pr-3">Guest Volume</th><th className="py-1 pr-3">Type</th>
+                      <th className="py-1 pr-3 text-right">Capacity</th><th className="py-1 pr-3 text-right">Used</th><th className="py-1 pr-3 text-right">Free</th><th className="py-1 pr-3 text-right">Used %</th>
+                    </tr></thead>
+                    <tbody>
+                      {vm.storage.filesystems.map((f) => {
+                        const color = f.state === 'critical' ? '#C75D5D' : f.state === 'warning' ? '#D4A24E' : '#6CB33F';
+                        return (
+                          <tr key={f.id} className="border-b border-cohesity-border/40">
+                            <td className="py-1.5 pr-3 text-ink tnum">{f.mount}</td>
+                            <td className="py-1.5 pr-3 text-ink-faint">{f.fs_type || '-'}</td>
+                            <td className="py-1.5 pr-3 text-right tnum">{fmtBytes(f.capacity_bytes)}</td>
+                            <td className="py-1.5 pr-3 text-right tnum">{fmtBytes(f.used_bytes)}</td>
+                            <td className="py-1.5 pr-3 text-right tnum">{fmtBytes(f.free_bytes)}</td>
+                            <td className="py-1.5 pr-3">
+                              <div className="flex items-center gap-2 justify-end">
+                                <div className="h-1.5 rounded-full bg-surface-overlay overflow-hidden" style={{ width: 80 }}>
+                                  <div className="h-full rounded-full" style={{ width: `${Math.min(100, f.used_pct || 0)}%`, backgroundColor: color }} />
+                                </div>
+                                <span className="tnum" style={{ color: f.state === 'ok' ? undefined : color }}>{f.used_pct != null ? `${f.used_pct.toFixed(1)}%` : '-'}</span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="text-xs text-ink-faint">No guest volumes reported (VMware Tools not running or the VM is powered off).</p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div>
             <p className="text-xs font-semibold text-ink mb-1.5" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Network size={13} style={{ color: 'var(--vc-brand)' }} /> Network</p>
             {(vm.guest_nics || []).length === 0 && (vm.networks || []).length === 0 ? (
               <p className="text-xs text-ink-faint">No network data collected.</p>
