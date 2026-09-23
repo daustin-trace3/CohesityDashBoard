@@ -10,6 +10,7 @@ import request from 'supertest';
 const require = createRequire(import.meta.url);
 const db = require('../db/database');
 const pollerStatus = require('../services/pollerStatus');
+const { refreshDashboardSnapshot, getDashboardSnapshot } = require('../services/snapshot');
 const clustersRouter = require('../routes/clusters');
 
 let app;
@@ -38,8 +39,16 @@ describe('DELETE /api/clusters/:id', () => {
       pollerStatus.markEnd('cohesity', id, 'success');
     }
 
+    // The Overview reads this cached payload; it must not keep the removed cluster.
+    refreshDashboardSnapshot();
+    expect(getDashboardSnapshot().clusters.map(c => c.id)).toContain(gone);
+
     const res = await request(app).delete(`/api/clusters/${gone}`);
     expect(res.status).toBe(200);
+
+    const snapshotIds = getDashboardSnapshot().clusters.map(c => c.id);
+    expect(snapshotIds).not.toContain(gone);
+    expect(snapshotIds).toContain(kept);
 
     const count = (sql, id) => db.prepare(sql).get(id).c;
     expect(count('SELECT COUNT(*) c FROM clusters WHERE id = ?', gone)).toBe(0);

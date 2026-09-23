@@ -5,6 +5,7 @@ const { encrypt, decrypt } = require('../services/encryption');
 const { invalidateSession, testClusterConnection } = require('../services/cohesityApi');
 const { scheduleCluster, cancelCluster } = require('../services/poller');
 const cacheControl = require('../middleware/cache');
+const { refreshDashboardSnapshot } = require('../services/snapshot');
 
 const router = express.Router();
 
@@ -428,6 +429,10 @@ router.delete(
       db.prepare("DELETE FROM poller_status WHERE type = 'cohesity' AND entity_id = ?").run(id);
       cancelCluster(Number(id));
       invalidateSession(Number(id));
+      // The Overview serves the cached snapshot, which only the poller rebuilds
+      // after a poll. Rebuild it now or the removed cluster stays on the
+      // Overview until another cluster finishes polling.
+      refreshDashboardSnapshot();
 
       res.json({ success: true });
     } catch (err) {
