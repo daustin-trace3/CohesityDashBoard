@@ -100,6 +100,19 @@ function seedVcenter(db, { now, encrypt }) {
       cpu_usage_mhz, mem_usage_mb, overall_status, guest_hostname, captured_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertDisk = db.prepare(`
+    INSERT INTO vcenter_vm_disks (vcenter_id, vm_id, vm_name, disk_key, label, capacity_bytes, used_bytes, thin, datastore, file_name, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertFs = db.prepare(`
+    INSERT INTO vcenter_vm_filesystems (vcenter_id, vm_id, vm_name, mount, fs_type, capacity_bytes, free_bytes, used_pct, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertFsHist = db.prepare(`
+    INSERT OR REPLACE INTO vcenter_vm_filesystem_history (vcenter_id, vm_id, mount, day, capacity_bytes, free_bytes)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const OWNERS = ['Jane Doe', 'Sam Patel', 'Chris Nguyen', 'Platform Eng', 'DBA Team', 'Web Ops', 'Maria Lopez', 'Alex Kim'];
   const insertSnap = db.prepare(`
     INSERT INTO vcenter_metrics_history (vcenter_id, captured_at, hosts_total, hosts_connected,
       hosts_maintenance, vms_total, datastore_capacity_bytes, datastore_free_bytes)
@@ -125,6 +138,8 @@ function seedVcenter(db, { now, encrypt }) {
       vcVer.version, vcVer.build, vcVer.product, nowIso, nowIso
     );
     const vcId = db.prepare('SELECT id FROM vcenter_vcenters WHERE name = ?').get(vcName).id;
+    // Owner tag category differs per site in real estates; the demo uses one.
+    db.prepare("UPDATE vcenter_vcenters SET owner_tag_category = 'AdminOwner' WHERE id = ?").run(vcId);
 
     // Certs: syd expires soon (warning); the rest are comfortably out.
     const certDays = site === 'syd' ? 21 : randInt(rng, 180, 700);
@@ -228,6 +243,9 @@ function seedVcenter(db, { now, encrypt }) {
             const usageIdx = (vcIdx * 5 + c * 3 + (role === 'db' ? 1 : 0) + Math.floor(v / 4)) % USAGE_IDS.length;
             vmTags.push(`usage-id: ${USAGE_IDS[usageIdx]}`);
           }
+          // Owner tag on most VMs (Guest Storage owner column and alert text).
+          const owner = chance(rng, 0.75) ? pick(rng, OWNERS) : null;
+          if (owner) vmTags.push(`AdminOwner: ${owner}`);
           const mac = `00:50:56:${String(80 + vcIdx).padStart(2, '0')}:${String(c * 10 + h).padStart(2, '0')}:${String(v).padStart(2, '0')}`;
           const vmName = `${site}-${role}-${String(c).padStart(2, '0')}${String(h)}${String(v).padStart(2, '0')}`;
           const vmCpus = pick(rng, [2, 2, 4, 4, 8, 16]);
@@ -256,6 +274,38 @@ function seedVcenter(db, { now, encrypt }) {
             poweredOn ? `${vmName}.icc.demo` : null,
             nowIso);
           vmTotal++;
+
+          // Guest storage: 1-3 volumes per VM (Windows drive letters or Linux
+          // mounts), mostly healthy, about 6% at warning and 3% critical, a
+          // few growing fast enough to show days to full. Virtual disks sized
+          // to the volumes they carry; every VM has them even when Tools is off.
+          const vmMoid = `vm-${vcIdx}${c}${h}-${v}`;
+          const isWin = guestOs.includes('Windows');
+          const mounts = isWin ? ['C:\\', 'D:\\', 'E:\\'] : ['/', '/var', '/data'];
+          const volumeCount = role === 'db' || role === 'file' ? 3 : (chance(rng, 0.5) ? 2 : 1);
+          let diskIndex = 0;
+          for (let i = 0; i < volumeCount; i++) {
+            const capacityGb = i === 0 ? pick(rng, [80, 100, 120, 150]) : pick(rng, [200, 300, 500, 800, 1000]);
+            const capacity = capacityGb * GIB;
+            const roll = rng();
+            const usedPct = roll < 0.015 ? randInt(rng, 91, 99) : roll < 0.045 ? randInt(rng, 81, 89) : randInt(rng, 22, 78);
+            const free = Math.round(capacity * (1 - usedPct / 100));
+            const diskKey = 2000 + diskIndex++;
+            insertDisk.run(vcId, vmMoid, vmName, diskKey, `Hard disk ${i + 1}`, capacity,
+              Math.round(capacity * (chance(rng, 0.7) ? usedPct / 100 : 1)), chance(rng, 0.7) ? 1 : 0,
+              vmDatastores[0], `[${vmDatastores[0]}] ${vmName}/${vmName}${i ? `_${i}` : ''}.vmdk`, nowIso);
+            // Tools stopped means no guest view of the volumes.
+            if (!poweredOn) continue;
+            insertFs.run(vcId, vmMoid, vmName, mounts[i], isWin ? 'NTFS' : (i === 0 ? 'ext4' : 'xfs'),
+              capacity, free, Math.round(usedPct * 10) / 10, nowIso);
+            // 30 days of history; a quarter of volumes grow, the fast ones by
+            // up to 1.5% of capacity a day.
+            const growthFrac = chance(rng, 0.25) ? randFloat(rng, 0.001, 0.015, 4) : 0;
+            for (let d = 30; d >= 0; d--) {
+              const freeThen = Math.min(capacity, Math.round(free + capacity * growthFrac * d));
+              insertFsHist.run(vcId, vmMoid, mounts[i], new Date(now - d * 86400000).toISOString().slice(0, 10), capacity, freeThen);
+            }
+          }
           // Server 360 demo coherence: the first three nyc VMs (whose IPs are
           // seeded as NetApp NFS/SMB clients and vRA resource IPs) also get a
           // protected Cohesity object so every panel of the view lights up.

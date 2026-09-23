@@ -33,7 +33,11 @@ export default function VcSettingsPage() {
   const [refreshingId, setRefreshingId] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [certWarnDays, setCertWarnDays] = useState('');
+  const [guestWarnPct, setGuestWarnPct] = useState('');
+  const [guestCritPct, setGuestCritPct] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
+  const [tagCategories, setTagCategories] = useState([]);
+  const [savingOwnerId, setSavingOwnerId] = useState(null);
   const flash = (type, title, message) => toast({ type, title, message });
   // Sub-menu (Zerto settings pattern). Deep links: /vcenter/settings#sites, #clusters, #alerts.
   const [tab, setTab] = useState(tabFromHash);
@@ -51,20 +55,50 @@ export default function VcSettingsPage() {
   useEffect(() => {
     loadVcs();
     client.get('/vcenter/config')
-      .then(({ data }) => setCertWarnDays(String(data.certWarnDays)))
-      .catch(() => setCertWarnDays('60'));
+      .then(({ data }) => {
+        setCertWarnDays(String(data.certWarnDays));
+        setGuestWarnPct(String(data.guestDiskWarnPct ?? 80));
+        setGuestCritPct(String(data.guestDiskCritPct ?? 90));
+      })
+      .catch(() => { setCertWarnDays('60'); setGuestWarnPct('80'); setGuestCritPct('90'); });
+    client.get('/vcenter/tag-categories')
+      .then(({ data }) => setTagCategories(data || []))
+      .catch(() => setTagCategories([]));
   }, []);
+
+  const thresholdsValid = Number(certWarnDays) >= 1 && Number(certWarnDays) <= 365
+    && Number(guestWarnPct) >= 1 && Number(guestWarnPct) <= 100
+    && Number(guestCritPct) >= Number(guestWarnPct) && Number(guestCritPct) <= 100;
 
   const saveConfig = async () => {
     setSavingConfig(true);
     try {
-      const { data } = await client.put('/vcenter/config', { certWarnDays: Number(certWarnDays) });
+      const { data } = await client.put('/vcenter/config', {
+        certWarnDays: Number(certWarnDays),
+        guestDiskWarnPct: Number(guestWarnPct),
+        guestDiskCritPct: Number(guestCritPct),
+      });
       setCertWarnDays(String(data.certWarnDays));
-      toast({ type: 'success', title: 'Thresholds saved', message: `Certificate warnings now start ${data.certWarnDays} days before expiry.` });
+      setGuestWarnPct(String(data.guestDiskWarnPct));
+      setGuestCritPct(String(data.guestDiskCritPct));
+      toast({ type: 'success', title: 'Thresholds saved', message: `Certificate warnings at ${data.certWarnDays} days; guest volumes warn at ${data.guestDiskWarnPct}%, critical at ${data.guestDiskCritPct}%.` });
     } catch (err) {
-      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Enter a value between 1 and 365 days.' });
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Check the values: days 1 to 365, percentages 1 to 100 with critical at or above warning.' });
     } finally {
       setSavingConfig(false);
+    }
+  };
+
+  const saveOwnerTag = async (vc, category) => {
+    setSavingOwnerId(vc.id);
+    try {
+      await client.put(`/vcenter/vcenters/${vc.id}/owner-tag`, { category: category || null });
+      await loadVcs();
+      toast({ type: 'success', title: `Owner tag for ${vc.name}`, message: category ? `VM owners now read from the "${category}" tag category.` : 'Owner tag cleared.' });
+    } catch (err) {
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error });
+    } finally {
+      setSavingOwnerId(null);
     }
   };
 
@@ -237,6 +271,7 @@ export default function VcSettingsPage() {
                 <th className="py-2 pr-3">Username</th>
                 <th className="py-2 pr-3">Status</th>
                 <th className="py-2 pr-3">Last Poll</th>
+                <th className="py-2 pr-3" title="Tag category that names the VM owner on this vCenter (shown on Guest Storage and in alerts)">Owner Tag</th>
                 <th className="py-2 pr-3 text-right">Actions</th>
               </tr></thead>
               <tbody>
@@ -254,6 +289,18 @@ export default function VcSettingsPage() {
                       )}
                     </td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(v.lastPollAt)}</td>
+                    <td className="py-2 pr-3">
+                      <select value={v.ownerTagCategory || ''} disabled={savingOwnerId === v.id}
+                        onChange={(e) => saveOwnerTag(v, e.target.value)}
+                        className="bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer disabled:opacity-50"
+                        title="Categories come from the tags seen on VMs at the last poll">
+                        <option value="">None</option>
+                        {v.ownerTagCategory && !tagCategories.some((c) => c.category === v.ownerTagCategory) && (
+                          <option value={v.ownerTagCategory}>{v.ownerTagCategory}</option>
+                        )}
+                        {tagCategories.map((c) => <option key={c.category} value={c.category}>{c.category}</option>)}
+                      </select>
+                    </td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center justify-end gap-1.5">
                         <button onClick={() => startEdit(v)} title="Edit connection / update credentials" aria-label={`Edit ${v.name}`}
@@ -290,15 +337,27 @@ export default function VcSettingsPage() {
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
-          How far ahead of a vCenter TLS certificate's expiry the Overview raises a warning. Expiry within 14 days (or past due) is always critical.
+          How far ahead of a vCenter TLS certificate's expiry the Overview raises a warning (expiry within 14 days, or past due, is always critical),
+          and how full a guest volume (C:, /var) may get before Guest Storage flags it. Each volume over the warning line is an open
+          issue; turn on the "guest-volume-full" type under Alert Notifications to have it emailed.
         </p>
-        <div className="flex items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3">
           <div className="w-56">
             <label className="block text-xs font-semibold text-ink mb-1">Certificate warning (days before expiry)</label>
             <input type="number" min={1} max={365} value={certWarnDays}
               onChange={(e) => setCertWarnDays(e.target.value)} className={inp} />
           </div>
-          <button onClick={saveConfig} disabled={savingConfig || !certWarnDays || Number(certWarnDays) < 1 || Number(certWarnDays) > 365}
+          <div className="w-44">
+            <label className="block text-xs font-semibold text-ink mb-1">Guest volume warning (% used)</label>
+            <input type="number" min={1} max={100} value={guestWarnPct}
+              onChange={(e) => setGuestWarnPct(e.target.value)} className={inp} />
+          </div>
+          <div className="w-44">
+            <label className="block text-xs font-semibold text-ink mb-1">Guest volume critical (% used)</label>
+            <input type="number" min={1} max={100} value={guestCritPct}
+              onChange={(e) => setGuestCritPct(e.target.value)} className={inp} />
+          </div>
+          <button onClick={saveConfig} disabled={savingConfig || !thresholdsValid}
             className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
             {savingConfig ? 'Saving…' : 'Save'}
           </button>

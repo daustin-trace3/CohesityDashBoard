@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { Crosshair, Search, Server, ShieldCheck, ArrowLeftRight, FolderTree, Package, Loader2 } from 'lucide-react';
+import { Crosshair, Search, Server, ShieldCheck, ArrowLeftRight, FolderTree, Package, Loader2, HardDrive } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge } from '../../components/ui/primitives';
 
@@ -146,7 +146,61 @@ export default function ServerStatusPage() {
             <Fact label="Uptime">{fmtUptime(vm.uptime_seconds)}</Fact>
             <Fact label="Datastores">{(vm.datastores || []).join(', ') || '—'}</Fact>
             <Fact label="Networks">{(vm.networks || []).join(', ') || '—'}</Fact>
+            {vm.owner && <Fact label="Owner">{vm.owner}</Fact>}
           </div>
+        </Panel>
+      )}
+
+      {/* vCenter guest storage: volumes inside the guest plus the virtual disks */}
+      {vm && vm.storage && (vm.storage.filesystems.length > 0 || vm.storage.disks.length > 0) && (
+        <Panel title="Guest Storage" icon={HardDrive} actions={<PlatformChip platform="vcenter" />}>
+          {vm.storage.filesystems.length > 0 ? (
+            <div className="overflow-x-auto mb-3">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                    <th className="py-1.5 pr-3">Volume</th>
+                    <th className="py-1.5 pr-3">Type</th>
+                    <th className="py-1.5 pr-3 text-right">Capacity</th>
+                    <th className="py-1.5 pr-3 text-right">Used</th>
+                    <th className="py-1.5 pr-3 text-right">Free</th>
+                    <th className="py-1.5 pr-3 text-right">Used %</th>
+                    <th className="py-1.5 pr-3 text-right">Days to full</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {vm.storage.filesystems.map((f) => {
+                    const color = f.state === 'critical' ? '#C75D5D' : f.state === 'warning' ? '#D4A24E' : '#6CB33F';
+                    return (
+                      <tr key={f.id} className="border-b border-cohesity-border/50">
+                        <td className="py-1.5 pr-3 text-ink tnum">{f.mount}</td>
+                        <td className="py-1.5 pr-3 text-ink-faint">{f.fs_type || '—'}</td>
+                        <td className="py-1.5 pr-3 text-right tnum">{fmtBytes(f.capacity_bytes)}</td>
+                        <td className="py-1.5 pr-3 text-right tnum">{fmtBytes(f.used_bytes)}</td>
+                        <td className="py-1.5 pr-3 text-right tnum">{fmtBytes(f.free_bytes)}</td>
+                        <td className="py-1.5 pr-3">
+                          <div className="flex items-center gap-2 justify-end">
+                            <div className="w-24 h-1.5 rounded-full bg-surface-overlay overflow-hidden">
+                              <div className="h-full rounded-full" style={{ width: `${Math.min(100, f.used_pct || 0)}%`, backgroundColor: color }} />
+                            </div>
+                            <span className="tnum" style={{ color: f.state === 'ok' ? undefined : color }}>{f.used_pct != null ? `${f.used_pct.toFixed(1)}%` : '—'}</span>
+                          </div>
+                        </td>
+                        <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{f.days_to_full == null ? '—' : `${f.days_to_full}d`}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-xs text-ink-muted mb-3">No guest volumes reported (VMware Tools not running or the VM is powered off).</p>
+          )}
+          {vm.storage.disks.length > 0 && (
+            <p className="text-[11px] text-ink-faint tnum">
+              {vm.storage.disks.map((d) => `${d.label || `disk ${d.disk_key}`}: ${fmtBytes(d.capacity_bytes)} provisioned${d.used_bytes != null ? `, ${fmtBytes(d.used_bytes)} on ${d.datastore || 'datastore'}` : ''}${d.thin ? ', thin' : ''}`).join(' · ')}
+            </p>
+          )}
         </Panel>
       )}
 

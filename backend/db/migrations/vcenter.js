@@ -341,4 +341,60 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 10,
+    up(db) {
+      // Guest storage: the virtual disks behind each VM (provisioned versus
+      // consumed on the datastore, from config.hardware.device + layoutEx) and
+      // the filesystems VMware Tools reports from inside the guest (C:, /var,
+      // capacity and free). One history row per filesystem per day feeds the
+      // growth and days-to-full figures. Owner tag category is per vCenter,
+      // because the category name differs from site to site.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vcenter_vm_disks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          vm_id TEXT NOT NULL,
+          vm_name TEXT,
+          disk_key INTEGER,
+          label TEXT,
+          capacity_bytes INTEGER,
+          used_bytes INTEGER,
+          thin INTEGER,
+          datastore TEXT,
+          file_name TEXT,
+          captured_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_vm_disks_vm ON vcenter_vm_disks(vcenter_id, vm_id);
+
+        CREATE TABLE IF NOT EXISTS vcenter_vm_filesystems (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          vm_id TEXT NOT NULL,
+          vm_name TEXT,
+          mount TEXT NOT NULL,
+          fs_type TEXT,
+          capacity_bytes INTEGER,
+          free_bytes INTEGER,
+          used_pct REAL,
+          captured_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_vm_fs_vm ON vcenter_vm_filesystems(vcenter_id, vm_id);
+        CREATE INDEX IF NOT EXISTS idx_vcenter_vm_fs_pct ON vcenter_vm_filesystems(used_pct);
+
+        CREATE TABLE IF NOT EXISTS vcenter_vm_filesystem_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          vm_id TEXT NOT NULL,
+          mount TEXT NOT NULL,
+          day TEXT NOT NULL,
+          capacity_bytes INTEGER,
+          free_bytes INTEGER,
+          UNIQUE (vcenter_id, vm_id, mount, day)
+        );
+
+        ALTER TABLE vcenter_vcenters ADD COLUMN owner_tag_category TEXT;
+      `);
+    },
+  },
 ];

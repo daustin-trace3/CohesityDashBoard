@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell, Building2, TrendingUp, ArrowLeftRight, Tag } from 'lucide-react';
+import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell, Building2, TrendingUp, ArrowLeftRight, Tag, HardDrive } from 'lucide-react';
 
 const VcOverviewPage = lazy(() => import('../../pages/vcenter/VcOverviewPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
@@ -18,6 +18,7 @@ const VcAdvisorPage = lazy(() => import('../../pages/vcenter/VcAdvisorPage'));
 const VcCapacityOverviewPage = lazy(() => import('../../pages/vcenter/VcCapacityOverviewPage'));
 const VcCapacityTrendsPage = lazy(() => import('../../pages/vcenter/VcCapacityTrendsPage'));
 const VcCapacityExplorerPage = lazy(() => import('../../pages/vcenter/VcCapacityExplorerPage'));
+const VcGuestStoragePage = lazy(() => import('../../pages/vcenter/VcGuestStoragePage'));
 
 // VMware vCenter sidebar — shown when the vCenter platform is active.
 const navGroups = [
@@ -45,6 +46,7 @@ const navGroups = [
       { label: 'VM Inventory', route: '/vcenter/inventory', icon: MonitorSmartphone, isActive: (p) => p.startsWith('/vcenter/inventory') },
       { label: 'Tags', route: '/vcenter/tags', icon: Tag, isActive: (p) => p.startsWith('/vcenter/tags') },
       { label: 'Datastores', route: '/vcenter/datastores', icon: Database, isActive: (p) => p.startsWith('/vcenter/datastores') },
+      { label: 'Guest Storage', route: '/vcenter/guest-storage', icon: HardDrive, isActive: (p) => p.startsWith('/vcenter/guest-storage') },
       { label: 'Network', route: '/vcenter/network', icon: Network, isActive: (p) => p.startsWith('/vcenter/network') },
     ],
   },
@@ -85,6 +87,7 @@ export default {
     { path: 'vcenter/inventory', Component: VcInventoryPage },
     { path: 'vcenter/tags', Component: VcTagsPage },
     { path: 'vcenter/datastores', Component: VcDatastoresPage },
+    { path: 'vcenter/guest-storage', Component: VcGuestStoragePage },
     { path: 'vcenter/network', Component: VcNetworkPage },
     { path: 'vcenter/events', Component: VcEventsPage },
     { path: 'vcenter/governance', Component: VcGovernancePage },

@@ -253,6 +253,9 @@ const VM_PROPS = [
   'summary.quickStats.overallCpuUsage', 'summary.quickStats.guestMemoryUsage',
   'overallStatus', 'guest.hostName',
 ];
+// Guest storage is a second, optional VM retrieval: the device list is large
+// on a big vCenter, and a fault in it must not sink the main inventory.
+const VM_STORAGE_PROPS = ['guest.disk', 'config.hardware.device', 'layoutEx.disk', 'layoutEx.file'];
 // NB: DVSSummary's port total is `numPorts` — requesting `summary.portCount`
 // faults the WHOLE RetrievePropertiesEx call with InvalidProperty.
 const DVS_PROPS = ['name', 'summary.numPorts', 'summary.uuid'];
@@ -321,6 +324,65 @@ function parseHostNetworks(hostName, props) {
 }
 
 const SSH_SERVICE_KEYS = new Set(['TSM-SSH', 'ssh']);
+
+/**
+ * One VM's storage rows from the optional retrieval: virtual disks (VirtualDisk
+ * devices with their datastore usage summed from the layoutEx chain) and the
+ * guest filesystems VMware Tools reports (guest.disk). Either list is empty
+ * when the property is absent (Tools not running, VM powered off).
+ */
+function parseVmStorage(props, dsNameByMoref) {
+  const files = new Map();
+  for (const f of vimArray(props['layoutEx.file'], 'VirtualMachineFileLayoutExFileInfo')) {
+    const key = num(f.key);
+    if (key != null) files.set(key, { size: num(f.size), type: flat(f.type) != null ? String(flat(f.type)) : null });
+  }
+  // Disk key -> bytes on disk, from every extent file in the disk's chain.
+  const usedByDiskKey = new Map();
+  for (const d of vimArray(props['layoutEx.disk'], 'VirtualMachineFileLayoutExDiskLayout')) {
+    const key = num(d.key);
+    if (key == null) continue;
+    let used = 0;
+    let seen = false;
+    for (const unit of vimArray(d.chain, 'VirtualMachineFileLayoutExDiskUnit')) {
+      for (const fk of asArray(unit.fileKey).map(num)) {
+        const f = fk != null ? files.get(fk) : null;
+        if (f && f.size != null && (f.type == null || f.type === 'diskExtent')) { used += f.size; seen = true; }
+      }
+    }
+    if (seen) usedByDiskKey.set(key, used);
+  }
+  const virtualDisks = [];
+  for (const dev of vimArray(props['config.hardware.device'], 'VirtualDevice')) {
+    const type = dev['@_xsi:type'] || dev['@_type'] || '';
+    const capBytes = num(dev.capacityInBytes) ?? (num(dev.capacityInKB) != null ? num(dev.capacityInKB) * 1024 : null);
+    if (!/VirtualDisk$/.test(String(type)) && capBytes == null) continue;
+    const key = num(dev.key);
+    const backing = dev.backing || {};
+    const dsRef = flat(backing.datastore);
+    virtualDisks.push({
+      key,
+      label: flat(dev.deviceInfo?.label) != null ? String(flat(dev.deviceInfo.label)) : null,
+      capacityBytes: capBytes,
+      usedBytes: key != null && usedByDiskKey.has(key) ? usedByDiskKey.get(key) : null,
+      thin: backing.thinProvisioned != null ? (String(flat(backing.thinProvisioned)) === 'true' ? 1 : 0) : null,
+      datastore: dsRef != null ? (dsNameByMoref.get(String(dsRef)) || null) : null,
+      fileName: flat(backing.fileName) != null ? String(flat(backing.fileName)) : null,
+    });
+  }
+  const guestDisks = [];
+  for (const g of vimArray(props['guest.disk'], 'GuestDiskInfo')) {
+    const mount = flat(g.diskPath);
+    if (mount == null) continue;
+    guestDisks.push({
+      mount: String(mount),
+      fsType: flat(g.filesystemType) != null ? String(flat(g.filesystemType)) : null,
+      capacityBytes: num(g.capacity),
+      freeBytes: num(g.freeSpace),
+    });
+  }
+  return { virtualDisks, guestDisks };
+}
 
 /**
  * Orphaned-VMDK sweep: browse every accessible datastore for *.vmdk files
@@ -511,6 +573,8 @@ async function fetchInventorySoap(vc) {
     const netRows = await retrieveOptional('Network', ['name']);
     const dvsRows = await retrieveOptional('DistributedVirtualSwitch', DVS_PROPS);
     const dvpgRows = await retrieveOptional('DistributedVirtualPortgroup', DVPG_PROPS);
+    const vmStorageRows = await retrieveOptional('VirtualMachine', VM_STORAGE_PROPS);
+    const vmStorageByMoref = new Map(vmStorageRows.map(r => [String(r._moref), r]));
 
     const networkNameByMoref = new Map();
     for (const r of [...netRows, ...dvpgRows]) {
@@ -588,8 +652,13 @@ async function fetchInventorySoap(vc) {
         connected: String(flat(n.connected)) === 'true',
         ips: stringList(n.ipAddress),
       }));
+      const storageProps = vmStorageByMoref.get(String(v._moref));
+      const storage = storageProps ? parseVmStorage(storageProps, dsNameByMoref) : null;
       return {
         vmId: String(v._moref || ''),
+        // null = storage retrieval unavailable (keep last rows); [] = none reported
+        virtualDisks: storage ? storage.virtualDisks : null,
+        guestDisks: storage ? storage.guestDisks : null,
         name: String(v.name),
         hostName: hostNameByMoref.get(String(v['runtime.host'])) || null,
         powerState: normalizePowerState(v['runtime.powerState']),

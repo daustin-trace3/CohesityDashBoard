@@ -164,6 +164,44 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
       v.cpuUsageMhz ?? null, v.memUsageMb ?? null, v.overallStatus ?? null, v.guestHostname ?? null);
   }
 
+  // Guest storage rows are replaced only when the storage retrieval worked
+  // (null lists mean it did not); a VM with Tools stopped simply has no
+  // filesystem rows, which the page reports as "no guest data".
+  if ((vms || []).some(v => v.guestDisks != null || v.virtualDisks != null)) {
+    db.prepare('DELETE FROM vcenter_vm_disks WHERE vcenter_id = ?').run(vcId);
+    db.prepare('DELETE FROM vcenter_vm_filesystems WHERE vcenter_id = ?').run(vcId);
+    const diskStmt = db.prepare(`
+      INSERT INTO vcenter_vm_disks (vcenter_id, vm_id, vm_name, disk_key, label, capacity_bytes, used_bytes, thin, datastore, file_name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const fsStmt = db.prepare(`
+      INSERT INTO vcenter_vm_filesystems (vcenter_id, vm_id, vm_name, mount, fs_type, capacity_bytes, free_bytes, used_pct)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const histStmt = db.prepare(`
+      INSERT INTO vcenter_vm_filesystem_history (vcenter_id, vm_id, mount, day, capacity_bytes, free_bytes)
+      VALUES (?, ?, ?, date('now'), ?, ?)
+      ON CONFLICT(vcenter_id, vm_id, mount, day) DO UPDATE SET
+        capacity_bytes = excluded.capacity_bytes, free_bytes = excluded.free_bytes
+    `);
+    for (const v of vms) {
+      if (!v.vmId) continue;
+      for (const d of (v.virtualDisks || [])) {
+        diskStmt.run(vcId, v.vmId, v.name || null, d.key ?? null, d.label ?? null,
+          d.capacityBytes ?? null, d.usedBytes ?? null, d.thin ?? null, d.datastore ?? null, d.fileName ?? null);
+      }
+      for (const g of (v.guestDisks || [])) {
+        const usedPct = g.capacityBytes > 0 && g.freeBytes != null
+          ? Math.round((1 - g.freeBytes / g.capacityBytes) * 1000) / 10 : null;
+        fsStmt.run(vcId, v.vmId, v.name || null, g.mount, g.fsType ?? null,
+          g.capacityBytes ?? null, g.freeBytes ?? null, usedPct);
+        if (g.capacityBytes != null) histStmt.run(vcId, v.vmId, g.mount, g.capacityBytes, g.freeBytes ?? null);
+      }
+    }
+    // Two years of daily rows is plenty for growth; older ones go.
+    db.prepare("DELETE FROM vcenter_vm_filesystem_history WHERE vcenter_id = ? AND day < date('now', '-730 days')").run(vcId);
+  }
+
   // Networking rows are wholesale-replaced only when SOAP produced them —
   // a SOAP outage keeps the last good inventory instead of blanking the page.
   if (networks) {
