@@ -11,8 +11,36 @@ const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg 
 
 const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost', 'rds', 'lambda', 'dynamo', 'ecr', 'vpc'];
 
-const CRED_TONE = { stored: 'ok', env: 'brand', none: 'neutral' };
-const CRED_LABEL = { stored: 'Stored', env: 'Env fallback', none: 'None' };
+const CRED_TONE = { role: 'ok', stored: 'ok', session: 'warn', profile: 'ok', env: 'brand', none: 'neutral' };
+const CRED_LABEL = { role: 'Assume role', stored: 'Access key', session: 'Session key', profile: 'Named profile', env: 'Env fallback', none: 'Host identity' };
+const BASE_LABEL = { stored: 'stored key', session: 'session key', profile: 'named profile', env: 'server env', host: 'host identity' };
+
+const EMPTY_FORM = {
+  name: '', region: 'us-east-2', pollingIntervalMinutes: 10,
+  authMode: 'key', baseSource: 'host',
+  accessKeyId: '', secretAccessKey: '', sessionToken: '', credentialExpiresAt: '',
+  roleArn: '', externalId: '', roleSessionName: 'icc', profileName: '',
+};
+
+// ISO -> value for <input type="datetime-local"> in the browser's zone.
+function toLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function fmtExpiry(iso) {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const mins = Math.round((ms - Date.now()) / 60000);
+  if (mins <= 0) return { text: 'expired', tone: 'crit' };
+  if (mins < 60) return { text: `expires in ${mins}m`, tone: 'warn' };
+  if (mins < 48 * 60) return { text: `expires in ${Math.round(mins / 60)}h`, tone: mins < 120 ? 'warn' : 'neutral' };
+  return { text: `expires ${new Date(ms).toLocaleDateString()}`, tone: 'neutral' };
+}
 
 // Portal to <body> — the page wrapper's fade-in animation leaves a transform
 // applied (fill-mode: both), which would re-anchor position:fixed to the
@@ -77,7 +105,7 @@ function ProbeModal({ account, onClose }) {
 export default function AwsSettingsPage() {
   const { toast } = useToast();
   const [accounts, setAccounts] = useState(null);
-  const [form, setForm] = useState({ name: '', accessKeyId: '', secretAccessKey: '', region: 'us-east-2', pollingIntervalMinutes: 10 });
+  const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -118,13 +146,44 @@ export default function AwsSettingsPage() {
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
+  // Which credential fields the current mode uses.
+  const usesKey = form.authMode === 'key' || (form.authMode === 'role' && form.baseSource === 'key');
+  const usesProfile = form.authMode === 'profile' || (form.authMode === 'role' && form.baseSource === 'profile');
+
+  // Body shared by save and test: blank strings clear, omitted keeps stored.
+  const credentialBody = (forTest) => {
+    const body = { authMode: form.authMode };
+    if (usesKey) {
+      body.accessKeyId = form.accessKeyId.trim();
+      if (form.secretAccessKey) body.secretAccessKey = form.secretAccessKey;
+      body.sessionToken = form.sessionToken.trim();
+      body.credentialExpiresAt = form.credentialExpiresAt ? new Date(form.credentialExpiresAt).toISOString() : '';
+    } else if (!forTest) {
+      body.accessKeyId = '';
+      body.clearSecret = true;
+      body.sessionToken = '';
+      body.credentialExpiresAt = '';
+    }
+    body.profileName = usesProfile ? form.profileName.trim() : '';
+    if (form.authMode === 'role') {
+      body.roleArn = form.roleArn.trim();
+      body.roleSessionName = form.roleSessionName.trim() || 'icc';
+      if (form.externalId || !forTest) body.externalId = form.externalId;
+    } else if (!forTest) {
+      body.roleArn = '';
+      body.externalId = '';
+    }
+    return body;
+  };
+
   const test = async () => {
     setTesting(true);
     setTestResult(null);
     try {
-      const body = editingId
-        ? { id: editingId }
-        : { accessKeyId: form.accessKeyId.trim() || undefined, secretAccessKey: form.secretAccessKey || undefined, region: form.region };
+      const body = { ...credentialBody(true), region: form.region };
+      if (editingId) body.id = editingId;
+      // Nothing typed into a stored field means test what is stored.
+      for (const k of Object.keys(body)) if (body[k] === '' && k !== 'region') delete body[k];
       const { data } = await client.post('/aws/accounts/test', body);
       setTestResult(data);
     } catch (err) {
@@ -135,15 +194,20 @@ export default function AwsSettingsPage() {
   };
 
   const blankForm = () => {
-    setForm({ name: '', accessKeyId: '', secretAccessKey: '', region: 'us-east-2', pollingIntervalMinutes: 10 });
+    setForm(EMPTY_FORM);
     setTestResult(null);
   };
 
   const startEdit = (a) => {
     setEditingId(a.id);
     setForm({
-      name: a.name, accessKeyId: a.accessKeyId || '', secretAccessKey: '',
-      region: a.region || 'us-east-2', pollingIntervalMinutes: a.pollingIntervalMinutes || 10,
+      ...EMPTY_FORM,
+      name: a.name, region: a.region || 'us-east-2', pollingIntervalMinutes: a.pollingIntervalMinutes || 10,
+      authMode: a.authMode || 'key',
+      baseSource: a.baseSource === 'stored' || a.baseSource === 'session' ? 'key' : a.baseSource === 'profile' ? 'profile' : 'host',
+      accessKeyId: a.accessKeyId || '', secretAccessKey: '', sessionToken: '',
+      credentialExpiresAt: toLocalInput(a.credentialExpiresAt),
+      roleArn: a.roleArn || '', externalId: '', roleSessionName: a.roleSessionName || 'icc', profileName: a.profileName || '',
     });
     setTestResult(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -158,10 +222,8 @@ export default function AwsSettingsPage() {
         name: form.name.trim(),
         region: form.region.trim() || 'us-east-2',
         pollingIntervalMinutes: Number(form.pollingIntervalMinutes) || 10,
+        ...credentialBody(false),
       };
-      if (form.accessKeyId.trim()) body.accessKeyId = form.accessKeyId.trim();
-      // Blank secret = keep the stored one (omit from the body).
-      if (form.secretAccessKey) body.secretAccessKey = form.secretAccessKey;
       if (editingId) {
         await client.put(`/aws/accounts/${editingId}`, body);
         toast({ type: 'success', title: 'Account updated', message: form.secretAccessKey ? 'Credentials replaced — next poll uses them.' : 'Saved. Stored credentials unchanged.' });
@@ -203,7 +265,9 @@ export default function AwsSettingsPage() {
     }
   };
 
-  const canSubmit = form.name.trim();
+  const canSubmit = form.name.trim()
+    && (form.authMode !== 'role' || form.roleArn.trim())
+    && (!usesProfile || form.profileName.trim());
 
   return (
     <div className="animate-fade-in max-w-3xl">
@@ -212,8 +276,10 @@ export default function AwsSettingsPage() {
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'account'}` : 'Add an AWS account'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
-          Leave the access key and secret blank to fall back to the server's <code>AWS_ACCESS_KEY_ID</code> / <code>AWS_SECRET_ACCESS_KEY</code> environment variables.
-          Read-only IAM permissions are sufficient for polling. The secret is encrypted at rest.
+          Read-only IAM permissions are sufficient for polling. Secrets are encrypted at rest. Assume role is the option that never
+          hands ICC a user key: the account owner creates a role with a trust policy (and an external ID) and ICC assumes it from
+          a stored key, a named profile, or the identity of the box ICC runs on (instance profile, IAM Roles Anywhere, or the
+          server's <code>AWS_ACCESS_KEY_ID</code> / <code>AWS_SECRET_ACCESS_KEY</code>).
         </p>
         <div className="grid md:grid-cols-2 gap-3 mb-3">
           <div>
@@ -225,13 +291,65 @@ export default function AwsSettingsPage() {
             <input type="number" min={5} max={1440} value={form.pollingIntervalMinutes} onChange={set('pollingIntervalMinutes')} className={inp} />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Access key ID</label>
-            <input value={form.accessKeyId} onChange={set('accessKeyId')} placeholder="AKIA… (blank = use server env)" className={inp} spellCheck={false} />
+            <label className="block text-xs font-semibold text-ink mb-1">Authentication</label>
+            <select value={form.authMode} onChange={set('authMode')} className={inp}>
+              <option value="key">Access key (long-lived or session)</option>
+              <option value="role">Assume role (STS)</option>
+              <option value="profile">Named profile on the ICC server</option>
+            </select>
           </div>
-          <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Secret access key{editingId ? <span className="font-normal text-ink-faint"> — stored, leave blank to keep current</span> : ''}</label>
-            <input type="password" value={form.secretAccessKey} onChange={set('secretAccessKey')} placeholder={editingId ? 'leave blank to keep current' : 'blank = use server env'} className={inp} />
-          </div>
+          {form.authMode === 'role' && (
+            <div>
+              <label className="block text-xs font-semibold text-ink mb-1">Assume the role from</label>
+              <select value={form.baseSource} onChange={set('baseSource')} className={inp}>
+                <option value="host">This server's identity (instance profile, Roles Anywhere, env)</option>
+                <option value="key">An access key entered below</option>
+                <option value="profile">A named profile on this server</option>
+              </select>
+            </div>
+          )}
+          {form.authMode === 'role' && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-ink mb-1">Role ARN</label>
+                <input value={form.roleArn} onChange={set('roleArn')} placeholder="arn:aws:iam::123456789012:role/ICCReadOnly" className={inp} spellCheck={false} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-ink mb-1">External ID{editingId ? <span className="font-normal text-ink-faint"> — stored, leave blank to keep current</span> : <span className="font-normal text-ink-faint"> (optional, from the trust policy)</span>}</label>
+                <input type="password" value={form.externalId} onChange={set('externalId')} className={inp} spellCheck={false} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-ink mb-1">Session name</label>
+                <input value={form.roleSessionName} onChange={set('roleSessionName')} placeholder="icc" className={inp} spellCheck={false} />
+              </div>
+            </>
+          )}
+          {usesKey && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-ink mb-1">Access key ID</label>
+                <input value={form.accessKeyId} onChange={set('accessKeyId')} placeholder={form.authMode === 'key' ? 'AKIA... or ASIA... (blank = server env or host identity)' : 'AKIA... or ASIA...'} className={inp} spellCheck={false} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-ink mb-1">Secret access key{editingId ? <span className="font-normal text-ink-faint"> — stored, leave blank to keep current</span> : ''}</label>
+                <input type="password" value={form.secretAccessKey} onChange={set('secretAccessKey')} placeholder={editingId ? 'leave blank to keep current' : ''} className={inp} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-ink mb-1">Session token <span className="font-normal text-ink-faint">(temporary credentials only)</span></label>
+                <input type="password" value={form.sessionToken} onChange={set('sessionToken')} placeholder={editingId ? 'blank = keep current, clears when a new secret is entered' : 'from STS, Identity Center or the CLI'} className={inp} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-ink mb-1">Session expires <span className="font-normal text-ink-faint">(optional; ICC warns before and stops polling after)</span></label>
+                <input type="datetime-local" value={form.credentialExpiresAt} onChange={set('credentialExpiresAt')} className={inp} />
+              </div>
+            </>
+          )}
+          {usesProfile && (
+            <div>
+              <label className="block text-xs font-semibold text-ink mb-1">Profile name <span className="font-normal text-ink-faint">(in ~/.aws on the ICC server: SSO, credential_process, Roles Anywhere)</span></label>
+              <input value={form.profileName} onChange={set('profileName')} placeholder="icc-prod" className={inp} spellCheck={false} />
+            </div>
+          )}
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Region</label>
             <select value={form.region} onChange={set('region')} className={inp}>
@@ -260,7 +378,9 @@ export default function AwsSettingsPage() {
           {testResult && (
             <span className={`inline-flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-status-ok' : 'text-status-crit'}`}>
               {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-              {testResult.ok ? `Connected — ${testResult.instanceCount} instance(s) visible` : testResult.error}
+              {testResult.ok
+                ? `Connected as ${testResult.identity?.arn || 'unknown identity'} (account ${testResult.identity?.account || '?'}), ${testResult.instanceCount} instance(s) visible`
+                : testResult.error}
             </span>
           )}
         </div>
@@ -319,11 +439,22 @@ export default function AwsSettingsPage() {
                     <td className="py-2 pr-3 text-ink whitespace-nowrap">{a.name}</td>
                     <td className="py-2 pr-3 text-ink-muted tnum whitespace-nowrap">{a.region}</td>
                     <td className="py-2 pr-3">
-                      <span title={a.credSource === 'env' ? "Falling back to the server's .env credentials" : undefined}>
-                        <Badge tone={CRED_TONE[a.credSource] || 'neutral'}>
-                          {CRED_LABEL[a.credSource] || a.credSource}
-                        </Badge>
-                      </span>
+                      {(() => {
+                        const exp = fmtExpiry(a.credentialExpiresAt);
+                        const title = a.credSource === 'role'
+                          ? `${a.roleArn} from ${BASE_LABEL[a.baseSource] || a.baseSource}`
+                          : a.credSource === 'profile' ? `~/.aws profile ${a.profileName}`
+                            : a.credSource === 'env' ? "Falling back to the server's .env credentials"
+                              : a.credSource === 'none' ? 'No key stored: the SDK uses the identity of the server ICC runs on' : undefined;
+                        return (
+                          <span title={title} className="inline-flex items-center gap-1.5">
+                            <Badge tone={exp?.tone === 'crit' ? 'crit' : (CRED_TONE[a.credSource] || 'neutral')}>
+                              {CRED_LABEL[a.credSource] || a.credSource}
+                            </Badge>
+                            {exp && <span className={`text-[10px] ${exp.tone === 'crit' ? 'text-status-crit' : exp.tone === 'warn' ? 'text-status-warn' : 'text-ink-faint'}`}>{exp.text}</span>}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="py-2 pr-3">
                       <Badge tone={a.lastPollStatus === 'error' ? 'crit' : a.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
