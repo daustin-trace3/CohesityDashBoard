@@ -32,7 +32,12 @@ export function fmtRatio(r) {
 
 export function timeAgo(iso) {
   if (!iso) return '—';
-  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  // SQLite datetime('now') strings are UTC with no zone marker; read as such,
+  // or a Phoenix browser shows them seven hours in the future.
+  const raw = typeof iso === 'string' && !/[TZ]/.test(iso) ? `${iso.replace(' ', 'T')}Z` : iso;
+  const ms = new Date(raw).getTime();
+  if (Number.isNaN(ms)) return '—';
+  const secs = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (secs < 60) return `${secs}s ago`;
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;

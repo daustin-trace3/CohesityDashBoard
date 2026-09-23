@@ -419,7 +419,7 @@ router.get('/alerts', cacheControl(15), (req, res, next) => {
       ORDER BY CASE LOWER(al.severity)
         WHEN 'emergency' THEN 0 WHEN 'alert' THEN 1 WHEN 'critical' THEN 2
         WHEN 'error' THEN 3 WHEN 'warning' THEN 4 ELSE 5 END, al.captured_at DESC
-    `).all());
+    `).all().map((r) => ({ ...r, captured_at: normalizeSqliteDate(r.captured_at) })));
   } catch (err) { next(err); }
 });
 
