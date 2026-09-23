@@ -127,7 +127,8 @@ export default function NetAppOverviewPage() {
 
   const forecast = useMemo(() => {
     if (!history || history.length < 2) return { ready: false };
-    const pts = history.filter((r) => r.used_bytes != null).map((r) => [new Date(r.captured_at).getTime(), r.used_bytes]);
+    const asUtc = (v) => (/[TZ]/.test(String(v)) ? v : `${String(v).replace(' ', 'T')}Z`);
+    const pts = history.filter((r) => r.used_bytes != null).map((r) => [new Date(asUtc(r.captured_at)).getTime(), r.used_bytes]);
     const fit = linearFit(pts);
     const last = history[history.length - 1];
     const cap = last?.total_bytes || 0;
