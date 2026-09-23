@@ -317,7 +317,7 @@ function validate(req, res, next) {
  *    queued | duration | dataToSend | dataSent | percentComplete. 'default' is running, then failed,
  *    canceled, skipped, succeeded, newest first inside each.
  *  - sortDir (optional, default 'desc')
- *  - page (optional, default 0), pageSize (optional, default 50, max 200)
+ *  - page (optional, default 0), pageSize (optional, default 25, max 200)
  * The summary covers the whole window; replications is one page.
  */
 router.get(
@@ -353,7 +353,7 @@ router.get(
       sortBy: req.query.sortBy || 'default',
       sortDir: req.query.sortDir || 'desc',
       page: parseInt(req.query.page) || 0,
-      pageSize: parseInt(req.query.pageSize) || 50
+      pageSize: parseInt(req.query.pageSize) || 25
     };
 
     const cluster = db.prepare(
