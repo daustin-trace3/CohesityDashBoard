@@ -50,6 +50,30 @@ async function degradeGracefully(account, label, fn, fallback) {
   }
 }
 
+// A service the account does not use, has not enabled, or is denied by an
+// SCP must not fail the whole poll: log it, note it in the poll status and
+// carry on with the next service. Only credential failures (an expired or
+// unrecognised key, a refused AssumeRole) still fail the account, because
+// every following call would fail the same way.
+const CREDENTIAL_ERROR_RE = /ExpiredToken|InvalidClientTokenId|UnrecognizedClientException|SignatureDoesNotMatch|InvalidSignature|AuthFailure|CredentialsProviderError/i;
+function isCredentialError(err) {
+  const name = String(err?.name || err?.Code || '');
+  const msg = String(err?.message || '');
+  if (CREDENTIAL_ERROR_RE.test(name) || CREDENTIAL_ERROR_RE.test(msg)) return true;
+  return /AccessDenied/i.test(name) && /AssumeRole/i.test(msg);
+}
+async function collectService(account, label, fn, fallback, skipped) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (isCredentialError(err)) throw err;
+    const reason = err?.name || err?.code || 'error';
+    logger.warn(`[AwsPoller] ${account.name}: ${label} skipped (${reason}): ${safeMsg(err)}`);
+    skipped.push(`${label} (${reason})`);
+    return fallback;
+  }
+}
+
 // ── Fix #0: global-collector election ───────────────────────────────────────
 
 /** account.access_key_id || env AWS_ACCESS_KEY_ID || '' — blank key = one shared group. */
@@ -692,13 +716,19 @@ async function pollAccount(account) {
       logger.debug(`[AwsPoller] health RSS sweep failed: ${safeMsg(err)}`);
     }
 
-    const ec2 = await collectEc2(account);
-    const lightsail = await collectLightsail(account);
-    const ecs = await collectEcs(account);
+    // Services the account lacks are skipped, not fatal (see collectService).
+    const skipped = [];
+    const ec2 = await collectService(account, 'EC2', () => collectEc2(account), { instances: [], volumes: [] }, skipped);
+    const lightsail = await collectService(account, 'Lightsail', () => collectLightsail(account), [], skipped);
+    const ecs = await collectService(account, 'ECS', () => collectEcs(account), { clusters: [], services: [] }, skipped);
     storeCore(account.id, { ec2, lightsail, ecs });
 
     const [rds, lambdaFns, dynamo, ecr, vpc] = await Promise.all([
-      collectRds(account), collectLambda(account), collectDynamo(account), collectEcr(account), collectVpc(account),
+      collectService(account, 'RDS', () => collectRds(account), [], skipped),
+      collectService(account, 'Lambda', () => collectLambda(account), [], skipped),
+      collectService(account, 'DynamoDB', () => collectDynamo(account), [], skipped),
+      collectService(account, 'ECR', () => collectEcr(account), [], skipped),
+      collectService(account, 'VPC', () => collectVpc(account), { vpcs: [], subnets: [] }, skipped),
     ]);
     storeR2(account.id, { rds, lambda: lambdaFns, dynamo, ecr, vpc });
 
@@ -709,7 +739,9 @@ async function pollAccount(account) {
       const bedrock = await collectBedrock(account);
       upsertBedrock(account.id, bedrock);
     } catch (err) {
+      if (isCredentialError(err)) throw err;
       logger.warn(`[AwsPoller] ${account.name}: Bedrock usage collection failed: ${safeMsg(err)}`);
+      skipped.push(`Bedrock (${err?.name || 'error'})`);
     }
 
     const elected = isElected(account);
@@ -726,7 +758,9 @@ async function pollAccount(account) {
           upsertCostInstanceType(account.id, instanceTypeCost.filter((r) => r.instanceType && r.instanceType !== 'NoInstanceType'));
           db.prepare('UPDATE aws_accounts SET last_cost_capture_at = datetime(\'now\') WHERE id = ?').run(account.id);
         } catch (err) {
+          if (isCredentialError(err)) throw err;
           logger.warn(`[AwsPoller] ${account.name}: Cost Explorer capture failed: ${safeMsg(err)}`);
+          skipped.push(`Cost Explorer (${err?.name || 'error'})`);
         }
       }
 
@@ -737,7 +771,9 @@ async function pollAccount(account) {
           upsertS3SizeHistory(account.id, s3Rows);
           db.prepare('UPDATE aws_accounts SET last_s3_capture_at = datetime(\'now\') WHERE id = ?').run(account.id);
         } catch (err) {
+          if (isCredentialError(err)) throw err;
           logger.warn(`[AwsPoller] ${account.name}: S3 capture failed: ${safeMsg(err)}`);
+          skipped.push(`S3 (${err?.name || 'error'})`);
         }
       }
       if (!s3Rows) {
@@ -759,17 +795,21 @@ async function pollAccount(account) {
         const rows = [...co.rows.map((r) => ({ ...r, source: 'compute-optimizer' })), ...heuristics];
         storeOptimizer(account.id, co.status, rows);
       } catch (err) {
+        if (isCredentialError(err)) throw err;
         logger.warn(`[AwsPoller] ${account.name}: Optimizer capture failed: ${safeMsg(err)}`);
+        skipped.push(`Compute Optimizer (${err?.name || 'error'})`);
       }
     }
 
     appendMetricsHistory(account.id, { ec2, lightsail, ecs, s3Rows });
 
+    // 'partial' = the poll finished but one or more services were skipped;
+    // the note lists them so Settings can show what the account lacks.
     db.prepare(`
-      UPDATE aws_accounts SET last_poll_status = 'success', last_poll_error = NULL,
+      UPDATE aws_accounts SET last_poll_status = ?, last_poll_error = ?,
         last_poll_at = datetime('now') WHERE id = ?
-    `).run(account.id);
-    logger.info(`[AwsPoller] ${account.name}: ${ec2.instances.length} EC2, ${lightsail.length} Lightsail, ${ecs.clusters.length} ECS cluster(s)`);
+    `).run(skipped.length ? 'partial' : 'success', skipped.length ? `Skipped: ${skipped.join('; ')}` : null, account.id);
+    logger.info(`[AwsPoller] ${account.name}: ${ec2.instances.length} EC2, ${lightsail.length} Lightsail, ${ecs.clusters.length} ECS cluster(s)${skipped.length ? `; skipped ${skipped.join(', ')}` : ''}`);
   } catch (err) {
     db.prepare(`
       UPDATE aws_accounts SET last_poll_status = 'error', last_poll_error = ?,
@@ -797,6 +837,7 @@ function initAwsPoller() {
 }
 
 module.exports = {
+  _collectService: collectService, _isCredentialError: isCredentialError,
   initAwsPoller, awsPoller, pollAccount,
   isElected, cleanupNonElectedGlobalRows,
   upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType,

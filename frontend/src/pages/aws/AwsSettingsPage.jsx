@@ -473,11 +473,11 @@ export default function AwsSettingsPage() {
                       })()}
                     </td>
                     <td className="py-2 pr-3">
-                      <Badge tone={a.lastPollStatus === 'error' ? 'crit' : a.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
-                        {a.lastPollStatus === 'error' ? 'Error' : a.lastPollStatus === 'success' ? 'Up' : 'Pending'}
+                      <Badge tone={a.lastPollStatus === 'error' ? 'crit' : a.lastPollStatus === 'partial' ? 'warn' : a.lastPollStatus === 'success' ? 'ok' : 'neutral'}>
+                        {a.lastPollStatus === 'error' ? 'Error' : a.lastPollStatus === 'partial' ? 'Partial' : a.lastPollStatus === 'success' ? 'Up' : 'Pending'}
                       </Badge>
-                      {a.lastPollStatus === 'error' && a.lastPollError && (
-                        <p className="text-[10px] text-status-crit mt-0.5 max-w-[260px] truncate" title={a.lastPollError}>{a.lastPollError}</p>
+                      {(a.lastPollStatus === 'error' || a.lastPollStatus === 'partial') && a.lastPollError && (
+                        <p className={`text-[10px] mt-0.5 max-w-[260px] truncate ${a.lastPollStatus === 'error' ? 'text-status-crit' : 'text-status-warn'}`} title={a.lastPollError}>{a.lastPollError}</p>
                       )}
                     </td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(a.lastPollAt)}</td>
