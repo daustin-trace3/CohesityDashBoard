@@ -35,38 +35,163 @@ const axios = require('axios');
 const { XMLParser } = require('fast-xml-parser');
 const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
+const { fromTemporaryCredentials, fromIni } = require('@aws-sdk/credential-providers');
+const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
 
 const healthXmlParser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: true });
 
-/** Resolve { accessKeyId, secretAccessKey } for an account row (or unsaved candidate). */
-function creds(account) {
-  // Unsaved test candidates carry a plaintext secretAccessKey.
+// ── Credentials ─────────────────────────────────────────────────────────────
+// An account authenticates one of three ways (auth_mode):
+//   key      access key + secret, optionally a session token with an expiry
+//            (temporary credentials from STS or Identity Center)
+//   role     STS AssumeRole into role_arn (external ID, session name) from a
+//            base identity: a stored key, a named profile, or the host's own
+//            credential chain (instance profile, Roles Anywhere, env)
+//   profile  a named profile in ~/.aws on the ICC box (SSO, credential_process)
+// With nothing stored the SDK default chain applies, which is how a row with
+// blank credentials picks up AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.
+
+// The stored blob: { secretAccessKey, sessionToken? }. Unsaved test
+// candidates carry the same fields in plaintext.
+function readSecret(account) {
   if (account.secretAccessKey) {
-    return { accessKeyId: account.accessKeyId || account.access_key_id, secretAccessKey: account.secretAccessKey };
+    return { secretAccessKey: account.secretAccessKey, sessionToken: account.sessionToken || null };
   }
-  if (account.access_key_id && account.encrypted_credentials) {
+  if (account.encrypted_credentials) {
     try {
       const c = JSON.parse(decrypt(account.encrypted_credentials));
-      if (c.secretAccessKey) return { accessKeyId: account.access_key_id, secretAccessKey: c.secretAccessKey };
+      if (c.secretAccessKey) return { secretAccessKey: c.secretAccessKey, sessionToken: c.sessionToken || null };
     } catch (err) {
       logger.warn(`[awsApi] decrypt failed for account ${account.name || account.id}: ${err.message}`);
     }
   }
-  return { accessKeyId: process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY };
+  return { secretAccessKey: null, sessionToken: null };
 }
 
-/** 'stored' | 'env' | 'none' — never the secret itself. */
-function credSource(account) {
-  if (account.access_key_id && account.encrypted_credentials) return 'stored';
+function readExternalId(account) {
+  if (account.externalId !== undefined) return account.externalId || null;
+  if (account.encrypted_external_id) {
+    try { return decrypt(account.encrypted_external_id) || null; } catch { return null; }
+  }
+  return null;
+}
+
+const field = (account, camel, snake) => (account[camel] !== undefined ? account[camel] : account[snake]);
+const authMode = (account) => field(account, 'authMode', 'auth_mode') || 'key';
+
+// What the role (or the account itself) authenticates with before any AssumeRole.
+function baseSource(account) {
+  const keyId = field(account, 'accessKeyId', 'access_key_id');
+  const { secretAccessKey, sessionToken } = readSecret(account);
+  const profile = field(account, 'profileName', 'profile_name');
+  const mode = authMode(account);
+  if (mode !== 'profile' && keyId && secretAccessKey) return sessionToken ? 'session' : 'stored';
+  if (profile) return 'profile';
   if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) return 'env';
-  return 'none';
+  return 'host';
+}
+
+function baseCredentials(account) {
+  const src = baseSource(account);
+  if (src === 'stored' || src === 'session') {
+    const { secretAccessKey, sessionToken } = readSecret(account);
+    const c = { accessKeyId: field(account, 'accessKeyId', 'access_key_id'), secretAccessKey };
+    if (sessionToken) c.sessionToken = sessionToken;
+    return c;
+  }
+  if (src === 'profile') return fromIni({ profile: field(account, 'profileName', 'profile_name') });
+  if (src === 'env') {
+    const c = { accessKeyId: process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY };
+    if (process.env.AWS_SESSION_TOKEN) c.sessionToken = process.env.AWS_SESSION_TOKEN;
+    return c;
+  }
+  return undefined; // SDK default chain: instance profile, Roles Anywhere, ~/.aws default
+}
+
+// AssumeRole providers refresh their STS session on their own; keep one per
+// saved account (and credential version) so every client shares the session.
+const roleProviders = new Map();
+
+function credentialProvider(account, region) {
+  const roleArn = authMode(account) === 'role' ? field(account, 'roleArn', 'role_arn') : null;
+  if (!roleArn) return baseCredentials(account);
+  const cacheKey = account.id && account.secretAccessKey === undefined && account.externalId === undefined
+    ? `${account.id}|${account.updated_at}|${region}` : null;
+  if (cacheKey && roleProviders.has(cacheKey)) return roleProviders.get(cacheKey);
+  const externalId = readExternalId(account);
+  const provider = fromTemporaryCredentials({
+    masterCredentials: baseCredentials(account),
+    params: {
+      RoleArn: roleArn,
+      RoleSessionName: field(account, 'roleSessionName', 'role_session_name') || 'icc',
+      ...(externalId ? { ExternalId: externalId } : {}),
+      DurationSeconds: 3600,
+    },
+    clientConfig: { region },
+  });
+  if (cacheKey) {
+    if (roleProviders.size > 200) roleProviders.clear();
+    roleProviders.set(cacheKey, provider);
+  }
+  return provider;
+}
+
+/** Back-compat shape for callers that only want a static key pair. */
+function creds(account) {
+  const c = baseCredentials(account);
+  return c && typeof c === 'object' ? c : { accessKeyId: undefined, secretAccessKey: undefined };
+}
+
+/** 'role' | 'session' | 'stored' | 'profile' | 'env' | 'none' — never the secret itself. */
+function credSource(account) {
+  if (authMode(account) === 'role' && field(account, 'roleArn', 'role_arn')) return 'role';
+  const src = baseSource(account);
+  return src === 'host' ? 'none' : src;
+}
+
+function credentialExpired(account) {
+  const at = field(account, 'credentialExpiresAt', 'credential_expires_at');
+  if (!at) return false;
+  const ms = Date.parse(at);
+  return Number.isFinite(ms) && ms <= Date.now();
+}
+
+/** Everything the UI may show about how an account authenticates (no secrets). */
+function credentialSummary(account) {
+  const { sessionToken } = readSecret(account);
+  return {
+    authMode: authMode(account),
+    credSource: credSource(account),
+    baseSource: baseSource(account),
+    roleArn: field(account, 'roleArn', 'role_arn') || null,
+    roleSessionName: field(account, 'roleSessionName', 'role_session_name') || null,
+    profileName: field(account, 'profileName', 'profile_name') || null,
+    hasSessionToken: !!sessionToken,
+    hasExternalId: !!readExternalId(account),
+    credentialExpiresAt: field(account, 'credentialExpiresAt', 'credential_expires_at') || null,
+    credentialExpired: credentialExpired(account),
+  };
 }
 
 function clientConfig(account, region) {
-  const { accessKeyId, secretAccessKey } = creds(account);
   const cfg = { region: region || account.region || 'us-east-2' };
-  if (accessKeyId && secretAccessKey) cfg.credentials = { accessKeyId, secretAccessKey };
+  const credentials = credentialProvider(account, cfg.region);
+  if (credentials) cfg.credentials = credentials;
   return cfg;
+}
+
+// Friendlier text for the credential failures a customer will actually hit.
+function explainAuthError(err, account) {
+  const name = String(err?.name || err?.Code || '');
+  const msg = err?.message || String(err);
+  if (/ExpiredToken/i.test(name) || /expired/i.test(msg)) return `Credentials have expired: ${msg}`;
+  if (/InvalidClientTokenId|UnrecognizedClientException/i.test(name)) {
+    return `AWS did not recognise the access key${readSecret(account).sessionToken ? '' : ' (temporary keys need their session token)'}: ${msg}`;
+  }
+  if (/AccessDenied/i.test(name) && /AssumeRole/i.test(msg)) {
+    return `sts:AssumeRole was denied: check the role trust policy and external ID. ${msg}`;
+  }
+  return msg;
 }
 
 const ec2Client = (account) => new EC2Client(clientConfig(account));
@@ -1040,18 +1165,29 @@ async function fetchCoEcsRecommendations(account) {
 
 /** Validate a saved or candidate account. Never throws. */
 async function testConnection(account) {
+  if (credentialExpired(account)) {
+    return { ok: false, error: `Session credentials expired at ${field(account, 'credentialExpiresAt', 'credential_expires_at')}.` };
+  }
+  let identity = null;
+  try {
+    const sts = new STSClient(clientConfig(account));
+    const who = await sts.send(new GetCallerIdentityCommand({}));
+    identity = { account: who?.Account || null, arn: who?.Arn || null, userId: who?.UserId || null };
+  } catch (err) {
+    return { ok: false, error: explainAuthError(err, account), identity };
+  }
   try {
     const client = ec2Client(account);
     const resp = await client.send(new DescribeInstancesCommand({ MaxResults: 5 }));
     const instanceCount = (resp?.Reservations || []).reduce((n, r) => n + (r.Instances || []).length, 0);
-    return { ok: true, instanceCount };
+    return { ok: true, instanceCount, identity };
   } catch (err) {
-    return { ok: false, error: err.message || String(err) };
+    return { ok: false, error: explainAuthError(err, account), identity };
   }
 }
 
 module.exports = {
-  creds, credSource,
+  creds, credSource, credentialSummary, credentialExpired, credentialProvider, explainAuthError,
   ec2Client, lightsailClient, ecsClient, s3Client, cloudwatchClient, costExplorerClient,
   rdsClient, lambdaClient, dynamoClient, ecrClient,
   fetchEc2Instances, fetchEbsVolumes, fetchEc2Metrics,

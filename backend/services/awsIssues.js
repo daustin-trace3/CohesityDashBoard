@@ -120,6 +120,26 @@ function computeIssues() {
     }
   }
 
+  // 5b. Session credentials with an expiry: warn inside the last two hours,
+  // critical once past it (polling has stopped for that account).
+  for (const acc of accounts) {
+    if (!acc.credential_expires_at) continue;
+    const ms = Date.parse(acc.credential_expires_at);
+    if (!Number.isFinite(ms)) continue;
+    const minutesLeft = Math.round((ms - Date.now()) / 60000);
+    if (minutesLeft <= 0) {
+      issues.push({
+        severity: 'critical', type: 'credentials-expired', account: acc.name, accountId: acc.id,
+        target: acc.name, message: `AWS account ${acc.name}: session credentials expired ${Math.abs(minutesLeft)} minute(s) ago; polling has stopped until new ones are entered`,
+      });
+    } else if (minutesLeft <= 120) {
+      issues.push({
+        severity: 'warning', type: 'credentials-expiring', account: acc.name, accountId: acc.id,
+        target: acc.name, message: `AWS account ${acc.name}: session credentials expire in ${minutesLeft} minute(s)`,
+      });
+    }
+  }
+
   // 6. account-poll-error — account last_poll_status = 'error'.
   for (const acc of accounts) {
     if (acc.last_poll_status === 'error') {

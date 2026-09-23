@@ -396,4 +396,21 @@ module.exports = [
       if (!cols.includes('co_enrollment')) db.exec('ALTER TABLE aws_accounts ADD COLUMN co_enrollment TEXT');
     },
   },
+  {
+    // Credentials beyond a long-lived key: AssumeRole (role ARN, external ID,
+    // session name), a named profile on the ICC box, and an expiry for pasted
+    // session credentials. The session token itself rides in the encrypted
+    // secret blob; the external ID gets its own encrypted column.
+    version: 6,
+    up(db) {
+      const cols = db.prepare("PRAGMA table_info('aws_accounts')").all().map((c) => c.name);
+      const add = (name, ddl) => { if (!cols.includes(name)) db.exec(`ALTER TABLE aws_accounts ADD COLUMN ${name} ${ddl}`); };
+      add('auth_mode', "TEXT NOT NULL DEFAULT 'key'");
+      add('role_arn', 'TEXT');
+      add('encrypted_external_id', 'TEXT');
+      add('role_session_name', 'TEXT');
+      add('profile_name', 'TEXT');
+      add('credential_expires_at', 'DATETIME');
+    },
+  },
 ];

@@ -6,7 +6,7 @@
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
-const { encrypt } = require('../services/encryption');
+const { encrypt, decrypt } = require('../services/encryption');
 const { setSetting } = require('../services/settings');
 const awsApi = require('../services/awsApi');
 const { awsPoller, getHealthLastCheckedAt, HEALTH_SERVICES, isElected } = require('../services/awsPoller');
@@ -25,8 +25,51 @@ const publicAccount = (row) => ({
   id: row.id, name: row.name, accessKeyId: row.access_key_id, region: row.region,
   pollingIntervalMinutes: row.polling_interval_minutes,
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
-  credSource: awsApi.credSource(row),
+  ...awsApi.credentialSummary(row),
 });
+
+const AUTH_MODES = ['key', 'role', 'profile'];
+const ROLE_ARN_RE = /^arn:aws[a-z-]*:iam::\d{12}:role\/[\w+=,.@/-]+$/;
+const SESSION_NAME_RE = /^[\w+=,.@-]{2,64}$/;
+
+// Credential fields shared by register, update and test. Blank strings clear
+// (session token, external ID, expiry); undefined leaves the stored value.
+const credentialValidators = [
+  body('authMode').optional().isIn(AUTH_MODES),
+  body('accessKeyId').optional({ nullable: true }).isString().trim().isLength({ max: 128 }),
+  body('secretAccessKey').optional({ nullable: true }).isString().isLength({ max: 256 }),
+  body('sessionToken').optional({ nullable: true }).isString().isLength({ max: 4096 }),
+  body('credentialExpiresAt').optional({ nullable: true }).custom((v) => v === '' || v == null || Number.isFinite(Date.parse(v)))
+    .withMessage('credentialExpiresAt must be an ISO 8601 date'),
+  body('roleArn').optional({ nullable: true }).custom((v) => v === '' || v == null || ROLE_ARN_RE.test(String(v).trim()))
+    .withMessage('roleArn must look like arn:aws:iam::123456789012:role/Name'),
+  body('externalId').optional({ nullable: true }).isString().isLength({ max: 1224 }),
+  body('roleSessionName').optional({ nullable: true }).custom((v) => v === '' || v == null || SESSION_NAME_RE.test(String(v).trim()))
+    .withMessage('roleSessionName: 2 to 64 characters from A-Z a-z 0-9 + = , . @ _ -'),
+  body('profileName').optional({ nullable: true }).isString().trim().isLength({ max: 64 }),
+  body('clearSecret').optional().isBoolean(),
+];
+
+// The stored secret blob after applying a request body to an existing row.
+function nextSecretBlob(b, row) {
+  if (b.clearSecret) return null;
+  let current = null;
+  if (row?.encrypted_credentials) {
+    try { current = JSON.parse(decrypt(row.encrypted_credentials)); } catch { current = null; }
+  }
+  if (!b.secretAccessKey && b.sessionToken === undefined) return row?.encrypted_credentials || null;
+  const blob = { secretAccessKey: b.secretAccessKey || current?.secretAccessKey || null };
+  if (!blob.secretAccessKey) return null;
+  // A fresh secret without a token drops the old token (a new long-lived key).
+  const token = b.sessionToken !== undefined ? (b.sessionToken || null) : (b.secretAccessKey ? null : current?.sessionToken || null);
+  if (token) blob.sessionToken = token;
+  return encrypt(JSON.stringify(blob));
+}
+
+const nextExternalId = (b, row) => (b.externalId === undefined ? (row?.encrypted_external_id || null) : (b.externalId ? encrypt(b.externalId) : null));
+const nextExpiry = (b, row) => (b.credentialExpiresAt === undefined ? (row?.credential_expires_at || null)
+  : (b.credentialExpiresAt ? new Date(b.credentialExpiresAt).toISOString() : null));
+const trimOr = (v, fallback) => (v === undefined ? fallback : (v && String(v).trim()) || null);
 
 // ── Accounts CRUD ────────────────────────────────────────────────────────────
 
@@ -40,23 +83,25 @@ router.get('/accounts', (req, res, next) => {
 /** POST /api/aws/accounts — register an account; creds optional (env mode). */
 router.post('/accounts', [
   body('name').isString().trim().notEmpty().isLength({ max: 120 }),
-  body('accessKeyId').optional({ nullable: true }).isString().trim().isLength({ max: 128 }),
-  body('secretAccessKey').optional({ nullable: true }).isString().isLength({ max: 256 }),
+  ...credentialValidators,
   body('region').optional().isString().trim().isLength({ max: 32 }),
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     const { name } = req.body;
+    const b = req.body;
     const dup = db.prepare('SELECT id FROM aws_accounts WHERE name = ?').get(name.trim());
     if (dup) return res.status(409).json({ error: 'duplicate' });
-    const accessKeyId = req.body.accessKeyId?.trim() || null;
-    const encryptedCreds = req.body.secretAccessKey
-      ? encrypt(JSON.stringify({ secretAccessKey: req.body.secretAccessKey })) : null;
+    const mode = b.authMode || 'key';
+    if (mode === 'role' && !b.roleArn) return res.status(400).json({ error: 'roleArn is required for the assume-role mode.' });
+    if (mode === 'profile' && !b.profileName) return res.status(400).json({ error: 'profileName is required for the profile mode.' });
     const info = db.prepare(`
-      INSERT INTO aws_accounts (name, access_key_id, encrypted_credentials, region, polling_interval_minutes)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(name.trim(), accessKeyId, encryptedCreds, req.body.region?.trim() || 'us-east-2',
-      req.body.pollingIntervalMinutes || 10);
+      INSERT INTO aws_accounts (name, access_key_id, encrypted_credentials, region, polling_interval_minutes,
+        auth_mode, role_arn, encrypted_external_id, role_session_name, profile_name, credential_expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(name.trim(), trimOr(b.accessKeyId, null), nextSecretBlob(b, null), b.region?.trim() || 'us-east-2',
+      b.pollingIntervalMinutes || 10,
+      mode, trimOr(b.roleArn, null), nextExternalId(b, null), trimOr(b.roleSessionName, null), trimOr(b.profileName, null), nextExpiry(b, null));
     const row = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(info.lastInsertRowid);
     awsPoller.schedule(row);
     awsPoller.trigger(row).catch(() => {});
@@ -68,8 +113,7 @@ router.post('/accounts', [
 router.put('/accounts/:id', [
   param('id').isInt().toInt(),
   body('name').optional().isString().trim().notEmpty().isLength({ max: 120 }),
-  body('accessKeyId').optional({ nullable: true }).isString().trim().isLength({ max: 128 }),
-  body('secretAccessKey').optional({ nullable: true }).isString().isLength({ max: 256 }),
+  ...credentialValidators,
   body('region').optional().isString().trim().isLength({ max: 32 }),
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
 ], validate, (req, res, next) => {
@@ -81,17 +125,24 @@ router.put('/accounts/:id', [
       const dup = db.prepare('SELECT id FROM aws_accounts WHERE name = ? AND id != ?').get(b.name.trim(), row.id);
       if (dup) return res.status(409).json({ error: 'duplicate' });
     }
+    const mode = b.authMode || row.auth_mode || 'key';
+    const roleArn = trimOr(b.roleArn, row.role_arn);
+    const profileName = trimOr(b.profileName, row.profile_name);
+    if (mode === 'role' && !roleArn) return res.status(400).json({ error: 'roleArn is required for the assume-role mode.' });
+    if (mode === 'profile' && !profileName) return res.status(400).json({ error: 'profileName is required for the profile mode.' });
     db.prepare(`
       UPDATE aws_accounts SET
         name = ?, access_key_id = ?, encrypted_credentials = ?, region = ?,
-        polling_interval_minutes = ?, updated_at = datetime('now')
+        polling_interval_minutes = ?, auth_mode = ?, role_arn = ?, encrypted_external_id = ?,
+        role_session_name = ?, profile_name = ?, credential_expires_at = ?, updated_at = datetime('now')
       WHERE id = ?
     `).run(
       b.name?.trim() || row.name,
-      b.accessKeyId !== undefined ? (b.accessKeyId?.trim() || null) : row.access_key_id,
-      b.secretAccessKey ? encrypt(JSON.stringify({ secretAccessKey: b.secretAccessKey })) : row.encrypted_credentials,
+      trimOr(b.accessKeyId, row.access_key_id),
+      nextSecretBlob(b, row),
       b.region?.trim() || row.region,
       b.pollingIntervalMinutes || row.polling_interval_minutes,
+      mode, roleArn, nextExternalId(b, row), trimOr(b.roleSessionName, row.role_session_name), profileName, nextExpiry(b, row),
       row.id
     );
     const updated = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(row.id);
@@ -114,21 +165,24 @@ router.delete('/accounts/:id', [param('id').isInt().toInt()], validate, (req, re
 /** POST /api/aws/accounts/test — validate a saved account ({id}) or a candidate. */
 router.post('/accounts/test', [
   body('id').optional().isInt().toInt(),
-  body('accessKeyId').optional({ nullable: true }).isString(),
-  body('secretAccessKey').optional({ nullable: true }).isString(),
+  ...credentialValidators,
   body('region').optional().isString(),
 ], validate, async (req, res) => {
   const b = req.body;
+  // Fields typed into the form override the saved row; a saved row is tested
+  // as stored when nothing is typed (the secret never leaves the server).
+  const typed = {};
+  for (const k of ['authMode', 'accessKeyId', 'secretAccessKey', 'sessionToken', 'credentialExpiresAt', 'roleArn', 'externalId', 'roleSessionName', 'profileName']) {
+    if (b[k] !== undefined && b[k] !== null && b[k] !== '') typed[k] = b[k];
+  }
   let candidate;
   if (b.id) {
     const row = db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(b.id);
     if (!row) return res.status(404).json({ error: 'Account not found.' });
-    candidate = { ...row };
+    candidate = { ...row, ...typed };
     if (b.region) candidate.region = b.region;
-    if (b.accessKeyId) candidate.accessKeyId = b.accessKeyId;
-    if (b.secretAccessKey) candidate.secretAccessKey = b.secretAccessKey;
   } else {
-    candidate = { accessKeyId: b.accessKeyId, secretAccessKey: b.secretAccessKey, region: b.region || 'us-east-2' };
+    candidate = { authMode: 'key', region: b.region || 'us-east-2', ...typed };
   }
   const result = await awsApi.testConnection(candidate);
   res.status(result.ok ? 200 : 502).json(result);

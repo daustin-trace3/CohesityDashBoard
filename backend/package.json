@@ -21,6 +21,8 @@
     "@aws-sdk/client-lightsail": "^3.1101.0",
     "@aws-sdk/client-rds": "^3.1101.0",
     "@aws-sdk/client-s3": "^3.1101.0",
+    "@aws-sdk/client-sts": "^3.1138.0",
+    "@aws-sdk/credential-providers": "^3.1138.0",
     "argon2": "^0.44.0",
     "axios": "^1.7.2",
     "better-sqlite3": "^12.9.0",
