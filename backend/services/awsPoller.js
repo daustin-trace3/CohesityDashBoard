@@ -699,15 +699,11 @@ function appendMetricsHistory(accountId, { ec2, lightsail, ecs, s3Rows }) {
 async function pollAccount(account) {
   // Pasted session credentials carry an expiry; once past it every call would
   // fail with ExpiredToken, so record the state and skip the round.
+  // The typed expiry is advisory (issues warn on it); AWS decides whether the
+  // token still works, and an ExpiredToken answer ends the round in 'error'
+  // with a plain message. A wrong or wrong-zone expiry must not block polling.
   if (awsApi.credentialExpired(account)) {
-    db.prepare(`
-      UPDATE aws_accounts SET last_poll_status = 'error', last_poll_error = ?,
-        last_poll_at = datetime('now') WHERE id = ?
-    `).run(`Session credentials expired at ${account.credential_expires_at}; enter new ones in Settings.`, account.id);
-    try { reconcileIssueHistory(); } catch (err) {
-      logger.warn(`[AwsPoller] issue-history reconcile failed: ${err.message}`);
-    }
-    return;
+    logger.warn(`[AwsPoller] ${account.name}: session credentials are past their entered expiry (${account.credential_expires_at}); polling anyway`);
   }
   try {
     try {
