@@ -719,15 +719,10 @@ async function pollAccount(coreApi, txns, account) {
   const db = coreApi.db;
   // Pasted session credentials carry an expiry; once past it every call would
   // fail with ExpiredToken, so record the state and skip the round.
+  // The typed expiry is advisory (issues warn on it); AWS decides whether the
+  // token still works. A wrong or wrong-zone expiry must not block polling.
   if (awsApi.credentialExpired(account)) {
-    db.prepare(`
-      UPDATE aws_accounts SET last_poll_status = 'error', last_poll_error = ?,
-        last_poll_at = datetime('now') WHERE id = ?
-    `).run(`Session credentials expired at ${account.credential_expires_at}; enter new ones in Settings.`, account.id);
-    try { reconcileIssueHistory(coreApi); } catch (err) {
-      coreApi.logger.warn(`[AwsPoller] issue-history reconcile failed: ${err.message}`);
-    }
-    return;
+    coreApi.logger.warn(`[AwsPoller] ${account.name}: session credentials are past their entered expiry (${account.credential_expires_at}); polling anyway`);
   }
   try {
     try {
