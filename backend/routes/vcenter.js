@@ -10,8 +10,9 @@ const { setSetting } = require('../services/settings');
 const vcenterApi = require('../services/vcenterApi');
 const { vcenterPoller } = require('../services/vcenterPoller');
 const {
-  DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues,
+  DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, guestDiskThresholds, computeIssues,
 } = require('../services/vcenterIssues');
+const guestStorage = require('../services/vcenterGuestStorage');
 const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
 const { writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites, pairSummary } = require('../services/vcenterCapacity');
 
@@ -28,6 +29,7 @@ const publicVc = (row) => ({
   sslVerify: !!row.ssl_verify, pollingIntervalMinutes: row.polling_interval_minutes,
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
   version: row.version, build: row.build, productName: row.product_name,
+  ownerTagCategory: row.owner_tag_category || null,
 });
 
 /** GET /api/vcenter/vcenters — registered vCenters (never the credentials). */
@@ -241,19 +243,114 @@ router.get('/issue-history', (req, res, next) => {
 });
 
 /** GET /api/vcenter/config — platform-level settings (alert thresholds). */
+const configOut = () => {
+  const gd = guestDiskThresholds();
+  return { certWarnDays: certWarnDays(), guestDiskWarnPct: gd.warn, guestDiskCritPct: gd.crit };
+};
+
 router.get('/config', (req, res, next) => {
   try {
-    res.json({ certWarnDays: certWarnDays() });
+    res.json(configOut());
   } catch (err) { next(err); }
 });
 
-/** PUT /api/vcenter/config — save alert thresholds. */
+/** PUT /api/vcenter/config — save alert thresholds (any subset). */
 router.put('/config', [
-  body('certWarnDays').isInt({ min: 1, max: 365 }).toInt(),
+  body('certWarnDays').optional().isInt({ min: 1, max: 365 }).toInt(),
+  body('guestDiskWarnPct').optional().isInt({ min: 1, max: 100 }).toInt(),
+  body('guestDiskCritPct').optional().isInt({ min: 1, max: 100 }).toInt(),
 ], validate, (req, res, next) => {
   try {
-    setSetting('vcenter_cert_warn_days', String(req.body.certWarnDays));
-    res.json({ saved: true, certWarnDays: certWarnDays() });
+    const b = req.body;
+    if (b.certWarnDays != null) setSetting('vcenter_cert_warn_days', String(b.certWarnDays));
+    if (b.guestDiskWarnPct != null) setSetting('vcenter_guest_disk_warn_pct', String(b.guestDiskWarnPct));
+    if (b.guestDiskCritPct != null) setSetting('vcenter_guest_disk_crit_pct', String(b.guestDiskCritPct));
+    if (b.guestDiskWarnPct != null && b.guestDiskCritPct != null && b.guestDiskCritPct < b.guestDiskWarnPct) {
+      return res.status(400).json({ error: 'The critical threshold must not be below the warning threshold.' });
+    }
+    res.json({ saved: true, ...configOut() });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/tag-categories?vcenterId= — tag categories seen on VMs,
+ *  the choices for a vCenter's owner tag category. */
+router.get('/tag-categories', [query('vcenterId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    res.json(guestStorage.tagCategories(req.query.vcenterId || null));
+  } catch (err) { next(err); }
+});
+
+/** PUT /api/vcenter/vcenters/:id/owner-tag — which tag category names the VM
+ *  owner on this vCenter (differs from site to site). Null clears it. */
+router.put('/vcenters/:id/owner-tag', [
+  param('id').isInt().toInt(),
+  body('category').optional({ nullable: true }).isString().trim().isLength({ max: 120 }),
+], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT id FROM vcenter_vcenters WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'vCenter not found.' });
+    const category = req.body.category ? String(req.body.category).trim() : null;
+    db.prepare("UPDATE vcenter_vcenters SET owner_tag_category = ?, updated_at = datetime('now') WHERE id = ?").run(category, row.id);
+    res.json(publicVc(db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(row.id)));
+  } catch (err) { next(err); }
+});
+
+const pagedQuery = (req) => ({
+  vcenterId: req.query.vcenterId || null,
+  state: req.query.state || 'all',
+  owner: req.query.owner || null,
+  q: req.query.q ? String(req.query.q).trim() : '',
+  thin: req.query.thin,
+  sortBy: req.query.sortBy, sortDir: req.query.sortDir,
+  page: req.query.page, pageSize: req.query.pageSize,
+});
+
+const guestStorageValidators = [
+  query('vcenterId').optional({ checkFalsy: true }).isInt().toInt(),
+  query('state').optional({ checkFalsy: true }).isIn(guestStorage.STATES),
+  query('q').optional({ checkFalsy: true }).isString().isLength({ max: 200 }),
+  query('owner').optional({ checkFalsy: true }).isString().isLength({ max: 200 }),
+  query('sortDir').optional({ checkFalsy: true }).isIn(['asc', 'desc']),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 0 }).toInt(),
+  query('pageSize').optional({ checkFalsy: true }).isInt({ min: 1, max: guestStorage.PAGE_SIZE_MAX }).toInt(),
+];
+
+/** GET /api/vcenter/guest-storage — guest filesystems (C:, /var ...) with
+ *  capacity, used percent, threshold state and owner; one page plus a
+ *  whole-set summary. Sort keys: used_pct (default), vm_name, mount,
+ *  capacity_bytes, free_bytes, used_bytes, owner, vcenter_name, days_to_full,
+ *  growth_bytes_per_day. state: all | attention | critical | warning | ok. */
+router.get('/guest-storage', [
+  ...guestStorageValidators,
+  query('sortBy').optional({ checkFalsy: true }).isIn(guestStorage.FS_SORT_KEYS),
+], validate, (req, res, next) => {
+  try {
+    res.json(guestStorage.listFilesystems(pagedQuery(req)));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/guest-storage.csv — the same rows, every page, as CSV. */
+router.get('/guest-storage.csv', [
+  ...guestStorageValidators,
+  query('sortBy').optional({ checkFalsy: true }).isIn(guestStorage.FS_SORT_KEYS),
+], validate, (req, res, next) => {
+  try {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="vcenter-guest-storage-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(guestStorage.filesystemsCsv(pagedQuery(req)));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/vm-disks — virtual disks: provisioned versus consumed on
+ *  the datastore, thin flag, backing file. Sort keys: capacity_bytes
+ *  (default), used_bytes, used_pct, vm_name, label, datastore, vcenter_name, owner. */
+router.get('/vm-disks', [
+  ...guestStorageValidators,
+  query('thin').optional({ checkFalsy: true }).isIn(['1']),
+  query('sortBy').optional({ checkFalsy: true }).isIn(guestStorage.DISK_SORT_KEYS),
+], validate, (req, res, next) => {
+  try {
+    res.json(guestStorage.listDisks(pagedQuery(req)));
   } catch (err) { next(err); }
 });
 
@@ -472,6 +569,7 @@ router.get('/vms/:id', [param('id').isInt().toInt()], validate, (req, res, next)
       datastores: parseJson(vm.datastores) || [],
       tags: parseJson(vm.tags) || [],
       guest_nics: parseJson(vm.guest_nics) || [],
+      storage: vm.vm_id ? guestStorage.vmStorage(vm.vcenter_id, vm.vm_id) : null,
       events: db.prepare(`
         SELECT * FROM vcenter_events
         WHERE vcenter_id = ? AND entity_name = ?

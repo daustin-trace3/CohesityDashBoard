@@ -9,6 +9,8 @@ const { hasPermission } = require('../services/rbac');
 const { getSetting } = require('../services/settings');
 const registry = require('../core/registry');
 const logger = require('../utils/logger');
+const guestStorage = require('../services/vcenterGuestStorage');
+const { ownerFromTags } = require('../services/vcenterIssues');
 
 const router = express.Router();
 
@@ -75,6 +77,12 @@ router.get('/', (req, res, next) => {
         vm.mem_pct = vm.mem_usage_mb != null && vm.memory_mb ? Math.round((vm.mem_usage_mb / vm.memory_mb) * 1000) / 10 : null;
         vm.networks = parseJson(vm.networks, []);
         vm.datastores = parseJson(vm.datastores, []);
+        // Guest volumes and virtual disks, plus the owner tag for this vCenter.
+        try {
+          vm.storage = vm.vm_id ? guestStorage.vmStorage(vm.vcenter_id, vm.vm_id) : null;
+          const vc = db.prepare('SELECT owner_tag_category FROM vcenter_vcenters WHERE id = ?').get(vm.vcenter_id);
+          vm.owner = ownerFromTags(vm.tags, vc?.owner_tag_category);
+        } catch (err) { logger.warn('[server360] guest storage lookup failed:', err.message); }
       }
     }
 

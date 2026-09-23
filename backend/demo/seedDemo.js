@@ -74,6 +74,7 @@ const SEEDED_TABLES = [
   'zerto_vras', 'zerto_vms', 'zerto_alerts', 'zerto_vpgs', 'zerto_sites', 'zerto_metrics_history', 'zerto_licenses',
   // vcenter (children before the parent so FK deletes stay explicit)
   'vcenter_site_pairs', 'vcenter_site_members', 'vcenter_capacity_history', 'vcenter_datastore_history', 'vcenter_vm_capacity_history',
+  'vcenter_vm_disks', 'vcenter_vm_filesystems', 'vcenter_vm_filesystem_history',
   'vcenter_vms', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores',
   'vcenter_certs', 'vcenter_metrics_history', 'vcenter_networks',
   'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history', 'vcenter_sites', 'vcenter_vcenters',
