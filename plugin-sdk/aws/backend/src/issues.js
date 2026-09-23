@@ -141,7 +141,16 @@ function computeIssues(coreApi) {
   }
 
   // 6. account-poll-error — account last_poll_status = 'error'.
+  // 6b. account-partial-poll (info) — the poll ran but skipped services the
+  // account does not use or permit; the note names them.
   for (const acc of accounts) {
+    if (acc.last_poll_status === 'partial') {
+      issues.push({
+        severity: 'info', type: 'account-partial-poll', account: acc.name, accountId: acc.id,
+        target: acc.name, message: `AWS account ${acc.name}: ${acc.last_poll_error || 'some services were skipped'}`,
+      });
+      continue;
+    }
     if (acc.last_poll_status === 'error') {
       issues.push({
         severity: 'warning', type: 'account-poll-error', account: acc.name, accountId: acc.id,

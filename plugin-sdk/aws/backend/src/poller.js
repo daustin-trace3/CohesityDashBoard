@@ -57,6 +57,29 @@ async function degradeGracefully(coreApi, account, label, fn, fallback) {
   }
 }
 
+// A service the account does not use, has not enabled, or is denied by an
+// SCP must not fail the whole poll: log it, note it in the poll status and
+// carry on with the next service. Only credential failures still fail the
+// account, because every following call would fail the same way.
+const CREDENTIAL_ERROR_RE = /ExpiredToken|InvalidClientTokenId|UnrecognizedClientException|SignatureDoesNotMatch|InvalidSignature|AuthFailure|CredentialsProviderError/i;
+function isCredentialError(err) {
+  const name = String(err?.name || err?.Code || '');
+  const msg = String(err?.message || '');
+  if (CREDENTIAL_ERROR_RE.test(name) || CREDENTIAL_ERROR_RE.test(msg)) return true;
+  return /AccessDenied/i.test(name) && /AssumeRole/i.test(msg);
+}
+async function collectService(coreApi, account, label, fn, fallback, skipped) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (isCredentialError(err)) throw err;
+    const reason = err?.name || err?.code || 'error';
+    coreApi.logger.warn(`[AwsPoller] ${account.name}: ${label} skipped (${reason}): ${safeMsg(err)}`);
+    skipped.push(`${label} (${reason})`);
+    return fallback;
+  }
+}
+
 // ── Fix #0: global-collector election ───────────────────────────────────────
 
 /** account.access_key_id || env AWS_ACCESS_KEY_ID || '' — blank key = one shared group. */
@@ -713,14 +736,19 @@ async function pollAccount(coreApi, txns, account) {
       coreApi.logger.debug(`[AwsPoller] health RSS sweep failed: ${safeMsg(err)}`);
     }
 
-    const ec2 = await collectEc2(coreApi, account);
-    const lightsail = await collectLightsail(coreApi, account);
-    const ecs = await collectEcs(coreApi, account);
+    // Services the account lacks are skipped, not fatal (see collectService).
+    const skipped = [];
+    const ec2 = await collectService(coreApi, account, 'EC2', () => collectEc2(coreApi, account), { instances: [], volumes: [] }, skipped);
+    const lightsail = await collectService(coreApi, account, 'Lightsail', () => collectLightsail(coreApi, account), [], skipped);
+    const ecs = await collectService(coreApi, account, 'ECS', () => collectEcs(coreApi, account), { clusters: [], services: [] }, skipped);
     txns.storeCore(account.id, { ec2, lightsail, ecs });
 
     const [rds, lambdaFns, dynamo, ecr, vpc] = await Promise.all([
-      collectRds(coreApi, account), collectLambda(coreApi, account), collectDynamo(coreApi, account),
-      collectEcr(coreApi, account), collectVpc(coreApi, account),
+      collectService(coreApi, account, 'RDS', () => collectRds(coreApi, account), [], skipped),
+      collectService(coreApi, account, 'Lambda', () => collectLambda(coreApi, account), [], skipped),
+      collectService(coreApi, account, 'DynamoDB', () => collectDynamo(coreApi, account), [], skipped),
+      collectService(coreApi, account, 'ECR', () => collectEcr(coreApi, account), [], skipped),
+      collectService(coreApi, account, 'VPC', () => collectVpc(coreApi, account), { vpcs: [], subnets: [] }, skipped),
     ]);
     txns.storeR2(account.id, { rds, lambda: lambdaFns, dynamo, ecr, vpc });
 
@@ -731,7 +759,9 @@ async function pollAccount(coreApi, txns, account) {
       const bedrock = await collectBedrock(coreApi, account);
       txns.upsertBedrock(account.id, bedrock);
     } catch (err) {
+      if (isCredentialError(err)) throw err;
       coreApi.logger.warn(`[AwsPoller] ${account.name}: Bedrock usage collection failed: ${safeMsg(err)}`);
+      skipped.push(`Bedrock (${err?.name || 'error'})`);
     }
 
     const elected = isElected(coreApi, account);
@@ -748,7 +778,9 @@ async function pollAccount(coreApi, txns, account) {
           txns.upsertCostInstanceType(account.id, instanceTypeCost.filter((r) => r.instanceType && r.instanceType !== 'NoInstanceType'));
           db.prepare("UPDATE aws_accounts SET last_cost_capture_at = datetime('now') WHERE id = ?").run(account.id);
         } catch (err) {
+          if (isCredentialError(err)) throw err;
           coreApi.logger.warn(`[AwsPoller] ${account.name}: Cost Explorer capture failed: ${safeMsg(err)}`);
+          skipped.push(`Cost Explorer (${err?.name || 'error'})`);
         }
       }
 
@@ -759,7 +791,9 @@ async function pollAccount(coreApi, txns, account) {
           txns.upsertS3SizeHistory(account.id, s3Rows);
           db.prepare("UPDATE aws_accounts SET last_s3_capture_at = datetime('now') WHERE id = ?").run(account.id);
         } catch (err) {
+          if (isCredentialError(err)) throw err;
           coreApi.logger.warn(`[AwsPoller] ${account.name}: S3 capture failed: ${safeMsg(err)}`);
+          skipped.push(`S3 (${err?.name || 'error'})`);
         }
       }
       if (!s3Rows) {
@@ -781,17 +815,21 @@ async function pollAccount(coreApi, txns, account) {
         const rows = [...co.rows.map((r) => ({ ...r, source: 'compute-optimizer' })), ...heuristics];
         txns.storeOptimizer(account.id, co.status, rows);
       } catch (err) {
+        if (isCredentialError(err)) throw err;
         coreApi.logger.warn(`[AwsPoller] ${account.name}: Optimizer capture failed: ${safeMsg(err)}`);
+        skipped.push(`Compute Optimizer (${err?.name || 'error'})`);
       }
     }
 
     appendMetricsHistory(coreApi, account.id, { ec2, lightsail, ecs, s3Rows });
 
+    // 'partial' = the poll finished but one or more services were skipped;
+    // the note lists them so Settings can show what the account lacks.
     db.prepare(`
-      UPDATE aws_accounts SET last_poll_status = 'success', last_poll_error = NULL,
+      UPDATE aws_accounts SET last_poll_status = ?, last_poll_error = ?,
         last_poll_at = datetime('now') WHERE id = ?
-    `).run(account.id);
-    coreApi.logger.info(`[AwsPoller] ${account.name}: ${ec2.instances.length} EC2, ${lightsail.length} Lightsail, ${ecs.clusters.length} ECS cluster(s)`);
+    `).run(skipped.length ? 'partial' : 'success', skipped.length ? `Skipped: ${skipped.join('; ')}` : null, account.id);
+    coreApi.logger.info(`[AwsPoller] ${account.name}: ${ec2.instances.length} EC2, ${lightsail.length} Lightsail, ${ecs.clusters.length} ECS cluster(s)${skipped.length ? `; skipped ${skipped.join(', ')}` : ''}`);
   } catch (err) {
     db.prepare(`
       UPDATE aws_accounts SET last_poll_status = 'error', last_poll_error = ?,
