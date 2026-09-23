@@ -37,11 +37,11 @@
     "multer": "^2.0.1",
     "node-cron": "^3.0.3",
     "nodemailer": "^9.0.3",
-    "yauzl": "^3.2.0"
+    "yauzl": "^3.2.0",
+    "yazl": "^3.3.1"
   },
   "devDependencies": {
     "supertest": "^7.2.2",
-    "vitest": "^4.1.10",
-    "yazl": "^3.3.1"
+    "vitest": "^4.1.10"
   }
 }
