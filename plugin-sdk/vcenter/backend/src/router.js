@@ -11,7 +11,8 @@
 // and JSON response shapes exactly.
 const api = require('./api');
 const { getPoller } = require('./poller');
-const { DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, computeIssues } = require('./issues');
+const { DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, guestDiskThresholds, computeIssues } = require('./issues');
+const guestStorage = require('./guestStorage');
 const { createVcenterAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const {
@@ -27,6 +28,7 @@ const publicVc = (row) => ({
   sslVerify: !!row.ssl_verify, pollingIntervalMinutes: row.polling_interval_minutes,
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
   version: row.version, build: row.build, productName: row.product_name,
+  ownerTagCategory: row.owner_tag_category || null,
 });
 
 // ── vCenter registration CRUD ────────────────────────────────────────────────
@@ -255,17 +257,109 @@ function handleGetIssueHistory(req, res, coreApi) {
 }
 
 /** GET /config — platform-level settings (alert thresholds). */
+const configOut = (coreApi) => {
+  const gd = guestDiskThresholds(coreApi);
+  return { certWarnDays: certWarnDays(coreApi), guestDiskWarnPct: gd.warn, guestDiskCritPct: gd.crit };
+};
+
 function handleGetConfig(req, res, coreApi) {
-  res.json({ certWarnDays: certWarnDays(coreApi) });
+  res.json(configOut(coreApi));
 }
 
-/** PUT /config — save alert thresholds. */
+/** PUT /config — save alert thresholds (any subset). */
 function handlePutConfig(req, res, coreApi) {
   const b = req.body || {};
-  const n = parseIntStrict(b.certWarnDays);
-  if (!Number.isInteger(n) || n < 1 || n > 365) return badRequest(res, [fail('certWarnDays')]);
-  coreApi.settings.setSetting('vcenter_cert_warn_days', String(n));
-  res.json({ saved: true, certWarnDays: certWarnDays(coreApi) });
+  const errors = [];
+  const intIn = (key, min, max) => {
+    if (b[key] === undefined || b[key] === null) return undefined;
+    const n = parseIntStrict(b[key]);
+    if (!Number.isInteger(n) || n < min || n > max) { errors.push(fail(key)); return undefined; }
+    return n;
+  };
+  const cert = intIn('certWarnDays', 1, 365);
+  const warn = intIn('guestDiskWarnPct', 1, 100);
+  const crit = intIn('guestDiskCritPct', 1, 100);
+  if (errors.length) return badRequest(res, errors);
+  if (warn != null && crit != null && crit < warn) {
+    return res.status(400).json({ error: 'The critical threshold must not be below the warning threshold.' });
+  }
+  if (cert != null) coreApi.settings.setSetting('vcenter_cert_warn_days', String(cert));
+  if (warn != null) coreApi.settings.setSetting('vcenter_guest_disk_warn_pct', String(warn));
+  if (crit != null) coreApi.settings.setSetting('vcenter_guest_disk_crit_pct', String(crit));
+  res.json({ saved: true, ...configOut(coreApi) });
+}
+
+/** GET /tag-categories?vcenterId= — tag categories seen on VMs. */
+function handleGetTagCategories(req, res, coreApi) {
+  const vc = parseQueryInt(req.query.vcenterId, 1);
+  if (!vc.ok) return badRequest(res, [fail('vcenterId')]);
+  res.json(guestStorage.tagCategories(coreApi, vc.value || null));
+}
+
+/** PUT /vcenters/:id/owner-tag — which tag category names the VM owner. */
+function handlePutOwnerTag(req, res, coreApi) {
+  const id = requireIdParam(req, res);
+  if (id === null) return;
+  const row = coreApi.db.prepare('SELECT id FROM vcenter_vcenters WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ error: 'vCenter not found.' });
+  const raw = (req.body || {}).category;
+  if (raw != null && raw !== '' && (typeof raw !== 'string' || raw.length > 120)) return badRequest(res, [fail('category')]);
+  const category = raw ? String(raw).trim() : null;
+  coreApi.db.prepare("UPDATE vcenter_vcenters SET owner_tag_category = ?, updated_at = datetime('now') WHERE id = ?").run(category, row.id);
+  res.json(publicVc(coreApi.db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(row.id)));
+}
+
+// Shared query parsing for the guest storage list endpoints. Returns null
+// after answering 400 when a parameter is out of range.
+function pagedQuery(req, res, sortKeys) {
+  const q = req.query || {};
+  const errors = [];
+  const vc = parseQueryInt(q.vcenterId === '' ? undefined : q.vcenterId, 1);
+  if (!vc.ok) errors.push(fail('vcenterId'));
+  const page = parseQueryInt(q.page === '' ? undefined : q.page, 0);
+  if (!page.ok) errors.push(fail('page'));
+  const pageSize = parseQueryInt(q.pageSize === '' ? undefined : q.pageSize, 1, guestStorage.PAGE_SIZE_MAX);
+  if (!pageSize.ok) errors.push(fail('pageSize'));
+  if (q.state && !guestStorage.STATES.includes(String(q.state))) errors.push(fail('state'));
+  if (q.sortBy && !sortKeys.includes(String(q.sortBy))) errors.push(fail('sortBy'));
+  if (q.sortDir && !['asc', 'desc'].includes(String(q.sortDir))) errors.push(fail('sortDir'));
+  if (q.q && String(q.q).length > 200) errors.push(fail('q'));
+  if (q.owner && String(q.owner).length > 200) errors.push(fail('owner'));
+  if (q.thin && String(q.thin) !== '1') errors.push(fail('thin'));
+  if (errors.length) { badRequest(res, errors); return null; }
+  return {
+    vcenterId: vc.value || null,
+    state: q.state ? String(q.state) : 'all',
+    owner: q.owner ? String(q.owner) : null,
+    q: q.q ? String(q.q).trim() : '',
+    thin: q.thin ? String(q.thin) : undefined,
+    sortBy: q.sortBy ? String(q.sortBy) : undefined,
+    sortDir: q.sortDir ? String(q.sortDir) : undefined,
+    page: page.value, pageSize: pageSize.value,
+  };
+}
+
+/** GET /guest-storage — guest filesystems, one page plus a whole-set summary. */
+function handleGetGuestStorage(req, res, coreApi) {
+  const opts = pagedQuery(req, res, guestStorage.FS_SORT_KEYS);
+  if (!opts) return;
+  res.json(guestStorage.listFilesystems(coreApi, opts));
+}
+
+/** GET /guest-storage.csv — the same rows, every page, as CSV. */
+function handleGetGuestStorageCsv(req, res, coreApi) {
+  const opts = pagedQuery(req, res, guestStorage.FS_SORT_KEYS);
+  if (!opts) return;
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="vcenter-guest-storage-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(guestStorage.filesystemsCsv(coreApi, opts));
+}
+
+/** GET /vm-disks — virtual disks, provisioned versus consumed. */
+function handleGetVmDisks(req, res, coreApi) {
+  const opts = pagedQuery(req, res, guestStorage.DISK_SORT_KEYS);
+  if (!opts) return;
+  res.json(guestStorage.listDisks(coreApi, opts));
 }
 
 /** GET /network — physical + logical networking inventory. */
@@ -480,6 +574,7 @@ function handleGetVmById(req, res, coreApi) {
     datastores: parseJson(vm.datastores) || [],
     tags: parseJson(vm.tags) || [],
     guest_nics: parseJson(vm.guest_nics) || [],
+    storage: vm.vm_id ? guestStorage.vmStorage(coreApi, vm.vcenter_id, vm.vm_id) : null,
     events: db.prepare(`
       SELECT * FROM vcenter_events
       WHERE vcenter_id = ? AND entity_name = ?
@@ -900,6 +995,11 @@ const ROUTES = [
   { method: 'GET', ...compile('/issue-history'), handler: handleGetIssueHistory },
   { method: 'GET', ...compile('/config'), handler: handleGetConfig },
   { method: 'PUT', ...compile('/config'), handler: handlePutConfig },
+  { method: 'GET', ...compile('/tag-categories'), handler: handleGetTagCategories },
+  { method: 'PUT', ...compile('/vcenters/:id/owner-tag'), handler: handlePutOwnerTag },
+  { method: 'GET', ...compile('/guest-storage'), handler: handleGetGuestStorage },
+  { method: 'GET', ...compile('/guest-storage.csv'), handler: handleGetGuestStorageCsv },
+  { method: 'GET', ...compile('/vm-disks'), handler: handleGetVmDisks },
   { method: 'GET', ...compile('/network'), handler: handleGetNetwork },
   { method: 'GET', ...compile('/governance'), handler: handleGetGovernance },
   { method: 'GET', ...compile('/vms'), handler: handleGetVms },

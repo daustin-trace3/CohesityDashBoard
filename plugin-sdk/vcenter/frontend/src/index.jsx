@@ -18,7 +18,7 @@ const { injectStyles } = require('./ui.jsx');
 const { LOGO_DATA_URI } = require('./logo.js');
 const {
   Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, Bell,
-  Building2, TrendingUp, ArrowLeftRight, Tag,
+  Building2, TrendingUp, ArrowLeftRight, Tag, HardDrive,
 } = require('./icons.jsx');
 
 const OverviewPage = require('./pages/overview.jsx').default;
@@ -35,6 +35,7 @@ const SettingsPage = require('./pages/settings.jsx').default;
 const CapacityOverviewPage = require('./pages/capacityOverview.jsx').default;
 const CapacityTrendsPage = require('./pages/capacityTrends.jsx').default;
 const CapacityExplorerPage = require('./pages/capacityExplorer.jsx').default;
+const GuestStoragePage = require('./pages/guestStorage.jsx').default;
 
 const ACCENT = '#0091DA';
 
@@ -65,6 +66,7 @@ const navGroups = [
       { label: 'VM Inventory', route: '/vcenter/inventory', icon: MonitorSmartphone, isActive: (p) => p.startsWith('/vcenter/inventory') },
       { label: 'Tags', route: '/vcenter/tags', icon: Tag, isActive: (p) => p.startsWith('/vcenter/tags') },
       { label: 'Datastores', route: '/vcenter/datastores', icon: Database, isActive: (p) => p.startsWith('/vcenter/datastores') },
+      { label: 'Guest Storage', route: '/vcenter/guest-storage', icon: HardDrive, isActive: (p) => p.startsWith('/vcenter/guest-storage') },
       { label: 'Network', route: '/vcenter/network', icon: Network, isActive: (p) => p.startsWith('/vcenter/network') },
     ],
   },
@@ -97,6 +99,7 @@ const routes = [
   { path: 'vcenter/inventory', Component: rooted(InventoryPage) },
   { path: 'vcenter/tags', Component: rooted(TagsPage) },
   { path: 'vcenter/datastores', Component: rooted(DatastoresPage) },
+  { path: 'vcenter/guest-storage', Component: rooted(GuestStoragePage) },
   { path: 'vcenter/network', Component: rooted(NetworkPage) },
   { path: 'vcenter/events', Component: rooted(EventsPage) },
   { path: 'vcenter/governance', Component: rooted(GovernancePage) },

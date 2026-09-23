@@ -17,6 +17,34 @@ function certWarnDays(coreApi) {
 
 const dsUsedPct = (d) => (d.capacity_bytes > 0 ? (1 - d.free_bytes / d.capacity_bytes) * 100 : null);
 
+// Guest filesystem thresholds (vCenter Settings > Alert thresholds): warning
+// at 80% used and critical at 90% by default. Critical never sits below warning.
+function guestDiskThresholds(coreApi) {
+  const read = (key, dflt) => {
+    const n = Number(coreApi.settings.getSetting(key));
+    return Number.isFinite(n) && n >= 1 && n <= 100 ? Math.round(n) : dflt;
+  };
+  const warn = read('vcenter_guest_disk_warn_pct', 80);
+  const crit = Math.max(warn, read('vcenter_guest_disk_crit_pct', 90));
+  return { warn, crit };
+}
+
+const fmtGb = (b) => (b == null ? '?' : `${(b / 1e9).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`);
+
+// "Owner" of a VM: the tag under the vCenter's configured owner category
+// (for example "AdminOwner: Jane Doe" -> "Jane Doe"), or null.
+function ownerFromTags(tagsJson, category) {
+  if (!category || !tagsJson) return null;
+  let tags;
+  try { tags = JSON.parse(tagsJson); } catch { return null; }
+  const prefix = `${String(category).toLowerCase()}:`;
+  for (const t of Array.isArray(tags) ? tags : []) {
+    const s = String(t);
+    if (s.toLowerCase().startsWith(prefix)) return s.slice(s.indexOf(':') + 1).trim() || null;
+  }
+  return null;
+}
+
 /**
  * Current issues from the stored inventory. Every issue carries a `target`
  * (host/datastore/cluster name) so `type|vcenter|target` is a stable identity
@@ -88,6 +116,25 @@ function computeIssues(coreApi) {
       });
     }
   }
+  // Guest volumes near full (VMware Tools guest.disk). One issue per volume so
+  // C: and E: on the same VM alert and clear on their own.
+  const { warn: gdWarn, crit: gdCrit } = guestDiskThresholds(coreApi);
+  for (const f of db.prepare(`
+    SELECT f.vm_name, f.mount, f.capacity_bytes, f.free_bytes, f.used_pct,
+           v.name AS vcenter_name, v.owner_tag_category, m.tags
+    FROM vcenter_vm_filesystems f
+    JOIN vcenter_vcenters v ON v.id = f.vcenter_id
+    LEFT JOIN vcenter_vms m ON m.vcenter_id = f.vcenter_id AND m.vm_id = f.vm_id
+    WHERE f.used_pct >= ?
+  `).all(gdWarn)) {
+    const owner = ownerFromTags(f.tags, f.owner_tag_category);
+    issues.push({
+      severity: f.used_pct >= gdCrit ? 'critical' : 'warning', type: 'guest-volume-full',
+      vcenter: f.vcenter_name, target: `${f.vm_name}:${f.mount}`,
+      message: `VM ${f.vm_name} volume ${f.mount} is ${f.used_pct.toFixed(1)}% full `
+        + `(${fmtGb(f.free_bytes)} free of ${fmtGb(f.capacity_bytes)})${owner ? `, owner ${owner}` : ''}`,
+    });
+  }
   const order = { critical: 0, warning: 1, info: 2 };
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);
 }
@@ -135,6 +182,6 @@ function reconcileIssueHistory(coreApi) {
 }
 
 module.exports = {
-  DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays,
+  DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, guestDiskThresholds, ownerFromTags,
   computeIssues, reconcileIssueHistory,
 };
