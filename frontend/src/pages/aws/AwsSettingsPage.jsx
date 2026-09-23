@@ -15,6 +15,21 @@ const CRED_TONE = { role: 'ok', stored: 'ok', session: 'warn', profile: 'ok', en
 const CRED_LABEL = { role: 'Assume role', stored: 'Access key', session: 'Session key', profile: 'Named profile', env: 'Env fallback', none: 'Host identity' };
 const BASE_LABEL = { stored: 'stored key', session: 'session key', profile: 'named profile', env: 'server env', host: 'host identity' };
 
+// The poll note (error or skipped-services list) is one line until clicked,
+// then the whole text wraps so an AWS message can be read and copied.
+function PollNote({ text, tone }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <p
+      className={`text-[10px] mt-0.5 cursor-pointer ${tone} ${open ? 'max-w-[560px] whitespace-pre-wrap break-words' : 'max-w-[260px] truncate'}`}
+      title={open ? 'Click to collapse' : 'Click to show the whole message'}
+      onClick={() => setOpen((v) => !v)}
+    >
+      {text}
+    </p>
+  );
+}
+
 const EMPTY_FORM = {
   name: '', region: 'us-east-2', pollingIntervalMinutes: 10,
   authMode: 'key', baseSource: 'host',
@@ -461,7 +476,7 @@ export default function AwsSettingsPage() {
                         {a.lastPollStatus === 'error' ? 'Error' : a.lastPollStatus === 'partial' ? 'Partial' : a.lastPollStatus === 'success' ? 'Up' : 'Pending'}
                       </Badge>
                       {(a.lastPollStatus === 'error' || a.lastPollStatus === 'partial') && a.lastPollError && (
-                        <p className={`text-[10px] mt-0.5 max-w-[260px] truncate ${a.lastPollStatus === 'error' ? 'text-status-crit' : 'text-status-warn'}`} title={a.lastPollError}>{a.lastPollError}</p>
+                        <PollNote text={a.lastPollError} tone={a.lastPollStatus === 'error' ? 'text-status-crit' : 'text-status-warn'} />
                       )}
                     </td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(a.lastPollAt)}</td>
