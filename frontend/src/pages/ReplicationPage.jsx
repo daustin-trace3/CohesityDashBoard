@@ -85,7 +85,7 @@ export default function ReplicationPage() {
   const [sortBy, setSortBy] = useState('default');
   const [sortDir, setSortDir] = useState('desc');
   const [page, setPage] = useState(0);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(25);
 
   // Fetch clusters on mount
   useEffect(() => {
