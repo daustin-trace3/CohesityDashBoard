@@ -417,7 +417,15 @@ export async function apiFetch(path, opts = {}) {
 }
 
 export async function apiFetchBlob(path, opts = {}) {
-  const res = await fetch(`/api${path}`, { credentials: 'include', ...opts });
+  const method = (opts.method || 'GET').toUpperCase();
+  const headers = { ...(opts.headers || {}) };
+  let body = opts.body;
+  if (body !== undefined && typeof body !== 'string') {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify(body);
+  }
+  if (method !== 'GET' && csrfToken()) headers['x-csrf-token'] = csrfToken();
+  const res = await fetch(`/api${path}`, { credentials: 'include', ...opts, method, headers, body });
   if (!res.ok) {
     const err = new Error(`Request failed: ${res.status}`);
     err.status = res.status;

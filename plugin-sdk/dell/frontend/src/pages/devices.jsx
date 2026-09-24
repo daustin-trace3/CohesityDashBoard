@@ -226,25 +226,45 @@ const GROUPS = [
   { key: 'cpu', label: 'CPU (sockets, cores, models)' },
   { key: 'memory', label: 'Memory (total, DIMM detail)' },
   { key: 'network', label: 'Network (NICs, MAC addresses)' },
+  { key: 'raid', label: 'RAID controllers (firmware, cache)' },
+  { key: 'vdisk', label: 'Virtual disks (RAID level, size)' },
+  { key: 'disk', label: 'Physical disks (slot, size, media, serials)' },
+  { key: 'fc', label: 'Fibre Channel (ports, speed, WWPNs)' },
+  { key: 'psu', label: 'Power supplies (model, watts, serials)' },
+  { key: 'os', label: 'Operating system (name, version, hostname)' },
+];
+const ALL_GROUPS = Object.fromEntries(GROUPS.map((g) => [g.key, true]));
+const NO_GROUPS = Object.fromEntries(GROUPS.map((g) => [g.key, false]));
+const LAYOUTS = [
+  { key: 'devices', label: 'One row per device', hint: 'summary columns for each selected group' },
+  { key: 'components', label: 'One row per component', hint: 'every controller, disk, DIMM and port on its own line' },
 ];
 
-function ExportModal({ devices, onClose }) {
-  const [deviceId, setDeviceId] = React.useState('all');
-  const [groups, setGroups] = React.useState({ cpu: true, memory: true, network: true });
+/** `filtered` is the row set the table currently shows (search + dropdown
+ *  filters applied); the default scope follows it so the file matches the
+ *  page. Device ids travel in a POST body because a filtered estate can run
+ *  to thousands of rows. */
+function ExportModal({ devices, filtered, filterActive, onClose }) {
+  const [scope, setScope] = React.useState(filterActive ? 'filtered' : 'all');
+  const [layout, setLayout] = React.useState('devices');
+  const [groups, setGroups] = React.useState(ALL_GROUPS);
   const [exporting, setExporting] = React.useState(false);
   const [error, setError] = React.useState(null);
+
+  const pickList = filterActive ? filtered : devices;
+  const include = GROUPS.map((g) => g.key).filter((k) => groups[k]);
+  const nothing = (scope === 'filtered' && filtered.length === 0) || (layout === 'components' && include.length === 0);
 
   const run = async () => {
     setExporting(true);
     setError(null);
     try {
-      const include = Object.keys(groups).filter((k) => groups[k]).join(',');
-      const params = new URLSearchParams({ ...(include ? { include } : {}), ...(deviceId !== 'all' ? { deviceId } : {}) });
-      const blob = await apiFetchBlob(`/dell/export?${params.toString()}`);
+      const ids = scope === 'all' ? null : scope === 'filtered' ? filtered.map((d) => d.id) : [Number(scope)];
+      const blob = await apiFetchBlob('/dell/export', { method: 'POST', body: { ids, include: include.join(','), layout } });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `dell-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download = `dell-${layout === 'components' ? 'components' : 'inventory'}-${new Date().toISOString().slice(0, 10)}.csv`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -261,15 +281,37 @@ function ExportModal({ devices, onClose }) {
     <Modal title="Export inventory" subtitle="CSV — device name, model, IP and support info are always included" icon={Download} onClose={onClose}>
       <div className="mb-4">
         <label className="block text-xs font-semibold text-ink mb-1">Scope</label>
-        <select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} className="dl-input" style={{ cursor: 'pointer' }}>
+        <select value={scope} onChange={(e) => setScope(e.target.value)}
+          className="dl-input" style={{ cursor: 'pointer' }}>
+          {filterActive && <option value="filtered">Filtered devices ({filtered.length} of {devices.length})</option>}
           <option value="all">All devices ({devices.length})</option>
-          {devices.map((d) => (
+          {pickList.map((d) => (
             <option key={d.id} value={d.id}>{d.name || d.service_tag}</option>
           ))}
         </select>
+        {filterActive && scope === 'all' && (
+          <p className="text-[11px] text-ink-faint mt-1">The page filter is ignored; every device is exported.</p>
+        )}
       </div>
-      <p className="text-xs font-semibold text-ink mb-2">Include hardware detail</p>
-      <div className="flex flex-col gap-2 mb-5">
+      <p className="text-xs font-semibold text-ink mb-2">Layout</p>
+      <div className="flex flex-col gap-1.5 mb-4">
+        {LAYOUTS.map((l) => (
+          <label key={l.key} className="flex items-start gap-2 cursor-pointer select-none">
+            <input type="radio" name="dell-export-layout" checked={layout === l.key} onChange={() => setLayout(l.key)}
+              className="accent-brand cursor-pointer mt-0.5" />
+            <span className="text-sm text-ink-muted">{l.label} <span className="text-[11px] text-ink-faint">({l.hint})</span></span>
+          </label>
+        ))}
+      </div>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-semibold text-ink">Include hardware detail</p>
+        <span className="text-[11px] text-ink-faint">
+          <button onClick={() => setGroups(ALL_GROUPS)} className="hover:text-ink cursor-pointer">Select all</button>
+          {' / '}
+          <button onClick={() => setGroups(NO_GROUPS)} className="hover:text-ink cursor-pointer">Clear</button>
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 mb-5">
         {GROUPS.map((g) => (
           <label key={g.key} className="flex items-center gap-2 cursor-pointer select-none">
             <input type="checkbox" checked={groups[g.key]}
@@ -285,7 +327,7 @@ function ExportModal({ devices, onClose }) {
           className="px-4 py-2 rounded-lg text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink transition-colors cursor-pointer">
           Cancel
         </button>
-        <button onClick={run} disabled={exporting}
+        <button onClick={run} disabled={exporting || nothing}
           className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer inline-flex items-center gap-2">
           {exporting && <Spinner size={13} />} Export CSV
         </button>
@@ -319,6 +361,7 @@ export default function DellDevicesPage() {
     defaultSortKey: 'name', defaultSortDir: 'asc',
     paginate: true,
   });
+  const filterActive = Boolean(ctl.q.trim()) || Object.values(ctl.filters).some((v) => v !== '' && v != null);
 
   return (
     <div className="animate-fade-in">
@@ -414,7 +457,7 @@ export default function DellDevicesPage() {
 
       {detailId != null && <DeviceDetailModal deviceId={detailId} onClose={() => setDetailId(null)} />}
       {driftReportId != null && <DriftModal reportId={driftReportId} onClose={() => setDriftReportId(null)} onChanged={load} />}
-      {showExport && <ExportModal devices={list} onClose={() => setShowExport(false)} />}
+      {showExport && <ExportModal devices={list} filtered={ctl.rows} filterActive={filterActive} onClose={() => setShowExport(false)} />}
     </div>
   );
 }

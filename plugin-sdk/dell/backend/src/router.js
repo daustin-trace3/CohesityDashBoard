@@ -417,80 +417,212 @@ function handleGetAlerts(req, res, coreApi) {
   `).all(`-${days} days`));
 }
 
-/** GET /export?include=cpu,memory,network&deviceId= — CSV inventory export. */
-function handleGetExport(req, res, coreApi) {
-  const deviceQ = parseQueryInt(req.query.deviceId);
-  if (!deviceQ.ok) return badRequest(res, [fail('deviceId')]);
-  const db = coreApi.db;
-  const include = new Set(String(req.query.include || '').split(',').map((s) => s.trim()).filter(Boolean));
-  const devices = db.prepare(`
+/* Shared CSV export builder. `db` is the tenant handle. Returns
+ * { csv, filename } or null when a requested device row does not exist.
+ *   ids      - array of dell_devices.id to export (null = every device)
+ *   include  - Set of group keys (see EXPORT_GROUPS)
+ *   layout   - 'devices' (one row per device, summary columns per group) or
+ *              'components' (one row per component of the chosen groups) */
+const EXPORT_GROUPS = {
+  cpu: { kind: 'processor', label: 'Processor' },
+  memory: { kind: 'memory', label: 'Memory' },
+  network: { kind: 'nic', label: 'NIC' },
+  raid: { kind: 'raid', label: 'RAID Controller' },
+  vdisk: { kind: 'vdisk', label: 'Virtual Disk' },
+  disk: { kind: 'disk', label: 'Physical Disk' },
+  fc: { kind: 'fc', label: 'FC Card' },
+  psu: { kind: 'psu', label: 'Power Supply' },
+  os: { kind: 'os', label: 'Operating System' },
+};
+
+function parseExportInclude(raw) {
+  const keys = Array.isArray(raw) ? raw : String(raw || '').split(',');
+  return new Set(keys.map((s) => String(s).trim()).filter((k) => EXPORT_GROUPS[k]));
+}
+
+function buildDellExport(db, { ids = null, include, layout = 'devices' }) {
+  let devices = db.prepare(`
     SELECT d.*, o.name AS ome_name FROM dell_devices d
     JOIN dell_ome_instances o ON o.id = d.ome_id
-    ${deviceQ.value !== undefined ? 'WHERE d.id = ?' : ''} ORDER BY d.name
-  `).all(...(deviceQ.value !== undefined ? [deviceQ.value] : []));
-  if (deviceQ.value !== undefined && devices.length === 0) return res.status(404).json({ error: 'Device not found.' });
+    ORDER BY d.name
+  `).all();
+  if (ids) {
+    const want = new Set(ids);
+    devices = devices.filter((d) => want.has(d.id));
+    if (devices.length === 0) return null;
+  }
 
-  const compRows = db.prepare('SELECT * FROM dell_components').all();
   const compsByDevice = new Map();
-  for (const c of compRows) {
+  for (const c of db.prepare('SELECT * FROM dell_components').all()) {
     const key = `${c.ome_id}|${c.device_id}`;
     if (!compsByDevice.has(key)) compsByDevice.set(key, []);
     compsByDevice.get(key).push(c);
   }
-  const warRows = db.prepare('SELECT * FROM dell_warranties').all();
   const warByTag = new Map();
-  for (const w of warRows) {
+  for (const w of db.prepare('SELECT * FROM dell_warranties').all()) {
+    // Keep the longest-running contract per service tag.
     const prev = warByTag.get(w.service_tag);
     if (!prev || (w.days_remaining ?? -1) > (prev.days_remaining ?? -1)) warByTag.set(w.service_tag, w);
   }
 
   const gb = (b) => (b != null ? (b / 1024 ** 3).toFixed(0) : '');
+  const extraOf = (c) => { try { return JSON.parse(c.extra || '{}') || {}; } catch { return {}; } };
+  const join = (parts) => parts.filter(Boolean).join(' ');
+  const list = (items) => items.filter(Boolean).join('; ');
+  const esc = (v) => {
+    const s = v == null ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const stamp = new Date().toISOString().slice(0, 10);
+  const kinds = [...include].map((k) => EXPORT_GROUPS[k].kind);
+  const lines = [];
+
+  if (layout === 'components') {
+    lines.push(['Device Name', 'Service Tag', 'Device Model', 'Device Type', 'IP Address', 'OME Instance',
+      'Component', 'Name', 'Description', 'Slot', 'Component Model', 'Serial', 'Size (GB)', 'Speed', 'Status', 'Details']
+      .map(esc).join(','));
+    const labelOf = {};
+    for (const g of Object.values(EXPORT_GROUPS)) labelOf[g.kind] = g.label;
+    for (const d of devices) {
+      const comps = (compsByDevice.get(`${d.ome_id}|${d.device_id}`) || []).filter((c) => kinds.includes(c.kind));
+      for (const c of comps) {
+        const x = extraOf(c);
+        let details;
+        if (c.kind === 'nic') {
+          details = list((x.ports || []).map((p) => join([p.portId != null ? `port ${p.portId}` : null, p.linkStatus,
+            p.linkSpeed, (p.macs || []).length ? `MAC ${(p.macs || []).join(' ')}` : null])));
+          if (x.vendor) details = list([`vendor ${x.vendor}`, details]);
+        } else {
+          details = list(Object.entries(x).map(([k, v]) => {
+            if (v == null || v === '' || (Array.isArray(v) && v.length === 0)) return null;
+            return `${k} ${Array.isArray(v) ? v.join(' ') : v}`;
+          }));
+        }
+        lines.push([d.name, d.service_tag, d.model, d.device_type, d.ip_address, d.ome_name,
+          labelOf[c.kind] || c.kind, c.name, c.description, c.slot, c.model, c.serial,
+          c.size_bytes != null ? gb(c.size_bytes) : '', c.speed, c.status, details].map(esc).join(','));
+      }
+    }
+    return { csv: lines.join('\r\n'), filename: `dell-components-${stamp}.csv` };
+  }
+
   const header = ['Device Name', 'Service Tag', 'Model', 'Type', 'IP Address', 'Health', 'Power State', 'OME Instance',
     'Support Level', 'Support End', 'Support Days Left'];
   if (include.has('cpu')) header.push('CPU Sockets', 'CPU Cores', 'CPU Models');
   if (include.has('memory')) header.push('Memory (GB)', 'DIMM Count', 'DIMM Detail');
   if (include.has('network')) header.push('NIC Count', 'NICs', 'MAC Addresses');
+  if (include.has('raid')) header.push('RAID Controllers', 'RAID Controller Detail');
+  if (include.has('vdisk')) header.push('Virtual Disks', 'Virtual Disk Detail');
+  if (include.has('disk')) header.push('Physical Disks', 'Raw Disk (GB)', 'Physical Disk Detail', 'Physical Disk Serials');
+  if (include.has('fc')) header.push('FC Ports', 'FC Detail', 'WWPNs');
+  if (include.has('psu')) header.push('PSU Count', 'PSU Detail', 'PSU Serials');
+  if (include.has('os')) header.push('OS', 'OS Version', 'OS Hostname');
+  lines.push(header.map(esc).join(','));
 
-  const esc = (v) => {
-    const s = v == null ? '' : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const lines = [header.map(esc).join(',')];
   for (const d of devices) {
     const comps = compsByDevice.get(`${d.ome_id}|${d.device_id}`) || [];
+    const ofKind = (k) => comps.filter((c) => c.kind === k);
     const war = warByTag.get(d.service_tag);
     const row = [d.name, d.service_tag, d.model, d.device_type, d.ip_address, d.health, d.power_state, d.ome_name,
       war?.service_level ?? '', war?.end_date ? String(war.end_date).slice(0, 10) : '',
       war?.days_remaining ?? ''];
     if (include.has('cpu')) {
-      const cpus = comps.filter((c) => c.kind === 'processor');
-      row.push(d.cpu_count ?? (cpus.length || ''),
-        d.core_count ?? '',
+      const cpus = ofKind('processor');
+      row.push(d.cpu_count ?? (cpus.length || ''), d.core_count ?? '',
         [...new Set(cpus.map((c) => c.name).filter(Boolean))].join('; '));
     }
     if (include.has('memory')) {
-      const dimms = comps.filter((c) => c.kind === 'memory');
+      const dimms = ofKind('memory');
       row.push(gb(d.memory_bytes), dimms.length || '',
         [...new Set(dimms.map((c) => `${gb(c.size_bytes)}GB ${c.speed || ''}`.trim()))].join('; '));
     }
     if (include.has('network')) {
-      const nics = comps.filter((c) => c.kind === 'nic');
+      const nics = ofKind('nic');
       const macs = [];
-      for (const n of nics) {
-        try {
-          for (const p of (JSON.parse(n.extra || '{}').ports || [])) macs.push(...(p.macs || []));
-        } catch { /* extra not JSON */ }
-      }
-      row.push(nics.length || '',
-        [...new Set(nics.map((c) => c.description || c.name).filter(Boolean))].join('; '),
+      for (const n of nics) for (const p of (extraOf(n).ports || [])) macs.push(...(p.macs || []));
+      row.push(nics.length || '', [...new Set(nics.map((c) => c.description || c.name).filter(Boolean))].join('; '),
         macs.join('; '));
+    }
+    if (include.has('raid')) {
+      const ctrls = ofKind('raid');
+      row.push(ctrls.length || '', list(ctrls.map((c) => {
+        const x = extraOf(c);
+        return join([c.name || c.description, c.slot ? `slot ${c.slot}` : null, x.firmware ? `fw ${x.firmware}` : null,
+          x.cacheMb ? `${x.cacheMb}MB cache` : null, c.status]);
+      })));
+    }
+    if (include.has('vdisk')) {
+      const vds = ofKind('vdisk');
+      row.push(vds.length || '', list(vds.map((c) => {
+        const x = extraOf(c);
+        return join([c.name, c.speed || c.description, c.size_bytes ? `${gb(c.size_bytes)}GB` : null,
+          x.controller ? `on ${x.controller}` : null, c.status]);
+      })));
+    }
+    if (include.has('disk')) {
+      const disks = ofKind('disk');
+      const raw = disks.reduce((s, c) => s + (c.size_bytes || 0), 0);
+      row.push(disks.length || '', gb(d.disk_bytes ?? (raw || null)), list(disks.map((c) => {
+        const x = extraOf(c);
+        return join([c.slot != null ? `slot ${c.slot}` : null, c.model || c.name, c.size_bytes ? `${gb(c.size_bytes)}GB` : null,
+          x.mediaType, x.busType, x.raidStatus, x.endurance != null ? `${x.endurance}% endurance` : null, c.status]);
+      })), list(disks.map((c) => c.serial)));
+    }
+    if (include.has('fc')) {
+      const fcs = ofKind('fc');
+      row.push(fcs.length || '', list(fcs.map((c) => {
+        const x = extraOf(c);
+        return join([c.name || c.description, c.slot, c.speed, x.linkStatus ? `link ${x.linkStatus}` : null]);
+      })), list(fcs.map((c) => extraOf(c).wwpn || c.serial)));
+    }
+    if (include.has('psu')) {
+      const psus = ofKind('psu');
+      row.push(psus.length || '', list(psus.map((c) => {
+        const x = extraOf(c);
+        return join([c.name, c.model, c.slot, c.speed, x.firmware ? `fw ${x.firmware}` : null, c.status]);
+      })), list(psus.map((c) => c.serial)));
+    }
+    if (include.has('os')) {
+      const os = ofKind('os')[0];
+      row.push(os?.name ?? '', os?.description ?? '', os ? (extraOf(os).hostname ?? '') : '');
     }
     lines.push(row.map(esc).join(','));
   }
+  return { csv: lines.join('\r\n'), filename: `dell-inventory-${stamp}.csv` };
+}
 
+/** GET /export?include=...&deviceId=&layout= and POST /export { ids, include, layout }
+ *  - CSV inventory export. The POST form carries the device ids the Devices
+ *  page currently shows (search and dropdown filters applied). */
+const EXPORT_LAYOUTS = ['devices', 'components'];
+function sendExport(res, db, { ids, include, layout }) {
+  const out = buildDellExport(db, {
+    ids, include: parseExportInclude(include), layout: EXPORT_LAYOUTS.includes(layout) ? layout : 'devices',
+  });
+  if (!out) return res.status(404).json({ error: 'Device not found.' });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="dell-inventory-${new Date().toISOString().slice(0, 10)}.csv"`);
-  res.send(lines.join('\r\n'));
+  res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+  res.send(out.csv);
+}
+function handleGetExport(req, res, coreApi) {
+  const deviceQ = parseQueryInt(req.query.deviceId);
+  if (!deviceQ.ok) return badRequest(res, [fail('deviceId')]);
+  if (req.query.layout !== undefined && !EXPORT_LAYOUTS.includes(req.query.layout)) return badRequest(res, [fail('layout')]);
+  sendExport(res, coreApi.db, {
+    ids: deviceQ.value !== undefined ? [deviceQ.value] : null, include: req.query.include, layout: req.query.layout,
+  });
+}
+function handlePostExport(req, res, coreApi) {
+  const b = req.body || {};
+  let ids = null;
+  if (b.ids != null) {
+    if (!Array.isArray(b.ids) || b.ids.length > 50000) return badRequest(res, [fail('ids')]);
+    ids = b.ids.map((v) => parseIntStrict(v));
+    if (ids.some((n) => !Number.isInteger(n))) return badRequest(res, [fail('ids')]);
+  }
+  if (b.include !== undefined && typeof b.include !== 'string' && !Array.isArray(b.include)) return badRequest(res, [fail('include')]);
+  if (b.layout !== undefined && !EXPORT_LAYOUTS.includes(b.layout)) return badRequest(res, [fail('layout')]);
+  sendExport(res, coreApi.db, { ids, include: b.include, layout: b.layout });
 }
 
 /** GET /warranty — warranty rows across instances + the warn window.
@@ -878,6 +1010,7 @@ const ROUTES = [
   { method: 'GET', ...compile('/devices/:id'), handler: handleGetDeviceById },
   { method: 'GET', ...compile('/alerts'), handler: handleGetAlerts },
   { method: 'GET', ...compile('/export'), handler: handleGetExport },
+  { method: 'POST', ...compile('/export'), handler: handlePostExport },
   { method: 'GET', ...compile('/warranty'), handler: handleGetWarranty },
   { method: 'GET', ...compile('/firmware'), handler: handleGetFirmware },
   { method: 'GET', ...compile('/governance'), handler: handleGetGovernance },
