@@ -5,12 +5,13 @@ import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import AdminNav from '../components/AdminNav';
+import PrivacyInspectorPage from '../components/PrivacyInspectorPage';
 import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
 import { usePlatforms } from '../platforms/PlatformsContext';
 
 // Sections rendered by this page; Users & Access and Plugins are their own
 // routed pages sharing the same AdminNav shell.
-const LOCAL_SECTIONS = ['ai', 'agent', 'platforms', 'license', 'notifications'];
+const LOCAL_SECTIONS = ['ai', 'agent', 'agent-privacy', 'platforms', 'license', 'notifications'];
 
 const NOTIFY_PLATFORMS = [
   { key: 'cohesity', label: 'Cohesity' },
@@ -850,6 +851,13 @@ export default function AdminSettingsPage() {
 
       {/* Alert Notifications */}
       {/* Operations Agent */}
+      {tab === 'agent-privacy' && (
+      <div className="panel p-4">
+        <PrivacyInspectorPage platform="ops-agent" embedded title="Operations Agent privacy"
+          emptyText={`No Operations Agent AI requests in the last 30 days. Incidents triaged without an AI provider use the rule-based digest and send nothing to a model.`} />
+      </div>
+      )}
+
       {tab === 'agent' && (
       <div className="panel p-4">
         <div className="flex items-center gap-2 mb-1">
@@ -930,7 +938,7 @@ export default function AdminSettingsPage() {
                 className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
                 <Mail size={13} /> {testingAgent ? 'Sending…' : 'Send sample incident email'}
               </button>
-              <span className="text-[11px] text-ink-faint">The sample shows the exact layout an incident email uses.</span>
+              <span className="text-[11px] text-ink-faint">The sample shows the exact layout an incident email uses. Every model call the agent makes is logged under Agent Privacy.</span>
             </div>
           </div>
         )}

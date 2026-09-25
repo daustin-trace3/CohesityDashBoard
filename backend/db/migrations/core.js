@@ -555,4 +555,15 @@ module.exports = [
       `);
     },
   },
+  // Operations Agent self-healing: a re-poll the agent triggered for a stale or
+  // unreachable source, and when, so the triage can say whether it worked.
+  {
+    version: 23,
+    up(db) {
+      const cols = new Set(db.prepare('PRAGMA table_info(ops_incidents)').all().map((c) => c.name));
+      if (!cols.has('heal_attempted')) db.exec('ALTER TABLE ops_incidents ADD COLUMN heal_attempted INTEGER NOT NULL DEFAULT 0');
+      if (!cols.has('heal_at')) db.exec('ALTER TABLE ops_incidents ADD COLUMN heal_at TEXT');
+      if (!cols.has('heal_actions_json')) db.exec('ALTER TABLE ops_incidents ADD COLUMN heal_actions_json TEXT');
+    },
+  },
 ];
