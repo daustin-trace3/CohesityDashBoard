@@ -15,7 +15,7 @@
 // paths already prefixed with /reports/...).
 const api = require('./api');
 const { getPoller } = require('./poller');
-const { computeIssues, warrantyWarnDays } = require('./issues');
+const { computeIssues, warrantyWarnDays, warrantyAlertFilter } = require('./issues');
 const { createDellAdvisor } = require('./advisor');
 const { compile } = require('./compile');
 const { fingerprint: varianceFingerprint } = require('./variance');
@@ -414,7 +414,7 @@ function handleGetAlerts(req, res, coreApi) {
       AND (d.service_tag = a.service_tag OR d.name = a.device_name)
     WHERE a.created_at >= datetime('now', ?)
     ORDER BY a.created_at DESC LIMIT 5000
-  `).all(`-${days} days`));
+  `).all(`-${days} days`).filter(warrantyAlertFilter(coreApi)));
 }
 
 /* Shared CSV export builder. `db` is the tenant handle. Returns

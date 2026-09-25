@@ -17,7 +17,7 @@
 const migrations = require('./migrations');
 const { createRouter } = require('./router');
 const { createDellPoller } = require('./poller');
-const { warrantyWarnDays } = require('./issues');
+const { warrantyWarnDays, warrantyAlertFilter } = require('./issues');
 
 function toIso(value) {
   if (value == null) return null;
@@ -85,13 +85,16 @@ function opsSummary(coreApi) {
 /** Un-acknowledged Dell OME alerts. dell_alerts is append-only (90-day
  *  retention) — acknowledging the alert in OME is what stops reminders. */
 function collectAlerts(coreApi) {
+  // OME warranty alerts on a tag with an active contract are dropped.
+  const keep = warrantyAlertFilter(coreApi);
   const rows = coreApi.db.prepare(`
-    SELECT d.ome_id AS omeId, d.alert_id AS alertId, d.severity, d.message,
-           d.device_name AS deviceName, d.service_tag AS serviceTag,
+    SELECT d.ome_id AS omeId, d.ome_id, d.alert_id AS alertId, d.severity, d.message,
+           d.category, d.subcategory,
+           d.device_name AS deviceName, d.device_name, d.service_tag AS serviceTag, d.service_tag,
            d.created_at AS createdAt, d.captured_at AS capturedAt, o.name AS omeName
     FROM dell_alerts d JOIN dell_ome_instances o ON d.ome_id = o.id
     WHERE d.status IS NULL OR d.status != 'acknowledged'
-  `).all();
+  `).all().filter(keep);
   return rows.map((r) => {
     let severity = String(r.severity || '').toLowerCase();
     if (severity === 'normal') severity = 'info';

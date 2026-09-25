@@ -9,6 +9,36 @@ function warrantyWarnDays(coreApi) {
   return Number.isFinite(n) ? Math.min(365, Math.max(1, n)) : 90;
 }
 
+// OME raises its own warranty alerts per support contract, so a tag whose
+// base warranty lapsed under an active renewal still alerts. Judge the tag by
+// its BEST contract (same rule as computeIssues) and drop covered alerts.
+const WARRANTY_RE = /warrant/i;
+function warrantyAlertFilter(coreApi) {
+  const db = coreApi.db;
+  const warnDays = warrantyWarnDays(coreApi);
+  const covered = new Set();
+  try {
+    for (const r of db.prepare(`
+      SELECT ome_id, service_tag FROM dell_warranties
+      WHERE service_tag IS NOT NULL AND days_remaining IS NOT NULL
+      GROUP BY ome_id, service_tag HAVING MAX(days_remaining) > ?
+    `).all(warnDays)) covered.add(`${r.ome_id}|${String(r.service_tag).toUpperCase()}`);
+  } catch { return () => true; }
+  if (covered.size === 0) return () => true;
+  const tagByName = new Map();
+  try {
+    for (const d of db.prepare('SELECT ome_id, name, service_tag FROM dell_devices WHERE service_tag IS NOT NULL').all()) {
+      if (d.name) tagByName.set(`${d.ome_id}|${String(d.name).toLowerCase()}`, d.service_tag);
+    }
+  } catch { /* match on service_tag only */ }
+  return (row) => {
+    if (!WARRANTY_RE.test(`${row.category || ''} ${row.subcategory || ''} ${row.message || ''}`)) return true;
+    const tag = row.service_tag || (row.device_name ? tagByName.get(`${row.ome_id}|${String(row.device_name).toLowerCase()}`) : null);
+    if (!tag) return true;
+    return !covered.has(`${row.ome_id}|${String(tag).toUpperCase()}`);
+  };
+}
+
 function computeIssues(coreApi) {
   const db = coreApi.db;
   const issues = [];
@@ -71,4 +101,4 @@ function computeIssues(coreApi) {
   return issues.sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3));
 }
 
-module.exports = { computeIssues, warrantyWarnDays };
+module.exports = { computeIssues, warrantyWarnDays, warrantyAlertFilter };
