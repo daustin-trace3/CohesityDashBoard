@@ -37,6 +37,13 @@ const STALE_MINUTES = 120;       // a source with no completed poll for this lon
 const HEAL_HOLD_MINUTES = 3;     // time given to a triggered re-poll before triage judges it
 const CLASS_WEIGHT = { incident: 300, recurring: 250, 'one-off': 100, noise: 0, 'self-healed': 0, 'self-cleared': 0 };
 
+/** Every autonomous action the agent takes goes through here, at INFO, with
+ *  enough detail to answer "what did it do and how often" from the log alone:
+ *  grep for "[OpsAgent] ACTION". Failures stay at warn/error as before. */
+function act(verb, detail) {
+  logger.info(`[OpsAgent] ACTION ${verb}: ${detail}`);
+}
+
 function rank(severity) {
   return RANK[String(severity || '').toLowerCase()] ?? 1;
 }
@@ -250,6 +257,7 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
         byKey.set(key, inc);
         stats.incidentsOpened += 1;
+        act('opened incident', `#${inc.id} ${title} [${key}] first alert ${platformMeta(it.platform).label} ${normalizeSeverity(it.severity)}${baseline ? ', baseline (pre-existing backlog, will not email)' : ''}`);
       }
       insertAlert.run(inc.id, it.platform, String(it.sourceKey), normalizeSeverity(it.severity), it.host || null, String(it.message || '').slice(0, 1000), it.type || null, it.firstSeen || null, now);
       const platforms = new Set(JSON.parse(inc.platforms || '[]'));
@@ -288,13 +296,15 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         if (inc.state === 'collecting' && inc.heal_attempted) {
           const targets = [];
           try { for (const a of JSON.parse(inc.heal_actions_json || '[]')) targets.push(a.target); } catch { /* ignore */ }
-          db.prepare("UPDATE ops_incidents SET state = 'resolved', resolved_at = ?, classification = 'self-healed', confidence = 'high', summary = ? WHERE id = ?")
-            .run(now, `ICC re-polled ${targets.join(', ') || 'the source'} at ${inc.heal_at}; the next poll completed and every alert cleared. No human action was needed.`, id);
+          db.prepare("UPDATE ops_incidents SET state = 'resolved', resolved_at = ?, resolved_by = 'agent', classification = 'self-healed', confidence = 'high', summary = ?, resolution = ? WHERE id = ?")
+            .run(now, `ICC re-polled ${targets.join(', ') || 'the source'} at ${inc.heal_at}; the next poll completed and every alert cleared. No human action was needed.`, `Self-healed: the re-poll of ${targets.join(', ') || 'the source'} completed and every alert cleared.`, id);
+          act('resolved incident', `#${id} self-healed, the re-poll of ${targets.join(', ') || 'the source'} cleared it, no human action needed`);
           continue;
         }
         if (inc.state === 'collecting') {
           // Cleared before triage: a self-healing blip, recorded, never emailed.
           db.prepare("UPDATE ops_incidents SET state = 'resolved', resolved_at = ?, resolved_by = 'agent', classification = COALESCE(classification, 'self-cleared'), summary = COALESCE(summary, 'Every alert in this incident cleared before the hold window ended; no triage was run.'), resolution = COALESCE(resolution, 'Cleared before the hold window ended; never triaged or emailed.') WHERE id = ?").run(now, id);
+          act('resolved incident', `#${id} self-cleared before triage, never emailed`);
           continue;
         }
         // Triaged or emailed: hold it open until the alerts have stayed quiet
@@ -302,8 +312,10 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         const quietMinutes = Number(settings.autoResolveMinutes) || 0;
         if (quietMinutes > 0) {
           db.prepare("UPDATE ops_incidents SET state = 'clearing', cleared_since = ? WHERE id = ?").run(now, id);
+          act('incident clearing', `#${id} every alert cleared, holding ${quietMinutes} min of quiet before it closes`);
         } else {
           db.prepare("UPDATE ops_incidents SET state = 'resolved', resolved_at = ?, resolved_by = 'agent', resolution = COALESCE(resolution, 'Every alert in this incident cleared.') WHERE id = ?").run(now, id);
+          act('resolved incident', `#${id} every alert cleared (no quiet window set)`);
         }
       }
     }
@@ -784,6 +796,7 @@ async function resolvePass(now, settings, config, budget) {
       const mins = Math.max(1, Math.round((Date.parse(now) - since) / 60000));
       closeIncident(inc.id, { now, resolution: `Every alert cleared at ${inc.cleared_since} and none fired again in the ${mins} minutes since, so ${settings.name} closed this incident.` });
       stats.resolvedQuiet += 1;
+      act('resolved incident', `#${inc.id} quiet for ${mins} min after its alerts cleared`);
       const fresh = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(inc.id);
       if (await notifyResolved(fresh, settings, config)) stats.closureEmails += 1;
     }
@@ -819,7 +832,7 @@ async function resolvePass(now, settings, config, budget) {
       resolution: `Resolved by other means: ${verdict.reason} The alert is still open on ${platforms}; nobody cleared it there, so ${settings.name} closed this incident on the evidence (${verdict.confidence} confidence). It reopens if the condition fires again.`,
     });
     stats.resolvedEvidence += 1;
-    logger.info(`[OpsAgent] incident #${inc.id} resolved on evidence: ${verdict.reason.slice(0, 120)}`);
+    act('resolved incident', `#${inc.id} on evidence (${verdict.confidence} confidence), platform alert still open on ${platforms}: ${verdict.reason.slice(0, 200)}`);
     const fresh = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(inc.id);
     if (await notifyResolved(fresh, settings, config)) stats.closureEmails += 1;
   }
@@ -864,14 +877,17 @@ async function runOnce({ force = false } = {}) {
       }
       const actions = targets.map((a) => {
         const eid = Number(a.source_key.split(':')[1]);
-        return syncing.has(`${a.platform}:${eid}`)
+        const why = a.source_key.startsWith('stale:') ? 'data went stale' : 'ICC could not reach it';
+        const rec = syncing.has(`${a.platform}:${eid}`)
           ? { at: now, action: 'repoll', platform: a.platform, target: a.host || String(eid), result: 'already polling, left to finish' }
           : triggerPoll(a.platform, eid, a.host);
+        act('re-poll', `${platformMeta(a.platform).label} source #${eid} ${a.host || ''} (${why}) -> ${rec.result}, incident #${inc.id}`.replace(/\s+/g, ' '));
+        return rec;
       });
       const holdUntil = new Date(Math.max(Date.parse(inc.hold_until), Date.parse(now) + HEAL_HOLD_MINUTES * 60000)).toISOString();
       db.prepare('UPDATE ops_incidents SET heal_attempted = 1, heal_at = ?, heal_actions_json = ?, hold_until = ? WHERE id = ?').run(now, JSON.stringify(actions), holdUntil, inc.id);
       stats.healAttempts += 1;
-      logger.info(`[OpsAgent] incident #${inc.id}: re-poll triggered for ${targets.length} source(s)`);
+
     }
     if (coldStart && stats.incidentsOpened) logger.info(`[OpsAgent] cold start: ${stats.incidentsOpened} baseline incident(s) recorded, not emailed`);
 
@@ -883,8 +899,10 @@ async function runOnce({ force = false } = {}) {
       if (budget <= 0) break;
       budget -= 1;
       try {
-        await triageIncident(inc);
+        const a = await triageIncident(inc);
         stats.triaged += 1;
+        const fresh = db.prepare('SELECT model FROM ops_incidents WHERE id = ?').get(inc.id);
+        act('triaged incident', `#${inc.id} ${a.classification}, ${a.confidence} confidence, human ${a.human_required ? 'required' : 'not needed'}, ${a.source === 'ai' ? `analysis by ${fresh?.model || 'the model'}` : 'rule-based digest'}`);
       } catch (err) {
         if (err.code === 'LLM_RATE_LIMITED') break;
         logger.error(`[OpsAgent] triage failed for #${inc.id}: ${err.message}`);
@@ -914,7 +932,7 @@ async function runOnce({ force = false } = {}) {
         if (inc.notified_at && Date.parse(inc.notified_at) > Date.now() - settings.renotifyMinutes * 60000) continue;
       }
       const r = await notifyIncident(inc, settings, config);
-      if (r.sent) stats.emailsSent += 1;
+      if (r.sent) { stats.emailsSent += 1; act('emailed incident', `#${inc.id} to ${r.to}${inc.notify_count ? ` (update ${inc.notify_count + 1})` : ' (first notice)'}`); }
       else if (r.skipped) logger.info(`[OpsAgent] incident #${inc.id} triaged, email skipped (${r.skipped})`);
       else logger.error(`[OpsAgent] email failed for #${inc.id} via ${config.smtpHost}:${config.smtpPort}: ${r.error}`);
     }
@@ -926,6 +944,10 @@ async function runOnce({ force = false } = {}) {
       db.prepare('INSERT INTO ops_agent_runs (at, alerts_seen, new_alerts, incidents_opened, triaged, emails_sent, error) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(stats.at, stats.alertsSeen, stats.newAlerts, stats.incidentsOpened, stats.triaged, stats.emailsSent, stats.error);
       db.prepare(`DELETE FROM ops_agent_runs WHERE at < datetime('now', '-${RUN_LOG_DAYS} days')`).run();
+      const did = stats.incidentsOpened + stats.triaged + stats.emailsSent + stats.healAttempts + stats.resolvedQuiet + stats.resolvedEvidence;
+      if (did) {
+        logger.info(`[OpsAgent] tick: ${stats.alertsSeen} alerts seen, ${stats.newAlerts} new, ${stats.incidentsOpened} opened, ${stats.healAttempts} re-poll(s), ${stats.triaged} triaged, ${stats.emailsSent} emailed, ${stats.resolvedQuiet + stats.resolvedEvidence} resolved`);
+      }
     } catch { /* run log is best effort */ }
     running = false;
   }
@@ -1104,6 +1126,6 @@ module.exports = {
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
   hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
-  closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason,
+  closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act,
 };
 void chatFn;
