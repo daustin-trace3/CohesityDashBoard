@@ -14,7 +14,8 @@ const STATE_META = {
   notified: { label: 'Notified', tone: 'ok', hint: 'Analysis emailed' },
   resolved: { label: 'Resolved', tone: 'neutral', hint: 'Every alert cleared or closed by hand' },
 };
-const CLASS_TONE = { incident: 'crit', recurring: 'warn', 'one-off': 'info', noise: 'neutral', 'self-cleared': 'neutral' };
+const CLASS_TONE = { incident: 'crit', recurring: 'warn', 'one-off': 'info', noise: 'neutral', 'self-cleared': 'neutral', 'self-healed': 'ok' };
+const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', host: 'Host' };
 const sevTone = (s) => (s === 'critical' ? 'crit' : s === 'error' || s === 'warning' ? 'warn' : 'info');
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children, footer }) {
@@ -77,8 +78,8 @@ function IncidentModal({ id, onClose, onChanged }) {
   const sm = inc ? (STATE_META[inc.state] || STATE_META.collecting) : null;
   return (
     <ModalShell
-      title={inc ? `#${inc.id} ${inc.title || inc.host || ''}` : 'Incident'}
-      subtitle={inc ? `${inc.platforms.join(', ')} · opened ${timeAgo(inc.openedAt)} · ${inc.eventCount} alert${inc.eventCount === 1 ? '' : 's'}` : null}
+      title={inc ? (inc.title || inc.host || '') : 'Incident'}
+      subtitle={inc ? `${KIND_LABEL[inc.kind] || 'Host'} · ${inc.platforms.join(', ')} · opened ${timeAgo(inc.openedAt)} · ${inc.eventCount} alert${inc.eventCount === 1 ? '' : 's'} · id ${inc.id}` : null}
       icon={Bot} onClose={onClose}
       footer={inc && (
         <>
@@ -108,6 +109,9 @@ function IncidentModal({ id, onClose, onChanged }) {
               {inc.classification && <Badge tone={CLASS_TONE[inc.classification] || 'neutral'}>{inc.classification}{inc.confidence ? ` · ${inc.confidence} confidence` : ''}</Badge>}
               {a?.source === 'fallback' && <Badge tone="warn">rule-based digest</Badge>}
               {inc.baseline && <Badge tone="neutral">baseline</Badge>}
+              {inc.humanRequired === true && <Badge tone="crit">human required</Badge>}
+              {inc.humanRequired === false && <Badge tone="ok">no human needed</Badge>}
+              {inc.healAttempted && <Badge tone="info">re-poll attempted</Badge>}
               {inc.model && a?.source === 'ai' && <span className="text-[11px] text-ink-faint">analysis by {inc.model}</span>}
             </div>
             {inc.triageError && <p className="text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5 mb-3">{inc.triageError}</p>}
@@ -126,6 +130,8 @@ function IncidentModal({ id, onClose, onChanged }) {
                 <Section title="What ICC reviewed">
                   <ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{(a.reviewed || []).map((r, i) => <li key={i}>{r}</li>)}</ul>
                 </Section>
+                {a.human_reason && <Section title={a.human_required ? 'Why a human is required' : 'Why no human is needed'}><p className="text-sm text-ink-muted">{a.human_reason}</p></Section>}
+                {inc.healActions?.length > 0 && <Section title="What ICC did"><ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{inc.healActions.map((h, i) => <li key={i}>{new Date(h.at).toLocaleTimeString()}: {h.action} {h.target}: {h.result}</li>)}</ul></Section>}
                 {a.likely_cause && <Section title="Likely cause"><p className="text-sm text-ink">{a.likely_cause}</p></Section>}
                 <Section title="Next steps for the next level">
                   <ol className="list-decimal pl-5 text-sm text-ink space-y-1">
@@ -206,13 +212,13 @@ export default function OpsAgentPage() {
   };
 
   const list = (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', ') }));
-  const ctl = useTableControls(list, { searchKeys: ['title', 'host', 'platformsLabel', 'classification', 'summary'], defaultSortKey: 'openedAt', defaultSortDir: 'desc', paginate: true });
+  const ctl = useTableControls(list, { searchKeys: ['title', 'host', 'platformsLabel', 'classification', 'summary'], defaultSortKey: 'impactScore', defaultSortDir: 'desc', paginate: true });
   const s = status;
   const counts = s?.counts || {};
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts into incidents, triages each one against the evidence ICC holds, and emails the analysis with next steps">
+      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Ordered by severity, then by how much is affected.">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <button onClick={runNow} disabled={running}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
@@ -260,7 +266,7 @@ export default function OpsAgentPage() {
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
                   <SortTh k="state" label="State" ctl={ctl} />
-                  <SortTh k="severity" label="Severity" ctl={ctl} />
+                  <SortTh k="impactScore" label="Severity" ctl={ctl} />
                   <SortTh k="title" label="Incident" ctl={ctl} />
                   <SortTh k="platformsLabel" label="Platforms" ctl={ctl} />
                   <SortTh k="eventCount" label="Alerts" ctl={ctl} align="right" />
@@ -276,7 +282,8 @@ export default function OpsAgentPage() {
                         <td className="py-2 pr-3"><Badge tone={sm.tone}>{sm.label}</Badge></td>
                         <td className="py-2 pr-3"><Badge tone={sevTone(r.severity)}>{String(r.severity).toUpperCase()}</Badge></td>
                         <td className="py-2 pr-3 max-w-[360px]">
-                          <button onClick={() => setOpenId(r.id)} className="text-brand hover:underline cursor-pointer text-left">#{r.id} {r.title || r.host || r.key}</button>
+                          <button onClick={() => setOpenId(r.id)} className="text-brand hover:underline cursor-pointer text-left">{r.title || r.host || r.key}</button>
+                          <span className="ml-1.5 text-[10px] text-ink-faint">{KIND_LABEL[r.kind] || ''}{r.humanRequired ? ' · human required' : ''}</span>
                           {r.summary && <p className="text-[11px] text-ink-faint line-clamp-1" title={r.summary}>{r.summary}</p>}
                         </td>
                         <td className="py-2 pr-3 text-ink-muted text-[11px]">{r.platformsLabel}</td>

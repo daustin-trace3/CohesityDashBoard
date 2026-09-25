@@ -24,7 +24,7 @@ function Highlighted({ text }) {
  * Per-platform AI Privacy Inspector page — the audit trail of every AI request
  * this platform sent (anonymized payload) vs. the token map that stayed local.
  */
-export default function PrivacyInspectorPage({ platform }) {
+export default function PrivacyInspectorPage({ platform, embedded = false, title = 'Privacy Inspector', emptyText }) {
   const [exchanges, setExchanges] = useState(null);
   const [retentionDays, setRetentionDays] = useState(30);
   const [selected, setSelected] = useState(null); // full exchange detail
@@ -60,9 +60,26 @@ export default function PrivacyInspectorPage({ platform }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {embedded ? (
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
+              <ShieldCheck size={14} className="text-brand" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-ink">{title}</p>
+              <p className="text-[11px] text-ink-muted">Proof of anonymization: the exact payload each AI request sent versus the name mapping that never left this server. Entries are retained for {retentionDays} days.</p>
+            </div>
+          </div>
+          <button onClick={loadList}
+            className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 border border-cohesity-border text-ink rounded-lg hover:border-brand/50 hover:text-brand transition-colors cursor-pointer">
+            <RefreshCw size={13} /> Refresh
+          </button>
+        </div>
+      ) : (
       <PageHeader
         icon={ShieldCheck}
-        title="Privacy Inspector"
+        title={title}
         description={`Proof of anonymization — the exact payload each AI request sent vs. the name mapping that never left this server. Entries are retained for ${retentionDays} days.`}
       >
         <button
@@ -72,6 +89,7 @@ export default function PrivacyInspectorPage({ platform }) {
           <RefreshCw size={13} /> Refresh
         </button>
       </PageHeader>
+      )}
 
       <div className="panel flex overflow-hidden min-h-[480px]">
         {/* Exchange list */}
@@ -80,7 +98,7 @@ export default function PrivacyInspectorPage({ platform }) {
             <div className="flex items-center gap-2 p-4 text-ink-muted text-xs"><RefreshCw size={13} className="animate-spin" /> Loading…</div>
           ) : exchanges.length === 0 ? (
             <p className="p-4 text-xs text-ink-muted leading-relaxed">
-              No AI requests recorded for this platform in the last {retentionDays} days. Run any AI report, then refresh this page.
+              {emptyText || `No AI requests recorded for this platform in the last ${retentionDays} days. Run any AI report, then refresh this page.`}
             </p>
           ) : exchanges.map((ex) => (
             <button

@@ -151,3 +151,50 @@ describe('manual resolve and baseline', () => {
     expect(agent.listIncidents({ state: 'open' })[0].baseline).toBe(true);
   });
 });
+
+describe('app services, self-heal and ordering', () => {
+  it('keys app service items by app and keeps them out of the platform-wide fold', () => {
+    const wide = new Set(['vcenter']);
+    expect(agent.incidentKeyFor({ platform: 'appservice', sourceKey: 'usage:ATM42', host: 'ATM42 (Payments)' }, wide)).toBe('app:usage:ATM42');
+    expect(agent.incidentKeyFor({ platform: 'vcenter', sourceKey: 'v1', host: 'esx-01' }, wide)).toBe('platform:vcenter:wide');
+  });
+
+  it('a stale source folds its platform into one incident and resolves as self-healed after a re-poll clears it', () => {
+    agent.groupTick(NOW, settings, { items: [
+      item('netapp', 'stale:4', { host: 'filer-c', severity: 'warning', message: 'Data is stale: no completed poll in 180 minutes' }),
+      item('netapp', 'n9', { host: 'filer-c' }),
+    ], failed: [] });
+    const inc = incidents()[0];
+    expect(inc.incident_key).toBe('platform:netapp:wide');
+    db.prepare("UPDATE ops_incidents SET heal_attempted = 1, heal_at = ?, heal_actions_json = ? WHERE id = ?")
+      .run('2026-09-25T20:01:00.000Z', JSON.stringify([{ at: '2026-09-25T20:01:00.000Z', action: 'repoll', target: 'filer-c', result: 'poll triggered' }]), inc.id);
+    agent.groupTick('2026-09-25T20:04:00.000Z', settings, { items: [], failed: [] });
+    const done = incidents()[0];
+    expect(done.state).toBe('resolved');
+    expect(done.classification).toBe('self-healed');
+    expect(done.summary).toMatch(/re-polled filer-c/);
+  });
+
+  it('says a human is required when the re-poll did not help, and not for a plain warning', () => {
+    const base = { incident: { id: 1, key: 'platform:netapp:wide', platforms: ['netapp'], severity: 'warning', host: null }, hosts: [], priorIncidentsSameKey30d: [], concurrentOpenIncidents: [] };
+    const stuck = agent.fallbackTriage({ ...base, alerts: [{ platform: 'netapp', severity: 'warning', message: 'Data is stale: no completed poll in 200 minutes', cleared: false }], selfHeal: { outcome: 'still failing after the re-poll: NetApp filer-c' } });
+    expect(stuck.human_required).toBe(true);
+    const calm = agent.fallbackTriage({ ...base, alerts: [{ platform: 'netapp', severity: 'warning', message: 'Volume 80% full', cleared: false }] });
+    expect(calm.human_required).toBe(false);
+  });
+
+  it('lists incidents by severity then impact, not by number', () => {
+    agent.groupTick(NOW, settings, { items: [
+      item('pure', 'p1', { host: 'array-a', severity: 'warning' }),
+      item('dell', 'd1', { host: 'r740-01', severity: 'critical' }),
+      item('appservice', 'usage:ATM7', { host: 'ATM7 (Trading)', severity: 'critical' }),
+      item('vcenter', 'v1', { host: 'esx-09', severity: 'critical' }),
+      item('brocade', 'b1', { host: 'esx-09', severity: 'warning' }),
+    ], failed: [] });
+    const list = agent.listIncidents({ state: 'open' });
+    expect(list.map((i) => i.kind)).toEqual(['app-service', 'host', 'host', 'host']);
+    expect(list[1].host).toBe('esx-09');
+    expect(list[3].severity).toBe('warning');
+    expect(list.every((i) => typeof i.impactScore === 'number')).toBe(true);
+  });
+});

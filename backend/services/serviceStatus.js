@@ -1159,6 +1159,8 @@ module.exports = {
   gatherEvidence,
   gatherReachabilityItems,
   getEnabledPlatformIds,
+  polledSourcesFor,
+  sourceRowFor,
   _platformPollsFor: platformPollsFor,
   _setCollector,
   _setChat,
