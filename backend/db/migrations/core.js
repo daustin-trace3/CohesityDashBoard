@@ -555,4 +555,16 @@ module.exports = [
       if (!cols.has('heal_actions_json')) db.exec('ALTER TABLE ops_incidents ADD COLUMN heal_actions_json TEXT');
     },
   },
+  // Operations Agent auto-resolution: when the alerts went quiet, why the
+  // incident was closed, and when the agent last asked whether the evidence
+  // shows it fixed.
+  {
+    version: 23,
+    up(db) {
+      const cols = new Set(db.prepare('PRAGMA table_info(ops_incidents)').all().map((c) => c.name));
+      if (!cols.has('cleared_since')) db.exec('ALTER TABLE ops_incidents ADD COLUMN cleared_since TEXT');
+      if (!cols.has('resolution')) db.exec('ALTER TABLE ops_incidents ADD COLUMN resolution TEXT');
+      if (!cols.has('evidence_check_at')) db.exec('ALTER TABLE ops_incidents ADD COLUMN evidence_check_at TEXT');
+    },
+  },
 ];

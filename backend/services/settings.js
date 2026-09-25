@@ -203,6 +203,8 @@ function getOpsAgentSettings() {
     holdMinutes: (hold >= 0 && hold <= 120) ? Math.round(hold) : 10,
     analysesPerHour: (cap >= 1 && cap <= 200) ? Math.round(cap) : 20,
     renotifyMinutes: (renotify >= 0 && renotify <= 1440) ? Math.round(renotify) : 60,
+    autoResolveMinutes: (() => { const n = Number(getSetting('ops_agent_auto_resolve_minutes')); return (n >= 0 && n <= 1440) ? Math.round(n) : 30; })(),
+    evidenceResolve: getSetting('ops_agent_evidence_resolve') !== '0',
     emailEnabled: getSetting('ops_agent_email_enabled') !== '0',
     recipients: (getSetting('ops_agent_recipients') || '').trim(),
   };
