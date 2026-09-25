@@ -24,11 +24,19 @@ const NOTIFY_PLATFORMS = [
 
 // Global AI provider tokens. Platform-specific credentials (Helios, Pure1,
 // AIQUM) live on their own platform settings pages.
+const LLM_PROVIDERS = [
+  { value: 'auto', label: 'Automatic (OpenAI when its key is set, otherwise GitHub Models)' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'github-models', label: 'GitHub Models' },
+  { value: 'custom', label: 'Custom OpenAI-compatible endpoint (Copilot bridge, local model server)' },
+];
 const AI_TOKEN_FIELDS = [
-  { name: 'openaiToken', label: 'OpenAI API token',
-    hint: 'Preferred AI provider (pay-per-use). When set, all AI analyses use OpenAI.' },
-  { name: 'githubModelsToken', label: 'GitHub Models token',
-    hint: 'Fallback AI provider (free PAT, daily caps). Used only when no OpenAI token is configured.' },
+  { name: 'openaiToken', label: 'OpenAI API token', providers: ['auto', 'openai'],
+    hint: 'Pay-per-use. Under Automatic, all AI analyses use OpenAI whenever this key is set.' },
+  { name: 'githubModelsToken', label: 'GitHub Models token', providers: ['auto', 'github-models'],
+    hint: 'Free PAT with daily caps. Under Automatic it is used only when no OpenAI token is configured.' },
+  { name: 'customEndpointToken', label: 'Endpoint API key', providers: ['custom'],
+    hint: 'Sent as a Bearer token to the endpoint above. Leave empty if the endpoint takes no key.' },
 ];
 
 function SourceBadge({ source }) {
@@ -43,6 +51,11 @@ export default function AdminSettingsPage() {
   const [estateContext, setEstateContext] = useState('');
   const [flagUnprotected, setFlagUnprotected] = useState(false);
   const [llmModel, setLlmModel] = useState('');
+  const [llmProvider, setLlmProvider] = useState('auto');
+  const [llmCustomEndpoint, setLlmCustomEndpoint] = useState('');
+  const [savedProvider, setSavedProvider] = useState({ provider: 'auto', endpoint: '' });
+  const [testingLlm, setTestingLlm] = useState(false);
+  const [llmTest, setLlmTest] = useState(null);
   const [ttlHours, setTtlHours] = useState(24);
   const [serviceStatusAiEnabled, setServiceStatusAiEnabled] = useState(true);
   const [serviceStatusAnalysesPerMinute, setServiceStatusAnalysesPerMinute] = useState(3);
@@ -88,6 +101,9 @@ export default function AdminSettingsPage() {
         setEstateContext(d.llmEstateContext || '');
         setFlagUnprotected(!!d.llmFlagUnprotected);
         setLlmModel(d.llmModel || '');
+        setLlmProvider(d.llmProvider || 'auto');
+        setLlmCustomEndpoint(d.llmCustomEndpoint || '');
+        setSavedProvider({ provider: d.llmProvider || 'auto', endpoint: d.llmCustomEndpoint || '' });
         setTtlHours(d.llmAnalysisTtlHours || 24);
         setServiceStatusAiEnabled(d.serviceStatusAiEnabled !== false);
         setServiceStatusAnalysesPerMinute(d.serviceStatusAnalysesPerMinute || 3);
@@ -101,10 +117,76 @@ export default function AdminSettingsPage() {
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
     }).finally(() => setLoading(false));
 
-    client.get('/settings/llm-models')
-      .then(({ data }) => setModelList(data))
-      .catch((err) => setModelsError(err?.response?.data?.error || 'Could not load the model list from the AI provider.'));
+    refreshModels();
   }, []);
+
+  /** Reload the picker from the active provider; a picked model the new
+   *  provider does not list is cleared (and the cleared value saved). */
+  const refreshModels = async () => {
+    setModelList(null);
+    setModelsError(null);
+    try {
+      const { data } = await client.get('/settings/llm-models');
+      setModelList(data);
+      const stale = llmModel && Array.isArray(data.models) && data.models.length > 0 && !data.models.includes(llmModel);
+      if (stale) {
+        setLlmModel('');
+        await client.put('/settings', { llmModel: '' }).catch(() => {});
+      }
+      return true;
+    } catch (err) {
+      setModelsError(err?.response?.data?.error || 'Could not load the model list from the AI provider.');
+      return false;
+    }
+  };
+
+  const providerDirty = llmProvider !== savedProvider.provider
+    || llmCustomEndpoint.trim() !== savedProvider.endpoint
+    || AI_TOKEN_FIELDS.some(f => (credInputs[f.name] || '').trim());
+
+  /** Provider choice and endpoint first (the server drops the stored key when
+   *  the URL changes), then any keys typed in this round. */
+  const saveProvider = async () => {
+    setSavingCreds(true);
+    try {
+      await client.put('/settings', { llmProvider, llmCustomEndpoint: llmCustomEndpoint.trim() });
+      const payload = {};
+      for (const f of AI_TOKEN_FIELDS) {
+        const v = (credInputs[f.name] || '').trim();
+        if (v) payload[f.name] = v;
+      }
+      const { data } = await client.put('/settings/credentials', payload);
+      setCredSources(data);
+      setCredInputs({});
+      setSavedProvider({ provider: llmProvider, endpoint: llmCustomEndpoint.trim() });
+      setLlmTest(null);
+      window.dispatchEvent(new Event('ai-status-changed'));
+      const ok = await refreshModels();
+      if (ok) setAiEnabled(true);
+      toast({ type: 'success', title: 'AI provider saved', message: 'Applied immediately — no restart needed.' });
+    } catch (e) {
+      toast({ type: 'error', title: 'Save failed', message: e?.response?.data?.error || 'Could not save the AI provider. Try again.' });
+    } finally {
+      setSavingCreds(false);
+    }
+  };
+
+  const testLlm = async () => {
+    setTestingLlm(true);
+    setLlmTest(null);
+    try {
+      const { data } = await client.post('/settings/llm-test', {
+        endpoint: llmCustomEndpoint.trim(),
+        apiToken: (credInputs.customEndpointToken || '').trim(),
+        model: llmModel,
+      });
+      setLlmTest(data);
+    } catch (e) {
+      setLlmTest({ error: e?.response?.data?.error || 'Test failed.' });
+    } finally {
+      setTestingLlm(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -130,29 +212,6 @@ export default function AdminSettingsPage() {
       toast({ type: 'error', title: 'Save failed', message: e?.response?.data?.error || 'Could not save settings. Try again.' });
     } finally {
       setSaving(false);
-    }
-  };
-
-  const saveCredentials = async () => {
-    const payload = {};
-    for (const f of AI_TOKEN_FIELDS) {
-      const v = (credInputs[f.name] || '').trim();
-      if (v) payload[f.name] = v;
-    }
-    if (Object.keys(payload).length === 0) return;
-    setSavingCreds(true);
-    try {
-      const { data } = await client.put('/settings/credentials', payload);
-      setCredSources(data);
-      // AI-gated surfaces (nav item, Ask AI buttons) re-check live.
-      window.dispatchEvent(new Event('ai-status-changed'));
-      setCredInputs({});
-      setAiEnabled(true);
-      toast({ type: 'success', title: 'AI keys saved', message: 'Stored encrypted. Applied immediately — no restart needed.' });
-    } catch {
-      toast({ type: 'error', title: 'Save failed', message: 'Could not save AI keys. Try again.' });
-    } finally {
-      setSavingCreds(false);
     }
   };
 
@@ -267,9 +326,9 @@ export default function AdminSettingsPage() {
             <Sparkles size={14} className="text-brand" />
           </div>
           <div>
-            <p className="text-sm font-bold text-ink">AI Provider Keys</p>
+            <p className="text-sm font-bold text-ink">AI Provider</p>
             <p className="text-[11px] text-ink-muted">
-              Stored <span className="text-ink">AES-256-GCM encrypted</span> in the local database, never displayed again,
+              Keys are stored <span className="text-ink">AES-256-GCM encrypted</span> in the local database, never displayed again,
               and applied immediately. A stored key overrides <code>.env</code>; once it shows "Stored encrypted" you can
               remove the token from <code>.env</code>.
             </p>
@@ -278,7 +337,7 @@ export default function AdminSettingsPage() {
 
         {!aiEnabled && (
           <p className="mt-3 text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5">
-            AI analysis is not configured — add an OpenAI or GitHub Models token below to enable it.
+            AI analysis is not configured — pick a provider and add its key, or point ICC at a custom OpenAI-compatible endpoint.
           </p>
         )}
 
@@ -286,7 +345,41 @@ export default function AdminSettingsPage() {
           <p className="text-gray-400 text-sm mt-4">Loading…</p>
         ) : (
           <div className="flex flex-col gap-5 mt-4">
-            {AI_TOKEN_FIELDS.map(f => (
+            <div>
+              <label htmlFor="llm-provider" className="block text-xs font-semibold text-ink mb-1">Provider</label>
+              <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">
+                Which service answers every AI analysis (cluster reviews, Ask AI, advisors, Service Status). Keys for the
+                other providers stay stored, so switching back is one save.
+              </p>
+              <select
+                id="llm-provider"
+                value={llmProvider}
+                onChange={e => setLlmProvider(e.target.value)}
+                className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer"
+              >
+                {LLM_PROVIDERS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
+            {llmProvider === 'custom' && (
+              <div>
+                <label htmlFor="llm-custom-endpoint" className="block text-xs font-semibold text-ink mb-1">Endpoint URL</label>
+                <p className="text-[11px] text-ink-muted mb-1.5 leading-relaxed">
+                  Any OpenAI-compatible server (a Copilot bridge, a local model server). Paste the chat completions URL or
+                  the API base; ICC keeps the base and calls <code>/models</code> and <code>/chat/completions</code> under it.
+                  Changing the URL drops the stored key, so type the key again with a new address.
+                </p>
+                <input
+                  id="llm-custom-endpoint"
+                  type="text"
+                  autoComplete="off"
+                  value={llmCustomEndpoint}
+                  onChange={e => setLlmCustomEndpoint(e.target.value)}
+                  placeholder="http://127.0.0.1:8787/v1/chat/completions"
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs font-mono text-ink focus:border-brand/60 outline-none"
+                />
+              </div>
+            )}
+            {AI_TOKEN_FIELDS.filter(f => f.providers.includes(llmProvider)).map(f => (
               <div key={f.name}>
                 <div className="flex items-center gap-2.5 mb-1 flex-wrap">
                   <label htmlFor={`cred-${f.name}`} className="text-xs font-semibold text-ink">{f.label}</label>
@@ -313,13 +406,44 @@ export default function AdminSettingsPage() {
                 />
               </div>
             ))}
+            {llmProvider === 'custom' && (
+              <div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={testLlm}
+                    disabled={testingLlm || !llmCustomEndpoint.trim()}
+                    className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <Sparkles size={13} /> {testingLlm ? 'Testing…' : 'Test endpoint'}
+                  </button>
+                  <span className="text-[11px] text-ink-faint">
+                    Checks the endpoint is alive, lists its models and sends a one-word chat. A blank key uses the stored key only for the saved URL.
+                  </span>
+                </div>
+                {llmTest && (
+                  <div className={`mt-2 text-[11px] rounded-md px-2.5 py-1.5 border ${llmTest.error ? 'text-red-400 bg-red-400/10 border-red-400/30' : 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30'}`}>
+                    {llmTest.error ? llmTest.error : (
+                      <>
+                        <span>Alive at {llmTest.endpoint} ({llmTest.latencyMs} ms). </span>
+                        {llmTest.modelsError
+                          ? <span className="text-amber-400">Model list failed ({llmTest.modelsError}); type a model id under Default AI model. </span>
+                          : <span>{llmTest.models.length} model{llmTest.models.length === 1 ? '' : 's'}{llmTest.models.length ? `: ${llmTest.models.slice(0, 8).join(', ')}${llmTest.models.length > 8 ? ', ...' : ''}` : ''}. </span>}
+                        {llmTest.chat?.ok
+                          ? <span>Chat OK{llmTest.chat.model ? ` on ${llmTest.chat.model}` : ''} ({llmTest.chat.latencyMs} ms), reply "{llmTest.chat.reply}".</span>
+                          : <span className="text-amber-400">Chat failed: {llmTest.chat?.error}</span>}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-2 pt-1">
               <button
-                onClick={saveCredentials}
-                disabled={savingCreds || !AI_TOKEN_FIELDS.some(f => (credInputs[f.name] || '').trim())}
+                onClick={saveProvider}
+                disabled={savingCreds || !providerDirty}
                 className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer"
               >
-                <Save size={13} /> {savingCreds ? 'Saving…' : 'Save AI keys'}
+                <Save size={13} /> {savingCreds ? 'Saving…' : 'Save AI provider'}
               </button>
             </div>
           </div>
@@ -363,7 +487,17 @@ export default function AdminSettingsPage() {
                     {modelList.models.map(m => <option key={m} value={m}>{m}</option>)}
                   </select>
                 ) : modelsError ? (
-                  <p className="text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5">{modelsError}</p>
+                  <>
+                    <p className="text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5 mb-1.5">{modelsError}</p>
+                    <input
+                      id="llm-model"
+                      type="text"
+                      value={llmModel}
+                      onChange={e => setLlmModel(e.target.value)}
+                      placeholder="Type a model id"
+                      className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs font-mono text-ink focus:border-brand/60 outline-none"
+                    />
+                  </>
                 ) : (
                   <p className="text-[11px] text-ink-faint">Loading models…</p>
                 )}

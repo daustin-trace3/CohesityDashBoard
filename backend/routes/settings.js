@@ -1,7 +1,7 @@
 const express = require('express');
-const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, getServiceStatusSettings, setSetting, secretSource } = require('../services/settings');
+const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, getServiceStatusSettings, getSetting, setSetting, getSecretSetting, secretSource } = require('../services/settings');
 const { encrypt } = require('../services/encryption');
-const { listModels } = require('../services/llmProvider');
+const { listModels, testEndpoint, normalizeEndpoint, PROVIDERS } = require('../services/llmProvider');
 const alertNotifier = require('../services/alertNotifier');
 const registry = require('../core/registry');
 
@@ -37,6 +37,7 @@ const CREDENTIALS = {
   heliosApiKey: { key: 'helios_api_key', env: 'HELIOS_API_KEY' },
   openaiToken: { key: 'openai_token', env: 'OPENAI_TOKEN' },
   githubModelsToken: { key: 'github_models_token', env: 'GITHUB_MODELS_TOKEN' },
+  customEndpointToken: { key: 'llm_custom_token', env: 'LLM_CUSTOM_TOKEN' },
 };
 
 function credentialStatus() {
@@ -56,6 +57,26 @@ router.get('/llm-models', async (req, res) => {
     }
     const status = err.response?.status;
     res.status(502).json({ error: `Could not list models from the AI provider${status ? ` (HTTP ${status})` : ''}.` });
+  }
+});
+
+/** POST /api/settings/llm-test { endpoint, apiToken?, model? } — probe a custom
+ *  OpenAI-compatible endpoint before saving it. A blank key reuses the stored
+ *  key only when the URL is the saved one, so a saved secret never travels to
+ *  an address it was not saved for. */
+router.post('/llm-test', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const endpoint = normalizeEndpoint(body.endpoint);
+    if (!endpoint) return res.status(400).json({ error: 'Enter the endpoint URL.' });
+    let apiToken = String(body.apiToken || '').trim();
+    if (!apiToken) {
+      const saved = normalizeEndpoint(getSetting('llm_custom_endpoint') || process.env.LLM_CUSTOM_ENDPOINT);
+      if (saved && saved === endpoint) apiToken = getSecretSetting('llm_custom_token', 'LLM_CUSTOM_TOKEN') || '';
+    }
+    res.json(await testEndpoint({ endpoint, apiToken, model: body.model }));
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -124,6 +145,17 @@ router.put('/', (req, res, next) => {
     }
     if (llmFlagUnprotected !== undefined) {
       setSetting('llm_flag_unprotected', llmFlagUnprotected ? '1' : '0');
+    }
+    if (req.body?.llmProvider !== undefined) {
+      if (!PROVIDERS.includes(req.body.llmProvider)) return res.status(400).json({ error: 'Unknown AI provider.' });
+      setSetting('llm_provider', req.body.llmProvider);
+    }
+    if (req.body?.llmCustomEndpoint !== undefined) {
+      const ep = normalizeEndpoint(req.body.llmCustomEndpoint).slice(0, 500);
+      if (ep && !/^https?:\/\//i.test(ep)) return res.status(400).json({ error: 'Endpoint must start with http:// or https://.' });
+      // A saved key is only ever sent to the address it was saved for.
+      if (ep !== normalizeEndpoint(getSetting('llm_custom_endpoint'))) setSetting('llm_custom_token', '');
+      setSetting('llm_custom_endpoint', ep);
     }
     if (req.body?.llmModel !== undefined) {
       setSetting('llm_model', String(req.body.llmModel).trim().slice(0, 120));
