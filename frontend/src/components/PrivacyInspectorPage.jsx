@@ -93,7 +93,7 @@ export default function PrivacyInspectorPage({ platform, embedded = false, title
 
       <div className="panel flex overflow-hidden min-h-[480px]">
         {/* Exchange list */}
-        <div className="w-64 border-r border-cohesity-border overflow-y-auto flex-shrink-0 max-h-[75vh]">
+        <div className="w-64 xl:w-72 border-r border-cohesity-border overflow-y-auto flex-shrink-0 max-h-[78vh]">
           {exchanges === null ? (
             <div className="flex items-center gap-2 p-4 text-ink-muted text-xs"><RefreshCw size={13} className="animate-spin" /> Loading…</div>
           ) : exchanges.length === 0 ? (
@@ -114,7 +114,7 @@ export default function PrivacyInspectorPage({ platform, embedded = false, title
         </div>
 
         {/* Detail */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 min-w-0 max-h-[75vh]">
+        <div className="flex-1 overflow-y-auto px-5 py-4 min-w-0 max-h-[78vh]">
           {error && <p className="text-red-400 text-xs mb-3">{error}</p>}
           {!selected ? (
             exchanges?.length > 0 && <p className="text-ink-muted text-xs py-10 text-center">Select an exchange.</p>
@@ -136,7 +136,7 @@ export default function PrivacyInspectorPage({ platform, embedded = false, title
                 {selected.messages.map((m, i) => (
                   <div key={i} className="mb-2">
                     <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-0.5">{m.role}</p>
-                    <pre className="text-[11px] leading-relaxed text-ink-muted bg-cohesity-black/60 border border-cohesity-border rounded-md p-3 whitespace-pre-wrap break-words max-h-72 overflow-y-auto">
+                    <pre className="text-[11px] leading-relaxed text-ink-muted bg-cohesity-black/60 border border-cohesity-border rounded-md p-3 whitespace-pre-wrap break-words max-h-[32rem] overflow-y-auto">
                       <Highlighted text={m.content} />
                     </pre>
                   </div>
@@ -180,7 +180,7 @@ export default function PrivacyInspectorPage({ platform, embedded = false, title
                   <summary className="text-xs font-bold text-ink cursor-pointer hover:text-brand transition-colors">
                     Raw AI response, as received (still tokenized)
                   </summary>
-                  <pre className="mt-1.5 text-[11px] leading-relaxed text-ink-muted bg-cohesity-black/60 border border-cohesity-border rounded-md p-3 whitespace-pre-wrap break-words max-h-72 overflow-y-auto">
+                  <pre className="mt-1.5 text-[11px] leading-relaxed text-ink-muted bg-cohesity-black/60 border border-cohesity-border rounded-md p-3 whitespace-pre-wrap break-words max-h-[32rem] overflow-y-auto">
                     <Highlighted text={selected.response} />
                   </pre>
                 </details>
