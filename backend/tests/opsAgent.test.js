@@ -222,3 +222,63 @@ describe('self-heal re-poll', () => {
     expect(agent.triggerPoll('nopoll', 1, 'x').result).toMatch(/no on-demand poll/);
   });
 });
+
+describe('auto-resolution', () => {
+  const CONFIG = { smtpHost: '', smtpFrom: '', smtpRecipients: '' };
+  const quiet = { ...settings, autoResolveMinutes: 30, evidenceResolve: false, name: 'Otis', emailEnabled: false };
+  const triaged = (id) => db.prepare("UPDATE ops_incidents SET state = 'triaged', triaged_at = ?, summary = 'x' WHERE id = ?").run(NOW, id);
+
+  it('holds a triaged incident in clearing, then closes it once the alerts stay quiet', async () => {
+    agent.groupTick(NOW, quiet, { items: [item('dell', 'd1')], failed: [] });
+    triaged(incidents()[0].id);
+    agent.groupTick('2026-09-25T20:05:00.000Z', quiet, { items: [], failed: [] });
+    let row = incidents()[0];
+    expect(row.state).toBe('clearing');
+    expect(row.cleared_since).toBe('2026-09-25T20:05:00.000Z');
+
+    await agent.resolvePass('2026-09-25T20:20:00.000Z', quiet, CONFIG, 5);
+    expect(incidents()[0].state).toBe('clearing');   // 15 min of quiet, window is 30
+
+    const out = await agent.resolvePass('2026-09-25T20:40:00.000Z', quiet, CONFIG, 5);
+    row = incidents()[0];
+    expect(out.resolvedQuiet).toBe(1);
+    expect(row.state).toBe('resolved');
+    expect(row.resolved_by).toBe('agent');
+    expect(row.resolution).toMatch(/none fired again in the 35 minutes since, so Otis closed this incident/);
+  });
+
+  it('a re-fire inside the quiet window reopens the incident instead of closing it', async () => {
+    agent.groupTick(NOW, quiet, { items: [item('dell', 'd1')], failed: [] });
+    triaged(incidents()[0].id);
+    agent.groupTick('2026-09-25T20:05:00.000Z', quiet, { items: [], failed: [] });
+    expect(incidents()[0].state).toBe('clearing');
+    agent.groupTick('2026-09-25T20:10:00.000Z', quiet, { items: [item('dell', 'd1', { firstSeen: '2026-09-25T20:09:00.000Z' })], failed: [] });
+    const row = incidents()[0];
+    expect(row.state).toBe('collecting');
+    expect(row.cleared_since).toBeNull();
+    const out = await agent.resolvePass('2026-09-25T21:00:00.000Z', quiet, CONFIG, 5);
+    expect(out.resolvedQuiet).toBe(0);
+  });
+
+  it('closes on the spot when the quiet window is zero', () => {
+    const immediate = { ...quiet, autoResolveMinutes: 0 };
+    agent.groupTick(NOW, immediate, { items: [item('pure', 'p1')], failed: [] });
+    triaged(incidents()[0].id);
+    agent.groupTick('2026-09-25T20:05:00.000Z', immediate, { items: [], failed: [] });
+    const row = incidents()[0];
+    expect(row.state).toBe('resolved');
+    expect(row.resolution).toMatch(/Every alert in this incident cleared/);
+  });
+
+  it('only offers evidence-resolution for a platform alert whose subject ICC sees as healthy', () => {
+    const open = [{ source_key: 'a1', cleared_at: null }];
+    const healthy = { hosts: [{ verdict: 'degraded', hostRecords: [{ up: true }], platformPolls: [{ lastPollStatus: 'success' }] }] };
+    expect(agent.evidenceResolveEligible(open, healthy)).toBe(true);
+    expect(agent.evidenceResolveEligible([{ source_key: 'poll:3', cleared_at: null }], healthy)).toBe(false);
+    expect(agent.evidenceResolveEligible([{ source_key: 'stale:3', cleared_at: null }], healthy)).toBe(false);
+    expect(agent.evidenceResolveEligible(open, { hosts: [{ verdict: 'offline', hostRecords: [{ up: true }] }] })).toBe(false);
+    expect(agent.evidenceResolveEligible(open, { hosts: [{ verdict: 'degraded', hostRecords: [{ up: true }], platformPolls: [{ lastPollStatus: 'error' }] }] })).toBe(false);
+    expect(agent.evidenceResolveEligible(open, { hosts: [{ verdict: 'degraded', hostRecords: [{ up: null }] }] })).toBe(false);
+    expect(agent.evidenceResolveEligible([{ source_key: 'a1', cleared_at: NOW }], healthy)).toBe(false);
+  });
+});

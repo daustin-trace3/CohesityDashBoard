@@ -68,6 +68,8 @@ export default function AdminSettingsPage() {
   const [agentAnalysesPerHour, setAgentAnalysesPerHour] = useState(20);
   const [agentRenotifyMinutes, setAgentRenotifyMinutes] = useState(60);
   const [agentEmailEnabled, setAgentEmailEnabled] = useState(true);
+  const [agentAutoResolveMinutes, setAgentAutoResolveMinutes] = useState(30);
+  const [agentEvidenceResolve, setAgentEvidenceResolve] = useState(true);
   const [agentRecipients, setAgentRecipients] = useState('');
   const [testingAgent, setTestingAgent] = useState(false);
   const [ttlHours, setTtlHours] = useState(24);
@@ -147,6 +149,8 @@ export default function AdminSettingsPage() {
           setAgentAnalysesPerHour(d.opsAgent.analysesPerHour ?? 20);
           setAgentRenotifyMinutes(d.opsAgent.renotifyMinutes ?? 60);
           setAgentEmailEnabled(d.opsAgent.emailEnabled !== false);
+          setAgentAutoResolveMinutes(d.opsAgent.autoResolveMinutes ?? 30);
+          setAgentEvidenceResolve(d.opsAgent.evidenceResolve !== false);
           setAgentRecipients(d.opsAgent.recipients || '');
         }
       }
@@ -256,6 +260,7 @@ export default function AdminSettingsPage() {
           enabled: agentEnabled, name: agentName, minSeverity: agentMinSeverity, holdMinutes: Number(agentHoldMinutes),
           analysesPerHour: Number(agentAnalysesPerHour) || 20, renotifyMinutes: Number(agentRenotifyMinutes),
           emailEnabled: agentEmailEnabled, recipients: agentRecipients,
+          autoResolveMinutes: Number(agentAutoResolveMinutes), evidenceResolve: agentEvidenceResolve,
         },
       });
       window.dispatchEvent(new Event('platforms-changed'));
@@ -922,6 +927,20 @@ export default function AdminSettingsPage() {
                 <p className="text-[11px] text-ink-muted mb-1.5">An emailed incident that gains alerts is triaged again and emailed once this many minutes have passed. 0 never re-emails.</p>
                 <input id="agent-renotify" type="number" min={0} max={1440} value={agentRenotifyMinutes} onChange={(e) => setAgentRenotifyMinutes(e.target.value)}
                   className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="agent-autoresolve" className="block text-xs font-semibold text-ink mb-1">Resolve after quiet for (minutes)</label>
+                <p className="text-[11px] text-ink-muted mb-1.5">Once every alert in an incident has cleared, the agent waits this long before closing it, so a flapping condition does not close and reopen. 0 closes as soon as the alerts clear. 0 to 1440.</p>
+                <input id="agent-autoresolve" type="number" min={0} max={1440} value={agentAutoResolveMinutes} onChange={(e) => setAgentAutoResolveMinutes(e.target.value)}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
+              </div>
+              <div>
+                <label className="flex items-start gap-2 cursor-pointer select-none mt-5">
+                  <input type="checkbox" checked={agentEvidenceResolve} onChange={(e) => setAgentEvidenceResolve(e.target.checked)} className="accent-brand cursor-pointer mt-0.5" />
+                  <span className="text-sm text-ink">Also close what the evidence shows is fixed<span className="block text-[11px] text-ink-muted">For an incident whose platform alert is still open while ICC's own evidence says the system is healthy, the agent asks once an hour whether it is fixed and closes it with the reason. Hardware faults and anything the evidence does not cover stay open.</span></span>
+                </label>
               </div>
             </div>
             <label className="flex items-start gap-2 cursor-pointer select-none">

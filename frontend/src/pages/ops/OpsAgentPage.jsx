@@ -12,6 +12,7 @@ const STATE_META = {
   collecting: { label: 'Collecting', tone: 'info', hint: 'Holding for related alerts before triage' },
   triaged: { label: 'Triaged', tone: 'warn', hint: 'Analysis written, email pending or off' },
   notified: { label: 'Notified', tone: 'ok', hint: 'Analysis emailed' },
+  clearing: { label: 'Clearing', tone: 'info', hint: 'Alerts cleared; closing once they stay quiet' },
   resolved: { label: 'Resolved', tone: 'neutral', hint: 'Every alert cleared or closed by hand' },
 };
 const CLASS_TONE = { incident: 'crit', recurring: 'warn', 'one-off': 'info', noise: 'neutral', 'self-cleared': 'neutral', 'self-healed': 'ok' };
@@ -117,6 +118,13 @@ function IncidentModal({ id, onClose, onChanged }) {
             {inc.triageError && <p className="text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5 mb-3">{inc.triageError}</p>}
             {inc.emailError && <p className="text-[11px] text-red-400 bg-red-400/10 border border-red-400/30 rounded-md px-2.5 py-1.5 mb-3">Email failed: {inc.emailError}</p>}
             {inc.baseline && !inc.emailTo && <p className="text-[11px] text-ink-faint mb-3">Found on the agent's first pass: a backlog that existed before the agent started, triaged and listed but not emailed. Use Send email if it should go out.</p>}
+            {inc.resolution && (
+              <div className="mb-3 rounded-md border border-status-ok/30 bg-status-ok/10 px-2.5 py-2">
+                <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-0.5">Resolution{inc.resolvedBy ? ` (${inc.resolvedBy})` : ''}</p>
+                <p className="text-xs text-ink">{inc.resolution}</p>
+              </div>
+            )}
+            {inc.state === 'clearing' && inc.clearedSince && <p className="text-[11px] text-ink-faint mb-3">Alerts cleared {timeAgo(inc.clearedSince)}; the incident closes itself if nothing fires again inside the quiet window.</p>}
             {inc.emailTo && <p className="text-[11px] text-ink-faint mb-3">Emailed {inc.notifyCount} time{inc.notifyCount === 1 ? '' : 's'} to {inc.emailTo}{inc.notifiedAt ? `, last ${timeAgo(inc.notifiedAt)}` : ''}.</p>}
 
             {inc.state === 'collecting' && !a && (
