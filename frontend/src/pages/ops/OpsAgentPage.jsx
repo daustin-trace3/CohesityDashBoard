@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings } from 'lucide-react';
@@ -7,7 +7,8 @@ import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, tim
 import { useToast } from '../../components/ui/Toaster';
 import { useTableControls, SortTh, TablePager } from '../../components/ui/tableTools';
 
-const REFRESH_MS = 60_000;
+const REFRESH_MS = 60_000;   // floor: a full reload even when nothing changed
+const PULSE_MS = 5_000;      // change probe, so a tick shows up within seconds
 const STATE_META = {
   collecting: { label: 'Collecting', tone: 'info', hint: 'Holding for related alerts before triage' },
   triaged: { label: 'Triaged', tone: 'warn', hint: 'Analysis written, email pending or off' },
@@ -52,7 +53,7 @@ const Section = ({ title, children }) => (
   </div>
 );
 
-function IncidentModal({ id, onClose, onChanged }) {
+function IncidentModal({ id, onClose, onChanged, pulse }) {
   const [inc, setInc] = useState(null);
   const [failed, setFailed] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -61,7 +62,7 @@ function IncidentModal({ id, onClose, onChanged }) {
   const load = useCallback(() => client.get(`/ops-agent/incidents/${id}`)
     .then(({ data }) => setInc(data))
     .catch((e) => setFailed(e?.response?.data?.error || 'Failed to load incident.')), [id]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, pulse]);
 
   const act = async (verb, label) => {
     setBusy(verb);
@@ -195,6 +196,9 @@ export default function OpsAgentPage() {
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [openId, setOpenId] = useState(null);
   const [running, setRunning] = useState(false);
+  const [pulse, setPulse] = useState('');
+  const pulseRef = useRef(null);
+  const [live, setLive] = useState(true);
 
   const load = useCallback(() => Promise.allSettled([
     client.get('/ops-agent/status'),
@@ -206,6 +210,29 @@ export default function OpsAgentPage() {
   }), [scope]);
 
   useEffect(() => { load(); const t = setInterval(load, REFRESH_MS); return () => clearInterval(t); }, [load]);
+
+  // Live updates without a socket: poll a tiny token and only refetch when the
+  // agent has actually changed something (a tick, a triage, an email, a close).
+  useEffect(() => {
+    let alive = true;
+    const probe = async () => {
+      try {
+        const { data } = await client.get('/ops-agent/pulse');
+        if (!alive) return;
+        setLive(true);
+        if (pulseRef.current === null) { pulseRef.current = data.token; return; }
+        if (data.token !== pulseRef.current) {
+          pulseRef.current = data.token;
+          setPulse(data.token);
+          load();
+        }
+      } catch {
+        if (alive) setLive(false);
+      }
+    };
+    const t = setInterval(probe, PULSE_MS);
+    return () => { alive = false; clearInterval(t); };
+  }, [load]);
 
   const runNow = async () => {
     setRunning(true);
@@ -227,6 +254,10 @@ export default function OpsAgentPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Ordered by severity, then by how much is affected.">
+        <span className={`inline-flex items-center gap-1.5 text-[11px] ${live ? 'text-status-ok' : 'text-status-warn'}`} title={live ? `Watching for changes every ${PULSE_MS / 1000}s` : 'Lost contact with ICC; retrying'}>
+          <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-status-ok animate-pulse' : 'bg-status-warn'}`} />
+          {live ? 'Live' : 'Reconnecting'}
+        </span>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <button onClick={runNow} disabled={running}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
@@ -309,7 +340,7 @@ export default function OpsAgentPage() {
         <TablePager ctl={ctl} />
       </Panel>
 
-      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} />}
+      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} />}
     </div>
   );
 }

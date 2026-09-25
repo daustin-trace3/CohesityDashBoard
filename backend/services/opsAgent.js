@@ -917,6 +917,24 @@ function getIncident(id) {
   return row ? shapeIncident(row, { withDetail: true }) : null;
 }
 
+/** Cheap change token for live updates: one row of aggregates, no payload.
+ *  Every state change writes one of these timestamps, and each tick writes a
+ *  run row, so a changed token means the page has something new to fetch. */
+function pulse() {
+  const a = db.prepare(`SELECT COUNT(*) n,
+      COALESCE(MAX(opened_at), '') o, COALESCE(MAX(last_event_at), '') e, COALESCE(MAX(triaged_at), '') t,
+      COALESCE(MAX(notified_at), '') nt, COALESCE(MAX(resolved_at), '') r, COALESCE(MAX(cleared_since), '') c,
+      COALESCE(SUM(notify_count), 0) s
+    FROM ops_incidents`).get();
+  const open = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE state != 'resolved'").get().c;
+  const run = db.prepare('SELECT at FROM ops_agent_runs ORDER BY id DESC LIMIT 1').get();
+  return {
+    token: [a.n, open, a.o, a.e, a.t, a.nt, a.r, a.c, a.s, run?.at || ''].join('|'),
+    lastRunAt: run?.at || null,
+    openIncidents: open,
+  };
+}
+
 function status() {
   const settings = getOpsAgentSettings();
   const config = getNotificationSettings();
@@ -1015,7 +1033,7 @@ function stopOpsAgent() {
 }
 
 module.exports = {
-  runOnce, status, listIncidents, getIncident, retriage, resend, resolve, sampleEmail, sendSampleEmail,
+  runOnce, status, pulse, listIncidents, getIncident, retriage, resend, resolve, sampleEmail, sendSampleEmail,
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
   hostKey, incidentKeyFor, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
