@@ -126,10 +126,10 @@ function triggerPoll(platform, entityId, name) {
       return rec('poll triggered');
     }
     const handle = registry.getPollerHandle(platform);
-    const row = serviceStatus.sourceRowFor(platform, entityId);
     if (!handle || typeof handle.trigger !== 'function') return rec('this platform has no on-demand poll ICC can trigger');
-    if (!row) return rec('source row not found');
-    Promise.resolve(handle.trigger(row)).catch((err) => logger.warn(`[OpsAgent] re-poll of ${platform} #${entityId} failed: ${err.message}`));
+    // The framework resolves the full source row from the id; a name-only row
+    // would reach poll() without a host or credentials.
+    Promise.resolve(handle.trigger(entityId)).catch((err) => logger.warn(`[OpsAgent] re-poll of ${platform} #${entityId} failed: ${err.message}`));
     return rec('poll triggered');
   } catch (err) {
     return rec(`could not trigger a poll: ${err.message}`);
@@ -622,7 +622,17 @@ async function runOnce({ force = false } = {}) {
     for (const inc of db.prepare("SELECT * FROM ops_incidents WHERE state = 'collecting' AND heal_attempted = 0").all()) {
       const targets = incidentAlerts(inc.id).filter((a) => !a.cleared_at && /^(poll|stale):/.test(a.source_key));
       if (!targets.length) continue;
-      const actions = targets.map((a) => triggerPoll(a.platform, Number(a.source_key.split(':')[1]), a.host));
+      // A source mid-poll needs no nudge; let that run finish first.
+      const syncing = new Set();
+      for (const t of targets) {
+        try { for (const s of serviceStatus.polledSourcesFor(t.platform)) if (s.isSyncing) syncing.add(`${t.platform}:${s.entityId}`); } catch { /* ignore */ }
+      }
+      const actions = targets.map((a) => {
+        const eid = Number(a.source_key.split(':')[1]);
+        return syncing.has(`${a.platform}:${eid}`)
+          ? { at: now, action: 'repoll', platform: a.platform, target: a.host || String(eid), result: 'already polling, left to finish' }
+          : triggerPoll(a.platform, eid, a.host);
+      });
       const holdUntil = new Date(Math.max(Date.parse(inc.hold_until), Date.parse(now) + HEAL_HOLD_MINUTES * 60000)).toISOString();
       db.prepare('UPDATE ops_incidents SET heal_attempted = 1, heal_at = ?, heal_actions_json = ?, hold_until = ? WHERE id = ?').run(now, JSON.stringify(actions), holdUntil, inc.id);
       stats.healAttempts += 1;
@@ -827,6 +837,6 @@ module.exports = {
   runOnce, status, listIncidents, getIncident, retriage, resend, resolve, sampleEmail, sendSampleEmail,
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
-  hostKey, incidentKeyFor, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence,
+  hostKey, incidentKeyFor, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
 };
 void chatFn;
