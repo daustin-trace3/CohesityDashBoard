@@ -19,6 +19,14 @@ router.get('/status', (req, res, next) => {
   try { res.json(agent.status()); } catch (err) { next(err); }
 });
 
+/** Live-update probe: tiny, uncached, safe to call every few seconds. */
+router.get('/pulse', (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json(agent.pulse());
+  } catch (err) { next(err); }
+});
+
 router.get('/incidents', (req, res, next) => {
   try {
     const state = ['open', 'resolved', 'all'].includes(req.query.state) ? req.query.state : 'open';
