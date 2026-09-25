@@ -13,6 +13,7 @@ const { dellPoller } = require('../services/dellPoller');
 const dellAdvisor = require('../services/advisors/dellAdvisor');
 const { fingerprint: varianceFingerprint } = require('../services/dellVariance');
 const { vcenterHostUtilization } = require('../services/dellVcenterUtil');
+const { warrantyAlertFilter } = require('../services/dellWarrantyCover');
 
 const router = express.Router();
 
@@ -464,7 +465,8 @@ router.get('/devices/:id', [param('id').isInt().toInt()], validate, (req, res, n
 });
 
 /** GET /api/dell/alerts?days=7 — alert feed across instances. device_row_id
- *  resolves the alerting device to its inventory row for the detail modal. */
+ *  resolves the alerting device to its inventory row for the detail modal.
+ *  OME warranty alerts on a tag with an active contract are left out. */
 router.get('/alerts', [query('days').optional().isInt({ min: 1, max: 90 }).toInt()], validate, (req, res, next) => {
   try {
     const days = req.query.days || 7;
@@ -476,7 +478,7 @@ router.get('/alerts', [query('days').optional().isInt({ min: 1, max: 90 }).toInt
         AND (d.service_tag = a.service_tag OR d.name = a.device_name)
       WHERE a.created_at >= datetime('now', ?)
       ORDER BY a.created_at DESC LIMIT 5000
-    `).all(`-${days} days`));
+    `).all(`-${days} days`).filter(warrantyAlertFilter(db)));
   } catch (err) { next(err); }
 });
 

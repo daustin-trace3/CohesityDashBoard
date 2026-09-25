@@ -5,6 +5,7 @@ const db = require('../db/database');
 const logger = require('../utils/logger');
 const { getNotificationSettings, getSmtpPassword } = require('./settings');
 const registry = require('../core/registry');
+const { warrantyAlertFilter } = require('./dellWarrantyCover');
 
 const SEVERITY_RANK = { info: 0, warning: 1, error: 2, critical: 3 };
 const THRESHOLD_RANK = { info: 0, warning: 1, critical: 3 };
@@ -145,16 +146,19 @@ function collectVcenterIssues() {
 }
 
 /** Un-acknowledged Dell OME alerts. dell_alerts is append-only (90-day
- *  retention) — acknowledging the alert in OME is what stops reminders. */
+ *  retention) — acknowledging the alert in OME is what stops reminders.
+ *  OME warranty alerts for a tag whose best contract is outside the warning
+ *  window are dropped (see dellWarrantyCover). */
 function collectDellAlerts() {
+  const keep = warrantyAlertFilter(db);
   const rows = db.prepare(`
-    SELECT d.ome_id AS omeId, d.alert_id AS alertId, d.severity, d.message,
+    SELECT d.ome_id AS omeId, d.ome_id, d.alert_id AS alertId, d.severity, d.message,
            d.category AS category, d.subcategory AS subcategory,
-           d.device_name AS deviceName, d.service_tag AS serviceTag,
+           d.device_name AS deviceName, d.device_name, d.service_tag AS serviceTag, d.service_tag,
            d.created_at AS createdAt, d.captured_at AS capturedAt, o.name AS omeName
     FROM dell_alerts d JOIN dell_ome_instances o ON d.ome_id = o.id
     WHERE d.status IS NULL OR d.status != 'acknowledged'
-  `).all();
+  `).all().filter(keep);
   return rows.map((r) => {
     let severity = String(r.severity || '').toLowerCase();
     if (severity === 'normal') severity = 'info';
