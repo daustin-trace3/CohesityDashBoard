@@ -628,9 +628,23 @@ function fromAddress(settings, config) {
   return `"${settings.name.replace(/"/g, '')}" <${addr}>`;
 }
 
+/** Why an automatic email must not be attempted, or null when it may be.
+ *  The Global Settings SMTP switch wins over the agent's own: with it off
+ *  ICC sends nothing at all, so the agent must not open a connection either. */
+function emailBlockedReason(settings, config) {
+  if (!settings.emailEnabled) return "the agent's own email switch is off";
+  if (!config.smtpEnabled) return 'SMTP is switched off in Global Settings';
+  if (!config.smtpHost || !config.smtpFrom) return 'SMTP has no host or from address';
+  return null;
+}
+
 async function notifyIncident(inc, settings, config, { force = false } = {}) {
-  if (!settings.emailEnabled && !force) return { skipped: 'email off' };
-  if (!config.smtpHost || !config.smtpFrom) return { skipped: 'smtp not configured' };
+  // force is an explicit Send email from the UI: it ignores the two on/off
+  // switches but still needs somewhere to send.
+  const blocked = force
+    ? (!config.smtpHost || !config.smtpFrom ? 'SMTP has no host or from address' : null)
+    : emailBlockedReason(settings, config);
+  if (blocked) return { skipped: blocked };
   const to = recipientsFor(inc, settings, config);
   if (!to) return { skipped: 'no recipients' };
   const analysis = JSON.parse(inc.analysis_json || 'null') || fallbackTriage(gatherIncidentEvidence(inc, incidentAlerts(inc.id)));
@@ -665,8 +679,8 @@ function closeIncident(id, { now, resolution, classification = null, by = 'agent
 
 /** Closure note for an incident that had already been emailed. */
 async function notifyResolved(inc, settings, config) {
-  if (!settings.emailEnabled || !inc.notify_count) return false;
-  if (!config.smtpHost || !config.smtpFrom) return false;
+  if (!inc.notify_count) return false;
+  if (emailBlockedReason(settings, config)) return false;
   const to = inc.email_to || recipientsFor(inc, settings, config);
   if (!to) return false;
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
@@ -697,7 +711,7 @@ async function notifyResolved(inc, settings, config) {
     await transport.sendMail({ from: fromAddress(settings, config), to, subject, text, html });
     return true;
   } catch (err) {
-    logger.error(`[OpsAgent] closure email failed for #${inc.id}: ${err.message}`);
+    logger.error(`[OpsAgent] closure email failed for #${inc.id} via ${config.smtpHost}:${config.smtpPort}: ${err.message}`);
     return false;
   }
 }
@@ -886,7 +900,12 @@ async function runOnce({ force = false } = {}) {
     }
 
     // Notify: triaged incidents, first time or a re-notify after growth.
-    const toNotify = db.prepare("SELECT * FROM ops_incidents WHERE state = 'triaged'").all();
+    const blocked = emailBlockedReason(settings, config);
+    const toNotify = blocked ? [] : db.prepare("SELECT * FROM ops_incidents WHERE state = 'triaged'").all();
+    if (blocked) {
+      const waiting = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE state = 'triaged'").get().c;
+      if (waiting) logger.info(`[OpsAgent] ${waiting} incident(s) triaged, no email sent: ${blocked}`);
+    }
     for (const inc of toNotify) {
       if (inc.baseline && !inc.notify_count) { db.prepare("UPDATE ops_incidents SET state = 'notified' WHERE id = ?").run(inc.id); continue; }
       if (inc.email_attempt_at && inc.email_error && Date.parse(inc.email_attempt_at) > Date.now() - EMAIL_RETRY_MINUTES * 60000) continue;
@@ -897,7 +916,7 @@ async function runOnce({ force = false } = {}) {
       const r = await notifyIncident(inc, settings, config);
       if (r.sent) stats.emailsSent += 1;
       else if (r.skipped) logger.info(`[OpsAgent] incident #${inc.id} triaged, email skipped (${r.skipped})`);
-      else logger.error(`[OpsAgent] email failed for #${inc.id}: ${r.error}`);
+      else logger.error(`[OpsAgent] email failed for #${inc.id} via ${config.smtpHost}:${config.smtpPort}: ${r.error}`);
     }
   } catch (err) {
     stats.error = err.message;
@@ -1085,6 +1104,6 @@ module.exports = {
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
   hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
-  closeIncident, evidenceResolveEligible, resolvePass,
+  closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason,
 };
 void chatFn;
