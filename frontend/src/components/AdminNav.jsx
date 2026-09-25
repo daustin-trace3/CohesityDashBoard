@@ -2,6 +2,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal, Bot, ShieldCheck } from 'lucide-react';
 import { Building2 } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
+import { useAiEnabled } from '../api/useAiEnabled';
 
 // Grouped vertical nav shared by every Global Settings page. Each item is a
 // real route so sections are bookmarkable and browser-back works.
@@ -10,8 +11,8 @@ const GROUPS = [
     label: 'Intelligence',
     items: [
       { to: '/admin/ai', label: 'AI Analysis & Keys', icon: Sparkles, aliases: ['/admin'] },
-      { to: '/admin/agent', label: 'Operations Agent', icon: Bot },
-      { to: '/admin/agent-privacy', label: 'Agent Privacy', icon: ShieldCheck, permission: 'admin:ai-audit:view' },
+      { to: '/admin/agent', label: 'Operations Agent', icon: Bot, requiresAi: true },
+      { to: '/admin/agent-privacy', label: 'Agent Privacy', icon: ShieldCheck, permission: 'admin:ai-audit:view', requiresAi: true },
     ],
   },
   {
@@ -42,6 +43,7 @@ export default function AdminNav() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { hasPermission, loading: authLoading, user } = useAuth();
+  const aiEnabled = useAiEnabled();
 
   const isActive = (item) =>
     pathname === item.to || (item.aliases || []).includes(pathname);
@@ -49,7 +51,7 @@ export default function AdminNav() {
   return (
     <nav className="w-full md:w-48 shrink-0 flex flex-row md:flex-col flex-wrap gap-x-6 gap-y-4" aria-label="Global settings sections">
       {GROUPS.map(group => {
-        const items = group.items.filter(i => (!i.permission || authLoading || hasPermission(i.permission)) && (!i.globalAdmin || user?.isGlobalAdmin));
+        const items = group.items.filter(i => (!i.permission || authLoading || hasPermission(i.permission)) && (!i.globalAdmin || user?.isGlobalAdmin) && (!i.requiresAi || aiEnabled));
         if (items.length === 0) return null;
         return (
           <div key={group.label} className="flex flex-col gap-0.5 min-w-[10rem]">

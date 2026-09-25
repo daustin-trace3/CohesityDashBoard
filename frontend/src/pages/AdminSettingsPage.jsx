@@ -874,6 +874,11 @@ export default function AdminSettingsPage() {
             </p>
           </div>
         </div>
+        {!aiEnabled && (
+          <p className="mt-3 text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5">
+            The Operations Agent needs an AI provider. Configure one under AI Analysis &amp; Keys; until then the agent stays idle and hidden from the navigation.
+          </p>
+        )}
         {loading ? (
           <p className="text-gray-400 text-sm mt-4">Loading…</p>
         ) : (

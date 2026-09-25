@@ -233,7 +233,7 @@ export default function OpsAgentPage() {
       {s && (
         <div className="flex items-center gap-2 mb-4 flex-wrap text-[11px]">
           <Badge tone={s.settings.enabled ? 'ok' : 'crit'}>{s.settings.enabled ? 'Agent on' : 'Agent off'}</Badge>
-          <Badge tone={s.aiConfigured ? 'ok' : 'warn'}>{s.aiConfigured ? `AI: ${s.aiProvider}${s.aiModel ? ` / ${s.aiModel}` : ''}` : 'AI not configured: rule-based digests only'}</Badge>
+          <Badge tone={s.aiConfigured ? 'ok' : 'crit'}>{s.aiConfigured ? `AI: ${s.aiProvider}${s.aiModel ? ` / ${s.aiModel}` : ''}` : 'AI not configured: the agent is idle'}</Badge>
           <Badge tone={s.smtpReady && s.settings.emailEnabled ? 'ok' : 'warn'}>{!s.settings.emailEnabled ? 'Email off' : s.smtpReady ? 'SMTP ready' : 'SMTP not configured'}</Badge>
           <span className="text-ink-faint">Hold {s.settings.holdMinutes} min · minimum {s.settings.minSeverity} · {s.settings.analysesPerHour}/h triage cap · recipients {s.settings.recipients || (s.defaultRecipients ? 'per platform, default ' + s.defaultRecipients : 'per platform')}</span>
           <span className="text-ink-faint">{s.lastRun ? `Last tick ${timeAgo(s.lastRun.at)}: ${s.lastRun.alertsSeen} alerts seen, ${s.lastRun.newAlerts} new${s.lastRun.error ? `, error: ${s.lastRun.error}` : ''}` : 'No tick yet'}</span>

@@ -602,6 +602,9 @@ async function runOnce({ force = false } = {}) {
   if (running) return null;
   const settings = getOpsAgentSettings();
   if (!settings.enabled && !force) return null;
+  // An AI feature: without a configured provider the agent stays idle and
+  // out of the navigation, like every other AI surface.
+  if (!isConfigured()) { if (!force) return null; }
   running = true;
   const now = new Date().toISOString();
   const stats = { at: now, alertsSeen: 0, newAlerts: 0, incidentsOpened: 0, triaged: 0, emailsSent: 0, healAttempts: 0, error: null };
