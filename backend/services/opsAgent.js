@@ -60,10 +60,38 @@ function hostKey(host) {
   return h;
 }
 
-function incidentKeyFor(item, wide) {
+/** The source an alert came from, as its collector encodes it: c<clusterId>,
+ *  a<arrayId>, d<omeId>, v, z, ar, aws, or the entity id of a poll/stale item.
+ *  Used to keep one cluster, array or appliance apart from the next. */
+function sourceTokenOf(item) {
+  const key = String(item.sourceKey || '');
+  const head = key.split(':')[0];
+  if (head === 'poll' || head === 'stale') return `s${key.split(':')[1] || '0'}`;
+  return head || 'src';
+}
+
+/** Grouping is a setting, because a fleet is not always troubleshot as one:
+ *   platform  - alerts on one host share an incident, and a platform whose
+ *               source is unreachable or bursting folds into one (default)
+ *   service   - alerts on servers of a watched app service roll into that
+ *               app's incident; everything else groups by host
+ *   component - one incident per alerting component: per host, per cluster,
+ *               per array, per appliance. Nothing folds platform-wide. */
+function incidentKeyFor(item, wide, { mode = 'platform', appOf = null } = {}) {
   if (item.platform === 'appservice') return `app:${item.sourceKey}`;
-  if (wide.has(item.platform)) return `platform:${item.platform}:wide`;
   const hk = hostKey(item.host);
+  if (mode === 'service' && hk && appOf) {
+    const app = appOf.get(hk);
+    if (app) return `app:usage:${app.usageId}`;
+  }
+  if (mode === 'component') {
+    return hk ? `host:${hk}` : `src:${item.platform}:${sourceTokenOf(item)}`;
+  }
+  if (mode === 'service') {
+    if (/^(poll|stale):/.test(String(item.sourceKey))) return `src:${item.platform}:${sourceTokenOf(item)}`;
+    return hk ? `host:${hk}` : `platform:${item.platform}`;
+  }
+  if (wide.has(item.platform)) return `platform:${item.platform}:wide`;
   return hk ? `host:${hk}` : `platform:${item.platform}`;
 }
 
@@ -94,9 +122,8 @@ function staleItems(now) {
 
 /** Watched app services that are degraded (warning) or critical. Service
  *  Status only surfaces critical apps; the agent triages degraded ones too. */
-function appServiceItems(now) {
-  if (typeof appSvc.evaluateAll !== 'function') return [];
-  return (appSvc.evaluateAll(new Date(now)) || [])
+function appServiceItems(now, details) {
+  return (details || [])
     .filter((d) => d.state === 'critical' || d.state === 'degraded')
     .map((d) => ({
       platform: 'appservice', sourceKey: `usage:${d.usageId}`,
@@ -111,8 +138,20 @@ function collectItems(now) {
   const enabled = serviceStatus.getEnabledPlatformIds();
   const reach = serviceStatus.gatherReachabilityItems(enabled);
   let apps = [];
-  try { apps = appServiceItems(now); } catch (err) { logger.error(`[OpsAgent] app service evaluation failed: ${err.message}`); failed.push('appservice'); }
-  return { items: [...items, ...reach, ...staleItems(now), ...apps], failed };
+  let appOf = new Map();
+  try {
+    const details = typeof appSvc.evaluateAll === 'function' ? (appSvc.evaluateAll(new Date(now)) || []) : [];
+    apps = appServiceItems(now, details);
+    // host -> app, so 'service' grouping can roll a server's alerts into the
+    // application it belongs to.
+    for (const d of details) {
+      for (const s of (d.servers || [])) {
+        const hk = hostKey(s.name);
+        if (hk && !appOf.has(hk)) appOf.set(hk, { usageId: d.usageId, displayId: d.displayId, label: d.label });
+      }
+    }
+  } catch (err) { logger.error(`[OpsAgent] app service evaluation failed: ${err.message}`); failed.push('appservice'); }
+  return { items: [...items, ...reach, ...staleItems(now), ...apps], failed, appOf };
 }
 
 /** Re-poll one source now. Fire and forget: the framework records the outcome
@@ -170,12 +209,17 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
     return true;
   });
 
-  // Platform-wide: a source unreachable, or a burst of new alerts.
+  const mode = ['platform', 'service', 'component'].includes(settings.grouping) ? settings.grouping : 'platform';
+  const appOf = collected.appOf || null;
+  // Platform-wide: a source unreachable, or a burst of new alerts. Only the
+  // 'platform' mode folds; the others keep each component apart.
   const wide = new Set();
   const perPlatform = new Map();
   for (const it of fresh) perPlatform.set(it.platform, (perPlatform.get(it.platform) || 0) + 1);
-  for (const it of items) if (/^(poll|stale):/.test(String(it.sourceKey)) && it.platform !== 'appservice') wide.add(it.platform);
-  for (const [p, n] of perPlatform) if (n >= WIDE_BURST) wide.add(p);
+  if (mode === 'platform') {
+    for (const it of items) if (/^(poll|stale):/.test(String(it.sourceKey)) && it.platform !== 'appservice') wide.add(it.platform);
+    for (const [p, n] of perPlatform) if (n >= WIDE_BURST) wide.add(p);
+  }
 
   const stats = { alertsSeen: items.length, newAlerts: fresh.length, incidentsOpened: 0 };
   const holdMs = settings.holdMinutes * 60000;
@@ -191,14 +235,18 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
   db.transaction(() => {
     const byKey = new Map(openIncidents().map((i) => [i.incident_key, i]));
     for (const it of fresh) {
-      const key = incidentKeyFor(it, wide);
+      const key = incidentKeyFor(it, wide, { mode, appOf });
       let inc = byKey.get(key);
       if (!inc) {
         const holdUntil = new Date(Date.parse(now) + holdMs).toISOString();
         const meta = platformMeta(it.platform);
         const isWide = key.endsWith(':wide');
-        const title = it.platform === 'appservice' ? `App service ${it.host || it.sourceKey}` : isWide ? `${meta.label}: platform-wide alerts` : (it.host ? `${it.host}` : `${meta.label} alerts`);
-        const id = insertIncident.run(key, title, isWide ? null : (it.host || null), JSON.stringify([it.platform]), normalizeSeverity(it.severity), now, holdUntil, now, baseline ? 1 : 0).lastInsertRowid;
+        const app = key.startsWith('app:') && it.platform !== 'appservice' && appOf ? appOf.get(hostKey(it.host)) : null;
+        const title = it.platform === 'appservice' ? `App service ${it.host || it.sourceKey}`
+          : app ? `App service ${app.displayId}${app.label ? ` (${app.label})` : ''}`
+          : isWide ? `${meta.label}: platform-wide alerts`
+          : (it.host ? `${it.host}` : `${meta.label} alerts`);
+        const id = insertIncident.run(key, title, isWide || key.startsWith('src:') && !it.host ? null : (it.host || null), JSON.stringify([it.platform]), normalizeSeverity(it.severity), now, holdUntil, now, baseline ? 1 : 0).lastInsertRowid;
         inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
         byKey.set(key, inc);
         stats.incidentsOpened += 1;
@@ -319,7 +367,7 @@ function gatherIncidentEvidence(inc, alerts) {
     selfHeal = { attemptedAt: inc.heal_at, actions, outcome: stillFailing.length ? `still failing after the re-poll: ${stillFailing.join(', ')}` : 're-poll completed, source answered' };
   }
   return {
-    incident: { id: inc.id, key: inc.incident_key, title: inc.title, host: inc.host, platforms: JSON.parse(inc.platforms || '[]'), severity: inc.severity, openedAt: inc.opened_at, kind: inc.incident_key.startsWith('app:') ? 'app-service' : inc.incident_key.endsWith(':wide') ? 'platform-wide' : 'host' },
+    incident: { id: inc.id, key: inc.incident_key, title: inc.title, host: inc.host, platforms: JSON.parse(inc.platforms || '[]'), severity: inc.severity, openedAt: inc.opened_at, kind: inc.incident_key.startsWith('app:') ? 'app-service' : inc.incident_key.endsWith(':wide') ? 'platform-wide' : inc.incident_key.startsWith('src:') ? 'source' : 'host' },
     relatedIncidents,
     selfHeal,
     alerts: [...alerts].sort((x, y) => rank(y.severity) - rank(x.severity)).slice(0, EVIDENCE_ALERT_CAP)
@@ -878,7 +926,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
     resolvedAt: row.resolved_at, classification: row.classification, confidence: row.confidence,
     summary: row.summary, eventCount: row.event_count, emailTo: row.email_to, emailError: row.email_error,
     model: row.model, triageError: row.triage_error, baseline: !!row.baseline, resolvedBy: row.resolved_by || null,
-    kind: row.incident_key.startsWith('app:') ? 'app-service' : row.incident_key.endsWith(':wide') ? 'platform-wide' : 'host',
+    kind: row.incident_key.startsWith('app:') ? 'app-service' : row.incident_key.endsWith(':wide') ? 'platform-wide' : row.incident_key.startsWith('src:') ? 'source' : 'host',
     healAttempted: !!row.heal_attempted, healAt: row.heal_at || null,
     resolution: row.resolution || null, clearedSince: row.cleared_since || null,
   };
@@ -889,7 +937,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
   // Ordering key: severity first, then how much is affected and what the
   // triage made of it. Bigger = higher on the page.
   out.impactScore = rank(row.severity) * 1000
-    + (out.kind === 'app-service' ? 700 : out.kind === 'platform-wide' ? 200 : 0)
+    + (out.kind === 'app-service' ? 700 : out.kind === 'platform-wide' ? 200 : out.kind === 'source' ? 150 : 0)
     + Math.min(row.event_count || 0, 100) * 5 + out.platforms.length * 25
     + (CLASS_WEIGHT[row.classification] ?? 150)
     + (out.humanRequired ? 100 : 0);
@@ -1036,7 +1084,7 @@ module.exports = {
   runOnce, status, pulse, listIncidents, getIncident, retriage, resend, resolve, sampleEmail, sendSampleEmail,
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
-  hostKey, incidentKeyFor, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
+  hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
   closeIncident, evidenceResolveEligible, resolvePass,
 };
 void chatFn;

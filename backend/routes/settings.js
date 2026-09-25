@@ -232,6 +232,7 @@ router.put('/', (req, res, next) => {
       if (a.enabled !== undefined) setSetting('ops_agent_enabled', a.enabled ? '1' : '0');
       if (a.name !== undefined) setSetting('ops_agent_name', String(a.name).replace(/[\r\n<>"]/g, '').trim().slice(0, 80));
       if (a.minSeverity !== undefined && ['info', 'warning', 'error', 'critical'].includes(a.minSeverity)) setSetting('ops_agent_min_severity', a.minSeverity);
+      if (a.grouping !== undefined && ['platform', 'service', 'component'].includes(a.grouping)) setSetting('ops_agent_grouping', a.grouping);
       if (a.holdMinutes !== undefined) { const n = Number(a.holdMinutes); setSetting('ops_agent_hold_minutes', n >= 0 && n <= 120 ? String(Math.round(n)) : ''); }
       if (a.analysesPerHour !== undefined) { const n = Number(a.analysesPerHour); setSetting('ops_agent_analyses_per_hour', n >= 1 && n <= 200 ? String(Math.round(n)) : ''); }
       if (a.renotifyMinutes !== undefined) { const n = Number(a.renotifyMinutes); setSetting('ops_agent_renotify_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }

@@ -200,6 +200,7 @@ function getOpsAgentSettings() {
     enabled: getSetting('ops_agent_enabled') === '1',
     name: (getSetting('ops_agent_name') || '').trim() || 'ICC Operations Agent',
     minSeverity: ['info', 'warning', 'error', 'critical'].includes(sev) ? sev : 'warning',
+    grouping: ['platform', 'service', 'component'].includes(getSetting('ops_agent_grouping')) ? getSetting('ops_agent_grouping') : 'platform',
     holdMinutes: (hold >= 0 && hold <= 120) ? Math.round(hold) : 10,
     analysesPerHour: (cap >= 1 && cap <= 200) ? Math.round(cap) : 20,
     renotifyMinutes: (renotify >= 0 && renotify <= 1440) ? Math.round(renotify) : 60,
