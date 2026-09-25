@@ -282,3 +282,44 @@ describe('auto-resolution', () => {
     expect(agent.evidenceResolveEligible([{ source_key: 'a1', cleared_at: NOW }], healthy)).toBe(false);
   });
 });
+
+describe('grouping modes', () => {
+  const alerts = () => [
+    { platform: 'cohesity', sourceKey: 'c1:a1', severity: 'critical', host: 'sql-01', message: 'backup failed', firstSeen: NOW },
+    { platform: 'cohesity', sourceKey: 'c2:a9', severity: 'critical', host: 'web-02', message: 'backup failed', firstSeen: NOW },
+    { platform: 'cohesity', sourceKey: 'poll:7', severity: 'critical', host: 'cluster-b', message: 'unreachable', firstSeen: NOW },
+    { platform: 'vcenter', sourceKey: 'v:i1', severity: 'warning', host: 'vc-prod', message: 'host issue', firstSeen: NOW },
+  ];
+  const keys = () => incidents().map((i) => i.incident_key).sort();
+
+  it('platform mode folds a platform whose source is unreachable (today\'s default)', () => {
+    agent.groupTick(NOW, { ...settings, grouping: 'platform' }, { items: alerts(), failed: [] });
+    expect(keys()).toEqual(['host:vc-prod', 'platform:cohesity:wide']);
+  });
+
+  it('component mode keeps every server and every source apart', () => {
+    agent.groupTick(NOW, { ...settings, grouping: 'component' }, { items: alerts(), failed: [] });
+    expect(keys()).toEqual(['host:cluster-b', 'host:sql-01', 'host:vc-prod', 'host:web-02']);
+    const hostless = [{ platform: 'cohesity', sourceKey: 'c3:a4', severity: 'critical', host: null, message: 'cluster alert', firstSeen: NOW },
+      { platform: 'cohesity', sourceKey: 'c4:a5', severity: 'critical', host: null, message: 'cluster alert', firstSeen: NOW }];
+    agent.groupTick('2026-09-25T20:01:00.000Z', { ...settings, grouping: 'component' }, { items: [...alerts(), ...hostless], failed: [] });
+    expect(keys()).toContain('src:cohesity:c3');
+    expect(keys()).toContain('src:cohesity:c4');
+  });
+
+  it('service mode rolls a server into the app service it belongs to', () => {
+    const appOf = new Map([['sql-01', { usageId: 'aa1', displayId: 'AA1', label: 'Payments' }]]);
+    agent.groupTick(NOW, { ...settings, grouping: 'service' }, { items: alerts(), failed: [], appOf });
+    expect(keys()).toEqual(['app:usage:aa1', 'host:vc-prod', 'host:web-02', 'src:cohesity:s7']);
+    const app = incidents().find((i) => i.incident_key === 'app:usage:aa1');
+    expect(app.title).toBe('App service AA1 (Payments)');
+  });
+
+  it('reads the source token each collector encodes', () => {
+    expect(agent.sourceTokenOf({ sourceKey: 'c12:9' })).toBe('c12');
+    expect(agent.sourceTokenOf({ sourceKey: 'a3:alert:hash' })).toBe('a3');
+    expect(agent.sourceTokenOf({ sourceKey: 'poll:7' })).toBe('s7');
+    expect(agent.sourceTokenOf({ sourceKey: 'stale:4' })).toBe('s4');
+    expect(agent.sourceTokenOf({ sourceKey: 'aws:i1' })).toBe('aws');
+  });
+});

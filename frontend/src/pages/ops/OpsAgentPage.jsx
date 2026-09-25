@@ -17,7 +17,7 @@ const STATE_META = {
   resolved: { label: 'Resolved', tone: 'neutral', hint: 'Every alert cleared or closed by hand' },
 };
 const CLASS_TONE = { incident: 'crit', recurring: 'warn', 'one-off': 'info', noise: 'neutral', 'self-cleared': 'neutral', 'self-healed': 'ok' };
-const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', host: 'Host' };
+const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', source: 'Source', host: 'Host' };
 const sevTone = (s) => (s === 'critical' ? 'crit' : s === 'error' || s === 'warning' ? 'warn' : 'info');
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children, footer }) {

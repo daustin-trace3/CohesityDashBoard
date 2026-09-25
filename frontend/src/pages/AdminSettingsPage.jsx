@@ -64,6 +64,7 @@ export default function AdminSettingsPage() {
   const [agentEnabled, setAgentEnabled] = useState(false);
   const [agentName, setAgentName] = useState('ICC Operations Agent');
   const [agentMinSeverity, setAgentMinSeverity] = useState('warning');
+  const [agentGrouping, setAgentGrouping] = useState('platform');
   const [agentHoldMinutes, setAgentHoldMinutes] = useState(10);
   const [agentAnalysesPerHour, setAgentAnalysesPerHour] = useState(20);
   const [agentRenotifyMinutes, setAgentRenotifyMinutes] = useState(60);
@@ -145,6 +146,7 @@ export default function AdminSettingsPage() {
           setAgentEnabled(!!d.opsAgent.enabled);
           setAgentName(d.opsAgent.name || 'ICC Operations Agent');
           setAgentMinSeverity(d.opsAgent.minSeverity || 'warning');
+          setAgentGrouping(d.opsAgent.grouping || 'platform');
           setAgentHoldMinutes(d.opsAgent.holdMinutes ?? 10);
           setAgentAnalysesPerHour(d.opsAgent.analysesPerHour ?? 20);
           setAgentRenotifyMinutes(d.opsAgent.renotifyMinutes ?? 60);
@@ -257,7 +259,7 @@ export default function AdminSettingsPage() {
         dnsServer,
         cohesityAlertWindowDays: Number(cohesityAlertWindowDays) || 0,
         opsAgent: {
-          enabled: agentEnabled, name: agentName, minSeverity: agentMinSeverity, holdMinutes: Number(agentHoldMinutes),
+          enabled: agentEnabled, name: agentName, minSeverity: agentMinSeverity, grouping: agentGrouping, holdMinutes: Number(agentHoldMinutes),
           analysesPerHour: Number(agentAnalysesPerHour) || 20, renotifyMinutes: Number(agentRenotifyMinutes),
           emailEnabled: agentEmailEnabled, recipients: agentRecipients,
           autoResolveMinutes: Number(agentAutoResolveMinutes), evidenceResolve: agentEvidenceResolve,
@@ -897,6 +899,16 @@ export default function AdminSettingsPage() {
               <p className="text-[11px] text-ink-muted mb-1.5">Shown as the sender name on its emails (over the SMTP from address), in the subject prefix and the signature, and on the agent page.</p>
               <input id="agent-name" type="text" maxLength={80} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="ICC Operations Agent"
                 className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
+            </div>
+            <div>
+              <label htmlFor="agent-grouping" className="block text-xs font-semibold text-ink mb-1">Group alerts into incidents by</label>
+              <p className="text-[11px] text-ink-muted mb-1.5">A fleet is not always troubleshot as one. Component keeps every cluster, array, appliance and server on its own incident, which means many more incidents and more triage calls, so raise the hourly cap to match. Incidents already open keep the grouping they were created with.</p>
+              <select id="agent-grouping" value={agentGrouping} onChange={(e) => setAgentGrouping(e.target.value)}
+                className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer">
+                <option value="platform">Platform: one incident per host, and one per platform when its source is down or bursting (default)</option>
+                <option value="service">App service: alerts on a watched app's servers roll into that app's incident, the rest by host</option>
+                <option value="component">Component: one incident per server, cluster, array or appliance, nothing folded</option>
+              </select>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
