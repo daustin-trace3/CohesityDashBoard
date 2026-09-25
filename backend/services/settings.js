@@ -120,6 +120,8 @@ function getAiSettings() {
     llmEstateContext: getSetting('llm_estate_context') || '',
     llmFlagUnprotected: getSetting('llm_flag_unprotected') === '1',
     llmModel: getSetting('llm_model') || '',
+    llmProvider: getSetting('llm_provider') || 'auto',
+    llmCustomEndpoint: getSetting('llm_custom_endpoint') || '',
     llmAnalysisTtlHours: getAnalysisTtlHours(),
   };
 }

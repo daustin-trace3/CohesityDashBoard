@@ -26,7 +26,7 @@ const logger = require('../utils/logger');
 // Shared provider config so alert reviews use the same provider/model as the
 // cluster analysis (OpenAI gpt-5.4 when an OpenAI token is set). Resolved
 // lazily per request so credentials saved in Settings apply without restart.
-const { resolveProvider, isConfigured } = require('./llmProvider');
+const { resolveProvider, isConfigured, authHeaders } = require('./llmProvider');
 const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
 
@@ -206,7 +206,7 @@ async function reviewAlert(alertId, { force = false } = {}) {
         response_format: { type: 'json_object' },
       },
       {
-        headers: { Authorization: `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' },
+        headers: authHeaders(API_TOKEN, { 'Content-Type': 'application/json' }),
         timeout: 30000,
       }
     );

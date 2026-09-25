@@ -2,7 +2,7 @@ const axios = require('axios');
 const db = require('../db/database');
 const { FAILURE_STATUSES, fmtBytes } = require('./insights');
 const { getSetting } = require('./settings');
-const { resolveProvider, isConfigured: providerConfigured } = require('./llmProvider');
+const { resolveProvider, isConfigured: providerConfigured, authHeaders } = require('./llmProvider');
 const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
 const logger = require('../utils/logger');
@@ -194,7 +194,7 @@ async function analyzeClusterWithLLM(clusterId, mode = 'system') {
   if (!MODES.includes(mode)) mode = 'system';
 
   if (!isConfigured()) {
-    const err = new Error('No AI provider token is configured (Settings → Credentials, or OPENAI_TOKEN / GITHUB_MODELS_TOKEN in .env).');
+    const err = new Error('No AI provider is configured (Global Settings > AI: a provider key, or a custom OpenAI-compatible endpoint).');
     err.code = 'LLM_NOT_CONFIGURED';
     throw err;
   }
@@ -253,10 +253,7 @@ async function analyzeClusterWithLLM(clusterId, mode = 'system') {
         messages,
       },
       {
-        headers: {
-          Authorization: `Bearer ${API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
+        headers: authHeaders(API_TOKEN, { 'Content-Type': 'application/json' }),
         timeout: 60000,
       }
     );
