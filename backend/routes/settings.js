@@ -1,5 +1,5 @@
 const express = require('express');
-const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, getServiceStatusSettings, getSetting, setSetting, getSecretSetting, secretSource } = require('../services/settings');
+const { getAiSettings, getLicenseSettings, getPlatformSettings, getNotificationSettings, getServiceStatusSettings, getOpsAgentSettings, getSetting, setSetting, getSecretSetting, secretSource } = require('../services/settings');
 const { encrypt } = require('../services/encryption');
 const { listModels, testEndpoint, normalizeEndpoint, PROVIDERS } = require('../services/llmProvider');
 const alertNotifier = require('../services/alertNotifier');
@@ -106,7 +106,7 @@ router.put('/credentials', (req, res, next) => {
 /** GET /api/settings — current AI + licensing settings. */
 router.get('/', (req, res, next) => {
   try {
-    res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings() });
+    res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings(), opsAgent: getOpsAgentSettings() });
   } catch (err) {
     next(err);
   }
@@ -241,6 +241,17 @@ router.put('/', (req, res, next) => {
       const v = String(req.body.opsOverviewStyle);
       if (!OPS_STYLE_VALUES.has(v)) return res.status(400).json({ error: 'opsOverviewStyle must be classic, drift or nocturne' });
       setSetting('ops_overview_style', v);
+    }
+    if (req.body?.opsAgent && typeof req.body.opsAgent === 'object') {
+      const a = req.body.opsAgent;
+      if (a.enabled !== undefined) setSetting('ops_agent_enabled', a.enabled ? '1' : '0');
+      if (a.name !== undefined) setSetting('ops_agent_name', String(a.name).replace(/[\r\n<>"]/g, '').trim().slice(0, 80));
+      if (a.minSeverity !== undefined && ['info', 'warning', 'error', 'critical'].includes(a.minSeverity)) setSetting('ops_agent_min_severity', a.minSeverity);
+      if (a.holdMinutes !== undefined) { const n = Number(a.holdMinutes); setSetting('ops_agent_hold_minutes', n >= 0 && n <= 120 ? String(Math.round(n)) : ''); }
+      if (a.analysesPerHour !== undefined) { const n = Number(a.analysesPerHour); setSetting('ops_agent_analyses_per_hour', n >= 1 && n <= 200 ? String(Math.round(n)) : ''); }
+      if (a.renotifyMinutes !== undefined) { const n = Number(a.renotifyMinutes); setSetting('ops_agent_renotify_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }
+      if (a.emailEnabled !== undefined) setSetting('ops_agent_email_enabled', a.emailEnabled ? '1' : '0');
+      if (a.recipients !== undefined) setSetting('ops_agent_recipients', String(a.recipients).trim().slice(0, 2000));
     }
     if (req.body?.serviceStatusAiEnabled !== undefined) {
       setSetting('service_status_ai_enabled', req.body.serviceStatusAiEnabled ? '1' : '0');

@@ -491,4 +491,68 @@ module.exports = [
       db.exec('UPDATE alert_notify_types SET enabled = 0');
     },
   },
+  // Operations Agent: incidents built from open alerts, their member alerts,
+  // the triage written per incident, and a short run log for the status line.
+  {
+    version: 22,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ops_incidents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          incident_key TEXT NOT NULL,
+          title TEXT,
+          host TEXT,
+          platforms TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'collecting',
+          opened_at TEXT NOT NULL,
+          hold_until TEXT NOT NULL,
+          last_event_at TEXT NOT NULL,
+          triaged_at TEXT,
+          triage_error TEXT,
+          notified_at TEXT,
+          notify_count INTEGER NOT NULL DEFAULT 0,
+          email_to TEXT,
+          email_error TEXT,
+          email_attempt_at TEXT,
+          resolved_at TEXT,
+          resolved_by TEXT,
+          baseline INTEGER NOT NULL DEFAULT 0,
+          classification TEXT,
+          confidence TEXT,
+          summary TEXT,
+          analysis_json TEXT,
+          evidence_json TEXT,
+          model TEXT,
+          event_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_incidents_state ON ops_incidents(state, opened_at);
+        CREATE INDEX IF NOT EXISTS idx_ops_incidents_key ON ops_incidents(incident_key, opened_at);
+        CREATE TABLE IF NOT EXISTS ops_incident_alerts (
+          incident_id INTEGER NOT NULL REFERENCES ops_incidents(id) ON DELETE CASCADE,
+          platform TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          severity TEXT NOT NULL,
+          host TEXT,
+          message TEXT,
+          type TEXT,
+          first_seen TEXT,
+          attached_at TEXT NOT NULL,
+          cleared_at TEXT,
+          PRIMARY KEY (incident_id, platform, source_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_incident_alerts_key ON ops_incident_alerts(platform, source_key);
+        CREATE TABLE IF NOT EXISTS ops_agent_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          at TEXT NOT NULL,
+          alerts_seen INTEGER,
+          new_alerts INTEGER,
+          incidents_opened INTEGER,
+          triaged INTEGER,
+          emails_sent INTEGER,
+          error TEXT
+        );
+      `);
+    },
+  },
 ];

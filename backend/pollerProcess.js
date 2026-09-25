@@ -18,6 +18,7 @@ const pluginBoot = require('./services/pluginBoot');
 const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
 const { initServiceStatus } = require('./services/serviceStatus');
+const { initOpsAgent } = require('./services/opsAgent');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
@@ -95,6 +96,7 @@ if (isDemo()) {
   initPoller();
   initAlertNotifier();
   initServiceStatus();
+  initOpsAgent();
   for (const entry of registry.listPlugins()) {
     if (!entry.enabled || entry.status !== 'active') continue;
     const handle = registry.getPollerHandle(entry.id);
