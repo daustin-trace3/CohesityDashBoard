@@ -1,7 +1,10 @@
 import http from 'node:http';
+import https from 'node:https';
+import os from 'node:os';
 import { config, ensureDataDir } from './config.js';
 import { ensureApiKey, verifyApiKey } from './apiKey.js';
 import { chatCompletion, listModels, resolveDefaultModel } from './copilotClient.js';
+import { ensureTls, lanIPv4 } from './tls.js';
 import * as memory from './memory.js';
 
 function sendJson(res, status, obj) {
@@ -178,25 +181,60 @@ async function route(req, res) {
 }
 
 export function createServer() {
-  return http.createServer((req, res) => {
-    route(req, res).catch((e) => {
-      if (!res.headersSent) sendJson(res, 500, { error: { message: e.message } });
-      else res.end();
-    });
+  return http.createServer(requestHandler);
+}
+
+function requestHandler(req, res) {
+  route(req, res).catch((e) => {
+    if (!res.headersSent) sendJson(res, 500, { error: { message: e.message } });
+    else res.end();
   });
+}
+
+function banner(label, url) {
+  console.log(`  ${label.padEnd(9)}: ${url}`);
 }
 
 export function startServer() {
   ensureDataDir();
   const key = ensureApiKey();
-  const server = createServer();
-  server.listen(config.port, config.host, () => {
-    const base = `http://${config.host}:${config.port}`;
-    console.log('\n  Copilot Bridge is running');
-    console.log(`  Base URL : ${base}`);
-    console.log(`  Endpoint : POST ${base}/v1/chat/completions`);
-    console.log(`  API key  : ${key}`);
-    console.log(`  Model    : ${config.defaultModel}`);
-    console.log('\n  Send requests with header:  Authorization: Bearer <API key>\n');
+
+  console.log('\n  Copilot Bridge is running');
+
+  // HTTP listener (local only, keeps existing 127.0.0.1 access).
+  const httpServer = http.createServer(requestHandler);
+  httpServer.on('error', (e) => console.error(`  HTTP error: ${e.message}`));
+  httpServer.listen(config.port, config.host, () => {
+    banner('HTTP', `http://${config.host}:${config.port}`);
   });
+
+  // HTTPS listener (LAN-accessible on port 443).
+  if (config.httpsEnabled) {
+    const ips = lanIPv4();
+    const host = os.hostname();
+    const fqdn = process.env.USERDNSDOMAIN ? `${host}.${process.env.USERDNSDOMAIN}`.toLowerCase() : null;
+    const sans = [...new Set([
+      'localhost', '127.0.0.1', host, fqdn, ...ips, ...config.tlsExtraSans,
+    ].filter(Boolean))];
+    try {
+      const tlsOptions = ensureTls(sans);
+      const httpsServer = https.createServer(tlsOptions, requestHandler);
+      httpsServer.on('error', (e) => {
+        if (e.code === 'EADDRINUSE') console.error(`  HTTPS error: port ${config.httpsPort} already in use`);
+        else if (e.code === 'EACCES') console.error(`  HTTPS error: no permission to bind port ${config.httpsPort}`);
+        else console.error(`  HTTPS error: ${e.message}`);
+      });
+      httpsServer.listen(config.httpsPort, config.httpsHost, () => {
+        banner('HTTPS', `https://${config.httpsHost}:${config.httpsPort}`);
+        for (const ip of ips) banner('  LAN', `https://${ip}:${config.httpsPort}`);
+      });
+    } catch (e) {
+      console.error(`  HTTPS disabled (TLS setup failed): ${e.message}`);
+    }
+  }
+
+  console.log(`  API key  : ${key}`);
+  console.log(`  Model    : ${config.defaultModel}`);
+  console.log('\n  Send requests with header:  Authorization: Bearer <API key>');
+  console.log('  Self-signed HTTPS: clients must skip cert verification (curl -k / rejectUnauthorized:false).\n');
 }

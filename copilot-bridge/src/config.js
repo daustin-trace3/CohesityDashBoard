@@ -37,6 +37,16 @@ export const config = {
   userAgent: process.env.USER_AGENT || 'GitHubCopilotChat/0.23.0',
   copilotApiBase: process.env.COPILOT_API_BASE || 'https://api.githubcopilot.com',
   maxHistoryMessages: parseInt(process.env.MAX_HISTORY_MESSAGES || '40', 10),
+
+  // HTTPS listener (LAN-accessible). Auto-generates a self-signed cert if none supplied.
+  httpsEnabled: (process.env.HTTPS_ENABLE || 'true').toLowerCase() !== 'false',
+  httpsHost: process.env.HTTPS_HOST || '0.0.0.0',
+  httpsPort: parseInt(process.env.HTTPS_PORT || '443', 10),
+  tlsCertPath: process.env.TLS_CERT_PATH || '',
+  tlsKeyPath: process.env.TLS_KEY_PATH || '',
+  tlsPfxPath: process.env.TLS_PFX_PATH || '',
+  tlsPfxPass: process.env.TLS_PFX_PASS || '',
+  tlsExtraSans: (process.env.TLS_EXTRA_SANS || '').split(',').map((s) => s.trim()).filter(Boolean),
 };
 
 export function ensureDataDir() {
