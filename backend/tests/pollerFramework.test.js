@@ -51,6 +51,30 @@ describe('pollerFramework', () => {
       expect(cronLib.scheduled).toHaveLength(2);
     });
 
+it('trigger(id) resolves the full source row through loadSources, and trigger(row) still polls that row', async () => {
+      const cronLib = makeFakeCronLib();
+      const polled = [];
+      const rows = [
+        { id: 1, name: 'src-1', host: 'a.example', encrypted_credentials: 'x' },
+        { id: 2, name: 'src-2', host: 'b.example', encrypted_credentials: 'y' },
+      ];
+      const poller = createPoller({ id: 'test', loadSources: () => rows, poll: async (s) => { polled.push(s); }, cronLib });
+
+      await poller.trigger(2);
+      expect(polled).toHaveLength(1);
+      expect(polled[0]).toEqual(rows[1]);            // whole row, not just a name
+      expect(polled[0].host).toBe('b.example');
+
+      await poller.trigger(rows[0]);
+      expect(polled[1]).toEqual(rows[0]);
+    });
+
+    it('trigger(id) rejects when no source carries that id', async () => {
+      const cronLib = makeFakeCronLib();
+      const poller = createPoller({ id: 'test', loadSources: () => [{ id: 1, name: 's' }], poll: async () => {}, cronLib });
+      await expect(poller.trigger(99)).rejects.toThrow(/source 99 not found/);
+    });
+
     it('clamps the interval below 5 minutes up to 5', () => {
       const cronLib = makeFakeCronLib();
       const poller = createPoller({

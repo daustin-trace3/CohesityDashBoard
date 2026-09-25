@@ -198,3 +198,27 @@ describe('app services, self-heal and ordering', () => {
     expect(list.every((i) => typeof i.impactScore === 'number')).toBe(true);
   });
 });
+
+describe('self-heal re-poll', () => {
+  const registry = require('../core/registry');
+
+  it('hands the poller the source id, so the framework resolves the full row', () => {
+    const seen = [];
+    registry.registerPlugin({
+      id: 'fakeplat', name: 'Fake', apiVersion: registry.PLUGIN_API_VERSION, migrations: [],
+      createRouter: () => (req, res, next) => next(),
+      createPoller: () => ({ trigger: (arg) => { seen.push(arg); return Promise.resolve(); } }),
+    });
+    const rec = agent.triggerPoll('fakeplat', 7, 'filer-a');
+    expect(rec).toMatchObject({ action: 'repoll', platform: 'fakeplat', target: 'filer-a', result: 'poll triggered' });
+    expect(seen).toEqual([7]);
+  });
+
+  it('says so plainly when a platform has no poll ICC can trigger', () => {
+    registry.registerPlugin({
+      id: 'nopoll', name: 'NoPoll', apiVersion: registry.PLUGIN_API_VERSION, migrations: [],
+      createRouter: () => (req, res, next) => next(),
+    });
+    expect(agent.triggerPoll('nopoll', 1, 'x').result).toMatch(/no on-demand poll/);
+  });
+});

@@ -86,8 +86,17 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
     }
   }
 
+  /** Poll one source now. Takes the source row (callers that already hold it)
+   *  or its id, in which case the full row is resolved through loadSources —
+   *  poll() needs every column, not just a name. */
   function trigger(source) {
-    return runWrapped(source);
+    if (source && typeof source === 'object') return runWrapped(source);
+    const wanted = Number(source);
+    let rows = [];
+    try { rows = loadSources() || []; } catch (err) { return Promise.reject(err); }
+    const row = rows.find((s) => Number(s.id) === wanted);
+    if (!row) return Promise.reject(new Error(`[${id}] source ${source} not found`));
+    return runWrapped(row);
   }
 
   function stopAll() {
