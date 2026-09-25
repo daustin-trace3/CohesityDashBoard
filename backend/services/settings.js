@@ -190,6 +190,24 @@ function getNotificationSettings() {
   };
 }
 
+/** Operations Agent (Ops > Operations Agent, Global Settings > Operations Agent). */
+function getOpsAgentSettings() {
+  const hold = Number(getSetting('ops_agent_hold_minutes'));
+  const cap = Number(getSetting('ops_agent_analyses_per_hour'));
+  const renotify = Number(getSetting('ops_agent_renotify_minutes'));
+  const sev = getSetting('ops_agent_min_severity');
+  return {
+    enabled: getSetting('ops_agent_enabled') === '1',
+    name: (getSetting('ops_agent_name') || '').trim() || 'ICC Operations Agent',
+    minSeverity: ['info', 'warning', 'error', 'critical'].includes(sev) ? sev : 'warning',
+    holdMinutes: (hold >= 0 && hold <= 120) ? Math.round(hold) : 10,
+    analysesPerHour: (cap >= 1 && cap <= 200) ? Math.round(cap) : 20,
+    renotifyMinutes: (renotify >= 0 && renotify <= 1440) ? Math.round(renotify) : 60,
+    emailEnabled: getSetting('ops_agent_email_enabled') !== '0',
+    recipients: (getSetting('ops_agent_recipients') || '').trim(),
+  };
+}
+
 /** Service Status page (contract: critical-alert board + AI analysis cap). */
 /** Cohesity alerts count only while they fired inside this many days. Open
  *  alerts nobody resolves on a cluster otherwise pile up for months (verified
@@ -228,5 +246,5 @@ function getSmtpPassword() {
 module.exports = {
   getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
   getAnalysisTtlHours, getAiSettings, getLicenseSettings, getPlatformSettings,
-  getNotificationSettings, getSmtpPassword, getServiceStatusSettings, getCohesityAlertWindowDays,
+  getNotificationSettings, getSmtpPassword, getServiceStatusSettings, getOpsAgentSettings, getCohesityAlertWindowDays,
 };

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Sparkles, Save, Layers, KeyRound, Settings, Mail } from 'lucide-react';
+import { Sparkles, Save, Layers, KeyRound, Settings, Mail, Bot } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
@@ -9,7 +9,7 @@ import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher'
 
 // Sections rendered by this page; Users & Access and Plugins are their own
 // routed pages sharing the same AdminNav shell.
-const LOCAL_SECTIONS = ['ai', 'platforms', 'license', 'notifications'];
+const LOCAL_SECTIONS = ['ai', 'agent', 'platforms', 'license', 'notifications'];
 
 const NOTIFY_PLATFORMS = [
   { key: 'cohesity', label: 'Cohesity' },
@@ -56,6 +56,15 @@ export default function AdminSettingsPage() {
   const [savedProvider, setSavedProvider] = useState({ provider: 'auto', endpoint: '' });
   const [testingLlm, setTestingLlm] = useState(false);
   const [llmTest, setLlmTest] = useState(null);
+  const [agentEnabled, setAgentEnabled] = useState(false);
+  const [agentName, setAgentName] = useState('ICC Operations Agent');
+  const [agentMinSeverity, setAgentMinSeverity] = useState('warning');
+  const [agentHoldMinutes, setAgentHoldMinutes] = useState(10);
+  const [agentAnalysesPerHour, setAgentAnalysesPerHour] = useState(20);
+  const [agentRenotifyMinutes, setAgentRenotifyMinutes] = useState(60);
+  const [agentEmailEnabled, setAgentEmailEnabled] = useState(true);
+  const [agentRecipients, setAgentRecipients] = useState('');
+  const [testingAgent, setTestingAgent] = useState(false);
   const [ttlHours, setTtlHours] = useState(24);
   const [serviceStatusAiEnabled, setServiceStatusAiEnabled] = useState(true);
   const [serviceStatusAnalysesPerMinute, setServiceStatusAnalysesPerMinute] = useState(3);
@@ -113,6 +122,16 @@ export default function AdminSettingsPage() {
         setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
         setCohesityAlertWindowDays(d.cohesityAlertWindowDays ?? 5);
+        if (d.opsAgent) {
+          setAgentEnabled(!!d.opsAgent.enabled);
+          setAgentName(d.opsAgent.name || 'ICC Operations Agent');
+          setAgentMinSeverity(d.opsAgent.minSeverity || 'warning');
+          setAgentHoldMinutes(d.opsAgent.holdMinutes ?? 10);
+          setAgentAnalysesPerHour(d.opsAgent.analysesPerHour ?? 20);
+          setAgentRenotifyMinutes(d.opsAgent.renotifyMinutes ?? 60);
+          setAgentEmailEnabled(d.opsAgent.emailEnabled !== false);
+          setAgentRecipients(d.opsAgent.recipients || '');
+        }
       }
       if (c.status === 'fulfilled') setAiEnabled(!!c.value.data.enabled);
     }).finally(() => setLoading(false));
@@ -171,6 +190,18 @@ export default function AdminSettingsPage() {
     }
   };
 
+  const sendAgentTest = async () => {
+    setTestingAgent(true);
+    try {
+      const { data } = await client.post('/ops-agent/test-email');
+      toast({ type: 'success', title: 'Sample incident email sent', message: `Sent to ${data.to}.` });
+    } catch (e) {
+      toast({ type: 'error', title: 'Send failed', message: e?.response?.data?.error || 'Could not send the sample email.' });
+    } finally {
+      setTestingAgent(false);
+    }
+  };
+
   const testLlm = async () => {
     setTestingLlm(true);
     setLlmTest(null);
@@ -204,6 +235,11 @@ export default function AdminSettingsPage() {
         opsOverviewStyle,
         dnsServer,
         cohesityAlertWindowDays: Number(cohesityAlertWindowDays) || 0,
+        opsAgent: {
+          enabled: agentEnabled, name: agentName, minSeverity: agentMinSeverity, holdMinutes: Number(agentHoldMinutes),
+          analysesPerHour: Number(agentAnalysesPerHour) || 20, renotifyMinutes: Number(agentRenotifyMinutes),
+          emailEnabled: agentEmailEnabled, recipients: agentRecipients,
+        },
       });
       window.dispatchEvent(new Event('platforms-changed'));
       window.dispatchEvent(new Event('ops-style-changed'));
@@ -797,6 +833,94 @@ export default function AdminSettingsPage() {
       )}
 
       {/* Alert Notifications */}
+      {/* Operations Agent */}
+      {tab === 'agent' && (
+      <div className="panel p-4">
+        <div className="flex items-center gap-2 mb-1">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
+            <Bot size={14} className="text-brand" />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-ink">Operations Agent</p>
+            <p className="text-[11px] text-ink-muted">
+              Runs every minute in the poller: folds open alerts into incidents by host (or platform-wide when a source is
+              unreachable), holds a window for related alerts, triages each incident against the evidence ICC holds, and
+              emails the analysis with next steps for the next level. Uses the AI provider above; without one it still
+              sends a rule-based digest. Incidents are listed under Ops &gt; Operations Agent.
+            </p>
+          </div>
+        </div>
+        {loading ? (
+          <p className="text-gray-400 text-sm mt-4">Loading…</p>
+        ) : (
+          <div className="flex flex-col gap-5 mt-4">
+            <label className="flex items-start gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={agentEnabled} onChange={(e) => setAgentEnabled(e.target.checked)} className="accent-brand cursor-pointer mt-0.5" />
+              <span className="text-sm text-ink">Run the Operations Agent<span className="block text-[11px] text-ink-muted">Off by default. Run now on the agent page works either way for a one-off pass.</span></span>
+            </label>
+            <div>
+              <label htmlFor="agent-name" className="block text-xs font-semibold text-ink mb-1">Agent name</label>
+              <p className="text-[11px] text-ink-muted mb-1.5">Shown as the sender name on its emails (over the SMTP from address), in the subject prefix and the signature, and on the agent page.</p>
+              <input id="agent-name" type="text" maxLength={80} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="ICC Operations Agent"
+                className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="agent-min-sev" className="block text-xs font-semibold text-ink mb-1">Minimum severity</label>
+                <p className="text-[11px] text-ink-muted mb-1.5">Alerts below this never enter an incident.</p>
+                <select id="agent-min-sev" value={agentMinSeverity} onChange={(e) => setAgentMinSeverity(e.target.value)}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer">
+                  <option value="info">Info and above</option>
+                  <option value="warning">Warning and above</option>
+                  <option value="error">Error and above</option>
+                  <option value="critical">Critical only</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="agent-hold" className="block text-xs font-semibold text-ink mb-1">Hold window (minutes)</label>
+                <p className="text-[11px] text-ink-muted mb-1.5">How long a new incident collects related alerts before triage. 0 to 120.</p>
+                <input id="agent-hold" type="number" min={0} max={120} value={agentHoldMinutes} onChange={(e) => setAgentHoldMinutes(e.target.value)}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
+              </div>
+              <div>
+                <label htmlFor="agent-cap" className="block text-xs font-semibold text-ink mb-1">Triages per hour</label>
+                <p className="text-[11px] text-ink-muted mb-1.5">Cap on AI analyses; incidents past the cap wait for the next hour. 1 to 200.</p>
+                <input id="agent-cap" type="number" min={1} max={200} value={agentAnalysesPerHour} onChange={(e) => setAgentAnalysesPerHour(e.target.value)}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
+              </div>
+              <div>
+                <label htmlFor="agent-renotify" className="block text-xs font-semibold text-ink mb-1">Re-notify after growth (minutes)</label>
+                <p className="text-[11px] text-ink-muted mb-1.5">An emailed incident that gains alerts is triaged again and emailed once this many minutes have passed. 0 never re-emails.</p>
+                <input id="agent-renotify" type="number" min={0} max={1440} value={agentRenotifyMinutes} onChange={(e) => setAgentRenotifyMinutes(e.target.value)}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
+              </div>
+            </div>
+            <label className="flex items-start gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={agentEmailEnabled} onChange={(e) => setAgentEmailEnabled(e.target.checked)} className="accent-brand cursor-pointer mt-0.5" />
+              <span className="text-sm text-ink">Email the analysis<span className="block text-[11px] text-ink-muted">Uses the SMTP server under Alert Notifications. Off keeps triage on the page only.</span></span>
+            </label>
+            <div>
+              <label htmlFor="agent-recipients" className="block text-xs font-semibold text-ink mb-1">Recipients</label>
+              <p className="text-[11px] text-ink-muted mb-1.5">Blank sends each incident to the union of its platforms' Alert Notifications recipients (falling back to the default list). Set an address list here to send every incident to one place instead.</p>
+              <input id="agent-recipients" type="text" value={agentRecipients} onChange={(e) => setAgentRecipients(e.target.value)} placeholder="ops@example.com, l2-storage@example.com"
+                className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs font-mono text-ink focus:border-brand/60 outline-none" />
+            </div>
+            <div className="flex items-center gap-2 pt-1 flex-wrap">
+              <button onClick={save} disabled={saving}
+                className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer">
+                <Save size={13} /> {saving ? 'Saving…' : 'Save agent settings'}
+              </button>
+              <button onClick={sendAgentTest} disabled={testingAgent}
+                className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
+                <Mail size={13} /> {testingAgent ? 'Sending…' : 'Send sample incident email'}
+              </button>
+              <span className="text-[11px] text-ink-faint">The sample shows the exact layout an incident email uses.</span>
+            </div>
+          </div>
+        )}
+      </div>
+      )}
+
       {tab === 'notifications' && (
       <>
       <div className="panel p-4">

@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal } from 'lucide-react';
+import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal, Bot } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 
 // Grouped vertical nav shared by every Global Settings page. Each item is a
@@ -9,6 +9,7 @@ const GROUPS = [
     label: 'Intelligence',
     items: [
       { to: '/admin/ai', label: 'AI Analysis & Keys', icon: Sparkles, aliases: ['/admin'] },
+      { to: '/admin/agent', label: 'Operations Agent', icon: Bot },
     ],
   },
   {

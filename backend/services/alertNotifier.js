@@ -317,6 +317,11 @@ let transportFactory = (config) => nodemailer.createTransport({
 });
 
 /** Test-only DI seam: override the transport factory so no test hits the network. */
+/** Transport built from the saved SMTP settings (Operations Agent shares it). */
+function createTransport(config) {
+  return transportFactory(config);
+}
+
 function _setTransportFactory(fn) {
   transportFactory = fn;
 }
@@ -769,6 +774,8 @@ module.exports = {
   stopAlertNotifier,
   collectOpenAlerts,
   refreshTypeCatalog,
+  createTransport,
+  resolvePlatformRecipients,
   _setTransportFactory,
   _reset,
 };
