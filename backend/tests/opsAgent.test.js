@@ -342,3 +342,43 @@ describe('email gating', () => {
     expect(agent.emailBlockedReason(on, smtp)).toBeNull();
   });
 });
+
+describe('autonomous actions are logged at INFO with detail', () => {
+  const logger = require('../utils/logger');
+  let lines; let realInfo;
+  beforeEach(() => { lines = []; realInfo = logger.info; logger.info = (...a) => lines.push(a.join(' ')); });
+  afterEach(() => { logger.info = realInfo; });
+  const acts = () => lines.filter((l) => l.includes('[OpsAgent] ACTION'));
+
+  it('names the incident it opened, including a baseline backlog', () => {
+    agent.groupTick(NOW, settings, { items: [item('dell', 'd1', { host: 'r740-01' })], failed: [] });
+    expect(acts()).toHaveLength(1);
+    expect(acts()[0]).toMatch(/ACTION opened incident: #\d+ r740-01 \[host:r740-01\] first alert \S+ critical$/);
+    lines.length = 0;
+    agent.groupTick(NOW, settings, { items: [item('pure', 'p1', { host: 'array-a' })], failed: [] }, { baseline: true });
+    expect(acts()[0]).toMatch(/baseline \(pre-existing backlog, will not email\)/);
+  });
+
+  it('records a self-clear and a clearing hold, each naming the incident', () => {
+    agent.groupTick(NOW, settings, { items: [item('dell', 'd1')], failed: [] });
+    lines.length = 0;
+    agent.groupTick('2026-09-25T20:02:00.000Z', settings, { items: [], failed: [] });
+    expect(acts()[0]).toMatch(/ACTION resolved incident: #\d+ self-cleared before triage, never emailed/);
+
+    db.exec("DELETE FROM ops_incident_alerts; DELETE FROM ops_incidents;");
+    agent.groupTick(NOW, { ...settings, autoResolveMinutes: 30 }, { items: [item('dell', 'd2')], failed: [] });
+    db.prepare("UPDATE ops_incidents SET state = 'notified'").run();
+    lines.length = 0;
+    agent.groupTick('2026-09-25T20:02:00.000Z', { ...settings, autoResolveMinutes: 30 }, { items: [], failed: [] });
+    expect(acts()[0]).toMatch(/ACTION incident clearing: #\d+ every alert cleared, holding 30 min of quiet/);
+  });
+
+  it('logs the quiet close with how long it waited', async () => {
+    agent.groupTick(NOW, { ...settings, autoResolveMinutes: 30 }, { items: [item('dell', 'd1')], failed: [] });
+    const id = incidents()[0].id;
+    db.prepare("UPDATE ops_incidents SET state = 'clearing', cleared_since = ? WHERE id = ?").run(NOW, id);
+    lines.length = 0;
+    await agent.resolvePass('2026-09-25T21:00:00.000Z', { ...settings, autoResolveMinutes: 30, evidenceResolve: false, name: 'Otis', emailEnabled: false }, { smtpHost: '', smtpFrom: '' }, 0);
+    expect(acts()[0]).toMatch(/ACTION resolved incident: #\d+ quiet for 60 min after its alerts cleared/);
+  });
+});
