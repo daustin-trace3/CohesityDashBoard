@@ -11,6 +11,8 @@ import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher'
 // Sections rendered by this page; Users & Access and Plugins are their own
 // routed pages sharing the same AdminNav shell.
 const LOCAL_SECTIONS = ['ai', 'agent', 'agent-privacy', 'platforms', 'license', 'notifications'];
+// Sections that read better across the whole column: long AI payloads, not forms.
+const WIDE_SECTIONS = ['agent-privacy'];
 
 const NOTIFY_PLATFORMS = [
   { key: 'cohesity', label: 'Cohesity' },
@@ -359,7 +361,7 @@ export default function AdminSettingsPage() {
 
       <div className="flex flex-col md:flex-row gap-5 items-start">
         <AdminNav />
-        <div className="flex flex-col gap-4 max-w-3xl flex-1 min-w-0">
+        <div className={`flex flex-col gap-4 flex-1 min-w-0 ${WIDE_SECTIONS.includes(tab) ? '' : 'max-w-3xl'}`}>
 
       {/* AI Analysis & Keys */}
       {tab === 'ai' && (
@@ -843,7 +845,7 @@ export default function AdminSettingsPage() {
       {/* Alert Notifications */}
       {/* Operations Agent */}
       {tab === 'agent-privacy' && (
-      <div className="panel p-4">
+      <div className="flex flex-col gap-3">
         <PrivacyInspectorPage platform="ops-agent" embedded title="Operations Agent privacy"
           emptyText={`No Operations Agent AI requests in the last 30 days. Incidents triaged without an AI provider use the rule-based digest and send nothing to a model.`} />
       </div>
