@@ -1,0 +1,16 @@
+{
+  "name": "copilot-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local OpenAI-compatible API bridge to your GitHub Copilot subscription with API-key auth, streaming, and conversation memory.",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "login": "node src/login.js",
+    "key": "node src/key-cli.js show",
+    "key:new": "node src/key-cli.js regenerate"
+  }
+}
