@@ -323,3 +323,22 @@ describe('grouping modes', () => {
     expect(agent.sourceTokenOf({ sourceKey: 'aws:i1' })).toBe('aws');
   });
 });
+
+describe('email gating', () => {
+  const on = { emailEnabled: true };
+  const smtp = { smtpEnabled: true, smtpHost: 'smtp.lab', smtpFrom: 'icc@lab' };
+
+  it('never sends automatically while SMTP is switched off in Global Settings', () => {
+    expect(agent.emailBlockedReason(on, { ...smtp, smtpEnabled: false })).toMatch(/switched off in Global Settings/);
+  });
+
+  it('never sends while the agent\'s own switch is off, or with nowhere to send', () => {
+    expect(agent.emailBlockedReason({ emailEnabled: false }, smtp)).toMatch(/agent's own email switch/);
+    expect(agent.emailBlockedReason(on, { ...smtp, smtpHost: '' })).toMatch(/no host or from address/);
+    expect(agent.emailBlockedReason(on, { ...smtp, smtpFrom: '' })).toMatch(/no host or from address/);
+  });
+
+  it('allows the send when both switches are on and SMTP is addressed', () => {
+    expect(agent.emailBlockedReason(on, smtp)).toBeNull();
+  });
+});
