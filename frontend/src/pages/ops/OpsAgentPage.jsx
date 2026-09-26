@@ -19,6 +19,35 @@ const STATE_META = {
 };
 const CLASS_TONE = { incident: 'crit', recurring: 'warn', 'one-off': 'info', noise: 'neutral', 'self-cleared': 'neutral', 'self-healed': 'ok' };
 const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', source: 'Source', host: 'Host' };
+/** The run row is written when a tick ends, so a tick that hangs leaves
+ *  "last tick" frozen while its work still shows up. This says one is in
+ *  flight, and turns red when it has been in flight too long to be normal. */
+function LastTickChip({ lastRun }) {
+  if (!lastRun) {
+    return (
+      <span title="No tick has ever finished on this instance. The agent's work is done in the poller process and recorded when a tick ends, so this means no tick has completed since the database was created.">
+        <Badge tone="crit">No tick recorded</Badge>
+      </span>
+    );
+  }
+  const mins = Math.round((Date.now() - Date.parse(lastRun.at)) / 60000);
+  if (mins < 5 && !lastRun.error) return null;                 // ticking every minute: nothing to say
+  const why = lastRun.error
+    ? `Last tick reported: ${lastRun.error}`
+    : 'A tick should finish every minute. This one has not, so the poller process is down, stuck or idle.';
+  return <span title={why}><Badge tone={mins >= 15 || lastRun.error ? 'crit' : 'warn'}>Last tick {timeAgo(lastRun.at)}</Badge></span>;
+}
+
+function TickChip({ startedAt }) {
+  if (!startedAt) return null;
+  const mins = Math.round((Date.now() - Date.parse(startedAt)) / 60000);
+  const tone = mins >= 10 ? 'crit' : 'info';
+  const why = mins >= 10
+    ? 'A tick normally finishes in seconds. This one is stuck on something it is waiting for; the agent starts a fresh tick after 30 minutes and the poller log says so.'
+    : 'A tick is running now. The last tick line only moves when a tick finishes.';
+  return <span title={why}><Badge tone={tone}>Tick running {mins < 1 ? 'now' : `${mins}m`}</Badge></span>;
+}
+
 const sevTone = (s) => (s === 'critical' ? 'crit' : s === 'error' || s === 'warning' ? 'warn' : 'info');
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children, footer }) {
@@ -276,8 +305,8 @@ export default function OpsAgentPage() {
           <Badge tone={s.settings.enabled ? 'ok' : 'crit'}>{s.settings.enabled ? 'Agent on' : 'Agent off'}</Badge>
           <Badge tone={s.aiConfigured ? 'ok' : 'crit'}>{s.aiConfigured ? `AI: ${s.aiProvider}${s.aiModel ? ` / ${s.aiModel}` : ''}` : 'AI not configured: the agent is idle'}</Badge>
           <Badge tone={s.smtpReady && s.settings.emailEnabled ? 'ok' : 'warn'}>{!s.settings.emailEnabled ? 'Email off' : s.smtpReady ? 'SMTP ready' : 'SMTP not configured'}</Badge>
-          <span className="text-ink-faint">Hold {s.settings.holdMinutes} min · minimum {s.settings.minSeverity} · {s.settings.analysesPerHour}/h triage cap · recipients {s.settings.recipients || (s.defaultRecipients ? 'per platform, default ' + s.defaultRecipients : 'per platform')}</span>
-          <span className="text-ink-faint">{s.lastRun ? `Last tick ${timeAgo(s.lastRun.at)}: ${s.lastRun.alertsSeen} alerts seen, ${s.lastRun.newAlerts} new${s.lastRun.error ? `, error: ${s.lastRun.error}` : ''}` : 'No tick yet'}</span>
+          <TickChip startedAt={s.tickStartedAt} />
+          <LastTickChip lastRun={s.lastRun} />
         </div>
       )}
 

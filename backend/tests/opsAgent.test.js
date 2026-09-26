@@ -382,3 +382,21 @@ describe('autonomous actions are logged at INFO with detail', () => {
     expect(acts()[0]).toMatch(/ACTION resolved incident: #\d+ quiet for 60 min after its alerts cleared/);
   });
 });
+
+describe('a tick that never finishes', () => {
+  it('records the start so the API process can see one in flight, and clears it at the end', async () => {
+    const { getSetting } = require('../services/settings');
+    await agent.runOnce({ force: true });
+    expect(getSetting('ops_agent_tick_started')).toBe('');            // cleared when it ended
+    const runs = db.prepare('SELECT * FROM ops_agent_runs').all();
+    expect(runs).toHaveLength(1);                                      // and the run row was written
+    expect(agent.status().tickStartedAt).toBeNull();
+  });
+
+  it('reports the in-flight tick through status()', () => {
+    const { setSetting } = require('../services/settings');
+    const started = new Date(Date.now() - 12 * 60000).toISOString();
+    setSetting('ops_agent_tick_started', started);
+    expect(agent.status().tickStartedAt).toBe(started);
+  });
+});
