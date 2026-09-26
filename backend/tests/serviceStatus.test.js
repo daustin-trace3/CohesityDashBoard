@@ -71,6 +71,7 @@ beforeAll(() => {
 beforeEach(() => {
   clearAll();
   setSetting('service_status_ai_enabled', '0');
+  setSetting('llm_custom_endpoint', '');
   setSetting('service_status_analyses_per_minute', '3');
   setSetting('service_status_dedupe_minutes', '60');
   svc._resetTestSeams();
@@ -318,6 +319,7 @@ describe('runPending (AI analysis)', () => {
   it('6) AI verdict offline WITH a reason: stored, platform stays degraded (its sources still answer), an audit exchange is recorded', async () => {
     const id = await seedPendingEvent({ sourceKey: 'e6', host: 'r740-06' });
     setSetting('service_status_ai_enabled', '1');
+    setSetting('llm_custom_endpoint', 'http://127.0.0.1:1/v1');   // configured, unreachable, chat is stubbed
     process.env.OPENAI_API_KEY = 'test-token';
     svc._setChat(async () => JSON.stringify({
       verdict: 'offline', verdict_reason: 'confirmed unreachable via IPMI',
@@ -340,6 +342,7 @@ describe('runPending (AI analysis)', () => {
   it('7) AI verdict offline WITHOUT a reason while evidence says degraded: final verdict stays degraded, ai_verdict stored as offline', async () => {
     const id = await seedPendingEvent({ sourceKey: 'e7', host: 'unknown-host-7' });
     setSetting('service_status_ai_enabled', '1');
+    setSetting('llm_custom_endpoint', 'http://127.0.0.1:1/v1');   // configured, unreachable, chat is stubbed
     process.env.OPENAI_API_KEY = 'test-token';
     svc._setChat(async () => JSON.stringify({
       verdict: 'offline', verdict_reason: '', why: 'w', actions: [], current_state: 'c', confidence: 'medium',
@@ -356,6 +359,7 @@ describe('runPending (AI analysis)', () => {
   it('8) a throwing chat call: status failed, evidence-only row, verdict = evidence verdict', async () => {
     const id = await seedPendingEvent({ sourceKey: 'e8', host: 'unknown-host-8' });
     setSetting('service_status_ai_enabled', '1');
+    setSetting('llm_custom_endpoint', 'http://127.0.0.1:1/v1');   // configured, unreachable, chat is stubbed
     process.env.OPENAI_API_KEY = 'test-token';
     svc._setChat(async () => { throw Object.assign(new Error('boom'), { code: 'LLM_REQUEST_FAILED' }); });
 
@@ -383,6 +387,8 @@ describe('runPending (AI analysis)', () => {
     for (const r of rows) db.prepare("UPDATE service_alert_events SET analysis_status = 'pending' WHERE id = ?").run(r.id);
 
     setSetting('service_status_ai_enabled', '1');
+
+    setSetting('llm_custom_endpoint', 'http://127.0.0.1:1/v1');   // configured, unreachable, chat is stubbed
     process.env.OPENAI_API_KEY = 'test-token';
     let chatCalls = 0;
     svc._setChat(async () => {
@@ -416,6 +422,8 @@ describe('runPending (AI analysis)', () => {
     for (const r of rows) db.prepare("UPDATE service_alert_events SET analysis_status = 'pending' WHERE id = ?").run(r.id);
 
     setSetting('service_status_ai_enabled', '1');
+
+    setSetting('llm_custom_endpoint', 'http://127.0.0.1:1/v1');   // configured, unreachable, chat is stubbed
     setSetting('service_status_analyses_per_minute', '1');
     process.env.OPENAI_API_KEY = 'test-token';
     svc._setChat(async () => JSON.stringify({ verdict: 'degraded', verdict_reason: '', why: 'w', actions: [], current_state: 'c', confidence: 'medium' }));

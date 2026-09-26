@@ -97,7 +97,8 @@ describe('two-tenant leak test', () => {
       const res = await request(app).get(route.replace('/api/', '/api/t/clean/')).set('x-api-key', API_KEY);
       const text = typeof res.text === 'string' ? res.text : JSON.stringify(res.body);
       if (text && text.includes(MARKER)) leaks.push(`${route} -> ${res.status}`);
-      if (res.status >= 500) errors.push(`${route} -> ${res.status} ${text.slice(0, 80)}`);
+      const notConfigured = res.status === 503 && /not configured/i.test(text);
+      if (res.status >= 500 && !notConfigured) errors.push(`${route} -> ${res.status} ${text.slice(0, 80)}`);
     }
     expect(leaks).toEqual([]);
     expect(errors).toEqual([]);
