@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { HeartPulse, Sparkles, X } from 'lucide-react';
 import client from '../../api/client';
+import WorkerChip from '../../components/WorkerChip';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import { useAiEnabled } from '../../api/useAiEnabled';
 
@@ -416,6 +417,7 @@ export default function ServiceStatusPage() {
             </button>
           ))}
         </div>
+        {board && <WorkerChip worker={board.worker} />}
         <LastUpdated date={board?.generatedAt} />
         <RefreshButton onClick={() => load(days)} refreshing={refreshing} />
       </PageHeader>

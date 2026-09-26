@@ -112,6 +112,8 @@ if (require.main === module) {
       initPoller();
       initAlertNotifier();
       initServiceStatus();
+      require('./services/opsAgent').initOpsAgent();
+      require('./services/workerHeartbeat').startHeartbeat('poller (inline in the API process)');
       directorySync.startScheduler();
       // Start pollers only for enabled, actively-registered plugins (Cohesity's
       // poller above is not registry-managed in Phase 1 and always starts).
@@ -126,6 +128,8 @@ if (require.main === module) {
       initDnsPrewarm();
     } else {
       logger.info('[Boot] Pollers run in the separate poller process (backend/pollerProcess.js, pm2: icc-poller). Set RUN_POLLERS_INLINE=true to run them in this process.');
+      // Watch for that process actually being there.
+      require('./services/workerHeartbeat').startWatchdog();
     }
     initLicense();
   });

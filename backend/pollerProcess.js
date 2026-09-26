@@ -19,6 +19,7 @@ const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
 const { initServiceStatus } = require('./services/serviceStatus');
 const { initOpsAgent } = require('./services/opsAgent');
+const { startHeartbeat } = require('./services/workerHeartbeat');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
@@ -43,6 +44,7 @@ const WORKER_TENANT = process.env.ICC_TENANT || null;
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
   logger.info('[Poller process] Demo mode — pollers disabled, idling.');
+  startHeartbeat('idle (demo)');
   setInterval(() => {}, 60 * 60 * 1000);
 } else if (!WORKER_TENANT && tenantRegistry.isStrict()) {
   // More than one tenant: this process only supervises, one worker process
@@ -107,6 +109,7 @@ if (isDemo()) {
   initGflags();
   initDnsPrewarm();
   require('./core/tenantLifecycle').initRetention();
+  startHeartbeat(WORKER_TENANT ? `poller worker for ${WORKER_TENANT}` : 'poller');
   logger.info('[Poller process] All pollers scheduled (Cohesity, plugins, licensing, views, gflags, alert notifier, DNS prewarm).');
 }
 

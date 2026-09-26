@@ -1041,6 +1041,9 @@ function status() {
     aiProvider: p.provider, aiModel: p.model || null,
     smtpReady: Boolean(config.smtpEnabled && config.smtpHost && config.smtpFrom),
     defaultRecipients: config.smtpRecipients || '',
+    // Whether the process that runs the tick is alive at all, so a stalled
+    // agent can be told apart from a stopped poller process.
+    worker: require('./workerHeartbeat').readHeartbeat(),
     lastRun: lastRun ? { at: lastRun.at, alertsSeen: lastRun.alerts_seen, newAlerts: lastRun.new_alerts, incidentsOpened: lastRun.incidents_opened, triaged: lastRun.triaged, emailsSent: lastRun.emails_sent, error: lastRun.error } : null,
     counts,
   };
