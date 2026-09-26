@@ -565,7 +565,7 @@ function esc(s) {
 function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [] } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
-  const subject = `[${agentName}] ${sev} | ${inc.host || platforms.join(', ')} | ${analysis.title || inc.title}${update ? ` [update ${update}]` : ''}`;
+  const subject = `${sev} | ${inc.host || platforms.join(', ')} | ${analysis.title || inc.title}${update ? ` [update ${update}]` : ''}`;
   const alive = alerts.filter((a) => !a.cleared_at);
   const cleared = alerts.filter((a) => a.cleared_at);
   const cls = `${analysis.classification || 'unknown'} (${analysis.confidence || 'low'} confidence${analysis.source === 'fallback' ? ', rule-based digest, no AI narrative' : ''})`;
@@ -701,7 +701,7 @@ async function notifyResolved(inc, settings, config) {
   const to = inc.email_to || recipientsFor(inc, settings, config);
   if (!to) return false;
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
-  const subject = `[${settings.name}] RESOLVED | ${inc.host || platforms.join(', ')} | ${inc.title}`;
+  const subject = `RESOLVED | ${inc.host || platforms.join(', ')} | ${inc.title}`;
   const text = [
     `${settings.name}, incident #${inc.id} is resolved.`,
     `Platforms: ${platforms.join(', ')}   Opened: ${inc.opened_at}`,

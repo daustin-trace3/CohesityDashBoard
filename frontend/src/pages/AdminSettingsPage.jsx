@@ -882,7 +882,7 @@ export default function AdminSettingsPage() {
             </label>
             <div>
               <label htmlFor="agent-name" className="block text-xs font-semibold text-ink mb-1">Agent name</label>
-              <p className="text-[11px] text-ink-muted mb-1.5">Shown as the sender name on its emails (over the SMTP from address), in the subject prefix and the signature, and on the agent page.</p>
+              <p className="text-[11px] text-ink-muted mb-1.5">Shown as the sender name on its emails (over the SMTP from address), in the signature, and on the agent page. Subjects carry the severity, host and title only.</p>
               <input id="agent-name" type="text" maxLength={80} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="ICC Operations Agent"
                 className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
             </div>
