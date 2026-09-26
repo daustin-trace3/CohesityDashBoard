@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
+import WorkerChip from '../../components/WorkerChip';
 import { useToast } from '../../components/ui/Toaster';
 import { useTableControls, SortTh, TablePager } from '../../components/ui/tableTools';
 
@@ -271,6 +272,7 @@ export default function OpsAgentPage() {
 
       {s && (
         <div className="flex items-center gap-2 mb-4 flex-wrap text-[11px]">
+          <WorkerChip worker={s.worker} />
           <Badge tone={s.settings.enabled ? 'ok' : 'crit'}>{s.settings.enabled ? 'Agent on' : 'Agent off'}</Badge>
           <Badge tone={s.aiConfigured ? 'ok' : 'crit'}>{s.aiConfigured ? `AI: ${s.aiProvider}${s.aiModel ? ` / ${s.aiModel}` : ''}` : 'AI not configured: the agent is idle'}</Badge>
           <Badge tone={s.smtpReady && s.settings.emailEnabled ? 'ok' : 'warn'}>{!s.settings.emailEnabled ? 'Email off' : s.smtpReady ? 'SMTP ready' : 'SMTP not configured'}</Badge>

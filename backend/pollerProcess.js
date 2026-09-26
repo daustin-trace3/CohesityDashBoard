@@ -13,6 +13,7 @@ const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
 const { initServiceStatus } = require('./services/serviceStatus');
 const { initOpsAgent } = require('./services/opsAgent');
+const { startHeartbeat } = require('./services/workerHeartbeat');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
@@ -31,6 +32,7 @@ const brocadeManifest = require('./platforms/brocade');
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
   logger.info('[Poller process] Demo mode — pollers disabled, idling.');
+  startHeartbeat('idle (demo)');
   setInterval(() => {}, 60 * 60 * 1000);
 } else {
   // Same plugin boot sequence as server.js: swap staged upgrades before any
@@ -69,6 +71,7 @@ if (isDemo()) {
   initViews();
   initGflags();
   initDnsPrewarm();
+  startHeartbeat('poller');
   logger.info('[Poller process] All pollers scheduled (Cohesity, plugins, licensing, views, gflags, alert notifier, DNS prewarm).');
 }
 

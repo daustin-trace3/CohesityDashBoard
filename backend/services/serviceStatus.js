@@ -1122,7 +1122,10 @@ function getBoard({ days = 30 } = {}) {
     return { id, label: meta.label, color: meta.color, route: meta.route, alertsRoute: meta.alertsRoute, current, days: dayRows };
   });
 
-  return { generatedAt: new Date().toISOString(), days: dayStrings, platforms };
+  // Polling happens in the poller process; if that is not alive, nothing on
+  // this board moves no matter what the platforms are doing.
+  const worker = require('./workerHeartbeat').readHeartbeat();
+  return { generatedAt: new Date().toISOString(), days: dayStrings, platforms, worker };
 }
 
 let intervalHandle = null;
