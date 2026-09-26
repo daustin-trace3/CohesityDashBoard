@@ -161,6 +161,32 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
             {inc.state === 'collecting' && !a && (
               <p className="text-sm text-ink-muted mb-4">Collecting related alerts until {new Date(inc.holdUntil).toLocaleTimeString()}; triage runs when the hold window ends.</p>
             )}
+            {inc.recurrence?.isPattern && (
+              <div className="mb-4 rounded-md border border-status-warn/40 bg-status-warn/10 px-3 py-2.5">
+                <p className="text-xs font-bold text-status-warn mb-1">This has happened {inc.recurrence.count} times in {inc.recurrence.windowDays} days</p>
+                <p className="text-[11px] text-ink-muted mb-2">
+                  {inc.recurrence.typicalGapMinutes != null && (inc.recurrence.typicalGapMinutes >= 1440
+                    ? `Roughly every ${(inc.recurrence.typicalGapMinutes / 1440).toFixed(1)} days. `
+                    : inc.recurrence.typicalGapMinutes >= 60
+                      ? `Roughly every ${(inc.recurrence.typicalGapMinutes / 60).toFixed(1)} hours. `
+                      : `Roughly every ${inc.recurrence.typicalGapMinutes} minutes. `)}
+                  {inc.recurrence.closedByAgent > 0 && `${inc.recurrence.closedByAgent} of the earlier ones closed on their own, so nobody was asked to look.`}
+                </p>
+                <table className="w-full text-[11px]">
+                  <thead><tr className="text-left text-ink-faint border-b border-cohesity-border"><th className="py-1 pr-3 font-semibold">Opened</th><th className="py-1 pr-3 font-semibold">Lasted</th><th className="py-1 pr-3 font-semibold">Closed by</th><th className="py-1 font-semibold">Resolution</th></tr></thead>
+                  <tbody>
+                    {inc.recurrence.occurrences.map((o) => (
+                      <tr key={o.id} className="border-b border-cohesity-border/40 last:border-0">
+                        <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{new Date(o.openedAt).toLocaleString()}</td>
+                        <td className="py-1 pr-3 text-ink-muted tnum whitespace-nowrap">{o.minutesOpen == null ? 'still open' : o.minutesOpen >= 60 ? `${(o.minutesOpen / 60).toFixed(1)} h` : `${o.minutesOpen} min`}</td>
+                        <td className="py-1 pr-3 text-ink-muted">{o.closedBy}</td>
+                        <td className="py-1 text-ink-muted">{o.resolution || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             {a && (
               <>
                 <Section title="What happened"><p className="text-sm text-ink">{a.summary}</p></Section>
@@ -354,6 +380,7 @@ export default function OpsAgentPage() {
                         <td className="py-2 pr-3 max-w-[360px]">
                           <button onClick={() => setOpenId(r.id)} className="text-brand hover:underline cursor-pointer text-left">{r.title || r.host || r.key}</button>
                           <span className="ml-1.5 text-[10px] text-ink-faint">{KIND_LABEL[r.kind] || ''}{r.humanRequired ? ' · human required' : ''}</span>
+                          {r.isPattern && <span className="ml-1.5 text-[10px] font-semibold text-status-warn" title={`The same incident has opened ${r.repeatCount} times inside the repeat window. The repetition is the thing to investigate.`}>repeat {r.repeatCount}x</span>}
                           {r.summary && <p className="text-[11px] text-ink-faint line-clamp-1" title={r.summary}>{r.summary}</p>}
                         </td>
                         <td className="py-2 pr-3 text-ink-muted text-[11px]">{r.platformsLabel}</td>

@@ -253,6 +253,8 @@ router.put('/', (req, res, next) => {
       if (a.renotifyMinutes !== undefined) { const n = Number(a.renotifyMinutes); setSetting('ops_agent_renotify_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }
       if (a.autoResolveMinutes !== undefined) { const n = Number(a.autoResolveMinutes); setSetting('ops_agent_auto_resolve_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }
       if (a.evidenceResolve !== undefined) setSetting('ops_agent_evidence_resolve', a.evidenceResolve ? '1' : '0');
+      if (a.patternMin !== undefined) { const n = Number(a.patternMin); setSetting('ops_agent_pattern_min', n >= 2 && n <= 20 ? String(Math.round(n)) : ''); }
+      if (a.patternDays !== undefined) { const n = Number(a.patternDays); setSetting('ops_agent_pattern_days', n >= 1 && n <= 90 ? String(Math.round(n)) : ''); }
       if (a.emailEnabled !== undefined) setSetting('ops_agent_email_enabled', a.emailEnabled ? '1' : '0');
       if (a.recipients !== undefined) setSetting('ops_agent_recipients', String(a.recipients).trim().slice(0, 2000));
     }

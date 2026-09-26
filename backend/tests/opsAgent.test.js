@@ -106,7 +106,8 @@ describe('fallback triage and email', () => {
       { platform: 'brocade', severity: 'warning', host: 'esx-01', message: 'Port offline', cleared: false },
     ],
     hosts: [{ host: 'esx-01', platform: 'vcenter', verdict: 'degraded', verdictReason: 'host still up', hostRecords: [{ platform: 'vcenter', name: 'esx-01', up: true }], sanPaths: [{}], platformPolls: [], relatedOtherPlatformEvents: [{}] }],
-    priorIncidentsSameKey30d: [{ id: 3 }],
+    recurrence: { windowDays: 14, threshold: 3, count: 3, isPattern: true, typicalGapMinutes: 180, closedByAgent: 2,
+      occurrences: [{ id: 3, openedAt: NOW, minutesOpen: 20, closedBy: 'agent', resolution: 'cleared' }, { id: 2, openedAt: NOW, minutesOpen: 15, closedBy: 'agent', resolution: 'cleared' }] },
     concurrentOpenIncidents: [],
   };
 
@@ -116,7 +117,7 @@ describe('fallback triage and email', () => {
     expect(a.reviewed.some((r) => /still up/.test(r))).toBe(true);
     expect(a.reviewed.some((r) => /SAN path/.test(r))).toBe(true);
     expect(a.next_steps.length).toBeGreaterThanOrEqual(3);
-    const single = agent.fallbackTriage({ ...evidence, priorIncidentsSameKey30d: [], alerts: [evidence.alerts[0]] });
+    const single = agent.fallbackTriage({ ...evidence, recurrence: { windowDays: 14, count: 1, isPattern: false, occurrences: [] }, alerts: [evidence.alerts[0]] });
     expect(single.classification).toBe('one-off');
   });
 
@@ -447,5 +448,90 @@ describe('an unparsable model answer', () => {
   it('still recovers JSON from a fenced or chatty answer without a retry', () => {
     expect(agent.parseModelJson('```json\n{"classification":"noise"}\n```').classification).toBe('noise');
     expect(agent.parseModelJson('Here you go: {"classification":"one-off"} hope that helps').classification).toBe('one-off');
+  });
+});
+
+describe('repeating conditions', () => {
+  const key = 'host:esx-09';
+  const open = (openedAt, resolvedAt, resolution) => db.prepare(`
+    INSERT INTO ops_incidents (incident_key, title, host, platforms, severity, state, opened_at, hold_until, last_event_at,
+      event_count, resolved_at, resolved_by, resolution, classification)
+    VALUES (?, 'Path lost', 'esx-09', '["brocade"]', 'critical', ?, ?, ?, ?, 2, ?, ?, ?, 'incident')
+  `).run(key, resolvedAt ? 'resolved' : 'collecting', openedAt, openedAt, openedAt, resolvedAt, resolvedAt ? 'agent' : null, resolution, ).lastInsertRowid;
+  const ago = (h) => new Date(Date.now() - h * 3600000).toISOString();
+
+  it('counts prior incidents on the same key and calls it a pattern at the threshold', () => {
+    open(ago(30), ago(29), 'Every alert cleared; closed after a quiet window.');
+    open(ago(18), ago(17.6), 'Every alert cleared; closed after a quiet window.');
+    const id = open(ago(1), null, null);
+    const row = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
+    const rec = agent.recurrenceFor(row, { patternDays: 14, patternMin: 3 });
+    expect(rec.count).toBe(3);
+    expect(rec.isPattern).toBe(true);
+    expect(rec.occurrences).toHaveLength(2);
+    expect(rec.occurrences[0].closedBy).toBe('agent');
+    expect(rec.occurrences[0].resolution).toContain('quiet window');
+    expect(rec.typicalGapMinutes).toBeGreaterThan(600);     // roughly twelve to seventeen hours apart
+  });
+
+  it('stays quiet below the threshold, and the line says what a person should look at', () => {
+    open(ago(5), ago(4), 'cleared');
+    const id = open(ago(1), null, null);
+    const row = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
+    expect(agent.recurrenceFor(row, { patternDays: 14, patternMin: 3 }).isPattern).toBe(false);
+    expect(agent.recurrenceLine(agent.recurrenceFor(row, { patternDays: 14, patternMin: 2 })))
+      .toContain('The repetition is the fault worth investigating');
+  });
+
+  it('puts the history and a repeat marker in the email', () => {
+    const inc = { id: 3, platforms: '["brocade"]', severity: 'critical', host: 'esx-09', title: 'Path lost',
+      opened_at: NOW, triage_error: null };
+    const analysis = { source: 'ai', classification: 'recurring', confidence: 'high', summary: 's', reviewed: [], next_steps: [] };
+    const recurrence = { isPattern: true, count: 4, windowDays: 14, threshold: 3, typicalGapMinutes: 240, closedByAgent: 3,
+      occurrences: [{ openedAt: '2026-09-25T02:00:00.000Z', minutesOpen: 12, closedBy: 'agent', resolution: 'Cleared on its own.' }] };
+    const mail = agent.renderEmail(inc, [], analysis, { agentName: 'Tank', recurrence });
+    expect(mail.subject).toContain('[repeat 4]');
+    expect(mail.text).toContain('THIS IS A REPEAT (4 times in 14 days)');
+    expect(mail.text).toContain('about every 4.0 hours');
+    expect(mail.text).toContain('closed by agent. Cleared on its own.');
+    expect(mail.html).toContain('This is a repeat (4 times in 14 days)');
+  });
+
+  it(`leaves an ordinary incident's email untouched`, () => {
+    const inc = { id: 4, platforms: '["dell"]', severity: 'warning', title: 'x', opened_at: NOW, triage_error: null };
+    const analysis = { source: 'ai', classification: 'one-off', confidence: 'high', summary: 's', reviewed: [], next_steps: [] };
+    const mail = agent.renderEmail(inc, [], analysis, { recurrence: { isPattern: false, count: 1 } });
+    expect(mail.subject).not.toContain('repeat');
+    expect(mail.text).not.toContain('THIS IS A REPEAT');
+  });
+});
+
+describe('a pattern overrides the triage verdict', () => {
+  it('classes the incident recurring and demands a human, whatever the digest said', async () => {
+    const key = 'host:db-11';
+    const ins = (openedAt, resolvedAt) => db.prepare(`
+      INSERT INTO ops_incidents (incident_key, title, host, platforms, severity, state, opened_at, hold_until, last_event_at,
+        event_count, resolved_at, resolved_by, resolution, classification)
+      VALUES (?, 'Backup missed', 'db-11', '["cohesity"]', 'warning', ?, ?, ?, ?, 1, ?, ?, ?, 'one-off')
+    `).run(key, resolvedAt ? 'resolved' : 'collecting', openedAt, openedAt, openedAt, resolvedAt,
+      resolvedAt ? 'agent' : null, resolvedAt ? 'Cleared on its own after 20 minutes.' : null).lastInsertRowid;
+    const ago = (h) => new Date(Date.now() - h * 3600000).toISOString();
+    ins(ago(50), ago(49));
+    ins(ago(26), ago(25));
+    setSetting('ops_agent_pattern_min', '3');
+    setSetting('ops_agent_pattern_days', '14');
+    const id = ins(ago(1), null);
+
+    await agent.retriage(id);
+
+    const row = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
+    expect(row.classification).toBe('recurring');
+    const analysis = JSON.parse(row.analysis_json);
+    expect(analysis.human_required).toBe(true);
+    expect(analysis.human_reason).toContain('3 times in 14 days');
+    const detail = agent.getIncident(id);
+    expect(detail.isPattern).toBe(true);
+    expect(detail.recurrence.occurrences).toHaveLength(2);
+    expect(detail.recurrence.occurrences[0].resolution).toContain('Cleared on its own');
   });
 });
