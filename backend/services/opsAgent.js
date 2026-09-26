@@ -333,7 +333,60 @@ function incidentAlerts(id) {
   return db.prepare('SELECT * FROM ops_incident_alerts WHERE incident_id = ? ORDER BY attached_at, rowid').all(id);
 }
 
-function gatherIncidentEvidence(inc, alerts) {
+/**
+ * Everything the same incident key did inside the pattern window. A condition
+ * that opens, clears itself and opens again is invisible one incident at a
+ * time: each one looks minor and closes on its own. Counted together it is a
+ * repeating fault with a cadence, and the point of the count is to hand a
+ * person the history rather than keep quietly closing it.
+ */
+function recurrenceFor(inc, settings) {
+  const days = settings.patternDays;
+  const rows = db.prepare(`
+    SELECT id, opened_at, resolved_at, state, classification, resolved_by, resolution, summary, event_count
+    FROM ops_incidents
+    WHERE incident_key = ? AND id != ? AND opened_at >= datetime('now', '-${days} days')
+    ORDER BY opened_at DESC LIMIT 20
+  `).all(inc.incident_key, inc.id);
+  const occurrences = rows.map((r) => ({
+    id: r.id, openedAt: r.opened_at, resolvedAt: r.resolved_at || null,
+    minutesOpen: r.resolved_at ? Math.max(0, Math.round((Date.parse(r.resolved_at) - Date.parse(r.opened_at)) / 60000)) : null,
+    closedBy: r.state === 'resolved' ? (r.resolved_by || 'agent') : 'still open',
+    classification: r.classification || null,
+    resolution: r.resolution || null,
+    alerts: r.event_count || 0,
+  }));
+  // Cadence from this incident plus every prior one, newest first.
+  const stamps = [inc.opened_at, ...rows.map((r) => r.opened_at)].map((s) => Date.parse(s)).filter((n) => !Number.isNaN(n));
+  let gapMinutes = null;
+  if (stamps.length > 1) {
+    const gaps = [];
+    for (let i = 0; i < stamps.length - 1; i += 1) gaps.push(Math.abs(stamps[i] - stamps[i + 1]) / 60000);
+    gaps.sort((x, y) => x - y);
+    gapMinutes = Math.round(gaps[Math.floor(gaps.length / 2)]);
+  }
+  const count = occurrences.length + 1;   // this one included
+  const closedItself = occurrences.filter((o) => o.closedBy === 'agent').length;
+  return {
+    windowDays: days, threshold: settings.patternMin, count, isPattern: count >= settings.patternMin,
+    typicalGapMinutes: gapMinutes, closedByAgent: closedItself,
+    firstSeen: occurrences.length ? occurrences[occurrences.length - 1].openedAt : inc.opened_at,
+    occurrences,
+  };
+}
+
+/** One sentence a person can act on, or null when this is not a pattern. */
+function recurrenceLine(rec) {
+  if (!rec || !rec.isPattern) return null;
+  const every = rec.typicalGapMinutes == null ? ''
+    : rec.typicalGapMinutes >= 1440 ? `, about every ${(rec.typicalGapMinutes / 1440).toFixed(1)} days`
+      : rec.typicalGapMinutes >= 60 ? `, about every ${(rec.typicalGapMinutes / 60).toFixed(1)} hours`
+        : `, about every ${rec.typicalGapMinutes} minutes`;
+  const closed = rec.closedByAgent ? ` ${rec.closedByAgent} of the earlier ones closed on their own, which is why nobody was asked to look.` : '';
+  return `This has now happened ${rec.count} times in ${rec.windowDays} days${every}.${closed} The repetition is the fault worth investigating, not this single occurrence.`;
+}
+
+function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   const hosts = [];
   const seen = new Set();
   for (const a of alerts) {
@@ -358,10 +411,7 @@ function gatherIncidentEvidence(inc, alerts) {
       hosts.push({ host: a.host, platform: a.platform, error: `evidence gather failed: ${err.message}` });
     }
   }
-  const history = db.prepare(`
-    SELECT id, opened_at, resolved_at, classification, summary FROM ops_incidents
-    WHERE incident_key = ? AND id != ? AND opened_at >= datetime('now', '-30 days') ORDER BY opened_at DESC LIMIT 5
-  `).all(inc.incident_key, inc.id);
+  const recurrence = recurrenceFor(inc, settings);
   const concurrent = db.prepare(`
     SELECT id, title, host, platforms, severity, state, classification, summary FROM ops_incidents
     WHERE id != ? AND state != 'resolved' AND opened_at >= datetime(?, '-60 minutes') LIMIT 10
@@ -389,7 +439,7 @@ function gatherIncidentEvidence(inc, alerts) {
     alertsTotal: alerts.length,
     alertsOmitted: Math.max(0, alerts.length - EVIDENCE_ALERT_CAP),
     hosts,
-    priorIncidentsSameKey30d: history,
+    recurrence,
     concurrentOpenIncidents: concurrent,
   };
 }
@@ -416,7 +466,7 @@ function describeUnparsed(content) {
 function fallbackTriage(evidence) {
   const alive = evidence.alerts.filter((a) => !a.cleared);
   const platforms = evidence.incident.platforms.map((p) => platformMeta(p).label);
-  const recurring = evidence.priorIncidentsSameKey30d.length > 0;
+  const rec = evidence.recurrence || { count: 1, occurrences: [], windowDays: 0, isPattern: false };
   const reviewed = [];
   for (const h of evidence.hosts) {
     if (h.error) { reviewed.push(`${h.host}: ${h.error}`); continue; }
@@ -428,14 +478,14 @@ function fallbackTriage(evidence) {
     if ((h.relatedOtherPlatformEvents || []).length) reviewed.push(`${h.host}: ${h.relatedOtherPlatformEvents.length} open alert(s) on other platforms for the same host`);
   }
   if (!reviewed.length) reviewed.push('No host-level inventory matched these alerts; only the alert text and platform poll state were available.');
-  reviewed.push(`Incident history: ${recurring ? `${evidence.priorIncidentsSameKey30d.length} prior incident(s) on the same key in 30 days` : 'none on this key in 30 days'}.`);
+  reviewed.push(`Incident history: ${rec.occurrences.length ? `${rec.occurrences.length} earlier occurrence(s) of this same incident in ${rec.windowDays} days, the most recent ${rec.occurrences[0].openedAt}` : `none on this key in ${rec.windowDays} days`}.`);
   const down = evidence.hosts.some((h) => h.verdict === 'offline');
   const pollTrouble = alive.some((a) => /stale|could not reach/i.test(a.message || ''));
   const humanRequired = pollTrouble ? (evidence.selfHeal ? /still failing/.test(evidence.selfHeal.outcome) : true) : (down || rank(evidence.incident.severity) >= 3);
   return {
     human_required: humanRequired,
     human_reason: humanRequired ? (pollTrouble ? 'ICC re-polled the source and it still does not answer; someone has to check the source or the network path.' : 'The condition needs hands on the system; ICC can only observe it.') : 'ICC will keep watching; no action is needed unless the alerts persist.',
-    classification: recurring ? 'recurring' : (alive.length > 1 ? 'incident' : 'one-off'),
+    classification: rec.isPattern ? 'recurring' : (alive.length > 1 ? 'incident' : 'one-off'),
     confidence: 'low',
     title: evidence.incident.title,
     summary: `${alive.length} open alert${alive.length === 1 ? '' : 's'} on ${platforms.join(', ')}${evidence.incident.host ? ` for ${evidence.incident.host}` : ''}. ${down ? 'ICC evidence shows the host offline.' : 'ICC evidence shows the host still reachable.'}`,
@@ -477,7 +527,10 @@ function buildMessages(evidence, anon) {
     '"next_steps": [{"owner": string (team or role), "action": string}] (2-6 ordered steps), ' +
     '"escalate": string (when and to whom to escalate), "human_required": boolean, "human_reason": string (why a ' +
     'person is or is not needed)}. "recurring" means the same incident key had prior ' +
-    'incidents in the last 30 days; "noise" means the evidence shows nothing is actually wrong; "one-off" means a ' +
+    'occurrences in the recurrence window; when recurrence.isPattern is true the classification is "recurring" and a ' +
+    'person IS required, so write the summary and the steps around finding why it keeps coming back rather than ' +
+    'around this single occurrence, and use the past occurrences and their resolutions in the evidence. ' +
+    '"noise" means the evidence shows nothing is actually wrong; "one-off" means a ' +
     'single isolated alert with no correlated signal.';
   const ec = (getSetting('llm_estate_context') || '').trim();
   if (ec) system += ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}`;
@@ -514,8 +567,9 @@ function shapeAnalysis(parsed, anon, fallback) {
 }
 
 async function triageIncident(inc, { force = false } = {}) {
+  const settings = getOpsAgentSettings();
   const alerts = incidentAlerts(inc.id);
-  const evidence = gatherIncidentEvidence(inc, alerts);
+  const evidence = gatherIncidentEvidence(inc, alerts, settings);
   const fallback = fallbackTriage(evidence);
   let analysis = { ...fallback, source: 'fallback' };
   let model = null;
@@ -557,6 +611,14 @@ async function triageIncident(inc, { force = false } = {}) {
   } else {
     error = 'AI provider not configured; rule-based digest used.';
   }
+  // Recurrence is counted, so it is not the model's call. A repeating fault
+  // that keeps closing itself is exactly the thing an agent hides from people.
+  const rline = recurrenceLine(evidence.recurrence);
+  if (rline) {
+    analysis.classification = 'recurring';
+    analysis.human_required = true;
+    analysis.human_reason = `${rline}${analysis.human_reason ? ` ${analysis.human_reason}` : ''}`;
+  }
   const now = new Date().toISOString();
   db.prepare(`
     UPDATE ops_incidents SET state = 'triaged', triaged_at = ?, classification = ?, confidence = ?, title = ?, summary = ?,
@@ -585,10 +647,25 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [] } = {}) {
+function lastedText(o) {
+  if (o.minutesOpen == null) return 'still open';
+  return o.minutesOpen >= 60 ? `${(o.minutesOpen / 60).toFixed(1)} h` : `${o.minutesOpen} min`;
+}
+
+function occurrenceLine(o) {
+  return `- ${o.openedAt}: ${lastedText(o)}, closed by ${o.closedBy}${o.resolution ? `. ${o.resolution}` : ''}`;
+}
+
+function occurrenceRows(rec, esc) {
+  return rec.occurrences.map((o) => `<tr><td style="padding:3px 8px">${esc(o.openedAt)}</td><td style="padding:3px 8px">${lastedText(o)}</td><td style="padding:3px 8px">${esc(o.closedBy)}</td><td style="padding:3px 8px">${esc(o.resolution || '-')}</td></tr>`).join('');
+}
+
+function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
-  const subject = `${sev} | ${inc.host || platforms.join(', ')} | ${analysis.title || inc.title}${update ? ` [update ${update}]` : ''}`;
+  const rec = recurrence && recurrence.isPattern ? recurrence : null;
+  const recLine = rec ? recurrenceLine(rec) : null;
+  const subject = `${sev} | ${inc.host || platforms.join(', ')} | ${analysis.title || inc.title}${rec ? ` [repeat ${rec.count}]` : ''}${update ? ` [update ${update}]` : ''}`;
   const alive = alerts.filter((a) => !a.cleared_at);
   const cleared = alerts.filter((a) => a.cleared_at);
   const cls = `${analysis.classification || 'unknown'} (${analysis.confidence || 'low'} confidence${analysis.source === 'fallback' ? ', rule-based digest, no AI narrative' : ''})`;
@@ -604,6 +681,9 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     `Classification: ${cls}`,
     ...(noAi ? [noAi] : []),
     ...(human ? [human] : []),
+    '',
+    ...(recLine ? ['', `THIS IS A REPEAT (${rec.count} times in ${rec.windowDays} days)`, recLine,
+      'Earlier occurrences, newest first:', ...rec.occurrences.map(occurrenceLine)] : []),
     '',
     'WHAT HAPPENED',
     analysis.summary || '-',
@@ -647,6 +727,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
 ${noAi ? `<div style="font-size:12px;color:#92400E">${esc(noAi)}</div>` : ''}
 ${human ? `<div style="font-size:12px;font-weight:600;color:${analysis.human_required ? '#B91C1C' : '#166534'}">${esc(human)}</div>` : ''}
 </div>
+${recLine ? section(`This is a repeat (${rec.count} times in ${rec.windowDays} days)`, `<p style="margin:0 0 6px">${esc(recLine)}</p><table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Opened</th><th style="padding:3px 8px">Lasted</th><th style="padding:3px 8px">Closed by</th><th style="padding:3px 8px">Resolution</th></tr>${occurrenceRows(rec, esc)}</table>`) : ''}
 ${section('What happened', `<p style="margin:0">${esc(analysis.summary || '-')}</p>`)}
 ${section('Impact', `<p style="margin:0">${esc(analysis.impact || '-')}</p>`)}
 ${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(alive)}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(cleared)}` : ''}</table>`)}
@@ -691,7 +772,9 @@ async function notifyIncident(inc, settings, config, { force = false } = {}) {
   const update = inc.notify_count || 0;
   let healActions = [];
   try { healActions = JSON.parse(inc.heal_actions_json || '[]'); } catch { /* ignore */ }
-  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions });
+  let storedEvidence = null;
+  try { storedEvidence = JSON.parse(inc.evidence_json || 'null'); } catch { storedEvidence = null; }
+  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null });
   const now = new Date().toISOString();
   try {
     const transport = alertNotifier.createTransport(config);
@@ -1049,14 +1132,23 @@ function shapeIncident(row, { withDetail = false } = {}) {
 
 function listIncidents({ state = 'open', limit = 100 } = {}) {
   const where = state === 'open' ? "WHERE state != 'resolved'" : state === 'resolved' ? "WHERE state = 'resolved'" : '';
+  const s = getOpsAgentSettings();
+  const repeats = new Map();
+  for (const r of db.prepare(`SELECT incident_key k, COUNT(*) c FROM ops_incidents WHERE opened_at >= datetime('now', '-${s.patternDays} days') GROUP BY incident_key HAVING c > 1`).all()) repeats.set(r.k, r.c);
   return db.prepare(`SELECT * FROM ops_incidents ${where} ORDER BY opened_at DESC LIMIT ?`).all(Math.min(500, Math.max(1, limit)))
-    .map((r) => shapeIncident(r))
+    .map((r) => { const o = shapeIncident(r); o.repeatCount = repeats.get(r.incident_key) || 1; o.isPattern = o.repeatCount >= s.patternMin; return o; })
     .sort((x, y) => (y.impactScore - x.impactScore) || (Date.parse(y.openedAt) - Date.parse(x.openedAt)));
 }
 
 function getIncident(id) {
   const row = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
-  return row ? shapeIncident(row, { withDetail: true }) : null;
+  if (!row) return null;
+  const out = shapeIncident(row, { withDetail: true });
+  const s = getOpsAgentSettings();
+  out.recurrence = recurrenceFor(row, s);
+  out.repeatCount = out.recurrence.count;
+  out.isPattern = out.recurrence.isPattern;
+  return out;
 }
 
 /** Cheap change token for live updates: one row of aggregates, no payload.
@@ -1186,5 +1278,6 @@ module.exports = {
   // pure helpers for tests
   hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
   closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson,
+  recurrenceFor, recurrenceLine,
 };
 void chatFn;

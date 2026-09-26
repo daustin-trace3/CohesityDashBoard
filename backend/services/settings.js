@@ -206,6 +206,11 @@ function getOpsAgentSettings() {
     renotifyMinutes: (renotify >= 0 && renotify <= 1440) ? Math.round(renotify) : 60,
     autoResolveMinutes: (() => { const n = Number(getSetting('ops_agent_auto_resolve_minutes')); return (n >= 0 && n <= 1440) ? Math.round(n) : 30; })(),
     evidenceResolve: getSetting('ops_agent_evidence_resolve') !== '0',
+    // A condition that keeps coming back and keeps clearing itself is a
+    // pattern, not a series of one-offs: this is how many times inside the
+    // window it takes before the agent says so and asks for a person.
+    patternMin: (() => { const n = Number(getSetting('ops_agent_pattern_min')); return (n >= 2 && n <= 20) ? Math.round(n) : 3; })(),
+    patternDays: (() => { const n = Number(getSetting('ops_agent_pattern_days')); return (n >= 1 && n <= 90) ? Math.round(n) : 14; })(),
     emailEnabled: getSetting('ops_agent_email_enabled') !== '0',
     recipients: (getSetting('ops_agent_recipients') || '').trim(),
   };

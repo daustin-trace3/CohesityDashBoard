@@ -69,6 +69,8 @@ export default function AdminSettingsPage() {
   const [agentEmailEnabled, setAgentEmailEnabled] = useState(true);
   const [agentAutoResolveMinutes, setAgentAutoResolveMinutes] = useState(30);
   const [agentEvidenceResolve, setAgentEvidenceResolve] = useState(true);
+  const [agentPatternMin, setAgentPatternMin] = useState(3);
+  const [agentPatternDays, setAgentPatternDays] = useState(14);
   const [agentRecipients, setAgentRecipients] = useState('');
   const [testingAgent, setTestingAgent] = useState(false);
   const [ttlHours, setTtlHours] = useState(24);
@@ -138,6 +140,8 @@ export default function AdminSettingsPage() {
           setAgentRenotifyMinutes(d.opsAgent.renotifyMinutes ?? 60);
           setAgentEmailEnabled(d.opsAgent.emailEnabled !== false);
           setAgentAutoResolveMinutes(d.opsAgent.autoResolveMinutes ?? 30);
+          setAgentPatternMin(d.opsAgent.patternMin ?? 3);
+          setAgentPatternDays(d.opsAgent.patternDays ?? 14);
           setAgentEvidenceResolve(d.opsAgent.evidenceResolve !== false);
           setAgentRecipients(d.opsAgent.recipients || '');
         }
@@ -249,6 +253,7 @@ export default function AdminSettingsPage() {
           analysesPerHour: Number(agentAnalysesPerHour) || 20, renotifyMinutes: Number(agentRenotifyMinutes),
           emailEnabled: agentEmailEnabled, recipients: agentRecipients,
           autoResolveMinutes: Number(agentAutoResolveMinutes), evidenceResolve: agentEvidenceResolve,
+          patternMin: Number(agentPatternMin), patternDays: Number(agentPatternDays),
         },
       });
       window.dispatchEvent(new Event('platforms-changed'));
@@ -939,6 +944,20 @@ export default function AdminSettingsPage() {
                   <input type="checkbox" checked={agentEvidenceResolve} onChange={(e) => setAgentEvidenceResolve(e.target.checked)} className="accent-brand cursor-pointer mt-0.5" />
                   <span className="text-sm text-ink">Also close what the evidence shows is fixed<span className="block text-[11px] text-ink-muted">For an incident whose platform alert is still open while ICC's own evidence says the system is healthy, the agent asks once an hour whether it is fixed and closes it with the reason. Hardware faults and anything the evidence does not cover stay open.</span></span>
                 </label>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="agent-pattern-min" className="block text-xs font-semibold text-ink mb-1">Call it a repeat after (occurrences)</label>
+                <p className="text-[11px] text-ink-muted mb-1.5">A condition that opens, clears itself and opens again is invisible one incident at a time. Once the same incident key has come back this many times inside the window, the agent classes it recurring, says a person is required, and puts every earlier occurrence and how it was resolved in the email. 2 to 20.</p>
+                <input id="agent-pattern-min" type="number" min={2} max={20} value={agentPatternMin} onChange={(e) => setAgentPatternMin(e.target.value)}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
+              </div>
+              <div>
+                <label htmlFor="agent-pattern-days" className="block text-xs font-semibold text-ink mb-1">Repeat window (days)</label>
+                <p className="text-[11px] text-ink-muted mb-1.5">How far back the agent counts occurrences of the same incident key. 1 to 90.</p>
+                <input id="agent-pattern-days" type="number" min={1} max={90} value={agentPatternDays} onChange={(e) => setAgentPatternDays(e.target.value)}
+                  className="w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none" />
               </div>
             </div>
             <label className="flex items-start gap-2 cursor-pointer select-none">
