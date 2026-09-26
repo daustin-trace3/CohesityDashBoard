@@ -1111,13 +1111,10 @@ let intervalHandle = null;
 let timeoutHandle = null;
 function initOpsAgent() {
   if (intervalHandle) return;
-  const { forEachTenant } = require('../core/tenantRegistry');
   // Exchanges logged before the agent had its own Privacy Inspector tag.
-  forEachTenant(() => {
-    try { db.prepare("UPDATE ai_audit_exchanges SET platform = 'ops-agent' WHERE feature = 'Operations Agent' AND platform != 'ops-agent'").run(); } catch { /* table absent on a fresh db */ }
-  });
-  intervalHandle = setInterval(() => { forEachTenant(() => runOnce()); }, 60000);
-  timeoutHandle = setTimeout(() => { forEachTenant(() => runOnce()); }, 30000);
+  try { db.prepare("UPDATE ai_audit_exchanges SET platform = 'ops-agent' WHERE feature = 'Operations Agent' AND platform != 'ops-agent'").run(); } catch { /* table absent on a fresh db */ }
+  intervalHandle = setInterval(() => { runOnce(); }, 60000);
+  timeoutHandle = setTimeout(() => { runOnce(); }, 30000);
 }
 function stopOpsAgent() {
   if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
