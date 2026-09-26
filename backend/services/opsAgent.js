@@ -1113,8 +1113,11 @@ function initOpsAgent() {
   if (intervalHandle) return;
   // Exchanges logged before the agent had its own Privacy Inspector tag.
   try { db.prepare("UPDATE ai_audit_exchanges SET platform = 'ops-agent' WHERE feature = 'Operations Agent' AND platform != 'ops-agent'").run(); } catch { /* table absent on a fresh db */ }
-  intervalHandle = setInterval(() => { runOnce(); }, 60000);
-  timeoutHandle = setTimeout(() => { runOnce(); }, 30000);
+  // A rejection here would otherwise be unhandled; the timer survives either
+  // way, but an unlogged failure is how a quiet agent goes unnoticed.
+  const tick = () => { runOnce().catch((err) => logger.error(`[OpsAgent] tick rejected: ${err.message}`)); };
+  intervalHandle = setInterval(tick, 60000);
+  timeoutHandle = setTimeout(tick, 30000);
 }
 function stopOpsAgent() {
   if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
