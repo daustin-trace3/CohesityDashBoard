@@ -400,3 +400,21 @@ describe('a tick that never finishes', () => {
     expect(agent.status().tickStartedAt).toBe(started);
   });
 });
+
+describe('email when the model did not answer', () => {
+  it('says why there is no AI narrative instead of only that there is none', () => {
+    const inc = { id: 7, platforms: '["dell"]', severity: 'critical', host: 'r740-07', title: 'Host down',
+      opened_at: NOW, triage_error: 'LLM request failed (HTTP 400). response_format is not supported.' };
+    const analysis = { source: 'fallback', classification: 'incident', confidence: 'low', summary: 's', impact: 'i',
+      correlation: 'c', likely_cause: 'l', reviewed: [], next_steps: [], escalate: 'e' };
+    const mail = agent.renderEmail(inc, [], analysis, { agentName: 'ICC Operations Agent' });
+    expect(mail.text).toContain('No AI narrative: LLM request failed (HTTP 400)');
+    expect(mail.html).toContain('No AI narrative: LLM request failed (HTTP 400)');
+  });
+
+  it('says nothing extra when the model did answer', () => {
+    const inc = { id: 8, platforms: '["dell"]', severity: 'warning', title: 'x', opened_at: NOW, triage_error: null };
+    const analysis = { source: 'ai', classification: 'one-off', confidence: 'high', summary: 's', reviewed: [], next_steps: [] };
+    expect(agent.renderEmail(inc, [], analysis, {}).text).not.toContain('No AI narrative');
+  });
+});

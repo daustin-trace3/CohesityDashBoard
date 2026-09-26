@@ -569,6 +569,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const alive = alerts.filter((a) => !a.cleared_at);
   const cleared = alerts.filter((a) => a.cleared_at);
   const cls = `${analysis.classification || 'unknown'} (${analysis.confidence || 'low'} confidence${analysis.source === 'fallback' ? ', rule-based digest, no AI narrative' : ''})`;
+  const noAi = analysis.source === 'fallback' && inc.triage_error ? `No AI narrative: ${inc.triage_error}` : null;
   const steps = (analysis.next_steps || []).map((s, i) => `${i + 1}. [${s.owner}] ${s.action}`);
   const human = analysis.human_required == null ? null : `Human required: ${analysis.human_required ? 'YES' : 'no'}${analysis.human_reason ? ` (${analysis.human_reason})` : ''}`;
   const did = (healActions || []).map((a) => `- ${a.at}: ${a.action} ${a.target}: ${a.result}`);
@@ -578,6 +579,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     `${agentName}, incident #${inc.id}${update ? ` (update ${update})` : ''}`,
     `Severity: ${sev}   Platforms: ${platforms.join(', ')}   Opened: ${inc.opened_at}`,
     `Classification: ${cls}`,
+    ...(noAi ? [noAi] : []),
     ...(human ? [human] : []),
     '',
     'WHAT HAPPENED',
@@ -619,6 +621,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
 <div style="font-size:16px;font-weight:600">${esc(analysis.title || inc.title)}</div>
 <div style="font-size:12px;color:#475569">Incident #${inc.id}${update ? ` (update ${update})` : ''} &middot; ${esc(sev)} &middot; ${esc(platforms.join(', '))} &middot; opened ${esc(inc.opened_at)}</div>
 <div style="font-size:12px;color:#475569">Classification: ${esc(cls)}</div>
+${noAi ? `<div style="font-size:12px;color:#92400E">${esc(noAi)}</div>` : ''}
 ${human ? `<div style="font-size:12px;font-weight:600;color:${analysis.human_required ? '#B91C1C' : '#166534'}">${esc(human)}</div>` : ''}
 </div>
 ${section('What happened', `<p style="margin:0">${esc(analysis.summary || '-')}</p>`)}
@@ -924,8 +927,8 @@ async function runOnce({ force = false } = {}) {
       try {
         const a = await triageIncident(inc);
         stats.triaged += 1;
-        const fresh = db.prepare('SELECT model FROM ops_incidents WHERE id = ?').get(inc.id);
-        act('triaged incident', `#${inc.id} ${a.classification}, ${a.confidence} confidence, human ${a.human_required ? 'required' : 'not needed'}, ${a.source === 'ai' ? `analysis by ${fresh?.model || 'the model'}` : 'rule-based digest'}`);
+        const fresh = db.prepare('SELECT model, triage_error FROM ops_incidents WHERE id = ?').get(inc.id);
+        act('triaged incident', `#${inc.id} ${a.classification}, ${a.confidence} confidence, human ${a.human_required ? 'required' : 'not needed'}, ${a.source === 'ai' ? `analysis by ${fresh?.model || 'the model'}` : `rule-based digest${fresh?.triage_error ? ` (no AI narrative: ${fresh.triage_error})` : ''}`}`);
       } catch (err) {
         if (err.code === 'LLM_RATE_LIMITED') break;
         logger.error(`[OpsAgent] triage failed for #${inc.id}: ${err.message}`);
