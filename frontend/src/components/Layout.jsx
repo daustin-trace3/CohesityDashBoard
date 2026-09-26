@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HelpCircle, HeartPulse, Layers,
@@ -209,6 +209,23 @@ export default function Layout() {
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
   const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(isOps ? 'all' : (platformKey || primaryPlatformId || 'cohesity'));
+  // What the pill is actually reporting. Error sticks until that source polls
+  // cleanly again, so the tooltip has to name it or the pill says nothing.
+  const syncDetail = useMemo(() => {
+    const failed = []; const stale = [];
+    for (const [id, p] of Object.entries(pollerStatus || {})) {
+      if (!p || p.enabled === false) continue;
+      for (const e of (p.entities || [])) {
+        if (e.lastPollStatus === 'error') failed.push(`${id}: ${e.name || `source ${e.id}`}`);
+        else if (e.isStale) stale.push(`${id}: ${e.name || `source ${e.id}`}`);
+      }
+      for (const s of (p.failedSources || [])) failed.push(`${id}: ${s.name || s}`);
+    }
+    const list = (a) => a.slice(0, 6).join(', ') + (a.length > 6 ? ` and ${a.length - 6} more` : '');
+    if (failed.length) return `Last poll failed for ${failed.length} source${failed.length === 1 ? '' : 's'} (${list(failed)}). It stays on Error until each one polls cleanly. Service Status has the detail.`;
+    if (stale.length) return `${stale.length} source${stale.length === 1 ? ' has' : 's have'} not reported inside their polling interval (${list(stale)}).`;
+    return 'Every polled source reported cleanly on its last run.';
+  }, [pollerStatus]);
 
   // Ops Monitor header: estate-wide figures from /ops/summary (platform count,
   // critical across every managed platform) instead of the Cohesity feed.
@@ -677,7 +694,7 @@ export default function Layout() {
                 </button>
               )
             ) : (
-              cohesityPresent && criticalCount > 0 && (
+              !isOps && cohesityPresent && criticalCount > 0 && (
                 <button
                   onClick={() => navigate('/cohesity/alerts')}
                   className="chip bg-status-crit/10 border-status-crit/25 text-status-crit cursor-pointer hover:bg-status-crit/20 transition-colors tnum flex-shrink-0"
@@ -690,7 +707,7 @@ export default function Layout() {
             {/* Poller / network sync status — scoped to the active platform;
                 hidden when that platform has nothing registered */}
             {((pollerStatus && hasEntities) || networkSyncing) && (
-              <span className="hidden sm:inline-flex flex-shrink-0">
+              <span className="hidden sm:inline-flex flex-shrink-0" title={syncDetail}>
                 <SyncStatusChip
                   state={networkSyncing || anySyncing ? 'syncing' : anyError ? 'error' : anyStale ? 'stale' : 'live'}
                 />
