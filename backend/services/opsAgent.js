@@ -405,6 +405,13 @@ function parseModelJson(content) {
   return null;
 }
 
+function describeUnparsed(content) {
+  const s = String(content || '');
+  const tail = s.slice(-90).replace(/s+/g, ' ');
+  const shape = s.trim().startsWith('{') ? 'started as JSON and was cut off or malformed' : 'was not JSON at all';
+  return `${s.length} chars, ${shape}, ends: ...${tail}`;
+}
+
 /** Deterministic digest when the model is unavailable or fails. */
 function fallbackTriage(evidence) {
   const alive = evidence.alerts.filter((a) => !a.cleared);
@@ -431,7 +438,7 @@ function fallbackTriage(evidence) {
     classification: recurring ? 'recurring' : (alive.length > 1 ? 'incident' : 'one-off'),
     confidence: 'low',
     title: evidence.incident.title,
-    summary: `${alive.length} open alert${alive.length === 1 ? '' : 's'} on ${platforms.join(', ')}${evidence.incident.host ? ` for ${evidence.incident.host}` : ''}. ${down ? 'ICC evidence shows the host offline.' : 'ICC evidence shows the host still reachable.'} AI narrative was not available; this is the rule-based digest.`,
+    summary: `${alive.length} open alert${alive.length === 1 ? '' : 's'} on ${platforms.join(', ')}${evidence.incident.host ? ` for ${evidence.incident.host}` : ''}. ${down ? 'ICC evidence shows the host offline.' : 'ICC evidence shows the host still reachable.'}`,
     impact: down ? 'Host offline: workloads on it are affected until it is back.' : 'Degraded: the system is up but impaired.',
     correlation: alive.length > 1 ? 'Alerts grouped by shared host or platform inside the hold window; causal link not established.' : 'Single alert.',
     likely_cause: down ? 'Host or its management path is down; see the platform records reviewed.' : 'See the alert text; no stronger signal in the evidence.',
@@ -525,8 +532,24 @@ async function triageIncident(inc, { force = false } = {}) {
       });
       const content = await chatCompletion(messages, { responseFormat: { type: 'json_object' }, timeout: 90000 });
       attachResponse(auditId, content);
-      analysis = shapeAnalysis(parseModelJson(content), anon, fallback);
-      if (analysis.source === 'fallback') error = 'Model answer was not valid JSON; rule-based digest used.';
+      let parsed = parseModelJson(content);
+      if (!parsed) {
+        // Bridges that ignore response_format answer in prose, and a low output
+        // cap truncates a long object. One stricter, shorter retry fixes both
+        // more often than not, and costs a call only when the first one failed.
+        const retry = [...messages, { role: 'assistant', content: String(content || '').slice(0, 1500) },
+          { role: 'user', content: 'That answer could not be parsed. Reply with the JSON object only: no prose, no code fence, no trailing text, and keep every string short so the object is complete.' }];
+        const retryAudit = recordExchange({
+          platform: 'ops-agent', feature: 'Operations Agent',
+          label: `#${inc.id} retry after an unparsable answer`, model, messages: retry, mappings: anon.mappings(),
+        });
+        const second = await chatCompletion(retry, { responseFormat: { type: 'json_object' }, timeout: 90000 });
+        attachResponse(retryAudit, second);
+        parsed = parseModelJson(second);
+        if (!parsed) error = `Model answer could not be parsed as JSON, twice. Second answer: ${describeUnparsed(second)}. Rule-based digest used; the full answers are in Agent Privacy.`;
+        else logger.info(`[OpsAgent] incident #${inc.id}: first model answer was unparsable (${describeUnparsed(content)}), the retry parsed.`);
+      }
+      analysis = shapeAnalysis(parsed, anon, fallback);
     } catch (err) {
       error = err.detail ? `${err.message} ${err.detail}` : err.message;
       if (err.code === 'LLM_RATE_LIMITED' && !force) throw err;
@@ -595,9 +618,9 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     'CORRELATION',
     analysis.correlation || '-',
     '',
-    'WHAT ICC REVIEWED',
+    `WHAT ${agentName.toUpperCase()} REVIEWED`,
     ...(analysis.reviewed || []).map((r) => `- ${r}`),
-    ...(did.length ? ['', 'WHAT ICC DID', ...did] : []),
+    ...(did.length ? ['', `WHAT ${agentName.toUpperCase()} DID`, ...did] : []),
     '',
     'LIKELY CAUSE',
     analysis.likely_cause || '-',
@@ -628,8 +651,8 @@ ${section('What happened', `<p style="margin:0">${esc(analysis.summary || '-')}<
 ${section('Impact', `<p style="margin:0">${esc(analysis.impact || '-')}</p>`)}
 ${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(alive)}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(cleared)}` : ''}</table>`)}
 ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')}</p>`)}
-${section('What ICC reviewed', list(analysis.reviewed || []))}
-${did.length ? section('What ICC did', list(did.map((d) => d.replace(/^- /, '')))) : ''}
+${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
+${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.replace(/^- /, '')))) : ''}
 ${section('Likely cause', `<p style="margin:0">${esc(analysis.likely_cause || '-')}</p>`)}
 ${section('Next steps for the next level', `<ol style="margin:0;padding-left:18px">${(analysis.next_steps || []).map((s) => `<li style="margin:2px 0"><b>${esc(s.owner)}</b>: ${esc(s.action)}</li>`).join('')}</ol>`)}
 ${section('Escalation', `<p style="margin:0">${esc(analysis.escalate || '-')}</p>`)}
@@ -1162,6 +1185,6 @@ module.exports = {
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
   hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
-  closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act,
+  closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson,
 };
 void chatFn;

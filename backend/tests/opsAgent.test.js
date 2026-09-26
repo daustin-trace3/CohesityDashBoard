@@ -127,7 +127,7 @@ describe('fallback triage and email', () => {
     // The agent's name rides in the From display name, not the subject.
     expect(mail.subject).toBe('CRITICAL | esx-01 | Path <lost> [update 1]');
     expect(mail.text).toContain('Otis, incident #7 (update 1)');
-    for (const h of ['WHAT HAPPENED', 'WHAT ICC REVIEWED', 'LIKELY CAUSE', 'NEXT STEPS FOR THE NEXT LEVEL', 'ESCALATION']) expect(mail.text).toContain(h);
+    for (const h of ['WHAT HAPPENED', 'WHAT OTIS REVIEWED', 'LIKELY CAUSE', 'NEXT STEPS FOR THE NEXT LEVEL', 'ESCALATION']) expect(mail.text).toContain(h);
     expect(mail.text).toContain('1. [L2]');
     expect(mail.html).toContain('Path &lt;lost&gt;');
     expect(mail.html).toContain('&quot;DS1&quot;');
@@ -417,5 +417,35 @@ describe('email when the model did not answer', () => {
     const inc = { id: 8, platforms: '["dell"]', severity: 'warning', title: 'x', opened_at: NOW, triage_error: null };
     const analysis = { source: 'ai', classification: 'one-off', confidence: 'high', summary: 's', reviewed: [], next_steps: [] };
     expect(agent.renderEmail(inc, [], analysis, {}).text).not.toContain('No AI narrative');
+  });
+});
+
+describe('the agent speaks in its own name', () => {
+  it('labels the reviewed and did sections with the agent name', () => {
+    const inc = { id: 9, platforms: '["cohesity"]', severity: 'warning', host: 'node-2', title: 'Disk',
+      opened_at: NOW, triage_error: null };
+    const analysis = { source: 'ai', classification: 'incident', confidence: 'high', summary: 's', impact: 'i',
+      correlation: 'c', likely_cause: 'l', reviewed: ['checked the cluster'], next_steps: [], escalate: 'e' };
+    const mail = agent.renderEmail(inc, [], analysis, { agentName: 'Tank',
+      healActions: [{ at: NOW, action: 'repoll', target: 'cl-1', result: 'poll triggered' }] });
+    expect(mail.text).toContain('WHAT TANK REVIEWED');
+    expect(mail.text).toContain('WHAT TANK DID');
+    expect(mail.html).toContain('What Tank reviewed');
+    expect(mail.html).toContain('What Tank did');
+    expect(mail.text).not.toContain('WHAT ICC REVIEWED');
+  });
+});
+
+describe('an unparsable model answer', () => {
+  it('describes a cut-off object differently from prose, so the cause is readable', () => {
+    const cut = agent.describeUnparsed('{"classification":"incident","summary":"the host stopped repo');
+    expect(cut).toContain('started as JSON and was cut off');
+    const prose = agent.describeUnparsed('Sure! Here is my analysis of the incident.');
+    expect(prose).toContain('was not JSON at all');
+  });
+
+  it('still recovers JSON from a fenced or chatty answer without a retry', () => {
+    expect(agent.parseModelJson('```json\n{"classification":"noise"}\n```').classification).toBe('noise');
+    expect(agent.parseModelJson('Here you go: {"classification":"one-off"} hope that helps').classification).toBe('one-off');
   });
 });
