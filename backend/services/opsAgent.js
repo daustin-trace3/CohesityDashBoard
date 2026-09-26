@@ -21,7 +21,7 @@ const registry = require('../core/registry');
 const { chatCompletion, resolveProvider, isConfigured } = require('./llmProvider');
 const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
-const { getSetting, getNotificationSettings, getOpsAgentSettings } = require('./settings');
+const { getSetting, setSetting, getNotificationSettings, getOpsAgentSettings } = require('./settings');
 const { platformMeta } = require('./platformMeta');
 
 const RANK = { info: 0, informational: 0, normal: 0, warning: 1, warn: 1, minor: 1, error: 2, major: 2, critical: 3, emergency: 3, fatal: 3 };
@@ -35,6 +35,8 @@ const EVIDENCE_RECHECK_MINUTES = 60; // how often one incident may be re-asked w
 const EVIDENCE_ALERT_CAP = 60;   // alerts handed to the model per incident (most severe first)
 const STALE_MINUTES = 120;       // a source with no completed poll for this long is stale
 const HEAL_HOLD_MINUTES = 3;     // time given to a triggered re-poll before triage judges it
+const STUCK_MINUTES = 30;        // a tick still running after this is treated as wedged
+const TICK_MARK = 'ops_agent_tick_started';  // so the API process can see a tick in flight
 const CLASS_WEIGHT = { incident: 300, recurring: 250, 'one-off': 100, noise: 0, 'self-healed': 0, 'self-cleared': 0 };
 
 /** Every autonomous action the agent takes goes through here, at INFO, with
@@ -844,10 +846,29 @@ async function resolvePass(now, settings, config, budget) {
 // ---------------------------------------------------------------------------
 
 let running = false;
+let runStartedAt = 0;
+let lastBusyLog = 0;
 let chatFn = null; // test seam
 
+function markTick(at) { try { setSetting(TICK_MARK, at); } catch { /* the marker is diagnostic only */ } }
+
 async function runOnce({ force = false } = {}) {
-  if (running) return null;
+  // A tick that never finishes is the one failure that looks like nothing at
+  // all: its work lands but the run row, written at the end, never does. Say
+  // so, and after STUCK_MINUTES start a new tick rather than stay silent.
+  if (running) {
+    const mins = Math.round((Date.now() - runStartedAt) / 60000);
+    if (mins >= STUCK_MINUTES) {
+      logger.error(`[OpsAgent] the tick that started ${mins} min ago never finished; starting a fresh one. Whatever it was waiting on (a model call, an SMTP send, a poll it triggered) never came back.`);
+      running = false;
+    } else {
+      if (Date.now() - lastBusyLog > 300000) {
+        lastBusyLog = Date.now();
+        logger.warn(`[OpsAgent] tick skipped: the previous one has been running for ${mins} min.`);
+      }
+      return null;
+    }
+  }
   const settings = getOpsAgentSettings();
   if (!settings.enabled && !force) return null;
   // An AI feature: without a configured provider the agent stays idle and
@@ -855,6 +876,8 @@ async function runOnce({ force = false } = {}) {
   if (!isConfigured()) { if (!force) return null; }
   running = true;
   const now = new Date().toISOString();
+  runStartedAt = Date.now();
+  markTick(now);
   const stats = { at: now, alertsSeen: 0, newAlerts: 0, incidentsOpened: 0, triaged: 0, emailsSent: 0, healAttempts: 0, resolvedQuiet: 0, resolvedEvidence: 0, closureEmails: 0, error: null };
   try {
     // First tick after a long silence: what it finds is a backlog. Those
@@ -948,7 +971,11 @@ async function runOnce({ force = false } = {}) {
       if (did) {
         logger.info(`[OpsAgent] tick: ${stats.alertsSeen} alerts seen, ${stats.newAlerts} new, ${stats.incidentsOpened} opened, ${stats.healAttempts} re-poll(s), ${stats.triaged} triaged, ${stats.emailsSent} emailed, ${stats.resolvedQuiet + stats.resolvedEvidence} resolved`);
       }
-    } catch { /* run log is best effort */ }
+    } catch (err) {
+      // Swallowing this is why a stalled "last tick" could not be explained.
+      logger.error(`[OpsAgent] could not write the run log: ${err.message}`);
+    }
+    markTick('');
     running = false;
   }
   return stats;
@@ -1044,6 +1071,9 @@ function status() {
     // Whether the process that runs the tick is alive at all, so a stalled
     // agent can be told apart from a stopped poller process.
     worker: require('./workerHeartbeat').readHeartbeat(),
+    // A tick in flight, so a wedged one is visible from the API process, which
+    // cannot see the poller's in-memory state.
+    tickStartedAt: getSetting(TICK_MARK) || null,
     lastRun: lastRun ? { at: lastRun.at, alertsSeen: lastRun.alerts_seen, newAlerts: lastRun.new_alerts, incidentsOpened: lastRun.incidents_opened, triaged: lastRun.triaged, emailsSent: lastRun.emails_sent, error: lastRun.error } : null,
     counts,
   };
