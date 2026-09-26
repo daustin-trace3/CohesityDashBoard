@@ -124,7 +124,8 @@ describe('fallback triage and email', () => {
     const inc = { id: 7, title: 'esx-01 storage', host: 'esx-01', platforms: JSON.stringify(['vcenter', 'brocade']), severity: 'critical', opened_at: NOW, notify_count: 1, model: 'gpt-x' };
     const analysis = { ...agent.fallbackTriage(evidence), source: 'ai', title: 'Path <lost>' };
     const mail = agent.renderEmail(inc, [{ platform: 'vcenter', severity: 'critical', host: 'esx-01', message: 'Datastore "DS1" inaccessible', first_seen: NOW }], analysis, { update: 1, agentName: 'Otis' });
-    expect(mail.subject).toBe('[Otis] CRITICAL | esx-01 | Path <lost> [update 1]');
+    // The agent's name rides in the From display name, not the subject.
+    expect(mail.subject).toBe('CRITICAL | esx-01 | Path <lost> [update 1]');
     expect(mail.text).toContain('Otis, incident #7 (update 1)');
     for (const h of ['WHAT HAPPENED', 'WHAT ICC REVIEWED', 'LIKELY CAUSE', 'NEXT STEPS FOR THE NEXT LEVEL', 'ESCALATION']) expect(mail.text).toContain(h);
     expect(mail.text).toContain('1. [L2]');
