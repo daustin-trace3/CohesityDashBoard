@@ -92,6 +92,9 @@ if (require.main === module) {
       // The demo's poller process idles (pollers disabled above), so the API
       // process is the only place Service Status can run its 1-minute sweep.
       initServiceStatus();
+      // A demo has no poller process to hear from, and this process is the one
+      // doing what background work there is, so it beats for itself.
+      require('./services/workerHeartbeat').startHeartbeat('demo instance (seeded data, no polling)');
     } else if (process.env.RUN_POLLERS_INLINE === 'true') {
       // Legacy single-process mode: pollers share the API event loop, so
       // heavy poll cycles can stall API responses. Prefer the separate
