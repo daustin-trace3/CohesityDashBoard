@@ -83,7 +83,7 @@ const Section = ({ title, children }) => (
   </div>
 );
 
-function IncidentModal({ id, onClose, onChanged, pulse }) {
+function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
   const [inc, setInc] = useState(null);
   const [failed, setFailed] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -166,11 +166,11 @@ function IncidentModal({ id, onClose, onChanged, pulse }) {
                 <Section title="What happened"><p className="text-sm text-ink">{a.summary}</p></Section>
                 {a.impact && <Section title="Impact"><p className="text-sm text-ink-muted">{a.impact}</p></Section>}
                 {a.correlation && <Section title="Correlation"><p className="text-sm text-ink-muted">{a.correlation}</p></Section>}
-                <Section title="What ICC reviewed">
+                <Section title={`What ${agentName} reviewed`}>
                   <ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{(a.reviewed || []).map((r, i) => <li key={i}>{r}</li>)}</ul>
                 </Section>
                 {a.human_reason && <Section title={a.human_required ? 'Why a human is required' : 'Why no human is needed'}><p className="text-sm text-ink-muted">{a.human_reason}</p></Section>}
-                {inc.healActions?.length > 0 && <Section title="What ICC did"><ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{inc.healActions.map((h, i) => <li key={i}>{new Date(h.at).toLocaleTimeString()}: {h.action} {h.target}: {h.result}</li>)}</ul></Section>}
+                {inc.healActions?.length > 0 && <Section title={`What ${agentName} did`}><ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{inc.healActions.map((h, i) => <li key={i}>{new Date(h.at).toLocaleTimeString()}: {h.action} {h.target}: {h.result}</li>)}</ul></Section>}
                 {a.likely_cause && <Section title="Likely cause"><p className="text-sm text-ink">{a.likely_cause}</p></Section>}
                 <Section title="Next steps for the next level">
                   <ol className="list-decimal pl-5 text-sm text-ink space-y-1">
@@ -371,7 +371,7 @@ export default function OpsAgentPage() {
         <TablePager ctl={ctl} />
       </Panel>
 
-      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} />}
+      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} />}
     </div>
   );
 }
