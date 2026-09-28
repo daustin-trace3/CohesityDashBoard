@@ -209,7 +209,7 @@ export default function Layout() {
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
-  const { status: pollerStatus, anySyncing, anyStale, anyError, hasEntities, newestCapture } = usePollerStatus(isOps ? 'all' : (platformKey || primaryPlatformId || 'cohesity'));
+  const { status: pollerStatus, anySyncing, anyStale, anyError, anyDelayed, hasEntities, newestCapture } = usePollerStatus(isOps ? 'all' : (platformKey || primaryPlatformId || 'cohesity'));
   // What the pill is actually reporting. Error sticks until that source polls
   // cleanly again, so the tooltip has to name it or the pill says nothing.
   const syncDetail = useMemo(() => {
@@ -710,7 +710,7 @@ export default function Layout() {
             {((pollerStatus && hasEntities) || networkSyncing) && (
               <span className="hidden sm:inline-flex flex-shrink-0" title={syncDetail}>
                 <SyncStatusChip
-                  state={networkSyncing || anySyncing ? 'syncing' : anyError ? 'error' : anyStale ? 'stale' : 'live'}
+                  state={networkSyncing || anySyncing ? 'syncing' : anyDelayed ? 'delayed' : anyError ? 'error' : anyStale ? 'stale' : 'live'}
                 />
               </span>
             )}

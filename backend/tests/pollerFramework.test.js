@@ -51,6 +51,54 @@ describe('pollerFramework', () => {
       expect(cronLib.scheduled).toHaveLength(2);
     });
 
+    it('serialize: polls run one at a time, and a source already queued is not queued again', async () => {
+      const cronLib = makeFakeCronLib();
+      const order = [];
+      let releaseFirst;
+      const gate = new Promise((r) => { releaseFirst = r; });
+      const rows = [
+        { id: 1, name: 'src-1', polling_interval_minutes: 10 },
+        { id: 2, name: 'src-2', polling_interval_minutes: 10 },
+      ];
+      const poller = createPoller({
+        id: 'test', loadSources: () => rows, cronLib, serialize: true,
+        poll: async (s) => {
+          order.push(`start-${s.id}`);
+          if (s.id === 1) await gate;                 // first poll blocks
+          order.push(`end-${s.id}`);
+        },
+      });
+      poller.schedule(rows[0]);
+      poller.schedule(rows[1]);
+      cronLib.scheduled[0].cb();                      // src-1 starts (blocked)
+      cronLib.scheduled[1].cb();                      // src-2 must WAIT
+      cronLib.scheduled[0].cb();                      // src-1 fires again: already pending, skipped
+      await new Promise((r) => setImmediate(r));
+      expect(order).toEqual(['start-1']);             // nothing overlapped
+      releaseFirst();
+      await poller.trigger(2);                        // joins the same chain
+      expect(order).toEqual(['start-1', 'end-1', 'start-2', 'end-2']);
+      // src-1's duplicate fire was dropped, not queued behind.
+      expect(order.filter((x) => x === 'start-1')).toHaveLength(1);
+    });
+
+    it('shouldRun gates SCHEDULED polls only; trigger() bypasses it', async () => {
+      const cronLib = makeFakeCronLib();
+      const polled = [];
+      const rows = [{ id: 1, name: 'src-1', polling_interval_minutes: 10 }];
+      const poller = createPoller({
+        id: 'test', loadSources: () => rows, cronLib,
+        shouldRun: () => false,
+        poll: async (s) => { polled.push(s.id); },
+      });
+      poller.schedule(rows[0]);
+      cronLib.scheduled[0].cb();
+      await new Promise((r) => setImmediate(r));
+      expect(polled).toHaveLength(0);                 // backoff gate held
+      await poller.trigger(1);
+      expect(polled).toEqual([1]);                    // manual bypasses
+    });
+
 it('trigger(id) resolves the full source row through loadSources, and trigger(row) still polls that row', async () => {
       const cronLib = makeFakeCronLib();
       const polled = [];

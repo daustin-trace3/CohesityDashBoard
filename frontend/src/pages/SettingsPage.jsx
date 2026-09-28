@@ -16,16 +16,76 @@ const TABS = [
   { key: 'alerts', label: 'Alert Notifications', icon: BellRing },
 ];
 
+/** Poller watchdog email: the WEB process emails when the poller heartbeat
+ *  goes silent, over the SMTP relay from Global Settings. */
+function WatchdogPanel() {
+  const { toast } = useToast();
+  const [enabled, setEnabled] = useState(false);
+  const [recipients, setRecipients] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    client.get('/settings').then(({ data }) => {
+      setEnabled(!!data.pollerWatchdogEmailEnabled);
+      setRecipients(data.pollerWatchdogRecipients || '');
+    }).catch(() => {});
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await client.put('/settings', { pollerWatchdogEmailEnabled: enabled, pollerWatchdogRecipients: recipients });
+      toast({ type: 'success', title: 'Watchdog saved', message: enabled ? 'ICC emails when the poller process goes silent.' : 'Watchdog email is off.' });
+    } catch {
+      toast({ type: 'error', title: 'Save failed', message: 'Could not save the watchdog settings.' });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="panel p-4 mt-4">
+      <p className="text-sm font-bold text-ink">Poller watchdog email</p>
+      <p className="text-[11px] text-ink-muted mt-0.5 leading-relaxed max-w-xl">
+        The web process watches the poller process heartbeat and emails when it has been silent for
+        10 minutes (a reminder every 6 hours while it stays down, and a note when it recovers).
+        Mail goes through the SMTP relay configured under Global Settings; a poller that is down
+        cannot report itself, which is why this lives in the web process.
+      </p>
+      <div className="flex flex-wrap items-center gap-3 mt-3">
+        <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="accent-current" />
+          Email when the poller stops
+        </label>
+        <input value={recipients} onChange={(e) => setRecipients(e.target.value)}
+          placeholder="Recipients (blank = default alert recipients)"
+          className="bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-1.5 text-sm text-ink focus:border-brand/60 outline-none w-96 max-w-full" />
+        <button onClick={save} disabled={saving}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-brand/10 border border-brand/30 text-brand hover:bg-brand/20 transition-colors cursor-pointer disabled:opacity-50">
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** Manual poll triggers — whole estate or a single cluster. */
 function PollingTab() {
   const { toast } = useToast();
   const [clusters, setClusters] = useState(null);
   const [busy, setBusy] = useState({}); // clusterId|'all' -> true
+  const [pollState, setPollState] = useState({}); // clusterId -> { backoffUntil, failCount, lastPollStatus }
 
   useEffect(() => {
     client.get('/cohesity/clusters')
       .then(({ data }) => setClusters(Array.isArray(data) ? data : data.clusters || []))
       .catch(() => setClusters([]));
+    const loadState = () => client.get('/poller/status').then(({ data }) => {
+      const map = {};
+      for (const e of data?.cohesity?.entities || []) map[e.id] = e;
+      setPollState(map);
+    }).catch(() => {});
+    loadState();
+    const t = setInterval(() => { if (!document.hidden) loadState(); }, 30000);
+    return () => clearInterval(t);
   }, []);
 
   const mark = (k, v) => setBusy((b) => ({ ...b, [k]: v }));
@@ -77,7 +137,15 @@ function PollingTab() {
             <div key={c.id} className="flex items-center justify-between py-2">
               <div className="min-w-0">
                 <p className="text-sm text-ink truncate">{c.name}</p>
-                <p className="text-[11px] text-ink-faint">{c.connection_type === 'helios' ? 'Helios' : c.vip || 'direct'}</p>
+                <p className="text-[11px] text-ink-faint">
+                  {c.connection_type === 'helios' ? 'Helios' : c.vip || 'direct'}
+                  {pollState[c.id]?.backoffUntil && new Date(pollState[c.id].backoffUntil) > new Date() && (
+                    <span className="ml-2 text-status-warn font-semibold"
+                      title={`${pollState[c.id].failCount} failed poll(s) in a row; scheduled polls resume ${new Date(pollState[c.id].backoffUntil).toLocaleTimeString()}. Poll now bypasses the backoff.`}>
+                      delayed — retry {new Date(pollState[c.id].backoffUntil).toLocaleTimeString()}
+                    </span>
+                  )}
+                </p>
               </div>
               <button onClick={() => pollOne(c)} disabled={!!busy[c.id]}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50">
@@ -153,7 +221,7 @@ export default function SettingsPage() {
       {tab === 'direct' && <DirectClustersTab />}
 
       {/* Manual polling */}
-      {tab === 'polling' && <PollingTab />}
+      {tab === 'polling' && <><PollingTab /><WatchdogPanel /></>}
 
       {/* Alert Notifications */}
       {tab === 'alerts' && <PlatformAlertNotifications platform="cohesity" label="Cohesity" />}

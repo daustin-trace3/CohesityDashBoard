@@ -31,16 +31,31 @@ const statements = perTenant((db) => {
     is_syncing = 0
 `),
 
+    // A successful poll ends any backoff; setBackoff records a failed streak.
+    clearBackoff: db.prepare(`
+  UPDATE poller_status SET backoff_until = NULL, fail_count = 0 WHERE type = ? AND entity_id = ?
+`),
+
+    upsertBackoff: db.prepare(`
+  INSERT INTO poller_status (type, entity_id, backoff_until, fail_count)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(type, entity_id) DO UPDATE SET
+    backoff_until = excluded.backoff_until,
+    fail_count = excluded.fail_count
+`),
+
     selectOne: db.prepare(`
   SELECT last_poll_start AS lastPollStart, last_poll_end AS lastPollEnd,
-         last_poll_status AS lastPollStatus, is_syncing AS isSyncing
+         last_poll_status AS lastPollStatus, is_syncing AS isSyncing,
+         backoff_until AS backoffUntil, fail_count AS failCount
   FROM poller_status WHERE type = ? AND entity_id = ?
 `),
 
     selectAll: db.prepare(`
   SELECT type, entity_id AS entityId,
          last_poll_start AS lastPollStart, last_poll_end AS lastPollEnd,
-         last_poll_status AS lastPollStatus, is_syncing AS isSyncing
+         last_poll_status AS lastPollStatus, is_syncing AS isSyncing,
+         backoff_until AS backoffUntil, fail_count AS failCount
   FROM poller_status
 `),
   };
@@ -48,17 +63,20 @@ const statements = perTenant((db) => {
 
 function shape(row) {
   if (!row) {
-    return { lastPollStart: null, lastPollEnd: null, lastPollStatus: null, isSyncing: false };
+    return { lastPollStart: null, lastPollEnd: null, lastPollStatus: null, isSyncing: false, backoffUntil: null, failCount: 0 };
   }
   let syncing = !!row.isSyncing;
   if (syncing && row.lastPollStart && Date.now() - Date.parse(row.lastPollStart) > STALE_SYNC_MS) {
     syncing = false;
   }
+  const backoffUntil = row.backoffUntil && Date.parse(row.backoffUntil) > Date.now() ? row.backoffUntil : null;
   return {
     lastPollStart: row.lastPollStart,
     lastPollEnd: row.lastPollEnd,
     lastPollStatus: row.lastPollStatus,
     isSyncing: syncing,
+    backoffUntil,
+    failCount: row.failCount || 0,
   };
 }
 
@@ -68,6 +86,13 @@ function markStart(type, id) {
 
 function markEnd(type, id, status) {
   statements().upsertEnd.run(type, id, new Date().toISOString(), status);
+  if (status === 'success') statements().clearBackoff.run(type, id);
+}
+
+/** Record a failed streak: the source's next scheduled polls are skipped
+ *  until `untilIso` (manual Poll now bypasses the gate on purpose). */
+function setBackoff(type, id, untilIso, failCount) {
+  statements().upsertBackoff.run(type, id, untilIso, failCount);
 }
 
 function getState(type, id) {
@@ -82,4 +107,4 @@ function getAll() {
   return map;
 }
 
-module.exports = { markStart, markEnd, getState, getAll };
+module.exports = { markStart, markEnd, setBackoff, getState, getAll };

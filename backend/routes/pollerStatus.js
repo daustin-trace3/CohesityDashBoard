@@ -52,6 +52,8 @@ router.get('/status', (req, res, next) => {
           lastPollStart: state.lastPollStart,
           lastPollEnd: state.lastPollEnd,
           lastPollStatus: state.lastPollStatus,
+          backoffUntil: state.backoffUntil,
+          failCount: state.failCount,
           lastDataCapture,
           ageMinutes: age,
           isStale: age !== null ? age > interval * 2 + 5 : false,

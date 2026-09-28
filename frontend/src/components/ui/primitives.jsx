@@ -171,12 +171,14 @@ const SYNC_TONE = {
   syncing: 'bg-brand/10 text-brand border-brand/25',
   live:    'bg-status-ok/10 text-status-ok border-status-ok/25',
   stale:   'bg-status-warn/10 text-status-warn border-status-warn/25',
+  // The poller is getting errors from a source and backing off between tries.
+  delayed: 'bg-status-warn/10 text-status-warn border-status-warn/25',
   error:   'bg-status-crit/10 text-status-crit border-status-crit/25',
 };
 
 export function SyncStatusChip({ state = 'live', label }) {
   const tone = SYNC_TONE[state] || SYNC_TONE.live;
-  const text = label ?? { syncing: 'Syncing', live: 'Live', stale: 'Stale', error: 'Error' }[state] ?? state;
+  const text = label ?? { syncing: 'Syncing', live: 'Live', stale: 'Stale', delayed: 'Delayed', error: 'Error' }[state] ?? state;
 
   return (
     <span className={`chip ${tone}`}>

@@ -9,6 +9,7 @@ const { scheduleSnapshotRefresh, refreshDashboardSnapshot } = require('./snapsho
 const { fetchWorkloads, insertWorkloadSnapshot } = require('./workloads');
 const logger = require('../utils/logger');
 const { createPoller } = require('../core/pollerFramework');
+const pollerStatus = require('./pollerStatus');
 const { getCohesityAlertWindowDays } = require('./settings');
 
 // Retention: delete metrics older than 90 days — runs daily at 02:00
@@ -443,6 +444,15 @@ async function doPollCluster(cluster) {
       fetchSearchObjects(cluster),
       fetchPhysicalAgents(cluster)
     ]);
+    // A poll where EVERY fetch failed is a FAILED poll, not a quiet success.
+    // Before 2026-09-28, per-phase catches let days of Helios 502s record
+    // status success, so Service Status, the staleness detector and the Ops
+    // Agent all saw a healthy poller while no data moved.
+    const batch = [clusterInfo, alertData, protectionData, policyData, sourceData, workloadData, objectData, agentData];
+    if (!batch.some((r) => r.status === 'fulfilled')) {
+      const reason = safeErrorMessage(clusterInfo.reason) || 'unknown error';
+      throw new Error(`every fetch failed for cluster ${cluster.id} (${cluster.name}); first error: ${reason}`);
+    }
     // The cluster's own Cohesity id: from cluster info, or for a Helios
     // connection the id Helios addresses it by (stored in vip).
     const localClusterId = (clusterInfo.status === 'fulfilled' && clusterInfo.value?.id)
@@ -594,11 +604,39 @@ async function doPollCluster(cluster) {
   }
 }
 
+// Backoff after total poll failures: 5, 10, 20, 40, then 60 minutes between
+// attempts, so a dead upstream (a Helios outage) is not hammered on every
+// cron tick. State is per process (a restart retries at once) and mirrored
+// into poller_status.backoff_until so the UI can show Delayed. A successful
+// poll clears it (pollerStatus.markEnd does the DB side).
+const failStreak = new Map(); // clusterId -> count
+function backoffMinutes(fails) { return Math.min(60, 5 * 2 ** Math.max(0, fails - 1)); }
+
+async function pollWithBackoff(cluster) {
+  try {
+    await doPollCluster(cluster);
+    failStreak.delete(cluster.id);
+  } catch (err) {
+    const fails = (failStreak.get(cluster.id) || 0) + 1;
+    failStreak.set(cluster.id, fails);
+    const minutes = backoffMinutes(fails);
+    const until = new Date(Date.now() + minutes * 60000).toISOString();
+    try { pollerStatus.setBackoff('cohesity', cluster.id, until, fails); } catch { /* status row is advisory */ }
+    logger.warn(`[Poller] Cluster ${cluster.id} (${cluster.name}) failed ${fails} poll(s) in a row — backing off ${minutes} min (until ${until})`);
+    throw err;
+  }
+}
+
 const cohesityPoller = createPoller({
   id: 'cohesity',
   loadSources: () => db.prepare('SELECT * FROM clusters').all(),
   intervalMinutes: (cluster) => cluster.polling_interval_minutes,
-  poll: doPollCluster,
+  poll: pollWithBackoff,
+  serialize: true,
+  shouldRun: (cluster) => {
+    const s = pollerStatus.getState('cohesity', cluster.id);
+    return !s.backoffUntil;
+  },
 });
 
 /**

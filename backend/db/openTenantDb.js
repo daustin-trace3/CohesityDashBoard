@@ -71,6 +71,12 @@ function openTenantDb(dbPath) {
     );
   `);
 
+  // Backoff bookkeeping for sources whose polls keep failing entirely
+  // (2026-09-28). Guarded ALTERs because the table above predates them.
+  const pollerCols = new Set(db.prepare('PRAGMA table_info(poller_status)').all().map((c) => c.name));
+  if (!pollerCols.has('backoff_until')) db.exec('ALTER TABLE poller_status ADD COLUMN backoff_until TEXT');
+  if (!pollerCols.has('fail_count')) db.exec('ALTER TABLE poller_status ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0');
+
   return db;
 }
 
