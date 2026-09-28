@@ -136,6 +136,111 @@ function gatherAlertTriage() {
   };
 }
 
+function gatherGovernance() {
+  const arrays = db.prepare('SELECT id, name, version, source FROM netapp_arrays').all();
+  const names = new Map(arrays.map(a => [a.id, a.name]));
+  const nodes = db.prepare('SELECT array_id, name, model, state, version FROM netapp_nodes ORDER BY array_id, name').all();
+  const versions = [...new Set(nodes.map(n => n.version).filter(Boolean))];
+  const clusters = arrays.map(a => {
+    const mine = nodes.filter(n => n.array_id === a.id);
+    return {
+      cluster: a.name,
+      source: a.source,
+      version: a.version || mine[0]?.version || null,
+      nodeVersions: [...new Set(mine.map(n => n.version).filter(Boolean))],
+      models: [...new Set(mine.map(n => n.model).filter(Boolean))],
+      nodesNotUp: mine.filter(n => n.state && n.state !== 'up').map(n => ({ node: n.name, state: n.state })),
+    };
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    versionsInEstate: versions,
+    clusters,
+    note: arrays.length === 0 ? 'No NetApp clusters registered.' : undefined,
+  };
+}
+
+function gatherSecurityReview() {
+  const arrays = db.prepare('SELECT id, name FROM netapp_arrays').all();
+  const names = new Map(arrays.map(a => [a.id, a.name]));
+  const wideOpen = (c) => /^(0\.0\.0\.0\/0|0\.0\.0\.0|any|\*)$/i.test(String(c || '').trim());
+  const exportRules = db.prepare(`
+    SELECT array_id, policy_name, svm_name, rule_index, clients, protocols, ro_rule, rw_rule, superuser
+    FROM netapp_export_rules LIMIT 500
+  `).all().map(r => ({
+    cluster: names.get(r.array_id) || `Array ${r.array_id}`,
+    policy: r.policy_name, svm: r.svm_name, ruleIndex: r.rule_index,
+    clients: r.clients, protocols: r.protocols, roRule: r.ro_rule, rwRule: r.rw_rule, superuser: r.superuser,
+    openToAnyClient: wideOpen(r.clients),
+    allowsSysAuth: /(^|,)\s*(sys|none|never)?sys/i.test(String(r.rw_rule || '')) || /(^|,)\s*any/i.test(String(r.rw_rule || '')),
+    superuserAllowed: !!(r.superuser && !/none/i.test(r.superuser)),
+  }));
+  const sessions = db.prepare(`
+    SELECT array_id, svm_name, smb_encryption, smb_signing, COUNT(*) count
+    FROM netapp_cifs_sessions GROUP BY array_id, svm_name, smb_encryption, smb_signing
+  `).all().map(r => ({
+    cluster: names.get(r.array_id) || `Array ${r.array_id}`,
+    svm: r.svm_name, encryption: r.smb_encryption, signing: !!r.smb_signing, sessions: r.count,
+  }));
+  const shares = db.prepare(`
+    SELECT array_id, svm_name, COUNT(*) count FROM netapp_cifs_shares GROUP BY array_id, svm_name
+  `).all().map(r => ({ cluster: names.get(r.array_id) || `Array ${r.array_id}`, svm: r.svm_name, shares: r.count }));
+  const quotaBreaches = db.prepare(`
+    SELECT array_id, svm_name, volume_name, qtree_name, space_used_bytes, space_hard_limit_bytes
+    FROM netapp_quotas
+    WHERE space_hard_limit_bytes > 0 AND space_used_bytes >= space_hard_limit_bytes * 0.9
+    ORDER BY CAST(space_used_bytes AS REAL) / space_hard_limit_bytes DESC LIMIT 25
+  `).all().map(q => ({
+    cluster: names.get(q.array_id) || `Array ${q.array_id}`,
+    svm: q.svm_name, volume: q.volume_name, qtree: q.qtree_name,
+    used: fmtBytes(q.space_used_bytes), hardLimit: fmtBytes(q.space_hard_limit_bytes),
+    usedPct: +((q.space_used_bytes / q.space_hard_limit_bytes) * 100).toFixed(1),
+  }));
+  const total = exportRules.length + sessions.length + shares.length + quotaBreaches.length;
+  return {
+    generatedAt: new Date().toISOString(),
+    exportRules: {
+      total: exportRules.length,
+      flagged: exportRules.filter(r => r.openToAnyClient || r.superuserAllowed).slice(0, 40),
+    },
+    cifsSessionsByPosture: sessions,
+    cifsSharesBySvm: shares,
+    quotaBreaches,
+    note: total === 0 ? 'No export rules, CIFS data or quotas collected yet.' : undefined,
+  };
+}
+
+function gatherHardwareHealth() {
+  const arrays = db.prepare('SELECT id, name FROM netapp_arrays').all();
+  const names = new Map(arrays.map(a => [a.id, a.name]));
+  const disks = db.prepare(`
+    SELECT array_id, state, COUNT(*) count FROM netapp_disks GROUP BY array_id, state
+  `).all().map(d => ({ cluster: names.get(d.array_id) || `Array ${d.array_id}`, state: d.state, disks: d.count }));
+  const brokenDisks = db.prepare(`
+    SELECT array_id, name, model, type, state FROM netapp_disks
+    WHERE state IS NOT NULL AND state NOT IN ('present', 'spare', 'aggregate', 'zeroing') LIMIT 30
+  `).all().map(d => ({ cluster: names.get(d.array_id) || `Array ${d.array_id}`, disk: d.name, model: d.model, type: d.type, state: d.state }));
+  const lifs = db.prepare(`
+    SELECT array_id, name, svm_name, state, enabled, is_home, node_name, port_name
+    FROM netapp_lifs WHERE state != 'up' OR is_home = 0 LIMIT 40
+  `).all().map(l => ({
+    cluster: names.get(l.array_id) || `Array ${l.array_id}`,
+    lif: l.name, svm: l.svm_name, state: l.state, enabled: !!l.enabled,
+    isHome: !!l.is_home, node: l.node_name, port: l.port_name,
+  }));
+  const nodesNotUp = db.prepare(`
+    SELECT array_id, name, model, state FROM netapp_nodes WHERE state IS NOT NULL AND state != 'up'
+  `).all().map(n => ({ cluster: names.get(n.array_id) || `Array ${n.array_id}`, node: n.name, model: n.model, state: n.state }));
+  return {
+    generatedAt: new Date().toISOString(),
+    diskStatesByCluster: disks,
+    disksNeedingAttention: brokenDisks,
+    lifsNotUpOrNotHome: lifs,
+    nodesNotUp,
+    note: arrays.length === 0 ? 'No NetApp clusters registered.' : undefined,
+  };
+}
+
 module.exports = createPlatformAdvisor({
   platform: 'netapp',
   feature: 'NetApp AI Advisor',
@@ -170,6 +275,39 @@ module.exports = createPlatformAdvisor({
         '**Recommended triage order**. Keep under ~350 words.',
       gather: gatherAlertTriage,
       noun: 'alert triage report',
+    },
+    governance: {
+      system:
+        'You are an ONTAP estate governance reviewer. You are given every cluster with its ONTAP version, the node ' +
+        'versions inside it, hardware models, and nodes not in the up state, plus the set of versions present in the ' +
+        'estate. Do NOT use vendor end-of-support dates; judge only relative currency inside this estate. Flag clusters ' +
+        'behind the newest release seen, clusters with mixed node versions, and propose a sensible upgrade order that ' +
+        'starts with the furthest behind. Do not invent data. Markdown sections: **Estate summary**, ' +
+        '**Behind or inconsistent (prioritized)**, **Suggested upgrade order**. Keep under ~350 words.',
+      gather: gatherGovernance,
+      noun: 'estate governance report',
+    },
+    security_review: {
+      system:
+        'You are a storage security auditor reviewing data-access posture on a NetApp ONTAP fleet for a regulated ' +
+        'financial-services environment. You are given NFS export rules flagged for wide-open client lists or ' +
+        'superuser access, CIFS session counts grouped by encryption and signing posture, CIFS share counts per SVM, ' +
+        'and quotas at or past 90% of their hard limit. Assess exposure, call out the riskiest rules by name, and give ' +
+        'remediation steps ordered by risk. State clearly that this covers only what ICC collects (exports, CIFS ' +
+        'posture, quotas), not a full security audit. Do not invent data. Markdown sections: **Posture summary**, ' +
+        '**Highest-risk findings**, **Remediation order**. Keep under ~400 words.',
+      gather: gatherSecurityReview,
+      noun: 'data-access security review',
+    },
+    hardware_health: {
+      system:
+        'You are a NetApp hardware and availability engineer. You are given disk counts by state per cluster, disks in ' +
+        'an unusual state, LIFs that are down or not on their home port, and nodes not in the up state. A LIF off its ' +
+        'home port often means an unfinished failover or giveback. Assess hardware and failover risk and give a ' +
+        'prioritized action list. Do not invent data. Markdown sections: **Health summary**, **Findings (prioritized)**, ' +
+        '**Recommended actions**. Keep under ~350 words.',
+      gather: gatherHardwareHealth,
+      noun: 'hardware and failover health report',
     },
   },
 });

@@ -221,6 +221,84 @@ function gatherPortHealth() {
   };
 }
 
+function gatherChangeAudit() {
+  const windowStart = new Date(Date.now() - 30 * 864e5).toISOString();
+  const changes = db.prepare(`
+    SELECT fabric_name, change_type, detail, old_value, new_value, detected_at
+    FROM brocade_zone_changes WHERE detected_at >= ?
+    ORDER BY detected_at DESC LIMIT 60
+  `).all(windowStart).map(c => ({
+    fabric: c.fabric_name, type: c.change_type, detail: c.detail,
+    oldValue: c.old_value, newValue: c.new_value, detectedAt: c.detected_at,
+  }));
+  const changeVolume = db.prepare(`
+    SELECT fabric_name, change_type, COUNT(*) count FROM brocade_zone_changes
+    WHERE detected_at >= ? GROUP BY fabric_name, change_type ORDER BY count DESC LIMIT 20
+  `).all(windowStart).map(r => ({ fabric: r.fabric_name, type: r.change_type, count: r.count }));
+  const newIssues = db.prepare(`
+    SELECT type, severity, target, message, first_seen, resolved_at
+    FROM brocade_issue_history WHERE first_seen >= ?
+    ORDER BY first_seen DESC LIMIT 40
+  `).all(windowStart).map(i => ({
+    type: i.type, severity: i.severity, target: i.target,
+    message: String(i.message || '').slice(0, 180), firstSeen: i.first_seen, resolved: !!i.resolved_at,
+  }));
+  const eventsPerDay = db.prepare(`
+    SELECT date(last_occurred_ms / 1000, 'unixepoch') day,
+           SUM(CASE WHEN UPPER(COALESCE(severity_norm, severity, '')) = 'CRITICAL' THEN 1 ELSE 0 END) critical,
+           SUM(CASE WHEN UPPER(COALESCE(severity_norm, severity, '')) = 'WARNING' THEN 1 ELSE 0 END) warning
+    FROM brocade_events WHERE last_occurred_ms >= ? GROUP BY day ORDER BY day
+  `).all(Date.now() - 30 * 864e5);
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays: 30,
+    zoneChanges: changes,
+    changeVolumeByFabric: changeVolume,
+    issuesOpenedInWindow: newIssues,
+    eventsPerDay,
+    note: changes.length === 0 && newIssues.length === 0 ? 'No zoning changes or new issues recorded in the window.' : undefined,
+  };
+}
+
+function gatherPathRedundancy() {
+  // One row per host login (device port). Hosts group by enclosure when SANnav
+  // knows it, else by the FDMI host name, else by WWN (a host we cannot group).
+  const rows = db.prepare(`
+    SELECT wwn, COALESCE(NULLIF(enclosure_name, ''), NULLIF(fdmi_host_name, ''), wwn) AS host,
+           fabric_name, switch_name, switch_port_name, port_id
+    FROM brocade_device_ports
+    WHERE stale = 0 AND is_missing = 0 AND UPPER(COALESCE(port_role, type, '')) LIKE '%HOST%'
+  `).all();
+  const byHost = new Map();
+  for (const r of rows) {
+    if (!byHost.has(r.host)) byHost.set(r.host, { logins: 0, switches: new Set(), fabrics: new Set(), ports: [] });
+    const h = byHost.get(r.host);
+    h.logins += 1;
+    if (r.switch_name) h.switches.add(r.switch_name);
+    if (r.fabric_name) h.fabrics.add(r.fabric_name);
+    if (h.ports.length < 6) h.ports.push(`${r.switch_name || '?'}:${r.switch_port_name || r.port_id || '?'}`);
+  }
+  const hosts = [...byHost.entries()].map(([host, h]) => ({
+    host, logins: h.logins, switches: h.switches.size, fabrics: h.fabrics.size,
+    onSwitches: [...h.switches].slice(0, 4), samplePorts: h.ports,
+  }));
+  const atRisk = hosts
+    .filter(h => h.logins <= 1 || h.switches <= 1 || h.fabrics <= 1)
+    .sort((a, b) => (a.switches - b.switches) || (a.logins - b.logins))
+    .slice(0, 40);
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      hosts: hosts.length,
+      singleLogin: hosts.filter(h => h.logins <= 1).length,
+      singleSwitch: hosts.filter(h => h.switches <= 1).length,
+      singleFabric: hosts.filter(h => h.fabrics <= 1).length,
+    },
+    hostsAtRisk: atRisk,
+    note: hosts.length === 0 ? 'No host device ports discovered (or none carry a host port role).' : undefined,
+  };
+}
+
 module.exports = createPlatformAdvisor({
   platform: 'brocade',
   feature: 'Brocade SAN AI Advisor',
@@ -273,6 +351,31 @@ module.exports = createPlatformAdvisor({
         '**Findings** (severity-ordered), **Recommended actions**, **Data gaps**. Keep under ~350 words.',
       gather: gatherPortHealth,
       noun: 'port health report',
+    },
+    change_audit: {
+      system:
+        'You are a SAN change auditor reviewing 30 days of Brocade fabric changes for an enterprise infrastructure ' +
+        'team. You are given zoning changes (type, fabric, what changed, when), issues that opened in the same ' +
+        'window with their first-seen times, and critical/warning event counts per day. Correlate by time: a change ' +
+        'shortly before an issue first appears deserves a hard look. Summarize change volume by fabric, name the ' +
+        'changes nearest in time to new issues, and note fabrics changing with no recorded issues (healthy churn). ' +
+        'Names in the data are anonymized tokens; keep them exactly as given. Do not invent data or claim causation, ' +
+        'only proximity. Markdown sections: **Change summary**, **Changes near new issues**, **Recommended follow-ups**. ' +
+        'Keep under ~400 words.',
+      gather: gatherChangeAudit,
+      noun: 'change and drift audit',
+    },
+    path_redundancy: {
+      system:
+        'You are a SAN availability engineer reviewing host path redundancy on Brocade fabrics. You are given, per ' +
+        'host (enclosure), how many device-port logins it has, how many distinct switches and fabrics those logins ' +
+        'land on, and the hosts with a single login or every login on one switch. A host with all paths through one ' +
+        'switch loses storage when that switch reboots, and firmware upgrades reboot switches. Prioritize by blast ' +
+        'radius and name the switch each single-switch host depends on. Names in the data are anonymized tokens; ' +
+        'keep them exactly as given. Do not invent data. Markdown sections: **Summary**, ' +
+        '**Single points of failure (prioritized)**, **Recommended actions**. Keep under ~400 words.',
+      gather: gatherPathRedundancy,
+      noun: 'path redundancy report',
     },
   },
 });

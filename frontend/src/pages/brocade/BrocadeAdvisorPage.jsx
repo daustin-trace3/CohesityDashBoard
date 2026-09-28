@@ -1,4 +1,4 @@
-import { Waypoints, Router, Network, Cable } from 'lucide-react';
+import { Waypoints, Router, Network, Cable, History, Share2 } from 'lucide-react';
 import PlatformAdvisorPage from '../../components/PlatformAdvisorPage';
 
 const BRAND = '#CC092F';
@@ -12,6 +12,10 @@ const TABS = [
     blurb: 'Zone configs, unzoned device ports, and default-access or drift risks per fabric.' },
   { slug: 'port-health', label: 'Port Health', icon: Cable,
     blurb: 'Port state and CRC error hotspots, plus the noisiest event patterns in the last 24 hours.' },
+  { slug: 'change-audit', label: 'Change Audit', icon: History,
+    blurb: '30 days of zoning changes correlated in time with new issues — what changed before what broke.' },
+  { slug: 'path-redundancy', label: 'Path Redundancy', icon: Share2,
+    blurb: 'Hosts with a single login, one switch, or one fabric — the single points of failure by name.' },
 ];
 
 export default function BrocadeAdvisorPage() {

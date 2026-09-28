@@ -3,7 +3,8 @@ const { createPlatformAdvisor, linReg, parseUtcMs, fmtBytes } = require('../plat
 
 function gatherDrReadiness() {
   const vpgs = db.prepare(`
-    SELECT vpg_identifier, name, vms_count, protected_site, recovery_site, actual_rpo, configured_rpo, health, status, sub_status
+    SELECT vpg_identifier, name, vms_count, protected_site, recovery_site, actual_rpo, configured_rpo,
+           actual_journal_history, configured_journal_history, health, status, sub_status
     FROM zerto_vpgs ORDER BY (health != 'Healthy') DESC, actual_rpo DESC LIMIT 40
   `).all().map(v => ({
     vpg: v.name,
@@ -13,6 +14,10 @@ function gatherDrReadiness() {
     actualRpoSeconds: v.actual_rpo,
     configuredRpoSeconds: v.configured_rpo,
     rpoBreached: v.configured_rpo != null && v.actual_rpo != null ? v.actual_rpo > v.configured_rpo : null,
+    actualJournalHistoryHours: v.actual_journal_history,
+    configuredJournalHistoryHours: v.configured_journal_history,
+    journalShort: v.configured_journal_history > 0 && v.actual_journal_history != null
+      ? v.actual_journal_history < v.configured_journal_history : null,
     health: v.health,
     status: v.status,
     subStatus: v.sub_status,
@@ -111,6 +116,66 @@ function gatherAlertTriage() {
   };
 }
 
+function gatherStability() {
+  const windowStart = new Date(Date.now() - 14 * 864e5).toISOString();
+  const totals = db.prepare(`
+    SELECT COUNT(*) total,
+           SUM(CASE WHEN category = 'Alerts' THEN 1 ELSE 0 END) alertTransitions,
+           SUM(CASE WHEN category = 'Events' THEN 1 ELSE 0 END) operational,
+           SUM(CASE WHEN completed_successfully = 0 THEN 1 ELSE 0 END) failures
+    FROM zerto_events WHERE occurred_on >= ?
+  `).get(windowStart);
+  // A flap is an alert code that keeps turning on and off on the same site.
+  const flaps = db.prepare(`
+    SELECT site_name, code,
+           SUM(CASE WHEN event_type = 'AlertTurnedOn' THEN 1 ELSE 0 END) turnedOn,
+           SUM(CASE WHEN event_type = 'AlertTurnedOff' THEN 1 ELSE 0 END) turnedOff,
+           MIN(occurred_on) firstSeen, MAX(occurred_on) lastSeen, MAX(description) sample
+    FROM zerto_events
+    WHERE occurred_on >= ? AND category = 'Alerts'
+    GROUP BY site_name, code
+    HAVING turnedOn >= 3
+    ORDER BY turnedOn DESC LIMIT 15
+  `).all(windowStart).map(f => ({
+    site: f.site_name, code: f.code, turnedOn: f.turnedOn, turnedOff: f.turnedOff,
+    firstSeen: f.firstSeen, lastSeen: f.lastSeen,
+    selfClearing: f.turnedOff >= f.turnedOn * 0.8,
+    sampleDescription: String(f.sample || '').slice(0, 220),
+  }));
+  const failedOps = db.prepare(`
+    SELECT event_type, code, site_name, description, occurred_on FROM zerto_events
+    WHERE occurred_on >= ? AND completed_successfully = 0
+    ORDER BY occurred_on DESC LIMIT 20
+  `).all(windowStart).map(e => ({
+    type: e.event_type, code: e.code, site: e.site_name,
+    occurredOn: e.occurred_on, description: String(e.description || '').slice(0, 220),
+  }));
+  const opsByType = db.prepare(`
+    SELECT event_type, COUNT(*) count FROM zerto_events
+    WHERE occurred_on >= ? AND category = 'Events'
+    GROUP BY event_type ORDER BY count DESC LIMIT 20
+  `).all(windowStart).map(r => ({ type: r.event_type, count: r.count }));
+  const bySite = db.prepare(`
+    SELECT site_name, COUNT(*) count FROM zerto_events WHERE occurred_on >= ?
+    GROUP BY site_name ORDER BY count DESC LIMIT 10
+  `).all(windowStart).map(r => ({ site: r.site_name, count: r.count }));
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays: 14,
+    totals: {
+      events: totals.total || 0,
+      alertTransitions: totals.alertTransitions || 0,
+      operationalEvents: totals.operational || 0,
+      reportedFailures: totals.failures || 0,
+    },
+    flappingAlerts: flaps,
+    failedOperations: failedOps,
+    operationalEventsByType: opsByType,
+    busiestSites: bySite,
+    note: (totals.total || 0) === 0 ? 'No events collected yet; the event log fills from the next polls on.' : undefined,
+  };
+}
+
 module.exports = createPlatformAdvisor({
   platform: 'zerto',
   feature: 'Zerto AI Advisor',
@@ -119,8 +184,9 @@ module.exports = createPlatformAdvisor({
     dr_readiness: {
       system:
         'You are a DR/business-continuity engineer for a Zerto replication estate. You are given VPG health/status ' +
-        '(actual vs configured RPO, worst first), site connection status, and VRA appliance status. Assess DR readiness: ' +
-        'flag RPO breaches, unhealthy VPGs, disconnected sites, and VRAs not installed/healthy. Be specific with VPG and ' +
+        '(actual vs configured RPO and journal history, worst first), site connection status, and VRA appliance status. ' +
+        'Assess DR readiness: flag RPO breaches, journals shorter than configured (recovery-point depth is reduced), ' +
+        'unhealthy VPGs, disconnected sites, and VRAs not installed/healthy. Be specific with VPG and ' +
         'site names. Do not invent data. Markdown sections: **DR readiness summary**, **Key gaps (prioritized)**, ' +
         '**Recommended actions**. Keep under ~400 words.',
       gather: gatherDrReadiness,
@@ -144,6 +210,19 @@ module.exports = createPlatformAdvisor({
         '**Recommended triage order**. Keep under ~350 words.',
       gather: gatherAlertTriage,
       noun: 'alert triage report',
+    },
+    stability: {
+      system:
+        'You are a reliability engineer reviewing 14 days of the Zerto event log. You are given totals (alert ' +
+        'transitions vs operational events vs reported failures), alert codes that keep flapping on and off per site ' +
+        '(with whether they self-clear), operational events that reported failure, operational event counts by type, ' +
+        'and the busiest sites. A condition that keeps clearing itself is invisible one alert at a time; the ' +
+        'repetition is the finding. Identify the flap patterns worth engineering time, failed operations to follow ' +
+        'up, and what the event volume says about estate stability. Do not invent data. Markdown sections: ' +
+        '**Stability summary**, **Flap patterns worth fixing**, **Failed operations**, **Recommended actions**. ' +
+        'Keep under ~400 words.',
+      gather: gatherStability,
+      noun: 'stability and event-pattern report',
     },
   },
 });

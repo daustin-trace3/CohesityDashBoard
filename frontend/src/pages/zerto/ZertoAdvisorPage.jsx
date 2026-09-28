@@ -1,4 +1,4 @@
-import { ShieldCheck, BadgeCheck, BellRing } from 'lucide-react';
+import { ShieldCheck, BadgeCheck, BellRing, Activity } from 'lucide-react';
 import PlatformAdvisorPage from '../../components/PlatformAdvisorPage';
 
 const BRAND = '#EE3124';
@@ -10,6 +10,8 @@ const TABS = [
     blurb: 'Protected VM growth, journal sizing, and license consumption trends.' },
   { slug: 'alert-triage', label: 'Alert Triage', icon: BellRing,
     blurb: 'Cross-VPG alert patterns — systemic issues vs noise, and a prioritized triage order.' },
+  { slug: 'stability', label: 'Stability & Flaps', icon: Activity,
+    blurb: 'Two weeks of the event log — flapping alert codes, failed operations, and estate churn.' },
 ];
 
 export default function ZertoAdvisorPage() {

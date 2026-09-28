@@ -77,6 +77,15 @@ describe('platform AI advisors: contract', () => {
         }
       });
 
+      it('every unscoped gather() executes its SQL and returns an object on the empty test DB', () => {
+        for (const key of advisor.REPORTS) {
+          if (advisor.SCOPED.includes(key)) continue;
+          const out = advisor.gatherFor(key);
+          expect(out, `${platform}/${key}`).toBeTruthy();
+          expect(typeof out, `${platform}/${key}`).toBe('object');
+        }
+      });
+
       it('getCachedReport of an unknown key returns null', () => {
         expect(advisor.getCachedReport('not_a_real_report')).toBeNull();
       });

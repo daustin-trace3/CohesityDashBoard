@@ -1,4 +1,4 @@
-import { Database, ArrowLeftRight, BellRing } from 'lucide-react';
+import { Database, ArrowLeftRight, BellRing, Layers, ShieldCheck, HardDrive } from 'lucide-react';
 import PlatformAdvisorPage from '../../components/PlatformAdvisorPage';
 
 const BRAND = '#0067C5';
@@ -10,6 +10,12 @@ const TABS = [
     blurb: 'SnapMirror relationship health, lag, and disaster-recovery coverage gaps.' },
   { slug: 'alert-triage', label: 'Alert Triage', icon: BellRing,
     blurb: 'Cross-cluster alert patterns — systemic issues vs noise, and a prioritized triage order.' },
+  { slug: 'governance', label: 'Estate Governance', icon: Layers,
+    blurb: 'ONTAP versions and models across the estate — clusters behind or mixed, and an upgrade order.' },
+  { slug: 'security-review', label: 'Security Review', icon: ShieldCheck,
+    blurb: 'Wide-open NFS exports, CIFS session encryption and signing posture, and quota breaches.' },
+  { slug: 'hardware-health', label: 'Hardware & Failover', icon: HardDrive,
+    blurb: 'Disk states, LIFs off their home port, and nodes not up — failover risk before it bites.' },
 ];
 
 export default function NetAppAdvisorPage() {

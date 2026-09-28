@@ -192,6 +192,116 @@ function gatherAlertTriage() {
   };
 }
 
+function pureNames() {
+  const arrays = db.prepare('SELECT id, name FROM pure_arrays').all();
+  return { arrays, names: new Map(arrays.map(a => [a.id, a.name])) };
+}
+
+function gatherProtectionPosture() {
+  const { arrays, names } = pureNames();
+  const fmtFreq = (ms) => (ms == null ? null : ms >= 86400000 ? `${(ms / 86400000).toFixed(1)}d` : ms >= 3600000 ? `${(ms / 3600000).toFixed(1)}h` : `${Math.round(ms / 60000)}m`);
+  const groups = db.prepare(`
+    SELECT array_id, name, is_local, volume_count, host_count, target_count, snapshot_enabled,
+           snapshot_frequency_ms, replication_enabled, replication_frequency_ms,
+           source_retention_days, target_retention_days, snapshots_bytes, destroyed
+    FROM pure_protection_groups WHERE destroyed = 0
+    ORDER BY (snapshot_enabled = 0 AND replication_enabled = 0) DESC, name LIMIT 60
+  `).all().map(g => ({
+    array: names.get(g.array_id) || `Array ${g.array_id}`,
+    group: g.name, local: !!g.is_local,
+    volumes: g.volume_count, hosts: g.host_count, replicationTargets: g.target_count,
+    snapshots: g.snapshot_enabled ? `every ${fmtFreq(g.snapshot_frequency_ms)}` : 'OFF',
+    replication: g.replication_enabled ? `every ${fmtFreq(g.replication_frequency_ms)}` : 'OFF',
+    sourceRetentionDays: g.source_retention_days, targetRetentionDays: g.target_retention_days,
+    snapshotFootprint: fmtBytes(g.snapshots_bytes),
+    unprotected: !g.snapshot_enabled && !g.replication_enabled,
+  }));
+  const connections = db.prepare(`
+    SELECT array_id, remote_name, status, type, transport FROM pure_array_connections
+  `).all().map(c => ({
+    array: names.get(c.array_id) || `Array ${c.array_id}`,
+    remote: c.remote_name, status: c.status, type: c.type, transport: c.transport,
+  }));
+  const pods = db.prepare(`
+    SELECT array_id, name, promotion_status, mediator, array_count, link_source_count, link_target_count, member_arrays
+    FROM pure_pods
+  `).all().map(p => ({
+    array: names.get(p.array_id) || `Array ${p.array_id}`,
+    pod: p.name, promotionStatus: p.promotion_status, mediator: p.mediator,
+    memberArrays: p.array_count, linkSources: p.link_source_count, linkTargets: p.link_target_count,
+  }));
+  return {
+    generatedAt: new Date().toISOString(),
+    protectionGroups: groups,
+    arrayConnections: connections,
+    activeClusterPods: pods,
+    note: arrays.length === 0 ? 'No direct FlashArray connections; protection detail needs direct connections.'
+      : groups.length === 0 ? 'No protection groups discovered.' : undefined,
+  };
+}
+
+function gatherHardwareLifecycle() {
+  const { arrays, names } = pureNames();
+  const controllers = db.prepare('SELECT array_id, name, model, status, mode, version FROM pure_controllers').all()
+    .map(c => ({ array: names.get(c.array_id) || `Array ${c.array_id}`, controller: c.name, model: c.model, status: c.status, mode: c.mode, version: c.version }));
+  const badDrives = db.prepare(`
+    SELECT array_id, name, type, status, capacity_bytes FROM pure_drives
+    WHERE status IS NOT NULL AND LOWER(status) NOT IN ('healthy', 'unused', 'empty') LIMIT 30
+  `).all().map(d => ({ array: names.get(d.array_id) || `Array ${d.array_id}`, drive: d.name, type: d.type, status: d.status, capacity: fmtBytes(d.capacity_bytes) }));
+  const badHardware = db.prepare(`
+    SELECT array_id, name, type, status FROM pure_hardware
+    WHERE status IS NOT NULL AND LOWER(status) NOT IN ('ok', 'healthy', 'not_installed', 'unused') LIMIT 30
+  `).all().map(h => ({ array: names.get(h.array_id) || `Array ${h.array_id}`, component: h.name, type: h.type, status: h.status }));
+  const soon = Date.now() + 90 * 86400000;
+  const certs = db.prepare('SELECT array_id, name, common_name, issued_by, valid_to_ms, status FROM pure_certificates').all()
+    .filter(c => c.valid_to_ms != null && c.valid_to_ms < soon)
+    .map(c => ({
+      array: names.get(c.array_id) || `Array ${c.array_id}`,
+      certificate: c.name, commonName: c.common_name, issuedBy: c.issued_by, status: c.status,
+      expires: new Date(c.valid_to_ms).toISOString().slice(0, 10),
+      expired: c.valid_to_ms < Date.now(),
+    }));
+  return {
+    generatedAt: new Date().toISOString(),
+    controllers,
+    drivesNeedingAttention: badDrives,
+    hardwareNeedingAttention: badHardware,
+    certificatesExpiringWithin90Days: certs,
+    note: arrays.length === 0 ? 'No direct FlashArray connections; hardware detail needs direct connections.' : undefined,
+  };
+}
+
+function gatherHostConnectivity() {
+  const { arrays, names } = pureNames();
+  const hosts = db.prepare('SELECT array_id, name, connection_count, personality, protocol FROM pure_hosts').all();
+  const volsByHost = new Map();
+  for (const c of db.prepare('SELECT array_id, host_name, COUNT(*) n FROM pure_connections GROUP BY array_id, host_name').all()) {
+    volsByHost.set(`${c.array_id}|${c.host_name}`, c.n);
+  }
+  const shaped = hosts.map(h => ({
+    array: names.get(h.array_id) || `Array ${h.array_id}`,
+    host: h.name, personality: h.personality, protocol: h.protocol,
+    connectionCount: h.connection_count,
+    volumesMapped: volsByHost.get(`${h.array_id}|${h.name}`) || 0,
+  }));
+  const mappedVolumes = new Set(db.prepare("SELECT DISTINCT array_id || '|' || volume_name AS k FROM pure_connections").all().map(r => r.k));
+  const unmapped = db.prepare('SELECT array_id, name, provisioned_bytes FROM pure_volumes LIMIT 2000').all()
+    .filter(v => !mappedVolumes.has(`${v.array_id}|${v.name}`))
+    .slice(0, 30)
+    .map(v => ({ array: names.get(v.array_id) || `Array ${v.array_id}`, volume: v.name, provisioned: fmtBytes(v.provisioned_bytes) }));
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      hosts: shaped.length,
+      hostsWithNoVolumes: shaped.filter(h => h.volumesMapped === 0).length,
+      hostsWithSingleConnection: shaped.filter(h => h.connectionCount != null && h.connectionCount <= 1).length,
+    },
+    hostsNeedingAttention: shaped.filter(h => h.volumesMapped === 0 || (h.connectionCount != null && h.connectionCount <= 1)).slice(0, 40),
+    unmappedVolumes: unmapped,
+    note: arrays.length === 0 ? 'No direct FlashArray connections; host detail needs direct connections.' : undefined,
+  };
+}
+
 module.exports = createPlatformAdvisor({
   platform: 'pure',
   feature: 'Pure AI Advisor',
@@ -226,6 +336,38 @@ module.exports = createPlatformAdvisor({
         'Markdown sections: **Summary**, **Systemic patterns**, **Recommended triage order**. Keep under ~350 words.',
       gather: gatherAlertTriage,
       noun: 'alert triage report',
+    },
+    protection_posture: {
+      system:
+        'You are a data-protection and DR reviewer for a Pure Storage FlashArray fleet. You are given protection ' +
+        'groups (snapshot and replication schedules, retention, target counts, groups with both OFF first), ' +
+        'array-to-array replication connections with status, and ActiveCluster pods (promotion status, mediator, ' +
+        'link counts). Assess protection posture: groups with no snapshots or replication, thin retention, broken ' +
+        'array connections, and pods without a healthy mediator or links. Ransomware planning assumes the attacker ' +
+        'was resident before detection, so weigh retention depth accordingly. Do not invent data. Markdown sections: ' +
+        '**Posture summary**, **Gaps (prioritized)**, **Recommended actions**. Keep under ~400 words.',
+      gather: gatherProtectionPosture,
+      noun: 'data-protection posture review',
+    },
+    hardware_lifecycle: {
+      system:
+        'You are a Pure Storage hardware and lifecycle engineer. You are given controllers (model, status, mode, ' +
+        'Purity version), drives and hardware components not in a healthy state, and management certificates already ' +
+        'expired or expiring within 90 days. Flag failed or degraded components, mismatched controller Purity ' +
+        'versions, and certificate work needed. Do not invent data. Markdown sections: **Summary**, ' +
+        '**Findings (prioritized)**, **Recommended actions**. Keep under ~350 words.',
+      gather: gatherHardwareLifecycle,
+      noun: 'hardware and lifecycle report',
+    },
+    host_connectivity: {
+      system:
+        'You are a SAN connectivity reviewer for a Pure Storage fleet. You are given per-host connection counts and ' +
+        'mapped-volume counts, the hosts with no volumes or a single connection, and volumes mapped to no host. A ' +
+        'single connection is a redundancy risk; a host with no volumes and volumes with no host are cleanup ' +
+        'candidates, though a recently prepared host can be legitimate. Do not invent data. Markdown sections: ' +
+        '**Summary**, **Redundancy risks**, **Cleanup candidates**, **Recommended actions**. Keep under ~350 words.',
+      gather: gatherHostConnectivity,
+      noun: 'host connectivity review',
     },
   },
 });
