@@ -128,7 +128,15 @@ function createPlatformAdvisor({ platform, feature, table, reports }) {
     return row;
   }
 
-  return { REPORTS, SCOPED, isScoped, generateReport, getCachedReport, isConfigured };
+  /** Run a report's gather alone (no LLM, no cache). Lets tests exercise the
+   *  SQL of every gather against the schema without a configured provider. */
+  function gatherFor(reportKey, params = {}) {
+    const spec = reports[reportKey];
+    if (!spec) { const e = new Error('Unknown report.'); e.code = 'BAD_REPORT'; throw e; }
+    return spec.scoped ? spec.gather(params) : spec.gather();
+  }
+
+  return { REPORTS, SCOPED, isScoped, generateReport, getCachedReport, gatherFor, isConfigured };
 }
 
 module.exports = { createPlatformAdvisor, linReg, parseUtcMs, fmtBytes };

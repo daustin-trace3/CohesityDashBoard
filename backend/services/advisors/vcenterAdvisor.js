@@ -1,5 +1,6 @@
 const db = require('../../db/database');
 const { createPlatformAdvisor, linReg, parseUtcMs, fmtBytes } = require('../platformAdvisor');
+const { listFilesystems } = require('../vcenterGuestStorage');
 
 function gatherCapacity() {
   const vcenters = db.prepare('SELECT id, name FROM vcenter_vcenters').all();
@@ -138,6 +139,105 @@ function gatherEfficiency() {
   };
 }
 
+function gatherGuestStorage() {
+  const { summary, rows } = listFilesystems({ state: 'attention', sortBy: 'used_pct', sortDir: 'desc', pageSize: 40, page: 0 });
+  const worst = rows.map(r => ({
+    vm: r.vm_name, owner: r.owner || '(no owner tag)', mount: r.mount, fsType: r.fs_type,
+    usedPct: r.used_pct, capacity: fmtBytes(r.capacity_bytes), free: fmtBytes(r.free_bytes),
+    state: r.state, growthPerDay: r.growth_bytes_per_day > 0 ? fmtBytes(r.growth_bytes_per_day) + '/day' : null,
+    daysToFull: r.days_to_full, cluster: r.cluster_name, vcenter: r.vcenter_name,
+  }));
+  const fillingFast = listFilesystems({ sortBy: 'days_to_full', sortDir: 'asc', pageSize: 15, page: 0 }).rows
+    .filter(r => r.days_to_full != null && r.days_to_full <= 90)
+    .map(r => ({
+      vm: r.vm_name, owner: r.owner || '(no owner tag)', mount: r.mount, usedPct: r.used_pct,
+      daysToFull: r.days_to_full, growthPerDay: fmtBytes(r.growth_bytes_per_day) + '/day', vcenter: r.vcenter_name,
+    }));
+  return {
+    generatedAt: new Date().toISOString(),
+    thresholds: summary.thresholds,
+    summary: {
+      volumesTracked: summary.volumes, vmsTracked: summary.vms,
+      critical: summary.critical, warning: summary.warning,
+      poweredOnVmsWithoutGuestData: summary.poweredOnWithoutData,
+      poweredOnVmsToolsNotRunning: summary.poweredOnToolsNotRunning,
+    },
+    volumesOverThreshold: worst,
+    fillingWithin90Days: fillingFast,
+    volumesByOwner: (summary.owners || []).slice(0, 25),
+    note: summary.volumes === 0 ? 'No guest filesystem data yet; it needs VMware Tools and a poll after the guest-storage feature.' : undefined,
+  };
+}
+
+function gatherFailoverReadiness() {
+  const sites = db.prepare('SELECT id, name FROM vcenter_sites ORDER BY sort_order, name').all();
+  const members = db.prepare("SELECT site_id, vcenter_id, member_name FROM vcenter_site_members WHERE member_type = 'cluster'").all();
+  const latest = db.prepare(`
+    SELECT h.* FROM vcenter_capacity_history h
+    WHERE h.captured_at = (
+      SELECT MAX(h2.captured_at) FROM vcenter_capacity_history h2
+      WHERE h2.vcenter_id = h.vcenter_id AND h2.cluster_name = h.cluster_name
+    )
+  `).all();
+  const siteOf = new Map(members.map(m => [`${m.vcenter_id}|${m.member_name}`, m.site_id]));
+  const rollup = new Map(sites.map(s => [s.id, { site: s.name, clusters: 0, hosts: 0, vms: 0, cpuCap: 0, cpuUsed: 0, memCap: 0, memUsed: 0 }]));
+  for (const c of latest) {
+    const sid = siteOf.get(`${c.vcenter_id}|${c.cluster_name}`);
+    if (sid == null || !rollup.has(sid)) continue;
+    const r = rollup.get(sid);
+    r.clusters += 1; r.hosts += c.host_count || 0; r.vms += c.vms_on || 0;
+    r.cpuCap += c.cpu_mhz_capacity || 0; r.cpuUsed += c.cpu_mhz_used || 0;
+    r.memCap += c.mem_bytes_capacity || 0; r.memUsed += c.mem_bytes_used || 0;
+  }
+  const pct = (u, c) => (c > 0 ? +((u / c) * 100).toFixed(1) : null);
+  const siteRows = [...rollup.entries()].map(([id, r]) => ({
+    id, site: r.site, clusters: r.clusters, hosts: r.hosts, vmsOn: r.vms,
+    cpuUsedPct: pct(r.cpuUsed, r.cpuCap), memUsedPct: pct(r.memUsed, r.memCap),
+    memUsed: fmtBytes(r.memUsed), memCapacity: fmtBytes(r.memCap),
+  }));
+  const pairs = db.prepare('SELECT id, site_a_id, site_b_id FROM vcenter_site_pairs').all().map(p => {
+    const a = rollup.get(p.site_a_id);
+    const b = rollup.get(p.site_b_id);
+    if (!a || !b) return null;
+    const dir = (from, to) => ({
+      survivingSite: to.site,
+      cpuCombinedPct: pct(from.cpuUsed + to.cpuUsed, to.cpuCap),
+      memCombinedPct: pct(from.memUsed + to.memUsed, to.memCap),
+      fits: to.memCap > 0 && to.cpuCap > 0
+        ? (from.memUsed + to.memUsed) <= to.memCap && (from.cpuUsed + to.cpuUsed) <= to.cpuCap : null,
+    });
+    return { pair: `${a.site} <-> ${b.site}`, ifAFails: dir(a, b), ifBFails: dir(b, a) };
+  }).filter(Boolean);
+  // 30-day memory-used growth per site, so headroom has a direction.
+  const hist = db.prepare(`
+    SELECT vcenter_id, cluster_name, captured_at, mem_bytes_used FROM vcenter_capacity_history
+    WHERE captured_at >= datetime('now', '-30 days') ORDER BY captured_at ASC
+  `).all();
+  const seriesBySite = new Map();
+  for (const r of hist) {
+    const sid = siteOf.get(`${r.vcenter_id}|${r.cluster_name}`);
+    if (sid == null) continue;
+    if (!seriesBySite.has(sid)) seriesBySite.set(sid, new Map());
+    const perT = seriesBySite.get(sid);
+    const t = r.captured_at;
+    perT.set(t, (perT.get(t) || 0) + (r.mem_bytes_used || 0));
+  }
+  const growth = [...seriesBySite.entries()].map(([sid, perT]) => {
+    const pts = [...perT.entries()].map(([t, y]) => ({ x: parseUtcMs(t), y }));
+    const reg = linReg(pts);
+    const perDay = reg ? reg.slope * 86400000 : 0;
+    return { site: rollup.get(sid)?.site, memGrowthPerDay: perDay > 0 ? fmtBytes(perDay) + '/day' : 'flat/declining', dataPoints: pts.length };
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    sites: siteRows,
+    failoverPairs: pairs,
+    memoryGrowthBySite: growth,
+    note: sites.length === 0 ? 'No sites defined under vCenter Site Capacity.'
+      : pairs.length === 0 ? 'No failover pairs configured; per-site figures only.' : undefined,
+  };
+}
+
 module.exports = createPlatformAdvisor({
   platform: 'vcenter',
   feature: 'vCenter AI Advisor',
@@ -171,6 +271,30 @@ module.exports = createPlatformAdvisor({
         '**Cleanup opportunities**, **Recommended actions**. Keep under ~300 words.',
       gather: gatherEfficiency,
       noun: 'efficiency review',
+    },
+    guest_storage: {
+      system:
+        'You are a VMware guest-storage hygiene reviewer. You are given in-guest filesystems over the warning or ' +
+        'critical threshold (worst first, with the owner team from vSphere tags), volumes projected to fill within ' +
+        '90 days at their modeled growth, volume counts per owner, and how many powered-on VMs report no guest data ' +
+        'or have VMware Tools not running (blind spots). Group findings by owner so each team sees its own disks, ' +
+        'call out the volumes filling soonest, and treat the blind spots as a finding, not a footnote. Do not invent ' +
+        'data. Markdown sections: **Summary**, **Filling soonest**, **By owner**, **Blind spots**, ' +
+        '**Recommended actions**. Keep under ~400 words.',
+      gather: gatherGuestStorage,
+      noun: 'guest storage hygiene report',
+    },
+    failover_readiness: {
+      system:
+        'You are a DR capacity planner for a dual-datacenter VMware estate. You are given per-site CPU and memory ' +
+        'utilization from the latest capacity samples, each configured failover pair with combined utilization in ' +
+        'both directions (does the surviving site hold both sides today), and 30-day memory growth per site. State ' +
+        'plainly for each pair whether a failover fits today in each direction, how much headroom remains, and how ' +
+        'the growth trend moves the answer. If no pairs are configured, say what the per-site numbers alone support. ' +
+        'Do not invent data. Markdown sections: **Readiness summary**, **Per-pair fit (both directions)**, ' +
+        '**Trend and horizon**, **Recommended actions**. Keep under ~400 words.',
+      gather: gatherFailoverReadiness,
+      noun: 'failover readiness report',
     },
   },
 });
