@@ -9,6 +9,7 @@ const {
 } = require('./netappApi');
 const { getSetting } = require('./settings');
 const logger = require('../utils/logger');
+const configLedger = require('./configLedger');
 const { createPoller } = require('../core/pollerFramework');
 
 function pollIntervalMin() {
@@ -285,6 +286,37 @@ const replaceCifsShares = db.transaction((arrayId, items) => {
   }
 });
 
+// Ledger snapshots for the change ledger (services/configLedger.js): export
+// rules and CIFS shares are the security-relevant config on a filer. A rule
+// is keyed by policy and index, a share by SVM and name; values are stable
+// JSON so an unchanged config diffs to nothing.
+function ledgerExportRules(array, policies) {
+  const items = [];
+  for (const p of policies) {
+    for (const r of p.rules || []) {
+      items.push({
+        item: `${p.svm?.name || '-'}/${p.name || '-'}#${r.index ?? '-'}`,
+        value: JSON.stringify({
+          clients: Array.isArray(r.clients) ? r.clients.map((c) => c.match).filter(Boolean).sort() : [],
+          protocols: Array.isArray(r.protocols) ? [...r.protocols].sort() : [],
+          ro: Array.isArray(r.ro_rule) ? [...r.ro_rule].sort() : [],
+          rw: Array.isArray(r.rw_rule) ? [...r.rw_rule].sort() : [],
+          superuser: Array.isArray(r.superuser) ? [...r.superuser].sort() : [],
+        }),
+      });
+    }
+  }
+  configLedger.recordSnapshot({ platform: 'netapp', scope: 'nfs-exports', system: array.name, items });
+}
+
+function ledgerCifsShares(array, shares) {
+  const items = (shares || []).map((s) => ({
+    item: `${s.svm?.name || '-'}/${s.name || '-'}`,
+    value: JSON.stringify({ path: s.path || null, volume: s.volume?.name || null }),
+  }));
+  configLedger.recordSnapshot({ platform: 'netapp', scope: 'cifs-shares', system: array.name, items });
+}
+
 /** Poll a single NetApp cluster: capacity, performance, inventory, alerts. */
 async function doPollArray(array) {
   const [
@@ -348,9 +380,9 @@ async function doPollArray(array) {
       [lifR, () => replaceLifs(array.id, lifR.value || []), 'lifs'],
       [quotaR, () => replaceQuotas(array.id, quotaR.value || []), 'quotas'],
       [nfsR, () => replaceNfsClients(array.id, nfsR.value || []), 'nfs-clients'],
-      [exportR, () => replaceExportRules(array.id, exportR.value || []), 'export-policies'],
+      [exportR, () => { replaceExportRules(array.id, exportR.value || []); ledgerExportRules(array, exportR.value || []); }, 'export-policies'],
       [cifsR, () => replaceCifsSessions(array.id, cifsR.value || []), 'cifs-sessions'],
-      [cifsShareR, () => replaceCifsShares(array.id, cifsShareR.value || []), 'cifs-shares'],
+      [cifsShareR, () => { replaceCifsShares(array.id, cifsShareR.value || []); ledgerCifsShares(array, cifsShareR.value || []); }, 'cifs-shares'],
     ];
     for (const [result, store, label] of stores) {
       if (result.status === 'fulfilled') {

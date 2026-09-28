@@ -594,4 +594,37 @@ module.exports = [
       `);
     },
   },
+  // Configuration change ledger (services/configLedger.js): pollers snapshot
+  // security-relevant config (NFS exports, CIFS shares, AD group membership)
+  // and the diff against the last snapshot is the ledger. config_state holds
+  // the last normalized value per item; config_changes is append-only.
+  {
+    version: 26,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS config_state (
+          platform    TEXT NOT NULL,
+          scope       TEXT NOT NULL,
+          system      TEXT NOT NULL,
+          item        TEXT NOT NULL,
+          value       TEXT,
+          updated_at  TEXT NOT NULL,
+          PRIMARY KEY (platform, scope, system, item)
+        );
+        CREATE TABLE IF NOT EXISTS config_changes (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          platform    TEXT NOT NULL,
+          scope       TEXT NOT NULL,
+          system      TEXT NOT NULL,
+          item        TEXT NOT NULL,
+          change_type TEXT NOT NULL,
+          old_value   TEXT,
+          new_value   TEXT,
+          detected_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_config_changes_time ON config_changes(detected_at);
+        CREATE INDEX IF NOT EXISTS idx_config_changes_scope ON config_changes(platform, scope, detected_at);
+      `);
+    },
+  },
 ];

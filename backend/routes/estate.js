@@ -45,4 +45,21 @@ router.post('/advisor/:report', [param('report').isString()], validate, async (r
   }
 });
 
+/** GET /api/estate/config-changes — raw ledger rows, newest first. */
+const { query } = require('express-validator');
+const { listChanges } = require('../services/configLedger');
+router.get('/config-changes', [
+  query('days').optional().isInt({ min: 1, max: 365 }).toInt(),
+  query('platform').optional().isString().trim().isLength({ max: 40 }),
+  query('scope').optional().isString().trim().isLength({ max: 60 }),
+  query('q').optional().isString().trim().isLength({ max: 200 }),
+], validate, (req, res, next) => {
+  try {
+    res.json(listChanges({
+      days: req.query.days ?? 30, platform: req.query.platform || null,
+      scope: req.query.scope || null, q: req.query.q || null,
+    }));
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

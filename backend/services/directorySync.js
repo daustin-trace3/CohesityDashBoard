@@ -172,6 +172,26 @@ async function runSync(trigger = 'schedule') {
     if (conflicts.size) notes.push(`Skipped ${conflicts.size} directory user(s) that clash with local accounts: ${[...conflicts].slice(0, 5).join(', ')}`);
     const msg = notes.length ? notes.join('. ') : null;
     logFinish(logId, 'ok', counts, msg);
+    // Change ledger: the AD-sourced membership per linked group, one item per
+    // group with the sorted member list as the value.
+    try {
+      const configLedger = require('./configLedger');
+      const rows = db.prepare(`
+        SELECT g.name AS group_name, u.username FROM user_groups ug
+        JOIN groups g ON g.id = ug.group_id JOIN users u ON u.id = ug.user_id
+        WHERE ug.source = 'ad'
+      `).all();
+      const byGroup = new Map();
+      for (const r of rows) {
+        if (!byGroup.has(r.group_name)) byGroup.set(r.group_name, []);
+        byGroup.get(r.group_name).push(r.username);
+      }
+      for (const g of linkedGroups()) if (!byGroup.has(g.name)) byGroup.set(g.name, []);
+      configLedger.recordSnapshot({
+        platform: 'directory', scope: 'ad-group-membership', system: 'active-directory',
+        items: [...byGroup.entries()].map(([group, members]) => ({ item: group, value: JSON.stringify(members.sort()) })),
+      });
+    } catch (err) { logger.warn(`[directory] change ledger snapshot failed: ${err.message}`); }
     logger.info(`[directory] sync ${trigger}: ${counts.groups} groups, ${counts.seen} users (${counts.created} new, ${counts.updated} updated, ${counts.deactivated} deactivated)`);
     return { id: logId, status: 'ok', ...counts, message: msg };
   } catch (err) {
