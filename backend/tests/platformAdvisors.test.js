@@ -46,6 +46,7 @@ const awsAdvisor = require('../services/advisors/awsAdvisor');
 const bluecatAdvisor = require('../services/advisors/bluecatAdvisor');
 const ariaopsAdvisor = require('../services/advisors/ariaopsAdvisor');
 const brocadeAdvisor = require('../services/advisors/brocadeAdvisor');
+const estateAdvisor = require('../services/advisors/estateAdvisor');
 
 const API_KEY = 'test-api-key';
 
@@ -61,6 +62,7 @@ const ADVISORS = {
   bluecat: bluecatAdvisor,
   ariaops: ariaopsAdvisor,
   brocade: brocadeAdvisor,
+  estate: estateAdvisor,
 };
 
 describe('platform AI advisors: contract', () => {
@@ -123,6 +125,14 @@ describe('platform AI advisors: dispatcher routes', () => {
   });
 
   const slug = (key) => key.replace(/_/g, '-');
+
+  it('GET /api/estate/advisor/:report -> 200 { enabled:false, report:null } on an empty DB (flat mount, not a plugin)', async () => {
+    const key = estateAdvisor.REPORTS[0];
+    const res = await request(app).get(`/api/estate/advisor/${slug(key)}`).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.enabled).toBe(false);
+    expect(res.body.report).toBeNull();
+  });
 
   it('GET /api/pure/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
     const key = pureAdvisor.REPORTS[0];

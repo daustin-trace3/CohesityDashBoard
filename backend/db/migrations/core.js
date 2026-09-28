@@ -567,4 +567,21 @@ module.exports = [
       if (!cols.has('evidence_check_at')) db.exec('ALTER TABLE ops_incidents ADD COLUMN evidence_check_at TEXT');
     },
   },
+  // Estate AI Advisor: cross-platform reports (daily brief, certificate
+  // audit, access review, recovery readiness), cached like the per-platform
+  // advisor tables. NOTE: v24 here; feat/multi-tenant numbers it v25 because
+  // this branch's core migrations run one behind.
+  {
+    version: 24,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS estate_ai_reports (
+          report_key    TEXT PRIMARY KEY,
+          model         TEXT,
+          content       TEXT NOT NULL,
+          generated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    },
+  },
 ];
