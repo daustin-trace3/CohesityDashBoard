@@ -665,7 +665,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const sev = String(inc.severity || 'warning').toUpperCase();
   const rec = recurrence && recurrence.isPattern ? recurrence : null;
   const recLine = rec ? recurrenceLine(rec) : null;
-  const subject = `${sev} | ${inc.host || platforms.join(', ')} | ${analysis.title || inc.title}${rec ? ` [repeat ${rec.count}]` : ''}${update ? ` [update ${update}]` : ''}`;
+  const subject = `${analysis.human_required ? 'HUMAN REQUIRED | ' : ''}${sev} | ${inc.host || platforms.join(', ')} | ${analysis.title || inc.title}${rec ? ` [repeat ${rec.count}]` : ''}${update ? ` [update ${update}]` : ''}`;
   const alive = alerts.filter((a) => !a.cleared_at);
   const cleared = alerts.filter((a) => a.cleared_at);
   const cls = `${analysis.classification || 'unknown'} (${analysis.confidence || 'low'} confidence${analysis.source === 'fallback' ? ', rule-based digest, no AI narrative' : ''})`;
