@@ -464,70 +464,70 @@ async function doPollCluster(cluster) {
     // not sink the object snapshot — objects just land without dates.
     const backupTimes = await fetchProtectedObjectTimes(cluster, groupIds)
       .catch((err) => {
-        logger.error(`[Poller] Protected-object times fetch failed for cluster ${cluster.id}:`, safeErrorMessage(err));
+        logger.error(`[CohesityPoller] Protected-object times fetch failed for cluster ${cluster.id}:`, safeErrorMessage(err));
         return new Map();
       });
 
     if (clusterInfo.status === 'fulfilled') {
       upsertMetrics(cluster, clusterInfo.value);
     } else {
-      logger.error(`[Poller] Metrics fetch failed for cluster ${cluster.id}:`, safeErrorMessage(clusterInfo.reason));
+      logger.error(`[CohesityPoller] Metrics fetch failed for cluster ${cluster.id}:`, safeErrorMessage(clusterInfo.reason));
     }
 
     if (alertData.status === 'fulfilled') {
       upsertAlerts(cluster, alertData.value);
     } else {
-      logger.error(`[Poller] Alerts fetch failed for cluster ${cluster.id}:`, safeErrorMessage(alertData.reason));
+      logger.error(`[CohesityPoller] Alerts fetch failed for cluster ${cluster.id}:`, safeErrorMessage(alertData.reason));
     }
 
     if (policyData.status === 'fulfilled') {
       try {
         replacePolicies(cluster.id, policyData.value);
       } catch (err) {
-        logger.error(`[Poller] Policy snapshot failed for cluster ${cluster.id}:`, err.message);
+        logger.error(`[CohesityPoller] Policy snapshot failed for cluster ${cluster.id}:`, err.message);
       }
     } else {
-      logger.error(`[Poller] Policies fetch failed for cluster ${cluster.id}:`, safeErrorMessage(policyData.reason));
+      logger.error(`[CohesityPoller] Policies fetch failed for cluster ${cluster.id}:`, safeErrorMessage(policyData.reason));
     }
 
     if (sourceData.status === 'fulfilled') {
       try {
         replaceSourceRegistrations(cluster.id, sourceData.value);
       } catch (err) {
-        logger.error(`[Poller] Source registration snapshot failed for cluster ${cluster.id}:`, err.message);
+        logger.error(`[CohesityPoller] Source registration snapshot failed for cluster ${cluster.id}:`, err.message);
       }
     } else {
-      logger.error(`[Poller] Source registrations fetch failed for cluster ${cluster.id}:`, safeErrorMessage(sourceData.reason));
+      logger.error(`[CohesityPoller] Source registrations fetch failed for cluster ${cluster.id}:`, safeErrorMessage(sourceData.reason));
     }
 
     if (workloadData.status === 'fulfilled') {
       try {
         insertWorkloadSnapshot(cluster.id, workloadData.value);
       } catch (err) {
-        logger.error(`[Poller] Workload snapshot failed for cluster ${cluster.id}:`, err.message);
+        logger.error(`[CohesityPoller] Workload snapshot failed for cluster ${cluster.id}:`, err.message);
       }
     } else {
-      logger.error(`[Poller] Workload fetch failed for cluster ${cluster.id}:`, safeErrorMessage(workloadData.reason));
+      logger.error(`[CohesityPoller] Workload fetch failed for cluster ${cluster.id}:`, safeErrorMessage(workloadData.reason));
     }
 
     if (objectData.status === 'fulfilled') {
       try {
         replaceObjects(cluster.id, objectData.value, backupTimes, localClusterId);
       } catch (err) {
-        logger.error(`[Poller] Object inventory snapshot failed for cluster ${cluster.id}:`, err.message);
+        logger.error(`[CohesityPoller] Object inventory snapshot failed for cluster ${cluster.id}:`, err.message);
       }
     } else {
-      logger.error(`[Poller] Object search fetch failed for cluster ${cluster.id}:`, safeErrorMessage(objectData.reason));
+      logger.error(`[CohesityPoller] Object search fetch failed for cluster ${cluster.id}:`, safeErrorMessage(objectData.reason));
     }
 
     if (agentData.status === 'fulfilled') {
       try {
         replaceAgents(cluster.id, agentData.value);
       } catch (err) {
-        logger.error(`[Poller] Agent snapshot failed for cluster ${cluster.id}:`, err.message);
+        logger.error(`[CohesityPoller] Agent snapshot failed for cluster ${cluster.id}:`, err.message);
       }
     } else {
-      logger.error(`[Poller] Agent fetch failed for cluster ${cluster.id}:`, safeErrorMessage(agentData.reason));
+      logger.error(`[CohesityPoller] Agent fetch failed for cluster ${cluster.id}:`, safeErrorMessage(agentData.reason));
     }
 
     // If the normal fetch failed (some clusters 500 on wide windows), retry
@@ -535,14 +535,14 @@ async function doPollCluster(cluster) {
     let protRuns = protectionData.status === 'fulfilled' ? protectionData.value : null;
     let usedFallback = false;
     if (protRuns === null && !smallWindowClusters.has(cluster.id)) {
-      logger.warn(`[Poller] Protection runs fetch failed for cluster ${cluster.id} (${safeErrorMessage(protectionData.reason)}) — retrying with ${FALLBACK_WINDOW_DAYS}-day window`);
+      logger.warn(`[CohesityPoller] Protection runs fetch failed for cluster ${cluster.id} (${safeErrorMessage(protectionData.reason)}) — retrying with ${FALLBACK_WINDOW_DAYS}-day window`);
       try {
         protRuns = await fetchProtectionRuns(cluster, NUM_RUNS_INCREMENTAL, (Date.now() - FALLBACK_WINDOW_DAYS * 24 * 60 * 60 * 1000) * 1000);
         smallWindowClusters.add(cluster.id);
         usedFallback = true;
-        logger.info(`[Poller] Cluster ${cluster.id} pinned to ${FALLBACK_WINDOW_DAYS}-day runs window (wide queries return HTTP 500 on this cluster)`);
+        logger.info(`[CohesityPoller] Cluster ${cluster.id} pinned to ${FALLBACK_WINDOW_DAYS}-day runs window (wide queries return HTTP 500 on this cluster)`);
       } catch (err) {
-        logger.error(`[Poller] Fallback runs fetch also failed for cluster ${cluster.id}:`, safeErrorMessage(err));
+        logger.error(`[CohesityPoller] Fallback runs fetch also failed for cluster ${cluster.id}:`, safeErrorMessage(err));
       }
     }
 
@@ -550,7 +550,7 @@ async function doPollCluster(cluster) {
       try {
         upsertProtectionRuns(cluster, protRuns);
       } catch (err) {
-        logger.error(`[Poller] Protection runs upsert failed for cluster ${cluster.id}:`, err.message);
+        logger.error(`[CohesityPoller] Protection runs upsert failed for cluster ${cluster.id}:`, err.message);
       }
 
       // Phase 2 (per-job catch-up) matters on the initial backfill AND any
@@ -559,7 +559,7 @@ async function doPollCluster(cluster) {
       // trailing jobs every poll (Splunk gap, 2026-07-30).
       const capped = protRuns.length >= window.numRuns;
       if (capped && window.incremental) {
-        logger.warn(`[Poller] Cluster ${cluster.id} runs fetch hit the ${window.numRuns}-run cap — running per-job catch-up`);
+        logger.warn(`[CohesityPoller] Cluster ${cluster.id} runs fetch hit the ${window.numRuns}-run cap — running per-job catch-up`);
       }
       if ((!window.incremental || capped) && !usedFallback) {
         const seenJobIds = new Set(protRuns.map(r => r.jobId).filter(Boolean));
@@ -568,26 +568,26 @@ async function doPollCluster(cluster) {
         try {
           allJobs = await fetchProtectionJobs(cluster);
         } catch (err) {
-          logger.error(`[Poller] Phase 2 jobs list fetch failed for cluster ${cluster.id}:`, safeErrorMessage(err));
+          logger.error(`[CohesityPoller] Phase 2 jobs list fetch failed for cluster ${cluster.id}:`, safeErrorMessage(err));
         }
 
         if (allJobs.length > 0) {
           const missedJobs = allJobs.filter(job => !seenJobIds.has(job.id)).slice(0, 200);
           if (missedJobs.length > 0) {
-            logger.info(`[Poller] Phase 2: fetching ${missedJobs.length} missed job(s) for cluster ${cluster.id}`);
+            logger.info(`[CohesityPoller] Phase 2: fetching ${missedJobs.length} missed job(s) for cluster ${cluster.id}`);
             for (const job of missedJobs) {
               let runs;
               try {
                 runs = await fetchProtectionRuns(cluster, 100, window.sinceUsecs, null, job.id);
               } catch (err) {
-                logger.error(`[Poller] Phase 2 fetch failed for job ${job.id} on cluster ${cluster.id}:`, safeErrorMessage(err));
+                logger.error(`[CohesityPoller] Phase 2 fetch failed for job ${job.id} on cluster ${cluster.id}:`, safeErrorMessage(err));
                 continue;
               }
               if (runs && runs.length > 0) {
                 try {
                   upsertProtectionRuns(cluster, runs);
                 } catch (err) {
-                  logger.error(`[Poller] Phase 2 upsert failed for job ${job.id} on cluster ${cluster.id}:`, err.message);
+                  logger.error(`[CohesityPoller] Phase 2 upsert failed for job ${job.id} on cluster ${cluster.id}:`, err.message);
                 }
               }
             }
@@ -596,7 +596,7 @@ async function doPollCluster(cluster) {
       }
     } else if (protectionData.status !== 'fulfilled' && smallWindowClusters.has(cluster.id)) {
       // Pinned cluster failed even at the small window — already at minimum.
-      logger.error(`[Poller] Protection runs fetch failed for cluster ${cluster.id}:`, safeErrorMessage(protectionData.reason));
+      logger.error(`[CohesityPoller] Protection runs fetch failed for cluster ${cluster.id}:`, safeErrorMessage(protectionData.reason));
     }
   } finally {
     // Rebuild the cached dashboard payload so the next page load is instant.
@@ -622,7 +622,7 @@ async function pollWithBackoff(cluster) {
     const minutes = backoffMinutes(fails);
     const until = new Date(Date.now() + minutes * 60000).toISOString();
     try { pollerStatus.setBackoff('cohesity', cluster.id, until, fails); } catch { /* status row is advisory */ }
-    logger.warn(`[Poller] Cluster ${cluster.id} (${cluster.name}) failed ${fails} poll(s) in a row — backing off ${minutes} min (until ${until})`);
+    logger.warn(`[CohesityPoller] Cluster ${cluster.id} (${cluster.name}) failed ${fails} poll(s) in a row — backing off ${minutes} min (until ${until})`);
     throw err;
   }
 }
@@ -674,12 +674,12 @@ function initPoller() {
       WHERE status IN ('kRunning', 'kAccepted')
         AND ${START_EPOCH_SQL} < ?
     `).run(Math.floor((Date.now() - OPEN_RUN_MAX_LOOKBACK_MS) / 1000));
-    if (swept.changes) logger.info(`[Poller] Closed ${swept.changes} stale in-flight run(s) as kUnknown`);
+    if (swept.changes) logger.info(`[CohesityPoller] Closed ${swept.changes} stale in-flight run(s) as kUnknown`);
   } catch (err) {
-    logger.warn(`[Poller] Stale open-run sweep failed: ${err.message}`);
+    logger.warn(`[CohesityPoller] Stale open-run sweep failed: ${err.message}`);
   }
   const clusters = cohesityPoller.init();
-  logger.info(`[Poller] Initialized ${clusters.length} cluster(s)`);
+  logger.info(`[CohesityPoller] Initialized ${clusters.length} cluster(s)`);
   // Build the dashboard snapshot from existing cached data on startup so the
   // first page load is instant even before the next poll cycle runs.
   refreshDashboardSnapshot();
