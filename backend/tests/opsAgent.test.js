@@ -126,7 +126,10 @@ describe('fallback triage and email', () => {
     const analysis = { ...agent.fallbackTriage(evidence), source: 'ai', title: 'Path <lost>' };
     const mail = agent.renderEmail(inc, [{ platform: 'vcenter', severity: 'critical', host: 'esx-01', message: 'Datastore "DS1" inaccessible', first_seen: NOW }], analysis, { update: 1, agentName: 'Otis' });
     // The agent's name rides in the From display name, not the subject.
-    expect(mail.subject).toBe('CRITICAL | esx-01 | Path <lost> [update 1]');
+    // fallbackTriage marks a critical incident human-required, which prefixes the subject.
+    expect(mail.subject).toBe('HUMAN REQUIRED | CRITICAL | esx-01 | Path <lost> [update 1]');
+    const calm = agent.renderEmail(inc, [], { ...analysis, human_required: false }, { update: 1, agentName: 'Otis' });
+    expect(calm.subject).toBe('CRITICAL | esx-01 | Path <lost> [update 1]');
     expect(mail.text).toContain('Otis, incident #7 (update 1)');
     for (const h of ['WHAT HAPPENED', 'WHAT OTIS REVIEWED', 'LIKELY CAUSE', 'NEXT STEPS FOR THE NEXT LEVEL', 'ESCALATION']) expect(mail.text).toContain(h);
     expect(mail.text).toContain('1. [L2]');
