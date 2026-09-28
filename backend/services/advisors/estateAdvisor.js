@@ -271,6 +271,35 @@ function gatherRecoveryReadiness() {
   };
 }
 
+// ── 5. Change ledger ────────────────────────────────────────────────────────
+
+function gatherChangeLedger() {
+  const { listChanges } = require('../configLedger');
+  const changes = listChanges({ days: 30, limit: 120 }).map((c) => ({
+    detectedAt: c.detected_at, platform: c.platform, scope: c.scope, system: c.system,
+    item: c.item, change: c.change_type,
+    oldValue: c.old_value ? String(c.old_value).slice(0, 300) : null,
+    newValue: c.new_value ? String(c.new_value).slice(0, 300) : null,
+  }));
+  const volume = rows(`
+    SELECT platform, scope, system, COUNT(*) count FROM config_changes
+    WHERE detected_at >= ? GROUP BY platform, scope, system ORDER BY count DESC LIMIT 20
+  `, new Date(Date.now() - 30 * 86400000).toISOString())
+    .map((r) => ({ platform: r.platform, scope: r.scope, system: r.system, changes: r.count }));
+  const coverage = rows('SELECT DISTINCT platform, scope FROM config_state')
+    .map((r) => `${r.platform}/${r.scope}`);
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays: 30,
+    changes,
+    changeVolumeBySystem: volume,
+    ledgerCoverage: coverage.length ? coverage : ['nothing snapshotted yet'],
+    note: changes.length === 0
+      ? 'No configuration changes recorded in the window. The first poll after this feature ships seeds the baseline silently; changes appear from the second poll on.'
+      : undefined,
+  };
+}
+
 module.exports = createPlatformAdvisor({
   platform: 'estate',
   feature: 'Estate AI Advisor',
@@ -325,6 +354,18 @@ module.exports = createPlatformAdvisor({
         '**Estate-wide gaps**, **The one fix that buys the most**. Keep under ~450 words.',
       gather: gatherRecoveryReadiness,
       noun: 'recovery readiness scorecard',
+    },
+    change_ledger: {
+      system:
+        'You are a configuration change auditor. You are given 30 days of the estate change ledger: every recorded ' +
+        'add, change and removal of security-relevant configuration (NFS export rules, CIFS shares, AD group ' +
+        'membership), the change volume per system, and which config classes the ledger covers. Summarize what ' +
+        'changed, single out changes that widened access (a new client on an export, a new member in a privileged ' +
+        'group, a new share), and note systems changing unusually often. State the coverage limits plainly. Do not ' +
+        'invent data and do not claim intent, only what changed and when. Markdown sections: **Change summary**, ' +
+        '**Access-widening changes**, **Noisy systems**, **Coverage**. Keep under ~400 words.',
+      gather: gatherChangeLedger,
+      noun: 'configuration change audit',
     },
   },
 });

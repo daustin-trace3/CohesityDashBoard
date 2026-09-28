@@ -1,4 +1,4 @@
-import { Sunrise, FileKey, UserCheck, ShieldCheck } from 'lucide-react';
+import { Sunrise, FileKey, UserCheck, ShieldCheck, History } from 'lucide-react';
 import PlatformAdvisorPage from '../../components/PlatformAdvisorPage';
 
 const BRAND = '#8FA3B0';
@@ -12,6 +12,8 @@ const TABS = [
     blurb: 'Quarterly recertification evidence — dormant accounts, wildcard holders, service accounts, direct grants.' },
   { slug: 'recovery-readiness', label: 'Recovery Readiness', icon: ShieldCheck,
     blurb: 'Per-application recovery scorecard from backup, replication and protection posture — and the weakest link.' },
+  { slug: 'change-ledger', label: 'Change Ledger', icon: History,
+    blurb: '30 days of recorded config changes — NFS exports, CIFS shares, AD group membership — with access-widening flags.' },
 ];
 
 export default function EstateAdvisorPage() {
