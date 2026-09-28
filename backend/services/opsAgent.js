@@ -687,6 +687,14 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const subject = `${analysis.human_required ? 'HUMAN REQUIRED | ' : ''}${sev} | ${inc.host || platforms.join(', ')} | ${analysis.title || inc.title}${rec ? ` [repeat ${rec.count}]` : ''}${update ? ` [update ${update}]` : ''}`;
   const alive = alerts.filter((a) => !a.cleared_at);
   const cleared = alerts.filter((a) => a.cleared_at);
+  // A big incident lists only the newest few alerts per group; the totals stay
+  // in the section heading and the rest is a count pointing at the page.
+  const EMAIL_ALERT_CAP = 5;
+  const newestFirst = (arr) => [...arr].sort((x, y) => String(y.first_seen || '').localeCompare(String(x.first_seen || '')));
+  const aliveShown = newestFirst(alive).slice(0, EMAIL_ALERT_CAP);
+  const clearedShown = newestFirst(cleared).slice(0, EMAIL_ALERT_CAP);
+  const aliveMore = alive.length - aliveShown.length;
+  const clearedMore = cleared.length - clearedShown.length;
   const cls = `${analysis.classification || 'unknown'} (${analysis.confidence || 'low'} confidence${analysis.source === 'fallback' ? ', rule-based digest, no AI narrative' : ''})`;
   const noAi = analysis.source === 'fallback' && inc.triage_error ? `No AI narrative: ${inc.triage_error}` : null;
   const steps = (analysis.next_steps || []).map((s, i) => `${i + 1}. [${s.owner}] ${s.action}`);
@@ -710,9 +718,11 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     'IMPACT',
     analysis.impact || '-',
     '',
-    `ALERTS IN THIS INCIDENT (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''})`,
-    ...alive.map(alertLine),
-    ...(cleared.length ? ['Cleared while collecting:', ...cleared.map(alertLine)] : []),
+    `ALERTS IN THIS INCIDENT (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`,
+    ...aliveShown.map(alertLine),
+    ...(aliveMore > 0 ? [`... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.`] : []),
+    ...(cleared.length ? ['Cleared while collecting:', ...clearedShown.map(alertLine),
+      ...(clearedMore > 0 ? [`... and ${clearedMore} more cleared.`] : [])] : []),
     '',
     'CORRELATION',
     analysis.correlation || '-',
@@ -749,7 +759,7 @@ ${human ? `<div style="font-size:12px;font-weight:600;color:${analysis.human_req
 ${recLine ? section(`This is a repeat (${rec.count} times in ${rec.windowDays} days)`, `<p style="margin:0 0 6px">${esc(recLine)}</p><table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Opened</th><th style="padding:3px 8px">Lasted</th><th style="padding:3px 8px">Closed by</th><th style="padding:3px 8px">Resolution</th></tr>${occurrenceRows(rec, esc)}</table>`) : ''}
 ${section('What happened', `<p style="margin:0">${esc(analysis.summary || '-')}</p>`)}
 ${section('Impact', `<p style="margin:0">${esc(analysis.impact || '-')}</p>`)}
-${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(alive)}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(cleared)}` : ''}</table>`)}
+${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(aliveShown)}${aliveMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.</td></tr>` : ''}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(clearedShown)}${clearedMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${clearedMore} more cleared.</td></tr>` : ''}` : ''}</table>`)}
 ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')}</p>`)}
 ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
 ${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.replace(/^- /, '')))) : ''}

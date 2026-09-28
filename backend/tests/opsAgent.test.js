@@ -143,6 +143,23 @@ describe('fallback triage and email', () => {
     expect(mail.html).toContain('Analysis from Otis. Open Ops &gt; Ops Agent in ICC for full details.');
     expect(mail.text).toContain('Analysis from Otis. Open Ops > Ops Agent in ICC for full details.');
   });
+
+  it('lists only the newest 5 alerts per group and counts the rest', () => {
+    const inc = { id: 8, title: 'big one', host: 'esx-01', platforms: JSON.stringify(['vcenter']), severity: 'critical', opened_at: NOW, notify_count: 0 };
+    const at = (i) => `2026-09-25T${String(10 + i).padStart(2, '0')}:00:00.000Z`;
+    const many = [
+      ...Array.from({ length: 8 }, (_, i) => ({ platform: 'vcenter', severity: 'critical', host: 'esx-01', message: `open alert ${i}`, first_seen: at(i) })),
+      ...Array.from({ length: 7 }, (_, i) => ({ platform: 'vcenter', severity: 'warning', host: 'esx-01', message: `cleared alert ${i}`, first_seen: at(i), cleared_at: NOW })),
+    ];
+    const mail = agent.renderEmail(inc, many, agent.fallbackTriage(evidence), { agentName: 'Otis' });
+    expect(mail.text).toContain('ALERTS IN THIS INCIDENT (8 open, 7 cleared, newest shown)');
+    expect(mail.text).toContain('open alert 7');       // newest survives the cap
+    expect(mail.text).not.toContain('open alert 2');   // oldest does not
+    expect(mail.text).toContain('... and 3 more open alerts; the full list is on the Ops Agent page.');
+    expect(mail.text).toContain('... and 2 more cleared.');
+    expect(mail.html).toContain('and 3 more open alerts');
+    expect(mail.html).not.toContain('cleared alert 1');
+  });
 });
 
 describe('manual resolve and baseline', () => {
