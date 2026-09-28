@@ -43,6 +43,7 @@ const topologyRouter = require('./routes/topology');
 const opsRouter = require('./routes/ops');
 const serviceStatusRouter = require('./routes/serviceStatus');
 const opsAgentRouter = require('./routes/opsAgent');
+const estateRouter = require('./routes/estate');
 const appServicesRouter = require('./routes/appServices');
 const datasetsRouter = require('./routes/datasets');
 const userDashboardsRouter = require('./routes/userDashboards');
@@ -296,6 +297,8 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // Operations Agent: incidents + triage, reachable like /api/service-status.
   app.use('/api/ops-agent', opsAgentRouter);
   app.use('/api/app-services', appServicesRouter);
+  // Estate AI Advisor: cross-platform reports, reachable like /api/ops-agent.
+  app.use('/api/estate', estateRouter);
   // Custom dashboards ship dark: both mounts 404 until the feature is
   // switched on in Global Settings → Platforms (feature_custom_dashboards_enabled).
   const requireCustomDashboards = (req, res, next) => {

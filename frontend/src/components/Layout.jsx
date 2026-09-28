@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Bot,
+  Bot, Sparkles,
   Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HelpCircle, HeartPulse, Layers,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
@@ -30,6 +30,7 @@ const opsNavGroups = [{
   items: [
     { label: 'Ops Monitor', route: '/ops', icon: Activity, isActive: p => p === '/ops', permission: 'cohesity:*:view' },
     { label: 'Ops Agent', route: '/ops/agent', icon: Bot, isActive: p => p.startsWith('/ops/agent'), permission: 'cohesity:*:view', requiresAi: true },
+    { label: 'Estate Advisor', route: '/ops/estate-advisor', icon: Sparkles, isActive: p => p.startsWith('/ops/estate-advisor'), permission: 'cohesity:*:view', requiresAi: true },
     { label: 'Service Status', route: '/ops/status', icon: HeartPulse, isActive: p => p.startsWith('/ops/status'), permission: 'cohesity:*:view' },
     { label: 'App Services', route: '/ops/app-status', icon: Layers, isActive: p => p.startsWith('/ops/app-status'), permission: 'cohesity:*:view' },
     { label: 'Server 360', route: '/ops/server360', icon: Crosshair, isActive: p => p.startsWith('/ops/server360'), permission: 'cohesity:*:view' },
