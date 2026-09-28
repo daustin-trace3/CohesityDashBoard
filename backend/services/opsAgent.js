@@ -478,7 +478,7 @@ function fallbackTriage(evidence) {
     if ((h.relatedOtherPlatformEvents || []).length) reviewed.push(`${h.host}: ${h.relatedOtherPlatformEvents.length} open alert(s) on other platforms for the same host`);
   }
   if (!reviewed.length) reviewed.push('No host-level inventory matched these alerts; only the alert text and platform poll state were available.');
-  reviewed.push(`Incident history: ${rec.occurrences.length ? `${rec.occurrences.length} earlier occurrence(s) of this same incident in ${rec.windowDays} days, the most recent ${rec.occurrences[0].openedAt}` : `none on this key in ${rec.windowDays} days`}.`);
+  reviewed.push(`Incident history: ${rec.occurrences.length ? `${rec.occurrences.length} earlier occurrence(s) of this same incident in ${rec.windowDays} days, the most recent ${fmtStamp(rec.occurrences[0].openedAt)}` : `none on this key in ${rec.windowDays} days`}.`);
   const down = evidence.hosts.some((h) => h.verdict === 'offline');
   const pollTrouble = alive.some((a) => /stale|could not reach/i.test(a.message || ''));
   const humanRequired = pollTrouble ? (evidence.selfHeal ? /still failing/.test(evidence.selfHeal.outcome) : true) : (down || rank(evidence.incident.severity) >= 3);
@@ -647,17 +647,36 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+const EMAIL_TZ = 'America/Los_Angeles';
+let emailTzFmt = null;
+/** Email timestamps read as Pacific wall-clock time: "9-27-2026 5:30am PDT".
+ *  A zoneless SQLite datetime is UTC, so it gets a Z before parsing. */
+function fmtStamp(s) {
+  if (!s) return '-';
+  let str = String(s);
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(str)) str = str.replace(' ', 'T') + 'Z';
+  const ms = Date.parse(str);
+  if (Number.isNaN(ms)) return String(s);
+  emailTzFmt ||= new Intl.DateTimeFormat('en-US', {
+    timeZone: EMAIL_TZ, year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short',
+  });
+  const p = {};
+  for (const part of emailTzFmt.formatToParts(new Date(ms))) p[part.type] = part.value;
+  return `${p.month}-${p.day}-${p.year} ${p.hour}:${p.minute}${(p.dayPeriod || '').toLowerCase()} ${p.timeZoneName || ''}`.trim();
+}
+
 function lastedText(o) {
   if (o.minutesOpen == null) return 'still open';
   return o.minutesOpen >= 60 ? `${(o.minutesOpen / 60).toFixed(1)} h` : `${o.minutesOpen} min`;
 }
 
 function occurrenceLine(o) {
-  return `- ${o.openedAt}: ${lastedText(o)}, closed by ${o.closedBy}${o.resolution ? `. ${o.resolution}` : ''}`;
+  return `- ${fmtStamp(o.openedAt)}: ${lastedText(o)}, closed by ${o.closedBy}${o.resolution ? `. ${o.resolution}` : ''}`;
 }
 
 function occurrenceRows(rec, esc) {
-  return rec.occurrences.map((o) => `<tr><td style="padding:3px 8px">${esc(o.openedAt)}</td><td style="padding:3px 8px">${lastedText(o)}</td><td style="padding:3px 8px">${esc(o.closedBy)}</td><td style="padding:3px 8px">${esc(o.resolution || '-')}</td></tr>`).join('');
+  return rec.occurrences.map((o) => `<tr><td style="padding:3px 8px">${esc(fmtStamp(o.openedAt))}</td><td style="padding:3px 8px">${lastedText(o)}</td><td style="padding:3px 8px">${esc(o.closedBy)}</td><td style="padding:3px 8px">${esc(o.resolution || '-')}</td></tr>`).join('');
 }
 
 function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null } = {}) {
@@ -672,12 +691,12 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const noAi = analysis.source === 'fallback' && inc.triage_error ? `No AI narrative: ${inc.triage_error}` : null;
   const steps = (analysis.next_steps || []).map((s, i) => `${i + 1}. [${s.owner}] ${s.action}`);
   const human = analysis.human_required == null ? null : `Human required: ${analysis.human_required ? 'YES' : 'no'}${analysis.human_reason ? ` (${analysis.human_reason})` : ''}`;
-  const did = (healActions || []).map((a) => `- ${a.at}: ${a.action} ${a.target}: ${a.result}`);
-  const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${a.first_seen})` : ''}`;
+  const did = (healActions || []).map((a) => `- ${fmtStamp(a.at)}: ${a.action} ${a.target}: ${a.result}`);
+  const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
 
   const text = [
     `${agentName}, incident #${inc.id}${update ? ` (update ${update})` : ''}`,
-    `Severity: ${sev}   Platforms: ${platforms.join(', ')}   Opened: ${inc.opened_at}`,
+    `Severity: ${sev}   Platforms: ${platforms.join(', ')}   Opened: ${fmtStamp(inc.opened_at)}`,
     `Classification: ${cls}`,
     ...(noAi ? [noAi] : []),
     ...(human ? [human] : []),
@@ -722,7 +741,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#0f172a;max-width:820px">
 <div style="border-left:5px solid ${sevColor};padding:8px 12px;background:#f8fafc">
 <div style="font-size:16px;font-weight:600">${esc(analysis.title || inc.title)}</div>
-<div style="font-size:12px;color:#475569">Incident #${inc.id}${update ? ` (update ${update})` : ''} &middot; ${esc(sev)} &middot; ${esc(platforms.join(', '))} &middot; opened ${esc(inc.opened_at)}</div>
+<div style="font-size:12px;color:#475569">Incident #${inc.id}${update ? ` (update ${update})` : ''} &middot; ${esc(sev)} &middot; ${esc(platforms.join(', '))} &middot; opened ${esc(fmtStamp(inc.opened_at))}</div>
 <div style="font-size:12px;color:#475569">Classification: ${esc(cls)}</div>
 ${noAi ? `<div style="font-size:12px;color:#92400E">${esc(noAi)}</div>` : ''}
 ${human ? `<div style="font-size:12px;font-weight:600;color:${analysis.human_required ? '#B91C1C' : '#166534'}">${esc(human)}</div>` : ''}
@@ -810,7 +829,7 @@ async function notifyResolved(inc, settings, config) {
   const subject = `RESOLVED | ${inc.host || platforms.join(', ')} | ${inc.title}`;
   const text = [
     `${settings.name}, incident #${inc.id} is resolved.`,
-    `Platforms: ${platforms.join(', ')}   Opened: ${inc.opened_at}`,
+    `Platforms: ${platforms.join(', ')}   Opened: ${fmtStamp(inc.opened_at)}`,
     '',
     'HOW IT RESOLVED',
     inc.resolution || 'Resolved.',
@@ -824,7 +843,7 @@ async function notifyResolved(inc, settings, config) {
   const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#0f172a;max-width:820px">
 <div style="border-left:5px solid #16A34A;padding:8px 12px;background:#f8fafc">
 <div style="font-size:16px;font-weight:600">Resolved: ${esc(inc.title)}</div>
-<div style="font-size:12px;color:#475569">Incident #${inc.id} &middot; ${esc(platforms.join(', '))} &middot; opened ${esc(inc.opened_at)}</div>
+<div style="font-size:12px;color:#475569">Incident #${inc.id} &middot; ${esc(platforms.join(', '))} &middot; opened ${esc(fmtStamp(inc.opened_at))}</div>
 </div>
 <h3 style="margin:18px 0 6px;font-size:13px;color:#334155">How it resolved</h3><p style="margin:0">${esc(inc.resolution || 'Resolved.')}</p>
 <h3 style="margin:18px 0 6px;font-size:13px;color:#334155">Original summary</h3><p style="margin:0">${esc(inc.summary || '-')}</p>
