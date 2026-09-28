@@ -106,7 +106,12 @@ router.put('/credentials', (req, res, next) => {
 /** GET /api/settings — current AI + licensing settings. */
 router.get('/', (req, res, next) => {
   try {
-    res.json({ ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings(), opsAgent: getOpsAgentSettings() });
+    res.json({
+      ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings(),
+      opsAgent: getOpsAgentSettings(),
+      pollerWatchdogEmailEnabled: getSetting('poller_watchdog_email_enabled') === '1',
+      pollerWatchdogRecipients: getSetting('poller_watchdog_recipients') || '',
+    });
   } catch (err) {
     next(err);
   }
@@ -139,6 +144,12 @@ router.put('/', (req, res, next) => {
     ].some(Boolean);
     if (!anyEnabled) {
       return res.status(400).json({ error: 'At least one platform must remain enabled.' });
+    }
+    if (req.body?.pollerWatchdogEmailEnabled !== undefined) {
+      setSetting('poller_watchdog_email_enabled', req.body.pollerWatchdogEmailEnabled ? '1' : '0');
+    }
+    if (req.body?.pollerWatchdogRecipients !== undefined) {
+      setSetting('poller_watchdog_recipients', String(req.body.pollerWatchdogRecipients).trim().slice(0, 1000));
     }
     if (llmEstateContext !== undefined) {
       setSetting('llm_estate_context', String(llmEstateContext).slice(0, 4000));

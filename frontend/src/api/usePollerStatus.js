@@ -10,11 +10,12 @@ const POLL_INTERVAL_MS = 30_000;
  * chip hide entirely on a platform with nothing registered yet.
  */
 function rollup(status, platform = 'cohesity') {
-  if (!status) return { anySyncing: false, anyStale: false, anyError: false, hasEntities: false, newestCapture: null };
+  if (!status) return { anySyncing: false, anyStale: false, anyError: false, anyDelayed: false, hasEntities: false, newestCapture: null };
 
   let anySyncing = false;
   let anyStale = false;
   let anyError = false;
+  let anyDelayed = false;
   let hasEntities = false;
   let newestCapture = null;
 
@@ -28,6 +29,7 @@ function rollup(status, platform = 'cohesity') {
       anySyncing: parts.some((r) => r.anySyncing),
       anyStale: parts.some((r) => r.anyStale),
       anyError: parts.some((r) => r.anyError),
+      anyDelayed: parts.some((r) => r.anyDelayed),
       hasEntities: parts.some((r) => r.hasEntities),
       newestCapture: parts.reduce((m, r) => (r.newestCapture && (!m || r.newestCapture > m) ? r.newestCapture : m), null),
     };
@@ -39,7 +41,10 @@ function rollup(status, platform = 'cohesity') {
       hasEntities = true;
       if (e.isSyncing) anySyncing = true;
       if (e.isStale) anyStale = true;
-      if (e.lastPollStatus === 'error') anyError = true;
+      // Backing off after repeated failed polls: the chip says Delayed
+      // instead of a bare Error, because the poller is deliberately waiting.
+      if (e.backoffUntil && new Date(e.backoffUntil).getTime() > Date.now()) anyDelayed = true;
+      else if (e.lastPollStatus === 'error') anyError = true;
       if (e.lastDataCapture) {
         const t = new Date(e.lastDataCapture).getTime();
         if (!newestCapture || t > newestCapture) newestCapture = t;
@@ -68,7 +73,7 @@ function rollup(status, platform = 'cohesity') {
     }
   }
 
-  return { anySyncing, anyStale, anyError, hasEntities, newestCapture: newestCapture ? new Date(newestCapture) : null };
+  return { anySyncing, anyStale, anyError, anyDelayed, hasEntities, newestCapture: newestCapture ? new Date(newestCapture) : null };
 }
 
 export function usePollerStatus(platform = 'cohesity') {

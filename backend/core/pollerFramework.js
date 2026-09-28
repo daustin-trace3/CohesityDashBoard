@@ -18,7 +18,7 @@ function cronExpression(intervalMinutes) {
  * per-source error isolation. Platform-specific fetch+persist logic lives in
  * the `poll` callback and is untouched by this framework.
  */
-function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalMinutes = 15, cronLib = nodeCron }) {
+function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null, serialize = false, defaultIntervalMinutes = 15, cronLib = nodeCron }) {
   const tasks = new Map(); // sourceId -> { task, snapshot }
   let reconcileTask = null;
 
@@ -33,6 +33,25 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
     }
   }
 
+  // serialize: one poll at a time for the whole platform — the next starts
+  // only when the previous completed or failed, and a source already queued
+  // or running is not queued again. Keeps a big fleet from hitting its
+  // upstream (Helios) in bursts when many cron ticks line up.
+  let chain = Promise.resolve();
+  const pending = new Set();
+  function run(source) {
+    if (!serialize) return runWrapped(source);
+    if (pending.has(source.id)) {
+      logger.debug(`[${id}] ${source.name || source.id} is already queued or polling — skipped`);
+      return chain;
+    }
+    pending.add(source.id);
+    chain = chain.then(async () => {
+      try { await runWrapped(source); } finally { pending.delete(source.id); }
+    });
+    return chain;
+  }
+
   function cancel(sourceId) {
     const existing = tasks.get(sourceId);
     if (existing) {
@@ -45,7 +64,13 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
     cancel(source.id);
     const interval = resolveInterval(intervalMinutes, source, defaultIntervalMinutes);
     const task = cronLib.schedule(cronExpression(interval), () => {
-      runWrapped(source);
+      // The gate only guards SCHEDULED polls (backoff after repeated total
+      // failures); a manual trigger() bypasses it on purpose.
+      if (shouldRun && !shouldRun(source)) {
+        logger.debug(`[${id}] Skipping scheduled poll of ${source.name || source.id}: backing off`);
+        return;
+      }
+      run(source);
     });
     tasks.set(source.id, { task, snapshot: JSON.stringify(source) });
     logger.info(`[${id}] Scheduled source ${source.id} (${source.name}) every ${interval} min`);
@@ -72,7 +97,7 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
       if (!existing) {
         logger.info(`[${id}] Reconcile: new source ${source.id} (${source.name}) — scheduling + polling now`);
         schedule(source);
-        runWrapped(source);
+        run(source);
       } else if (existing.snapshot !== JSON.stringify(source)) {
         logger.info(`[${id}] Reconcile: source ${source.id} (${source.name}) changed — rescheduling`);
         schedule(source);
@@ -90,13 +115,15 @@ function createPoller({ id, loadSources, intervalMinutes, poll, defaultIntervalM
    *  or its id, in which case the full row is resolved through loadSources —
    *  poll() needs every column, not just a name. */
   function trigger(source) {
-    if (source && typeof source === 'object') return runWrapped(source);
+    // A manual trigger bypasses the shouldRun backoff gate but still joins
+    // the serialized queue, so "one poll at a time" holds even for clicks.
+    if (source && typeof source === 'object') return run(source);
     const wanted = Number(source);
     let rows = [];
     try { rows = loadSources() || []; } catch (err) { return Promise.reject(err); }
     const row = rows.find((s) => Number(s.id) === wanted);
     if (!row) return Promise.reject(new Error(`[${id}] source ${source} not found`));
-    return runWrapped(row);
+    return run(row);
   }
 
   function stopAll() {

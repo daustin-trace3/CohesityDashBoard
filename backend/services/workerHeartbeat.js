@@ -70,10 +70,72 @@ function readHeartbeat() {
   };
 }
 
+// Email the watchdog finding (2026-09-28): the poller process cannot report
+// its own death, so the API process sends this over the Global Settings SMTP
+// relay. Enabled + recipients live under Cohesity Settings > Polling
+// (poller_watchdog_email_enabled / poller_watchdog_recipients; blank
+// recipients fall back to the global default list). One email when the
+// silence passes EMAIL_AFTER_MS, a reminder every EMAIL_REPEAT_MS while it
+// lasts, and one recovery note when the heartbeat returns.
+const EMAIL_AFTER_MS = 10 * 60000;
+const EMAIL_REPEAT_MS = 6 * 3600000;
+const STATE_KEY = 'poller_watchdog_email_state';
+
+function watchdogEmailCheck(h) {
+  if (getSetting('poller_watchdog_email_enabled') !== '1') return;
+  const { getNotificationSettings } = require('./settings');
+  const alertNotifier = require('./alertNotifier');
+  const config = getNotificationSettings();
+  const to = (getSetting('poller_watchdog_recipients') || '').trim() || config.smtpRecipients;
+  if (!config.smtpHost || !config.smtpFrom || !to) return;
+
+  let state = {};
+  try { state = JSON.parse(getSetting(STATE_KEY) || '{}'); } catch { state = {}; }
+  const now = Date.now();
+  const silent = !h || !h.alive;
+  const silentSinceMs = h ? Date.parse(h.at) : (state.silentSince ? Date.parse(state.silentSince) : now);
+
+  const send = (subject, text) => alertNotifier.createTransport(config)
+    .sendMail({ from: config.smtpFrom, to, subject, text })
+    .then(() => true)
+    .catch((err) => { logger.error(`[Worker] watchdog email failed via ${config.smtpHost}:${config.smtpPort}: ${err.message}`); return false; });
+
+  if (silent) {
+    if (!state.silentSince) { state.silentSince = new Date(silentSinceMs).toISOString(); state.lastEmailAt = null; }
+    const silentMin = Math.round((now - Date.parse(state.silentSince)) / 60000);
+    const due = (now - Date.parse(state.silentSince)) >= EMAIL_AFTER_MS
+      && (!state.lastEmailAt || (now - Date.parse(state.lastEmailAt)) >= EMAIL_REPEAT_MS);
+    if (due) {
+      send(
+        'CRITICAL | ICC | poller process is not running',
+        `The ICC background poller has not written a heartbeat for ${silentMin} minute(s)`
+        + ` (last: ${h ? h.at : 'never on this build'}${h ? `, pid ${h.pid}, started ${h.startedAt}` : ''}).\n\n`
+        + 'Nothing is polling and the Ops Agent is not ticking, so every page is aging and no alerts are being triaged or emailed.\n\n'
+        + 'Check the poller service on the ICC host (systemctl status / journalctl for the poller unit) and restart it.\n\n'
+        + `This reminder repeats every ${Math.round(EMAIL_REPEAT_MS / 3600000)} hours while the poller stays silent. ICC watchdog (web process).`
+      ).then((ok) => { if (ok) { state.lastEmailAt = new Date(now).toISOString(); setSetting(STATE_KEY, JSON.stringify(state)); logger.info(`[Worker] watchdog email sent to ${to}: poller silent ${silentMin} min`); } });
+      return; // state saved in the callback
+    }
+  } else if (state.silentSince) {
+    const wasMin = Math.round((now - Date.parse(state.silentSince)) / 60000);
+    if (state.lastEmailAt) {
+      send(
+        'RESOLVED | ICC | poller process is back',
+        `The ICC background poller is heartbeating again (pid ${h.pid}, started ${h.startedAt}) after about ${wasMin} minute(s) of silence. Polling and the Ops Agent have resumed. ICC watchdog (web process).`
+      ).then(() => logger.info(`[Worker] watchdog recovery email sent to ${to}`));
+    }
+    state = {};
+  } else {
+    return; // healthy and nothing pending — no write
+  }
+  setSetting(STATE_KEY, JSON.stringify(state));
+}
+
 function watchCheck() {
   const h = readHeartbeat();
   if (!h) logger.warn('[Worker] no poller heartbeat: the poller process is not running, or predates the heartbeat. Nothing is polling and the Ops Agent is not ticking.');
   else if (!h.alive) logger.warn(`[Worker] poller heartbeat is ${Math.round(h.ageSeconds / 60)} min old (pid ${h.pid}, started ${h.startedAt}): background work has stopped.`);
+  try { watchdogEmailCheck(h); } catch (err) { logger.error(`[Worker] watchdog email check failed: ${err.message}`); }
 }
 
 /**
@@ -92,6 +154,7 @@ function stopWatchdog() { if (watchHandle) { clearInterval(watchHandle); watchHa
 
 module.exports = {
   startHeartbeat, stopHeartbeat, readHeartbeat, startWatchdog, stopWatchdog, watchCheck, KEY, BEAT_MS,
+  watchdogEmailCheck,
   // test seams: a gap cannot be waited out in a unit test
   _beatForTest: beat, _setLastBeatForTest: (ms) => { lastBeat = ms; },
 };

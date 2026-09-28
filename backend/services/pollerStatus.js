@@ -18,6 +18,14 @@ db.exec(`
   )
 `);
 
+// Backoff bookkeeping for sources whose polls keep failing entirely
+// (2026-09-28). Guarded ALTERs because the table above predates them.
+{
+  const cols = new Set(db.prepare('PRAGMA table_info(poller_status)').all().map((c) => c.name));
+  if (!cols.has('backoff_until')) db.exec('ALTER TABLE poller_status ADD COLUMN backoff_until TEXT');
+  if (!cols.has('fail_count')) db.exec('ALTER TABLE poller_status ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0');
+}
+
 // A poll that "started" this long ago without ending is assumed dead (the
 // poller process crashed or was restarted mid-run) — don't report Syncing
 // forever.
@@ -40,32 +48,50 @@ const upsertEnd = db.prepare(`
     is_syncing = 0
 `);
 
+// A successful poll ends any backoff; setBackoff records a failed streak.
+const clearBackoffStmt = db.prepare(`
+  UPDATE poller_status SET backoff_until = NULL, fail_count = 0 WHERE type = ? AND entity_id = ?
+`);
+
+const upsertBackoff = db.prepare(`
+  INSERT INTO poller_status (type, entity_id, backoff_until, fail_count)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(type, entity_id) DO UPDATE SET
+    backoff_until = excluded.backoff_until,
+    fail_count = excluded.fail_count
+`);
+
 const selectOne = db.prepare(`
   SELECT last_poll_start AS lastPollStart, last_poll_end AS lastPollEnd,
-         last_poll_status AS lastPollStatus, is_syncing AS isSyncing
+         last_poll_status AS lastPollStatus, is_syncing AS isSyncing,
+         backoff_until AS backoffUntil, fail_count AS failCount
   FROM poller_status WHERE type = ? AND entity_id = ?
 `);
 
 const selectAll = db.prepare(`
   SELECT type, entity_id AS entityId,
          last_poll_start AS lastPollStart, last_poll_end AS lastPollEnd,
-         last_poll_status AS lastPollStatus, is_syncing AS isSyncing
+         last_poll_status AS lastPollStatus, is_syncing AS isSyncing,
+         backoff_until AS backoffUntil, fail_count AS failCount
   FROM poller_status
 `);
 
 function shape(row) {
   if (!row) {
-    return { lastPollStart: null, lastPollEnd: null, lastPollStatus: null, isSyncing: false };
+    return { lastPollStart: null, lastPollEnd: null, lastPollStatus: null, isSyncing: false, backoffUntil: null, failCount: 0 };
   }
   let syncing = !!row.isSyncing;
   if (syncing && row.lastPollStart && Date.now() - Date.parse(row.lastPollStart) > STALE_SYNC_MS) {
     syncing = false;
   }
+  const backoffUntil = row.backoffUntil && Date.parse(row.backoffUntil) > Date.now() ? row.backoffUntil : null;
   return {
     lastPollStart: row.lastPollStart,
     lastPollEnd: row.lastPollEnd,
     lastPollStatus: row.lastPollStatus,
     isSyncing: syncing,
+    backoffUntil,
+    failCount: row.failCount || 0,
   };
 }
 
@@ -75,6 +101,13 @@ function markStart(type, id) {
 
 function markEnd(type, id, status) {
   upsertEnd.run(type, id, new Date().toISOString(), status);
+  if (status === 'success') clearBackoffStmt.run(type, id);
+}
+
+/** Record a failed streak: the source's next scheduled polls are skipped
+ *  until `untilIso` (manual Poll now bypasses the gate on purpose). */
+function setBackoff(type, id, untilIso, failCount) {
+  upsertBackoff.run(type, id, untilIso, failCount);
 }
 
 function getState(type, id) {
@@ -89,4 +122,4 @@ function getAll() {
   return map;
 }
 
-module.exports = { markStart, markEnd, getState, getAll };
+module.exports = { markStart, markEnd, setBackoff, getState, getAll };
