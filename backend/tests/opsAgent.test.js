@@ -140,7 +140,8 @@ describe('fallback triage and email', () => {
     expect(mail.text).toContain('1. [L2]');
     expect(mail.html).toContain('Path &lt;lost&gt;');
     expect(mail.html).toContain('&quot;DS1&quot;');
-    expect(mail.html).toContain('analysis by gpt-x');
+    expect(mail.html).toContain('Analysis from Otis. Open Ops &gt; Ops Agent in ICC for full details.');
+    expect(mail.text).toContain('Analysis from Otis. Open Ops > Ops Agent in ICC for full details.');
   });
 });
 

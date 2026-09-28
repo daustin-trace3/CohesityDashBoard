@@ -731,7 +731,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     analysis.escalate || '-',
     '',
     '--',
-    `${agentName}${analysis.source === 'ai' && inc.model ? ` (analysis by ${inc.model})` : ''}. Incident #${inc.id}. Open Ops > Operations Agent in ICC for the evidence.`,
+    `Analysis from ${agentName}. Open Ops > Ops Agent in ICC for full details.`,
   ].join('\n');
 
   const sevColor = sev === 'CRITICAL' ? '#DC2626' : sev === 'ERROR' ? '#EA580C' : sev === 'WARNING' ? '#D97706' : '#2563EB';
@@ -756,7 +756,7 @@ ${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.repla
 ${section('Likely cause', `<p style="margin:0">${esc(analysis.likely_cause || '-')}</p>`)}
 ${section('Next steps for the next level', `<ol style="margin:0;padding-left:18px">${(analysis.next_steps || []).map((s) => `<li style="margin:2px 0"><b>${esc(s.owner)}</b>: ${esc(s.action)}</li>`).join('')}</ol>`)}
 ${section('Escalation', `<p style="margin:0">${esc(analysis.escalate || '-')}</p>`)}
-<p style="margin-top:18px;font-size:11px;color:#64748b">${esc(agentName)}${analysis.source === 'ai' && inc.model ? ` (analysis by ${esc(inc.model)})` : ''}. Open Ops &gt; Operations Agent in ICC for the evidence.</p>
+<p style="margin-top:18px;font-size:11px;color:#64748b">Analysis from ${esc(agentName)}. Open Ops &gt; Ops Agent in ICC for full details.</p>
 </div>`;
   return { subject, text, html };
 }
