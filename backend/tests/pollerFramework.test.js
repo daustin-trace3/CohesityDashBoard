@@ -82,6 +82,41 @@ describe('pollerFramework', () => {
       expect(order.filter((x) => x === 'start-1')).toHaveLength(1);
     });
 
+    it('serialize: a poll running past maxRunMinutes releases the queue instead of delaying every source behind it', async () => {
+      vi.useFakeTimers();
+      try {
+        const cronLib = makeFakeCronLib();
+        const order = [];
+        let releaseStuck;
+        const stuck = new Promise((r) => { releaseStuck = r; });
+        const rows = [
+          { id: 1, name: 'stuck', polling_interval_minutes: 10 },
+          { id: 2, name: 'healthy', polling_interval_minutes: 10 },
+        ];
+        const poller = createPoller({
+          id: 'test', loadSources: () => rows, cronLib, serialize: true, maxRunMinutes: 20,
+          poll: async (s) => {
+            order.push(`start-${s.id}`);
+            if (s.id === 1) await stuck;              // never resolves on its own
+            order.push(`end-${s.id}`);
+          },
+        });
+        const p = Promise.all([poller.trigger(1), poller.trigger(2)]);
+        await Promise.resolve();
+        expect(order).toEqual(['start-1']);           // healthy is stuck behind it
+        await vi.advanceTimersByTimeAsync(20 * 60000 + 1000);
+        await p;
+        expect(order).toEqual(['start-1', 'start-2', 'end-2']); // queue released, healthy ran
+        // The stuck source stays pending: its re-fires are skipped, not stacked.
+        await poller.trigger(1);
+        expect(order.filter((x) => x === 'start-1')).toHaveLength(1);
+        releaseStuck();
+        await Promise.resolve();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('shouldRun gates SCHEDULED polls only; trigger() bypasses it', async () => {
       const cronLib = makeFakeCronLib();
       const polled = [];

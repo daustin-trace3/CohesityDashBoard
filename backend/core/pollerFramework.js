@@ -18,7 +18,7 @@ function cronExpression(intervalMinutes) {
  * per-source error isolation. Platform-specific fetch+persist logic lives in
  * the `poll` callback and is untouched by this framework.
  */
-function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null, serialize = false, defaultIntervalMinutes = 15, cronLib = nodeCron }) {
+function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null, serialize = false, maxRunMinutes = 20, defaultIntervalMinutes = 15, cronLib = nodeCron }) {
   const tasks = new Map(); // sourceId -> { task, snapshot }
   let reconcileTask = null;
 
@@ -37,6 +37,14 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
   // only when the previous completed or failed, and a source already queued
   // or running is not queued again. Keeps a big fleet from hitting its
   // upstream (Helios) in bursts when many cron ticks line up.
+  //
+  // Head-of-line guard: a poll cannot be killed mid-flight in Node, so a
+  // stuck one (every HTTP call has its own 30 s timeout, but a pathological
+  // request sequence can run long) would otherwise delay every source behind
+  // it. After maxRunMinutes the queue RELEASES and moves on; the stuck poll
+  // keeps running in the background and still records its own end when (if)
+  // it finishes. The source stays in `pending` until then, so its own next
+  // fires are still skipped rather than piling a second copy on.
   let chain = Promise.resolve();
   const pending = new Set();
   function run(source) {
@@ -46,8 +54,20 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
       return chain;
     }
     pending.add(source.id);
-    chain = chain.then(async () => {
-      try { await runWrapped(source); } finally { pending.delete(source.id); }
+    chain = chain.then(() => {
+      const work = (async () => {
+        try { await runWrapped(source); } finally { pending.delete(source.id); }
+      })();
+      let timer = null;
+      const release = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          logger.warn(`[${id}] Poll of ${source.name || source.id} has run past ${maxRunMinutes} min — releasing the queue so other sources are not delayed; it continues in the background.`);
+          resolve();
+        }, maxRunMinutes * 60000);
+        if (timer.unref) timer.unref();
+      });
+      work.finally(() => clearTimeout(timer));
+      return Promise.race([work, release]);
     });
     return chain;
   }
