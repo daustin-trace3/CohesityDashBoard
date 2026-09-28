@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings } from 'lucide-react';
@@ -265,13 +265,21 @@ export default function OpsAgentPage() {
     setLastRefreshed(new Date());
   }), [scope]);
 
-  useEffect(() => { load(); const t = setInterval(load, REFRESH_MS); return () => clearInterval(t); }, [load]);
+  // A hidden tab does no work at all; coming back refreshes immediately.
+  useEffect(() => {
+    load();
+    const t = setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+    const onVis = () => { if (!document.hidden) load(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis); };
+  }, [load]);
 
   // Live updates without a socket: poll a tiny token and only refetch when the
   // agent has actually changed something (a tick, a triage, an email, a close).
   useEffect(() => {
     let alive = true;
     const probe = async () => {
+      if (document.hidden) return;
       try {
         const { data } = await client.get('/ops-agent/pulse');
         if (!alive) return;
@@ -302,7 +310,7 @@ export default function OpsAgentPage() {
     } finally { setRunning(false); }
   };
 
-  const list = (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', ') }));
+  const list = useMemo(() => (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', ') })), [rows]);
   const ctl = useTableControls(list, { searchKeys: ['title', 'host', 'platformsLabel', 'classification', 'summary'], defaultSortKey: 'impactScore', defaultSortDir: 'desc', paginate: true });
   const s = status;
   const counts = s?.counts || {};
