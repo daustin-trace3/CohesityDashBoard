@@ -131,6 +131,11 @@ describe('fallback triage and email', () => {
     const calm = agent.renderEmail(inc, [], { ...analysis, human_required: false }, { update: 1, agentName: 'Otis' });
     expect(calm.subject).toBe('CRITICAL | esx-01 | Path <lost> [update 1]');
     expect(mail.text).toContain('Otis, incident #7 (update 1)');
+    // Timestamps render as Pacific wall-clock time, never raw ISO.
+    expect(mail.text).toContain('Opened: 9-25-2026 1:00pm PDT');
+    expect(mail.text).toContain('(since 9-25-2026 1:00pm PDT)');
+    expect(mail.text).not.toContain(NOW);
+    expect(mail.html).not.toContain(NOW);
     for (const h of ['WHAT HAPPENED', 'WHAT OTIS REVIEWED', 'LIKELY CAUSE', 'NEXT STEPS FOR THE NEXT LEVEL', 'ESCALATION']) expect(mail.text).toContain(h);
     expect(mail.text).toContain('1. [L2]');
     expect(mail.html).toContain('Path &lt;lost&gt;');
