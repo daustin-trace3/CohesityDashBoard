@@ -162,6 +162,64 @@ describe('fallback triage and email', () => {
   });
 });
 
+describe('re-triage cooldown (the 2026-09-28 flap-storm defect)', () => {
+  const later = (min) => new Date(Date.parse(NOW) + min * 60000).toISOString();
+
+  function notifiedIncident() {
+    agent.groupTick(NOW, settings, { items: [item('zerto', 'z:VRA0004:aaa', { host: 'zmsite-a' })], failed: [] });
+    const id = incidents()[0].id;
+    db.prepare("UPDATE ops_incidents SET state = 'notified', triaged_at = ?, notified_at = ? WHERE id = ?").run(NOW, NOW, id);
+    return id;
+  }
+
+  it('a new alert inside the renotify window attaches without re-opening triage', () => {
+    const id = notifiedIncident();
+    agent.groupTick(later(2), settings, { items: [
+      item('zerto', 'z:VRA0004:aaa', { host: 'zmsite-a' }),
+      item('zerto', 'z:VRA0004:bbb', { host: 'zmsite-a', firstSeen: later(2) }),
+    ], failed: [] });
+    const inc = incidents()[0];
+    expect(inc.id).toBe(id);
+    expect(inc.state).toBe('notified');          // no bounce back to collecting
+    expect(alertsOf(id)).toHaveLength(2);        // but the alert did attach
+  });
+
+  it('a new alert after the window re-opens the incident for triage', () => {
+    const id = notifiedIncident();
+    agent.groupTick(later(120), settings, { items: [
+      item('zerto', 'z:VRA0004:bbb', { host: 'zmsite-a', firstSeen: later(120) }),
+    ], failed: [] });
+    expect(incidents()[0].id).toBe(id);
+    expect(incidents()[0].state).toBe('collecting');
+  });
+
+  it('a re-firing alert with the same key re-arms its cleared row', () => {
+    const holding = { ...settings, autoResolveMinutes: 30 }; // keep it open while quiet
+    const id = notifiedIncident();
+    // The alert goes quiet: its row is cleared, the incident holds in 'clearing'.
+    agent.groupTick(later(1), holding, { items: [], failed: [] });
+    expect(alertsOf(id)[0].cleared_at).not.toBeNull();
+    expect(incidents()[0].state).toBe('clearing');
+    // It fires again with the SAME key (content-stable): the row re-arms
+    // instead of the firing reading as a brand-new alert forever.
+    agent.groupTick(later(3), holding, { items: [item('zerto', 'z:VRA0004:aaa', { host: 'zmsite-a' })], failed: [] });
+    const rows = alertsOf(id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].cleared_at).toBeNull();
+    expect(incidents()[0].state).toBe('notified'); // still inside the cooldown, no re-triage
+  });
+
+  it('a clearing incident whose alert returns inside the cooldown stops the quiet-close clock', () => {
+    const id = notifiedIncident();
+    db.prepare("UPDATE ops_incidents SET state = 'clearing', cleared_since = ? WHERE id = ?").run(NOW, id);
+    db.prepare('UPDATE ops_incident_alerts SET cleared_at = ? WHERE incident_id = ?').run(NOW, id);
+    agent.groupTick(later(2), settings, { items: [item('zerto', 'z:VRA0004:aaa', { host: 'zmsite-a' })], failed: [] });
+    const inc = incidents()[0];
+    expect(inc.state).toBe('notified');
+    expect(inc.cleared_since).toBeNull();
+  });
+});
+
 describe('manual resolve and baseline', () => {
   it('an alert resolved by hand stays quiet until it fires again later', () => {
     agent.groupTick(NOW, settings, { items: [item('dell', 'd1', { firstSeen: NOW })], failed: [] });
@@ -282,7 +340,10 @@ describe('auto-resolution', () => {
     expect(incidents()[0].state).toBe('clearing');
     agent.groupTick('2026-09-25T20:10:00.000Z', quiet, { items: [item('dell', 'd1', { firstSeen: '2026-09-25T20:09:00.000Z' })], failed: [] });
     const row = incidents()[0];
-    expect(row.state).toBe('collecting');
+    // Since the re-triage cooldown (2026-09-28) a re-fire inside the renotify
+    // window returns to the post-triage state instead of collecting again;
+    // what matters is that it does NOT close and the quiet clock stops.
+    expect(row.state).toBe('triaged');
     expect(row.cleared_since).toBeNull();
     const out = await agent.resolvePass('2026-09-25T21:00:00.000Z', quiet, CONFIG, 5);
     expect(out.resolvedQuiet).toBe(0);

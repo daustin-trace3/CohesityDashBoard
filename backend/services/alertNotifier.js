@@ -102,27 +102,36 @@ function collectNetappAlerts() {
   });
 }
 
-/** Active Zerto alerts — zerto_alerts is wiped+reloaded every poll, but
- *  alert_identifier is Zerto's own stable id so it survives the reload. */
+/** Active Zerto alerts — zerto_alerts is wiped+reloaded every poll. The
+ *  sourceKey must be CONTENT-stable, not alert_identifier: Zerto issues a
+ *  fresh identifier every time a flapping alert re-fires, and a per-firing
+ *  key made every re-fire look like a brand-new alert (the Ops Agent then
+ *  re-triaged the same incident every tick during the 2026-09-28 CG VRA
+ *  flap storm). Same rule as collectNetappAlerts. */
 function collectZertoAlerts() {
   // Per-type toggles: a code disabled in zerto_alert_catalog is muted — it
   // drops out of the collector entirely, which also ends its reminders.
   const rows = db.prepare(`
-    SELECT alert_identifier AS alertId, severity, description, site_name AS siteName,
-           collection_time AS collectionTime, captured_at AS capturedAt
+    SELECT alert_identifier AS alertId, alert_type AS alertType, severity, description,
+           site_name AS siteName, collection_time AS collectionTime, captured_at AS capturedAt
     FROM zerto_alerts z
     WHERE z.alert_type IS NULL OR NOT EXISTS (
       SELECT 1 FROM zerto_alert_catalog c WHERE c.alert_type = z.alert_type AND c.enabled = 0
     )
   `).all();
-  return rows.map((r) => ({
-    sourceKey: `z:${r.alertId}`,
-    severity: String(r.severity || '').toLowerCase(),
-    host: r.siteName || 'Zerto',
-    message: r.description || '',
-    firstSeen: toIso(r.collectionTime || r.capturedAt),
-    lastSeen: toIso(r.capturedAt),
-  }));
+  return rows.map((r) => {
+    const contentHash = crypto.createHash('sha256')
+      .update(`${r.siteName || ''}|${r.description || ''}`).digest('hex').slice(0, 12);
+    return {
+      sourceKey: `z:${r.alertType || 'alert'}:${contentHash}`,
+      severity: String(r.severity || '').toLowerCase(),
+      host: r.siteName || 'Zerto',
+      message: r.description || '',
+      firstSeen: toIso(r.collectionTime || r.capturedAt),
+      lastSeen: toIso(r.capturedAt),
+      ...(r.alertType ? { type: r.alertType, typeLabel: r.alertType } : {}),
+    };
+  });
 }
 
 /** Open vCenter computed issues — reconcileIssueHistory keeps

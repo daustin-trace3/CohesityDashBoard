@@ -236,9 +236,14 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
     INSERT INTO ops_incidents (incident_key, title, host, platforms, severity, state, opened_at, hold_until, last_event_at, event_count, baseline)
     VALUES (?, ?, ?, ?, ?, 'collecting', ?, ?, ?, 0, ?)
   `);
+  // A re-firing alert with the same key re-arms its cleared row instead of
+  // staying "cleared" forever (which made every flap cycle read as new).
   const insertAlert = db.prepare(`
-    INSERT OR IGNORE INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, type, first_seen, attached_at)
+    INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, type, first_seen, attached_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(incident_id, platform, source_key) DO UPDATE SET
+      cleared_at = NULL, severity = excluded.severity, message = excluded.message,
+      first_seen = excluded.first_seen, attached_at = excluded.attached_at
   `);
 
   db.transaction(() => {
@@ -267,15 +272,25 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
       const sev = maxSeverity([inc.severity, it.severity]);
       // A notified incident that grows goes back to collecting so the growth
       // is triaged again (re-notify guarded by renotifyMinutes at send time).
-      const reopen = inc.state === 'notified' || inc.state === 'triaged' || inc.state === 'clearing';
+      // Re-triage carries a cooldown: an incident triaged inside the renotify
+      // window only collects the new alert. Without it, a platform whose
+      // alert identity shifts per firing (Zerto flaps) re-triaged the same
+      // incident every tick — one model call a minute, update counts past 90.
+      const cooldownMs = Math.max(15, Number(settings.renotifyMinutes) || 60) * 60000;
+      const recentlyTriaged = inc.triaged_at && (Date.parse(now) - Date.parse(inc.triaged_at)) < cooldownMs;
+      const reopen = (inc.state === 'notified' || inc.state === 'triaged' || inc.state === 'clearing') && !recentlyTriaged;
+      // Inside the cooldown, a clearing incident whose alerts return still
+      // leaves 'clearing' (the quiet-close clock must not run while an alert
+      // is live); it goes back to its post-triage state without a new triage.
+      const nextState = reopen ? 'collecting' : (inc.state === 'clearing' ? (inc.notified_at ? 'notified' : 'triaged') : inc.state);
       db.prepare(`
         UPDATE ops_incidents SET platforms = ?, severity = ?, last_event_at = ?, event_count = event_count + 1,
-          cleared_since = CASE WHEN ? THEN NULL ELSE cleared_since END,
-          state = CASE WHEN ? THEN 'collecting' ELSE state END,
+          cleared_since = NULL,
+          state = ?,
           hold_until = CASE WHEN ? THEN ? ELSE hold_until END
         WHERE id = ?
-      `).run(JSON.stringify([...platforms]), sev, now, reopen ? 1 : 0, reopen ? 1 : 0, reopen ? 1 : 0, new Date(Date.parse(now) + Math.min(holdMs, 5 * 60000)).toISOString(), inc.id);
-      inc.platforms = JSON.stringify([...platforms]); inc.severity = sev; inc.state = reopen ? 'collecting' : inc.state;
+      `).run(JSON.stringify([...platforms]), sev, now, nextState, reopen ? 1 : 0, new Date(Date.parse(now) + Math.min(holdMs, 5 * 60000)).toISOString(), inc.id);
+      inc.platforms = JSON.stringify([...platforms]); inc.severity = sev; inc.state = nextState;
     }
 
     // Clear alerts that are gone (skip platforms whose collector failed).
