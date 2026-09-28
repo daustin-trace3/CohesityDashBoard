@@ -73,6 +73,83 @@ router.get('/alerts', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** Shared WHERE builder for the event log. occurred_on is the API's ISO UTC
+ *  string, so the window bound is computed in JS in the same format. */
+function eventFilters(q) {
+  const days = Math.min(30, Math.max(1, Number(q.days) || 7));
+  const where = ['occurred_on >= ?'];
+  const params = [new Date(Date.now() - days * 864e5).toISOString()];
+  if (q.category) { where.push('category = ?'); params.push(q.category); }
+  const term = String(q.q || '').trim();
+  if (term) {
+    where.push('(description LIKE ? OR code LIKE ? OR event_type LIKE ? OR site_name LIKE ? OR zorg_name LIKE ?)');
+    const like = `%${term}%`;
+    params.push(like, like, like, like, like);
+  }
+  return { days, where: where.join(' AND '), params };
+}
+
+/** GET /api/zerto/events — the event log, server-paged newest first (an alert
+ *  storm can put thousands of rows in a day). Tiles come from `counts`, which
+ *  covers the whole window regardless of search or category. */
+router.get('/events', [
+  query('days').optional().isInt({ min: 1, max: 30 }).toInt(),
+  query('category').optional().isString().trim().isLength({ max: 40 }),
+  query('q').optional().isString().trim().isLength({ max: 200 }),
+  query('page').optional().isInt({ min: 0 }).toInt(),
+  query('pageSize').optional().isInt({ min: 10, max: 200 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const { days, where, params } = eventFilters(req.query);
+    const page = req.query.page ?? 0;
+    const pageSize = req.query.pageSize ?? 50;
+    const total = db.prepare(`SELECT COUNT(*) AS n FROM zerto_events WHERE ${where}`).get(...params).n;
+    const rows = db.prepare(`
+      SELECT * FROM zerto_events WHERE ${where}
+      ORDER BY occurred_on DESC LIMIT ? OFFSET ?
+    `).all(...params, pageSize, page * pageSize);
+    const windowStart = new Date(Date.now() - days * 864e5).toISOString();
+    const byCategory = {};
+    for (const r of db.prepare('SELECT category, COUNT(*) AS n FROM zerto_events WHERE occurred_on >= ? GROUP BY category').all(windowStart)) {
+      byCategory[r.category || 'Unknown'] = r.n;
+    }
+    res.json({
+      rows, total, page, pageSize, days,
+      counts: {
+        windowTotal: Object.values(byCategory).reduce((a, b) => a + b, 0),
+        byCategory,
+        failures: db.prepare('SELECT COUNT(*) AS n FROM zerto_events WHERE occurred_on >= ? AND completed_successfully = 0').get(windowStart).n,
+        sites: db.prepare('SELECT COUNT(DISTINCT site_name) AS n FROM zerto_events WHERE occurred_on >= ? AND site_name IS NOT NULL').get(windowStart).n,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/zerto/events.csv — the filtered event log as CSV (no paging, capped). */
+router.get('/events.csv', [
+  query('days').optional().isInt({ min: 1, max: 30 }).toInt(),
+  query('category').optional().isString().trim().isLength({ max: 40 }),
+  query('q').optional().isString().trim().isLength({ max: 200 }),
+], validate, (req, res, next) => {
+  try {
+    const { where, params } = eventFilters(req.query);
+    const rows = db.prepare(`
+      SELECT occurred_on, category, event_type, code, site_name, zorg_name,
+             completed_successfully, description
+      FROM zerto_events WHERE ${where} ORDER BY occurred_on DESC LIMIT 20000
+    `).all(...params);
+    const esc = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+    const lines = ['Occurred (UTC),Category,Type,Code,Site,ZORG,Success,Description'];
+    for (const r of rows) {
+      lines.push([r.occurred_on, r.category, r.event_type, r.code, r.site_name, r.zorg_name,
+        r.completed_successfully == null ? '' : (r.completed_successfully ? 'yes' : 'no'), r.description].map(esc).join(','));
+    }
+    res.set('Content-Type', 'text/csv; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="zerto-events-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(lines.join('\r\n'));
+  } catch (err) { next(err); }
+});
+
 /** GET /api/zerto/alert-types — the per-type notification catalog: every known
  *  Zerto alert code (official reference + codes seen live) with its SMTP
  *  enabled flag and how many alerts of that type are currently active. */

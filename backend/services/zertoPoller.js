@@ -8,7 +8,7 @@ const { createGlobalTask } = require('../core/pollerFramework');
 const { getSetting } = require('./settings');
 const {
   zertoConfigured, fetchSites, fetchSitesTopology, fetchVpgs, fetchAlerts, fetchProtectedVms,
-  fetchLicenses,
+  fetchLicenses, fetchEvents,
 } = require('./zertoApi');
 const logger = require('../utils/logger');
 
@@ -144,6 +144,52 @@ const replaceLicenses = db.transaction((licenses) => {
   }
 });
 
+// The events endpoint returns the NEWEST 1000 in a window with no paging, so
+// an overflowing window (an alert storm) is walked backwards: the next slice
+// ends at the oldest row already fetched, and the PK dedupes the boundary.
+const EVENT_FETCH_CAP = 1000;
+const EVENT_MAX_SLICES = 10;
+const insertEvents = db.transaction((events) => {
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO zerto_events (event_identifier, category, code, event_type,
+      description, completed_successfully, occurred_on, site_identifier, site_name, site_type, zorg_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let n = 0;
+  for (const e of events) {
+    if (!e.identifier) continue;
+    n += stmt.run(
+      e.identifier, e.category || null, e.code || null, e.type || null,
+      e.description || null, e.completedSuccessfully == null ? null : (e.completedSuccessfully ? 1 : 0),
+      e.occurredOn || null, e.site?.identifier || null, e.site?.name || null, e.site?.type || null,
+      e.zorg?.name || null
+    ).changes;
+  }
+  return n;
+});
+
+async function collectEvents() {
+  const last = db.prepare('SELECT MAX(occurred_on) AS m FROM zerto_events').get().m;
+  // 10 min overlap on incremental runs; 7 day backfill on the first one.
+  const start = last ? new Date(Date.parse(last) - 10 * 60000) : new Date(Date.now() - 7 * 864e5);
+  let end = new Date();
+  let inserted = 0;
+  for (let i = 0; i < EVENT_MAX_SLICES; i++) {
+    const data = await fetchEvents({ startDate: start.toISOString(), endDate: end.toISOString() });
+    const events = data.events || [];
+    inserted += insertEvents(events);
+    if (events.length < EVENT_FETCH_CAP) break;
+    const oldest = events.reduce((m, e) => (e.occurredOn && e.occurredOn < m ? e.occurredOn : m), events[0].occurredOn || '');
+    const nextEnd = new Date(Date.parse(oldest));
+    if (!oldest || Number.isNaN(nextEnd.getTime()) || nextEnd >= end || nextEnd <= start) break;
+    end = nextEnd;
+  }
+  const retentionDays = Math.min(365, Math.max(1, Number(getSetting('zerto_event_retention_days')) || 30));
+  db.prepare('DELETE FROM zerto_events WHERE occurred_on < ?')
+    .run(new Date(Date.now() - retentionDays * 864e5).toISOString());
+  return inserted;
+}
+
 function appendSnapshot({ sites, vpgData, alerts, vms }) {
   const vpgs = vpgData.vpgs || [];
   const rpoVals = vpgs.map(v => v.actualRpo).filter(v => typeof v === 'number' && v >= 0);
@@ -186,7 +232,11 @@ async function refreshAll() {
   if (topology) replaceVras(topology);
   if (licenses) replaceLicenses(licenses);
   appendSnapshot({ sites, vpgData, alerts, vms });
-  logger.info(`[ZertoPoller] Refreshed ${sites.length} site(s), ${(vpgData.vpgs || []).length} VPG(s), ${alerts.length} alert(s), ${vms.length} VM(s)`);
+  let newEvents = null;
+  try { newEvents = await collectEvents(); } catch (err) {
+    logger.warn(`[ZertoPoller] events fetch failed, keeping existing rows: ${err.message}`);
+  }
+  logger.info(`[ZertoPoller] Refreshed ${sites.length} site(s), ${(vpgData.vpgs || []).length} VPG(s), ${alerts.length} alert(s), ${vms.length} VM(s)${newEvents != null ? `, ${newEvents} new event(s)` : ''}`);
 }
 
 const zertoTask = createGlobalTask({
@@ -209,4 +259,4 @@ function stopAll() {
   if (zertoTask.isRunning()) zertoTask.stop();
 }
 
-module.exports = { initZertoPoller, refreshAll, zertoTask, stopAll };
+module.exports = { initZertoPoller, refreshAll, zertoTask, stopAll, collectEvents };

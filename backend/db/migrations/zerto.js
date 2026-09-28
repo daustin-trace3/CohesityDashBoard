@@ -188,4 +188,30 @@ module.exports = [
       db.exec('UPDATE zerto_alert_catalog SET enabled = 0');
     },
   },
+  // Event log from /v2/monitoring/events, accumulated incrementally (the API
+  // serves the newest 1000 per window). occurred_on is the API's ISO UTC
+  // string; rows age out by zerto_event_retention_days (default 30).
+  {
+    version: 7,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS zerto_events (
+          event_identifier      TEXT PRIMARY KEY,
+          category              TEXT,
+          code                  TEXT,
+          event_type            TEXT,
+          description           TEXT,
+          completed_successfully INTEGER,
+          occurred_on           TEXT,
+          site_identifier       TEXT,
+          site_name             TEXT,
+          site_type             TEXT,
+          zorg_name             TEXT,
+          captured_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_zerto_events_occurred ON zerto_events(occurred_on);
+        CREATE INDEX IF NOT EXISTS idx_zerto_events_category ON zerto_events(category);
+      `);
+    },
+  },
 ];

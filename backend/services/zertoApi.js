@@ -101,6 +101,12 @@ const fetchProtectedVms = async () => (await zGet('/v2/monitoring/protected-vms'
 // v3, not v2 — /v2/licenses reports usedVMsCount 0 and no site breakdown.
 const fetchLicenses = async () => (await zGet('/v3/licenses')) || [];
 
+/** Events in a time window: { events: [...], totalCount }. The API returns the
+ *  NEWEST 1000 in the window and honours no paging params (verified live
+ *  2026-09-28), so callers walk backwards by endDate when a window overflows.
+ *  Params: startDate/endDate as ISO strings. */
+const fetchEvents = async (params = {}) => (await zGet('/v2/monitoring/events', params)) || { events: [] };
+
 /**
  * Validate credentials (optionally an unsaved candidate set) by authenticating
  * and pulling the site list. Returns { ok, sites?, error? } — never throws.
@@ -132,6 +138,6 @@ async function testConnection(candidate = null) {
 module.exports = {
   getZertoConfig, zertoConfigured, zGet, invalidateToken,
   fetchAccountStats, fetchSites, fetchSitesTopology, fetchVpgs, fetchAlerts, fetchProtectedVms,
-  fetchLicenses,
+  fetchLicenses, fetchEvents,
   testConnection,
 };
