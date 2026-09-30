@@ -101,6 +101,18 @@ if (require.main === module) {
     logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
     if (isDemo()) {
       logger.info('[Demo] Demo mode — pollers disabled');
+      // Packs re-seed their own platform tables at boot (fresh relative
+      // timestamps), which wipes the cross-platform App Services linking
+      // rows (Cohesity objects and Zerto VPGs named after the tagged
+      // vCenter VMs). Re-apply the scenario after every pack has seeded.
+      try {
+        const db = require('./db/database');
+        const { applyAppServiceLinking } = require('./demo/scenarios/appServiceLinking');
+        const r = db.transaction(() => applyAppServiceLinking(db, { now: Date.now() }))();
+        logger.info(`[Demo] app-service linking re-applied: ${r.objects} objects, ${r.vpgs} VPGs, ${r.zertoVms} Zerto VMs`);
+      } catch (err) {
+        logger.warn(`[Demo] app-service linking failed: ${err.message}`);
+      }
       // The demo's poller process idles (pollers disabled above), so the API
       // process is the only place Service Status can run its 1-minute sweep.
       initServiceStatus();
