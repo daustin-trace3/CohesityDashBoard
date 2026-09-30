@@ -66,6 +66,7 @@ const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const deprecated = require('./middleware/deprecatedAlias');
 const demoPollGuard = require('./middleware/demoPollGuard');
+const demoWriteGuard = require('./middleware/demoWriteGuard');
 
 /** cohesity:<name>:view|manage — same permission for a mount and its deprecated alias (contract C8.6). */
 function cohesityPermission(name) {
@@ -189,6 +190,9 @@ function createApp({ licenseGate = requireLicense } = {}) {
   // before any route — static Cohesity mounts, deprecated aliases, and the
   // plugin dispatcher — can run. See middleware/demoPollGuard.js.
   app.use('/api', demoPollGuard);
+  // Demo mode: default-deny every other write outside a short allowlist of
+  // interactive surfaces. See middleware/demoWriteGuard.js.
+  app.use('/api', demoWriteGuard);
 
   // Routes
   app.use('/api/auth', authRouter);
