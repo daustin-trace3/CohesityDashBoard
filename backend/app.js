@@ -53,6 +53,7 @@ const { requirePermission, platformPermission } = require('./middleware/requireP
 const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const deprecated = require('./middleware/deprecatedAlias');
+const demoWriteGuard = require('./middleware/demoWriteGuard');
 
 /** cohesity:<name>:view|manage — same permission for a mount and its deprecated alias (contract C8.6). */
 function cohesityPermission(name) {
@@ -126,6 +127,11 @@ function createApp({ licenseGate = requireLicense } = {}) {
 
   // Product license gate — blocks everything except /api/license/* when unlicensed
   app.use('/api', licenseGate);
+
+  // Demo mode: default-deny every write outside a short allowlist of
+  // interactive surfaces. See middleware/demoWriteGuard.js.
+  app.use('/api', demoWriteGuard);
+
 
   // Routes
   app.use('/api/auth', authRouter);
