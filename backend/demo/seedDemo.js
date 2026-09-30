@@ -155,6 +155,10 @@ async function main() {
   // dropped) layered over the generated estate; see scenarios/sanBootPathDown.js.
   const { applySanBootPathDown } = require('./scenarios/sanBootPathDown');
   const scenarioResult = db.transaction(() => applySanBootPathDown(db))();
+  // Backup + DR coverage for the usage-id tagged VMs, so App Services shows
+  // the Cohesity and Zerto (incl. AWS target) linking; see appServiceLinking.js.
+  const { applyAppServiceLinking } = require('./scenarios/appServiceLinking');
+  const linkResult = db.transaction(() => applyAppServiceLinking(db, { now }))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -181,6 +185,7 @@ async function main() {
     ['brocade sources/fabrics/switches/ports', `${brocadeResult.sources}/${brocadeResult.fabrics}/${brocadeResult.switches}/${brocadeResult.switchPorts}`],
     ['bluecat views/zones/records/networks/devices/servers', `${bluecatResult.views}/${bluecatResult.zones}/${bluecatResult.records}/${bluecatResult.networks}/${bluecatResult.devices}/${bluecatResult.servers}`],
     ['scenario san-boot-path-down (vcenter/brocade/dell)', `${scenarioResult.vcenter.applied}/${scenarioResult.brocade.applied}/${scenarioResult.dell.applied}`],
+    ['scenario app-service-linking (objects/vpgs/zerto vms)', `${linkResult.objects}/${linkResult.vpgs}/${linkResult.zertoVms}`],
     ['users', 1],
   ];
 
