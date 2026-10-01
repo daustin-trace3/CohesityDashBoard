@@ -39,6 +39,12 @@ const STUCK_MINUTES = 30;        // a tick still running after this is treated a
 const TICK_MARK = 'ops_agent_tick_started';  // so the API process can see a tick in flight
 const CLASS_WEIGHT = { incident: 300, recurring: 250, 'one-off': 100, noise: 0, 'self-healed': 0, 'self-cleared': 0 };
 
+// Timestamps in these tables are JS ISO strings (2026-10-01T05:00:00.000Z).
+// SQLite's datetime('now', ...) yields "2026-10-01 05:00:00", and string
+// comparison between the two formats breaks on the T, so cutoffs must be
+// built here in the same ISO format and bound as parameters.
+const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
+
 /** Every autonomous action the agent takes goes through here, at INFO, with
  *  enough detail to answer "what did it do and how often" from the log alone:
  *  grep for "[OpsAgent] ACTION". Failures stay at warn/error as before. */
@@ -208,9 +214,9 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
   for (const r of db.prepare(`
     SELECT a.platform, a.source_key, MAX(i.resolved_at) AS resolved_at FROM ops_incident_alerts a
     JOIN ops_incidents i ON i.id = a.incident_id
-    WHERE i.state = 'resolved' AND i.resolved_by IS NOT NULL AND i.resolved_at >= datetime('now', '-30 days')
+    WHERE i.state = 'resolved' AND i.resolved_by IS NOT NULL AND i.resolved_at >= ?
     GROUP BY a.platform, a.source_key
-  `).all()) suppressed.set(`${r.platform}|${r.source_key}`, Date.parse(r.resolved_at));
+  `).all(isoAgo(30 * 86400000))) suppressed.set(`${r.platform}|${r.source_key}`, Date.parse(r.resolved_at));
   const fresh = items.filter((it) => {
     if (attached.has(`${it.platform}:${it.sourceKey}`)) return false;
     const at = suppressed.get(`${it.platform}|${it.sourceKey}`);
@@ -360,9 +366,9 @@ function recurrenceFor(inc, settings) {
   const rows = db.prepare(`
     SELECT id, opened_at, resolved_at, state, classification, resolved_by, resolution, summary, event_count
     FROM ops_incidents
-    WHERE incident_key = ? AND id != ? AND opened_at >= datetime('now', '-${days} days')
+    WHERE incident_key = ? AND id != ? AND opened_at >= ?
     ORDER BY opened_at DESC LIMIT 20
-  `).all(inc.incident_key, inc.id);
+  `).all(inc.incident_key, inc.id, isoAgo(days * 86400000));
   const occurrences = rows.map((r) => ({
     id: r.id, openedAt: r.opened_at, resolvedAt: r.resolved_at || null,
     minutesOpen: r.resolved_at ? Math.max(0, Math.round((Date.parse(r.resolved_at) - Date.parse(r.opened_at)) / 60000)) : null,
@@ -429,8 +435,8 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   const recurrence = recurrenceFor(inc, settings);
   const concurrent = db.prepare(`
     SELECT id, title, host, platforms, severity, state, classification, summary FROM ops_incidents
-    WHERE id != ? AND state != 'resolved' AND opened_at >= datetime(?, '-60 minutes') LIMIT 10
-  `).all(inc.id, inc.opened_at);
+    WHERE id != ? AND state != 'resolved' AND opened_at >= ? LIMIT 10
+  `).all(inc.id, new Date(Date.parse(inc.opened_at) - 3600000).toISOString());
   // App service incidents: open incidents on the servers behind the app.
   let relatedIncidents = [];
   if (inc.incident_key.startsWith('app:')) {
@@ -1068,7 +1074,7 @@ async function runOnce({ force = false } = {}) {
     if (coldStart && stats.incidentsOpened) logger.info(`[OpsAgent] cold start: ${stats.incidentsOpened} baseline incident(s) recorded, not emailed`);
 
     // Triage: hold expired, capped per hour.
-    const triagedLastHour = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE triaged_at >= datetime('now', '-60 minutes')").get().c;
+    const triagedLastHour = db.prepare('SELECT COUNT(*) c FROM ops_incidents WHERE triaged_at >= ?').get(isoAgo(3600000)).c;
     let budget = Math.max(0, settings.analysesPerHour - triagedLastHour);
     const due = db.prepare("SELECT * FROM ops_incidents WHERE state = 'collecting' AND hold_until <= ? ORDER BY opened_at").all(now);
     for (const inc of due) {
@@ -1119,7 +1125,7 @@ async function runOnce({ force = false } = {}) {
     try {
       db.prepare('INSERT INTO ops_agent_runs (at, alerts_seen, new_alerts, incidents_opened, triaged, emails_sent, error) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(stats.at, stats.alertsSeen, stats.newAlerts, stats.incidentsOpened, stats.triaged, stats.emailsSent, stats.error);
-      db.prepare(`DELETE FROM ops_agent_runs WHERE at < datetime('now', '-${RUN_LOG_DAYS} days')`).run();
+      db.prepare('DELETE FROM ops_agent_runs WHERE at < ?').run(isoAgo(RUN_LOG_DAYS * 86400000));
       const did = stats.incidentsOpened + stats.triaged + stats.emailsSent + stats.healAttempts + stats.resolvedQuiet + stats.resolvedEvidence;
       if (did) {
         logger.info(`[OpsAgent] tick: ${stats.alertsSeen} alerts seen, ${stats.newAlerts} new, ${stats.incidentsOpened} opened, ${stats.healAttempts} re-poll(s), ${stats.triaged} triaged, ${stats.emailsSent} emailed, ${stats.resolvedQuiet + stats.resolvedEvidence} resolved`);
@@ -1178,7 +1184,7 @@ function listIncidents({ state = 'open', limit = 100 } = {}) {
   const where = state === 'open' ? "WHERE state != 'resolved'" : state === 'resolved' ? "WHERE state = 'resolved'" : '';
   const s = getOpsAgentSettings();
   const repeats = new Map();
-  for (const r of db.prepare(`SELECT incident_key k, COUNT(*) c FROM ops_incidents WHERE opened_at >= datetime('now', '-${s.patternDays} days') GROUP BY incident_key HAVING c > 1`).all()) repeats.set(r.k, r.c);
+  for (const r of db.prepare('SELECT incident_key k, COUNT(*) c FROM ops_incidents WHERE opened_at >= ? GROUP BY incident_key HAVING c > 1').all(isoAgo(s.patternDays * 86400000))) repeats.set(r.k, r.c);
   return db.prepare(`SELECT * FROM ops_incidents ${where} ORDER BY opened_at DESC LIMIT ?`).all(Math.min(500, Math.max(1, limit)))
     .map((r) => { const o = shapeIncident(r); o.repeatCount = repeats.get(r.incident_key) || 1; o.isPattern = o.repeatCount >= s.patternMin; return o; })
     .sort((x, y) => (y.impactScore - x.impactScore) || (Date.parse(y.openedAt) - Date.parse(x.openedAt)));
@@ -1219,10 +1225,10 @@ function status() {
   const lastRun = db.prepare('SELECT * FROM ops_agent_runs ORDER BY id DESC LIMIT 1').get() || null;
   const counts = {};
   for (const r of db.prepare("SELECT state, COUNT(*) c FROM ops_incidents WHERE state != 'resolved' GROUP BY state").all()) counts[r.state] = r.c;
-  counts.resolved24h = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE state = 'resolved' AND resolved_at >= datetime('now', '-1 day')").get().c;
-  counts.emails24h = db.prepare("SELECT COALESCE(SUM(emails_sent), 0) c FROM ops_agent_runs WHERE at >= datetime('now', '-1 day')").get().c;
+  counts.resolved24h = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE state = 'resolved' AND resolved_at >= ?").get(isoAgo(86400000)).c;
+  counts.emails24h = db.prepare('SELECT COALESCE(SUM(emails_sent), 0) c FROM ops_agent_runs WHERE at >= ?').get(isoAgo(86400000)).c;
   counts.baseline = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE baseline = 1 AND state != 'resolved'").get().c;
-  counts.triagedLastHour = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE triaged_at >= datetime('now', '-60 minutes')").get().c;
+  counts.triagedLastHour = db.prepare('SELECT COUNT(*) c FROM ops_incidents WHERE triaged_at >= ?').get(isoAgo(3600000)).c;
   const p = resolveProvider();
   return {
     settings,
