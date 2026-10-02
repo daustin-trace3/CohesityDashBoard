@@ -23,6 +23,14 @@ function buildCoreApi(overrides = {}) {
       if (overrides.createPoller) return overrides.createPoller;
       return require('./pollerFramework').createPoller;
     },
+    get advisor() {
+      if (overrides.advisor) return overrides.advisor;
+      return require('../services/platformAdvisor'); // { createPlatformAdvisor, linReg, parseUtcMs, fmtBytes }
+    },
+    get anonymizer() {
+      if (overrides.anonymizer) return overrides.anonymizer;
+      return require('../services/anonymizer'); // { createAnonymizer, PROMPT_NOTE }
+    },
   };
 
   return Object.freeze(api);
