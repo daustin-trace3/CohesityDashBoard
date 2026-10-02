@@ -83,6 +83,13 @@ const Section = ({ title, children }) => (
   </div>
 );
 
+// The triage summary is one issue per line; old incidents hold a single paragraph.
+const SummaryLines = ({ text, className = 'text-ink' }) => {
+  const lines = String(text || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  if (lines.length > 1) return <ul className={`list-disc pl-5 text-sm space-y-0.5 ${className}`}>{lines.map((l, i) => <li key={i}>{l}</li>)}</ul>;
+  return <p className={`text-sm ${className}`}>{lines[0] || '-'}</p>;
+};
+
 function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
   const [inc, setInc] = useState(null);
   const [failed, setFailed] = useState(null);
@@ -189,7 +196,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
             )}
             {a && (
               <>
-                <Section title="What happened"><p className="text-sm text-ink">{a.summary}</p></Section>
+                <Section title="What happened"><SummaryLines text={a.summary} className="text-ink" /></Section>
                 {a.impact && <Section title="Impact"><p className="text-sm text-ink-muted">{a.impact}</p></Section>}
                 {a.correlation && <Section title="Correlation"><p className="text-sm text-ink-muted">{a.correlation}</p></Section>}
                 <Section title={`What ${agentName} reviewed`}>
@@ -206,7 +213,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                 {a.escalate && <Section title="Escalation"><p className="text-sm text-ink-muted">{a.escalate}</p></Section>}
               </>
             )}
-            {!a && inc.summary && <Section title="Summary"><p className="text-sm text-ink-muted">{inc.summary}</p></Section>}
+            {!a && inc.summary && <Section title="Summary"><SummaryLines text={inc.summary} className="text-ink-muted" /></Section>}
 
             <Section title={`Alerts in this incident (${inc.alerts.length})`}>
               <div className="overflow-x-auto">
@@ -389,7 +396,7 @@ export default function OpsAgentPage() {
                           <button onClick={() => setOpenId(r.id)} className="text-brand hover:underline cursor-pointer text-left">{r.title || r.host || r.key}</button>
                           <span className="ml-1.5 text-[10px] text-ink-faint">{KIND_LABEL[r.kind] || ''}{r.humanRequired ? ' · human required' : ''}</span>
                           {r.isPattern && <span className="ml-1.5 text-[10px] font-semibold text-status-warn" title={`The same incident has opened ${r.repeatCount} times inside the repeat window. The repetition is the thing to investigate.`}>repeat {r.repeatCount}x</span>}
-                          {r.summary && <p className="text-[11px] text-ink-faint line-clamp-1" title={r.summary}>{r.summary}</p>}
+                          {r.summary && <p className="text-[11px] text-ink-faint line-clamp-1" title={r.summary}>{r.summary.split('\n').filter(Boolean).join('; ')}</p>}
                         </td>
                         <td className="py-2 pr-3 text-ink-muted text-[11px]">{r.platformsLabel}</td>
                         <td className="py-2 pr-3 text-right tnum text-ink-muted">{r.eventCount}</td>

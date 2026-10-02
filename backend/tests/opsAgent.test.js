@@ -144,6 +144,27 @@ describe('fallback triage and email', () => {
     expect(mail.text).toContain('Analysis from Otis. Open Ops > Ops Agent in ICC for full details.');
   });
 
+  it('renders a multi-line summary as one bullet per issue, single line as a paragraph', () => {
+    const inc = { id: 9, title: 'two problems', host: 'esx-01', platforms: JSON.stringify(['vcenter']), severity: 'critical', opened_at: NOW, notify_count: 0 };
+    const analysis = { ...agent.fallbackTriage(evidence), source: 'ai', summary: 'esx-01 lost a SAN path.\nDatastore DS1 went inaccessible.' };
+    const mail = agent.renderEmail(inc, [], analysis, { agentName: 'Otis' });
+    expect(mail.text).toContain('- esx-01 lost a SAN path.');
+    expect(mail.text).toContain('- Datastore DS1 went inaccessible.');
+    expect(mail.html).toContain('<li style="margin:2px 0">esx-01 lost a SAN path.</li>');
+    const single = agent.renderEmail(inc, [], { ...analysis, summary: 'One thing happened.' }, { agentName: 'Otis' });
+    expect(single.text).toContain('WHAT HAPPENED\nOne thing happened.');
+    expect(single.html).toContain('<p style="margin:0">One thing happened.</p>');
+  });
+
+  it('shapes an array summary into newline-joined lines and tolerates a plain string', () => {
+    const noop = { restore: (s) => s };
+    const fallback = { classification: 'one-off', summary: 'fallback' };
+    const shaped = agent.shapeAnalysis({ classification: 'incident', summary: [' line one ', 'line two', 42, ''] }, noop, fallback);
+    expect(shaped.summary).toBe('line one\nline two');
+    expect(agent.shapeAnalysis({ summary: 'just a paragraph' }, noop, fallback).summary).toBe('just a paragraph');
+    expect(agent.shapeAnalysis({ summary: [] }, noop, fallback).summary).toBe('fallback');
+  });
+
   it('lists only the newest 5 alerts per group and counts the rest', () => {
     const inc = { id: 8, title: 'big one', host: 'esx-01', platforms: JSON.stringify(['vcenter']), severity: 'critical', opened_at: NOW, notify_count: 0 };
     const at = (i) => `2026-09-25T${String(10 + i).padStart(2, '0')}:00:00.000Z`;
