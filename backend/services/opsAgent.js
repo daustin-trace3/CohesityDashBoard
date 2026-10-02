@@ -542,7 +542,9 @@ function buildMessages(evidence, anon) {
     'evidence given; when evidence from another platform explains an alert, name the component and the platform ' +
     'that reported it. Say plainly when the evidence is thin. Respond ONLY with a JSON object: ' +
     '{"classification": "incident" | "one-off" | "recurring" | "noise", "confidence": "high"|"medium"|"low", ' +
-    '"title": string (under 80 chars), "summary": string (2-4 sentences, what happened), "impact": string (1-2 sentences), ' +
+    '"title": string (under 80 chars), "summary": string[] (1-5 lines, each a single plain sentence under 140 chars ' +
+    'stating one distinct event or issue and naming the component it concerns; never combine unrelated issues in one ' +
+    'line, and skip narrative filler), "impact": string (1-2 sentences), ' +
     '"correlation": string (how the alerts relate, or "independent"), "likely_cause": string, ' +
     '"reviewed": string[] (each item: one thing ICC checked and what it showed, 3-8 items), ' +
     '"next_steps": [{"owner": string (team or role), "action": string}] (2-6 ordered steps), ' +
@@ -569,7 +571,14 @@ function shapeAnalysis(parsed, anon, fallback) {
   if (['incident', 'one-off', 'recurring', 'noise'].includes(parsed.classification)) out.classification = parsed.classification;
   if (['high', 'medium', 'low'].includes(parsed.confidence)) out.confidence = parsed.confidence;
   if (typeof parsed.human_required === 'boolean') out.human_required = parsed.human_required;
-  for (const k of ['title', 'summary', 'impact', 'correlation', 'likely_cause', 'escalate', 'human_reason']) {
+  // summary arrives as lines (one issue per line); stored newline-joined so
+  // old single-paragraph incidents keep rendering unchanged.
+  const sumLines = (Array.isArray(parsed.summary) ? parsed.summary : [parsed.summary])
+    .filter((x) => typeof x === 'string' && x.trim())
+    .slice(0, 6)
+    .map((x) => anon.restore(x.trim()).slice(0, 300));
+  if (sumLines.length) out.summary = sumLines.join('\n');
+  for (const k of ['title', 'impact', 'correlation', 'likely_cause', 'escalate', 'human_reason']) {
     const v = STR(parsed[k]); if (v) out[k] = anon.restore(v).slice(0, 2000);
   }
   if (Array.isArray(parsed.reviewed)) {
@@ -722,6 +731,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const human = analysis.human_required == null ? null : `Human required: ${analysis.human_required ? 'YES' : 'no'}${analysis.human_reason ? ` (${analysis.human_reason})` : ''}`;
   const did = (healActions || []).map((a) => `- ${fmtStamp(a.at)}: ${a.action} ${a.target}: ${a.result}`);
   const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
+  const happened = String(analysis.summary || '-').split('\n').map((s) => s.trim()).filter(Boolean);
 
   const text = [
     `${agentName}, incident #${inc.id}${update ? ` (update ${update})` : ''}`,
@@ -734,7 +744,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
       'Earlier occurrences, newest first:', ...rec.occurrences.map(occurrenceLine)] : []),
     '',
     'WHAT HAPPENED',
-    analysis.summary || '-',
+    ...(happened.length > 1 ? happened.map((l) => `- ${l}`) : [happened[0] || '-']),
     '',
     'IMPACT',
     analysis.impact || '-',
@@ -778,7 +788,7 @@ ${noAi ? `<div style="font-size:12px;color:#92400E">${esc(noAi)}</div>` : ''}
 ${human ? `<div style="font-size:12px;font-weight:600;color:${analysis.human_required ? '#B91C1C' : '#166534'}">${esc(human)}</div>` : ''}
 </div>
 ${recLine ? section(`This is a repeat (${rec.count} times in ${rec.windowDays} days)`, `<p style="margin:0 0 6px">${esc(recLine)}</p><table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Opened</th><th style="padding:3px 8px">Lasted</th><th style="padding:3px 8px">Closed by</th><th style="padding:3px 8px">Resolution</th></tr>${occurrenceRows(rec, esc)}</table>`) : ''}
-${section('What happened', `<p style="margin:0">${esc(analysis.summary || '-')}</p>`)}
+${section('What happened', happened.length > 1 ? list(happened) : `<p style="margin:0">${esc(happened[0] || '-')}</p>`)}
 ${section('Impact', `<p style="margin:0">${esc(analysis.impact || '-')}</p>`)}
 ${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(aliveShown)}${aliveMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.</td></tr>` : ''}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(clearedShown)}${clearedMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${clearedMore} more cleared.</td></tr>` : ''}` : ''}</table>`)}
 ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')}</p>`)}
@@ -877,7 +887,7 @@ async function notifyResolved(inc, settings, config) {
 <div style="font-size:12px;color:#475569">Incident #${inc.id} &middot; ${esc(platforms.join(', '))} &middot; opened ${esc(fmtStamp(inc.opened_at))}</div>
 </div>
 <h3 style="margin:18px 0 6px;font-size:13px;color:#334155">How it resolved</h3><p style="margin:0">${esc(inc.resolution || 'Resolved.')}</p>
-<h3 style="margin:18px 0 6px;font-size:13px;color:#334155">Original summary</h3><p style="margin:0">${esc(inc.summary || '-')}</p>
+<h3 style="margin:18px 0 6px;font-size:13px;color:#334155">Original summary</h3><p style="margin:0">${String(inc.summary || '-').split('\n').filter(Boolean).map(esc).join('<br>')}</p>
 <p style="margin-top:18px;font-size:11px;color:#64748b">${esc(settings.name)}. No action is needed unless it returns.</p></div>`;
   try {
     const transport = alertNotifier.createTransport(config);
@@ -1326,7 +1336,7 @@ module.exports = {
   runOnce, status, pulse, listIncidents, getIncident, retriage, resend, resolve, sampleEmail, sendSampleEmail,
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
-  hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll,
+  hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,
   closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson,
   recurrenceFor, recurrenceLine,
 };
