@@ -165,6 +165,43 @@ describe('fallback triage and email', () => {
     expect(agent.shapeAnalysis({ summary: [] }, noop, fallback).summary).toBe('fallback');
   });
 
+  it('collects recent failed Cohesity runs, scoped to the alerting cluster when it matches', () => {
+    db.exec("DELETE FROM protection_runs; DELETE FROM clusters;");
+    const addCluster = db.prepare("INSERT INTO clusters (name, connection_type, auth_type, encrypted_credentials) VALUES (?, 'helios', 'apikey', 'x')");
+    const a = addCluster.run('cohx-cl01').lastInsertRowid;
+    const b = addCluster.run('cohx-cl02').lastInsertRowid;
+    const run = db.prepare('INSERT INTO protection_runs (cluster_id, job_id, job_name, status, start_time, end_time, error_message) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    const recent = new Date(Date.now() - 3600000).toISOString();
+    const old = new Date(Date.now() - 3 * 86400000).toISOString();
+    run.run(a, 1, 'VM-Nightly', 'kFailed', recent, recent, 'snapshot timed out');
+    run.run(a, 2, 'SQL-Hourly', 'kSuccess', recent, recent, null);
+    run.run(a, 3, 'Old-Fail', 'kFailed', old, old, 'ancient history');
+    run.run(b, 4, 'Other-Cluster-Fail', 'kFailed', recent, recent, 'other cluster');
+    const scoped = agent.collectFailedBackupJobs(['cohesity'], [{ platform: 'cohesity', host: 'COHX-CL01' }]);
+    expect(scoped.map((j) => j.job)).toEqual(['VM-Nightly']);
+    expect(scoped[0].error).toBe('snapshot timed out');
+    // No matching cluster name: fall back to every cluster's recent failures.
+    const unscoped = agent.collectFailedBackupJobs(['cohesity'], [{ platform: 'cohesity', host: 'something-else' }]);
+    expect(unscoped.map((j) => j.job).sort()).toEqual(['Other-Cluster-Fail', 'VM-Nightly']);
+    // Non-backup platforms contribute nothing.
+    expect(agent.collectFailedBackupJobs(['vcenter'], [])).toEqual([]);
+    db.exec('DELETE FROM protection_runs; DELETE FROM clusters;');
+  });
+
+  it('renders a failed backup jobs section only when jobs are present', () => {
+    const inc = { id: 11, title: 'backup trouble', host: 'cohx-cl01', platforms: JSON.stringify(['cohesity']), severity: 'critical', opened_at: NOW, notify_count: 0 };
+    const failedJobs = [{ platform: 'cohesity', source: 'cohx-cl01', job: 'VM-Nightly', status: 'kFailed', started: NOW, finished: NOW, error: 'kTimeout: snapshot timed out' }];
+    const mail = agent.renderEmail(inc, [], agent.fallbackTriage(evidence), { agentName: 'Otis', failedJobs });
+    expect(mail.text).toContain('FAILED BACKUP JOBS (LAST 24H, 1 total)');
+    expect(mail.text).toContain('- Cohesity | cohx-cl01 | VM-Nightly | kFailed');
+    expect(mail.text).toContain('kTimeout: snapshot timed out');
+    expect(mail.html).toContain('Failed backup jobs (last 24h, 1 total)');
+    expect(mail.html).toContain('kTimeout: snapshot timed out');
+    const without = agent.renderEmail(inc, [], agent.fallbackTriage(evidence), { agentName: 'Otis' });
+    expect(without.text).not.toContain('FAILED BACKUP JOBS');
+    expect(without.html).not.toContain('Failed backup jobs');
+  });
+
   it('lists only the newest 5 alerts per group and counts the rest', () => {
     const inc = { id: 8, title: 'big one', host: 'esx-01', platforms: JSON.stringify(['vcenter']), severity: 'critical', opened_at: NOW, notify_count: 0 };
     const at = (i) => `2026-09-25T${String(10 + i).padStart(2, '0')}:00:00.000Z`;

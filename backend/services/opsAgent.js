@@ -407,6 +407,68 @@ function recurrenceLine(rec) {
   return `This has now happened ${rec.count} times in ${rec.windowDays} days${every}.${closed} The repetition is the fault worth investigating, not this single occurrence.`;
 }
 
+// ---------------------------------------------------------------------------
+// Failed backup job log
+// ---------------------------------------------------------------------------
+
+const BACKUP_JOB_WINDOW_MS = 24 * 3600000;
+const BACKUP_JOB_CAP = 20;
+
+const tableExists = (name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+
+/** Per-platform collectors for recent failed job runs. Each is guarded by its
+ *  table existing, so the same code runs on branches and installs where the
+ *  platform is absent or pack-served. hostNames are the incident's alert hosts
+ *  lowercased; a collector scopes to them when they match its source names. */
+const BACKUP_JOB_COLLECTORS = {
+  cohesity(hostNames, sinceIso) {
+    if (!tableExists('protection_runs')) return [];
+    const rows = db.prepare(`
+      SELECT c.name cluster, r.job_name, r.run_type, r.status, r.start_time, r.end_time, r.error_code, r.error_message
+      FROM protection_runs r JOIN clusters c ON c.id = r.cluster_id
+      WHERE r.status IN ('kFailed', 'kFailure', 'kError', 'kCanceled', 'kCancelled')
+        AND COALESCE(r.end_time, r.start_time) >= ?
+      ORDER BY COALESCE(r.end_time, r.start_time) DESC LIMIT 200
+    `).all(sinceIso);
+    const scoped = hostNames.size ? rows.filter((r) => hostNames.has(String(r.cluster || '').toLowerCase())) : rows;
+    return (scoped.length ? scoped : rows).map((r) => ({
+      platform: 'cohesity', source: r.cluster, job: r.job_name, runType: r.run_type, status: r.status,
+      started: r.start_time, finished: r.end_time,
+      error: [r.error_code, r.error_message].filter(Boolean).join(': ').slice(0, 400) || null,
+    }));
+  },
+  netbackup(hostNames, sinceIso) {
+    // NBU keeps no error text locally, only the status code; code 0 is success
+    // and 1 is partial, so anything above 1 is a failure worth showing.
+    if (!tableExists('netbackup_jobs')) return [];
+    const rows = db.prepare(`
+      SELECT s.name src, s.host, j.policy_name, j.client_name, j.job_type, j.state, j.status_code, j.started_at, j.ended_at
+      FROM netbackup_jobs j JOIN netbackup_sources s ON s.id = j.source_id
+      WHERE j.status_code > 1 AND COALESCE(j.ended_at, j.started_at, j.captured_at) >= ?
+      ORDER BY COALESCE(j.ended_at, j.started_at) DESC LIMIT 200
+    `).all(sinceIso);
+    const scoped = hostNames.size ? rows.filter((r) => hostNames.has(String(r.src || '').toLowerCase()) || hostNames.has(String(r.host || '').toLowerCase()) || hostNames.has(String(r.client_name || '').toLowerCase())) : rows;
+    return (scoped.length ? scoped : rows).map((r) => ({
+      platform: 'netbackup', source: r.src, job: [r.policy_name, r.client_name].filter(Boolean).join(' / ') || null,
+      runType: r.job_type, status: `${r.state || 'DONE'} status ${r.status_code}`,
+      started: r.started_at, finished: r.ended_at, error: `NetBackup status code ${r.status_code}`,
+    }));
+  },
+};
+
+/** Recent failed job runs for the backup platforms involved in an incident. */
+function collectFailedBackupJobs(platforms, alerts) {
+  const since = isoAgo(BACKUP_JOB_WINDOW_MS);
+  const out = [];
+  for (const p of platforms) {
+    const collect = BACKUP_JOB_COLLECTORS[p];
+    if (!collect) continue;
+    const hostNames = new Set(alerts.filter((a) => a.platform === p && a.host).map((a) => String(a.host).toLowerCase()));
+    try { out.push(...collect(hostNames, since)); } catch (err) { logger.warn(`[OpsAgent] failed-job lookup for ${p}: ${err.message}`); }
+  }
+  return out.slice(0, BACKUP_JOB_CAP);
+}
+
 function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   const hosts = [];
   const seen = new Set();
@@ -462,6 +524,7 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     hosts,
     recurrence,
     concurrentOpenIncidents: concurrent,
+    failedBackupJobs: collectFailedBackupJobs(JSON.parse(inc.platforms || '[]'), alerts),
   };
 }
 
@@ -499,6 +562,8 @@ function fallbackTriage(evidence) {
     if ((h.relatedOtherPlatformEvents || []).length) reviewed.push(`${h.host}: ${h.relatedOtherPlatformEvents.length} open alert(s) on other platforms for the same host`);
   }
   if (!reviewed.length) reviewed.push('No host-level inventory matched these alerts; only the alert text and platform poll state were available.');
+  const jobs = evidence.failedBackupJobs || [];
+  if (jobs.length) reviewed.push(`Backup job log: ${jobs.length} failed or canceled run(s) in 24h on ${[...new Set(jobs.map((j) => j.source).filter(Boolean))].join(', ') || 'the platform'}; the newest is ${jobs[0].job || 'unnamed'} (${jobs[0].status}${jobs[0].error ? `: ${jobs[0].error.slice(0, 120)}` : ''}).`);
   reviewed.push(`Incident history: ${rec.occurrences.length ? `${rec.occurrences.length} earlier occurrence(s) of this same incident in ${rec.windowDays} days, the most recent ${fmtStamp(rec.occurrences[0].openedAt)}` : `none on this key in ${rec.windowDays} days`}.`);
   const down = evidence.hosts.some((h) => h.verdict === 'offline');
   const pollTrouble = alive.some((a) => /stale|could not reach/i.test(a.message || ''));
@@ -540,7 +605,10 @@ function buildMessages(evidence, anon) {
     'Write for the next-level engineer who receives the email: what happened, what ICC already checked and what ' +
     'it found, what most likely caused it, and the concrete ordered steps they should take next. Use only the ' +
     'evidence given; when evidence from another platform explains an alert, name the component and the platform ' +
-    'that reported it. Say plainly when the evidence is thin. Respond ONLY with a JSON object: ' +
+    'that reported it. failedBackupJobs lists backup job runs that failed or were canceled in the last 24 hours ' +
+    'with the platform\'s own error text; when a backup platform is involved, say which jobs failed and why, ' +
+    'quoting the decisive part of the error, and use it in likely_cause and next_steps. ' +
+    'Say plainly when the evidence is thin. Respond ONLY with a JSON object: ' +
     '{"classification": "incident" | "one-off" | "recurring" | "noise", "confidence": "high"|"medium"|"low", ' +
     '"title": string (under 80 chars), "summary": string[] (1-5 lines, each a single plain sentence under 140 chars ' +
     'stating one distinct event or issue and naming the component it concerns; never combine unrelated issues in one ' +
@@ -709,7 +777,7 @@ function occurrenceRows(rec, esc) {
   return rec.occurrences.map((o) => `<tr><td style="padding:3px 8px">${esc(fmtStamp(o.openedAt))}</td><td style="padding:3px 8px">${lastedText(o)}</td><td style="padding:3px 8px">${esc(o.closedBy)}</td><td style="padding:3px 8px">${esc(o.resolution || '-')}</td></tr>`).join('');
 }
 
-function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null } = {}) {
+function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [] } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
   const rec = recurrence && recurrence.isPattern ? recurrence : null;
@@ -732,6 +800,10 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const did = (healActions || []).map((a) => `- ${fmtStamp(a.at)}: ${a.action} ${a.target}: ${a.result}`);
   const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
   const happened = String(analysis.summary || '-').split('\n').map((s) => s.trim()).filter(Boolean);
+  const JOB_CAP = 6;
+  const jobsShown = (failedJobs || []).slice(0, JOB_CAP);
+  const jobsMore = (failedJobs || []).length - jobsShown.length;
+  const jobLine = (j) => `- ${platformMeta(j.platform).label} | ${j.source || '-'} | ${j.job || '-'} | ${j.status}${j.finished ? ` | finished ${fmtStamp(j.finished)}` : ''}${j.error ? ` | ${j.error}` : ''}`;
 
   const text = [
     `${agentName}, incident #${inc.id}${update ? ` (update ${update})` : ''}`,
@@ -754,6 +826,9 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     ...(aliveMore > 0 ? [`... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.`] : []),
     ...(cleared.length ? ['Cleared while collecting:', ...clearedShown.map(alertLine),
       ...(clearedMore > 0 ? [`... and ${clearedMore} more cleared.`] : [])] : []),
+    ...(jobsShown.length ? ['', `FAILED BACKUP JOBS (LAST 24H, ${(failedJobs || []).length} total)`,
+      ...jobsShown.map(jobLine),
+      ...(jobsMore > 0 ? [`... and ${jobsMore} more; see the platform's job pages.`] : [])] : []),
     '',
     'CORRELATION',
     analysis.correlation || '-',
@@ -791,6 +866,7 @@ ${recLine ? section(`This is a repeat (${rec.count} times in ${rec.windowDays} d
 ${section('What happened', happened.length > 1 ? list(happened) : `<p style="margin:0">${esc(happened[0] || '-')}</p>`)}
 ${section('Impact', `<p style="margin:0">${esc(analysis.impact || '-')}</p>`)}
 ${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(aliveShown)}${aliveMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.</td></tr>` : ''}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(clearedShown)}${clearedMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${clearedMore} more cleared.</td></tr>` : ''}` : ''}</table>`)}
+${jobsShown.length ? section(`Failed backup jobs (last 24h, ${(failedJobs || []).length} total)`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Source</th><th style="padding:3px 8px">Job</th><th style="padding:3px 8px">Status</th><th style="padding:3px 8px">Finished</th><th style="padding:3px 8px">Error</th></tr>${jobsShown.map((j) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(platformMeta(j.platform).label)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.source || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.job || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.status)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.finished ? fmtStamp(j.finished) : '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.error || '-')}</td></tr>`).join('')}${jobsMore > 0 ? `<tr><td colspan="6" style="padding:6px 8px;color:#64748b">... and ${jobsMore} more; see the platform's job pages.</td></tr>` : ''}</table>`) : ''}
 ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')}</p>`)}
 ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
 ${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.replace(/^- /, '')))) : ''}
@@ -834,7 +910,7 @@ async function notifyIncident(inc, settings, config, { force = false } = {}) {
   try { healActions = JSON.parse(inc.heal_actions_json || '[]'); } catch { /* ignore */ }
   let storedEvidence = null;
   try { storedEvidence = JSON.parse(inc.evidence_json || 'null'); } catch { storedEvidence = null; }
-  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null });
+  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [] });
   const now = new Date().toISOString();
   try {
     const transport = alertNotifier.createTransport(config);
@@ -1292,7 +1368,7 @@ function sampleEmail(agentName = getOpsAgentSettings().name) {
   ];
   const analysis = {
     source: 'ai', classification: 'incident', confidence: 'high', title: inc.title,
-    summary: 'esx-demo-01 lost datastore DS-PROD-07 two minutes after Brocade reported port 3/14 down on switch sw-core-1. The host is still up and running its VMs on the remaining path.',
+    summary: 'Brocade switch sw-core-1 lost port 3/14, dropping one of esx-demo-01\'s two SAN paths.\nDatastore DS-PROD-07 went inaccessible on esx-demo-01 two minutes later.\nThe nightly Cohesity backup of the VMs on DS-PROD-07 failed while the datastore was unreachable.\nesx-demo-01 is still up and running its VMs on the remaining path.',
     impact: 'One of two SAN paths is gone; the host runs unprotected against a second path failure.',
     correlation: 'The Brocade port-down and the vCenter datastore alert name the same host HBA; the vCenter alert is a consequence of the fabric event.',
     likely_cause: 'Link failure on switch sw-core-1 port 3/14 (cable, SFP, or the host HBA port).',
@@ -1300,7 +1376,12 @@ function sampleEmail(agentName = getOpsAgentSettings().name) {
     next_steps: [{ owner: 'L2 SAN', action: 'Check port 3/14 on sw-core-1: SFP light levels and cable seating; reseat or replace.' }, { owner: 'L2 virtualization', action: 'Confirm the datastore is reachable over the surviving path and no VM is on a single-path LUN.' }, { owner: 'L2 SAN', action: 'After the port is back, confirm hba1 logs in and the vCenter alert clears.' }],
     escalate: 'Escalate to the SAN vendor if the port stays down after an SFP swap, or immediately if the second path degrades.',
   };
-  return renderEmail(inc, alerts, analysis, { agentName });
+  const failedJobs = [{
+    platform: 'cohesity', source: 'cohx-demo-cl01', job: 'VM-Prod-Nightly', runType: 'kRegular', status: 'kFailed',
+    started: inc.opened_at, finished: inc.opened_at,
+    error: 'KInvalidError: Datastore DS-PROD-07 is inaccessible on host esx-demo-01; snapshot could not be taken.',
+  }];
+  return renderEmail(inc, alerts, analysis, { agentName, failedJobs });
 }
 
 async function sendSampleEmail() {
@@ -1337,7 +1418,7 @@ module.exports = {
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
   hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,
-  closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson,
+  closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson, collectFailedBackupJobs,
   recurrenceFor, recurrenceLine,
 };
 void chatFn;
