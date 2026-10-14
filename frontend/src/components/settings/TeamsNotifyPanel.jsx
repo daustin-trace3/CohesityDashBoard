@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { MessageSquare, Save, Send, Trash2 } from 'lucide-react';
+import { MessageSquare, Save, Send, Trash2, Eye, EyeOff } from 'lucide-react';
 import client from '../../api/client';
 import { Badge } from '../ui/primitives';
 import { useToast } from '../ui/Toaster';
@@ -12,6 +12,7 @@ export default function TeamsNotifyPanel() {
   const [form, setForm] = useState(null);
   const [webhook, setWebhook] = useState('');
   const [stored, setStored] = useState(false);
+  const [showUrl, setShowUrl] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [failed, setFailed] = useState(null);
@@ -103,8 +104,12 @@ export default function TeamsNotifyPanel() {
               {stored ? <Badge tone="ok">stored</Badge> : <Badge tone="neutral">not set</Badge>}
             </div>
             <div className="flex items-center gap-2">
-              <input type="password" autoComplete="off" value={webhook} onChange={(e) => setWebhook(e.target.value)}
-                placeholder={stored ? 'Leave blank to keep the stored URL' : 'https://...'} className={input} />
+              <input type={showUrl ? 'text' : 'password'} autoComplete="off" spellCheck={false} value={webhook} onChange={(e) => setWebhook(e.target.value)}
+                placeholder={stored ? 'Leave blank to keep the stored URL' : 'https://prod-00.westus.logic.azure.com/workflows/...'} className={`${input} font-mono`} />
+              <button type="button" onClick={() => setShowUrl((v) => !v)} aria-label={showUrl ? 'Hide the URL' : 'Show the URL'} title={showUrl ? 'Hide' : 'Show'}
+                className="flex items-center text-xs px-2.5 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
+                {showUrl ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
               {stored && (
                 <button onClick={clear} disabled={saving}
                   className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer whitespace-nowrap">
@@ -112,7 +117,7 @@ export default function TeamsNotifyPanel() {
                 </button>
               )}
             </div>
-            <p className="text-[10px] text-ink-faint mt-1">From the Teams Workflows app: "When a Teams webhook request is received". Stored encrypted, never shown again.</p>
+            <p className="text-[10px] text-ink-faint mt-1">The HTTP POST URL of a Power Automate flow built on the "When a Teams webhook request is received" trigger (Teams Workflows app, Post to a channel when a webhook request is received). Its sig= part is the credential, so it is masked here, stored encrypted and never shown again after saving.</p>
           </div>
 
           <label className="flex items-start gap-2.5 cursor-pointer select-none">
