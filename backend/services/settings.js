@@ -191,26 +191,35 @@ function getNotificationSettings() {
 }
 
 /** Operations Agent (Ops > Operations Agent, Global Settings > Operations Agent). */
+/** A numeric setting inside [min, max], or the default when it was never
+ *  saved. An unset key reads as null and Number(null) is 0, which sat inside
+ *  the range of every zero-allowed option, so a fresh install ran with a 0
+ *  hold window, never re-notified and closed incidents the moment they went
+ *  quiet instead of the documented 10 / 60 / 30 (found 2026-10-14). */
+function numSetting(key, def, min, max) {
+  const raw = getSetting(key);
+  if (raw == null || String(raw).trim() === '') return def;
+  const n = Number(raw);
+  return (n >= min && n <= max) ? Math.round(n) : def;
+}
+
 function getOpsAgentSettings() {
-  const hold = Number(getSetting('ops_agent_hold_minutes'));
-  const cap = Number(getSetting('ops_agent_analyses_per_hour'));
-  const renotify = Number(getSetting('ops_agent_renotify_minutes'));
   const sev = getSetting('ops_agent_min_severity');
   return {
     enabled: getSetting('ops_agent_enabled') === '1',
     name: (getSetting('ops_agent_name') || '').trim() || 'ICC Operations Agent',
     minSeverity: ['info', 'warning', 'error', 'critical'].includes(sev) ? sev : 'warning',
     grouping: ['platform', 'service', 'component'].includes(getSetting('ops_agent_grouping')) ? getSetting('ops_agent_grouping') : 'platform',
-    holdMinutes: (hold >= 0 && hold <= 120) ? Math.round(hold) : 10,
-    analysesPerHour: (cap >= 1 && cap <= 200) ? Math.round(cap) : 20,
-    renotifyMinutes: (renotify >= 0 && renotify <= 1440) ? Math.round(renotify) : 60,
-    autoResolveMinutes: (() => { const n = Number(getSetting('ops_agent_auto_resolve_minutes')); return (n >= 0 && n <= 1440) ? Math.round(n) : 30; })(),
+    holdMinutes: numSetting('ops_agent_hold_minutes', 10, 0, 120),
+    analysesPerHour: numSetting('ops_agent_analyses_per_hour', 20, 1, 200),
+    renotifyMinutes: numSetting('ops_agent_renotify_minutes', 60, 0, 1440),
+    autoResolveMinutes: numSetting('ops_agent_auto_resolve_minutes', 30, 0, 1440),
     evidenceResolve: getSetting('ops_agent_evidence_resolve') !== '0',
     // A condition that keeps coming back and keeps clearing itself is a
     // pattern, not a series of one-offs: this is how many times inside the
     // window it takes before the agent says so and asks for a person.
-    patternMin: (() => { const n = Number(getSetting('ops_agent_pattern_min')); return (n >= 2 && n <= 20) ? Math.round(n) : 3; })(),
-    patternDays: (() => { const n = Number(getSetting('ops_agent_pattern_days')); return (n >= 1 && n <= 90) ? Math.round(n) : 14; })(),
+    patternMin: numSetting('ops_agent_pattern_min', 3, 2, 20),
+    patternDays: numSetting('ops_agent_pattern_days', 14, 1, 90),
     emailEnabled: getSetting('ops_agent_email_enabled') !== '0',
     recipients: (getSetting('ops_agent_recipients') || '').trim(),
     // Teams is a second channel beside email (a Power Automate workflow URL,

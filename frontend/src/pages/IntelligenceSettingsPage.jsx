@@ -7,6 +7,7 @@ import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
 import PrivacyInspectorPage from '../components/PrivacyInspectorPage';
 import AgentCapabilitiesPanel from '../components/AgentCapabilitiesPanel';
+import TeamsNotifyPanel from '../components/settings/TeamsNotifyPanel';
 import {
   SettingRow, SettingGroup, Toggle, TabSaveBar, inputCls, numberCls, selectCls,
 } from '../components/settings/SettingRow';
@@ -21,7 +22,7 @@ export const INTEL_TABS = [
   { key: 'context', label: 'Estate context', icon: FileText },
   { key: 'status', label: 'Service Status AI', icon: Activity },
   { key: 'agent', label: 'Operations Agent', icon: Bot, requiresAi: true },
-  { key: 'email', label: 'Agent email', icon: Mail, requiresAi: true },
+  { key: 'email', label: 'Agent notifications', icon: Mail, requiresAi: true },
   { key: 'capabilities', label: 'Capabilities', icon: Wrench, requiresAi: true },
   { key: 'privacy', label: 'Privacy', icon: ShieldCheck, requiresAi: true, permission: 'admin:ai-audit:view' },
 ];
@@ -576,7 +577,8 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
 
     if (tab === 'email') {
       return (
-        <TabPanel title="Agent email" intro="Where the Operations Agent sends its incident analyses.">
+        <>
+        <TabPanel title="Agent email" intro="Where the Operations Agent sends its incident analyses. Teams is a second channel below, independent of SMTP.">
           {loading ? loadingNote : (
             <>
               <SettingRow label="Email the analysis" htmlFor="agent-email" dirty={isDirty('agentEmailEnabled')}
@@ -599,6 +601,8 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
             </>
           )}
         </TabPanel>
+        <TeamsNotifyPanel />
+        </>
       );
     }
     return null;
