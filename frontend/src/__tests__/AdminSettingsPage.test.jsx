@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import AdminSettingsPage from '../pages/AdminSettingsPage';
 
@@ -27,6 +27,11 @@ const notifySettings = {
   reminderHours: 24,
 };
 
+function LocationProbe() {
+  const { pathname, search } = useLocation();
+  return <span data-testid="location">{pathname}{search}</span>;
+}
+
 function renderPage(initialPath = '/admin') {
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
@@ -34,6 +39,7 @@ function renderPage(initialPath = '/admin') {
         <Route path="/admin" element={<AdminSettingsPage />} />
         <Route path="/admin/:section" element={<AdminSettingsPage />} />
       </Routes>
+      <LocationProbe />
     </MemoryRouter>
   );
 }
@@ -81,5 +87,42 @@ describe('AdminSettingsPage — Alert Notifications tab', () => {
     fireEvent.click(screen.getByText('Save settings'));
 
     await waitFor(() => expect(client.put).toHaveBeenCalledWith('/settings/notifications', expect.objectContaining({ smtpPassword: 'new-secret' })));
+  });
+});
+
+describe('AdminSettingsPage - Intelligence', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    client.get.mockImplementation((url) => {
+      if (url === '/cohesity/insights/ai/config') return Promise.resolve({ data: { enabled: true } });
+      if (url === '/settings') return Promise.resolve({ data: { opsAgent: { enabled: false, name: 'ICC Operations Agent' } } });
+      return Promise.resolve({ data: {} });
+    });
+    client.put.mockResolvedValue({ data: {} });
+  });
+
+  it('shows one Intelligence nav item instead of the four old ones', () => {
+    renderPage();
+    expect(screen.getByRole('button', { name: /^Intelligence$/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /AI Analysis & Keys/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Agent Privacy/ })).not.toBeInTheDocument();
+  });
+
+  it('bare /admin lands on the AI provider tab', async () => {
+    renderPage('/admin');
+    expect(screen.getByTestId('location').textContent).toBe('/admin/intelligence?tab=provider');
+    expect(await screen.findByRole('tab', { name: /AI provider/, selected: true })).toBeInTheDocument();
+  });
+
+  it('the old /admin/agent route opens the Operations Agent tab', async () => {
+    renderPage('/admin/agent');
+    expect(screen.getByTestId('location').textContent).toBe('/admin/intelligence?tab=agent');
+    expect(await screen.findByRole('tab', { name: /Operations Agent/, selected: true })).toBeInTheDocument();
+    expect(await screen.findByLabelText('Agent name')).toBeInTheDocument();
+  });
+
+  it('the old /admin/agent-capabilities route opens the Capabilities tab', async () => {
+    renderPage('/admin/agent-capabilities');
+    expect(await screen.findByRole('tab', { name: /Capabilities/, selected: true })).toBeInTheDocument();
   });
 });
