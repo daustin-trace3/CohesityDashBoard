@@ -1037,4 +1037,7 @@ router.post('/advisor/:report', [param('report').isString()], validate, async (r
   }
 });
 
+// Ad-hoc email of the cached advisor report (user-clicked, never scheduled).
+router.post('/advisor/:report/email', dellAdvisor.emailRoute('Dell'));
+
 module.exports = router;

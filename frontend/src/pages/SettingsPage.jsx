@@ -6,6 +6,7 @@ import { useToast } from '../components/ui/Toaster';
 import HeliosConnectTab from '../components/cohesity/HeliosConnectTab';
 import DirectClustersTab from '../components/cohesity/DirectClustersTab';
 import PlatformAlertNotifications from '../components/PlatformAlertNotifications';
+import PlatformSettingsLayout from '../components/PlatformSettingsLayout';
 
 const TABS = [
   { key: 'helios', label: 'Helios (SaaS)', icon: Cloud },
@@ -199,7 +200,7 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4 max-w-3xl">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2.5">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand/10 border border-brand/20">
           <Server size={16} className="text-brand" />
@@ -211,20 +212,7 @@ export default function SettingsPage() {
       </div>
 
       {/* Section tabs */}
-      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start">
-        {TABS.map(t => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-              }`}>
-              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <PlatformSettingsLayout brand={'#6CB33F'} label="Cohesity" sections={TABS} active={tab} onSelect={setTab}>
 
       {/* Helios (SaaS) */}
       {tab === 'helios' && <HeliosConnectTab />}
@@ -310,6 +298,7 @@ export default function SettingsPage() {
         )}
       </div>
       )}
+    </PlatformSettingsLayout>
     </div>
   );
 }

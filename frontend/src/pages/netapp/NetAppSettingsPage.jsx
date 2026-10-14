@@ -4,6 +4,7 @@ import { BellRing } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, Badge, RefreshButton } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 
@@ -209,7 +210,7 @@ export default function NetAppSettingsPage() {
 
   if (cfg == null) {
     return (
-      <div className="animate-fade-in max-w-3xl">
+      <div className="animate-fade-in">
         <PageHeader icon={Settings} title="NetApp Settings" description="Active IQ Unified Manager connection" />
         <LoadingPanel label="Loading settings…" height={160} />
       </div>
@@ -217,25 +218,12 @@ export default function NetAppSettingsPage() {
   }
 
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="NetApp Settings" description="Manage AIQUM and direct ONTAP cluster connections">
         <RefreshButton onClick={load} />
       </PageHeader>
 
-      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 w-fit mb-4">
-        {TABS.map((t) => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-              }`}>
-              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <PlatformSettingsLayout brand={BRAND} label="NetApp" sections={TABS} active={tab} onSelect={setTab}>
 
       {tab === 'aiqum' && (
         <>
@@ -509,6 +497,7 @@ export default function NetAppSettingsPage() {
       )}
 
       {tab === 'alerts' && <PlatformAlertNotifications platform="netapp" label="NetApp" />}
+    </PlatformSettingsLayout>
     </div>
   );
 }

@@ -48,4 +48,28 @@ router.post('/:report', [param('report').isString()], validate, async (req, res,
   }
 });
 
+/** POST /api/advisor/:report/email - ad-hoc send of the cached report via
+ *  the alert SMTP server (user-clicked, never scheduled; like the SMTP test
+ *  button it needs host + from, not the notifications enable switch). */
+router.post('/:report/email', [param('report').isString()], validate, async (req, res) => {
+  try {
+    const key = reportKey(req.params.report);
+    if (!REPORTS.includes(key)) return res.status(404).json({ error: 'Unknown report.' });
+    const cached = getCachedReport(key);
+    if (!cached) return res.status(404).json({ error: 'No generated report to send. Run the report first.' });
+    const { getNotificationSettings } = require('../services/settings');
+    const { sendCachedReportEmail } = require('../services/platformAdvisor');
+    const config = getNotificationSettings();
+    if (!config.smtpHost || !config.smtpFrom) {
+      return res.status(409).json({ error: 'SMTP is not configured. Set at least the server and from address under Global Settings > Alert Notifications.' });
+    }
+    const to = String((req.body && req.body.recipients) || '').trim() || config.smtpRecipients;
+    if (!to) return res.status(400).json({ error: 'No recipients. Enter addresses or set default alert recipients in Global Settings.' });
+    await sendCachedReportEmail({ platformLabel: 'Cohesity', noun: key.replace(/_/g, ' '), cached, config, to });
+    res.json({ ok: true, to });
+  } catch (err) {
+    res.status(502).json({ error: `Email failed: ${err.message}` });
+  }
+});
+
 module.exports = router;

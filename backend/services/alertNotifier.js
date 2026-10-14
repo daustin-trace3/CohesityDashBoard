@@ -314,6 +314,8 @@ const COLLECTORS = {
   dell: collectDellAlerts,
   aria: collectAriaIssues,
   brocade: collectBrocadeIssues,
+  netbackup: collectNetbackupIssues,
+  proxmox: collectProxmoxIssues,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({
@@ -486,6 +488,8 @@ const CATALOG_BACKFILL = {
   vcenter: () => issueHistoryBackfill('vcenter_issue_history'),
   aria: () => issueHistoryBackfill('aria_issue_history'),
   aws: () => issueHistoryBackfill('aws_issue_history'),
+  netbackup: () => issueHistoryBackfill('netbackup_issue_history'),
+  proxmox: () => issueHistoryBackfill('proxmox_issue_history'),
 
   // unifi/bluecat platforms/*/index.js collectAlerts() and brocade's
   // fromIssues half read their own issue_history.type off open rows only;

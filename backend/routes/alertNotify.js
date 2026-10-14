@@ -126,6 +126,21 @@ router.put('/:platform', requirePermission(managePermission), [
   } catch (err) { next(err); }
 });
 
+/** PUT /api/alert-notify/:platform/types - mute/unmute many alert types at once
+ *  (the Enable/Disable shown buttons). Unknown types are ignored. */
+router.put('/:platform/types', requirePermission(managePermission), [
+  body('enabled').isBoolean(),
+  body('types').isArray({ min: 1, max: 5000 }),
+  body('types.*').isString().trim().isLength({ min: 1, max: 200 }),
+], validate, (req, res, next) => {
+  try {
+    const stmt = db.prepare('UPDATE alert_notify_types SET enabled = ? WHERE platform = ? AND type = ?');
+    const flag = req.body.enabled ? 1 : 0;
+    const changed = db.transaction((types) => types.reduce((n, t) => n + stmt.run(flag, req.params.platform, t).changes, 0))(req.body.types);
+    res.json({ ok: true, platform: req.params.platform, enabled: !!req.body.enabled, changed });
+  } catch (err) { next(err); }
+});
+
 /** PUT /api/alert-notify/:platform/types/:type - mute/unmute one alert type. */
 router.put('/:platform/types/:type', requirePermission(managePermission), [
   param('type').isString().trim().isLength({ min: 1, max: 200 }),

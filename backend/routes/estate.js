@@ -62,4 +62,7 @@ router.get('/config-changes', [
   } catch (err) { next(err); }
 });
 
+// Ad-hoc email of the cached advisor report (user-clicked, never scheduled).
+router.post('/advisor/:report/email', estateAdvisor.emailRoute('Estate'));
+
 module.exports = router;

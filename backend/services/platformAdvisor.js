@@ -136,7 +136,59 @@ function createPlatformAdvisor({ platform, feature, table, reports }) {
     return spec.scoped ? spec.gather(params) : spec.gather();
   }
 
-  return { REPORTS, SCOPED, isScoped, generateReport, getCachedReport, gatherFor, isConfigured };
+  /**
+   * Ad-hoc email of the CACHED report (user-clicked after a run, never
+   * scheduled). Uses the global alert SMTP server; like the SMTP test
+   * button it needs host + from but ignores the notifications enable
+   * switch, because the user is asking for this one send. Mount as
+   * router.post('/advisor/:report/email', advisor.emailRoute('Pure')).
+   */
+  function emailRoute(platformLabel) {
+    return async (req, res) => {
+      try {
+        // The page posts the URL slug (dr-readiness); report keys use underscores.
+        const reportKey = String(req.params.report || '').replace(/-/g, '_');
+        const spec = reports[reportKey];
+        if (!spec) return res.status(404).json({ error: 'Unknown report.' });
+        const params = spec.scoped ? { scope: String((req.body && req.body.scope) || '') } : {};
+        const cached = getCachedReport(reportKey, params);
+        if (!cached) return res.status(404).json({ error: 'No generated report to send. Run the report first.' });
+        const { getNotificationSettings } = require('./settings');
+        const config = getNotificationSettings();
+        if (!config.smtpHost || !config.smtpFrom) {
+          return res.status(409).json({ error: 'SMTP is not configured. Set at least the server and from address under Global Settings > Alert Notifications.' });
+        }
+        const to = String((req.body && req.body.recipients) || '').trim() || config.smtpRecipients;
+        if (!to) return res.status(400).json({ error: 'No recipients. Enter addresses or set default alert recipients in Global Settings.' });
+        const noun = typeof spec.noun === 'function' ? spec.noun(params) : spec.noun;
+        await sendCachedReportEmail({ platformLabel, noun, cached, config, to });
+        logger.info(`[${platform}Advisor] ${reportKey} emailed on request to ${to}`);
+        res.json({ ok: true, to });
+      } catch (err) {
+        res.status(502).json({ error: `Email failed: ${err.message}` });
+      }
+    };
+  }
+
+  return { REPORTS, SCOPED, isScoped, generateReport, getCachedReport, gatherFor, isConfigured, emailRoute };
 }
 
-module.exports = { createPlatformAdvisor, linReg, parseUtcMs, fmtBytes };
+/** Shared send for an already-fetched cached report (also used by the
+ *  Cohesity advisor, which predates createPlatformAdvisor). */
+async function sendCachedReportEmail({ platformLabel, noun, cached, config, to }) {
+  const alertNotifier = require('./alertNotifier');
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const staleNote = cached.stale ? ' (stale - older than the analysis TTL)' : '';
+  const transport = alertNotifier.createTransport(config);
+  await transport.sendMail({
+    from: config.smtpFrom,
+    to,
+    subject: `[ICC] ${platformLabel} AI Advisor - ${noun}${cached.scope ? ` (${cached.scope})` : ''}`,
+    text: `${noun}\nGenerated ${cached.generatedAt}${staleNote}\n\n${cached.content}\n\n--\nSent on request from the ICC AI Advisor.`,
+    html: `<p style="font-family:sans-serif;font-size:13px"><strong>${esc(noun)}</strong><br>Generated ${esc(cached.generatedAt)}${esc(staleNote)}</p>`
+      + `<pre style="font-family:Consolas,Menlo,monospace;font-size:13px;white-space:pre-wrap">${esc(cached.content)}</pre>`
+      + '<p style="font-family:sans-serif;font-size:11px;color:#667">Sent on request from the ICC AI Advisor.</p>',
+  });
+}
+
+module.exports = { createPlatformAdvisor, sendCachedReportEmail, linReg, parseUtcMs, fmtBytes };

@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 import { BRAND, fmtWhen } from './helpers';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
@@ -210,12 +212,20 @@ export default function PxSettingsPage() {
   };
 
   const canSubmit = form.name.trim() && form.host.trim() && form.tokenId.trim() && (editingId || form.tokenSecret);
+  const [section, setSection] = useState('sources');
+  const SECTIONS = [
+    { key: 'sources', label: 'Servers', icon: Server },
+    { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal },
+    { key: 'notify', label: 'Alert Notifications', icon: BellRing },
+  ];
 
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="Proxmox VE Settings" description="Register Proxmox VE servers — each is polled directly with its own API token" />
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <PlatformSettingsLayout brand={BRAND} label="Proxmox VE" sections={SECTIONS} active={section} onSelect={setSection}>
+      {section === 'sources' && (<>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Server size={15} className="text-brand" /> {editingId ? `Edit — ${form.name || 'server'}` : 'Add a Proxmox server'}</p>
         <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
           An API token with PVEAuditor is sufficient for inventory. Token ID is the full <code>user@realm!name</code> string. The secret is encrypted at rest.
@@ -273,8 +283,10 @@ export default function PxSettingsPage() {
           )}
         </div>
       </div>
+      </>)}
 
-      <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      {section === 'thresholds' && (<>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
           Storage utilization warning/critical percentages, days without a successful backup before a guest is flagged stale, days ahead of TLS certificate expiry to warn, and snapshot age before it's flagged stale.
@@ -315,7 +327,11 @@ export default function PxSettingsPage() {
           </div>
         )}
       </div>
+      </>)}
 
+      {section === 'notify' && <PlatformAlertNotifications platform="proxmox" label="Proxmox VE" />}
+
+      {section === 'sources' && (<>
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Registered Servers</p>
         {servers == null ? (
@@ -378,6 +394,8 @@ export default function PxSettingsPage() {
           The Proxmox VE platform tab itself is enabled from Global Settings (gear icon → Platforms).
         </p>
       </div>
+      </>)}
+      </PlatformSettingsLayout>
 
       {probeServer && <ProbeModal server={probeServer} onClose={() => setProbeServer(null)} />}
     </div>

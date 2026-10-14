@@ -25,7 +25,11 @@ const NOTIFY_PLATFORMS = [
   { key: 'vcenter', label: 'VMware vCenter' },
   { key: 'dell', label: 'Dell (OME)' },
   { key: 'aria', label: 'Aria Automation' },
+  { key: 'aws', label: 'AWS' },
+  { key: 'bluecat', label: 'BlueCat Address Manager' },
   { key: 'brocade', label: 'Brocade SAN' },
+  { key: 'netbackup', label: 'NetBackup' },
+  { key: 'proxmox', label: 'Proxmox VE' },
 ];
 
 export default function AdminSettingsPage() {

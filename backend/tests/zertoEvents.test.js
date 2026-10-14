@@ -80,3 +80,29 @@ describe('GET /api/zerto/events.csv', () => {
     expect(lines[1]).toContain('"has, comma and ""quotes"""');
   });
 });
+
+describe('PUT /api/zerto/alert-types (bulk)', () => {
+  const codes = ['ZTST01', 'ZTST02'];
+  beforeEach(() => {
+    const ins = db.prepare('INSERT OR REPLACE INTO zerto_alert_catalog (alert_type, entity, severity, description, enabled) VALUES (?, ?, ?, ?, 1)');
+    for (const c of codes) ins.run(c, 'VPG', 'Warning', `test ${c}`);
+  });
+
+  it('disables every listed code, ignores unknown ones, and the single-code route still works', async () => {
+    const res = await request(app).put('/api/zerto/alert-types').send({ enabled: false, codes: [...codes, 'ZNOPE9'] });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, enabled: false, changed: 2 });
+    const rows = db.prepare(`SELECT alert_type, enabled FROM zerto_alert_catalog WHERE alert_type IN ('ZTST01', 'ZTST02') ORDER BY alert_type`).all();
+    expect(rows).toEqual([{ alert_type: 'ZTST01', enabled: 0 }, { alert_type: 'ZTST02', enabled: 0 }]);
+
+    const one = await request(app).put('/api/zerto/alert-types/ZTST01').send({ enabled: true });
+    expect(one.status).toBe(200);
+    db.exec("DELETE FROM zerto_alert_catalog WHERE alert_type IN ('ZTST01', 'ZTST02')");
+  });
+
+  it('rejects an empty or missing codes array', async () => {
+    expect((await request(app).put('/api/zerto/alert-types').send({ enabled: true, codes: [] })).status).toBe(400);
+    expect((await request(app).put('/api/zerto/alert-types').send({ enabled: true })).status).toBe(400);
+    db.exec("DELETE FROM zerto_alert_catalog WHERE alert_type IN ('ZTST01', 'ZTST02')");
+  });
+});

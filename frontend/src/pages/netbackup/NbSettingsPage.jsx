@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, Cloud, Server, HardDrive, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Plus, X, PlugZap, Save } from 'lucide-react';
+import { Settings, Cloud, Server, HardDrive, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Plus, X, PlugZap, Save, SlidersHorizontal } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
+import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
+import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
 import { BRAND, fmtWhen } from './helpers';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
@@ -11,6 +13,12 @@ const TABS = [
   { key: 'alta', label: 'Alta (SaaS)', icon: Cloud, sourceType: 'alta' },
   { key: 'primary', label: 'Primary Servers (Direct)', icon: Server, sourceType: 'primary' },
   { key: 'hardware', label: 'Appliance Hardware', icon: HardDrive, sourceType: 'hardware' },
+];
+
+const SECTIONS = [
+  ...TABS.map((t) => ({ ...t, group: 'Connections' })),
+  { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal, group: 'Alerts' },
+  { key: 'notify', label: 'Alert Notifications', icon: BellRing, group: 'Alerts' },
 ];
 
 const ALTA_EMPTY = { name: '', host: '', apiKey: '', pollingIntervalMinutes: 15 };
@@ -23,29 +31,16 @@ const PRIMARY_EMPTY = {
 export default function NbSettingsPage() {
   const [tab, setTab] = useState('alta');
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in">
       <PageHeader icon={Settings} title="NetBackup Settings" description="Register Alta (SaaS) or on-prem primary servers" />
 
-      <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 self-start w-fit mb-4">
-        {TABS.map(t => {
-          const Icon = t.icon;
-          const active = tab === t.key;
-          return (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
-                active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
-              }`}>
-              <Icon size={13} className={active ? 'text-brand' : ''} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
-
+      <PlatformSettingsLayout brand={BRAND} label="NetBackup" sections={SECTIONS} active={tab} onSelect={setTab}>
       {tab === 'alta' && <SourcesTab sourceType="alta" />}
       {tab === 'primary' && <SourcesTab sourceType="primary" />}
       {tab === 'hardware' && <ApplianceHardwareTab />}
-
-      {tab !== 'hardware' && <AlertThresholdsPanel />}
+      {tab === 'thresholds' && <AlertThresholdsPanel />}
+      {tab === 'notify' && <PlatformAlertNotifications platform="netbackup" label="NetBackup" />}
+      </PlatformSettingsLayout>
     </div>
   );
 }
@@ -622,14 +617,14 @@ function AlertThresholdsPanel() {
 
   if (cfg == null) {
     return (
-      <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <LoadingPanel label="Loading thresholds…" height={80} />
       </div>
     );
   }
 
   return (
-    <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+    <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
       <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><BellRing size={15} className="text-brand" /> Alert Thresholds</p>
       <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
         Thresholds that drive the computed issues feed — success rate, storage headroom and stale-backup detection.

@@ -34,8 +34,14 @@ function fmtWhen(iso) {
   return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
 }
 
-function CurrentIssuesPanel({ cfg, rows }) {
-  const list = rows || [];
+function CurrentIssuesPanel({ cfg, rows, history }) {
+  // Computed issues carry no timestamp of their own; their open history row
+  // (same type + target) knows when the condition first appeared, so each
+  // open issue shows a Since time. Unmatched rows show a dash, never a guess.
+  const sinceByKey = new Map((history || [])
+    .filter((h) => h.status === 'open')
+    .map((h) => [`${h.type}|${h.target || ''}`, h.first_seen]));
+  const list = (rows || []).map((i) => ({ ...i, since: sinceByKey.get(`${i.type}|${i.target || ''}`) || null }));
   const ctl = useTableControls(list, {
     searchKeys: ['message', 'type', 'target', cfg.instanceKey],
     defaultSortKey: 'severity', defaultSortDir: 'asc',
@@ -47,6 +53,7 @@ function CurrentIssuesPanel({ cfg, rows }) {
     { label: cfg.instanceLabel, get: (i) => i[cfg.instanceKey] },
     { label: 'Target', get: (i) => i.target },
     { label: 'Message', get: (i) => i.message },
+    { label: 'Open Since', get: (i) => i.since || '' },
   ];
   return (
     <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${cfg.brand}` }}>
@@ -71,6 +78,7 @@ function CurrentIssuesPanel({ cfg, rows }) {
               <SortTh k={cfg.instanceKey} label={cfg.instanceLabel} ctl={ctl} />
               <SortTh k="target" label="Target" ctl={ctl} />
               <th className="py-2 pr-3">Message</th>
+              <SortTh k="since" label="Open Since" ctl={ctl} />
             </tr></thead>
             <tbody>
               {ctl.pageRows.map((i, idx) => (
@@ -80,6 +88,7 @@ function CurrentIssuesPanel({ cfg, rows }) {
                   <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{i[cfg.instanceKey] || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted max-w-[220px] truncate" title={i.target || ''}>{i.target || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted text-xs max-w-[460px]">{i.message || '—'}</td>
+                  <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(i.since)}</td>
                 </tr>
               ))}
             </tbody>
@@ -92,29 +101,32 @@ function CurrentIssuesPanel({ cfg, rows }) {
 }
 
 function HistoryPanel({ cfg, rows }) {
-  const list = rows || [];
+  // Open issues live in the panel above (with their Since time); history is
+  // strictly the resolved record, so nothing appears in both tables. The
+  // fetch still returns open rows because the open panel joins on them.
+  const list = (rows || []).filter((h) => h.status !== 'open');
   const ctl = useTableControls(list, {
-    searchKeys: ['message', 'type', 'target', 'instance', 'vcenter'],
-    defaultSortKey: 'last_seen', defaultSortDir: 'desc',
+    searchKeys: ['message', 'type', 'target', 'instance', 'vcenter', 'source'],
+    defaultSortKey: 'resolved_at', defaultSortDir: 'desc',
     paginate: true,
   });
   return (
     <div className="panel p-4" style={{ borderTop: `3px solid ${cfg.brand}` }}>
-      <div className="text-xs font-semibold text-ink mb-2">Issue History <span className="text-ink-faint font-normal">— when each issue was first detected and when it resolved</span></div>
-      <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter history…"
-        filters={[{ k: 'status', label: 'Statuses' }, { k: 'severity', label: 'Severities' }, { k: 'type', label: 'Types' }]} />
+      <div className="text-xs font-semibold text-ink mb-2">Resolved Issues <span className="text-ink-faint font-normal">— when each was first detected and when it cleared; anything still open is in the panel above</span></div>
+      <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter resolved issues…"
+        filters={[{ k: 'severity', label: 'Severities' }, { k: 'type', label: 'Types' }]} />
       {rows == null ? (
         <LoadingPanel label="Loading history…" height={140} />
       ) : list.length === 0 ? (
-        <div className="text-sm text-ink-muted py-6 text-center">No issue history in the selected window.</div>
+        <div className="text-sm text-ink-muted py-6 text-center">No issues resolved in the selected window.</div>
       ) : ctl.rows.length === 0 ? (
-        <div className="text-sm text-ink-muted py-6 text-center">No history matches your filters.</div>
+        <div className="text-sm text-ink-muted py-6 text-center">No resolved issues match your filters.</div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-              <SortTh k="status" label="Status" ctl={ctl} />
-              <SortTh k="severity" label="Severity" ctl={ctl} />
+              <th className="py-2 pr-3">Status</th>
+              <SortTh k="severity" label="Was" ctl={ctl} />
               <SortTh k="type" label="Type" ctl={ctl} />
               <SortTh k="target" label="Target" ctl={ctl} />
               <th className="py-2 pr-3">Message</th>
@@ -124,13 +136,13 @@ function HistoryPanel({ cfg, rows }) {
             <tbody>
               {ctl.pageRows.map((h) => (
                 <tr key={h.id} className="border-b border-cohesity-border/50">
-                  <td className="py-2 pr-3"><Badge tone={h.status === 'open' ? 'crit' : 'ok'}>{h.status}</Badge></td>
+                  <td className="py-2 pr-3"><Badge tone="ok">Resolved</Badge></td>
                   <td className="py-2 pr-3"><Badge tone={sevTone(h.severity)}>{h.severity || '—'}</Badge></td>
                   <td className="py-2 pr-3 text-ink-muted text-[11px] whitespace-nowrap">{h.type || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted max-w-[200px] truncate" title={h.target || ''}>{h.target || '—'}</td>
                   <td className="py-2 pr-3 text-ink-muted text-xs max-w-[380px]">{h.message || '—'}</td>
                   <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(h.first_seen)}</td>
-                  <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{h.status === 'open' ? '—' : fmtWhen(h.resolved_at)}</td>
+                  <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(h.resolved_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -172,7 +184,7 @@ export default function IssueAlertsPage({ platform }) {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
-      <CurrentIssuesPanel cfg={cfg} rows={issues} />
+      <CurrentIssuesPanel cfg={cfg} rows={issues} history={history} />
       <HistoryPanel cfg={cfg} rows={history} />
     </div>
   );

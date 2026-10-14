@@ -615,4 +615,7 @@ function describeApiError(err) {
   return err?.message || 'Connection failed';
 }
 
+// Ad-hoc email of the cached advisor report (user-clicked, never scheduled).
+router.post('/advisor/:report/email', pureAdvisor.emailRoute('Pure'));
+
 module.exports = router;

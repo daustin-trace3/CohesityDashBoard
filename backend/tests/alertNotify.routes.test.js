@@ -138,6 +138,48 @@ describe('PUT /api/alert-notify/:platform/types/:type', () => {
   });
 });
 
+describe('PUT /api/alert-notify/:platform/types (bulk)', () => {
+  const putTypes = (platform, body) => request(app).put(`/api/alert-notify/${platform}/types`).set('x-api-key', API_KEY).send(body);
+
+  it('mutes every listed type in one call, ignores unknown types, and leaves other platforms alone', async () => {
+    const ins = db.prepare(`
+      INSERT INTO alert_notify_types (platform, type, label, enabled, first_seen, last_seen)
+      VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+    `);
+    ins.run('netbackup', 'job-failed', 'job-failed');
+    ins.run('netbackup', 'stale-source', 'stale-source');
+    ins.run('proxmox', 'job-failed', 'job-failed');
+
+    const res = await putTypes('netbackup', { enabled: false, types: ['job-failed', 'stale-source', 'no-such-type'] });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, platform: 'netbackup', enabled: false, changed: 2 });
+
+    const rows = db.prepare('SELECT platform, type, enabled FROM alert_notify_types ORDER BY platform, type').all();
+    expect(rows).toEqual([
+      { platform: 'netbackup', type: 'job-failed', enabled: 0 },
+      { platform: 'netbackup', type: 'stale-source', enabled: 0 },
+      { platform: 'proxmox', type: 'job-failed', enabled: 1 },
+    ]);
+
+    const back = await putTypes('netbackup', { enabled: true, types: ['job-failed'] });
+    expect(back.body.changed).toBe(1);
+  });
+
+  it('rejects a missing enabled flag or an empty types array', async () => {
+    expect((await putTypes('cohesity', { types: ['kDisk'] })).status).toBe(400);
+    expect((await putTypes('cohesity', { enabled: true, types: [] })).status).toBe(400);
+  });
+
+  it('404s for an unknown platform', async () => {
+    expect((await putTypes('not-a-real-platform', { enabled: true, types: ['x'] })).status).toBe(404);
+  });
+
+  it('accepts netbackup and proxmox on GET', async () => {
+    expect((await get('netbackup')).status).toBe(200);
+    expect((await get('proxmox')).status).toBe(200);
+  });
+});
+
 describe('POST /api/alert-notify/:platform/test', () => {
   afterEach(() => {
     delete process.env.DASHBOARD_DEMO;

@@ -227,3 +227,68 @@ describe('platform AI advisors: dispatcher routes', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('platform AI advisors: email route', () => {
+  const db = require('../db/database');
+  const { setSetting } = require('../services/settings');
+  const alertNotifier = require('../services/alertNotifier');
+  let app;
+  const slug = (key) => key.replace(/_/g, '-');
+  const SMTP_KEYS = ['smtp_host', 'smtp_from', 'smtp_recipients'];
+
+  beforeEach(() => {
+    registry._reset();
+    registry.init();
+    for (const m of [pureManifest, netappManifest, zertoManifest, vcenterManifest, dellManifest, ariaManifest,
+      netbackupManifest, awsManifest, bluecatManifest, ariaopsManifest, brocadeManifest]) registry.registerPlugin(m);
+    app = createApp({ licenseGate: (req, res, next) => next() });
+    for (const k of SMTP_KEYS) setSetting(k, '');
+    db.exec("DELETE FROM zerto_ai_reports WHERE report_key = 'dr_readiness'");
+    db.exec("DELETE FROM ai_reports WHERE report_key = 'dr_readiness'");
+    alertNotifier._reset();
+  });
+
+  for (const [platform, advisor] of Object.entries(ADVISORS)) {
+    it(`POST /api/${platform}/advisor/:report/email is mounted and 404s with no cached report`, async () => {
+      const key = advisor.REPORTS.find((k) => !advisor.isScoped(k));
+      const res = await request(app).post(`/api/${platform}/advisor/${slug(key)}/email`).set('x-api-key', API_KEY).send({});
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('No generated report to send. Run the report first.');
+    });
+  }
+
+  it('409s when SMTP is not configured (dash slug resolves to the underscore key)', async () => {
+    db.prepare("INSERT INTO zerto_ai_reports (report_key, model, content, generated_at) VALUES ('dr_readiness', 'm', '# DR', datetime('now'))").run();
+    const res = await request(app).post('/api/zerto/advisor/dr-readiness/email').set('x-api-key', API_KEY).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('SMTP is not configured. Set at least the server and from address under Global Settings > Alert Notifications.');
+  });
+
+  it('sends the cached report to the default alert list when SMTP has host + from', async () => {
+    db.prepare("INSERT INTO zerto_ai_reports (report_key, model, content, generated_at) VALUES ('dr_readiness', 'm', '# DR <b>', datetime('now'))").run();
+    setSetting('smtp_host', 'smtp.example.com');
+    setSetting('smtp_from', 'icc@example.com');
+    setSetting('smtp_recipients', 'ops@example.com');
+    const sent = [];
+    alertNotifier._setTransportFactory(() => ({ sendMail: async (m) => { sent.push(m); } }));
+    const res = await request(app).post('/api/zerto/advisor/dr-readiness/email').set('x-api-key', API_KEY).send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, to: 'ops@example.com' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].subject).toBe('[ICC] Zerto AI Advisor - DR readiness report');
+    expect(sent[0].html).toContain('# DR &lt;b&gt;');
+    alertNotifier._reset();
+    for (const k of SMTP_KEYS) setSetting(k, '');
+  });
+
+  it('Cohesity POST /api/cohesity/advisor/:report/email 404s with no report and 409s without SMTP', async () => {
+    const none = await request(app).post('/api/cohesity/advisor/dr-readiness/email').set('x-api-key', API_KEY).send({});
+    expect(none.status).toBe(404);
+    expect(none.body.error).toBe('No generated report to send. Run the report first.');
+    db.prepare("INSERT INTO ai_reports (report_key, model, content, generated_at) VALUES ('dr_readiness', 'm', '# DR', datetime('now'))").run();
+    const res = await request(app).post('/api/cohesity/advisor/dr-readiness/email').set('x-api-key', API_KEY).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/^SMTP is not configured/);
+    db.exec("DELETE FROM ai_reports WHERE report_key = 'dr_readiness'");
+  });
+});
