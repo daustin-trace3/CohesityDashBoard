@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
@@ -151,9 +151,11 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
               {inc.humanRequired === true && <Badge tone="crit">human required</Badge>}
               {inc.humanRequired === false && <Badge tone="ok">no human needed</Badge>}
               {inc.healAttempted && <Badge tone="info">re-poll attempted</Badge>}
+              {inc.teamsNotifiedAt && <span title={`Last posted ${timeAgo(inc.teamsNotifiedAt)}`}><Badge tone="ok">posted to Teams</Badge></span>}
               {inc.model && a?.source === 'ai' && <span className="text-[11px] text-ink-faint">analysis by {inc.model}</span>}
             </div>
             {inc.triageError && <p className="text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5 mb-3">{inc.triageError}</p>}
+            {inc.teamsError && <p className="text-[11px] text-red-400 bg-red-400/10 border border-red-400/30 rounded-md px-2.5 py-1.5 mb-3">Teams post failed: {inc.teamsError}</p>}
             {inc.emailError && <p className="text-[11px] text-red-400 bg-red-400/10 border border-red-400/30 rounded-md px-2.5 py-1.5 mb-3">Email failed: {inc.emailError}</p>}
             {inc.baseline && !inc.emailTo && <p className="text-[11px] text-ink-faint mb-3">Found on the agent's first pass: a backlog that existed before the agent started, triaged and listed but not emailed. Use Send email if it should go out.</p>}
             {inc.resolution && (
@@ -273,7 +275,9 @@ export default function OpsAgentPage() {
   const [rows, setRows] = useState(null);
   const [scope, setScope] = useState('open');
   const [lastRefreshed, setLastRefreshed] = useState(null);
-  const [openId, setOpenId] = useState(null);
+  // ?incident=<id> (the Open in ICC link on a Teams card) opens that incident.
+  const [params] = useSearchParams();
+  const [openId, setOpenId] = useState(() => { const n = Number(params.get('incident')); return Number.isInteger(n) && n > 0 ? n : null; });
   const [running, setRunning] = useState(false);
   const [pulse, setPulse] = useState('');
   const pulseRef = useRef(null);

@@ -21,15 +21,18 @@ const registry = require('../core/registry');
 const { chatCompletion, resolveProvider, isConfigured } = require('./llmProvider');
 const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
-const { getSetting, setSetting, getNotificationSettings, getOpsAgentSettings } = require('./settings');
+const { getSetting, setSetting, getNotificationSettings, getOpsAgentSettings, getTeamsWebhook } = require('./settings');
 const { platformMeta } = require('./platformMeta');
 const capabilities = require('./agentCapabilities');
+const teams = require('./opsAgentTeams');
+const { isDemo } = require('./demoMode');
 
 const RANK = { info: 0, informational: 0, normal: 0, warning: 1, warn: 1, minor: 1, error: 2, major: 2, critical: 3, emergency: 3, fatal: 3 };
 const SEVERITY_ORDER = ['info', 'warning', 'error', 'critical'];
 const WIDE_BURST = 10;            // new alerts on one platform in one tick = platform-wide
 const HOST_EVIDENCE_CAP = 3;      // hosts per incident that get a full evidence gather
 const EMAIL_RETRY_MINUTES = 10;
+const TEAMS_RETRY_MINUTES = 10;   // a failed Teams post waits this long before the next try
 const RUN_LOG_DAYS = 7;
 const COLD_START_HOURS = 24;     // no tick for this long = the alerts found are a backlog, not news
 const EVIDENCE_RECHECK_MINUTES = 60; // how often one incident may be re-asked whether it is fixed
@@ -289,7 +292,7 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
       // Inside the cooldown, a clearing incident whose alerts return still
       // leaves 'clearing' (the quiet-close clock must not run while an alert
       // is live); it goes back to its post-triage state without a new triage.
-      const nextState = reopen ? 'collecting' : (inc.state === 'clearing' ? (inc.notified_at ? 'notified' : 'triaged') : inc.state);
+      const nextState = reopen ? 'collecting' : (inc.state === 'clearing' ? (inc.notified_at || inc.teams_notified_at ? 'notified' : 'triaged') : inc.state);
       db.prepare(`
         UPDATE ops_incidents SET platforms = ?, severity = ?, last_event_at = ?, event_count = event_count + 1,
           cleared_since = NULL,
@@ -944,6 +947,80 @@ async function notifyIncident(inc, settings, config, { force = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Teams
+// ---------------------------------------------------------------------------
+
+// Last failed Teams post per incident, so a broken workflow URL is retried
+// every TEAMS_RETRY_MINUTES instead of every tick. In memory: a restart
+// simply allows one more try.
+const teamsLastFail = new Map(); // single-tenant branch: one map for the install
+
+/** Why an automatic Teams post must not be attempted, or null when it may be.
+ *  Independent of SMTP: Teams is its own channel. */
+function teamsBlockedReason(settings) {
+  if (isDemo()) return 'demo mode';
+  if (!settings.teamsEnabled) return 'Teams is switched off';
+  if (!settings.teamsWebhookSet) return 'no Teams workflow URL is stored';
+  return null;
+}
+
+// Single-tenant branch: no tenant segment in the deep link.
+function currentTenant() {
+  return null;
+}
+
+function teamsOpts(settings, extra = {}) {
+  return { agentName: settings.name, baseUrl: settings.iccBaseUrl, tenantId: currentTenant(), ...extra };
+}
+
+/** Post an incident card. A success moves the incident to 'notified' (the
+ *  email columns are left alone); a failure stores teams_error. */
+async function notifyTeams(inc, settings) {
+  if (isDemo()) return { skipped: 'demo mode' };
+  const blocked = teamsBlockedReason(settings);
+  if (blocked) return { skipped: blocked };
+  const url = getTeamsWebhook();
+  if (!url) return { skipped: 'the stored Teams workflow URL could not be read' };
+  let analysis = null;
+  try { analysis = JSON.parse(inc.analysis_json || 'null'); } catch { analysis = null; }
+  if (!analysis) analysis = fallbackTriage(gatherIncidentEvidence(inc, incidentAlerts(inc.id)));
+  const update = !!inc.teams_notified_at;
+  const card = teams.buildCard(inc, analysis, teamsOpts(settings, { update }));
+  const now = new Date().toISOString();
+  try {
+    const r = await teams.postCard(url, card);
+    if (r && r.skipped) return r;
+    db.prepare("UPDATE ops_incidents SET state = 'notified', teams_notified_at = ?, teams_error = NULL WHERE id = ?").run(now, inc.id);
+    teamsLastFail.delete(inc.id);
+    act('posted to Teams', `#${inc.id} ${update ? '(update)' : '(first notice)'}`);
+    return { sent: true };
+  } catch (err) {
+    db.prepare('UPDATE ops_incidents SET teams_error = ? WHERE id = ?').run(String(err.message).slice(0, 500), inc.id);
+    teamsLastFail.set(inc.id, Date.now());
+    logger.error(`[OpsAgent] Teams post failed for incident #${inc.id}: ${err.message}`);
+    return { error: err.message };
+  }
+}
+
+/** Resolution card for an incident that had been posted to Teams. */
+async function notifyTeamsResolved(inc, settings) {
+  if (!inc.teams_notified_at || !settings.teamsOnResolve) return false;
+  if (teamsBlockedReason(settings)) return false;
+  const url = getTeamsWebhook();
+  if (!url) return false;
+  try {
+    const r = await teams.postCard(url, teams.buildResolvedCard(inc, teamsOpts(settings)));
+    if (r && r.skipped) return false;
+    act('posted to Teams', `#${inc.id} resolution`);
+    return true;
+  } catch (err) {
+    db.prepare('UPDATE ops_incidents SET teams_error = ? WHERE id = ?').run(String(err.message).slice(0, 500), inc.id);
+    logger.error(`[OpsAgent] Teams resolution post failed for incident #${inc.id}: ${err.message}`);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
 
@@ -958,6 +1035,7 @@ function closeIncident(id, { now, resolution, classification = null, by = 'agent
 
 /** Closure note for an incident that had already been emailed. */
 async function notifyResolved(inc, settings, config) {
+  await notifyTeamsResolved(inc, settings);
   if (!inc.notify_count) return false;
   if (emailBlockedReason(settings, config)) return false;
   const to = inc.email_to || recipientsFor(inc, settings, config);
@@ -1175,7 +1253,7 @@ async function runOnce({ force = false } = {}) {
   const now = new Date().toISOString();
   runStartedAt = Date.now();
   markTick(now);
-  const stats = { at: now, alertsSeen: 0, newAlerts: 0, incidentsOpened: 0, triaged: 0, emailsSent: 0, healAttempts: 0, resolvedQuiet: 0, resolvedEvidence: 0, closureEmails: 0, error: null };
+  const stats = { at: now, alertsSeen: 0, newAlerts: 0, incidentsOpened: 0, triaged: 0, emailsSent: 0, teamsPosted: 0, healAttempts: 0, resolvedQuiet: 0, resolvedEvidence: 0, closureEmails: 0, error: null };
   try {
     // First tick after a long silence: what it finds is a backlog. Those
     // incidents are triaged and shown, flagged baseline, and not emailed.
@@ -1214,23 +1292,42 @@ async function runOnce({ force = false } = {}) {
     }
 
     // Notify: triaged incidents, first time or a re-notify after growth.
+    // Email and Teams are two independent channels; a send on either moves
+    // the incident to 'notified', and each keeps its own renotify clock.
     const blocked = emailBlockedReason(settings, config);
-    const toNotify = blocked ? [] : db.prepare("SELECT * FROM ops_incidents WHERE state = 'triaged'").all();
+    const teamsBlocked = teamsBlockedReason(settings);
+    const toNotify = blocked && teamsBlocked ? [] : db.prepare("SELECT * FROM ops_incidents WHERE state = 'triaged'").all();
     if (blocked) {
       const waiting = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE state = 'triaged'").get().c;
       if (waiting) logger.info(`[OpsAgent] ${waiting} incident(s) triaged, no email sent: ${blocked}`);
     }
+    const insideWindow = (at) => at && Date.parse(at) > Date.now() - settings.renotifyMinutes * 60000;
     for (const inc of toNotify) {
-      if (inc.baseline && !inc.notify_count) { db.prepare("UPDATE ops_incidents SET state = 'notified' WHERE id = ?").run(inc.id); continue; }
-      if (inc.email_attempt_at && inc.email_error && Date.parse(inc.email_attempt_at) > Date.now() - EMAIL_RETRY_MINUTES * 60000) continue;
-      if (inc.notify_count > 0) {
-        if (settings.renotifyMinutes <= 0) { db.prepare("UPDATE ops_incidents SET state = 'notified' WHERE id = ?").run(inc.id); continue; }
-        if (inc.notified_at && Date.parse(inc.notified_at) > Date.now() - settings.renotifyMinutes * 60000) continue;
+      if (inc.baseline && !inc.notify_count && !inc.teams_notified_at) { db.prepare("UPDATE ops_incidents SET state = 'notified' WHERE id = ?").run(inc.id); continue; }
+      let emailDue = !blocked;
+      if (emailDue && inc.email_attempt_at && inc.email_error && Date.parse(inc.email_attempt_at) > Date.now() - EMAIL_RETRY_MINUTES * 60000) emailDue = false;
+      if (emailDue && inc.notify_count > 0 && (settings.renotifyMinutes <= 0 || insideWindow(inc.notified_at))) emailDue = false;
+      let teamsDue = !teamsBlocked;
+      const lastFail = teamsLastFail.get(inc.id);
+      if (teamsDue && lastFail && lastFail > Date.now() - TEAMS_RETRY_MINUTES * 60000) teamsDue = false;
+      if (teamsDue && inc.teams_notified_at && (settings.renotifyMinutes <= 0 || insideWindow(inc.teams_notified_at))) teamsDue = false;
+      if (!emailDue && !teamsDue) {
+        // Re-notify off and already sent on a channel: this growth will never
+        // go out again, so it counts as notified.
+        if (settings.renotifyMinutes <= 0 && (inc.notify_count > 0 || inc.teams_notified_at)) db.prepare("UPDATE ops_incidents SET state = 'notified' WHERE id = ?").run(inc.id);
+        continue;
       }
-      const r = await notifyIncident(inc, settings, config);
-      if (r.sent) { stats.emailsSent += 1; act('emailed incident', `#${inc.id} to ${r.to}${inc.notify_count ? ` (update ${inc.notify_count + 1})` : ' (first notice)'}`); }
-      else if (r.skipped) logger.info(`[OpsAgent] incident #${inc.id} triaged, email skipped (${r.skipped})`);
-      else logger.error(`[OpsAgent] email failed for #${inc.id} via ${config.smtpHost}:${config.smtpPort}: ${r.error}`);
+      if (emailDue) {
+        const r = await notifyIncident(inc, settings, config);
+        if (r.sent) { stats.emailsSent += 1; act('emailed incident', `#${inc.id} to ${r.to}${inc.notify_count ? ` (update ${inc.notify_count + 1})` : ' (first notice)'}`); }
+        else if (r.skipped) logger.info(`[OpsAgent] incident #${inc.id} triaged, email skipped (${r.skipped})`);
+        else logger.error(`[OpsAgent] email failed for #${inc.id} via ${config.smtpHost}:${config.smtpPort}: ${r.error}`);
+      }
+      if (teamsDue) {
+        const t = await notifyTeams(inc, settings);
+        if (t.sent) stats.teamsPosted += 1;
+        else if (t.skipped) logger.info(`[OpsAgent] incident #${inc.id} triaged, Teams post skipped (${t.skipped})`);
+      }
     }
   } catch (err) {
     stats.error = err.message;
@@ -1240,9 +1337,9 @@ async function runOnce({ force = false } = {}) {
       db.prepare('INSERT INTO ops_agent_runs (at, alerts_seen, new_alerts, incidents_opened, triaged, emails_sent, error) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(stats.at, stats.alertsSeen, stats.newAlerts, stats.incidentsOpened, stats.triaged, stats.emailsSent, stats.error);
       db.prepare('DELETE FROM ops_agent_runs WHERE at < ?').run(isoAgo(RUN_LOG_DAYS * 86400000));
-      const did = stats.incidentsOpened + stats.triaged + stats.emailsSent + stats.healAttempts + stats.resolvedQuiet + stats.resolvedEvidence;
+      const did = stats.incidentsOpened + stats.triaged + stats.emailsSent + stats.teamsPosted + stats.healAttempts + stats.resolvedQuiet + stats.resolvedEvidence;
       if (did) {
-        logger.info(`[OpsAgent] tick: ${stats.alertsSeen} alerts seen, ${stats.newAlerts} new, ${stats.incidentsOpened} opened, ${stats.healAttempts} re-poll(s), ${stats.triaged} triaged, ${stats.emailsSent} emailed, ${stats.resolvedQuiet + stats.resolvedEvidence} resolved`);
+        logger.info(`[OpsAgent] tick: ${stats.alertsSeen} alerts seen, ${stats.newAlerts} new, ${stats.incidentsOpened} opened, ${stats.healAttempts} re-poll(s), ${stats.triaged} triaged, ${stats.emailsSent} emailed, ${stats.teamsPosted} posted to Teams, ${stats.resolvedQuiet + stats.resolvedEvidence} resolved`);
       }
     } catch (err) {
       // Swallowing this is why a stalled "last tick" could not be explained.
@@ -1270,6 +1367,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
     kind: row.incident_key.startsWith('app:') ? 'app-service' : row.incident_key.endsWith(':wide') ? 'platform-wide' : row.incident_key.startsWith('src:') ? 'source' : 'host',
     healAttempted: !!row.heal_attempted, healAt: row.heal_at || null,
     resolution: row.resolution || null, clearedSince: row.cleared_since || null,
+    teamsNotifiedAt: row.teams_notified_at || null, teamsError: row.teams_error || null,
   };
   try { out.healActions = JSON.parse(row.heal_actions_json || '[]'); } catch { out.healActions = []; }
   let a = null;
@@ -1322,12 +1420,13 @@ function pulse() {
   const a = db.prepare(`SELECT COUNT(*) n,
       COALESCE(MAX(opened_at), '') o, COALESCE(MAX(last_event_at), '') e, COALESCE(MAX(triaged_at), '') t,
       COALESCE(MAX(notified_at), '') nt, COALESCE(MAX(resolved_at), '') r, COALESCE(MAX(cleared_since), '') c,
+      COALESCE(MAX(teams_notified_at), '') tm,
       COALESCE(SUM(notify_count), 0) s
     FROM ops_incidents`).get();
   const open = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE state != 'resolved'").get().c;
   const run = db.prepare('SELECT at FROM ops_agent_runs ORDER BY id DESC LIMIT 1').get();
   return {
-    token: [a.n, open, a.o, a.e, a.t, a.nt, a.r, a.c, a.s, run?.at || ''].join('|'),
+    token: [a.n, open, a.o, a.e, a.t, a.nt, a.r, a.c, a.tm, a.s, run?.at || ''].join('|'),
     lastRunAt: run?.at || null,
     openIncidents: open,
   };
@@ -1387,8 +1486,8 @@ function resolve(id, by) {
   return getIncident(id);
 }
 
-/** Preview or send a sample incident email built from a synthetic incident. */
-function sampleEmail(agentName = getOpsAgentSettings().name) {
+/** The synthetic incident behind the sample email and the sample Teams card. */
+function sampleIncident() {
   const inc = { id: 0, title: 'Sample: esx-demo-01 lost a SAN path', host: 'esx-demo-01', platforms: JSON.stringify(['vcenter', 'brocade']), severity: 'critical', opened_at: new Date().toISOString(), notify_count: 0, model: null };
   const alerts = [
     { platform: 'vcenter', severity: 'critical', host: 'esx-demo-01', message: 'Datastore DS-PROD-07 inaccessible on host', first_seen: inc.opened_at },
@@ -1409,7 +1508,32 @@ function sampleEmail(agentName = getOpsAgentSettings().name) {
     started: inc.opened_at, finished: inc.opened_at,
     error: 'KInvalidError: Datastore DS-PROD-07 is inaccessible on host esx-demo-01; snapshot could not be taken.',
   }];
+  return { inc, alerts, analysis, failedJobs };
+}
+
+/** Preview or send a sample incident email built from a synthetic incident. */
+function sampleEmail(agentName = getOpsAgentSettings().name) {
+  const { inc, alerts, analysis, failedJobs } = sampleIncident();
   return renderEmail(inc, alerts, analysis, { agentName, failedJobs });
+}
+
+/** The sample incident as a Teams card, so the shape can be previewed. */
+function sampleTeamsCard(settings = getOpsAgentSettings()) {
+  const { inc, analysis } = sampleIncident();
+  return teams.buildCard(inc, analysis, teamsOpts(settings));
+}
+
+/** Post the sample card to the stored workflow URL (Settings > Send test card).
+ *  Works with the Teams switch off, so the URL can be checked before enabling. */
+async function sendSampleTeams() {
+  if (isDemo()) { const e = new Error('The demo never posts to Teams.'); e.code = 'TEAMS_NOT_CONFIGURED'; throw e; }
+  const settings = getOpsAgentSettings();
+  const url = settings.teamsWebhookSet ? getTeamsWebhook() : '';
+  if (!url) { const e = new Error('No Teams workflow URL is stored. Paste one and save first.'); e.code = 'TEAMS_NOT_CONFIGURED'; throw e; }
+  const r = await teams.postCard(url, sampleTeamsCard(settings));
+  if (r && r.skipped) { const e = new Error(`Not sent: ${r.skipped}.`); e.code = 'TEAMS_NOT_CONFIGURED'; throw e; }
+  act('posted to Teams', 'sample card (test from Settings)');
+  return { sent: true };
 }
 
 async function sendSampleEmail() {
@@ -1443,6 +1567,7 @@ function stopOpsAgent() {
 
 module.exports = {
   runOnce, status, pulse, listIncidents, getIncident, retriage, resend, resolve, sampleEmail, sendSampleEmail,
+  sampleTeamsCard, sendSampleTeams, notifyTeams, notifyResolved, teamsBlockedReason,
   initOpsAgent, stopOpsAgent,
   // pure helpers for tests
   hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,

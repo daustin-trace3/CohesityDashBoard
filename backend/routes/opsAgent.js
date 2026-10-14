@@ -4,6 +4,7 @@
 const express = require('express');
 const agent = require('../services/opsAgent');
 const capabilities = require('../services/agentCapabilities');
+const { requirePermission } = require('../middleware/requirePermission');
 
 const router = express.Router();
 
@@ -12,6 +13,8 @@ function fail(res, err) {
   if (err.code === 'LLM_NOT_CONFIGURED') return res.status(503).json({ error: err.message });
   if (err.code === 'LLM_RATE_LIMITED') return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
   if (err.code === 'SMTP_NOT_CONFIGURED' || err.code === 'NO_RECIPIENTS') return res.status(409).json({ error: err.message });
+  if (err.code === 'TEAMS_NOT_CONFIGURED') return res.status(409).json({ error: err.message });
+  if (err.code === 'TEAMS_FAILED') return res.status(502).json({ error: err.message });
   if (err.code === 'SMTP_FAILED' || err.code === 'LLM_REQUEST_FAILED') return res.status(502).json({ error: err.message, detail: err.detail });
   return null;
 }
@@ -94,6 +97,12 @@ router.get('/sample-email', (req, res, next) => {
 
 router.post('/test-email', async (req, res, next) => {
   try { res.json(await agent.sendSampleEmail()); } catch (err) { if (!fail(res, err)) next(err); }
+});
+
+/** Post the sample incident card to the stored Teams workflow URL. Same gate
+ *  as PUT /api/settings, since it spends the saved secret. */
+router.post('/test-teams', requirePermission(() => 'admin:settings:manage'), async (req, res, next) => {
+  try { res.json(await agent.sendSampleTeams()); } catch (err) { if (!fail(res, err)) next(err); }
 });
 
 module.exports = router;

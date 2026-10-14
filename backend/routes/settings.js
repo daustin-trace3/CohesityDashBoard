@@ -38,6 +38,10 @@ const CREDENTIALS = {
   openaiToken: { key: 'openai_token', env: 'OPENAI_TOKEN' },
   githubModelsToken: { key: 'github_models_token', env: 'GITHUB_MODELS_TOKEN' },
   customEndpointToken: { key: 'llm_custom_token', env: 'LLM_CUSTOM_TOKEN' },
+  // Operations Agent Teams workflow URL: the URL itself is the secret (anyone
+  // holding it can post into the channel). Saved through PUT /api/settings
+  // { opsAgent: { teamsWebhook } } as well.
+  teamsWebhook: { key: 'ops_agent_teams_webhook', env: null },
 };
 
 function credentialStatus() {
@@ -109,6 +113,7 @@ router.get('/', (req, res, next) => {
     res.json({
       ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings(),
       opsAgent: getOpsAgentSettings(),
+      iccBaseUrl: getSetting('icc_base_url') || '',
       pollerWatchdogEmailEnabled: getSetting('poller_watchdog_email_enabled') === '1',
       pollerWatchdogRecipients: getSetting('poller_watchdog_recipients') || '',
     });
@@ -254,6 +259,21 @@ router.put('/', (req, res, next) => {
       if (a.emailEnabled !== undefined) setSetting('ops_agent_email_enabled', a.emailEnabled ? '1' : '0');
       if (a.recipients !== undefined) setSetting('ops_agent_recipients', String(a.recipients).trim().slice(0, 2000));
       if (a.capabilities && typeof a.capabilities === 'object') require('../services/agentCapabilities').saveEnabled(a.capabilities);
+      if (a.teamsEnabled !== undefined) setSetting('ops_agent_teams_enabled', a.teamsEnabled ? '1' : '0');
+      if (a.teamsOnResolve !== undefined) setSetting('ops_agent_teams_on_resolve', a.teamsOnResolve ? '1' : '0');
+      // Write-only secret: a URL saves it encrypted, null clears it, a blank
+      // string keeps whatever is stored.
+      if (a.teamsWebhook === null) setSetting(CREDENTIALS.teamsWebhook.key, '');
+      else if (a.teamsWebhook !== undefined && String(a.teamsWebhook).trim()) {
+        const url = String(a.teamsWebhook).trim();
+        if (!/^https:\/\//i.test(url) || url.length > 2000) return res.status(400).json({ error: 'The Teams workflow URL must start with https://.' });
+        setSetting(CREDENTIALS.teamsWebhook.key, encrypt(url));
+      }
+    }
+    if (req.body?.iccBaseUrl !== undefined) {
+      const u = String(req.body.iccBaseUrl || '').trim().replace(/\/+$/, '').slice(0, 500);
+      if (u && !/^https?:\/\/[^\s/]+/i.test(u)) return res.status(400).json({ error: 'The ICC address must start with http:// or https://.' });
+      setSetting('icc_base_url', u);
     }
     if (req.body?.serviceStatusAiEnabled !== undefined) {
       setSetting('service_status_ai_enabled', req.body.serviceStatusAiEnabled ? '1' : '0');

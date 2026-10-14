@@ -213,7 +213,23 @@ function getOpsAgentSettings() {
     patternDays: (() => { const n = Number(getSetting('ops_agent_pattern_days')); return (n >= 1 && n <= 90) ? Math.round(n) : 14; })(),
     emailEnabled: getSetting('ops_agent_email_enabled') !== '0',
     recipients: (getSetting('ops_agent_recipients') || '').trim(),
+    // Teams is a second channel beside email (a Power Automate workflow URL,
+    // stored encrypted and never returned; only whether one is set).
+    teamsEnabled: getSetting('ops_agent_teams_enabled') === '1',
+    teamsOnResolve: getSetting('ops_agent_teams_on_resolve') !== '0',
+    teamsWebhookSet: !!getSetting('ops_agent_teams_webhook'),
+    iccBaseUrl: getIccBaseUrl(),
   };
+}
+
+/** Public address of this ICC, for deep links in notifications. No trailing slash. */
+function getIccBaseUrl() {
+  return String(getSetting('icc_base_url') || '').trim().replace(/\/+$/, '');
+}
+
+/** Decrypted Teams workflow URL, or '' if none stored. */
+function getTeamsWebhook() {
+  return getSecretSetting('ops_agent_teams_webhook', null);
 }
 
 /** Service Status page (contract: critical-alert board + AI analysis cap). */
@@ -255,4 +271,5 @@ module.exports = {
   getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
   getAnalysisTtlHours, getAiSettings, getLicenseSettings, getPlatformSettings,
   getNotificationSettings, getSmtpPassword, getServiceStatusSettings, getOpsAgentSettings, getCohesityAlertWindowDays,
+  getIccBaseUrl, getTeamsWebhook,
 };

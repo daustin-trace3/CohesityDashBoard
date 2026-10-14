@@ -644,4 +644,15 @@ module.exports = [
       `);
     },
   },
+  // Operations Agent Teams channel (services/opsAgentTeams.js): when the
+  // incident was last posted to the Teams workflow, and why the last post
+  // failed. Email keeps its own columns.
+  {
+    version: 27, // feat/multi-tenant numbers this v28; this branch runs one behind
+    up(db) {
+      const cols = new Set(db.prepare('PRAGMA table_info(ops_incidents)').all().map((c) => c.name));
+      if (!cols.has('teams_notified_at')) db.exec('ALTER TABLE ops_incidents ADD COLUMN teams_notified_at TEXT');
+      if (!cols.has('teams_error')) db.exec('ALTER TABLE ops_incidents ADD COLUMN teams_error TEXT');
+    },
+  },
 ];
