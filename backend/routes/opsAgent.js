@@ -3,6 +3,7 @@
 // settings live under /api/settings (admin).
 const express = require('express');
 const agent = require('../services/opsAgent');
+const capabilities = require('../services/agentCapabilities');
 
 const router = express.Router();
 
@@ -63,6 +64,27 @@ router.post('/run', async (req, res, next) => {
   try {
     const stats = await agent.runOnce({ force: true });
     res.json({ ran: Boolean(stats), stats: stats || null, status: agent.status() });
+  } catch (err) { next(err); }
+});
+
+/** The capability catalog with each one's enabled state. Toggles are saved
+ *  through PUT /api/settings { opsAgent: { capabilities: { id: bool } } },
+ *  which carries the admin permission; this read is for the page and the
+ *  incident modal. */
+router.get('/capabilities', (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ capabilities: capabilities.listCapabilities(), riskClasses: capabilities.RISK_CLASSES });
+  } catch (err) { next(err); }
+});
+
+/** Audit trail: what the agent ran, against what, with what result. */
+router.get('/capability-runs', (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
+    const incidentId = req.query.incident ? Number(req.query.incident) : null;
+    res.json(capabilities.listRuns({ limit, incidentId }));
   } catch (err) { next(err); }
 });
 

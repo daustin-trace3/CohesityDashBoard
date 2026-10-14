@@ -6,11 +6,12 @@ import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import AdminNav from '../components/AdminNav';
 import PrivacyInspectorPage from '../components/PrivacyInspectorPage';
+import AgentCapabilitiesPanel from '../components/AgentCapabilitiesPanel';
 import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
 
 // Sections rendered by this page; Users & Access and Plugins are their own
 // routed pages sharing the same AdminNav shell.
-const LOCAL_SECTIONS = ['ai', 'agent', 'agent-privacy', 'platforms', 'license', 'notifications'];
+const LOCAL_SECTIONS = ['ai', 'agent', 'agent-capabilities', 'agent-privacy', 'platforms', 'license', 'notifications'];
 // Sections that read better across the whole column: long AI payloads, not forms.
 const WIDE_SECTIONS = ['agent-privacy'];
 
@@ -849,6 +850,8 @@ export default function AdminSettingsPage() {
 
       {/* Alert Notifications */}
       {/* Operations Agent */}
+      {tab === 'agent-capabilities' && <AgentCapabilitiesPanel />}
+
       {tab === 'agent-privacy' && (
       <div className="flex flex-col gap-3">
         <PrivacyInspectorPage platform="ops-agent" embedded title="Operations Agent privacy"

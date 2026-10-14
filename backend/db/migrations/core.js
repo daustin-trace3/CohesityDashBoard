@@ -617,4 +617,31 @@ module.exports = [
       `);
     },
   },
+  // Operations Agent capabilities (services/agentCapabilities): every live
+  // check the agent ran, against what, with what result. The audit trail a
+  // customer reads to see what the agent touched on their network.
+  {
+    version: 26, // feat/multi-tenant numbers this v27; this branch runs one behind
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ops_capability_runs (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          incident_id    INTEGER,
+          capability     TEXT NOT NULL,
+          risk           TEXT NOT NULL,
+          target_kind    TEXT NOT NULL,
+          platform       TEXT,
+          target_name    TEXT,
+          target_address TEXT,
+          ok             INTEGER NOT NULL DEFAULT 0,
+          summary        TEXT,
+          result_json    TEXT,
+          ran_at         TEXT NOT NULL,
+          duration_ms    INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_capability_runs_time ON ops_capability_runs(ran_at);
+        CREATE INDEX IF NOT EXISTS idx_ops_capability_runs_incident ON ops_capability_runs(incident_id);
+      `);
+    },
+  },
 ];

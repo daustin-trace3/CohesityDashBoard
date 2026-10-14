@@ -23,6 +23,7 @@ const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
 const { getSetting, setSetting, getNotificationSettings, getOpsAgentSettings } = require('./settings');
 const { platformMeta } = require('./platformMeta');
+const capabilities = require('./agentCapabilities');
 
 const RANK = { info: 0, informational: 0, normal: 0, warning: 1, warn: 1, minor: 1, error: 2, major: 2, critical: 3, emergency: 3, fatal: 3 };
 const SEVERITY_ORDER = ['info', 'warning', 'error', 'critical'];
@@ -562,6 +563,8 @@ function fallbackTriage(evidence) {
     if ((h.relatedOtherPlatformEvents || []).length) reviewed.push(`${h.host}: ${h.relatedOtherPlatformEvents.length} open alert(s) on other platforms for the same host`);
   }
   if (!reviewed.length) reviewed.push('No host-level inventory matched these alerts; only the alert text and platform poll state were available.');
+  for (const c of (evidence.liveChecks?.results || [])) reviewed.push(`Live ${c.label || c.capability} on ${c.target.name}${c.target.address && c.target.address !== c.target.name ? ` (${c.target.address})` : ''}: ${c.summary}`);
+  if (evidence.liveChecks && !evidence.liveChecks.ran && evidence.liveChecks.skipped) reviewed.push(`No live checks: ${evidence.liveChecks.skipped}.`);
   const jobs = evidence.failedBackupJobs || [];
   if (jobs.length) reviewed.push(`Backup job log: ${jobs.length} failed or canceled run(s) in 24h on ${[...new Set(jobs.map((j) => j.source).filter(Boolean))].join(', ') || 'the platform'}; the newest is ${jobs[0].job || 'unnamed'} (${jobs[0].status}${jobs[0].error ? `: ${jobs[0].error.slice(0, 120)}` : ''}).`);
   reviewed.push(`Incident history: ${rec.occurrences.length ? `${rec.occurrences.length} earlier occurrence(s) of this same incident in ${rec.windowDays} days, the most recent ${fmtStamp(rec.occurrences[0].openedAt)}` : `none on this key in ${rec.windowDays} days`}.`);
@@ -608,6 +611,10 @@ function buildMessages(evidence, anon) {
     'that reported it. failedBackupJobs lists backup job runs that failed or were canceled in the last 24 hours ' +
     'with the platform\'s own error text; when a backup platform is involved, say which jobs failed and why, ' +
     'quoting the decisive part of the error, and use it in likely_cause and next_steps. ' +
+    'liveChecks, when present, are probes ICC itself ran from its own server at triage time (ping, TCP ports, DNS, ' +
+    'TLS) against the hosts and sources in this incident; quote each result in reviewed and weigh it in likely_cause. ' +
+    'A failed probe means ICC could not reach the target from where it runs, which is not proof the target is down; ' +
+    'a passing probe beside an open "unreachable" alert points at the platform API or credentials, not the network. ' +
     'Say plainly when the evidence is thin. Respond ONLY with a JSON object: ' +
     '{"classification": "incident" | "one-off" | "recurring" | "noise", "confidence": "high"|"medium"|"low", ' +
     '"title": string (under 80 chars), "summary": string[] (1-5 lines, each a single plain sentence under 140 chars ' +
@@ -668,6 +675,11 @@ async function triageIncident(inc, { force = false } = {}) {
   const settings = getOpsAgentSettings();
   const alerts = incidentAlerts(inc.id);
   const evidence = gatherIncidentEvidence(inc, alerts, settings);
+  // Live checks: whatever capabilities the customer switched on, run once
+  // here against the incident's own hosts and sources, before the model sees
+  // the evidence. A retriage runs them again, so the page shows current state.
+  try { evidence.liveChecks = await capabilities.runPlaybook(inc, alerts, { evidence }); }
+  catch (err) { evidence.liveChecks = { ran: false, skipped: `live checks failed: ${err.message}`, results: [] }; }
   const fallback = fallbackTriage(evidence);
   let analysis = { ...fallback, source: 'fallback' };
   let model = null;
@@ -777,7 +789,11 @@ function occurrenceRows(rec, esc) {
   return rec.occurrences.map((o) => `<tr><td style="padding:3px 8px">${esc(fmtStamp(o.openedAt))}</td><td style="padding:3px 8px">${lastedText(o)}</td><td style="padding:3px 8px">${esc(o.closedBy)}</td><td style="padding:3px 8px">${esc(o.resolution || '-')}</td></tr>`).join('');
 }
 
-function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [] } = {}) {
+function liveCheckLine(c) {
+  return `- ${fmtStamp(c.at)}: ${c.label || c.capability} on ${c.target.name}${c.target.address && c.target.address !== c.target.name ? ` (${c.target.address})` : ''}: ${c.ok ? 'OK' : 'FAILED'}, ${c.summary}`;
+}
+
+function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
   const rec = recurrence && recurrence.isPattern ? recurrence : null;
@@ -798,6 +814,8 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const steps = (analysis.next_steps || []).map((s, i) => `${i + 1}. [${s.owner}] ${s.action}`);
   const human = analysis.human_required == null ? null : `Human required: ${analysis.human_required ? 'YES' : 'no'}${analysis.human_reason ? ` (${analysis.human_reason})` : ''}`;
   const did = (healActions || []).map((a) => `- ${fmtStamp(a.at)}: ${a.action} ${a.target}: ${a.result}`);
+  const checks = (liveChecks && liveChecks.results) || [];
+  const checkLines = checks.map(liveCheckLine);
   const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
   const happened = String(analysis.summary || '-').split('\n').map((s) => s.trim()).filter(Boolean);
   const JOB_CAP = 6;
@@ -836,6 +854,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     `WHAT ${agentName.toUpperCase()} REVIEWED`,
     ...(analysis.reviewed || []).map((r) => `- ${r}`),
     ...(did.length ? ['', `WHAT ${agentName.toUpperCase()} DID`, ...did] : []),
+    ...(checkLines.length ? ['', `WHAT ${agentName.toUpperCase()} CHECKED LIVE (from the ICC server)`, ...checkLines] : []),
     '',
     'LIKELY CAUSE',
     analysis.likely_cause || '-',
@@ -870,6 +889,7 @@ ${jobsShown.length ? section(`Failed backup jobs (last 24h, ${(failedJobs || [])
 ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')}</p>`)}
 ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
 ${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.replace(/^- /, '')))) : ''}
+${checkLines.length ? section(`What ${esc(agentName)} checked live (from the ICC server)`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Check</th><th style="padding:3px 8px">Target</th><th style="padding:3px 8px">Result</th></tr>${checks.map((c) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.label || c.capability)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.target.name)}${c.target.address && c.target.address !== c.target.name ? ` <span style="color:#64748b">${esc(c.target.address)}</span>` : ''}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0"><span style="font-weight:600;color:${c.ok ? '#166534' : '#B91C1C'}">${c.ok ? 'OK' : 'FAILED'}</span> ${esc(c.summary)}</td></tr>`).join('')}</table>`) : ''}
 ${section('Likely cause', `<p style="margin:0">${esc(analysis.likely_cause || '-')}</p>`)}
 ${section('Next steps for the next level', `<ol style="margin:0;padding-left:18px">${(analysis.next_steps || []).map((s) => `<li style="margin:2px 0"><b>${esc(s.owner)}</b>: ${esc(s.action)}</li>`).join('')}</ol>`)}
 ${section('Escalation', `<p style="margin:0">${esc(analysis.escalate || '-')}</p>`)}
@@ -910,7 +930,7 @@ async function notifyIncident(inc, settings, config, { force = false } = {}) {
   try { healActions = JSON.parse(inc.heal_actions_json || '[]'); } catch { /* ignore */ }
   let storedEvidence = null;
   try { storedEvidence = JSON.parse(inc.evidence_json || 'null'); } catch { storedEvidence = null; }
-  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [] });
+  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null });
   const now = new Date().toISOString();
   try {
     const transport = alertNotifier.createTransport(config);
@@ -1097,6 +1117,38 @@ let chatFn = null; // test seam
 
 function markTick(at) { try { setSetting(TICK_MARK, at); } catch { /* the marker is diagnostic only */ } }
 
+/** Self-heal: an incident holding a poll:/stale: alert gets one re-poll of
+ *  each such source before triage, and a little more hold so the result
+ *  lands. The next tick sees the item clear (self-healed) or persist. It is
+ *  the 'repoll' capability, so a customer can switch it off. Returns how many
+ *  incidents got a re-poll this pass. */
+function selfHealPass(now) {
+  if (!capabilities.isEnabled('repoll')) return 0;
+  let attempts = 0;
+  for (const inc of db.prepare("SELECT * FROM ops_incidents WHERE state = 'collecting' AND heal_attempted = 0").all()) {
+    const targets = incidentAlerts(inc.id).filter((a) => !a.cleared_at && /^(poll|stale):/.test(a.source_key));
+    if (!targets.length) continue;
+    // A source mid-poll needs no nudge; let that run finish first.
+    const syncing = new Set();
+    for (const t of targets) {
+      try { for (const s of serviceStatus.polledSourcesFor(t.platform)) if (s.isSyncing) syncing.add(`${t.platform}:${s.entityId}`); } catch { /* ignore */ }
+    }
+    const actions = targets.map((a) => {
+      const eid = Number(a.source_key.split(':')[1]);
+      const why = a.source_key.startsWith('stale:') ? 'data went stale' : 'ICC could not reach it';
+      const rec = syncing.has(`${a.platform}:${eid}`)
+        ? { at: now, action: 'repoll', platform: a.platform, target: a.host || String(eid), result: 'already polling, left to finish' }
+        : triggerPoll(a.platform, eid, a.host);
+      act('re-poll', `${platformMeta(a.platform).label} source #${eid} ${a.host || ''} (${why}) -> ${rec.result}, incident #${inc.id}`.replace(/\s+/g, ' '));
+      return rec;
+    });
+    const holdUntil = new Date(Math.max(Date.parse(inc.hold_until), Date.parse(now) + HEAL_HOLD_MINUTES * 60000)).toISOString();
+    db.prepare('UPDATE ops_incidents SET heal_attempted = 1, heal_at = ?, heal_actions_json = ?, hold_until = ? WHERE id = ?').run(now, JSON.stringify(actions), holdUntil, inc.id);
+    attempts += 1;
+  }
+  return attempts;
+}
+
 async function runOnce({ force = false } = {}) {
   // A tick that never finishes is the one failure that looks like nothing at
   // all: its work lands but the run row, written at the end, never does. Say
@@ -1132,31 +1184,7 @@ async function runOnce({ force = false } = {}) {
     const collected = collectItems(now);
     Object.assign(stats, groupTick(now, settings, collected, { baseline: coldStart }));
 
-    // Self-heal: an incident holding a poll:/stale: alert gets one re-poll of
-    // each such source before triage, and a little more hold so the result
-    // lands. The next tick sees the item clear (self-healed) or persist.
-    for (const inc of db.prepare("SELECT * FROM ops_incidents WHERE state = 'collecting' AND heal_attempted = 0").all()) {
-      const targets = incidentAlerts(inc.id).filter((a) => !a.cleared_at && /^(poll|stale):/.test(a.source_key));
-      if (!targets.length) continue;
-      // A source mid-poll needs no nudge; let that run finish first.
-      const syncing = new Set();
-      for (const t of targets) {
-        try { for (const s of serviceStatus.polledSourcesFor(t.platform)) if (s.isSyncing) syncing.add(`${t.platform}:${s.entityId}`); } catch { /* ignore */ }
-      }
-      const actions = targets.map((a) => {
-        const eid = Number(a.source_key.split(':')[1]);
-        const why = a.source_key.startsWith('stale:') ? 'data went stale' : 'ICC could not reach it';
-        const rec = syncing.has(`${a.platform}:${eid}`)
-          ? { at: now, action: 'repoll', platform: a.platform, target: a.host || String(eid), result: 'already polling, left to finish' }
-          : triggerPoll(a.platform, eid, a.host);
-        act('re-poll', `${platformMeta(a.platform).label} source #${eid} ${a.host || ''} (${why}) -> ${rec.result}, incident #${inc.id}`.replace(/\s+/g, ' '));
-        return rec;
-      });
-      const holdUntil = new Date(Math.max(Date.parse(inc.hold_until), Date.parse(now) + HEAL_HOLD_MINUTES * 60000)).toISOString();
-      db.prepare('UPDATE ops_incidents SET heal_attempted = 1, heal_at = ?, heal_actions_json = ?, hold_until = ? WHERE id = ?').run(now, JSON.stringify(actions), holdUntil, inc.id);
-      stats.healAttempts += 1;
-
-    }
+    stats.healAttempts = selfHealPass(now);
     if (coldStart && stats.incidentsOpened) logger.info(`[OpsAgent] cold start: ${stats.incidentsOpened} baseline incident(s) recorded, not emailed`);
 
     // Triage: hold expired, capped per hour.
@@ -1419,6 +1447,6 @@ module.exports = {
   // pure helpers for tests
   hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,
   closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson, collectFailedBackupJobs,
-  recurrenceFor, recurrenceLine,
+  recurrenceFor, recurrenceLine, triageIncident, selfHealPass,
 };
 void chatFn;

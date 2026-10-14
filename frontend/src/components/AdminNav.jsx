@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal, Bot, ShieldCheck } from 'lucide-react';
+import { Sparkles, Layers, KeyRound, Mail, Users, SlidersHorizontal, Bot, ShieldCheck, Wrench } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { useAiEnabled } from '../api/useAiEnabled';
 
@@ -11,6 +11,7 @@ const GROUPS = [
     items: [
       { to: '/admin/ai', label: 'AI Analysis & Keys', icon: Sparkles, aliases: ['/admin'] },
       { to: '/admin/agent', label: 'Operations Agent', icon: Bot, requiresAi: true },
+      { to: '/admin/agent-capabilities', label: 'Agent Capabilities', icon: Wrench, requiresAi: true },
       { to: '/admin/agent-privacy', label: 'Agent Privacy', icon: ShieldCheck, permission: 'admin:ai-audit:view', requiresAi: true },
     ],
   },

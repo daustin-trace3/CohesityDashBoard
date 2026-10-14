@@ -229,6 +229,15 @@ function setEnabled(id, enabled) {
   return true;
 }
 
+/** Capabilities a pack hands the Operations Agent (manifest.agentCapabilities,
+ *  an array of the same shape as backend/services/agentCapabilities/capabilities/*).
+ *  The agent namespaces their ids by pack id. */
+function getAgentCapabilityProviders() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && Array.isArray(e.manifest.agentCapabilities) && e.manifest.agentCapabilities.length)
+    .map((e) => ({ id: e.id, name: e.manifest.name, capabilities: e.manifest.agentCapabilities }));
+}
+
 /** Express middleware mounted at `/api/:pluginId`. */
 function dispatch(req, res, next) {
   const entry = plugins.get(req.params.pluginId);
@@ -257,6 +266,7 @@ module.exports = {
   listPlugins,
   getServer360Providers,
   getTopologyProviders,
+  getAgentCapabilityProviders,
   setEnabled,
   isEntitled,
   setIsEntitledFn,

@@ -253,6 +253,7 @@ router.put('/', (req, res, next) => {
       if (a.patternDays !== undefined) { const n = Number(a.patternDays); setSetting('ops_agent_pattern_days', n >= 1 && n <= 90 ? String(Math.round(n)) : ''); }
       if (a.emailEnabled !== undefined) setSetting('ops_agent_email_enabled', a.emailEnabled ? '1' : '0');
       if (a.recipients !== undefined) setSetting('ops_agent_recipients', String(a.recipients).trim().slice(0, 2000));
+      if (a.capabilities && typeof a.capabilities === 'object') require('../services/agentCapabilities').saveEnabled(a.capabilities);
     }
     if (req.body?.serviceStatusAiEnabled !== undefined) {
       setSetting('service_status_ai_enabled', req.body.serviceStatusAiEnabled ? '1' : '0');

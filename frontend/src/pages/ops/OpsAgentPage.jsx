@@ -204,6 +204,22 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                 </Section>
                 {a.human_reason && <Section title={a.human_required ? 'Why a human is required' : 'Why no human is needed'}><p className="text-sm text-ink-muted">{a.human_reason}</p></Section>}
                 {inc.healActions?.length > 0 && <Section title={`What ${agentName} did`}><ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{inc.healActions.map((h, i) => <li key={i}>{new Date(h.at).toLocaleTimeString()}: {h.action} {h.target}: {h.result}</li>)}</ul></Section>}
+                {inc.evidence?.liveChecks?.results?.length > 0 && (
+                  <Section title={`What ${agentName} checked live (from the ICC server)`}>
+                    <ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">
+                      {inc.evidence.liveChecks.results.map((c, i) => (
+                        <li key={i}>
+                          <span className={c.ok ? 'text-status-ok font-semibold' : 'text-status-crit font-semibold'}>{c.ok ? 'OK' : 'FAILED'}</span>{' '}
+                          {c.label || c.capability} on {c.target?.name}{c.target?.address && c.target.address !== c.target.name ? <span className="text-ink-faint"> ({c.target.address})</span> : null}: {c.summary}
+                        </li>
+                      ))}
+                    </ul>
+                    {inc.evidence.liveChecks.unresolved?.length > 0 && <p className="text-[11px] text-ink-faint mt-1">Not checked, no stored address: {inc.evidence.liveChecks.unresolved.join('; ')}.</p>}
+                  </Section>
+                )}
+                {inc.evidence?.liveChecks && !inc.evidence.liveChecks.ran && inc.evidence.liveChecks.skipped && !/switched on/.test(inc.evidence.liveChecks.skipped) && (
+                  <p className="text-[11px] text-ink-faint mb-4">Live checks did not run: {inc.evidence.liveChecks.skipped}.</p>
+                )}
                 {a.likely_cause && <Section title="Likely cause"><p className="text-sm text-ink">{a.likely_cause}</p></Section>}
                 <Section title="Next steps for the next level">
                   <ol className="list-decimal pl-5 text-sm text-ink space-y-1">
