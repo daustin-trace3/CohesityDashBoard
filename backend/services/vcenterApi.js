@@ -322,6 +322,125 @@ function parseHostNetworks(hostName, props) {
   return rows;
 }
 
+// Physical NIC neighbour hints (HostNetworkSystem.QueryNetworkHint)
+// UNVERIFIED against a live vCenter (built blind 2026-10-14): the nesting of
+// QueryNetworkHintResponse.returnval (repeated <returnval> elements expected,
+// a { PhysicalNicHintInfo: [...] } wrapper also tolerated), whether
+// lldpInfo.parameter is an array or a single object, and how KeyAnyValue.value
+// parses (plain text or { '#text' } with an xsi:type attribute). Every field
+// is optional; a hint with neither CDP nor LLDP yields no row.
+const NIC_HINT_HOST_CAP = 200;
+const nicHintCursor = new Map(); // vc.id -> round-robin offset when hosts > cap
+
+const strOrNull = (v) => { const f = flat(v); return f == null || f === '' ? null : String(f); };
+const MAC_RE = /^([0-9a-f]{2}[:.-]?){5}[0-9a-f]{2}$|^([0-9a-f]{4}\.){2}[0-9a-f]{4}$/i;
+
+/** One host's QueryNetworkHint returnval -> rows per (nic, protocol). */
+function parseNetworkHints(hostName, returnval, macByNic = new Map()) {
+  let hints = asArray(returnval);
+  if (hints.length === 1 && hints[0] && typeof hints[0] === 'object' && hints[0].PhysicalNicHintInfo != null) {
+    hints = asArray(hints[0].PhysicalNicHintInfo);
+  }
+  const rows = [];
+  for (const h of hints) {
+    if (!h || typeof h !== 'object') continue;
+    const nic = strOrNull(h.device);
+    if (!nic) continue;
+    const mac = macByNic.get(nic) ?? null;
+    const cdp = h.connectedSwitchPort;
+    if (cdp && typeof cdp === 'object') {
+      const name = strOrNull(cdp.systemName) ?? strOrNull(cdp.devId);
+      const port = strOrNull(cdp.portId);
+      if (name || port) {
+        rows.push({
+          hostName, nic, mac, protocol: 'cdp',
+          switchName: name, switchPort: port,
+          switchAddress: strOrNull(cdp.address) ?? strOrNull(cdp.mgmtAddr),
+          switchPlatform: strOrNull(cdp.hardwarePlatform),
+          vlan: num(cdp.vlan),
+          raw: { device: nic, connectedSwitchPort: cdp },
+        });
+      }
+    }
+    const lldp = h.lldpInfo;
+    if (lldp && typeof lldp === 'object') {
+      const params = new Map();
+      // Repeated <parameter> elements parse as an array, a single one as an object;
+      // an ArrayOfKeyAnyValue-style { KeyAnyValue: ... } wrapper is tolerated too.
+      const rawParams = lldp.parameter?.KeyAnyValue != null ? lldp.parameter.KeyAnyValue : lldp.parameter;
+      for (const p of asArray(rawParams)) {
+        const key = strOrNull(p?.key);
+        if (key) params.set(key.toLowerCase(), strOrNull(p.value));
+      }
+      const param = (...keys) => { for (const k of keys) { const v = params.get(k); if (v != null) return v; } return null; };
+      const portId = strOrNull(lldp.portId);
+      const portDesc = param('port description');
+      const portIsOpaque = portId == null || MAC_RE.test(portId) || /^\d+$/.test(portId);
+      const name = param('system name') ?? strOrNull(lldp.chassisId);
+      const port = (portIsOpaque && portDesc) ? portDesc : (portId ?? portDesc);
+      if (name || port) {
+        const vlanRaw = param('vlan id', 'port vlan id', 'vlan');
+        rows.push({
+          hostName, nic, mac, protocol: 'lldp',
+          switchName: name, switchPort: port,
+          switchAddress: param('management address', 'mgmt address'),
+          switchPlatform: param('system description'),
+          vlan: vlanRaw != null ? num(vlanRaw) : null,
+          raw: { device: nic, lldpInfo: lldp },
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+/** Pick at most NIC_HINT_HOST_CAP hosts, round-robin across sweeps. */
+function pickHintHosts(vcId, hosts) {
+  if (hosts.length <= NIC_HINT_HOST_CAP) return { picked: hosts, capped: false };
+  const start = (nicHintCursor.get(vcId) || 0) % hosts.length;
+  const picked = [];
+  for (let i = 0; i < NIC_HINT_HOST_CAP; i++) picked.push(hosts[(start + i) % hosts.length]);
+  nicHintCursor.set(vcId, (start + NIC_HINT_HOST_CAP) % hosts.length);
+  return { picked, capped: true };
+}
+
+/**
+ * Hint pass over the session's hosts. Never throws for a single host; the
+ * caller wraps the whole pass. Returns { rows, hostsCovered } where
+ * hostsCovered lists the hosts whose call succeeded (their rows are
+ * authoritative, including "no hints").
+ */
+async function collectNicHints(vc, cookie, hosts) {
+  const eligible = hosts
+    .filter(h => h.networkSystem && (h.connectionState == null || h.connectionState === 'connected'))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const { picked, capped } = pickHintHosts(vc.id, eligible);
+  const rows = [];
+  const hostsCovered = [];
+  let failed = 0;
+  let firstError = null;
+  let next = 0;
+  const worker = async () => {
+    while (next < picked.length) {
+      const h = picked[next++];
+      try {
+        const r = await soapCall(vc,
+          `<vim25:QueryNetworkHint><vim25:_this type="HostNetworkSystem">${esc(h.networkSystem)}</vim25:_this></vim25:QueryNetworkHint>`,
+          cookie);
+        rows.push(...parseNetworkHints(h.name, r.body?.QueryNetworkHintResponse?.returnval, h.macByNic));
+        hostsCovered.push(h.name);
+      } catch (err) {
+        failed++;
+        if (!firstError) firstError = `${h.name}: ${err.message}`;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, picked.length) }, worker));
+  if (capped) logger.info(`[vcenterApi] ${vc.name}: NIC hint pass capped at ${NIC_HINT_HOST_CAP} of ${eligible.length} host(s) this sweep (round-robin)`);
+  if (failed) logger.warn(`[vcenterApi] ${vc.name}: NIC hint query failed on ${failed} of ${picked.length} host(s); first: ${firstError}`);
+  return { rows, hostsCovered };
+}
+
 const SSH_SERVICE_KEYS = new Set(['TSM-SSH', 'ssh']);
 
 /**
@@ -682,6 +801,37 @@ async function fetchInventorySoap(vc) {
       };
     });
 
+    // NIC neighbour hints: own HostSystem retrieval for configManager.networkSystem
+    // (kept out of HOST_PROPS so an InvalidProperty fault there cannot blank the
+    // host inventory) plus one QueryNetworkHint per host. Any failure of the pass
+    // leaves nicNeighbors = null, which keeps the last stored hints.
+    let nicNeighbors = null;
+    let nicNeighborHosts = null;
+    try {
+      const nsRows = await retrieveType('HostSystem', ['name', 'configManager.networkSystem', 'runtime.connectionState']);
+      const macByHost = new Map();
+      for (const props of hostRows) {
+        if (props.name == null) continue;
+        const m = new Map();
+        for (const p of vimArray(props['config.network.pnic'], 'PhysicalNic')) {
+          const dev = strOrNull(p.device);
+          if (dev) m.set(dev, strOrNull(p.mac));
+        }
+        macByHost.set(String(props.name), m);
+      }
+      const hintHosts = nsRows.filter(r => r.name != null).map(r => ({
+        name: String(r.name),
+        networkSystem: strOrNull(r['configManager.networkSystem']),
+        connectionState: strOrNull(r['runtime.connectionState']),
+        macByNic: macByHost.get(String(r.name)) || new Map(),
+      }));
+      const hints = await collectNicHints(vc, cookie, hintHosts);
+      nicNeighbors = hints.rows;
+      nicNeighborHosts = hints.hostsCovered;
+    } catch (err) {
+      logger.warn(`[vcenterApi] ${vc.name}: NIC hint pass failed (keeping last hints): ${err.message}`);
+    }
+
     // Orphan sweep uses the same session; failures leave orphans = null so the
     // poller can tell "sweep unavailable" apart from "no orphans found".
     let orphans = null;
@@ -695,7 +845,7 @@ async function fetchInventorySoap(vc) {
       logger.debug(`[vcenterApi] orphan sweep failed for ${vc.name}: ${err.message}`);
     }
 
-    return { about, hostsByName, vms, networks, orphans };
+    return { about, hostsByName, vms, networks, orphans, nicNeighbors, nicNeighborHosts };
   } finally {
     soapCall(vc, '<vim25:Logout><vim25:_this type="SessionManager">${esc(sc.sessionManager)}</vim25:_this></vim25:Logout>', cookie)
       .catch(() => {});
@@ -785,4 +935,5 @@ module.exports = {
   getSession, invalidateSession, vGet, unwrap,
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
   fetchInventorySoap, fetchEvents, fetchVmTags, testConnection,
+  parseNetworkHints, collectNicHints, pickHintHosts, NIC_HINT_HOST_CAP,
 };

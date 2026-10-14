@@ -25,6 +25,7 @@ const PLATFORM_METRICS_HISTORY = {
   // other platform's metrics-history table — aliased below so buildEntities
   // can read metricsRow.captured_at same as everyone else.
   brocade: { arraysTable: 'brocade_sources', metricsTable: 'brocade_metrics', arrayIdColumn: 'source_id', tsColumn: 'ts' },
+  logicmonitor: { arraysTable: 'lm_sources', metricsTable: 'lm_metrics_history', arrayIdColumn: 'source_id' },
 };
 
 /**

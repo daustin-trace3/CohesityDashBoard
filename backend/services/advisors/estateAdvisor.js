@@ -188,6 +188,28 @@ function gatherAccessReview() {
     SELECT action, COUNT(*) count FROM tenant_audit
     WHERE at >= datetime('now', '-30 days') GROUP BY action ORDER BY count DESC LIMIT 20
   `).map((r) => ({ action: r.action, count: r.count }));
+
+  // LogicMonitor portal accounts (lm_admins, refreshed daily by the poller).
+  let lmAccounts;
+  if (tableExists('lm_admins')) {
+    const parse = (s) => { try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
+    lmAccounts = rows(`
+      SELECT s.name AS system, a.username, a.status, a.roles_json, a.last_login_epoch, a.two_fa, a.apionly, a.api_token_count
+      FROM lm_admins a JOIN lm_sources s ON s.id = a.source_id
+      WHERE COALESCE(a.stale, 0) = 0 ORDER BY s.name, a.username LIMIT 500
+    `).map((a) => ({
+      platform: 'logicmonitor',
+      system: a.system,
+      account: a.username,
+      status: a.status,
+      roles: parse(a.roles_json),
+      lastLogin: a.last_login_epoch ? new Date(Number(a.last_login_epoch) * 1000).toISOString() : null,
+      mfa: !!a.two_fa,
+      serviceAccount: !!a.apionly,
+      tokens: a.api_token_count || 0,
+    }));
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     users: shapedUsers.map((u) => ({ ...u, groups: groupsByUser.get(u.username) || [] })),
@@ -196,6 +218,7 @@ function gatherAccessReview() {
     fullAdminWildcardHolders: wildcardHolders,
     serviceAccounts,
     auditActionsLast30Days: auditSummary,
+    logicmonitorAccounts: lmAccounts,
     reviewWindow: { dormantAfterDays: 90 },
     note: globalNote,
   };
@@ -334,7 +357,9 @@ module.exports = createPlatformAdvisor({
         'auditor can file. You are given every account (provider, active flag, last login, dormancy at 90 days, ' +
         'group membership), each group with its permissions and member count, direct user grants, holders of the ' +
         'full *:*:* wildcard, service accounts with their permissions and last use, and 30 days of audit-log action ' +
-        'counts. Flag dormant accounts still active, wildcard holders, service accounts unused in 90 days, and ' +
+        'counts. When present, logicmonitorAccounts lists LogicMonitor portal accounts (status, ' +
+        'roles, last login, MFA, API-only service accounts, API token count); flag ones without MFA, suspended or ' +
+        'never-logged-in accounts that still hold tokens, and API-only accounts with admin roles. Flag dormant accounts still active, wildcard holders, service accounts unused in 90 days, and ' +
         'direct grants that bypass groups. Recommend specific revocations or reviews by name. Do not invent data. ' +
         'Markdown sections: **Access summary**, **Findings (prioritized)**, **Recommended recertification actions**. ' +
         'Keep under ~400 words.',

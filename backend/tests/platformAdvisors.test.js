@@ -31,6 +31,7 @@ const ariaManifest = require('../platforms/aria');
 const netbackupManifest = require('../platforms/netbackup');
 const awsManifest = require('../platforms/aws');
 const bluecatManifest = require('../platforms/bluecat');
+const logicmonitorManifest = require('../platforms/logicmonitor');
 const ariaopsManifest = require('../platforms/ariaops');
 const brocadeManifest = require('../platforms/brocade');
 const { createApp } = require('../app');
@@ -44,6 +45,7 @@ const ariaAdvisor = require('../services/advisors/ariaAdvisor');
 const netbackupAdvisor = require('../services/advisors/netbackupAdvisor');
 const awsAdvisor = require('../services/advisors/awsAdvisor');
 const bluecatAdvisor = require('../services/advisors/bluecatAdvisor');
+const logicmonitorAdvisor = require('../services/advisors/logicmonitorAdvisor');
 const ariaopsAdvisor = require('../services/advisors/ariaopsAdvisor');
 const brocadeAdvisor = require('../services/advisors/brocadeAdvisor');
 const estateAdvisor = require('../services/advisors/estateAdvisor');
@@ -60,6 +62,7 @@ const ADVISORS = {
   netbackup: netbackupAdvisor,
   aws: awsAdvisor,
   bluecat: bluecatAdvisor,
+  logicmonitor: logicmonitorAdvisor,
   ariaops: ariaopsAdvisor,
   brocade: brocadeAdvisor,
   estate: estateAdvisor,
@@ -119,6 +122,7 @@ describe('platform AI advisors: dispatcher routes', () => {
     registry.registerPlugin(netbackupManifest);
     registry.registerPlugin(awsManifest);
     registry.registerPlugin(bluecatManifest);
+    registry.registerPlugin(logicmonitorManifest);
     registry.registerPlugin(ariaopsManifest);
     registry.registerPlugin(brocadeManifest);
     app = createApp({ licenseGate: (req, res, next) => next() });
@@ -145,6 +149,14 @@ describe('platform AI advisors: dispatcher routes', () => {
   it('GET /api/netapp/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
     const key = netappAdvisor.REPORTS[0];
     const res = await request(app).get(`/api/netapp/advisor/${slug(key)}`).set('x-api-key', API_KEY);
+    expect(res.status).toBe(200);
+    expect(res.body.enabled).toBe(false);
+    expect(res.body.report).toBeNull();
+  });
+
+  it('GET /api/logicmonitor/advisor/:report -> 200 { enabled:false, report:null } on an empty DB', async () => {
+    const key = logicmonitorAdvisor.REPORTS[0];
+    const res = await request(app).get(`/api/logicmonitor/advisor/${slug(key)}`).set('x-api-key', API_KEY);
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(false);
     expect(res.body.report).toBeNull();
@@ -240,7 +252,7 @@ describe('platform AI advisors: email route', () => {
     registry._reset();
     registry.init();
     for (const m of [pureManifest, netappManifest, zertoManifest, vcenterManifest, dellManifest, ariaManifest,
-      netbackupManifest, awsManifest, bluecatManifest, ariaopsManifest, brocadeManifest]) registry.registerPlugin(m);
+      netbackupManifest, awsManifest, bluecatManifest, ariaopsManifest, brocadeManifest, logicmonitorManifest]) registry.registerPlugin(m);
     app = createApp({ licenseGate: (req, res, next) => next() });
     for (const k of SMTP_KEYS) setSetting(k, '');
     db.exec("DELETE FROM zerto_ai_reports WHERE report_key = 'dr_readiness'");

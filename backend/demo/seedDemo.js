@@ -51,6 +51,7 @@ const { seedAws } = require('./generators/aws');
 const { seedProxmox } = require('./generators/proxmox');
 const { seedBrocade } = require('./generators/brocade');
 const { seedBluecat } = require('./generators/bluecat');
+const { seedLogicmonitor } = require('./generators/logicmonitor');
 
 const SEEDED_TABLES = [
   // core
@@ -74,7 +75,7 @@ const SEEDED_TABLES = [
   'zerto_vras', 'zerto_vms', 'zerto_alerts', 'zerto_vpgs', 'zerto_sites', 'zerto_metrics_history', 'zerto_licenses',
   // vcenter (children before the parent so FK deletes stay explicit)
   'vcenter_site_pairs', 'vcenter_site_members', 'vcenter_capacity_history', 'vcenter_datastore_history', 'vcenter_vm_capacity_history',
-  'vcenter_vm_disks', 'vcenter_vm_filesystems', 'vcenter_vm_filesystem_history',
+  'vcenter_vm_disks', 'vcenter_vm_filesystems', 'vcenter_vm_filesystem_history', 'vcenter_host_nic_neighbors',
   'vcenter_vms', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores',
   'vcenter_certs', 'vcenter_metrics_history', 'vcenter_networks',
   'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history', 'vcenter_sites', 'vcenter_vcenters',
@@ -119,11 +120,23 @@ const SEEDED_TABLES = [
   'bluecat_addresses', 'bluecat_ranges', 'bluecat_networks', 'bluecat_blocks',
   'bluecat_records', 'bluecat_zones', 'bluecat_views', 'bluecat_servers', 'bluecat_devices',
   'bluecat_sources',
+  // logicmonitor (children before the parent)
+  'lm_webhook_events', 'lm_interface_baseline', 'lm_sites',
+  'lm_ai_reports', 'lm_issue_history', 'lm_metrics_history', 'lm_topology_links',
+  'lm_check_daily', 'lm_check_baseline', 'lm_check_history', 'lm_check_locations', 'lm_checks',
+  'lm_interface_daily', 'lm_interface_history', 'lm_interfaces', 'lm_device_datasources',
+  'lm_alerts', 'lm_sdts', 'lm_admins', 'lm_roles', 'lm_devices', 'lm_device_groups',
+  'lm_collectors', 'lm_sources',
 ];
+
+// Tables a parallel migration may not have created yet; a missing one is skipped.
+const OPTIONAL_TABLES = new Set(['vcenter_host_nic_neighbors', 'lm_webhook_events', 'lm_interface_baseline', 'lm_sites']);
 
 function wipeSeededTables(database) {
   database.transaction(() => {
     for (const table of SEEDED_TABLES) {
+      if (OPTIONAL_TABLES.has(table)
+        && !database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) continue;
       try {
         database.exec(`DELETE FROM ${table}`);
       } catch (err) {
@@ -152,6 +165,10 @@ async function main() {
   const netbackupResult = db.transaction(() => seedNetbackup(db, { now, encrypt }))();
   const awsResult = db.transaction(() => seedAws(db, { now, encrypt }))();
   const proxmoxResult = db.transaction(() => seedProxmox(db, { now, encrypt }))();
+  // LogicMonitor writes its own transactions and then runs the real baseline,
+  // topology-link and issue-reconcile passes (each opens its own transaction,
+  // so it cannot sit inside an outer db.transaction).
+  const lmResult = seedLogicmonitor(db, { now, encrypt });
   const brocadeResult = db.transaction(() => seedBrocade(db, { now, encrypt }))();
   const bluecatResult = db.transaction(() => seedBluecat(db, { now, encrypt }))();
   // Cross-platform incident story (Dell host down because its Brocade links
@@ -179,6 +196,7 @@ async function main() {
     ['pure_arrays', pureResult.arrays],
     ['zerto sites/vras/vpgs/vms', `${zertoResult.sites}/${zertoResult.vras}/${zertoResult.vpgs}/${zertoResult.vms}`],
     ['vcenters/hosts/vms', `${vcenterResult.vcenters}/${vcenterResult.hosts}/${vcenterResult.vms}`],
+    ['vcenter host nic neighbors (cdp/lldp hints)', vcenterResult.nicNeighbors],
     ['vcenter capacity demo', `sites: 2, members: ${vcenterResult.siteMembers}, cap-hist: ${vcenterResult.capacityHistory}, ds-hist: ${vcenterResult.datastoreHistory}, vm-hist: ${vcenterResult.vmCapacityHistory}`],
     ['dell instances/devices/components', `${dellResult.instances}/${dellResult.devices}/${dellResult.components}`],
     ['aria instances/deployments/requests', `${ariaResult.instances}/${ariaResult.deployments}/${ariaResult.requests}`],
@@ -187,6 +205,12 @@ async function main() {
     ['proxmox servers/nodes/guests', `${proxmoxResult.servers}/${proxmoxResult.nodes}/${proxmoxResult.guests}`],
     ['brocade sources/fabrics/switches/ports', `${brocadeResult.sources}/${brocadeResult.fabrics}/${brocadeResult.switches}/${brocadeResult.switchPorts}`],
     ['bluecat views/zones/records/networks/devices/servers', `${bluecatResult.views}/${bluecatResult.zones}/${bluecatResult.records}/${bluecatResult.networks}/${bluecatResult.devices}/${bluecatResult.servers}`],
+    ['logicmonitor sources/collectors/devices/network/interfaces', `${lmResult.sources}/${lmResult.collectors}/${lmResult.devices}/${lmResult.networkDevices}/${lmResult.interfaces}`],
+    ['logicmonitor alerts open/cleared/acked/sdted', `${lmResult.alertsOpen}/${lmResult.alertsCleared}/${lmResult.alertsAcked}/${lmResult.alertsSdted}`],
+    ['logicmonitor checks/locations/history/baselines', `${lmResult.checks}/${lmResult.checkLocations}/${lmResult.checkHistory}/${lmResult.baselines}`],
+    ['logicmonitor if history/daily, links, open issue types', `${lmResult.interfaceHistory}/${lmResult.interfaceDaily}, ${lmResult.topologyLinks}, ${lmResult.openIssueTypes.length}`],
+    ['logicmonitor round 3 backup runs/webhook events+alerts/config changes', `${lmResult.round3.backupRuns}/${lmResult.round3.webhookEvents}+${lmResult.round3.webhookAlerts}/${lmResult.round3.configChanges}`],
+    ['logicmonitor round 3 passes (sites/tiers/wan/shadows/baselines)', ['sites', 'tiers', 'wan', 'shadows', 'baselines'].map((k) => (lmResult.wp1.s1[k] ? 'yes' : 'no')).join('/')],
     ['scenario san-boot-path-down (vcenter/brocade/dell)', `${scenarioResult.vcenter.applied}/${scenarioResult.brocade.applied}/${scenarioResult.dell.applied}`],
     ['scenario app-service-linking (objects/vpgs/zerto vms)', `${linkResult.objects}/${linkResult.vpgs}/${linkResult.zertoVms}`],
     ['users', 1],

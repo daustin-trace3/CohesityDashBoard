@@ -523,6 +523,7 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
                   <select id="agent-grouping" value={form.agentGrouping} onChange={set('agentGrouping')} className={selectCls}>
                     <option value="platform">Platform: one incident per host, and one per platform when its source is down or bursting (default)</option>
                     <option value="service">App service: alerts on a watched app's servers roll into that app's incident, the rest by host</option>
+                    <option value="site">Site: every alert from one site folds into one incident named after the site; alerts with no site fall back to the platform rule</option>
                     <option value="component">Component: one incident per server, cluster, array or appliance, nothing folded</option>
                   </select>
                 </SettingRow>

@@ -397,4 +397,34 @@ module.exports = [
       `);
     },
   },
+  // NOTE icc-phase1: v11 here is feat/multi-tenant vcenter v11 (same number).
+  {
+    version: 11,
+    up(db) {
+      // Physical NIC neighbour hints (HostNetworkSystem.QueryNetworkHint): the
+      // switch and port each ESXi vmnic is plugged into, as CDP or LLDP
+      // reports it. One row per host, nic and protocol; replaced per vCenter
+      // each sweep that produced hints.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vcenter_host_nic_neighbors (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          host_name TEXT NOT NULL,
+          nic TEXT NOT NULL,
+          mac TEXT,
+          protocol TEXT NOT NULL,
+          switch_name TEXT,
+          switch_port TEXT,
+          switch_address TEXT,
+          switch_platform TEXT,
+          vlan INTEGER,
+          raw_json TEXT,
+          captured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE (vcenter_id, host_name, nic, protocol)
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_nic_nb_host ON vcenter_host_nic_neighbors(vcenter_id, host_name);
+        CREATE INDEX IF NOT EXISTS idx_vcenter_nic_nb_switch ON vcenter_host_nic_neighbors(switch_name);
+      `);
+    },
+  },
 ];

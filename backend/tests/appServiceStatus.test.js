@@ -490,3 +490,94 @@ describe('hand-off into Service Status', () => {
     expect(appSvc.systemPrompt()).toMatch(/application service/);
   });
 });
+
+describe('network component (LogicMonitor tables)', () => {
+  const { runMigrations } = require('../core/migrations');
+  const lmMigrations = require('../db/migrations/logicmonitor');
+  const LM_TABLES = ['lm_issue_history', 'lm_check_locations', 'lm_checks', 'lm_topology_links', 'lm_interfaces', 'lm_devices', 'lm_sources'];
+  let lmSource;
+
+  const ins = (table, row) => {
+    const cols = Object.keys(row);
+    return db.prepare(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...cols.map((c) => row[c])).lastInsertRowid;
+  };
+
+  beforeEach(() => {
+    runMigrations(db, 'logicmonitor', lmMigrations);
+    for (const t of LM_TABLES) db.exec(`DELETE FROM ${t}`);
+    appSvc._resetTableCache();
+    lmSource = ins('lm_sources', { name: 'Acme', company: 'acme', auth_mode: 'lmv1', encrypted_credentials: 'x' });
+    ins('lm_devices', { source_id: lmSource, lm_device_id: 201, name: '10.1.1.1', display_name: 'sw-1', role: 'switch', is_network: 1, host_status: 'normal' });
+    const iface = (instance, name, statusText) => ins('lm_interfaces', {
+      source_id: lmSource, lm_device_id: 201, instance_id: instance, display_name: name, status: statusText === 'up' ? 1 : 2, status_text: statusText,
+    });
+    iface(1, 'Gi1/0/5', 'down');
+    iface(2, 'Gi1/0/6', 'up');
+    const link = (instance, port, ref, protocol) => ins('lm_topology_links', {
+      source_id: lmSource, src_device_id: 201, src_instance_id: instance, src_port: port, dst_name: ref, dst_port: 'vmnic0',
+      protocol, confidence: 'high', last_seen: new Date().toISOString(), dst_platform: 'vcenter', dst_ref: ref,
+    });
+    link(1, 'Gi1/0/5', 'esx-a.corp.local', 'lldp');
+    link(2, 'Gi1/0/6', 'esx-b.corp.local', 'lldp');
+  });
+
+  const watchApp = () => {
+    seedHealthyApp('usage-id: AA00001721', 4);
+    appSvc.addWatch({ usageId: 'aa00001721' });
+  };
+
+  it('a downed switch port behind a server is a critical finding and a port row', () => {
+    watchApp();
+    const d = appSvc.evaluate('aa00001721');
+    const down = d.network.filter((r) => r.state === 'critical');
+    expect(down).toHaveLength(1);
+    expect(down[0]).toMatchObject({ deviceName: 'sw-1', port: 'Gi1/0/5', statusText: 'down' });
+    expect(down[0].checkName).toBeUndefined();
+    expect(d.network.find((r) => r.port === 'Gi1/0/6')).toMatchObject({ state: 'ok', statusText: 'up', issue: null });
+    expect(d.findings.some((f) => f.level === 'critical' && /^Switch port sw-1 Gi1\/0\/5 for app-vm-\d+ is down$/.test(f.text))).toBe(true);
+    expect(d.state).toBe('critical');
+    expect(d.counts).toMatchObject({ networkPortsDown: 1, networkDegraded: 0 });
+  });
+
+  it('an open errors-growing issue degrades the port; a down reachability check is critical', () => {
+    watchApp();
+    db.prepare("UPDATE lm_interfaces SET status = 1, status_text = 'up' WHERE instance_id = 1").run();
+    ins('lm_issue_history', { issue_key: 'k1', source: 'Acme', severity: 'warning', type: 'interface-errors-growing', target: 'sw-1 Gi1/0/5', message: '412 errors in 24 h', status: 'open' });
+    appSvc._resetTableCache();
+    let d = appSvc.evaluate('aa00001721');
+    const port = d.network.find((r) => r.port === 'Gi1/0/5');
+    expect(port).toMatchObject({ state: 'degraded', issue: '412 errors in 24 h' });
+    expect(d.findings.some((f) => f.level === 'degraded' && f.text.startsWith('Port errors growing on sw-1 Gi1/0/5 for app-vm-'))).toBe(true);
+    expect(d.state).toBe('degraded');
+    expect(d.counts).toMatchObject({ networkPortsDown: 0, networkDegraded: 1 });
+
+    ins('lm_checks', { source_id: lmSource, check_id: 'c1', kind: 'ping', name: 'ping app-vm-01', target: 'app-vm-01', stale: 0 });
+    ins('lm_check_locations', { source_id: lmSource, check_id: 'c1', checkpoint_id: 'cp1', label: 'Phoenix collector', last_status: 'down', last_sample_epoch: Math.floor(Date.now() / 1000), stale: 0 });
+    appSvc._resetTableCache();
+    d = appSvc.evaluate('aa00001721');
+    const reach = d.network.filter((r) => r.checkName);
+    expect(reach).toHaveLength(1);
+    expect(reach[0]).toMatchObject({ checkName: 'ping app-vm-01', label: 'Phoenix collector', anomaly: 'down', state: 'critical' });
+    expect(d.findings.some((f) => f.level === 'critical' && f.text.startsWith('Reachability check ping app-vm-01 from Phoenix collector'))).toBe(true);
+    expect(d.state).toBe('critical');
+  });
+
+  it('the detail route carries network[], the board carries the counts, and the evidence payload includes it', async () => {
+    watchApp();
+    appSvc.evaluateAll();
+    const detail = await request(app).get('/api/app-services/apps/aa00001721');
+    expect(detail.body.network.length).toBeGreaterThan(0);
+    const board = await request(app).get('/api/app-services/board');
+    expect(board.body.apps[0].counts).toMatchObject({ networkPortsDown: 1, networkDegraded: 0 });
+    const ev = appSvc.gatherEvidence({ platform: 'appservice', source_key: 'usage:aa00001721', severity: 'critical', host: 'AA00001721', message: 'm' });
+    expect(ev.app.network.length).toBeGreaterThan(0);
+  });
+
+  it('is empty and harmless when LogicMonitor has no devices', () => {
+    watchApp();
+    db.exec('DELETE FROM lm_topology_links; DELETE FROM lm_devices');
+    let d = appSvc.evaluate('aa00001721');
+    expect(d.network).toEqual([]);
+    expect(d.state).toBe('ok');
+  });
+});

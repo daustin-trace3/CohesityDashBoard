@@ -7,8 +7,9 @@ import dell from './dell/index.jsx';
 import aria from './aria/index.jsx';
 import ariaops from './ariaops/index.jsx';
 import brocade from './brocade/index.jsx';
+import logicmonitor from './logicmonitor/index.jsx';
 
-export const platforms = [cohesity, pure, netapp, zerto, vcenter, dell, aria, ariaops, brocade];
+export const platforms = [cohesity, pure, netapp, zerto, vcenter, dell, aria, ariaops, brocade, logicmonitor];
 
 export function getPlatform(id) {
   return platforms.find(p => p.id === id);

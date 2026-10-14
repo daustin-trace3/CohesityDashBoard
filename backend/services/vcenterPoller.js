@@ -112,10 +112,12 @@ async function collect(vc) {
     about: soap?.about || null,
     networks: soap?.networks || null,
     orphans: soap?.orphans ?? null, // null = sweep unavailable, [] = swept clean
+    nicNeighbors: soap?.nicNeighbors ?? null, // null = hint pass unavailable
+    nicNeighborHosts: soap?.nicNeighborHosts ?? null,
   };
 }
 
-const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, about, networks, orphans }) => {
+const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, about, networks, orphans, nicNeighbors, nicNeighborHosts }) => {
   if (about) {
     db.prepare(`
       UPDATE vcenter_vcenters SET version = ?, build = ?, product_name = ? WHERE id = ?
@@ -217,6 +219,33 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
         n.netmask ?? null, n.mtu ?? null,
         n.uplinks ? JSON.stringify(n.uplinks) : null, n.portCount ?? null,
         n.extra ? JSON.stringify(n.extra) : null);
+    }
+  }
+
+  // NIC neighbour hints: null = the hint pass did not run, keep what is stored.
+  // Otherwise the hosts the pass covered are replaced (a covered host with no
+  // hints loses its rows) and rows for hosts gone from the inventory are
+  // dropped; hosts skipped by the 200-host round-robin cap or a per-host fault
+  // keep their last rows. When every host is covered this is the plain
+  // per-vCenter DELETE then INSERT.
+  if (Array.isArray(nicNeighbors)) {
+    const covered = new Set(Array.isArray(nicNeighborHosts) ? nicNeighborHosts : nicNeighbors.map(n => n.hostName));
+    const delHost = db.prepare('DELETE FROM vcenter_host_nic_neighbors WHERE vcenter_id = ? AND host_name = ?');
+    for (const name of covered) delHost.run(vcId, name);
+    db.prepare(`
+      DELETE FROM vcenter_host_nic_neighbors WHERE vcenter_id = ?
+        AND host_name NOT IN (SELECT name FROM vcenter_hosts WHERE vcenter_id = ? AND name IS NOT NULL)
+    `).run(vcId, vcId);
+    const nbStmt = db.prepare(`
+      INSERT OR REPLACE INTO vcenter_host_nic_neighbors (vcenter_id, host_name, nic, mac, protocol,
+        switch_name, switch_port, switch_address, switch_platform, vlan, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const n of nicNeighbors) {
+      if (!n.hostName || !n.nic || !n.protocol) continue;
+      nbStmt.run(vcId, n.hostName, n.nic, n.mac ?? null, n.protocol,
+        n.switchName ?? null, n.switchPort ?? null, n.switchAddress ?? null,
+        n.switchPlatform ?? null, n.vlan ?? null, n.raw ? JSON.stringify(n.raw) : null);
     }
   }
 
@@ -355,4 +384,4 @@ function initVcenterPoller() {
   return vcenterPoller;
 }
 
-module.exports = { initVcenterPoller, vcenterPoller, pollVcenter };
+module.exports = { initVcenterPoller, vcenterPoller, pollVcenter, store };

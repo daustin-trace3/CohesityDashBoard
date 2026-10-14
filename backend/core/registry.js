@@ -218,6 +218,25 @@ function getTopologyProviders() {
     }));
 }
 
+/**
+ * Ops Agent contributors (LogicMonitor round 3). A plugin manifest may export
+ *   incidentEvidence(coreApi, { names, ips, siteKey }) -> { title, lines[] } | null
+ *   siteOf(coreApi, { names, ips }) -> { siteKey, siteName } | null
+ * The agent calls the first to add network evidence to a triage and the
+ * second to group alerts by site. Callers guard against throws.
+ */
+function getIncidentEvidenceProviders() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.incidentEvidence === 'function')
+    .map((e) => ({ id: e.id, name: e.manifest.name, run: (ctx) => e.manifest.incidentEvidence(coreApiRef, ctx) }));
+}
+
+function getSiteProviders() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.siteOf === 'function')
+    .map((e) => ({ id: e.id, name: e.manifest.name, run: (ctx) => e.manifest.siteOf(coreApiRef, ctx) }));
+}
+
 /** Refused (returns false, no state change) when turning ON a plugin that
  *  isn't entitled (contract C9.5). Disabling is always allowed. */
 function setEnabled(id, enabled) {
@@ -266,6 +285,8 @@ module.exports = {
   listPlugins,
   getServer360Providers,
   getTopologyProviders,
+  getIncidentEvidenceProviders,
+  getSiteProviders,
   getAgentCapabilityProviders,
   setEnabled,
   isEntitled,

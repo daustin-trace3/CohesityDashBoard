@@ -17,6 +17,7 @@ const BUILTIN = {
   unifi: { label: 'UniFi', color: '#006FFF', route: '/unifi', alertsRoute: '/unifi/alerts' },
   brocade: { label: 'Brocade', color: '#CC092F', route: '/brocade', alertsRoute: '/brocade/issues' },
   bluecat: { label: 'BlueCat', color: '#0057B8', route: '/bluecat', alertsRoute: '/bluecat/alerts' },
+  logicmonitor: { label: 'LogicMonitor', color: '#1A73E8', route: '/logicmonitor', alertsRoute: '/logicmonitor/issues' },
 };
 
 // Not a polled platform, so it stays out of BUILTIN (which drives the platform

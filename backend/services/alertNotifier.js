@@ -305,6 +305,14 @@ function collectBrocadeIssues() {
   return [...fromIssues, ...fromEvents];
 }
 
+/** LogicMonitor ICC issues plus LM's own alerts, from the manifest's
+ *  collectAlerts (this branch has no manifest-hook collector loop for the
+ *  notifier tick). Empty while the platform is off. */
+function collectLogicmonitorAlerts() {
+  if (registry.getPlugin('logicmonitor')?.enabled !== true) return [];
+  return require('../platforms/logicmonitor').collectAlerts();
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -316,6 +324,7 @@ const COLLECTORS = {
   brocade: collectBrocadeIssues,
   netbackup: collectNetbackupIssues,
   proxmox: collectProxmoxIssues,
+  logicmonitor: collectLogicmonitorAlerts,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({
@@ -498,6 +507,9 @@ const CATALOG_BACKFILL = {
   unifi: () => issueHistoryBackfill('unifi_issue_history'),
   brocade: () => issueHistoryBackfill('brocade_issue_history'),
   bluecat: () => issueHistoryBackfill('bluecat_issue_history'),
+  // logicmonitor collectAlerts() emits ICC issues (type from lm_issue_history)
+  // plus LM's own alerts typed by resource_template_name (the datasource).
+  logicmonitor: () => logicmonitorBackfill(),
 
   // zerto keeps its own zerto_alert_catalog (per-code toggles) - no entry here.
 };
@@ -510,6 +522,28 @@ function issueHistoryBackfill(table) {
     FROM ${table} WHERE type IS NOT NULL AND type != ''
     GROUP BY type
   `).all();
+}
+
+function logicmonitorBackfill() {
+  const has = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
+  const byType = new Map();
+  const add = (r) => {
+    const prev = byType.get(r.type);
+    if (!prev) { byType.set(r.type, { ...r }); return; }
+    if (r.firstSeen && (!prev.firstSeen || r.firstSeen < prev.firstSeen)) prev.firstSeen = r.firstSeen;
+    if (r.lastSeen && (!prev.lastSeen || r.lastSeen > prev.lastSeen)) prev.lastSeen = r.lastSeen;
+  };
+  if (has('lm_issue_history')) issueHistoryBackfill('lm_issue_history').forEach(add);
+  if (has('lm_alerts')) {
+    db.prepare(`
+      SELECT resource_template_name AS type,
+             datetime(MIN(start_epoch), 'unixepoch') AS firstSeen,
+             datetime(MAX(COALESCE(captured_at, datetime(start_epoch, 'unixepoch')))) AS lastSeen
+      FROM lm_alerts WHERE resource_template_name IS NOT NULL AND resource_template_name != ''
+      GROUP BY resource_template_name
+    `).all().forEach(add);
+  }
+  return [...byType.values()];
 }
 
 /** Fills alert_notify_types from the full stored alert tables (any

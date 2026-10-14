@@ -24,6 +24,7 @@ const dellManifest = require('./platforms/dell');
 const ariaManifest = require('./platforms/aria');
 const ariaopsManifest = require('./platforms/ariaops');
 const brocadeManifest = require('./platforms/brocade');
+const logicmonitorManifest = require('./platforms/logicmonitor');
 
 // Auth boot work (contract C8.3): prune stale sessions and (re-)check the
 // first-run claim token. authService already runs this once at module load
@@ -40,7 +41,7 @@ registry.init();
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
 // (C9.5) gates enabling regardless of the stored flag.
-const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled } = getPlatformSettings();
+const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled } = getPlatformSettings();
 registry.registerPlugin(pureManifest);
 registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
 registry.registerPlugin(netappManifest);
@@ -57,6 +58,8 @@ registry.registerPlugin(ariaopsManifest);
 registry.setEnabled('ariaops', platformAriaopsEnabled && registry.isEntitled('ariaops'));
 registry.registerPlugin(brocadeManifest);
 registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
+registry.registerPlugin(logicmonitorManifest);
+registry.setEnabled('logicmonitor', platformLogicmonitorEnabled && registry.isEntitled('logicmonitor'));
 
 // Scan and register any installed (non-built-in) plugins left in plugins/
 // after the boot swap above.
@@ -100,6 +103,18 @@ if (require.main === module) {
         logger.info(`[Demo] app-service linking re-applied: ${r.objects} objects, ${r.vpgs} VPGs, ${r.zertoVms} Zerto VMs`);
       } catch (err) {
         logger.warn(`[Demo] app-service linking failed: ${err.message}`);
+      }
+      // Same reason: the LogicMonitor demo scenario writes rows into the vCenter
+      // and Zerto tables (management vmkernel uplinks, RPO alerts and a breached VPG).
+      try {
+        const db = require('./db/database');
+        if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lm_sources'").get()) {
+          const { applyCrossPlatformRows } = require('./demo/generators/logicmonitor');
+          const r = db.transaction(() => applyCrossPlatformRows(db, { nowMs: Date.now() }))();
+          logger.info(`[Demo] logicmonitor cross-platform rows re-applied: vmkernel ${r.vmkernelRows}, zerto alerts ${r.zertoAlerts}, vpgs ${r.zertoVpgs}`);
+        }
+      } catch (err) {
+        logger.warn(`[Demo] logicmonitor cross-platform rows failed: ${err.message}`);
       }
       // The demo's poller process idles (pollers disabled above), so the API
       // process is the only place Service Status can run its 1-minute sweep.

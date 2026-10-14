@@ -59,6 +59,7 @@ const SOURCE_TABLES = {
   vcenter: 'vcenter_vcenters', dell: 'dell_ome_instances', aria: 'aria_instances',
   ariaops: 'ariaops_instances', aws: 'aws_accounts', unifi: 'unifi_sources',
   brocade: 'brocade_sources', bluecat: 'bluecat_sources',
+  logicmonitor: 'lm_sources',
 };
 
 /** The source row behind a poller_status key, or null when the platform has a
@@ -391,6 +392,12 @@ const HOST_TABLE_DEFS = [
     up: (r) => Number(r.state) === 1,
   },
   {
+    platform: 'logicmonitor',
+    find: (c) => twoInQuery('lm_devices', 'display_name', 'name', c),
+    fields: (r) => ({ model: r.model, vendor: r.vendor, hostStatus: r.host_status, collector: r.collector_description }),
+    up: (r) => r.host_status === 'normal',
+  },
+  {
     platform: 'brocade',
     find: (c) => oneInQuery('brocade_switches', 'name', c),
     fields: (r) => ({ state: r.state, status: r.status, operational_status: r.operational_status, health: r.health, is_missing: r.is_missing, ip_address: r.ip_address }),
@@ -447,6 +454,7 @@ const SOURCES_TABLES = {
   vcenter: 'vcenter_vcenters', dell: 'dell_ome_instances', unifi: 'unifi_sources',
   brocade: 'brocade_sources', bluecat: 'bluecat_sources', aws: 'aws_accounts',
   aria: 'aria_instances', ariaops: 'ariaops_instances',
+  logicmonitor: 'lm_sources',
 };
 
 function sourcesFor(platform) {
@@ -482,6 +490,7 @@ const METRICS_MAP = {
   aria: ['aria_metrics_history', 'captured_at'], ariaops: ['ariaops_metrics_history', 'captured_at'],
   aws: ['aws_metrics_history', 'captured_at'], unifi: ['unifi_metrics_history', 'captured_at'],
   brocade: ['brocade_metrics', 'ts'], bluecat: ['bluecat_metrics_history', 'captured_at'],
+  logicmonitor: ['lm_metrics_history', 'captured_at'],
 };
 
 function metricsFreshnessFor(platform) {

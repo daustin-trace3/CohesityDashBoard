@@ -206,6 +206,11 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                 </Section>
                 {a.human_reason && <Section title={a.human_required ? 'Why a human is required' : 'Why no human is needed'}><p className="text-sm text-ink-muted">{a.human_reason}</p></Section>}
                 {inc.healActions?.length > 0 && <Section title={`What ${agentName} did`}><ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{inc.healActions.map((h, i) => <li key={i}>{new Date(h.at).toLocaleTimeString()}: {h.action} {h.target}: {h.result}</li>)}</ul></Section>}
+                {Array.isArray(inc.evidence?.network) && inc.evidence.network.filter((n) => n && Array.isArray(n.lines) && n.lines.length > 0).map((n, ni) => (
+                  <Section key={`net-${ni}`} title={n.title || 'Network'}>
+                    <ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{n.lines.map((l, i) => <li key={i}>{String(l)}</li>)}</ul>
+                  </Section>
+                ))}
                 {inc.evidence?.liveChecks?.results?.length > 0 && (
                   <Section title={`What ${agentName} checked live (from the ICC server)`}>
                     <ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">

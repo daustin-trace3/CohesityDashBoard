@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Server, Boxes, ChevronDown, ChevronUp, Cpu } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Server, Boxes, ChevronDown, ChevronUp, Cpu, Cable, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtNum, fmtBytes, hostStateTone, hostStateLabel } from './helpers';
+import { BRAND, fmtNum, fmtBytes, fmtWhen, hostStateTone, hostStateLabel } from './helpers';
 
 const pct = (used, cap) => (cap > 0 && used != null ? (used / cap) * 100 : null);
 
@@ -83,11 +84,81 @@ function FleetRollup({ vcs, hosts }) {
   );
 }
 
+// CDP / LLDP neighbour hints for one host's physical NICs. A 404 (unknown
+// host or a backend without the route) reads the same as no hints.
+function NicNeighborsPanel({ hostName }) {
+  const [rows, setRows] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setRows(null);
+    setFailed(false);
+    client.get(`/vcenter/hosts/${encodeURIComponent(hostName)}/nic-neighbors`)
+      .then(({ data }) => setRows(Array.isArray(data) ? data : []))
+      .catch((e) => { if (e?.response?.status !== 404) setFailed(true); setRows([]); });
+  }, [hostName]);
+  const captured = (rows || []).map((r) => r.capturedAt).filter(Boolean).sort().pop();
+  return (
+    <div>
+      <p className="text-xs font-semibold text-ink mb-2 flex items-center gap-2"><Cable size={13} className="text-brand" /> Physical NIC neighbours</p>
+      {rows == null ? <LoadingPanel label="Loading NIC hints..." height={80} /> : failed ? (
+        <p className="text-sm text-status-warn py-3 text-center">Failed to load NIC neighbour hints.</p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-ink-muted py-3 text-center">No CDP or LLDP hints reported</p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-1.5 pr-3">NIC</th><th className="py-1.5 pr-3">MAC</th><th className="py-1.5 pr-3">Protocol</th>
+                <th className="py-1.5 pr-3">Switch</th><th className="py-1.5 pr-3">Port</th><th className="py-1.5 pr-3">Address</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={`${r.nic}-${r.protocol}-${i}`} className="border-b border-cohesity-border/50">
+                    <td className="py-1.5 pr-3 text-ink font-mono text-[11px]">{r.nic || '-'}</td>
+                    <td className="py-1.5 pr-3 text-ink-muted font-mono text-[11px]">{r.mac || '-'}</td>
+                    <td className="py-1.5 pr-3"><Badge tone="info">{r.protocol ? String(r.protocol).toUpperCase() : '-'}</Badge></td>
+                    <td className="py-1.5 pr-3 text-ink text-[12px]" title={r.switchPlatform || ''}>{r.switchName || '-'}</td>
+                    <td className="py-1.5 pr-3 text-ink-muted text-[12px]">{r.switchPort || '-'}{r.vlan != null ? <span className="text-ink-faint"> (VLAN {r.vlan})</span> : null}</td>
+                    <td className="py-1.5 pr-3 text-ink-muted tnum text-[12px]">{r.switchAddress || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {captured && <p className="text-[10px] text-ink-faint mt-1">Captured {fmtWhen(captured)}</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
+function HostModal({ host, onClose }) {
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
+      <div className="panel w-full max-w-3xl p-5 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-ink truncate flex items-center gap-2"><Server size={15} className="text-brand" /> {host.name}</h2>
+            <p className="text-[11px] text-ink-muted mt-0.5">{[host.cluster_name, host.vcenter_name, host.esx_version].filter(Boolean).join(' - ')}</p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="text-ink-faint hover:text-ink flex-shrink-0 cursor-pointer"><X size={16} /></button>
+        </div>
+        <div className="overflow-y-auto pr-1 min-h-0">
+          <NicNeighborsPanel hostName={host.name} />
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 export default function VcHostsPage() {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
   const [vcs, setVcs] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [openHost, setOpenHost] = useState(null);
 
   const load = useCallback(() => Promise.all([
     client.get('/vcenter/hosts').then(({ data }) => setRows(data)),
@@ -144,7 +215,8 @@ export default function VcHostsPage() {
               </tr></thead>
               <tbody>
                 {ctl.pageRows.map((h) => (
-                  <tr key={`${h.vcenter_id}|${h.host_id}`} className="border-b border-cohesity-border/50">
+                  <tr key={`${h.vcenter_id}|${h.host_id}`} className={`border-b border-cohesity-border/50 ${h.name ? 'cursor-pointer hover:bg-surface-overlay' : ''}`}
+                    onClick={() => h.name && setOpenHost(h)}>
                     <td className="py-2 pr-3 text-ink">{h.name || '—'}</td>
                     <td className="py-2 pr-3"><Badge tone={hostStateTone(h)}>{h.state}</Badge></td>
                     <td className="py-2 pr-3 text-ink-muted">{h.cluster_name || '—'}</td>
@@ -162,6 +234,7 @@ export default function VcHostsPage() {
         )}
         <TablePager ctl={ctl} />
       </div>
+      {openHost && <HostModal host={openHost} onClose={() => setOpenHost(null)} />}
     </div>
   );
 }

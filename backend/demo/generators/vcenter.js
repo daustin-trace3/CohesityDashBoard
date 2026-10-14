@@ -412,6 +412,8 @@ function seedVcenter(db, { now, encrypt }) {
     }
   });
 
+  const nicNeighbors = seedNicNeighbors(db, nowIso);
+
   // ── Native vSphere events: ~50 per vCenter over the last 48h ────────────
   const insertEvent = db.prepare(`
     INSERT OR IGNORE INTO vcenter_events (vcenter_id, event_key, event_type, severity, message, username, entity_name, created_at, captured_at)
@@ -731,7 +733,82 @@ function seedVcenter(db, { now, encrypt }) {
     datastores: dsTotal, orphans: orphanTotal, events: eventTotal,
     issueHistory: db.prepare('SELECT COUNT(*) n FROM vcenter_issue_history').get().n,
     siteMembers: siteMemRows, capacityHistory: capHistRows, vmCapacityHistory: vmHistRows,
+    nicNeighbors,
   };
 }
 
-module.exports = { seedVcenter };
+// LogicMonitor access switches the nyc and lon ESXi hosts are cabled to. The
+// names and management IPs must match what generators/logicmonitor.js seeds
+// (sites nyc 10.51 and lon 10.52, dist-01 = .11, acc-01 = .12, acc-02 = .13).
+const LM_ACCESS = {
+  nyc: [{ name: 'nyc-acc-01', ip: '10.51.1.12' }, { name: 'nyc-acc-02', ip: '10.51.1.13' }],
+  lon: [{ name: 'lon-acc-01', ip: '10.52.1.12' }, { name: 'lon-acc-02', ip: '10.52.1.13' }],
+};
+// The one host that reports LLDP instead of CDP (System Name style data).
+const LLDP_HOST = 'lon-esx-0103.icc.demo';
+
+/** vcenter_host_nic_neighbors (QueryNetworkHint) for the nyc and lon hosts:
+ *  vmnic0 to <site>-acc-01 and vmnic1 to <site>-acc-02, both on
+ *  GigabitEthernet1/0/<n> where n is the host's position by name within its
+ *  site, so LM's "Gi1/0/<n>" matches by port number. Hosts that are not
+ *  CONNECTED answer no hint call and get no rows. Skipped when the table is
+ *  missing (vCenter migration v11). */
+function seedNicNeighbors(db, nowIso) {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vcenter_host_nic_neighbors'").get()) return 0;
+  const ins = db.prepare(`
+    INSERT INTO vcenter_host_nic_neighbors (vcenter_id, host_name, nic, mac, protocol, switch_name, switch_port,
+      switch_address, switch_platform, vlan, raw_json, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const macOf = db.prepare("SELECT mac FROM vcenter_networks WHERE vcenter_id = ? AND host_name = ? AND kind = 'pnic' AND name = ?");
+  let rows = 0;
+  for (const [site, switches] of Object.entries(LM_ACCESS)) {
+    const vc = db.prepare('SELECT id FROM vcenter_vcenters WHERE name = ?').get(`${site}-vc-prd-01`);
+    if (!vc) continue;
+    const hosts = db.prepare('SELECT name, connection_state FROM vcenter_hosts WHERE vcenter_id = ? ORDER BY name').all(vc.id);
+    hosts.forEach((h, idx) => {
+      if (h.connection_state !== 'CONNECTED') return;
+      const n = idx + 1;
+      switches.forEach((sw, p) => {
+        const nic = `vmnic${p}`;
+        const mac = (macOf.get(vc.id, h.name, nic) || {}).mac || null;
+        if (h.name === LLDP_HOST) {
+          const sysName = `${sw.name}.acme.local`;
+          const port = `Gi1/0/${n}`;
+          const raw = {
+            device: nic,
+            lldpInfo: {
+              chassisId: `00:1e:4c:${String(51 + p).padStart(2, '0')}:00:0${n}`, portId: port, timeToLive: 120,
+              parameter: [
+                { key: 'System Name', value: sysName },
+                { key: 'System Description', value: 'Cisco IOS Software [Cupertino], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.9.4a' },
+                { key: 'Port Description', value: `to ${h.name.split('.')[0]} ${nic}` },
+                { key: 'Management Address', value: sw.ip },
+                { key: 'VLAN ID', value: '100' },
+              ],
+            },
+          };
+          ins.run(vc.id, h.name, nic, mac, 'lldp', sysName, port, sw.ip,
+            'Cisco IOS Software [Cupertino], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.9.4a', 100, JSON.stringify(raw), nowIso);
+        } else {
+          const port = `GigabitEthernet1/0/${n}`;
+          const raw = {
+            device: nic,
+            connectedSwitchPort: {
+              cdpVersion: 2, timeout: 60, ttl: 180, samples: 1200, devId: sw.name, address: sw.ip, portId: port,
+              hardwarePlatform: 'cisco WS-C9300-48P', softwareVersion: 'Cisco IOS Software [Cupertino], Version 17.9.4a',
+              systemName: '', vlan: 100, fullDuplex: true, mtu: 9000,
+            },
+          };
+          ins.run(vc.id, h.name, nic, mac, 'cdp', sw.name, port, sw.ip, 'cisco WS-C9300-48P', 100, JSON.stringify(raw), nowIso);
+        }
+        rows += 1;
+      });
+    });
+  }
+  return rows;
+}
+
+// seedNicNeighbors is exported for the demo one-off that adds the hint rows to
+// a demo database whose vCenter tables were seeded by the installed pack.
+module.exports = { seedVcenter, seedNicNeighbors };

@@ -129,7 +129,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -146,6 +146,7 @@ router.put('/', (req, res, next) => {
       resolve(platformAriaEnabled, 'platformAriaEnabled'),
       resolve(platformAriaopsEnabled, 'platformAriaopsEnabled'),
       resolve(platformBrocadeEnabled, 'platformBrocadeEnabled'),
+      resolve(platformLogicmonitorEnabled, 'platformLogicmonitorEnabled'),
     ].some(Boolean);
     if (!anyEnabled) {
       return res.status(400).json({ error: 'At least one platform must remain enabled.' });
@@ -232,6 +233,10 @@ router.put('/', (req, res, next) => {
       setSetting('platform_brocade_enabled', platformBrocadeEnabled ? '1' : '0');
       applyPlatformEnabled('brocade', !!platformBrocadeEnabled);
     }
+    if (platformLogicmonitorEnabled !== undefined) {
+      setSetting('platform_logicmonitor_enabled', platformLogicmonitorEnabled ? '1' : '0');
+      applyPlatformEnabled('logicmonitor', !!platformLogicmonitorEnabled);
+    }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));
     }
@@ -248,7 +253,7 @@ router.put('/', (req, res, next) => {
       if (a.enabled !== undefined) setSetting('ops_agent_enabled', a.enabled ? '1' : '0');
       if (a.name !== undefined) setSetting('ops_agent_name', String(a.name).replace(/[\r\n<>"]/g, '').trim().slice(0, 80));
       if (a.minSeverity !== undefined && ['info', 'warning', 'error', 'critical'].includes(a.minSeverity)) setSetting('ops_agent_min_severity', a.minSeverity);
-      if (a.grouping !== undefined && ['platform', 'service', 'component'].includes(a.grouping)) setSetting('ops_agent_grouping', a.grouping);
+      if (a.grouping !== undefined && ['platform', 'service', 'component', 'site'].includes(a.grouping)) setSetting('ops_agent_grouping', a.grouping);
       if (a.holdMinutes !== undefined) { const n = Number(a.holdMinutes); setSetting('ops_agent_hold_minutes', n >= 0 && n <= 120 ? String(Math.round(n)) : ''); }
       if (a.analysesPerHour !== undefined) { const n = Number(a.analysesPerHour); setSetting('ops_agent_analyses_per_hour', n >= 1 && n <= 200 ? String(Math.round(n)) : ''); }
       if (a.renotifyMinutes !== undefined) { const n = Number(a.renotifyMinutes); setSetting('ops_agent_renotify_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }

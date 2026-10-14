@@ -109,6 +109,8 @@ const CATEGORIES = [
     params: 2,
     sql: `SELECT COALESCE(symbolic_name, wwn) AS title, wwn AS subtitle FROM brocade_device_ports
           WHERE (wwn LIKE ? ESCAPE '\\' OR symbolic_name LIKE ? ESCAPE '\\') AND stale = 0 ORDER BY symbolic_name LIMIT ?` },
+  // LogicMonitor declares its categories in the manifest (searchCategories).
+  ...require('../platforms/logicmonitor').searchCategories,
 ];
 
 const platformEnabled = (id) => {

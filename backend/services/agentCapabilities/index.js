@@ -34,10 +34,11 @@ const RUN_LOG_DAYS = 30;
 // list is part of the audit story ("ICC only ever connects to these").
 const SOURCE_PORTS = {
   cohesity: [443], pure: [443], netapp: [443], vcenter: [443], dell: [443], aria: [443], ariaops: [443],
-  unifi: [443], brocade: [443], bluecat: [443], eon: [443], zerto: [443],
+  unifi: [443], brocade: [443], bluecat: [443], eon: [443], zerto: [443], logicmonitor: [443],
 };
 const HOST_PORTS = {
   dell: [443], vcenter: [443, 902], brocade: [22, 443], bluecat: [22, 443], unifi: [22, 443], zerto: [443, 9669],
+  logicmonitor: [22, 443, 161],
 };
 const DEFAULT_PORTS = [443];
 
@@ -80,7 +81,9 @@ function packCapabilities() {
     for (const cap of p.capabilities) {
       try {
         validate(cap, `${p.id} pack`);
-        out.push({ ...cap, id: `${p.id}:${cap.id}`, source: p.id, platform: cap.platform || p.id });
+        // platform '*' means the capability applies to any incident target (a
+        // read-only lookup keyed by host name), not only the pack's own platform.
+        out.push({ ...cap, id: `${p.id}:${cap.id}`, source: p.id, platform: cap.platform === '*' ? null : (cap.platform || p.id) });
       } catch (err) {
         logger.warn(`[AgentCapabilities] pack ${p.id}: ${err.message}`);
       }
@@ -160,6 +163,7 @@ function sourceAddress(platform, entityId) {
     case 'pure': { const r = sq('SELECT name, mgmt_host FROM pure_arrays WHERE id = ?', id); return r ? { name: r.name, address: hostPart(r.mgmt_host) } : null; }
     case 'netapp': { const r = sq('SELECT name, mgmt_host, management_ip FROM netapp_arrays WHERE id = ?', id); return r ? { name: r.name, address: hostPart(r.management_ip || r.mgmt_host) } : null; }
     case 'eon': { const r = sq('SELECT name, endpoint FROM eon_sources WHERE id = ?', id); return r ? { name: r.name, address: hostPart(r.endpoint) } : null; }
+    case 'logicmonitor': { const r = sq('SELECT name, company FROM lm_sources WHERE id = ?', id); return r ? { name: r.name, address: r.company ? `${r.company}.logicmonitor.com` : null } : null; }
     case 'vcenter': case 'dell': case 'aria': case 'ariaops': case 'unifi': case 'brocade': case 'bluecat': {
       const table = { vcenter: 'vcenter_vcenters', dell: 'dell_ome_instances', aria: 'aria_instances', ariaops: 'ariaops_instances', unifi: 'unifi_sources', brocade: 'brocade_sources', bluecat: 'bluecat_sources' }[platform];
       const r = sq(`SELECT name, host FROM ${table} WHERE id = ?`, id);
@@ -184,6 +188,7 @@ function hostAddress(platform, host) {
     ['bluecat', 'SELECT address a FROM bluecat_servers WHERE lower(name) = ?', [lc]],
     ['zerto', 'SELECT zvm_ip a FROM zerto_sites WHERE lower(name) = ?', [lc]],
     ['unifi', 'SELECT ip a FROM unifi_devices WHERE lower(name) = ?', [lc]],
+    ['logicmonitor', "SELECT COALESCE(NULLIF(name,''), display_name) a FROM lm_devices WHERE lower(display_name) = ?", [lc]],
   ];
   // The alerting platform's own table first, then any other that knows the name.
   lookups.sort((x, y) => (x[0] === platform ? -1 : 0) - (y[0] === platform ? -1 : 0));

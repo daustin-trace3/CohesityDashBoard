@@ -10,6 +10,7 @@ import { execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import Database from 'better-sqlite3';
 
 const backendDir = path.join(__dirname, '..');
@@ -222,6 +223,21 @@ describe('seedDemo.js', () => {
     expect(pm.find((r) => r.name === 'DC2 OME').util).toBe(0);
     expect(pm.find((r) => r.name === 'DC2 OME').pw).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM dell_metrics_history').get().c).toBe(2 * 31);
+  });
+
+  it('seeds vcenter host NIC neighbour hints for the nyc and lon hosts', () => {
+    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vcenter_host_nic_neighbors'").get();
+    if (!exists) return;
+    const c = (sql) => db.prepare(sql).get().c;
+    // Two vmnics per CONNECTED nyc/lon host; hosts that are not responding answer no hint call.
+    const hosts = c(`SELECT COUNT(*) c FROM vcenter_hosts h JOIN vcenter_vcenters v ON v.id = h.vcenter_id
+      WHERE v.name IN ('nyc-vc-prd-01', 'lon-vc-prd-01') AND h.connection_state = 'CONNECTED'`);
+    expect(hosts).toBeGreaterThan(0);
+    expect(c('SELECT COUNT(*) c FROM vcenter_host_nic_neighbors')).toBe(hosts * 2);
+    expect(c("SELECT COUNT(*) c FROM vcenter_host_nic_neighbors WHERE protocol = 'lldp'")).toBe(2);
+    expect(c("SELECT COUNT(*) c FROM vcenter_host_nic_neighbors WHERE protocol = 'cdp' AND switch_port NOT LIKE 'GigabitEthernet1/0/%'")).toBe(0);
+    expect(c("SELECT COUNT(*) c FROM vcenter_host_nic_neighbors WHERE switch_name NOT LIKE 'nyc-acc-0_%' AND switch_name NOT LIKE 'lon-acc-0_%'")).toBe(0);
+    expect(c("SELECT COUNT(*) c FROM vcenter_host_nic_neighbors WHERE mac IS NULL OR switch_address NOT LIKE '10.5_.1.1_'")).toBe(0);
   });
 
   it('seeds vcenter governance + network data', () => {
@@ -628,6 +644,212 @@ describe('seedDemo.js', () => {
     ]) {
       expect(openTypes).toContain(type);
     }
+  });
+
+  it('seeds the logicmonitor platform with inventory, history and every issue trigger', () => {
+    const c = (sql, ...args) => db.prepare(sql).get(...args).c;
+    expect(c('SELECT COUNT(*) c FROM lm_sources')).toBe(2);
+    expect(c("SELECT COUNT(*) c FROM lm_sources WHERE last_poll_status = 'error'")).toBe(1);
+    expect(c('SELECT COUNT(*) c FROM lm_collectors')).toBe(6);
+    expect(c('SELECT COUNT(*) c FROM lm_collectors WHERE is_down = 1')).toBe(1);
+    // 12 v1 groups plus 4 DC site groups (Network/Sites/<site>) added in round 3.
+    expect(c('SELECT COUNT(*) c FROM lm_device_groups')).toBe(16);
+    // 140 monitored devices plus the 2 LM Uptime ping-check devices (deviceType 19),
+    // plus 6 nyc/lon switches (round 2: 1 dist + 2 access per site), plus 7 round 3
+    // switches (abq-dist-01 with 3 access switches, 3 unassigned-sw-* in no site group).
+    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(155);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 19')).toBe(2);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 2')).toBe(20);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(73);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead-collector'")).toBe(14);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead' AND is_network = 1")).toBe(7);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor = 'Cisco' AND role = 'switch' AND version = '17.6.5'")).toBe(4);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE sdt_status != 'none-none-none'")).toBe(5);
+    expect(c('SELECT COUNT(*) c FROM lm_sdts')).toBe(7);
+
+    expect(c('SELECT COUNT(*) c FROM lm_interfaces')).toBe(2024);
+    expect(c("SELECT COUNT(*) c FROM lm_interfaces WHERE status_text = 'down'")).toBe(10);
+    const ifHist = c('SELECT COUNT(*) c FROM lm_interface_history');
+    expect(ifHist).toBeGreaterThan(100000);
+    expect(ifHist).toBeLessThan(150000);
+    expect(c('SELECT COUNT(*) c FROM lm_interface_daily')).toBeGreaterThan(40000);
+    expect(c('SELECT COUNT(*) c FROM lm_device_datasources WHERE is_interface = 1')).toBe(67);
+
+    expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0')).toBe(114);
+    expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 1')).toBe(400);
+    expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0 AND acked = 1')).toBe(12);
+    expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0 AND sdted = 1')).toBe(6);
+    expect(c("SELECT COUNT(*) c FROM lm_alerts WHERE condition_key NOT LIKE 'lm:%' OR condition_key LIKE '%DS5%'")).toBe(0);
+    const noisy = db.prepare('SELECT COUNT(*) n FROM lm_alerts GROUP BY condition_key HAVING n >= 40').all();
+    expect(noisy.length).toBe(3);
+
+    expect(c('SELECT COUNT(*) c FROM lm_checks')).toBe(18);
+    expect(c("SELECT COUNT(*) c FROM lm_checks WHERE origin = 'uptime' AND check_id LIKE 'u:%'")).toBe(2);
+    expect(c("SELECT COUNT(*) c FROM lm_check_locations WHERE is_overall = 1 AND checkpoint_id = 'overall'")).toBe(18);
+    expect(c('SELECT COUNT(*) c FROM lm_check_history')).toBeGreaterThan(140000);
+    expect(c('SELECT COUNT(*) c FROM lm_check_baseline')).toBeGreaterThan(0);
+    expect(c("SELECT COUNT(*) c FROM lm_alerts WHERE type = 'websiteAlert' AND cleared = 0 AND lm_alert_id LIKE 'LMS%'")).toBe(2);
+    expect(c('SELECT COUNT(*) c FROM lm_admins')).toBe(9);
+    expect(c('SELECT COUNT(*) c FROM lm_roles')).toBe(4);
+    expect(c('SELECT COUNT(*) c FROM lm_metrics_history')).toBe(720);
+
+    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'description' AND dst_device_id IS NOT NULL")).toBe(96);
+    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'description' AND dst_device_id IS NULL")).toBe(39);
+    // Round 2 server-facing ports: 6 ESXi hosts x 2 per site plus 2 dual-homed Dell servers.
+    expect(c("SELECT COUNT(*) c FROM lm_interfaces WHERE description LIKE 'to %-esx-0% vmnic_'")).toBe(24);
+    expect(c("SELECT COUNT(*) c FROM lm_interfaces WHERE description LIKE 'to dc_-esx-% NIC.Integrated.1-_'")).toBe(4);
+    expect(c("SELECT COUNT(*) c FROM lm_checks WHERE check_id IN ('w:115', 'w:116') AND target LIKE '10.10_.%'")).toBe(2);
+    // Cross-platform endpoint resolution (WP-A): only asserted once the column
+    // exists and the poller writes it.
+    const linkCols = db.prepare("PRAGMA table_info('lm_topology_links')").all().map((r) => r.name);
+    const pollerSrc = fs.readFileSync(path.join(backendDir, 'services', 'logicmonitorPoller.js'), 'utf8');
+    if (linkCols.includes('dst_platform') && pollerSrc.includes('dst_platform')) {
+      expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE dst_platform = 'vcenter'")).toBeGreaterThan(0);
+      expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE dst_platform = 'vcenter' AND dst_ref = 'nyc-esx-0101.icc.demo'")).toBe(2);
+    }
+    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'lldp'")).toBe(10);
+
+    const openTypes = db.prepare("SELECT DISTINCT type FROM lm_issue_history WHERE status = 'open'").all().map((r) => r.type);
+    for (const type of [
+      'source-unreachable', 'collector-down', 'collector-build-behind', 'device-dead', 'device-in-sdt', 'device-new',
+      'interface-utilization-high', 'interface-errors-growing', 'interface-flapping', 'alert-storm',
+      'check-down', 'check-location-down', 'latency-anomaly', 'packet-loss-anomaly', 'location-degraded',
+    ]) {
+      expect(openTypes).toContain(type);
+    }
+
+    const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_logicmonitor_enabled'").get();
+    expect(flag.value).toBe('1');
+  });
+
+  it('seeds the logicmonitor round 3 scenarios (sites, shadowing, circuits, anomalies, backup windows, webhook, data quality)', async () => {
+    const c = (sql, ...args) => db.prepare(sql).get(...args).c;
+    const cols = (t) => new Set(db.prepare(`PRAGMA table_info('${t}')`).all().map((r) => r.name));
+    const hasTable = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
+    expect(cols('lm_alerts').has('shadowed_by')).toBe(true);
+
+    // Sites: 4 DC sites, 4 branches and AWS; at least 80 percent of network devices resolve through a group.
+    expect(c('SELECT COUNT(*) c FROM lm_sites')).toBeGreaterThanOrEqual(9);
+    expect(c('SELECT COUNT(*) c FROM lm_checks WHERE site_key IS NOT NULL')).toBeGreaterThanOrEqual(12);
+    expect(c("SELECT COUNT(*) c FROM lm_issue_history WHERE type = 'device-dead' AND target = 'den-acc-02' AND status = 'open' AND first_seen < datetime('now', '-70 hours')")).toBe(1);
+    expect(c("SELECT COUNT(*) c FROM lm_issue_history WHERE status = 'open' AND first_seen < datetime('now', '-1 hour')")).toBeGreaterThanOrEqual(5);
+    const grouped = c("SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1 AND site_source = 'group'");
+    expect(grouped / c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBeGreaterThanOrEqual(0.8);
+    const noSite = db.prepare('SELECT display_name FROM lm_devices WHERE is_network = 1 AND site_key IS NULL ORDER BY display_name').all().map((r) => r.display_name);
+    expect(noSite).toEqual(['unassigned-sw-01', 'unassigned-sw-02', 'unassigned-sw-03']);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1 AND tier IS NOT NULL')).toBeGreaterThan(60);
+
+    // Dependency suppression: the abq outage folds under abq-dist-01.
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE display_name IN ('abq-dist-01', 'abq-acc-03', 'abq-acc-04', 'abq-acc-05') AND host_status = 'dead'")).toBe(4);
+    expect(c("SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0 AND monitor_object_name IN ('abq-acc-03', 'abq-acc-04', 'abq-acc-05') AND resource_template_name = 'SNMP_Network_Interfaces'")).toBe(20);
+    const shadowed = db.prepare('SELECT shadowed_by FROM lm_alerts WHERE cleared = 0 AND shadowed_by IS NOT NULL').all();
+    expect(shadowed.length).toBeGreaterThanOrEqual(20);
+    expect(shadowed.every((r) => JSON.parse(r.shadowed_by).deviceName === 'abq-dist-01')).toBe(true);
+
+    // Circuits: the DC WAN uplinks are marked, one is saturated, the den uplink is unresolved.
+    expect(c('SELECT COUNT(*) c FROM lm_interfaces WHERE is_wan = 1')).toBeGreaterThanOrEqual(7);
+    expect(c(`SELECT COUNT(*) c FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
+      WHERE i.is_wan = 1 AND i.wan_reason = 'unresolved-uplink' AND d.display_name = 'den-rtr-01'`)).toBe(1);
+    const issues = db.prepare("SELECT type, target FROM lm_issue_history WHERE status = 'open'").all();
+    const sat = issues.filter((i) => i.type === 'circuit-saturated');
+    expect(sat.length).toBe(1);
+    expect(sat[0].target).toMatch(/^phx-wan-rtr-01 /);
+    expect(c(`SELECT COUNT(*) c FROM lm_interface_daily x
+      JOIN lm_interfaces i ON i.source_id = x.source_id AND i.instance_id = x.instance_id
+      JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
+      WHERE d.display_name = 'phx-wan-rtr-01' AND i.display_name = 'GigabitEthernet0/0/0' AND x.max_in_util_pct >= 95`)).toBeGreaterThanOrEqual(3);
+
+    // Interface anomalies on ports that stay under the static thresholds.
+    expect(issues.filter((i) => i.type === 'interface-util-anomaly' && i.target.startsWith('phx-acc-06 ')).length).toBe(1);
+    expect(issues.filter((i) => i.type === 'interface-error-anomaly' && i.target.startsWith('phx-acc-08 ')).length).toBe(1);
+    expect(c('SELECT COUNT(*) c FROM lm_interface_baseline')).toBeGreaterThan(1000);
+
+    // Backup overlay: four seeded runs, two of them on a hot port, found by the real run-to-port join.
+    expect(c("SELECT COUNT(*) c FROM protection_runs WHERE job_name LIKE 'VM_Nightly_Backup_%'")).toBe(4);
+    expect(c("SELECT COUNT(*) c FROM cohesity_objects WHERE protection_groups LIKE '%VM_Nightly_Backup_%'")).toBe(4);
+    const endpoints = await import(path.join(backendDir, 'services', 'logicmonitorEndpoints.js'));
+    const ep = endpoints.default || endpoints;
+    const windows = ep.backupWindows(db, { nowMs: Date.now() }).filter((w) => w.jobName.startsWith('VM_Nightly_Backup_'));
+    expect(windows.length).toBe(2);
+    expect(windows.every((w) => w.finding === 'saturates' && w.meanUtilPct >= 70)).toBe(true);
+    expect(windows.map((w) => w.deviceName).sort()).toEqual(['lon-acc-01', 'nyc-acc-01']);
+
+    // Round 4 backup load: nyc-esx-0101 has five jobs merged in the same 01:00 to 03:00 window and its
+    // management vmkernel leaves through vmnic0 only.
+    expect(c("SELECT COUNT(*) c FROM protection_runs WHERE job_name LIKE 'NYC_%'")).toBe(4);
+    expect(c("SELECT COUNT(*) c FROM vcenter_networks WHERE host_name = 'nyc-esx-0101.icc.demo' AND kind = 'vswitch' AND name = 'vSwitch0' AND uplinks = '[\"vmnic0\"]'")).toBe(1);
+    expect(c("SELECT COUNT(*) c FROM vcenter_networks WHERE host_name = 'nyc-esx-0101.icc.demo' AND kind = 'vmkernel' AND name = 'vmk0' AND switch_name = 'Management Network'")).toBe(1);
+    if (typeof ep.backupLoad === 'function') {
+      const load = ep.backupLoad(db, { nowMs: Date.now() });
+      const five = load.filter((w) => w.runCount === 5);
+      expect(five.length).toBeGreaterThanOrEqual(1);
+      expect(five.every((w) => w.deviceName === 'nyc-acc-01' && w.uplinkRule === 'vmkernel')).toBe(true);
+      const shares = five[0].runs.map((r) => r.sharePct);
+      expect(shares.reduce((a, b) => a + b, 0)).toBeGreaterThan(99);
+      expect(shares.reduce((a, b) => a + b, 0)).toBeLessThan(101);
+    }
+
+    // Round 4 replication vs circuits: Phoenix RPO alerts and a breached VPG, 90 minute replication lag, all
+    // inside the phx-wan-rtr-01 saturation window.
+    expect(c("SELECT COUNT(*) c FROM zerto_alerts WHERE alert_identifier LIKE 'demo-lm-rpo-%' AND description LIKE '%RPO%'")).toBe(2);
+    expect(c("SELECT COUNT(*) c FROM zerto_vpgs WHERE protected_site LIKE '%Phoenix%' AND actual_rpo > configured_rpo")).toBe(1);
+    expect(c('SELECT COUNT(*) c FROM replication_runs WHERE lag_seconds = 5400')).toBe(2);
+    const corrPath = path.join(backendDir, 'services', 'logicmonitorCorrelation.js');
+    const corr = fs.existsSync(corrPath) ? await import(corrPath) : null;
+    const corrApi = corr ? (corr.default || corr) : {};
+    if (typeof corrApi.replicationVsCircuits === 'function') {
+      const rep = corrApi.replicationVsCircuits(db, { days: 7 });
+      expect(rep.filter((r) => r.finding === 'coincident' || r.finding === 'possible').length).toBeGreaterThanOrEqual(1);
+    }
+
+    // Round 4 changes followed by incidents: the abq-dist-01 changes and the phx-acc-03 change before its flapping.
+    expect(c("SELECT COUNT(*) c FROM config_changes WHERE platform = 'logicmonitor' AND item LIKE 'phx-acc-03%'")).toBe(1);
+    if (typeof corrApi.changesThenIncidents === 'function') {
+      expect(corrApi.changesThenIncidents(db, { days: 14 }).length).toBeGreaterThanOrEqual(2);
+    }
+
+    // Round 4 blame history: 40 seeded rows, phx-dist-01 Te1/0/3 nine times, dal-wan-rtr-01 Gi0/0/0 six times.
+    if (hasTable('lm_blame_history')) {
+      expect(c("SELECT COUNT(*) c FROM lm_blame_history WHERE hop_device_name = 'phx-dist-01' AND hop_port = 'Te1/0/3'")).toBeGreaterThanOrEqual(9);
+      expect(c("SELECT COUNT(*) c FROM lm_blame_history WHERE hop_device_name = 'dal-wan-rtr-01' AND hop_port = 'Gi0/0/0'")).toBeGreaterThanOrEqual(6);
+      expect(c("SELECT COUNT(*) c FROM lm_blame_history WHERE kind = 'check'")).toBeGreaterThan(0);
+      expect(c("SELECT COUNT(*) c FROM lm_blame_history WHERE kind = 'server'")).toBeGreaterThan(0);
+      if (typeof corrApi.blameHistory === 'function') {
+        const bh = corrApi.blameHistory(db, { days: 30 });
+        expect(bh.hops[0].count).toBeGreaterThanOrEqual(9);
+      }
+    }
+
+    // Webhook source: token demo-webhook-token (sha256 stored), 20 events, 12 webhook alerts.
+    const src = db.prepare('SELECT webhook_enabled, webhook_count, webhook_token_hash, webhook_last_at FROM lm_sources WHERE id = 1').get();
+    expect(src.webhook_enabled).toBe(1);
+    expect(src.webhook_count).toBe(128);
+    expect(src.webhook_token_hash).toBe(crypto.createHash('sha256').update('demo-webhook-token').digest('hex'));
+    expect(src.webhook_last_at).toBeTruthy();
+    expect(c('SELECT COUNT(*) c FROM lm_webhook_events')).toBe(20);
+    expect(c('SELECT COUNT(*) c FROM lm_webhook_events WHERE accepted = 0')).toBe(2);
+    expect(c("SELECT COUNT(*) c FROM lm_alerts WHERE ingest = 'webhook'")).toBe(12);
+
+    // Config ledger rows and the data quality gaps.
+    expect(hasTable('config_changes')).toBe(true);
+    expect(c("SELECT COUNT(*) c FROM config_changes WHERE platform = 'logicmonitor' AND scope IN ('device-inventory', 'links')")).toBe(7);
+    expect(c("SELECT COUNT(*) c FROM config_changes WHERE platform = 'logicmonitor' AND item LIKE 'abq-dist-01%'")).toBe(3);
+    const upPorts = c("SELECT COUNT(*) c FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id WHERE d.is_network = 1 AND i.status_text = 'up'");
+    const upNoDesc = c("SELECT COUNT(*) c FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id WHERE d.is_network = 1 AND i.status_text = 'up' AND (i.description IS NULL OR trim(i.description) = '')");
+    expect(upNoDesc).toBeGreaterThanOrEqual(30);
+    const noNeighbor = db.prepare(`SELECT display_name FROM lm_devices d WHERE d.is_network = 1 AND d.role = 'switch'
+      AND NOT EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = d.source_id AND x.lm_device_id = d.lm_device_id AND x.is_neighbor = 1)
+      ORDER BY display_name`).all().map((r) => r.display_name);
+    expect(noNeighbor).toEqual(['den-acc-03', 'slc-acc-03']);
+    const thin = db.prepare("SELECT check_id FROM lm_check_history WHERE checkpoint_id != 'overall' GROUP BY check_id, checkpoint_id HAVING COUNT(*) < 48").all();
+    expect(thin.length).toBe(2);
+    // Governance coverageScore (routes/logicmonitor.js buildDataQuality) is 82 on this seed. The first
+    // three weighted terms of the same formula must leave it between 1 and 99.
+    const switches = c("SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1 AND role = 'switch'");
+    const net = c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1');
+    const score = 100 - (20 * (upNoDesc / upPorts) + 20 * (noNeighbor.length / switches) + 20 * (noSite.length / net));
+    expect(score).toBeGreaterThan(1);
+    expect(score).toBeLessThan(99);
   });
 
 });

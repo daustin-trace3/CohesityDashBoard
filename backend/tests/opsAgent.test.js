@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
@@ -678,5 +678,127 @@ describe('a pattern overrides the triage verdict', () => {
     expect(detail.isPattern).toBe(true);
     expect(detail.recurrence.occurrences).toHaveLength(2);
     expect(detail.recurrence.occurrences[0].resolution).toContain('Cleared on its own');
+  });
+});
+
+describe('site grouping (LogicMonitor round 3)', () => {
+  const siteOf = (it) => {
+    const h = agent.hostKey(it.host);
+    if (h.startsWith('phx-')) return { siteKey: 'phoenix', siteName: 'Phoenix' };
+    if (h.startsWith('dal-')) return { siteKey: 'dallas', siteName: 'Dallas' };
+    return null;
+  };
+
+  it('keys by site when a provider places the host, and falls back to the platform rule otherwise', () => {
+    const wide = new Set();
+    expect(agent.incidentKeyFor({ platform: 'vcenter', sourceKey: 'v1', host: 'phx-esx-01' }, wide, { mode: 'site', siteOf })).toBe('site:phoenix');
+    expect(agent.incidentKeyFor({ platform: 'dell', sourceKey: 'd1', host: 'lone-host' }, wide, { mode: 'site', siteOf })).toBe('host:lone-host');
+    expect(agent.incidentKeyFor({ platform: 'pure', sourceKey: 'p1', host: '' }, wide, { mode: 'site', siteOf })).toBe('platform:pure');
+    expect(agent.incidentKeyFor({ platform: 'netapp', sourceKey: 'n1', host: 'phx-filer' }, new Set(['netapp']), { mode: 'site', siteOf: () => null })).toBe('platform:netapp:wide');
+    // an item that already carries its siteKey needs no provider
+    expect(agent.incidentKeyFor({ platform: 'logicmonitor', sourceKey: 'lm1', host: 'x', siteKey: 'denver' }, wide, { mode: 'site' })).toBe('site:denver');
+    // a poll item names a source, not a place
+    expect(agent.incidentKeyFor({ platform: 'vcenter', sourceKey: 'poll:3', host: 'phx-vc' }, wide, { mode: 'site', siteOf })).toBe('host:phx-vc');
+    // the other modes ignore sites
+    expect(agent.incidentKeyFor({ platform: 'vcenter', sourceKey: 'v1', host: 'phx-esx-01' }, wide, { mode: 'platform', siteOf })).toBe('host:phx-esx-01');
+  });
+
+  it('folds a site into one incident titled with live counts, and ranks it between host and platform-wide', () => {
+    agent.groupTick(NOW, { ...settings, grouping: 'site' }, { items: [
+      item('vcenter', 'v1', { host: 'phx-esx-01' }),
+      item('brocade', 'b1', { host: 'phx-esx-02', severity: 'warning' }),
+      item('dell', 'd1', { host: 'phx-esx-02' }),
+      item('dell', 'd2', { host: 'dal-esx-01' }),
+      item('dell', 'd3', { host: 'lone-host' }),
+    ], failed: [], siteOf });
+    const rows = incidents();
+    const phx = rows.find((r) => r.incident_key === 'site:phoenix');
+    expect(phx.event_count).toBe(3);
+    expect(phx.host).toBeNull();
+    expect(phx.title).toBe('Phoenix: 3 alerts across 2 devices');
+    expect(rows.find((r) => r.incident_key === 'site:dallas').title).toBe('Dallas: 1 alert across 1 device');
+    expect(rows.find((r) => r.incident_key === 'host:lone-host')).toBeTruthy();
+    const shaped = agent.getIncident(phx.id);
+    expect(shaped.kind).toBe('site');
+    const hostOne = agent.getIncident(rows.find((r) => r.incident_key === 'host:lone-host').id);
+    expect(hostOne.kind).toBe('host');
+    expect(shaped.impactScore).toBeGreaterThan(hostOne.impactScore);
+  });
+});
+
+describe('network evidence providers', () => {
+  const registry = require('../core/registry');
+  const realEvidence = registry.getIncidentEvidenceProviders;
+  const realSites = registry.getSiteProviders;
+  afterEach(() => { registry.getIncidentEvidenceProviders = realEvidence; registry.getSiteProviders = realSites; });
+
+  const seedIncident = () => {
+    const id = db.prepare(`
+      INSERT INTO ops_incidents (incident_key, title, host, platforms, severity, state, opened_at, hold_until, last_event_at, event_count)
+      VALUES ('host:phx-esx-01', 'phx-esx-01', 'phx-esx-01', '["vcenter"]', 'critical', 'collecting', ?, ?, ?, 1)
+    `).run(NOW, NOW, NOW).lastInsertRowid;
+    db.prepare(`INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, first_seen, attached_at)
+      VALUES (?, 'vcenter', 'v1', 'critical', 'phx-esx-01', 'host lost', ?, ?)`).run(id, NOW, NOW);
+    return id;
+  };
+
+  it('merges provider blocks into evidence.network, blame first, capped, and survives a throwing provider', async () => {
+    const seen = [];
+    registry.getSiteProviders = () => [{ id: 'logicmonitor', run: () => ({ siteKey: 'phoenix', siteName: 'Phoenix' }) }];
+    registry.getIncidentEvidenceProviders = () => [
+      { id: 'boom', name: 'Boom', run: () => { throw new Error('provider exploded'); } },
+      { id: 'logicmonitor', name: 'LogicMonitor', run: (ctx) => {
+        seen.push(ctx);
+        if (!ctx.names.length) return { title: 'Site Phoenix', lines: ['3 devices, 1 dead'] };
+        return { title: 'Network path for phx-esx-01', lines: ['Blame: phx-dist-01 Te1/0/3 is down since 9-27-2026', ...Array.from({ length: 60 }, (_, i) => `hop ${i}`)] };
+      } },
+    ];
+    const id = seedIncident();
+    await agent.retriage(id);
+    const detail = agent.getIncident(id);
+    const net = detail.evidence.network;
+    expect(net).toHaveLength(2);
+    expect(net[0].title).toBe('Network path for phx-esx-01');
+    expect(net[0].lines).toHaveLength(40);
+    expect(net[0].lines[0]).toMatch(/^Blame:/);
+    expect(net[1]).toEqual({ title: 'Site Phoenix', lines: ['3 devices, 1 dead'] });
+    expect(seen.some((c) => c.names.includes('phx-esx-01') && c.siteKey === 'phoenix')).toBe(true);
+    expect(seen.some((c) => !c.names.length && c.siteKey === 'phoenix')).toBe(true);
+    // the rule-based digest names the network finding
+    expect(detail.analysis.reviewed.some((r) => r.includes('Network, Network path for phx-esx-01'))).toBe(true);
+  });
+
+  it('adds nothing when no provider is registered', async () => {
+    registry.getIncidentEvidenceProviders = () => [];
+    const id = seedIncident();
+    await agent.retriage(id);
+    expect(agent.getIncident(id).evidence.network).toEqual([]);
+  });
+
+  it('renders a Network section in both the text and html email', () => {
+    const inc = { id: 9, platforms: '["vcenter"]', severity: 'critical', title: 'x', opened_at: NOW, triage_error: null };
+    const analysis = { source: 'ai', classification: 'incident', confidence: 'high', summary: 's', reviewed: [], next_steps: [] };
+    const network = [{ title: 'Network path for phx-esx-01', lines: ['Blame: phx-dist-01 Te1/0/3 is down'] }];
+    const mail = agent.renderEmail(inc, [], analysis, { network });
+    expect(mail.text).toContain('NETWORK\nNetwork path for phx-esx-01\n- Blame: phx-dist-01 Te1/0/3 is down');
+    expect(mail.html).toContain('>Network</h3>');
+    expect(mail.html).toContain('Blame: phx-dist-01 Te1/0/3 is down');
+    expect(agent.renderEmail(inc, [], analysis, {}).text).not.toContain('NETWORK');
+  });
+});
+
+describe('webhook wake flag', () => {
+  it('wake() writes the flag; wakeCheck() ticks once per new flag and not when the agent is off', () => {
+    db.prepare("DELETE FROM app_settings WHERE key = 'ops_agent_wake_requested'").run();
+    expect(agent.wakeCheck()).toBe(false);          // no flag
+    const at = agent.wake();
+    expect(typeof at).toBe('string');
+    expect(db.prepare("SELECT value FROM app_settings WHERE key = 'ops_agent_wake_requested'").get().value).toBe(at);
+    setSetting('ops_agent_enabled', '0');
+    expect(agent.wakeCheck()).toBe(false);          // seen, but the agent is off
+    agent.wake();
+    setSetting('ops_agent_enabled', '1');
+    expect(agent.wakeCheck()).toBe(true);           // a new flag
+    expect(agent.wakeCheck()).toBe(false);          // same flag again
   });
 });

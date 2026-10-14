@@ -30,6 +30,7 @@ const NOTIFY_PLATFORMS = [
   { key: 'brocade', label: 'Brocade SAN' },
   { key: 'netbackup', label: 'NetBackup' },
   { key: 'proxmox', label: 'Proxmox VE' },
+  { key: 'logicmonitor', label: 'LogicMonitor' },
 ];
 
 export default function AdminSettingsPage() {

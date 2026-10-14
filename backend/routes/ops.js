@@ -414,6 +414,9 @@ const PLATFORMS = [
   { id: 'aws', label: 'AWS', color: '#FF9900', route: '/aws', fn: awsSummary },
   { id: 'proxmox', label: 'Proxmox VE', color: '#E57000', route: '/proxmox', fn: proxmoxSummary },
   { id: 'brocade', label: 'Brocade SAN', color: '#CC092F', route: '/brocade', fn: brocadeSummary },
+  // LogicMonitor's summarizer lives in its manifest (opsSummary); this branch
+  // has no manifest-hook loop, so it is listed here by hand.
+  { id: 'logicmonitor', label: 'LogicMonitor', color: '#1A73E8', route: '/logicmonitor', fn: () => require('../platforms/logicmonitor').opsSummary() },
 ];
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };

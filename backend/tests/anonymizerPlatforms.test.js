@@ -192,6 +192,17 @@ describe('anonymizer platform coverage', () => {
     }
   });
 
+  it('scrubs entity names used as object KEYS, not only as values', () => {
+    const a = createAnonymizer();
+    const out = a.anonymize({ byGroup: { 'Network/Sites/pure-array-alpha': { normal: 3 }, 'esx-hostgroup-01': 1, plain: 2 } });
+    const keys = Object.keys(out.byGroup);
+    expect(keys.some((k) => k.includes('pure-array-alpha'))).toBe(false);
+    expect(keys.some((k) => k.includes('esx-hostgroup-01'))).toBe(false);
+    expect(keys).toContain('plain');
+    expect(out.byGroup[keys.find((k) => k.startsWith('Network/Sites/'))]).toEqual({ normal: 3 });
+    expect(a.restore(keys.find((k) => k.startsWith('Network/Sites/')))).toBe('Network/Sites/pure-array-alpha');
+  });
+
   it('masks a service_tag value entirely with a SERIAL token', () => {
     const anon = createAnonymizer();
     const out = anon.anonymize({ service_tag: 'ABC1234' });

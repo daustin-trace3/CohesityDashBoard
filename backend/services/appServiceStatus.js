@@ -462,6 +462,82 @@ function backupRowsFor(vms, nowMs, staleHours) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Network component (LogicMonitor): the switch ports behind an app's servers
+// and the reachability checks aimed at them. Tolerant: absent when the
+// LogicMonitor tables or module are missing, or when nothing resolves.
+// ---------------------------------------------------------------------------
+
+const NETWORK_SERVER_CAP = 25;
+const NETWORK_CACHE_MS = 20000;
+const networkCache = new Map(); // single-tenant branch: one map for the install
+
+function serverPathCached(eps, server) {
+  const key = `${lower(server.name)}|${server.ipAddress || ''}`;
+  const hit = networkCache.get(key);
+  if (hit && Date.now() - hit.at < NETWORK_CACHE_MS) return hit.value;
+  const value = eps.serverPath(db, {
+    names: [server.name, server.guestHostname].filter(Boolean),
+    ips: [server.ipAddress].filter(Boolean),
+  });
+  networkCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+const PORT_ISSUE_PHRASE = {
+  'interface-errors-growing': 'Port errors growing on',
+  'interface-flapping': 'Port flapping on',
+  'interface-utilization-high': 'Port utilization high on',
+};
+
+/** Rows: { kind: 'port', server, deviceName, port, statusText, state, issue }
+ *  and { kind: 'reachability', server, checkName, label, anomaly, state }.
+ *  Findings are returned for the caller to merge. */
+function networkFor(servers) {
+  const rows = [];
+  const findings = [];
+  if (!tableExists('lm_devices')) return { rows, findings };
+  let eps;
+  try { eps = require('./logicmonitorEndpoints'); } catch { return { rows, findings }; }
+  if (!eps || typeof eps.serverPath !== 'function') return { rows, findings };
+  try { if (!db.prepare('SELECT 1 FROM lm_devices LIMIT 1').get()) return { rows, findings }; } catch { return { rows, findings }; }
+  const seenPorts = new Set();
+  const seenChecks = new Set();
+  for (const s of servers.slice(0, NETWORK_SERVER_CAP)) {
+    let path;
+    try { path = serverPathCached(eps, s); } catch { continue; }
+    for (const p of (path && path.switchPorts) || []) {
+      const key = `${p.sourceId}|${p.deviceName}|${p.port}`;
+      if (seenPorts.has(key)) continue;
+      seenPorts.add(key);
+      const down = p.statusText === 'down';
+      const issue = (p.issues || []).find((i) => PORT_ISSUE_PHRASE[i.type]) || null;
+      const state = down ? 'critical' : issue ? 'degraded' : 'ok';
+      rows.push({
+        kind: 'port', server: s.name, deviceName: p.deviceName, port: p.port, statusText: p.statusText || 'unknown',
+        state, issue: issue ? issue.message : null,
+      });
+      if (down) findings.push({ level: 'critical', text: `Switch port ${p.deviceName} ${p.port} for ${s.name} is down` });
+      else if (issue) findings.push({ level: 'degraded', text: `${PORT_ISSUE_PHRASE[issue.type]} ${p.deviceName} ${p.port} for ${s.name}` });
+    }
+    for (const c of (path && path.checks) || []) {
+      const key = `${c.sourceId}|${c.checkId}`;
+      if (seenChecks.has(key)) continue;
+      seenChecks.add(key);
+      let worst = null; let tone = 'unknown';
+      try { worst = eps.worstLocation(c); tone = eps.checkTone(worst); } catch { /* leave unknown */ }
+      const state = tone === 'crit' ? 'critical' : tone === 'warn' ? 'degraded' : 'ok';
+      rows.push({
+        kind: 'reachability', server: s.name, checkName: c.name, label: worst ? worst.label : null,
+        anomaly: worst ? (worst.anomaly || (worst.lastStatus === 'down' ? 'down' : null)) : null, state,
+      });
+      if (state === 'critical') findings.push({ level: 'critical', text: `Reachability check ${c.name} from ${worst ? worst.label : 'its checkpoints'} is ${worst && worst.anomaly ? worst.anomaly : 'failing'} (${s.name})` });
+      else if (state === 'degraded') findings.push({ level: 'degraded', text: `Reachability check ${c.name} from ${worst ? worst.label : 'a checkpoint'} shows ${worst && worst.anomaly ? worst.anomaly : 'an anomaly'} (${s.name})` });
+    }
+  }
+  return { rows, findings };
+}
+
 /** Full evaluation of one usage-id from the current tables. Pure read. */
 function evaluate(usageId, { now = new Date() } = {}) {
   const id = normId(usageId);
@@ -477,8 +553,8 @@ function evaluate(usageId, { now = new Date() } = {}) {
   if (!vms.length) {
     return {
       ...base, state: 'unknown', reason: `No vCenter VM carries the tag usage-id: ${displayId}`,
-      counts: { vms: 0, vmsOnline: 0, vmsOffline: 0, hosts: 0, hostsDisconnected: 0, pathsTotal: 0, pathsMissing: 0, datastoresInaccessible: 0, backupsStale: 0 },
-      findings: [], servers: [], hosts: [], storage: [], backup: [], replication: [],
+      counts: { vms: 0, vmsOnline: 0, vmsOffline: 0, hosts: 0, hostsDisconnected: 0, pathsTotal: 0, pathsMissing: 0, datastoresInaccessible: 0, backupsStale: 0, networkPortsDown: 0, networkDegraded: 0 },
+      findings: [], servers: [], hosts: [], storage: [], backup: [], replication: [], network: [],
     };
   }
 
@@ -585,6 +661,11 @@ function evaluate(usageId, { now = new Date() } = {}) {
     else degraded(`Zerto replication for ${b.vm} is ${b.status || 'not meeting SLA'}`);
   }
 
+  // Network: switch ports behind the servers and reachability checks aimed at them.
+  let network = { rows: [], findings: [] };
+  try { network = networkFor(servers); } catch (err) { logger.warn(`[AppServiceStatus] network component for ${id} skipped: ${err.message}`); }
+  findings.push(...network.findings);
+
   const state = findings.length ? worst(findings.map((f) => f.level)) : 'ok';
   const ordered = [...findings.filter((f) => f.level === 'critical'), ...findings.filter((f) => f.level === 'degraded')];
   const reason = ordered.length
@@ -601,9 +682,11 @@ function evaluate(usageId, { now = new Date() } = {}) {
       datastoresInaccessible: storage.filter((s) => s.kind === 'datastore' && s.accessible === false).length,
       backupsStale: backup.filter((b) => b.state === 'degraded').length,
       replicationIssues: replication.filter((b) => b.state === 'degraded').length,
+      networkPortsDown: network.rows.filter((r) => r.kind === 'port' && r.state === 'critical').length,
+      networkDegraded: network.rows.filter((r) => r.state === 'degraded').length,
     },
     backupStaleHours,
-    findings: ordered, servers, hosts: hosts.map(({ connected, ...h }) => ({ ...h, connected })), storage, backup, replication,
+    findings: ordered, servers, hosts: hosts.map(({ connected, ...h }) => ({ ...h, connected })), storage, backup, replication, network: network.rows,
   };
 }
 
@@ -665,7 +748,7 @@ function getBoard() {
     LEFT JOIN service_alert_analyses a ON a.event_id = e.id
     ORDER BY w.display_id
   `).all();
-  const empty = { vms: 0, vmsOnline: 0, vmsOffline: 0, hosts: 0, hostsDisconnected: 0, pathsTotal: 0, pathsMissing: 0, datastoresInaccessible: 0, backupsStale: 0 };
+  const empty = { vms: 0, vmsOnline: 0, vmsOffline: 0, hosts: 0, hostsDisconnected: 0, pathsTotal: 0, pathsMissing: 0, datastoresInaccessible: 0, backupsStale: 0, networkPortsDown: 0, networkDegraded: 0 };
   return {
     generatedAt: new Date().toISOString(),
     apps: rows.map((r) => ({
@@ -709,7 +792,7 @@ function gatherEvidence(event) {
     },
     app: {
       usageId: app.displayId, label: app.label, state: app.state, reason: app.reason, counts: app.counts,
-      findings: app.findings, servers: app.servers, hosts: app.hosts, storage: app.storage, backup: app.backup, replication: app.replication,
+      findings: app.findings, servers: app.servers, hosts: app.hosts, storage: app.storage, backup: app.backup, replication: app.replication, network: app.network,
     },
     relatedOpenEvents,
     evidenceVerdict: verdict,
@@ -758,5 +841,5 @@ module.exports = {
   importCatalog, catalogSummary, parseCsv,
   evaluate, evaluateAll, collectItems, getBoard,
   gatherEvidence, deriveVerdict, systemPrompt, buildPayload,
-  _resetTableCache: () => tableCache.clear(),
+  _resetTableCache: () => { tableCache.clear(); networkCache.clear(); },
 };

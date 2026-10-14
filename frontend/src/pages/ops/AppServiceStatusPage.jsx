@@ -216,6 +216,65 @@ function StorageSection({ storage }) {
   );
 }
 
+/* ---- Expanded detail: Network section (LogicMonitor switch ports and reachability checks) ---- */
+function NetworkSection({ ports, checks }) {
+  if (ports.length === 0 && checks.length === 0) {
+    return <p className="text-xs text-ink-faint">Nothing mapped.</p>;
+  }
+  return (
+    <div className="flex flex-col gap-3 overflow-x-auto">
+      {ports.length > 0 && (
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-ink-faint">
+              <th className="font-medium pb-1.5 pr-2"></th>
+              <th className="font-medium pb-1.5 pr-2">Server</th>
+              <th className="font-medium pb-1.5 pr-2">Switch</th>
+              <th className="font-medium pb-1.5 pr-2">Port</th>
+              <th className="font-medium pb-1.5 pr-2">Status</th>
+              <th className="font-medium pb-1.5">Issue</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ports.map((p, i) => (
+              <tr key={`${p.server}-${p.deviceName}-${p.port}-${i}`} className="border-t border-cohesity-border/60">
+                <td className="py-1.5 pr-2"><StateDot state={p.state} /></td>
+                <td className="py-1.5 pr-2 text-ink truncate max-w-[160px]" title={p.server}>{p.server || '-'}</td>
+                <td className="py-1.5 pr-2 text-ink-muted">{p.deviceName || '-'}</td>
+                <td className="py-1.5 pr-2 text-ink-muted">{p.port || '-'}</td>
+                <td className="py-1.5 pr-2 text-ink-muted">{p.statusText || '-'}</td>
+                <td className="py-1.5 text-ink-muted">{p.issue || '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {checks.length > 0 && (
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-ink-faint">
+              <th className="font-medium pb-1.5 pr-2"></th>
+              <th className="font-medium pb-1.5 pr-2">Reachability check</th>
+              <th className="font-medium pb-1.5 pr-2">From</th>
+              <th className="font-medium pb-1.5">Anomaly</th>
+            </tr>
+          </thead>
+          <tbody>
+            {checks.map((c, i) => (
+              <tr key={`${c.checkName}-${c.label}-${i}`} className="border-t border-cohesity-border/60">
+                <td className="py-1.5 pr-2"><StateDot state={c.state} /></td>
+                <td className="py-1.5 pr-2 text-ink truncate max-w-[200px]" title={c.checkName}>{c.checkName || '-'}</td>
+                <td className="py-1.5 pr-2 text-ink-muted">{c.label || '-'}</td>
+                <td className="py-1.5 text-ink-muted">{c.anomaly || '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 /* ---- Expanded detail: Backup section ---- */
 function BackupSection({ backup, staleHours = 24 }) {
   if (!backup || backup.length === 0) {
@@ -348,6 +407,10 @@ function buildSections(detail) {
   // Older API answers carried Zerto rows inside backup; keep them apart either way.
   const backup = (detail.backup || []).filter((b) => b.platform !== 'zerto');
   const replication = detail.replication || (detail.backup || []).filter((b) => b.platform === 'zerto');
+  // Network rows: switch ports carry a port, reachability rows carry a checkName.
+  const netAll = Array.isArray(detail.network) ? detail.network : [];
+  const netPorts = netAll.filter((n) => n && !n.checkName);
+  const netChecks = [...netAll.filter((n) => n && n.checkName), ...(Array.isArray(detail.networkReachability) ? detail.networkReachability : [])];
   const out = [];
 
   if (servers.length) {
@@ -373,6 +436,19 @@ function buildSections(detail) {
       key: 'storage', title: 'Storage', state: worstState(storage.map((s) => s.state)),
       summary: `${storage.length} datastore${storage.length === 1 ? '' : 's'} and volume${storage.length === 1 ? '' : 's'}${bad ? `, ${bad} with issues` : ''}`,
       body: <IssuesFirst items={storage} render={(rows) => <StorageSection storage={rows} />} />,
+    });
+  }
+  if (netPorts.length || netChecks.length) {
+    const bad = netPorts.filter((n) => n.state !== 'ok').length + netChecks.filter((n) => n.state !== 'ok').length;
+    out.push({
+      key: 'network', title: 'Network', state: worstState([...netPorts, ...netChecks].map((n) => n.state)),
+      summary: `${netPorts.length} switch port${netPorts.length === 1 ? '' : 's'}${netChecks.length ? `, ${netChecks.length} reachability check${netChecks.length === 1 ? '' : 's'}` : ''}${bad ? `, ${bad} with issues` : ''}`,
+      body: (
+        <div className="flex flex-col gap-2">
+          {netPorts.length > 0 && <IssuesFirst items={netPorts} render={(rows) => <NetworkSection ports={rows} checks={[]} />} />}
+          {netChecks.length > 0 && <IssuesFirst items={netChecks} render={(rows) => <NetworkSection ports={[]} checks={rows} />} />}
+        </div>
+      ),
     });
   }
   if (backup.length) {

@@ -95,10 +95,19 @@ function sourceTokenOf(item) {
  *   service   - alerts on servers of a watched app service roll into that
  *               app's incident; everything else groups by host
  *   component - one incident per alerting component: per host, per cluster,
- *               per array, per appliance. Nothing folds platform-wide. */
-function incidentKeyFor(item, wide, { mode = 'platform', appOf = null } = {}) {
+ *               per array, per appliance. Nothing folds platform-wide.
+ *   site      - alerts whose host a site provider (LogicMonitor) places at a
+ *               site fold into one incident per site; the rest follow the
+ *               platform rule. */
+function incidentKeyFor(item, wide, { mode = 'platform', appOf = null, siteOf = null } = {}) {
   if (item.platform === 'appservice') return `app:${item.sourceKey}`;
   const hk = hostKey(item.host);
+  // site: every alert from one site folds into one incident; an alert with no
+  // site (or a poll:/stale: item, which names a source) takes the platform rule.
+  if (mode === 'site') {
+    const site = item.siteKey ? { siteKey: item.siteKey } : (siteOf && !/^(poll|stale):/.test(String(item.sourceKey)) ? siteOf(item) : null);
+    if (site && site.siteKey) return `site:${site.siteKey}`;
+  }
   if (mode === 'service' && hk && appOf) {
     const app = appOf.get(hk);
     if (app) return `app:usage:${app.usageId}`;
@@ -112,6 +121,75 @@ function incidentKeyFor(item, wide, { mode = 'platform', appOf = null } = {}) {
   }
   if (wide.has(item.platform)) return `platform:${item.platform}:wide`;
   return hk ? `host:${hk}` : `platform:${item.platform}`;
+}
+
+// ---------------------------------------------------------------------------
+// Site and network providers (registry: manifest.siteOf / manifest.incidentEvidence)
+// ---------------------------------------------------------------------------
+
+const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+/** Resolver host label -> { siteKey, siteName } | null, cached for its life
+ *  (one tick). Every provider is guarded; a throwing one is skipped. */
+function makeSiteResolver() {
+  let providers = [];
+  try { providers = registry.getSiteProviders ? registry.getSiteProviders() : []; } catch { providers = []; }
+  const cache = new Map();
+  return (item) => {
+    const host = typeof item === 'string' ? item : item && item.host;
+    const hk = hostKey(host);
+    if (!hk || !providers.length) return null;
+    if (cache.has(hk)) return cache.get(hk);
+    let found = null;
+    for (const p of providers) {
+      try {
+        const r = p.run({ names: [String(host), hk], ips: IPV4_RE.test(hk) ? [hk] : [] });
+        if (r && r.siteKey) { found = { siteKey: String(r.siteKey), siteName: r.siteName || String(r.siteKey) }; break; }
+      } catch (err) { logger.warn(`[OpsAgent] site provider ${p.id} failed: ${err.message}`); }
+    }
+    cache.set(hk, found);
+    return found;
+  };
+}
+
+const NETWORK_LINE_CAP = 40;
+const NETWORK_BLAME_RE = /^(blame|likely hop)/i;
+
+/** Network evidence blocks [{title, lines[]}] from every provider, for up to
+ *  HOST_EVIDENCE_CAP hosts of the incident plus its site. Never throws. */
+function gatherNetworkEvidence(inc, hostLabels, siteResolver) {
+  let providers = [];
+  try { providers = registry.getIncidentEvidenceProviders ? registry.getIncidentEvidenceProviders() : []; } catch { providers = []; }
+  if (!providers.length) return [];
+  const resolve = siteResolver || makeSiteResolver();
+  const contexts = [];
+  let incidentSite = String(inc.incident_key || '').startsWith('site:') ? String(inc.incident_key).slice(5) : null;
+  for (const label of hostLabels.slice(0, HOST_EVIDENCE_CAP)) {
+    const hk = hostKey(label);
+    if (!hk) continue;
+    let site = null;
+    try { site = resolve(label); } catch { site = null; }
+    contexts.push({ names: [String(label), hk], ips: IPV4_RE.test(hk) ? [hk] : [], siteKey: site ? site.siteKey : incidentSite });
+    if (!incidentSite && site) incidentSite = site.siteKey;
+  }
+  if (incidentSite) contexts.push({ names: [], ips: [], siteKey: incidentSite });
+  const blocks = [];
+  const seen = new Set();
+  for (const p of providers) {
+    for (const ctx of contexts) {
+      try {
+        const r = p.run(ctx);
+        if (!r || !Array.isArray(r.lines) || !r.lines.length) continue;
+        const title = String(r.title || p.name || p.id).slice(0, 120);
+        if (seen.has(title)) continue;
+        seen.add(title);
+        blocks.push({ title, lines: r.lines.map((l) => String(l).slice(0, 400)).slice(0, NETWORK_LINE_CAP) });
+      } catch (err) { logger.warn(`[OpsAgent] evidence provider ${p.id} failed: ${err.message}`); }
+    }
+  }
+  // Blame goes first: a block that opens with a blame line leads.
+  blocks.sort((a, b) => Number(NETWORK_BLAME_RE.test(b.lines[0] || '')) - Number(NETWORK_BLAME_RE.test(a.lines[0] || '')));
+  return blocks;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,14 +306,16 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
     return true;
   });
 
-  const mode = ['platform', 'service', 'component'].includes(settings.grouping) ? settings.grouping : 'platform';
+  const mode = ['platform', 'service', 'component', 'site'].includes(settings.grouping) ? settings.grouping : 'platform';
   const appOf = collected.appOf || null;
+  const siteOf = mode === 'site' ? (collected.siteOf || makeSiteResolver()) : null;
+  const siteTouched = new Map();   // incident key -> { id, name }
   // Platform-wide: a source unreachable, or a burst of new alerts. Only the
   // 'platform' mode folds; the others keep each component apart.
   const wide = new Set();
   const perPlatform = new Map();
   for (const it of fresh) perPlatform.set(it.platform, (perPlatform.get(it.platform) || 0) + 1);
-  if (mode === 'platform') {
+  if (mode === 'platform' || mode === 'site') {
     for (const it of items) if (/^(poll|stale):/.test(String(it.sourceKey)) && it.platform !== 'appservice') wide.add(it.platform);
     for (const [p, n] of perPlatform) if (n >= WIDE_BURST) wide.add(p);
   }
@@ -259,22 +339,29 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
   db.transaction(() => {
     const byKey = new Map(openIncidents().map((i) => [i.incident_key, i]));
     for (const it of fresh) {
-      const key = incidentKeyFor(it, wide, { mode, appOf });
+      const key = incidentKeyFor(it, wide, { mode, appOf, siteOf });
       let inc = byKey.get(key);
       if (!inc) {
         const holdUntil = new Date(Date.parse(now) + holdMs).toISOString();
         const meta = platformMeta(it.platform);
         const isWide = key.endsWith(':wide');
+        const isSite = key.startsWith('site:');
+        const siteInfo = isSite ? (it.siteKey ? { siteName: it.siteName || it.siteKey } : (siteOf ? siteOf(it) : null)) : null;
         const app = key.startsWith('app:') && it.platform !== 'appservice' && appOf ? appOf.get(hostKey(it.host)) : null;
         const title = it.platform === 'appservice' ? `App service ${it.host || it.sourceKey}`
           : app ? `App service ${app.displayId}${app.label ? ` (${app.label})` : ''}`
+          : isSite ? `${siteInfo && siteInfo.siteName ? siteInfo.siteName : key.slice(5)}: 1 alert across 1 device`
           : isWide ? `${meta.label}: platform-wide alerts`
           : (it.host ? `${it.host}` : `${meta.label} alerts`);
-        const id = insertIncident.run(key, title, isWide || key.startsWith('src:') && !it.host ? null : (it.host || null), JSON.stringify([it.platform]), normalizeSeverity(it.severity), now, holdUntil, now, baseline ? 1 : 0).lastInsertRowid;
+        const id = insertIncident.run(key, title, isWide || isSite || (key.startsWith('src:') && !it.host) ? null : (it.host || null), JSON.stringify([it.platform]), normalizeSeverity(it.severity), now, holdUntil, now, baseline ? 1 : 0).lastInsertRowid;
         inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
         byKey.set(key, inc);
         stats.incidentsOpened += 1;
         act('opened incident', `#${inc.id} ${title} [${key}] first alert ${platformMeta(it.platform).label} ${normalizeSeverity(it.severity)}${baseline ? ', baseline (pre-existing backlog, will not email)' : ''}`);
+      }
+      if (key.startsWith('site:')) {
+        const info = it.siteKey ? { siteName: it.siteName || it.siteKey } : (siteOf ? siteOf(it) : null);
+        siteTouched.set(key, { id: inc.id, name: (info && info.siteName) || (siteTouched.get(key) || {}).name || key.slice(5) });
       }
       insertAlert.run(inc.id, it.platform, String(it.sourceKey), normalizeSeverity(it.severity), it.host || null, String(it.message || '').slice(0, 1000), it.type || null, it.firstSeen || null, now);
       const platforms = new Set(JSON.parse(inc.platforms || '[]'));
@@ -301,6 +388,15 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         WHERE id = ?
       `).run(JSON.stringify([...platforms]), sev, now, nextState, reopen ? 1 : 0, new Date(Date.parse(now) + Math.min(holdMs, 5 * 60000)).toISOString(), inc.id);
       inc.platforms = JSON.stringify([...platforms]); inc.severity = sev; inc.state = nextState;
+    }
+
+    // Site incident titles carry live counts until triage sets its own.
+    for (const { id, name } of siteTouched.values()) {
+      const live = db.prepare('SELECT host FROM ops_incident_alerts WHERE incident_id = ? AND cleared_at IS NULL').all(id);
+      const devices = new Set(live.map((r) => hostKey(r.host)).filter(Boolean)).size;
+      const n = live.length;
+      db.prepare('UPDATE ops_incidents SET title = ? WHERE id = ? AND triaged_at IS NULL')
+        .run(`${name}: ${n} alert${n === 1 ? '' : 's'} across ${devices} device${devices === 1 ? '' : 's'}`, id);
     }
 
     // Clear alerts that are gone (skip platforms whose collector failed).
@@ -498,6 +594,7 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
       hosts.push({ host: a.host, platform: a.platform, error: `evidence gather failed: ${err.message}` });
     }
   }
+  const network = gatherNetworkEvidence(inc, hosts.map((h) => h.host).filter(Boolean));
   const recurrence = recurrenceFor(inc, settings);
   const concurrent = db.prepare(`
     SELECT id, title, host, platforms, severity, state, classification, summary FROM ops_incidents
@@ -518,7 +615,7 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     selfHeal = { attemptedAt: inc.heal_at, actions, outcome: stillFailing.length ? `still failing after the re-poll: ${stillFailing.join(', ')}` : 're-poll completed, source answered' };
   }
   return {
-    incident: { id: inc.id, key: inc.incident_key, title: inc.title, host: inc.host, platforms: JSON.parse(inc.platforms || '[]'), severity: inc.severity, openedAt: inc.opened_at, kind: inc.incident_key.startsWith('app:') ? 'app-service' : inc.incident_key.endsWith(':wide') ? 'platform-wide' : inc.incident_key.startsWith('src:') ? 'source' : 'host' },
+    incident: { id: inc.id, key: inc.incident_key, title: inc.title, host: inc.host, platforms: JSON.parse(inc.platforms || '[]'), severity: inc.severity, openedAt: inc.opened_at, kind: inc.incident_key.startsWith('app:') ? 'app-service' : inc.incident_key.endsWith(':wide') ? 'platform-wide' : inc.incident_key.startsWith('site:') ? 'site' : inc.incident_key.startsWith('src:') ? 'source' : 'host' },
     relatedIncidents,
     selfHeal,
     alerts: [...alerts].sort((x, y) => rank(y.severity) - rank(x.severity)).slice(0, EVIDENCE_ALERT_CAP)
@@ -526,6 +623,7 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     alertsTotal: alerts.length,
     alertsOmitted: Math.max(0, alerts.length - EVIDENCE_ALERT_CAP),
     hosts,
+    network,
     recurrence,
     concurrentOpenIncidents: concurrent,
     failedBackupJobs: collectFailedBackupJobs(JSON.parse(inc.platforms || '[]'), alerts),
@@ -568,6 +666,7 @@ function fallbackTriage(evidence) {
   if (!reviewed.length) reviewed.push('No host-level inventory matched these alerts; only the alert text and platform poll state were available.');
   for (const c of (evidence.liveChecks?.results || [])) reviewed.push(`Live ${c.label || c.capability} on ${c.target.name}${c.target.address && c.target.address !== c.target.name ? ` (${c.target.address})` : ''}: ${c.summary}`);
   if (evidence.liveChecks && !evidence.liveChecks.ran && evidence.liveChecks.skipped) reviewed.push(`No live checks: ${evidence.liveChecks.skipped}.`);
+  for (const b of (evidence.network || [])) reviewed.push(`Network, ${b.title}: ${(b.lines || []).slice(0, 3).join('; ')}${(b.lines || []).length > 3 ? ` (+${b.lines.length - 3} more in the Network section)` : ''}`);
   const jobs = evidence.failedBackupJobs || [];
   if (jobs.length) reviewed.push(`Backup job log: ${jobs.length} failed or canceled run(s) in 24h on ${[...new Set(jobs.map((j) => j.source).filter(Boolean))].join(', ') || 'the platform'}; the newest is ${jobs[0].job || 'unnamed'} (${jobs[0].status}${jobs[0].error ? `: ${jobs[0].error.slice(0, 120)}` : ''}).`);
   reviewed.push(`Incident history: ${rec.occurrences.length ? `${rec.occurrences.length} earlier occurrence(s) of this same incident in ${rec.windowDays} days, the most recent ${fmtStamp(rec.occurrences[0].openedAt)}` : `none on this key in ${rec.windowDays} days`}.`);
@@ -614,6 +713,10 @@ function buildMessages(evidence, anon) {
     'that reported it. failedBackupJobs lists backup job runs that failed or were canceled in the last 24 hours ' +
     'with the platform\'s own error text; when a backup platform is involved, say which jobs failed and why, ' +
     'quoting the decisive part of the error, and use it in likely_cause and next_steps. ' +
+    'network, when present, is an array of {title, lines[]} blocks from the network monitoring platform (device and ' +
+    'switch-port health, the path from the server toward the WAN, a likely failing hop, reachability checks, scheduled ' +
+    'downtime, recent configuration changes); when a block names a likely hop or a downed upstream device, say so in ' +
+    'likely_cause and name it in next_steps ahead of host-level work. ' +
     'liveChecks, when present, are probes ICC itself ran from its own server at triage time (ping, TCP ports, DNS, ' +
     'TLS) against the hosts and sources in this incident; quote each result in reviewed and weigh it in likely_cause. ' +
     'A failed probe means ICC could not reach the target from where it runs, which is not proof the target is down; ' +
@@ -796,7 +899,7 @@ function liveCheckLine(c) {
   return `- ${fmtStamp(c.at)}: ${c.label || c.capability} on ${c.target.name}${c.target.address && c.target.address !== c.target.name ? ` (${c.target.address})` : ''}: ${c.ok ? 'OK' : 'FAILED'}, ${c.summary}`;
 }
 
-function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null } = {}) {
+function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [] } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
   const rec = recurrence && recurrence.isPattern ? recurrence : null;
@@ -819,6 +922,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const did = (healActions || []).map((a) => `- ${fmtStamp(a.at)}: ${a.action} ${a.target}: ${a.result}`);
   const checks = (liveChecks && liveChecks.results) || [];
   const checkLines = checks.map(liveCheckLine);
+  const netBlocks = (network || []).filter((b) => b && Array.isArray(b.lines) && b.lines.length);
   const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
   const happened = String(analysis.summary || '-').split('\n').map((s) => s.trim()).filter(Boolean);
   const JOB_CAP = 6;
@@ -856,6 +960,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     '',
     `WHAT ${agentName.toUpperCase()} REVIEWED`,
     ...(analysis.reviewed || []).map((r) => `- ${r}`),
+    ...(netBlocks.length ? ['', 'NETWORK', ...netBlocks.flatMap((b) => [b.title, ...b.lines.map((l) => `- ${l}`)])] : []),
     ...(did.length ? ['', `WHAT ${agentName.toUpperCase()} DID`, ...did] : []),
     ...(checkLines.length ? ['', `WHAT ${agentName.toUpperCase()} CHECKED LIVE (from the ICC server)`, ...checkLines] : []),
     '',
@@ -891,6 +996,7 @@ ${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${
 ${jobsShown.length ? section(`Failed backup jobs (last 24h, ${(failedJobs || []).length} total)`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Source</th><th style="padding:3px 8px">Job</th><th style="padding:3px 8px">Status</th><th style="padding:3px 8px">Finished</th><th style="padding:3px 8px">Error</th></tr>${jobsShown.map((j) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(platformMeta(j.platform).label)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.source || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.job || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.status)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.finished ? fmtStamp(j.finished) : '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.error || '-')}</td></tr>`).join('')}${jobsMore > 0 ? `<tr><td colspan="6" style="padding:6px 8px;color:#64748b">... and ${jobsMore} more; see the platform's job pages.</td></tr>` : ''}</table>`) : ''}
 ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')}</p>`)}
 ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
+${netBlocks.length ? section('Network', netBlocks.map((b) => `<p style="margin:6px 0 2px;font-weight:600">${esc(b.title)}</p>${list(b.lines)}`).join('')) : ''}
 ${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.replace(/^- /, '')))) : ''}
 ${checkLines.length ? section(`What ${esc(agentName)} checked live (from the ICC server)`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Check</th><th style="padding:3px 8px">Target</th><th style="padding:3px 8px">Result</th></tr>${checks.map((c) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.label || c.capability)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.target.name)}${c.target.address && c.target.address !== c.target.name ? ` <span style="color:#64748b">${esc(c.target.address)}</span>` : ''}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0"><span style="font-weight:600;color:${c.ok ? '#166534' : '#B91C1C'}">${c.ok ? 'OK' : 'FAILED'}</span> ${esc(c.summary)}</td></tr>`).join('')}</table>`) : ''}
 ${section('Likely cause', `<p style="margin:0">${esc(analysis.likely_cause || '-')}</p>`)}
@@ -933,7 +1039,7 @@ async function notifyIncident(inc, settings, config, { force = false } = {}) {
   try { healActions = JSON.parse(inc.heal_actions_json || '[]'); } catch { /* ignore */ }
   let storedEvidence = null;
   try { storedEvidence = JSON.parse(inc.evidence_json || 'null'); } catch { storedEvidence = null; }
-  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null });
+  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [] });
   const now = new Date().toISOString();
   try {
     const transport = alertNotifier.createTransport(config);
@@ -1364,7 +1470,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
     resolvedAt: row.resolved_at, classification: row.classification, confidence: row.confidence,
     summary: row.summary, eventCount: row.event_count, emailTo: row.email_to, emailError: row.email_error,
     model: row.model, triageError: row.triage_error, baseline: !!row.baseline, resolvedBy: row.resolved_by || null,
-    kind: row.incident_key.startsWith('app:') ? 'app-service' : row.incident_key.endsWith(':wide') ? 'platform-wide' : row.incident_key.startsWith('src:') ? 'source' : 'host',
+    kind: row.incident_key.startsWith('app:') ? 'app-service' : row.incident_key.endsWith(':wide') ? 'platform-wide' : row.incident_key.startsWith('site:') ? 'site' : row.incident_key.startsWith('src:') ? 'source' : 'host',
     healAttempted: !!row.heal_attempted, healAt: row.heal_at || null,
     resolution: row.resolution || null, clearedSince: row.cleared_since || null,
     teamsNotifiedAt: row.teams_notified_at || null, teamsError: row.teams_error || null,
@@ -1376,7 +1482,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
   // Ordering key: severity first, then how much is affected and what the
   // triage made of it. Bigger = higher on the page.
   out.impactScore = rank(row.severity) * 1000
-    + (out.kind === 'app-service' ? 700 : out.kind === 'platform-wide' ? 200 : out.kind === 'source' ? 150 : 0)
+    + (out.kind === 'app-service' ? 700 : out.kind === 'platform-wide' ? 200 : out.kind === 'source' ? 150 : out.kind === 'site' ? 100 : 0)
     + Math.min(row.event_count || 0, 100) * 5 + out.platforms.length * 25
     + (CLASS_WEIGHT[row.classification] ?? 150)
     + (out.humanRequired ? 100 : 0);
@@ -1548,8 +1654,42 @@ async function sendSampleEmail() {
   return { to };
 }
 
+// Wake flag. The webhook ingest runs in the web process, the agent tick in the
+// poller process; the two share the SQLite file, so the web side writes a
+// timestamp and the poller checks it every few seconds. A flag is used rather
+// than an inline tick because the web process does not run the agent (no
+// provider loop, no heartbeat role) and a second tick path would race the
+// poller's own `running` guard.
+const WAKE_KEY = 'ops_agent_wake_requested';
+const WAKE_CHECK_MS = 5000;
+const WAKE_MAX_AGE_MS = 60000;
+const wakeSeen = new Map(); // single-tenant branch: one map for the install
+
+/** Ask the agent for a tick soon. Safe from any process; never throws. */
+function wake() {
+  const at = new Date().toISOString();
+  try { setSetting(WAKE_KEY, at); } catch { return false; }
+  return at;
+}
+
+/** Poller side: run a tick when a new wake flag has appeared. */
+function wakeCheck() {
+  let v = null;
+  try { v = getSetting(WAKE_KEY); } catch { return false; }
+  if (!v) return false;
+  const first = !wakeSeen.has('v');
+  if (wakeSeen.get('v') === v) return false;
+  wakeSeen.set('v', v);
+  // A flag left over from before this process started is not news.
+  if (first && Date.now() - Date.parse(v) > WAKE_MAX_AGE_MS) return false;
+  if (!getOpsAgentSettings().enabled) return false;
+  Promise.resolve(runOnce()).catch((err) => logger.warn(`[OpsAgent] wake tick failed: ${err.message}`));
+  return true;
+}
+
 let intervalHandle = null;
 let timeoutHandle = null;
+let wakeHandle = null;
 function initOpsAgent() {
   if (intervalHandle) return;
   // Exchanges logged before the agent had its own Privacy Inspector tag.
@@ -1559,19 +1699,22 @@ function initOpsAgent() {
   const tick = () => { runOnce().catch((err) => logger.error(`[OpsAgent] tick rejected: ${err.message}`)); };
   intervalHandle = setInterval(tick, 60000);
   timeoutHandle = setTimeout(tick, 30000);
+  wakeHandle = setInterval(() => { wakeCheck(); }, WAKE_CHECK_MS);
+  if (wakeHandle.unref) wakeHandle.unref();
 }
 function stopOpsAgent() {
   if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
   if (timeoutHandle) { clearTimeout(timeoutHandle); timeoutHandle = null; }
+  if (wakeHandle) { clearInterval(wakeHandle); wakeHandle = null; }
 }
 
 module.exports = {
   runOnce, status, pulse, listIncidents, getIncident, retriage, resend, resolve, sampleEmail, sendSampleEmail,
   sampleTeamsCard, sendSampleTeams, notifyTeams, notifyResolved, teamsBlockedReason,
-  initOpsAgent, stopOpsAgent,
+  initOpsAgent, stopOpsAgent, wake, wakeCheck,
   // pure helpers for tests
   hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,
   closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson, collectFailedBackupJobs,
-  recurrenceFor, recurrenceLine, triageIncident, selfHealPass,
+  recurrenceFor, recurrenceLine, triageIncident, selfHealPass, makeSiteResolver, gatherNetworkEvidence,
 };
 void chatFn;

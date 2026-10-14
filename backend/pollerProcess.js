@@ -28,6 +28,7 @@ const dellManifest = require('./platforms/dell');
 const ariaManifest = require('./platforms/aria');
 const ariaopsManifest = require('./platforms/ariaops');
 const brocadeManifest = require('./platforms/brocade');
+const logicmonitorManifest = require('./platforms/logicmonitor');
 
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
@@ -39,7 +40,7 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled } = getPlatformSettings();
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
@@ -56,6 +57,8 @@ if (isDemo()) {
   registry.setEnabled('ariaops', platformAriaopsEnabled && registry.isEntitled('ariaops'));
   registry.registerPlugin(brocadeManifest);
   registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
+  registry.registerPlugin(logicmonitorManifest);
+  registry.setEnabled('logicmonitor', platformLogicmonitorEnabled && registry.isEntitled('logicmonitor'));
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();

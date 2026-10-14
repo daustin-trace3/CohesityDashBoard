@@ -25,6 +25,7 @@ import awsMigrations from '../db/migrations/aws.js';
 import proxmoxMigrations from '../db/migrations/proxmox.js';
 import brocadeMigrations from '../db/migrations/brocade.js';
 import bluecatMigrations from '../db/migrations/bluecat.js';
+import logicmonitorMigrations from '../db/migrations/logicmonitor.js';
 import directoryMigrations from '../db/migrations/directory.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -167,6 +168,7 @@ function buildNewDb() {
   runMigrations(db, 'proxmox', proxmoxMigrations);
   runMigrations(db, 'brocade', brocadeMigrations);
   runMigrations(db, 'bluecat', bluecatMigrations);
+  runMigrations(db, 'logicmonitor', logicmonitorMigrations);
   runMigrations(db, 'directory', directoryMigrations);
   return db;
 }
@@ -255,7 +257,14 @@ const NEW_TABLES = [
   'alert_notify_platform', 'alert_notify_types',
   'ops_incidents', 'ops_incident_alerts', 'ops_agent_runs', 'ops_capability_runs',
   'vcenter_vm_disks', 'vcenter_vm_filesystems', 'vcenter_vm_filesystem_history',
+  'vcenter_host_nic_neighbors',
   'zerto_events', 'estate_ai_reports', 'config_state', 'config_changes',
+  'lm_sources', 'lm_devices', 'lm_device_groups', 'lm_device_datasources',
+  'lm_interfaces', 'lm_interface_history', 'lm_interface_daily', 'lm_alerts',
+  'lm_collectors', 'lm_sdts', 'lm_checks', 'lm_check_locations', 'lm_check_history',
+  'lm_check_baseline', 'lm_check_daily', 'lm_topology_links', 'lm_admins', 'lm_roles',
+  'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports',
+  'lm_sites', 'lm_interface_baseline', 'lm_webhook_events', 'lm_blame_history',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms, cohesity
   // v12 alerts.closed_reason), so their
@@ -355,6 +364,7 @@ describe('runMigrations', () => {
       runMigrations(db, 'proxmox', proxmoxMigrations);
       runMigrations(db, 'brocade', brocadeMigrations);
       runMigrations(db, 'bluecat', bluecatMigrations);
+      runMigrations(db, 'logicmonitor', logicmonitorMigrations);
       runMigrations(db, 'directory', directoryMigrations);
     }).not.toThrow();
 

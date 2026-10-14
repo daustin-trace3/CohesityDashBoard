@@ -54,6 +54,7 @@ const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const deprecated = require('./middleware/deprecatedAlias');
 const demoWriteGuard = require('./middleware/demoWriteGuard');
+const lmWebhook = require('./routes/logicmonitorWebhook');
 
 /** cohesity:<name>:view|manage — same permission for a mount and its deprecated alias (contract C8.6). */
 function cohesityPermission(name) {
@@ -119,6 +120,12 @@ function createApp({ licenseGate = requireLicense } = {}) {
 
   app.use(express.json({ limit: '1mb' }));
 
+  // LogicMonitor alert webhook: LogicMonitor cannot hold a session, so this one
+  // route authenticates itself (token header, constant-time compare) and has
+  // its own per-source limiter. It runs ahead of authenticate, csrf and
+  // the license gate (/api/logicmonitor/webhook/:sourceId).
+  app.use('/api/logicmonitor/webhook', lmWebhook);
+
   // Authentication (contract C8.5): session cookie, env API key, or a scoped
   // service-account key. Replaces the old blanket x-api-key check. /api/auth/*
   // and (mostly) /api/license/* are exempt — see middleware/authenticate.js.
@@ -134,6 +141,14 @@ function createApp({ licenseGate = requireLicense } = {}) {
 
 
   // Routes
+  // LogicMonitor webhook token issue/disable and settings view: authenticated,
+  // same permission strings the plugin dispatcher would apply to /sources/*,
+  // and mounted ahead of the dispatcher so these three paths reach this router.
+  app.use(
+    '/api/logicmonitor/sources/:id',
+    requirePermission((req) => `logicmonitor:sources:${req.method === 'GET' ? 'view' : 'manage'}`),
+    lmWebhook.adminRouter
+  );
   app.use('/api/auth', authRouter);
   app.use('/api/license', licenseRouter);
   app.use(

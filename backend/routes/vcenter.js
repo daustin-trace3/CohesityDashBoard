@@ -589,6 +589,45 @@ router.get('/hosts', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * GET /api/vcenter/hosts/:name/nic-neighbors - CDP/LLDP neighbour hints per
+ * physical NIC of one ESX host (case-insensitive name, optional ?vcenterId).
+ * 404 when no such host; [] when the host has no hints stored.
+ */
+router.get('/hosts/:name/nic-neighbors', [
+  param('name').isString().trim().isLength({ min: 1, max: 255 }),
+  query('vcenterId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const vcId = req.query.vcenterId ?? null;
+    const hosts = db.prepare(`
+      SELECT h.vcenter_id, h.name, v.name AS vcenter_name FROM vcenter_hosts h
+      JOIN vcenter_vcenters v ON v.id = h.vcenter_id
+      WHERE lower(h.name) = lower(?) AND (? IS NULL OR h.vcenter_id = ?)
+    `).all(req.params.name, vcId, vcId);
+    if (!hosts.length) return res.status(404).json({ error: 'Host not found.' });
+    const stmt = db.prepare(`
+      SELECT * FROM vcenter_host_nic_neighbors
+      WHERE vcenter_id = ? AND host_name = ? ORDER BY nic, protocol
+    `);
+    const out = [];
+    for (const h of hosts) {
+      for (const r of stmt.all(h.vcenter_id, h.name)) {
+        out.push({
+          nic: r.nic, mac: r.mac, protocol: r.protocol,
+          switchName: r.switch_name, switchPort: r.switch_port,
+          switchAddress: r.switch_address, switchPlatform: r.switch_platform,
+          vlan: r.vlan, vcenterName: h.vcenter_name,
+          // SQLite CURRENT_TIMESTAMP is zoneless UTC; send it with its zone.
+          capturedAt: r.captured_at && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(r.captured_at)
+            ? `${r.captured_at.replace(' ', 'T')}Z` : r.captured_at,
+        });
+      }
+    }
+    res.json(out);
+  } catch (err) { next(err); }
+});
+
 /** GET /api/vcenter/clusters — clusters with capacity rollups. */
 router.get('/clusters', (req, res, next) => {
   try {

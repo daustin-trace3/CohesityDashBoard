@@ -284,6 +284,28 @@ function loadDictionary() {
     add(db.prepare("SELECT DISTINCT name FROM unifi_cameras WHERE name IS NOT NULL AND name != ''").all(), 'HOST');
   } catch { /* unifi_cameras (v2) not present on this instance */ }
 
+  try {
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lm_sources'").get()) {
+      add(db.prepare("SELECT name FROM lm_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
+      add(db.prepare("SELECT company AS name FROM lm_sources WHERE company IS NOT NULL AND company != ''").all(), 'CLUSTER');
+      // LM device "name" is often the IP; addHostOrIp files it as IP then.
+      // Device IP lists (ips_json) are left to the IPv4 regex pass.
+      for (const col of ['display_name', 'name', 'sysname', 'hostname']) {
+        addHostOrIp(db.prepare(`SELECT DISTINCT ${col} AS name FROM lm_devices WHERE ${col} IS NOT NULL AND ${col} != '' LIMIT 5000`).all());
+      }
+      add(db.prepare("SELECT DISTINCT hostname AS name FROM lm_collectors WHERE hostname IS NOT NULL AND hostname != ''").all(), 'HOST');
+      add(db.prepare("SELECT DISTINCT description AS name FROM lm_collectors WHERE description IS NOT NULL AND description != ''").all(), 'HOST');
+      add(db.prepare("SELECT DISTINCT name FROM lm_device_groups WHERE name IS NOT NULL AND name != ''").all(), 'SOURCE');
+      add(db.prepare("SELECT DISTINCT full_path AS name FROM lm_device_groups WHERE full_path IS NOT NULL AND full_path != ''").all(), 'SOURCE');
+      add(db.prepare("SELECT DISTINCT site_name AS name FROM lm_sites WHERE site_name IS NOT NULL AND site_name != ''").all(), 'SOURCE');
+      add(db.prepare("SELECT DISTINCT site_key AS name FROM lm_sites WHERE site_key IS NOT NULL AND site_key != ''").all(), 'SOURCE');
+      add(db.prepare("SELECT DISTINCT name FROM lm_checks WHERE name IS NOT NULL AND name != ''").all(), 'OBJECT');
+      add(db.prepare("SELECT DISTINCT target AS name FROM lm_checks WHERE target IS NOT NULL AND target != ''").all(), 'OBJECT');
+      add(db.prepare("SELECT DISTINCT username AS name FROM lm_admins WHERE username IS NOT NULL AND username != ''").all(), 'USER');
+      add(db.prepare("SELECT DISTINCT email AS name FROM lm_admins WHERE email IS NOT NULL AND email != ''").all(), 'USER');
+    }
+  } catch { /* LogicMonitor tables not present on this instance */ }
+
   return entries;
 }
 
@@ -361,13 +383,16 @@ function createAnonymizer() {
     return out;
   }
 
-  /** Deep-walk any value, scrubbing every string. Non-strings pass through. */
+  /** Deep-walk any value, scrubbing every string. Non-strings pass through.
+   *  Object KEYS are scrubbed too (dictionary and pattern passes, none of the
+   *  key-name rules): gathers that index a map by group path, device or site
+   *  name ("Network/Sites/Phoenix DC": {...}) used to leak the name as a key. */
   function anonymize(value, key) {
     if (typeof value === 'string') return scrubText(value, key);
     if (Array.isArray(value)) return value.map((v) => anonymize(v, key));
     if (value && typeof value === 'object') {
       const out = {};
-      for (const [k, v] of Object.entries(value)) out[k] = anonymize(v, k);
+      for (const [k, v] of Object.entries(value)) out[scrubText(k)] = anonymize(v, k);
       return out;
     }
     return value;

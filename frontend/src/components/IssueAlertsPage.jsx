@@ -22,6 +22,8 @@ const CONFIG = {
     description: 'Computed fabric issues across all registered SANnav sources, with open/resolved history' },
   bluecat: { brand: '#0057B8', base: '/bluecat', instanceKey: 'source', instanceLabel: 'Address Manager',
     description: 'Computed IPAM and DNS issues across all registered BlueCat Address Managers, with open/resolved history' },
+  logicmonitor: { brand: '#1A73E8', base: '/logicmonitor', instanceKey: 'source', instanceLabel: 'Portal', label: 'LogicMonitor',
+    description: 'Computed monitoring issues across connected LogicMonitor portals: dead devices, down interfaces, collector health and site reachability, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];
