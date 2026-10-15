@@ -159,7 +159,7 @@ export default function LmInterfacesPage() {
                         </td>
                         <td className="py-2 pr-3 text-ink-muted text-[12px] truncate max-w-[180px]">{r.deviceName}</td>
                         <td className="py-2 pr-3 text-ink-muted text-[12px] truncate max-w-[120px]">{r.siteKey || '-'}</td>
-                        <td className="py-2 pr-3"><p className="text-ink truncate max-w-[200px]">{r.displayName}{r.isWan ? <Badge tone="info" className="ml-1">WAN</Badge> : null}</p><p className="text-[10px] text-ink-faint truncate max-w-[200px]">{r.description || '-'}</p></td>
+                        <td className="py-2 pr-3"><p className="text-ink truncate max-w-[200px]">{r.displayName}{r.isWan ? <Badge tone="info" className="ml-1">WAN</Badge> : null}</p><p className="text-[10px] text-ink-faint truncate max-w-[200px]">{r.description || '-'}</p>{r.circuitId ? <p className="text-[10px] text-ink-muted font-mono truncate max-w-[200px]" title={r.carrier || undefined}>CID {r.circuitId}{r.carrier ? ` (${r.carrier})` : ''}</p> : null}</td>
                         <td className="py-2 pr-3"><Badge tone={statusTextTone(r.statusText)}>{r.statusText || 'unknown'}</Badge>{r.stopMonitoring ? <span className="text-[10px] text-ink-faint ml-1">not monitored</span> : null}</td>
                         <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtSpeed(r.speedBps)}</td>
                         <td className="py-2 pr-3"><UtilBar pct={r.inUtilPct} /><p className="text-[10px] text-ink-faint tnum">{fmtMbps(r.inMbps)}</p></td>

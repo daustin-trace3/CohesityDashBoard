@@ -663,6 +663,7 @@ function statusTextOf(r) {
 }
 
 function interfaceOut(r) {
+  const ci = lmPath().circuitInfo(r.description, r.props_json);
   return {
     instanceId: r.instance_id,
     sourceId: r.source_id,
@@ -688,6 +689,9 @@ function interfaceOut(r) {
     siteKey: r.site_key || null,
     isWan: Number(r.is_wan) === 1,
     wanLabel: r.wan_label || null,
+    alias: ci.alias,
+    circuitId: ci.circuitId,
+    carrier: ci.carrier,
   };
 }
 
@@ -1420,7 +1424,7 @@ router.get('/interfaces.csv', ifQueryRules, validate, (req, res, next) => {
       SELECT i.*, d.display_name AS device_name, d.site_key AS site_key ${IF_FROM} ${whereSql}
       ORDER BY ${sortCol} ${dir} NULLS LAST, d.display_name, i.if_index, i.instance_id LIMIT 5000
     `).all(...params).map(interfaceOut);
-    sendCsv(res, 'interfaces', rows, ['deviceName', 'displayName', 'description', 'ifIndex', 'statusText', 'speedBps',
+    sendCsv(res, 'interfaces', rows, ['deviceName', 'displayName', 'description', 'alias', 'circuitId', 'carrier', 'ifIndex', 'statusText', 'speedBps',
       'inMbps', 'outMbps', 'inUtilPct', 'outUtilPct', 'inErrors', 'outErrors', 'inDiscards', 'outDiscards', 'sampledAt', 'alertStatus', 'siteKey', 'isWan']);
   } catch (err) { next(err); }
 });
@@ -1841,6 +1845,125 @@ router.get('/circuits/:instanceId/profile', [
     const p = lmPath().circuitProfile(db, req.params.instanceId, req.query.sourceId != null ? req.query.sourceId : null);
     if (!p) return notFound(res, 'Circuit');
     res.json(p);
+  } catch (err) { next(err); }
+});
+
+// ---- Full data export and discovery ------------------------------------------
+// Under /settings so the settings:view grant gates it (it includes admins).
+
+// Time-series and raw payload tables; only exported with ?history=1.
+const EXPORT_HISTORY_TABLES = new Set(['lm_interface_history', 'lm_interface_daily', 'lm_check_history', 'lm_check_daily',
+  'lm_check_baseline', 'lm_interface_baseline', 'lm_metrics_history', 'lm_webhook_events', 'lm_blame_history', 'lm_issue_history']);
+const SECRET_COL_RE = /credential|token|secret|password|access_?key/i;
+// LM property names that carry credentials (snmp.auth, aws.accesskeyid, ise.dev.pass, ...).
+const SECRET_PROP_RE = /pass|secret|token|key(id)?$|accesskey|community|snmp\.(auth|priv)|cert|credential/i;
+function redactProps(v) {
+  if (Array.isArray(v)) return v.map(redactProps);
+  if (!v || typeof v !== 'object') return v;
+  const out = {};
+  for (const [k, x] of Object.entries(v)) out[k] = SECRET_PROP_RE.test(k) && (x == null || typeof x !== 'object') ? '[redacted]' : redactProps(x);
+  return out;
+}
+
+function exportRows(table, withRaw) {
+  const cols = db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name)
+    .filter((c) => !SECRET_COL_RE.test(c) && (withRaw || c !== 'raw_json'));
+  if (!cols.length) return [];
+  return db.prepare(`SELECT ${cols.map((c) => `"${c}"`).join(', ')} FROM "${table}"`).all().map((r) => {
+    for (const c of cols) if (/_json$/.test(c) && typeof r[c] === 'string') r[c] = redactProps(parseJson(r[c], r[c]));
+    return r;
+  });
+}
+
+/** What the portals send: vendors/roles, datasources seen per vendor, property keys, circuit coverage. */
+function discoveryReport() {
+  const out = {};
+  out.devicesByVendorRole = db.prepare(`
+    SELECT COALESCE(vendor, 'Unknown') vendor, COALESCE(role, 'unknown') role, is_network isNetwork, COUNT(*) devices
+    FROM lm_devices WHERE stale = 0 GROUP BY 1, 2, 3 ORDER BY devices DESC
+  `).all();
+  const healthNames = lmApi().HEALTH_DATASOURCES.map((h) => h.name);
+  const uptime = lmApi().UPTIME_DATASOURCES;
+  out.datasources = db.prepare(`
+    SELECT x.datasource_name name, MAX(x.datasource_display_name) displayName, COUNT(DISTINCT x.source_id || ':' || x.lm_device_id) devices,
+      SUM(COALESCE(x.instance_count, 0)) instances, MAX(x.is_interface) isInterface, MAX(x.is_neighbor) isNeighbor,
+      GROUP_CONCAT(DISTINCT COALESCE(d.vendor, 'Unknown')) vendors
+    FROM lm_device_datasources x LEFT JOIN lm_devices d ON d.source_id = x.source_id AND d.lm_device_id = x.lm_device_id
+    WHERE COALESCE(x.instance_count, 0) > 0
+    GROUP BY x.datasource_name ORDER BY devices DESC, name
+  `).all().map((r) => {
+    let collected = 'inventory only';
+    if (r.isInterface) collected = 'instances + metrics';
+    else if (r.isNeighbor) collected = 'topology (LLDP/CDP)';
+    else if (uptime.includes(r.name)) collected = 'reachability checks';
+    else if (healthNames.some((n) => r.name && r.name.startsWith(n))) collected = 'alert labels only';
+    return { ...r, isInterface: !!r.isInterface, isNeighbor: !!r.isNeighbor, collected };
+  });
+  const keyCatalog = (rows, scopes) => {
+    const m = new Map();
+    for (const r of rows) {
+      for (const [scope, raw] of scopes(r)) {
+        const map = typeof raw === 'string' ? parseJson(raw, {}) : (raw || {});
+        for (const [k, v] of Object.entries(map)) {
+          const key = `${scope}|${k}`;
+          const e = m.get(key) || { scope, key: k, count: 0, sample: null };
+          e.count += 1;
+          if (e.sample == null && v != null && v !== '') e.sample = SECRET_PROP_RE.test(k) ? '[redacted]' : String(v).slice(0, 120);
+          m.set(key, e);
+        }
+      }
+    }
+    return [...m.values()].sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+  };
+  out.devicePropertyKeys = keyCatalog(
+    db.prepare('SELECT system_props_json, auto_props_json, custom_props_json FROM lm_devices WHERE stale = 0').all(),
+    (r) => [['system', r.system_props_json], ['auto', r.auto_props_json], ['custom', r.custom_props_json]],
+  );
+  const ifRows = db.prepare('SELECT description, props_json, is_wan FROM lm_interfaces WHERE stale = 0').all();
+  out.interfacePropertyKeys = keyCatalog(ifRows, (r) => {
+    const p = parseJson(r.props_json, {});
+    return [['system', p.system], ['auto', p.auto], ['custom', p.custom]];
+  });
+  const cov = { interfaces: ifRows.length, withDescription: 0, withAlias: 0, withCircuitId: 0, wan: 0, wanWithCircuitId: 0, circuitIdSources: {} };
+  for (const r of ifRows) {
+    const ci = lmPath().circuitInfo(r.description, r.props_json);
+    if (r.description) cov.withDescription += 1;
+    if (ci.alias) cov.withAlias += 1;
+    if (Number(r.is_wan) === 1) cov.wan += 1;
+    if (ci.circuitId) {
+      cov.withCircuitId += 1;
+      if (Number(r.is_wan) === 1) cov.wanWithCircuitId += 1;
+      const s = String(ci.source).split(':').slice(0, 2).join(':');
+      cov.circuitIdSources[s] = (cov.circuitIdSources[s] || 0) + 1;
+    }
+  }
+  out.circuitCoverage = cov;
+  out.devicesWithoutDatasourceInventory = db.prepare(`
+    SELECT COUNT(*) n FROM lm_devices d WHERE d.stale = 0
+      AND NOT EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = d.source_id AND x.lm_device_id = d.lm_device_id)
+  `).get().n;
+  return out;
+}
+
+router.get('/settings/discovery', (req, res, next) => {
+  try { res.json(discoveryReport()); } catch (err) { next(err); }
+});
+
+router.get('/settings/export.json', [query('history').optional().isIn(['0', '1'])], validate, (req, res, next) => {
+  try {
+    const withHistory = req.query.history === '1';
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lm\\_%' ESCAPE '\\' ORDER BY name").all()
+      .map((t) => t.name).filter((n) => withHistory || !EXPORT_HISTORY_TABLES.has(n));
+    const data = {};
+    for (const t of tables) data[t] = exportRows(t, withHistory);
+    if (data.lm_interfaces) {
+      for (const r of data.lm_interfaces) Object.assign(r, { circuit: lmPath().circuitInfo(r.description, r.props_json) });
+    }
+    const payload = { exportedAt: new Date().toISOString(), history: withHistory, discovery: discoveryReport(),
+      circuits: lmPath().circuitRows(db), tables: data };
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="logicmonitor-export-${new Date().toISOString().slice(0, 10)}.json"`);
+    res.send(JSON.stringify(payload, null, 1));
   } catch (err) { next(err); }
 });
 

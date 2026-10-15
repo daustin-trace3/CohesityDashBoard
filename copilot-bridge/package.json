@@ -11,6 +11,7 @@
     "start": "node index.js",
     "login": "node src/login.js",
     "key": "node src/key-cli.js show",
-    "key:new": "node src/key-cli.js regenerate"
+    "key:new": "node src/key-cli.js regenerate",
+    "cert:export": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-cert.ps1"
   }
 }

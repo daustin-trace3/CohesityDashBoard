@@ -463,6 +463,43 @@ const WAN_RE = /\b(wan|circuit|mpls|isp|carrier|zayo|lumen|att|verizon|comcast|c
 const LINKISH_RE = /\bto\s|uplink|->/i;
 const cleanPortKey = (p) => norm(lmEndpoints.cleanPort(p)).replace(/\s+/g, '');
 
+// Circuit reference in free text: "CID: 12/ABCD/345678", "Circuit ID 4471-XY", "ckt# BBEC.123456".
+const CID_TEXT_RE = /\b(?:cid|ckt(?:\s*id)?|circuit(?:\s*(?:id|ref|no|number))?)\s*[:#=-]?\s*([A-Za-z0-9][A-Za-z0-9./_:-]{3,})/i;
+const CID_KEY_RE = /(circuit[._ -]?(id|ref|no|number)?$|\.cid$|^cid$|ckt)/i;
+const CARRIER_KEY_RE = /(carrier|provider|isp|telco)$/i;
+const CARRIER_RE = /\b(at&t|att|verizon|lumen|centurylink|level ?3|zayo|cogent|comcast|spectrum|charter|cox|windstream|frontier|gtt|bt|colt|vodafone|telstra|ntt|orange|tata|virgin media|openreach|megaport|equinix)\b/i;
+
+/**
+ * Circuit reference for one interface: {circuitId, carrier, alias, source}.
+ * Instance custom properties win, then auto properties, then the ifAlias /
+ * description text. props is lm_interfaces.props_json ({auto, system, custom}).
+ */
+function circuitInfo(description, props) {
+  const p = typeof props === 'string' ? parseJson(props, {}) : (props || {});
+  const alias = (p.auto && p.auto['auto.interface.alias']) || null;
+  let circuitId = null; let carrier = null; let source = null;
+  for (const [scope, map] of [['custom', p.custom], ['auto', p.auto]]) {
+    for (const [k, v] of Object.entries(map || {})) {
+      if (v == null || String(v).trim() === '') continue;
+      if (!circuitId && CID_KEY_RE.test(k)) { circuitId = String(v).trim(); source = `${scope}:${k}`; }
+      if (!carrier && CARRIER_KEY_RE.test(k)) carrier = String(v).trim();
+    }
+  }
+  for (const text of [alias, description]) {
+    if (!text) continue;
+    if (!circuitId) {
+      const m = CID_TEXT_RE.exec(text);
+      // Carrier IDs always carry a digit; this skips "WAN circuit Lumen".
+      if (m && /\d/.test(m[1])) { circuitId = m[1].replace(/[.,;:]+$/, ''); source = text === alias ? 'ifAlias' : 'description'; }
+    }
+    if (!carrier) {
+      const c = CARRIER_RE.exec(text);
+      if (c) carrier = c[1];
+    }
+  }
+  return { circuitId, carrier, alias, source };
+}
+
 /** Parse lm_wan_overrides: "dev:port,!dev:port" -> [{device, port, exclude}]. */
 function parseWanOverrides(text) {
   return String(text || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
@@ -482,7 +519,7 @@ function computeCircuits(dbh, sourceId = null) {
     const where = sourceId != null ? 'AND i.source_id = ?' : '';
     const args = sourceId != null ? [sourceId] : [];
     const rows = dbh.prepare(`
-      SELECT i.source_id, i.instance_id, i.display_name, i.description, d.display_name AS dev_name, d.name AS dev_alt, d.role,
+      SELECT i.source_id, i.instance_id, i.display_name, i.description, i.props_json, d.display_name AS dev_name, d.name AS dev_alt, d.role,
         EXISTS (SELECT 1 FROM lm_topology_links l WHERE l.source_id = i.source_id AND l.src_instance_id = i.instance_id
           AND COALESCE(l.stale, 0) = 0 AND l.dst_device_id IS NULL AND l.dst_platform IS NULL) AS unresolved
       FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
@@ -503,6 +540,7 @@ function computeCircuits(dbh, sourceId = null) {
           if (r.description && WAN_RE.test(r.description)) reason = 'carrier-description';
           else if (r.role === 'router' && r.unresolved && r.description && LINKISH_RE.test(r.description)) reason = 'unresolved-uplink';
         }
+        if (!reason && circuitInfo(r.description, r.props_json).circuitId) reason = 'circuit-id';
         if (!reason) continue;
         upd.run(1, reason, r.description || `${r.dev_name || r.dev_alt} ${r.display_name}`, r.source_id, r.instance_id);
         marked += 1;
@@ -589,7 +627,9 @@ function circuitRows(dbh, { sourceId = null, siteKey = null, nowMs = Date.now() 
       if (critRun >= 3) satState = 'critical';
       const statusText = w.status_text || (w.status == null ? 'unknown' : Number(w.status) === 1 ? 'up' : Number(w.status) === 2 ? 'down' : 'other');
       const down = statusText === 'down' && Number(w.stop_monitoring) !== 1;
+      const ci = circuitInfo(w.description, w.props_json);
       out.push({
+        circuitId: ci.circuitId, carrier: ci.carrier, alias: ci.alias, circuitIdSource: ci.source,
         sourceId: w.source_id, deviceId: w.lm_device_id, deviceName: w.dev_name || w.dev_alt, siteKey: w.site_key || null, siteName: w.site_name || null,
         instanceId: w.instance_id, port: w.display_name, label: w.wan_label || w.description || `${w.dev_name || w.dev_alt} ${w.display_name}`,
         wanReason: w.wan_reason, speedBps: w.speed_bps, statusText, inUtilPct: w.in_util_pct, outUtilPct: w.out_util_pct,
@@ -708,5 +748,5 @@ module.exports = {
   PORT_ISSUE_TYPES, WAN_RE,
   tierValue, computeTiers, makeContext, hopHealth, pathFor, blame, blameForCheck, likelyHopText, shadowCause,
   buildChain, findLmDevices, portObj,
-  computeCircuits, parseWanOverrides, circuitRows, circuitProfile, p95, longestDayRun,
+  computeCircuits, parseWanOverrides, circuitRows, circuitProfile, p95, longestDayRun, circuitInfo,
 };

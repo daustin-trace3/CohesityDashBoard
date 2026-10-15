@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Settings, Network, FolderTree, Gauge, BellRing } from 'lucide-react';
+import { Settings, Network, FolderTree, Gauge, BellRing, Database } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
@@ -7,12 +7,14 @@ import PlatformAlertNotifications from '../../components/PlatformAlertNotificati
 import { BRAND } from './helpers';
 import LmPortalsPanel from './LmPortalsPanel';
 import { LmScopePanel, LmThresholdsPanel } from './LmScopeThresholds';
+import LmDataExportPanel from './LmDataExportPanel';
 
 const SECTIONS = [
   { key: 'portals', label: 'Portals', icon: Network, group: 'Connections' },
   { key: 'scope', label: 'Scope', icon: FolderTree, group: 'Connections' },
   { key: 'thresholds', label: 'Thresholds', icon: Gauge, group: 'Tuning' },
   { key: 'notify', label: 'Alert Notifications', icon: BellRing, group: 'Tuning' },
+  { key: 'export', label: 'Data Export', icon: Database, group: 'Data' },
 ];
 
 export default function LmSettingsPage() {
@@ -33,6 +35,7 @@ export default function LmSettingsPage() {
         {section === 'scope' && <LmScopePanel sources={sources} reload={loadSources} />}
         {section === 'thresholds' && <LmThresholdsPanel />}
         {section === 'notify' && <PlatformAlertNotifications platform="logicmonitor" label="LogicMonitor" />}
+        {section === 'export' && <LmDataExportPanel />}
         <p className="text-[11px] text-ink-faint leading-relaxed">
           The LogicMonitor platform tab itself is enabled from Global Settings (gear icon, Platforms).
         </p>

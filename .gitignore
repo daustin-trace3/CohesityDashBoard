@@ -28,3 +28,4 @@ requirements.txt
 # Live-platform probe dumps (real customer data), never commit
 backend/scripts/*-probe.json
 backend/*-probe.json
+copilot-bridge/*

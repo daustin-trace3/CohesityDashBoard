@@ -102,7 +102,7 @@ export default function LmCircuitsPage() {
   })).filter((c) => !stateFilter || stateTone(c.state) === stateFilter), [rows, stateFilter]);
 
   const ctl = useTableControls(list, {
-    searchKeys: ['deviceName', 'port', 'label', 'siteLabel'], defaultSortKey: 'stateRank', defaultSortDir: 'desc', paginate: true,
+    searchKeys: ['deviceName', 'port', 'label', 'siteLabel', 'circuitId', 'carrier'], defaultSortKey: 'stateRank', defaultSortDir: 'desc', paginate: true,
   });
 
   const recompute = async () => {
@@ -157,7 +157,7 @@ export default function LmCircuitsPage() {
         </div>
 
         {rows == null ? <LoadingPanel label="Loading circuits..." height={200} /> : list.length === 0 ? (
-          <div className="text-sm text-ink-muted py-6 text-center">{rows.length === 0 ? 'No WAN circuits identified yet. Circuits are router and firewall interfaces whose description names a carrier, or that you force under Settings.' : 'No circuits match.'}</div>
+          <div className="text-sm text-ink-muted py-6 text-center">{rows.length === 0 ? 'No WAN circuits identified yet. Circuits are router and firewall interfaces whose description names a carrier, interfaces carrying a circuit ID (ifAlias, description or a circuit property), or ones you force under Settings.' : 'No circuits match.'}</div>
         ) : (
           <>
             <div className="overflow-x-auto">
@@ -167,6 +167,8 @@ export default function LmCircuitsPage() {
                   <SortTh k="deviceName" label="Device" ctl={ctl} />
                   <SortTh k="port" label="Port" ctl={ctl} />
                   <SortTh k="label" label="Label" ctl={ctl} />
+                  <SortTh k="circuitId" label="Circuit ID" ctl={ctl} />
+                  <SortTh k="carrier" label="Carrier" ctl={ctl} />
                   <SortTh k="speedBps" label="Speed" ctl={ctl} align="right" />
                   <SortTh k="inUtilPct" label="Now in" ctl={ctl} align="right" />
                   <SortTh k="outUtilPct" label="Now out" ctl={ctl} align="right" />
@@ -185,6 +187,8 @@ export default function LmCircuitsPage() {
                       <td className="py-2 pr-3 text-ink text-[12px]">{c.deviceName}</td>
                       <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.port}</td>
                       <td className="py-2 pr-3 text-ink-muted text-[12px] truncate max-w-[220px]" title={c.label}>{c.label || '-'}{c.wanReason === 'override' ? <Badge tone="neutral" className="ml-1">Forced</Badge> : null}</td>
+                      <td className="py-2 pr-3 text-ink text-[12px] font-mono" title={c.circuitIdSource ? `from ${c.circuitIdSource}` : undefined}>{c.circuitId || '-'}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.carrier || '-'}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtSpeed(c.speedBps)}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtPct(c.inUtilPct)}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtPct(c.outUtilPct)}</td>
