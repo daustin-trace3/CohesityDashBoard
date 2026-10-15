@@ -342,14 +342,14 @@ export default function OpsAgentPage() {
     } finally { setRunning(false); }
   };
 
-  const list = useMemo(() => (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', ') })), [rows]);
-  const ctl = useTableControls(list, { searchKeys: ['title', 'host', 'platformsLabel', 'classification', 'summary'], defaultSortKey: 'impactScore', defaultSortDir: 'desc', paginate: true });
+  const list = useMemo(() => (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', '), idLabel: '#' + r.id })), [rows]);
+  const ctl = useTableControls(list, { searchKeys: ['idLabel', 'title', 'host', 'platformsLabel', 'classification', 'summary'], defaultSortKey: 'openedAt', defaultSortDir: 'desc', paginate: true });
   const s = status;
   const counts = s?.counts || {};
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Ordered by severity, then by how much is affected.">
+      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Newest first; sort any column.">
         <span className={`inline-flex items-center gap-1.5 text-[11px] ${live ? 'text-status-ok' : 'text-status-warn'}`} title={live ? `Watching for changes every ${PULSE_MS / 1000}s` : 'Lost contact with ICC; retrying'}>
           <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-status-ok animate-pulse' : 'bg-status-warn'}`} />
           {live ? 'Live' : 'Reconnecting'}
@@ -392,7 +392,7 @@ export default function OpsAgentPage() {
               {k === 'open' ? 'Open' : k === 'resolved' ? 'Resolved' : 'All'}
             </button>
           ))}
-          <input value={ctl.q} onChange={(e) => ctl.setQ(e.target.value)} placeholder="Filter by title, host, platform, classification…"
+          <input value={ctl.q} onChange={(e) => ctl.setQ(e.target.value)} placeholder="Filter by id, title, host, platform, classification..."
             className="ml-auto bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-1.5 text-xs text-ink focus:border-brand/60 outline-none w-72 max-w-full" />
         </div>
         {rows == null ? <LoadingPanel label="Loading incidents…" height={140} />
@@ -401,6 +401,7 @@ export default function OpsAgentPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                  <SortTh k="id" label="ID" ctl={ctl} />
                   <SortTh k="state" label="State" ctl={ctl} />
                   <SortTh k="impactScore" label="Severity" ctl={ctl} />
                   <SortTh k="title" label="Incident" ctl={ctl} />
@@ -415,6 +416,7 @@ export default function OpsAgentPage() {
                     const sm = STATE_META[r.state] || STATE_META.collecting;
                     return (
                       <tr key={r.id} className="border-b border-cohesity-border/50">
+                        <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">#{r.id}</td>
                         <td className="py-2 pr-3"><Badge tone={sm.tone}>{sm.label}</Badge></td>
                         <td className="py-2 pr-3"><Badge tone={sevTone(r.severity)}>{String(r.severity).toUpperCase()}</Badge></td>
                         <td className="py-2 pr-3 max-w-[360px]">

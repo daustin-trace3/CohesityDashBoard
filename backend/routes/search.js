@@ -111,6 +111,13 @@ const CATEGORIES = [
           WHERE (wwn LIKE ? ESCAPE '\\' OR symbolic_name LIKE ? ESCAPE '\\') AND stale = 0 ORDER BY symbolic_name LIMIT ?` },
   // LogicMonitor declares its categories in the manifest (searchCategories).
   ...require('../platforms/logicmonitor').searchCategories,
+  // Not a platform: no enabled gate (platform null). A bare number matches the incident id.
+  { key: 'ops-incidents', label: 'Ops Agent Incidents', platform: null, perm: 'cohesity:*:view', digitsParam: true,
+    sql: `SELECT id, ('#' || id || ' ' || COALESCE(title, host, incident_key)) AS title,
+                 (state || ' . ' || severity || ' . ' || opened_at) AS subtitle
+          FROM ops_incidents WHERE CAST(id AS TEXT) = ? OR title LIKE ? ESCAPE '\\' OR host LIKE ? ESCAPE '\\'
+          ORDER BY opened_at DESC LIMIT ?`, params: 3,
+    route: (i) => `/ops/agent?incident=${i.id}` },
 ];
 
 const platformEnabled = (id) => {
@@ -122,17 +129,21 @@ const platformEnabled = (id) => {
 router.get('/', (req, res, next) => {
   try {
     const q = String(req.query.q || '').trim();
-    if (q.length < 2) return res.json({ results: [] });
+    const digits = /^#?\d+$/.test(q) ? q.replace('#', '') : null;
+    if (q.length < 2 && !digits) return res.json({ results: [] });
     const pattern = `%${escLike(q)}%`;
+    const bare = `%${escLike(q.replace(/^#/, ''))}%`;
     const grants = (req.auth && req.auth.grants) || [];
 
     const results = [];
     for (const cat of CATEGORIES) {
-      if (!platformEnabled(cat.platform)) continue;
+      if (q.length < 2 && !cat.digitsParam) continue; // 1-char digit query is incident-only
+      if (cat.platform && !platformEnabled(cat.platform)) continue;
       if (!hasPermission(grants, cat.perm)) continue;
       let items;
       try {
         const args = Array(cat.params || 1).fill(pattern);
+        if (cat.digitsParam) args.splice(0, 3, digits || '', bare, bare);
         items = db.prepare(cat.sql).all(...args, LIMIT_PER_CATEGORY);
       } catch {
         continue; // table missing (platform never migrated) — skip quietly
@@ -145,7 +156,7 @@ router.get('/', (req, res, next) => {
         items: items.map((i) => ({
           title: i.title,
           subtitle: i.subtitle || null,
-          route: `${cat.base}?q=${encodeURIComponent(i.title || q)}`,
+          route: cat.route ? cat.route(i) : `${cat.base}?q=${encodeURIComponent(i.title || q)}`,
         })),
       });
     }

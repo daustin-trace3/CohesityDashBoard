@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Wrench, Save, RefreshCw } from 'lucide-react';
 import client from '../api/client';
 import { Badge, timeAgo } from './ui/primitives';
 import { useToast } from './ui/Toaster';
+import { useTableControls, TableControls, SortTh, TablePager } from './ui/tableTools';
 
 // Global Settings > Agent Capabilities: what the Operations Agent may do
 // beyond reading ICC's own tables. Each row is one capability the backend
@@ -38,6 +40,9 @@ export default function AgentCapabilitiesPanel() {
     }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  const runList = useMemo(() => runs.map((r) => ({ ...r, incidentLabel: r.incidentId ? '#' + r.incidentId : '', resultLabel: r.ok ? 'OK' : 'FAILED' })), [runs]);
+  const ctl = useTableControls(runList, { searchKeys: ['capability', 'targetName', 'targetAddress', 'platform', 'summary', 'incidentLabel'], defaultSortKey: 'ranAt', defaultSortDir: 'desc', paginate: true, defaultPageSize: 10 });
 
   const effective = (c) => (Object.prototype.hasOwnProperty.call(pending, c.id) ? pending[c.id] : c.enabled);
   const dirty = Object.keys(pending).some((id) => { const c = caps?.find((x) => x.id === id); return c && pending[id] !== c.enabled; });
@@ -125,30 +130,34 @@ export default function AgentCapabilitiesPanel() {
         {runs.length === 0 ? (
           <p className="text-[12px] text-ink-faint">Nothing yet. Runs appear once a capability is on and the agent triages an incident.</p>
         ) : (
+          <>
+          <TableControls ctl={ctl} rows={runList} searchPlaceholder="Filter by check, target, incident..." filters={[{ k: 'resultLabel', label: 'Result' }, { k: 'capability', label: 'Check' }]} />
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
               <thead>
-                <tr className="text-left text-ink-faint border-b border-cohesity-border">
-                  <th className="py-1 pr-3 font-semibold">When</th>
-                  <th className="py-1 pr-3 font-semibold">Check</th>
-                  <th className="py-1 pr-3 font-semibold">Target</th>
-                  <th className="py-1 pr-3 font-semibold">Result</th>
-                  <th className="py-1 font-semibold">Incident</th>
+                <tr className="text-left text-[11px] text-ink-faint border-b border-cohesity-border">
+                  <SortTh k="ranAt" label="When" ctl={ctl} />
+                  <SortTh k="capability" label="Check" ctl={ctl} />
+                  <SortTh k="targetName" label="Target" ctl={ctl} />
+                  <SortTh k="resultLabel" label="Result" ctl={ctl} />
+                  <SortTh k="incidentId" label="Incident" ctl={ctl} />
                 </tr>
               </thead>
               <tbody>
-                {runs.map((r) => (
+                {ctl.pageRows.map((r) => (
                   <tr key={r.id} className="border-b border-cohesity-border/40 last:border-0">
                     <td className="py-1 pr-3 text-ink-muted whitespace-nowrap" title={r.ranAt}>{timeAgo(r.ranAt)}</td>
                     <td className="py-1 pr-3 text-ink whitespace-nowrap">{r.capability} <span className="text-ink-faint">({r.durationMs} ms)</span></td>
                     <td className="py-1 pr-3 text-ink-muted">{r.targetName}{r.targetAddress && r.targetAddress !== r.targetName ? <span className="text-ink-faint"> {r.targetAddress}</span> : null} <span className="text-ink-faint">{r.platform}</span></td>
                     <td className="py-1 pr-3 text-ink-muted"><span className={r.ok ? 'text-status-ok font-semibold' : 'text-status-crit font-semibold'}>{r.ok ? 'OK' : 'FAILED'}</span> {r.summary}</td>
-                    <td className="py-1 text-ink-muted">{r.incidentId ? `#${r.incidentId}` : '-'}</td>
+                    <td className="py-1 text-ink-muted">{r.incidentId ? <Link to={`/ops/agent?incident=${r.incidentId}`} className="text-brand hover:underline">#{r.incidentId}</Link> : '-'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <TablePager ctl={ctl} sizes={[10, 25, 50, 'all']} />
+          </>
         )}
       </div>
     </>
