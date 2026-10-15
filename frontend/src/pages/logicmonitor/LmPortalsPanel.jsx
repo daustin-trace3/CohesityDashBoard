@@ -204,11 +204,11 @@ export default function LmPortalsPanel({ sources, reload }) {
             <input value={form.name} onChange={setF('name')} placeholder="Acme Network Ops" className={inp} spellCheck={false} />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-ink mb-1">Company (portal subdomain)</label>
-            <div className="flex items-center gap-1">
-              <input value={form.company} onChange={setF('company')} placeholder="acme" className={inp} spellCheck={false} />
-              <span className="text-[11px] text-ink-faint whitespace-nowrap">.logicmonitor.com</span>
-            </div>
+            <label className="block text-xs font-semibold text-ink mb-1">Portal</label>
+            <input value={form.company} onChange={setF('company')} onBlur={() => setForm((f) => ({ ...f, company: normCompany(f.company) }))} placeholder="acme or https://acme.logicmonitor.com" className={inp} spellCheck={false} />
+            {form.company.trim() && (/^[a-z0-9][a-z0-9-]{1,62}$/i.test(company)
+              ? <p className="text-[10px] text-ink-faint mt-1">Connects to https://{company}.logicmonitor.com</p>
+              : <p className="text-[10px] text-status-warn mt-1">Enter the portal subdomain or paste the portal URL</p>)}
             {companyChanged && <p className="text-[10px] text-status-warn mt-1">Changing the portal needs the secret typed again.</p>}
           </div>
           <div>
