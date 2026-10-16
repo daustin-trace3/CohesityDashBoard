@@ -294,7 +294,8 @@ export function LmCircuitsRulesPanel() {
 }
 
 const SVC_KEYS = ['lm_fw_session_warn_pct', 'lm_tunnel_fold', 'lm_cert_warn_days', 'lm_cpu_warn_pct', 'lm_mem_warn_pct',
-  'lm_wlan_chan_util_warn_pct', 'lm_wlan_client_cap_warn_pct', 'lm_wlan_ap_avail_warn_pct', 'lm_wlan_ap_fold'];
+  'lm_wlan_chan_util_warn_pct', 'lm_wlan_client_cap_warn_pct', 'lm_wlan_ap_avail_warn_pct', 'lm_wlan_ap_fold',
+  'lm_fs_warn_pct', 'lm_fs_crit_pct', 'lm_cohesity_cap_warn_pct', 'lm_cohesity_cap_crit_pct'];
 
 export function LmServicesRulesPanel() {
   const cfg = useLmConfig(SVC_KEYS);
@@ -320,6 +321,18 @@ export function LmServicesRulesPanel() {
           tip="A controller with the AP status check raises a wlan-ap-availability-low warning below this share of APs available, critical below half of it." />
         <NumRow cfg={cfg} k="lm_wlan_ap_fold" label="APs or radios before folding" unit="items"
           tip="Each down AP, down radio, hot radio or erroring AP uplink raises its own issue. Above this many on one controller ICC raises one issue for the controller instead." />
+      </SettingGroup>
+      <SettingGroup title="Servers">
+        <NumRow cfg={cfg} k="lm_fs_warn_pct" label="Filesystem warning" unit="%"
+          tip="A server filesystem raises a warning server-filesystem-full issue at or above this value (pseudo filesystems such as /proc, /sys, /dev, /run and tmpfs are skipped)." />
+        <NumRow cfg={cfg} k="lm_fs_crit_pct" label="Filesystem critical" unit="%"
+          tip="The same issue turns critical at or above this value." />
+      </SettingGroup>
+      <SettingGroup title="Cohesity via LogicMonitor">
+        <NumRow cfg={cfg} k="lm_cohesity_cap_warn_pct" label="Cluster capacity warning" unit="%"
+          tip="A Cohesity cluster polled through LogicMonitor raises a warning cohesity-capacity-high issue at or above this value." />
+        <NumRow cfg={cfg} k="lm_cohesity_cap_crit_pct" label="Cluster capacity critical" unit="%"
+          tip="The same issue turns critical at or above this value." />
       </SettingGroup>
       <SettingGroup title="Device health">
         <Lead>The metrics tier samples every 30 minutes by default, so these use the latest value rather than a run of samples.</Lead>

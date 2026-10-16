@@ -538,6 +538,28 @@ function networkFor(servers) {
   return { rows, findings };
 }
 
+const LM_HINT_CAP = 25;
+const lmHintCache = tenantMap();
+
+/** Adds server.lmServer = { device, criticalAlerts, filesystem, note } (and state 'degraded' on an
+ *  online server) for servers whose LogicMonitor device is in trouble. */
+function lmServerHints(servers) {
+  if (!tableExists('lm_devices')) return;
+  let mod;
+  try { mod = require('./logicmonitorServers'); } catch { return; }
+  for (const s of servers.slice(0, LM_HINT_CAP)) {
+    const key = `${lower(s.name)}|${s.ipAddress || ''}`;
+    let hit = lmHintCache.get(key);
+    if (!hit || Date.now() - hit.at >= NETWORK_CACHE_MS) {
+      hit = { at: Date.now(), value: mod.lmServerHint(db, { names: [s.name, s.guestHostname].filter(Boolean), ips: [s.ipAddress].filter(Boolean) }) };
+      lmHintCache.set(key, hit);
+    }
+    if (!hit.value) continue;
+    s.lmServer = hit.value;
+    if (s.state === 'ok') s.state = 'degraded';
+  }
+}
+
 /** Full evaluation of one usage-id from the current tables. Pure read. */
 function evaluate(usageId, { now = new Date() } = {}) {
   const id = normId(usageId);
@@ -600,6 +622,10 @@ function evaluate(usageId, { now = new Date() } = {}) {
       vcenterId: vm.vcenter_id,
     };
   });
+  // LogicMonitor hint (round 11): a server whose LM device has an open critical alert or a
+  // critical full filesystem shows as degraded in its row. Display only: the rollup rules
+  // below do not read it.
+  try { lmServerHints(servers); } catch (err) { logger.warn(`[AppServiceStatus] LogicMonitor server hints for ${id} skipped: ${err.message}`); }
   const offline = servers.filter((s) => !s.online);
   if (offline.length) {
     const ratio = offline.length / servers.length;

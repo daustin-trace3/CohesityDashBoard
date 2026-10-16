@@ -11,6 +11,7 @@ const { computeIssues, isShadowedIssue, shadowedAlertCounts } = require('../../s
 const lmPath = require('../../services/logicmonitorPath');
 const lmSites = require('../../services/logicmonitorSites');
 const lmEndpoints = require('../../services/logicmonitorEndpoints');
+const lmServers = require('../../services/logicmonitorServers');
 
 const BRAND = '#1A73E8';
 
@@ -217,6 +218,65 @@ function alertsGroup(db, d) {
   } catch { return null; }
 }
 
+const fmtUptime = (sec) => {
+  const n = Number(sec);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const days = Math.floor(n / 86400);
+  return days >= 1 ? `${days}d ${Math.floor((n % 86400) / 3600)}h` : `${Math.floor(n / 3600)}h ${Math.floor((n % 3600) / 60)}m`;
+};
+
+/**
+ * Server 360 "LogicMonitor OS" group (round 11): CPU, memory, filesystems over the warning line,
+ * stopped services and uptime from the 'os' and 'health' DataSource metrics of one matched LM
+ * device, or null when the device has none. Datapoint names behind it are UNVERIFIED.
+ */
+function osGroup(db, d) {
+  try {
+    const issuesMod = require('../../services/logicmonitorIssues');
+    const index = issuesMod.loadDsIndex(db, { families: ['os', 'health'], sourceId: d.source_id, deviceId: d.lm_device_id });
+    const dev = [...index.values()][0];
+    if (!dev) return null;
+    const cpu = issuesMod.devMax(dev, 'cpu_pct');
+    const mem = issuesMod.devMax(dev, 'mem_pct');
+    const warn = issuesMod.getThreshold('lm_fs_warn_pct');
+    const crit = issuesMod.getThreshold('lm_fs_crit_pct');
+    const cpuWarn = issuesMod.getThreshold('lm_cpu_warn_pct');
+    const memWarn = issuesMod.getThreshold('lm_mem_warn_pct');
+    const fsAll = lmServers.filesystemsOf(dev);
+    const fsOver = fsAll.filter((f) => f.pct >= warn).sort((a, b) => b.pct - a.pct);
+    const stopped = issuesMod.devInstances(dev, 'svc_state').filter((i) => lmServers.serviceIsStopped(i.m.svc_state.value));
+    const nfsDown = issuesMod.devInstances(dev, 'nfs_mount_state').filter((i) => lmServers.mountIsDown(i.m.nfs_mount_state.value));
+    const up = issuesMod.devVal(dev, 'uptime_s');
+    if (!cpu && !mem && !fsAll.length && !stopped.length && up == null) return null;
+    const facts = [];
+    const lines = [];
+    if (cpu) {
+      facts.push({ label: 'CPU', value: fmtPct(cpu.value), tone: cpu.value >= cpuWarn ? 'warn' : 'ok' });
+      lines.push(`CPU ${fmtPct(cpu.value)}`);
+    }
+    if (mem) {
+      facts.push({ label: 'Memory', value: fmtPct(mem.value), tone: mem.value >= memWarn ? 'warn' : 'ok' });
+      lines.push(`Memory ${fmtPct(mem.value)}`);
+    }
+    if (fsAll.length) {
+      facts.push({ label: 'Filesystems Over Warning', value: `${fsOver.length}/${fsAll.length}`, tone: fsOver.some((f) => f.pct >= crit) ? 'crit' : fsOver.length ? 'warn' : 'ok' });
+    }
+    for (const f of fsOver.slice(0, 6)) lines.push(`Filesystem ${f.name} ${fmtPct(f.pct)} full (${f.pct >= crit ? 'critical' : 'warning'} at ${f.pct >= crit ? crit : warn}%)`);
+    if (fsOver.length > 6) lines.push(`... and ${fsOver.length - 6} more filesystem(s) over ${warn}%`);
+    if (stopped.length) {
+      facts.push({ label: 'Services Stopped', value: String(stopped.length), tone: 'warn' });
+      for (const i of stopped.slice(0, 6)) lines.push(`Service stopped: ${i.name} (state ${i.m.svc_state.value})`);
+    }
+    for (const i of nfsDown.slice(0, 4)) lines.push(`NFS mount down: ${i.name} (state ${i.m.nfs_mount_state.value})`);
+    const upText = fmtUptime(up);
+    if (upText) {
+      facts.push({ label: 'Uptime', value: upText });
+      lines.push(`Uptime ${upText}`);
+    }
+    return { facts, lines, link: { label: 'Open OS metrics in LogicMonitor', href: `/logicmonitor/devices?device=${d.lm_device_id}` } };
+  } catch { return null; }
+}
+
 /**
  * Server 360 contribution: LM devices matching the queried server by display
  * name, name, sysname, hostname or any system IP, plus (round 2) the switch
@@ -262,6 +322,11 @@ function server360(coreApi, ctx) {
     // Round 9: the device's open, non-duplicate LM alerts as their own group.
     for (const d of rows) {
       const g = alertsGroup(db, d);
+      if (g) groups.push(g);
+    }
+    // Round 11: OS lines (CPU, memory, filesystems, services, uptime) from the os and health families.
+    for (const d of rows) {
+      const g = osGroup(db, d);
       if (g) groups.push(g);
     }
     if (pathGroup) groups.push(pathGroup);
@@ -677,7 +742,7 @@ module.exports = {
   },
   statusTables: ['lm_sources'],
   settingsFields: [],
-  navSections: ['overview', 'reachability', 'sites', 'alerts', 'issues', 'devices', 'interfaces', 'circuits', 'firewalls', 'load-balancers', 'metrics', 'collectors', 'governance', 'trends', 'advisor', 'privacy', 'settings'],
+  navSections: ['overview', 'reachability', 'sites', 'alerts', 'issues', 'devices', 'interfaces', 'circuits', 'firewalls', 'load-balancers', 'voice', 'zscaler', 'ise', 'applications', 'metrics', 'collectors', 'governance', 'trends', 'advisor', 'privacy', 'settings'],
   // Dataset tables are views named logicmonitor_* (migration v1): the dataset
   // catalog requires the '<platform id>_' prefix, the data lives in lm_*.
   datasets: [

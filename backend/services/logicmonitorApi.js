@@ -381,7 +381,7 @@ const ERT_ROLES = [
   [/^loadbalancecollector$/i, 'load-balancer'],
   // Live portals report WLC for AireOS controllers and Wireless for Catalyst 9800s.
   [/^(wlc|wireless|wirelesscontroller|accesspoint)$/i, 'wireless'],
-  [/^(physicalserver|virtualmachine|hypervisor)$/i, 'server'],
+  [/^(physicalserver|virtualmachine(resource)?|hypervisor)$/i, 'server'],
   [/^storage/i, 'storage'],
 ];
 
@@ -429,7 +429,18 @@ function splitCategories(categories) {
   return String(categories || '').split(',').map((c) => c.trim()).filter(Boolean);
 }
 
+// Round 11: vendors a Net-SNMP sysoid or a bare category would otherwise hide. Tested on the
+// categories plus sysinfo before any other rule. The NetScout, Zscaler and Oracle patterns are
+// UNVERIFIED against a live portal (the PFS model string and ZscalerOS banner are guesses).
+const VENDOR_HINTS = [
+  [/netscout|infinistream|ngenius|\bPFS[\s-]?\d/i, 'NetScout'],
+  [/zscaler/i, 'Zscaler'],
+  [/acme.?packet|ntm_sbc|oracle.{0,20}(sbc|session border)/i, 'Oracle'],
+];
+
 function classifyVendor({ sysoid, categories, sysinfo } = {}) {
+  const hintText = `${splitCategories(categories).join(' ')} ${sysinfo || ''}`;
+  for (const [re, vendor] of VENDOR_HINTS) if (re.test(hintText)) return vendor;
   const oid = normalizeSysoid(sysoid);
   if (oid) {
     const hit = SYSOID_VENDORS.find((v) => oid.startsWith(v.prefix));
@@ -457,6 +468,11 @@ function classifyRole({ ert, categories, vendor } = {}) {
     if (hit) return hit[1];
   }
   const cats = splitCategories(categories);
+  // Round 11: a Windows or Linux category with no network category is a server, whatever
+  // topology category (TopoSwitch from LLDP) or Net-SNMP vendor rides along. Cohesity VE
+  // clusters and Zscaler NSS appliances used to come out as switches.
+  if (vendor !== 'F5' && cats.some((c) => /^(Windows|Linux)/i.test(c))
+    && !cats.some((c) => !/^Topo/i.test(c) && CATEGORY_ROLES.some(([re, role]) => NETWORK_ROLES.has(role) && re.test(c)))) return 'server';
   for (const [re, role] of CATEGORY_ROLES) {
     if (cats.some((c) => re.test(c))) return role;
   }

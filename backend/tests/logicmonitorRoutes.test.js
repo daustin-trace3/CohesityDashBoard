@@ -600,7 +600,7 @@ describe('logicmonitor data routes', () => {
     const g = await request(app).get(`${API}/config`);
     expect(g.body.thresholds.lm_if_util_warn_pct).toBe(80);
     expect(g.body.thresholds.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(g.body.thresholds)).toHaveLength(58);
+    expect(Object.keys(g.body.thresholds)).toHaveLength(60);
     for (const k of THRESHOLD_KEYS) expect(g.body.thresholds).toHaveProperty(k);
     expect(g.body.ranges.lm_if_util_warn_pct).toEqual({ min: 50, max: 100, default: 80 });
     const put = await request(app).put(`${API}/config`).send({ lm_if_util_warn_pct: 150, lm_if_flap_warn: 0, lm_dead_grace_min: 15 });
@@ -1256,7 +1256,7 @@ describe('logicmonitor round 8 routes: metrics, firewalls, load balancers', () =
     ins('lm_device_datasources', { source_id: sid8, lm_device_id: 301, hds_id: 9001, datasource_id: 2, datasource_name: 'F5_BigIP_System', datasource_display_name: 'F5 system', instance_count: 1, is_interface: 0, is_neighbor: 0 });
     const res = await request(app).get(`${API}/metrics/families`);
     expect(res.status).toBe(200);
-    expect(res.body.map((f) => f.family)).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity']);
+    expect(res.body.map((f) => f.family)).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity', 'apps', 'security', 'os']);
     const fw = res.body.find((f) => f.family === 'firewall');
     expect(fw).toMatchObject({ label: 'Firewalls', enabled: true, datasources: 1, devices: 1, instances: 1, collectedDevices: 3 });
     expect(Object.keys(fw)).toEqual(expect.arrayContaining(['family', 'label', 'enabled', 'sources', 'datasources', 'devices', 'instances', 'collectedInstances', 'lastPollAt']));
@@ -1616,5 +1616,164 @@ describe('logicmonitor round 9 routes: /lookup', () => {
     const none = await request(app).get(`${API}/lookup?names=not-in-lm`);
     expect(none.status).toBe(200);
     expect(none.body).toMatchObject({ device: null, alerts: [], health: null });
+  });
+});
+
+// ---- Round 11, WP-V: voice, Zscaler and ISE lists -----------------------------
+
+describe('logicmonitor round 11 routes: voice, zscaler, ise', () => {
+  let sidV;
+  let hdsSeqV = 7000;
+  const hdsOfV = new Map();
+
+  function devV(id, name, over = {}) {
+    return ins('lm_devices', {
+      source_id: sidV, lm_device_id: id, name, display_name: name, device_type: 0, host_status: 'normal', alert_status: 'none',
+      sdt_status: 'none-none-none', vendor: over.vendor || 'Net-SNMP', role: over.role || 'server', is_network: 0, model: over.model || null,
+      site_key: over.site || 'phoenix', site_name: over.siteName || 'Phoenix DC', ips_json: '[]', stale: 0,
+    });
+  }
+  function metV(devId, ds, family, inst, metric, value) {
+    const hk = `${devId}|${ds}`;
+    if (!hdsOfV.has(hk)) { hdsSeqV += 1; hdsOfV.set(hk, hdsSeqV); }
+    const hds = hdsOfV.get(hk);
+    db.prepare(`INSERT OR IGNORE INTO lm_ds_instances (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, instance_name, stale)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0)`).run(sidV, devId, hds, ds, family, inst, inst);
+    db.prepare(`INSERT OR REPLACE INTO lm_ds_metrics (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, metric, datapoint, value, sampled_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(sidV, devId, hds, ds, family, inst, metric, metric, value, nowSec() - 120);
+    if (!db.prepare('SELECT 1 FROM lm_device_datasources WHERE source_id = ? AND lm_device_id = ? AND hds_id = ?').get(sidV, devId, hds)) {
+      ins('lm_device_datasources', { source_id: sidV, lm_device_id: devId, hds_id: hds, datasource_id: hds, datasource_name: ds, datasource_display_name: ds, instance_count: 1, is_interface: 0, is_neighbor: 0 });
+    }
+    return hds;
+  }
+
+  beforeEach(() => {
+    wipe();
+    db.prepare('DELETE FROM lm_latency_episodes').run();
+    hdsOfV.clear();
+    sidV = insertSource();
+    // Voice: one healthy SBC, one SBC with a fan fault, a CUBE with SIP error history, a GANC.
+    devV(401, 'phx-sbc-01', { vendor: 'Oracle', model: 'Acme Packet 4600' });
+    devV(402, 'dal-sbc-01', { vendor: 'Oracle', model: 'Acme Packet 4600', site: 'dallas', siteName: 'Dallas DC' });
+    devV(403, 'phx-cube-01', { vendor: 'Cisco', role: 'router', model: 'ISR4451' });
+    devV(404, 'phx-ganc-01');
+    for (const id of [401, 402]) {
+      metV(id, 'ntm_sbc_system_health', 'voice', 'system', 'sbc_health_state', 1);
+      metV(id, 'ntm_sbc_cpu_utilization', 'voice', 'cpu', 'sbc_cpu_pct', 25);
+      metV(id, 'ntm_sbc_memory_utilization', 'voice', 'memory', 'sbc_mem_pct', 44);
+      for (let f = 1; f <= 3; f += 1) metV(id, 'ntm_sbc_fan_state', 'voice', `fan${f}`, 'sbc_fan_state', id === 402 && f === 2 ? 5 : 2);
+      metV(id, 'ntm_sbc_steering_pool_performance', 'voice', 'poolA', 'sbc_pool_util_pct', 41);
+    }
+    metV(403, 'Cisco_SIP_Connections', 'voice', 'sip', 'sip_active_tcp', 12);
+    const hs = metV(403, 'Cisco_SIP_Server_Errors', 'voice', 'sip', 'sip_server_int_error', 99000);
+    const stmt = db.prepare('INSERT INTO lm_ds_metrics_history (source_id, lm_device_id, hds_id, instance_key, metric, value, sampled_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    // 7200 s window, 3 errors per second.
+    stmt.run(sidV, 403, hs, 'sip', 'sip_server_int_error', 99000 - 21600, nowSec() - 7200);
+    stmt.run(sidV, 403, hs, 'sip', 'sip_server_int_error', 99000, nowSec());
+    metV(404, 'ntm_ganc_mobility_domain_check', 'voice', 'domain', 'ganc_mobility_state', 0);
+    // Zscaler.
+    devV(411, 'phx-zpa-1');
+    devV(412, 'dal-zpa-1', { site: 'dallas', siteName: 'Dallas DC' });
+    devV(413, 'phx-zpa-2');
+    for (const [id, st, ports] of [[411, 1, 30], [412, 0, 12], [413, 1, 88]]) {
+      metV(id, 'ntm_zpa_app_connector', 'security', 'connector', 'connector_state', st);
+      metV(id, 'Zscaler ZPA Port Exhaustion', 'security', 'ports', 'port_used_pct', ports);
+    }
+    devV(414, 'phx-zsclr-nss-01');
+    metV(414, 'NetSNMPCPUwithCores', 'health', 'cpu', 'cpu_pct', 33);
+    metV(414, 'NetSNMP_Memory_Usage', 'health', 'mem', 'mem_pct', 61);
+    const zcheck = (cid, name, status, rtt) => {
+      ins('lm_checks', { source_id: sidV, check_id: cid, kind: 'ping', origin: 'website', name, target: 'x.sme.zscaler.net', is_internal: 1, stale: 0 });
+      ins('lm_check_locations', { source_id: sidV, check_id: cid, checkpoint_id: `${cid}-o`, label: 'Overall', is_overall: 1, last_status: status, last_rtt_ms: rtt, last_loss_pct: 0, last_sample_epoch: nowSec() - 120, stale: 0 });
+      ins('lm_check_locations', { source_id: sidV, check_id: cid, checkpoint_id: `${cid}-p`, label: 'phx-col01', is_overall: 0, last_status: status, last_rtt_ms: rtt, last_loss_pct: 0, last_sample_epoch: nowSec() - 120, stale: 0 });
+    };
+    zcheck('w:901', 'ZSDC_SJC1-San Jose-uptime', 'up', 35);
+    zcheck('w:902', 'ZSDC_SJC3-San Jose-uptime', 'up', 41);
+    zcheck('w:903', 'ZSDC_LHR4-London-uptime', 'down', null);
+    zcheck('w:904', 'unrelated check', 'up', 10);
+    // ISE.
+    devV(421, 'phx-ipsn-1', { model: 'ISE-VM' });
+    devV(422, 'dal-ipsn-1', { model: 'ISE-VM', site: 'dallas', siteName: 'Dallas DC' });
+    for (const [id, cert] of [[421, 200], [422, 12]]) {
+      metV(id, 'Cisco_ISE_ServerSessions', 'security', 'sessions', 'sessions', 1500);
+      metV(id, 'Cisco_ISE_Disk', 'security', '/', 'disk_used_pct', 44);
+      metV(id, 'ntm_ise_application_and_certificate_status', 'security', 'application', 'app_state', 1);
+      metV(id, 'ntm_ise_application_and_certificate_status', 'security', 'admin-cert', 'cert_days', cert);
+      metV(id, 'ntm_cisco_ise_memory_cpu', 'security', 'system', 'cpu_pct', 20);
+      metV(id, 'ntm_deployment_nodes_status', 'security', 'node', 'node_state', 1);
+    }
+  });
+  afterEach(() => { wipe(); db.prepare('DELETE FROM lm_latency_episodes').run(); });
+
+  it('GET /voice returns SBC, CUBE and GANC rows with their facts and a state from the issues', async () => {
+    const res = await request(app).get(`${API}/voice`);
+    expect(res.status).toBe(200);
+    expect(res.body.map((r) => r.deviceName)).toEqual(['dal-sbc-01', 'phx-cube-01', 'phx-ganc-01', 'phx-sbc-01']);
+    const sbc = res.body.find((r) => r.deviceName === 'dal-sbc-01');
+    expect(sbc).toMatchObject({ kind: 'sbc', healthRaw: 1, healthBad: false, cpuPct: 25, memPct: 44, fans: 3, fansBad: 1, pools: 1, state: 'warning', openIssues: 1 });
+    const cube = res.body.find((r) => r.deviceName === 'phx-cube-01');
+    expect(cube).toMatchObject({ kind: 'cube', sipConnections: 12, state: 'warning' });
+    expect(cube.sipServerErrPerSec).toBeGreaterThan(2.5);
+    expect(res.body.find((r) => r.deviceName === 'phx-ganc-01')).toMatchObject({ kind: 'ganc', mobilityRaw: 0, state: 'ok' });
+    expect(res.body.find((r) => r.deviceName === 'phx-sbc-01')).toMatchObject({ fansBad: 0, state: 'ok' });
+  });
+
+  it('GET /voice filters by kind, state and q, and /voice.csv carries the header row', async () => {
+    expect((await request(app).get(`${API}/voice?kind=sbc`)).body.map((r) => r.deviceName)).toEqual(['dal-sbc-01', 'phx-sbc-01']);
+    expect((await request(app).get(`${API}/voice?state=warning`)).body.map((r) => r.deviceName)).toEqual(['dal-sbc-01', 'phx-cube-01']);
+    expect((await request(app).get(`${API}/voice?q=ganc`)).body.map((r) => r.deviceName)).toEqual(['phx-ganc-01']);
+    expect((await request(app).get(`${API}/voice?kind=nope`)).status).toBe(400);
+    const csv = await request(app).get(`${API}/voice.csv`);
+    expect(csv.status).toBe(200);
+    expect(csv.headers['content-type']).toMatch(/text\/csv/);
+    expect(csv.text.split('\r\n')[0]).toBe('deviceName,kind,siteName,vendor,model,version,hostStatus,healthRaw,cpuPct,memPct,fans,fansBad,psus,psusBad,tempMaxC,pools,poolUtilMaxPct,poolSessions,poolFailures,retransmissions,sipConnections,sipServerErrPerSec,sipClientErrPerSec,ssids,clients,mobilityRaw,radiusCheckRaw,radiusServers,radiusServersDown,openIssues,state,sampledAt');
+  });
+
+  it('GET /voice/:deviceId returns the 360 sections and 404s for a device that is not voice', async () => {
+    const sbc = await request(app).get(`${API}/voice/402`);
+    expect(sbc.status).toBe(200);
+    expect(sbc.body.summary.kind).toBe('sbc');
+    expect(sbc.body.fans.filter((f) => f.bad).map((f) => f.name)).toEqual(['fan2']);
+    expect(sbc.body.pools).toEqual([expect.objectContaining({ name: 'poolA', utilPct: 41 })]);
+    expect(sbc.body.issues.map((i) => i.type)).toEqual(['voice-sbc-degraded']);
+    expect(Object.keys(sbc.body)).toEqual(expect.arrayContaining(['device', 'summary', 'fans', 'psus', 'temps', 'pools', 'ssids', 'radius', 'sip', 'history', 'issues']));
+    const cube = await request(app).get(`${API}/voice/403`);
+    expect(cube.body.sip.map((x) => x.metric)).toEqual(expect.arrayContaining(['sip_active_tcp', 'sip_server_int_error']));
+    expect((await request(app).get(`${API}/voice/414`)).status).toBe(404);
+    expect((await request(app).get(`${API}/voice/abc`)).status).toBe(400);
+  });
+
+  it('GET /zscaler returns connectors, NSS appliances and ZSDC checks grouped by city', async () => {
+    const res = await request(app).get(`${API}/zscaler`);
+    expect(res.status).toBe(200);
+    expect(res.body.connectors.map((c) => [c.deviceName, c.state, c.connectorDown, c.portUsedPct])).toEqual([
+      ['dal-zpa-1', 'critical', true, 12], ['phx-zpa-1', 'ok', false, 30], ['phx-zpa-2', 'warning', false, 88],
+    ]);
+    expect(res.body.nss.map((n) => [n.deviceName, n.cpuPct, n.memPct])).toEqual([['phx-zsclr-nss-01', 33, 61]]);
+    const dcs = res.body.dataCenters;
+    expect(dcs.map((d) => [d.city, d.checks, d.state])).toEqual([['London', 1, 'critical'], ['San Jose', 2, 'ok']]);
+    expect(dcs[1].codes).toBe('SJC1, SJC3');
+    expect(dcs[1].items.map((i) => i.name)).toEqual(['ZSDC_SJC1-San Jose-uptime', 'ZSDC_SJC3-San Jose-uptime']);
+    expect(dcs[1].rttAvgMs).toBe(38);
+    expect(Object.keys(res.body)).toEqual(['connectors', 'nss', 'dataCenters']);
+    const csv = await request(app).get(`${API}/zscaler.csv`);
+    expect(csv.status).toBe(200);
+    expect(csv.text.split('\r\n')[0]).toBe('type,name,site,state,connectorState,portUsedPct,ntpOffset,cpuPct,memPct,fsUsedMaxPct,checks,rttAvgMs,rttMaxMs,lossMaxPct,episodeState');
+    expect(csv.text).toContain('datacenter,San Jose');
+  });
+
+  it('GET /ise returns node rows, /ise.csv the header, and /ise/:deviceId the 360 sections', async () => {
+    const res = await request(app).get(`${API}/ise`);
+    expect(res.status).toBe(200);
+    expect(res.body.map((r) => [r.deviceName, r.sessions, r.certDaysMin, r.state])).toEqual([['dal-ipsn-1', 1500, 12, 'warning'], ['phx-ipsn-1', 1500, 200, 'ok']]);
+    expect(res.body[0]).toMatchObject({ diskUsedMaxPct: 44, cpuPct: 20, nodes: 1, nodesDown: 0, appDown: false });
+    const csv = await request(app).get(`${API}/ise.csv`);
+    expect(csv.text.split('\r\n')[0]).toBe('deviceName,siteName,vendor,model,version,hostStatus,sessions,diskUsedMaxPct,cpuPct,memPct,appStateRaw,certDaysMin,nodeStateRaw,nodes,nodesDown,openIssues,state,sampledAt');
+    const one = await request(app).get(`${API}/ise/422`);
+    expect(one.status).toBe(200);
+    expect(one.body.certificates[0]).toMatchObject({ name: 'admin-cert', daysLeft: 12 });
+    expect(one.body.issues.map((i) => i.type)).toEqual(['ise-cert-expiring']);
+    expect(Object.keys(one.body)).toEqual(expect.arrayContaining(['device', 'summary', 'certificates', 'disks', 'nodes', 'history', 'issues']));
+    expect((await request(app).get(`${API}/ise/403`)).status).toBe(404);
   });
 });

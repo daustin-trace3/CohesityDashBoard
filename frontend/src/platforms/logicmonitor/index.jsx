@@ -1,7 +1,7 @@
 import { lazy } from 'react';
 import {
   Gauge, Radar, MapPin, Bell, ClipboardCheck, Server, Cable, Waypoints, Cpu, Scale, ShieldAlert, GitMerge, LineChart, Sparkles, ShieldCheck, Settings, BrickWall, Split,
-  Wifi, RadioTower, Radio, Users,
+  Wifi, RadioTower, Radio, Users, AppWindow, Phone, Cloud, Fingerprint,
 } from 'lucide-react';
 import { BRAND } from '../../pages/logicmonitor/helpers';
 
@@ -11,6 +11,10 @@ const LmSitesPage = lazy(() => import('../../pages/logicmonitor/LmSitesPage'));
 const LmCircuitsPage = lazy(() => import('../../pages/logicmonitor/LmCircuitsPage'));
 const LmFirewallsPage = lazy(() => import('../../pages/logicmonitor/LmFirewallsPage'));
 const LmLoadBalancersPage = lazy(() => import('../../pages/logicmonitor/LmLoadBalancersPage'));
+const LmVoicePage = lazy(() => import('../../pages/logicmonitor/LmVoicePage'));
+const LmZscalerPage = lazy(() => import('../../pages/logicmonitor/LmZscalerPage'));
+const LmIsePage = lazy(() => import('../../pages/logicmonitor/LmIsePage'));
+const LmApplicationsPage = lazy(() => import('../../pages/logicmonitor/LmApplicationsPage'));
 const LmWirelessOverviewPage = lazy(() => import('../../pages/logicmonitor/LmWirelessOverviewPage'));
 const LmWirelessControllersPage = lazy(() => import('../../pages/logicmonitor/LmWirelessControllersPage'));
 const LmWirelessApsPage = lazy(() => import('../../pages/logicmonitor/LmWirelessApsPage'));
@@ -66,6 +70,15 @@ const navGroups = [
     ],
   },
   {
+    label: 'Services',
+    items: [
+      { label: 'Voice', route: `${B}/voice`, icon: Phone, isActive: under(`${B}/voice`) },
+      { label: 'Zscaler', route: `${B}/zscaler`, icon: Cloud, isActive: under(`${B}/zscaler`) },
+      { label: 'Identity Services', route: `${B}/ise`, icon: Fingerprint, isActive: under(`${B}/ise`) },
+      { label: 'Applications', route: `${B}/applications`, icon: AppWindow, isActive: under(`${B}/applications`) },
+    ],
+  },
+  {
     label: 'Analytics',
     items: [
       { label: 'Governance', route: `${B}/governance`, icon: Scale, isActive: under(`${B}/governance`) },
@@ -107,6 +120,10 @@ export default {
     { path: 'logicmonitor/circuits', Component: LmCircuitsPage },
     { path: 'logicmonitor/firewalls', Component: LmFirewallsPage },
     { path: 'logicmonitor/load-balancers', Component: LmLoadBalancersPage },
+    { path: 'logicmonitor/voice', Component: LmVoicePage },
+    { path: 'logicmonitor/zscaler', Component: LmZscalerPage },
+    { path: 'logicmonitor/ise', Component: LmIsePage },
+    { path: 'logicmonitor/applications', Component: LmApplicationsPage },
     { path: 'logicmonitor/wireless', Component: LmWirelessOverviewPage },
     { path: 'logicmonitor/wireless/controllers', Component: LmWirelessControllersPage },
     { path: 'logicmonitor/wireless/aps', Component: LmWirelessApsPage },

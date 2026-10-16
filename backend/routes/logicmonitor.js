@@ -3904,6 +3904,417 @@ router.get('/datasources/:name/datapoints', [param('name').isString().isLength({
   try { res.json(lmRaw().datapointsFor(db, req.params.name)); } catch (err) { next(err); }
 });
 
+// ---- Applications and appliances (round 11, WP-X) ---------------------------------
+// Sections are the first path segment (applications). Every DataSource, datapoint and
+// state enum behind these rows is UNVERIFIED (blind catalog block 'apps').
+
+const lmApps = () => require('../services/logicmonitorApps');
+const APP_WHERE = `EXISTS (SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = 'apps')`;
+
+const appListRules = [
+  ...dsListRules,
+  query('kind').optional().isIn(['sql', 'splunk', 'hyperv', 'xen', 'ironport', 'emc']),
+];
+
+function appRow(r, lk, dev, issues) {
+  const A = lmApps();
+  const sum = dev ? A.summarize(dev) : { kinds: [], instances: 0, metrics: {}, downCount: 0 };
+  const name = r.display_name || r.name;
+  const devIssues = issuesOnDevice(issues, name).filter((i) => /^app-/.test(String(i.type)));
+  return {
+    ...devBase(r, lk),
+    kinds: sum.kinds,
+    kindLabels: sum.kinds.map((k) => A.KIND_BY_ID.get(k).label),
+    instances: sum.instances,
+    downCount: sum.downCount,
+    metrics: sum.metrics,
+    headline: A.headline(sum),
+    openIssues: devIssues.length,
+    state: stateFromIssues(devIssues, sum.instances > 0),
+    sampledAt: dev ? epochToIso(maxEpoch(dev)) : null,
+  };
+}
+
+const APP_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'kindLabels', 'instances', 'downCount', 'headline', 'openIssues', 'state', 'sampledAt'];
+
+function applicationRows(q) {
+  const lk = lookups();
+  const devs = roleDevices(APP_WHERE, q);
+  const index = lmIssues().loadDsIndex(db, { families: ['apps'] });
+  const issues = safeIssues();
+  let rows = devs.map((r) => appRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues));
+  if (q.kind) rows = rows.filter((r) => r.kinds.includes(q.kind));
+  if (q.state) rows = rows.filter((r) => r.state === q.state);
+  return rows;
+}
+
+// Literal .csv path before /applications/:deviceId.
+router.get('/applications.csv', appListRules, validate, (req, res, next) => {
+  try {
+    sendCsv(res, 'applications', applicationRows(req.query).map((r) => ({ ...r, kindLabels: r.kindLabels.join('; ') })), APP_COLUMNS);
+  } catch (err) { next(err); }
+});
+router.get('/applications', appListRules, validate, (req, res, next) => {
+  try { res.json(applicationRows(req.query)); } catch (err) { next(err); }
+});
+
+router.get('/applications/:deviceId', deviceParams, validate, (req, res, next) => {
+  try {
+    const r = roleDevice(APP_WHERE, req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Application');
+    const L = lmIssues();
+    const lk = lookups();
+    const idx = L.loadDsIndex(db, { sourceId: r.source_id, deviceId: r.lm_device_id, families: ['apps'] });
+    const dev = idx.get(`${r.source_id}:${r.lm_device_id}`) || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
+    const issues = safeIssues();
+    const summary = appRow(r, lk, dev, issues);
+    const CAP = 500;
+    const dsMap = new Map();
+    for (const inst of dev.instances.values()) {
+      const dk = `${inst.hds}|${inst.ds}`;
+      if (!dsMap.has(dk)) {
+        const e = catalogEntry(inst.ds);
+        dsMap.set(dk, { name: inst.ds, label: (e && e.label) || inst.ds, hdsId: inst.hds, instanceCount: 0, truncated: false, instances: [] });
+      }
+      const ds = dsMap.get(dk);
+      ds.instanceCount += 1;
+      if (ds.instances.length >= CAP) { ds.truncated = true; continue; }
+      const metrics = {};
+      for (const [mk, m] of Object.entries(inst.m)) {
+        const meta = metricMeta(inst.ds, mk);
+        metrics[mk] = { value: m.value, unit: meta.unit, kind: meta.kind, label: meta.label, datapoint: m.datapoint, epoch: m.epoch };
+      }
+      ds.instances.push({ key: inst.key, name: inst.name, metrics });
+    }
+    const datasources = [...dsMap.values()].sort((a, b) => a.label.localeCompare(b.label)).map((ds) => ({
+      ...ds, instances: ds.instances.sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    }));
+    const history = {};
+    for (const mk of ['sql_connections', 'sql_batch_rate', 'splunk_license_used_pct', 'emc_cap_used_pct', 'hv_cpu_pct', 'esa_queue']) {
+      const pts = deviceSeries(dev, mk, 24);
+      if (pts.length) history[mk] = pts;
+    }
+    res.json({
+      device: deviceOut(r, lk),
+      summary,
+      datasources,
+      history,
+      issues: issuesOnDevice(issues, r.display_name || r.name).filter((i) => /^app-/.test(String(i.type))),
+    });
+  } catch (err) { next(err); }
+});
+
+// ---- Voice, Zscaler and ISE (round 11, lm11-sections) ---------------------------------
+// Sections are the first path segment (voice, zscaler, ise). Datapoint names and state enums
+// behind these rows are UNVERIFIED; raw values travel next to every derived flag.
+
+const lmAppliances = () => require('../services/logicmonitorAppliances');
+const dsLike = (...prefixes) => prefixes.map((p) => `x.datasource_name LIKE '${p.replace(/_/g, '\\_')}%' ESCAPE '\\'`).join(' OR ');
+const hasDs = (cond) => `EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = d.source_id AND x.lm_device_id = d.lm_device_id AND (${cond}))`;
+const hasFamily = (fam) => `EXISTS (SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = '${fam}')`;
+const VOICE_WHERE = `(${hasDs(`${dsLike('ntm_sbc_', 'Cisco_SIP_', 'ntm_ganc_')} OR x.datasource_name = 'ISDN_Channels'`)} OR ${hasFamily('voice')})`;
+const ISE_WHERE = `(${hasDs(`${dsLike('Cisco_ISE_', 'ntm_ise_', 'ntm_cisco_ise_')} OR x.datasource_name = 'ntm_deployment_nodes_status'`)})`;
+const ZPA_WHERE = `(${hasDs(`${dsLike('ntm_zpa_')} OR x.datasource_name = 'Zscaler ZPA Port Exhaustion'`)} OR lower(d.name) LIKE '%zpa%')`;
+const NSS_WHERE = `((d.vendor = 'Zscaler' OR lower(d.name) LIKE '%zsclr%' OR lower(d.name) LIKE '%pxy-log%' OR lower(COALESCE(d.sysinfo, '')) LIKE '%zscaler%') AND NOT ${ZPA_WHERE})`;
+
+const emptyDv = (r) => ({ instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name });
+const FAMS_VOICE = ['voice', 'wireless'];
+const FAMS_SEC = ['security', 'health', 'os'];
+
+const voiceListRules = [...dsListRules, query('kind').optional().isIn(['sbc', 'cube', 'ganc'])];
+
+const VOICE_BLANK = {
+  healthRaw: null, healthBad: null, cpuPct: null, memPct: null, fans: null, fansBad: null, psus: null, psusBad: null, tempMaxC: null,
+  pools: null, poolUtilMaxPct: null, poolSessions: null, poolFailures: null, retransmissions: null, localConnectionRaw: null,
+  sipConnections: null, sipServerErrPerSec: null, sipClientErrPerSec: null, sipErrPerSec: null, sipRetries: null, isdnBusy: null,
+  mobilityRaw: null, radiusCheckRaw: null, ssids: null, clients: null, radiusServers: null, radiusServersDown: null,
+};
+
+function voiceKindOf(r, dv) {
+  const k = lmAppliances().voiceKind(dv);
+  if (k) return k;
+  const n = String(r.display_name || r.name || '');
+  return /sbc/i.test(n) ? 'sbc' : /ganc/i.test(n) ? 'ganc' : 'cube';
+}
+
+function voiceRow(r, lk, dev, issues) {
+  const A = lmAppliances();
+  const dv = dev || emptyDv(r);
+  const name = r.display_name || r.name;
+  const kind = voiceKindOf(r, dv);
+  const facts = kind === 'sbc' ? A.sbcFacts(dv) : kind === 'ganc' ? A.gancFacts(dv) : A.cubeFacts(db, dv);
+  const devIssues = issuesOnDevice(issues, name);
+  return {
+    ...devBase(r, lk),
+    kind,
+    ...VOICE_BLANK,
+    ...facts,
+    openIssues: devIssues.length,
+    state: stateFromIssues(devIssues, dv.instances.size > 0),
+    sampledAt: epochToIso(maxEpoch(dv)),
+  };
+}
+
+const VOICE_COLUMNS = ['deviceName', 'kind', 'siteName', 'vendor', 'model', 'version', 'hostStatus', 'healthRaw', 'cpuPct', 'memPct', 'fans', 'fansBad', 'psus', 'psusBad',
+  'tempMaxC', 'pools', 'poolUtilMaxPct', 'poolSessions', 'poolFailures', 'retransmissions', 'sipConnections', 'sipServerErrPerSec', 'sipClientErrPerSec', 'ssids', 'clients',
+  'mobilityRaw', 'radiusCheckRaw', 'radiusServers', 'radiusServersDown', 'openIssues', 'state', 'sampledAt'];
+
+function voiceRows(q) {
+  const lk = lookups();
+  const devs = roleDevices(VOICE_WHERE, q);
+  const index = lmIssues().loadDsIndex(db, { families: FAMS_VOICE });
+  const issues = safeIssues();
+  let rows = devs.map((r) => voiceRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues));
+  if (q.state) rows = rows.filter((r) => r.state === q.state);
+  if (q.kind) rows = rows.filter((r) => r.kind === q.kind);
+  return rows;
+}
+
+// Literal .csv path before /voice/:deviceId.
+router.get('/voice.csv', voiceListRules, validate, (req, res, next) => {
+  try { sendCsv(res, 'voice', voiceRows(req.query), VOICE_COLUMNS); } catch (err) { next(err); }
+});
+router.get('/voice', voiceListRules, validate, (req, res, next) => {
+  try { res.json(voiceRows(req.query)); } catch (err) { next(err); }
+});
+
+/** Every metric of the device's instances that pass `pick`, as flat rows with the catalog label and unit. */
+function metricRowsOf(dev, pick, cap = 400) {
+  const out = [];
+  for (const i of dev.instances.values()) {
+    if (!pick(i)) continue;
+    for (const [mk, m] of Object.entries(i.m)) {
+      const meta = metricMeta(i.ds, mk);
+      out.push({ datasource: i.ds, instance: i.name, metric: mk, label: meta.label, unit: meta.unit, value: m.value, datapoint: m.datapoint });
+      if (out.length >= cap) return out;
+    }
+  }
+  return out;
+}
+
+router.get('/voice/:deviceId', deviceParams, validate, (req, res, next) => {
+  try {
+    const r = roleDevice(VOICE_WHERE, req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Voice device');
+    const A = lmAppliances();
+    const lk = lookups();
+    const idx = lmIssues().loadDsIndex(db, { sourceId: r.source_id, deviceId: r.lm_device_id });
+    const dev = idx.get(`${r.source_id}:${r.lm_device_id}`) || emptyDv(r);
+    const issues = safeIssues();
+    const summary = voiceRow(r, lk, dev, issues);
+    const byKey = (a, b) => String(a.name).localeCompare(String(b.name));
+    const stateOf = (i, metric) => ({ name: i.name, raw: num(i, metric), bad: A.stateBad(num(i, metric), i.m[metric].datapoint) });
+    const fans = rowsOf(dev, 'sbc_fan_state').map((i) => stateOf(i, 'sbc_fan_state')).sort(byKey);
+    const psus = rowsOf(dev, 'sbc_psu_state').map((i) => stateOf(i, 'sbc_psu_state')).sort(byKey);
+    const temps = rowsOf(dev, 'sbc_temp_c').map((i) => ({ name: i.name, tempC: rnd1(num(i, 'sbc_temp_c')) })).sort(byKey);
+    const pools = [...dev.instances.values()].filter((i) => i.m.sbc_pool_util_pct || i.m.sbc_pool_sessions || i.m.sbc_pool_failures)
+      .map((i) => ({ name: i.name, utilPct: rnd1(num(i, 'sbc_pool_util_pct')), sessions: num(i, 'sbc_pool_sessions'), failures: num(i, 'sbc_pool_failures') })).sort(byKey);
+    const ssids = [...dev.instances.values()].filter((i) => i.m.ess_clients || i.m.ess_admin)
+      .map((i) => ({ name: i.name, clients: num(i, 'ess_clients'), adminRaw: num(i, 'ess_admin') })).sort(byKey);
+    const radius = rowsOf(dev, 'radius_status').map((i) => ({
+      name: i.name, enabled: Math.round(num(i, 'radius_status')) === 1, requests: num(i, 'radius_requests'), rejects: num(i, 'radius_rejects'), timeouts: num(i, 'radius_timeouts'),
+    })).sort(byKey);
+    const sip = metricRowsOf(dev, (i) => /^Cisco_SIP_/i.test(i.ds) || /^ISDN_Channels$/i.test(i.ds));
+    res.json({
+      device: deviceOut(r, lk),
+      summary,
+      fans,
+      psus,
+      temps,
+      pools,
+      ssids,
+      radius,
+      sip,
+      history: { cpuPct: deviceSeries(dev, 'sbc_cpu_pct', 24), memPct: deviceSeries(dev, 'sbc_mem_pct', 24) },
+      issues: issuesOnDevice(issues, r.display_name || r.name),
+    });
+  } catch (err) { next(err); }
+});
+
+// ---- Zscaler -----------------------------------------------------------------------------
+
+/** Latest latency episode per check (7 day window), keyed "sourceId|checkId". */
+function latestCheckEpisodes() {
+  const out = new Map();
+  try {
+    const cutoff = new Date(Date.now() - 7 * 86400000).toISOString();
+    for (const e of db.prepare(`
+      SELECT source_id, check_id, state, kind, outcome, opened_at, peak_ms, loss_max_pct FROM lm_latency_episodes
+      WHERE subject_kind = 'check' AND (opened_at >= ? OR state != 'closed') ORDER BY opened_at DESC
+    `).all(cutoff)) {
+      const k = `${e.source_id}|${e.check_id}`;
+      if (!out.has(k)) out.set(k, e);
+    }
+  } catch { /* episodes table not migrated */ }
+  return out;
+}
+
+const WORST = { down: 3, degraded: 2, ok: 1 };
+
+/** ZSDC_ uptime checks grouped by city. */
+function zscalerDataCenters(q = {}) {
+  const A = lmAppliances();
+  let checks = [];
+  try { checks = buildChecks(q.sourceId).filter((c) => A.isZsdc(c.name)); } catch { checks = []; }
+  const eps = latestCheckEpisodes();
+  const groups = new Map();
+  for (const c of checks) {
+    const { code, city } = A.zsdcCity(c.name);
+    const locs = (c.locations || []).filter((l) => !l.isOverall);
+    const overall = (c.locations || []).find((l) => l.isOverall);
+    const rtts = (locs.length ? locs : (c.locations || [])).map((l) => (c.kind === 'web' ? (l.responseMs ?? l.rttAvgMs) : l.rttAvgMs)).filter((v) => v != null);
+    const loss = (c.locations || []).map((l) => l.lossPct).filter((v) => v != null);
+    const rtt = overall && (c.kind === 'web' ? (overall.responseMs ?? overall.rttAvgMs) : overall.rttAvgMs) != null
+      ? (c.kind === 'web' ? (overall.responseMs ?? overall.rttAvgMs) : overall.rttAvgMs)
+      : (rtts.length ? rtts.reduce((a, b) => a + b, 0) / rtts.length : null);
+    const ep = eps.get(`${c.sourceId}|${c.checkId}`);
+    const item = {
+      checkId: c.checkId, sourceId: c.sourceId, name: c.name, target: c.target, kind: c.kind, code, state: c.state,
+      rttAvgMs: rnd1(rtt), baselineRttMs: rnd1((locs.find((l) => l.baselineRttMs != null) || {}).baselineRttMs),
+      lossMaxPct: loss.length ? rnd1(Math.max(...loss)) : null,
+      anomaly: (locs.find((l) => l.anomaly) || {}).anomaly || null,
+      episodeState: ep ? ep.state : null, episodeOutcome: ep ? ep.outcome : null, episodeOpenedAt: ep ? ep.opened_at : null,
+    };
+    const key = city.toLowerCase();
+    if (!groups.has(key)) groups.set(key, { city, codes: new Set(), items: [] });
+    const g = groups.get(key);
+    g.codes.add(code);
+    g.items.push(item);
+  }
+  const rows = [...groups.values()].map((g) => {
+    const rtts = g.items.map((i) => i.rttAvgMs).filter((v) => v != null);
+    const worst = g.items.reduce((w, i) => (WORST[i.state] > WORST[w] ? i.state : w), 'ok');
+    const epPick = g.items.filter((i) => i.episodeState).sort((a, b) => String(b.episodeOpenedAt).localeCompare(String(a.episodeOpenedAt)))[0];
+    return {
+      city: g.city,
+      codes: [...g.codes].sort().join(', '),
+      checks: g.items.length,
+      state: worst === 'down' ? 'critical' : worst === 'degraded' ? 'warning' : 'ok',
+      checkState: worst,
+      rttAvgMs: rtts.length ? rnd1(rtts.reduce((a, b) => a + b, 0) / rtts.length) : null,
+      rttMaxMs: rtts.length ? rnd1(Math.max(...rtts)) : null,
+      lossMaxPct: g.items.map((i) => i.lossMaxPct).filter((v) => v != null).reduce((m, v) => Math.max(m, v), 0) || 0,
+      episodeState: epPick ? epPick.episodeState : null,
+      items: g.items.sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    };
+  });
+  rows.sort((a, b) => (WORST[b.checkState] - WORST[a.checkState]) || a.city.localeCompare(b.city));
+  return rows;
+}
+
+function zscalerData(q) {
+  const A = lmAppliances();
+  const lk = lookups();
+  const index = lmIssues().loadDsIndex(db, { families: FAMS_SEC });
+  const issues = safeIssues();
+  const modes = A.modeMap(index, ['connector_state', 'node_state', 'app_state']);
+  let fsWarn = 85; // lm_fs_warn_pct arrives with the servers work package
+  try { fsWarn = Number(thr('lm_fs_warn_pct')) || 85; } catch { fsWarn = 85; }
+  const build = (r, facts) => {
+    const dv = index.get(`${r.source_id}:${r.lm_device_id}`) || emptyDv(r);
+    const devIssues = issuesOnDevice(issues, r.display_name || r.name);
+    return {
+      ...devBase(r, lk), ...facts(dv), openIssues: devIssues.length,
+      state: stateFromIssues(devIssues, dv.instances.size > 0), sampledAt: epochToIso(maxEpoch(dv)),
+    };
+  };
+  let connectors = roleDevices(ZPA_WHERE, q).map((r) => build(r, (dv) => A.zpaFacts(dv, modes)));
+  let nss = roleDevices(NSS_WHERE, q).map((r) => build(r, (dv) => A.nssFacts(dv, fsWarn)));
+  if (q.state) { connectors = connectors.filter((x) => x.state === q.state); nss = nss.filter((x) => x.state === q.state); }
+  const dataCenters = zscalerDataCenters(q);
+  return { connectors, nss, dataCenters };
+}
+
+const ZSCALER_COLUMNS = ['type', 'name', 'site', 'state', 'connectorState', 'portUsedPct', 'ntpOffset', 'cpuPct', 'memPct', 'fsUsedMaxPct', 'checks', 'rttAvgMs', 'rttMaxMs', 'lossMaxPct', 'episodeState'];
+function zscalerCsvRows(data) {
+  return [
+    ...data.connectors.map((c) => ({
+      type: 'connector', name: c.deviceName, site: c.siteName, state: c.state, connectorState: c.connectorDown ? 'down' : (c.connectorRaw == null ? '' : `raw ${c.connectorRaw}`),
+      portUsedPct: c.portUsedPct, ntpOffset: c.ntpOffset,
+    })),
+    ...data.nss.map((n) => ({ type: 'nss', name: n.deviceName, site: n.siteName, state: n.state, cpuPct: n.cpuPct, memPct: n.memPct, fsUsedMaxPct: n.fsUsedMaxPct })),
+    ...data.dataCenters.map((d) => ({
+      type: 'datacenter', name: d.city, site: d.codes, state: d.state, checks: d.checks, rttAvgMs: d.rttAvgMs, rttMaxMs: d.rttMaxMs, lossMaxPct: d.lossMaxPct, episodeState: d.episodeState,
+    })),
+  ];
+}
+
+router.get('/zscaler.csv', dsListRules, validate, (req, res, next) => {
+  try { sendCsv(res, 'zscaler', zscalerCsvRows(zscalerData(req.query)), ZSCALER_COLUMNS); } catch (err) { next(err); }
+});
+router.get('/zscaler', dsListRules, validate, (req, res, next) => {
+  try { res.json(zscalerData(req.query)); } catch (err) { next(err); }
+});
+
+// ---- Cisco ISE ---------------------------------------------------------------------------
+
+function iseRow(r, lk, dev, issues, modes) {
+  const dv = dev || emptyDv(r);
+  const name = r.display_name || r.name;
+  const devIssues = issuesOnDevice(issues, name);
+  return {
+    ...devBase(r, lk),
+    ...lmAppliances().iseFacts(dv, modes),
+    openIssues: devIssues.length,
+    state: stateFromIssues(devIssues, dv.instances.size > 0),
+    sampledAt: epochToIso(maxEpoch(dv)),
+  };
+}
+
+const ISE_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'version', 'hostStatus', 'sessions', 'diskUsedMaxPct', 'cpuPct', 'memPct', 'appStateRaw', 'certDaysMin',
+  'nodeStateRaw', 'nodes', 'nodesDown', 'openIssues', 'state', 'sampledAt'];
+
+function iseRows(q) {
+  const lk = lookups();
+  const devs = roleDevices(ISE_WHERE, q);
+  const index = lmIssues().loadDsIndex(db, { families: FAMS_SEC });
+  const issues = safeIssues();
+  const modes = lmAppliances().modeMap(index, ['connector_state', 'node_state', 'app_state']);
+  let rows = devs.map((r) => iseRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, modes));
+  if (q.state) rows = rows.filter((r) => r.state === q.state);
+  return rows;
+}
+
+router.get('/ise.csv', dsListRules, validate, (req, res, next) => {
+  try { sendCsv(res, 'ise', iseRows(req.query), ISE_COLUMNS); } catch (err) { next(err); }
+});
+router.get('/ise', dsListRules, validate, (req, res, next) => {
+  try { res.json(iseRows(req.query)); } catch (err) { next(err); }
+});
+
+router.get('/ise/:deviceId', deviceParams, validate, (req, res, next) => {
+  try {
+    const r = roleDevice(ISE_WHERE, req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'ISE node');
+    const A = lmAppliances();
+    const lk = lookups();
+    const idxAll = lmIssues().loadDsIndex(db, { families: FAMS_SEC });
+    const dev = idxAll.get(`${r.source_id}:${r.lm_device_id}`) || emptyDv(r);
+    const modes = A.modeMap(idxAll, ['connector_state', 'node_state', 'app_state']);
+    const issues = safeIssues();
+    const summary = iseRow(r, lk, dev, issues, modes);
+    const byKey = (a, b) => String(a.name).localeCompare(String(b.name));
+    const certs = [
+      ...rowsOf(dev, 'cert_days').map((i) => ({ name: i.name, kind: 'Certificate', daysLeft: num(i, 'cert_days') })),
+      ...rowsOf(dev, 'eap_cert_days').map((i) => ({ name: i.name, kind: 'EAP certificate', daysLeft: num(i, 'eap_cert_days') })),
+    ].sort((a, b) => (a.daysLeft - b.daysLeft) || byKey(a, b));
+    const disks = rowsOf(dev, 'disk_used_pct').map((i) => ({ name: i.name, usedPct: rnd1(num(i, 'disk_used_pct')) })).sort((a, b) => (b.usedPct - a.usedPct) || byKey(a, b));
+    const nodes = [
+      ...rowsOf(dev, 'node_state').map((i) => ({ name: i.name, kind: 'Deployment node', raw: num(i, 'node_state'), down: A.readsDown(num(i, 'node_state'), modes.get('node_state')) })),
+      ...rowsOf(dev, 'app_state').map((i) => ({ name: i.name, kind: 'Application', raw: num(i, 'app_state'), down: A.readsDown(num(i, 'app_state'), modes.get('app_state')) })),
+    ].sort(byKey);
+    res.json({
+      device: deviceOut(r, lk),
+      summary,
+      certificates: certs,
+      disks,
+      nodes,
+      history: { sessions: deviceSeries(dev, 'sessions', 24), cpuPct: deviceSeries(dev, 'cpu_pct', 24), memPct: deviceSeries(dev, 'mem_pct', 24) },
+      issues: issuesOnDevice(issues, r.display_name || r.name),
+    });
+  } catch (err) { next(err); }
+});
+
 // ---- Device 360 Metrics tab -----------------------------------------------------
 
 router.get('/devices/:deviceId/metrics', deviceParams, validate, (req, res, next) => {

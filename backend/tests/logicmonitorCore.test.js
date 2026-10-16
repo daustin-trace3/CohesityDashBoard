@@ -231,6 +231,27 @@ describe('logicmonitorApi: classification (section 5)', () => {
     expect(lmApi.classifyRole({ vendor: 'Microsoft' })).toBe('other');
   });
 
+  // Round 11 (lm11-servers): server roles and the NetScout, Zscaler and Oracle vendors.
+  it('Windows and Linux categories without a network category are servers', () => {
+    expect(lmApi.classifyRole({ categories: 'snmp,NetSNMP,Linux,TopoSwitch', vendor: 'Net-SNMP' })).toBe('server');
+    expect(lmApi.classifyRole({ categories: 'Windows,WMI,TopoSwitch' })).toBe('server');
+    expect(lmApi.classifyRole({ ert: 'VirtualMachineResource', categories: 'snmp,TopoSwitch', vendor: 'Net-SNMP' })).toBe('server');
+    expect(lmApi.classifyRole({ ert: 'PhysicalServer' })).toBe('server');
+    // A network category keeps its role.
+    expect(lmApi.classifyRole({ categories: 'Linux,CiscoASA', vendor: 'Cisco' })).toBe('firewall');
+    expect(lmApi.classifyRole({ categories: 'snmp,TopoSwitch', vendor: 'Cisco' })).toBe('switch');
+  });
+
+  it('detects NetScout, Zscaler and Oracle vendors (patterns UNVERIFIED live)', () => {
+    expect(lmApi.classifyVendor({ sysoid: '.1.3.6.1.4.1.8072.3.2.10', categories: 'snmp,NetSNMP,Linux', sysinfo: 'NetScout nGenius PFS 6010' })).toBe('NetScout');
+    expect(lmApi.classifyVendor({ categories: 'snmp,Infinistream' })).toBe('NetScout');
+    expect(lmApi.classifyVendor({ sysinfo: 'PFS 5010 packet flow switch' })).toBe('NetScout');
+    expect(lmApi.classifyVendor({ sysoid: '.1.3.6.1.4.1.8072.3.2.10', sysinfo: 'Linux zscaler-nss 4.18 ZscalerOS' })).toBe('Zscaler');
+    expect(lmApi.classifyVendor({ categories: 'snmp,ntm_sbc_system_health' })).toBe('Oracle');
+    expect(lmApi.classifyVendor({ sysinfo: 'Acme Packet Net-Net 4600' })).toBe('Oracle');
+    expect(lmApi.classifyVendor({ sysoid: '.1.3.6.1.4.1.9.1.2066' })).toBe('Cisco');
+  });
+
   it('is_network needs deviceType 0 and a network role', () => {
     expect(lmApi.isNetworkDevice({ deviceType: 0, role: 'switch' })).toBe(true);
     expect(lmApi.isNetworkDevice({ deviceType: 2, role: 'switch' })).toBe(false);
@@ -661,7 +682,7 @@ describe('logicmonitorIssues: rules', () => {
     expect(t.lm_if_util_warn_pct).toBe(50);
     expect(t.lm_check_latency_k).toBe(10);
     expect(t.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(t).length).toBe(58);
+    expect(Object.keys(t).length).toBe(60);
     setSetting('lm_if_util_warn_pct', '80');
     setSetting('lm_check_latency_k', '3');
   });

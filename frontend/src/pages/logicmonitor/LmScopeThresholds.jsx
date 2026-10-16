@@ -24,6 +24,9 @@ const METRIC_FAMILIES = [
   ['wireless', 'Wireless', 'Controller HA, APs, radios and RF, SSID clients, RADIUS, mobility and AP uplinks.'],
   ['cloud', 'Cloud circuits', 'AWS Direct Connect connections and virtual interfaces, Azure ExpressRoute circuits: state, BGP and throughput.'],
   ['cohesity', 'Cohesity (via LogicMonitor)', 'Cohesity clusters LogicMonitor monitors: cluster health, capacity, nodes, services, fans and power supplies.'],
+  ['security', 'Security appliances (via LogicMonitor)', 'Cisco ISE nodes, Zscaler ZPA connectors and port use, and the ASA license check (ntm_ DataSource names matched blind).'],
+  ['os', 'Server OS (via LogicMonitor)', 'Linux and Windows servers: filesystems and volumes, disk I/O, temperature, NFS mounts, Windows services, processes and uptime (Windows names matched blind).'],
+  ['apps', 'Applications and appliances', 'SQL Server, Splunk, Hyper-V, XenServer, Cisco IronPort / ESA and EMC (matched blind from standard DataSource names).'],
 ];
 
 // The per-portal site rule arrives as an object (siteRule) or its JSON text.

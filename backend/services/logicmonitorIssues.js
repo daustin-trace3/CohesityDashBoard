@@ -53,6 +53,9 @@ const THRESHOLD_DEFS = {
   // Cohesity via LogicMonitor (round 10).
   lm_cohesity_cap_warn_pct: { def: 80, min: 50, max: 100, label: 'Cohesity cluster capacity warning (%)' },
   lm_cohesity_cap_crit_pct: { def: 90, min: 50, max: 100, label: 'Cohesity cluster capacity critical (%)' },
+  // Servers via LogicMonitor (round 11).
+  lm_fs_warn_pct: { def: 85, min: 50, max: 100, label: 'Server filesystem warning (%)' },
+  lm_fs_crit_pct: { def: 95, min: 50, max: 100, label: 'Server filesystem critical (%)' },
   // Wireless (Cisco WLC DataSources).
   lm_wlan_chan_util_warn_pct: { def: 70, min: 30, max: 100, label: 'Radio channel utilization warning (%)' },
   lm_wlan_client_cap_warn_pct: { def: 80, min: 50, max: 100, label: 'Controller client capacity warning (%)' },
@@ -604,6 +607,12 @@ function computeMetricIssues(dbh, t, srcName) {
   try { issues.push(...require('./logicmonitorCloud').cloudIssues(dbh, t, srcName, index)); } catch { /* a cloud rule fault must not hide the other issues */ }
   // Round 10: Cohesity clusters seen through LogicMonitor (family 'cohesity').
   try { issues.push(...require('./logicmonitorCohesity').cohesityIssues(dbh, t, srcName, index)); } catch { /* a Cohesity rule fault must not hide the other issues */ }
+  // Round 11: Linux and Windows servers (families 'os' and 'health').
+  try { issues.push(...require('./logicmonitorServers').serverIssues(dbh, t, srcName, index)); } catch { /* a server rule fault must not hide the other issues */ }
+  // Round 11: applications and appliances (family 'apps').
+  try { issues.push(...require('./logicmonitorApps').appsIssues(dbh, t, srcName, index)); } catch { /* an apps rule fault must not hide the other issues */ }
+  // Round 11: voice, Zscaler and ISE appliances (families 'voice' and 'security').
+  try { issues.push(...require('./logicmonitorAppliances').applianceIssues(dbh, t, srcName, index)); } catch { /* an appliance rule fault must not hide the other issues */ }
   return issues;
 }
 

@@ -13,7 +13,7 @@
 // kind: 'gauge' | 'state' | 'counter' | 'pct'. State values keep the raw
 // number; routes map enums and render unknown values as the number.
 
-const FAMILIES = ['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity'];
+const FAMILIES = ['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity', 'apps', 'security', 'os'];
 
 // Round 9: devices the inventory refresh must also read DataSources for even
 // though they are not network devices (AWS Direct Connect, Azure ExpressRoute).
@@ -32,6 +32,9 @@ const FAMILY_LABELS = {
   wireless: 'Wireless',
   cloud: 'Cloud circuits',
   cohesity: 'Cohesity (via LogicMonitor)',
+  os: 'Server OS (via LogicMonitor)',
+  apps: 'Applications and appliances (via LogicMonitor)',
+  security: 'Security appliances (via LogicMonitor)',
 };
 
 const DEFAULT_MAX_INSTANCES = 2500;
@@ -48,7 +51,7 @@ const exact = (name) => `^${name}$`;
 // Bump whenever a regex below changes. pollMetrics drops every learned
 // dsColumns/dsUnmatched map when a source's stored catalogVersion differs, so
 // the next poll relearns with the corrected matchers.
-const CATALOG_VERSION = 2;
+const CATALOG_VERSION = 3; // 3: round 11 families (os, security, apps) and SNMP_Filesystem_Usage byte metrics
 
 const CATALOG = [];
 const add = (family, match, label, metrics, opts = {}) => {
@@ -339,7 +342,13 @@ add('health', 'Cisco_Catalyst_PowerOverEthernet', 'Cisco Catalyst PoE', {
   poe_used_pct: pct(['percent', 'pct', 'util'], 'PoE used'),
   poe_used_watts: gauge(['consum', 'used', 'watt', 'power'], 'W', 'PoE used'),
 });
-add('health', 'SNMP_Filesystem_Usage', 'SNMP filesystem usage', { fs_used_pct: pct(['percent.?used', 'used.?percent', 'pct', 'percent', 'util'], 'Filesystem used') });
+add('health', 'SNMP_Filesystem_Usage', 'SNMP filesystem usage', {
+  fs_used_pct: pct(['percent.?used', 'used.?percent', 'pct', 'percent', 'util'], 'Filesystem used'),
+  // Round 11 (lm11-servers), UNVERIFIED datapoint names.
+  fs_used_bytes: gauge(['used.?(bytes|space|size|kb|mb|gb)', '^used$'], 'bytes', 'Used'),
+  fs_total_bytes: gauge(['total', 'size', 'capacity'], 'bytes', 'Total'),
+  fs_free_bytes: gauge(['free', 'avail'], 'bytes', 'Free'),
+}, { history: true, maxInstances: 400 });
 add('health', 'SNMP_Host_Uptime', 'SNMP host uptime', { uptime_s: gauge(exact('Uptime'), 's', 'Uptime') });
 
 // -- Optics ----------------------------------------------------------------------
@@ -428,12 +437,12 @@ add('voice', 'Cisco_SIP_Client_Errors', 'Cisco SIP client errors', {
   sip_client_bad_request: counter(exact('cSipStatsClientBadRequestIns'), 'req', 'Bad request in'),
   sip_client_unauthorized: counter(exact('cSipStatsClientUnauthorizedIns'), 'req', 'Unauthorized in'),
   sip_client_not_found: counter(exact('cSipStatsClientNotFoundIns'), 'req', 'Not found in'),
-});
+}, { history: true });
 add('voice', 'Cisco_SIP_Server_Errors', 'Cisco SIP server errors', {
   sip_server_int_error: counter(exact('cSipStatsServerIntErrorIns'), 'req', 'Internal error in'),
   sip_server_unavailable: counter(exact('cSipStatsServerServiceUnavailIns'), 'req', 'Service unavailable in'),
   sip_server_gw_timeout: counter(exact('cSipStatsServerGatewayTimeoutIns'), 'req', 'Gateway timeout in'),
-});
+}, { history: true });
 add('voice', 'Cisco_SIP_Retries', 'Cisco SIP retries', {
   sip_retry_invites: counter(exact('cSipStatsRetryInvites'), 'req', 'Invite retries'),
   sip_retry_registers: counter(exact('cSipStatsRetryRegisters'), 'req', 'Register retries'),
@@ -462,7 +471,7 @@ add('voice', /^Cisco_SIP_/i, 'Cisco SIP', {
   sip_global_fail: counter([noRaw('global.?fail|fail')], 'req', 'Global failures'),
   sip_traffic_in: counter([noRaw('in(bound)?.?(traffic|bytes|msgs?|messages?)|traffic.?in|received')], 'msgs', 'Traffic in'),
   sip_traffic_out: counter([noRaw('out(bound)?.?(traffic|bytes|msgs?|messages?)|traffic.?out|sent')], 'msgs', 'Traffic out'),
-});
+}, { history: true });
 add('voice', /^ntm_sbc_/i, 'SBC', {
   sbc_cpu_pct: pct(['cpu'], 'CPU'),
   sbc_mem_pct: pct(['mem'], 'Memory'),
@@ -657,6 +666,164 @@ add('cloud', /ntm_cloud_connectivity_azure_ecx/i, 'Azure ECX connection utilizat
   ecx_bps_in: gauge(['^in$', 'bits?.?in', 'in.?bps', 'ingress', 'inbound', 'rx'], 'bps', 'In'),
   ecx_bps_out: gauge(['^out$', 'bits?.?out', 'out.?bps', 'egress', 'outbound', 'tx'], 'bps', 'Out'),
 }, { history: true });
+
+// -- Applications and appliances (lm11-apps) -------------------------------------------
+
+// Round 11 WP-X. ALL UNVERIFIED and BLIND: none of these DataSources exists on the first live
+// portal (SQL Server and Splunk devices exist but have no instances; Hyper-V, XenServer, IronPort
+// and EMC are absent). The DataSource names are LogicMonitor's standard names as remembered, matched
+// loosely by regex; every datapoint regex is a loose alternative list and the first live poll
+// records the matched and unmatched names (Settings > Data Export). Order inside an entry
+// matters: a datapoint is claimed by the first metric that matches it. State enums are unknown,
+// so logicmonitorApps.js prints the raw value in every message.
+add('apps', /^Microsoft_SQLServer|^MSSQL|SQLServer/i, 'Microsoft SQL Server', {
+  sql_state: state(['status', 'state', 'running'], 'Service state'),
+  sql_connections: gauge(['connections', 'users'], 'connections', 'Connections'),
+  sql_batch_rate: gauge(['batch', 'request'], '/s', 'Batch requests'),
+  sql_buffer_hit_pct: pct(['buffer', 'cache.?hit'], 'Buffer cache hit'),
+  sql_blocked: gauge(['blocked', 'deadlock'], 'processes', 'Blocked processes'),
+  sql_db_size: gauge(['size', 'space'], 'bytes', 'Database size'),
+  sql_backup_age_h: gauge(['last.?backup', 'backup'], 'h', 'Hours since backup'),
+}, { history: true, maxInstances: 500 });
+add('apps', /splunk/i, 'Splunk', {
+  splunk_indexing_rate: gauge(['index', 'ingest', 'kb'], 'KB/s', 'Indexing rate'),
+  splunk_queue_fill_pct: pct(['queue', 'fill'], 'Queue fill'),
+  splunk_search_concurrency: gauge(['search', 'concurr'], 'searches', 'Search concurrency'),
+  splunk_license_used_pct: pct(['license', 'quota'], 'License used'),
+}, { maxInstances: 500 });
+add('apps', /hyper-?v/i, 'Hyper-V', {
+  hv_vm_state: state(['state', 'status'], 'VM state'),
+  hv_cpu_pct: pct(['cpu'], 'CPU'),
+  hv_mem_pct: pct(['mem'], 'Memory'),
+}, { maxInstances: 1000 });
+add('apps', /xen/i, 'XenServer', {
+  xen_host_state: state(['status', 'state', 'enabled'], 'Host state'),
+  xen_cpu_pct: pct(['cpu'], 'CPU'),
+  xen_mem_pct: pct(['mem'], 'Memory'),
+  xen_vm_count: gauge(['vm', 'guest'], 'VMs', 'VMs'),
+}, { maxInstances: 500 });
+add('apps', /ironport|cisco_esa|email.?security/i, 'Cisco IronPort / ESA', {
+  esa_queue: gauge(['queue', 'workqueue'], 'messages', 'Work queue'),
+  esa_cpu_pct: pct(['cpu'], 'CPU'),
+  esa_mem_pct: pct(['mem'], 'Memory'),
+  esa_msgs_rate: gauge(['message', 'msg'], '/s', 'Message rate'),
+  esa_quarantine_pct: pct(['quarantine'], 'Quarantine used'),
+}, { maxInstances: 200 });
+// The Cisco guard keeps Cisco Unity Connection DataSources out of the EMC Unity entry.
+add('apps', /^emc|^(?!cisco).*(unity|vnx|isilon|powerstore|data.?domain)/i, 'EMC / Dell storage', {
+  emc_health: state(['health', 'status', 'state'], 'Health'),
+  emc_cap_used_pct: pct(['percent', 'used', 'util', 'capacity'], 'Capacity used'),
+  emc_disk_faults: gauge(['fault', 'fail', 'degrad'], 'disks', 'Disk faults'),
+  emc_temp: gauge(['temp'], 'C', 'Temperature'),
+}, { maxInstances: 500 });
+
+// -- Voice, Zscaler, ISE (lm11-sections) -----------------------------------------------
+
+// Round 11 WP-V. Every datapoint regex below is UNVERIFIED: the datapoint names of the ntm_*
+// DataSources are unknown until the first poll, so each matcher is a loose alternative list and
+// the raw store (lm_ds_values) keeps whatever it does not claim. State enums are unknown, so
+// logicmonitorAppliances.js prints the raw value in every message.
+
+// Oracle SBC steering pools: the loose ntm_sbc_ entry in the voice block has no pool metrics. An
+// exact entry wins over that pattern entry.
+add('voice', 'ntm_sbc_steering_pool_performance', 'SBC steering pool performance', {
+  sbc_pool_util_pct: pct(['util', 'percent', 'usage'], 'Pool utilization'),
+  sbc_pool_sessions: gauge(['session', 'call', 'active'], 'sessions', 'Pool sessions'),
+  sbc_pool_failures: counter(['fail', 'error', 'reject'], 'req', 'Pool failures'),
+});
+// GANC checks (UNVERIFIED names). The WLC RADIUS servers of a GANC are already in the wireless block.
+add('voice', 'ntm_ganc_mobility_domain_check', 'GANC mobility domain', {
+  ganc_mobility_state: state(['status', 'state', 'mobility', 'tunnel'], 'Mobility domain'),
+});
+add('voice', 'ntm_ganc_ise_radius_check', 'GANC ISE RADIUS check', {
+  ganc_radius_state: state(['status', 'state', 'result', 'radius', 'auth'], 'ISE RADIUS check'),
+});
+
+add('security', 'Cisco_ISE_ServerSessions', 'Cisco ISE sessions', {
+  sessions: gauge(['session', 'active'], 'sessions', 'Active sessions'),
+}, { history: true });
+add('security', 'Cisco_ISE_Disk', 'Cisco ISE disk', {
+  disk_used_pct: pct(['percent', 'used', 'util'], 'Disk used'),
+}, { maxInstances: 400 });
+add('security', 'ntm_ise_application_and_certificate_status', 'ISE application and certificates', {
+  app_state: state(['app', 'status'], 'Application state'),
+  cert_days: gauge(['days', 'expir'], 'days', 'Certificate days left'),
+});
+add('security', 'ntm_cisco_ise_eap_certificate', 'ISE EAP certificate', {
+  eap_cert_days: gauge(['days', 'expir'], 'days', 'EAP certificate days left'),
+});
+add('security', 'ntm_deployment_nodes_status', 'ISE deployment nodes', {
+  node_state: state(['status', 'state'], 'Deployment node state'),
+});
+add('security', 'ntm_cisco_ise_memory_cpu', 'ISE memory and CPU', {
+  cpu_pct: pct(['cpu'], 'CPU'),
+  mem_pct: pct(['mem'], 'Memory'),
+}, { history: true });
+add('security', 'ntm_zpa_app_connector', 'Zscaler ZPA app connector', {
+  connector_state: state(['status', 'state', 'health'], 'Connector state'),
+});
+add('security', 'Zscaler ZPA Port Exhaustion', 'Zscaler ZPA port exhaustion', {
+  port_used_pct: pct(['percent', 'used', 'exhaust'], 'Ports used'),
+}, { history: true });
+add('security', 'ntm_zpa_ntp_time_sync', 'Zscaler ZPA NTP sync', {
+  ntp_offset: gauge(['offset', 'drift'], 's', 'NTP offset'),
+  ntp_state: state(['status', 'sync'], 'NTP state'),
+});
+add('security', 'ntm_asa_license_authorization', 'ASA license authorization', {
+  asa_license_state: state(['status', 'state', 'auth'], 'License authorization'),
+});
+
+// -- Servers (lm11-servers) ------------------------------------------------------
+
+// Round 11. Linux servers under Net-SNMP are verified at the DataSource level on the live
+// sandbox (names and instance counts) but NO datapoint name has been read; the Windows
+// entries are built blind from LM's standard DataSource names (the sandbox returned zero
+// instances on every Windows device). EVERY regex below is UNVERIFIED. Existing health
+// entries are reused, not duplicated: NetSNMPCPUwithCores (cpu_pct), NetSNMP_Memory_Usage
+// (mem_pct), SNMP_Host_Uptime (uptime_s) and SNMP_Filesystem_Usage (fs_used_pct plus the
+// byte metrics, which stay in the health family so the existing DataSource lists hold).
+// State enums are unknown: logicmonitorServers.js prints the raw value in every message.
+add('os', 'SNMP_Filesystem_Status', 'SNMP filesystem status', {
+  fs_status: state(['status', 'state'], 'Filesystem status'),
+}, { maxInstances: 400 });
+add('os', 'NetSNMPdiskIO-', 'Net-SNMP disk I/O', {
+  disk_read_bps: gauge(['read'], 'B/s', 'Disk read'),
+  disk_write_bps: gauge(['write'], 'B/s', 'Disk write'),
+  disk_busy_pct: pct(['busy', 'util'], 'Disk busy'),
+}, { maxInstances: 400 });
+add('os', 'Linux_Sensors_Temperature', 'Linux temperature sensors', {
+  temp_c: gauge(['temp'], 'C', 'Temperature'),
+}, { maxInstances: 400 });
+add('os', 'snmpHR_NFSMount-', 'NFS mounts', {
+  nfs_mount_state: state(['status', 'state', 'mounted'], 'NFS mount state'),
+}, { maxInstances: 400 });
+// LM HostStatus is a ping-based idle check: the datapoint name is a guess.
+add('os', 'HostStatus', 'Host status', {
+  host_status: state(['status', 'state'], 'Host status'),
+});
+// Windows (blind, standard LM names).
+add('os', 'WinCPU', 'Windows CPU', {
+  cpu_pct: pct(['CPUBusyPercent', 'cpu'], 'CPU'),
+}, { history: true });
+add('os', 'WinMemory', 'Windows memory', {
+  mem_pct: pct(['MemoryUtilization', 'percent', 'used'], 'Memory used'),
+}, { history: true });
+add('os', 'WinVolumeUsage-', 'Windows volumes', {
+  vol_used_pct: pct(['PercentUsed', 'percent', 'used'], 'Volume used'),
+  vol_free_bytes: gauge(['FreeSpace', 'free'], 'bytes', 'Free space'),
+}, { history: true, maxInstances: 400 });
+add('os', 'WinServices-', 'Windows services', {
+  svc_state: state(['State', 'status'], 'Service state'),
+}, { maxInstances: 1000 });
+add('os', 'WinSystemUptime', 'Windows uptime', {
+  uptime_s: gauge(['Uptime'], 's', 'Uptime'),
+});
+add('os', 'WinProcessStats-', 'Windows processes', {
+  proc_count: gauge(['ProcessCount', 'count'], 'processes', 'Processes'),
+}, { maxInstances: 400 });
+add('os', 'WinEventLog-', 'Windows event log', {
+  events: gauge(['EventCount', 'count'], 'events', 'Events'),
+}, { maxInstances: 400 });
 
 // -- Lookup ----------------------------------------------------------------------
 

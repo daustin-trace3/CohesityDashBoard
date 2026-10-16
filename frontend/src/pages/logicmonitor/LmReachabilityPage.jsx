@@ -15,6 +15,18 @@ const REFRESH_MS = 60000;
 
 const ANOMALY_RANK = { down: 3, loss: 2, latency: 1 };
 
+// Zscaler data centre uptime checks are named ZSDC_<CODE>-<City>-uptime. With many of them the matrix
+// grows wide, so they can collapse into one column per city (worst cell wins).
+const isZsdc = (name) => /^ZSDC_/i.test(String(name || ''));
+function zsdcCity(name) {
+  const rest = String(name || '').replace(/^ZSDC_/i, '');
+  const dash = rest.indexOf('-');
+  const code = (dash < 0 ? rest : rest.slice(0, dash)).trim().toUpperCase();
+  const city = (dash < 0 ? '' : rest.slice(dash + 1)).replace(/[\s-]*uptime\s*$/i, '').replace(/[\s-]+$/, '').trim();
+  return city || code;
+}
+const cellRank = (c) => (String(c.status).toLowerCase() === 'down' ? 100 : 0) + (ANOMALY_RANK[c.anomaly] || 0) * 10 + (Number(c.rttAvgMs) || 0) / 10000;
+
 function cellTone(c) {
   if (!c) return 'neutral';
   return anomalyTone(c.anomaly, c.status);
@@ -46,6 +58,7 @@ export default function LmReachabilityPage() {
   const [episodes, setEpisodes] = useState([]);
   const [chip, setChip] = useState('');
   const [episodeId, setEpisodeId] = useState(null);
+  const [groupPref, setGroupPref] = useState(null); // null = automatic (on above 10 ZSDC checks)
 
   const load = useCallback(() => client.get('/logicmonitor/checks')
     .then(({ data: d }) => { setData({ items: d?.items || [], matrix: d?.matrix || { rows: [], cols: [], cells: [] }, counts: d?.counts || {} }); setLastRefreshed(new Date()); })
@@ -82,13 +95,15 @@ export default function LmReachabilityPage() {
 
   const items = useMemo(() => data?.items || [], [data]);
   const byId = useMemo(() => new Map(items.map((c) => [String(c.checkId), c])), [items]);
+  const zsdcCount = useMemo(() => items.filter((c) => isZsdc(c.name)).length, [items]);
+  const groupZs = zsdcCount > 0 && (groupPref == null ? zsdcCount > 10 : groupPref);
 
   // Matrix cells: row is the checkpoint label, col is the checkId (WP6
   // confirmed). Numbers are accepted as indexes too, to survive a change.
   const matrix = useMemo(() => {
     const m = data?.matrix || { rows: [], cols: [], cells: [] };
     const rows = m.rows || [];
-    const cols = (m.cols || []).filter((c) => !kind || byId.get(String(c.checkId))?.kind === kind);
+    let cols = (m.cols || []).filter((c) => !kind || byId.get(String(c.checkId))?.kind === kind);
     const map = new Map();
     for (const cell of m.cells || []) {
       const row = typeof cell.row === 'number' ? rows[cell.row] : cell.row;
@@ -96,11 +111,38 @@ export default function LmReachabilityPage() {
       const loc = cell.blame ? null : byId.get(String(col))?.locations?.find((l) => l.label === row);
       map.set(`${row}|${col}`, loc?.blame ? { ...cell, blame: loc.blame } : cell);
     }
+    if (groupZs) {
+      const groups = new Map();
+      const plain = [];
+      for (const c of cols) {
+        const chk = byId.get(String(c.checkId));
+        if (chk && isZsdc(chk.name)) {
+          const city = zsdcCity(chk.name);
+          if (!groups.has(city.toLowerCase())) groups.set(city.toLowerCase(), { city, ids: [] });
+          groups.get(city.toLowerCase()).ids.push(c.checkId);
+        } else plain.push(c);
+      }
+      const grouped = [];
+      for (const [key, g] of groups) {
+        const gid = `zsdc:${key}`;
+        grouped.push({ checkId: gid, name: `ZSDC ${g.city} (${g.ids.length})` });
+        for (const row of rows) {
+          let best = null;
+          for (const id of g.ids) {
+            const cell = map.get(`${row}|${id}`);
+            if (cell && (!best || cellRank(cell) > cellRank(best))) best = { ...cell, memberCheckId: id };
+          }
+          if (best) map.set(`${row}|${gid}`, best);
+        }
+      }
+      cols = [...plain, ...grouped.sort((a, b) => a.name.localeCompare(b.name))];
+    }
     return { rows, cols, map };
-  }, [data, kind, byId]);
+  }, [data, kind, byId, groupZs]);
 
   const openCell = (rowLabel, checkId) => {
-    const check = byId.get(String(checkId));
+    const member = matrix.map.get(`${rowLabel}|${checkId}`)?.memberCheckId;
+    const check = byId.get(String(member || checkId));
     const location = check?.locations?.find((l) => l.label === rowLabel);
     if (check && location) setOpen({ check, location });
   };
@@ -153,6 +195,9 @@ export default function LmReachabilityPage() {
 
       <div className="flex items-center gap-1 mb-3">
         {[['', 'All checks'], ['ping', 'Ping'], ['web', 'Web']].map(([v, l]) => <button key={v || 'all'} onClick={() => setKind(v)} className={chipBtn(kind === v)}>{l}</button>)}
+        {zsdcCount > 0 && (
+          <button onClick={() => setGroupPref(!groupZs)} className={`${chipBtn(groupZs)} ml-2`} title={`${zsdcCount} ZSDC_ checks; on shows one matrix column per city`}>Group Zscaler data centres</button>
+        )}
       </div>
 
       {!data ? <LoadingPanel label="Loading checks..." height={220} /> : items.length === 0 ? (

@@ -9,6 +9,7 @@ import { BRAND, fmtNum, fmtBytes, healthTone, severityTone, fmtWhen } from './he
 import { DriftModal } from './DellGovernancePage';
 import AdvisorReportModal from '../../components/AdvisorReportModal';
 import DellNetworkSection from '../../components/dell/DellNetworkSection';
+import LmDeviceCard from '../../components/logicmonitor/LmDeviceCard';
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children, headerActions }) {
   // Portal to <body>: the page wrapper's fade-in animation leaves a transform
@@ -212,6 +213,8 @@ export function DeviceDetailModal({ deviceId, onClose }) {
           )}
 
           <DellNetworkSection deviceId={deviceId} deviceName={dev.name} />
+
+          <LmDeviceCard names={[dev.name, dev.os_hostname]} ips={[dev.ip_address]} />
 
           {['processor', 'memory', 'raid', 'vdisk', 'disk', 'nic', 'fc', 'psu', 'os'].map((k) => (
             <ComponentSection key={k} kind={k} rows={byKind(k)} />

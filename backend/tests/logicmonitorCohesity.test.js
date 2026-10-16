@@ -67,7 +67,7 @@ describe('catalog family', () => {
   it('registers the cohesity family and matches the DataSource names', () => {
     expect(catalog.FAMILIES).toContain('cohesity');
     expect(catalog.FAMILY_LABELS.cohesity).toBe('Cohesity (via LogicMonitor)');
-    expect(catalog.CATALOG_VERSION).toBe(2);
+    expect(catalog.CATALOG_VERSION).toBe(3);
     for (const name of ['Cohesity_DataPlatform_ClusterStatus', 'Cohesity_DataPlatform_BasicStorage', 'Cohesity_DataPlatform_NodeStatus',
       'Cohesity_DataPlatform_Fans', 'Cohesity_DataPlatform_PowerSupplies', 'ntm_cohesity_node_services',
       'Cohesity_DataPlatform_ProtectionJobs', 'ntm_cohesity_alerts', 'Cohesity_DataPlatform_Troubleshooter']) {

@@ -213,6 +213,13 @@ function buildDevicePlan(db) {
   // Round 10 WP-B: the two Cohesity demo clusters (generators/cohesity.js names) as LogicMonitor
   // devices, named exactly like clusters.name so the identity index resolves them.
   for (const n of COHESITY_LM_CLUSTERS) add({ name: n, site: n.slice(0, 3), kind: 'cohesity', r8: true });
+  // Round 11 WP-X: a Splunk indexer, an EMC Unity and an IronPort (generators/logicmonitorAppsDemo.js).
+  for (const c of require('./logicmonitorAppsDemo').appDevices()) add(c);
+  // Round 11 WP-V: SBCs, CUBEs, a GANC, ZPA connectors, NSS appliances and ISE nodes (generators/logicmonitorServicesDemo.js).
+  for (const c of require('./logicmonitorServicesDemo').serviceDevices()) add(c);
+
+  // Round 11 WP-S: six Linux and six Windows guests of the demo's own vCenter VMs (generators/logicmonitorServersDemo.js).
+  for (const c of require('./logicmonitorServersDemo').serverDevices(db)) add(c);
 
   let id = 101;
   const counters = {};
@@ -229,6 +236,7 @@ function buildDevicePlan(db) {
     } else {
       d.ip = `172.31.${Math.floor(d.id / 200) + 10}.${(d.id % 200) + 20}`;
     }
+    if (d.fixedIp) d.ip = d.fixedIp; // round 11: a server device keeps its vCenter VM address
   }
   return devices;
 }
@@ -238,7 +246,7 @@ function deviceIdentity(d, rng) {
   const behind = BEHIND_SWITCHES.has(d.name);
   const iosVer = behind ? '17.6.5' : '17.9.4a';
   const train = behind ? 'Bengaluru' : 'Cupertino';
-  switch (d.kind) {
+  switch (d.kind === 'win-vm' ? 'win' : d.kind === 'linux-vm' ? 'linux' : d.kind) {
     case 'core':
     case 'dist':
     case 'access':
@@ -316,6 +324,17 @@ function deviceIdentity(d, rng) {
         sysinfo: `Linux ${d.name} 5.15.0-${randInt(rng, 88, 105)}-generic #1-Ubuntu SMP x86_64`, sysoid: '.1.3.6.1.4.1.8072.3.2.10',
         categories: 'Linux,LinuxSSH,snmp', ert: 'VirtualMachine',
       };
+    case 'app-splunk':
+    case 'app-emc':
+    case 'app-ironport':
+      return require('./logicmonitorAppsDemo').appIdentity(d);
+    case 'svc-sbc':
+    case 'svc-cube':
+    case 'svc-ganc':
+    case 'svc-zpa':
+    case 'svc-nss':
+    case 'svc-ise':
+      return require('./logicmonitorServicesDemo').serviceIdentity(d, rng);
     case 'aws-ec2':
       return { deviceType: 2, model: pick(rng, ['m6i.large', 't3.medium', 'c6i.xlarge']), serial: null, sysinfo: null, sysoid: null, categories: 'AWS/EC2', ert: 'VirtualMachine' };
     case 'aws-rds':
@@ -360,8 +379,8 @@ function groupsFor(d) {
   if (d.kind === 'asa' || d.kind === 'paloalto') g.push(GROUP_ID['Network/Firewalls']);
   if (d.kind === 'f5') g.push(GROUP_ID['Network/LoadBalancers']);
   if (d.kind === 'ap' || d.kind === 'wlc') g.push(GROUP_ID['Network/Wireless']);
-  if (d.kind === 'win') g.push(GROUP_ID['Servers/Windows']);
-  if (d.kind === 'linux') g.push(GROUP_ID['Servers/Linux']);
+  if (d.kind === 'win' || d.kind === 'win-vm') g.push(GROUP_ID['Servers/Windows']);
+  if (d.kind === 'linux' || d.kind === 'linux-vm') g.push(GROUP_ID['Servers/Linux']);
   if (d.kind.startsWith('aws')) g.push(GROUP_ID['Cloud/AWS']);
   const site = SITES[d.site];
   if (site && site.group && ['branch-access', 'branch-rtr', 'asa', 'paloalto', 'ap', 'dist'].includes(d.kind)) g.push(GROUP_ID[site.group]);
@@ -821,6 +840,8 @@ function seedLogicmonitor(db, { now, encrypt }) {
     { wid: 117, kind: 'ping', name: 'DEN guest gateway', target: '10.31.40.200', locs: ['den'], days: 0.04, base: { den: 33 } },
     { wid: 118, kind: 'ping', name: 'SLC badge controller', target: '10.32.40.201', locs: ['slc'], days: 0.04, base: { slc: 27 } },
   );
+  // Round 11 WP-V: eight ZSDC_ uptime checks across four Zscaler data centre cities.
+  CHECKS.push(...require('./logicmonitorServicesDemo').zsdcChecks());
   let uptimeInst = 950000;
   for (const c of CHECKS) {
     if (c.uptimeDevice) {
@@ -2060,6 +2081,12 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   require('./logicmonitorIpslaCloudDemo').seedIpslaCloud(devices, { put, rng, r1, series });
   // Round 10 WP-B: Cohesity through LogicMonitor (own PRNG, defined next to the wireless seed above).
   seedCohesityViaLm(devices, { put });
+  // Round 11 WP-S: Linux and Windows guests with OS family rows (generators/logicmonitorServersDemo.js).
+  require('./logicmonitorServersDemo').seedServersViaLm(devices, { put, rng, r1, series });
+  // Round 11 WP-X: SQL Server, Splunk, EMC Unity and IronPort rows (generators/logicmonitorAppsDemo.js).
+  require('./logicmonitorAppsDemo').seedAppsViaLm(devices, { put, rng, r1, series });
+  // Round 11 WP-V: voice, Zscaler and ISE rows (generators/logicmonitorServicesDemo.js; own PRNG).
+  require('./logicmonitorServicesDemo').seedServicesViaLm(devices, { put, r1, series, steps: R8_STEPS, stepSec: R8_STEP_S });
 
   // Keep the datasource inventory counts in step with what was collected.
   for (const { dev, hds, n } of instN.values()) ddsUpd.run(n, n, sid, dev.id, hds);

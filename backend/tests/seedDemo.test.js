@@ -657,11 +657,11 @@ describe('seedDemo.js', () => {
     // 140 monitored devices plus the 2 LM Uptime ping-check devices (deviceType 19),
     // plus 6 nyc/lon switches (round 2: 1 dist + 2 access per site), plus 7 round 3
     // switches (abq-dist-01 with 3 access switches, 3 unassigned-sw-* in no site group).
-    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(169); // 162 plus the 5 round 9 cloud circuits (3 Direct Connect, 2 ExpressRoute) plus the 2 round 10 Cohesity clusters
+    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(197); // 162 plus the 13 round 11 service devices (2 SBC, 2 CUBE, 1 GANC, 3 ZPA, 2 NSS, 3 ISE; WP-V) plus the 5 round 9 cloud circuits (3 Direct Connect, 2 ExpressRoute) plus the 2 round 10 Cohesity clusters plus the 3 round 11 application devices (Splunk, EMC Unity, IronPort; WP-X) plus the 12 round 11 server guests (6 Linux, 6 Windows vCenter VMs; WP-S)
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 19')).toBe(2);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 2')).toBe(23);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 4')).toBe(2);
-    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(80);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(83); // 80 plus the 2 round 11 CUBE routers (WP-V) plus 1 round 11 appliance (IronPort; WP-X)
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead-collector'")).toBe(14);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead' AND is_network = 1")).toBe(7);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor = 'Cisco' AND role = 'switch' AND version = '17.6.5'")).toBe(4);
@@ -684,9 +684,9 @@ describe('seedDemo.js', () => {
     const noisy = db.prepare('SELECT COUNT(*) n FROM lm_alerts GROUP BY condition_key HAVING n >= 40').all();
     expect(noisy.length).toBe(3);
 
-    expect(c('SELECT COUNT(*) c FROM lm_checks')).toBe(18);
+    expect(c('SELECT COUNT(*) c FROM lm_checks')).toBe(26); // 18 plus the 8 round 11 ZSDC_ uptime checks (WP-V)
     expect(c("SELECT COUNT(*) c FROM lm_checks WHERE origin = 'uptime' AND check_id LIKE 'u:%'")).toBe(2);
-    expect(c("SELECT COUNT(*) c FROM lm_check_locations WHERE is_overall = 1 AND checkpoint_id = 'overall'")).toBe(18);
+    expect(c("SELECT COUNT(*) c FROM lm_check_locations WHERE is_overall = 1 AND checkpoint_id = 'overall'")).toBe(26);
     expect(c('SELECT COUNT(*) c FROM lm_check_history')).toBeGreaterThan(140000);
     expect(c('SELECT COUNT(*) c FROM lm_check_baseline')).toBeGreaterThan(0);
     expect(c("SELECT COUNT(*) c FROM lm_alerts WHERE type = 'websiteAlert' AND cleared = 0 AND lm_alert_id LIKE 'LMS%'")).toBe(2);
@@ -725,6 +725,13 @@ describe('seedDemo.js', () => {
     ]) {
       expect(openTypes).toContain(type);
     }
+
+    // Round 11 WP-V: voice, Zscaler and ISE scenarios.
+    for (const type of ['voice-sbc-degraded', 'voice-sip-errors', 'zpa-connector-down', 'zpa-port-exhaustion', 'ise-cert-expiring']) {
+      expect(openTypes, type).toContain(type);
+    }
+    expect(c("SELECT COUNT(*) c FROM lm_checks WHERE substr(name, 1, 5) = 'ZSDC_'")).toBe(8);
+    expect(c("SELECT COUNT(DISTINCT lm_device_id) c FROM lm_ds_metrics WHERE family = 'security' AND datasource_name = 'Cisco_ISE_Disk'")).toBe(3);
 
     const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_logicmonitor_enabled'").get();
     expect(flag.value).toBe('1');

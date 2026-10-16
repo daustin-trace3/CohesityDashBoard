@@ -247,6 +247,27 @@ export const ISSUE_TYPE_LABELS = {
   'latency-drift': 'Latency baseline drift',
   'cloud-circuit-down': 'Cloud circuit down',
   'cloud-circuit-saturated': 'Cloud circuit saturated',
+  // Round 11 (voice, Zscaler, ISE).
+  'voice-sbc-degraded': 'SBC degraded',
+  'voice-sip-errors': 'SIP errors',
+  'ise-cert-expiring': 'ISE certificate expiring',
+  'ise-node-down': 'ISE node down',
+  'zpa-connector-down': 'ZPA connector down',
+  'zpa-port-exhaustion': 'ZPA port exhaustion',
+  'asa-license-unauthorized': 'ASA license unauthorized',
+  // Rounds 9 to 11 (Cohesity, servers, topology coverage, cloud).
+  'cohesity-node-down': 'Cohesity node down',
+  'cohesity-service-down': 'Cohesity service down',
+  'cohesity-hardware-fault': 'Cohesity hardware fault',
+  'cohesity-capacity-high': 'Cohesity capacity high',
+  'server-filesystem-full': 'Filesystem full',
+  'server-service-stopped': 'Service stopped',
+  'server-nfs-mount-down': 'NFS mount down',
+  'unmonitored-neighbor': 'Unmonitored neighbours',
+  // Round 11 (applications and appliances).
+  'app-service-down': 'Application service down',
+  'app-capacity-high': 'Application capacity high',
+  'app-queue-high': 'Application queue high',
 };
 export const issueTypeLabel = (t) => ISSUE_TYPE_LABELS[t] || t;
 

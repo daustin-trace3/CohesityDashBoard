@@ -54,7 +54,7 @@ describe('catalogFor', () => {
       'PaloAlto_FW_IPSecTunnelStats', 'PaloAlto_GlobalProtect_Gateway', 'PaloAlto_FW_Config_Synced', 'PaloAlto_FW_ThreatAnalysis',
       'PaloAlto_FW_Zones', 'PaloAlto_FW_vSys', 'PaloAlto_FW_LogForwarding', 'PaloAlto_FW_Disk', 'PaloAlto_FW_Power',
       'PaloAlto_FW_ChassisPower', 'PaloAlto_FW_Temperature', 'PaloAlto_FW_BGP', 'PaloAlto_FW_OSPF', 'PaloAlto_FW_SDWAN_Tunnel',
-      'CiscoASA', 'Cisco_ASA_Failover', 'ntm_asa_license_authorization', 'ntm_meraki_mx_device_utilization'],
+      'CiscoASA', 'Cisco_ASA_Failover', 'ntm_meraki_mx_device_utilization'],
     loadbalancer: ['F5_BigIP_System', 'F5_BigIP_FailoverStatus', 'F5_BigIP_PoolMemberStats', 'F5_GTM_WideIP-', 'F5_GTM_VIPs-',
       'F5_GTM_Servers-', 'F5_GTM_Datacenters-', 'F5_GTM_Global', 'f5_big3d_service_status', 'f5_mcpd_service_status',
       'f5_tmm_service_status', 'f5_tmrouted_service_status', 'f5_gtmd_service_status', 'f5_gtm_gslb_status',
@@ -98,7 +98,7 @@ describe('catalogFor', () => {
   });
 
   it('exports the family list and every entry carries the contract fields', () => {
-    expect(catalog.FAMILIES).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity']);
+    expect(catalog.FAMILIES).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity', 'apps', 'security', 'os']);
     for (const f of catalog.FAMILIES) expect(catalog.FAMILY_LABELS[f]).toBeTruthy();
     for (const e of catalog.CATALOG) {
       expect(catalog.FAMILIES).toContain(e.family);
@@ -483,7 +483,7 @@ describe('catalog against the live datapoint lists', () => {
   });
 
   it('exports a numeric catalog version', () => {
-    expect(catalog.CATALOG_VERSION).toBe(2);
+    expect(catalog.CATALOG_VERSION).toBe(3);
   });
 });
 

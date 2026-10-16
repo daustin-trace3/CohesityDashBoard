@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Layers, Sparkles, X, ChevronDown, ChevronRight, Search, Plus, Trash2, Upload } from 'lucide-react';
 import client from '../../api/client';
@@ -122,13 +122,21 @@ function ServersSection({ servers }) {
         </thead>
         <tbody>
           {servers.map((s) => (
-            <tr key={s.name} className="border-t border-cohesity-border/60">
-              <td className="py-1.5 pr-2"><StateDot state={s.state} /></td>
-              <td className="py-1.5 pr-2 text-ink truncate max-w-[160px]" title={s.name}>{s.name}</td>
-              <td className="py-1.5 pr-2 text-ink-muted">{s.powerState || '-'}</td>
-              <td className="py-1.5 pr-2 text-ink-muted">{s.toolsStatus || '-'}</td>
-              <td className="py-1.5 text-ink-muted">{s.ipAddress || '-'}</td>
-            </tr>
+            <Fragment key={s.name}>
+              <tr className="border-t border-cohesity-border/60">
+                <td className="py-1.5 pr-2"><StateDot state={s.state} /></td>
+                <td className="py-1.5 pr-2 text-ink truncate max-w-[160px]" title={s.name}>{s.name}</td>
+                <td className="py-1.5 pr-2 text-ink-muted">{s.powerState || '-'}</td>
+                <td className="py-1.5 pr-2 text-ink-muted">{s.toolsStatus || '-'}</td>
+                <td className="py-1.5 text-ink-muted">{s.ipAddress || '-'}</td>
+              </tr>
+              {s.lmServer && (
+                <tr>
+                  <td />
+                  <td colSpan={4} className="pb-1.5 text-[11px] text-status-warn">LogicMonitor: {s.lmServer.note}</td>
+                </tr>
+              )}
+            </Fragment>
           ))}
         </tbody>
       </table>

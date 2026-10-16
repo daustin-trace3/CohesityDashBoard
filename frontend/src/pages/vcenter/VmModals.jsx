@@ -4,6 +4,7 @@ import { X, MonitorSmartphone, Network, Database, Tag, ScrollText, Cpu, MemorySt
 import client from '../../api/client';
 import { Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { fmtNum, fmtBytes, fmtWhen, severityTone } from './helpers';
+import LmDeviceCard from '../../components/logicmonitor/LmDeviceCard';
 
 const powerTone = (p) => p === 'POWERED_ON' ? 'ok' : p === 'POWERED_OFF' ? 'neutral' : 'warn';
 const powerLabel = (p) => String(p || '—').replace(/^POWERED_/, '');
@@ -237,6 +238,8 @@ export function VmDetailModal({ vmId, onClose }) {
               </div>
             )}
           </div>
+
+          <LmDeviceCard names={[vm.name, vm.guest_hostname]} ips={[vm.ip_address]} />
 
           <div>
             <p className="text-xs font-semibold text-ink mb-1.5 flex items-center gap-1.5"><Database size={13} className="text-brand" /> Datastores</p>
