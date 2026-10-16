@@ -1656,7 +1656,7 @@ function seedWireless(devices, { put, rng, r1, series }) {
 function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   const out = { instances: 0, metrics: 0, history: 0, devices: 0 };
   if (!hasTable(db, 'lm_ds_instances') || !hasTable(db, 'lm_ds_metrics') || !hasTable(db, 'lm_ds_metrics_history')) return out;
-  for (const t of ['lm_ds_metrics_history', 'lm_ds_metrics', 'lm_ds_instances']) {
+  for (const t of ['lm_ds_metrics_history', 'lm_ds_metrics', 'lm_ds_instances', ...(hasTable(db, 'lm_ds_metric_baseline') ? ['lm_ds_metric_baseline'] : [])]) {
     db.prepare(`DELETE FROM ${t} WHERE source_id = ? OR source_id NOT IN (SELECT id FROM lm_sources)`).run(sid);
   }
   const rng = rngFor('logicmonitor-r8');

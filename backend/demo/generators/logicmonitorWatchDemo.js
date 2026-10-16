@@ -92,8 +92,8 @@ function seedWatchRows(db, { sourceId, nowMs, checks }) {
   const t = require('../../services/logicmonitorIssues').getThresholds();
   const source = db.prepare('SELECT * FROM lm_sources WHERE id = ?').get(sourceId);
   const nowS = Math.floor(nowMs / 1000);
-  db.prepare('DELETE FROM lm_latency_episodes WHERE source_id = ?').run(sourceId);
-  db.prepare('DELETE FROM lm_check_reference WHERE source_id = ?').run(sourceId);
+  db.prepare('DELETE FROM lm_latency_episodes WHERE source_id = ? OR source_id NOT IN (SELECT id FROM lm_sources)').run(sourceId);
+  db.prepare('DELETE FROM lm_check_reference WHERE source_id = ? OR source_id NOT IN (SELECT id FROM lm_sources)').run(sourceId);
   const out = { reference: watch.computeReference(db, sourceId, t, { force: true, nowMs }).written, opened: 0, promoted: 0, closed: 0 };
   const replay = (scenario, fromEpoch) => {
     const loc = locOf(checks, scenario);

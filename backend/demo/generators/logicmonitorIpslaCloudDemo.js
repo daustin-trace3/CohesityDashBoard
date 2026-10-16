@@ -92,7 +92,7 @@ function seedIpslaWatch(db, { sourceId, nowMs }) {
   out.reference = base.reference;
   const watch = require('../../services/logicmonitorWatchIpsla');
   const source = db.prepare('SELECT * FROM lm_sources WHERE id = ?').get(sourceId);
-  db.prepare("DELETE FROM lm_latency_episodes WHERE source_id = ? AND subject_kind = 'ipsla'").run(sourceId);
+  db.prepare("DELETE FROM lm_latency_episodes WHERE (source_id = ? OR source_id NOT IN (SELECT id FROM lm_sources)) AND subject_kind = 'ipsla'").run(sourceId);
   const nowS = Math.floor(nowMs / 1000);
   const step = 1800;
   const epochs = [];

@@ -682,6 +682,22 @@ describe('logicmonitor round 2: model review, endpoints, server path', () => {
     expect(epLines).toHaveLength(3);
   });
 
+  it('GET /endpoints/summary answers per-host port counts for one platform and rejects an unknown platform', async () => {
+    const sid = seedEstate();
+    seedRound2(sid);
+    const dell = await request(app).get(`${API}/endpoints/summary?platform=dell`);
+    expect(dell.status).toBe(200);
+    expect(dell.body['db-srv9']).toEqual({ ports: 1, switches: ['core-sw1'], state: 'down' });
+    const vc = await request(app).get(`${API}/endpoints/summary?platform=vcenter`);
+    expect(vc.body['esx-01.lab']).toEqual({ ports: 1, switches: ['core-sw1'], state: 'up' });
+    expect(vc.body['db-srv9']).toBeUndefined();
+    const none = await request(app).get(`${API}/endpoints/summary?platform=cohesity`);
+    expect(none.status).toBe(200);
+    expect(none.body).toEqual({});
+    expect((await request(app).get(`${API}/endpoints/summary?platform=bogus`)).status).toBe(400);
+    expect((await request(app).get(`${API}/endpoints/summary`)).status).toBe(400);
+  });
+
   it('GET /endpoints is server-paged, sorted, filtered; CSV', async () => {
     const sid = seedEstate();
     seedRound2(sid);

@@ -2549,6 +2549,66 @@ router.get('/lookup', [
   } catch (err) { next(err); }
 });
 
+// ---- Endpoint summary for other platforms' pages (round 9) -------------------
+
+const ENDPOINT_SUMMARY_PLATFORMS = ['dell', 'cohesity', 'netapp', 'pure', 'brocade', 'vcenter'];
+const ENDPOINT_SUMMARY_TTL_MS = 60 * 1000;
+const endpointSummaryCache = new Map(); // `${dbKey}|${platform}` -> { at, data }
+
+/**
+ * { "<refKey>": { ports, switches: [names], state } } over the endpoint rows of
+ * one platform. One computeEndpoints call; a row is filed under its endpoint
+ * host lower-cased and, when the identity index resolves that name, under the
+ * ref key and every name of the ref. state is down when any port is down, up
+ * when every port is up, else unknown.
+ */
+function buildEndpointSummary(platform) {
+  const rows = lmEndpoints().computeEndpoints(db).filter((r) => r.endpointPlatform === platform);
+  let idx = null;
+  let ident = null;
+  try { ident = require('../services/hostIdentity'); idx = ident.buildIdentityIndex(db); } catch { idx = null; }
+  const groups = new Map();
+  for (const r of rows) {
+    const k = String(r.endpoint || '').trim().toLowerCase();
+    if (!k) continue;
+    const keys = new Set([k]);
+    if (idx) {
+      let ref = null;
+      try { ref = ident.resolveToken(idx, k); } catch { ref = null; }
+      if (ref) { keys.add(ref.refKey); for (const n of ref.names || []) keys.add(n); }
+    }
+    for (const key of keys) {
+      if (!groups.has(key)) groups.set(key, new Set());
+      groups.get(key).add(r);
+    }
+  }
+  const data = {};
+  for (const [key, set] of groups) {
+    const list = [...set];
+    const states = list.map((r) => String(r.portStatusText || 'unknown').toLowerCase());
+    data[key] = {
+      ports: list.length,
+      switches: [...new Set(list.map((r) => r.deviceName).filter(Boolean))],
+      state: states.some((x) => x === 'down') ? 'down' : states.every((x) => x === 'up') ? 'up' : 'unknown',
+    };
+  }
+  return data;
+}
+
+router.get('/endpoints/summary', [
+  query('platform').isIn(ENDPOINT_SUMMARY_PLATFORMS),
+], validate, (req, res, next) => {
+  try {
+    const platform = String(req.query.platform);
+    const cacheKey = `${String(db.name || '')}|${platform}`;
+    const hit = endpointSummaryCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < ENDPOINT_SUMMARY_TTL_MS) return res.json(hit.data);
+    const data = buildEndpointSummary(platform);
+    endpointSummaryCache.set(cacheKey, { at: Date.now(), data });
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 // ---- Issues, history, trends, SDT, topology --------------------------------
 
 router.get('/issues', (req, res, next) => {
