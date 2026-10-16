@@ -139,7 +139,7 @@ const defs = () => lmIssues().THRESHOLD_DEFS;
 const isText = (d) => d.type === 'text';
 const clampTo = (key, v) => {
   const d = defs()[key];
-  const n = parseInt(v, 10);
+  const n = d.float ? Math.round(parseFloat(v) * 10) / 10 : parseInt(v, 10);
   if (!Number.isFinite(n)) return d.def;
   return Math.min(d.max, Math.max(d.min, n));
 };
@@ -1599,6 +1599,171 @@ router.get('/checks/:checkId/history', [
   } catch (err) { next(err); }
 });
 
+// ---- Latency watch (round 9) -------------------------------------------------
+// Episodes from services/logicmonitorWatch.js. The first path segment 'watch'
+// is the permission section (logicmonitor:watch:view).
+
+const lmWatch = () => require('../services/logicmonitorWatch');
+const WATCH_SORTS = ['openedAt', 'durationMin', 'peakRatio', 'peakMs', 'state', 'subjectLabel', 'siteKey', 'outcome'];
+const WATCH_CSV = ['id', 'checkName', 'label', 'siteKey', 'kind', 'state', 'outcome', 'openedAt', 'closedAt', 'durationMin',
+  'peakMs', 'peakRatio', 'lossMaxPct', 'baselineMedian', 'likelyHop'];
+const watchRules = [
+  query('siteKey').optional().isString().trim().isLength({ max: 128 }),
+  query('checkId').optional().isString().trim().isLength({ max: 128 }),
+  query('sourceId').optional().isInt().toInt(),
+  query('state').optional().isIn(['watching', 'degrading', 'critical', 'closed']),
+  query('outcome').optional().isIn(['one-off', 'sustained', 'escalated']),
+  query('q').optional().isString().trim().isLength({ max: 200 }),
+  query('days').optional().isInt({ min: 1, max: 365 }).toInt(),
+  query('sort').optional().isIn(WATCH_SORTS),
+  query('dir').optional().isIn(['asc', 'desc']),
+];
+
+/** Episode rows after the filters, as route items, sorted (newest first by default). */
+function watchItems(q) {
+  const days = q.days || 7;
+  const where = ['(e.opened_at >= ? OR e.state != \'closed\')'];
+  const args = [isoAgo(days * 86400000)];
+  if (q.siteKey) { where.push('e.site_key = ?'); args.push(q.siteKey); }
+  if (q.checkId) { where.push('e.check_id = ?'); args.push(q.checkId); }
+  if (q.sourceId) { where.push('e.source_id = ?'); args.push(q.sourceId); }
+  if (q.state) { where.push('e.state = ?'); args.push(q.state); }
+  if (q.outcome) { where.push('e.outcome = ?'); args.push(q.outcome); }
+  const rows = db.prepare(`SELECT e.* FROM lm_latency_episodes e WHERE ${where.join(' AND ')} ORDER BY e.opened_at DESC`).all(...args);
+  const w = lmWatch();
+  let items = rows.map((r) => {
+    const v = w.episodeView(r);
+    const at = String(v.subjectLabel || '').lastIndexOf(' @ ');
+    return { ...v, checkName: at >= 0 ? v.subjectLabel.slice(0, at) : v.subjectLabel, label: at >= 0 ? v.subjectLabel.slice(at + 3) : null };
+  });
+  if (q.q) {
+    const needle = String(q.q).toLowerCase();
+    items = items.filter((i) => [i.subjectLabel, i.siteKey, i.likelyHop, i.kind, i.state, i.outcome].some((x) => String(x == null ? '' : x).toLowerCase().includes(needle)));
+  }
+  if (q.sort && WATCH_SORTS.includes(q.sort)) {
+    const dir = q.dir === 'asc' ? 1 : -1;
+    items = [...items].sort((a, b) => {
+      const x = a[q.sort]; const y = b[q.sort];
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return dir * (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true }));
+    });
+  }
+  return items;
+}
+
+router.get('/watch/episodes', [...watchRules, query('page').optional().isInt({ min: 1 }), limitValidator], validate, (req, res, next) => {
+  try {
+    const items = watchItems(req.query);
+    const { limit, page, offset } = pageArgs(req);
+    res.json({ items: items.slice(offset, offset + limit), total: items.length, page, limit });
+  } catch (err) { next(err); }
+});
+
+router.get('/watch/episodes.csv', watchRules, validate, (req, res, next) => {
+  try {
+    sendCsv(res, 'latency-episodes', watchItems(req.query).slice(0, 5000), WATCH_CSV);
+  } catch (err) { next(err); }
+});
+
+router.get('/watch/summary', [
+  query('siteKey').optional().isString().trim().isLength({ max: 128 }),
+  query('days').optional().isInt({ min: 1, max: 365 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const days = req.query.days || 7;
+    const siteKey = req.query.siteKey || null;
+    const rows = db.prepare('SELECT * FROM lm_latency_episodes WHERE (opened_at >= ? OR state != \'closed\')' + (siteKey ? ' AND site_key = ?' : ''))
+      .all(...[isoAgo(days * 86400000), ...(siteKey ? [siteKey] : [])]);
+    const open = { watching: 0, degrading: 0, critical: 0 };
+    const closed = { oneOff: 0, sustained: 0, escalated: 0 };
+    const sites = new Map();
+    const subjects = new Map();
+    const siteRow = (k) => {
+      const key = k || '';
+      if (!sites.has(key)) sites.set(key, { siteKey: k || null, siteName: null, watching: 0, degrading: 0, critical: 0, oneOff7d: 0 });
+      return sites.get(key);
+    };
+    for (const r of rows) {
+      const s = siteRow(r.site_key);
+      if (r.state !== 'closed') { open[r.state] += 1; s[r.state] += 1; }
+      else if (r.outcome === 'one-off') { closed.oneOff += 1; s.oneOff7d += 1; }
+      else if (r.outcome === 'sustained') closed.sustained += 1;
+      else if (r.outcome === 'escalated') closed.escalated += 1;
+      const sk = `${r.source_id}|${r.subject_key}`;
+      const sub = subjects.get(sk) || { subjectLabel: r.subject_label, siteKey: r.site_key, count: 0, oneOff: 0, sustained: 0, escalated: 0, lastOpenedAt: null, peakRatio: null, openState: null };
+      sub.count += 1;
+      if (r.outcome === 'one-off') sub.oneOff += 1;
+      else if (r.outcome === 'sustained') sub.sustained += 1;
+      else if (r.outcome === 'escalated') sub.escalated += 1;
+      if (r.state !== 'closed') sub.openState = r.state;
+      if (!sub.lastOpenedAt || r.opened_at > sub.lastOpenedAt) sub.lastOpenedAt = r.opened_at;
+      if (r.peak_ratio != null) sub.peakRatio = Math.max(sub.peakRatio == null ? 0 : sub.peakRatio, Math.round(r.peak_ratio * 100) / 100);
+      subjects.set(sk, sub);
+    }
+    for (const s of sites.values()) {
+      if (!s.siteKey) continue;
+      const site = db.prepare('SELECT site_name FROM lm_sites WHERE site_key = ? LIMIT 1').get(s.siteKey);
+      s.siteName = site ? site.site_name : s.siteKey;
+    }
+
+    // Repeating and drifting subjects come from the issue rules themselves.
+    const srcMap = new Map(db.prepare('SELECT id, name FROM lm_sources').all().map((s) => [s.id, s.name]));
+    const watchIssues = lmWatch().computeWatchIssues(db, lmIssues().getThresholds(), srcMap);
+    let siteOfTarget = null;
+    if (siteKey) {
+      siteOfTarget = new Map(db.prepare(`
+        SELECT c.name AS n, l.label AS lab, COALESCE(l.site_key, c.site_key) AS sk FROM lm_check_locations l
+        JOIN lm_checks c ON c.source_id = l.source_id AND c.check_id = l.check_id WHERE l.is_overall = 0
+      `).all().map((r) => [`${r.n} @ ${r.lab}`, r.sk]));
+    }
+    const inSite = (i) => !siteKey || siteOfTarget.get(i.target) === siteKey;
+    const repeating = watchIssues.filter((i) => i.type === 'latency-pattern' && inSite(i)).length;
+    const drifting = watchIssues.filter((i) => i.type === 'latency-drift' && inSite(i)).length;
+
+    const topSubjects = [...subjects.values()]
+      .sort((a, b) => b.count - a.count || String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)))
+      .slice(0, 10);
+    const bySite = [...sites.values()].filter((s) => s.siteKey)
+      .sort((a, b) => (b.critical - a.critical) || (b.degrading - a.degrading) || (b.watching - a.watching) || (b.oneOff7d - a.oneOff7d));
+    res.json({ days, open, closed, repeating, drifting, bySite, topSubjects });
+  } catch (err) { next(err); }
+});
+
+router.get('/watch/episodes/:id', [param('id').isInt({ min: 1 }).toInt()], validate, (req, res, next) => {
+  try {
+    const r = db.prepare('SELECT * FROM lm_latency_episodes WHERE id = ?').get(req.params.id);
+    if (!r) return notFound(res, 'Episode');
+    const w = lmWatch();
+    const v = w.episodeView(r);
+    const at = String(v.subjectLabel || '').lastIndexOf(' @ ');
+    const openedS = Math.floor(Date.parse(r.opened_at) / 1000);
+    const endS = r.closed_at ? Math.floor(Date.parse(r.closed_at) / 1000) : nowSec();
+    let samples = [];
+    if (r.subject_kind === 'check' && Number.isFinite(openedS)) {
+      samples = db.prepare(`
+        SELECT sample_epoch, status, rtt_avg_ms, loss_pct FROM lm_check_history
+        WHERE source_id = ? AND check_id = ? AND checkpoint_id = ? AND sample_epoch >= ? AND sample_epoch <= ?
+        ORDER BY sample_epoch ASC LIMIT 2000
+      `).all(r.source_id, r.check_id, r.checkpoint_id, openedS - 1800, endS)
+        .map((h) => ({ at: epochIso(h.sample_epoch), status: h.status, rttAvgMs: h.rtt_avg_ms, lossPct: h.loss_pct }));
+    }
+    res.json({
+      ...v,
+      checkName: at >= 0 ? v.subjectLabel.slice(0, at) : v.subjectLabel,
+      label: at >= 0 ? v.subjectLabel.slice(at + 3) : null,
+      baselineMad: r.baseline_mad,
+      baselineSamples: r.baseline_samples,
+      areaOverBaseline: r.area_over_baseline,
+      samplesCount: r.samples,
+      elevatedSamples: r.elevated_samples,
+      trend: parseArr(r.trend_json),
+      samples,
+    });
+  } catch (err) { next(err); }
+});
+
 // ---- Switch ports to endpoints, server path (round 2) ------------------------
 
 const ENDPOINT_SORTS = ['deviceName', 'port', 'endpoint', 'endpointPlatform', 'portStatusText', 'protocol', 'lastSeen'];
@@ -1951,6 +2116,27 @@ function discoveryReport() {
     }
   }
   out.circuitCoverage = cov;
+  // Round 9: what the cross-platform identity index knows and how many links resolved through it.
+  out.identity = (() => {
+    const res = { refs: 0, byPlatform: {}, resolvedLinksByPlatform: {} };
+    try {
+      const idx = require('../services/hostIdentity').buildIdentityIndex(db, { fresh: true });
+      const seen = new Set();
+      for (const ref of idx.refs.values()) {
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        for (const p of ref.platforms) res.byPlatform[p] = (res.byPlatform[p] || 0) + 1;
+      }
+      res.refs = seen.size;
+      const cols = new Set(db.prepare("PRAGMA table_info('lm_topology_links')").all().map((c) => c.name));
+      if (cols.has('dst_platform')) {
+        for (const r of db.prepare("SELECT dst_platform p, COUNT(*) n FROM lm_topology_links WHERE COALESCE(stale, 0) = 0 AND dst_platform IS NOT NULL GROUP BY dst_platform").all()) {
+          res.resolvedLinksByPlatform[r.p] = r.n;
+        }
+      }
+    } catch { /* identity index unavailable */ }
+    return res;
+  })();
   out.devicesWithoutDatasourceInventory = db.prepare(`
     SELECT COUNT(*) n FROM lm_devices d WHERE d.stale = 0
       AND NOT EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = d.source_id AND x.lm_device_id = d.lm_device_id)
@@ -2144,6 +2330,22 @@ function buildGovernance() {
   }));
   const unrouted = db.prepare("SELECT COUNT(*) n FROM lm_alerts WHERE cleared = 0 AND COALESCE(rule, '') = ''").get().n;
 
+  // Why a description link stayed unresolved: no name token in the text, a name
+  // two ICC hosts share, or a name nothing knows (round 9, hostIdentity).
+  const unmatchedReason = (() => {
+    let idx = null;
+    try { idx = require('../services/hostIdentity').buildIdentityIndex(db); } catch { idx = null; }
+    const grammar = require('../services/logicmonitorGrammar');
+    return (desc) => {
+      const g = grammar.parseEndpointDescription(desc);
+      const m = String(desc || '').match(/(?:^|[\s(\[])(?:uplink\s+to|link\s+to|to|->)\s*[:-]?\s*(\S+)/i);
+      const tok = (g && g.host) || (m ? m[1].replace(/^[\s"'([<]+|[\s"')\]>,;.]+$/g, '') : '');
+      if (!tok || tok.length < 3) return 'no-name';
+      if (!idx) return 'unknown-name';
+      const r = require('../services/hostIdentity').explainToken(idx, tok);
+      return r.reason === 'ambiguous' ? 'ambiguous' : r.reason === 'no-name' ? 'no-name' : 'unknown-name';
+    };
+  })();
   const topologyUnmatched = db.prepare(`
     SELECT d.display_name AS device_name, i.display_name, i.description, l.src_device_id, l.src_instance_id
     FROM lm_topology_links l
@@ -2151,7 +2353,7 @@ function buildGovernance() {
     LEFT JOIN lm_interfaces i ON i.source_id = l.source_id AND i.instance_id = l.src_instance_id
     WHERE l.dst_device_id IS NULL AND l.dst_platform IS NULL AND COALESCE(l.stale, 0) = 0
     ORDER BY d.display_name, i.display_name
-  `).all().map((r) => ({ deviceId: r.src_device_id, instanceId: r.src_instance_id, deviceName: r.device_name, displayName: r.display_name, description: r.description }));
+  `).all().map((r) => ({ deviceId: r.src_device_id, instanceId: r.src_instance_id, deviceName: r.device_name, displayName: r.display_name, description: r.description, reason: unmatchedReason(r.description) }));
 
   // Model Review (round 2): every live network device with its code level,
   // uplink count (links to other LM devices) and endpoint count (switch
@@ -2386,7 +2588,9 @@ router.put('/config', (req, res, next) => {
         if (!['0', '1', 'true', 'false'].includes(t)) { bad.push({ path: key, msg: 'must be 0 or 1' }); continue; }
         writes.push([key, t === '1' || t === 'true' ? '1' : '0']);
       } else {
-        if (!(typeof v === 'number' ? Number.isInteger(v) : /^-?\d+$/.test(String(v).trim()))) { bad.push({ path: key, msg: 'must be an integer' }); continue; }
+        if (d.float) {
+          if (!Number.isFinite(Number(v)) || String(v).trim() === '') { bad.push({ path: key, msg: 'must be a number' }); continue; }
+        } else if (!(typeof v === 'number' ? Number.isInteger(v) : /^-?\d+$/.test(String(v).trim()))) { bad.push({ path: key, msg: 'must be an integer' }); continue; }
         writes.push([key, String(clampTo(key, v))]);
       }
     }

@@ -104,6 +104,15 @@ if (require.main === module) {
       } catch (err) {
         logger.warn(`[Demo] app-service linking failed: ${err.message}`);
       }
+      // Same reason: vcenter_hosts.serial / service_tag are demo-seeded after the packs.
+      try {
+        const db = require('./db/database');
+        const { applyHostIdentity } = require('./demo/generators/hostIdentity');
+        const r = db.transaction(() => applyHostIdentity(db))();
+        logger.info(`[Demo] host identity re-applied: ${r.paired} vCenter hosts paired with Dell service tags`);
+      } catch (err) {
+        logger.warn(`[Demo] host identity failed: ${err.message}`);
+      }
       // Same reason: the LogicMonitor demo scenario writes rows into the vCenter
       // and Zerto tables (management vmkernel uplinks, RPO alerts and a breached VPG).
       try {

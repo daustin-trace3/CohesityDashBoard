@@ -187,7 +187,7 @@ export function parseList(v) {
 // ICC platform ids as they arrive on endpoint rows (endpointPlatform).
 const PLATFORM_LABELS = {
   vcenter: 'vCenter', dell: 'Dell', unifi: 'UniFi', netapp: 'NetApp', pure: 'Pure', cohesity: 'Cohesity',
-  logicmonitor: 'LogicMonitor', nutanix: 'Nutanix', proxmox: 'Proxmox', aws: 'AWS', brocade: 'Brocade',
+  logicmonitor: 'LogicMonitor', nutanix: 'Nutanix', proxmox: 'Proxmox', aws: 'AWS', brocade: 'Brocade', zerto: 'Zerto',
 };
 export function platformLabel(id) {
   if (!id) return DASH;

@@ -12,7 +12,7 @@ const dellOmeApi = require('../services/dellOmeApi');
 const { dellPoller } = require('../services/dellPoller');
 const dellAdvisor = require('../services/advisors/dellAdvisor');
 const { fingerprint: varianceFingerprint } = require('../services/dellVariance');
-const { vcenterHostUtilization } = require('../services/dellVcenterUtil');
+const { vcenterHostUtilization, dellHostLinks, shortHost } = require('../services/dellVcenterUtil');
 const { warrantyAlertFilter } = require('../services/dellWarrantyCover');
 
 const router = express.Router();
@@ -425,6 +425,109 @@ router.get('/devices', [
       ) cc ON cc.ome_id = d.ome_id AND cc.device_id = d.device_id
       ${where} ORDER BY d.name
     `).all(...params));
+  } catch (err) { next(err); }
+});
+
+// ── Server to switch port (LogicMonitor round 9, WP5) ─────────────────────
+// A Dell server's switch ports come from LogicMonitor's endpoint mapping
+// (vCenter NIC hints, LLDP/CDP and description links). The ESX host paired by
+// service tag (dellHostLinks) lends its name and vmkernel addresses, because
+// the hints name the ESX host, not the Dell device. Everything here degrades
+// to 404 / empty when the LogicMonitor tables or service are absent.
+function lmEndpointsService() {
+  try {
+    const svc = require('../services/logicmonitorEndpoints');
+    // Same enabled test the topology route uses: an installed pack, else the platform switch.
+    const entry = require('../core/registry').getPlugin('logicmonitor');
+    const enabled = entry ? entry.enabled : String(getSetting('platform_logicmonitor_enabled') ?? '0') === '1';
+    if (!enabled) return null;
+    const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lm_topology_links'").get();
+    return has ? svc : null;
+  } catch { return null; }
+}
+
+function deviceIdentity(dev, links) {
+  const esxHost = links.byDevice.get(dev.id) || null;
+  const names = new Set();
+  const add = (n) => { const v = String(n || '').trim().toLowerCase(); if (v) { names.add(v); names.add(shortHost(v)); } };
+  add(dev.name); add(dev.os_hostname); add(esxHost);
+  if (!dev.os_hostname) {
+    try {
+      const c = db.prepare("SELECT json_extract(extra, '$.hostname') AS h FROM dell_components WHERE ome_id = ? AND device_id = ? AND kind = 'os' LIMIT 1").get(dev.ome_id, dev.device_id);
+      if (c && c.h) add(c.h);
+    } catch { /* no OS component */ }
+  }
+  const ips = new Set();
+  if (dev.ip_address) ips.add(String(dev.ip_address).trim());
+  if (esxHost) {
+    try {
+      for (const r of db.prepare("SELECT ip_address FROM vcenter_networks WHERE kind = 'vmkernel' AND host_name = ? AND ip_address IS NOT NULL").all(esxHost)) ips.add(r.ip_address);
+    } catch { /* no vmkernel inventory */ }
+  }
+  names.delete('');
+  return { esxHost, names: [...names], ips: [...ips] };
+}
+
+const NETWORK_SUMMARY_TTL_MS = 60 * 1000;
+let networkSummaryCache = null; // { at, data }
+
+/** GET /api/dell/devices/network-summary - { [deviceRowId]: { ports, switches, state } }
+ *  for the Devices page column. One computeEndpoints call, cached 60 s. */
+router.get('/devices/network-summary', (req, res, next) => {
+  try {
+    if (networkSummaryCache && Date.now() - networkSummaryCache.at < NETWORK_SUMMARY_TTL_MS) return res.json(networkSummaryCache.data);
+    const lm = lmEndpointsService();
+    if (!lm) return res.status(404).json({ error: 'LogicMonitor is not available.' });
+    const endpoints = lm.computeEndpoints(db);
+    const byEndpoint = new Map();
+    for (const e of endpoints) {
+      const k = String(e.endpoint || '').trim().toLowerCase();
+      if (!k) continue;
+      for (const key of new Set([k, shortHost(k)])) {
+        if (!byEndpoint.has(key)) byEndpoint.set(key, []);
+        byEndpoint.get(key).push(e);
+      }
+    }
+    const links = dellHostLinks(db);
+    const devices = db.prepare('SELECT id, ome_id, device_id, name, ip_address, os_hostname FROM dell_devices').all();
+    const data = {};
+    for (const dev of devices) {
+      const ident = deviceIdentity(dev, links);
+      const seen = new Set();
+      const rows = [];
+      for (const key of [...ident.names, ...ident.ips]) {
+        for (const e of byEndpoint.get(String(key).toLowerCase()) || []) {
+          const id = `${e.sourceId}|${e.deviceId}|${e.instanceId != null ? e.instanceId : e.port}|${e.nic || ''}`;
+          if (seen.has(id)) continue;
+          seen.add(id); rows.push(e);
+        }
+      }
+      if (!rows.length) continue;
+      const states = rows.map((r) => String(r.portStatusText || 'unknown').toLowerCase());
+      data[dev.id] = {
+        ports: rows.length,
+        switches: [...new Set(rows.map((r) => r.deviceName).filter(Boolean))],
+        ports_list: rows.slice(0, 4).map((r) => `${r.deviceName || '?'} ${r.port || '?'}`),
+        state: states.some((x) => x === 'down') ? 'down' : states.every((x) => x === 'up') ? 'up' : 'unknown',
+      };
+    }
+    networkSummaryCache = { at: Date.now(), data };
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+/** GET /api/dell/devices/:id/network - the switch ports, uplinks and
+ *  reachability checks behind one server (404 without LogicMonitor). */
+router.get('/devices/:id/network', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const dev = db.prepare('SELECT id, ome_id, device_id, name, service_tag, ip_address, os_hostname FROM dell_devices WHERE id = ?').get(req.params.id);
+    if (!dev) return res.status(404).json({ error: 'Device not found.' });
+    const lm = lmEndpointsService();
+    if (!lm) return res.status(404).json({ error: 'LogicMonitor is not available.' });
+    const ident = deviceIdentity(dev, dellHostLinks(db));
+    const path = lm.serverPath(db, { names: ident.names, ips: ident.ips });
+    const sources = [...new Set(path.switchPorts.flatMap((p) => String(p.source || '').split('+')).filter(Boolean))];
+    res.json({ esxHost: ident.esxHost, switchPorts: path.switchPorts, uplinks: path.uplinks, checks: path.checks, sources });
   } catch (err) { next(err); }
 });
 

@@ -22,6 +22,9 @@
 //   latency-anomaly           "DAL DR replication link" 3x baseline for the last 2 hours
 //   packet-loss-anomaly       "PHX VoIP gateway" 15% loss from slc-col01 for 2 hours
 //   location-degraded         3 checks from den-col01 slow at once (fold)
+// Round 9 latency watch (generators/logicmonitorWatchDemo.js): latency-degrading "NYC ... reachability @ phx-col01"
+//   (1.85x for 41 min, open episode), latency-pattern "DAL core reachability @ abq-col01" (four one-off spikes in
+//   6 days), latency-drift "PHX core reachability @ abq-col01" (35% above the earlier weeks for 7 days).
 // Round 8 (DataSource metrics): five Palo Alto firewalls (phx-fw-01/02, dal-fw-01/02, den-fw-01) and
 //   lm_ds_* rows for firewalls, the four F5s, Cisco device health, core and distribution optics, BGP and
 //   OSPF, with 7 days of history on the history metrics. Issues: fw-ha-degraded phx-fw-02 (peer),
@@ -1412,6 +1415,9 @@ function seedLogicmonitor(db, { now, encrypt }) {
   `).run();
 
   // -- WP1 passes: baselines, topology links, issue history ----------------------------
+  // Round 9 latency watch scenarios: bend three locations' history before the baselines are computed.
+  counts.watchHistory = require('./logicmonitorWatchDemo').seedWatchHistory(db, { sourceId, nowMs, checks: CHECKS });
+
   const checksMod = optionalModule('../../services/logicmonitorChecks');
   if (checksMod && checksMod.computeBaselines) {
     counts.baselines = checksMod.computeBaselines(db, sourceId, 7, 24, nowMs);
@@ -1446,6 +1452,10 @@ function seedLogicmonitor(db, { now, encrypt }) {
   // -- Round 3: WP-S1 passes, each skipped with a log line when absent -----------------
   wp1.s1 = runS1Passes(db, sourceId, counts, nowMs);
   counts.blameHistory = seedBlameHistory(db, { sourceId, byName });
+  // Round 9: replay the latency watch engine over the scenario locations and compute the drift reference.
+  try {
+    counts.watch = require('./logicmonitorWatchDemo').seedWatchRows(db, { sourceId, nowMs, checks: CHECKS });
+  } catch (err) { console.warn(`[seedDemo] logicmonitor latency watch scenarios skipped: ${err.message}`); }
 
   const issuesMod = optionalModule('../../services/logicmonitorIssues');
   if (issuesMod && issuesMod.reconcileIssueHistory) {

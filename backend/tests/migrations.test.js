@@ -203,7 +203,7 @@ function normalizeSchema(db) {
 const NEW_TABLES = [
   'plugins', 'users', 'groups', 'user_groups', 'role_grants',
   'auth_sessions', 'service_accounts', 'alert_notifications',
-  'cohesity_views', 'workload_history', 'cluster_gflags', 'gflag_changes',
+  'cohesity_views', 'cohesity_nodes', 'workload_history', 'cluster_gflags', 'gflag_changes',
   'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras', 'zerto_licenses', 'zerto_alert_catalog',
   'pure1_arrays', 'pure1_alerts', 'pure1_pods', 'pure1_metrics_history',
   'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vms',
@@ -266,6 +266,7 @@ const NEW_TABLES = [
   'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports',
   'lm_sites', 'lm_interface_baseline', 'lm_webhook_events', 'lm_blame_history',
   'lm_ds_instances', 'lm_ds_metrics', 'lm_ds_metrics_history',
+  'lm_latency_episodes', 'lm_check_reference',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms, cohesity
   // v12 alerts.closed_reason), so their

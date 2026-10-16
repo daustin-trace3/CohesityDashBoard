@@ -118,6 +118,28 @@ function seedCohesity(db, { now, encrypt }) {
 
   const clusterByName = new Map(clusters.map((c) => [c.name, c]));
 
+  // Node identity rows (cohesity_nodes), 4 per cluster, hostnames <cluster>-node-N
+  // with IPs in the cluster VIP's /24. Own rng so the streams below are unchanged.
+  const insertNode = db.prepare(`
+    INSERT INTO cohesity_nodes (cluster_id, node_id, hostname, ip, ips_json, serial, chassis_serial,
+      model, role, status, software_version, raw_json, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const cluster of clusters) {
+    const nrng = rngFor(`${cluster.name}-nodes`);
+    const vipRow = db.prepare('SELECT vip FROM clusters WHERE id = ?').get(cluster.id);
+    const base = String(vipRow.vip).split('.').slice(0, 3).join('.');
+    const model = pick(nrng, ['C6055', 'C4110', 'C5220']);
+    const chassisSerial = `CHS${randInt(nrng, 100000, 999999)}`;
+    for (let n = 1; n <= 4; n++) {
+      const ip = `${base}.${20 + n}`;
+      const serial = `NSN${randInt(nrng, 1000000, 9999999)}`;
+      insertNode.run(cluster.id, String(1000 + n), `${cluster.name}-node-${n}`, ip, JSON.stringify([ip]),
+        serial, chassisSerial, model, 'kData', 'kActive', SOFTWARE_VERSIONS[0],
+        JSON.stringify({ id: 1000 + n, ip, cohesityNodeSerial: serial }), nowIso);
+    }
+  }
+
   // ── Metrics history: 30 days @ 2h cadence ──────────────────────────────
   let metricsCount = 0;
   const insightsClusterName = clusters[0].name;

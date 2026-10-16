@@ -58,6 +58,12 @@ async function collect(ome) {
         d.memoryBytes = s.memoryBytes || null; d.diskBytes = s.diskBytes || null;
       }
     }
+    // OS hostname from the os component, written on the device row so joins skip the JSON.
+    const osHost = new Map();
+    for (const c of components) {
+      if (c.kind === 'os' && c.extra?.hostname && !osHost.has(c.deviceId)) osHost.set(c.deviceId, String(c.extra.hostname));
+    }
+    for (const d of devices) d.osHostname = osHost.get(d.deviceId) || null;
   }
 
   // Power Manager instant metrics — plugin-gated; first hard failure disables
@@ -186,20 +192,25 @@ const store = db.transaction((omeId, { info, devices, components, alerts, warran
     db.prepare('UPDATE dell_ome_instances SET version = ? WHERE id = ?').run(info.version, omeId);
   }
 
+  // Components not swept this poll keep the prior OS hostname.
+  const priorOsHost = new Map(db.prepare('SELECT device_id, os_hostname FROM dell_devices WHERE ome_id = ?')
+    .all(omeId).map((r) => [r.device_id, r.os_hostname]));
   db.prepare('DELETE FROM dell_devices WHERE ome_id = ?').run(omeId);
   const devStmt = db.prepare(`
     INSERT INTO dell_devices (ome_id, device_id, service_tag, name, model, device_type,
       chassis_service_tag, health, health_raw, power_state, connection_state, managed_state,
       asset_tag, ip_address, firmware_version, cpu_count, core_count, memory_bytes,
-      disk_bytes, power_w, inlet_temp_c, cpu_util_pct, mem_util_pct, last_inventory_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      disk_bytes, power_w, inlet_temp_c, cpu_util_pct, mem_util_pct, last_inventory_time,
+      idrac_mac, os_hostname)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const d of devices) {
     devStmt.run(omeId, d.deviceId, d.serviceTag, d.name, d.model, d.deviceType,
       d.chassisServiceTag, d.health, d.healthRaw, d.powerState, d.connectionState, d.managedState,
       d.assetTag, d.ipAddress, d.firmwareVersion, d.cpuCount ?? null, d.coreCount ?? null,
       d.memoryBytes ?? null, d.diskBytes ?? null, d.powerW ?? null, d.inletTempC ?? null,
-      d.cpuUtilPct ?? null, d.memUtilPct ?? null, d.lastInventoryTime);
+      d.cpuUtilPct ?? null, d.memUtilPct ?? null, d.lastInventoryTime,
+      d.idracMac ?? null, d.osHostname ?? priorOsHost.get(d.deviceId) ?? null);
   }
 
   if (components) {

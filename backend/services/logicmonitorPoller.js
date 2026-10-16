@@ -17,7 +17,10 @@ const { reconcileIssueHistory, getThreshold, isBehind, computeShadows } = requir
 const lmSites = require('./logicmonitorSites');
 const lmPath = require('./logicmonitorPath');
 const lmEndpoints = require('./logicmonitorEndpoints');
+const hostIdentity = require('./hostIdentity');
+const lmGrammar = require('./logicmonitorGrammar');
 const lmMetrics = require('./logicmonitorMetrics');
+const lmWatch = require('./logicmonitorWatch');
 const { isDemo } = require('./demoMode');
 const logger = require('../utils/logger');
 
@@ -653,9 +656,17 @@ function buildDeviceIndex(dbh, sourceId) {
     if (!index.has(key)) index.set(key, id);
     const short = key.includes('.') && !/^\d+(\.\d+){3}$/.test(key) ? key.split('.')[0] : null;
     if (short && short.length >= 3 && !index.has(short)) index.set(short, id);
+    // Round 9: "name(serial)" spellings index under the bare name and its short form too.
+    const bare = key.replace(/\s*\([^)]*\)\s*$/, '').trim();
+    if (bare && bare !== key) {
+      if (!index.has(bare)) index.set(bare, id);
+      const bareShort = bare.includes('.') && !/^\d+(\.\d+){3}$/.test(bare) ? bare.split('.')[0] : null;
+      if (bareShort && bareShort.length >= 3 && !index.has(bareShort)) index.set(bareShort, id);
+    }
   };
-  for (const d of dbh.prepare('SELECT lm_device_id, display_name, name, sysname, hostname, ips_json, eri_json FROM lm_devices WHERE source_id = ? AND stale = 0').all(sourceId)) {
+  for (const d of dbh.prepare('SELECT lm_device_id, display_name, name, sysname, hostname, serial, ips_json, eri_json FROM lm_devices WHERE source_id = ? AND stale = 0').all(sourceId)) {
     [d.display_name, d.name, d.sysname, d.hostname].forEach((n) => add(n, d.lm_device_id));
+    if (d.serial && String(d.serial).trim().length >= 7) add(d.serial, d.lm_device_id);
     for (const ip of parseJson(d.ips_json, []) || []) add(ip, d.lm_device_id);
     const eri = parseJson(d.eri_json, {}) || {};
     for (const k of ['mac', 'ip', 'fqdn']) for (const v of eri[k] || []) add(v, d.lm_device_id);
@@ -669,6 +680,14 @@ function makeResolver(index, selfId) {
     if (!k) return null;
     let id = index.get(k);
     if (id == null && k.includes('.') && !/^\d+(\.\d+){3}$/.test(k)) id = index.get(k.split('.')[0]);
+    if (id == null) {
+      // "nyx1-mgt-1(flm29210hwa)": cleanTok may already have eaten the closing paren.
+      const bare = k.replace(/\s*\([^)]*\)?\s*$/, '').trim();
+      if (bare && bare !== k) {
+        id = index.get(bare);
+        if (id == null && bare.includes('.') && !/^\d+(\.\d+){3}$/.test(bare)) id = index.get(bare.split('.')[0]);
+      }
+    }
     return id == null || id === selfId ? null : id;
   };
 }
@@ -739,19 +758,25 @@ function buildTopologyLinks(dbh, sourceId, { neighbors = null } = {}) {
   const index = buildDeviceIndex(dbh, sourceId);
   let iccResolve = null;
   try {
-    const iccIndex = lmEndpoints.buildIccHostIndex(dbh);
-    if (iccIndex.exact.size) iccResolve = lmEndpoints.makeIccResolver(iccIndex, index);
+    // Round 9: the identity index (names, IPs, MACs, serials, service tags across platforms).
+    const idIndex = hostIdentity.buildIdentityIndex(dbh, { fresh: true });
+    if (idIndex.refs.size) iccResolve = lmEndpoints.makeIccResolver(idIndex, index);
   } catch (err) {
     logger.warn(`[LmPoller] ICC host index failed, links resolve against LM only: ${safeMsg(err)}`);
   }
   const ifaces = dbh.prepare(`
-    SELECT lm_device_id, instance_id, display_name, description FROM lm_interfaces
+    SELECT lm_device_id, instance_id, display_name, description, props_json FROM lm_interfaces
     WHERE source_id = ? AND stale = 0 AND description IS NOT NULL AND description != ''
   `).all(sourceId);
   const rows = [];
+  const classUpdates = [];
   for (const i of ifaces) {
     const parse = (resolve) => parseLinkDescription(i.description, resolve);
-    const link = withIccFallback(parse(makeResolver(index, i.lm_device_id)), parse, iccResolve);
+    const lmResolve = makeResolver(index, i.lm_device_id);
+    // The description grammar (NetApp, Pure, iDRAC, CG tag) runs before the generic parser.
+    const g = lmGrammar.linkFromDescription(i.description, lmResolve, iccResolve);
+    if (g.cls !== undefined) classUpdates.push({ instanceId: i.instance_id, propsJson: i.props_json, cls: g.cls });
+    const link = g.link || withIccFallback(parse(lmResolve), parse, iccResolve);
     if (!link) continue;
     rows.push({ srcDeviceId: i.lm_device_id, srcInstanceId: i.instance_id, srcPort: i.display_name, protocol: 'description', ...link });
   }
@@ -786,6 +811,15 @@ function buildTopologyLinks(dbh, sourceId, { neighbors = null } = {}) {
         r.protocol, r.confidence, firstSeen.get(`${r.srcInstanceId}|${r.protocol}`) || null];
       if (hasPlatformCols) ins.run(...base, r.dstPlatform || null, r.dstRef || null);
       else ins.run(...base);
+    }
+    // CG tag class ("[t=srv ...]") kept on the interface as props_json.iccClass; cleared when the tag is gone.
+    const setProps = dbh.prepare('UPDATE lm_interfaces SET props_json = ? WHERE source_id = ? AND instance_id = ?');
+    for (const u of classUpdates) {
+      const props = parseJson(u.propsJson, {});
+      const base = props && typeof props === 'object' && !Array.isArray(props) ? props : {};
+      if ((base.iccClass || null) === (u.cls || null)) continue;
+      if (u.cls) base.iccClass = u.cls; else delete base.iccClass;
+      setProps.run(JSON.stringify(base), sourceId, u.instanceId);
     }
   });
   txn();
@@ -1058,6 +1092,9 @@ async function dailyWork(source, note) {
   try { lmPath.computeTiers(db, source.id); } catch (err) { logger.warn(`[LmPoller] tiers failed: ${err.message}`); }
   try { lmPath.computeCircuits(db, source.id); } catch (err) { logger.warn(`[LmPoller] circuits failed: ${err.message}`); }
   try { computeInterfaceBaselines(db, source.id); } catch (err) { logger.warn(`[LmPoller] interface baselines failed: ${err.message}`); }
+  try { lmWatch.pruneEpisodes(db); } catch (err) { logger.warn(`[LmPoller] episode prune failed: ${err.message}`); }
+  // Weekly (computeReference skips itself while its newest row is under 6 days old).
+  try { lmWatch.computeReference(db, source.id, require('./logicmonitorIssues').getThresholds()); } catch (err) { logger.warn(`[LmPoller] check reference failed: ${err.message}`); }
   const features = readFeatures(source.id);
   if (!features.probedAt) {
     try { await probeFeatures(source); } catch (err) { logger.warn(`[LmPoller] feature probe failed: ${err.message}`); }
@@ -1168,6 +1205,12 @@ async function pollSource(source) {
 
     const hourlyRes = await trySection('hourly', () => hourlyWork(source));
     if (!hourlyRes.ok) note('hourly', hourlyRes);
+
+    // Latency watch (round 9): episodes over the check samples just stored.
+    try {
+      const w = lmWatch.evaluateWatch(db, source, require('./logicmonitorIssues').getThresholds(), nowSec());
+      if (w.opened || w.promoted || w.closed) logger.info(`[LmPoller] ${source.name}: latency watch opened ${w.opened}, promoted ${w.promoted}, closed ${w.closed}`);
+    } catch (err) { logger.warn(`[LmPoller] latency watch failed: ${err.message}`); }
 
     if (dailyDue(source)) await dailyWork(source, note);
 
@@ -1475,7 +1518,7 @@ module.exports = {
   lmPoller, lmInterfacePoller, lmMetricsPoller, loadSources,
   initLogicmonitorPoller, createLogicmonitorPollerHandle, logicmonitorPollerHandle,
   pollSource, pollInterfaces, probeFeatures,
-  buildTopologyLinks, parseLinkDescription, parseNeighborInstance, buildDeviceIndex,
+  buildTopologyLinks, parseLinkDescription, parseNeighborInstance, buildDeviceIndex, makeResolver,
   storeAlerts, upsertAlertRow, computeInterfaceBaselines, storeDevices, storeCollectors, storeChecks, appendCheckRows, clearedSince,
   mapInterfaceColumns, summarizeInterfaceSeries, mapInterfaceResponse, matchInstance, statusText,
   checkWindow, interfaceWindow, rollupInterfaceDaily, pruneHistories, writeMetrics,

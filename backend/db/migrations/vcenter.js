@@ -427,4 +427,15 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 12,
+    up(db) {
+      // Host hardware identity from hardware.systemInfo (UNVERIFIED against a
+      // live vCenter). service_tag is the Dell service tag when present.
+      const cols = db.prepare("PRAGMA table_info('vcenter_hosts')").all().map((c) => c.name);
+      for (const c of ['serial', 'service_tag', 'uuid']) {
+        if (!cols.includes(c)) db.exec(`ALTER TABLE vcenter_hosts ADD COLUMN ${c} TEXT`);
+      }
+    },
+  },
 ];

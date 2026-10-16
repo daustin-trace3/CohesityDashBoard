@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Server, X, Cpu, MemoryStick, HardDrive, Network, Plug, MonitorSmartphone, AlertTriangle, BadgeCheck, Download, Layers, Database, Cable, ClipboardCheck, ScrollText, Sparkles } from 'lucide-react';
 import client from '../../api/client';
@@ -8,6 +8,7 @@ import { useTableControls, SortTh, TableControls, TablePager } from '../../compo
 import { BRAND, fmtNum, fmtBytes, healthTone, severityTone, fmtWhen } from './helpers';
 import { DriftModal } from './DellGovernancePage';
 import AdvisorReportModal from '../../components/AdvisorReportModal';
+import DellNetworkSection from '../../components/dell/DellNetworkSection';
 
 function ModalShell({ title, subtitle, icon: Icon, onClose, children, headerActions }) {
   // Portal to <body>: the page wrapper's fade-in animation leaves a transform
@@ -210,6 +211,8 @@ export function DeviceDetailModal({ deviceId, onClose }) {
             </div>
           )}
 
+          <DellNetworkSection deviceId={deviceId} deviceName={dev.name} />
+
           {['processor', 'memory', 'raid', 'vdisk', 'disk', 'nic', 'fc', 'psu', 'os'].map((k) => (
             <ComponentSection key={k} kind={k} rows={byKind(k)} />
           ))}
@@ -365,6 +368,14 @@ function ExportModal({ devices, filtered, filterActive, onClose }) {
   );
 }
 
+/** "switch port" for one port, "n ports on m switches" for several, '' for none. */
+function netText(n) {
+  if (!n || !n.ports) return '';
+  if (n.ports === 1) return (n.ports_list && n.ports_list[0]) || '1 port';
+  const m = (n.switches || []).length;
+  return `${n.ports} ports on ${m} switch${m === 1 ? '' : 'es'}`;
+}
+
 export default function DellDevicesPage() {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
@@ -372,14 +383,26 @@ export default function DellDevicesPage() {
   const [detailId, setDetailId] = useState(null);
   const [driftReportId, setDriftReportId] = useState(null);
   const [showExport, setShowExport] = useState(false);
+  // Switch ports per device row id; null while loading or when LogicMonitor is
+  // off / unavailable (the route answers 404), which hides the column.
+  const [netSummary, setNetSummary] = useState(null);
 
-  const load = useCallback(() => client.get('/dell/devices')
-    .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
-    .catch(() => { setRows([]); toast({ type: 'error', title: 'Failed to load devices' }); }), [toast]);
+  const load = useCallback(() => {
+    client.get('/dell/devices/network-summary')
+      .then(({ data }) => setNetSummary(data || {}))
+      .catch(() => setNetSummary(null));
+    return client.get('/dell/devices')
+      .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
+      .catch(() => { setRows([]); toast({ type: 'error', title: 'Failed to load devices' }); });
+  }, [toast]);
 
   useEffect(() => { load(); }, [load]);
 
-  const list = rows || [];
+  const hasNet = netSummary != null;
+  const list = useMemo(() => (rows || []).map((d) => {
+    const n = netSummary && netSummary[d.id];
+    return { ...d, net_ports: n ? n.ports : 0, net_text: netText(n) };
+  }), [rows, netSummary]);
   // Power Manager is licensed per OME — hide the Watts column entirely when
   // nothing in the estate is metered.
   const hasPm = list.some((d) => d.power_w != null);
@@ -434,6 +457,7 @@ export default function DellDevicesPage() {
                 <SortTh k="core_count" label="Cores" ctl={ctl} align="right" />
                 <SortTh k="memory_bytes" label="Memory" ctl={ctl} align="right" />
                 {hasPm && <SortTh k="power_w" label="Watts" ctl={ctl} align="right" />}
+                {hasNet && <SortTh k="net_ports" label="Switch ports" ctl={ctl} />}
                 <SortTh k="ip_address" label="IP" ctl={ctl} />
                 <SortTh k="ome_name" label="OME" ctl={ctl} />
               </tr></thead>
@@ -474,6 +498,13 @@ export default function DellDevicesPage() {
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(d.core_count)}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{d.memory_bytes ? fmtBytes(d.memory_bytes) : '—'}</td>
                     {hasPm && <td className="py-2 pr-3 text-right tnum text-ink-muted">{d.power_w != null ? fmtNum(Math.round(d.power_w)) : '—'}</td>}
+                    {hasNet && (
+                      <td className="py-2 pr-3 text-[11px] whitespace-nowrap">
+                        {d.net_ports
+                          ? <span className={netSummary[d.id].state === 'down' ? 'text-status-crit' : 'text-ink-muted'} title={(netSummary[d.id].ports_list || []).join(', ')}>{d.net_text}</span>
+                          : <span className="text-ink-faint">—</span>}
+                      </td>
+                    )}
                     <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{d.ip_address || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted">{d.ome_name}</td>
                   </tr>

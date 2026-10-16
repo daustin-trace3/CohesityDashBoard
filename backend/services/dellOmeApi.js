@@ -142,30 +142,42 @@ async function fetchDeviceTypeMap(ome) {
   } catch { return DEVICE_TYPE_FALLBACK; }
 }
 
+/** Lower-case colon-form MAC, or null when the value is not a 12-hex-digit MAC. */
+function normMac(v) {
+  if (v == null) return null;
+  const hex = String(v).toLowerCase().replace(/[^0-9a-f]/g, '');
+  return hex.length === 12 ? hex.match(/../g).join(':') : null;
+}
+
 /** All managed devices. The one call a poll cannot survive without. */
 async function fetchDevices(ome, typeMap) {
   const rows = await oGetAll(ome, '/api/DeviceService/Devices?$top=500');
-  return rows.map((d) => {
-    const mgmt = Array.isArray(d.DeviceManagement) ? d.DeviceManagement[0] : null;
-    return {
-      deviceId: d.Id,
-      serviceTag: d.DeviceServiceTag || d.Identifier || null,
-      name: d.DeviceName || null,
-      model: d.Model || null,
-      deviceType: typeMap[d.Type] || String(d.Type ?? ''),
-      chassisServiceTag: d.ChassisServiceTag || null,
-      health: HEALTH_MAP[d.Status] || 'unknown',
-      healthRaw: d.Status ?? null,
-      powerState: POWER_MAP[d.PowerState] || (d.PowerState != null ? String(d.PowerState) : null),
-      connectionState: d.ConnectionState === true || d.ConnectionState === 'true' ? 1
-        : d.ConnectionState === false || d.ConnectionState === 'false' ? 0 : null,
-      managedState: d.ManagedState != null ? String(d.ManagedState) : null,
-      assetTag: d.AssetTag || null,
-      ipAddress: mgmt?.NetworkAddress || null,
-      firmwareVersion: mgmt?.ManagementProfile?.[0]?.Version || null,
-      lastInventoryTime: d.LastInventoryTime || null,
-    };
-  });
+  return rows.map((d) => parseDevice(d, typeMap));
+}
+
+/** One OME /Devices row -> device record (pure; exported for tests). */
+function parseDevice(d, typeMap) {
+  const mgmt = Array.isArray(d.DeviceManagement) ? d.DeviceManagement[0] : null;
+  return {
+    deviceId: d.Id,
+    serviceTag: d.DeviceServiceTag || d.Identifier || null,
+    name: d.DeviceName || null,
+    model: d.Model || null,
+    deviceType: typeMap[d.Type] || String(d.Type ?? ''),
+    chassisServiceTag: d.ChassisServiceTag || null,
+    health: HEALTH_MAP[d.Status] || 'unknown',
+    healthRaw: d.Status ?? null,
+    powerState: POWER_MAP[d.PowerState] || (d.PowerState != null ? String(d.PowerState) : null),
+    connectionState: d.ConnectionState === true || d.ConnectionState === 'true' ? 1
+      : d.ConnectionState === false || d.ConnectionState === 'false' ? 0 : null,
+    managedState: d.ManagedState != null ? String(d.ManagedState) : null,
+    assetTag: d.AssetTag || null,
+    ipAddress: mgmt?.NetworkAddress || null,
+    // UNVERIFIED field name: OME DeviceManagement entries are expected to carry MacAddress.
+    idracMac: normMac(mgmt?.MacAddress),
+    firmwareVersion: mgmt?.ManagementProfile?.[0]?.Version || null,
+    lastInventoryTime: d.LastInventoryTime || null,
+  };
 }
 
 // ── Per-device hardware inventory ───────────────────────────────────────────
@@ -965,7 +977,7 @@ async function testConnection(candidate) {
 }
 
 module.exports = {
-  fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
+  fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, parseDevice, normMac, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, probeAlerts, fetchWarranties, fetchFirmwareCompliance,
   fetchDeviceMetrics, fetchDevicePowerThermal, probeInventory, testConnection, invalidateSession,
   fetchConfigCompliance, fetchJobs, fetchConfigProfiles, fetchHardwareLogs,

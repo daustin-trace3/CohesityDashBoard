@@ -506,4 +506,20 @@ module.exports = [
       }
     },
   },
+  {
+    version: 14,
+    up(db) {
+      // Per-node identity (hostname, IPs, serials) captured by the cluster poll
+      // so cross-platform identity matching (LogicMonitor, Server 360) can
+      // resolve a Cohesity node without a live API call.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cohesity_nodes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, cluster_id INTEGER NOT NULL, node_id TEXT, hostname TEXT, ip TEXT,
+          ips_json TEXT, serial TEXT, chassis_serial TEXT, model TEXT, role TEXT, status TEXT, software_version TEXT,
+          raw_json TEXT, captured_at TEXT, UNIQUE(cluster_id, node_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cohesity_nodes_cluster ON cohesity_nodes(cluster_id);
+      `);
+    },
+  },
 ];

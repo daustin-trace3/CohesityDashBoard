@@ -359,4 +359,15 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 9,
+    up(db) {
+      // iDRAC management MAC (OME DeviceManagement[0].MacAddress, UNVERIFIED
+      // field name) and the OS hostname copied from the os component row.
+      const cols = db.prepare("PRAGMA table_info('dell_devices')").all().map((c) => c.name);
+      for (const c of ['idrac_mac', 'os_hostname']) {
+        if (!cols.includes(c)) db.exec(`ALTER TABLE dell_devices ADD COLUMN ${c} TEXT`);
+      }
+    },
+  },
 ];

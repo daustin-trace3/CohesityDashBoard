@@ -1,5 +1,5 @@
 const express = require('express');
-const { param, validationResult } = require('express-validator');
+const { param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { fetchNodes, fetchNodesV2, fetchChassis } = require('../services/cohesityApi');
 const { isDemo } = require('../services/demoMode');
@@ -12,6 +12,31 @@ function validate(req, res, next) {
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
   next();
 }
+
+/**
+ * GET /api/cohesity/hardware/nodes?clusterId=
+ * Stored node identity rows (cohesity_nodes) for Server 360 and identity consumers.
+ * Declared before /:clusterId so "nodes" is not parsed as a cluster id.
+ */
+router.get('/nodes', [query('clusterId').optional().isInt({ min: 1 })], validate, (req, res, next) => {
+  try {
+    const cid = req.query.clusterId ? Number(req.query.clusterId) : null;
+    const rows = db.prepare(`
+      SELECT n.id, n.cluster_id AS clusterId, c.name AS clusterName, n.node_id AS nodeId, n.hostname, n.ip,
+             n.ips_json, n.serial, n.chassis_serial AS chassisSerial, n.model, n.role, n.status,
+             n.software_version AS softwareVersion, n.captured_at
+        FROM cohesity_nodes n LEFT JOIN clusters c ON c.id = n.cluster_id
+       ${cid ? 'WHERE n.cluster_id = ?' : ''} ORDER BY n.cluster_id, n.node_id
+    `).all(...(cid ? [cid] : []));
+    res.json(rows.map(({ ips_json, captured_at, ...r }) => {
+      let ips = [];
+      try { ips = ips_json ? JSON.parse(ips_json) : []; } catch { /* leave empty */ }
+      return { ...r, ips, capturedAt: captured_at ? new Date(captured_at).toISOString() : null };
+    }));
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * GET /api/hardware/:clusterId

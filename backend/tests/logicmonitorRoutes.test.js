@@ -538,7 +538,7 @@ describe('logicmonitor data routes', () => {
     expect(res.body.alertHygiene.ackedOpenOver7d.map((a) => a.id)).toEqual(['DS1']);
     expect(res.body.alertHygiene.noisyConditions[0]).toMatchObject({ conditionKey: 'lm:1:core-sw1:Cisco_CPU_SNMP:CPU:CPUBusyPercent', count30d: 3 });
     expect(res.body.alertHygiene.unrouted).toBe(1);
-    expect(res.body.topologyUnmatched).toEqual([{ deviceId: 101, instanceId: 2, deviceName: 'core-sw1', displayName: 'Gi1/0/2', description: null }]);
+    expect(res.body.topologyUnmatched).toEqual([{ deviceId: 101, instanceId: 2, deviceName: 'core-sw1', displayName: 'Gi1/0/2', description: null, reason: 'no-name' }]);
     expect(res.body.configChanges[0]).toMatchObject({ scope: 'admins', item: 'bob' });
     expect(res.body.configChanges[0].detectedAt).toMatch(/Z$/);
     expect(sid).toBeGreaterThan(0);
@@ -600,7 +600,7 @@ describe('logicmonitor data routes', () => {
     const g = await request(app).get(`${API}/config`);
     expect(g.body.thresholds.lm_if_util_warn_pct).toBe(80);
     expect(g.body.thresholds.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(g.body.thresholds)).toHaveLength(45);
+    expect(Object.keys(g.body.thresholds)).toHaveLength(55);
     for (const k of THRESHOLD_KEYS) expect(g.body.thresholds).toHaveProperty(k);
     expect(g.body.ranges.lm_if_util_warn_pct).toEqual({ min: 50, max: 100, default: 80 });
     const put = await request(app).put(`${API}/config`).send({ lm_if_util_warn_pct: 150, lm_if_flap_warn: 0, lm_dead_grace_min: 15 });
@@ -920,6 +920,8 @@ describe('logicmonitor round 3 routes', () => {
     expect(keys.location).toBe('PHX');
     expect(disc.body.circuitCoverage).toMatchObject({ interfaces: 4, wan: 1, withCircuitId: 0 });
     expect(disc.body.devicesWithoutDatasourceInventory).toBe(2);
+    // round 9: the identity block is always present (counts may be empty on a test database)
+    expect(disc.body.identity).toMatchObject({ refs: expect.any(Number), byPlatform: expect.any(Object), resolvedLinksByPlatform: expect.any(Object) });
 
     const exp = await request(app).get(`${API}/settings/export.json`);
     expect(exp.status).toBe(200);

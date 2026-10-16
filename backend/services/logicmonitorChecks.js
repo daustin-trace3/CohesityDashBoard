@@ -310,33 +310,58 @@ const locationKey = (sourceId, checkId, checkpointId) => `${sourceId}|${checkId}
 const round = (v, d = 0) => (v == null ? null : Number(Number(v).toFixed(d)));
 
 /**
- * Pure rule for one location: last samples (newest first) plus its baseline
- * row and thresholds -> {anomaly, severity, meanRtt, meanLoss}. anomaly is
- * null | 'latency' | 'loss' | 'down'.
+ * Classify one sample window against its hour baseline. recent is newest
+ * first (only the first 3 rows are used). Returns {level, kind, latency,
+ * loss, severity, meanRtt, meanLoss, ratio}: level is 'normal' | 'elevated' |
+ * 'severe' (severe: loss at the critical percentage, or RTT at least
+ * t.lm_watch_severe_ratio times the baseline median, 2 when t does not carry
+ * the key), kind is 'loss' | 'latency' | null (loss wins when both fire, as
+ * the original rule did), latency and loss say which rules fired, severity is
+ * the original warning/critical verdict of the winning rule and ratio is the
+ * mean RTT over the baseline median (null without both).
  */
-function evaluateLocationRule({ lastStatus, recent, baseline, t }) {
-  if (lastStatus === 'down') return { anomaly: 'down', severity: 'warning', meanRtt: null, meanLoss: null };
+function classifySample(recent, baseline, t) {
   const last3 = (recent || []).slice(0, 3);
   const meanRtt = mean(last3.map((r) => r.rtt_avg_ms));
   const meanLoss = mean(last3.map((r) => r.loss_pct));
-  if (!baseline || (baseline.samples || 0) < t.lm_check_baseline_min_samples || last3.length < 3) {
-    return { anomaly: null, severity: null, meanRtt, meanLoss };
-  }
+  const out = { level: 'normal', kind: null, latency: false, loss: false, severity: null, meanRtt, meanLoss, ratio: null };
+  if (!baseline || (baseline.samples || 0) < t.lm_check_baseline_min_samples || last3.length < 3) return out;
+  if (meanRtt != null && baseline.rtt_median != null && baseline.rtt_median > 0) out.ratio = meanRtt / baseline.rtt_median;
   const k = t.lm_check_latency_k;
+  let lossSeverity = null;
+  let latencySeverity = null;
   if (meanLoss != null && baseline.loss_median != null) {
     const limit = baseline.loss_median + k * Math.max(baseline.loss_mad || 0, 1);
     if (meanLoss > limit && meanLoss >= t.lm_check_loss_min_pct) {
-      return { anomaly: 'loss', severity: meanLoss >= t.lm_check_loss_crit_pct ? 'critical' : 'warning', meanRtt, meanLoss };
+      out.loss = true;
+      lossSeverity = meanLoss >= t.lm_check_loss_crit_pct ? 'critical' : 'warning';
     }
   }
   if (meanRtt != null && baseline.rtt_median != null) {
     const limit = baseline.rtt_median + k * Math.max(baseline.rtt_mad || 0, t.lm_check_latency_floor_ms);
     if (meanRtt > limit && meanRtt > t.lm_check_latency_min_ms) {
-      const critical = meanRtt > 2 * baseline.rtt_median && meanRtt > 100;
-      return { anomaly: 'latency', severity: critical ? 'critical' : 'warning', meanRtt, meanLoss };
+      out.latency = true;
+      latencySeverity = meanRtt > 2 * baseline.rtt_median && meanRtt > 100 ? 'critical' : 'warning';
     }
   }
-  return { anomaly: null, severity: null, meanRtt, meanLoss };
+  if (!out.loss && !out.latency) return out;
+  const severeRatio = t.lm_watch_severe_ratio != null ? t.lm_watch_severe_ratio : 2;
+  out.kind = out.loss ? 'loss' : 'latency';
+  out.severity = out.loss ? lossSeverity : latencySeverity;
+  const severe = (out.loss && lossSeverity === 'critical') || (out.latency && out.ratio != null && out.ratio >= severeRatio);
+  out.level = severe ? 'severe' : 'elevated';
+  return out;
+}
+
+/**
+ * Pure rule for one location: last samples (newest first) plus its baseline
+ * row and thresholds -> {anomaly, severity, meanRtt, meanLoss}. anomaly is
+ * null | 'latency' | 'loss' | 'down'. The sample math lives in classifySample.
+ */
+function evaluateLocationRule({ lastStatus, recent, baseline, t }) {
+  if (lastStatus === 'down') return { anomaly: 'down', severity: 'warning', meanRtt: null, meanLoss: null };
+  const c = classifySample(recent, baseline, t);
+  return { anomaly: c.kind, severity: c.severity, meanRtt: c.meanRtt, meanLoss: c.meanLoss };
 }
 
 /**
@@ -504,5 +529,5 @@ module.exports = {
   learnCheckColumns, mapCheckRow, parseCheckSeries, statusFromCode,
   median, mad, mean,
   computeBaselines, rollupCheckDaily,
-  evaluateLocationRule, evaluateLocations, evaluateAnomalies, locationKey,
+  classifySample, evaluateLocationRule, evaluateLocations, evaluateAnomalies, locationKey,
 };

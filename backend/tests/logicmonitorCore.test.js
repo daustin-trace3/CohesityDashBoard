@@ -29,6 +29,7 @@ const TABLES = [
   'lm_admins', 'lm_roles', 'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports',
   'lm_sites', 'lm_interface_baseline', 'lm_webhook_events', 'lm_blame_history',
   'lm_ds_instances', 'lm_ds_metrics', 'lm_ds_metrics_history',
+  'lm_latency_episodes', 'lm_check_reference',
 ];
 
 beforeAll(() => {
@@ -66,10 +67,10 @@ function insertDevice(sourceId, o = {}) {
 }
 
 describe('migrations/logicmonitor.js', () => {
-  it('creates all 28 lm_* tables and the four dataset views', () => {
+  it('creates all 30 lm_* tables and the four dataset views', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lm_%'").all().map((r) => r.name);
     for (const t of TABLES) expect(tables, `missing ${t}`).toContain(t);
-    expect(tables.length).toBe(28);
+    expect(tables.length).toBe(30);
     const views = db.prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name LIKE 'logicmonitor_%'").all().map((r) => r.name).sort();
     expect(views).toEqual(['logicmonitor_alerts', 'logicmonitor_checks', 'logicmonitor_devices', 'logicmonitor_interfaces']);
   });
@@ -660,7 +661,7 @@ describe('logicmonitorIssues: rules', () => {
     expect(t.lm_if_util_warn_pct).toBe(50);
     expect(t.lm_check_latency_k).toBe(10);
     expect(t.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(t).length).toBe(45);
+    expect(Object.keys(t).length).toBe(55);
     setSetting('lm_if_util_warn_pct', '80');
     setSetting('lm_check_latency_k', '3');
   });
@@ -1330,7 +1331,7 @@ describe('round 3: manifest seams (C6)', () => {
 
   it('exposes three read-only database capabilities that pass the host validator', () => {
     const manifest = require('../platforms/logicmonitor');
-    expect(manifest.agentCapabilities.map((c) => c.id)).toEqual(['lm_port_history', 'lm_sdt_lookup', 'lm_path_blame']);
+    expect(manifest.agentCapabilities.map((c) => c.id)).toEqual(['lm_port_history', 'lm_sdt_lookup', 'lm_path_blame', 'lm_latency_watch']);
     for (const c of manifest.agentCapabilities) {
       expect(/^[a-z0-9_-]{2,40}$/.test(c.id)).toBe(true);
       expect(c.risk).toBe('read-only');

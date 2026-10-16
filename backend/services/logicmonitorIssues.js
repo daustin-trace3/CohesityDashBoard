@@ -52,6 +52,17 @@ const THRESHOLD_DEFS = {
   lm_wlan_client_cap_warn_pct: { def: 80, min: 50, max: 100, label: 'Controller client capacity warning (%)' },
   lm_wlan_ap_avail_warn_pct: { def: 50, min: 5, max: 100, label: 'Controller AP availability warning (%)' },
   lm_wlan_ap_fold: { def: 5, min: 2, max: 200, label: 'Wireless APs or radios before they fold into one issue' },
+  // Round 9: latency watch (logicmonitorWatch.js) and anomaly hysteresis.
+  lm_watch_sustain_minutes: { def: 15, min: 5, max: 120, label: 'Minutes elevated before a watch becomes degrading' },
+  lm_watch_trend_windows: { def: 3, min: 2, max: 10, label: 'Rising 10 minute windows that promote a watch' },
+  lm_watch_severe_ratio: { def: 2, min: 1.2, max: 10, float: true, label: 'Severe spike ratio over baseline' },
+  lm_watch_clear_samples: { def: 3, min: 1, max: 20, label: 'Normal samples that close an episode' },
+  lm_watch_repeat_days: { def: 7, min: 1, max: 30, label: 'Repeat window (days)' },
+  lm_watch_repeat_min: { def: 3, min: 2, max: 20, label: 'One-off episodes in the window that raise a pattern' },
+  lm_watch_drift_pct: { def: 25, min: 5, max: 200, label: 'Baseline drift against the reference (%)' },
+  lm_watch_drift_crit_pct: { def: 50, min: 10, max: 400, label: 'Baseline drift warning (%)' },
+  lm_watch_reference_days: { def: 28, min: 14, max: 90, label: 'Drift reference window (days)' },
+  lm_issue_clear_absences: { def: 2, min: 1, max: 10, label: 'Polls an anomaly must be absent before its issue clears' },
 };
 
 /** Text settings (site roots, WAN overrides): a trimmed string, capped. */
@@ -73,6 +84,7 @@ function getThreshold(key) {
   if (raw == null || raw === '') return d.def;
   const n = Number(raw);
   if (!Number.isFinite(n)) return d.def;
+  if (d.float) return Math.min(d.max, Math.max(d.min, Math.round(n * 10) / 10));
   return Math.min(d.max, Math.max(d.min, Math.round(n)));
 }
 
@@ -763,6 +775,11 @@ function computeIssues({ nowMs = Date.now() } = {}) {
     issues.push(...checks.evaluateAnomalies(db, { nowMs }));
   } catch { /* a check evaluation fault must not hide the other issues */ }
 
+  // Round 9: latency watch (degrading episodes, repeating one-offs, drift).
+  try {
+    issues.push(...require('./logicmonitorWatch').computeWatchIssues(db, t, srcName));
+  } catch { /* a watch fault must not hide the other issues */ }
+
   // device-new, with the bootstrap guard: a portal whose first successful
   // poll is younger than the window would flag its whole inventory.
   if (t.lm_new_device_days > 0) {
@@ -794,7 +811,7 @@ const issueKey = (i) => `${i.type}|${i.source}|${i.target}`;
 // one records its blamed hop once per (issue, hop) in lm_blame_history for the
 // Correlation page; the blame is recomputed here because the issue object only
 // holds the text.
-const CHECK_BLAME_TYPES = new Set(['check-down', 'check-location-down', 'latency-anomaly', 'packet-loss-anomaly']);
+const CHECK_BLAME_TYPES = new Set(['check-down', 'check-location-down', 'latency-anomaly', 'packet-loss-anomaly', 'latency-degrading', 'loss-degrading']);
 function recordCheckBlames(current) {
   try {
     const cands = [...current.values()].filter((i) => CHECK_BLAME_TYPES.has(i.type) && /Likely hop:/.test(String(i.message || '')));
@@ -826,13 +843,20 @@ function recordCheckBlames(current) {
   } catch { /* blame history is best effort */ }
 }
 
+// Anomaly issues flap with the data, so an open row survives
+// lm_issue_clear_absences consecutive polls without its key before it resolves
+// (lm_issue_history.absent_polls counts them; a poll that has the key resets it).
+const ANOMALY_TYPES = new Set(['latency-anomaly', 'packet-loss-anomaly', 'interface-util-anomaly', 'interface-error-anomaly', 'latency-degrading', 'loss-degrading']);
+
 const reconcileIssueHistoryTxn = db.transaction(() => {
   const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
   const open = db.prepare("SELECT * FROM lm_issue_history WHERE status = 'open'").all();
+  const clearAbsences = getThreshold('lm_issue_clear_absences');
 
   const touch = db.prepare(`
-    UPDATE lm_issue_history SET last_seen = datetime('now'), message = ?, severity = ? WHERE id = ?
+    UPDATE lm_issue_history SET last_seen = datetime('now'), message = ?, severity = ?, absent_polls = 0 WHERE id = ?
   `);
+  const absent = db.prepare('UPDATE lm_issue_history SET absent_polls = ? WHERE id = ?');
   const resolve = db.prepare(`
     UPDATE lm_issue_history SET status = 'resolved', resolved_at = datetime('now'), last_seen = datetime('now') WHERE id = ?
   `);
@@ -847,6 +871,8 @@ const reconcileIssueHistoryTxn = db.transaction(() => {
     if (cur) {
       openKeys.add(row.issue_key);
       touch.run(cur.message, cur.severity, row.id);
+    } else if (ANOMALY_TYPES.has(row.type) && (row.absent_polls || 0) + 1 < clearAbsences) {
+      absent.run((row.absent_polls || 0) + 1, row.id);
     } else {
       resolve.run(row.id);
     }
@@ -928,7 +954,7 @@ const reconcileIssueHistory = () => {
 module.exports = {
   THRESHOLD_DEFS, getThreshold, getThresholds, getTextSetting,
   compareBuild, isBehind,
-  computeIssues, issueKey, reconcileIssueHistory,
+  computeIssues, issueKey, reconcileIssueHistory, ANOMALY_TYPES,
   computeShadows, shadowedAlertCounts, isShadowedIssue,
   // Round 8 helpers shared with routes/logicmonitor.js.
   loadDsIndex, computeMetricIssues, haText, failoverText, availState, poolOf, devVal, devMax, devInstances,

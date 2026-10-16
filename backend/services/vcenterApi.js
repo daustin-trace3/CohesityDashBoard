@@ -234,6 +234,9 @@ const HOST_PROPS = [
   'config.product.version', 'config.product.build',
   'hardware.biosInfo.biosVersion', 'hardware.biosInfo.releaseDate',
   'hardware.systemInfo.vendor', 'hardware.systemInfo.model',
+  // Hardware identity. UNVERIFIED against a live vCenter (none available when
+  // written): property paths per the vim25 HostSystemInfo type.
+  'hardware.systemInfo.serialNumber', 'hardware.systemInfo.uuid', 'hardware.systemInfo.otherIdentifyingInfo',
   // Governance + network config (drift detection, Network page)
   'config.dateTimeInfo.ntpConfig.server', 'config.network.dnsConfig.address',
   'config.service.service',
@@ -283,6 +286,32 @@ const vimArray = (val, elementName) => asArray(val?.[elementName] ?? (elementNam
 // ArrayOfString parses as { string: [...] } — used by NTP/DNS server lists.
 const stringList = (val) => asArray(val?.string ?? val).map(flat).filter(v => v != null).map(String);
 const num = (v) => { const n = Number(flat(v)); return Number.isFinite(n) ? n : null; };
+
+/**
+ * Host hardware identity from the SOAP properties. UNVERIFIED live.
+ * otherIdentifyingInfo is an array of HostSystemIdentificationInfo
+ * { identifierValue, identifierType: { key } } with keys ServiceTag, AssetTag,
+ * EnclosureSerialNumberTag, SerialNumberTag. Absence yields nulls, never a throw.
+ */
+function parseHostIdentity(props) {
+  const p = props || {};
+  const serialNumber = flat(p['hardware.systemInfo.serialNumber']);
+  const serial = serialNumber != null && String(serialNumber).trim() ? String(serialNumber).trim() : null;
+  const uuidRaw = flat(p['hardware.systemInfo.uuid']);
+  const uuid = uuidRaw != null && String(uuidRaw).trim() ? String(uuidRaw).trim() : null;
+  let serviceTag = null;
+  let serialTag = null;
+  for (const e of vimArray(p['hardware.systemInfo.otherIdentifyingInfo'], 'HostSystemIdentificationInfo')) {
+    const key = String(flat(e?.identifierType?.key) ?? '');
+    const val = flat(e?.identifierValue);
+    if (val == null || !String(val).trim()) continue;
+    if (key === 'ServiceTag' && !serviceTag) serviceTag = String(val).trim();
+    else if (key === 'SerialNumberTag' && !serialTag) serialTag = String(val).trim();
+  }
+  // Without a ServiceTag entry, a 7-character alphanumeric serial is a Dell tag.
+  if (!serviceTag && serial && /^[A-Za-z0-9]{7}$/.test(serial)) serviceTag = serial;
+  return { serial: serial || serialTag, serviceTag, uuid };
+}
 
 /** Host networking structures → typed rows for vcenter_networks. */
 function parseHostNetworks(hostName, props) {
@@ -729,6 +758,7 @@ async function fetchInventorySoap(vc) {
         biosReleaseDate: props['hardware.biosInfo.releaseDate'] ?? null,
         vendor: props['hardware.systemInfo.vendor'] ?? null,
         model: props['hardware.systemInfo.model'] ?? null,
+        ...(() => { const id = parseHostIdentity(props); return { serial: id.serial, serviceTag: id.serviceTag, uuid: id.uuid }; })(),
         ntpServers: stringList(props['config.dateTimeInfo.ntpConfig.server']),
         dnsServers: stringList(props['config.network.dnsConfig.address']),
         sshEnabled: ssh ? (String(flat(ssh.running)) === 'true' ? 1 : 0) : null,
@@ -935,5 +965,5 @@ module.exports = {
   getSession, invalidateSession, vGet, unwrap,
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
   fetchInventorySoap, fetchEvents, fetchVmTags, testConnection,
-  parseNetworkHints, collectNicHints, pickHintHosts, NIC_HINT_HOST_CAP,
+  parseHostIdentity, parseNetworkHints, collectNicHints, pickHintHosts, NIC_HINT_HOST_CAP,
 };

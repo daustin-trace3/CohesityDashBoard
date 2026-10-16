@@ -12,6 +12,7 @@ const { getSetting } = require('../services/settings');
 const registry = require('../core/registry');
 const logger = require('../utils/logger');
 const { supersededMissingSql } = require('../services/brocadePaths');
+const hostIdentity = require('../services/hostIdentity');
 
 const router = express.Router();
 
@@ -28,6 +29,47 @@ const parseJson = (s, fallback) => { try { return s ? JSON.parse(s) : fallback; 
 const lower = (s) => String(s || '').toLowerCase();
 const esc = (s) => String(s).replace(/[\\%_]/g, (c) => `\\${c}`);
 const q = (s) => encodeURIComponent(s);
+
+
+// Identity-index anchors (no VM matched the query). Platform -> node shape.
+const ID_ANCHOR_PLATFORMS = new Set(['dell', 'cohesity', 'netapp', 'pure', 'brocade', 'vcenter']);
+const ID_ANCHOR_SHAPE = {
+  dell: { type: 'server', tier: 'compute' },
+  cohesity: { type: 'node', tier: 'backup' },
+  netapp: { type: 'array', tier: 'storage' },
+  pure: { type: 'array', tier: 'storage' },
+  brocade: { type: 'switch', tier: 'san' },
+};
+
+function identityAnchor(platform, ref, query) {
+  const shape = ID_ANCHOR_SHAPE[platform] || { type: 'host', tier: 'compute' };
+  let label = ref.label || query;
+  let sublabel = '';
+  let route = ref.route || null;
+  if (platform === 'dell') {
+    // A merged vCenter + Dell ref carries the Dell facts under ref.dell.
+    const d = ref.dell || {};
+    let dev = null;
+    try {
+      const tag = d.serviceTag || ref.serviceTag || null;
+      dev = db.prepare('SELECT name, model, service_tag FROM dell_devices WHERE (? IS NOT NULL AND service_tag = ?) OR lower(name) = ? LIMIT 1')
+        .get(tag, tag, lower(query)) || null;
+    } catch { /* dell inventory unavailable */ }
+    label = (dev && dev.name) || d.name || ref.label || query;
+    const model = (dev && dev.model) || d.model || null;
+    const tag = (dev && dev.service_tag) || d.serviceTag || ref.serviceTag || null;
+    sublabel = [model, tag].filter(Boolean).join(' - ');
+    route = `/dell/devices?q=${q(label)}`;
+  } else if (platform === 'cohesity') {
+    sublabel = ref.clusterName ? `${ref.kind === 'node' ? 'node of ' : ''}${ref.clusterName}` : (ref.kind || '');
+  } else {
+    sublabel = ref.kind || '';
+  }
+  return {
+    id: `${shape.type}:${platform}:${ref.refKey || lower(label)}`, type: shape.type, tier: shape.tier, platform,
+    label, sublabel, route, status: 'unknown',
+  };
+}
 
 /** GET /api/topology?name=<device> — anchored graph across all tiers. */
 router.get('/', (req, res, next) => {
@@ -70,9 +112,26 @@ router.get('/', (req, res, next) => {
       names.add(lower(vm.name));
       if (vm.guest_hostname) { names.add(lower(vm.guest_hostname)); names.add(lower(String(vm.guest_hostname).split('.')[0])); }
     }
+    // No VM matched: ask the cross-platform identity index (LogicMonitor round 9).
+    // A Dell, Cohesity, NetApp, Pure or Brocade object becomes the anchor and
+    // lends all of its names and addresses to the identity set, so the plugin
+    // topology hooks (LogicMonitor uplinks) can find its switch ports.
+    let idRef = null;
+    if (!vm) {
+      try {
+        const idx = hostIdentity.buildIdentityIndex(db);
+        const cand = hostIdentity.resolveToken(idx, query) || hostIdentity.resolveToken(idx, short);
+        const owner = cand && (cand.platforms || [cand.platform]).find((p) => ID_ANCHOR_PLATFORMS.has(p) && p !== 'vcenter');
+        if (owner && platformEnabled(owner) && can(`${owner}:objects:view`)) {
+          idRef = { ref: cand, platform: owner };
+          for (const n of cand.names || []) names.add(lower(n));
+        }
+      } catch (err) { logger.warn('[topology] identity lookup failed:', err.message); }
+    }
     names.delete('');
     const ips = new Set();
     if (vm?.ip_address) ips.add(vm.ip_address);
+    if (idRef) for (const ip of idRef.ref.ips || []) ips.add(ip);
     for (const nic of parseJson(vm?.guest_nics, [])) for (const ip of (nic.ips || [])) ips.add(ip);
 
     const nameList = [...names];
@@ -137,6 +196,10 @@ router.get('/', (req, res, next) => {
         });
         addEdge(anchorId, dsId, 'stores-on', '', dsProblem);
       }
+    } else if (idRef) {
+      const a = identityAnchor(idRef.platform, idRef.ref, query);
+      anchorId = a.id;
+      addNode(a);
     } else {
       anchorId = `device:${query}`;
       addNode({

@@ -725,4 +725,71 @@ module.exports = [
       `);
     },
   },
+  // Migration v6 (round 9): latency watch. lm_latency_episodes is one row per
+  // episode of a check location (subject_kind 'check'; 'ipsla' is reserved for
+  // the IP SLA watch). check_id and checkpoint_id are TEXT here because the
+  // lm_check_* tables hold them as TEXT. lm_check_reference is the frozen
+  // multi-week reference median per hour (drift). absent_polls is the
+  // hysteresis counter on lm_issue_history.
+  {
+    version: 6,
+    up(db) {
+      const addCol = (table, col, ddl) => {
+        const cols = db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name);
+        if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+      };
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lm_latency_episodes (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id           INTEGER NOT NULL,
+          subject_kind        TEXT NOT NULL,
+          check_id            TEXT,
+          checkpoint_id       TEXT,
+          subject_key         TEXT NOT NULL,
+          subject_label       TEXT,
+          site_key            TEXT,
+          kind                TEXT NOT NULL,
+          state               TEXT NOT NULL,
+          outcome             TEXT,
+          opened_at           TEXT NOT NULL,
+          promoted_at         TEXT,
+          closed_at           TEXT,
+          last_sample_epoch   INTEGER,
+          samples             INTEGER DEFAULT 0,
+          elevated_samples    INTEGER DEFAULT 0,
+          consecutive_normal  INTEGER DEFAULT 0,
+          baseline_median     REAL,
+          baseline_mad        REAL,
+          baseline_samples    INTEGER,
+          peak_ms             REAL,
+          peak_ratio          REAL,
+          loss_max_pct        REAL,
+          area_over_baseline  REAL DEFAULT 0,
+          likely_hop          TEXT,
+          likely_hop_device_id INTEGER,
+          issue_key           TEXT,
+          trend_json          TEXT,
+          run_start_epoch     INTEGER,
+          severe_run          INTEGER DEFAULT 0,
+          severe_since_epoch  INTEGER,
+          promote_reason      TEXT,
+          last_elevated_epoch INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_lm_episodes_subject ON lm_latency_episodes(source_id, subject_key, opened_at);
+        CREATE INDEX IF NOT EXISTS idx_lm_episodes_state ON lm_latency_episodes(state);
+        CREATE TABLE IF NOT EXISTS lm_check_reference (
+          source_id     INTEGER NOT NULL,
+          check_id      TEXT NOT NULL,
+          checkpoint_id TEXT NOT NULL,
+          hour_of_day   INTEGER NOT NULL,
+          samples       INTEGER,
+          rtt_median    REAL,
+          loss_median   REAL,
+          computed_at   TEXT,
+          PRIMARY KEY (source_id, check_id, checkpoint_id, hour_of_day)
+        );
+      `);
+      addCol('lm_issue_history', 'absent_polls', 'INTEGER DEFAULT 0');
+    },
+  },
 ];

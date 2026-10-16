@@ -60,7 +60,7 @@ const SEEDED_TABLES = [
   'replication_status_cache', 'consumption_breakdown', 'license_view_detail', 'cohesity_views',
   'license_meter_usage', 'license_type_usage', 'license_usage',
   'source_registrations', 'policies', 'replication_runs', 'protection_runs',
-  'alerts', 'metrics_history', 'workload_history', 'cohesity_objects', 'cohesity_agents', 'clusters',
+  'alerts', 'metrics_history', 'workload_history', 'cohesity_objects', 'cohesity_agents', 'cohesity_nodes', 'clusters',
   'aria_deployment_resources',
   // netapp
   'netapp_cifs_shares', 'netapp_cifs_sessions', 'netapp_export_rules',
@@ -179,6 +179,9 @@ async function main() {
   // the Cohesity and Zerto (incl. AWS target) linking; see appServiceLinking.js.
   const { applyAppServiceLinking } = require('./scenarios/appServiceLinking');
   const linkResult = db.transaction(() => applyAppServiceLinking(db, { now }))();
+  // Dell iDRAC MAC / OS hostname and the vCenter host serial + service tag join.
+  const { applyHostIdentity } = require('./generators/hostIdentity');
+  db.transaction(() => applyHostIdentity(db))();
 
   const summary = [
     ['clusters', cohesityResult.clusters],

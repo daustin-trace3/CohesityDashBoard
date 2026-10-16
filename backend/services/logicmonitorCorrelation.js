@@ -200,7 +200,7 @@ function replicationVsCircuits(dbh, { days = 7, nowMs = Date.now() } = {}) {
 // -- B3: changes followed by incidents ---------------------------------------------------------
 
 const INCIDENT_TYPES = ['device-dead', 'interface-flapping', 'interface-errors-growing', 'interface-util-anomaly',
-  'interface-error-anomaly', 'latency-anomaly', 'packet-loss-anomaly', 'check-down', 'circuit-saturated'];
+  'interface-error-anomaly', 'latency-anomaly', 'packet-loss-anomaly', 'latency-degrading', 'loss-degrading', 'check-down', 'circuit-saturated'];
 const DAY_MS = 86400000;
 const ALERTS_PER_CHANGE = 5;
 

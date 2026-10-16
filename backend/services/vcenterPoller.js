@@ -85,6 +85,9 @@ async function collect(vc) {
     row.ntpServers = r?.ntpServers ?? null;
     row.dnsServers = r?.dnsServers ?? null;
     row.sshEnabled = r?.sshEnabled ?? null;
+    row.serial = r?.serial ?? null;
+    row.serviceTag = r?.serviceTag ?? null;
+    row.uuid = r?.uuid ?? null;
   }
 
   // vSphere Tags (REST batch) — best-effort; works with or without SOAP since
@@ -130,8 +133,8 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
       power_state, in_maintenance, vm_count, cpu_mhz_capacity, cpu_mhz_used,
       mem_bytes_capacity, mem_bytes_used, esx_version, esx_build, bios_version,
       bios_release_date, vendor, model, cpu_cores, ntp_servers, dns_servers,
-      ssh_enabled, uptime_seconds)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ssh_enabled, uptime_seconds, serial, service_tag, uuid)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const h of hosts) {
     hostStmt.run(vcId, h.host, h.name || null, h.clusterName, h.connection_state || null,
@@ -140,7 +143,7 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
       h.biosReleaseDate, h.vendor, h.model, h.cpuCores,
       h.ntpServers ? JSON.stringify(h.ntpServers) : null,
       h.dnsServers ? JSON.stringify(h.dnsServers) : null,
-      h.sshEnabled, h.uptimeSeconds);
+      h.sshEnabled, h.uptimeSeconds, h.serial ?? null, h.serviceTag ?? null, h.uuid ?? null);
   }
 
   db.prepare('DELETE FROM vcenter_vms WHERE vcenter_id = ?').run(vcId);

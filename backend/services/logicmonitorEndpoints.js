@@ -15,6 +15,8 @@
 // Server 360. Every read of a table outside lm_* is guarded; nothing here
 // throws on a missing table.
 
+const hostIdentity = require('./hostIdentity');
+
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 const ENDPOINT_CAP = 5000;
 
@@ -89,6 +91,17 @@ function buildIccHostIndex(dbh) {
 /** Resolver over the ICC host index; tokens the LM index knows are refused
  *  so a device's own name never resolves to another platform's copy of it. */
 function makeIccResolver(iccIndex, lmIndex) {
+  // Round 9: an identity index (services/hostIdentity) resolves names, IPs, MACs
+  // and serials; the legacy {exact, short} index keeps working for old callers.
+  if (iccIndex && iccIndex.byName) {
+    return (tok) => {
+      const k = norm(tok);
+      if (!k || k.length < 3) return null;
+      if (lmIndex && (lmIndex.has(k) || lmIndex.has(shortName(k)))) return null;
+      const ref = hostIdentity.resolveToken(iccIndex, k);
+      return ref ? { platform: ref.platform, ref: ref.refKey, platforms: ref.platforms } : null;
+    };
+  }
   return (tok) => {
     const k = norm(tok);
     if (!k || k.length < 3) return null;
@@ -399,7 +412,23 @@ function resolveAnchor(dbh, names, ips) {
       if (host) anchor = { name: host.name, kind: 'host', hostName: host.name };
     } catch { /* host inventory shape differs */ }
   }
-  if (!anchor) anchor = { name: (names || []).find(Boolean) || [...ipSet][0] || null, kind: 'device', hostName: null };
+  // Round 9: vCenter missed (or found an ESX host that may be a merged Dell
+  // ref): ask the cross-platform identity index and widen the match set with
+  // the ref's every name and address.
+  if ((!anchor || anchor.kind === 'host') && (list.length || ipSet.size)) {
+    try {
+      const idx = hostIdentity.buildIdentityIndex(dbh);
+      let ref = null;
+      for (const n of list) { if (!IPV4.test(n)) { ref = hostIdentity.resolveToken(idx, n); if (ref) break; } }
+      if (!ref) for (const ip of ipSet) { ref = idx.byIp.get(ip) || null; if (ref) break; }
+      if (ref) {
+        if (!anchor) anchor = { name: ref.label, kind: ref.platform, hostName: null };
+        for (const n of ref.names) { nameSet.add(n); nameSet.add(shortName(n)); }
+        for (const ip of ref.ips) ipSet.add(ip);
+      }
+    } catch { /* identity index unavailable: keep what vCenter found */ }
+  }
+  if (!anchor) anchor ={ name: (names || []).find(Boolean) || [...ipSet][0] || null, kind: 'device', hostName: null };
   nameSet.delete('');
   return { anchor, nameSet, ipSet };
 }

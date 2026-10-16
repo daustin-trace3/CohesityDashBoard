@@ -453,6 +453,7 @@ async function doPollCluster(cluster) {
       const reason = safeErrorMessage(clusterInfo.reason) || 'unknown error';
       throw new Error(`every fetch failed for cluster ${cluster.id} (${cluster.name}); first error: ${reason}`);
     }
+    await require('./cohesityNodes').syncClusterNodes(cluster); // never throws
     // The cluster's own Cohesity id: from cluster info, or for a Helios
     // connection the id Helios addresses it by (stored in vip).
     const localClusterId = (clusterInfo.status === 'fulfilled' && clusterInfo.value?.id)

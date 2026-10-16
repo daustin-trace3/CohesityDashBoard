@@ -498,8 +498,12 @@ function incidentEvidence(coreApi, ctx) {
         for (const c of changes) lines.push(`Config change ${isoShort(c.detected_at)} ${c.scope} ${c.item}: ${String(c.old_value ?? '-').slice(0, 80)} -> ${String(c.new_value ?? '-').slice(0, 80)}`);
       }
     } catch { /* ledger unavailable */ }
+    try {
+      const eps = require('../../services/logicmonitorWatch').watchLines(db, { names: [...names, dev && (dev.display_name || dev.name)].filter(Boolean), siteKey, days: 30, max: 6 });
+      lines.push(...eps.lines);
+    } catch { /* episode history is best effort */ }
     if (siteKey) lines.push(...siteLines(db, siteKey));
-    return lines.length ? { title: 'LogicMonitor network', lines: lines.slice(0, 40) } : null;
+    return lines.length ? { title: 'LogicMonitor network', lines: lines.slice(0, 46) } : null;
   } catch {
     return null;
   }
@@ -561,6 +565,24 @@ const agentCapabilities = [
     run(target) {
       const path = lmPath.pathFor(lmDb(), targetAnchor(target));
       return { ok: path.length > 0, summary: lmPath.pathText(path), data: { hops: path.length, blame: lmPath.blame(path) } };
+    },
+  },
+  {
+    id: 'lm_latency_watch',
+    label: 'Latency episode history',
+    description: 'Reads ICC\'s stored latency watch episodes (30 days) for the check, host or site of the incident: how many spikes, how they ended, how long they ran and which hop was blamed. Database only, no network call.',
+    platform: '*',
+    risk: 'read-only',
+    defaultEnabled: true,
+    run(target) {
+      const db = lmDb();
+      const anchor = targetAnchor(target);
+      const site = target && target.siteKey ? { siteKey: target.siteKey } : lmSites.siteOf(db, anchor);
+      const found = require('../../services/logicmonitorWatch').watchLines(db, {
+        names: [target && target.name].filter(Boolean), siteKey: site ? site.siteKey : null, days: 30, max: 6,
+      });
+      if (!found.lines.length) return { ok: true, summary: 'no latency episodes in the last 30 days', data: { episodes: 0 } };
+      return { ok: true, summary: found.lines.join('; '), data: { episodes: found.lines.length, scope: found.scope } };
     },
   },
 ];
