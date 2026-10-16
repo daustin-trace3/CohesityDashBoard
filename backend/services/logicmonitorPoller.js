@@ -18,6 +18,7 @@ const lmSites = require('./logicmonitorSites');
 const lmPath = require('./logicmonitorPath');
 const lmEndpoints = require('./logicmonitorEndpoints');
 const hostIdentity = require('./hostIdentity');
+const lmEri = require('./logicmonitorEri');
 const lmGrammar = require('./logicmonitorGrammar');
 const lmMetrics = require('./logicmonitorMetrics');
 const lmWatch = require('./logicmonitorWatch');
@@ -767,6 +768,15 @@ function buildTopologyLinks(dbh, sourceId, { neighbors = null } = {}) {
   } catch (err) {
     logger.warn(`[LmPoller] ICC host index failed, links resolve against LM only: ${safeMsg(err)}`);
   }
+  // Round 10: LogicMonitor's own neighbour discovery (predef.externalResourceID on every interface)
+  // is read first; an ERI link wins over a neighbour-instance link for the same (instance, protocol).
+  let eri = { rows: [], cdp: 0, lldp: 0, resolved: 0 };
+  try {
+    eri = lmEri.buildEriLinks(dbh, sourceId, { deviceIndex: index, resolver: iccResolve });
+  } catch (err) {
+    logger.warn(`[LmPoller] ERI link build failed, falling back to instance and description links: ${safeMsg(err)}`);
+  }
+  const eriKeys = new Set(eri.rows.map((r) => `${r.srcInstanceId}|${r.protocol}`));
   const ifaces = dbh.prepare(`
     SELECT lm_device_id, instance_id, display_name, description, props_json FROM lm_interfaces
     WHERE source_id = ? AND stale = 0 AND description IS NOT NULL AND description != ''
@@ -783,8 +793,10 @@ function buildTopologyLinks(dbh, sourceId, { neighbors = null } = {}) {
     if (!link) continue;
     rows.push({ srcDeviceId: i.lm_device_id, srcInstanceId: i.instance_id, srcPort: i.display_name, protocol: 'description', ...link });
   }
+  rows.push(...eri.rows);
   if (Array.isArray(neighbors)) {
     for (const n of neighbors) {
+      if (eriKeys.has(`${n.instance.instanceId}|${n.protocol}`)) continue;
       const parse = (resolve) => parseNeighborInstance(n.instance, resolve);
       const link = withIccFallback(parse(makeResolver(index, n.srcDeviceId)), parse, iccResolve);
       rows.push({ srcDeviceId: n.srcDeviceId, srcInstanceId: n.instance.instanceId, protocol: n.protocol, ...link });
@@ -795,9 +807,14 @@ function buildTopologyLinks(dbh, sourceId, { neighbors = null } = {}) {
   const protocols = Array.isArray(neighbors) ? ['description', 'lldp', 'cdp'] : ['description'];
   const placeholders = protocols.map(() => '?').join(',');
   const txn = dbh.transaction(() => {
-    const firstSeen = new Map(dbh.prepare(`SELECT src_instance_id, protocol, first_seen FROM lm_topology_links WHERE source_id = ? AND protocol IN (${placeholders})`)
-      .all(sourceId, ...protocols).map((r) => [`${r.src_instance_id}|${r.protocol}`, r.first_seen]));
+    const firstSeen = new Map(dbh.prepare(`SELECT src_instance_id, protocol, first_seen FROM lm_topology_links WHERE source_id = ? AND protocol IN ('description', 'lldp', 'cdp')`)
+      .all(sourceId).map((r) => [`${r.src_instance_id}|${r.protocol}`, r.first_seen]));
     dbh.prepare(`DELETE FROM lm_topology_links WHERE source_id = ? AND protocol IN (${placeholders})`).run(sourceId, ...protocols);
+    // Without a neighbour list the old lldp/cdp rows stay, except the ones an ERI row now replaces.
+    if (!Array.isArray(neighbors) && eri.rows.length) {
+      const delOne = dbh.prepare('DELETE FROM lm_topology_links WHERE source_id = ? AND src_instance_id = ? AND protocol = ?');
+      for (const r of eri.rows) delOne.run(sourceId, r.srcInstanceId, r.protocol);
+    }
     const ins = hasPlatformCols
       ? dbh.prepare(`
       INSERT OR REPLACE INTO lm_topology_links (source_id, src_device_id, src_instance_id, src_port, dst_device_id, dst_name,
@@ -824,12 +841,14 @@ function buildTopologyLinks(dbh, sourceId, { neighbors = null } = {}) {
       if (u.cls) base.iccClass = u.cls; else delete base.iccClass;
       setProps.run(JSON.stringify(base), sourceId, u.instanceId);
     }
+    try { lmEri.refreshUnmonitored(dbh, sourceId, eri.rows); } catch (err) { logger.warn(`[LmPoller] unmonitored neighbour refresh failed: ${safeMsg(err)}`); }
   });
   txn();
   return {
     links: rows.length,
     resolved: rows.filter((r) => r.dstDeviceId != null).length,
     resolvedIcc: rows.filter((r) => r.dstDeviceId == null && r.dstPlatform).length,
+    eri: { cdp: eri.cdp, lldp: eri.lldp, resolved: eri.resolved },
   };
 }
 

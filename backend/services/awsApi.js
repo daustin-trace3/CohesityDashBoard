@@ -1186,7 +1186,17 @@ async function testConnection(account) {
   }
 }
 
+/** The account number STS reports for the credentials, or null. Never throws. */
+async function fetchCallerAccount(account) {
+  try {
+    const sts = new STSClient(clientConfig(account));
+    const who = await sts.send(new GetCallerIdentityCommand({}));
+    return who?.Account ? String(who.Account) : null;
+  } catch { return null; }
+}
+
 module.exports = {
+  fetchCallerAccount,
   creds, credSource, credentialSummary, credentialExpired, credentialProvider, explainAuthError,
   ec2Client, lightsailClient, ecsClient, s3Client, cloudwatchClient, costExplorerClient,
   rdsClient, lambdaClient, dynamoClient, ecrClient,

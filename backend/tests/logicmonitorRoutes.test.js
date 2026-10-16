@@ -600,7 +600,7 @@ describe('logicmonitor data routes', () => {
     const g = await request(app).get(`${API}/config`);
     expect(g.body.thresholds.lm_if_util_warn_pct).toBe(80);
     expect(g.body.thresholds.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(g.body.thresholds)).toHaveLength(55);
+    expect(Object.keys(g.body.thresholds)).toHaveLength(57);
     for (const k of THRESHOLD_KEYS) expect(g.body.thresholds).toHaveProperty(k);
     expect(g.body.ranges.lm_if_util_warn_pct).toEqual({ min: 50, max: 100, default: 80 });
     const put = await request(app).put(`${API}/config`).send({ lm_if_util_warn_pct: 150, lm_if_flap_warn: 0, lm_dead_grace_min: 15 });
@@ -1256,7 +1256,7 @@ describe('logicmonitor round 8 routes: metrics, firewalls, load balancers', () =
     ins('lm_device_datasources', { source_id: sid8, lm_device_id: 301, hds_id: 9001, datasource_id: 2, datasource_name: 'F5_BigIP_System', datasource_display_name: 'F5 system', instance_count: 1, is_interface: 0, is_neighbor: 0 });
     const res = await request(app).get(`${API}/metrics/families`);
     expect(res.status).toBe(200);
-    expect(res.body.map((f) => f.family)).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud']);
+    expect(res.body.map((f) => f.family)).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity']);
     const fw = res.body.find((f) => f.family === 'firewall');
     expect(fw).toMatchObject({ label: 'Firewalls', enabled: true, datasources: 1, devices: 1, instances: 1, collectedDevices: 3 });
     expect(Object.keys(fw)).toEqual(expect.arrayContaining(['family', 'label', 'enabled', 'sources', 'datasources', 'devices', 'instances', 'collectedInstances', 'lastPollAt']));

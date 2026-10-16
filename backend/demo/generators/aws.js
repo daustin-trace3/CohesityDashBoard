@@ -180,9 +180,9 @@ function seedAws(db, { now, encrypt }) {
   const insertAccount = db.prepare(`
     INSERT INTO aws_accounts (name, access_key_id, encrypted_credentials, region, polling_interval_minutes,
       last_poll_status, last_poll_error, last_poll_at, last_cost_capture_at, last_s3_capture_at,
-      last_optimizer_capture_at, co_enrollment, created_at, updated_at)
+      last_optimizer_capture_at, co_enrollment, account_number, created_at, updated_at)
     VALUES (?, ?, ?, 'us-east-2', 10, 'success', NULL,
-      datetime('now', ?), datetime('now', ?), datetime('now', ?), datetime('now', ?), ?,
+      datetime('now', ?), datetime('now', ?), datetime('now', ?), datetime('now', ?), ?, '893373391538',
       datetime('now', '-400 days'), datetime('now', '-4 minutes'))
   `);
   insertAccount.run(

@@ -821,4 +821,28 @@ module.exports = [
       `);
     },
   },
+  // Migration v8 (round 10, WP-A). Neighbours that CDP/LLDP show on LogicMonitor's own
+  // discovery (predef.externalResourceID) but that no LM device or ICC host explains.
+  {
+    version: 8,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lm_unmonitored_neighbors (
+          id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id            INTEGER NOT NULL REFERENCES lm_sources(id) ON DELETE CASCADE,
+          neighbor_key         TEXT NOT NULL,
+          neighbor_name        TEXT,
+          kind                 TEXT,
+          ports_seen           INTEGER DEFAULT 0,
+          devices_seen         INTEGER DEFAULT 0,
+          first_seen           TEXT DEFAULT (datetime('now')),
+          last_seen            TEXT,
+          sample_src_device_id INTEGER,
+          sample_src_port      TEXT,
+          stale                INTEGER DEFAULT 0,
+          UNIQUE(source_id, neighbor_key)
+        );
+      `);
+    },
+  },
 ];

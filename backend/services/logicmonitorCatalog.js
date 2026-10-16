@@ -13,7 +13,7 @@
 // kind: 'gauge' | 'state' | 'counter' | 'pct'. State values keep the raw
 // number; routes map enums and render unknown values as the number.
 
-const FAMILIES = ['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud'];
+const FAMILIES = ['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity'];
 
 // Round 9: devices the inventory refresh must also read DataSources for even
 // though they are not network devices (AWS Direct Connect, Azure ExpressRoute).
@@ -31,6 +31,7 @@ const FAMILY_LABELS = {
   voice: 'Voice',
   wireless: 'Wireless',
   cloud: 'Cloud circuits',
+  cohesity: 'Cohesity (via LogicMonitor)',
 };
 
 const DEFAULT_MAX_INSTANCES = 2500;
@@ -570,6 +571,54 @@ add('wireless', 'ntm_wlc_ap_status_check', 'WLC AP availability', { wlc_ap_avail
 // Status: 0 ok, 1 mobility tunnels down, 2 script error.
 add('wireless', 'ntm_wlc_mobility_domain_check', 'WLC mobility domain', { wlc_mobility_status: state(exact('Status'), 'Mobility tunnels') });
 
+// -- Cohesity via LogicMonitor (round 10) -------------------------------------------
+
+// ALL UNVERIFIED: the Cohesity_DataPlatform_* and ntm_cohesity_* DataSources exist on
+// the live portal (instance counts known) but no datapoint name has been read. The
+// regexes are loose; the first poll records the matched names and the unmatched ones
+// (Settings > Data Export). Order inside an entry matters, because a datapoint is
+// claimed by the first metric that matches it (used percent before used bytes, total
+// before available). State enums are unknown: logicmonitorCohesity.js prints the raw
+// value in every message. Issues are NOT raised from ProtectionJobs; ICC has the
+// direct Cohesity feed for backups.
+add('cohesity', 'Cohesity_DataPlatform_ClusterStatus', 'Cohesity cluster status', {
+  cluster_health: state(['health', 'status', 'state'], 'Cluster health'),
+  cluster_nodes: gauge(['node.?count', 'nodes'], 'nodes', 'Nodes'),
+}, { history: true });
+add('cohesity', 'Cohesity_DataPlatform_BasicStorage', 'Cohesity cluster storage', {
+  cap_used_pct: pct(['used.?pct', 'percent.?used', 'utilization', 'usage.?pct'], 'Capacity used'),
+  cap_used_bytes: gauge(['used.?bytes', 'used'], 'bytes', 'Used'),
+  cap_total_bytes: gauge(['total', 'capacity'], 'bytes', 'Total'),
+  cap_avail_bytes: gauge(['avail', 'free'], 'bytes', 'Available'),
+  dedupe_ratio: gauge(['dedup', 'reduction', 'ratio'], 'x', 'Data reduction'),
+}, { history: true });
+add('cohesity', 'Cohesity_DataPlatform_NodeStatus', 'Cohesity node status', {
+  node_status: state(['status', 'state', 'health'], 'Node status'),
+  node_cpu_pct: pct(['cpu'], 'Node CPU'),
+  node_mem_pct: pct(['mem'], 'Node memory'),
+  node_uptime: gauge(['uptime'], 's', 'Node uptime'),
+}, { history: true });
+add('cohesity', 'Cohesity_DataPlatform_Fans', 'Cohesity fans', {
+  fan_state: state(['status', 'state'], 'Fan state'),
+  fan_rpm: gauge(['rpm', 'speed'], 'rpm', 'Fan speed'),
+});
+add('cohesity', 'Cohesity_DataPlatform_PowerSupplies', 'Cohesity power supplies', {
+  psu_state: state(['status', 'state'], 'PSU state'),
+});
+add('cohesity', 'ntm_cohesity_node_services', 'Cohesity node services', {
+  service_state: state(['status', 'state', 'running', 'up'], 'Service state'),
+}, { maxInstances: 500 });
+add('cohesity', 'Cohesity_DataPlatform_ProtectionJobs', 'Cohesity protection jobs', {
+  job_status: state(['status', 'state', 'result'], 'Job status'),
+  job_last_run: gauge(['last.?run', 'age', 'since'], 's', 'Since last run'),
+});
+add('cohesity', 'ntm_cohesity_alerts', 'Cohesity alerts', {
+  alert_count: gauge(['count', 'alerts'], 'alerts', 'Alerts'),
+});
+add('cohesity', 'Cohesity_DataPlatform_Troubleshooter', 'Cohesity troubleshooter', {
+  trouble_state: state(['status', 'state'], 'Troubleshooter state'),
+});
+
 // -- Cloud circuits (round 9) -------------------------------------------------------
 
 // ALL UNVERIFIED: no AWS Direct Connect / Azure ExpressRoute DataSource has been
@@ -596,8 +645,17 @@ add('cloud', /DirectConnect/i, 'AWS Direct Connect', {
 add('cloud', /ExpressRoute/i, 'Azure ExpressRoute', {
   er_bps_in: gauge(['BitsInPerSecond', 'BitsIn'], 'bps', 'In'),
   er_bps_out: gauge(['BitsOutPerSecond', 'BitsOut'], 'bps', 'Out'),
-  er_bgp: state(['Bgp', 'BgpAvailability'], 'BGP availability'),
-  er_arp: state(['Arp'], 'ARP availability'),
+  // UNVERIFIED datapoint names: the Peering DataSource (Microsoft_Azure_ExpressRouteCircuitPeering)
+  // also lands here by regex; round 10 widened the BGP and ARP matchers.
+  er_bgp: state(['bgp', 'availability', 'state'], 'BGP availability'),
+  er_arp: state(['arp'], 'ARP availability'),
+}, { history: true });
+// Round 10: the Azure ECX connection utilisation DataSource (seen on the first live portal, 1 instance
+// per circuit). ALL datapoint names UNVERIFIED; loose matchers learn on the first poll.
+add('cloud', /ntm_cloud_connectivity_azure_ecx/i, 'Azure ECX connection utilization', {
+  ecx_util_pct: pct(['util', 'utilization', 'percent'], 'Utilization'),
+  ecx_bps_in: gauge(['^in$', 'bits?.?in', 'in.?bps', 'ingress', 'inbound', 'rx'], 'bps', 'In'),
+  ecx_bps_out: gauge(['^out$', 'bits?.?out', 'out.?bps', 'egress', 'outbound', 'tx'], 'bps', 'Out'),
 }, { history: true });
 
 // -- Lookup ----------------------------------------------------------------------

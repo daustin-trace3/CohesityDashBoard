@@ -206,7 +206,11 @@ function build(dbh) {
   for (const c of clusters) {
     if (!c.name) continue;
     const ref = register(newRef('cohesity', 'cluster', c.name, `/cohesity/hardware?q=${encodeURIComponent(c.name)}`, { clusterId: c.id }));
-    if (ref) withIdent(ref, { names: [c.name], host: c.vip });
+    // Helios-registered clusters keep a numeric cluster id in vip (e.g. "8803852180576369"); only an
+    // IPv4 address or a host name (contains a letter) is an identity.
+    const vip = c.vip != null ? String(c.vip).trim() : '';
+    const vipOk = vip && (IPV4.test(vip) || /[a-z]/i.test(vip));
+    if (ref) withIdent(ref, { names: [c.name], host: vipOk ? vip : null });
   }
   for (const n of readRows(dbh, 'cohesity_nodes', ['cluster_id', 'node_id', 'hostname', 'ip', 'ips_json', 'serial', 'chassis_serial'])) {
     const label = n.hostname || (n.ip ? `${clusterName.get(n.cluster_id) || 'cluster'}-${n.node_id || n.ip}` : null);

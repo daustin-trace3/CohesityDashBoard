@@ -706,6 +706,12 @@ async function pollAccount(account) {
     logger.warn(`[AwsPoller] ${account.name}: session credentials are past their entered expiry (${account.credential_expires_at}); polling anyway`);
   }
   try {
+    // Round 10: remember the account number (STS caller identity) so LogicMonitor Direct Connect
+    // rows can be tied to this account. Best effort, UNVERIFIED live.
+    try {
+      const num = await awsApi.fetchCallerAccount(account);
+      if (num && num !== account.account_number) db.prepare('UPDATE aws_accounts SET account_number = ? WHERE id = ?').run(num, account.id);
+    } catch { /* identity is optional */ }
     try {
       await maybeCollectHealth();
     } catch (err) {

@@ -21,6 +21,7 @@ const lmIssues = () => require('../services/logicmonitorIssues');
 const pollerHandle = () => require('../services/logicmonitorPoller').logicmonitorPollerHandle;
 const lmEndpoints = () => require('../services/logicmonitorEndpoints');
 const lmPath = () => require('../services/logicmonitorPath');
+const lmEri = () => require('../services/logicmonitorEri');
 const lmSites = () => require('../services/logicmonitorSites');
 const lmChecks = () => require('../services/logicmonitorChecks');
 const lmCorrelation = () => require('../services/logicmonitorCorrelation');
@@ -2156,6 +2157,8 @@ function discoveryReport() {
     } catch { /* identity index unavailable */ }
     return res;
   })();
+  // Round 10: LogicMonitor's own neighbour discovery (predef.externalResourceID) and how much of it resolved.
+  try { out.eri = lmEri().eriSummary(db); } catch { out.eri = { interfacesWithEri: 0, cdpTokens: 0, lldpTokens: 0, resolved: 0, unresolved: 0 }; }
   out.devicesWithoutDatasourceInventory = db.prepare(`
     SELECT COUNT(*) n FROM lm_devices d WHERE d.stale = 0
       AND NOT EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = d.source_id AND x.lm_device_id = d.lm_device_id)
@@ -2407,6 +2410,7 @@ function buildGovernance() {
     coverage: { noInterfaceDatasource, inSdt: inSdtList, alertingDisabled, notPolled24h },
     alertHygiene: { ackedOpenOver7d, noisyConditions, unrouted },
     topologyUnmatched, configChanges,
+    unmonitoredNeighbors: lmEri().unmonitoredRows(db),
     modelReview, rollups,
     endpoints, endpointsSummary: lmEndpoints().endpointsSummary(endpoints),
     shadowedAlerts: shadowedAlertRows(),
@@ -2432,6 +2436,7 @@ const GOV_SECTIONS = {
   ackedOpenOver7d: (g) => g.alertHygiene.ackedOpenOver7d,
   noisyConditions: (g) => g.alertHygiene.noisyConditions,
   topologyUnmatched: (g) => g.topologyUnmatched,
+  unmonitoredNeighbors: (g) => g.unmonitoredNeighbors,
   configChanges: (g) => g.configChanges,
   modelReview: (g) => g.modelReview.map((r) => ({ ...r, groups: (r.groups || []).join('; '), behind: r.behind ? 'yes' : 'no' })),
   endpoints: (g) => g.endpoints,
@@ -2450,6 +2455,13 @@ const GOV_CSV_COLUMNS = { modelReview: MODEL_REVIEW_CSV, endpoints: ENDPOINT_CSV
 
 router.get('/governance', (req, res, next) => {
   try { res.json(buildGovernance()); } catch (err) { next(err); }
+});
+
+router.get('/governance/unmonitored-neighbors.csv', (req, res, next) => {
+  try {
+    sendCsv(res, 'unmonitored-neighbors', lmEri().unmonitoredRows(db),
+      ['name', 'kind', 'portsSeen', 'devicesSeen', 'firstSeen', 'lastSeen', 'sampleDevice', 'samplePort', 'sourceName', 'key']);
+  } catch (err) { next(err); }
 });
 
 router.get('/governance.csv', [query('section').isIn(Object.keys(GOV_SECTIONS))], validate, (req, res, next) => {
@@ -2525,7 +2537,7 @@ router.get('/lookup', [
     const [dev] = platform.matchDevices(db, names, ips, 1);
     let switchPorts = [];
     try { switchPorts = lmEndpoints().serverPath(db, { names, ips }).switchPorts; } catch { switchPorts = []; }
-    if (!dev) return res.json({ device: null, alerts: [], health: null, switchPorts });
+    if (!dev) return res.json({ device: null, alerts: [], health: null, switchPorts, metrics: [], families: [] });
     const alerts = platform.openAlertsOf(db, dev, 50).map((a) => ({
       severity: a.severity_norm, datasource: a.resource_template_name, instanceName: a.instance_name, dataPointName: a.data_point_name,
       alertValue: a.alert_value, threshold: a.threshold, startedAt: epochIso(a.start_epoch), acked: Number(a.acked) === 1, sdted: Number(a.sdted) === 1,
@@ -2545,9 +2557,47 @@ router.get('/lookup', [
         collectorDown: !!dev.collector_down,
       },
       switchPorts,
+      ...lookupMetrics(dev, req.query.family),
     });
   } catch (err) { next(err); }
 });
+
+/**
+ * Round 10: the DataSource metrics LogicMonitor holds for a resolved device, newest value per
+ * instance and metric (lm_ds_metrics), capped at 200 and ordered by family, DataSource and
+ * instance. family narrows the list (a Cohesity page asks for 'cohesity'). Labels and units
+ * come from the catalog; a metric the catalog does not know keeps its key. Never throws.
+ */
+function lookupMetrics(dev, familyQuery) {
+  const out = { metrics: [], families: [], metricsTruncated: false };
+  try {
+    const cat = lmCatalog();
+    const family = familyQuery ? String(familyQuery).slice(0, 40) : null;
+    const rows = db.prepare(`
+      SELECT m.datasource_name, m.family, m.instance_key, i.instance_name, m.metric, m.value, m.sampled_at_epoch
+      FROM lm_ds_metrics m
+      LEFT JOIN lm_ds_instances i ON i.source_id = m.source_id AND i.lm_device_id = m.lm_device_id
+        AND i.hds_id = m.hds_id AND i.instance_key = m.instance_key
+      WHERE m.source_id = ? AND m.lm_device_id = ? AND COALESCE(i.stale, 0) = 0 ${family ? 'AND m.family = ?' : ''}
+      ORDER BY m.family, m.datasource_name, m.instance_key, m.metric LIMIT 200
+    `).all(dev.source_id, dev.lm_device_id, ...(family ? [family] : []));
+    const fams = new Set();
+    for (const r of rows) {
+      const entry = cat && cat.catalogFor ? cat.catalogFor(r.datasource_name) : null;
+      const def = entry && entry.metrics ? entry.metrics[r.metric] : null;
+      fams.add(r.family);
+      out.metrics.push({
+        datasource: r.datasource_name, datasourceLabel: entry ? entry.label : r.datasource_name, family: r.family,
+        instanceKey: r.instance_key, instanceName: r.instance_name || r.instance_key,
+        metric: r.metric, label: def ? def.label : r.metric, unit: def ? def.unit : '', kind: def ? def.kind : null,
+        value: r.value, sampledAt: epochIso(r.sampled_at_epoch),
+      });
+    }
+    out.families = [...fams];
+    out.metricsTruncated = rows.length >= 200;
+  } catch { /* tables absent on an older schema: no metrics */ }
+  return out;
+}
 
 // ---- Endpoint summary for other platforms' pages (round 9) -------------------
 

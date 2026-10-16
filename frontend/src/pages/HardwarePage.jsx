@@ -83,6 +83,7 @@ export default function HardwarePage() {
               const rows = nodeList.map(node => ({
                 clusterId: cluster.id,
                 clusterName: cluster.name,
+                clusterVip: cluster.vip || cluster.hostname || null,
                 ip: node.ip || node.ipAddress || '—',
                 hostname: node.hostName || node.hostname || node.nodeHostName || null,
                 model: node.productModel || node._v2Model || node.hardwareModel || '—',
@@ -157,6 +158,22 @@ export default function HardwarePage() {
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const safePage = Math.min(page, totalPages - 1);
   const pageItems = sorted.slice(safePage * pageSize, (safePage + 1) * pageSize);
+
+  // One LogicMonitor card per CLUSTER (round 10): the cluster name, its VIP when it is an address or a
+  // host name (Helios-registered clusters hold a numeric id there), and every node name and address.
+  // It shows the Cohesity metrics LogicMonitor collects; the node rows below keep a card without them.
+  const lmCluster = useMemo(() => {
+    const name = clusterFilter !== 'all' ? clusterFilter : (clusterNames.length === 1 ? clusterNames[0] : null);
+    if (!name) return null;
+    const rows = nodeRows.filter((r) => r.clusterName === name);
+    const vip = rows[0] && rows[0].clusterVip ? String(rows[0].clusterVip) : '';
+    const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(vip);
+    return {
+      name,
+      names: [name, ...(vip && !isIp && /[a-z]/i.test(vip) ? [vip] : []), ...rows.map((r) => r.hostname)].filter(Boolean),
+      ips: [...(isIp ? [vip] : []), ...rows.map((r) => (/^[0-9a-fA-F:.]+$/.test(String(r.ip)) ? r.ip : null))].filter(Boolean),
+    };
+  }, [clusterFilter, clusterNames, nodeRows]);
 
   const hasFilters = search || clusterFilter !== 'all' || statusFilter !== 'all' || modelFilter !== 'all';
 
@@ -249,6 +266,8 @@ export default function HardwarePage() {
         </span>
       </div>
 
+      {lmCluster && <LmDeviceCard names={lmCluster.names} ips={lmCluster.ips} family="cohesity" />}
+
       {/* Table */}
       <div className="bg-cohesity-gray border border-cohesity-border rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
@@ -308,7 +327,7 @@ export default function HardwarePage() {
                     {openNode === rowKey && (
                       <tr className="bg-white/[0.02]">
                         <td colSpan={9} className="px-3 py-2">
-                          <LmDeviceCard names={[row.hostname]} ips={[/^[0-9a-fA-F:.]+$/.test(String(row.ip)) ? row.ip : null]} />
+                          <LmDeviceCard names={[row.hostname]} ips={[/^[0-9a-fA-F:.]+$/.test(String(row.ip)) ? row.ip : null]} showMetrics={false} />
                         </td>
                       </tr>
                     )}

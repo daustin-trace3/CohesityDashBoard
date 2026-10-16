@@ -21,10 +21,32 @@ const REFRESH_MS = 60000;
 const pctOpts = { ...chartOpts, scales: { x: chartOpts.scales.x, y: { ...chartOpts.scales.y, min: 0, suggestedMax: 100 } } };
 const num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
 
-const CLOUD_KIND_LABEL = { 'aws-dx': 'Direct Connect', 'aws-vif': 'Direct Connect VIF', 'azure-er': 'ExpressRoute' };
+const CLOUD_KIND_LABEL = { 'aws-dx': 'Direct Connect', 'aws-vif': 'Direct Connect VIF', 'azure-er': 'ExpressRoute', 'azure-ecx': 'ExpressRoute' };
 const CLOUD_STATE_LABEL = { critical: 'Down', warning: 'Saturated', ok: 'OK', unknown: 'No data' };
 const cloudTone = (s) => (s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : s === 'ok' ? 'ok' : 'neutral');
 const fmtBps = (v) => (v == null ? '-' : fmtSpeed(v));
+// Cost center tag when present, else the first tag as "key: value" (round 10; tag keys come from system.aws.tag.* and system.azure.tag.*).
+const costCenterOf = (c) => {
+  const tags = c.tags && typeof c.tags === 'object' ? c.tags : {};
+  if (tags['cost-center'] != null) return String(tags['cost-center']);
+  const first = Object.entries(tags)[0];
+  return first ? `${first[0]}: ${first[1]}` : '-';
+};
+const ownerOf = (c) => c.ownerAccount || c.subscription || '-';
+const csvCell = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+
+function exportCloudCsv(rows) {
+  const head = ['Connection', 'Kind', 'Region', 'Location', 'Bandwidth', 'Owner', 'Cost center', 'State', 'In bps', 'Out bps', 'BGP'];
+  const lines = [head.join(',')].concat(rows.map((c) => [
+    c.name, CLOUD_KIND_LABEL[c.kind] || c.kindLabel || c.kind, c.region, c.location, c.bandwidthText || (c.bandwidthBps ? fmtSpeed(c.bandwidthBps) : ''),
+    c.ownerAccount || c.subscription, costCenterOf(c) === '-' ? '' : costCenterOf(c), CLOUD_STATE_LABEL[c.state] || c.state, c.bpsIn, c.bpsOut, c.bgp,
+  ].map(csvCell).join(',')));
+  const url = URL.createObjectURL(new Blob([lines.join('\r\n')], { type: 'text/csv' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = 'logicmonitor-cloud-circuits.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 // AWS Direct Connect and Azure ExpressRoute from the DataSource metrics (round 9). Small, so no paging.
 function CloudCircuits({ rows }) {
@@ -35,19 +57,24 @@ function CloudCircuits({ rows }) {
         <Cloud size={14} className="text-ink-muted" />
         <h3 className="text-sm font-semibold text-ink">Cloud circuits</h3>
         <span className="text-[11px] text-ink-faint tnum">{fmtNum(rows.length)} connection(s)</span>
+        <button onClick={() => exportCloudCsv(rows)} className="ml-auto inline-flex items-center gap-1 text-[11px] text-ink-muted hover:text-ink"><Download size={12} /> Export</button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead><tr className={headRow}>
             <th className="text-left py-2 pr-3 font-medium">Connection</th>
-            <th className="text-left py-2 pr-3 font-medium">Type</th>
+            <th className="text-left py-2 pr-3 font-medium">Kind</th>
             <th className="text-left py-2 pr-3 font-medium">Region</th>
+            <th className="text-left py-2 pr-3 font-medium">Location</th>
             <th className="text-right py-2 pr-3 font-medium">Bandwidth</th>
+            <th className="text-left py-2 pr-3 font-medium">Owner</th>
+            <th className="text-left py-2 pr-3 font-medium">Cost center</th>
+            <th className="text-left py-2 pr-3 font-medium">State</th>
             <th className="text-right py-2 pr-3 font-medium">In</th>
             <th className="text-right py-2 pr-3 font-medium">Out</th>
+            <th className="text-right py-2 pr-3 font-medium">BGP</th>
             <th className="text-right py-2 pr-3 font-medium">Load</th>
             <th className="text-left py-2 pr-3 font-medium">24 h</th>
-            <th className="text-left py-2 pr-3 font-medium">State</th>
           </tr></thead>
           <tbody>
             {rows.map((c) => {
@@ -57,16 +84,20 @@ function CloudCircuits({ rows }) {
                   <td className="py-2 pr-3 text-ink text-[12px]">{c.name}</td>
                   <td className="py-2 pr-3 text-ink-muted text-[12px]">{CLOUD_KIND_LABEL[c.kind] || c.kindLabel || c.kind}</td>
                   <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.region || '-'}</td>
-                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBps(c.bandwidthBps)}</td>
-                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBps(c.bpsIn)}</td>
-                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBps(c.bpsOut)}</td>
-                  <td className={`py-2 pr-3 text-right tnum ${num(c.utilPct) >= 80 ? 'text-status-warn' : 'text-ink-muted'}`}>{fmtPct(c.utilPct)}</td>
-                  <td className="py-2 pr-3"><Sparkline values={series} color={c.state === 'critical' ? '#C75D5D' : c.state === 'warning' ? '#D4A24E' : BRAND} width={96} height={24} /></td>
+                  <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.location || '-'}</td>
+                  <td className="py-2 pr-3 text-right tnum text-ink-muted" title={c.bandwidthText || undefined}>{fmtBps(c.bandwidthBps)}</td>
+                  <td className="py-2 pr-3 text-ink-muted text-[12px] tnum">{ownerOf(c)}</td>
+                  <td className="py-2 pr-3 text-ink-muted text-[12px]">{costCenterOf(c)}</td>
                   <td className="py-2 pr-3">
                     <span title={c.stateRaw != null ? `Raw state value ${c.stateRaw} (enum unverified)` : undefined}>
                       <Badge tone={cloudTone(c.state)}>{CLOUD_STATE_LABEL[c.state] || c.state}</Badge>
                     </span>
                   </td>
+                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBps(c.bpsIn)}</td>
+                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBps(c.bpsOut)}</td>
+                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{c.bgp == null ? '-' : fmtNum(c.bgp)}</td>
+                  <td className={`py-2 pr-3 text-right tnum ${num(c.utilPct) >= 80 ? 'text-status-warn' : 'text-ink-muted'}`}>{fmtPct(c.utilPct)}</td>
+                  <td className="py-2 pr-3"><Sparkline values={series} color={c.state === 'critical' ? '#C75D5D' : c.state === 'warning' ? '#D4A24E' : BRAND} width={96} height={24} /></td>
                 </tr>
               );
             })}

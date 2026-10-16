@@ -47,6 +47,9 @@ const THRESHOLD_DEFS = {
   lm_mem_warn_pct: { def: 90, min: 50, max: 100, label: 'Device memory warning (%)' },
   lm_cert_warn_days: { def: 30, min: 1, max: 365, label: 'Certificate expiry warning (days)' },
   lm_tunnel_fold: { def: 5, min: 2, max: 100, label: 'IPSec tunnels down before they fold into one issue' },
+  // Cohesity via LogicMonitor (round 10).
+  lm_cohesity_cap_warn_pct: { def: 80, min: 50, max: 100, label: 'Cohesity cluster capacity warning (%)' },
+  lm_cohesity_cap_crit_pct: { def: 90, min: 50, max: 100, label: 'Cohesity cluster capacity critical (%)' },
   // Wireless (Cisco WLC DataSources).
   lm_wlan_chan_util_warn_pct: { def: 70, min: 30, max: 100, label: 'Radio channel utilization warning (%)' },
   lm_wlan_client_cap_warn_pct: { def: 80, min: 50, max: 100, label: 'Controller client capacity warning (%)' },
@@ -527,6 +530,7 @@ function computeMetricIssues(dbh, t, srcName) {
       const faults = [];
       for (const metric of Object.keys(HW_STATE_LABELS)) {
         for (const i of devInstances(dev, metric)) {
+          if (i.family === 'cohesity') continue; // round 10: cohesity-hardware-fault (logicmonitorCohesity.js) owns these
           if (stateIsFault(i.m[metric].value, metric)) faults.push({ i, metric, v: i.m[metric].value });
         }
       }
@@ -595,6 +599,8 @@ function computeMetricIssues(dbh, t, srcName) {
 
   // Round 9: AWS Direct Connect and Azure ExpressRoute (family 'cloud').
   try { issues.push(...require('./logicmonitorCloud').cloudIssues(dbh, t, srcName, index)); } catch { /* a cloud rule fault must not hide the other issues */ }
+  // Round 10: Cohesity clusters seen through LogicMonitor (family 'cohesity').
+  try { issues.push(...require('./logicmonitorCohesity').cohesityIssues(dbh, t, srcName, index)); } catch { /* a Cohesity rule fault must not hide the other issues */ }
   return issues;
 }
 
@@ -804,6 +810,11 @@ function computeIssues({ nowMs = Date.now() } = {}) {
   try {
     issues.push(...require('./logicmonitorWatch').computeWatchIssues(db, t, srcName));
   } catch { /* a watch fault must not hide the other issues */ }
+
+  // Round 10: neighbours CDP/LLDP see that nothing monitors (one folded info issue per source).
+  try {
+    issues.push(...require('./logicmonitorEri').unmonitoredNeighborIssues(db, t, srcName));
+  } catch { /* an ERI fault must not hide the other issues */ }
 
   // device-new, with the bootstrap guard: a portal whose first successful
   // poll is younger than the window would flag its whole inventory.

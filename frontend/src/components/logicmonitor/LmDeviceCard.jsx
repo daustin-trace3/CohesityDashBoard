@@ -12,7 +12,70 @@ import { BRAND, hostStatusTone, hostStatusLabel, severityTone, statusTextTone, f
 
 const clean = (list) => Array.from(new Set((list || []).map((v) => String(v == null ? '' : v).trim()).filter(Boolean)));
 
-export default function LmDeviceCard({ names = [], ips = [], className = '' }) {
+const fmtVal = (m) => {
+  const v = m.value;
+  if (v == null) return '-';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  if (m.unit === 'bytes') {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let x = n; let u = 0;
+    while (Math.abs(x) >= 1024 && u < units.length - 1) { x /= 1024; u += 1; }
+    return `${Math.round(x * 10) / 10} ${units[u]}`;
+  }
+  const r = Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10);
+  return m.unit ? `${r} ${m.unit}` : r;
+};
+
+// Metrics LogicMonitor collected for the object, one compact table per DataSource.
+// An instance row shows its metrics as "label: value" pairs; more than six
+// instances in a group collapse behind "show all".
+function ViaLogicMonitor({ metrics }) {
+  const [open, setOpen] = useState({});
+  const groups = [];
+  const byDs = new Map();
+  for (const m of metrics) {
+    let g = byDs.get(m.datasource);
+    if (!g) { g = { ds: m.datasource, label: m.datasourceLabel || m.datasource, instances: new Map() }; byDs.set(m.datasource, g); groups.push(g); }
+    let inst = g.instances.get(m.instanceKey);
+    if (!inst) { inst = { key: m.instanceKey, name: m.instanceName || m.instanceKey, items: [] }; g.instances.set(m.instanceKey, inst); }
+    inst.items.push(m);
+  }
+  return (
+    <div className="mt-2">
+      <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-1">Via LogicMonitor</p>
+      {groups.map((g) => {
+        const rows = [...g.instances.values()];
+        const showAll = !!open[g.ds];
+        const shown = showAll ? rows : rows.slice(0, 6);
+        return (
+          <div key={g.ds} className="mb-2">
+            <p className="text-[11px] text-ink font-semibold">{g.label} <span className="text-ink-faint font-normal">({rows.length} instance{rows.length === 1 ? '' : 's'})</span></p>
+            <table className="w-full text-[11px] text-ink-muted tnum">
+              <tbody>
+                {shown.map((inst) => (
+                  <tr key={inst.key} className="border-t border-cohesity-border/30">
+                    <td className="py-0.5 pr-3 text-ink whitespace-nowrap align-top">{inst.name}</td>
+                    <td className="py-0.5">{inst.items.map((m) => (
+                      <span key={m.metric} className="mr-3 whitespace-nowrap">{m.label}: <span className="text-ink">{fmtVal(m)}</span></span>
+                    ))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {rows.length > 6 && (
+              <button type="button" onClick={() => setOpen((o) => ({ ...o, [g.ds]: !showAll }))} className="text-[11px] text-brand hover:text-brand-bright">
+                {showAll ? 'show fewer' : `show all ${rows.length}`}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function LmDeviceCard({ names = [], ips = [], family = '', showMetrics = true, className = '' }) {
   const n = clean(names).join(',');
   const i = clean(ips).join(',');
   const [res, setRes] = useState(null);
@@ -23,11 +86,12 @@ export default function LmDeviceCard({ names = [], ips = [], className = '' }) {
     const params = {};
     if (n) params.names = n;
     if (i) params.ips = i;
+    if (family) params.family = family;
     client.get('/logicmonitor/lookup', { params })
       .then(({ data }) => { if (live) setRes(data || null); })
       .catch(() => { if (live) setRes(null); });
     return () => { live = false; };
-  }, [n, i]);
+  }, [n, i, family]);
 
   if (!res) return null;
   const device = res.device || null;
@@ -35,6 +99,7 @@ export default function LmDeviceCard({ names = [], ips = [], className = '' }) {
   const alerts = Array.isArray(res.alerts) ? res.alerts : [];
   if (!device && !ports.length) return null;
   const health = res.health || {};
+  const metrics = showMetrics && Array.isArray(res.metrics) ? res.metrics : [];
 
   return (
     <div className={`rounded-lg border border-cohesity-border/60 bg-surface-overlay/40 p-3 ${className}`} style={{ borderTop: `3px solid ${BRAND}` }}>
@@ -77,8 +142,10 @@ export default function LmDeviceCard({ names = [], ips = [], className = '' }) {
         </div>
       )}
 
+      {metrics.length > 0 && <ViaLogicMonitor metrics={metrics} />}
+
       {ports.length > 0 && (
-        <div>
+        <div className="mt-2">
           <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-1">Switch ports</p>
           {ports.slice(0, 6).map((p, k) => (
             <p key={`${p.deviceId}-${p.port}-${k}`} className="text-[11px] text-ink-muted tnum">

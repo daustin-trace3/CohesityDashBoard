@@ -2,12 +2,12 @@ import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams, useNavigate, Navigate } from 'react-router-dom';
 import {
   Scale, Layers, Cpu, Skull, BellRing, Repeat, Waypoints, History,
-  ListTree, Plug, EyeOff, ShieldCheck,
+  ListTree, Plug, EyeOff, ShieldCheck, Radar,
 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { BRAND, fmtNum } from './helpers';
+import { BRAND, fmtNum, fmtWhen } from './helpers';
 import {
   ListSection, codeLevelColumns, buildColumns, deadColumns, alertColumns, noisyColumns,
   topologyColumns, changeColumns, shadowedColumns,
@@ -15,6 +15,17 @@ import {
 import DataQualitySection from './dataQualitySection';
 import { ModelReviewSection, EndpointsSection } from './inventorySections';
 import LmDevice360 from './LmDevice360';
+
+// Round 10: neighbours LogicMonitor's CDP/LLDP discovery sees that nothing monitors.
+const unmonitoredColumns = [
+  { k: 'name', label: 'Neighbour' },
+  { k: 'kind', label: 'Seen by', render: (r) => (r.kind === 'lldp' ? 'LLDP' : 'CDP') },
+  { k: 'portsSeen', label: 'Ports seen', align: 'right', render: (r) => fmtNum(r.portsSeen) },
+  { k: 'devicesSeen', label: 'Devices seen', align: 'right', render: (r) => fmtNum(r.devicesSeen) },
+  { k: 'firstSeen', label: 'First seen', render: (r) => fmtWhen(r.firstSeen) },
+  { k: 'sampleDevice', label: 'Sample switch', render: (r) => r.sampleDevice || '-' },
+  { k: 'samplePort', label: 'Sample port', render: (r) => <span className="font-mono text-[11px]">{r.samplePort || '-'}</span> },
+];
 
 function NavChip({ count, tone }) {
   if (!count) return null;
@@ -73,6 +84,7 @@ export default function LmGovernancePage() {
     ] },
     { label: 'Topology and Change', items: [
       { id: 'topologyUnmatched', label: 'Unmatched Links', icon: Waypoints, count: (g.topologyUnmatched || []).length, tone: 'default' },
+      { id: 'unmonitoredNeighbors', label: 'Unmonitored Neighbours', icon: Radar, count: (g.unmonitoredNeighbors || []).length, tone: 'default' },
       { id: 'configChanges', label: 'Config Changes', icon: History, count: (g.configChanges || []).length, tone: 'default' },
     ] },
   ];
@@ -155,6 +167,11 @@ export default function LmGovernancePage() {
               <ListSection key={section} section={section} icon={Waypoints} title="Unmatched Link Descriptions" rows={g.topologyUnmatched}
                 blurb="Interface descriptions that look like a link (contain 'to' or 'uplink') but name no device ICC knows. Fix the description or the device name and the link appears on the topology map."
                 columns={topologyColumns} searchKeys={['deviceName', 'displayName', 'description']} defaultSortKey="deviceName" emptyText="Every link description resolved." />
+            )}
+            {section === 'unmonitoredNeighbors' && (
+              <ListSection key={section} section={section} icon={Radar} title="Neighbours LogicMonitor does not monitor" rows={g.unmonitoredNeighbors}
+                blurb="Devices that CDP or LLDP report on a monitored switch port but that match no LogicMonitor device or ICC host by name, serial or MAC. Add them to LogicMonitor to see their links on the topology map."
+                columns={unmonitoredColumns} searchKeys={['name', 'sampleDevice', 'samplePort']} defaultSortKey="firstSeen" defaultSortDir="desc" emptyText="Every neighbour LogicMonitor discovers is monitored." />
             )}
             {section === 'configChanges' && (
               <ListSection key={section} section={section} icon={History} title="Config Changes" rows={g.configChanges}

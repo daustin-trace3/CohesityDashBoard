@@ -170,3 +170,17 @@ describe('resolveToken', () => {
     expect(h.nameSet.has('dell-esx01')).toBe(true);
   });
 });
+
+describe('cohesity cluster vip', () => {
+  it('registers an IPv4 or host-name vip and ignores a Helios numeric cluster id', () => {
+    seed(db);
+    db.prepare("INSERT INTO clusters (id, name, vip) VALUES (2, 'helios-a', '8803852180576369')").run();
+    db.prepare("INSERT INTO clusters (id, name, vip) VALUES (3, 'host-vip', 'coh-vip.corp.local')").run();
+    const idx = hi.buildIdentityIndex(db, { fresh: true });
+    expect(idx.byIp.get('10.2.0.5').label).toBe('snotbkagcl-az');
+    expect(idx.byName.get('helios-a').ips).toEqual([]);
+    expect(idx.byName.get('helios-a').names).toEqual(['helios-a']);
+    expect(idx.byName.has('8803852180576369')).toBe(false);
+    expect(idx.byName.get('host-vip').names).toEqual(expect.arrayContaining(['host-vip', 'coh-vip.corp.local']));
+  });
+});

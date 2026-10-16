@@ -657,7 +657,7 @@ describe('seedDemo.js', () => {
     // 140 monitored devices plus the 2 LM Uptime ping-check devices (deviceType 19),
     // plus 6 nyc/lon switches (round 2: 1 dist + 2 access per site), plus 7 round 3
     // switches (abq-dist-01 with 3 access switches, 3 unassigned-sw-* in no site group).
-    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(167); // 162 plus the 5 round 9 cloud circuits (3 Direct Connect, 2 ExpressRoute)
+    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(169); // 162 plus the 5 round 9 cloud circuits (3 Direct Connect, 2 ExpressRoute) plus the 2 round 10 Cohesity clusters
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 19')).toBe(2);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 2')).toBe(23);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 4')).toBe(2);
@@ -676,7 +676,7 @@ describe('seedDemo.js', () => {
     expect(c('SELECT COUNT(*) c FROM lm_interface_daily')).toBeGreaterThan(40000);
     expect(c('SELECT COUNT(*) c FROM lm_device_datasources WHERE is_interface = 1')).toBe(67);
 
-    expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0')).toBe(118);
+    expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0')).toBe(120); // 118 plus the 2 round 10 Cohesity relay alerts
     expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 1')).toBe(400);
     expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0 AND acked = 1')).toBe(12);
     expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0 AND sdted = 1')).toBe(6);
@@ -708,7 +708,14 @@ describe('seedDemo.js', () => {
       expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE dst_platform = 'vcenter'")).toBeGreaterThan(0);
       expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE dst_platform = 'vcenter' AND dst_ref = 'nyc-esx-0101.icc.demo'")).toBe(2);
     }
-    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'lldp'")).toBe(12);
+    // Round 10 WP-A: every seeded uplink carries an ERI (cdp + lldp tokens), so cdp and lldp links resolve
+    // from it: lldp was 12 (10 LM + 2 cohesity), is now 98 (96 LM + 2 cohesity); cdp is 100 (96 LM + 4 unresolved).
+    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'lldp'")).toBe(98);
+    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'cdp' AND dst_platform = 'logicmonitor'")).toBe(96);
+    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'cdp' AND dst_device_id IS NULL AND dst_platform IS NULL")).toBe(4);
+    expect(db.prepare("SELECT neighbor_key k FROM lm_unmonitored_neighbors WHERE stale = 0 ORDER BY neighbor_key").all().map((r) => r.k))
+      .toEqual(['dal-badge-ctl-1', 'nyc-cam-nvr-2', 'phx-ups-01']);
+    expect(c("SELECT COUNT(*) c FROM lm_issue_history WHERE type = 'unmonitored-neighbor' AND status = 'open'")).toBe(1);
 
     const openTypes = db.prepare("SELECT DISTINCT type FROM lm_issue_history WHERE status = 'open'").all().map((r) => r.type);
     for (const type of [

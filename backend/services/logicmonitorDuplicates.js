@@ -16,7 +16,10 @@
 
 const OWNERS = [
   { platform: 'netapp', label: 'NetApp (AIQUM)', ds: /^ntm_aiqum|aiqum_alerts/i, tables: ['netapp_aiqum_instances'] },
-  { platform: 'cohesity', label: 'Cohesity', ds: /^(ntm_)?cohesity_/i, tables: ['clusters'] },
+  // Round 10: also "Cohesity Protection Jobs" (spaces) and Cohesity_DataPlatform_*. Cohesity is the one
+  // owner that must also resolve the LM device to an ICC cluster (resolveDevice): a customer sandbox whose
+  // clusters ICC does not poll keeps its alerts visible.
+  { platform: 'cohesity', label: 'Cohesity', ds: /^(ntm_)?cohesity[_ ]/i, tables: ['clusters'], resolveDevice: true },
   { platform: 'vcenter', label: 'vCenter', ds: /^vmware_.*(datastore|vcenter|vcsa)|^vcenter/i, tables: ['vcenter_vcenters'] },
   { platform: 'zerto', label: 'Zerto', ds: /^zerto_/i, tables: ['zerto_sites', 'zerto_vpgs'] },
   { platform: 'brocade', label: 'Brocade', ds: /^brocade_.*(fc|port)/i, tables: ['brocade_sources'] },
@@ -31,6 +34,39 @@ function tableHasRows(dbh, name) {
 }
 function hasColumn(dbh, table, col) {
   try { return dbh.prepare(`PRAGMA table_info('${table}')`).all().some((c) => c.name === col); } catch { return false; }
+}
+
+const parseJson = (s, fb) => { try { const v = JSON.parse(s); return v == null ? fb : v; } catch { return fb; } };
+
+/**
+ * Per "<source>:<device>" does the LM device resolve to an ICC ref of the platform?
+ * Tokens: display name, name, hostname, sysname and every IP of the device, resolved
+ * through the host identity index (clusters.name, cohesity_nodes hostname and ip).
+ */
+function deviceResolver(dbh, platform) {
+  const memo = new Map();
+  let idx = null;
+  const devStmt = dbh.prepare('SELECT display_name, name, hostname, sysname, ips_json FROM lm_devices WHERE source_id = ? AND lm_device_id = ?');
+  return (sourceId, deviceId) => {
+    if (deviceId == null) return false;
+    const k = `${sourceId}:${deviceId}`;
+    if (memo.has(k)) return memo.get(k);
+    let ok = false;
+    try {
+      const hi = require('./hostIdentity');
+      if (!idx) idx = hi.buildIdentityIndex(dbh, { fresh: true });
+      const d = devStmt.get(sourceId, deviceId);
+      if (d) {
+        const tokens = [d.display_name, d.name, d.hostname, d.sysname, ...(parseJson(d.ips_json, []) || [])].filter(Boolean);
+        ok = tokens.some((tok) => {
+          const ref = hi.resolveToken(idx, tok);
+          return !!ref && (ref.platform === platform || (Array.isArray(ref.platforms) && ref.platforms.includes(platform)));
+        });
+      }
+    } catch { ok = false; }
+    memo.set(k, ok);
+    return ok;
+  };
 }
 
 /** Owner entry for a DataSource name, or null. Pure (no db). */
@@ -51,11 +87,17 @@ function markDuplicateAlerts(dbh) {
     if (!hasColumn(dbh, 'lm_alerts', 'duplicate_of')) return res;
     const active = OWNERS.filter((o) => o.tables.some((t) => tableHasRows(dbh, t)));
     const want = new Map();
-    const rows = dbh.prepare('SELECT id, resource_template_name, duplicate_of FROM lm_alerts WHERE cleared = 0 OR duplicate_of IS NOT NULL').all();
+    const rows = dbh.prepare('SELECT id, source_id, lm_device_id, resource_template_name, duplicate_of FROM lm_alerts WHERE cleared = 0 OR duplicate_of IS NOT NULL').all();
+    const resolvers = new Map();
+    const resolves = (owner, r) => {
+      if (!owner.resolveDevice) return true;
+      if (!resolvers.has(owner.platform)) resolvers.set(owner.platform, deviceResolver(dbh, owner.platform));
+      return resolvers.get(owner.platform)(r.source_id, r.lm_device_id);
+    };
     const upd = dbh.prepare('UPDATE lm_alerts SET duplicate_of = ? WHERE id = ?');
     const run = dbh.transaction(() => {
       for (const r of rows) {
-        const owner = active.find((o) => o.ds.test(String(r.resource_template_name || '')));
+        const owner = active.find((o) => o.ds.test(String(r.resource_template_name || '')) && resolves(o, r));
         const tag = owner && r.id != null ? `duplicate:${owner.platform}` : null;
         want.set(r.id, tag);
         if ((r.duplicate_of || null) === tag) { if (tag) res.byPlatform[owner.platform] = (res.byPlatform[owner.platform] || 0) + 1; continue; }
@@ -87,4 +129,4 @@ function duplicateSummary(dbh) {
   return out;
 }
 
-module.exports = { markDuplicateAlerts, duplicateSummary, ownerForDatasource, OWNERS };
+module.exports = { markDuplicateAlerts, duplicateSummary, ownerForDatasource, deviceResolver, OWNERS };

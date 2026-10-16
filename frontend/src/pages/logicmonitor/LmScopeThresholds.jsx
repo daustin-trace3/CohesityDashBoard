@@ -23,6 +23,7 @@ const METRIC_FAMILIES = [
   ['voice', 'Voice', 'SIP counters, session border controller health and ISDN channels.'],
   ['wireless', 'Wireless', 'Controller HA, APs, radios and RF, SSID clients, RADIUS, mobility and AP uplinks.'],
   ['cloud', 'Cloud circuits', 'AWS Direct Connect connections and virtual interfaces, Azure ExpressRoute circuits: state, BGP and throughput.'],
+  ['cohesity', 'Cohesity (via LogicMonitor)', 'Cohesity clusters LogicMonitor monitors: cluster health, capacity, nodes, services, fans and power supplies.'],
 ];
 
 // The per-portal site rule arrives as an object (siteRule) or its JSON text.

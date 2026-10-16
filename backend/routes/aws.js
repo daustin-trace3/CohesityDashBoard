@@ -22,7 +22,7 @@ const validate = (req, res, next) => {
 };
 
 const publicAccount = (row) => ({
-  id: row.id, name: row.name, accessKeyId: row.access_key_id, region: row.region,
+  id: row.id, name: row.name, accessKeyId: row.access_key_id, region: row.region, accountNumber: row.account_number || null,
   pollingIntervalMinutes: row.polling_interval_minutes,
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
   ...awsApi.credentialSummary(row),
@@ -72,6 +72,26 @@ const nextExpiry = (b, row) => (b.credentialExpiresAt === undefined ? (row?.cred
 const trimOr = (v, fallback) => (v === undefined ? fallback : (v && String(v).trim()) || null);
 
 // ── Accounts CRUD ────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/aws/network-circuits - LogicMonitor Direct Connect rows whose system.aws.ownerAccount equals
+ * one of the registered accounts' numbers. 404 when LogicMonitor is not installed. Literal path, kept
+ * ahead of every :id route.
+ */
+router.get('/network-circuits', (req, res, next) => {
+  try {
+    let cloudMod;
+    let issuesMod;
+    try {
+      cloudMod = require('../services/logicmonitorCloud');
+      issuesMod = require('../services/logicmonitorIssues');
+    } catch { return res.status(404).json({ error: 'LogicMonitor is not available' }); }
+    const numbers = new Set(db.prepare("SELECT account_number FROM aws_accounts WHERE account_number IS NOT NULL AND account_number <> ''").all().map((r) => String(r.account_number)));
+    let rows = [];
+    try { rows = cloudMod.cloudCircuits(db, issuesMod.getThresholds(), {}); } catch { rows = []; }
+    res.json(rows.filter((r) => r.ownerAccount && numbers.has(String(r.ownerAccount))));
+  } catch (err) { next(err); }
+});
 
 /** GET /api/aws/accounts — registered accounts (never the secret). */
 router.get('/accounts', (req, res, next) => {

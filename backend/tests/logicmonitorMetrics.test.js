@@ -98,7 +98,7 @@ describe('catalogFor', () => {
   });
 
   it('exports the family list and every entry carries the contract fields', () => {
-    expect(catalog.FAMILIES).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud']);
+    expect(catalog.FAMILIES).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity']);
     for (const f of catalog.FAMILIES) expect(catalog.FAMILY_LABELS[f]).toBeTruthy();
     for (const e of catalog.CATALOG) {
       expect(catalog.FAMILIES).toContain(e.family);

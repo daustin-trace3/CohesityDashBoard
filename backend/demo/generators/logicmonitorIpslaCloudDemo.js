@@ -18,11 +18,14 @@
 //   cloud-ok         dx-phx-prod-1 (10 Gbps), er-phx-azure-east, er-dal-azure-south
 // The datapoints behind these metrics are UNVERIFIED against a live portal.
 const CLOUD_PLAN = {
-  'dx-phx-prod-1': { kind: 'aws-dx', site: 'aws', bandwidth: '10 Gbps', region: 'us-east-1', state: 1, util: 38 },
-  'dx-phx-prod-2': { kind: 'aws-dx', site: 'aws', bandwidth: '1 Gbps', region: 'us-east-1', state: 1, util: 87 },
-  'dx-dal-prod-1': { kind: 'aws-dx', site: 'aws', bandwidth: '10 Gbps', region: 'us-west-2', state: 0, util: 0 },
-  'er-phx-azure-east': { kind: 'azure-er', site: 'phx', bandwidth: '1 Gbps', region: 'eastus', state: 1, util: 22 },
-  'er-dal-azure-south': { kind: 'azure-er', site: 'dal', bandwidth: '500 Mbps', region: 'southcentralus', state: 1, util: 31 },
+  // Round 10: the AWS rows carry the system.aws.* properties seen on the first live portal. The two
+  // phx connections belong to the demo AWS account (893373391538, see generators/aws.js); dx-dal-prod-1
+  // belongs to another account so the AWS overview panel shows the filter working.
+  'dx-phx-prod-1': { kind: 'aws-dx', site: 'aws', bandwidth: '10 Gbps', bwProp: '10Gbps', region: 'us-east-1', awsDevice: 'EqDC2-g2845xqir5zz', owner: '893373391538', costCenter: '524121', state: 1, util: 38 },
+  'dx-phx-prod-2': { kind: 'aws-dx', site: 'aws', bandwidth: '1 Gbps', bwProp: '1Gbps', region: 'us-east-1', awsDevice: 'EqDC2-g2845xqir5zz', owner: '893373391538', costCenter: '524121', state: 1, util: 87 },
+  'dx-dal-prod-1': { kind: 'aws-dx', site: 'aws', bandwidth: '10 Gbps', bwProp: '10Gbps', region: 'us-west-2', awsDevice: 'CSOR1-2k3j4h5g6f7d', owner: '417788990011', costCenter: '610442', state: 0, util: 0 },
+  'er-phx-azure-east': { kind: 'azure-er', site: 'phx', bandwidth: '1 Gbps', region: 'eastus', subscription: '3f1c9a52-0d4e-4b7a-9c61-2a8e5b7d1f04', state: 1, util: 22 },
+  'er-dal-azure-south': { kind: 'azure-er', site: 'dal', bandwidth: '500 Mbps', region: 'southcentralus', subscription: '3f1c9a52-0d4e-4b7a-9c61-2a8e5b7d1f04', state: 1, util: 31 },
 };
 const BW_BPS = { '10 Gbps': 1e10, '1 Gbps': 1e9, '500 Mbps': 5e8 };
 
@@ -40,9 +43,19 @@ function cloudDevices() {
 function cloudProps(d) {
   const c = CLOUD_PLAN[d.name];
   if (!c) return null;
+  if (c.kind === 'aws-dx') {
+    return {
+      custom: [{ name: 'bandwidth', value: c.bandwidth }],
+      system: [
+        { name: 'system.aws.region', value: c.region }, { name: 'system.aws.awsDevice', value: c.awsDevice },
+        { name: 'system.aws.bandwidth', value: c.bwProp }, { name: 'system.aws.ownerAccount', value: c.owner },
+        { name: 'system.aws.tag.cost-center', value: c.costCenter },
+      ],
+    };
+  }
   return {
     custom: [{ name: 'bandwidth', value: c.bandwidth }],
-    system: [{ name: c.kind === 'azure-er' ? 'system.azure.location' : 'system.aws.region', value: c.region }],
+    system: [{ name: 'system.azure.location', value: c.region }, { name: 'system.azure.subscriptionId', value: c.subscription }],
   };
 }
 

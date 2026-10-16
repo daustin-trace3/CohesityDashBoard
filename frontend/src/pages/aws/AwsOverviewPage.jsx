@@ -16,6 +16,7 @@ export default function AwsOverviewPage() {
   const [data, setData] = useState(null);
   const [issues, setIssues] = useState(null);
   const [health, setHealth] = useState(null);
+  const [dx, setDx] = useState([]);
   const [filterAccountId, setFilterAccountId] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
@@ -23,6 +24,8 @@ export default function AwsOverviewPage() {
     client.get('/aws/overview', { params: filterAccountId ? { accountId: filterAccountId } : {} }).then(({ data }) => setData(data)),
     client.get('/aws/issues').then(({ data }) => setIssues(Array.isArray(data) ? data : data?.issues || [])).catch(() => setIssues([])),
     client.get('/aws/health').then(({ data }) => setHealth(data)).catch(() => setHealth({ operational: true, events: [] })),
+    // Round 10: Direct Connect rows from LogicMonitor; a 404 (no LogicMonitor) or an empty list hides the panel.
+    client.get('/aws/network-circuits').then(({ data }) => setDx(Array.isArray(data) ? data : [])).catch(() => setDx([])),
   ]).then(() => setLastRefreshed(new Date()))
     .catch(() => { setData({}); toast({ type: 'error', title: 'Failed to load AWS overview' }); }), [toast, filterAccountId]);
 
@@ -135,6 +138,40 @@ export default function AwsOverviewPage() {
           )}
         </div>
       </div>
+
+      {dx.length > 0 && (
+        <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+          <p className="text-sm font-semibold text-ink mb-3 flex items-center gap-2"><Network size={15} className="text-brand" /> Direct Connect (via LogicMonitor)</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-1.5 pr-3">Connection</th>
+                <th className="py-1.5 pr-3">Region</th>
+                <th className="py-1.5 pr-3">Location</th>
+                <th className="py-1.5 pr-3 text-right">Bandwidth</th>
+                <th className="py-1.5 pr-3 text-right">Load</th>
+                <th className="py-1.5 pr-3">State</th>
+              </tr></thead>
+              <tbody>
+                {dx.map((c) => (
+                  <tr key={`${c.sourceId}:${c.deviceId}`} className="border-b border-cohesity-border/40">
+                    <td className="py-1.5 pr-3 text-ink">{c.name}</td>
+                    <td className="py-1.5 pr-3 text-ink-muted">{c.region || '-'}</td>
+                    <td className="py-1.5 pr-3 text-ink-muted">{c.location || '-'}</td>
+                    <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{c.bandwidthText || '-'}</td>
+                    <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{c.utilPct != null ? `${c.utilPct}%` : '-'}</td>
+                    <td className="py-1.5 pr-3">
+                      <Badge tone={c.state === 'critical' ? 'crit' : c.state === 'warning' ? 'warn' : c.state === 'ok' ? 'ok' : 'neutral'}>
+                        {c.state === 'critical' ? 'Down' : c.state === 'warning' ? 'Saturated' : c.state === 'ok' ? 'OK' : 'No data'}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-3 gap-4 mb-4">
         <div className="panel p-4 lg:col-span-2" style={{ borderTop: `3px solid ${BRAND}` }}>

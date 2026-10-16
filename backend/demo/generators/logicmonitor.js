@@ -210,6 +210,9 @@ function buildDevicePlan(db) {
   for (const n of ['phx-wlc-01', 'dal-wlc-01']) add({ name: n, site: n.slice(0, 3), kind: 'wlc', r8: true });
   // Round 9 WP7: AWS Direct Connect (device_type 2) and Azure ExpressRoute (device_type 4), appended last.
   for (const c of require('./logicmonitorIpslaCloudDemo').cloudDevices()) add({ ...c, r8: true });
+  // Round 10 WP-B: the two Cohesity demo clusters (generators/cohesity.js names) as LogicMonitor
+  // devices, named exactly like clusters.name so the identity index resolves them.
+  for (const n of COHESITY_LM_CLUSTERS) add({ name: n, site: n.slice(0, 3), kind: 'cohesity', r8: true });
 
   let id = 101;
   const counters = {};
@@ -284,6 +287,13 @@ function deviceIdentity(d, rng) {
         sysinfo: 'Cisco IOS Software [Cupertino], C9800 Software (C9800_IOSXE-K9), Version 17.9.4a, RELEASE SOFTWARE (fc3)',
         sysoid: '.1.3.6.1.4.1.9.1.2530', categories: 'snmp,Cisco,CiscoCatalystWLC', ert: 'Wireless',
       };
+    case 'cohesity':
+      // Virtual Edition clusters as the live sandbox shows them: Net-SNMP, ERT VirtualMachineResource.
+      return {
+        deviceType: 0, model: 'Cohesity Virtual Edition', serial: null,
+        sysinfo: 'Linux cohesity-ve 5.4.0 #1 SMP x86_64', sysoid: '.1.3.6.1.4.1.8072.3.2.10',
+        categories: 'snmp,NetSNMP,Linux', ert: 'VirtualMachineResource',
+      };
     case 'f5':
       return {
         deviceType: 0, model: 'BIG-IP i5800', serial: `f5-${randInt(rng, 1000, 9999)}-${randInt(rng, 1000, 9999)}`,
@@ -334,9 +344,9 @@ function classify(d, ident) {
   }
   const roleByKind = {
     core: 'switch', dist: 'switch', access: 'switch', 'branch-access': 'switch', 'wan-rtr': 'router', 'branch-rtr': 'router',
-    asa: 'firewall', f5: 'load-balancer', ap: 'wireless', wlc: 'wireless', win: 'server', linux: 'server', 'aws-ec2': 'server',
+    asa: 'firewall', f5: 'load-balancer', ap: 'wireless', wlc: 'wireless', win: 'server', linux: 'server', cohesity: 'server', 'aws-ec2': 'server',
   };
-  const vendorByKind = { f5: 'F5', ap: 'Meraki', win: 'Microsoft', linux: 'Net-SNMP' };
+  const vendorByKind = { f5: 'F5', ap: 'Meraki', win: 'Microsoft', linux: 'Net-SNMP', cohesity: 'Net-SNMP' };
   const role = roleByKind[d.kind] || 'other';
   const vendor = ident.sysoid ? (vendorByKind[d.kind] || 'Cisco') : null;
   const m = String(ident.sysinfo || '').match(/(?:Version|BIG-IP)\s+([\w.()]+)/);
@@ -378,6 +388,13 @@ function portsFor(d) {
     default: return [];
   }
 }
+
+// Round 10: chassis MAC the demo gives a device (also written into eri_json), and the port MACs
+// that share its first five octets, as on Cisco gear.
+const demoDeviceMac = (id) => `00:1e:${(id >> 8).toString(16).padStart(2, '0')}:${(id & 255).toString(16).padStart(2, '0')}:4c:${pad2(id % 90)}`;
+const demoPortMac = (id, ifIndex) => `00:1e:${(id >> 8).toString(16).padStart(2, '0')}:${(id & 255).toString(16).padStart(2, '0')}:4c:${((ifIndex + 0x40) & 255).toString(16).padStart(2, '0')}`;
+// Neighbours CDP sees that nothing monitors: switch -> the device name (first non-uplink port of that switch).
+const UNMONITORED_CDP = { 'phx-acc-01': 'phx-ups-01', 'phx-acc-02': 'phx-ups-01', 'dal-acc-01': 'dal-badge-ctl-1', 'nyc-acc-01': 'nyc-cam-nvr-2' };
 
 // 80 uplink descriptions in "to <device> <port>" form.
 function uplinkDescriptions() {
@@ -567,6 +584,8 @@ function seedLogicmonitor(db, { now, encrypt }) {
   // Interfaces (instance ids from 700000), keyed "device|abbr".
   const links = uplinkDescriptions();
   const linkDesc = new Map(links.map((l) => [`${l.src}|${l.srcPort}`, `to ${l.dst} ${l.dstPort}`]));
+  const linkByKey = new Map(links.map((l) => [`${l.src}|${l.srcPort}`, l]));
+  const unmonDone = new Set();
   const ifaces = [];
   const ifByKey = new Map();
   let instanceSeq = 700000;
@@ -834,6 +853,17 @@ function seedLogicmonitor(db, { now, encrypt }) {
     });
   }
 
+  // Round 10 WP-B: LM alerts that relay the Cohesity feed ICC polls itself. Both clusters exist in the
+  // Cohesity demo, so the duplicate rule (device resolves to an ICC cluster) tags them.
+  addAlert({
+    device: COHESITY_LM_CLUSTERS[0], ds: 'Cohesity_DataPlatform_Alerts', instanceId: dsInstance(COHESITY_LM_CLUSTERS[0], 'Cohesity_DataPlatform_Alerts', 'Alerts'),
+    instanceName: 'Alerts', dp: 'CriticalAlerts', sev: 3, value: '2', threshold: '> 0', startEpoch: epochAgo(240),
+  });
+  addAlert({
+    device: COHESITY_LM_CLUSTERS[1], ds: 'Cohesity Protection Jobs', instanceId: dsInstance(COHESITY_LM_CLUSTERS[1], 'Cohesity Protection Jobs', 'SQL_Daily'),
+    instanceName: 'SQL_Daily', dp: 'LastRunStatus', sev: 3, value: '2', threshold: '= 2', startEpoch: epochAgo(310),
+  });
+
   // Cleared alerts: 400 over 30 days, 3 noisy conditions among them.
   const clearedRng = rngFor('logicmonitor-cleared');
   const noisy = [
@@ -955,6 +985,24 @@ function seedLogicmonitor(db, { now, encrypt }) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 0, datetime('now'))
     `);
     const statusText = (s) => (s === 1 ? 'up' : s === 2 ? 'down' : s == null ? 'unknown' : 'other');
+    // Round 10: predef.externalResourceID as LogicMonitor writes it: local MAC, a cdp token naming the real peer
+    // with its serial and port, an lldp token with the peer's chassis MAC; a few ports see unmonitored neighbours.
+    const ifaceProps = (f) => {
+      const props = [{ name: 'auto.interface.alias', value: f.description }, { name: 'auto.interface.speed', value: String(f.speed) }];
+      const tokens = [`interface:${demoPortMac(f.device.id, f.ifIndex)}`];
+      const l = linkByKey.get(f.key);
+      const peer = l ? byName.get(l.dst) : null;
+      if (peer) {
+        const port = l.dstPort.replace(/^Te/, 'TenGigabitEthernet').replace(/^Gi/, 'GigabitEthernet').toLowerCase();
+        const serial = peer.ident && peer.ident.serial ? `(${String(peer.ident.serial).toLowerCase()})` : '';
+        tokens.push(`cdp-interface:${peer.name}.acme.local${serial}--${port}`, `lldp-interface:${demoDeviceMac(peer.id)}--${port}`);
+      } else if (UNMONITORED_CDP[f.device.name] && f.cls !== 'uplink' && !unmonDone.has(f.device.name)) {
+        unmonDone.add(f.device.name);
+        tokens.push(`cdp-interface:${UNMONITORED_CDP[f.device.name]}.acme.local--eth0`);
+      }
+      props.push({ name: 'predef.externalResourceID', value: tokens.join(',') });
+      return props;
+    };
     for (const f of ifaces) {
       const d = f.device;
       let inU = f.baseIn;
@@ -972,7 +1020,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
         f.speed, round2(inU * f.speed / 1e8), round2(outU * f.speed / 1e8), errs, ERR_PORTS.has(f.key) ? 0.4 : 0, stormDisc, 0,
         round2(inU), round2(outU), epochAgo(sampledMin),
         sev ? `unconfirmed-${sevWord(sev)}-none` : 'none', d.inSdt ? 'none-SDT-none' : 'none-none-none',
-        JSON.stringify([{ name: 'auto.interface.alias', value: f.description }, { name: 'auto.interface.speed', value: String(f.speed) }]));
+        JSON.stringify(ifaceProps(f)));
       d.ifCount = (d.ifCount || 0) + 1;
       if (f.status === 1) d.ifUp = (d.ifUp || 0) + 1;
     }
@@ -1001,7 +1049,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
       const lr = d.r8 ? r8Rng : rng;
       const firstSeen = newDays ? `-${newDays} days` : `-${randInt(lr, 85, 89)} days`;
       const createdEpoch = newDays ? epochAgo(newDays * 1440 + 30) : epochAgo(randInt(lr, 120, 900) * 1440);
-      const mac = `00:1e:${(d.id >> 8).toString(16).padStart(2, '0')}:${(d.id & 255).toString(16).padStart(2, '0')}:4c:${pad2(d.id % 90)}`;
+      const mac = demoDeviceMac(d.id);
       const sysProps = [
         { name: 'system.displayname', value: d.name }, { name: 'system.hostname', value: fqdn || d.ip },
         { name: 'system.ips', value: d.ip }, { name: 'system.categories', value: id.categories },
@@ -1515,6 +1563,8 @@ const NYC_EXTRA_JOBS = [
 // standby, a certificate 12 days from expiry on phx-f5-01, dal-dist-02 PSU
 // failed, a BGP peer down on dal-wan-rtr-02, CPU 91% on phx-core-01.
 
+// Round 10 WP-B: the Cohesity demo clusters (generators/cohesity.js buildClusterList) LogicMonitor monitors.
+const COHESITY_LM_CLUSTERS = ['nyc-coh-prd-01', 'lon-coh-prd-01'];
 const R8_STEPS = 336; // 7 days at 30 minutes
 const R8_STEP_S = 1800;
 
@@ -1650,6 +1700,72 @@ function seedWireless(devices, { put, rng, r1, series }) {
     else put(d, 'Cisco_C9800_HA_Peer_State', 'Cisco C9800 HA Peer State', 'wireless', 'ha', { wlc_ha_peer_ok: 1 });
     put(d, 'ntm_wlc_ap_status_check', 'WLC AP Status Check', 'wireless', 'ap-status', { wlc_ap_available_pct: cfg.avail });
     put(d, 'ntm_wlc_mobility_domain_check', 'WLC Mobility Domain Check', 'wireless', 'mobility-domain', { wlc_mobility_status: 0 });
+  }
+}
+
+// ---- Round 10 WP-B: Cohesity clusters through LogicMonitor ----------------------------
+// Own PRNG and own series helper so no other round 8 or 9 stream moves. The datapoint
+// enums are UNVERIFIED: 1 reads healthy and 0 reads down, matching logicmonitorCohesity.js.
+// nyc: 71% full, two services down on node 2. lon: 86% full (warning), node 3 down,
+// PSU 2 of node 2 faulted. Nodes are the "<cluster>-node-N" hostnames of cohesity_nodes.
+const COH_SERVICES = ['bridge', 'apollo', 'athena', 'atom', 'bifrost', 'alerts', 'iris', 'magneto', 'stats', 'gandalf',
+  'keychain', 'sentinel', 'vault', 'yoda', 'nexus', 'scribe', 'groot', 'eagle_agent', 'pushclient', 'janus',
+  'icebox', 'hercules', 'heimdall', 'proxy_server', 'rpcgateway', 'tricorder', 'storage_proxy', 'patch_manager',
+  'smb_proxy', 'nfs_proxy', 'etl_server', 'cluster_manager', 'node_exporter', 'flexlm', 'kerberos', 'ntp',
+  'ldap_proxy', 'rigel', 'nimbus', 'cassini', 'opcenter', 'curator', 'ganesha', 'tiering', 'compass'];
+const COH_JOBS = ['VM_Prod_Backup', 'SQL_Daily', 'NAS_Archive', 'Exchange_DB', 'Oracle_Weekly', 'Physical_Servers',
+  'Gold-15min', 'Silver-1h', 'Bronze-24h', 'Endpoint_Config', 'O365_Mail', 'K8s_Clusters'];
+
+function seedCohesityViaLm(devices, { put }) {
+  const rng = rngFor('logicmonitor-cohesity-r10');
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const steps = R8_STEPS;
+  // Gentle daily wave ending exactly at cur.
+  const wave = (cur, amp, lo = 0, hi = 100) => {
+    const out = [];
+    for (let i = 0; i < steps; i += 1) out.push(r1(Math.min(hi, Math.max(lo, cur * (1 + amp * Math.sin((i / 48) * 2 * Math.PI) + 0.01 * (rng() - 0.5))))));
+    out[steps - 1] = cur;
+    return out;
+  };
+  // Capacity climbs about 0.05 points a day.
+  const creep = (cur) => Array.from({ length: steps }, (_, i) => r1(cur - ((steps - 1 - i) / 48) * 0.05));
+  const CFG = {
+    [COHESITY_LM_CLUSTERS[0]]: { usedPct: 71, totalTb: 400, downNode: 0, downServices: [[2, 'apollo'], [2, 'magneto']], psuFault: null },
+    [COHESITY_LM_CLUSTERS[1]]: { usedPct: 86, totalTb: 250, downNode: 3, downServices: [], psuFault: [2, 2] },
+  };
+  const TB = 1024 ** 4;
+  for (const d of devices.filter((x) => x.kind === 'cohesity' && x.hostStatus === 'normal')) {
+    const cfg = CFG[d.name];
+    if (!cfg) continue;
+    const total = cfg.totalTb * TB;
+    const used = Math.round(total * (cfg.usedPct / 100));
+    put(d, 'Cohesity_DataPlatform_ClusterStatus', 'Cohesity Cluster Status', 'cohesity', 'cluster', { cluster_health: 1, cluster_nodes: 4 });
+    put(d, 'Cohesity_DataPlatform_BasicStorage', 'Cohesity Basic Storage', 'cohesity', 'storage', {
+      cap_used_pct: cfg.usedPct, cap_used_bytes: used, cap_total_bytes: total, cap_avail_bytes: total - used, dedupe_ratio: d.name === COHESITY_LM_CLUSTERS[0] ? 3.4 : 2.9,
+    }, { cap_used_pct: creep(cfg.usedPct) });
+    for (let n = 1; n <= 4; n += 1) {
+      const node = `${d.name}-node-${n}`;
+      const down = cfg.downNode === n;
+      const cpu = r1(18 + rng() * 22);
+      put(d, 'Cohesity_DataPlatform_NodeStatus', 'Cohesity Node Status', 'cohesity', node, {
+        node_status: down ? 0 : 1, node_cpu_pct: down ? null : cpu, node_mem_pct: down ? null : r1(48 + rng() * 20),
+        node_uptime: down ? 0 : Math.round(86400 * (20 + rng() * 120)),
+      }, down ? null : { node_cpu_pct: wave(cpu, 0.2) });
+      for (let f = 1; f <= 3; f += 1) put(d, 'Cohesity_DataPlatform_Fans', 'Cohesity Fans', 'cohesity', `${node} Fan ${f}`, { fan_state: 1, fan_rpm: Math.round(5400 + rng() * 600) });
+      for (let ps = 1; ps <= 2; ps += 1) {
+        const bad = cfg.psuFault && cfg.psuFault[0] === n && cfg.psuFault[1] === ps;
+        put(d, 'Cohesity_DataPlatform_PowerSupplies', 'Cohesity Power Supplies', 'cohesity', `${node} PSU ${ps}`, { psu_state: bad ? 0 : 1 });
+      }
+      for (const svc of COH_SERVICES) {
+        const bad = cfg.downServices.some(([nn, name]) => nn === n && name === svc);
+        put(d, 'ntm_cohesity_node_services', 'Cohesity Node Services', 'cohesity', `${node}-${svc}`, { service_state: bad || down ? 0 : 1 });
+      }
+    }
+    COH_JOBS.forEach((job, ji) => put(d, 'Cohesity_DataPlatform_ProtectionJobs', 'Cohesity Protection Jobs', 'cohesity', job, {
+      job_status: ji === 1 && d.name === COHESITY_LM_CLUSTERS[1] ? 2 : 1, job_last_run: Math.round(3600 * (2 + rng() * 20)),
+    }));
+    put(d, 'ntm_cohesity_alerts', 'Cohesity Alerts', 'cohesity', 'alerts', { alert_count: d.name === COHESITY_LM_CLUSTERS[0] ? 2 : 1 });
+    put(d, 'Cohesity_DataPlatform_Troubleshooter', 'Cohesity Troubleshooter', 'cohesity', 'troubleshooter', { trouble_state: 1 });
   }
 }
 
@@ -1929,6 +2045,8 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   seedWireless(devices, { put, rng, r1, series });
   // Round 9 WP7: IP SLA probes and cloud circuits (generators/logicmonitorIpslaCloudDemo.js).
   require('./logicmonitorIpslaCloudDemo').seedIpslaCloud(devices, { put, rng, r1, series });
+  // Round 10 WP-B: Cohesity through LogicMonitor (own PRNG, defined next to the wireless seed above).
+  seedCohesityViaLm(devices, { put });
 
   // Keep the datasource inventory counts in step with what was collected.
   for (const { dev, hds, n } of instN.values()) ddsUpd.run(n, n, sid, dev.id, hds);

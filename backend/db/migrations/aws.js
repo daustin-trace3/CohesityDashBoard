@@ -413,4 +413,14 @@ module.exports = [
       add('credential_expires_at', 'DATETIME');
     },
   },
+  {
+    // Round 10: the 12 digit AWS account number from the STS caller identity, filled by the
+    // poller (and the test route), so LogicMonitor Direct Connect rows can be matched to an
+    // ICC account by their system.aws.ownerAccount property. UNVERIFIED live.
+    version: 7,
+    up(db) {
+      const cols = db.prepare("PRAGMA table_info('aws_accounts')").all().map((c) => c.name);
+      if (!cols.includes('account_number')) db.exec('ALTER TABLE aws_accounts ADD COLUMN account_number TEXT');
+    },
+  },
 ];

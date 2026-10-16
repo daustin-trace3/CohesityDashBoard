@@ -187,3 +187,75 @@ describe('cloudCircuits', () => {
     expect(lmCloud.cloudCircuits(db, t(), { sourceId: sid + 1000 })).toEqual([]);
   });
 });
+
+describe('round 10: properties, bandwidth parsing and the ECX entry', () => {
+  const t = () => lmIssues.getThresholds();
+
+  it('parseBandwidth reads "10Gbps", "500Mbps" and "1Gbps"', () => {
+    expect(lmCloud.parseBandwidth('10Gbps')).toBe(1e10);
+    expect(lmCloud.parseBandwidth('500Mbps')).toBe(5e8);
+    expect(lmCloud.parseBandwidth('1Gbps')).toBe(1e9);
+    expect(lmCloud.parseBandwidth('nonsense')).toBeNull();
+  });
+
+  it('deviceFacts reads system.aws.* properties, tags and prefers system.aws.bandwidth over the custom prop', () => {
+    const row = {
+      ert: 'AWS/DirectConnect',
+      system_props_json: JSON.stringify([
+        { name: 'system.aws.region', value: 'us-east-1' }, { name: 'system.aws.awsDevice', value: 'EqDC2-g2845xqir5zz' },
+        { name: 'system.aws.bandwidth', value: '10Gbps' }, { name: 'system.aws.ownerAccount', value: '893373391538' },
+        { name: 'system.aws.tag.cost-center', value: '524121' }, { name: 'system.aws.tag.sd-period', value: 'q4' },
+      ]),
+      custom_props_json: JSON.stringify([{ name: 'bandwidth', value: '1 Gbps' }]),
+    };
+    const f = lmCloud.deviceFacts(row);
+    expect(f).toMatchObject({
+      region: 'us-east-1', location: 'EqDC2-g2845xqir5zz', ownerAccount: '893373391538', bandwidthBps: 1e10, bandwidthText: '10Gbps',
+      tags: { 'cost-center': '524121', 'sd-period': 'q4' },
+    });
+  });
+
+  it('deviceFacts reads Azure region, subscription and bandwidth, and falls back to the custom prop', () => {
+    const f = lmCloud.deviceFacts({
+      system_props_json: JSON.stringify([{ name: 'system.azure.location', value: 'eastus' }, { name: 'system.azure.subscriptionId', value: 'sub-1' }, { name: 'system.azure.tag.owner', value: 'net' }]),
+      custom_props_json: JSON.stringify([{ name: 'bandwidth', value: '500 Mbps' }]),
+    });
+    expect(f).toMatchObject({ region: 'eastus', subscription: 'sub-1', bandwidthBps: 5e8, tags: { owner: 'net' }, ownerAccount: null });
+  });
+
+  it('cloudCircuits rows carry the new fields', () => {
+    cloudDev(1, 'dx-1');
+    db.prepare('UPDATE lm_devices SET system_props_json = ? WHERE lm_device_id = 1').run(JSON.stringify([
+      { name: 'system.aws.region', value: 'us-east-1' }, { name: 'system.aws.awsDevice', value: 'EqDC2-x' }, { name: 'system.aws.bandwidth', value: '10Gbps' },
+      { name: 'system.aws.ownerAccount', value: '111122223333' }, { name: 'system.aws.tag.cost-center', value: '42' },
+    ]));
+    metric(1, 'AWS_DirectConnect_Connection', 'dx_state', 1);
+    metric(1, 'AWS_DirectConnect_Connection', 'dx_bps_in', 5e9);
+    const [row] = lmCloud.cloudCircuits(db, t());
+    expect(row).toMatchObject({
+      region: 'us-east-1', location: 'EqDC2-x', ownerAccount: '111122223333', bandwidthBps: 1e10, bandwidthText: '10Gbps', tags: { 'cost-center': '42' }, utilPct: 50,
+    });
+  });
+
+  it('cloud-circuit-saturated uses bandwidthBps from system.aws.bandwidth', () => {
+    cloudDev(1, 'dx-sat');
+    db.prepare('UPDATE lm_devices SET system_props_json = ? WHERE lm_device_id = 1').run(JSON.stringify([{ name: 'system.aws.bandwidth', value: '1Gbps' }]));
+    metric(1, 'AWS_DirectConnect_Connection', 'dx_state', 1);
+    metric(1, 'AWS_DirectConnect_Connection', 'dx_bps_in', 9.5e8);
+    const sat = issuesOf('cloud-circuit-saturated');
+    expect(sat).toHaveLength(1);
+    expect(sat[0].message).toContain('1000 Mbps');
+  });
+
+  it('the ECX utilisation DataSource matches the cloud family and fills utilisation when no bandwidth is known', () => {
+    expect(lmCatalog.catalogFor('ntm_cloud_connectivity_azure_ecx_connection_utilization')).toMatchObject({ family: 'cloud' });
+    const peer = lmCatalog.catalogFor('Microsoft_Azure_ExpressRouteCircuitPeering');
+    expect(peer.metrics.er_bgp.match.some((r) => r.test('BgpAvailability'))).toBe(true);
+    expect(peer.metrics.er_arp.match.some((r) => r.test('ArpAvailability'))).toBe(true);
+    cloudDev(1, 'er-ecx', { type: 4, ert: 'Azure/ExpressRouteCircuit' });
+    metric(1, 'ntm_cloud_connectivity_azure_ecx_connection_utilization', 'ecx_util_pct', 42);
+    metric(1, 'ntm_cloud_connectivity_azure_ecx_connection_utilization', 'ecx_bps_in', 2e8);
+    const [row] = lmCloud.cloudCircuits(db, t());
+    expect(row).toMatchObject({ kind: 'azure-ecx', state: 'ok', utilPct: 42, bpsIn: 2e8 });
+  });
+});
