@@ -1,4 +1,5 @@
 import { lazy } from 'react';
+import { Navigate } from 'react-router-dom';
 import {
   Gauge, Radar, MapPin, Bell, ClipboardCheck, Server, Cable, Waypoints, Cpu, Scale, ShieldAlert, GitMerge, LineChart, Sparkles, ShieldCheck, Settings, BrickWall, Split,
   Wifi, RadioTower, Radio, Users, AppWindow, Phone, Cloud, Fingerprint,
@@ -24,7 +25,6 @@ const LmAlertsPage = lazy(() => import('../../pages/logicmonitor/LmAlertsPage'))
 const LmIssuesPage = lazy(() => import('../../pages/logicmonitor/LmIssuesPage'));
 const LmDevicesPage = lazy(() => import('../../pages/logicmonitor/LmDevicesPage'));
 const LmInterfacesPage = lazy(() => import('../../pages/logicmonitor/LmInterfacesPage'));
-const LmCollectorsPage = lazy(() => import('../../pages/logicmonitor/LmCollectorsPage'));
 const LmGovernancePage = lazy(() => import('../../pages/logicmonitor/LmGovernancePage'));
 const LmCoveragePage = lazy(() => import('../../pages/logicmonitor/LmCoveragePage'));
 const LmCorrelationPage = lazy(() => import('../../pages/logicmonitor/LmCorrelationPage'));
@@ -56,7 +56,6 @@ const navGroups = [
       { label: 'Circuits', route: `${B}/circuits`, icon: Waypoints, isActive: under(`${B}/circuits`) },
       { label: 'Firewalls', route: `${B}/firewalls`, icon: BrickWall, isActive: under(`${B}/firewalls`) },
       { label: 'Load Balancers', route: `${B}/load-balancers`, icon: Split, isActive: under(`${B}/load-balancers`) },
-      { label: 'Collectors', route: `${B}/collectors`, icon: Cpu, isActive: under(`${B}/collectors`) },
     ],
   },
   {
@@ -129,7 +128,8 @@ export default {
     { path: 'logicmonitor/wireless/aps', Component: LmWirelessApsPage },
     { path: 'logicmonitor/wireless/rf', Component: LmWirelessRfPage },
     { path: 'logicmonitor/wireless/ssids', Component: LmWirelessSsidsPage },
-    { path: 'logicmonitor/collectors', Component: LmCollectorsPage },
+    // Collectors moved under Settings > Connections (2026-10-16); the old link still lands there.
+    { path: 'logicmonitor/collectors', element: <Navigate to="/logicmonitor/settings?section=collectors" replace /> },
     { path: 'logicmonitor/governance', Component: LmGovernancePage },
     { path: 'logicmonitor/coverage', Component: LmCoveragePage },
     { path: 'logicmonitor/correlation', Component: LmCorrelationPage },

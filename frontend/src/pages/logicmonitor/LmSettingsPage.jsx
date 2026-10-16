@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Settings, Network, FolderTree, Activity, Server, Globe, Cable, BellRing, Database, Archive, Layers } from 'lucide-react';
+import { Settings, Network, FolderTree, Activity, Server, Globe, Cable, BellRing, Database, Archive, Layers, Cpu } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
@@ -10,10 +10,12 @@ import LmPortalsPanel from './LmPortalsPanel';
 import { LmScopePanel } from './LmScopeThresholds';
 import { LmInterfacesRulesPanel, LmDevicesRulesPanel, LmReachabilityRulesPanel, LmCircuitsRulesPanel, LmServicesRulesPanel, LmRetentionPanel } from './LmRulesPanels';
 import LmDataExportPanel from './LmDataExportPanel';
+import LmCollectorsPage from './LmCollectorsPage';
 
 const SECTIONS = [
   { key: 'portals', label: 'Portals', icon: Network, group: 'Connections' },
   { key: 'scope', label: 'Scope', icon: FolderTree, group: 'Connections' },
+  { key: 'collectors', label: 'Collectors', icon: Cpu, group: 'Connections' },
   { key: 'interfaces', label: 'Interfaces', icon: Activity, group: 'Rules' },
   { key: 'devices', label: 'Devices and alerts', icon: Server, group: 'Rules' },
   { key: 'reachability', label: 'Site reachability', icon: Globe, group: 'Rules' },
@@ -48,6 +50,7 @@ export default function LmSettingsPage() {
       <PlatformSettingsLayout brand={BRAND} label="LogicMonitor" sections={SECTIONS} active={section} onSelect={setSection}>
         {section === 'portals' && <LmPortalsPanel sources={sources} reload={loadSources} />}
         {section === 'scope' && <LmScopePanel sources={sources} reload={loadSources} />}
+        {section === 'collectors' && <LmCollectorsPage embedded />}
         {section === 'interfaces' && <LmInterfacesRulesPanel />}
         {section === 'devices' && <LmDevicesRulesPanel />}
         {section === 'reachability' && <LmReachabilityRulesPanel />}

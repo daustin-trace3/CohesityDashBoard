@@ -59,7 +59,9 @@ function CollectorModal({ c, onClose }) {
   );
 }
 
-export default function LmCollectorsPage() {
+// Mounted as Settings > Connections > Collectors (embedded) since 2026-10-16; the
+// /logicmonitor/collectors route redirects there.
+export default function LmCollectorsPage({ embedded = false } = {}) {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
@@ -89,10 +91,23 @@ export default function LmCollectorsPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Cpu} title="Collectors" description="LogicMonitor collectors, their build against the current mandatory release, and the devices they carry">
-        <LastUpdated date={lastRefreshed} prefix="Updated" />
-        <RefreshButton onClick={load} />
-      </PageHeader>
+      {embedded ? (
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-base font-semibold">Collectors</h2>
+            <p className="text-xs text-muted">LogicMonitor collectors, their build against the current mandatory release, and the devices they carry</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <LastUpdated date={lastRefreshed} prefix="Updated" />
+            <RefreshButton onClick={load} />
+          </div>
+        </div>
+      ) : (
+        <PageHeader icon={Cpu} title="Collectors" description="LogicMonitor collectors, their build against the current mandatory release, and the devices they carry">
+          <LastUpdated date={lastRefreshed} prefix="Updated" />
+          <RefreshButton onClick={load} />
+        </PageHeader>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <StatCard icon={Cpu} label="Collectors" value={fmtNum(list.length)} loading={rows == null} />
