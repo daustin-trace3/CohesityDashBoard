@@ -51,7 +51,7 @@ const exact = (name) => `^${name}$`;
 // Bump whenever a regex below changes. pollMetrics drops every learned
 // dsColumns/dsUnmatched map when a source's stored catalogVersion differs, so
 // the next poll relearns with the corrected matchers.
-const CATALOG_VERSION = 3; // 3: round 11 families (os, security, apps) and SNMP_Filesystem_Usage byte metrics
+const CATALOG_VERSION = 4; // 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
 
 const CATALOG = [];
 const add = (family, match, label, metrics, opts = {}) => {
@@ -203,10 +203,14 @@ add('firewall', 'ntm_meraki_mx_device_utilization', 'Meraki MX utilization', {
 // -- Load balancers: F5 ----------------------------------------------------------
 
 add('loadbalancer', 'F5_BigIP_System', 'F5 system', {
-  // Live names: CPUUtilization; MemoryUsed (MemoryUsage is the other candidate); the
-  // current-connection gauges (LM spells the server one ServerCurrentConncections).
+  // Live names and values (CGSandBox raw store): CPUUtilization 3 to 12 (percent),
+  // MemoryUsage 2.35 (percent) while MemoryUsed is bytes (283919056) and MemoryTotal
+  // bytes; the current-connection gauges (LM spells the server one
+  // ServerCurrentConncections).
   cpu_pct: pct(exact('CPUUtilization'), 'CPU'),
-  mem_pct: pct(exact('MemoryUsed'), 'Memory'),
+  mem_pct: pct(exact('MemoryUsage'), 'Memory'),
+  mem_used_bytes: gauge(exact('MemoryUsed'), 'B', 'Memory used'),
+  mem_total_bytes: gauge(exact('MemoryTotal'), 'B', 'Memory total'),
   client_connections: gauge(exact('ClientCurrentConnections'), 'conns', 'Client connections'),
   server_connections: gauge([exact('ServerCurrentConncections'), exact('ServerCurrentConnections')], 'conns', 'Server connections'),
   throughput_bps: gauge(['throughput', 'bits', 'bps'], 'bps', 'Throughput'),

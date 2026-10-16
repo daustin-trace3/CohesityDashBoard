@@ -434,7 +434,7 @@ describe('catalog against the live datapoint lists', () => {
   const expected = {
     NetSNMPCPUwithCores: { cpu_pct: 'CPUBusyPercent' },
     NetSNMP_Memory_Usage: { mem_pct: 'ActiveMemoryPercent' },
-    F5_BigIP_System: { cpu_pct: 'CPUUtilization', mem_pct: 'MemoryUsed', client_connections: 'ClientCurrentConnections', server_connections: 'ServerCurrentConncections' },
+    F5_BigIP_System: { cpu_pct: 'CPUUtilization', mem_pct: 'MemoryUsage', client_connections: 'ClientCurrentConnections', server_connections: 'ServerCurrentConncections' },
     F5_BigIP_Filesystem: { fs_used_pct: 'BlockUtilization', fs_inode_pct: 'NodeUtilization' },
     F5_BigIP_FailoverStatus: { failover_state: 'FailoverStatus' },
     'F5_GTM_VIPs-': { vip_avail: 'AvailStatus' },
@@ -483,7 +483,7 @@ describe('catalog against the live datapoint lists', () => {
   });
 
   it('exports a numeric catalog version', () => {
-    expect(catalog.CATALOG_VERSION).toBe(3);
+    expect(catalog.CATALOG_VERSION).toBe(4);
   });
 });
 

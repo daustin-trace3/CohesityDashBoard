@@ -522,12 +522,14 @@ function computeMetricIssues(dbh, t, srcName) {
     }
 
     // CPU and memory (any family; the latest value, the tier is 30 minutes).
+    // A percent above 100 is not a percent (a wrong learned pick or a multi-core sum): skip it.
+    const pctOk = (m) => m && m.value != null && m.value <= 100;
     const cpu = devMax(dev, 'cpu_pct');
-    if (!suppressed && cpu && cpu.value >= t.lm_cpu_warn_pct) {
+    if (!suppressed && pctOk(cpu) && cpu.value >= t.lm_cpu_warn_pct) {
       push(dev, 'warning', 'device-cpu-high', name, `${name} CPU at ${fmtNum(cpu.value)}% (threshold ${t.lm_cpu_warn_pct}%)`);
     }
     const mem = devMax(dev, 'mem_pct');
-    if (!suppressed && mem && mem.value >= t.lm_mem_warn_pct) {
+    if (!suppressed && pctOk(mem) && mem.value >= t.lm_mem_warn_pct) {
       push(dev, 'warning', 'device-memory-high', name, `${name} memory at ${fmtNum(mem.value)}% (threshold ${t.lm_mem_warn_pct}%)`);
     }
 
