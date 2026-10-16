@@ -240,6 +240,23 @@ describe('device health issues', () => {
     expect(got[0]).toMatchObject({ severity: 'warning', target: 'core-1 Te1/0/1' });
     expect(got[0].message).toContain('receives -14.2 dBm, below its low warning of -12 dBm');
   });
+
+  it('optic-power-low: generic sensor table judges power sensors only, by instance key', () => {
+    dev(1, 'core-1');
+    // Rx power below its low warning: issue.
+    m(1, 'Cisco_Transceiver_Sensors', 'optics', 'Te1/0/1 Receive Power Sensor', 'optic_value', -14.2);
+    m(1, 'Cisco_Transceiver_Sensors', 'optics', 'Te1/0/1 Receive Power Sensor', 'optic_low_warn', -12);
+    // Healthy Tx power: none.
+    m(1, 'Cisco_Transceiver_Sensors', 'optics', 'Te1/0/1 Transmit Power Sensor', 'optic_value', -2);
+    m(1, 'Cisco_Transceiver_Sensors', 'optics', 'Te1/0/1 Transmit Power Sensor', 'optic_low_warn', -8);
+    // Temperature row under its "low warning": not a power sensor, no issue.
+    m(1, 'Cisco_Transceiver_Sensors', 'optics', 'Te1/0/1 Temperature Sensor', 'optic_value', 20);
+    m(1, 'Cisco_Transceiver_Sensors', 'optics', 'Te1/0/1 Temperature Sensor', 'optic_low_warn', 30);
+    const got = issuesOf('optic-power-low');
+    expect(got).toHaveLength(1);
+    expect(got[0].target).toBe('core-1 Te1/0/1 Receive Power Sensor');
+    expect(got[0].message).toContain('reads -14.2 dBm, below its low warning of -12 dBm');
+  });
 });
 
 describe('wireless issues', () => {

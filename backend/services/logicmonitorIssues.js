@@ -139,7 +139,15 @@ const availState = (v) => {
 const tunnelIsDown = (v) => v != null && Math.round(v) === 0;
 
 // Component state metrics: 1 is ok, 5 is "not present" (an empty slot), the rest is a fault.
-const stateIsFault = (v) => v != null && ![1, 5].includes(Math.round(v));
+// Healthy enum values per state metric. Cisco redundancy MIB cRFStatusUnitState:
+// 9 standbyHot and 14 active are healthy (UNVERIFIED against the live portal,
+// from the MIB); every other state table here uses 1 ok and 5 normal.
+// Nexus 9300 fixed chassis report the chassis itself as the line card through
+// the same redundancy MIB, so StatusLineCard, StatusSup1 and StatusSup2 carry 14
+// (active) on a healthy switch too; 2 is cefcModuleOperStatus ok.
+const NEXUS_HEALTHY = [1, 2, 5, 9, 14];
+const HEALTHY_STATES = { sup_state: NEXUS_HEALTHY, sup1_state: NEXUS_HEALTHY, sup2_state: NEXUS_HEALTHY, linecard_state: NEXUS_HEALTHY };
+const stateIsFault = (v, metric = null) => v != null && !(HEALTHY_STATES[metric] || [1, 5]).includes(Math.round(v));
 const HW_STATE_LABELS = {
   psu_state: 'power supply', fan_state: 'fan', temp_state: 'temperature sensor',
   linecard_state: 'line card', sup_state: 'supervisor', stack_member_state: 'stack member',
@@ -519,7 +527,7 @@ function computeMetricIssues(dbh, t, srcName) {
       const faults = [];
       for (const metric of Object.keys(HW_STATE_LABELS)) {
         for (const i of devInstances(dev, metric)) {
-          if (stateIsFault(i.m[metric].value)) faults.push({ i, metric, v: i.m[metric].value });
+          if (stateIsFault(i.m[metric].value, metric)) faults.push({ i, metric, v: i.m[metric].value });
         }
       }
       if (faults.length > 5) {
@@ -557,6 +565,19 @@ function computeMetricIssues(dbh, t, srcName) {
         const lowWarn = i.m.rx_low_warn ? i.m.rx_low_warn.value : null;
         if (lowWarn != null && rx < lowWarn) {
           push(dev, 'warning', 'optic-power-low', `${name} ${i.name}`, `Optic ${i.name} on ${name} receives ${fmtNum(rx)} dBm, below its low warning of ${fmtNum(lowWarn)} dBm`);
+        }
+      }
+      // Generic sensor-table DataSource: one row per sensor, the kind is in the
+      // instance key and the thresholds are datapoints of the same row. Only
+      // power sensors are judged (temperature, voltage and current rows share
+      // the DataSource).
+      for (const i of devInstances(dev, 'optic_value')) {
+        if (i.m.rx_power_dbm) continue;
+        if (!/rx|receive|tx|transmit|power/i.test(String(i.key || i.name || ''))) continue;
+        const v = i.m.optic_value.value;
+        const lowWarn = i.m.optic_low_warn ? i.m.optic_low_warn.value : null;
+        if (lowWarn != null && v < lowWarn) {
+          push(dev, 'warning', 'optic-power-low', `${name} ${i.name}`, `Optic ${i.name} on ${name} reads ${fmtNum(v)} dBm, below its low warning of ${fmtNum(lowWarn)} dBm`);
         }
       }
     }

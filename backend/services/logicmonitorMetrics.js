@@ -13,7 +13,7 @@
 // enforced on the device join only.
 const db = require('../db/database');
 const lmApi = require('./logicmonitorApi');
-const { catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES } = require('./logicmonitorCatalog');
+const { catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES, CATALOG_VERSION } = require('./logicmonitorCatalog');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => lmApi.errMsg(e);
@@ -251,6 +251,11 @@ async function pollMetrics(source) {
   const all = candidateRows(source);
   const batch = all.slice(0, cap);
   let features = readFeatures(source.id);
+  // A catalog corrected since the last poll invalidates every learned map: drop
+  // them so this poll relearns with the new matchers, then stamp the version.
+  if (features.catalogVersion !== CATALOG_VERSION) {
+    features = mergeFeatures(source.id, { dsColumns: {}, dsUnmatched: {}, catalogVersion: CATALOG_VERSION });
+  }
   const dsColumns = { ...(features.dsColumns || {}) };
   const dsUnmatched = { ...(features.dsUnmatched || {}) };
   let ok = 0;

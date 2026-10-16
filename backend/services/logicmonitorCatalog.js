@@ -42,6 +42,12 @@ const gauge = (match, unit, label) => m(match, 'gauge', unit, label);
 const state = (match, label) => m(match, 'state', '', label);
 const counter = (match, unit, label) => m(match, 'counter', unit, label);
 const pct = (match, label) => m(match, 'pct', '%', label);
+const exact = (name) => `^${name}$`;
+
+// Bump whenever a regex below changes. pollMetrics drops every learned
+// dsColumns/dsUnmatched map when a source's stored catalogVersion differs, so
+// the next poll relearns with the corrected matchers.
+const CATALOG_VERSION = 2;
 
 const CATALOG = [];
 const add = (family, match, label, metrics, opts = {}) => {
@@ -193,48 +199,52 @@ add('firewall', 'ntm_meraki_mx_device_utilization', 'Meraki MX utilization', {
 // -- Load balancers: F5 ----------------------------------------------------------
 
 add('loadbalancer', 'F5_BigIP_System', 'F5 system', {
-  cpu_pct: pct(['cpu.*(util|percent|pct|used|usage)', 'cpu'], 'CPU'),
-  mem_pct: pct(['mem.*(util|percent|pct|used|usage)', 'mem'], 'Memory'),
-  client_connections: gauge(['client.*conn', 'curr.*client', 'clientside'], 'conns', 'Client connections'),
-  server_connections: gauge(['server.*conn', 'curr.*server', 'serverside'], 'conns', 'Server connections'),
+  // Live names: CPUUtilization; MemoryUsed (MemoryUsage is the other candidate); the
+  // current-connection gauges (LM spells the server one ServerCurrentConncections).
+  cpu_pct: pct(exact('CPUUtilization'), 'CPU'),
+  mem_pct: pct(exact('MemoryUsed'), 'Memory'),
+  client_connections: gauge(exact('ClientCurrentConnections'), 'conns', 'Client connections'),
+  server_connections: gauge([exact('ServerCurrentConncections'), exact('ServerCurrentConnections')], 'conns', 'Server connections'),
   throughput_bps: gauge(['throughput', 'bits', 'bps'], 'bps', 'Throughput'),
 }, { history: true });
 
 add('loadbalancer', 'F5_BigIP_FailoverStatus', 'F5 failover', {
   // LM enum (UNVERIFIED): 0 unknown, 1 offline, 2 forced offline, 3 standby, 4 active.
-  failover_state: state(['failover', 'unit.?state', 'state', 'status'], 'Failover state'),
+  // Live names: FailoverStatus (the number), FailoverColor and FailoverColorAlert are display helpers.
+  failover_state: state(exact('FailoverStatus'), 'Failover state'),
   sync_state: state(['sync'], 'Sync state'),
 });
 
 add('loadbalancer', 'F5_BigIP_PoolMemberStats', 'F5 pool members', {
   member_avail: state(['avail', 'status', 'state'], 'Member available'),
   member_enabled: state(['enabled', 'enable'], 'Member enabled'),
-  member_connections: gauge(['conn'], 'conns', 'Connections'),
-  member_bits_in: gauge(['bits.?in', 'in.?bits', 'bytes.?in', 'in.?bytes'], 'bps', 'Bits in'),
-  member_bits_out: gauge(['bits.?out', 'out.?bits', 'bytes.?out', 'out.?bytes'], 'bps', 'Bits out'),
+  // Live names (no availability datapoint exists on this DataSource, so member_avail stays loose and unmatched).
+  member_connections: gauge([exact('currentSessions'), exact('pvaCurrentConnections')], 'conns', 'Connections'),
+  member_bits_in: gauge([exact('serverBytesIn'), exact('pvaBytesIn')], 'bps', 'Bits in'),
+  member_bits_out: gauge([exact('serverBytesOut'), exact('pvaBytesOut')], 'bps', 'Bits out'),
 }, { maxInstances: 5000 });
 
 add('loadbalancer', 'F5_GTM_WideIP-', 'F5 GTM wide IPs', {
-  wideip_avail: state(['avail', 'status', 'state'], 'Wide IP available'),
-  wideip_requests: counter(['request'], 'req', 'Requests'),
+  wideip_avail: state(exact('AvailStatus'), 'Wide IP available'),
+  wideip_requests: counter(exact('RequestsTotal'), 'req', 'Requests'),
 }, { maxInstances: 5000 });
 
 add('loadbalancer', 'F5_GTM_VIPs-', 'F5 GTM VIPs', {
-  vip_avail: state(['avail', 'status', 'state'], 'VIP available'),
+  vip_avail: state(exact('AvailStatus'), 'VIP available'),
   vip_enabled: state(['enabled', 'enable'], 'VIP enabled'),
 }, { maxInstances: 5000 });
 
 add('loadbalancer', 'F5_GTM_Servers-', 'F5 GTM servers', {
-  gtm_server_avail: state(['avail', 'status', 'state'], 'GTM server available'),
+  gtm_server_avail: state(exact('AvailStatus'), 'GTM server available'),
 });
 
 add('loadbalancer', 'F5_GTM_Datacenters-', 'F5 GTM datacenters', {
-  dc_avail: state(['avail', 'status', 'state'], 'Datacenter available'),
+  dc_avail: state(exact('AvailStatus'), 'Datacenter available'),
 });
 
 add('loadbalancer', 'F5_GTM_Global', 'F5 GTM global', {
-  gtm_requests: counter(['request'], 'req', 'Requests'),
-  gtm_resolutions: counter(['resol'], 'res', 'Resolutions'),
+  gtm_requests: counter(exact('RequestsTotal'), 'req', 'Requests'),
+  gtm_resolutions: counter(exact('Resolutions'), 'res', 'Resolutions'),
 });
 
 for (const d of ['f5_big3d_service_status', 'f5_mcpd_service_status', 'f5_tmm_service_status',
@@ -254,7 +264,8 @@ add('loadbalancer', 'F5_BigIP_Memory', 'F5 memory', {
 }, { history: true });
 
 add('loadbalancer', 'F5_BigIP_Filesystem', 'F5 filesystem', {
-  fs_used_pct: pct(['used', 'percent', 'util'], 'Filesystem used'),
+  fs_used_pct: pct(exact('BlockUtilization'), 'Filesystem used'),
+  fs_inode_pct: pct(exact('NodeUtilization'), 'Inodes used'),
 });
 
 add('loadbalancer', 'F5_BigIP_Interfaces', 'F5 interfaces', {
@@ -263,9 +274,9 @@ add('loadbalancer', 'F5_BigIP_Interfaces', 'F5 interfaces', {
   if_out_bps: gauge(['out.?(bps|bits|rate)', '^out$', 'bits.?out'], 'bps', 'Out'),
 });
 
-add('loadbalancer', 'F5_BigIP_Fans', 'F5 fans', { fan_state: state(['status', 'state'], 'Fan state') });
-add('loadbalancer', 'F5_BigIP_Power', 'F5 power supplies', { psu_state: state(['status', 'state'], 'PSU state') });
-add('loadbalancer', 'F5_BigIP_Temperature', 'F5 temperature', { temp_c: gauge(['temp'], 'C', 'Temperature') });
+add('loadbalancer', 'F5_BigIP_Fans', 'F5 fans', { fan_state: state(exact('FanStatus'), 'Fan state') });
+add('loadbalancer', 'F5_BigIP_Power', 'F5 power supplies', { psu_state: state(exact('Status'), 'PSU state') });
+add('loadbalancer', 'F5_BigIP_Temperature', 'F5 temperature', { temp_c: gauge(exact('Temp'), 'C', 'Temperature') });
 
 // F5OS (rSeries / VELOS): exact names unknown, matched by pattern.
 add('loadbalancer', /^f5-?os[_ -]?disk/i, 'F5OS disk', { f5os_disk_pct: pct(['used', 'percent', 'util', 'usage'], 'Disk used') });
@@ -280,7 +291,8 @@ add('health', 'Cisco_CPU_SNMP', 'Cisco CPU', {
   cpu_pct: pct([/5.?min/, /cpu.?5/, /five/, /busy/, /cpu/, /1.?min/], 'CPU'),
 }, { history: true });
 add('health', 'NetSNMPCPUwithCores', 'Net-SNMP CPU', {
-  cpu_pct: pct(['^cpu$', 'util', 'usage', 'idle', 'cpu'], 'CPU'),
+  // CpuRawIdle is a raw tick counter; CPUBusyPercent is the percentage.
+  cpu_pct: pct(exact('CPUBusyPercent'), 'CPU'),
 }, { history: true });
 add('health', 'Brocade Corp CPU and Memory', 'Brocade CPU and memory', {
   cpu_pct: pct(['cpu'], 'CPU'),
@@ -293,10 +305,11 @@ add('health', 'Cisco_MemoryPools_SNMP', 'Cisco memory pools', {
   mem_pct: pct([/percent.?used/, /used.?percent/, /percent.?free|free.?percent|pct.?free/, /percent|util|usage/], 'Memory used'),
 }, { history: true });
 add('health', 'NetSNMP_Memory_Usage', 'Net-SNMP memory', {
-  mem_pct: pct([/percent.?used|used.?percent|pct.?used|memory.?util|util/, /percent.?free|free.?percent|pct.?free/, /percent|usage/], 'Memory used'),
+  // PercentSwapUsed is swap, not memory; ActiveMemoryPercent is the live memory figure.
+  mem_pct: pct(exact('ActiveMemoryPercent'), 'Memory used'),
 }, { history: true });
 
-add('health', 'Cisco_FRU_Power', 'Cisco FRU power', { psu_state: state(['status', 'state', 'oper'], 'PSU state') }, { maxInstances: 5000 });
+add('health', 'Cisco_FRU_Power', 'Cisco FRU power', { psu_state: state(exact('OperatingStatus'), 'PSU state') }, { maxInstances: 5000 });
 add('health', 'Cisco_Nexus_FRU_Power', 'Cisco Nexus FRU power', { psu_state: state(['status', 'state', 'oper'], 'PSU state') });
 add('health', 'Cisco_System_PowerSupplies', 'Cisco power supplies', { psu_state: state(['status', 'state', 'oper'], 'PSU state') });
 add('health', 'CiscoFan-', 'Cisco fans', { fan_state: state(['status', 'state', 'oper'], 'Fan state') });
@@ -305,12 +318,16 @@ add('health', 'Cisco_TemperatureSensors', 'Cisco temperature sensors', {
   temp_state: state(['state', 'status'], 'Temperature state'),
 });
 add('health', 'Cisco_Entity_Sensors', 'Cisco entity sensors', {
-  sensor_value: gauge(['value', 'reading'], '', 'Sensor value'),
-  sensor_state: state(['status', 'state', 'oper'], 'Sensor state'),
+  sensor_value: gauge(exact('sensor_value'), '', 'Sensor value'),
+  sensor_state: state(exact('sensor_status'), 'Sensor state'),
 }, { maxInstances: 5000 });
 add('health', 'Brocade Sensors-', 'Brocade sensors', { sensor_state: state(['status', 'state'], 'Sensor state') });
-add('health', 'Cisco_Nexus_Line_Card_Status', 'Cisco Nexus line cards', { linecard_state: state(['status', 'state', 'oper'], 'Line card state') });
-add('health', 'Cisco_Nexus_Supervisor_Status', 'Cisco Nexus supervisors', { sup_state: state(['status', 'state', 'oper'], 'Supervisor state') });
+add('health', 'Cisco_Nexus_Line_Card_Status', 'Cisco Nexus line cards', {
+  linecard_state: state(exact('StatusLineCard'), 'Line card state'),
+  sup1_state: state(exact('StatusSup1'), 'Supervisor 1 state'),
+  sup2_state: state(exact('StatusSup2'), 'Supervisor 2 state'),
+});
+add('health', 'Cisco_Nexus_Supervisor_Status', 'Cisco Nexus supervisors', { sup_state: state(exact('cRFStatusUnitState'), 'Supervisor state') });
 add('health', 'Cisco Switch Stack-', 'Cisco switch stack', { stack_member_state: state(['state', 'status', 'role'], 'Stack member state') });
 add('health', 'Cisco Switch Stack Ports-', 'Cisco switch stack ports', { stack_port_state: state(['state', 'status', 'oper'], 'Stack port state') });
 add('health', 'Cisco_PowerOverEthernet', 'Cisco PoE', {
@@ -322,11 +339,21 @@ add('health', 'Cisco_Catalyst_PowerOverEthernet', 'Cisco Catalyst PoE', {
   poe_used_watts: gauge(['consum', 'used', 'watt', 'power'], 'W', 'PoE used'),
 });
 add('health', 'SNMP_Filesystem_Usage', 'SNMP filesystem usage', { fs_used_pct: pct(['percent.?used', 'used.?percent', 'pct', 'percent', 'util'], 'Filesystem used') });
-add('health', 'SNMP_Host_Uptime', 'SNMP host uptime', { uptime_s: gauge(['uptime'], 's', 'Uptime') });
+add('health', 'SNMP_Host_Uptime', 'SNMP host uptime', { uptime_s: gauge(exact('Uptime'), 's', 'Uptime') });
 
 // -- Optics ----------------------------------------------------------------------
 
 add('optics', 'Cisco_Transceiver_Sensors', 'Cisco transceivers', {
+  // This portal's DataSource is a generic sensor table: the sensor kind (Rx power,
+  // Tx power, temperature, ...) is in the instance name, the thresholds are
+  // datapoints of the same row. These claim first; the per-metric names below
+  // stay for portals whose DataSource has one datapoint per measurement.
+  optic_value: gauge(exact('sensor_value'), '', 'Sensor value'),
+  optic_low_warn: gauge(exact('low_warning'), '', 'Low warning'),
+  optic_high_warn: gauge(exact('high_warning'), '', 'High warning'),
+  optic_low_alarm: gauge(exact('low_alarm'), '', 'Low alarm'),
+  optic_state: state(exact('sensor_status'), 'Sensor status'),
+  optic_if_state: state(exact('sensor_parent_interface_status'), 'Parent interface status'),
   rx_power_dbm: gauge(['rx.?power', 'receive.*power', 'rx', 'receive'], 'dBm', 'Rx power'),
   tx_power_dbm: gauge(['tx.?power', 'transmit.*power', 'tx', 'transmit'], 'dBm', 'Tx power'),
   temp_c: gauge(['temp(erature)?$', 'temp'], 'C', 'Temperature'),
@@ -341,13 +368,13 @@ add('optics', 'Cisco_Transceiver_Sensors', 'Cisco transceivers', {
 
 add('routing', 'BGP-', 'BGP peers', {
   // RFC 4273 bgpPeerState: 6 = established.
-  bgp_peer_state: state(['peer.?state', 'state', 'status'], 'BGP peer state'),
-  bgp_established_s: gauge(['established', 'uptime', 'elapsed'], 's', 'Established time'),
+  bgp_peer_state: state(exact('PeerState'), 'BGP peer state'),
+  bgp_established_s: gauge(exact('EstablishedTime'), 's', 'Established time'),
   bgp_prefixes_in: gauge(['prefix', 'received', 'accepted'], 'prefixes', 'Prefixes in'),
 });
 add('routing', 'OSPF_Neighbors', 'OSPF neighbours', {
   // OSPF-MIB ospfNbrState: 8 = full.
-  ospf_nbr_state: state(['state', 'status'], 'OSPF neighbour state'),
+  ospf_nbr_state: state(exact('peerState'), 'OSPF neighbour state'),
 });
 add('routing', 'Cisco_EIGRP_Peers', 'EIGRP peers', { eigrp_uptime_s: gauge(['uptime', 'up.?time'], 's', 'Peer uptime') });
 add('routing', 'ntm_CX_BGP', 'Cisco CX BGP', { bgp_peer_state: state(['state', 'status'], 'BGP peer state') });
@@ -356,13 +383,18 @@ add('routing', 'ntm_CX_BGP_Peering', 'Cisco CX BGP peering', { bgp_peer_state: s
 // -- IP SLA ----------------------------------------------------------------------
 
 add('ipsla', 'CiscoSLA_jitter-', 'Cisco IP SLA jitter', {
-  rtt_ms: gauge(['rtt', 'latency', 'delay'], 'ms', 'RTT'),
-  jitter_ms: gauge(['jitter'], 'ms', 'Jitter'),
-  loss_pct: pct(['loss', 'drop'], 'Packet loss'),
-  mos: gauge(['mos'], '', 'MOS'),
+  // The live jitter DataSource has no average RTT and no total loss datapoint
+  // (only SumRTT/NumRTT and the directional SDLoss/DSLoss), so rtt_ms and
+  // loss_pct are deliberately not mapped here.
+  mos: gauge(exact('MOS'), '', 'MOS'),
+  icpif: gauge(exact('ICPIF'), '', 'ICPIF'),
+  jitter_sd_pos: gauge(exact('SumPositiveSD'), 'ms', 'Positive jitter source to destination'),
+  jitter_ds_pos: gauge(exact('SumPositiveDS'), 'ms', 'Positive jitter destination to source'),
 }, { history: true });
+// An RTT name must not start with Sum/Num (SumRTT, Sum2RTT, NumRTT are
+// accumulators, not a round trip time).
 const slaMetrics = () => ({
-  rtt_ms: gauge(['rtt', 'latency', 'delay', 'completion'], 'ms', 'RTT'),
+  rtt_ms: gauge(['^(?!sum|num)(.*rtt|.*latency|.*delay|.*completion)'], 'ms', 'RTT'),
   loss_pct: pct(['loss', 'drop'], 'Packet loss'),
   sla_state: state(['state', 'status', 'oper', 'timeout'], 'SLA state'),
 });
@@ -374,19 +406,61 @@ add('ipsla', 'IPSLA_WAN', 'IP SLA WAN', slaMetrics(), { history: true });
 
 // -- Voice -----------------------------------------------------------------------
 
-// The nine Cisco_SIP_* DataSources: exact suffixes are not known, so one
-// entry matches the prefix and maps datapoints by name. Each DataSource
-// exposes one or two of these counters.
+// The Cisco_SIP_* DataSources seen on the live portal each carry dozens of
+// cSipStats counters (every one with a ...Raw twin). Each gets its own entry
+// with exact names; the Raw twins are never claimed. Exact entries win over
+// the loose prefix entry at the bottom, which only serves SIP DataSources
+// not seen live.
+add('voice', 'Cisco_SIP_Connections', 'Cisco SIP connections', {
+  sip_active_tcp: gauge(exact('cSipStatsActiveTCPConnections'), 'conns', 'Active TCP connections'),
+  sip_active_udp: gauge(exact('cSipStatsActiveUDPConnections'), 'conns', 'Active UDP connections'),
+});
+add('voice', 'Cisco_SIP_Successes', 'Cisco SIP successes', {
+  sip_successes_in: counter(exact('cSipStatsSuccessOkIns'), 'req', '200 OK in'),
+  sip_successes_out: counter(exact('cSipStatsSuccessOkOuts'), 'req', '200 OK out'),
+});
+add('voice', 'Cisco_SIP_GlobalFail', 'Cisco SIP global failures', {
+  sip_global_busy: counter(exact('cSipStatsGlobalBusyEverywhereIns'), 'req', 'Busy everywhere in'),
+  sip_global_decline: counter(exact('cSipStatsGlobalDeclineIns'), 'req', 'Decline in'),
+});
+add('voice', 'Cisco_SIP_Client_Errors', 'Cisco SIP client errors', {
+  sip_client_bad_request: counter(exact('cSipStatsClientBadRequestIns'), 'req', 'Bad request in'),
+  sip_client_unauthorized: counter(exact('cSipStatsClientUnauthorizedIns'), 'req', 'Unauthorized in'),
+  sip_client_not_found: counter(exact('cSipStatsClientNotFoundIns'), 'req', 'Not found in'),
+});
+add('voice', 'Cisco_SIP_Server_Errors', 'Cisco SIP server errors', {
+  sip_server_int_error: counter(exact('cSipStatsServerIntErrorIns'), 'req', 'Internal error in'),
+  sip_server_unavailable: counter(exact('cSipStatsServerServiceUnavailIns'), 'req', 'Service unavailable in'),
+  sip_server_gw_timeout: counter(exact('cSipStatsServerGatewayTimeoutIns'), 'req', 'Gateway timeout in'),
+});
+add('voice', 'Cisco_SIP_Retries', 'Cisco SIP retries', {
+  sip_retry_invites: counter(exact('cSipStatsRetryInvites'), 'req', 'Invite retries'),
+  sip_retry_registers: counter(exact('cSipStatsRetryRegisters'), 'req', 'Register retries'),
+});
+add('voice', 'Cisco_SIP_Redirect', 'Cisco SIP redirects', {
+  sip_redirect_temp: counter(exact('cSipStatsRedirMovedTempsIns'), 'req', 'Moved temporarily in'),
+  sip_redirect_perm: counter(exact('cSipStatsRedirMovedPerms'), 'req', 'Moved permanently'),
+});
+add('voice', 'Cisco_SIP_Traffic', 'Cisco SIP traffic', {
+  sip_traffic_in: counter(exact('cSipStatsTrafficInviteIns'), 'msgs', 'Invites in'),
+  sip_traffic_out: counter(exact('cSipStatsTrafficInviteOuts'), 'msgs', 'Invites out'),
+});
+add('voice', 'Cisco_SIP_Overview', 'Cisco SIP overview', {
+  sip_trying_in: counter(exact('cSipStatsInfoTryingIns'), 'msgs', 'Trying in'),
+  sip_ringing_in: counter(exact('cSipStatsInfoRingingIns'), 'msgs', 'Ringing in'),
+});
+// Loose fallback for SIP DataSources not seen live. Never claims a ...Raw name.
+const noRaw = (alts) => `^(?!.*raw$).*(?:${alts})`;
 add('voice', /^Cisco_SIP_/i, 'Cisco SIP', {
-  sip_connections: counter(['connection'], 'conns', 'Connections'),
-  sip_client_errors: counter(['client.?err', '4xx'], 'req', 'Client errors'),
-  sip_server_errors: counter(['server.?err', '5xx'], 'req', 'Server errors'),
-  sip_successes: counter(['success', '2xx'], 'req', 'Successes'),
-  sip_retries: counter(['retr'], 'req', 'Retries'),
-  sip_redirects: counter(['redirect', '3xx'], 'req', 'Redirects'),
-  sip_global_fail: counter(['global.?fail', 'fail'], 'req', 'Global failures'),
-  sip_traffic_in: counter(['in(bound)?.?(traffic|bytes|msgs?|messages?)', 'traffic.?in', 'received'], 'msgs', 'Traffic in'),
-  sip_traffic_out: counter(['out(bound)?.?(traffic|bytes|msgs?|messages?)', 'traffic.?out', 'sent'], 'msgs', 'Traffic out'),
+  sip_connections: counter([noRaw('connection')], 'conns', 'Connections'),
+  sip_client_errors: counter([noRaw('client.?err|4xx')], 'req', 'Client errors'),
+  sip_server_errors: counter([noRaw('server.?err|5xx')], 'req', 'Server errors'),
+  sip_successes: counter([noRaw('success|2xx')], 'req', 'Successes'),
+  sip_retries: counter([noRaw('retr')], 'req', 'Retries'),
+  sip_redirects: counter([noRaw('redirect|3xx')], 'req', 'Redirects'),
+  sip_global_fail: counter([noRaw('global.?fail|fail')], 'req', 'Global failures'),
+  sip_traffic_in: counter([noRaw('in(bound)?.?(traffic|bytes|msgs?|messages?)|traffic.?in|received')], 'msgs', 'Traffic in'),
+  sip_traffic_out: counter([noRaw('out(bound)?.?(traffic|bytes|msgs?|messages?)|traffic.?out|sent')], 'msgs', 'Traffic out'),
 });
 add('voice', /^ntm_sbc_/i, 'SBC', {
   sbc_cpu_pct: pct(['cpu'], 'CPU'),
@@ -403,8 +477,6 @@ add('voice', 'ISDN_Channels', 'ISDN channels', { isdn_busy: gauge(['busy', 'acti
 // -- Wireless --------------------------------------------------------------------
 // Datapoint names and enums verified against a live portal (AireOS 5508/3504 and
 // Catalyst 9800). Rate datapoints arrive from LM already per second.
-
-const exact = (name) => `^${name}$`;
 
 add('wireless', 'Cisco_Wireless_AP', 'Cisco wireless APs', {
   // bsnAPAdminStatus: 1 enabled, 2 disabled.
@@ -570,4 +642,4 @@ function cleanInstanceKey(rawKey, dsName) {
   return k;
 }
 
-module.exports = { FAMILIES, FAMILY_LABELS, CLOUD_ERT_RE, CATALOG, catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES };
+module.exports = { CATALOG_VERSION, FAMILIES, FAMILY_LABELS, CLOUD_ERT_RE, CATALOG, catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES };

@@ -2563,20 +2563,23 @@ const endpointSummaryCache = new Map(); // `${dbKey}|${platform}` -> { at, data 
  * when every port is up, else unknown.
  */
 function buildEndpointSummary(platform) {
-  const rows = lmEndpoints().computeEndpoints(db).filter((r) => r.endpointPlatform === platform);
+  // A row belongs to the platform when its endpoint platform matches, or when
+  // the identity index resolves the endpoint to a ref that carries the platform
+  // (an ESX host that is also a Dell server reaches its ports through vCenter
+  // hints, so platform=dell must include it).
   let idx = null;
   let ident = null;
   try { ident = require('../services/hostIdentity'); idx = ident.buildIdentityIndex(db); } catch { idx = null; }
   const groups = new Map();
-  for (const r of rows) {
+  for (const r of lmEndpoints().computeEndpoints(db)) {
     const k = String(r.endpoint || '').trim().toLowerCase();
     if (!k) continue;
+    let ref = null;
+    if (idx) { try { ref = ident.resolveToken(idx, k); } catch { ref = null; } }
+    const refPlatforms = ref ? (Array.isArray(ref.platforms) && ref.platforms.length ? ref.platforms : [ref.platform]) : [];
+    if (r.endpointPlatform !== platform && !refPlatforms.includes(platform)) continue;
     const keys = new Set([k]);
-    if (idx) {
-      let ref = null;
-      try { ref = ident.resolveToken(idx, k); } catch { ref = null; }
-      if (ref) { keys.add(ref.refKey); for (const n of ref.names || []) keys.add(n); }
-    }
+    if (ref) { keys.add(ref.refKey); for (const n of ref.names || []) keys.add(n); }
     for (const key of keys) {
       if (!groups.has(key)) groups.set(key, new Set());
       groups.get(key).add(r);

@@ -419,3 +419,100 @@ describe('round 8 QA: one datapoint per metric, shortest name wins', () => {
     expect(out.instances[0].latest.rx_low_warn.value).toBe(-14.5);
   });
 });
+
+// -- Live portal datapoint lists (first real poll, CGSandBox, 2026-10-16) ------------
+// fixtures/lm-live-datapoints.json holds the full datapoint list per DataSource
+// (what the portal returned: learned plus unmatched names).
+describe('catalog against the live datapoint lists', () => {
+  const live = require('./fixtures/lm-live-datapoints.json');
+  const learn = (ds) => {
+    const entry = catalogFor(ds);
+    expect(entry, ds).toBeTruthy();
+    return metrics.parseDsBody({ dataSourceName: ds, dataPoints: live[ds], instances: {} }, entry, null).learned;
+  };
+
+  const expected = {
+    NetSNMPCPUwithCores: { cpu_pct: 'CPUBusyPercent' },
+    NetSNMP_Memory_Usage: { mem_pct: 'ActiveMemoryPercent' },
+    F5_BigIP_System: { cpu_pct: 'CPUUtilization', mem_pct: 'MemoryUsed', client_connections: 'ClientCurrentConnections', server_connections: 'ServerCurrentConncections' },
+    F5_BigIP_Filesystem: { fs_used_pct: 'BlockUtilization', fs_inode_pct: 'NodeUtilization' },
+    F5_BigIP_FailoverStatus: { failover_state: 'FailoverStatus' },
+    'F5_GTM_VIPs-': { vip_avail: 'AvailStatus' },
+    'F5_GTM_WideIP-': { wideip_avail: 'AvailStatus', wideip_requests: 'RequestsTotal' },
+    Cisco_Nexus_Line_Card_Status: { linecard_state: 'StatusLineCard', sup1_state: 'StatusSup1', sup2_state: 'StatusSup2' },
+    Cisco_Nexus_Supervisor_Status: { sup_state: 'cRFStatusUnitState' },
+    F5_BigIP_PoolMemberStats: { member_connections: 'currentSessions', member_bits_in: 'serverBytesIn', member_bits_out: 'serverBytesOut' },
+    'CiscoSLA_jitter-': { mos: 'MOS', icpif: 'ICPIF', jitter_sd_pos: 'SumPositiveSD', jitter_ds_pos: 'SumPositiveDS' },
+    Cisco_Transceiver_Sensors: {
+      optic_value: 'sensor_value', optic_low_warn: 'low_warning', optic_high_warn: 'high_warning', optic_low_alarm: 'low_alarm',
+      optic_state: 'sensor_status', optic_if_state: 'sensor_parent_interface_status',
+    },
+    Cisco_SIP_Connections: { sip_active_tcp: 'cSipStatsActiveTCPConnections', sip_active_udp: 'cSipStatsActiveUDPConnections' },
+    Cisco_SIP_Successes: { sip_successes_in: 'cSipStatsSuccessOkIns', sip_successes_out: 'cSipStatsSuccessOkOuts' },
+    Cisco_SIP_GlobalFail: { sip_global_busy: 'cSipStatsGlobalBusyEverywhereIns', sip_global_decline: 'cSipStatsGlobalDeclineIns' },
+  };
+  for (const [ds, want] of Object.entries(expected)) {
+    it(`${ds} picks the corrected datapoints`, () => {
+      expect(learn(ds)).toMatchObject(want);
+    });
+  }
+
+  it('the jitter DataSource maps no rtt_ms or loss_pct', () => {
+    const l = learn('CiscoSLA_jitter-');
+    expect(l.rtt_ms).toBeUndefined();
+    expect(l.loss_pct).toBeUndefined();
+  });
+
+  it('no SIP DataSource claims a Raw counter and none shares a metric key with another', () => {
+    const keysSeen = new Map();
+    for (const ds of Object.keys(live).filter((d) => d.startsWith('Cisco_SIP_'))) {
+      const l = learn(ds);
+      for (const [k, raw] of Object.entries(l)) {
+        expect(raw, `${ds} ${k}`).not.toMatch(/Raw$/);
+        if (keysSeen.has(k)) throw new Error(`${k} learned from both ${keysSeen.get(k)} and ${ds}`);
+        keysSeen.set(k, ds);
+      }
+    }
+  });
+
+  it('the generic IP SLA matcher takes a real RTT name but never Sum/Num/Sum2 accumulators', () => {
+    const entry = catalogFor('CiscoSLA_ICMPEcho-x');
+    const names = ['SumRTT', 'NumRTT', 'Sum2RTT', 'RTT', 'PacketLoss'];
+    expect(metrics.matchDatapoint(names, entry.metrics.rtt_ms.match)).toBe('RTT');
+    expect(metrics.matchDatapoint(['SumRTT', 'NumRTT', 'Sum2RTT'], entry.metrics.rtt_ms.match)).toBeNull();
+  });
+
+  it('exports a numeric catalog version', () => {
+    expect(catalog.CATALOG_VERSION).toBe(2);
+  });
+});
+
+describe('catalog version relearn', () => {
+  let spy;
+  beforeEach(() => { wipe(); });
+  afterEach(() => { if (spy) spy.mockRestore(); spy = null; });
+
+  it('drops learned maps written under another catalog version and stamps the current one', async () => {
+    const stale = { PaloAlto_FW_GlobalSessions: { sessions_active: 'MaxSessions' } };
+    const sid = insertSource({ features: JSON.stringify({ dsColumns: stale, dsUnmatched: { PaloAlto_FW_GlobalSessions: ['ActiveSessions'] }, probedAt: 'keep' }) });
+    insertDevice(sid, 1);
+    insertDs(sid, 1, 701, 'PaloAlto_FW_GlobalSessions');
+    spy = vi.spyOn(lmApi, 'fetchDsData').mockImplementation(async () => ({
+      dataSourceName: 'PaloAlto_FW_GlobalSessions',
+      dataPoints: ['ActiveSessions', 'MaxSessions', 'SessionUtilization'],
+      instances: { 'PaloAlto_FW_GlobalSessions-Global [ID:1]': { time: [(now() - 60) * 1000], values: [[150, 1000, 15]] } },
+    }));
+    await metrics.pollMetrics(sourceRow(sid));
+    // Not narrowed to the stale map: the call asked for every datapoint.
+    expect(spy.mock.calls[0][3].datapoints).toBeNull();
+    const feat = JSON.parse(sourceRow(sid).features_json);
+    expect(feat.catalogVersion).toBe(catalog.CATALOG_VERSION);
+    expect(feat.probedAt).toBe('keep');
+    expect(feat.dsColumns.PaloAlto_FW_GlobalSessions.sessions_active).toBe('ActiveSessions');
+    expect(feat.dsUnmatched.PaloAlto_FW_GlobalSessions).toEqual([]);
+
+    // Same version on the next poll: the learned map is kept and narrows the call.
+    await metrics.pollMetrics(sourceRow(sid));
+    expect(spy.mock.calls[1][3].datapoints).not.toBeNull();
+  });
+});
