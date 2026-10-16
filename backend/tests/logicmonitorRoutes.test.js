@@ -883,6 +883,62 @@ describe('logicmonitor round 3 routes', () => {
     expect(csv.text).toContain('phx-dist-01');
   });
 
+  it('circuit ID and carrier come from ifAlias, a circuit property or the description; a circuit ID alone marks WAN', async () => {
+    const { circuitInfo } = require('../services/logicmonitorPath');
+    expect(circuitInfo('L2 AT&T AVPN Ckt ID: L4YS539825..ATI 10Gbps @mpls', null))
+      .toEqual({ circuitId: 'L4YS539825..ATI', carrier: 'AT&T', alias: null, source: 'description' });
+    expect(circuitInfo('WAN circuit Lumen', null).circuitId).toBeNull();
+    const props = JSON.stringify({ auto: { 'auto.interface.alias': 'LDCX-WAN-2 T0/1/6 LUMEN Circuit ID: 442059777 [t=p2p m=1 q=1 n=0]' }, custom: { 'circuit.id': 'OGYX/254139//ZYO', 'circuit.carrier': 'Zayo' } });
+    expect(circuitInfo('ignored', props)).toMatchObject({ circuitId: 'OGYX/254139//ZYO', carrier: 'Zayo', source: 'custom:circuit.id' });
+    expect(circuitInfo(null, JSON.stringify({ auto: { 'auto.interface.alias': 'Cogent DIA Ckt ID:3-001729255' } })))
+      .toMatchObject({ circuitId: '3-001729255', carrier: 'Cogent', source: 'ifAlias' });
+
+    ins('lm_interfaces', { source_id: sid, lm_device_id: 1, instance_id: 12, display_name: 'Te1/1/2', description: 'DCI CTL CKT ID:440463607 @ptp', status: 1, status_text: 'up', speed_bps: 10000000000, stale: 0 });
+    const rc = await request(app).post(`${API}/circuits/recompute`);
+    expect(rc.body).toEqual({ marked: 2 });
+    const list = await request(app).get(`${API}/circuits`);
+    const dci = list.body.find((c) => c.instanceId === 12);
+    expect(dci).toMatchObject({ wanReason: 'circuit-id', circuitId: '440463607', carrier: null, circuitIdSource: 'description' });
+    const ifs = await request(app).get(`${API}/interfaces?q=Te1/1/2`);
+    expect(ifs.body.items[0]).toMatchObject({ circuitId: "440463607", alias: null });
+  });
+
+  it('settings/discovery and settings/export.json describe and dump the collected estate without secrets', async () => {
+    ins('lm_device_datasources', { source_id: sid, lm_device_id: 1, hds_id: 5, datasource_id: 5, datasource_name: 'Cisco_CPU_SNMP', datasource_display_name: 'CPU', instance_count: 2, is_interface: 0, is_neighbor: 0 });
+    ins('lm_device_datasources', { source_id: sid, lm_device_id: 1, hds_id: 6, datasource_id: 6, datasource_name: 'SNMP_Network_Interfaces', datasource_display_name: 'Interfaces', instance_count: 48, is_interface: 1, is_neighbor: 0 });
+    ins('lm_device_datasources', { source_id: sid, lm_device_id: 1, hds_id: 7, datasource_id: 7, datasource_name: 'Cisco_Transceiver_Sensors', datasource_display_name: 'Optics', instance_count: 48, is_interface: 0, is_neighbor: 0 });
+    db.prepare("UPDATE lm_devices SET custom_props_json = ?, system_props_json = ? WHERE lm_device_id = 1").run(
+      JSON.stringify({ 'snmp.community': 'public', 'snmp.auth': 'x', 'location': 'PHX' }), JSON.stringify({ 'system.sysinfo': 'Cisco IOS' }));
+    const disc = await request(app).get(`${API}/settings/discovery`);
+    expect(disc.status).toBe(200);
+    expect(disc.body.devicesByVendorRole).toEqual(expect.arrayContaining([expect.objectContaining({ vendor: 'Cisco', role: 'switch', devices: 2 })]));
+    const ds = Object.fromEntries(disc.body.datasources.map((d) => [d.name, d.collected]));
+    expect(ds).toEqual({ Cisco_CPU_SNMP: 'alert labels only', SNMP_Network_Interfaces: 'instances + metrics', Cisco_Transceiver_Sensors: 'inventory only' });
+    const keys = Object.fromEntries(disc.body.devicePropertyKeys.map((k) => [k.key, k.sample]));
+    expect(keys['snmp.community']).toBe('[redacted]');
+    expect(keys['snmp.auth']).toBe('[redacted]');
+    expect(keys.location).toBe('PHX');
+    expect(disc.body.circuitCoverage).toMatchObject({ interfaces: 4, wan: 1, withCircuitId: 0 });
+    expect(disc.body.devicesWithoutDatasourceInventory).toBe(2);
+
+    const exp = await request(app).get(`${API}/settings/export.json`);
+    expect(exp.status).toBe(200);
+    expect(exp.headers['content-disposition']).toMatch(/logicmonitor-export-\d{4}-\d{2}-\d{2}\.json/);
+    const body = JSON.parse(exp.text);
+    expect(body.history).toBe(false);
+    expect(Object.keys(body.tables)).not.toContain('lm_interface_history');
+    expect(body.tables.lm_devices).toHaveLength(3);
+    const dev1 = body.tables.lm_devices.find((d) => d.lm_device_id === 1);
+    expect(dev1.custom_props_json).toEqual({ 'snmp.community': '[redacted]', 'snmp.auth': '[redacted]', location: 'PHX' });
+    expect(body.tables.lm_sources[0]).not.toHaveProperty('encrypted_credentials');
+    expect(JSON.stringify(body.tables.lm_sources)).not.toMatch(/access_id|access_key|bearer/i);
+    expect(body.tables.lm_interfaces.find((i) => i.instance_id === 40).circuit).toMatchObject({ circuitId: null, carrier: 'Zayo' });
+    expect(body.circuits).toHaveLength(1);
+    const hist = await request(app).get(`${API}/settings/export.json?history=1`);
+    expect(Object.keys(hist.body.tables)).toContain('lm_interface_history');
+    expect((await request(app).get(`${API}/settings/export.json?history=2`)).status).toBe(400);
+  });
+
   it('governance dataQuality, its score and the new CSV sections', async () => {
     const gov = await request(app).get(`${API}/governance`);
     const dq = gov.body.dataQuality;
