@@ -199,6 +199,8 @@ function buildDevicePlan(db) {
   for (const n of NO_SITE) add({ name: n, site: 'unassigned', kind: 'branch-access', r3: true, collectorId: 11 });
   // Round 8: the Palo Alto estate, appended last for the same reason.
   for (const n of ['phx-fw-01', 'phx-fw-02', 'dal-fw-01', 'dal-fw-02', 'den-fw-01']) add({ name: n, site: n.slice(0, 3), kind: 'paloalto', r8: true });
+  // Round 9: one AireOS (5520) and one Catalyst 9800 wireless controller, appended last.
+  for (const n of ['phx-wlc-01', 'dal-wlc-01']) add({ name: n, site: n.slice(0, 3), kind: 'wlc', r8: true });
 
   let id = 101;
   const counters = {};
@@ -208,7 +210,7 @@ function buildDevicePlan(db) {
     counters[d.site] = (counters[d.site] || 0) + 1;
     const net = SITES[d.site] ? SITES[d.site].net : null;
     if (net) {
-      const third = ['core', 'dist', 'access', 'branch-access', 'wan-rtr', 'branch-rtr', 'asa', 'f5', 'ap', 'paloalto'].includes(d.kind) ? 1 : 40;
+      const third = ['core', 'dist', 'access', 'branch-access', 'wan-rtr', 'branch-rtr', 'asa', 'f5', 'ap', 'paloalto', 'wlc'].includes(d.kind) ? 1 : 40;
       d.ip = `${net}.${third}.${counters[d.site] + 10}`;
     } else if (d.kind === 'uptime') {
       d.ip = d.target;
@@ -260,6 +262,19 @@ function deviceIdentity(d, rng) {
         categories: 'snmp,PaloAlto', ert: 'Firewall',
       };
     }
+    case 'wlc':
+      // phx is the AireOS 5520 (ERT WLC); dal is the Catalyst 9800 (ERT Wireless).
+      if (d.name.startsWith('phx')) {
+        return {
+          deviceType: 0, model: 'AIR-CT5520-K9', serial: serial(),
+          sysinfo: 'Cisco Controller', sysoid: '.1.3.6.1.4.1.9.1.1615', categories: 'snmp,Cisco,CiscoWLC', ert: 'WLC',
+        };
+      }
+      return {
+        deviceType: 0, model: 'C9800-40-K9', serial: serial(),
+        sysinfo: 'Cisco IOS Software [Cupertino], C9800 Software (C9800_IOSXE-K9), Version 17.9.4a, RELEASE SOFTWARE (fc3)',
+        sysoid: '.1.3.6.1.4.1.9.1.2530', categories: 'snmp,Cisco,CiscoCatalystWLC', ert: 'Wireless',
+      };
     case 'f5':
       return {
         deviceType: 0, model: 'BIG-IP i5800', serial: `f5-${randInt(rng, 1000, 9999)}-${randInt(rng, 1000, 9999)}`,
@@ -306,7 +321,7 @@ function classify(d, ident) {
   }
   const roleByKind = {
     core: 'switch', dist: 'switch', access: 'switch', 'branch-access': 'switch', 'wan-rtr': 'router', 'branch-rtr': 'router',
-    asa: 'firewall', f5: 'load-balancer', ap: 'wireless', win: 'server', linux: 'server', 'aws-ec2': 'server',
+    asa: 'firewall', f5: 'load-balancer', ap: 'wireless', wlc: 'wireless', win: 'server', linux: 'server', 'aws-ec2': 'server',
   };
   const vendorByKind = { f5: 'F5', ap: 'Meraki', win: 'Microsoft', linux: 'Net-SNMP' };
   const role = roleByKind[d.kind] || 'other';
@@ -321,13 +336,13 @@ function groupsFor(d) {
   if (d.kind === 'dist' || d.kind === 'access') g.push(GROUP_ID['Network/Distribution']);
   if (d.kind === 'asa' || d.kind === 'paloalto') g.push(GROUP_ID['Network/Firewalls']);
   if (d.kind === 'f5') g.push(GROUP_ID['Network/LoadBalancers']);
-  if (d.kind === 'ap') g.push(GROUP_ID['Network/Wireless']);
+  if (d.kind === 'ap' || d.kind === 'wlc') g.push(GROUP_ID['Network/Wireless']);
   if (d.kind === 'win') g.push(GROUP_ID['Servers/Windows']);
   if (d.kind === 'linux') g.push(GROUP_ID['Servers/Linux']);
   if (d.kind.startsWith('aws')) g.push(GROUP_ID['Cloud/AWS']);
   const site = SITES[d.site];
   if (site && site.group && ['branch-access', 'branch-rtr', 'asa', 'paloalto', 'ap', 'dist'].includes(d.kind)) g.push(GROUP_ID[site.group]);
-  if (DC_SITE_GROUP[d.site] && ['core', 'dist', 'access', 'wan-rtr', 'asa', 'paloalto', 'f5', 'ap'].includes(d.kind)) g.push(DC_SITE_GROUP[d.site]);
+  if (DC_SITE_GROUP[d.site] && ['core', 'dist', 'access', 'wan-rtr', 'asa', 'paloalto', 'f5', 'ap', 'wlc'].includes(d.kind)) g.push(DC_SITE_GROUP[d.site]);
   return g;
 }
 
@@ -1483,6 +1498,123 @@ const R8_WIDEIPS = ['portal', 'pay', 'api', 'sso', 'sftp', 'reports', 'batch', '
 const R8_DAEMONS = ['f5_big3d_service_status', 'f5_mcpd_service_status', 'f5_tmm_service_status', 'f5_tmrouted_service_status', 'f5_gtmd_service_status', 'f5_gtm_gslb_status'];
 const R8_CERTS = ['portal', 'pay', 'api', 'sso', 'sftp', 'reports', 'erp', 'partners'];
 
+// ---- Round 9: Cisco wireless controllers -------------------------------------------
+const WL_SSIDS = [['1', 'ACME-Corp', 0.46], ['2', 'ACME-Guest', 0.2], ['3', 'ACME-IoT', 0.12], ['4', 'ACME-Voice', 0.08], ['5', 'ACME-Lab', 0.06], ['6', 'ACME-Secure', 0.08]];
+const WL_CFG = {
+  'phx-wlc-01': { prefix: 'phx-wap', aps: 40, clients: 1860, usage: 62, avail: 96, aireos: true, cpu: 31, mem: 54, temp: 38,
+    disassoc: [5, 17], downloading: [33], disabled: [38], radioDown: [[11, 1]], hot: [7, 23, 31, 36], errAp: 14, radiusBad: 1 },
+  'dal-wlc-01': { prefix: 'dal-wap', aps: 40, clients: 1430, usage: 84, avail: 48, aireos: false, cpu: 44, mem: 61, temp: 41,
+    disassoc: [9, 28], downloading: [], disabled: [39], radioDown: [[3, 0], [20, 1]], hot: [12, 25, 30], errAp: 22, radiusBad: -1 },
+};
+
+function seedWireless(devices, { put, rng, r1, series }) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const whole = (arr) => arr.map((v) => Math.round(v));
+  for (const d of devices.filter((x) => x.kind === 'wlc' && x.hostStatus === 'normal')) {
+    const cfg = WL_CFG[d.name];
+    if (!cfg) continue;
+    for (let a = 1; a <= cfg.aps; a += 1) {
+      const ap = `${cfg.prefix}-${pad(a)}`;
+      const disabled = cfg.disabled.includes(a);
+      const dis = cfg.disassoc.includes(a);
+      const dl = cfg.downloading.includes(a);
+      const oper = dis ? 2 : dl ? 3 : 1;
+      put(d, 'Cisco_Wireless_AP', 'Cisco Wireless AP', 'wireless', ap, { ap_admin: disabled ? 2 : 1, ap_oper: oper });
+      const slots = a % 13 === 0 ? [0, 1, 2] : [0, 1];
+      for (const slot of slots) {
+        const rdDown = cfg.radioDown.some(([ra, rs]) => ra === a && rs === slot);
+        const hot = slot === 1 && cfg.hot.includes(a);
+        const rdDisabled = disabled && slot === 0;
+        const util = hot ? 72 + rng() * 13 : 5 + rng() * 58;
+        const down = dis || rdDown;
+        const clients = down || rdDisabled ? 0 : Math.round(rng() * (slot === 0 ? 14 : 22));
+        const profile = (k) => (hot && k === 'load' ? 2 : rng() < 0.04 ? 2 : 1);
+        const m = {
+          radio_admin: rdDisabled ? 2 : 1,
+          radio_oper: down || rdDisabled ? 1 : 2,
+          radio_clients: clients,
+          radio_users: clients,
+          radio_tx_power: slot === 0 ? 3 : 2,
+          radio_load_profile: profile('load'),
+          radio_noise_profile: profile('noise'),
+          radio_interference_profile: profile('interference'),
+          radio_coverage_profile: profile('coverage'),
+        };
+        if (!down && !rdDisabled) {
+          m.radio_util_pct = r1(util);
+          m.radio_rx_util_pct = r1(util * 0.55);
+          m.radio_tx_util_pct = r1(util * 0.3);
+        }
+        put(d, 'Cisco_Wireless_AccessPointRadio', 'Cisco Wireless AP Radio', 'wireless', `${ap}:${slot}`, m);
+      }
+      const bad = a === cfg.errAp;
+      put(d, 'Cisco_Wireless_AccessPointInterfaces', 'Cisco Wireless AP Interfaces', 'wireless', `${ap} - GigabitEthernet0`, {
+        apif_oper: dis ? 2 : 1,
+        apif_admin: 1,
+        apif_in_errors: bad ? r1(3.2 + rng() * 2) : r1(rng() * 0.3),
+        apif_out_errors: bad ? r1(0.4 + rng()) : 0,
+        apif_in_drops: r1(rng() * 0.4),
+        apif_out_drops: r1(rng() * 0.2),
+        apif_rx_bytes: dis ? 0 : Math.round(4e4 + rng() * 6e5),
+        apif_tx_bytes: dis ? 0 : Math.round(8e4 + rng() * 1.2e6),
+      });
+    }
+
+    let essTotal = 0;
+    for (const [wlan, ssid, share] of WL_SSIDS) {
+      const clients = Math.round(cfg.clients * share * (0.9 + rng() * 0.2));
+      essTotal += clients;
+      put(d, 'Cisco_Wireless_ESS', 'Cisco Wireless ESS', 'wireless', wlan, {
+        ess_admin: 1, ess_broadcast: ssid === 'ACME-Secure' ? 0 : 1, ess_clients: clients,
+      }, { ess_clients: whole(series(clients || 1, { amp: 0.45, jitter: 0.06, hi: 1e6 })) }, ssid);
+    }
+
+    put(d, 'Cisco_Wireless_GlobalPerformance', 'Cisco Wireless Global Performance', 'wireless', 'global', {
+      cpu_pct: cfg.cpu, mem_pct: cfg.mem, temp_c: cfg.temp,
+    }, {
+      cpu_pct: series(cfg.cpu, { amp: 0.25 }),
+      mem_pct: series(cfg.mem, { amp: 0.04, jitter: 0.01 }),
+      temp_c: series(cfg.temp, { amp: 0.05, jitter: 0.01, hi: 90 }),
+    });
+    const maxClients = Math.round((essTotal * 100) / cfg.usage);
+    put(d, 'Cisco_Wireless_ConnectionStatistics', 'Cisco Wireless Connection Statistics', 'wireless', 'global', {
+      wlc_clients: essTotal, wlc_clients_max: maxClients, wlc_client_usage_pct: cfg.usage, wlc_aps_joined: cfg.aps - cfg.disassoc.length,
+      wlc_ap_assoc_failed: r1(rng() * 0.6), wlc_abnormal_offline: r1(rng() * 0.05),
+    }, {
+      wlc_clients: whole(series(essTotal, { amp: 0.45, jitter: 0.05, hi: 1e6 })),
+      wlc_client_usage_pct: series(cfg.usage, { amp: 0.2, jitter: 0.02 }),
+    });
+    put(d, 'Cisco_Wireless_DHCPStatistics', 'Cisco Wireless DHCP Statistics', 'wireless', 'dhcp', {
+      dhcp_proxy: 1, dhcp_discover: r1(2 + rng() * 6), dhcp_offer: r1(2 + rng() * 6), dhcp_ack: r1(2 + rng() * 6), dhcp_nak: r1(rng() * 0.1), dhcp_tx_failures: 0,
+    });
+    put(d, 'Cisco_Wireless_MobilityStats', 'Cisco Wireless Mobility Stats', 'wireless', 'mobility', {
+      mob_handoffs: r1(1 + rng() * 4), mob_handoff_requests: r1(1 + rng() * 4), mob_handoff_errors: r1(rng() * 0.05),
+      mob_handoff_denied: 0, mob_handoff_dropped: r1(rng() * 0.05),
+    });
+    for (let sv = 1; sv <= 2; sv += 1) {
+      const bad = cfg.radiusBad === sv - 1;
+      const name = `10.${d.name.startsWith('phx') ? 10 : 20}.5.${sv}`;
+      put(d, 'Cisco_Wireless_RADIUSAuthServers', 'Cisco Wireless RADIUS Auth Servers', 'wireless', String(sv), {
+        radius_status: 1, radius_network_user: 1,
+        radius_requests: bad ? r1(1.5 + rng()) : r1(8 + rng() * 10),
+        radius_accepts: bad ? 0 : r1(7 + rng() * 9),
+        radius_rejects: bad ? 0 : r1(rng() * 0.8),
+        radius_challenges: 0,
+        radius_timeouts: bad ? r1(1.4 + rng()) : 0,
+        radius_retransmissions: bad ? r1(2 + rng() * 2) : r1(rng() * 0.2),
+        radius_pending: bad ? Math.round(6 + rng() * 4) : Math.round(rng() * 2),
+      }, null, name);
+      put(d, 'Cisco_Wireless_RADIUSAccountingServers', 'Cisco Wireless RADIUS Accounting Servers', 'wireless', String(sv), {
+        acct_status: 1, acct_requests: r1(6 + rng() * 8), acct_responses: r1(6 + rng() * 8), acct_timeouts: 0,
+      }, null, name);
+    }
+    if (cfg.aireos) put(d, 'Cisco_Wireless_HighAvailability', 'Cisco Wireless High Availability', 'wireless', 'ha', { wlc_primary_unit: 1 });
+    else put(d, 'Cisco_C9800_HA_Peer_State', 'Cisco C9800 HA Peer State', 'wireless', 'ha', { wlc_ha_peer_ok: 1 });
+    put(d, 'ntm_wlc_ap_status_check', 'WLC AP Status Check', 'wireless', 'ap-status', { wlc_ap_available_pct: cfg.avail });
+    put(d, 'ntm_wlc_mobility_domain_check', 'WLC Mobility Domain Check', 'wireless', 'mobility-domain', { wlc_mobility_status: 0 });
+  }
+}
+
 function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   const out = { instances: 0, metrics: 0, history: 0, devices: 0 };
   if (!hasTable(db, 'lm_ds_instances') || !hasTable(db, 'lm_ds_metrics') || !hasTable(db, 'lm_ds_metrics_history')) return out;
@@ -1588,7 +1720,7 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
 
   // ---- Cisco device health (every healthy Cisco network device) -----------------
   const CPU_RANGE = { core: [14, 28], dist: [10, 22], access: [4, 14], 'branch-access': [5, 16], 'wan-rtr': [18, 36], 'branch-rtr': [12, 30], asa: [20, 40] };
-  for (const d of devices.filter((x) => x.vendor === 'Cisco' && x.isNetwork && x.hostStatus === 'normal')) {
+  for (const d of devices.filter((x) => x.vendor === 'Cisco' && x.isNetwork && x.kind !== 'wlc' && x.hostStatus === 'normal')) {
     const [lo, hi] = CPU_RANGE[d.kind] || [8, 24];
     const hot = d.name === 'phx-core-01';
     const cpu = hot ? 91 : r1(lo + rng() * (hi - lo));
@@ -1755,6 +1887,8 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
     ['psu1', 'psu2'].forEach((p) => put(d, 'F5_BigIP_Power', 'F5 BIG-IP Power Supplies', 'loadbalancer', p, { psu_state: 1 }));
     put(d, 'F5_BigIP_Temperature', 'F5 BIG-IP Temperature', 'loadbalancer', 'chassis', { temp_c: r1(30 + rng() * 6) });
   }
+
+  seedWireless(devices, { put, rng, r1, series });
 
   // Keep the datasource inventory counts in step with what was collected.
   for (const { dev, hds, n } of instN.values()) ddsUpd.run(n, n, sid, dev.id, hds);

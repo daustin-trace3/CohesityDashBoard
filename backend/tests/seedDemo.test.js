@@ -657,10 +657,10 @@ describe('seedDemo.js', () => {
     // 140 monitored devices plus the 2 LM Uptime ping-check devices (deviceType 19),
     // plus 6 nyc/lon switches (round 2: 1 dist + 2 access per site), plus 7 round 3
     // switches (abq-dist-01 with 3 access switches, 3 unassigned-sw-* in no site group).
-    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(160);
+    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(162);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 19')).toBe(2);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 2')).toBe(20);
-    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(78);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(80);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead-collector'")).toBe(14);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead' AND is_network = 1")).toBe(7);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor = 'Cisco' AND role = 'switch' AND version = '17.6.5'")).toBe(4);
