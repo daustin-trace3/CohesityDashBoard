@@ -265,6 +265,7 @@ const NEW_TABLES = [
   'lm_check_baseline', 'lm_check_daily', 'lm_topology_links', 'lm_admins', 'lm_roles',
   'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports',
   'lm_sites', 'lm_interface_baseline', 'lm_webhook_events', 'lm_blame_history',
+  'lm_ds_instances', 'lm_ds_metrics', 'lm_ds_metrics_history',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms, cohesity
   // v12 alerts.closed_reason), so their

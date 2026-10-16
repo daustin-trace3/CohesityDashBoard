@@ -580,6 +580,18 @@ const searchCategories = [
     params: 2,
   },
   {
+    key: 'lm-firewalls', label: 'LogicMonitor Firewalls', platform: 'logicmonitor', perm: 'logicmonitor:firewalls:view', base: '/logicmonitor',
+    sql: `SELECT d.display_name AS title, (COALESCE(d.vendor, '') || ' ' || COALESCE(d.model, '') || ' ' || COALESCE(d.version, '')) AS subtitle FROM lm_devices d
+          WHERE d.stale = 0 AND (d.role = 'firewall' OR d.vendor LIKE 'Palo Alto%') AND (d.display_name LIKE ? ESCAPE '\\' OR d.model LIKE ? ESCAPE '\\') ORDER BY d.display_name LIMIT ?`,
+    params: 2,
+  },
+  {
+    key: 'lm-load-balancers', label: 'LogicMonitor Load Balancers', platform: 'logicmonitor', perm: 'logicmonitor:load-balancers:view', base: '/logicmonitor',
+    sql: `SELECT d.display_name AS title, (COALESCE(d.vendor, '') || ' ' || COALESCE(d.model, '') || ' ' || COALESCE(d.version, '')) AS subtitle FROM lm_devices d
+          WHERE d.stale = 0 AND (d.role = 'load-balancer' OR d.vendor = 'F5') AND (d.display_name LIKE ? ESCAPE '\\' OR d.model LIKE ? ESCAPE '\\') ORDER BY d.display_name LIMIT ?`,
+    params: 2,
+  },
+  {
     key: 'lm-collectors', label: 'LogicMonitor Collectors', platform: 'logicmonitor', perm: 'logicmonitor:collectors:view', base: '/logicmonitor',
     sql: `SELECT c.hostname AS title, (COALESCE(c.description, '') || ' build ' || COALESCE(c.build, '')) AS subtitle FROM lm_collectors c
           WHERE c.stale = 0 AND (c.hostname LIKE ? ESCAPE '\\' OR c.description LIKE ? ESCAPE '\\') ORDER BY c.hostname LIMIT ?`,
@@ -607,7 +619,7 @@ module.exports = {
   },
   statusTables: ['lm_sources'],
   settingsFields: [],
-  navSections: ['overview', 'reachability', 'sites', 'alerts', 'issues', 'devices', 'interfaces', 'circuits', 'collectors', 'governance', 'trends', 'advisor', 'privacy', 'settings'],
+  navSections: ['overview', 'reachability', 'sites', 'alerts', 'issues', 'devices', 'interfaces', 'circuits', 'firewalls', 'load-balancers', 'metrics', 'collectors', 'governance', 'trends', 'advisor', 'privacy', 'settings'],
   // Dataset tables are views named logicmonitor_* (migration v1): the dataset
   // catalog requires the '<platform id>_' prefix, the data lives in lm_*.
   datasets: [

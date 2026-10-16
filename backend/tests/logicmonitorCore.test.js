@@ -28,6 +28,7 @@ const TABLES = [
   'lm_check_locations', 'lm_check_history', 'lm_check_baseline', 'lm_check_daily', 'lm_topology_links',
   'lm_admins', 'lm_roles', 'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports',
   'lm_sites', 'lm_interface_baseline', 'lm_webhook_events', 'lm_blame_history',
+  'lm_ds_instances', 'lm_ds_metrics', 'lm_ds_metrics_history',
 ];
 
 beforeAll(() => {
@@ -65,10 +66,10 @@ function insertDevice(sourceId, o = {}) {
 }
 
 describe('migrations/logicmonitor.js', () => {
-  it('creates all 25 lm_* tables and the four dataset views', () => {
+  it('creates all 28 lm_* tables and the four dataset views', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lm_%'").all().map((r) => r.name);
     for (const t of TABLES) expect(tables, `missing ${t}`).toContain(t);
-    expect(tables.length).toBe(25);
+    expect(tables.length).toBe(28);
     const views = db.prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name LIKE 'logicmonitor_%'").all().map((r) => r.name).sort();
     expect(views).toEqual(['logicmonitor_alerts', 'logicmonitor_checks', 'logicmonitor_devices', 'logicmonitor_interfaces']);
   });
@@ -657,7 +658,7 @@ describe('logicmonitorIssues: rules', () => {
     expect(t.lm_if_util_warn_pct).toBe(50);
     expect(t.lm_check_latency_k).toBe(10);
     expect(t.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(t).length).toBe(34);
+    expect(Object.keys(t).length).toBe(41);
     setSetting('lm_if_util_warn_pct', '80');
     setSetting('lm_check_latency_k', '3');
   });

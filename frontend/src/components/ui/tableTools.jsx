@@ -7,10 +7,13 @@ import { Search, ChevronUp, ChevronDown, Download, SlidersHorizontal } from 'luc
 // column key to a getter when the raw field isn't directly comparable (e.g. ISO durations).
 // Pass `paginate: true` to slice the result into pages — render `ctl.pageRows`
 // instead of `ctl.rows` and drop a <TablePager ctl={ctl} /> under the table.
-export function useTableControls(rows, { searchKeys = [], defaultSortKey = null, defaultSortDir = 'asc', sortValues = {}, paginate = false, defaultPageSize = 25 } = {}) {
+export function useTableControls(rows, { searchKeys = [], defaultSortKey = null, defaultSortDir = 'asc', sortValues = {}, paginate = false, defaultPageSize = 25, deepLink = true } = {}) {
   // Deep-link convention: pages opened as /route?q=<term> start filtered — the
   // global header search navigates this way. User edits take over from there.
+  // A table nested inside a modal passes deepLink: false, or the page's ?q=
+  // (a device name) would filter its rows away.
   const [q, setQ] = useState(() => {
+    if (!deepLink) return '';
     try { return new URLSearchParams(window.location.search).get('q') || ''; } catch { return ''; }
   });
   const [filters, setFilters] = useState({});

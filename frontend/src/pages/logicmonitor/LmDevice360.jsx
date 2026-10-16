@@ -11,10 +11,11 @@ import {
 import { Modal, Tabs, Fact, UtilBar, headRow } from './ui';
 import LmInterfaceHistoryModal from './LmInterfaceHistoryModal';
 import EndpointsTable from './endpointsTable';
+import LmMetricsTab from './LmMetricsTab';
 
 function InterfacesTab({ rows, onOpen }) {
   const ctl = useTableControls(rows, {
-    searchKeys: ['displayName', 'description', 'instanceName'], defaultSortKey: 'ifIndex', paginate: true,
+    searchKeys: ['displayName', 'description', 'instanceName'], defaultSortKey: 'ifIndex', paginate: true, deepLink: false,
     sortValues: { maxUtil: (r) => Math.max(r.inUtilPct ?? -1, r.outUtilPct ?? -1) },
   });
   if (!rows.length) return <p className="text-sm text-ink-muted py-6 text-center">No interface DataSource instances on this device.</p>;
@@ -78,7 +79,7 @@ function AlertsTab({ rows }) {
 
 function PropertiesTab({ properties }) {
   const rows = useMemo(() => ['system', 'auto', 'custom'].flatMap((kind) => (properties?.[kind] || []).map((p) => ({ kind, name: p.name, value: p.value }))), [properties]);
-  const ctl = useTableControls(rows, { searchKeys: ['name', 'value'], defaultSortKey: 'name', paginate: true, defaultPageSize: 50 });
+  const ctl = useTableControls(rows, { searchKeys: ['name', 'value'], defaultSortKey: 'name', paginate: true, defaultPageSize: 50, deepLink: false });
   if (!rows.length) return <p className="text-sm text-ink-muted py-6 text-center">No properties stored.</p>;
   return (
     <>
@@ -182,6 +183,7 @@ export default function LmDevice360({ deviceId, sourceId, onClose, onSwitchDevic
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('interfaces');
   const [iface, setIface] = useState(null);
+  const [metrics, setMetrics] = useState(null); // null loading, false failed
 
   useEffect(() => {
     setData(null);
@@ -191,6 +193,10 @@ export default function LmDevice360({ deviceId, sourceId, onClose, onSwitchDevic
     client.get(`/logicmonitor/devices/${deviceId}`, { params })
       .then(({ data: d }) => setData(d || {}))
       .catch((e) => setError(e?.response?.status === 404 ? 'Device not found. It may have been removed from the portal.' : 'Failed to load the device.'));
+    setMetrics(null);
+    client.get(`/logicmonitor/devices/${deviceId}/metrics`, { params })
+      .then(({ data: m }) => setMetrics(m || {}))
+      .catch(() => setMetrics(false));
   }, [deviceId, sourceId]);
 
   const d = data?.device || {};
@@ -202,6 +208,7 @@ export default function LmDevice360({ deviceId, sourceId, onClose, onSwitchDevic
   const endpoints = Array.isArray(data?.endpoints) ? data.endpoints : [];
   const props = data?.properties || {};
   const propCount = (props.system || []).length + (props.auto || []).length + (props.custom || []).length;
+  const metricDs = Array.isArray(metrics?.families) ? metrics.families.reduce((n, f) => n + (Array.isArray(f.datasources) ? f.datasources.length : 0), 0) : null;
   const openAlerts = alerts.filter((a) => !a.cleared).length;
 
   return (
@@ -238,6 +245,7 @@ export default function LmDevice360({ deviceId, sourceId, onClose, onSwitchDevic
           <Tabs active={tab} onSelect={setTab} tabs={[
             { key: 'interfaces', label: 'Interfaces', count: interfaces.length },
             { key: 'alerts', label: 'Alerts', count: alerts.length },
+            { key: 'metrics', label: 'Metrics', count: metricDs },
             { key: 'properties', label: 'Properties', count: propCount },
             { key: 'sdt', label: 'SDT', count: sdts.length },
             { key: 'endpoints', label: 'Endpoints', count: endpoints.length },
@@ -245,6 +253,7 @@ export default function LmDevice360({ deviceId, sourceId, onClose, onSwitchDevic
           ]} />
           {tab === 'interfaces' && <InterfacesTab rows={interfaces} onOpen={setIface} />}
           {tab === 'alerts' && <AlertsTab rows={alerts} />}
+          {tab === 'metrics' && <LmMetricsTab payload={metrics} deviceId={deviceId} sourceId={sourceId || d.sourceId} />}
           {tab === 'properties' && <PropertiesTab properties={props} />}
           {tab === 'sdt' && <SdtTab rows={sdts} />}
           {tab === 'endpoints' && (

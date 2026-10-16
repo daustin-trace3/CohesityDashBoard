@@ -17,6 +17,8 @@ const { reconcileIssueHistory, getThreshold, isBehind, computeShadows } = requir
 const lmSites = require('./logicmonitorSites');
 const lmPath = require('./logicmonitorPath');
 const lmEndpoints = require('./logicmonitorEndpoints');
+const lmMetrics = require('./logicmonitorMetrics');
+const { isDemo } = require('./demoMode');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => lmApi.errMsg(e);
@@ -1048,6 +1050,7 @@ async function dailyWork(source, note) {
     logger.warn(`[LmPoller] interface daily rollup failed: ${err.message}`);
   }
   try { pruneHistories(source.id); } catch (err) { logger.warn(`[LmPoller] retention prune failed: ${err.message}`); }
+  try { lmMetrics.pruneMetricsHistory(source.id); } catch (err) { logger.warn(`[LmPoller] metrics prune failed: ${err.message}`); }
   try { recordLedger(source); } catch (err) { logger.warn(`[LmPoller] config ledger failed: ${err.message}`); }
   try { buildTopologyLinks(db, source.id, { neighbors: refresh.ok ? refresh.data.neighbors : null }); } catch (err) {
     logger.warn(`[LmPoller] topology links failed: ${err.message}`);
@@ -1397,7 +1400,7 @@ async function pollInterfaces(source) {
 // selected so a poll's own writes never look like a config change.
 const loadSources = () => db.prepare(`
   SELECT id, name, company, auth_mode, encrypted_credentials, verify_ssl, enabled, polling_interval_minutes,
-    interface_poll_minutes, group_filter_json, interface_categories_json, features_json
+    interface_poll_minutes, metrics_poll_minutes, metrics_families_json, group_filter_json, interface_categories_json, features_json
   FROM lm_sources WHERE enabled = 1
 `).all();
 
@@ -1420,10 +1423,22 @@ const lmInterfacePoller = createPoller({
   poll: pollInterfaces,
 });
 
+// Tier 3 (round 8): catalog-driven DataSource metrics. Inert in demo mode.
+const lmMetricsPoller = createPoller({
+  id: 'logicmonitor-metrics',
+  loadSources,
+  intervalMinutes: (s) => s.metrics_poll_minutes,
+  serialize: true,
+  maxRunMinutes: 25,
+  defaultIntervalMinutes: 30,
+  poll: (source) => (isDemo() ? Promise.resolve({ inert: true }) : lmMetrics.pollMetrics(source)),
+});
+
 function initLogicmonitorPoller() {
   const a = lmPoller.init();
   const b = lmInterfacePoller.init();
-  logger.info(`[LmPoller] Initialized ${a.length} source(s) (inventory), ${b.length} (interfaces)`);
+  const c = lmMetricsPoller.init();
+  logger.info(`[LmPoller] Initialized ${a.length} source(s) (inventory), ${b.length} (interfaces), ${c.length} (metrics)`);
   return a;
 }
 
@@ -1434,7 +1449,7 @@ const resolveSource = (sourceOrId) => (typeof sourceOrId === 'object' && sourceO
 function createLogicmonitorPollerHandle() {
   return {
     init: () => initLogicmonitorPoller(),
-    stopAll: () => { lmPoller.stopAll(); lmInterfacePoller.stopAll(); },
+    stopAll: () => { lmPoller.stopAll(); lmInterfacePoller.stopAll(); lmMetricsPoller.stopAll(); },
     trigger: (sourceOrId) => {
       const s = resolveSource(sourceOrId);
       return s ? lmPoller.trigger(s) : Promise.resolve();
@@ -1443,9 +1458,13 @@ function createLogicmonitorPollerHandle() {
       const s = resolveSource(sourceOrId);
       return s ? lmInterfacePoller.trigger(s) : Promise.resolve();
     },
-    schedule: (source) => { lmPoller.schedule(source); lmInterfacePoller.schedule(source); },
-    cancel: (sourceId) => { lmPoller.cancel(sourceId); lmInterfacePoller.cancel(sourceId); },
-    taskCount: () => lmPoller.taskCount() + lmInterfacePoller.taskCount(),
+    triggerMetrics: (sourceOrId) => {
+      const s = resolveSource(sourceOrId);
+      return s ? lmMetricsPoller.trigger(s) : Promise.resolve();
+    },
+    schedule: (source) => { lmPoller.schedule(source); lmInterfacePoller.schedule(source); lmMetricsPoller.schedule(source); },
+    cancel: (sourceId) => { lmPoller.cancel(sourceId); lmInterfacePoller.cancel(sourceId); lmMetricsPoller.cancel(sourceId); },
+    taskCount: () => lmPoller.taskCount() + lmInterfacePoller.taskCount() + lmMetricsPoller.taskCount(),
   };
 }
 
@@ -1453,7 +1472,7 @@ function createLogicmonitorPollerHandle() {
 const logicmonitorPollerHandle = createLogicmonitorPollerHandle();
 
 module.exports = {
-  lmPoller, lmInterfacePoller, loadSources,
+  lmPoller, lmInterfacePoller, lmMetricsPoller, loadSources,
   initLogicmonitorPoller, createLogicmonitorPollerHandle, logicmonitorPollerHandle,
   pollSource, pollInterfaces, probeFeatures,
   buildTopologyLinks, parseLinkDescription, parseNeighborInstance, buildDeviceIndex,

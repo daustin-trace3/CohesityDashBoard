@@ -39,6 +39,14 @@ const THRESHOLD_DEFS = {
   lm_backup_overlay_util_pct: { def: 70, min: 30, max: 100, label: 'Backup window port utilization (%)' },
   lm_wan_overrides: { type: 'text', def: '', maxLength: 2000, label: 'WAN circuit overrides (device:port, prefix ! to exclude)' },
   lm_webhook_rate_per_min: { def: 600, min: 60, max: 6000, label: 'Webhook rate limit (per minute)' },
+  // Round 8 (DataSource metric collector, firewalls, load balancers, device health).
+  lm_metrics_data_calls_per_tick: { def: 300, min: 20, max: 2000, label: 'Metrics tier data calls per run' },
+  lm_ds_history_days: { def: 14, min: 3, max: 90, label: 'DataSource metric history retention (days)' },
+  lm_fw_session_warn_pct: { def: 80, min: 50, max: 100, label: 'Firewall session table warning (%)' },
+  lm_cpu_warn_pct: { def: 85, min: 50, max: 100, label: 'Device CPU warning (%)' },
+  lm_mem_warn_pct: { def: 90, min: 50, max: 100, label: 'Device memory warning (%)' },
+  lm_cert_warn_days: { def: 30, min: 1, max: 365, label: 'Certificate expiry warning (days)' },
+  lm_tunnel_fold: { def: 5, min: 2, max: 100, label: 'IPSec tunnels down before they fold into one issue' },
 };
 
 /** Text settings (site roots, WAN overrides): a trimmed string, capped. */
@@ -79,6 +87,313 @@ function parseJson(v, fallback) {
 }
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// ---- Round 8: DataSource metric rules -----------------------------------------
+// Every enum below is UNVERIFIED (no live portal): LogicMonitor DataSources do
+// not agree on one numbering, so each rule only fires on values it names. A
+// number the table does not know is treated as healthy, so a mapping gap
+// never raises an alarm.
+
+// PAN-OS HA states (panSysHAState order). 4 tentative, 5 non-functional and
+// 6 suspended are the unhealthy ones.
+const HA_TEXT = { 0: 'unknown', 1: 'active', 2: 'passive', 3: 'initial', 4: 'tentative', 5: 'non-functional', 6: 'suspended', 7: 'active-primary', 8: 'active-secondary' };
+const haText = (v) => (v == null ? null : (HA_TEXT[Math.round(v)] || String(Math.round(v))));
+const isHaBadLocal = (v) => v != null && [5, 6].includes(Math.round(v));
+const isHaBadPeer = (v) => v != null && [4, 5, 6].includes(Math.round(v));
+/** HA is on when ha_enabled says 1, or (no ha_enabled datapoint) a state was reported. */
+const isHaEnabled = (enabled, local, peer) => (enabled != null ? Math.round(enabled) === 1 : (local != null || peer != null));
+
+// F5 sys failover: 0 unknown, 1 offline, 2 forced offline, 3 standby, 4 active.
+const FAILOVER_TEXT = { 0: 'unknown', 1: 'offline', 2: 'forced offline', 3: 'standby', 4: 'active' };
+const failoverText = (v) => (v == null ? null : (FAILOVER_TEXT[Math.round(v)] || 'unknown'));
+
+// F5 object availability colour: 1 green, 2 yellow (up, with a warning), 3 red
+// (down). 0, 4 and 5 (none, blue, gray) are unknown or disabled and never count as down.
+const availState = (v) => {
+  if (v == null) return 'unknown';
+  const n = Math.round(v);
+  if (n === 1) return 'up';
+  if (n === 2) return 'warn';
+  if (n === 3) return 'down';
+  return 'unknown';
+};
+
+// Tunnel state: 0 down, anything else up or unknown.
+const tunnelIsDown = (v) => v != null && Math.round(v) === 0;
+
+// Component state metrics: 1 is ok, 5 is "not present" (an empty slot), the rest is a fault.
+const stateIsFault = (v) => v != null && ![1, 5].includes(Math.round(v));
+const HW_STATE_LABELS = {
+  psu_state: 'power supply', fan_state: 'fan', temp_state: 'temperature sensor',
+  linecard_state: 'line card', sup_state: 'supervisor', stack_member_state: 'stack member',
+};
+
+/**
+ * Pool name from a "pool/member:port" instance key: the text before the first
+ * '/' or ':' (a leading '/' and the "Common/" partition are dropped first).
+ * ASSUMPTION: LogicMonitor F5 pool member instances are named pool then member.
+ */
+function poolOf(key) {
+  let k = String(key || '').replace(/^\/+/, '').replace(/^Common\//i, '');
+  const m = k.search(/[/:]/);
+  if (m > 0) k = k.slice(0, m);
+  return k || String(key || '');
+}
+
+const METRIC_ISSUE_TYPES = [
+  'fw-ha-degraded', 'fw-tunnel-down', 'fw-session-high', 'fw-config-unsynced',
+  'lb-failover-degraded', 'lb-pool-degraded', 'lb-cert-expiring', 'lb-daemon-down',
+  'device-cpu-high', 'device-memory-high', 'hardware-fault', 'bgp-peer-down', 'ospf-neighbor-down', 'optic-power-low',
+];
+
+/**
+ * Latest metric rows grouped per device: Map "sourceId:deviceId" ->
+ * { sourceId, deviceId, name, vendor, role, siteKey, sdt, instances: Map }.
+ * An instance is { ds, hds, family, key, name, m: { metric: { value, datapoint, epoch } } }.
+ * Stale instances are skipped; a metric whose instance row is missing keeps the key as its name.
+ * opts.families narrows to catalog families, opts.sourceId / opts.deviceId to one device.
+ */
+function loadDsIndex(dbh = db, opts = {}) {
+  const out = new Map();
+  const where = ['COALESCE(i.stale, 0) = 0'];
+  const args = [];
+  if (Array.isArray(opts.families) && opts.families.length) {
+    where.push(`m.family IN (${opts.families.map(() => '?').join(',')})`);
+    args.push(...opts.families);
+  }
+  if (opts.sourceId != null) { where.push('m.source_id = ?'); args.push(opts.sourceId); }
+  if (opts.deviceId != null) { where.push('m.lm_device_id = ?'); args.push(opts.deviceId); }
+  let rows;
+  try {
+    rows = dbh.prepare(`
+      SELECT m.source_id, m.lm_device_id, m.hds_id, m.datasource_name, m.family, m.instance_key, i.instance_name,
+        m.metric, m.datapoint, m.value, m.sampled_at_epoch,
+        d.display_name, d.name AS device_name, d.vendor, d.role, d.site_key, d.sdt_status
+      FROM lm_ds_metrics m
+      JOIN lm_devices d ON d.source_id = m.source_id AND d.lm_device_id = m.lm_device_id AND d.stale = 0
+      LEFT JOIN lm_ds_instances i ON i.source_id = m.source_id AND i.lm_device_id = m.lm_device_id
+        AND i.hds_id = m.hds_id AND i.instance_key = m.instance_key
+      WHERE ${where.join(' AND ')}
+    `).all(...args);
+  } catch { return out; }
+  for (const r of rows) {
+    const dk = `${r.source_id}:${r.lm_device_id}`;
+    let dev = out.get(dk);
+    if (!dev) {
+      dev = {
+        sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.device_name,
+        vendor: r.vendor, role: r.role, siteKey: r.site_key || null, sdt: hasSdt(r.sdt_status), instances: new Map(),
+      };
+      out.set(dk, dev);
+    }
+    const ik = `${r.hds_id}|${r.instance_key}`;
+    let inst = dev.instances.get(ik);
+    if (!inst) {
+      inst = { ds: r.datasource_name, hds: r.hds_id, family: r.family, key: r.instance_key, name: r.instance_name || r.instance_key, m: {} };
+      dev.instances.set(ik, inst);
+    }
+    inst.m[r.metric] = { value: r.value, datapoint: r.datapoint, epoch: r.sampled_at_epoch };
+  }
+  return out;
+}
+
+/** Instances of a device that carry a metric. */
+function devInstances(dev, metric) {
+  const res = [];
+  for (const inst of dev.instances.values()) if (inst.m[metric] && inst.m[metric].value != null) res.push(inst);
+  return res;
+}
+/** First non-null value of a metric on the device (single-instance metrics). */
+function devVal(dev, metric) {
+  const hit = devInstances(dev, metric)[0];
+  return hit ? hit.m[metric].value : null;
+}
+/** Highest value of a metric over the device's instances, with the instance. */
+function devMax(dev, metric) {
+  let best = null;
+  for (const inst of devInstances(dev, metric)) {
+    if (!best || inst.m[metric].value > best.value) best = { value: inst.m[metric].value, inst };
+  }
+  return best;
+}
+
+const fmtNum = (v) => (Number.isInteger(v) ? String(v) : String(Math.round(v * 10) / 10));
+
+function computeMetricIssues(dbh, t, srcName) {
+  const issues = [];
+  const index = loadDsIndex(dbh);
+  if (!index.size) return issues;
+  const push = (dev, severity, type, target, message) => issues.push({ severity, type, source: srcName.get(dev.sourceId), target, message });
+
+  // F5 pairs: devices with a failover state, grouped by site.
+  const failoverBySite = new Map();
+
+  for (const dev of index.values()) {
+    const name = dev.name;
+    const suppressed = dev.sdt; // devices in scheduled downtime raise nothing
+
+    // Firewall HA.
+    const haEnabled = devVal(dev, 'ha_enabled');
+    const haLocal = devVal(dev, 'ha_local_state');
+    const haPeer = devVal(dev, 'ha_peer_state');
+    if (!suppressed && isHaEnabled(haEnabled, haLocal, haPeer) && (isHaBadPeer(haPeer) || isHaBadLocal(haLocal))) {
+      const why = isHaBadLocal(haLocal) ? `local state ${haText(haLocal)}` : `peer state ${haText(haPeer)}`;
+      push(dev, 'critical', 'fw-ha-degraded', name,
+        `${name} HA is degraded: ${why} (local ${haText(haLocal) || 'n/a'}, peer ${haText(haPeer) || 'n/a'}; healthy is active or passive)`);
+    }
+
+    // Firewall sessions.
+    const sessions = devMax(dev, 'sessions_util_pct');
+    let sessPct = sessions ? sessions.value : null;
+    if (sessPct == null) {
+      const act = devVal(dev, 'sessions_active');
+      const max = devVal(dev, 'sessions_max');
+      if (act != null && max) sessPct = (act / max) * 100;
+    }
+    if (!suppressed && sessPct != null && sessPct >= t.lm_fw_session_warn_pct) {
+      push(dev, 'warning', 'fw-session-high', name,
+        `${name} session table at ${fmtNum(sessPct)}% (threshold ${t.lm_fw_session_warn_pct}%)`);
+    }
+
+    // Config sync.
+    const synced = devVal(dev, 'config_synced');
+    if (!suppressed && synced != null && Math.round(synced) === 0) {
+      push(dev, 'info', 'fw-config-unsynced', name, `${name} configuration is not synchronized with its HA peer`);
+    }
+
+    // IPSec tunnels.
+    const tunnels = devInstances(dev, 'tunnel_state');
+    const downT = tunnels.filter((i) => tunnelIsDown(i.m.tunnel_state.value));
+    if (!suppressed && downT.length) {
+      if (downT.length > t.lm_tunnel_fold) {
+        push(dev, 'warning', 'fw-tunnel-down', `${name} IPSec tunnels`,
+          `${downT.length} of ${tunnels.length} IPSec tunnels down on ${name} (folded above ${t.lm_tunnel_fold})`);
+      } else {
+        for (const i of downT) {
+          push(dev, 'warning', 'fw-tunnel-down', `${name} ${i.name}`, `IPSec tunnel ${i.name} on ${name} is down`);
+        }
+      }
+    }
+
+    // F5 failover state per device.
+    const fo = devVal(dev, 'failover_state');
+    if (fo != null) {
+      const k = dev.siteKey || '-';
+      if (!failoverBySite.has(k)) failoverBySite.set(k, []);
+      failoverBySite.get(k).push({ dev, state: Math.round(fo) });
+      if (!suppressed && [1, 2].includes(Math.round(fo))) {
+        push(dev, 'warning', 'lb-failover-degraded', name, `${name} failover state is ${failoverText(fo)} (expected active or standby)`);
+      }
+    }
+
+    // F5 pools from member availability.
+    if (!suppressed) {
+      const pools = new Map();
+      for (const i of devInstances(dev, 'member_avail')) {
+        const p = poolOf(i.key);
+        const e = pools.get(p) || { total: 0, down: 0 };
+        e.total += 1;
+        if (availState(i.m.member_avail.value) === 'down') e.down += 1;
+        pools.set(p, e);
+      }
+      for (const [p, e] of pools) {
+        if (!e.down) continue;
+        const all = e.down === e.total && e.total >= 2;
+        push(dev, all ? 'critical' : 'warning', 'lb-pool-degraded', `${name} ${p}`,
+          all ? `Pool ${p} on ${name} has every member down (${e.down} of ${e.total})`
+            : `Pool ${p} on ${name} has ${e.down} of ${e.total} members down`);
+      }
+    }
+
+    // Certificates.
+    if (!suppressed) {
+      for (const i of devInstances(dev, 'cert_days_left')) {
+        const days = i.m.cert_days_left.value;
+        if (days < t.lm_cert_warn_days) {
+          const crit = days < 7;
+          push(dev, crit ? 'critical' : 'warning', 'lb-cert-expiring', `${name} ${i.name}`,
+            days < 0 ? `Certificate ${i.name} on ${name} expired ${fmtNum(-days)} days ago`
+              : `Certificate ${i.name} on ${name} expires in ${fmtNum(days)} days (threshold ${t.lm_cert_warn_days} days)`);
+        }
+      }
+    }
+
+    // Daemons.
+    if (!suppressed) {
+      for (const i of devInstances(dev, 'daemon_state')) {
+        if (Math.round(i.m.daemon_state.value) !== 1) {
+          push(dev, 'critical', 'lb-daemon-down', `${name} ${i.name}`, `Service ${i.name} on ${name} is not running (state ${fmtNum(i.m.daemon_state.value)})`);
+        }
+      }
+    }
+
+    // CPU and memory (any family; the latest value, the tier is 30 minutes).
+    const cpu = devMax(dev, 'cpu_pct');
+    if (!suppressed && cpu && cpu.value >= t.lm_cpu_warn_pct) {
+      push(dev, 'warning', 'device-cpu-high', name, `${name} CPU at ${fmtNum(cpu.value)}% (threshold ${t.lm_cpu_warn_pct}%)`);
+    }
+    const mem = devMax(dev, 'mem_pct');
+    if (!suppressed && mem && mem.value >= t.lm_mem_warn_pct) {
+      push(dev, 'warning', 'device-memory-high', name, `${name} memory at ${fmtNum(mem.value)}% (threshold ${t.lm_mem_warn_pct}%)`);
+    }
+
+    // Hardware components; more than 5 faults on one device fold into one issue.
+    if (!suppressed) {
+      const faults = [];
+      for (const metric of Object.keys(HW_STATE_LABELS)) {
+        for (const i of devInstances(dev, metric)) {
+          if (stateIsFault(i.m[metric].value)) faults.push({ i, metric, v: i.m[metric].value });
+        }
+      }
+      if (faults.length > 5) {
+        push(dev, 'warning', 'hardware-fault', `${name} hardware`,
+          `${faults.length} hardware components report a fault on ${name} (${faults.slice(0, 3).map((f) => f.i.name).join(', ')}, ...)`);
+      } else {
+        for (const f of faults) {
+          push(dev, 'warning', 'hardware-fault', `${name} ${f.i.name}`,
+            `${HW_STATE_LABELS[f.metric][0].toUpperCase()}${HW_STATE_LABELS[f.metric].slice(1)} ${f.i.name} on ${name} reports state ${fmtNum(f.v)} (expected 1 = ok)`);
+        }
+      }
+    }
+
+    // Routing neighbours.
+    if (!suppressed) {
+      for (const i of devInstances(dev, 'bgp_peer_state')) {
+        if (Math.round(i.m.bgp_peer_state.value) !== 6) {
+          push(dev, 'warning', 'bgp-peer-down', `${name} ${i.name}`, `BGP peer ${i.name} on ${name} is not established (state ${fmtNum(i.m.bgp_peer_state.value)}, established is 6)`);
+        }
+      }
+      for (const i of devInstances(dev, 'ospf_nbr_state')) {
+        if (Math.round(i.m.ospf_nbr_state.value) !== 8) {
+          push(dev, 'warning', 'ospf-neighbor-down', `${name} ${i.name}`, `OSPF neighbor ${i.name} on ${name} is not full (state ${fmtNum(i.m.ospf_nbr_state.value)}, full is 8)`);
+        }
+      }
+    }
+
+    // Optics: only when LogicMonitor exposes the low-warning threshold as a
+    // datapoint (rx_low_warn); with no threshold there is no issue.
+    if (!suppressed) {
+      for (const i of devInstances(dev, 'rx_power_dbm')) {
+        const rx = i.m.rx_power_dbm.value;
+        const lowWarn = i.m.rx_low_warn ? i.m.rx_low_warn.value : null;
+        if (lowWarn != null && rx < lowWarn) {
+          push(dev, 'warning', 'optic-power-low', `${name} ${i.name}`, `Optic ${i.name} on ${name} receives ${fmtNum(rx)} dBm, below its low warning of ${fmtNum(lowWarn)} dBm`);
+        }
+      }
+    }
+  }
+
+  // F5 pairs where no device is active.
+  for (const group of failoverBySite.values()) {
+    const known = group.filter((g) => g.state >= 1 && g.state <= 4);
+    if (known.length >= 2 && !known.some((g) => g.state === 4)) {
+      const names = known.map((g) => g.dev.name).sort();
+      push(known[0].dev, 'critical', 'lb-failover-degraded', names.join(' + '),
+        `No F5 in the pair ${names.join(' and ')} is active (${known.map((g) => `${g.dev.name} ${failoverText(g.state)}`).join(', ')})`);
+    }
+  }
+  return issues;
+}
 
 function computeIssues({ nowMs = Date.now() } = {}) {
   const t = getThresholds();
@@ -298,6 +613,11 @@ function computeIssues({ nowMs = Date.now() } = {}) {
     }
   }
 
+  // Round 8: rules over the DataSource metric tables (lm_ds_metrics).
+  try {
+    issues.push(...computeMetricIssues(db, t, srcName));
+  } catch { /* a metric rule fault must not hide the other issues */ }
+
   const order = { critical: 0, warning: 1, info: 2 };
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);
 }
@@ -444,4 +764,7 @@ module.exports = {
   compareBuild, isBehind,
   computeIssues, issueKey, reconcileIssueHistory,
   computeShadows, shadowedAlertCounts, isShadowedIssue,
+  // Round 8 helpers shared with routes/logicmonitor.js.
+  loadDsIndex, computeMetricIssues, haText, failoverText, availState, poolOf, devVal, devMax, devInstances,
+  isHaBadPeer, isHaBadLocal, isHaEnabled, tunnelIsDown, stateIsFault, METRIC_ISSUE_TYPES,
 };

@@ -11,7 +11,7 @@ import { SectionPanel, Modal, inp, btnPrimary, btnGhost, iconBtn, headRow } from
 
 const blankForm = () => ({
   name: '', company: '', authMode: 'lmv1', accessId: '', accessKey: '', token: '', verifySsl: true,
-  pollingIntervalMinutes: 5, interfacePollMinutes: 15,
+  pollingIntervalMinutes: 5, interfacePollMinutes: 15, metricsPollMinutes: 30,
 });
 
 // "https://acme.logicmonitor.com/santaba" -> "acme" (the route normalises too).
@@ -98,6 +98,7 @@ export default function LmPortalsPanel({ sources, reload }) {
       name: s.name, company: s.company, authMode: s.authMode || 'lmv1', accessId: '', accessKey: '', token: '',
       verifySsl: s.verifySsl !== false && s.verifySsl !== 0, pollingIntervalMinutes: s.pollingIntervalMinutes || 5,
       interfacePollMinutes: s.interfacePollMinutes || 15,
+      metricsPollMinutes: s.metricsPollMinutes || 30,
     });
     setTestResult(null);
   };
@@ -135,6 +136,7 @@ export default function LmPortalsPanel({ sources, reload }) {
         name: form.name.trim(), company, authMode: form.authMode, verifySsl: !!form.verifySsl,
         pollingIntervalMinutes: Number(form.pollingIntervalMinutes) || 5,
         interfacePollMinutes: Number(form.interfacePollMinutes) || 15,
+        metricsPollMinutes: Number(form.metricsPollMinutes) || 30,
         ...credBody(),
       };
       if (editing) {
@@ -245,6 +247,10 @@ export default function LmPortalsPanel({ sources, reload }) {
           <div>
             <label className="block text-xs font-semibold text-ink mb-1">Interface poll interval (minutes)</label>
             <input type="number" min={5} max={1440} value={form.interfacePollMinutes} onChange={setF('interfacePollMinutes')} className={inp} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-ink mb-1">Metrics poll interval (minutes)</label>
+            <input type="number" min={5} max={1440} value={form.metricsPollMinutes} onChange={setF('metricsPollMinutes')} className={inp} />
           </div>
           <label className="flex items-center gap-2 text-xs text-ink cursor-pointer self-end h-[38px]">
             <input type="checkbox" checked={!!form.verifySsl} onChange={setF('verifySsl')} /> Verify TLS certificate

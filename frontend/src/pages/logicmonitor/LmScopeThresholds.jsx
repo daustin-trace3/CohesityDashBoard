@@ -10,6 +10,20 @@ const NETWORK_ROLES = [
   ['switch', 'Switches'], ['router', 'Routers'], ['firewall', 'Firewalls'], ['load-balancer', 'Load balancers'], ['wireless', 'Wireless'],
 ];
 
+// DataSource metric families the metrics tier can collect (ids match the
+// backend catalog FAMILIES). Labels and counts from /metrics/families override
+// these when the route answers.
+const METRIC_FAMILIES = [
+  ['firewall', 'Firewalls', 'Palo Alto, Cisco ASA and Meraki: sessions, HA, tunnels, GlobalProtect, load.'],
+  ['loadbalancer', 'Load balancers', 'F5 BIG-IP and GTM: failover, pools, wide IPs, daemons, certificates.'],
+  ['health', 'Device health', 'CPU, memory, power supplies, fans, temperature, line cards, PoE, filesystems.'],
+  ['optics', 'Optics', 'Transceiver receive and transmit power, temperature, current and voltage.'],
+  ['routing', 'Routing', 'BGP peers, OSPF neighbours and EIGRP peers.'],
+  ['ipsla', 'IP SLA', 'Round-trip time, jitter, loss and MOS from IP SLA operations.'],
+  ['voice', 'Voice', 'SIP counters, session border controller health and ISDN channels.'],
+  ['wireless', 'Wireless', 'Access point state, clients, radio utilization and controller HA.'],
+];
+
 // The per-portal site rule arrives as an object (siteRule) or its JSON text.
 function readSiteRule(source) {
   let r = source?.siteRule ?? source?.siteRuleJson ?? source?.site_rule_json ?? null;
@@ -35,6 +49,8 @@ export function LmScopePanel({ sources, reload }) {
   const [siteProperty, setSiteProperty] = useState('');
   const [siteHostname, setSiteHostname] = useState(true);
   const [ruleTouched, setRuleTouched] = useState(false);
+  const [families, setFamilies] = useState(null); // null = every family on
+  const [famInfo, setFamInfo] = useState({});
 
   const source = (sources || []).find((s) => String(s.id) === String(sourceId)) || (sources || [])[0];
 
@@ -43,6 +59,7 @@ export function LmScopePanel({ sources, reload }) {
     setSourceId(String(source.id));
     setPicked(new Set((source.groupFilter || []).map(Number)));
     setRoles(Array.isArray(source.interfaceCategories) ? source.interfaceCategories : null);
+    setFamilies(Array.isArray(source.metricsFamilies) ? source.metricsFamilies : null);
     setGroups(null);
     const rule = readSiteRule(source);
     setSiteRoots(rule.roots);
@@ -52,6 +69,9 @@ export function LmScopePanel({ sources, reload }) {
     client.get(`/logicmonitor/sources/${source.id}/groups`)
       .then(({ data }) => setGroups((Array.isArray(data) ? data : []).slice().sort((a, b) => String(a.fullPath || a.name).localeCompare(String(b.fullPath || b.name)))))
       .catch(() => setGroups([]));
+    client.get('/logicmonitor/metrics/families', { params: { sourceId: source.id } })
+      .then(({ data }) => setFamInfo(Object.fromEntries((Array.isArray(data) ? data : []).filter((f) => f && f.family).map((f) => [f.family, f]))))
+      .catch(() => setFamInfo({}));
   }, [source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const shown = useMemo(() => {
@@ -78,11 +98,17 @@ export function LmScopePanel({ sources, reload }) {
     return next.length === NETWORK_ROLES.length ? null : next;
   });
 
+  const toggleFamily = (id) => setFamilies((cur) => {
+    const base = cur || METRIC_FAMILIES.map(([v]) => v);
+    const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+    return next.length === METRIC_FAMILIES.length ? null : next;
+  });
+
   const save = async () => {
     if (!source) return;
     setSaving(true);
     try {
-      const body = { groupFilter: [...picked], interfaceCategories: roles };
+      const body = { groupFilter: [...picked], interfaceCategories: roles, metricsFamilies: families };
       if (ruleTouched) {
         body.siteRule = {
           roots: siteRoots.split(',').map((x) => x.trim()).filter(Boolean),
@@ -149,6 +175,25 @@ export function LmScopePanel({ sources, reload }) {
             ))}
           </div>
           <p className="text-[11px] text-ink-faint mt-2">{roles == null ? 'All network roles are polled.' : `${roles.length} of ${NETWORK_ROLES.length} roles polled.`}</p>
+        </div>
+      </div>
+      <div className="mt-5 pt-4 border-t border-cohesity-border/50">
+        <p className="text-xs font-semibold text-ink mb-1">Metric families</p>
+        <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">The DataSource metrics tier reads one data call per device and DataSource for every family ticked here. Untick a family to stop collecting it; values already stored stay until they age out. {families == null ? 'All families are collected.' : `${families.length} of ${METRIC_FAMILIES.length} families collected.`}</p>
+        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-x-4 gap-y-2">
+          {METRIC_FAMILIES.map(([id, label, blurb]) => {
+            const info = famInfo[id];
+            return (
+              <label key={id} className="flex items-start gap-2 text-xs text-ink cursor-pointer">
+                <input type="checkbox" className="mt-0.5" checked={families == null || families.includes(id)} onChange={() => toggleFamily(id)} />
+                <span>
+                  <span className="font-semibold">{info?.label || label}</span>
+                  {info && info.instances != null ? <span className="text-ink-faint tnum"> ({fmtNum(info.datasources)} DataSources, {fmtNum(info.instances)} instances)</span> : null}
+                  <span className="block text-[11px] text-ink-faint leading-snug">{blurb}</span>
+                </span>
+              </label>
+            );
+          })}
         </div>
       </div>
       <div className="mt-5 pt-4 border-t border-cohesity-border/50">

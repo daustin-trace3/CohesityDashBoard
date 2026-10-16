@@ -657,10 +657,10 @@ describe('seedDemo.js', () => {
     // 140 monitored devices plus the 2 LM Uptime ping-check devices (deviceType 19),
     // plus 6 nyc/lon switches (round 2: 1 dist + 2 access per site), plus 7 round 3
     // switches (abq-dist-01 with 3 access switches, 3 unassigned-sw-* in no site group).
-    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(155);
+    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(160);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 19')).toBe(2);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 2')).toBe(20);
-    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(73);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(78);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead-collector'")).toBe(14);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead' AND is_network = 1")).toBe(7);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor = 'Cisco' AND role = 'switch' AND version = '17.6.5'")).toBe(4);
@@ -720,6 +720,76 @@ describe('seedDemo.js', () => {
 
     const flag = db.prepare("SELECT value FROM app_settings WHERE key = 'platform_logicmonitor_enabled'").get();
     expect(flag.value).toBe('1');
+  });
+
+  it('seeds the logicmonitor round 8 DataSource metrics (firewalls, load balancers, health, optics, routing) and their scenarios', () => {
+    const c = (sql, ...args) => db.prepare(sql).get(...args).c;
+    // Five Palo Alto firewalls on top of the 155 earlier devices.
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor = 'Palo Alto' AND role = 'firewall' AND is_network = 1")).toBe(5);
+    expect(db.prepare("SELECT display_name, model, version FROM lm_devices WHERE vendor = 'Palo Alto' ORDER BY display_name").all()).toEqual([
+      { display_name: 'dal-fw-01', model: 'PA-3260', version: '10.2.9' }, { display_name: 'dal-fw-02', model: 'PA-3260', version: '10.2.9' },
+      { display_name: 'den-fw-01', model: 'PA-440', version: '10.2.9' }, { display_name: 'phx-fw-01', model: 'PA-5220', version: '10.2.9' },
+      { display_name: 'phx-fw-02', model: 'PA-5220', version: '10.2.9' },
+    ]);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor = 'Palo Alto' AND site_key IS NOT NULL")).toBe(5);
+
+    // Families and volumes.
+    const fam = Object.fromEntries(db.prepare('SELECT family, COUNT(*) n FROM lm_ds_instances GROUP BY family').all().map((r) => [r.family, r.n]));
+    for (const f of ['firewall', 'loadbalancer', 'health', 'optics', 'routing']) expect(fam[f]).toBeGreaterThan(10);
+    expect(c('SELECT COUNT(*) c FROM lm_ds_metrics')).toBeGreaterThan(c('SELECT COUNT(*) c FROM lm_ds_instances'));
+    expect(c('SELECT COUNT(*) c FROM lm_ds_metrics_history')).toBeGreaterThan(40000);
+    // Seven days at 30 minutes, newest sample a few minutes old.
+    const span = db.prepare('SELECT MIN(sampled_at_epoch) lo, MAX(sampled_at_epoch) hi FROM lm_ds_metrics_history').get();
+    expect(span.hi - span.lo).toBeGreaterThan(6.9 * 86400);
+    expect(span.hi - span.lo).toBeLessThan(7.1 * 86400);
+    expect(c("SELECT COUNT(*) c FROM lm_ds_metrics WHERE sampled_at_epoch IS NULL OR value IS NULL")).toBe(0);
+    // Every collected DataSource has an inventory row whose instance count matches.
+    expect(c(`SELECT COUNT(*) c FROM (SELECT DISTINCT source_id, lm_device_id, hds_id FROM lm_ds_instances) i
+      WHERE NOT EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = i.source_id AND x.lm_device_id = i.lm_device_id AND x.hds_id = i.hds_id)`)).toBe(0);
+    expect(c(`SELECT COUNT(*) c FROM lm_device_datasources x WHERE x.metrics_last_at IS NOT NULL
+      AND x.instance_count != (SELECT COUNT(*) FROM lm_ds_instances i WHERE i.source_id = x.source_id AND i.lm_device_id = x.lm_device_id AND i.hds_id = x.hds_id)`)).toBe(0);
+
+    // The four F5s: 30 to 40 pool members across 6 to 8 pools, 10 wide IPs, 12 VIPs, 6 daemons, 8 certificates.
+    for (const name of ['phx-f5-01', 'phx-f5-02', 'dal-f5-01', 'dal-f5-02']) {
+      const q = (ds) => c(`SELECT COUNT(*) c FROM lm_ds_instances i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
+        WHERE d.display_name = ? AND i.datasource_name ${ds}`, name);
+      const members = q("= 'F5_BigIP_PoolMemberStats'");
+      expect(members).toBeGreaterThanOrEqual(30);
+      expect(members).toBeLessThanOrEqual(40);
+      const pools = c(`SELECT COUNT(DISTINCT substr(i.instance_key, 1, instr(i.instance_key, '/') - 1)) c FROM lm_ds_instances i
+        JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id WHERE d.display_name = ? AND i.datasource_name = 'F5_BigIP_PoolMemberStats'`, name);
+      expect(pools).toBeGreaterThanOrEqual(6);
+      expect(pools).toBeLessThanOrEqual(8);
+      expect(q("= 'F5_GTM_WideIP-'")).toBe(10);
+      expect(q("= 'F5_GTM_VIPs-'")).toBe(12);
+      expect(q("LIKE 'f5\\_%\\_status' ESCAPE '\\'")).toBe(6);
+      expect(q("= 'F5_BigIP_SSL_VIP_Certs'")).toBe(8);
+    }
+    const fo = Object.fromEntries(db.prepare(`SELECT d.display_name n, m.value v FROM lm_ds_metrics m JOIN lm_devices d ON d.source_id = m.source_id AND d.lm_device_id = m.lm_device_id
+      WHERE m.metric = 'failover_state'`).all().map((r) => [r.n, r.v]));
+    expect(fo).toEqual({ 'phx-f5-01': 4, 'phx-f5-02': 3, 'dal-f5-01': 4, 'dal-f5-02': 3 });
+
+    // The scenarios surface as open issues, and nothing else from the new rules.
+    const open = db.prepare("SELECT type, severity, target FROM lm_issue_history WHERE status = 'open'").all();
+    const of = (type) => open.filter((i) => i.type === type).map((i) => `${i.severity}:${i.target}`).sort();
+    expect(of('fw-ha-degraded')).toEqual(['critical:phx-fw-02']);
+    expect(of('fw-session-high')).toEqual(['warning:phx-fw-01']);
+    expect(of('fw-tunnel-down')).toHaveLength(3);
+    expect(open.filter((i) => i.type === 'fw-tunnel-down').every((i) => i.target.startsWith('dal-fw-01 '))).toBe(true);
+    expect(of('fw-config-unsynced')).toEqual(['info:den-fw-01']);
+    expect(of('lb-pool-degraded')).toEqual(['critical:dal-f5-01 app-payments', 'warning:dal-f5-01 web-portal']);
+    expect(of('lb-cert-expiring')).toEqual(['warning:phx-f5-01 pay.acme-example.com']);
+    expect(of('hardware-fault')).toEqual(['warning:dal-dist-02 Power Supply 2']);
+    expect(of('bgp-peer-down')).toHaveLength(1);
+    expect(of('bgp-peer-down')[0]).toMatch(/^warning:dal-wan-rtr-02 /);
+    expect(of('device-cpu-high')).toEqual(['warning:phx-core-01']);
+    for (const quiet of ['lb-failover-degraded', 'lb-daemon-down', 'optic-power-low', 'ospf-neighbor-down', 'device-memory-high']) expect(of(quiet)).toEqual([]);
+    // phx-fw-01 history ends at 87 and climbed over the last hours.
+    const hist = db.prepare(`SELECT h.value v FROM lm_ds_metrics_history h JOIN lm_devices d ON d.source_id = h.source_id AND d.lm_device_id = h.lm_device_id
+      WHERE d.display_name = 'phx-fw-01' AND h.metric = 'sessions_util_pct' ORDER BY h.sampled_at_epoch`).all().map((r) => r.v);
+    expect(hist).toHaveLength(336);
+    expect(hist[hist.length - 1]).toBe(87);
+    expect(hist[hist.length - 12]).toBeLessThan(70);
   });
 
   it('seeds the logicmonitor round 3 scenarios (sites, shadowing, circuits, anomalies, backup windows, webhook, data quality)', async () => {

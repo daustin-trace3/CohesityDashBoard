@@ -22,6 +22,12 @@
 //   latency-anomaly           "DAL DR replication link" 3x baseline for the last 2 hours
 //   packet-loss-anomaly       "PHX VoIP gateway" 15% loss from slc-col01 for 2 hours
 //   location-degraded         3 checks from den-col01 slow at once (fold)
+// Round 8 (DataSource metrics): five Palo Alto firewalls (phx-fw-01/02, dal-fw-01/02, den-fw-01) and
+//   lm_ds_* rows for firewalls, the four F5s, Cisco device health, core and distribution optics, BGP and
+//   OSPF, with 7 days of history on the history metrics. Issues: fw-ha-degraded phx-fw-02 (peer),
+//   fw-session-high phx-fw-01 87%, fw-tunnel-down dal-fw-01 (3 of 24), fw-config-unsynced den-fw-01,
+//   lb-pool-degraded dal-f5-01 (app-payments all down, web-portal 1 of 6), lb-cert-expiring phx-f5-01,
+//   hardware-fault dal-dist-02 PS2, bgp-peer-down dal-wan-rtr-02, device-cpu-high phx-core-01.
 // Round 3 (sites, dependency suppression, circuits, baselines, webhook):
 //   abq-dist-01 + abq-acc-03..05 dead for 25 min with 4 Host Status and 20 interface
 //   Status alerts (computeShadows collapses them under abq-dist-01); WAN circuits on
@@ -191,6 +197,8 @@ function buildDevicePlan(db) {
   add({ name: 'abq-dist-01', site: 'abq', kind: 'dist', r3: true });
   for (const n of ABQ_DOWNSTREAM) add({ name: n, site: 'abq', kind: 'branch-access', r3: true });
   for (const n of NO_SITE) add({ name: n, site: 'unassigned', kind: 'branch-access', r3: true, collectorId: 11 });
+  // Round 8: the Palo Alto estate, appended last for the same reason.
+  for (const n of ['phx-fw-01', 'phx-fw-02', 'dal-fw-01', 'dal-fw-02', 'den-fw-01']) add({ name: n, site: n.slice(0, 3), kind: 'paloalto', r8: true });
 
   let id = 101;
   const counters = {};
@@ -200,7 +208,7 @@ function buildDevicePlan(db) {
     counters[d.site] = (counters[d.site] || 0) + 1;
     const net = SITES[d.site] ? SITES[d.site].net : null;
     if (net) {
-      const third = ['core', 'dist', 'access', 'branch-access', 'wan-rtr', 'branch-rtr', 'asa', 'f5', 'ap'].includes(d.kind) ? 1 : 40;
+      const third = ['core', 'dist', 'access', 'branch-access', 'wan-rtr', 'branch-rtr', 'asa', 'f5', 'ap', 'paloalto'].includes(d.kind) ? 1 : 40;
       d.ip = `${net}.${third}.${counters[d.site] + 10}`;
     } else if (d.kind === 'uptime') {
       d.ip = d.target;
@@ -242,6 +250,14 @@ function deviceIdentity(d, rng) {
         deviceType: 0, model: 'ASA5525', serial: serial(),
         sysinfo: `Cisco Adaptive Security Appliance Version ${ver}`,
         sysoid: '.1.3.6.1.4.1.9.1.2115', categories: 'snmp,Cisco,CiscoASA', ert: 'Firewall',
+      };
+    }
+    case 'paloalto': {
+      const model = d.name.startsWith('phx') ? 'PA-5220' : d.name.startsWith('dal') ? 'PA-3260' : 'PA-440';
+      return {
+        deviceType: 0, model, serial: `0159${randInt(rng, 10000000, 99999999)}`,
+        sysinfo: `Palo Alto Networks ${model} PAN-OS 10.2.9`, sysoid: '.1.3.6.1.4.1.25461.2.3.38',
+        categories: 'snmp,PaloAlto', ert: 'Firewall',
       };
     }
     case 'f5':
@@ -303,15 +319,15 @@ function groupsFor(d) {
   const g = [];
   if (d.kind === 'core' || d.kind === 'wan-rtr') g.push(GROUP_ID['Network/Core']);
   if (d.kind === 'dist' || d.kind === 'access') g.push(GROUP_ID['Network/Distribution']);
-  if (d.kind === 'asa') g.push(GROUP_ID['Network/Firewalls']);
+  if (d.kind === 'asa' || d.kind === 'paloalto') g.push(GROUP_ID['Network/Firewalls']);
   if (d.kind === 'f5') g.push(GROUP_ID['Network/LoadBalancers']);
   if (d.kind === 'ap') g.push(GROUP_ID['Network/Wireless']);
   if (d.kind === 'win') g.push(GROUP_ID['Servers/Windows']);
   if (d.kind === 'linux') g.push(GROUP_ID['Servers/Linux']);
   if (d.kind.startsWith('aws')) g.push(GROUP_ID['Cloud/AWS']);
   const site = SITES[d.site];
-  if (site && site.group && ['branch-access', 'branch-rtr', 'asa', 'ap', 'dist'].includes(d.kind)) g.push(GROUP_ID[site.group]);
-  if (DC_SITE_GROUP[d.site] && ['core', 'dist', 'access', 'wan-rtr', 'asa', 'f5', 'ap'].includes(d.kind)) g.push(DC_SITE_GROUP[d.site]);
+  if (site && site.group && ['branch-access', 'branch-rtr', 'asa', 'paloalto', 'ap', 'dist'].includes(d.kind)) g.push(GROUP_ID[site.group]);
+  if (DC_SITE_GROUP[d.site] && ['core', 'dist', 'access', 'wan-rtr', 'asa', 'paloalto', 'f5', 'ap'].includes(d.kind)) g.push(DC_SITE_GROUP[d.site]);
   return g;
 }
 
@@ -509,8 +525,9 @@ function seedLogicmonitor(db, { now, encrypt }) {
   const dc2Rng = rngFor('logicmonitor-dc2');
   const dc2 = dc2ServerPorts(db);
   const r3Rng = rngFor('logicmonitor-r3');
+  const r8Rng = rngFor('logicmonitor-r8-devices');
   for (const d of devices) {
-    d.ident = deviceIdentity(d, d.r3 ? r3Rng : DC2_SITES.has(d.site) ? dc2Rng : rng);
+    d.ident = deviceIdentity(d, d.r8 ? r8Rng : d.r3 ? r3Rng : DC2_SITES.has(d.site) ? dc2Rng : rng);
     Object.assign(d, classify(d, d.ident));
     d.groups = groupsFor(d);
     d.collector = SITES[d.site] ? COLLECTORS.find((c) => c.id === SITES[d.site].collectorId)
@@ -941,8 +958,9 @@ function seedLogicmonitor(db, { now, encrypt }) {
       const priority = open ? (open.sev >= 4 ? 1 : open.sev === 3 ? 2 : 3) : 100000;
       const deadOffset = d.hostStatus === 'dead' ? DEAD[d.name] : d.hostStatus === 'dead-collector' ? `-${COLLECTOR_DOWN_MIN} minutes` : null;
       const newDays = NEW_DEVICES[d.name];
-      const firstSeen = newDays ? `-${newDays} days` : `-${randInt(rng, 85, 89)} days`;
-      const createdEpoch = newDays ? epochAgo(newDays * 1440 + 30) : epochAgo(randInt(rng, 120, 900) * 1440);
+      const lr = d.r8 ? r8Rng : rng;
+      const firstSeen = newDays ? `-${newDays} days` : `-${randInt(lr, 85, 89)} days`;
+      const createdEpoch = newDays ? epochAgo(newDays * 1440 + 30) : epochAgo(randInt(lr, 120, 900) * 1440);
       const mac = `00:1e:${(d.id >> 8).toString(16).padStart(2, '0')}:${(d.id & 255).toString(16).padStart(2, '0')}:4c:${pad2(d.id % 90)}`;
       const sysProps = [
         { name: 'system.displayname', value: d.name }, { name: 'system.hostname', value: fqdn || d.ip },
@@ -970,7 +988,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
         JSON.stringify(d.groups), d.collector ? d.collector.id : 0, d.collector ? d.collector.id : 0,
         d.collector ? `${d.collector.host.toUpperCase()} ${SITES[d.collector.site].label} collector` : '',
         ['core', 'wan-rtr'].includes(d.kind) ? 1 : 0,
-        d.hostStatus === 'normal' ? randInt(rng, 3, 400) * 86400 : null, createdEpoch, epochAgo(d.hostStatus === 'normal' ? 5 : (DEAD_MIN[d.name] || COLLECTOR_DOWN_MIN)),
+        d.hostStatus === 'normal' ? randInt(lr, 3, 400) * 86400 : null, createdEpoch, epochAgo(d.hostStatus === 'normal' ? 5 : (DEAD_MIN[d.name] || COLLECTOR_DOWN_MIN)),
         id.sysinfo, id.sysoid, fqdn ? d.name : null, fqdn || d.ip, id.model, d.vendor, d.role, d.isNetwork, id.categories,
         JSON.stringify(d.ip ? [d.ip] : []), d.version, id.serial,
         fqdn ? JSON.stringify({ mac: [mac], ip: [d.ip], fqdn: [fqdn] }) : JSON.stringify({ mac: [], ip: [], fqdn: [] }),
@@ -1016,6 +1034,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
       }
     }
     counts.deviceDatasources = ddsRows;
+    counts.dsMetrics = seedDsMetrics(db, { sid, devices, ifaces, nowMs });
 
     // SDTs: 5 effective device SDTs plus a future collector SDT and a weekly group SDT.
     const insSdt = db.prepare(`
@@ -1431,6 +1450,317 @@ const NYC_EXTRA_JOBS = [
   { job: 'NYC_Exchange_DB_Backup', startMin: 35, durMin: 60, bytes: 60e9 },
   { job: 'NYC_Archive_Sweep', startMin: 50, durMin: 45, bytes: 35e9 },
 ];
+
+// -- Round 8: DataSource metrics (lm_ds_*) --------------------------------------
+// Firewalls (the five Palo Alto devices plus the Cisco ASAs), the four F5s,
+// Cisco device health, core and distribution optics, BGP and OSPF. Everything
+// is deterministic (rngFor 'logicmonitor-r8') and reseed-safe: the rows of
+// this source (and any orphans from an earlier seed) are deleted first.
+// Scenarios: phx-fw-02 HA peer non-functional, dal-fw-01 3 of 24 tunnels down,
+// phx-fw-01 sessions at 87%, den-fw-01 config unsynced, dal-f5-01 pool
+// app-payments all down and web-portal 1 of 6 down, dal-f5-02 and phx-f5-02
+// standby, a certificate 12 days from expiry on phx-f5-01, dal-dist-02 PSU
+// failed, a BGP peer down on dal-wan-rtr-02, CPU 91% on phx-core-01.
+
+const R8_STEPS = 336; // 7 days at 30 minutes
+const R8_STEP_S = 1800;
+
+const R8_FIREWALLS = {
+  'phx-fw-01': { max: 1000000, cores: 8, ha: { local: 1, peer: 2 }, tunnels: 12, down: 0, util: 87, gp: [148, 1000], bgp: 2 },
+  'phx-fw-02': { max: 1000000, cores: 8, ha: { local: 2, peer: 5 }, tunnels: 12, down: 0, util: 6, bgp: 2 },
+  'dal-fw-01': { max: 500000, cores: 6, ha: { local: 1, peer: 2 }, tunnels: 24, down: 3, util: 41, gp: [62, 500], bgp: 2 },
+  'dal-fw-02': { max: 500000, cores: 6, ha: { local: 2, peer: 1 }, tunnels: 24, down: 0, util: 5, bgp: 2 },
+  'den-fw-01': { max: 200000, cores: 2, ha: null, tunnels: 6, down: 0, util: 12, unsynced: true },
+};
+const R8_PARTNERS = ['Appian', 'Zayo_DAL', 'Equinix_FR', 'AWS_use1', 'AWS_usw2', 'Azure_east', 'Fiserv', 'Broadridge', 'Workday', 'Okta',
+  'Splunk_HEC', 'SWIFT', 'Cognizant', 'Infosys', 'ADP', 'Experian', 'Fidelity', 'StateStreet', 'Bloomberg', 'Refinitiv', 'DTCC', 'Moodys',
+  'FactSet', 'MSCI'];
+const R8_POOLS = [
+  ['web-portal', 6, 443], ['app-payments', 3, 8443], ['api-gateway', 5, 443], ['sso-auth', 3, 443], ['sftp-ingest', 2, 22],
+  ['reporting', 4, 8080], ['batch-api', 4, 8081], ['legacy-erp', 5, 7001],
+];
+const R8_WIDEIPS = ['portal', 'pay', 'api', 'sso', 'sftp', 'reports', 'batch', 'erp', 'mobile', 'partners'];
+const R8_DAEMONS = ['f5_big3d_service_status', 'f5_mcpd_service_status', 'f5_tmm_service_status', 'f5_tmrouted_service_status', 'f5_gtmd_service_status', 'f5_gtm_gslb_status'];
+const R8_CERTS = ['portal', 'pay', 'api', 'sso', 'sftp', 'reports', 'erp', 'partners'];
+
+function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
+  const out = { instances: 0, metrics: 0, history: 0, devices: 0 };
+  if (!hasTable(db, 'lm_ds_instances') || !hasTable(db, 'lm_ds_metrics') || !hasTable(db, 'lm_ds_metrics_history')) return out;
+  for (const t of ['lm_ds_metrics_history', 'lm_ds_metrics', 'lm_ds_instances']) {
+    db.prepare(`DELETE FROM ${t} WHERE source_id = ? OR source_id NOT IN (SELECT id FROM lm_sources)`).run(sid);
+  }
+  const rng = rngFor('logicmonitor-r8');
+  const latest = Math.floor(nowMs / 1000) - 240;
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const noise = () => rng() + rng() - 1;
+
+  const ddsFind = db.prepare('SELECT hds_id FROM lm_device_datasources WHERE source_id = ? AND lm_device_id = ? AND datasource_name = ?');
+  const ddsIns = db.prepare(`
+    INSERT INTO lm_device_datasources (source_id, lm_device_id, hds_id, datasource_id, datasource_name, datasource_display_name,
+      instance_count, monitoring_instance_count, alert_status, sdt_status, stop_monitoring, is_interface, is_neighbor, refreshed_at)
+    VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'none', ?, 0, 0, 0, datetime('now', '-6 hours'))
+  `);
+  const ddsUpd = db.prepare(`
+    UPDATE lm_device_datasources SET instance_count = ?, monitoring_instance_count = ?, metrics_last_at = datetime('now', '-4 minutes')
+    WHERE source_id = ? AND lm_device_id = ? AND hds_id = ?
+  `);
+  const insInst = db.prepare(`
+    INSERT OR REPLACE INTO lm_ds_instances (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, instance_name, stale, first_seen, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now', '-7 days'), datetime('now', '-4 minutes'))
+  `);
+  const insMet = db.prepare(`
+    INSERT OR REPLACE INTO lm_ds_metrics (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, metric, datapoint, value, sampled_at_epoch, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-4 minutes'))
+  `);
+  const insHist = db.prepare(`
+    INSERT INTO lm_ds_metrics_history (source_id, lm_device_id, hds_id, instance_key, metric, value, sampled_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const hdsMap = new Map();
+  const instN = new Map();
+  let nextHds = 60000;
+  let nextDsId = 8000;
+  const hdsFor = (dev, ds, display) => {
+    const k = `${dev.id}|${ds}`;
+    if (hdsMap.has(k)) return hdsMap.get(k);
+    const hit = ddsFind.get(sid, dev.id, ds);
+    let hds;
+    if (hit) hds = hit.hds_id;
+    else {
+      hds = nextHds;
+      nextHds += 1;
+      nextDsId += 1;
+      ddsIns.run(sid, dev.id, hds, nextDsId, ds, display || ds, dev.inSdt ? 'none-SDT-none' : 'none-none-none');
+    }
+    hdsMap.set(k, hds);
+    return hds;
+  };
+
+  /** One instance with its latest metric values; hist maps metric -> 336 values (oldest first). */
+  function put(dev, ds, display, family, key, metrics, hist = null, name = null) {
+    const hds = hdsFor(dev, ds, display);
+    insInst.run(sid, dev.id, hds, ds, family, key, name || key);
+    out.instances += 1;
+    for (const [metric, value] of Object.entries(metrics)) {
+      if (value == null) continue;
+      insMet.run(sid, dev.id, hds, ds, family, key, metric, metric, value, latest);
+      out.metrics += 1;
+    }
+    if (hist) {
+      for (const [metric, vals] of Object.entries(hist)) {
+        for (let i = 0; i < vals.length; i += 1) {
+          insHist.run(sid, dev.id, hds, key, metric, vals[i], latest - (vals.length - 1 - i) * R8_STEP_S);
+          out.history += 1;
+        }
+      }
+    }
+    const ik = `${dev.id}|${hds}`;
+    instN.set(ik, { dev, hds, n: (instN.has(ik) ? instN.get(ik).n : 0) + 1 });
+  }
+
+  // Diurnal series (9:00 peak) ending exactly at cur; lo/hi clamp.
+  const diurnal = (i) => {
+    const h = (((latest - (R8_STEPS - 1 - i) * R8_STEP_S) / 3600) % 24 + 24) % 24;
+    return Math.sin(((h - 3) / 24) * 2 * Math.PI);
+  };
+  const series = (cur, { amp = 0.2, jitter = 0.03, lo = 0, hi = 100, ramp = null } = {}) => {
+    const raw = [];
+    for (let i = 0; i < R8_STEPS; i += 1) {
+      let v = 1 + amp * diurnal(i) + jitter * noise();
+      if (ramp) v *= ramp(i);
+      raw.push(v);
+    }
+    const last = raw[R8_STEPS - 1] || 1;
+    return raw.map((v, i) => (i === R8_STEPS - 1 ? cur : Math.min(hi, Math.max(lo, r1((cur * v) / last)))));
+  };
+  // Last 6 hours (12 steps) climb from `from` x cur to cur.
+  const climb = (from) => (i) => (i >= R8_STEPS - 12 ? from + (1 - from) * ((i - (R8_STEPS - 12)) / 11) : 1);
+  // Monotonic counter ending at cur, growing roughly `per` each step.
+  const counter = (cur, per) => {
+    const vals = new Array(R8_STEPS);
+    let v = cur;
+    for (let i = R8_STEPS - 1; i >= 0; i -= 1) {
+      vals[i] = Math.max(0, Math.round(v));
+      v -= per * (0.8 + 0.4 * rng());
+    }
+    return vals;
+  };
+
+  // ---- Cisco device health (every healthy Cisco network device) -----------------
+  const CPU_RANGE = { core: [14, 28], dist: [10, 22], access: [4, 14], 'branch-access': [5, 16], 'wan-rtr': [18, 36], 'branch-rtr': [12, 30], asa: [20, 40] };
+  for (const d of devices.filter((x) => x.vendor === 'Cisco' && x.isNetwork && x.hostStatus === 'normal')) {
+    const [lo, hi] = CPU_RANGE[d.kind] || [8, 24];
+    const hot = d.name === 'phx-core-01';
+    const cpu = hot ? 91 : r1(lo + rng() * (hi - lo));
+    const mem = r1(30 + rng() * 35);
+    put(d, 'Cisco_CPU_SNMP', 'Cisco CPU', 'health', '1', { cpu_pct: cpu },
+      { cpu_pct: series(cpu, { amp: 0.25, ramp: hot ? climb(0.45) : null }) }, 'CPU 1');
+    put(d, 'Cisco_MemoryPools_SNMP', 'Cisco Memory Pools', 'health', 'Processor', { mem_pct: mem }, { mem_pct: series(mem, { amp: 0.04, jitter: 0.01 }) });
+    if (d.role === 'switch' || d.role === 'router') {
+      put(d, 'Cisco_FRU_Power', 'Cisco FRU Power', 'health', 'PS1', { psu_state: 1 }, null, 'Power Supply 1');
+      put(d, 'Cisco_FRU_Power', 'Cisco FRU Power', 'health', 'PS2', { psu_state: d.name === 'dal-dist-02' ? 3 : 1 }, null, 'Power Supply 2');
+    }
+    const fans = d.kind === 'core' ? 4 : d.kind === 'dist' ? 3 : 2;
+    for (let f = 1; f <= fans; f += 1) put(d, 'CiscoFan-', 'Cisco Fans', 'health', `Fan${f}`, { fan_state: 1 }, null, `Fan ${f}`);
+    put(d, 'Cisco_TemperatureSensors', 'Cisco Temperature Sensors', 'health', 'Inlet', { temp_c: r1(24 + rng() * 10), temp_state: 1 }, null, 'Inlet temperature');
+  }
+
+  // ---- Optics on core and distribution uplinks ------------------------------------
+  for (const f of ifaces.filter((x) => x.cls === 'uplink' && ['core', 'dist'].includes(x.device.kind) && x.device.hostStatus === 'normal')) {
+    put(f.device, 'Cisco_Transceiver_Sensors', 'Cisco Transceiver Sensors', 'optics', f.full, {
+      rx_power_dbm: r1(-2 - rng() * 5), tx_power_dbm: r1(-1 - rng() * 3), temp_c: r1(30 + rng() * 10), current_ma: r1(6 + rng() * 3),
+      voltage_v: 3.3, rx_low_warn: -11.9, rx_low_alarm: -14.4, tx_low_warn: -8,
+    }, null, f.short);
+  }
+
+  // ---- Routing: BGP on WAN routers, OSPF on routers -----------------------------------
+  for (const d of devices.filter((x) => ['wan-rtr', 'branch-rtr'].includes(x.kind) && x.hostStatus === 'normal')) {
+    if (d.kind === 'wan-rtr') {
+      const base = d.name.startsWith('dal') ? 20 : 10;
+      for (let p = 1; p <= 2; p += 1) {
+        const down = d.name === 'dal-wan-rtr-02' && p === 2;
+        put(d, 'BGP-', 'BGP', 'routing', `203.0.113.${base + (d.name.endsWith('02') ? 2 : 0) + p}`, {
+          bgp_peer_state: down ? 3 : 6, bgp_established_s: down ? 0 : 86400 * (10 + p * 7), bgp_prefixes_in: down ? 0 : 1000 + p * 4200,
+        }, null, `AS6453 peer ${p}`);
+      }
+    }
+    for (let n = 1; n <= (d.kind === 'wan-rtr' ? 2 : 1); n += 1) put(d, 'OSPF_Neighbors', 'OSPF Neighbors', 'routing', `10.255.${d.id % 200}.${n}`, { ospf_nbr_state: 8 });
+  }
+
+  // ---- Firewalls --------------------------------------------------------------------------
+  for (const d of devices.filter((x) => x.vendor === 'Cisco' && x.kind === 'asa' && x.hostStatus === 'normal')) {
+    put(d, 'CiscoASA', 'Global PIX/ASA Stats', 'firewall', 'global', { asa_connections: Math.round(20000 + rng() * 30000), asa_cpu_pct: r1(15 + rng() * 25), asa_mem_pct: r1(35 + rng() * 25) });
+    put(d, 'Cisco_ASA_Failover', 'Cisco ASA Failover', 'firewall', 'failover', { asa_failover_state: 1 });
+  }
+  for (const d of devices.filter((x) => x.kind === 'paloalto')) {
+    const cfg = R8_FIREWALLS[d.name];
+    const active = !cfg.ha || cfg.ha.local === 1;
+    const sessions = Math.round((cfg.max * cfg.util) / 100);
+    const util = cfg.util;
+    const tcp = Math.round(sessions * 0.74);
+    const udp = Math.round(sessions * 0.22);
+    put(d, 'PaloAlto_FW_GlobalSessions', 'PAN global sessions', 'firewall', 'global', {
+      sessions_active: sessions, sessions_max: cfg.max, sessions_util_pct: util, sessions_tcp: tcp, sessions_udp: udp, sessions_icmp: sessions - tcp - udp,
+    }, {
+      sessions_active: series(sessions, { amp: 0.18, lo: 0, hi: cfg.max, ramp: d.name === 'phx-fw-01' ? climb(0.65) : null }).map((v) => Math.round(v)),
+      sessions_util_pct: series(util, { amp: 0.18, ramp: d.name === 'phx-fw-01' ? climb(0.65) : null }),
+    });
+    put(d, 'PaloAlto_FW_GlobalPerformance', 'PAN global performance', 'firewall', 'global', {
+      pkt_rate: Math.round(sessions / 3), throughput_kbps: Math.round(sessions * 4.5), session_rate: Math.round(sessions / 400),
+    }, { throughput_kbps: series(Math.round(sessions * 4.5), { amp: 0.3, hi: 1e9 }).map((v) => Math.round(v)) });
+    const mgmt = active ? r1(14 + rng() * 18) : r1(4 + rng() * 5);
+    put(d, 'PaloAlto_FW_SystemResources', 'PAN system resources', 'firewall', 'system', { mgmt_cpu_pct: mgmt, mem_pct: r1(42 + rng() * 20), swap_pct: r1(1 + rng() * 4) },
+      { mgmt_cpu_pct: series(mgmt, { amp: 0.2 }) });
+    for (let c = 0; c < cfg.cores; c += 1) {
+      put(d, 'PaloAlto_FW_DataplaneCores', 'PAN dataplane cores', 'firewall', `core${c}`, { core_cpu_pct: active ? r1(10 + cfg.util / 3 + rng() * 14) : r1(1 + rng() * 4) }, null, `Core ${c}`);
+    }
+    put(d, 'PaloAlto_FW_DroppedPackets', 'PAN dropped packets', 'firewall', 'global', { dropped: 1200000 + Math.round(rng() * 400000) },
+      { dropped: counter(1400000, 600) });
+    if (cfg.ha) {
+      put(d, 'PaloAlto_FW_HA_Status', 'PAN HA status', 'firewall', 'ha', { ha_enabled: 1, ha_local_state: cfg.ha.local, ha_peer_state: cfg.ha.peer, ha_mode: 1 }, null, 'HA');
+      put(d, 'PaloAlto_FW_HA_Interface', 'PAN HA interfaces', 'firewall', 'HA1', { ha_if_state: 1 });
+      put(d, 'PaloAlto_FW_HA_Interface', 'PAN HA interfaces', 'firewall', 'HA2', { ha_if_state: 1 });
+    } else {
+      put(d, 'PaloAlto_FW_HA_Status', 'PAN HA status', 'firewall', 'ha', { ha_enabled: 0 }, null, 'HA');
+    }
+    // Tunnels: the first `down` ones are down; passive units report them all up.
+    put(d, 'PaloAlto_FW_IPSecTunnelOverview', 'PAN IPSec overview', 'firewall', 'overview', {
+      tunnels_up: cfg.tunnels - cfg.down, tunnels_down: cfg.down, tunnels_total: cfg.tunnels,
+    });
+    for (let t = 0; t < cfg.tunnels; t += 1) {
+      const partner = R8_PARTNERS[(t + d.id) % R8_PARTNERS.length];
+      const isDown = t < cfg.down;
+      put(d, 'PaloAlto_FW_IPSecTunnelStats', 'PAN IPSec tunnels', 'firewall', `${partner}_IPsec_Tunnel_PROD:proxy${t + 1}`, {
+        tunnel_state: isDown ? 0 : 1, tunnel_in_bps: isDown ? 0 : Math.round(1e5 + rng() * 4e7), tunnel_out_bps: isDown ? 0 : Math.round(1e5 + rng() * 3e7),
+      });
+    }
+    if (cfg.gp) {
+      put(d, 'PaloAlto_GlobalProtect_Gateway', 'PAN GlobalProtect gateway', 'firewall', 'gw-external', {
+        gp_users_active: cfg.gp[0], gp_users_max: cfg.gp[1], gp_tunnels: cfg.gp[0] + Math.round(rng() * 6),
+      }, null, 'GP external gateway');
+    }
+    put(d, 'PaloAlto_FW_Config_Synced', 'PAN config sync', 'firewall', 'config', { config_synced: cfg.unsynced ? 0 : 1, config_pending: cfg.unsynced ? 1 : 0 });
+    put(d, 'PaloAlto_FW_ThreatAnalysis', 'PAN threat analysis', 'firewall', 'threats', {
+      threats_total: 412000, threats_critical: 180, threats_high: 2100, threats_medium: 19000, threats_low: 88000, threats_informational: 302720,
+    }, { threats_total: counter(412000, 150 + Math.round(cfg.max / 10000)) });
+    for (const [zone, share] of [['trust', 0.5], ['untrust', 0.3], ['dmz', 0.15], ['guest', 0.05]]) {
+      put(d, 'PaloAlto_FW_Zones', 'PAN zones', 'firewall', zone, {
+        zone_in_bps: Math.round(sessions * 3000 * share), zone_out_bps: Math.round(sessions * 2200 * share), zone_sessions: Math.round(sessions * share),
+      });
+    }
+    put(d, 'PaloAlto_FW_vSys', 'PAN virtual systems', 'firewall', 'vsys1', { vsys_sessions: sessions, vsys_util_pct: util });
+    for (const lt of ['traffic', 'threat', 'url']) {
+      put(d, 'PaloAlto_FW_LogForwarding', 'PAN log forwarding', 'firewall', lt, { log_forwarded: Math.round(1e6 + rng() * 5e6), log_dropped: Math.round(rng() * 40) });
+    }
+    for (const [disk, base] of [['/', 34], ['/opt/pancfg', 12], ['/opt/panrepo', 58]]) {
+      put(d, 'PaloAlto_FW_Disk', 'PAN disks', 'firewall', disk, { disk_used_pct: r1(base + rng() * 4) });
+    }
+    for (const psu of ['PSU 1', 'PSU 2']) put(d, 'PaloAlto_FW_Power', 'PAN power supplies', 'firewall', psu, { psu_state: 1 });
+    put(d, 'PaloAlto_FW_ChassisPower', 'PAN chassis power', 'firewall', 'chassis', { chassis_watts: Math.round(380 + rng() * 120) });
+    for (const sensor of ['Ambient', 'Dataplane']) {
+      put(d, 'PaloAlto_FW_Temperature', 'PAN temperature', 'firewall', sensor, { temp_c: r1(sensor === 'Ambient' ? 27 + rng() * 5 : 41 + rng() * 8), temp_alarm: 0 });
+    }
+    for (let p = 1; p <= (cfg.bgp || 0); p += 1) {
+      put(d, 'PaloAlto_FW_BGP', 'PAN BGP', 'firewall', `10.250.${d.id % 200}.${p}`, { bgp_peer_state: 6, bgp_prefixes: 800 + p * 900 }, null, `peer ${p}`);
+    }
+    if (cfg.bgp) put(d, 'PaloAlto_FW_OSPF', 'PAN OSPF', 'firewall', `10.251.${d.id % 200}.1`, { ospf_nbr_state: 8 });
+  }
+
+  // ---- Load balancers ---------------------------------------------------------------------
+  const f5Active = { 'phx-f5-01': true, 'dal-f5-01': true };
+  for (const d of devices.filter((x) => x.kind === 'f5' && x.hostStatus === 'normal')) {
+    const active = !!f5Active[d.name];
+    const siteOctet = d.name.startsWith('dal') ? 20 : 10;
+    const cpu = active ? r1(18 + rng() * 14) : r1(4 + rng() * 5);
+    const mem = d.name === 'phx-f5-01' ? 88 : d.name === 'dal-f5-01' ? 87 : r1(52 + rng() * 14);
+    const client = active ? Math.round(18000 + rng() * 9000) : 0;
+    const server = active ? Math.round(client * 0.92) : 0;
+    put(d, 'F5_BigIP_System', 'F5 BIG-IP System', 'loadbalancer', 'system', {
+      cpu_pct: cpu, mem_pct: mem, client_connections: client, server_connections: server, throughput_bps: active ? Math.round(2.4e9 + rng() * 9e8) : 1.2e6,
+    }, {
+      cpu_pct: series(cpu, { amp: 0.3 }),
+      mem_pct: series(mem, { amp: 0.04, jitter: 0.01 }),
+      client_connections: series(client || 1, { amp: 0.35, hi: 1e9 }).map((v) => (active ? Math.round(v) : 0)),
+      server_connections: series(server || 1, { amp: 0.35, hi: 1e9 }).map((v) => (active ? Math.round(v) : 0)),
+    });
+    put(d, 'F5_BigIP_FailoverStatus', 'F5 BIG-IP Failover Status', 'loadbalancer', 'failover', { failover_state: active ? 4 : 3, sync_state: 3 });
+    // Pools: 8 pools, 32 members. dal-f5-01 carries the two failures.
+    R8_POOLS.forEach(([pool, members, port], pi) => {
+      for (let m = 1; m <= members; m += 1) {
+        let avail = 1;
+        if (d.name === 'dal-f5-01' && pool === 'app-payments') avail = 3;
+        if (d.name === 'dal-f5-01' && pool === 'web-portal' && m === 4) avail = 3;
+        put(d, 'F5_BigIP_PoolMemberStats', 'F5 BIG-IP Pool Member Stats', 'loadbalancer', `${pool}/10.${siteOctet}.${60 + pi}.${10 + m}:${port}`, {
+          member_avail: avail, member_enabled: 1, member_connections: avail === 3 || !active ? 0 : Math.round(80 + rng() * 900),
+          member_bits_in: avail === 3 || !active ? 0 : Math.round(2e6 + rng() * 4e7), member_bits_out: avail === 3 || !active ? 0 : Math.round(3e6 + rng() * 6e7),
+        });
+      }
+    });
+    R8_WIDEIPS.forEach((w) => put(d, 'F5_GTM_WideIP-', 'F5 GTM Wide IPs', 'loadbalancer', `${w}.acme-example.com`, { wideip_avail: 1, wideip_requests: Math.round(rng() * 90000) }));
+    for (let v = 1; v <= 12; v += 1) put(d, 'F5_GTM_VIPs-', 'F5 GTM VIPs', 'loadbalancer', `gtm-vip-${pad2(v)}`, { vip_avail: 1, vip_enabled: 1 });
+    ['phx-gtm', 'dal-gtm'].forEach((s) => put(d, 'F5_GTM_Servers-', 'F5 GTM Servers', 'loadbalancer', s, { gtm_server_avail: 1 }));
+    ['phoenix-dc', 'dallas-dc'].forEach((s) => put(d, 'F5_GTM_Datacenters-', 'F5 GTM Datacenters', 'loadbalancer', s, { dc_avail: 1 }));
+    put(d, 'F5_GTM_Global', 'F5 GTM Global', 'loadbalancer', 'global', { gtm_requests: Math.round(1e6 + rng() * 2e6), gtm_resolutions: Math.round(9e5 + rng() * 2e6) });
+    R8_DAEMONS.forEach((ds) => put(d, ds, ds, 'loadbalancer', ds.replace(/_service_status$/, '').replace(/^f5_/, ''), { daemon_state: 1 }));
+    R8_CERTS.forEach((c, ci) => {
+      const days = d.name === 'phx-f5-01' && c === 'pay' ? 12 : 90 + ci * 63 + Math.round(rng() * 20);
+      put(d, 'F5_BigIP_SSL_VIP_Certs', 'F5 BIG-IP SSL VIP Certificates', 'loadbalancer', `${c}.acme-example.com`, { cert_days_left: days });
+    });
+    put(d, 'F5_BigIP_Memory', 'F5 BIG-IP Memory', 'loadbalancer', 'memory', { tmm_mem_pct: r1(38 + rng() * 12), host_mem_pct: mem });
+    put(d, 'F5_BigIP_Filesystem', 'F5 BIG-IP Filesystem', 'loadbalancer', '/var', { fs_used_pct: r1(41 + rng() * 6) });
+    ['1.1', '1.2', '1.3', '1.4'].forEach((p) => put(d, 'F5_BigIP_Interfaces', 'F5 BIG-IP Interfaces', 'loadbalancer', p, {
+      if_status: 1, if_in_bps: active ? Math.round(2e8 + rng() * 8e8) : 5e4, if_out_bps: active ? Math.round(2e8 + rng() * 8e8) : 5e4,
+    }));
+    for (let f = 1; f <= 3; f += 1) put(d, 'F5_BigIP_Fans', 'F5 BIG-IP Fans', 'loadbalancer', `fan${f}`, { fan_state: 1 });
+    ['psu1', 'psu2'].forEach((p) => put(d, 'F5_BigIP_Power', 'F5 BIG-IP Power Supplies', 'loadbalancer', p, { psu_state: 1 }));
+    put(d, 'F5_BigIP_Temperature', 'F5 BIG-IP Temperature', 'loadbalancer', 'chassis', { temp_c: r1(30 + rng() * 6) });
+  }
+
+  // Keep the datasource inventory counts in step with what was collected.
+  for (const { dev, hds, n } of instN.values()) ddsUpd.run(n, n, sid, dev.id, hds);
+  out.devices = new Set([...instN.values()].map((x) => x.dev.id)).size;
+  return out;
+}
 
 function hasTable(db, name) {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);

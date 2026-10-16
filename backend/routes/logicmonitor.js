@@ -208,6 +208,8 @@ const publicSource = (row) => {
     enabled: Number(row.enabled) !== 0,
     pollingIntervalMinutes: row.polling_interval_minutes,
     interfacePollMinutes: row.interface_poll_minutes,
+    metricsPollMinutes: row.metrics_poll_minutes == null ? 30 : row.metrics_poll_minutes,
+    metricsFamilies: (() => { const v = parseJson(row.metrics_families_json, null); return Array.isArray(v) ? v.map(String) : null; })(),
     groupFilter: parseArr(row.group_filter_json),
     interfaceCategories: Array.isArray(cats) ? cats : null,
     features: featuresOut,
@@ -269,6 +271,9 @@ const sourceBodyRules = (create) => [
   body('enabled').optional().isBoolean().toBoolean(),
   body('pollingIntervalMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
   body('interfacePollMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
+  body('metricsPollMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
+  body('metricsFamilies').optional({ nullable: true }).isArray({ max: 20 }),
+  body('metricsFamilies.*').optional().isString().custom((v) => familyIds().includes(v)),
   body('groupFilter').optional({ nullable: true }).isArray({ max: 1000 }),
   body('groupFilter.*').optional().isInt({ min: 0 }).toInt(),
   body('interfaceCategories').optional({ nullable: true }).isArray({ max: 50 }),
@@ -291,8 +296,9 @@ router.post('/sources', sourceBodyRules(true), validate, (req, res, next) => {
     if (dup) return res.status(409).json({ error: 'A LogicMonitor portal with that name or company is already registered.' });
     const info = db.prepare(`
       INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials, verify_ssl, enabled,
-        polling_interval_minutes, interface_poll_minutes, group_filter_json, interface_categories_json, site_rule_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        polling_interval_minutes, interface_poll_minutes, group_filter_json, interface_categories_json, site_rule_json,
+        metrics_poll_minutes, metrics_families_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       name, company, mode, encrypt(JSON.stringify(creds)),
       b.verifySsl === false ? 0 : 1, b.enabled === false ? 0 : 1,
@@ -300,6 +306,8 @@ router.post('/sources', sourceBodyRules(true), validate, (req, res, next) => {
       JSON.stringify(Array.isArray(b.groupFilter) ? b.groupFilter : []),
       Array.isArray(b.interfaceCategories) ? JSON.stringify(b.interfaceCategories) : null,
       siteRuleIn(b.siteRule),
+      b.metricsPollMinutes || 30,
+      Array.isArray(b.metricsFamilies) ? JSON.stringify(b.metricsFamilies) : null,
     );
     const row = getSourceRow(info.lastInsertRowid);
     try {
@@ -357,7 +365,8 @@ router.put('/sources/:id', [param('id').isInt().toInt(), ...sourceBodyRules(fals
     db.prepare(`
       UPDATE lm_sources SET name = ?, company = ?, auth_mode = ?, encrypted_credentials = ?, verify_ssl = ?,
         enabled = ?, polling_interval_minutes = ?, interface_poll_minutes = ?, group_filter_json = ?,
-        interface_categories_json = ?, features_json = ?, rate_limit_json = ?, site_rule_json = ?
+        interface_categories_json = ?, features_json = ?, rate_limit_json = ?, site_rule_json = ?,
+        metrics_poll_minutes = ?, metrics_families_json = ?
       WHERE id = ?
     `).run(
       name, company, mode, encryptedCredentials,
@@ -369,6 +378,8 @@ router.put('/sources/:id', [param('id').isInt().toInt(), ...sourceBodyRules(fals
       companyChanged ? null : row.features_json,
       companyChanged ? null : row.rate_limit_json,
       b.siteRule !== undefined ? siteRuleIn(b.siteRule) : row.site_rule_json,
+      b.metricsPollMinutes || row.metrics_poll_minutes || 30,
+      b.metricsFamilies !== undefined ? (Array.isArray(b.metricsFamilies) ? JSON.stringify(b.metricsFamilies) : null) : row.metrics_families_json,
       row.id,
     );
     if (b.siteRule !== undefined) { try { lmSites().computeSites(db, row.id); } catch { /* next poll recomputes */ } }
@@ -1893,7 +1904,9 @@ function discoveryReport() {
     GROUP BY x.datasource_name ORDER BY devices DESC, name
   `).all().map((r) => {
     let collected = 'inventory only';
+    const cat = r.isInterface || r.isNeighbor ? null : catalogEntry(r.name);
     if (r.isInterface) collected = 'instances + metrics';
+    else if (cat) collected = `metrics (${cat.family})`;
     else if (r.isNeighbor) collected = 'topology (LLDP/CDP)';
     else if (uptime.includes(r.name)) collected = 'reachability checks';
     else if (healthNames.some((n) => r.name && r.name.startsWith(n))) collected = 'alert labels only';
@@ -2483,6 +2496,594 @@ router.post('/advisor/:report', [param('report').isString()], validate, async (r
 router.post('/advisor/:report/email', (req, res, next) => {
   if (lmAdvisor.isScoped(advisorReportKey(req.params.report))) return res.status(400).json(SCOPE_NEEDED);
   return lmAdvisor.emailRoute('LogicMonitor')(req, res, next);
+});
+
+// ---- Round 8: DataSource metrics, firewalls, load balancers -----------------
+// Everything here reads lm_ds_metrics / lm_ds_instances (migration v5) written
+// by the metrics tier. Enum meaning (HA states, F5 failover, availability
+// colours, tunnel state) is UNVERIFIED and lives in logicmonitorIssues.
+
+const lmCatalog = () => { try { return require('../services/logicmonitorCatalog'); } catch { return null; } };
+
+const DEFAULT_FAMILY_LABELS = {
+  firewall: 'Firewalls', loadbalancer: 'Load balancers', health: 'Device health', optics: 'Optics',
+  routing: 'Routing', ipsla: 'IP SLA', voice: 'Voice', wireless: 'Wireless',
+};
+const DEFAULT_FAMILIES = Object.keys(DEFAULT_FAMILY_LABELS);
+const familyIds = () => {
+  const c = lmCatalog();
+  return c && Array.isArray(c.FAMILIES) && c.FAMILIES.length ? c.FAMILIES.map((f) => (typeof f === 'string' ? f : f.id || f.family)) : DEFAULT_FAMILIES;
+};
+const familyLabel = (f) => {
+  const c = lmCatalog();
+  return (c && c.FAMILY_LABELS && c.FAMILY_LABELS[f]) || DEFAULT_FAMILY_LABELS[f] || f;
+};
+const catalogEntry = (dsName) => { const c = lmCatalog(); try { return c ? c.catalogFor(dsName) : null; } catch { return null; } };
+/** {unit, kind, label} for a metric key on a DataSource, from the catalog. */
+const metricMeta = (dsName, metric) => {
+  const e = catalogEntry(dsName);
+  const m = e && e.metrics && e.metrics[metric];
+  return { unit: (m && m.unit) || '', kind: (m && m.kind) || null, label: (m && m.label) || metric };
+};
+const epochToIso = (e) => (e == null || !Number.isFinite(Number(e)) ? null : new Date(Number(e) * 1000).toISOString());
+const rnd1 = (v) => (v == null ? null : Math.round(Number(v) * 10) / 10);
+
+function sourceFamilies(row) {
+  const v = parseJson(row.metrics_families_json, null);
+  return Array.isArray(v) ? v.map(String) : null;
+}
+
+/** Raw numeric -> text for an enum with a name table; unknown values render as the number. */
+const enumText = (table, v) => (v == null ? null : (table[Math.round(v)] != null ? table[Math.round(v)] : String(Math.round(v))));
+// F5 sysCmSyncStatus (UNVERIFIED numbering).
+const SYNC_TEXT = { 0: 'unknown', 1: 'syncing', 2: 'needs manual sync', 3: 'in sync', 4: 'changes pending', 5: 'standalone', 6: 'awaiting initial sync', 7: 'incompatible version', 8: 'partial sync' };
+const availText = (v) => { const s = lmIssues().availState(v); return s === 'unknown' && v != null ? String(Math.round(v)) : s; };
+
+// ---- /metrics/families -----------------------------------------------------
+
+router.get('/metrics/families', (req, res, next) => {
+  try {
+    const sources = db.prepare('SELECT id, name, enabled, metrics_poll_minutes, metrics_families_json FROM lm_sources ORDER BY name').all();
+    const fams = familyIds();
+    const inv = new Map(fams.map((f) => [f, { names: new Set(), devices: new Set(), instances: 0, last: null }]));
+    const rows = db.prepare(`
+      SELECT x.datasource_name name, x.source_id, x.lm_device_id, COALESCE(x.instance_count, 0) n, x.metrics_last_at
+      FROM lm_device_datasources x
+      JOIN lm_devices d ON d.source_id = x.source_id AND d.lm_device_id = x.lm_device_id AND d.stale = 0
+      WHERE COALESCE(x.instance_count, 0) > 0 AND COALESCE(x.stop_monitoring, 0) = 0
+        AND COALESCE(x.is_interface, 0) = 0 AND COALESCE(x.is_neighbor, 0) = 0
+    `).all();
+    const famOfName = new Map();
+    for (const r of rows) {
+      if (!famOfName.has(r.name)) { const e = catalogEntry(r.name); famOfName.set(r.name, e ? e.family : null); }
+      const f = famOfName.get(r.name);
+      if (!f || !inv.has(f)) continue;
+      const a = inv.get(f);
+      a.names.add(r.name);
+      a.devices.add(`${r.source_id}:${r.lm_device_id}`);
+      a.instances += r.n;
+      if (r.metrics_last_at && (!a.last || r.metrics_last_at > a.last)) a.last = r.metrics_last_at;
+    }
+    const collected = new Map();
+    try {
+      for (const r of db.prepare(`
+        SELECT family, COUNT(DISTINCT source_id || ':' || lm_device_id) devices, COUNT(*) instances
+        FROM lm_ds_instances WHERE stale = 0 GROUP BY family`).all()) collected.set(r.family, r);
+    } catch { /* tables not migrated */ }
+    const lastByFamily = new Map();
+    try {
+      for (const r of db.prepare('SELECT family, MAX(updated_at) last FROM lm_ds_metrics GROUP BY family').all()) lastByFamily.set(r.family, r.last);
+    } catch { /* tables not migrated */ }
+    res.json(fams.map((f) => {
+      const a = inv.get(f);
+      const c = collected.get(f);
+      const perSource = sources.map((s) => {
+        const fl = sourceFamilies(s);
+        return { sourceId: s.id, sourceName: s.name, enabled: Number(s.enabled) !== 0 && (fl == null || fl.includes(f)) };
+      });
+      return {
+        family: f,
+        label: familyLabel(f),
+        enabled: perSource.some((p) => p.enabled),
+        sources: perSource,
+        datasources: a.names.size,
+        devices: a.devices.size,
+        instances: a.instances,
+        collectedDevices: c ? c.devices : 0,
+        collectedInstances: c ? c.instances : 0,
+        lastPollAt: sqlIso(lastByFamily.get(f) || a.last),
+      };
+    }));
+  } catch (err) { next(err); }
+});
+
+// ---- Shared device rollups --------------------------------------------------
+
+const FW_WHERE = `(d.role = 'firewall' OR d.vendor LIKE 'Palo Alto%' OR EXISTS (
+  SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = 'firewall'))`;
+const LB_WHERE = `(d.role = 'load-balancer' OR d.vendor = 'F5' OR EXISTS (
+  SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = 'loadbalancer'))`;
+
+function roleDevices(whereSql, q = {}) {
+  const where = ['d.stale = 0', whereSql];
+  const params = [];
+  if (q.q) {
+    where.push("(d.display_name LIKE ? ESCAPE '\\' OR d.name LIKE ? ESCAPE '\\' OR d.model LIKE ? ESCAPE '\\' OR d.ips_json LIKE ? ESCAPE '\\')");
+    const p = likePat(q.q);
+    params.push(p, p, p, p);
+  }
+  if (q.siteKey) { where.push('d.site_key = ?'); params.push(String(q.siteKey)); }
+  if (q.vendor) { where.push("COALESCE(d.vendor, 'Unknown') = ?"); params.push(String(q.vendor)); }
+  if (q.sourceId) { where.push('d.source_id = ?'); params.push(Number(q.sourceId)); }
+  return db.prepare(`${DEVICE_SELECT} WHERE ${where.join(' AND ')} ORDER BY d.display_name, d.source_id`).all(...params);
+}
+
+/** Open computed issues that name this device (target is the device or starts with "<device> "). */
+function issuesOnDevice(issues, name) {
+  const n = String(name || '');
+  return issues.filter((i) => {
+    const t = String(i.target || '');
+    return t === n || t.startsWith(`${n} `) || (t.includes(' + ') && t.split(' + ').includes(n));
+  });
+}
+function stateFromIssues(devIssues, hasData) {
+  if (devIssues.some((i) => i.severity === 'critical')) return 'critical';
+  if (devIssues.some((i) => i.severity === 'warning')) return 'warning';
+  return hasData ? 'ok' : 'unknown';
+}
+const maxEpoch = (dev) => {
+  let best = null;
+  for (const inst of dev.instances.values()) for (const m of Object.values(inst.m)) if (m.epoch != null && (best == null || m.epoch > best)) best = m.epoch;
+  return best;
+};
+const sumMetric = (dev, metric) => {
+  const inst = lmIssues().devInstances(dev, metric);
+  return inst.length ? inst.reduce((s, i) => s + i.m[metric].value, 0) : null;
+};
+
+/** Counter growth per unit time from history (monotonic series only), summed over instances; null when unknown. */
+function counterRates(metric, perSeconds, windowSec = 10800) {
+  const out = new Map();
+  try {
+    const since = nowSec() - windowSec;
+    const series = new Map();
+    for (const r of db.prepare(`
+      SELECT source_id, lm_device_id, hds_id, instance_key, sampled_at_epoch e, value v FROM lm_ds_metrics_history
+      WHERE metric = ? AND sampled_at_epoch >= ? ORDER BY sampled_at_epoch`).all(metric, since)) {
+      const k = `${r.source_id}:${r.lm_device_id}|${r.hds_id}|${r.instance_key}`;
+      if (!series.has(k)) series.set(k, []);
+      series.get(k).push(r);
+    }
+    for (const [k, pts] of series) {
+      if (pts.length < 2) continue;
+      let mono = true;
+      for (let i = 1; i < pts.length; i += 1) if (pts[i].v < pts[i - 1].v) { mono = false; break; }
+      const span = pts[pts.length - 1].e - pts[0].e;
+      if (!mono || span <= 0) continue;
+      const rate = ((pts[pts.length - 1].v - pts[0].v) / span) * perSeconds;
+      const dk = k.split('|')[0];
+      out.set(dk, (out.get(dk) || 0) + rate);
+    }
+  } catch { /* history table missing */ }
+  return out;
+}
+
+function historySeries(sourceId, deviceId, hdsId, key, metric, hours) {
+  const since = nowSec() - Math.max(1, Number(hours) || 24) * 3600;
+  return db.prepare(`
+    SELECT sampled_at_epoch epoch, value FROM lm_ds_metrics_history
+    WHERE source_id = ? AND lm_device_id = ? AND hds_id = ? AND instance_key = ? AND metric = ? AND sampled_at_epoch >= ?
+    ORDER BY sampled_at_epoch
+  `).all(sourceId, deviceId, hdsId, key, metric, since);
+}
+/** History of the first instance of a device that carries the metric ([] when none). */
+function deviceSeries(dev, metric, hours = 24) {
+  const hit = lmIssues().devInstances(dev, metric)[0];
+  return hit ? historySeries(dev.sourceId, dev.deviceId, hit.hds, hit.key, metric, hours) : [];
+}
+
+const devBase = (r, lk) => {
+  const o = deviceOut(r, lk);
+  return {
+    deviceId: o.id, sourceId: o.sourceId, deviceName: o.displayName || o.name, siteKey: o.siteKey, siteName: o.siteName,
+    vendor: o.vendor, model: o.model, version: o.version, hostStatus: o.hostStatus,
+  };
+};
+
+// ---- Firewalls ---------------------------------------------------------------
+
+const fwBool = (v) => (v == null ? null : Math.round(v) === 1);
+
+function firewallRow(r, lk, dev, issues, rates) {
+  const L = lmIssues();
+  const dv = dev || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
+  const name = r.display_name || r.name;
+  const haEnabledRaw = L.devVal(dv, 'ha_enabled');
+  const haLocalRaw = L.devVal(dv, 'ha_local_state');
+  const haPeerRaw = L.devVal(dv, 'ha_peer_state');
+  const haOn = L.isHaEnabled(haEnabledRaw, haLocalRaw, haPeerRaw);
+  const haLocal = L.haText(haLocalRaw);
+  const haPeer = L.haText(haPeerRaw);
+  const act = L.devVal(dv, 'sessions_active');
+  const max = L.devVal(dv, 'sessions_max');
+  let util = L.devVal(dv, 'sessions_util_pct');
+  if (util == null && act != null && max) util = (act / max) * 100;
+  const core = L.devMax(dv, 'core_cpu_pct');
+  const mgmt = L.devVal(dv, 'mgmt_cpu_pct') ?? L.devVal(dv, 'asa_cpu_pct') ?? L.devVal(dv, 'cpu_pct');
+  const mem = L.devVal(dv, 'mem_pct') ?? L.devVal(dv, 'asa_mem_pct');
+  const tunnels = L.devInstances(dv, 'tunnel_state');
+  let tUp = L.devVal(dv, 'tunnels_up');
+  let tDown = L.devVal(dv, 'tunnels_down');
+  if (tUp == null && tDown == null && tunnels.length) {
+    tDown = tunnels.filter((i) => L.tunnelIsDown(i.m.tunnel_state.value)).length;
+    tUp = tunnels.length - tDown;
+  }
+  const dk = `${r.source_id}:${r.lm_device_id}`;
+  const devIssues = issuesOnDevice(issues, name);
+  const hasData = dv.instances.size > 0;
+  return {
+    ...devBase(r, lk),
+    haEnabled: hasData ? haOn : null,
+    haLocalState: haLocal,
+    haPeerState: haPeer,
+    haLocalRaw: haLocalRaw == null ? null : Math.round(haLocalRaw),
+    haPeerRaw: haPeerRaw == null ? null : Math.round(haPeerRaw),
+    haText: !hasData || (haLocalRaw == null && haPeerRaw == null) ? null : (haOn ? `${haLocal || 'n/a'} / ${haPeer || 'n/a'}` : 'off'),
+    sessionsActive: act,
+    sessionsMax: max,
+    sessionsUtilPct: rnd1(util),
+    dataplaneCpuPct: core ? rnd1(core.value) : null,
+    mgmtCpuPct: rnd1(mgmt),
+    memPct: rnd1(mem),
+    tunnelsUp: tUp,
+    tunnelsDown: tDown,
+    gpUsers: L.devVal(dv, 'gp_users_active'),
+    configSynced: fwBool(L.devVal(dv, 'config_synced')),
+    threatsPerHour: rates && rates.threats.has(dk) ? rnd1(rates.threats.get(dk)) : null,
+    droppedPerMin: rates && rates.dropped.has(dk) ? rnd1(rates.dropped.get(dk)) : null,
+    state: stateFromIssues(devIssues, hasData),
+    sampledAt: epochToIso(maxEpoch(dv)),
+  };
+}
+
+const FW_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'version', 'hostStatus', 'haText', 'sessionsActive', 'sessionsMax', 'sessionsUtilPct',
+  'dataplaneCpuPct', 'mgmtCpuPct', 'memPct', 'tunnelsUp', 'tunnelsDown', 'gpUsers', 'configSynced', 'threatsPerHour', 'droppedPerMin', 'state', 'sampledAt'];
+
+const dsListRules = [
+  query('q').optional().isString().trim().isLength({ max: 200 }),
+  query('siteKey').optional().matches(/^[a-z0-9-]{1,80}$/),
+  query('vendor').optional().isString().trim().isLength({ max: 64 }),
+  query('sourceId').optional().isInt().toInt(),
+  query('state').optional().isIn(['critical', 'warning', 'ok', 'unknown']),
+];
+
+function firewallRows(q) {
+  const lk = lookups();
+  const devs = roleDevices(FW_WHERE, q);
+  const index = lmIssues().loadDsIndex(db, { families: ['firewall', 'health'] });
+  const issues = safeIssues();
+  const rates = { threats: counterRates('threats_total', 3600), dropped: counterRates('dropped', 60) };
+  let rows = devs.map((r) => firewallRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, rates));
+  if (q.state) rows = rows.filter((r) => r.state === q.state);
+  return rows;
+}
+
+// Literal .csv path before /firewalls/:deviceId.
+router.get('/firewalls.csv', dsListRules, validate, (req, res, next) => {
+  try { sendCsv(res, 'firewalls', firewallRows(req.query), FW_COLUMNS); } catch (err) { next(err); }
+});
+router.get('/firewalls', dsListRules, validate, (req, res, next) => {
+  try { res.json(firewallRows(req.query)); } catch (err) { next(err); }
+});
+
+const deviceParams = [param('deviceId').isInt().toInt(), query('sourceId').optional().isInt().toInt()];
+/** Device row that also matches a role selector, else null. */
+function roleDevice(whereSql, id, sourceId) {
+  const args = [id];
+  let extra = '';
+  if (sourceId) { extra = ' AND d.source_id = ?'; args.push(sourceId); }
+  return db.prepare(`${DEVICE_SELECT} WHERE d.lm_device_id = ? AND d.stale = 0 AND ${whereSql}${extra} ORDER BY d.source_id LIMIT 1`).get(...args) || null;
+}
+const rowsOf = (dev, metric) => (dev ? lmIssues().devInstances(dev, metric) : []);
+const num = (inst, metric) => (inst.m[metric] ? inst.m[metric].value : null);
+
+router.get('/firewalls/:deviceId', deviceParams, validate, (req, res, next) => {
+  try {
+    const r = roleDevice(FW_WHERE, req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Firewall');
+    const L = lmIssues();
+    const lk = lookups();
+    const idx = L.loadDsIndex(db, { sourceId: r.source_id, deviceId: r.lm_device_id });
+    const dev = idx.get(`${r.source_id}:${r.lm_device_id}`) || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
+    const issues = safeIssues();
+    const rates = { threats: counterRates('threats_total', 3600), dropped: counterRates('dropped', 60) };
+    const summary = firewallRow(r, lk, dev, issues, rates);
+    const byKey = (a, b) => String(a.name).localeCompare(String(b.name));
+    const ifState = (v) => (v == null ? null : (Math.round(v) === 1 ? 'up' : Math.round(v) === 0 ? 'down' : String(Math.round(v))));
+    const ha = rowsOf(dev, 'ha_if_state').map((i) => ({ name: i.name, state: ifState(num(i, 'ha_if_state')), raw: num(i, 'ha_if_state') })).sort(byKey);
+    const tunnels = rowsOf(dev, 'tunnel_state').map((i) => ({
+      name: i.name,
+      state: L.tunnelIsDown(num(i, 'tunnel_state')) ? 'down' : 'up',
+      stateRaw: num(i, 'tunnel_state'),
+      inBps: num(i, 'tunnel_in_bps'),
+      outBps: num(i, 'tunnel_out_bps'),
+    })).sort((a, b) => (a.state === b.state ? byKey(a, b) : a.state === 'down' ? -1 : 1));
+    const zoneInst = [...dev.instances.values()].filter((i) => i.m.zone_sessions || i.m.zone_in_bps || i.m.zone_out_bps);
+    const zones = zoneInst
+      .map((i) => ({ name: i.name, inBps: num(i, 'zone_in_bps'), outBps: num(i, 'zone_out_bps'), sessions: num(i, 'zone_sessions') })).sort(byKey);
+    const vsys = rowsOf(dev, 'vsys_sessions').map((i) => ({ name: i.name, sessions: num(i, 'vsys_sessions'), utilPct: rnd1(num(i, 'vsys_util_pct')) })).sort(byKey);
+    const gateways = rowsOf(dev, 'gp_users_active').map((i) => ({ name: i.name, users: num(i, 'gp_users_active'), maxUsers: num(i, 'gp_users_max'), tunnels: num(i, 'gp_tunnels') })).sort(byKey);
+    const logForwarding = rowsOf(dev, 'log_forwarded').map((i) => ({ name: i.name, forwarded: num(i, 'log_forwarded'), dropped: num(i, 'log_dropped') })).sort(byKey);
+    const hardware = {
+      disks: rowsOf(dev, 'disk_used_pct').map((i) => ({ name: i.name, usedPct: rnd1(num(i, 'disk_used_pct')) })).sort(byKey),
+      psus: rowsOf(dev, 'psu_state').map((i) => ({ name: i.name, state: num(i, 'psu_state'), ok: !L.stateIsFault(num(i, 'psu_state')) })).sort(byKey),
+      temps: rowsOf(dev, 'temp_c').map((i) => ({ name: i.name, tempC: rnd1(num(i, 'temp_c')), alarm: i.m.temp_alarm ? Math.round(i.m.temp_alarm.value) !== 0 : null })).sort(byKey),
+      chassisWatts: L.devVal(dev, 'chassis_watts'),
+    };
+    const bgp = rowsOf(dev, 'bgp_peer_state').map((i) => ({
+      name: i.name, state: num(i, 'bgp_peer_state'), established: Math.round(num(i, 'bgp_peer_state')) === 6, prefixes: num(i, 'bgp_prefixes'),
+    })).sort(byKey);
+    const ospf = rowsOf(dev, 'ospf_nbr_state').map((i) => ({ name: i.name, state: num(i, 'ospf_nbr_state'), full: Math.round(num(i, 'ospf_nbr_state')) === 8 })).sort(byKey);
+    const name = r.display_name || r.name;
+    res.json({
+      device: deviceOut(r, lk),
+      summary,
+      ha,
+      tunnels,
+      zones,
+      vsys,
+      globalProtect: {
+        users: L.devVal(dev, 'gp_users_active'), maxUsers: L.devVal(dev, 'gp_users_max'), tunnels: L.devVal(dev, 'gp_tunnels'), gateways,
+      },
+      logForwarding,
+      hardware,
+      routing: { bgp, ospf },
+      sessionsHistory: { utilPct: deviceSeries(dev, 'sessions_util_pct', 24), active: deviceSeries(dev, 'sessions_active', 24) },
+      issues: issuesOnDevice(issues, name),
+    });
+  } catch (err) { next(err); }
+});
+
+// ---- Load balancers -----------------------------------------------------------
+
+function memberName(key, pool) {
+  const k = String(key || '').replace(/^\/+/, '').replace(/^Common\//i, '');
+  return k.length > pool.length + 1 ? k.slice(pool.length + 1) : k;
+}
+
+function lbRow(r, lk, dev, issues, certWarn) {
+  const L = lmIssues();
+  const dv = dev || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
+  const name = r.display_name || r.name;
+  const foRaw = L.devVal(dv, 'failover_state');
+  const syncRaw = L.devVal(dv, 'sync_state');
+  const pools = new Map();
+  for (const i of L.devInstances(dv, 'member_avail')) {
+    const p = L.poolOf(i.key);
+    const e = pools.get(p) || { total: 0, down: 0 };
+    e.total += 1;
+    if (L.availState(i.m.member_avail.value) === 'down') e.down += 1;
+    pools.set(p, e);
+  }
+  const wide = L.devInstances(dv, 'wideip_avail');
+  const vips = L.devInstances(dv, 'vip_avail');
+  const down = (list, metric) => list.filter((i) => L.availState(i.m[metric].value) === 'down').length;
+  const devIssues = issuesOnDevice(issues, name);
+  const hasData = dv.instances.size > 0;
+  return {
+    ...devBase(r, lk),
+    failoverState: foRaw == null ? null : Math.round(foRaw),
+    failoverText: foRaw == null ? null : L.failoverText(foRaw),
+    syncState: enumText(SYNC_TEXT, syncRaw),
+    cpuPct: rnd1(L.devVal(dv, 'cpu_pct')),
+    memPct: rnd1(L.devVal(dv, 'mem_pct') ?? L.devVal(dv, 'host_mem_pct')),
+    clientConnections: L.devVal(dv, 'client_connections'),
+    serverConnections: L.devVal(dv, 'server_connections'),
+    pools: pools.size,
+    poolsDegraded: [...pools.values()].filter((e) => e.down > 0).length,
+    membersTotal: [...pools.values()].reduce((s, e) => s + e.total, 0),
+    membersDown: [...pools.values()].reduce((s, e) => s + e.down, 0),
+    wideIps: wide.length,
+    wideIpsDown: down(wide, 'wideip_avail'),
+    vips: vips.length,
+    vipsDown: down(vips, 'vip_avail'),
+    daemonsDown: L.devInstances(dv, 'daemon_state').filter((i) => Math.round(i.m.daemon_state.value) !== 1).length,
+    certsExpiring: L.devInstances(dv, 'cert_days_left').filter((i) => i.m.cert_days_left.value < certWarn).length,
+    state: stateFromIssues(devIssues, hasData),
+    sampledAt: epochToIso(maxEpoch(dv)),
+  };
+}
+
+const LB_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'version', 'hostStatus', 'failoverText', 'syncState', 'cpuPct', 'memPct', 'clientConnections',
+  'serverConnections', 'pools', 'poolsDegraded', 'membersTotal', 'membersDown', 'wideIps', 'wideIpsDown', 'vips', 'vipsDown', 'daemonsDown', 'certsExpiring', 'state', 'sampledAt'];
+
+const lbListRules = dsListRules.filter((x, i) => i !== 2); // no vendor filter: every row is F5
+
+function lbRows(q) {
+  const lk = lookups();
+  const devs = roleDevices(LB_WHERE, q);
+  const index = lmIssues().loadDsIndex(db, { families: ['loadbalancer', 'health'] });
+  const issues = safeIssues();
+  const certWarn = thr('lm_cert_warn_days');
+  let rows = devs.map((r) => lbRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, certWarn));
+  if (q.state) rows = rows.filter((r) => r.state === q.state);
+  return rows;
+}
+
+router.get('/load-balancers.csv', lbListRules, validate, (req, res, next) => {
+  try { sendCsv(res, 'load-balancers', lbRows(req.query), LB_COLUMNS); } catch (err) { next(err); }
+});
+router.get('/load-balancers', lbListRules, validate, (req, res, next) => {
+  try { res.json(lbRows(req.query)); } catch (err) { next(err); }
+});
+
+router.get('/load-balancers/:deviceId', [...deviceParams, query('page').optional().isInt({ min: 1 }), limitValidator], validate, (req, res, next) => {
+  try {
+    const r = roleDevice(LB_WHERE, req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Load balancer');
+    const L = lmIssues();
+    const lk = lookups();
+    const idx = L.loadDsIndex(db, { sourceId: r.source_id, deviceId: r.lm_device_id });
+    const dev = idx.get(`${r.source_id}:${r.lm_device_id}`) || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
+    const issues = safeIssues();
+    const certWarn = thr('lm_cert_warn_days');
+    const summary = lbRow(r, lk, dev, issues, certWarn);
+    const byName = (a, b) => String(a.name).localeCompare(String(b.name));
+    const availOut = (i, metric) => ({ avail: availText(num(i, metric)), availRaw: num(i, metric) });
+
+    // Pool = instance key text before the first '/' or ':' (an assumption, see poolOf).
+    const poolMap = new Map();
+    for (const i of rowsOf(dev, 'member_avail')) {
+      const p = L.poolOf(i.key);
+      if (!poolMap.has(p)) poolMap.set(p, { pool: p, members: [], up: 0, down: 0 });
+      const e = poolMap.get(p);
+      const st = L.availState(num(i, 'member_avail'));
+      if (st === 'down') e.down += 1; else if (st === 'up' || st === 'warn') e.up += 1;
+      e.members.push({
+        member: memberName(i.key, p), key: i.key, ...availOut(i, 'member_avail'),
+        enabled: i.m.member_enabled ? Math.round(i.m.member_enabled.value) === 1 : null, connections: num(i, 'member_connections'),
+      });
+    }
+    const pools = [...poolMap.values()].map((e) => ({ ...e, members: e.members.sort((a, b) => a.member.localeCompare(b.member)) }))
+      .sort((a, b) => (b.down - a.down) || a.pool.localeCompare(b.pool));
+
+    const wideIps = rowsOf(dev, 'wideip_avail').map((i) => ({ name: i.name, ...availOut(i, 'wideip_avail'), requests: num(i, 'wideip_requests') })).sort(byName);
+    const vipAll = rowsOf(dev, 'vip_avail').map((i) => ({
+      name: i.name, ...availOut(i, 'vip_avail'), enabled: i.m.vip_enabled ? Math.round(i.m.vip_enabled.value) === 1 : null,
+    })).sort(byName);
+    const { limit, page, offset } = pageArgs({ query: { page: req.query.page, limit: req.query.limit || '50' } });
+    const gtmServers = rowsOf(dev, 'gtm_server_avail').map((i) => ({ name: i.name, ...availOut(i, 'gtm_server_avail') })).sort(byName);
+    const datacenters = rowsOf(dev, 'dc_avail').map((i) => ({ name: i.name, ...availOut(i, 'dc_avail') })).sort(byName);
+    const daemons = rowsOf(dev, 'daemon_state').map((i) => ({ name: i.name, state: Math.round(num(i, 'daemon_state')) === 1 ? 'running' : 'down', raw: num(i, 'daemon_state') })).sort(byName);
+    const certs = rowsOf(dev, 'cert_days_left').map((i) => ({ name: i.name, daysLeft: rnd1(num(i, 'cert_days_left')) })).sort((a, b) => a.daysLeft - b.daysLeft);
+    const hardware = {
+      fans: rowsOf(dev, 'fan_state').concat(rowsOf(dev, 'f5os_fan_state')).map((i) => ({ name: i.name, state: num(i, 'fan_state') ?? num(i, 'f5os_fan_state') })).sort(byName),
+      psus: rowsOf(dev, 'psu_state').map((i) => ({ name: i.name, state: num(i, 'psu_state'), ok: !L.stateIsFault(num(i, 'psu_state')) })).sort(byName),
+      temps: rowsOf(dev, 'temp_c').concat(rowsOf(dev, 'f5os_temp_c')).map((i) => ({ name: i.name, tempC: rnd1(num(i, 'temp_c') ?? num(i, 'f5os_temp_c')) })).sort(byName),
+      filesystems: rowsOf(dev, 'fs_used_pct').map((i) => ({ name: i.name, usedPct: rnd1(num(i, 'fs_used_pct')) })).sort(byName),
+      tmmMemPct: rnd1(L.devVal(dev, 'tmm_mem_pct')),
+      hostMemPct: rnd1(L.devVal(dev, 'host_mem_pct')),
+    };
+    const interfaces = rowsOf(dev, 'if_status').map((i) => ({ name: i.name, status: num(i, 'if_status'), inBps: num(i, 'if_in_bps'), outBps: num(i, 'if_out_bps') })).sort(byName);
+    res.json({
+      device: deviceOut(r, lk),
+      summary,
+      pools,
+      wideIps,
+      vips: { items: vipAll.slice(offset, offset + limit), total: vipAll.length, page, limit },
+      gtmServers,
+      datacenters,
+      daemons,
+      certs,
+      hardware,
+      interfaces,
+      cpuHistory: deviceSeries(dev, 'cpu_pct', 24),
+      connectionsHistory: { client: deviceSeries(dev, 'client_connections', 24), server: deviceSeries(dev, 'server_connections', 24) },
+      issues: issuesOnDevice(issues, r.display_name || r.name),
+    });
+  } catch (err) { next(err); }
+});
+
+// ---- Device 360 Metrics tab -----------------------------------------------------
+
+router.get('/devices/:deviceId/metrics', deviceParams, validate, (req, res, next) => {
+  try {
+    const r = findDevice(req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Device');
+    const idx = lmIssues().loadDsIndex(db, { sourceId: r.source_id, deviceId: r.lm_device_id });
+    const dev = idx.get(`${r.source_id}:${r.lm_device_id}`);
+    const dds = new Map();
+    try {
+      for (const x of db.prepare('SELECT hds_id, datasource_display_name, metrics_last_at, metrics_last_error FROM lm_device_datasources WHERE source_id = ? AND lm_device_id = ?').all(r.source_id, r.lm_device_id)) dds.set(x.hds_id, x);
+    } catch { /* columns not migrated */ }
+    const CAP = 500;
+    const famMap = new Map();
+    if (dev) {
+      for (const inst of dev.instances.values()) {
+        if (!famMap.has(inst.family)) famMap.set(inst.family, new Map());
+        const dsMap = famMap.get(inst.family);
+        const dk = `${inst.hds}|${inst.ds}`;
+        if (!dsMap.has(dk)) {
+          const e = catalogEntry(inst.ds);
+          const x = dds.get(inst.hds);
+          dsMap.set(dk, {
+            name: inst.ds, label: (e && e.label) || (x && x.datasource_display_name) || inst.ds, hdsId: inst.hds,
+            lastAt: sqlIso(x && x.metrics_last_at), lastError: (x && x.metrics_last_error) || null, instanceCount: 0, truncated: false, instances: [], lastEpoch: null,
+          });
+        }
+        const ds = dsMap.get(dk);
+        ds.instanceCount += 1;
+        const metrics = {};
+        for (const [mk, m] of Object.entries(inst.m)) {
+          const meta = metricMeta(inst.ds, mk);
+          metrics[mk] = { value: m.value, unit: meta.unit, kind: meta.kind, label: meta.label, datapoint: m.datapoint, epoch: m.epoch };
+          if (m.epoch != null && (ds.lastEpoch == null || m.epoch > ds.lastEpoch)) ds.lastEpoch = m.epoch;
+        }
+        if (ds.instances.length < CAP) ds.instances.push({ key: inst.key, name: inst.name, metrics });
+        else ds.truncated = true;
+      }
+    }
+    const order = familyIds();
+    const families = [...famMap.entries()].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])).map(([family, dsMap]) => ({
+      family,
+      label: familyLabel(family),
+      datasources: [...dsMap.values()].sort((a, b) => a.label.localeCompare(b.label)).map((ds) => {
+        const { lastEpoch, ...rest } = ds;
+        return { ...rest, lastAt: rest.lastAt || epochToIso(lastEpoch), instances: rest.instances.sort((a, b) => String(a.name).localeCompare(String(b.name))) };
+      }),
+    }));
+    res.json({ families });
+  } catch (err) { next(err); }
+});
+
+router.get('/metrics/history', [
+  query('deviceId').isInt().toInt(),
+  query('hdsId').isInt().toInt(),
+  query('instanceKey').isString().isLength({ min: 1, max: 500 }),
+  query('metric').isString().matches(/^[a-z0-9_]{1,64}$/),
+  query('hours').optional().isInt({ min: 1, max: 168 }).toInt(),
+  query('sourceId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const q = req.query;
+    let sourceId = q.sourceId;
+    if (sourceId == null) {
+      const hit = db.prepare('SELECT source_id FROM lm_ds_metrics_history WHERE lm_device_id = ? AND hds_id = ? AND instance_key = ? AND metric = ? LIMIT 1')
+        .get(q.deviceId, q.hdsId, q.instanceKey, q.metric);
+      sourceId = hit ? hit.source_id : null;
+    }
+    if (sourceId == null) return res.json([]);
+    res.json(historySeries(sourceId, q.deviceId, q.hdsId, q.instanceKey, q.metric, q.hours || 24));
+  } catch (err) { next(err); }
+});
+
+// Manual metrics-tier trigger (body.sourceId, or every enabled portal). POST on
+// the metrics path takes the manage permission like the other poll triggers.
+function triggerMetrics(rows) {
+  const h = pollerHandle();
+  for (const row of rows) {
+    try { Promise.resolve(typeof h.triggerMetrics === 'function' ? h.triggerMetrics(row) : h.trigger(row)).catch(() => {}); } catch { /* poller unavailable */ }
+  }
+}
+router.post('/metrics/poll', [body('sourceId').optional({ nullable: true }).isInt().toInt()], validate, (req, res, next) => {
+  try {
+    let rows;
+    if (req.body && req.body.sourceId != null) {
+      const row = getSourceRow(req.body.sourceId);
+      if (!row) return notFound(res);
+      rows = [row];
+    } else rows = db.prepare('SELECT * FROM lm_sources WHERE enabled = 1').all();
+    triggerMetrics(rows);
+    res.status(202).json({ ok: true, triggered: rows.length });
+  } catch (err) { next(err); }
+});
+router.post('/sources/:id/poll-metrics', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const row = getSourceRow(req.params.id);
+    if (!row) return notFound(res);
+    triggerMetrics([row]);
+    res.status(202).json({ ok: true, triggered: 1 });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

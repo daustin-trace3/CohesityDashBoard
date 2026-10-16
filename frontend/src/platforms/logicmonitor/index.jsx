@@ -1,6 +1,6 @@
 import { lazy } from 'react';
 import {
-  Gauge, Radar, MapPin, Bell, ClipboardCheck, Server, Cable, Waypoints, Cpu, Scale, ShieldAlert, GitMerge, LineChart, Sparkles, ShieldCheck, Settings,
+  Gauge, Radar, MapPin, Bell, ClipboardCheck, Server, Cable, Waypoints, Cpu, Scale, ShieldAlert, GitMerge, LineChart, Sparkles, ShieldCheck, Settings, BrickWall, Split,
 } from 'lucide-react';
 import { BRAND } from '../../pages/logicmonitor/helpers';
 
@@ -8,6 +8,8 @@ const LmOverviewPage = lazy(() => import('../../pages/logicmonitor/LmOverviewPag
 const LmReachabilityPage = lazy(() => import('../../pages/logicmonitor/LmReachabilityPage'));
 const LmSitesPage = lazy(() => import('../../pages/logicmonitor/LmSitesPage'));
 const LmCircuitsPage = lazy(() => import('../../pages/logicmonitor/LmCircuitsPage'));
+const LmFirewallsPage = lazy(() => import('../../pages/logicmonitor/LmFirewallsPage'));
+const LmLoadBalancersPage = lazy(() => import('../../pages/logicmonitor/LmLoadBalancersPage'));
 const LmAlertsPage = lazy(() => import('../../pages/logicmonitor/LmAlertsPage'));
 const LmIssuesPage = lazy(() => import('../../pages/logicmonitor/LmIssuesPage'));
 const LmDevicesPage = lazy(() => import('../../pages/logicmonitor/LmDevicesPage'));
@@ -42,6 +44,8 @@ const navGroups = [
       { label: 'Devices', route: `${B}/devices`, icon: Server, isActive: under(`${B}/devices`) },
       { label: 'Interfaces', route: `${B}/interfaces`, icon: Cable, isActive: under(`${B}/interfaces`) },
       { label: 'Circuits', route: `${B}/circuits`, icon: Waypoints, isActive: under(`${B}/circuits`) },
+      { label: 'Firewalls', route: `${B}/firewalls`, icon: BrickWall, isActive: under(`${B}/firewalls`) },
+      { label: 'Load Balancers', route: `${B}/load-balancers`, icon: Split, isActive: under(`${B}/load-balancers`) },
       { label: 'Collectors', route: `${B}/collectors`, icon: Cpu, isActive: under(`${B}/collectors`) },
     ],
   },
@@ -85,6 +89,8 @@ export default {
     { path: 'logicmonitor/devices', Component: LmDevicesPage },
     { path: 'logicmonitor/interfaces', Component: LmInterfacesPage },
     { path: 'logicmonitor/circuits', Component: LmCircuitsPage },
+    { path: 'logicmonitor/firewalls', Component: LmFirewallsPage },
+    { path: 'logicmonitor/load-balancers', Component: LmLoadBalancersPage },
     { path: 'logicmonitor/collectors', Component: LmCollectorsPage },
     { path: 'logicmonitor/governance', Component: LmGovernancePage },
     { path: 'logicmonitor/coverage', Component: LmCoveragePage },

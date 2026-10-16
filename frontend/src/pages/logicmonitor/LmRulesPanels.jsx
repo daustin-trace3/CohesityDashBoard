@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, Server, Globe, Cable, Archive, Plus, Trash2 } from 'lucide-react';
+import { Activity, Server, Globe, Cable, Archive, Layers, Plus, Trash2 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { LoadingPanel } from '../../components/ui/primitives';
@@ -266,7 +266,35 @@ export function LmCircuitsRulesPanel() {
   );
 }
 
-const RET_KEYS = ['lm_alert_retention_days', 'lm_interface_history_days', 'lm_check_history_days', 'lm_webhook_rate_per_min'];
+const SVC_KEYS = ['lm_fw_session_warn_pct', 'lm_tunnel_fold', 'lm_cert_warn_days', 'lm_cpu_warn_pct', 'lm_mem_warn_pct'];
+
+export function LmServicesRulesPanel() {
+  const cfg = useLmConfig(SVC_KEYS);
+  return (
+    <PanelShell icon={Layers} cfg={cfg} title="Services"
+      blurb="Thresholds for the issues raised from the DataSource metrics tier: firewalls, load balancers and device health. They show on the Issues page, the Firewalls and Load Balancers pages, Service Status, the Ops Agent and in alert email.">
+      <SettingGroup title="Firewalls">
+        <NumRow cfg={cfg} k="lm_fw_session_warn_pct" label="Session table warning" unit="%"
+          tip="A firewall raises a warning fw-session-high issue when its session table utilization is at or above this value." />
+        <NumRow cfg={cfg} k="lm_tunnel_fold" label="Tunnels down before folding" unit="tunnels"
+          tip="Each IPSec tunnel that is down raises its own fw-tunnel-down warning. When more tunnels than this are down on one firewall, ICC raises a single warning (N of M IPSec tunnels down) instead." />
+      </SettingGroup>
+      <SettingGroup title="Load balancers">
+        <NumRow cfg={cfg} k="lm_cert_warn_days" label="Certificate expiry warning" unit="days"
+          tip="An F5 certificate raises a lb-cert-expiring warning when it has fewer days left than this, and turns critical under 7 days." />
+      </SettingGroup>
+      <SettingGroup title="Device health">
+        <Lead>The metrics tier samples every 30 minutes by default, so these use the latest value rather than a run of samples.</Lead>
+        <NumRow cfg={cfg} k="lm_cpu_warn_pct" label="CPU warning" unit="%"
+          tip="A device raises a warning device-cpu-high issue when its latest CPU reading is at or above this value." />
+        <NumRow cfg={cfg} k="lm_mem_warn_pct" label="Memory warning" unit="%"
+          tip="A device raises a warning device-memory-high issue when its latest memory reading is at or above this value." />
+      </SettingGroup>
+    </PanelShell>
+  );
+}
+
+const RET_KEYS = ['lm_alert_retention_days', 'lm_interface_history_days', 'lm_check_history_days', 'lm_ds_history_days', 'lm_webhook_rate_per_min', 'lm_metrics_data_calls_per_tick'];
 
 export function LmRetentionPanel() {
   const cfg = useLmConfig(RET_KEYS);
@@ -280,10 +308,14 @@ export function LmRetentionPanel() {
           tip="Interface samples older than this are deleted. Interface baselines and the circuit saturation window can only use the history that is kept." />
         <NumRow cfg={cfg} k="lm_check_history_days" label="Check history" unit="days"
           tip="Ping and website check samples older than this are deleted. The latency baseline can only use the history that is kept." />
+        <NumRow cfg={cfg} k="lm_ds_history_days" label="DataSource metric history" unit="days"
+          tip="History samples from the DataSource metrics tier (session counts, CPU, memory and similar) older than this are deleted. Latest values are always kept." />
       </SettingGroup>
       <SettingGroup title="Limits">
         <NumRow cfg={cfg} k="lm_webhook_rate_per_min" label="Webhook deliveries accepted" unit="per minute"
           tip="Rate limit on the webhook ingest endpoint, counted per portal. Deliveries above it are refused until the limit window rolls over." />
+        <NumRow cfg={cfg} k="lm_metrics_data_calls_per_tick" label="Metric data calls per poll" unit="calls"
+          tip="Cap on LogicMonitor data calls the DataSource metrics tier makes each round, least recently polled first. One call reads all instances of one DataSource on one device. Raise it if devices fall behind, at the cost of more API load." />
       </SettingGroup>
     </PanelShell>
   );

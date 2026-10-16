@@ -34,7 +34,7 @@ beforeAll(() => {
   api = require('../services/logicmonitorApi');
 });
 
-const TABLES = ['lm_blame_history', 'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports', 'lm_topology_links', 'lm_admins', 'lm_roles',
+const TABLES = ['lm_ds_metrics_history', 'lm_ds_metrics', 'lm_ds_instances', 'lm_blame_history', 'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports', 'lm_topology_links', 'lm_admins', 'lm_roles',
   'lm_check_daily', 'lm_check_baseline', 'lm_check_history', 'lm_check_locations', 'lm_checks', 'lm_sdts',
   'lm_collectors', 'lm_alerts', 'lm_interface_daily', 'lm_interface_history', 'lm_interfaces',
   'lm_device_datasources', 'lm_device_groups', 'lm_devices', 'lm_sources'];
@@ -600,7 +600,7 @@ describe('logicmonitor data routes', () => {
     const g = await request(app).get(`${API}/config`);
     expect(g.body.thresholds.lm_if_util_warn_pct).toBe(80);
     expect(g.body.thresholds.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(g.body.thresholds)).toHaveLength(34);
+    expect(Object.keys(g.body.thresholds)).toHaveLength(41);
     for (const k of THRESHOLD_KEYS) expect(g.body.thresholds).toHaveProperty(k);
     expect(g.body.ranges.lm_if_util_warn_pct).toEqual({ min: 50, max: 100, default: 80 });
     const put = await request(app).put(`${API}/config`).send({ lm_if_util_warn_pct: 150, lm_if_flap_warn: 0, lm_dead_grace_min: 15 });
@@ -913,7 +913,7 @@ describe('logicmonitor round 3 routes', () => {
     expect(disc.status).toBe(200);
     expect(disc.body.devicesByVendorRole).toEqual(expect.arrayContaining([expect.objectContaining({ vendor: 'Cisco', role: 'switch', devices: 2 })]));
     const ds = Object.fromEntries(disc.body.datasources.map((d) => [d.name, d.collected]));
-    expect(ds).toEqual({ Cisco_CPU_SNMP: 'alert labels only', SNMP_Network_Interfaces: 'instances + metrics', Cisco_Transceiver_Sensors: 'inventory only' });
+    expect(ds).toEqual({ Cisco_CPU_SNMP: 'metrics (health)', SNMP_Network_Interfaces: 'instances + metrics', Cisco_Transceiver_Sensors: 'metrics (optics)' });
     const keys = Object.fromEntries(disc.body.devicePropertyKeys.map((k) => [k.key, k.sample]));
     expect(keys['snmp.community']).toBe('[redacted]');
     expect(keys['snmp.auth']).toBe('[redacted]');
@@ -1126,5 +1126,313 @@ describe('logicmonitor round 4 routes: Correlation', () => {
     expect(rows()[0]).toMatchObject({ subject: 'db-srv9', subject_key: 'db-srv9', hop_device_name: 'phx-dist-01', hop_port: 'Te1/1/1', site_key: 'phoenix' });
     await request(app).get(`${API}/server-path?name=db-srv9`);
     expect(rows()).toHaveLength(1);
+  });
+});
+
+// ---- Round 8: DataSource metrics, firewalls, load balancers ------------------
+
+describe('logicmonitor round 8 routes: metrics, firewalls, load balancers', () => {
+  let sid8;
+  const hdsOf = new Map();
+  let hdsSeq8 = 5000;
+
+  function dev8(id, name, over = {}) {
+    return ins('lm_devices', {
+      source_id: sid8, lm_device_id: id, name, display_name: name, device_type: 0, host_status: 'normal', alert_status: 'none',
+      sdt_status: 'none-none-none', vendor: over.vendor || 'Cisco', role: over.role || 'switch', is_network: 1, model: over.model || null,
+      version: over.version || null, site_key: over.site || 'phoenix', site_name: over.siteName || 'Phoenix DC', ips_json: '[]', stale: 0,
+    });
+  }
+  // Sets one metric on one instance (instance row created once).
+  function met(devId, ds, family, inst, metric, value, extra = {}) {
+    const hk = `${devId}|${ds}`;
+    if (!hdsOf.has(hk)) { hdsSeq8 += 1; hdsOf.set(hk, hdsSeq8); }
+    const hds = hdsOf.get(hk);
+    db.prepare(`INSERT OR IGNORE INTO lm_ds_instances (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, instance_name, stale)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0)`).run(sid8, devId, hds, ds, family, inst, extra.name || inst);
+    db.prepare(`INSERT OR REPLACE INTO lm_ds_metrics (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, metric, datapoint, value, sampled_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(sid8, devId, hds, ds, family, inst, metric, extra.datapoint || metric, value, nowSec() - 120);
+    return hds;
+  }
+  function hist8(devId, hds, inst, metric, points) {
+    const stmt = db.prepare('INSERT INTO lm_ds_metrics_history (source_id, lm_device_id, hds_id, instance_key, metric, value, sampled_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const [ageSec, v] of points) stmt.run(sid8, devId, hds, inst, metric, v, nowSec() - ageSec);
+  }
+
+  beforeEach(() => {
+    wipe();
+    hdsOf.clear();
+    sid8 = insertSource();
+    // Firewalls.
+    dev8(201, 'phx-fw-01', { vendor: 'Palo Alto', role: 'firewall', model: 'PA-5220', version: '10.2.9' });
+    dev8(202, 'phx-fw-02', { vendor: 'Palo Alto', role: 'firewall', model: 'PA-5220', version: '10.2.9' });
+    dev8(203, 'den-asa-01', { vendor: 'Cisco', role: 'firewall', model: 'ASA5525', site: 'denver', siteName: 'Denver' });
+    dev8(299, 'phx-core-01', { vendor: 'Cisco', role: 'switch' });
+    met(201, 'PaloAlto_FW_HA_Status', 'firewall', 'ha', 'ha_enabled', 1);
+    met(201, 'PaloAlto_FW_HA_Status', 'firewall', 'ha', 'ha_local_state', 1);
+    met(201, 'PaloAlto_FW_HA_Status', 'firewall', 'ha', 'ha_peer_state', 5);
+    met(201, 'PaloAlto_FW_HA_Interface', 'firewall', 'HA1', 'ha_if_state', 1);
+    met(201, 'PaloAlto_FW_HA_Interface', 'firewall', 'HA2', 'ha_if_state', 0);
+    const hs = met(201, 'PaloAlto_FW_GlobalSessions', 'firewall', 'g', 'sessions_active', 87000);
+    met(201, 'PaloAlto_FW_GlobalSessions', 'firewall', 'g', 'sessions_max', 100000);
+    met(201, 'PaloAlto_FW_GlobalSessions', 'firewall', 'g', 'sessions_util_pct', 87);
+    hist8(201, hs, 'g', 'sessions_util_pct', [[7200, 60], [5400, 70], [600, 87]]);
+    hist8(201, hs, 'g', 'sessions_active', [[7200, 60000], [600, 87000]]);
+    met(201, 'PaloAlto_FW_DataplaneCores', 'firewall', 'core0', 'core_cpu_pct', 40);
+    met(201, 'PaloAlto_FW_DataplaneCores', 'firewall', 'core1', 'core_cpu_pct', 66.66);
+    met(201, 'PaloAlto_FW_SystemResources', 'firewall', 'sys', 'mgmt_cpu_pct', 30);
+    met(201, 'PaloAlto_FW_SystemResources', 'firewall', 'sys', 'mem_pct', 51);
+    met(201, 'PaloAlto_FW_IPSecTunnelStats', 'firewall', 'Appian_proxy1', 'tunnel_state', 0);
+    met(201, 'PaloAlto_FW_IPSecTunnelStats', 'firewall', 'Appian_proxy1', 'tunnel_in_bps', 1000);
+    met(201, 'PaloAlto_FW_IPSecTunnelStats', 'firewall', 'Zayo_proxy2', 'tunnel_state', 1);
+    met(201, 'PaloAlto_FW_IPSecTunnelStats', 'firewall', 'Zayo_proxy2', 'tunnel_in_bps', 5000);
+    met(201, 'PaloAlto_FW_IPSecTunnelStats', 'firewall', 'Zayo_proxy2', 'tunnel_out_bps', 6000);
+    met(201, 'PaloAlto_GlobalProtect_Gateway', 'firewall', 'gw1', 'gp_users_active', 14);
+    met(201, 'PaloAlto_GlobalProtect_Gateway', 'firewall', 'gw1', 'gp_users_max', 500);
+    met(201, 'PaloAlto_FW_Zones', 'firewall', 'trust', 'zone_in_bps', 100);
+    met(201, 'PaloAlto_FW_Zones', 'firewall', 'trust', 'zone_sessions', 4000);
+    met(201, 'PaloAlto_FW_Disk', 'firewall', '/', 'disk_used_pct', 33);
+    met(201, 'PaloAlto_FW_Power', 'firewall', 'PSU1', 'psu_state', 1);
+    met(201, 'PaloAlto_FW_Temperature', 'firewall', 'Ambient', 'temp_c', 31);
+    met(201, 'PaloAlto_FW_BGP', 'firewall', 'peer1', 'bgp_peer_state', 6);
+    met(201, 'PaloAlto_FW_BGP', 'firewall', 'peer1', 'bgp_prefixes', 12);
+    met(202, 'PaloAlto_FW_HA_Status', 'firewall', 'ha', 'ha_enabled', 1);
+    met(202, 'PaloAlto_FW_HA_Status', 'firewall', 'ha', 'ha_local_state', 2);
+    met(202, 'PaloAlto_FW_HA_Status', 'firewall', 'ha', 'ha_peer_state', 1);
+    met(202, 'PaloAlto_FW_Config_Synced', 'firewall', 'c', 'config_synced', 0);
+    met(203, 'CiscoASA', 'firewall', 'asa', 'asa_cpu_pct', 22);
+    met(203, 'CiscoASA', 'firewall', 'asa', 'asa_mem_pct', 41);
+    // Load balancers.
+    dev8(301, 'phx-f5-01', { vendor: 'F5', role: 'load-balancer', model: 'BIG-IP i5800', version: '17.1.1' });
+    dev8(302, 'phx-f5-02', { vendor: 'F5', role: 'load-balancer', model: 'BIG-IP i5800', version: '17.1.1' });
+    met(301, 'F5_BigIP_FailoverStatus', 'loadbalancer', 'f', 'failover_state', 4);
+    met(301, 'F5_BigIP_FailoverStatus', 'loadbalancer', 'f', 'sync_state', 3);
+    met(302, 'F5_BigIP_FailoverStatus', 'loadbalancer', 'f', 'failover_state', 3);
+    const sysH = met(301, 'F5_BigIP_System', 'loadbalancer', 'sys', 'cpu_pct', 22);
+    met(301, 'F5_BigIP_System', 'loadbalancer', 'sys', 'mem_pct', 61);
+    met(301, 'F5_BigIP_System', 'loadbalancer', 'sys', 'client_connections', 1200);
+    met(301, 'F5_BigIP_System', 'loadbalancer', 'sys', 'server_connections', 1100);
+    hist8(301, sysH, 'sys', 'cpu_pct', [[7200, 10], [600, 22]]);
+    for (let i = 1; i <= 3; i += 1) met(301, 'F5_BigIP_PoolMemberStats', 'loadbalancer', `app-payments/10.0.0.${i}:443`, 'member_avail', 3);
+    for (let i = 1; i <= 4; i += 1) {
+      met(301, 'F5_BigIP_PoolMemberStats', 'loadbalancer', `web-portal/10.0.1.${i}:443`, 'member_avail', i === 1 ? 3 : 1);
+      met(301, 'F5_BigIP_PoolMemberStats', 'loadbalancer', `web-portal/10.0.1.${i}:443`, 'member_connections', 10 * i);
+    }
+    met(301, 'F5_GTM_WideIP-', 'loadbalancer', 'pay.example.com', 'wideip_avail', 1);
+    met(301, 'F5_GTM_WideIP-', 'loadbalancer', 'old.example.com', 'wideip_avail', 3);
+    for (let i = 1; i <= 3; i += 1) met(301, 'F5_GTM_VIPs-', 'loadbalancer', `vip${i}`, 'vip_avail', i === 3 ? 3 : 1);
+    met(301, 'f5_mcpd_service_status', 'loadbalancer', 'mcpd', 'daemon_state', 1);
+    met(301, 'f5_tmm_service_status', 'loadbalancer', 'tmm', 'daemon_state', 0);
+    met(301, 'F5_BigIP_SSL_VIP_Certs', 'loadbalancer', 'www.example.com', 'cert_days_left', 12);
+    met(301, 'F5_BigIP_SSL_VIP_Certs', 'loadbalancer', 'api.example.com', 'cert_days_left', 300);
+    met(301, 'F5_BigIP_Interfaces', 'loadbalancer', '1.1', 'if_status', 1);
+    met(301, 'F5_BigIP_Interfaces', 'loadbalancer', '1.1', 'if_in_bps', 5000);
+    // Health on the core switch.
+    met(299, 'Cisco_CPU_SNMP', 'health', 'c1', 'cpu_pct', 91);
+    met(299, 'Cisco_FRU_Power', 'health', 'PS2', 'psu_state', 3);
+    ins('lm_device_datasources', { source_id: sid8, lm_device_id: 201, hds_id: hdsOf.get('201|PaloAlto_FW_GlobalSessions'), datasource_id: 1, datasource_name: 'PaloAlto_FW_GlobalSessions', datasource_display_name: 'PAN sessions', instance_count: 1, metrics_last_at: sqlTs(5 * MIN) });
+  });
+  afterEach(() => { wipe(); });
+
+  it('GET /metrics/families lists every catalog family with inventory and collected counts', async () => {
+    ins('lm_device_datasources', { source_id: sid8, lm_device_id: 301, hds_id: 9001, datasource_id: 2, datasource_name: 'F5_BigIP_System', datasource_display_name: 'F5 system', instance_count: 1, is_interface: 0, is_neighbor: 0 });
+    const res = await request(app).get(`${API}/metrics/families`);
+    expect(res.status).toBe(200);
+    expect(res.body.map((f) => f.family)).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless']);
+    const fw = res.body.find((f) => f.family === 'firewall');
+    expect(fw).toMatchObject({ label: 'Firewalls', enabled: true, datasources: 1, devices: 1, instances: 1, collectedDevices: 3 });
+    expect(Object.keys(fw)).toEqual(expect.arrayContaining(['family', 'label', 'enabled', 'sources', 'datasources', 'devices', 'instances', 'collectedInstances', 'lastPollAt']));
+    expect(fw.lastPollAt).toMatch(/Z$/);
+    expect(res.body.find((f) => f.family === 'loadbalancer')).toMatchObject({ datasources: 1, devices: 1 });
+    // A family switched off on the only source reads disabled.
+    db.prepare('UPDATE lm_sources SET metrics_families_json = ? WHERE id = ?').run(JSON.stringify(['health']), sid8);
+    const off = await request(app).get(`${API}/metrics/families`);
+    expect(off.body.find((f) => f.family === 'firewall').enabled).toBe(false);
+    expect(off.body.find((f) => f.family === 'health').enabled).toBe(true);
+  });
+
+  it('GET /firewalls returns one row per firewall with the rolled-up figures and a state from the issues', async () => {
+    const res = await request(app).get(`${API}/firewalls`);
+    expect(res.status).toBe(200);
+    expect(res.body.map((r) => r.deviceName)).toEqual(['den-asa-01', 'phx-fw-01', 'phx-fw-02']);
+    const a = res.body.find((r) => r.deviceName === 'phx-fw-01');
+    expect(a).toMatchObject({
+      deviceId: 201, sourceId: sid8, siteKey: 'phoenix', vendor: 'Palo Alto', model: 'PA-5220', version: '10.2.9',
+      haEnabled: true, haLocalState: 'active', haPeerState: 'non-functional', haText: 'active / non-functional',
+      sessionsActive: 87000, sessionsMax: 100000, sessionsUtilPct: 87, dataplaneCpuPct: 66.7, mgmtCpuPct: 30, memPct: 51,
+      tunnelsUp: 1, tunnelsDown: 1, gpUsers: 14, configSynced: null, state: 'critical',
+    });
+    expect(a.sampledAt).toMatch(/Z$/);
+    const b = res.body.find((r) => r.deviceName === 'phx-fw-02');
+    expect(b).toMatchObject({ haText: 'passive / active', configSynced: false, state: 'ok' });
+    const asa = res.body.find((r) => r.deviceName === 'den-asa-01');
+    expect(asa).toMatchObject({ mgmtCpuPct: 22, memPct: 41, haEnabled: false, haText: null, state: 'ok' });
+    expect(res.body.some((r) => r.deviceName === 'phx-core-01')).toBe(false);
+    for (const k of ['threatsPerHour', 'droppedPerMin', 'siteName', 'hostStatus']) expect(a).toHaveProperty(k);
+  });
+
+  it('GET /firewalls filters by q, siteKey, vendor and state', async () => {
+    expect((await request(app).get(`${API}/firewalls?q=asa`)).body.map((r) => r.deviceName)).toEqual(['den-asa-01']);
+    expect((await request(app).get(`${API}/firewalls?siteKey=denver`)).body.map((r) => r.deviceName)).toEqual(['den-asa-01']);
+    expect((await request(app).get(`${API}/firewalls?vendor=Palo%20Alto`)).body).toHaveLength(2);
+    expect((await request(app).get(`${API}/firewalls?state=critical`)).body.map((r) => r.deviceName)).toEqual(['phx-fw-01']);
+    expect((await request(app).get(`${API}/firewalls?state=bogus`)).status).toBe(400);
+  });
+
+  it('GET /firewalls.csv has the header row and one line per firewall', async () => {
+    const res = await request(app).get(`${API}/firewalls.csv`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    const lines = res.text.trim().split(/\r\n/);
+    expect(lines[0]).toBe('deviceName,siteName,vendor,model,version,hostStatus,haText,sessionsActive,sessionsMax,sessionsUtilPct,dataplaneCpuPct,mgmtCpuPct,memPct,tunnelsUp,tunnelsDown,gpUsers,configSynced,threatsPerHour,droppedPerMin,state,sampledAt');
+    expect(lines).toHaveLength(4);
+  });
+
+  it('threatsPerHour comes from monotonic counter history and stays null otherwise', async () => {
+    const h = hdsOf.get('201|PaloAlto_FW_GlobalSessions');
+    hist8(201, h, 'g', 'threats_total', [[7200, 1000], [3600, 1600], [0, 2200]]);
+    const a = (await request(app).get(`${API}/firewalls`)).body.find((r) => r.deviceName === 'phx-fw-01');
+    expect(a.threatsPerHour).toBe(600);
+    expect(a.droppedPerMin).toBeNull();
+  });
+
+  it('GET /firewalls/:deviceId returns the 360 sections and 404s for a non-firewall', async () => {
+    const res = await request(app).get(`${API}/firewalls/201`);
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body)).toEqual(expect.arrayContaining(['device', 'summary', 'ha', 'tunnels', 'zones', 'vsys', 'globalProtect', 'logForwarding', 'hardware', 'routing', 'sessionsHistory', 'issues']));
+    expect(res.body.summary.deviceName).toBe('phx-fw-01');
+    expect(res.body.ha).toEqual([{ name: 'HA1', state: 'up', raw: 1 }, { name: 'HA2', state: 'down', raw: 0 }]);
+    expect(res.body.tunnels).toEqual([
+      { name: 'Appian_proxy1', state: 'down', stateRaw: 0, inBps: 1000, outBps: null },
+      { name: 'Zayo_proxy2', state: 'up', stateRaw: 1, inBps: 5000, outBps: 6000 },
+    ]);
+    expect(res.body.zones).toEqual([{ name: 'trust', inBps: 100, outBps: null, sessions: 4000 }]);
+    expect(res.body.globalProtect).toMatchObject({ users: 14, maxUsers: 500, gateways: [{ name: 'gw1', users: 14, maxUsers: 500, tunnels: null }] });
+    expect(res.body.hardware).toMatchObject({ disks: [{ name: '/', usedPct: 33 }], psus: [{ name: 'PSU1', state: 1, ok: true }], temps: [{ name: 'Ambient', tempC: 31, alarm: null }], chassisWatts: null });
+    expect(res.body.routing.bgp).toEqual([{ name: 'peer1', state: 6, established: true, prefixes: 12 }]);
+    expect(res.body.routing.ospf).toEqual([]);
+    expect(res.body.sessionsHistory.utilPct.map((p) => p.value)).toEqual([60, 70, 87]);
+    expect(res.body.sessionsHistory.active.map((p) => p.value)).toEqual([60000, 87000]);
+    expect(res.body.issues.map((i) => i.type).sort()).toEqual(['fw-ha-degraded', 'fw-session-high', 'fw-tunnel-down']);
+    expect((await request(app).get(`${API}/firewalls/299`)).status).toBe(404);
+    expect((await request(app).get(`${API}/firewalls/9999`)).status).toBe(404);
+    expect((await request(app).get(`${API}/firewalls/abc`)).status).toBe(400);
+  });
+
+  it('GET /load-balancers rolls pools, members, wide IPs, VIPs, daemons and certificates up per F5', async () => {
+    const res = await request(app).get(`${API}/load-balancers`);
+    expect(res.status).toBe(200);
+    expect(res.body.map((r) => r.deviceName)).toEqual(['phx-f5-01', 'phx-f5-02']);
+    const a = res.body[0];
+    expect(a).toMatchObject({
+      deviceId: 301, failoverState: 4, failoverText: 'active', syncState: 'in sync', cpuPct: 22, memPct: 61,
+      clientConnections: 1200, serverConnections: 1100, pools: 2, poolsDegraded: 2, membersTotal: 7, membersDown: 4,
+      wideIps: 2, wideIpsDown: 1, vips: 3, vipsDown: 1, daemonsDown: 1, certsExpiring: 1, state: 'critical',
+    });
+    expect(res.body[1]).toMatchObject({ failoverText: 'standby', state: 'ok', pools: 0 });
+    expect((await request(app).get(`${API}/load-balancers?state=ok`)).body.map((r) => r.deviceName)).toEqual(['phx-f5-02']);
+    const csv = await request(app).get(`${API}/load-balancers.csv`);
+    expect(csv.text.split(/\r\n/)[0]).toBe('deviceName,siteName,vendor,model,version,hostStatus,failoverText,syncState,cpuPct,memPct,clientConnections,serverConnections,pools,poolsDegraded,membersTotal,membersDown,wideIps,wideIpsDown,vips,vipsDown,daemonsDown,certsExpiring,state,sampledAt');
+  });
+
+  it('GET /load-balancers/:deviceId groups pool members from the instance key and pages the VIPs', async () => {
+    const res = await request(app).get(`${API}/load-balancers/301?limit=2`);
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body)).toEqual(expect.arrayContaining(['device', 'summary', 'pools', 'wideIps', 'vips', 'gtmServers', 'datacenters', 'daemons', 'certs', 'hardware', 'interfaces', 'cpuHistory', 'connectionsHistory', 'issues']));
+    expect(res.body.pools.map((p) => [p.pool, p.up, p.down, p.members.length])).toEqual([['app-payments', 0, 3, 3], ['web-portal', 3, 1, 4]]);
+    const web = res.body.pools.find((p) => p.pool === 'web-portal');
+    expect(web.members[0]).toMatchObject({ member: '10.0.1.1:443', key: 'web-portal/10.0.1.1:443', avail: 'down', availRaw: 3, connections: 10 });
+    expect(web.members[1]).toMatchObject({ avail: 'up' });
+    expect(res.body.wideIps).toEqual([
+      { name: 'old.example.com', avail: 'down', availRaw: 3, requests: null },
+      { name: 'pay.example.com', avail: 'up', availRaw: 1, requests: null },
+    ]);
+    expect(res.body.vips).toMatchObject({ total: 3, page: 1, limit: 2 });
+    expect(res.body.vips.items).toHaveLength(2);
+    expect(res.body.daemons).toEqual([{ name: 'mcpd', state: 'running', raw: 1 }, { name: 'tmm', state: 'down', raw: 0 }]);
+    expect(res.body.certs).toEqual([{ name: 'www.example.com', daysLeft: 12 }, { name: 'api.example.com', daysLeft: 300 }]);
+    expect(res.body.cpuHistory.map((p) => p.value)).toEqual([10, 22]);
+    expect(res.body.interfaces).toEqual([{ name: '1.1', status: 1, inBps: 5000, outBps: null }]);
+    const page2 = await request(app).get(`${API}/load-balancers/301?limit=2&page=2`);
+    expect(page2.body.vips.items).toHaveLength(1);
+    expect((await request(app).get(`${API}/load-balancers/299`)).status).toBe(404);
+  });
+
+  it('GET /devices/:deviceId/metrics groups the device by family and DataSource with catalog units', async () => {
+    const res = await request(app).get(`${API}/devices/301/metrics`);
+    expect(res.status).toBe(200);
+    expect(res.body.families.map((f) => f.family)).toEqual(['loadbalancer']);
+    const lb = res.body.families[0];
+    expect(lb.label).toBe('Load balancers');
+    const sys = lb.datasources.find((d) => d.name === 'F5_BigIP_System');
+    expect(sys).toMatchObject({ hdsId: hdsOf.get('301|F5_BigIP_System'), instanceCount: 1 });
+    expect(sys.lastAt).toMatch(/Z$/);
+    expect(sys.instances[0]).toMatchObject({ key: 'sys', name: 'sys' });
+    expect(sys.instances[0].metrics.cpu_pct).toMatchObject({ value: 22, datapoint: 'cpu_pct' });
+    expect(Object.keys(sys.instances[0].metrics.cpu_pct)).toEqual(expect.arrayContaining(['value', 'unit', 'kind', 'datapoint', 'epoch']));
+    const core = await request(app).get(`${API}/devices/299/metrics`);
+    expect(core.body.families.map((f) => f.family)).toEqual(['health']);
+    expect((await request(app).get(`${API}/devices/777/metrics`)).status).toBe(404);
+    db.prepare('DELETE FROM lm_ds_metrics WHERE lm_device_id = 302').run();
+    expect((await request(app).get(`${API}/devices/302/metrics`)).body).toEqual({ families: [] });
+  });
+
+  it('GET /metrics/history returns the series, 400s on a missing parameter, and [] for an unknown instance', async () => {
+    const h = hdsOf.get('201|PaloAlto_FW_GlobalSessions');
+    const res = await request(app).get(`${API}/metrics/history?deviceId=201&hdsId=${h}&instanceKey=g&metric=sessions_util_pct&hours=3`);
+    expect(res.status).toBe(200);
+    expect(res.body.map((p) => p.value)).toEqual([60, 70, 87]);
+    expect(Object.keys(res.body[0]).sort()).toEqual(['epoch', 'value']);
+    const short = await request(app).get(`${API}/metrics/history?deviceId=201&hdsId=${h}&instanceKey=g&metric=sessions_util_pct&hours=1`);
+    expect(short.body.map((p) => p.value)).toEqual([87]);
+    expect((await request(app).get(`${API}/metrics/history?deviceId=201&hdsId=${h}&metric=sessions_util_pct`)).status).toBe(400);
+    expect((await request(app).get(`${API}/metrics/history?hdsId=${h}&instanceKey=g&metric=sessions_util_pct`)).status).toBe(400);
+    expect((await request(app).get(`${API}/metrics/history?deviceId=201&hdsId=${h}&instanceKey=g&metric=sessions_util_pct&hours=500`)).status).toBe(400);
+    expect((await request(app).get(`${API}/metrics/history?deviceId=999&hdsId=1&instanceKey=x&metric=cpu_pct`)).body).toEqual([]);
+  });
+
+  it('sources round-trip metricsPollMinutes and metricsFamilies', async () => {
+    const created = await request(app).post(`${API}/sources`).send({
+      name: 'Beta', company: 'beta', accessId: 'AID', accessKey: 'KEY', metricsPollMinutes: 60, metricsFamilies: ['firewall', 'health'],
+    });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ metricsPollMinutes: 60, metricsFamilies: ['firewall', 'health'] });
+    const dflt = await request(app).post(`${API}/sources`).send({ name: 'Gamma', company: 'gamma', accessId: 'AID', accessKey: 'KEY' });
+    expect(dflt.body).toMatchObject({ metricsPollMinutes: 30, metricsFamilies: null });
+    const put = await request(app).put(`${API}/sources/${created.body.id}`).send({ metricsPollMinutes: 15, metricsFamilies: null });
+    expect(put.status).toBe(200);
+    expect(put.body).toMatchObject({ metricsPollMinutes: 15, metricsFamilies: null });
+    const keep = await request(app).put(`${API}/sources/${created.body.id}`).send({ name: 'Beta2' });
+    expect(keep.body).toMatchObject({ metricsPollMinutes: 15, metricsFamilies: null });
+    const list = (await request(app).get(`${API}/sources`)).body.find((s) => s.id === created.body.id);
+    expect(list.metricsPollMinutes).toBe(15);
+    expect((await request(app).put(`${API}/sources/${created.body.id}`).send({ metricsPollMinutes: 2 })).status).toBe(400);
+    expect((await request(app).put(`${API}/sources/${created.body.id}`).send({ metricsFamilies: ['nonsense'] })).status).toBe(400);
+  });
+
+  it('POST /metrics/poll triggers the metrics tier for one source or all enabled sources', async () => {
+    const trig = vi.fn(() => Promise.resolve());
+    handle.triggerMetrics = trig;
+    try {
+      const one = await request(app).post(`${API}/metrics/poll`).send({ sourceId: sid8 });
+      expect(one.status).toBe(202);
+      expect(one.body).toEqual({ ok: true, triggered: 1 });
+      expect(trig).toHaveBeenCalledTimes(1);
+      const all = await request(app).post(`${API}/metrics/poll`).send({});
+      expect(all.body.triggered).toBe(1);
+      expect((await request(app).post(`${API}/metrics/poll`).send({ sourceId: 99999 })).status).toBe(404);
+      const alias = await request(app).post(`${API}/sources/${sid8}/poll-metrics`);
+      expect(alias.status).toBe(202);
+      expect(trig).toHaveBeenCalledTimes(3);
+    } finally { delete handle.triggerMetrics; }
+  });
+
+  it('discovery labels a catalog DataSource "metrics (<family>)"', async () => {
+    ins('lm_device_datasources', { source_id: sid8, lm_device_id: 201, hds_id: 9100, datasource_id: 3, datasource_name: 'PaloAlto_FW_IPSecTunnelStats', datasource_display_name: 'IPSec', instance_count: 24, is_interface: 0, is_neighbor: 0 });
+    ins('lm_device_datasources', { source_id: sid8, lm_device_id: 201, hds_id: 9101, datasource_id: 4, datasource_name: 'SomeUnknownDS', datasource_display_name: 'x', instance_count: 1, is_interface: 0, is_neighbor: 0 });
+    const disc = await request(app).get(`${API}/settings/discovery`);
+    const ds = Object.fromEntries(disc.body.datasources.map((d) => [d.name, d.collected]));
+    expect(ds.PaloAlto_FW_IPSecTunnelStats).toBe('metrics (firewall)');
+    expect(ds.SomeUnknownDS).toBe('inventory only');
   });
 });

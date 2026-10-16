@@ -664,4 +664,65 @@ module.exports = [
       `);
     },
   },
+  // Migration v5 (round 8): DataSource metric collector. lm_ds_instances is the
+  // instance inventory per device DataSource, lm_ds_metrics the latest value per
+  // instance and canonical metric, lm_ds_metrics_history the optional series.
+  // Guarded ALTERs for the source and datasource bookkeeping columns.
+  {
+    version: 5,
+    up(db) {
+      const addCol = (table, col, ddl) => {
+        const cols = db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name);
+        if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+      };
+      addCol('lm_sources', 'metrics_poll_minutes', 'INTEGER DEFAULT 30');
+      addCol('lm_sources', 'metrics_families_json', 'TEXT');
+      addCol('lm_device_datasources', 'metrics_last_at', 'TEXT');
+      addCol('lm_device_datasources', 'metrics_last_error', 'TEXT');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lm_ds_instances (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id       INTEGER NOT NULL REFERENCES lm_sources(id) ON DELETE CASCADE,
+          lm_device_id    INTEGER NOT NULL,
+          hds_id          INTEGER NOT NULL,
+          datasource_name TEXT NOT NULL,
+          family          TEXT NOT NULL,
+          instance_key    TEXT NOT NULL,
+          instance_name   TEXT,
+          stale           INTEGER DEFAULT 0,
+          first_seen      TEXT DEFAULT (datetime('now')),
+          updated_at      TEXT DEFAULT (datetime('now')),
+          UNIQUE(source_id, lm_device_id, hds_id, instance_key)
+        );
+        CREATE TABLE IF NOT EXISTS lm_ds_metrics (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id        INTEGER NOT NULL REFERENCES lm_sources(id) ON DELETE CASCADE,
+          lm_device_id     INTEGER NOT NULL,
+          hds_id           INTEGER NOT NULL,
+          datasource_name  TEXT NOT NULL,
+          family           TEXT NOT NULL,
+          instance_key     TEXT NOT NULL,
+          metric           TEXT NOT NULL,
+          datapoint        TEXT,
+          value            REAL,
+          sampled_at_epoch INTEGER,
+          updated_at       TEXT DEFAULT (datetime('now')),
+          UNIQUE(source_id, lm_device_id, hds_id, instance_key, metric)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lm_ds_metrics_dev ON lm_ds_metrics(source_id, lm_device_id, family);
+        CREATE INDEX IF NOT EXISTS idx_lm_ds_metrics_fam ON lm_ds_metrics(source_id, family, metric);
+        CREATE TABLE IF NOT EXISTS lm_ds_metrics_history (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id        INTEGER NOT NULL REFERENCES lm_sources(id) ON DELETE CASCADE,
+          lm_device_id     INTEGER NOT NULL,
+          hds_id           INTEGER NOT NULL,
+          instance_key     TEXT NOT NULL,
+          metric           TEXT NOT NULL,
+          value            REAL,
+          sampled_at_epoch INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lm_ds_hist ON lm_ds_metrics_history(source_id, lm_device_id, hds_id, instance_key, metric, sampled_at_epoch);
+      `);
+    },
+  },
 ];
