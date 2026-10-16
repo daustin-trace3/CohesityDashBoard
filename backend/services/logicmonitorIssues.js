@@ -47,6 +47,11 @@ const THRESHOLD_DEFS = {
   lm_mem_warn_pct: { def: 90, min: 50, max: 100, label: 'Device memory warning (%)' },
   lm_cert_warn_days: { def: 30, min: 1, max: 365, label: 'Certificate expiry warning (days)' },
   lm_tunnel_fold: { def: 5, min: 2, max: 100, label: 'IPSec tunnels down before they fold into one issue' },
+  // Wireless (Cisco WLC DataSources).
+  lm_wlan_chan_util_warn_pct: { def: 70, min: 30, max: 100, label: 'Radio channel utilization warning (%)' },
+  lm_wlan_client_cap_warn_pct: { def: 80, min: 50, max: 100, label: 'Controller client capacity warning (%)' },
+  lm_wlan_ap_avail_warn_pct: { def: 50, min: 5, max: 100, label: 'Controller AP availability warning (%)' },
+  lm_wlan_ap_fold: { def: 5, min: 2, max: 200, label: 'Wireless APs or radios before they fold into one issue' },
 };
 
 /** Text settings (site roots, WAN overrides): a trimmed string, capped. */
@@ -140,10 +145,168 @@ function poolOf(key) {
   return k || String(key || '');
 }
 
+// -- Wireless (enums verified against live AireOS and Catalyst 9800 controllers) --
+
+const AP_OPER_TEXT = { 1: 'associated', 2: 'disassociating', 3: 'downloading' };
+const apOperText = (v) => (v == null ? null : (AP_OPER_TEXT[Math.round(v)] || String(Math.round(v))));
+/** Radio instance key "<ap>:<slot>" -> AP name. */
+const apOfRadio = (key) => String(key || '').replace(/:\d+$/, '');
+const slotOfRadio = (key) => { const m = String(key || '').match(/:(\d+)$/); return m ? Number(m[1]) : null; };
+// Slot 0 is 2.4 GHz and slot 1 is 5 GHz on Cisco APs; slot 2 is a second 5 GHz or a 6 GHz radio by model.
+// Slot 3 and above are auxiliary (scanning, monitor) radios that serve no clients and are often down by design.
+const bandOfSlot = (slot) => (slot === 0 ? '2.4 GHz' : slot === 1 ? '5 GHz' : slot === 2 ? '5/6 GHz' : slot == null ? 'Unknown' : `Aux (slot ${slot})`);
+const isClientSlot = (slot) => slot == null || slot <= 2;
+/** AP ethernet instance key "<ap> - <interface>" -> AP name. */
+const apOfIf = (key) => String(key || '').split(' - ')[0];
+const radioIsUp = (v) => v != null && Math.round(v) === 2;
+const radioIsDown = (v) => v != null && Math.round(v) === 1;
+const isDisabled = (v) => v != null && Math.round(v) === 2;
+// An AP whose latest sample is this much older than the controller's freshest AP sample stopped reporting.
+const AP_SILENT_SEC = 3 * 3600;
+const AP_MISSING_HOURS = 24;
+
+/**
+ * APs that left a controller's AP table in the last AP_MISSING_HOURS (stale
+ * instances, which loadDsIndex skips): Map "sourceId:deviceId" -> [{ key, name, since }].
+ */
+function loadMissingAps(dbh = db) {
+  const out = new Map();
+  try {
+    for (const r of dbh.prepare(`
+      SELECT source_id, lm_device_id, instance_key, instance_name, updated_at FROM lm_ds_instances
+      WHERE datasource_name = 'Cisco_Wireless_AP' AND stale = 1 AND updated_at >= datetime('now', ?)
+    `).all(`-${AP_MISSING_HOURS} hours`)) {
+      const dk = `${r.source_id}:${r.lm_device_id}`;
+      if (!out.has(dk)) out.set(dk, []);
+      out.get(dk).push({ key: r.instance_key, name: r.instance_name || r.instance_key, since: r.updated_at });
+    }
+  } catch { /* table not migrated */ }
+  return out;
+}
+
+/**
+ * Every AP of one controller with a status: up, down (disassociating, silent or
+ * missing), disabled or downloading. missing = loadMissingAps(...).get(devKey).
+ */
+function wirelessAps(dev, missing = []) {
+  const insts = devInstances(dev, 'ap_oper');
+  let fresh = null;
+  for (const i of insts) if (i.m.ap_oper.epoch != null && (fresh == null || i.m.ap_oper.epoch > fresh)) fresh = i.m.ap_oper.epoch;
+  const out = insts.map((i) => {
+    const oper = i.m.ap_oper.value;
+    const admin = i.m.ap_admin ? i.m.ap_admin.value : null;
+    const silent = fresh != null && i.m.ap_oper.epoch != null && fresh - i.m.ap_oper.epoch > AP_SILENT_SEC;
+    let status = 'up';
+    if (isDisabled(admin)) status = 'disabled';
+    else if (silent) status = 'silent';
+    else if (Math.round(oper) === 2) status = 'down';
+    else if (Math.round(oper) === 3) status = 'downloading';
+    return { key: i.key, name: i.name, admin, oper, operText: apOperText(oper), status, epoch: i.m.ap_oper.epoch };
+  });
+  for (const m of missing || []) out.push({ key: m.key, name: m.name, admin: null, oper: null, operText: null, status: 'missing', since: m.since, epoch: null });
+  return out;
+}
+const apIsDown = (ap) => ['down', 'silent', 'missing'].includes(ap.status);
+
+function wirelessIssues(dev, t, push, missing) {
+  const name = dev.name;
+  const fold = t.lm_wlan_ap_fold;
+
+  const ha = devVal(dev, 'wlc_ha_peer_ok');
+  if (ha != null && Math.round(ha) === 0) {
+    push(dev, 'critical', 'wlan-ha-degraded', name, `${name} HA peer is not in hot standby (HAPeerState 0)`);
+  }
+
+  const avail = devVal(dev, 'wlc_ap_available_pct');
+  if (avail != null && avail >= 0 && avail < t.lm_wlan_ap_avail_warn_pct) {
+    push(dev, avail < t.lm_wlan_ap_avail_warn_pct / 2 ? 'critical' : 'warning', 'wlan-ap-availability-low', name,
+      `${name} reports ${fmtNum(avail)}% of its APs available (threshold ${t.lm_wlan_ap_avail_warn_pct}%)`);
+  }
+
+  const aps = wirelessAps(dev, missing);
+  const downAps = aps.filter(apIsDown);
+  if (downAps.length) {
+    const managed = aps.filter((a) => a.status !== 'disabled').length;
+    if (downAps.length > fold) {
+      const half = managed >= 4 && downAps.length * 2 >= managed;
+      push(dev, half ? 'critical' : 'warning', 'wlan-ap-down', `${name} access points`,
+        `${downAps.length} of ${managed} access points down on ${name} (${downAps.slice(0, 3).map((a) => a.name).join(', ')}, ...)`);
+    } else {
+      for (const a of downAps) {
+        const why = a.status === 'missing' ? `left the controller at ${a.since} UTC` : a.status === 'silent' ? 'stopped reporting' : `is ${a.operText}`;
+        push(dev, 'warning', 'wlan-ap-down', `${name} ${a.name}`, `Access point ${a.name} on ${name} ${why}`);
+      }
+    }
+  }
+
+  const downApNames = new Set(downAps.map((a) => a.key));
+  const radiosDown = devInstances(dev, 'radio_oper').filter((i) => radioIsDown(i.m.radio_oper.value) && isClientSlot(slotOfRadio(i.key))
+    && !(i.m.radio_admin && isDisabled(i.m.radio_admin.value)) && !downApNames.has(apOfRadio(i.key)));
+  if (radiosDown.length > fold) {
+    push(dev, 'warning', 'wlan-radio-down', `${name} radios`,
+      `${radiosDown.length} enabled radios are down on ${name} (${radiosDown.slice(0, 3).map((i) => i.name).join(', ')}, ...)`);
+  } else {
+    for (const i of radiosDown) {
+      push(dev, 'warning', 'wlan-radio-down', `${name} ${i.name}`,
+        `Radio ${i.name} (${bandOfSlot(slotOfRadio(i.key))}) on ${name} is enabled but down`);
+    }
+  }
+
+  const hot = devInstances(dev, 'radio_util_pct').filter((i) => i.m.radio_util_pct.value >= t.lm_wlan_chan_util_warn_pct)
+    .sort((a, b) => b.m.radio_util_pct.value - a.m.radio_util_pct.value);
+  if (hot.length > fold) {
+    push(dev, 'warning', 'wlan-channel-util-high', `${name} radios`,
+      `${hot.length} radios on ${name} at or above ${t.lm_wlan_chan_util_warn_pct}% channel utilization (busiest ${hot.slice(0, 3).map((i) => `${i.name} ${fmtNum(i.m.radio_util_pct.value)}%`).join(', ')})`);
+  } else {
+    for (const i of hot) {
+      push(dev, 'warning', 'wlan-channel-util-high', `${name} ${i.name}`,
+        `Radio ${i.name} (${bandOfSlot(slotOfRadio(i.key))}) on ${name} at ${fmtNum(i.m.radio_util_pct.value)}% channel utilization (threshold ${t.lm_wlan_chan_util_warn_pct}%)`);
+    }
+  }
+
+  const cap = devVal(dev, 'wlc_client_usage_pct');
+  if (cap != null && cap >= t.lm_wlan_client_cap_warn_pct) {
+    push(dev, 'warning', 'wlan-client-capacity-high', name, `${name} is at ${fmtNum(cap)}% of its client capacity (threshold ${t.lm_wlan_client_cap_warn_pct}%)`);
+  }
+
+  const mob = devVal(dev, 'wlc_mobility_status');
+  if (mob != null && Math.round(mob) === 1) {
+    push(dev, 'warning', 'wlan-mobility-down', name, `${name} reports mobility tunnels down in its mobility domain`);
+  }
+
+  for (const i of devInstances(dev, 'radius_status')) {
+    if (Math.round(i.m.radius_status.value) !== 1) continue;
+    const v = (k) => (i.m[k] ? i.m[k].value : 0);
+    if (v('radius_timeouts') > 0 && v('radius_accepts') + v('radius_rejects') + v('radius_challenges') === 0) {
+      push(dev, 'warning', 'wlan-radius-unresponsive', `${name} RADIUS ${i.name}`,
+        `RADIUS server ${i.name} on ${name} is timing out (${fmtNum(v('radius_timeouts'))}/s) with no responses`);
+    }
+  }
+
+  const errIfs = devInstances(dev, 'apif_in_errors').filter((i) => i.m.apif_in_errors.value > 1 || (i.m.apif_out_errors && i.m.apif_out_errors.value > 1));
+  if (errIfs.length > fold) {
+    push(dev, 'warning', 'wlan-ap-uplink-errors', `${name} AP uplinks`,
+      `${errIfs.length} access point uplinks on ${name} report more than 1 error per second (${errIfs.slice(0, 3).map((i) => i.name).join(', ')}, ...)`);
+  } else {
+    for (const i of errIfs) {
+      const inE = i.m.apif_in_errors.value;
+      const outE = i.m.apif_out_errors ? i.m.apif_out_errors.value : 0;
+      push(dev, 'warning', 'wlan-ap-uplink-errors', `${name} ${i.name}`,
+        `Access point uplink ${i.name} on ${name} reports ${fmtNum(inE)} input and ${fmtNum(outE)} output errors per second`);
+    }
+  }
+}
+
+const WIRELESS_ISSUE_TYPES = [
+  'wlan-ha-degraded', 'wlan-ap-availability-low', 'wlan-ap-down', 'wlan-radio-down', 'wlan-channel-util-high',
+  'wlan-client-capacity-high', 'wlan-mobility-down', 'wlan-radius-unresponsive', 'wlan-ap-uplink-errors',
+];
+
 const METRIC_ISSUE_TYPES = [
   'fw-ha-degraded', 'fw-tunnel-down', 'fw-session-high', 'fw-config-unsynced',
   'lb-failover-degraded', 'lb-pool-degraded', 'lb-cert-expiring', 'lb-daemon-down',
   'device-cpu-high', 'device-memory-high', 'hardware-fault', 'bgp-peer-down', 'ospf-neighbor-down', 'optic-power-low',
+  ...WIRELESS_ISSUE_TYPES,
 ];
 
 /**
@@ -224,6 +387,7 @@ function computeMetricIssues(dbh, t, srcName) {
   const index = loadDsIndex(dbh);
   if (!index.size) return issues;
   const push = (dev, severity, type, target, message) => issues.push({ severity, type, source: srcName.get(dev.sourceId), target, message });
+  const missingAps = loadMissingAps(dbh);
 
   // F5 pairs: devices with a failover state, grouped by site.
   const failoverBySite = new Map();
@@ -369,6 +533,8 @@ function computeMetricIssues(dbh, t, srcName) {
         }
       }
     }
+
+    if (!suppressed) wirelessIssues(dev, t, push, missingAps.get(`${dev.sourceId}:${dev.deviceId}`));
 
     // Optics: only when LogicMonitor exposes the low-warning threshold as a
     // datapoint (rx_low_warn); with no threshold there is no issue.
@@ -767,4 +933,7 @@ module.exports = {
   // Round 8 helpers shared with routes/logicmonitor.js.
   loadDsIndex, computeMetricIssues, haText, failoverText, availState, poolOf, devVal, devMax, devInstances,
   isHaBadPeer, isHaBadLocal, isHaEnabled, tunnelIsDown, stateIsFault, METRIC_ISSUE_TYPES,
+  // Wireless helpers shared with routes/logicmonitor.js.
+  WIRELESS_ISSUE_TYPES, loadMissingAps, wirelessAps, apIsDown, apOperText, apOfRadio, slotOfRadio, bandOfSlot, isClientSlot, apOfIf,
+  radioIsUp, radioIsDown, isDisabled,
 };

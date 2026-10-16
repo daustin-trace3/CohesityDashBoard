@@ -21,7 +21,7 @@ const METRIC_FAMILIES = [
   ['routing', 'Routing', 'BGP peers, OSPF neighbours and EIGRP peers.'],
   ['ipsla', 'IP SLA', 'Round-trip time, jitter, loss and MOS from IP SLA operations.'],
   ['voice', 'Voice', 'SIP counters, session border controller health and ISDN channels.'],
-  ['wireless', 'Wireless', 'Access point state, clients, radio utilization and controller HA.'],
+  ['wireless', 'Wireless', 'Controller HA, APs, radios and RF, SSID clients, RADIUS, mobility and AP uplinks.'],
 ];
 
 // The per-portal site rule arrives as an object (siteRule) or its JSON text.

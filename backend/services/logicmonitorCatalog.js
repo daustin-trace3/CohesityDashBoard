@@ -38,7 +38,11 @@ const pct = (match, label) => m(match, 'pct', '%', label);
 
 const CATALOG = [];
 const add = (family, match, label, metrics, opts = {}) => {
-  CATALOG.push({ family, match, label, history: !!opts.history, maxInstances: opts.maxInstances || DEFAULT_MAX_INSTANCES, metrics });
+  CATALOG.push({
+    family, match, label, history: !!opts.history, maxInstances: opts.maxInstances || DEFAULT_MAX_INSTANCES, metrics,
+    // instanceNames: instance descriptions carry the readable name (SSID for a WLAN).
+    ...(opts.instanceNames ? { instanceNames: true } : {}),
+  });
 };
 
 // -- Firewalls: Palo Alto --------------------------------------------------------
@@ -390,23 +394,102 @@ add('voice', /^ntm_sbc_/i, 'SBC', {
 add('voice', 'ISDN_Channels', 'ISDN channels', { isdn_busy: gauge(['busy', 'active', 'in.?use'], 'channels', 'Busy channels') });
 
 // -- Wireless --------------------------------------------------------------------
+// Datapoint names and enums verified against a live portal (AireOS 5508/3504 and
+// Catalyst 9800). Rate datapoints arrive from LM already per second.
+
+const exact = (name) => `^${name}$`;
 
 add('wireless', 'Cisco_Wireless_AP', 'Cisco wireless APs', {
-  ap_state: state(['state', 'status', 'oper'], 'AP state'),
-  ap_clients: gauge(['client'], 'clients', 'Clients'),
+  // bsnAPAdminStatus: 1 enabled, 2 disabled.
+  ap_admin: state(exact('bsnAPAdminStatus'), 'Admin status'),
+  // bsnAPOperationStatus: 1 associated, 2 disassociating, 3 downloading.
+  ap_oper: state(exact('bsnAPOperationStatus'), 'Operation status'),
 }, { maxInstances: 5000 });
 add('wireless', 'Cisco_Wireless_AccessPointRadio', 'Cisco AP radios', {
-  radio_state: state(['state', 'status', 'oper'], 'Radio state'),
-  radio_clients: gauge(['client'], 'clients', 'Clients'),
-  radio_util_pct: pct(['util', 'channel.?util'], 'Channel utilization'),
+  // bsnAPIfAdminStatus: 1 enabled, 2 disabled. bsnAPIfOperStatus: 1 down, 2 up.
+  radio_admin: state(exact('bsnAPIfAdminStatus'), 'Admin status'),
+  radio_oper: state(exact('bsnAPIfOperStatus'), 'Oper status'),
+  radio_util_pct: pct(exact('bsnAPIfLoadChannelUtilization'), 'Channel utilization'),
+  radio_rx_util_pct: pct(exact('bsnAPIfLoadRxUtilization'), 'Rx utilization'),
+  radio_tx_util_pct: pct(exact('bsnAPIfLoadTxUtilization'), 'Tx utilization'),
+  radio_clients: gauge(exact('bsnAPIfLoadNumOfClients'), 'clients', 'Clients'),
+  radio_users: gauge(exact('bsnApIfNoOfUsers'), 'users', 'Users'),
+  radio_tx_power: gauge(exact('bsnAPIfPhyTxPowerLevel'), 'level', 'Tx power level'),
+  // RRM profile states: 1 pass, 2 fail.
+  radio_load_profile: state(exact('bsnAPIfLoadProfileState'), 'Load profile'),
+  radio_noise_profile: state(exact('bsnAPIfNoiseProfileState'), 'Noise profile'),
+  radio_interference_profile: state(exact('bsnAPIfInterferenceProfileState'), 'Interference profile'),
+  radio_coverage_profile: state(exact('bsnAPIfCoverageProfileState'), 'Coverage profile'),
 }, { maxInstances: 5000 });
+add('wireless', 'Cisco_Wireless_AccessPointInterfaces', 'Cisco AP ethernet', {
+  // cLApEthernetIfOperStatus: 1 up, 2 down.
+  apif_oper: state(exact('cLApEthernetIfOperStatus'), 'Oper status'),
+  apif_admin: state(exact('cLApEthernetIfAdminStatus'), 'Admin status'),
+  apif_in_errors: gauge(exact('cLApEthernetIfInputErrors'), '/s', 'Input errors'),
+  apif_out_errors: gauge(exact('cLApEthernetIfOutputErrors'), '/s', 'Output errors'),
+  apif_in_drops: gauge(exact('cLApEthernetIfInputDrops'), '/s', 'Input drops'),
+  apif_out_drops: gauge(exact('cLApEthernetIfOutputTotalDrops'), '/s', 'Output drops'),
+  apif_rx_bytes: gauge(exact('cLApEthernetIfRxTotalBytes'), 'B/s', 'Rx bytes'),
+  apif_tx_bytes: gauge(exact('cLApEthernetIfTxTotalBytes'), 'B/s', 'Tx bytes'),
+}, { maxInstances: 5000 });
+add('wireless', 'Cisco_Wireless_ESS', 'Cisco WLANs (SSIDs)', {
+  ess_admin: state(exact('adminStatus'), 'Admin status'),
+  ess_broadcast: state(exact('broadcastSSID'), 'Broadcast SSID'),
+  ess_clients: gauge(exact('numberOfMobileStations'), 'clients', 'Clients'),
+}, { history: true, instanceNames: true });
 add('wireless', 'Cisco_Wireless_GlobalPerformance', 'Cisco WLC performance', {
-  wlc_clients: gauge(['client'], 'clients', 'Clients'),
-  wlc_cpu_pct: pct(['cpu'], 'CPU'),
+  cpu_pct: pct(exact('cpuUtilization'), 'CPU'),
+  mem_pct: pct(exact('memoryUtilization'), 'Memory used'),
+  temp_c: gauge(exact('temperatureCurrent'), 'C', 'Temperature'),
 }, { history: true });
-add('wireless', 'Cisco_Wireless_HighAvailability', 'Cisco WLC HA', { wlc_ha_state: state(['state', 'status', 'ha'], 'HA state') });
-add('wireless', 'Cisco_C9800_HA_Peer_State', 'Cisco C9800 HA peer', { wlc_ha_state: state(['state', 'status', 'peer'], 'HA peer state') });
-add('wireless', 'ntm_wlc_ap_status_check', 'WLC AP status check', { wlc_ap_down: gauge(['down', 'offline', 'count'], 'APs', 'APs down') });
+add('wireless', 'Cisco_Wireless_ConnectionStatistics', 'Cisco WLC connections', {
+  wlc_clients: gauge(exact('numberOfClients'), 'clients', 'Clients'),
+  wlc_clients_max: gauge(exact('sysMaxClients'), 'clients', 'Max clients'),
+  wlc_client_usage_pct: pct(exact('sysMaxClientUsage'), 'Client capacity used'),
+  wlc_aps_joined: gauge(exact('sysApConnectCount'), 'APs', 'APs joined'),
+  wlc_ap_assoc_failed: gauge(exact('apAssocFailed'), '/s', 'AP association failures'),
+  wlc_abnormal_offline: gauge(exact('sysAbnormalOfflineRate'), '', 'Abnormal client offline rate'),
+}, { history: true });
+add('wireless', 'Cisco_Wireless_DHCPStatistics', 'Cisco WLC DHCP proxy', {
+  dhcp_proxy: state(exact('proxyState'), 'DHCP proxy'),
+  dhcp_discover: gauge(exact('discoverPackets'), '/s', 'Discovers'),
+  dhcp_offer: gauge(exact('offerPackets'), '/s', 'Offers'),
+  dhcp_ack: gauge(exact('ackPackets'), '/s', 'Acks'),
+  dhcp_nak: gauge(exact('nakPackets'), '/s', 'Naks'),
+  dhcp_tx_failures: gauge(exact('txFailures'), '/s', 'Tx failures'),
+});
+add('wireless', 'Cisco_Wireless_MobilityStats', 'Cisco WLC mobility', {
+  mob_handoffs: gauge(exact('handoffs'), '/s', 'Handoffs'),
+  mob_handoff_requests: gauge(exact('handoffRequests'), '/s', 'Handoff requests'),
+  mob_handoff_errors: gauge(exact('handoffErrors'), '/s', 'Handoff errors'),
+  mob_handoff_denied: gauge(exact('handoffRequestsDenied'), '/s', 'Handoffs denied'),
+  mob_handoff_dropped: gauge(exact('handoffRequestsDropped'), '/s', 'Handoffs dropped'),
+});
+add('wireless', 'Cisco_Wireless_RADIUSAuthServers', 'Cisco WLC RADIUS auth', {
+  // status: 0 disabled, 1 enabled.
+  radius_status: state(exact('status'), 'Enabled'),
+  radius_network_user: state(exact('networkUserConfig'), 'Network users'),
+  radius_requests: gauge(exact('clientAccessRequests'), '/s', 'Requests'),
+  radius_accepts: gauge(exact('clientAccessAccepts'), '/s', 'Accepts'),
+  radius_rejects: gauge(exact('clientAccessRejects'), '/s', 'Rejects'),
+  radius_challenges: gauge(exact('clientAccessChallenges'), '/s', 'Challenges'),
+  radius_timeouts: gauge(exact('clientAccessTimeouts'), '/s', 'Timeouts'),
+  radius_retransmissions: gauge(exact('clientAccessRetransmissions'), '/s', 'Retransmissions'),
+  radius_pending: gauge(exact('clientAccessPendingRequests'), 'req', 'Pending'),
+});
+add('wireless', 'Cisco_Wireless_RADIUSAccountingServers', 'Cisco WLC RADIUS accounting', {
+  acct_status: state(exact('status'), 'Enabled'),
+  acct_requests: gauge(exact('requests'), '/s', 'Requests'),
+  acct_responses: gauge(exact('responses'), '/s', 'Responses'),
+  acct_timeouts: gauge(exact('timeouts'), '/s', 'Timeouts'),
+});
+// cLHaPrimaryUnit on AireOS: 1 primary, 2 secondary. HAPeerState on 9800: 1 healthy, 0 degraded.
+add('wireless', 'Cisco_Wireless_HighAvailability', 'Cisco WLC HA', { wlc_primary_unit: state(exact('primaryUnit'), 'Primary unit') });
+add('wireless', 'Cisco_C9800_HA_Peer_State', 'Cisco C9800 HA peer', { wlc_ha_peer_ok: state(exact('HAPeerState'), 'HA peer healthy') });
+// Available: percent of APs joined; -1 is a script error.
+add('wireless', 'ntm_wlc_ap_status_check', 'WLC AP availability', { wlc_ap_available_pct: pct(exact('Available'), 'APs available') });
+// Status: 0 ok, 1 mobility tunnels down, 2 script error.
+add('wireless', 'ntm_wlc_mobility_domain_check', 'WLC mobility domain', { wlc_mobility_status: state(exact('Status'), 'Mobility tunnels') });
 
 // -- Lookup ----------------------------------------------------------------------
 

@@ -467,7 +467,8 @@ const cleanPortKey = (p) => norm(lmEndpoints.cleanPort(p)).replace(/\s+/g, '');
 const CID_TEXT_RE = /\b(?:cid|ckt(?:\s*id)?|circuit(?:\s*(?:id|ref|no|number))?)\s*[:#=-]?\s*([A-Za-z0-9][A-Za-z0-9./_:-]{3,})/i;
 const CID_KEY_RE = /(circuit[._ -]?(id|ref|no|number)?$|\.cid$|^cid$|ckt)/i;
 const CARRIER_KEY_RE = /(carrier|provider|isp|telco)$/i;
-const CARRIER_RE = /\b(at&t|att|verizon|lumen|centurylink|level ?3|zayo|cogent|comcast|spectrum|charter|cox|windstream|frontier|gtt|bt|colt|vodafone|telstra|ntt|orange|tata|virgin media|openreach|megaport|equinix)\b/i;
+const CARRIER_RE = /\b(at&t|att|verizon|vzb|lumen|centurylink|level ?3|zayo|cogent|cgt|comcast|spectrum|charter|cox|windstream|frontier|gtt|bt|colt|vodafone|telstra|ntt|orange|tata|virgin media|openreach|megaport|equinix)\b/i;
+const CARRIER_ALIASES = { vzb: 'Verizon', cgt: 'Cogent', att: 'AT&T' };
 
 /**
  * Circuit reference for one interface: {circuitId, carrier, alias, source}.
@@ -494,7 +495,7 @@ function circuitInfo(description, props) {
     }
     if (!carrier) {
       const c = CARRIER_RE.exec(text);
-      if (c) carrier = c[1];
+      if (c) carrier = CARRIER_ALIASES[c[1].toLowerCase()] || c[1];
     }
   }
   return { circuitId, carrier, alias, source };

@@ -71,7 +71,9 @@ describe('catalogFor', () => {
     ipsla: ['CiscoSLA_jitter-', 'Cisco_IPSLA_Statistics', 'Groovy_Cisco_IPSLA_Statistics', 'ntm_ipsla_svd', 'CiscoSLA_ICMPEcho-', 'IPSLA_WAN'],
     voice: ['Cisco_SIP_Global', 'Cisco_SIP_Traffic', 'ntm_sbc_cpu', 'ntm_sbc_fan_status', 'ISDN_Channels'],
     wireless: ['Cisco_Wireless_AP', 'Cisco_Wireless_AccessPointRadio', 'Cisco_Wireless_GlobalPerformance',
-      'Cisco_Wireless_HighAvailability', 'Cisco_C9800_HA_Peer_State', 'ntm_wlc_ap_status_check'],
+      'Cisco_Wireless_HighAvailability', 'Cisco_C9800_HA_Peer_State', 'ntm_wlc_ap_status_check', 'Cisco_Wireless_AccessPointInterfaces',
+      'Cisco_Wireless_ESS', 'Cisco_Wireless_ConnectionStatistics', 'Cisco_Wireless_DHCPStatistics', 'Cisco_Wireless_MobilityStats',
+      'Cisco_Wireless_RADIUSAuthServers', 'Cisco_Wireless_RADIUSAccountingServers', 'ntm_wlc_mobility_domain_check'],
   };
   for (const [family, names] of Object.entries(cases)) {
     it(`resolves the ${family} DataSources`, () => {
@@ -114,7 +116,8 @@ describe('catalogFor', () => {
     for (const k of ['sessions_util_pct', 'ha_peer_state', 'tunnel_state', 'tunnels_up', 'gp_users_active', 'config_synced', 'threats_total',
       'failover_state', 'member_avail', 'wideip_avail', 'vip_avail', 'daemon_state', 'cert_days_left', 'cpu_pct', 'mem_pct',
       'psu_state', 'fan_state', 'temp_state', 'linecard_state', 'sup_state', 'stack_member_state', 'rx_power_dbm', 'rx_low_warn',
-      'bgp_peer_state', 'ospf_nbr_state', 'rtt_ms', 'loss_pct', 'sip_connections', 'sbc_cpu_pct', 'ap_state', 'wlc_ap_down']) {
+      'bgp_peer_state', 'ospf_nbr_state', 'rtt_ms', 'loss_pct', 'sip_connections', 'sbc_cpu_pct', 'ap_oper', 'radio_util_pct',
+      'radio_oper', 'ess_clients', 'wlc_ha_peer_ok', 'wlc_ap_available_pct', 'wlc_mobility_status', 'radius_timeouts']) {
       expect(keys.has(k), k).toBe(true);
     }
   });
@@ -190,6 +193,46 @@ describe('parseDsBody', () => {
     const e = catalogFor('Cisco_CPU_SNMP');
     const r = metrics.parseDsBody({ dataSourceName: 'Cisco_CPU_SNMP', dataPoints: ['CPU1Min', 'CPU5Min'], instances: {} }, e, null);
     expect(r.learned.cpu_pct).toBe('CPU5Min');
+  });
+
+  // Bodies captured from a live portal (Catalyst 9800 and AireOS controllers).
+  it('maps the live Cisco wireless AP and radio datapoints exactly', () => {
+    const ap = metrics.parseDsBody({
+      dataSourceName: 'Cisco_Wireless_AP',
+      dataPoints: ['bsnAPAdminStatus', 'bsnAPOperationStatus', 'AdminStatusDisabled', 'AdminStatusEnabled', 'OperationStatusDisassociated'],
+      instances: { 'Cisco_Wireless_AP-IRVA-02-E62T1-WAP18': { time: [t0 * 1000], values: [[1, 1, 0, 1, 0]] } },
+    }, catalogFor('Cisco_Wireless_AP'), null);
+    expect(ap.learned).toEqual({ ap_admin: 'bsnAPAdminStatus', ap_oper: 'bsnAPOperationStatus' });
+    expect(ap.instances[0].key).toBe('IRVA-02-E62T1-WAP18');
+
+    const radio = metrics.parseDsBody({
+      dataSourceName: 'Cisco_Wireless_AccessPointRadio',
+      dataPoints: ['bsnAPIfAdminStatus', 'bsnAPIfCoverageProfileState', 'bsnAPIfInterferenceProfileState', 'bsnAPIfLoadChannelUtilization',
+        'bsnAPIfLoadNumOfClients', 'bsnAPIfLoadProfileState', 'bsnAPIfLoadRxUtilization', 'bsnAPIfLoadTxUtilization',
+        'bsnAPIfNoiseProfileState', 'bsnAPIfOperStatus', 'bsnAPIfPhyTxPowerLevel', 'bsnApIfNoOfUsers'],
+      instances: { 'Cisco_Wireless_AccessPointRadio-IRVS-01-E81T1-WAP09:1': { time: [t0 * 1000], values: [[1, 1, 1, 37, 12, 1, 20, 5, 1, 2, 7, 12]] } },
+    }, catalogFor('Cisco_Wireless_AccessPointRadio'), null);
+    expect(radio.unmatched).toEqual([]);
+    const l = radio.instances[0].latest;
+    expect(radio.instances[0].key).toBe('IRVS-01-E81T1-WAP09:1');
+    expect([l.radio_util_pct.value, l.radio_rx_util_pct.value, l.radio_clients.value, l.radio_oper.value, l.radio_tx_power.value]).toEqual([37, 20, 12, 2, 7]);
+  });
+
+  it('skips "No Data" cells on a 9800 GlobalPerformance body', () => {
+    const r = metrics.parseDsBody({
+      dataSourceName: 'Cisco_Wireless_GlobalPerformance',
+      dataPoints: ['temperatureFilter', 'cpuUtilization', 'memoryUtilization', 'temperatureCurrent'],
+      instances: { Cisco_Wireless_GlobalPerformance: { time: [t0 * 1000], values: [[-1, 'No Data', 'No Data', 'No Data']] } },
+    }, catalogFor('Cisco_Wireless_GlobalPerformance'), null);
+    expect(r.instances[0].latest).toEqual({});
+  });
+
+  it('instanceNameMap turns WLAN instance descriptions into SSID names', () => {
+    const map = metrics.instanceNameMap([
+      { instanceName: 'Cisco_Wireless_ESS-WLAN: 1', displayName: 'WLAN: 1', description: 'SSID: ILAnetwork' },
+      { instanceName: 'Cisco_Wireless_ESS-WLAN: 2', displayName: 'WLAN: 2', description: null },
+    ], 'Cisco_Wireless_ESS');
+    expect([...map.entries()]).toEqual([['WLAN: 1', 'ILAnetwork']]);
   });
 });
 

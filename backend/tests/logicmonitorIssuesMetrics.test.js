@@ -242,6 +242,83 @@ describe('device health issues', () => {
   });
 });
 
+describe('wireless issues', () => {
+  const wlc = (id = 1, name = 'irv-wlc-1') => dev(id, name, { role: 'wireless' });
+
+  it('wlan-ha-degraded: critical when the 9800 HA peer is not in hot standby', () => {
+    wlc(1, 'wlc-a');
+    m(1, 'Cisco_C9800_HA_Peer_State', 'wireless', 'ha', 'wlc_ha_peer_ok', 0);
+    wlc(2, 'wlc-b');
+    m(2, 'Cisco_C9800_HA_Peer_State', 'wireless', 'ha', 'wlc_ha_peer_ok', 1);
+    expect(issuesOf('wlan-ha-degraded').map((i) => [i.severity, i.target])).toEqual([['critical', 'wlc-a']]);
+  });
+
+  it('wlan-ap-down: one per disassociating AP, quiet for disabled and downloading APs, folded above the threshold', () => {
+    wlc(1, 'wlc-few');
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-1', 'ap_oper', 1);
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-2', 'ap_oper', 2);
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-3', 'ap_oper', 3);
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-4', 'ap_oper', 2);
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-4', 'ap_admin', 2);
+    wlc(2, 'wlc-many');
+    for (let i = 1; i <= 10; i += 1) m(2, 'Cisco_Wireless_AP', 'wireless', `B-${i}`, 'ap_oper', i <= 6 ? 2 : 1);
+    const got = issuesOf('wlan-ap-down');
+    expect(got.filter((i) => i.target.startsWith('wlc-few')).map((i) => i.target)).toEqual(['wlc-few AP-2']);
+    const folded = got.filter((i) => i.target.startsWith('wlc-many'));
+    expect(folded).toHaveLength(1);
+    expect(folded[0]).toMatchObject({ severity: 'critical', target: 'wlc-many access points' });
+    expect(folded[0].message).toContain('6 of 10 access points down');
+  });
+
+  it('wlan-ap-down: an AP that left the AP table in the last day is reported missing', () => {
+    wlc(1, 'wlc-a');
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-1', 'ap_oper', 1);
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-gone', 'ap_oper', 1, { stale: true });
+    const got = issuesOf('wlan-ap-down');
+    expect(got.map((i) => i.target)).toEqual(['wlc-a AP-gone']);
+    expect(got[0].message).toContain('left the controller');
+  });
+
+  it('wlan-radio-down skips disabled radios and radios of a down AP; wlan-channel-util-high uses the threshold', () => {
+    wlc(1, 'wlc-a');
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-1', 'ap_oper', 1);
+    m(1, 'Cisco_Wireless_AP', 'wireless', 'AP-2', 'ap_oper', 2);
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-1:0', 'radio_oper', 1);
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-1:0', 'radio_admin', 1);
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-1:1', 'radio_oper', 1);
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-1:1', 'radio_admin', 2);
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-2:0', 'radio_oper', 1);
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-1:2', 'radio_util_pct', 82);
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-1:3', 'radio_util_pct', 40);
+    // Slot 3 is an auxiliary monitor radio: enabled and down by design, never an issue.
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-1:3', 'radio_oper', 1);
+    m(1, 'Cisco_Wireless_AccessPointRadio', 'wireless', 'AP-1:3', 'radio_admin', 1);
+    const radios = issuesOf('wlan-radio-down');
+    expect(radios.map((i) => i.target)).toEqual(['wlc-a AP-1:0']);
+    expect(radios[0].message).toContain('2.4 GHz');
+    expect(issuesOf('wlan-channel-util-high').map((i) => i.target)).toEqual(['wlc-a AP-1:2']);
+  });
+
+  it('controller level rules: AP availability, client capacity, mobility and RADIUS', () => {
+    wlc(1, 'wlc-a');
+    m(1, 'ntm_wlc_ap_status_check', 'wireless', 'g', 'wlc_ap_available_pct', 20);
+    m(1, 'Cisco_Wireless_ConnectionStatistics', 'wireless', '0', 'wlc_client_usage_pct', 85);
+    m(1, 'ntm_wlc_mobility_domain_check', 'wireless', 'g', 'wlc_mobility_status', 1);
+    m(1, 'Cisco_Wireless_RADIUSAuthServers', 'wireless', '10.0.0.1', 'radius_status', 1);
+    m(1, 'Cisco_Wireless_RADIUSAuthServers', 'wireless', '10.0.0.1', 'radius_timeouts', 2);
+    m(1, 'Cisco_Wireless_RADIUSAuthServers', 'wireless', '10.0.0.2', 'radius_status', 1);
+    m(1, 'Cisco_Wireless_RADIUSAuthServers', 'wireless', '10.0.0.2', 'radius_timeouts', 1);
+    m(1, 'Cisco_Wireless_RADIUSAuthServers', 'wireless', '10.0.0.2', 'radius_accepts', 4);
+    wlc(2, 'wlc-script-error');
+    m(2, 'ntm_wlc_ap_status_check', 'wireless', 'g', 'wlc_ap_available_pct', -1);
+    m(2, 'ntm_wlc_mobility_domain_check', 'wireless', 'g', 'wlc_mobility_status', 2);
+    expect(issuesOf('wlan-ap-availability-low').map((i) => [i.severity, i.target])).toEqual([['critical', 'wlc-a']]);
+    expect(issuesOf('wlan-client-capacity-high').map((i) => i.target)).toEqual(['wlc-a']);
+    expect(issuesOf('wlan-mobility-down').map((i) => i.target)).toEqual(['wlc-a']);
+    expect(issuesOf('wlan-radius-unresponsive').map((i) => i.target)).toEqual(['wlc-a RADIUS 10.0.0.1']);
+  });
+});
+
 describe('metric issue plumbing', () => {
   it('a device in scheduled downtime raises nothing from metrics', () => {
     dev(1, 'core-sdt', { sdt: 'none-SDT-none' });

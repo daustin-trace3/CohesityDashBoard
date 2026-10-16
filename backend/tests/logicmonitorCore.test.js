@@ -221,6 +221,8 @@ describe('logicmonitorApi: classification (section 5)', () => {
     expect(lmApi.classifyRole({ categories: 'F5GTM', vendor: 'F5' })).toBe('load-balancer');
     expect(lmApi.classifyRole({ vendor: 'F5' })).toBe('load-balancer');
     expect(lmApi.classifyRole({ categories: 'CiscoMerakiWireless' })).toBe('wireless');
+    expect(lmApi.classifyRole({ ert: 'WLC', categories: 'snmp,TopoSwitch,Cisco', vendor: 'Cisco' })).toBe('wireless');
+    expect(lmApi.classifyRole({ ert: 'Wireless', categories: 'TopoSwitch', vendor: 'Cisco' })).toBe('wireless');
     expect(lmApi.classifyRole({ categories: 'snmp,TopoSwitch', vendor: 'Cisco' })).toBe('switch');
     expect(lmApi.classifyRole({ categories: 'CiscoUCSManager' })).toBe('server');
     expect(lmApi.classifyRole({ categories: 'Windows' })).toBe('server');
@@ -658,7 +660,7 @@ describe('logicmonitorIssues: rules', () => {
     expect(t.lm_if_util_warn_pct).toBe(50);
     expect(t.lm_check_latency_k).toBe(10);
     expect(t.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(t).length).toBe(41);
+    expect(Object.keys(t).length).toBe(45);
     setSetting('lm_if_util_warn_pct', '80');
     setSetting('lm_check_latency_k', '3');
   });

@@ -225,6 +225,17 @@ const storeResult = db.transaction((source, cand, parsed, nowIso) => {
   return written;
 });
 
+/** Pure: instance key -> readable name from normalized instances ("SSID: X" descriptions lose the label). */
+function instanceNameMap(instances, dsName) {
+  const out = new Map();
+  for (const i of Array.isArray(instances) ? instances : []) {
+    const key = cleanInstanceKey(i.instanceName || i.displayName || '', dsName);
+    const desc = String(i.description || '').replace(/^\s*SSID:\s*/i, '').trim();
+    if (key && desc) out.set(key, desc);
+  }
+  return out;
+}
+
 function markFailed(sourceId, hdsId, message, nowIso) {
   // metrics_last_at moves on failure too so a permanently failing DataSource
   // goes to the back of the queue instead of eating a slot every run.
@@ -249,7 +260,9 @@ async function pollMetrics(source) {
 
   for (const cand of batch) {
     try {
-      const known = dsColumns[cand.datasource_name];
+      let known = dsColumns[cand.datasource_name];
+      // A mapping learned under an older catalog (metric keys it no longer defines) is relearned.
+      if (known && typeof known === 'object' && Object.keys(known).some((k) => !cand.entry.metrics[k])) known = null;
       const knownNames = known && typeof known === 'object' ? [...new Set(Object.values(known))] : [];
       const datapoints = knownNames.length ? knownNames.join(',') : null;
       const last = parseDbTime(cand.metrics_last_at);
@@ -257,6 +270,14 @@ async function pollMetrics(source) {
       const body = await lmApi.fetchDsData(source, cand.lm_device_id, cand.hds_id, { start, end: now, datapoints });
       const parsed = parseDsBody(body, cand.entry, known || null, now);
       parsed.hasInstances = !!body && typeof body.instances === 'object' && body.instances !== null;
+      if (cand.entry.instanceNames && parsed.instances.length) {
+        try {
+          const names = instanceNameMap(await lmApi.fetchInstances(source, cand.lm_device_id, cand.hds_id), cand.datasource_name);
+          for (const inst of parsed.instances) if (names.has(inst.key)) inst.name = names.get(inst.key);
+        } catch (err) {
+          logger.debug(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} instance names: ${safeMsg(err)}`);
+        }
+      }
       if (!datapoints && Array.isArray(body?.dataPoints) && body.dataPoints.length) {
         dsColumns[cand.datasource_name] = parsed.learned;
         dsUnmatched[cand.datasource_name] = parsed.unmatched;
@@ -331,5 +352,5 @@ function historyFor(sourceId, deviceId, hdsId, instanceKey, metric, hours = 24) 
 module.exports = {
   pollMetrics, pruneMetricsHistory, parseDsBody, latestFor, historyFor,
   // test seams
-  candidateRows, matchDatapoint,
+  candidateRows, matchDatapoint, instanceNameMap,
 };

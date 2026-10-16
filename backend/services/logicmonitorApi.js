@@ -379,6 +379,8 @@ const ERT_ROLES = [
   [/^router$/i, 'router'],
   [/^(virtual)?switch$/i, 'switch'],
   [/^loadbalancecollector$/i, 'load-balancer'],
+  // Live portals report WLC for AireOS controllers and Wireless for Catalyst 9800s.
+  [/^(wlc|wireless|wirelesscontroller|accesspoint)$/i, 'wireless'],
   [/^(physicalserver|virtualmachine|hypervisor)$/i, 'server'],
   [/^storage/i, 'storage'],
 ];

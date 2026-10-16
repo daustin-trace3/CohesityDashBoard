@@ -266,13 +266,14 @@ export function LmCircuitsRulesPanel() {
   );
 }
 
-const SVC_KEYS = ['lm_fw_session_warn_pct', 'lm_tunnel_fold', 'lm_cert_warn_days', 'lm_cpu_warn_pct', 'lm_mem_warn_pct'];
+const SVC_KEYS = ['lm_fw_session_warn_pct', 'lm_tunnel_fold', 'lm_cert_warn_days', 'lm_cpu_warn_pct', 'lm_mem_warn_pct',
+  'lm_wlan_chan_util_warn_pct', 'lm_wlan_client_cap_warn_pct', 'lm_wlan_ap_avail_warn_pct', 'lm_wlan_ap_fold'];
 
 export function LmServicesRulesPanel() {
   const cfg = useLmConfig(SVC_KEYS);
   return (
     <PanelShell icon={Layers} cfg={cfg} title="Services"
-      blurb="Thresholds for the issues raised from the DataSource metrics tier: firewalls, load balancers and device health. They show on the Issues page, the Firewalls and Load Balancers pages, Service Status, the Ops Agent and in alert email.">
+      blurb="Thresholds for the issues raised from the DataSource metrics tier: firewalls, load balancers, wireless and device health. They show on the Issues page, the Firewalls, Load Balancers and Wireless pages, Service Status, the Ops Agent and in alert email.">
       <SettingGroup title="Firewalls">
         <NumRow cfg={cfg} k="lm_fw_session_warn_pct" label="Session table warning" unit="%"
           tip="A firewall raises a warning fw-session-high issue when its session table utilization is at or above this value." />
@@ -282,6 +283,16 @@ export function LmServicesRulesPanel() {
       <SettingGroup title="Load balancers">
         <NumRow cfg={cfg} k="lm_cert_warn_days" label="Certificate expiry warning" unit="days"
           tip="An F5 certificate raises a lb-cert-expiring warning when it has fewer days left than this, and turns critical under 7 days." />
+      </SettingGroup>
+      <SettingGroup title="Wireless">
+        <NumRow cfg={cfg} k="lm_wlan_chan_util_warn_pct" label="Radio channel utilization warning" unit="%"
+          tip="An AP radio raises a wlan-channel-util-high warning when its channel utilization is at or above this value. It also marks the radio as hot on the RF Analytics page." />
+        <NumRow cfg={cfg} k="lm_wlan_client_cap_warn_pct" label="Controller client capacity warning" unit="%"
+          tip="An AireOS controller raises a wlan-client-capacity-high warning when its clients use this share of its maximum." />
+        <NumRow cfg={cfg} k="lm_wlan_ap_avail_warn_pct" label="Controller AP availability warning" unit="%"
+          tip="A controller with the AP status check raises a wlan-ap-availability-low warning below this share of APs available, critical below half of it." />
+        <NumRow cfg={cfg} k="lm_wlan_ap_fold" label="APs or radios before folding" unit="items"
+          tip="Each down AP, down radio, hot radio or erroring AP uplink raises its own issue. Above this many on one controller ICC raises one issue for the controller instead." />
       </SettingGroup>
       <SettingGroup title="Device health">
         <Lead>The metrics tier samples every 30 minutes by default, so these use the latest value rather than a run of samples.</Lead>

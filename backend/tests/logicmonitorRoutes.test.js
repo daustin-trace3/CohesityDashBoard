@@ -600,7 +600,7 @@ describe('logicmonitor data routes', () => {
     const g = await request(app).get(`${API}/config`);
     expect(g.body.thresholds.lm_if_util_warn_pct).toBe(80);
     expect(g.body.thresholds.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(g.body.thresholds)).toHaveLength(41);
+    expect(Object.keys(g.body.thresholds)).toHaveLength(45);
     for (const k of THRESHOLD_KEYS) expect(g.body.thresholds).toHaveProperty(k);
     expect(g.body.ranges.lm_if_util_warn_pct).toEqual({ min: 50, max: 100, default: 80 });
     const put = await request(app).put(`${API}/config`).send({ lm_if_util_warn_pct: 150, lm_if_flap_warn: 0, lm_dead_grace_min: 15 });
@@ -1434,5 +1434,133 @@ describe('logicmonitor round 8 routes: metrics, firewalls, load balancers', () =
     const ds = Object.fromEntries(disc.body.datasources.map((d) => [d.name, d.collected]));
     expect(ds.PaloAlto_FW_IPSecTunnelStats).toBe('metrics (firewall)');
     expect(ds.SomeUnknownDS).toBe('inventory only');
+  });
+});
+
+describe('logicmonitor wireless routes', () => {
+  let sidW;
+  const hdsW = new Map();
+  let seq = 8000;
+  function wdev(id, name, over = {}) {
+    ins('lm_devices', {
+      source_id: sidW, lm_device_id: id, name, display_name: name, device_type: 0, host_status: 'normal', alert_status: 'none',
+      sdt_status: 'none-none-none', vendor: 'Cisco', role: over.role || 'wireless', is_network: 1, model: over.model || 'C9800-40-K9',
+      site_key: over.site || 'irv', site_name: over.siteName || 'IRV', ips_json: '[]', stale: 0,
+    });
+  }
+  function wm(devId, ds, inst, metric, value, extra = {}) {
+    const hk = `${devId}|${ds}`;
+    if (!hdsW.has(hk)) { seq += 1; hdsW.set(hk, seq); }
+    const hds = hdsW.get(hk);
+    db.prepare(`INSERT OR IGNORE INTO lm_ds_instances (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, instance_name, stale)
+      VALUES (?, ?, ?, ?, 'wireless', ?, ?, ?)`).run(sidW, devId, hds, ds, inst, extra.name || inst, extra.stale ? 1 : 0);
+    db.prepare(`INSERT OR REPLACE INTO lm_ds_metrics (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, metric, datapoint, value, sampled_at_epoch)
+      VALUES (?, ?, ?, ?, 'wireless', ?, ?, ?, ?, ?)`).run(sidW, devId, hds, ds, inst, metric, metric, value, nowSec() - 120);
+    return hds;
+  }
+
+  beforeEach(() => {
+    wipe();
+    hdsW.clear();
+    sidW = insertSource();
+    wdev(401, 'IRV-WLC-1');
+    wdev(402, 'SJCX-GANC-1', { model: 'AIR-CT3504-K9', site: 'sjcx', siteName: 'SJCX' });
+    wdev(499, 'irv-core-1', { role: 'switch' });
+    // IRV: 3 APs (one disassociating), 2.4 and 5 GHz radios, two SSIDs.
+    wm(401, 'Cisco_Wireless_AP', 'AP-A', 'ap_oper', 1);
+    wm(401, 'Cisco_Wireless_AP', 'AP-B', 'ap_oper', 1);
+    wm(401, 'Cisco_Wireless_AP', 'AP-C', 'ap_oper', 2);
+    for (const [k, util, clients] of [['AP-A:0', 30, 4], ['AP-A:1', 85, 20], ['AP-B:0', 10, 1], ['AP-B:1', 40, 9]]) {
+      wm(401, 'Cisco_Wireless_AccessPointRadio', k, 'radio_admin', 1);
+      wm(401, 'Cisco_Wireless_AccessPointRadio', k, 'radio_oper', 2);
+      wm(401, 'Cisco_Wireless_AccessPointRadio', k, 'radio_util_pct', util);
+      wm(401, 'Cisco_Wireless_AccessPointRadio', k, 'radio_clients', clients);
+      wm(401, 'Cisco_Wireless_AccessPointRadio', k, 'radio_tx_power', 3);
+    }
+    wm(401, 'Cisco_Wireless_AccessPointRadio', 'AP-B:1', 'radio_noise_profile', 2);
+    wm(401, 'Cisco_Wireless_AccessPointInterfaces', 'AP-A - GigabitEthernet0', 'apif_oper', 1);
+    wm(401, 'Cisco_Wireless_AccessPointInterfaces', 'AP-A - GigabitEthernet0', 'apif_rx_bytes', 1000);
+    const ess = wm(401, 'Cisco_Wireless_ESS', 'WLAN: 1', 'ess_clients', 30, { name: 'Corp' });
+    wm(401, 'Cisco_Wireless_ESS', 'WLAN: 1', 'ess_admin', 1, { name: 'Corp' });
+    wm(401, 'Cisco_Wireless_ESS', 'WLAN: 2', 'ess_clients', 4, { name: 'Guest' });
+    wm(401, 'Cisco_C9800_HA_Peer_State', 'Cisco_C9800_HA_Peer_State', 'wlc_ha_peer_ok', 1);
+    const stmt = db.prepare('INSERT INTO lm_ds_metrics_history (source_id, lm_device_id, hds_id, instance_key, metric, value, sampled_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    stmt.run(sidW, 401, ess, 'WLAN: 1', 'ess_clients', 20, nowSec() - 7200);
+    stmt.run(sidW, 401, ess, 'WLAN: 1', 'ess_clients', 30, nowSec() - 600);
+    // SJCX: AireOS with RADIUS and the connection statistics.
+    wm(402, 'Cisco_Wireless_AP', 'SJ-1', 'ap_oper', 1);
+    wm(402, 'Cisco_Wireless_ESS', 'WLAN: 1', 'ess_clients', 6, { name: 'Corp' });
+    wm(402, 'Cisco_Wireless_ConnectionStatistics', '0', 'wlc_clients_max', 3000);
+    wm(402, 'Cisco_Wireless_GlobalPerformance', 'Cisco_Wireless_GlobalPerformance', 'cpu_pct', 12);
+    wm(402, 'Cisco_Wireless_RADIUSAuthServers', '10.0.0.1', 'radius_status', 1);
+    wm(402, 'Cisco_Wireless_RADIUSAuthServers', '10.0.0.1', 'radius_timeouts', 3);
+    wm(402, 'Cisco_Wireless_HighAvailability', '0', 'wlc_primary_unit', 1);
+  });
+  afterEach(() => { wipe(); });
+
+  it('GET /wireless/controllers rolls up APs, radios, clients and HA per controller', async () => {
+    const res = await request(app).get(`${API}/wireless/controllers`);
+    expect(res.status).toBe(200);
+    expect(res.body.map((c) => c.deviceName).sort()).toEqual(['IRV-WLC-1', 'SJCX-GANC-1']);
+    const irv = res.body.find((c) => c.deviceName === 'IRV-WLC-1');
+    expect(irv).toMatchObject({
+      platform: 'Catalyst 9800', haText: 'hot standby', apsTotal: 3, apsUp: 2, apsDown: 1, radiosTotal: 4, radiosUp: 4, hotRadios: 1,
+      avgChannelUtilPct: 41.3, clients: 34, ssids: 2, state: 'warning',
+    });
+    const sj = res.body.find((c) => c.deviceName === 'SJCX-GANC-1');
+    expect(sj).toMatchObject({ platform: 'AireOS', haText: 'primary', cpuPct: 12, clients: 6, radiusServers: 1, radiusUnresponsive: 1, state: 'warning' });
+    const csv = await request(app).get(`${API}/wireless/controllers.csv`);
+    expect(csv.text.split('\r\n')[0]).toContain('deviceName,siteName,platform');
+  });
+
+  it('GET /wireless/overview returns totals, band, SSID and site analytics and the client trend', async () => {
+    const res = await request(app).get(`${API}/wireless/overview`);
+    expect(res.status).toBe(200);
+    expect(res.body.totals).toMatchObject({ controllers: 2, aps: 4, apsUp: 3, apsDown: 1, radios: 4, hotRadios: 1, clients: 40, ssids: 2, radiusUnresponsive: 1 });
+    expect(res.body.analytics.byBand.map((b) => [b.band, b.clients])).toEqual([['2.4 GHz', 5], ['5 GHz', 29]]);
+    expect(res.body.analytics.bySsid.map((s) => [s.ssid, s.clients, s.controllers])).toEqual([['Corp', 36], ['Guest', 4]].map(([n, c]) => [n, c, n === 'Corp' ? 2 : 1]));
+    expect(res.body.analytics.hottestRadios[0]).toMatchObject({ radio: 'AP-A:1', band: '5 GHz', channelUtilPct: 85 });
+    expect(res.body.analytics.downAps.map((a) => a.ap)).toEqual(['AP-C']);
+    expect(res.body.clientTrend.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('GET /wireless/aps and /wireless/ap join radios and uplinks per AP', async () => {
+    const list = await request(app).get(`${API}/wireless/aps`);
+    const a = list.body.find((x) => x.ap === 'AP-A');
+    expect(a).toMatchObject({ controller: 'IRV-WLC-1', status: 'up', radiosUp: 2, radiosTotal: 2, clients: 24, util24: 30, util5: 85, maxChannelUtilPct: 85, uplinkState: 'up', uplinkRxBps: 8000 });
+    expect(list.body.find((x) => x.ap === 'AP-C')).toMatchObject({ status: 'down', operText: 'disassociating' });
+    const one = await request(app).get(`${API}/wireless/ap`).query({ controllerId: 401, ap: 'AP-C' });
+    expect(one.status).toBe(200);
+    expect(one.body.issues.map((i) => i.type)).toEqual(['wlan-ap-down']);
+    expect((await request(app).get(`${API}/wireless/ap`).query({ controllerId: 401, ap: 'nope' })).status).toBe(404);
+    expect((await request(app).get(`${API}/wireless/ap`).query({ controllerId: 499, ap: 'AP-A' })).status).toBe(404);
+  });
+
+  it('GET /wireless/rf summarises bands, histogram, Tx power and RRM profile failures', async () => {
+    const res = await request(app).get(`${API}/wireless/rf`);
+    expect(res.status).toBe(200);
+    const five = res.body.bands.find((b) => b.band === '5 GHz');
+    expect(five).toMatchObject({ radios: 2, up: 2, clients: 29, avgChannelUtilPct: 62.5, hot: 1, profileFailures: { noise: 1, load: 0 } });
+    expect(five.utilHistogram.find((h) => h.bucket === '80-90%').count).toBe(1);
+    expect(five.txPower).toEqual([{ level: 3, count: 2 }]);
+    expect(res.body.radios).toHaveLength(4);
+  });
+
+  it('GET /wireless/ssids aggregates SSIDs across controllers with a per-SSID trend', async () => {
+    const res = await request(app).get(`${API}/wireless/ssids`);
+    expect(res.status).toBe(200);
+    expect(res.body.summary[0]).toMatchObject({ ssid: 'Corp', clients: 36, controllers: 2 });
+    expect(res.body.rows).toHaveLength(3);
+    expect(res.body.trend.bySsid.find((s) => s.ssid === 'Corp').points.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('GET /wireless/controllers/:id returns the 360 sections and 404s for a non-wireless device', async () => {
+    const res = await request(app).get(`${API}/wireless/controllers/402`);
+    expect(res.status).toBe(200);
+    expect(res.body.summary.deviceName).toBe('SJCX-GANC-1');
+    expect(res.body.radius.auth).toEqual([expect.objectContaining({ server: '10.0.0.1', state: 'unresponsive' })]);
+    expect(res.body.connections.clientsMax).toBe(3000);
+    expect(res.body.issues.map((i) => i.type)).toContain('wlan-radius-unresponsive');
+    expect((await request(app).get(`${API}/wireless/controllers/499`)).status).toBe(404);
   });
 });
