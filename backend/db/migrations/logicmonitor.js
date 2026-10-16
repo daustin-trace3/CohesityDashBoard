@@ -792,4 +792,33 @@ module.exports = [
       addCol('lm_issue_history', 'absent_polls', 'INTEGER DEFAULT 0');
     },
   },
+  // Migration v7 (round 9). WP6 part: lm_alerts.duplicate_of marks an open LM
+  // alert that relays a feed ICC polls directly ('duplicate:<platform>').
+  // shadowed_by is a JSON dependency culprit, so it cannot carry this.
+  {
+    version: 7,
+    up(db) {
+      const addCol = (table, col, ddl) => {
+        const cols = db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name);
+        if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+      };
+      addCol('lm_alerts', 'duplicate_of', 'TEXT');
+      // WP7 part: hour-of-day baselines for history-bearing DataSource metrics (IP SLA).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lm_ds_metric_baseline (
+          source_id    INTEGER NOT NULL,
+          lm_device_id INTEGER NOT NULL,
+          hds_id       INTEGER NOT NULL,
+          instance_key TEXT NOT NULL,
+          metric       TEXT NOT NULL,
+          hour_of_day  INTEGER NOT NULL,
+          samples      INTEGER,
+          median       REAL,
+          mad          REAL,
+          computed_at  TEXT,
+          PRIMARY KEY (source_id, lm_device_id, hds_id, instance_key, metric, hour_of_day)
+        );
+      `);
+    },
+  },
 ];

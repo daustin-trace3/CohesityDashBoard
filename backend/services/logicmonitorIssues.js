@@ -318,6 +318,7 @@ const METRIC_ISSUE_TYPES = [
   'fw-ha-degraded', 'fw-tunnel-down', 'fw-session-high', 'fw-config-unsynced',
   'lb-failover-degraded', 'lb-pool-degraded', 'lb-cert-expiring', 'lb-daemon-down',
   'device-cpu-high', 'device-memory-high', 'hardware-fault', 'bgp-peer-down', 'ospf-neighbor-down', 'optic-power-low',
+  'cloud-circuit-down', 'cloud-circuit-saturated',
   ...WIRELESS_ISSUE_TYPES,
 ];
 
@@ -570,6 +571,9 @@ function computeMetricIssues(dbh, t, srcName) {
         `No F5 in the pair ${names.join(' and ')} is active (${known.map((g) => `${g.dev.name} ${failoverText(g.state)}`).join(', ')})`);
     }
   }
+
+  // Round 9: AWS Direct Connect and Azure ExpressRoute (family 'cloud').
+  try { issues.push(...require('./logicmonitorCloud').cloudIssues(dbh, t, srcName, index)); } catch { /* a cloud rule fault must not hide the other issues */ }
   return issues;
 }
 

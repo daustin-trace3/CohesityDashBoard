@@ -21,6 +21,7 @@ function AlertModal({ alert, onClose }) {
         {a.acked ? <Badge tone="info">Acked</Badge> : null}
         {a.sdted ? <Badge tone="neutral">In SDT</Badge> : null}
         {a.anomaly ? <Badge tone="warn">Anomaly</Badge> : null}
+        {a.duplicateOf ? <Badge tone="neutral">{`Relay of ${String(a.duplicateOf).replace('duplicate:', '')}`}</Badge> : null}
       </div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
         <Fact label="Resource">{a.monitorObjectName}</Fact>
@@ -59,6 +60,7 @@ export default function LmAlertsPage() {
   const [rows, setRows] = useState(null);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState({});
+  const [duplicates, setDuplicates] = useState({ total: 0, byPlatform: [] });
   const [datasources, setDatasources] = useState([]);
   const [q, setQ] = useState(searchParams.get('q') || '');
   const [page, setPage] = useState(1);
@@ -74,6 +76,7 @@ export default function LmAlertsPage() {
   const acked = searchParams.get('acked') || '';
   const datasource = searchParams.get('datasource') || '';
   const deviceId = searchParams.get('deviceId') || '';
+  const duplicate = searchParams.get('duplicate') || '';
 
   const setParam = (key, value) => {
     const next = new URLSearchParams(searchParams);
@@ -89,15 +92,17 @@ export default function LmAlertsPage() {
     if (acked) params.acked = acked;
     if (datasource) params.datasource = datasource;
     if (deviceId) params.deviceId = deviceId;
+    if (duplicate) params.duplicate = duplicate;
     return client.get('/logicmonitor/alerts', { params })
       .then(({ data }) => {
         setRows(Array.isArray(data?.items) ? data.items : []);
         setTotal(data?.total ?? 0);
         setCounts(data?.counts || {});
+        setDuplicates(data?.duplicates || { total: 0, byPlatform: [] });
         setLastRefreshed(new Date());
       })
       .catch(() => { setRows([]); setTotal(0); toast({ type: 'error', title: 'Failed to load alerts' }); });
-  }, [q, page, limit, sort, dir, cleared, severity, acked, datasource, deviceId, toast]);
+  }, [q, page, limit, sort, dir, cleared, severity, acked, datasource, deviceId, duplicate, toast]);
 
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
@@ -132,6 +137,17 @@ export default function LmAlertsPage() {
             </button>
           ))}
           <button onClick={() => setParam('acked', acked === '1' ? '' : '1')} className={chipBtn(acked === '1')}>Acked <span className="tnum opacity-80">{fmtNum(counts.acked || 0)}</span></button>
+          {(duplicates.total > 0 || duplicate === '1') && (
+            <button
+              onClick={() => setParam('duplicate', duplicate === '1' ? '' : '1')}
+              className={chipBtn(duplicate === '1')}
+              title={duplicates.byPlatform.length
+                ? `Relays of feeds ICC already polls directly, kept out of the counts and the Ops Agent: ${duplicates.byPlatform.map((p) => `${p.label} ${p.count}`).join(', ')}`
+                : 'Alerts that relay a feed ICC already polls directly'}
+            >
+              Duplicates <span className="tnum opacity-80">{fmtNum(duplicates.total || 0)}</span>
+            </button>
+          )}
           <span className="text-[11px] text-ink-faint ml-1">In SDT: {fmtNum(counts.sdted || 0)} (counts are over the open set)</span>
         </div>
         {datasources.length > 0 && (
@@ -191,6 +207,7 @@ export default function LmAlertsPage() {
                           {a.cleared ? <Badge tone="neutral">Cleared</Badge> : null}
                           {a.acked ? <Badge tone="info">Acked</Badge> : null}
                           {a.sdted ? <Badge tone="neutral">SDT</Badge> : null}
+                          {a.duplicateOf ? <Badge tone="neutral">Duplicate</Badge> : null}
                           {!a.cleared && !a.acked && !a.sdted ? <span className="text-[11px] text-ink-faint">Open</span> : null}
                         </div>
                       </td>

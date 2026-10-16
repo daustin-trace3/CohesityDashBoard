@@ -423,6 +423,153 @@ function blameHistory(dbh, { days = 30, nowMs = Date.now() } = {}) {
   return res;
 }
 
+// -- SnapMirror lag versus node ports (round 9, WP6) ---------------------------------------------
+
+const SNAPMIRROR_LAG_S = 3600;
+const SNAPMIRROR_FALLBACK_WINDOW_S = 6 * 3600;
+
+/**
+ * SnapMirror relationships that lag (lag_seconds above an hour, a state other
+ * than snapmirrored, or healthy = 0) in the last `days`, against the switch
+ * ports of the source and destination cluster nodes. The ports come from the
+ * ICC endpoint rows (netapp refs, nic = node port); when the cluster has
+ * intercluster LIFs the node's ports are narrowed to the LIF ports. The lag
+ * window runs from captured_at minus the lag (else the last transfer end, else
+ * six hours) to captured_at, bounded to the page window. Per port: mean utilization and
+ * mean errors in the window against lm_interface_baseline for the window's
+ * UTC hours. finding: 'saturates' (mean >= lm_backup_overlay_util_pct),
+ * 'elevated' (utilization or errors above baseline + k x MAD), 'normal', or
+ * 'unmapped' (no resolvable port with history for that side). Same vocabulary
+ * as backupLoad. Netapp node and LIF column use is from the netapp migration
+ * (name, serial_number; node_name, port_name, services); whether ONTAP fills
+ * services with the string "intercluster" on a live cluster is UNVERIFIED.
+ * Never throws.
+ */
+function snapmirrorVsPorts(dbh, { days = 7, nowMs = Date.now(), endpoints = null } = {}) {
+  const out = [];
+  try {
+    if (!tableExists(dbh, 'netapp_snapmirror') || !tableExists(dbh, 'netapp_nodes') || !tableExists(dbh, 'netapp_arrays') || !tableExists(dbh, 'lm_interface_history')) return out;
+    const issuesMod = require('./logicmonitorIssues');
+    const sat = issuesMod.getThreshold('lm_backup_overlay_util_pct');
+    const k = issuesMod.getThreshold('lm_if_anomaly_k');
+    const epRows = endpoints || lmEndpoints.endpointsAll(dbh);
+    if (!epRows.length) return out;
+    // captured_at is written as ISO by some pollers and as a SQLite stamp by others, so the
+    // age cutoff is applied in JS (toMs) rather than compared in SQL.
+    const cutoffMs = nowMs - Math.max(1, Number(days) || 7) * DAY_MS;
+    const rels = dbh.prepare(`
+      SELECT m.*, a.name AS array_name FROM netapp_snapmirror m LEFT JOIN netapp_arrays a ON a.id = m.array_id
+      WHERE (COALESCE(m.lag_seconds, 0) > ? OR COALESCE(m.healthy, 1) = 0
+          OR (m.state IS NOT NULL AND lower(m.state) NOT IN ('snapmirrored', 'in-sync', 'insync')))
+      ORDER BY m.id DESC LIMIT 2000
+    `).all(SNAPMIRROR_LAG_S).filter((m) => (toMs(m.captured_at) || 0) >= cutoffMs).slice(0, 400);
+    if (!rels.length) return out;
+
+    const arrays = dbh.prepare('SELECT id, name FROM netapp_arrays').all();
+    const arrayByName = new Map(arrays.map((a) => [norm(a.name), a]));
+    const nodeStmt = dbh.prepare('SELECT name FROM netapp_nodes WHERE array_id = ? AND name IS NOT NULL ORDER BY name');
+    const lifStmt = tableExists(dbh, 'netapp_lifs')
+      ? dbh.prepare("SELECT port_name FROM netapp_lifs WHERE array_id = ? AND lower(node_name) = ? AND port_name IS NOT NULL AND lower(COALESCE(services, '')) LIKE '%intercluster%'")
+      : null;
+    const histStmt = dbh.prepare('SELECT in_util_pct, out_util_pct, in_errors, out_errors FROM lm_interface_history WHERE source_id = ? AND instance_id = ? AND captured_at >= ? AND captured_at <= ?');
+    const baseStmt = dbh.prepare('SELECT hour_of_day, util_median, util_mad, err_median, err_mad FROM lm_interface_baseline WHERE source_id = ? AND instance_id = ?');
+    const baseCache = new Map();
+    const portCache = new Map();
+
+    const portsOfCluster = (arrayId) => {
+      if (portCache.has(arrayId)) return portCache.get(arrayId);
+      const res = [];
+      const seen = new Set();
+      for (const n of nodeStmt.all(arrayId)) {
+        const lifPorts = lifStmt ? new Set(lifStmt.all(arrayId, norm(n.name)).map((l) => norm(l.port_name))) : new Set();
+        let sp = [];
+        try { sp = lmEndpoints.serverPath(dbh, { names: [n.name] }, { endpoints: epRows }).switchPorts.filter((p) => p.instanceId != null); } catch { sp = []; }
+        const narrowed = lifPorts.size ? sp.filter((p) => lifPorts.has(norm(p.nic))) : [];
+        const picked = narrowed.length ? narrowed : sp;
+        for (const p of picked) {
+          const key = `${p.sourceId}:${p.instanceId}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          res.push({ ...p, node: n.name, rule: narrowed.length ? 'intercluster-lif' : 'node-ports' });
+        }
+      }
+      portCache.set(arrayId, res);
+      return res;
+    };
+
+    const seenRel = new Set();
+    for (const r of rels) {
+      const relKey = `${norm(r.source_path)}|${norm(r.destination_path)}|${norm(r.destination_cluster)}`;
+      if (seenRel.has(relKey)) continue;
+      seenRel.add(relKey);
+      const capMs = toMs(r.captured_at) || nowMs;
+      const lastEnd = toMs(r.last_transfer_end);
+      // The lag started lag_seconds before the poll; without a lag figure the last
+      // transfer end opens the window, else the last six hours.
+      let startMs = Number(r.lag_seconds) > 0 ? capMs - Number(r.lag_seconds) * 1000
+        : (lastEnd && lastEnd < capMs ? lastEnd : capMs - SNAPMIRROR_FALLBACK_WINDOW_S * 1000);
+      startMs = Math.max(startMs, nowMs - Math.max(1, Number(days) || 7) * DAY_MS);
+      const endMs = Math.max(capMs, startMs + 30 * 60000);
+      const hours = new Set();
+      for (let t = startMs; t <= endMs; t += 1800000) hours.add(new Date(t).getUTCHours());
+      const base = {
+        relationship: `${r.source_path || '?'} to ${r.destination_path || '?'}`,
+        sourcePath: r.source_path || null, destinationPath: r.destination_path || null,
+        sourceCluster: r.source_cluster || null, destinationCluster: r.destination_cluster || null,
+        state: r.state || null, healthy: r.healthy == null ? null : Number(r.healthy) === 1,
+        lagSeconds: r.lag_seconds == null ? null : Number(r.lag_seconds),
+        lastTransferEnd: iso(lastEnd), lastTransferBytes: r.last_transfer_bytes == null ? null : Number(r.last_transfer_bytes),
+        windowStart: iso(startMs), windowEnd: iso(endMs),
+      };
+      for (const side of ['source', 'destination']) {
+        const clusterName = side === 'source' ? r.source_cluster : r.destination_cluster;
+        let arr = clusterName ? arrayByName.get(norm(clusterName)) : null;
+        // The polling array is the destination in a pull-model relationship list.
+        if (!arr && side === 'destination' && r.array_id != null) arr = { id: r.array_id, name: r.array_name };
+        const ports = arr ? portsOfCluster(arr.id) : [];
+        let any = false;
+        for (const p of ports) {
+          const rows = histStmt.all(p.sourceId, p.instanceId, sqlTs(startMs), sqlTs(endMs));
+          const utils = rows.map((x) => Math.max(x.in_util_pct == null ? -1 : x.in_util_pct, x.out_util_pct == null ? -1 : x.out_util_pct)).filter((v) => v >= 0);
+          if (!utils.length) continue;
+          any = true;
+          const errs = rows.map((x) => (x.in_errors == null && x.out_errors == null ? null : (Number(x.in_errors) || 0) + (Number(x.out_errors) || 0))).filter((v) => v != null);
+          const mean = utils.reduce((a, b) => a + b, 0) / utils.length;
+          const errMean = errs.length ? errs.reduce((a, b) => a + b, 0) / errs.length : null;
+          const bk = `${p.sourceId}:${p.instanceId}`;
+          if (!baseCache.has(bk)) baseCache.set(bk, baseStmt.all(p.sourceId, p.instanceId));
+          const bl = baseCache.get(bk).filter((b) => hours.has(b.hour_of_day) && b.util_median != null);
+          const avg = (key) => { const v = bl.map((b) => b[key]).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+          const bMed = avg('util_median');
+          const bMad = avg('util_mad') || 0;
+          const eMed = avg('err_median');
+          const eMad = avg('err_mad') || 0;
+          let finding = 'normal';
+          if (mean >= sat) finding = 'saturates';
+          else if (bMed != null && mean > bMed + k * Math.max(bMad, 2)) finding = 'elevated';
+          else if (errMean != null && errMean >= 1 && errMean > (eMed == null ? 0 : eMed) + k * Math.max(eMad, 1)) finding = 'elevated';
+          out.push({
+            ...base, side, cluster: clusterName || (arr && arr.name) || null, node: p.node, nodePort: p.nic || null,
+            sourceId: p.sourceId, deviceId: p.deviceId, deviceName: p.deviceName, instanceId: p.instanceId, port: p.port,
+            meanUtilPct: round1(mean), maxUtilPct: round1(Math.max(...utils)), baselineUtilPct: round1(bMed),
+            meanErrors: round1(errMean), baselineErrors: round1(eMed), portRule: p.rule, finding,
+          });
+        }
+        if (!any) {
+          out.push({ ...base, side, cluster: clusterName || (arr && arr.name) || null, node: null, nodePort: null, sourceId: null, deviceId: null,
+            deviceName: null, instanceId: null, port: null, meanUtilPct: null, maxUtilPct: null, baselineUtilPct: null,
+            meanErrors: null, baselineErrors: null, portRule: null, finding: 'unmapped' });
+        }
+      }
+    }
+    const rank = (x) => (x.finding === 'saturates' ? 0 : x.finding === 'elevated' ? 1 : x.finding === 'normal' ? 2 : 3);
+    out.sort((a, b) => rank(a) - rank(b) || (b.lagSeconds || 0) - (a.lagSeconds || 0) || String(a.relationship).localeCompare(String(b.relationship)));
+    return out.slice(0, 500);
+  } catch {
+    return out.slice(0, 500);
+  }
+}
+
 // -- Whole page ------------------------------------------------------------------------------------------
 
 /** GET /correlation payload. The ICC endpoint rows are built once and shared. */
@@ -434,6 +581,7 @@ function correlation(dbh, { nowMs = Date.now() } = {}) {
     replicationVsCircuits: replicationVsCircuits(dbh, { days: 7, nowMs }),
     changesThenIncidents: changesThenIncidents(dbh, { days: 14, nowMs }),
     blameHistory: blameHistory(dbh, { days: 30, nowMs }),
+    snapmirror: snapmirrorVsPorts(dbh, { days: 7, nowMs, endpoints }),
     generatedAt: new Date(nowMs).toISOString(),
   };
 }
@@ -458,7 +606,7 @@ function siteCounts(dbh, siteKey, sourceId = null, data = null) {
 module.exports = {
   backupLoad: lmEndpoints.backupLoad,
   backupLoadByPort: lmEndpoints.backupLoadByPort,
-  replicationVsCircuits, changesThenIncidents, blameHistory, recordBlame,
+  replicationVsCircuits, changesThenIncidents, blameHistory, snapmirrorVsPorts, recordBlame,
   correlation, siteCounts,
   INCIDENT_TYPES,
 };

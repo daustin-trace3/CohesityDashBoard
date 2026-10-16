@@ -657,9 +657,10 @@ describe('seedDemo.js', () => {
     // 140 monitored devices plus the 2 LM Uptime ping-check devices (deviceType 19),
     // plus 6 nyc/lon switches (round 2: 1 dist + 2 access per site), plus 7 round 3
     // switches (abq-dist-01 with 3 access switches, 3 unassigned-sw-* in no site group).
-    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(162);
+    expect(c('SELECT COUNT(*) c FROM lm_devices')).toBe(167); // 162 plus the 5 round 9 cloud circuits (3 Direct Connect, 2 ExpressRoute)
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 19')).toBe(2);
-    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 2')).toBe(20);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 2')).toBe(23);
+    expect(c('SELECT COUNT(*) c FROM lm_devices WHERE device_type = 4')).toBe(2);
     expect(c('SELECT COUNT(*) c FROM lm_devices WHERE is_network = 1')).toBe(80);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead-collector'")).toBe(14);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead' AND is_network = 1")).toBe(7);
@@ -675,7 +676,7 @@ describe('seedDemo.js', () => {
     expect(c('SELECT COUNT(*) c FROM lm_interface_daily')).toBeGreaterThan(40000);
     expect(c('SELECT COUNT(*) c FROM lm_device_datasources WHERE is_interface = 1')).toBe(67);
 
-    expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0')).toBe(114);
+    expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0')).toBe(118);
     expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 1')).toBe(400);
     expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0 AND acked = 1')).toBe(12);
     expect(c('SELECT COUNT(*) c FROM lm_alerts WHERE cleared = 0 AND sdted = 1')).toBe(6);
@@ -694,7 +695,7 @@ describe('seedDemo.js', () => {
     expect(c('SELECT COUNT(*) c FROM lm_metrics_history')).toBe(720);
 
     expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'description' AND dst_device_id IS NOT NULL")).toBe(96);
-    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'description' AND dst_device_id IS NULL")).toBe(39);
+    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'description' AND dst_device_id IS NULL")).toBe(41);
     // Round 2 server-facing ports: 6 ESXi hosts x 2 per site plus 2 dual-homed Dell servers.
     expect(c("SELECT COUNT(*) c FROM lm_interfaces WHERE description LIKE 'to %-esx-0% vmnic_'")).toBe(24);
     expect(c("SELECT COUNT(*) c FROM lm_interfaces WHERE description LIKE 'to dc_-esx-% NIC.Integrated.1-_'")).toBe(4);
@@ -707,7 +708,7 @@ describe('seedDemo.js', () => {
       expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE dst_platform = 'vcenter'")).toBeGreaterThan(0);
       expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE dst_platform = 'vcenter' AND dst_ref = 'nyc-esx-0101.icc.demo'")).toBe(2);
     }
-    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'lldp'")).toBe(10);
+    expect(c("SELECT COUNT(*) c FROM lm_topology_links WHERE protocol = 'lldp'")).toBe(12);
 
     const openTypes = db.prepare("SELECT DISTINCT type FROM lm_issue_history WHERE status = 'open'").all().map((r) => r.type);
     for (const type of [

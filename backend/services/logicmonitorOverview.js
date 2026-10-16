@@ -115,7 +115,7 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
     SELECT COALESCE(SUM(CASE WHEN severity_norm = 'critical' THEN 1 ELSE 0 END), 0) critical,
       COALESCE(SUM(CASE WHEN severity_norm = 'warning' THEN 1 ELSE 0 END), 0) warning,
       COALESCE(SUM(CASE WHEN severity_norm = 'info' THEN 1 ELSE 0 END), 0) info
-    FROM lm_alerts WHERE cleared = 0
+    FROM lm_alerts WHERE cleared = 0 AND duplicate_of IS NULL
   `) || { critical: 0, warning: 0, info: 0 };
   const shadowed = (one('SELECT COUNT(*) n FROM lm_alerts WHERE cleared = 0 AND shadowed_by IS NOT NULL') || { n: 0 }).n;
   const wanCount = (one('SELECT COUNT(*) n FROM lm_interfaces WHERE is_wan = 1 AND stale = 0') || { n: 0 }).n;
@@ -325,6 +325,21 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
         } : null,
       };
     };
+    // Latency watch counts per site: ONE grouped query over the episode table.
+    const watchBySite = new Map();
+    try {
+      const cut = new Date(nowMs - 7 * 86400000).toISOString();
+      const rows = db.prepare(`SELECT source_id AS sid, site_key AS sk, state, outcome, COUNT(*) AS n FROM lm_latency_episodes
+        WHERE site_key IS NOT NULL AND (opened_at >= ? OR state != 'closed') GROUP BY source_id, site_key, state, outcome`).all(cut);
+      for (const r of rows) {
+        const key = `${r.sid}|${r.sk}`;
+        const w = watchBySite.get(key) || { degrading: 0, critical: 0, oneOff7d: 0 };
+        if (r.state === 'degrading') w.degrading += r.n;
+        else if (r.state === 'critical') w.critical += r.n;
+        else if (r.state === 'closed' && r.outcome === 'one-off') w.oneOff7d += r.n;
+        watchBySite.set(key, w);
+      }
+    } catch { /* episode table missing on an unmigrated database */ }
     out.map.nodes = sites.map((s) => {
       const k = `${s.sourceId}|${s.siteKey}`;
       let viaCollector = null;
@@ -347,6 +362,7 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
         circuitsSaturated: satBySite.get(k) || 0,
         openIssues: openIssuesBySite.get(k) || 0,
         reachability: reach(k),
+        watch: watchBySite.get(k) || { degrading: 0, critical: 0, oneOff7d: 0 },
       };
     });
   }, null);

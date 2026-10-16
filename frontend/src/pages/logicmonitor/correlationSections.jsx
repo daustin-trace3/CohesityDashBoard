@@ -35,12 +35,14 @@ const fmtBytes = (n) => {
   return `${x.toFixed(x >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
 };
 
-const findingChip = (f) => (f ? <Badge tone={f === 'saturates' || f === 'coincident' ? 'crit' : 'warn'}>{titleCase(f)}</Badge> : <span className="text-ink-faint">-</span>);
+const findingChip = (f) => (f ? <Badge tone={f === 'saturates' || f === 'coincident' ? 'crit' : f === 'normal' || f === 'unmapped' ? 'neutral' : 'warn'}>{titleCase(f)}</Badge> : <span className="text-ink-faint">-</span>);
 
 const RULES = {
   vmkernel: ['vmkernel', "Ports found by following the host's management vmkernel interface to its vSwitch uplinks and their switch neighbours."],
   'all-uplinks': ['all uplinks', 'The vmkernel path could not be resolved, so every switch port matched to the host is counted.'],
   physical: ['physical', 'Physical server: the switch ports matched to the server by name.'],
+  'node-ports': ['node ports', "Cohesity cluster node: the switch ports matched to the node's hostname or address."],
+  'intercluster-lif': ['intercluster LIF', "The node's ports that carry an intercluster LIF."],
 };
 const RuleChip = ({ rule }) => {
   const r = RULES[rule];
@@ -138,6 +140,7 @@ function RunsDetail({ runs }) {
 export function BackupLoadSection({ rows, icon }) {
   const columns = [
     { k: 'port', label: 'Port', render: (r) => <span><span className="text-ink">{r.deviceName || '-'}</span> <span className="font-mono text-[11px] text-ink-muted">{r.port || ''}</span></span> },
+    { k: 'side', label: 'Side', render: (r) => (r.side === 'target' ? <span title="The Cohesity cluster node that receives the backup"><Badge tone="info">Target</Badge></span> : <span title="The protected host that sends the backup"><Badge tone="neutral">Client</Badge></span>) },
     { k: 'host', label: 'Host', render: (r) => <span>{r.host || '-'} <RuleChip rule={r.uplinkRule} /></span> },
     { k: 'windowStart', label: 'Window', render: (r) => <span className="whitespace-nowrap">{fmtWhen(r.windowStart)} - {fmtWhen(r.windowEnd)}</span> },
     { k: 'meanUtilPct', label: 'Mean', align: 'right', render: (r) => fmtPct(r.meanUtilPct) },
@@ -148,8 +151,8 @@ export function BackupLoadSection({ rows, icon }) {
   ];
   return (
     <CorrTable section="backupLoad" csv="backupLoad" icon={icon} title="Backup load on switch ports" rows={rows} columns={columns}
-      blurb="Cohesity protection runs from the last 7 days grouped per host and overlapping window, with the load on the switch ports behind that host. Open a row to see the runs and each run's share of the window's bytes."
-      searchKeys={['host', 'deviceName', 'port']} defaultSortKey="meanUtilPct" emptyText="No backup window was matched to a switch port."
+      blurb="Cohesity protection runs from the last 7 days grouped per host and overlapping window, with the load on the switch ports behind that host (client side) and behind the receiving Cohesity cluster nodes (target side). Open a row to see the runs and each run's share of the window's bytes."
+      searchKeys={['host', 'deviceName', 'port', 'side']} defaultSortKey="meanUtilPct" emptyText="No backup window was matched to a switch port."
       expand={(r) => <RunsDetail runs={r.runs} />} />
   );
 }
@@ -221,5 +224,31 @@ export function BlameSection({ blame, icon }) {
       <CorrTable section="blameRecent" csv="blameRecent" icon={icon} title="Recent blames" rows={blame?.recent} columns={recentCols}
         searchKeys={['subject', 'hopDeviceName', 'hopPort']} defaultSortKey="at" emptyText="No recent blames." />
     </div>
+  );
+}
+
+const fmtLag = (sec) => {
+  if (sec == null || !Number.isFinite(Number(sec))) return '-';
+  const m = Math.round(Number(sec) / 60);
+  return m < 120 ? `${m} min` : `${Math.round(m / 6) / 10} h`;
+};
+
+export function SnapmirrorSection({ rows, icon }) {
+  const columns = [
+    { k: 'relationship', label: 'Relationship', render: (r) => <span title={`${r.sourceCluster || '?'} to ${r.destinationCluster || '?'}`}>{r.relationship}</span> },
+    { k: 'lagSeconds', label: 'Lag', align: 'right', render: (r) => fmtLag(r.lagSeconds) },
+    { k: 'state', label: 'State', render: (r) => <span>{r.state || '-'}{r.healthy === false ? ' (unhealthy)' : ''}</span> },
+    { k: 'side', label: 'Side', render: (r) => <Badge tone={r.side === 'source' ? 'info' : 'neutral'}>{titleCase(r.side)}</Badge> },
+    { k: 'node', label: 'Node', render: (r) => <span>{r.node ? `${r.node}${r.nodePort ? ` ${r.nodePort}` : ''}` : '-'} <RuleChip rule={r.portRule} /></span> },
+    { k: 'deviceName', label: 'Switch port', render: (r) => (r.deviceName ? <span><span className="text-ink">{r.deviceName}</span> <span className="font-mono text-[11px] text-ink-muted">{r.port || ''}</span></span> : '-') },
+    { k: 'meanUtilPct', label: 'Mean', align: 'right', render: (r) => fmtPct(r.meanUtilPct) },
+    { k: 'baselineUtilPct', label: 'Baseline', align: 'right', render: (r) => fmtPct(r.baselineUtilPct) },
+    { k: 'meanErrors', label: 'Errors', align: 'right', render: (r) => (r.meanErrors == null ? '-' : fmtNum(r.meanErrors)) },
+    { k: 'finding', label: 'Finding', render: (r) => findingChip(r.finding) },
+  ];
+  return (
+    <CorrTable section="snapmirror" csv="snapmirror" icon={icon} title="SnapMirror lag versus node ports" rows={rows} columns={columns}
+      blurb="SnapMirror relationships that lagged in the last 7 days, against the load and errors on the switch ports behind the source and destination cluster nodes during the lag window. Normal means the ports were quiet, so the cause is not the network path; Unmapped means ICC could not tie a node of that cluster to a switch port with history."
+      searchKeys={['relationship', 'node', 'deviceName', 'cluster']} defaultSortKey="lagSeconds" emptyText="No SnapMirror relationship lagged in this period." />
   );
 }

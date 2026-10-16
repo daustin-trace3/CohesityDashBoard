@@ -562,12 +562,15 @@ async function refreshDevice(source, device) {
 }
 
 function refreshCandidates(sourceId, { onlyMissing = false } = {}) {
+  // Round 9: AWS Direct Connect and Azure ExpressRoute resources (device_type 2 and 4, not network
+  // devices) are inventoried too when their external resource type matches CLOUD_ERT_RE.
+  const cloudRe = require('./logicmonitorCatalog').CLOUD_ERT_RE;
   return db.prepare(`
-    SELECT d.lm_device_id, d.is_network, d.device_type, d.display_name FROM lm_devices d
-    WHERE d.source_id = ? AND d.stale = 0 AND (d.is_network = 1 OR d.device_type IN (18, 19))
+    SELECT d.lm_device_id, d.is_network, d.device_type, d.display_name, d.ert FROM lm_devices d
+    WHERE d.source_id = ? AND d.stale = 0 AND (d.is_network = 1 OR d.device_type IN (18, 19) OR (d.device_type IN (2, 4) AND d.ert IS NOT NULL))
     ${onlyMissing ? 'AND NOT EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = d.source_id AND x.lm_device_id = d.lm_device_id)' : ''}
     ORDER BY d.lm_device_id
-  `).all(sourceId);
+  `).all(sourceId).filter((d) => d.is_network === 1 || d.device_type === 18 || d.device_type === 19 || cloudRe.test(String(d.ert || '')));
 }
 
 async function refreshDevices(source, devices) {
@@ -1092,6 +1095,7 @@ async function dailyWork(source, note) {
   try { lmPath.computeTiers(db, source.id); } catch (err) { logger.warn(`[LmPoller] tiers failed: ${err.message}`); }
   try { lmPath.computeCircuits(db, source.id); } catch (err) { logger.warn(`[LmPoller] circuits failed: ${err.message}`); }
   try { computeInterfaceBaselines(db, source.id); } catch (err) { logger.warn(`[LmPoller] interface baselines failed: ${err.message}`); }
+  try { require('./logicmonitorMetricBaselines').computeMetricBaselines(db, source.id, require('./logicmonitorIssues').getThresholds()); } catch (err) { logger.warn(`[LmPoller] metric baselines failed: ${err.message}`); }
   try { lmWatch.pruneEpisodes(db); } catch (err) { logger.warn(`[LmPoller] episode prune failed: ${err.message}`); }
   // Weekly (computeReference skips itself while its newest row is under 6 days old).
   try { lmWatch.computeReference(db, source.id, require('./logicmonitorIssues').getThresholds()); } catch (err) { logger.warn(`[LmPoller] check reference failed: ${err.message}`); }
@@ -1114,9 +1118,9 @@ function writeMetrics(sourceId) {
       (SELECT COUNT(*) FROM lm_interfaces WHERE source_id = @s AND stale = 0) interfaces_total,
       (SELECT COUNT(*) FROM lm_interfaces WHERE source_id = @s AND stale = 0 AND status_text = 'up') interfaces_up,
       (SELECT COUNT(*) FROM lm_interfaces WHERE source_id = @s AND stale = 0 AND status_text = 'down' AND COALESCE(stop_monitoring, 0) = 0) interfaces_down,
-      (SELECT COUNT(*) FROM lm_alerts WHERE source_id = @s AND cleared = 0 AND severity = 4) alerts_critical,
-      (SELECT COUNT(*) FROM lm_alerts WHERE source_id = @s AND cleared = 0 AND severity = 3) alerts_error,
-      (SELECT COUNT(*) FROM lm_alerts WHERE source_id = @s AND cleared = 0 AND severity = 2) alerts_warning,
+      (SELECT COUNT(*) FROM lm_alerts WHERE source_id = @s AND cleared = 0 AND duplicate_of IS NULL AND severity = 4) alerts_critical,
+      (SELECT COUNT(*) FROM lm_alerts WHERE source_id = @s AND cleared = 0 AND duplicate_of IS NULL AND severity = 3) alerts_error,
+      (SELECT COUNT(*) FROM lm_alerts WHERE source_id = @s AND cleared = 0 AND duplicate_of IS NULL AND severity = 2) alerts_warning,
       (SELECT COUNT(*) FROM lm_alerts WHERE source_id = @s AND cleared = 0 AND acked = 1) alerts_acked,
       (SELECT COUNT(*) FROM lm_collectors WHERE source_id = @s AND stale = 0) collectors_total,
       (SELECT COUNT(*) FROM lm_collectors WHERE source_id = @s AND stale = 0 AND is_down = 1) collectors_down,
@@ -1180,6 +1184,7 @@ async function pollSource(source) {
     note('clearedAlerts', clearedRes);
     if (openRes.ok || clearedRes.ok) {
       storeAlerts(source.id, openRes.ok ? openRes.data : [], clearedRes.ok ? clearedRes.data : [], { openOk: openRes.ok });
+      try { require('./logicmonitorDuplicates').markDuplicateAlerts(db); } catch (err) { logger.warn(`[LmPoller] duplicate marking failed: ${err.message}`); }
     }
 
     const websitesRes = await trySection('websites', () => lmApi.fetchWebsites(source));
@@ -1519,7 +1524,7 @@ module.exports = {
   initLogicmonitorPoller, createLogicmonitorPollerHandle, logicmonitorPollerHandle,
   pollSource, pollInterfaces, probeFeatures,
   buildTopologyLinks, parseLinkDescription, parseNeighborInstance, buildDeviceIndex, makeResolver,
-  storeAlerts, upsertAlertRow, computeInterfaceBaselines, storeDevices, storeCollectors, storeChecks, appendCheckRows, clearedSince,
+  storeAlerts, upsertAlertRow, computeInterfaceBaselines, refreshCandidates, storeDevices, storeCollectors, storeChecks, appendCheckRows, clearedSince,
   mapInterfaceColumns, summarizeInterfaceSeries, mapInterfaceResponse, matchInstance, statusText,
   checkWindow, interfaceWindow, rollupInterfaceDaily, pruneHistories, writeMetrics,
   IF_COLUMNS,

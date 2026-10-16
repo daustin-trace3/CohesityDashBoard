@@ -13,7 +13,13 @@
 // kind: 'gauge' | 'state' | 'counter' | 'pct'. State values keep the raw
 // number; routes map enums and render unknown values as the number.
 
-const FAMILIES = ['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless'];
+const FAMILIES = ['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud'];
+
+// Round 9: devices the inventory refresh must also read DataSources for even
+// though they are not network devices (AWS Direct Connect, Azure ExpressRoute).
+// They arrive as device_type 2 (AWS) or 4 (Azure) with an external resource
+// type (ERT) in this family. UNVERIFIED against a live portal.
+const CLOUD_ERT_RE = /^(AWS\/DirectConnect|AWS\/DirectConnectVirtualInterface|Azure\/ExpressRouteCircuit)/i;
 
 const FAMILY_LABELS = {
   firewall: 'Firewalls',
@@ -24,6 +30,7 @@ const FAMILY_LABELS = {
   ipsla: 'IP SLA',
   voice: 'Voice',
   wireless: 'Wireless',
+  cloud: 'Cloud circuits',
 };
 
 const DEFAULT_MAX_INSTANCES = 2500;
@@ -491,6 +498,36 @@ add('wireless', 'ntm_wlc_ap_status_check', 'WLC AP availability', { wlc_ap_avail
 // Status: 0 ok, 1 mobility tunnels down, 2 script error.
 add('wireless', 'ntm_wlc_mobility_domain_check', 'WLC mobility domain', { wlc_mobility_status: state(exact('Status'), 'Mobility tunnels') });
 
+// -- Cloud circuits (round 9) -------------------------------------------------------
+
+// ALL UNVERIFIED: no AWS Direct Connect / Azure ExpressRoute DataSource has been
+// read from a live portal. Names are case-insensitive regex alternatives; the
+// first live poll records the matched datapoints and the unmatched ones.
+// connectionState / BGP enums are unknown, so states keep the raw number and
+// logicmonitorCloud.js treats /down|unavailable|0/ as down. The virtual
+// interface entry comes before the connection entry because a VIF DataSource
+// name also contains "DirectConnect".
+add('cloud', /VirtualInterface/i, 'AWS Direct Connect virtual interface', {
+  vif_state: state(['vifState', 'virtualInterfaceState', 'state'], 'Virtual interface state'),
+  vif_bps_in: gauge(['VirtualInterfaceBpsIngress', 'BitsIn', 'bpsIn', 'ingress'], 'bps', 'In'),
+  vif_bps_out: gauge(['VirtualInterfaceBpsEgress', 'BitsOut', 'bpsOut', 'egress'], 'bps', 'Out'),
+  vif_bgp: state(['bgp'], 'BGP'),
+}, { history: true });
+add('cloud', /DirectConnect/i, 'AWS Direct Connect', {
+  dx_state: state(['connectionState', 'state'], 'Connection state'),
+  dx_bps_in: gauge(['BitsIn', 'bpsIn', 'ConnectionBpsIngress'], 'bps', 'In'),
+  dx_bps_out: gauge(['BitsOut', 'bpsOut', 'ConnectionBpsEgress'], 'bps', 'Out'),
+  dx_light_in: gauge(['LightLevelRx'], 'dBm', 'Light level Rx'),
+  dx_light_out: gauge(['LightLevelTx'], 'dBm', 'Light level Tx'),
+  dx_errors: gauge(['ConnectionErrorCount', 'CRC'], 'errors', 'Errors'),
+}, { history: true });
+add('cloud', /ExpressRoute/i, 'Azure ExpressRoute', {
+  er_bps_in: gauge(['BitsInPerSecond', 'BitsIn'], 'bps', 'In'),
+  er_bps_out: gauge(['BitsOutPerSecond', 'BitsOut'], 'bps', 'Out'),
+  er_bgp: state(['Bgp', 'BgpAvailability'], 'BGP availability'),
+  er_arp: state(['Arp'], 'ARP availability'),
+}, { history: true });
+
 // -- Lookup ----------------------------------------------------------------------
 
 const EXACT = new Map();
@@ -533,4 +570,4 @@ function cleanInstanceKey(rawKey, dsName) {
   return k;
 }
 
-module.exports = { FAMILIES, FAMILY_LABELS, CATALOG, catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES };
+module.exports = { FAMILIES, FAMILY_LABELS, CLOUD_ERT_RE, CATALOG, catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES };

@@ -33,7 +33,7 @@ function opsSummary(coreApi) {
     FROM lm_devices WHERE stale = 0
   `).get();
   const i = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN status_text = 'up' THEN 1 ELSE 0 END) up FROM lm_interfaces WHERE stale = 0").get();
-  const openAlerts = db.prepare('SELECT COUNT(*) n FROM lm_alerts WHERE cleared = 0').get().n;
+  const openAlerts = db.prepare('SELECT COUNT(*) n FROM lm_alerts WHERE cleared = 0 AND duplicate_of IS NULL').get().n;
   const collectorsDown = db.prepare('SELECT COUNT(*) n FROM lm_collectors WHERE stale = 0 AND is_down = 1').get().n;
   const latest = db.prepare(`
     SELECT COALESCE(SUM(checks_degraded), 0) + COALESCE(SUM(checks_down), 0) n FROM lm_metrics_history m
@@ -99,7 +99,7 @@ function collectAlerts(coreApi) {
   const alerts = db.prepare(`
     SELECT condition_key, severity_norm, severity, source_id, lm_device_id, monitor_object_name, resource_template_name,
       instance_name, data_point_name, alert_value, threshold, start_epoch, captured_at
-    FROM lm_alerts WHERE cleared = 0 AND COALESCE(sdted, 0) = 0 AND severity >= 3 AND shadowed_by IS NULL
+    FROM lm_alerts WHERE cleared = 0 AND COALESCE(sdted, 0) = 0 AND severity >= 3 AND shadowed_by IS NULL AND duplicate_of IS NULL
   `).all();
   // The upstream alert reads "+N downstream shadowed": on the culprit device's
   // most severe alerts, N = alerts hidden beneath it.
@@ -186,6 +186,37 @@ function networkPathGroup(path) {
   };
 }
 
+/** Open, non-duplicate lm_alerts of one LM device, newest 20 first. */
+function openAlertsOf(db, d, limit = 20) {
+  return db.prepare(`
+    SELECT severity, severity_norm, resource_template_name, instance_name, data_point_name, alert_value, threshold, start_epoch, acked, sdted
+    FROM lm_alerts WHERE source_id = ? AND lm_device_id = ? AND cleared = 0 AND duplicate_of IS NULL
+    ORDER BY severity DESC, start_epoch DESC LIMIT ${Number(limit)}
+  `).all(d.source_id, d.lm_device_id);
+}
+
+/** Server 360 "LogicMonitor alerts" group for one matched LM device, or null. */
+function alertsGroup(db, d) {
+  try {
+    const alerts = openAlertsOf(db, d, 8);
+    if (!alerts.length) return null;
+    const total = db.prepare('SELECT COUNT(*) n FROM lm_alerts WHERE source_id = ? AND lm_device_id = ? AND cleared = 0 AND duplicate_of IS NULL').get(d.source_id, d.lm_device_id).n;
+    const sevTone = (s) => (s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : undefined);
+    return {
+      facts: alerts.map((a) => ({
+        label: 'LogicMonitor Alert',
+        value: `${a.severity_norm}: ${[a.resource_template_name, a.instance_name].filter(Boolean).join(' ')}`.slice(0, 80),
+        tone: sevTone(a.severity_norm),
+      })),
+      lines: [
+        ...alerts.map((a) => `LogicMonitor alert ${a.severity_norm}: ${[a.resource_template_name, a.instance_name, a.data_point_name].filter(Boolean).join(' / ')} = ${a.alert_value ?? '-'} since ${epochShort(a.start_epoch) || '-'}`),
+        ...(total > alerts.length ? [`... and ${total - alerts.length} more open LogicMonitor alert(s) on this device`] : []),
+      ],
+      link: { label: 'Open alerts in LogicMonitor', href: `/logicmonitor/alerts?deviceId=${d.lm_device_id}` },
+    };
+  } catch { return null; }
+}
+
 /**
  * Server 360 contribution: LM devices matching the queried server by display
  * name, name, sysname, hostname or any system IP, plus (round 2) the switch
@@ -211,7 +242,7 @@ function server360(coreApi, ctx) {
     }
     const tone = (s) => (s === 'normal' ? 'ok' : s === 'dead' ? 'crit' : s === 'dead-collector' ? 'warn' : undefined);
     const groups = rows.map((d) => {
-      const openAlerts = db.prepare('SELECT COUNT(*) n FROM lm_alerts WHERE source_id = ? AND lm_device_id = ? AND cleared = 0').get(d.source_id, d.lm_device_id).n;
+      const openAlerts = db.prepare('SELECT COUNT(*) n FROM lm_alerts WHERE source_id = ? AND lm_device_id = ? AND cleared = 0 AND duplicate_of IS NULL').get(d.source_id, d.lm_device_id).n;
       const lines = [];
       if (d.sysinfo) lines.push(String(d.sysinfo).slice(0, 160));
       if (d.collector_down) lines.push('Its LogicMonitor collector is down');
@@ -228,6 +259,11 @@ function server360(coreApi, ctx) {
         link: { label: d.display_name || d.name, href: `/logicmonitor/devices?device=${d.lm_device_id}` },
       };
     });
+    // Round 9: the device's open, non-duplicate LM alerts as their own group.
+    for (const d of rows) {
+      const g = alertsGroup(db, d);
+      if (g) groups.push(g);
+    }
     if (pathGroup) groups.push(pathGroup);
     return {
       title: 'LogicMonitor',
@@ -465,7 +501,7 @@ function incidentEvidence(coreApi, ctx) {
       lines.push(`Device ${dev.display_name || dev.name}: host status ${dev.host_status || 'unknown'}${dev.collector_hostname || dev.collector_desc ? `, collector ${dev.collector_hostname || dev.collector_desc}${dev.collector_down ? ' (DOWN)' : ''}` : ''}${dev.site_name ? `, site ${dev.site_name}` : ''}`);
       const open = db.prepare(`
         SELECT severity_norm, resource_template_name, instance_name, data_point_name, alert_value, start_epoch, shadowed_by
-        FROM lm_alerts WHERE source_id = ? AND lm_device_id = ? AND cleared = 0 ORDER BY severity DESC, start_epoch
+        FROM lm_alerts WHERE source_id = ? AND lm_device_id = ? AND cleared = 0 AND duplicate_of IS NULL ORDER BY severity DESC, start_epoch
       `).all(dev.source_id, dev.lm_device_id);
       const live = open.filter((a) => !a.shadowed_by);
       for (const a of live.slice(0, 8)) {
@@ -725,6 +761,8 @@ module.exports = {
   metricsHistory: { arraysTable: 'lm_sources', metricsTable: 'lm_metrics_history', arrayIdColumn: 'source_id' },
   server360,
   server360Suggest,
+  matchDevices,
+  openAlertsOf,
   topology,
   incidentEvidence,
   siteOf,

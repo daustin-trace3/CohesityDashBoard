@@ -25,6 +25,10 @@
 // Round 9 latency watch (generators/logicmonitorWatchDemo.js): latency-degrading "NYC ... reachability @ phx-col01"
 //   (1.85x for 41 min, open episode), latency-pattern "DAL core reachability @ abq-col01" (four one-off spikes in
 //   6 days), latency-drift "PHX core reachability @ abq-col01" (35% above the earlier weeks for 7 days).
+// Round 9 WP7 (generators/logicmonitorIpslaCloudDemo.js): IP SLA probe on slc-rtr-01 at 1.9x its baseline for 2 hours
+//   (open latency-degrading episode, den-rtr-01 probe clean); AWS Direct Connect dx-phx-prod-1/2 and dx-dal-prod-1
+//   (device_type 2; dal reads state 0 = cloud-circuit-down, phx-2 at 87% of 1 Gbps = cloud-circuit-saturated) and
+//   Azure ExpressRoute er-phx-azure-east / er-dal-azure-south (device_type 4), each with 7 days of throughput history.
 // Round 8 (DataSource metrics): five Palo Alto firewalls (phx-fw-01/02, dal-fw-01/02, den-fw-01) and
 //   lm_ds_* rows for firewalls, the four F5s, Cisco device health, core and distribution optics, BGP and
 //   OSPF, with 7 days of history on the history metrics. Issues: fw-ha-degraded phx-fw-02 (peer),
@@ -204,6 +208,8 @@ function buildDevicePlan(db) {
   for (const n of ['phx-fw-01', 'phx-fw-02', 'dal-fw-01', 'dal-fw-02', 'den-fw-01']) add({ name: n, site: n.slice(0, 3), kind: 'paloalto', r8: true });
   // Round 9: one AireOS (5520) and one Catalyst 9800 wireless controller, appended last.
   for (const n of ['phx-wlc-01', 'dal-wlc-01']) add({ name: n, site: n.slice(0, 3), kind: 'wlc', r8: true });
+  // Round 9 WP7: AWS Direct Connect (device_type 2) and Azure ExpressRoute (device_type 4), appended last.
+  for (const c of require('./logicmonitorIpslaCloudDemo').cloudDevices()) add({ ...c, r8: true });
 
   let id = 101;
   const counters = {};
@@ -306,6 +312,10 @@ function deviceIdentity(d, rng) {
       return { deviceType: 2, model: 'db.r6g.large', serial: null, sysinfo: null, sysoid: null, categories: 'AWS/RDS', ert: null };
     case 'aws-elb':
       return { deviceType: 2, model: 'application', serial: null, sysinfo: null, sysoid: null, categories: 'AWS/ApplicationELB', ert: null };
+    case 'aws-dx':
+      return { deviceType: 2, model: null, serial: null, sysinfo: null, sysoid: null, categories: 'AWS/DirectConnect', ert: 'AWS/DirectConnect' };
+    case 'azure-er':
+      return { deviceType: 4, model: null, serial: null, sysinfo: null, sysoid: null, categories: 'Azure/ExpressRoute', ert: 'Azure/ExpressRouteCircuit' };
     case 'uptime':
     default:
       return { deviceType: 19, model: null, serial: null, sysinfo: null, sysoid: null, categories: 'LMUptime', ert: null };
@@ -744,6 +754,18 @@ function seedLogicmonitor(db, { now, encrypt }) {
       ifAlert(`${n}|Gi1/0/${p}`, 'Status', p === 1 ? 4 : 3, 16 + (p % 4), { value: '2', threshold: '= 2' });
     }
   });
+  // Round 9 WP6 scenario "duplicate-feeds": four open alerts raised by DataSources that
+  // relay a platform ICC polls directly (NetApp AIQUM, Cohesity, vCenter datastore,
+  // Zerto). markDuplicateAlerts tags them duplicate:<platform> once that platform has
+  // a source; they then stay out of the counts, the Ops Agent and the alert list.
+  [
+    ['ntm_aiqum_alerts', 'snx2-nacls-01', 3, 'AggregateSpaceNearlyFull', '91', 35],
+    ['ntm_cohesity_cluster_alerts', 'snx2dragcl-az', 4, 'ClusterAlertCount', '3', 55],
+    ['VMware_vCenter_Datastore_Usage', 'phx-vc-01', 3, 'PercentUsed', '93.2', 140],
+    ['Zerto_VPG_Status', 'phx-zvm-01', 3, 'RpoStatus', '2', 22],
+  ].forEach(([ds, objectName, sev, dp, value, startMin], i) => addAlert({
+    ds, objectName, objectType: 'device', instanceName: `relay-${i + 1}`, dp, sev, value, threshold: '> 90 95 98', startEpoch: epochAgo(startMin),
+  }));
   // Website alerts for the down check (filled after the check plan below).
 
   // -- Checks plan ----------------------------------------------------------------
@@ -970,7 +992,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
     const deadSinceStmt = db.prepare("SELECT datetime('now', ?) d");
     for (const d of devices) {
       const id = d.ident;
-      const fqdn = d.kind.startsWith('aws') || d.kind === 'uptime' ? null : `${d.name}.acme.local`;
+      const fqdn = d.kind.startsWith('aws') || d.kind === 'azure-er' || d.kind === 'uptime' ? null : `${d.name}.acme.local`;
       const open = openByDev.get(d.id);
       const alertStatus = open ? `${open.allAcked ? 'confirmed' : 'unconfirmed'}-${sevWord(open.sev)}-${d.inSdt ? 'SDT' : 'none'}` : 'none';
       const priority = open ? (open.sev >= 4 ? 1 : open.sev === 3 ? 2 : 3) : 100000;
@@ -996,6 +1018,8 @@ function seedLogicmonitor(db, { now, encrypt }) {
       // property rule and the group rule yield the same site key.
       const custom = [];
       if (d.kind.startsWith('aws')) custom.push({ name: 'site', value: 'AWS' });
+      const cloudP = require('./logicmonitorIpslaCloudDemo').cloudProps(d);
+      if (cloudP) { custom.push(...cloudP.custom); sysProps.push(...cloudP.system); }
       if (SITES[d.site]) custom.push({ name: 'site', value: SITES[d.site].group ? SITES[d.site].group.split('/').pop() : SITES[d.site].label });
       if (d.ident.deviceType === 0 && d.isNetwork) custom.push({ name: 'snmp.version', value: 'v3' });
       const disableAlerting = d.name === 'phx-lab-01' ? 1 : 0;
@@ -1456,6 +1480,10 @@ function seedLogicmonitor(db, { now, encrypt }) {
   try {
     counts.watch = require('./logicmonitorWatchDemo').seedWatchRows(db, { sourceId, nowMs, checks: CHECKS });
   } catch (err) { console.warn(`[seedDemo] logicmonitor latency watch scenarios skipped: ${err.message}`); }
+  // Round 9 WP7: IP SLA metric baselines and the IP SLA watch replay (after the check episodes, which clear the table).
+  try {
+    counts.ipslaWatch = require('./logicmonitorIpslaCloudDemo').seedIpslaWatch(db, { sourceId, nowMs });
+  } catch (err) { console.warn(`[seedDemo] logicmonitor ip sla watch scenarios skipped: ${err.message}`); }
 
   const issuesMod = optionalModule('../../services/logicmonitorIssues');
   if (issuesMod && issuesMod.reconcileIssueHistory) {
@@ -1899,6 +1927,8 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   }
 
   seedWireless(devices, { put, rng, r1, series });
+  // Round 9 WP7: IP SLA probes and cloud circuits (generators/logicmonitorIpslaCloudDemo.js).
+  require('./logicmonitorIpslaCloudDemo').seedIpslaCloud(devices, { put, rng, r1, series });
 
   // Keep the datasource inventory counts in step with what was collected.
   for (const { dev, hds, n } of instN.values()) ddsUpd.run(n, n, sid, dev.id, hds);
@@ -2132,6 +2162,98 @@ function applyCrossPlatformRows(db, { nowMs = Date.now(), dc2 = null } = {}) {
     `).run(new Date(nowMs).toISOString());
     out.zertoVpgs = 1;
   }
+  // Round 9 (WP6) scenario "snapmirror-ports": the sgp to syd SnapMirror relationship is broken
+  // off with a 52 hour lag. Two unused ports on phx-dist-04 are tied to sgp-ontap-prd-01-node-1
+  // (running at 94 percent for the whole lag window, baseline 18) and syd-ontap-dr-01-node-1
+  // (quiet), so the Correlation page shows one saturated and one normal side. Re-applied at
+  // every demo boot because the netapp pack re-seeds its tables; the scenario's own link, history
+  // and baseline rows are deleted and rewritten each time.
+  try {
+    if (hasTable(db, 'lm_topology_links') && hasTable(db, 'lm_interfaces') && hasTable(db, 'netapp_nodes')) {
+      const sw = db.prepare("SELECT source_id, lm_device_id FROM lm_devices WHERE display_name = 'phx-dist-04'").get();
+      const pairs = [['sgp-ontap-prd-01-node-1', 94], ['syd-ontap-dr-01-node-1', 22]];
+      if (sw) {
+        db.prepare("DELETE FROM lm_topology_links WHERE source_id = ? AND dst_platform = 'netapp' AND dst_ref LIKE '%-ontap-%'").run(sw.source_id);
+        const free = db.prepare(`
+          SELECT i.instance_id, i.display_name FROM lm_interfaces i
+          WHERE i.source_id = ? AND i.lm_device_id = ? AND i.stale = 0
+            AND NOT EXISTS (SELECT 1 FROM lm_topology_links l WHERE l.source_id = i.source_id AND l.src_instance_id = i.instance_id)
+          ORDER BY i.instance_id DESC LIMIT 2
+        `).all(sw.source_id, sw.lm_device_id);
+        const insLink = db.prepare(`
+          INSERT INTO lm_topology_links (source_id, src_device_id, src_instance_id, src_port, dst_name, dst_port, protocol, confidence, last_seen, dst_platform, dst_ref)
+          VALUES (?, ?, ?, ?, ?, 'e01', 'description', 'high', datetime('now'), 'netapp', ?)
+        `);
+        const insHist = db.prepare(`
+          INSERT INTO lm_interface_history (source_id, instance_id, captured_at, status, in_mbps, out_mbps, in_errors, out_errors, in_discards, out_discards, in_util_pct, out_util_pct)
+          VALUES (?, ?, datetime('now', ?), 1, ?, ?, 0, 0, 0, 0, ?, ?)
+        `);
+        const insBase = db.prepare(`
+          INSERT OR REPLACE INTO lm_interface_baseline (source_id, instance_id, hour_of_day, samples, util_median, util_mad, err_median, err_mad, computed_at)
+          VALUES (?, ?, ?, 40, 18, 3, 0, 0, datetime('now'))
+        `);
+        free.forEach((f, idx) => {
+          const [node, util] = pairs[idx];
+          insLink.run(sw.source_id, sw.lm_device_id, f.instance_id, f.display_name, node.replace(/-node-\d+$/, ''), node);
+          db.prepare("DELETE FROM lm_interface_history WHERE source_id = ? AND instance_id = ? AND captured_at >= datetime('now', '-8 days')").run(sw.source_id, f.instance_id);
+          for (let m = 10; m <= 60 * 60; m += 30) {
+            const wobble = ((m * 7) % 5) - 2;
+            insHist.run(sw.source_id, f.instance_id, `-${m} minutes`, util * 10, util * 4, Math.min(99, util + wobble), Math.max(1, util / 2 + wobble));
+          }
+          for (let h = 0; h < 24; h += 1) insBase.run(sw.source_id, f.instance_id, h);
+        });
+        out.snapmirrorPorts = free.length;
+      }
+    }
+  } catch { /* netapp or LM tables absent on an older schema */ }
+  // Round 9 (WP6) scenario "cohesity-target-ports": node 1 of nyc-coh-prd-01 and lon-coh-prd-01
+  // sits on the highest free GigabitEthernet1/0/x port of nyc-acc-01 and lon-acc-01 (a port with
+  // no other link, so no client shares it). Both ports run hot (86 percent) in the 01:00 to 03:00 UTC backup
+  // windows one and three nights ago and idle at 15 otherwise, so backupLoad shows the
+  // target side next to the client side. Rewritten on every apply.
+  try {
+    if (hasTable(db, 'lm_topology_links') && hasTable(db, 'cohesity_nodes')) {
+      db.prepare("DELETE FROM lm_topology_links WHERE dst_platform = 'cohesity' AND dst_ref LIKE '%-coh-prd-%'").run();
+      const insLink = db.prepare(`
+        INSERT INTO lm_topology_links (source_id, src_device_id, src_instance_id, src_port, dst_name, dst_port, protocol, confidence, last_seen, dst_platform, dst_ref)
+        VALUES (?, ?, ?, ?, ?, 'eth0', 'lldp', 'high', datetime('now'), 'cohesity', ?)
+      `);
+      const insHist = db.prepare(`
+        INSERT INTO lm_interface_history (source_id, instance_id, captured_at, status, in_mbps, out_mbps, in_errors, out_errors, in_discards, out_discards, in_util_pct, out_util_pct)
+        VALUES (?, ?, ?, 1, ?, ?, 0, 0, 0, 0, ?, ?)
+      `);
+      const insBase = db.prepare(`
+        INSERT OR REPLACE INTO lm_interface_baseline (source_id, instance_id, hour_of_day, samples, util_median, util_mad, err_median, err_mad, computed_at)
+        VALUES (?, ?, ?, 40, 15, 3, 0, 0, datetime('now'))
+      `);
+      const sqlStamp = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+      for (const [dev, node] of [['nyc-acc-01', 'nyc-coh-prd-01-node-1'], ['lon-acc-01', 'lon-coh-prd-01-node-1']]) {
+        const row = db.prepare(`
+          SELECT i.source_id, i.lm_device_id, i.instance_id, i.display_name FROM lm_interfaces i
+          JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
+          WHERE d.display_name = ? AND i.stale = 0 AND i.display_name LIKE 'GigabitEthernet1/0/%'
+            AND NOT EXISTS (SELECT 1 FROM lm_topology_links l WHERE l.source_id = i.source_id AND l.src_instance_id = i.instance_id)
+          ORDER BY i.instance_id DESC LIMIT 1
+        `).get(dev);
+        if (!row) continue;
+        insLink.run(row.source_id, row.lm_device_id, row.instance_id, row.display_name, node.replace(/-node-\d+$/, ''), node);
+        db.prepare('DELETE FROM lm_interface_history WHERE source_id = ? AND instance_id = ? AND captured_at >= ?').run(row.source_id, row.instance_id, sqlStamp(nowMs - 6 * 86400000));
+        const hot = [backupWindow(nowMs, 1), backupWindow(nowMs, 3)];
+        for (let t = nowMs - 4 * 86400000; t <= nowMs; t += 15 * 60000) {
+          const util = hot.some((w) => t >= w.start && t < w.end) ? 86 : 15;
+          insHist.run(row.source_id, row.instance_id, sqlStamp(t), util * 10, util * 4, util, util / 2);
+        }
+        for (let h = 0; h < 24; h += 1) insBase.run(row.source_id, row.instance_id, h);
+        out.cohesityTargetPorts = (out.cohesityTargetPorts || 0) + 1;
+      }
+    }
+  } catch { /* cohesity_nodes or LM tables absent on an older schema */ }
+  // Round 9 (WP6): LM alerts that relay a feed ICC polls itself get tagged after the
+  // packs have seeded their tables (the owner check reads those tables). Idempotent.
+  try {
+    const r = require('../../services/logicmonitorDuplicates').markDuplicateAlerts(db);
+    out.duplicateAlerts = r.marked;
+  } catch { /* column absent on an older schema */ }
   return out;
 }
 

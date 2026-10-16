@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Cable, Download, RefreshCw, Activity } from 'lucide-react';
+import { Cable, Cloud, Download, RefreshCw, Activity } from 'lucide-react';
 import { Bar, Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend,
@@ -13,12 +13,69 @@ import {
   BRAND, arr, fmtNum, fmtPct, fmtSpeed, stateTone, stateLabel, stateRank, chartOpts, downloadCsv, useVisibleInterval,
 } from './helpers';
 import { Modal, Fact, headRow, chipBtn } from './ui';
+import Sparkline from './overview/Sparkline';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend);
 
 const REFRESH_MS = 60000;
 const pctOpts = { ...chartOpts, scales: { x: chartOpts.scales.x, y: { ...chartOpts.scales.y, min: 0, suggestedMax: 100 } } };
 const num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+
+const CLOUD_KIND_LABEL = { 'aws-dx': 'Direct Connect', 'aws-vif': 'Direct Connect VIF', 'azure-er': 'ExpressRoute' };
+const CLOUD_STATE_LABEL = { critical: 'Down', warning: 'Saturated', ok: 'OK', unknown: 'No data' };
+const cloudTone = (s) => (s === 'critical' ? 'crit' : s === 'warning' ? 'warn' : s === 'ok' ? 'ok' : 'neutral');
+const fmtBps = (v) => (v == null ? '-' : fmtSpeed(v));
+
+// AWS Direct Connect and Azure ExpressRoute from the DataSource metrics (round 9). Small, so no paging.
+function CloudCircuits({ rows }) {
+  if (!rows.length) return null;
+  return (
+    <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <div className="flex items-center gap-2 mb-3">
+        <Cloud size={14} className="text-ink-muted" />
+        <h3 className="text-sm font-semibold text-ink">Cloud circuits</h3>
+        <span className="text-[11px] text-ink-faint tnum">{fmtNum(rows.length)} connection(s)</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className={headRow}>
+            <th className="text-left py-2 pr-3 font-medium">Connection</th>
+            <th className="text-left py-2 pr-3 font-medium">Type</th>
+            <th className="text-left py-2 pr-3 font-medium">Region</th>
+            <th className="text-right py-2 pr-3 font-medium">Bandwidth</th>
+            <th className="text-right py-2 pr-3 font-medium">In</th>
+            <th className="text-right py-2 pr-3 font-medium">Out</th>
+            <th className="text-right py-2 pr-3 font-medium">Load</th>
+            <th className="text-left py-2 pr-3 font-medium">24 h</th>
+            <th className="text-left py-2 pr-3 font-medium">State</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((c) => {
+              const series = arr(c.series24h).map((p) => Math.max(num(p.inBps) || 0, num(p.outBps) || 0));
+              return (
+                <tr key={`${c.sourceId}:${c.deviceId}`} className="border-b border-cohesity-border/50">
+                  <td className="py-2 pr-3 text-ink text-[12px]">{c.name}</td>
+                  <td className="py-2 pr-3 text-ink-muted text-[12px]">{CLOUD_KIND_LABEL[c.kind] || c.kindLabel || c.kind}</td>
+                  <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.region || '-'}</td>
+                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBps(c.bandwidthBps)}</td>
+                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBps(c.bpsIn)}</td>
+                  <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBps(c.bpsOut)}</td>
+                  <td className={`py-2 pr-3 text-right tnum ${num(c.utilPct) >= 80 ? 'text-status-warn' : 'text-ink-muted'}`}>{fmtPct(c.utilPct)}</td>
+                  <td className="py-2 pr-3"><Sparkline values={series} color={c.state === 'critical' ? '#C75D5D' : c.state === 'warning' ? '#D4A24E' : BRAND} width={96} height={24} /></td>
+                  <td className="py-2 pr-3">
+                    <span title={c.stateRaw != null ? `Raw state value ${c.stateRaw} (enum unverified)` : undefined}>
+                      <Badge tone={cloudTone(c.state)}>{CLOUD_STATE_LABEL[c.state] || c.state}</Badge>
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 function ProfileModal({ circuit, onClose }) {
   const [data, setData] = useState(null);
@@ -82,14 +139,15 @@ export default function LmCircuitsPage() {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState(null);
+  const [cloud, setCloud] = useState([]);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [profile, setProfile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
   const stateFilter = searchParams.get('state') || '';
 
-  const load = useCallback(() => client.get('/logicmonitor/circuits')
-    .then(({ data }) => { setRows(Array.isArray(data) ? data : arr(data?.items)); setLastRefreshed(new Date()); })
+  const load = useCallback(() => client.get('/logicmonitor/circuits', { params: { cloud: 1 } })
+    .then(({ data }) => { setRows(Array.isArray(data) ? data : arr(data?.items)); setCloud(arr(data?.cloud)); setLastRefreshed(new Date()); })
     .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load circuits' }); }), [toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -208,6 +266,8 @@ export default function LmCircuitsPage() {
           </>
         )}
       </div>
+
+      <CloudCircuits rows={cloud} />
 
       {profile && <ProfileModal circuit={profile} onClose={() => setProfile(null)} />}
     </div>

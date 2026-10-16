@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Radar, Grid3x3, TrendingDown, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
+import { Radar, Grid3x3, TrendingDown, CheckCircle2, XCircle, AlertTriangle, Eye } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -7,6 +7,9 @@ import { useTableControls, SortTh, TableSearch, TablePager, CsvExportButton } fr
 import { fmtNum, fmtMs, fmtPct, fmtWhen, anomalyTone, TONE_COLOR, useVisibleInterval, blameText } from './helpers';
 import { SectionPanel, headRow, chipBtn } from './ui';
 import LmCheckHistoryModal from './LmCheckHistoryModal';
+import LmWatchBand, { CHIPS } from './LmWatchBand';
+import LmEpisodesTable from './LmEpisodesTable';
+import LmEpisodeModal from './LmEpisodeModal';
 
 const REFRESH_MS = 60000;
 
@@ -17,15 +20,16 @@ function cellTone(c) {
   return anomalyTone(c.anomaly, c.status);
 }
 
-function CellBox({ cell, onClick }) {
+function CellBox({ cell, onClick, watch }) {
   if (!cell) return <div className="h-9 rounded bg-surface-overlay/40" title="Not checked from this location" />;
   const tone = cellTone(cell);
   const color = TONE_COLOR[tone];
   return (
     <button type="button" onClick={onClick}
-      title={`RTT ${fmtMs(cell.rttAvgMs)}, loss ${fmtPct(cell.lossPct, 1)}${cell.anomaly ? `, anomaly ${cell.anomaly}` : ''}${blameText(cell.blame) ? `, via ${blameText(cell.blame)}` : ''}`}
-      className="h-9 w-full rounded flex flex-col items-center justify-center cursor-pointer hover:ring-1 hover:ring-brand/60 transition"
+      title={`${watch ? `${watch}. ` : ''}RTT ${fmtMs(cell.rttAvgMs)}, loss ${fmtPct(cell.lossPct, 1)}${cell.anomaly ? `, anomaly ${cell.anomaly}` : ''}${blameText(cell.blame) ? `, via ${blameText(cell.blame)}` : ''}`}
+      className="relative h-9 w-full rounded flex flex-col items-center justify-center cursor-pointer hover:ring-1 hover:ring-brand/60 transition"
       style={{ background: `${color}26`, borderLeft: `3px solid ${color}` }}>
+      {watch && <Eye size={10} className="absolute top-0.5 right-0.5 text-brand" aria-label="Watched" data-testid="watch-marker" />}
       <span className="text-[11px] tnum text-ink leading-none">{cell.rttAvgMs == null ? '-' : Math.round(cell.rttAvgMs)}</span>
       {cell.lossPct ? <span className="text-[9px] tnum text-status-crit leading-none mt-0.5">{Number(cell.lossPct).toFixed(0)}% loss</span> : null}
     </button>
@@ -38,13 +42,43 @@ export default function LmReachabilityPage() {
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [kind, setKind] = useState('');
   const [open, setOpen] = useState(null); // { check, location }
+  const [summary, setSummary] = useState(null);
+  const [episodes, setEpisodes] = useState([]);
+  const [chip, setChip] = useState('');
+  const [episodeId, setEpisodeId] = useState(null);
 
   const load = useCallback(() => client.get('/logicmonitor/checks')
     .then(({ data: d }) => { setData({ items: d?.items || [], matrix: d?.matrix || { rows: [], cols: [], cells: [] }, counts: d?.counts || {} }); setLastRefreshed(new Date()); })
     .catch(() => { setData((cur) => cur || { items: [], matrix: { rows: [], cols: [], cells: [] }, counts: {} }); toast({ type: 'error', title: 'Failed to load reachability checks' }); }), [toast]);
 
-  useEffect(() => { load(); }, [load]);
-  useVisibleInterval(load, REFRESH_MS);
+  // Latency watch: summary chips and the 7 day episode list (state filter is applied here).
+  const loadWatch = useCallback(() => Promise.all([
+    client.get('/logicmonitor/watch/summary'),
+    client.get('/logicmonitor/watch/episodes', { params: { limit: 500, days: 7 } }),
+  ]).then(([s, e]) => { setSummary(s.data || null); setEpisodes(e.data?.items || []); })
+    .catch(() => { setSummary((cur) => cur || { open: {}, closed: {}, repeating: 0, drifting: 0 }); }), []);
+
+  const refresh = useCallback(() => { load(); loadWatch(); }, [load, loadWatch]);
+  useEffect(() => { refresh(); }, [refresh]);
+  useVisibleInterval(refresh, REFRESH_MS);
+
+  const watchedBy = useMemo(() => {
+    const m = new Map();
+    for (const e of episodes) {
+      if (e.state === 'closed' || e.subjectKind === 'ipsla') continue;
+      const key = `${e.checkId}|${e.label}`;
+      if (!m.has(key)) m.set(key, `${e.state === 'watching' ? 'Watching' : e.state === 'critical' ? 'Critical episode' : 'Degrading'} since ${e.openedAt ? new Date(e.openedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '?'}`);
+    }
+    return m;
+  }, [episodes]);
+
+  const chipRows = useMemo(() => {
+    const repeatLabels = new Set((summary?.topSubjects || []).filter((t) => (t.oneOff || 0) >= 3).map((t) => t.subjectLabel));
+    if (chip === 'watching' || chip === 'degrading' || chip === 'critical') return episodes.filter((e) => e.state === chip);
+    if (chip === 'oneoff') return episodes.filter((e) => e.outcome === 'one-off');
+    if (chip === 'repeating') return episodes.filter((e) => repeatLabels.has(e.subjectLabel));
+    return episodes;
+  }, [episodes, chip, summary]);
 
   const items = useMemo(() => data?.items || [], [data]);
   const byId = useMemo(() => new Map(items.map((c) => [String(c.checkId), c])), [items]);
@@ -101,7 +135,7 @@ export default function LmReachabilityPage() {
     <div className="animate-fade-in">
       <PageHeader icon={Radar} title="Site Reachability" description="Ping and web checks from every collector and LM location, against an hour-of-day baseline">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
-        <RefreshButton onClick={load} />
+        <RefreshButton onClick={refresh} />
       </PageHeader>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
@@ -109,6 +143,12 @@ export default function LmReachabilityPage() {
         <StatCard icon={CheckCircle2} label="OK" value={fmtNum(counts.ok)} tone="ok" loading={!data} />
         <StatCard icon={AlertTriangle} label="Degraded" value={fmtNum(counts.degraded)} tone={counts.degraded ? 'warn' : 'ok'} loading={!data} />
         <StatCard icon={XCircle} label="Down" value={fmtNum(counts.down)} tone={counts.down ? 'crit' : 'ok'} loading={!data} />
+      </div>
+
+      <LmWatchBand summary={summary} active={chip} onPick={setChip} />
+
+      <div className="mb-4">
+        <LmEpisodesTable rows={chipRows} onOpen={setEpisodeId} chipLabel={chip ? CHIPS.find((c) => c.key === chip)?.label : ''} />
       </div>
 
       <div className="flex items-center gap-1 mb-3">
@@ -139,7 +179,7 @@ export default function LmReachabilityPage() {
                       <tr key={row}>
                         <td className="text-xs text-ink pr-2 whitespace-nowrap sticky left-0 bg-surface">{row}</td>
                         {matrix.cols.map((c) => (
-                          <td key={c.checkId}><CellBox cell={matrix.map.get(`${row}|${c.checkId}`)} onClick={() => openCell(row, c.checkId)} /></td>
+                          <td key={c.checkId}><CellBox cell={matrix.map.get(`${row}|${c.checkId}`)} watch={watchedBy.get(`${c.checkId}|${row}`)} onClick={() => openCell(row, c.checkId)} /></td>
                         ))}
                       </tr>
                     ))}
@@ -191,6 +231,7 @@ export default function LmReachabilityPage() {
         </div>
       )}
 
+      {episodeId != null && <LmEpisodeModal id={episodeId} onClose={() => setEpisodeId(null)} />}
       {open && <LmCheckHistoryModal check={open.check} location={open.location} onClose={() => setOpen(null)} />}
     </div>
   );

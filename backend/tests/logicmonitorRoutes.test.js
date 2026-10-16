@@ -1072,11 +1072,11 @@ describe('logicmonitor round 4 routes: Correlation', () => {
   it('GET /correlation returns the four sections and generatedAt', async () => {
     const res = await request(app).get(`${API}/correlation`);
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body).sort()).toEqual(['backupLoad', 'blameHistory', 'changesThenIncidents', 'generatedAt', 'replicationVsCircuits']);
+    expect(Object.keys(res.body).sort()).toEqual(['backupLoad', 'blameHistory', 'changesThenIncidents', 'generatedAt', 'replicationVsCircuits', 'snapmirror']);
     expect(res.body.generatedAt).toMatch(/Z$/);
     expect(res.body.backupLoad).toHaveLength(1);
     expect(res.body.backupLoad[0]).toMatchObject({
-      deviceName: 'phx-acc-01', port: 'Gi1/0/7', host: 'db-srv9', hostPlatform: 'dell', uplinkRule: 'physical', runCount: 2, finding: 'saturates', meanUtilPct: 90,
+      deviceName: 'phx-acc-01', port: 'Gi1/0/7', host: 'db-srv9', hostPlatform: 'dell', uplinkRule: 'physical', side: 'client', runCount: 2, finding: 'saturates', meanUtilPct: 90,
     });
     expect(res.body.backupLoad[0].runs.map((r) => [r.jobName, r.sharePct])).toEqual([['JobA', 50], ['JobB', 50]]);
     expect(res.body.replicationVsCircuits).toEqual([]);
@@ -1092,7 +1092,7 @@ describe('logicmonitor round 4 routes: Correlation', () => {
     expect(bl.status).toBe(200);
     expect(bl.headers['content-type']).toMatch(/text\/csv/);
     const lines = bl.text.trim().split(/\r\n/);
-    expect(lines[0]).toBe('deviceName,port,host,hostPlatform,windowStart,windowEnd,meanUtilPct,maxUtilPct,baselineUtilPct,finding,uplinkRule,runCount,runs');
+    expect(lines[0]).toBe('deviceName,port,host,hostPlatform,windowStart,windowEnd,meanUtilPct,maxUtilPct,baselineUtilPct,finding,uplinkRule,side,runCount,runs');
     expect(lines).toHaveLength(2);
     expect(lines[1]).toContain('phx-acc-01,Gi1/0/7,db-srv9,dell');
     expect(lines[1]).toContain('JobA (50%); JobB (50%)');
@@ -1240,7 +1240,7 @@ describe('logicmonitor round 8 routes: metrics, firewalls, load balancers', () =
     ins('lm_device_datasources', { source_id: sid8, lm_device_id: 301, hds_id: 9001, datasource_id: 2, datasource_name: 'F5_BigIP_System', datasource_display_name: 'F5 system', instance_count: 1, is_interface: 0, is_neighbor: 0 });
     const res = await request(app).get(`${API}/metrics/families`);
     expect(res.status).toBe(200);
-    expect(res.body.map((f) => f.family)).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless']);
+    expect(res.body.map((f) => f.family)).toEqual(['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud']);
     const fw = res.body.find((f) => f.family === 'firewall');
     expect(fw).toMatchObject({ label: 'Firewalls', enabled: true, datasources: 1, devices: 1, instances: 1, collectedDevices: 3 });
     expect(Object.keys(fw)).toEqual(expect.arrayContaining(['family', 'label', 'enabled', 'sources', 'datasources', 'devices', 'instances', 'collectedInstances', 'lastPollAt']));
@@ -1564,5 +1564,41 @@ describe('logicmonitor wireless routes', () => {
     expect(res.body.connections.clientsMax).toBe(3000);
     expect(res.body.issues.map((i) => i.type)).toContain('wlan-radius-unresponsive');
     expect((await request(app).get(`${API}/wireless/controllers/499`)).status).toBe(404);
+  });
+});
+
+describe('logicmonitor round 9 routes: /lookup', () => {
+  beforeEach(() => { wipe(); seedEstate(); });
+  afterEach(() => { wipe(); });
+
+  it('400s without names or ips', async () => {
+    expect((await request(app).get(`${API}/lookup`)).status).toBe(400);
+  });
+
+  it('returns the LM device, its open alerts, health and switch ports for a known name', async () => {
+    const res = await request(app).get(`${API}/lookup?names=core-sw1`);
+    expect(res.status).toBe(200);
+    expect(res.body.device).toMatchObject({ id: 101, displayName: 'core-sw1', vendor: 'Cisco', model: 'C9300' });
+    expect(res.body.health).toMatchObject({ hostStatus: 'normal', alertStatus: 'unconfirmed-critical-none', collectorDown: true });
+    expect(res.body.alerts.map((a) => a.datasource).sort()).toEqual(['Cisco_CPU_SNMP', 'SNMP_Network_Interfaces']);
+    expect(res.body.alerts[0].severity).toBe('critical');
+    expect(Array.isArray(res.body.switchPorts)).toBe(true);
+  });
+
+  it('matches by IP and reports a dead device with deadSince', async () => {
+    const res = await request(app).get(`${API}/lookup?ips=10.0.0.2`);
+    expect(res.status).toBe(200);
+    expect(res.body.device.displayName).toBe('edge-rt1');
+    expect(res.body.health.hostStatus).toBe('dead');
+    expect(res.body.health.deadSince).toMatch(/^2023-11-1[45]T/);
+  });
+
+  it('omits duplicate alerts and answers device null for an unknown object', async () => {
+    db.prepare("UPDATE lm_alerts SET duplicate_of = 'duplicate:netapp' WHERE lm_alert_id = 'DS2'").run();
+    const res = await request(app).get(`${API}/lookup?names=core-sw1`);
+    expect(res.body.alerts.map((a) => a.datasource)).toEqual(['SNMP_Network_Interfaces']);
+    const none = await request(app).get(`${API}/lookup?names=not-in-lm`);
+    expect(none.status).toBe(200);
+    expect(none.body).toMatchObject({ device: null, alerts: [], health: null });
   });
 });

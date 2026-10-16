@@ -74,6 +74,12 @@ function SiteModal({ siteKey, onClose }) {
         .catch(() => setAdvisor({ enabled: false })));
   }, [siteKey]);
 
+  const [watch, setWatch] = useState(null);
+  useEffect(() => {
+    setWatch(null);
+    client.get('/logicmonitor/watch/summary', { params: { siteKey, days: 7 } }).then(({ data: d }) => setWatch(d || null)).catch(() => setWatch(null));
+  }, [siteKey]);
+
   useEffect(() => {
     setData(null); setError(null); setTab('devices');
     client.get(`/logicmonitor/sites/${encodeURIComponent(siteKey)}`)
@@ -119,6 +125,13 @@ function SiteModal({ siteKey, onClose }) {
             <Fact label="Circuits">{circuits.length ? `${circuits.length}` : '-'}</Fact>
             <Fact label="Site key">{data.siteKey || siteKey}</Fact>
           </div>
+          {watch && (
+            <p className="text-[11px] text-ink-muted mb-3" data-testid="site-episodes">
+              <span className="text-ink-faint uppercase tracking-wide text-[10px] mr-2">Episodes (7 days)</span>
+              {`${watch.closed?.oneOff || 0} one-off, ${watch.closed?.sustained || 0} sustained, ${watch.closed?.escalated || 0} escalated; ${watch.repeating || 0} repeating check${watch.repeating === 1 ? '' : 's'}`}
+              {(watch.open?.watching || watch.open?.degrading || watch.open?.critical) ? `. Open now: ${watch.open.watching || 0} watching, ${watch.open.degrading || 0} degrading, ${watch.open.critical || 0} critical` : ''}
+            </p>
+          )}
           <Tabs active={tab} onSelect={setTab} tabs={[
             { key: 'devices', label: 'Devices', count: devices.length },
             { key: 'circuits', label: 'Circuits', count: circuits.length },

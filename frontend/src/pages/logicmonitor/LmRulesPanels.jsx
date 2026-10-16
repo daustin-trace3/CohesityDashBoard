@@ -54,7 +54,7 @@ function useLmConfig(keys) {
 }
 
 // One numeric row: input with a unit suffix, a faint range line and a reset link.
-function NumRow({ cfg, k, label, unit, tip }) {
+function NumRow({ cfg, k, label, unit, tip, step }) {
   const r = cfg.ranges[k] || {};
   const def = cfg.defaultOf(k);
   const differs = def != null && String(cfg.values[k] ?? '') !== def;
@@ -63,7 +63,7 @@ function NumRow({ cfg, k, label, unit, tip }) {
     <SettingRow label={label} htmlFor={`lm-${k}`} dirty={cfg.isDirty(k)}
       tip={<>{tip}{def != null && <> Default {def}{unit ? ` ${unit}` : ''}.</>}</>}>
       <div className="flex items-center gap-2">
-        <input id={`lm-${k}`} type="number" min={r.min} max={r.max} value={cfg.values[k] ?? ''} onChange={(e) => cfg.set(k, e.target.value)} className={numberCls} />
+        <input id={`lm-${k}`} type="number" step={step} min={r.min} max={r.max} value={cfg.values[k] ?? ''} onChange={(e) => cfg.set(k, e.target.value)} className={numberCls} />
         {unit && <span className="text-xs text-ink-muted">{unit}</span>}
       </div>
       <div className="flex items-center gap-3 mt-1">
@@ -163,7 +163,9 @@ export function LmDevicesRulesPanel() {
 }
 
 const RCH_KEYS = ['lm_check_baseline_days', 'lm_check_baseline_min_samples', 'lm_check_latency_k', 'lm_check_latency_floor_ms',
-  'lm_check_latency_min_ms', 'lm_check_loss_min_pct', 'lm_check_loss_crit_pct', 'lm_check_location_fold', 'lm_check_data_calls_per_tick'];
+  'lm_check_latency_min_ms', 'lm_check_loss_min_pct', 'lm_check_loss_crit_pct', 'lm_check_location_fold', 'lm_check_data_calls_per_tick',
+  'lm_watch_sustain_minutes', 'lm_watch_trend_windows', 'lm_watch_severe_ratio', 'lm_watch_clear_samples', 'lm_watch_repeat_days',
+  'lm_watch_repeat_min', 'lm_watch_drift_pct', 'lm_watch_drift_crit_pct', 'lm_watch_reference_days', 'lm_issue_clear_absences'];
 
 export function LmReachabilityRulesPanel() {
   const cfg = useLmConfig(RCH_KEYS);
@@ -188,6 +190,31 @@ export function LmReachabilityRulesPanel() {
           tip="A packet-loss-anomaly is only raised when the mean loss is also at or above this value." />
         <NumRow cfg={cfg} k="lm_check_loss_crit_pct" label="Loss is critical at" unit="%"
           tip="A packet-loss-anomaly at or above this mean loss is critical; below it the issue is a warning." />
+      </SettingGroup>
+      <SettingGroup title="Latency watch">
+        <Lead>An anomaly opens an episode that is watched, not alerted. A one-off spike that clears on its own stays on the Site Reachability page. An episode that lasts, climbs or is severe becomes a latency-degrading issue; spikes that keep coming back raise latency-pattern; a slow rise in the baseline itself raises latency-drift.</Lead>
+        <NumRow cfg={cfg} k="lm_watch_sustain_minutes" label="Sustained after" unit="min"
+          tip="An episode that stays elevated this long is promoted and raises a latency-degrading issue (loss-degrading for packet loss). It becomes critical when the severe level holds for this long or the location goes down." />
+        <NumRow cfg={cfg} k="lm_watch_trend_windows" label="Rising trend windows" unit="windows"
+          tip="An episode is promoted early when its rolling median rises across this many consecutive windows. Raises latency-degrading before the sustain time passes." />
+        <NumRow cfg={cfg} k="lm_watch_severe_ratio" label="Severe spike ratio over baseline" unit="x" step="0.1"
+          tip="Two consecutive samples this many times the baseline median promote the episode at once. Raises latency-degrading." />
+        <NumRow cfg={cfg} k="lm_watch_clear_samples" label="Normal samples to close" unit="samples"
+          tip="An episode closes after this many consecutive normal samples. It is recorded as one-off, sustained or escalated depending on how far it got." />
+        <NumRow cfg={cfg} k="lm_issue_clear_absences" label="Polls an anomaly must be absent before its issue clears" unit="polls"
+          tip="Hysteresis for latency-anomaly, packet-loss-anomaly, interface anomaly, latency-degrading and loss-degrading issues: one clean poll does not resolve them." />
+      </SettingGroup>
+      <SettingGroup title="Repeating spikes and drift">
+        <NumRow cfg={cfg} k="lm_watch_repeat_days" label="Repeat window" unit="days"
+          tip="One-off episodes on the same check location are counted over this many days for the latency-pattern issue." />
+        <NumRow cfg={cfg} k="lm_watch_repeat_min" label="One-offs that make a pattern" unit="items"
+          tip="This many one-off episodes inside the repeat window raise a latency-pattern warning, unless a degrading episode is already open on the same location." />
+        <NumRow cfg={cfg} k="lm_watch_drift_pct" label="Baseline drift, info at" unit="%"
+          tip="The live baseline median sits this far above the reference in at least 16 of 24 hours: latency-drift is raised as info." />
+        <NumRow cfg={cfg} k="lm_watch_drift_crit_pct" label="Baseline drift, warning at" unit="%"
+          tip="Drift at or above this percentage raises latency-drift as a warning instead of info." />
+        <NumRow cfg={cfg} k="lm_watch_reference_days" label="Reference window" unit="days"
+          tip="Days of check history behind the long-term reference the live baseline is compared with. The newest 7 days are left out, so a recent rise does not hide itself." />
       </SettingGroup>
       <SettingGroup title="Folding and polling">
         <NumRow cfg={cfg} k="lm_check_location_fold" label="Checks failing at one location to fold" unit="checks"

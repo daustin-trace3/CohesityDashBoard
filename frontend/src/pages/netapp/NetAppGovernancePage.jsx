@@ -9,6 +9,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TablePager, CsvExportButton } from '../../components/ui/tableTools';
 import { BRAND, fmtBytes, fmtNum, statusTone, timeAgo } from './helpers';
+import LmDeviceCard from '../../components/logicmonitor/LmDeviceCard';
 
 const SECTIONS = ['filers', 'nodes', 'versions', 'models'];
 
@@ -178,6 +179,7 @@ function ClusterDetailModal({ cluster, nodes, onClose }) {
           </tbody>
         </table>
       </div>
+      <LmDeviceCard names={[cluster.name, ...nodes.map((n) => n.name)]} ips={[cluster.mgmt_host]} className="mb-4" />
       <Link to="/netapp/hardware" className="text-xs text-brand hover:underline">View in NetApp Hardware &rsaquo;</Link>
     </ModalShell>
   );

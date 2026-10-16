@@ -72,6 +72,13 @@ export default function SitesBand({ nodes, onOpenSite }) {
                   <span className="text-[11px] text-ink-faint">-</span>
                   <Count n={n.interfacesDown} l="down" color={COLORS.warn} />
                 </p>
+                {(n.watch && (n.watch.critical > 0 || n.watch.degrading > 0)) && (
+                  <p className="text-[10px] font-semibold mb-1" data-testid="site-watch"
+                    style={{ color: n.watch.critical > 0 ? COLORS.crit : COLORS.warn }}
+                    title="Open latency watch episodes at this site (Site Reachability page)">
+                    {n.watch.critical > 0 ? `${fmtNum(n.watch.critical)} critical` : `${fmtNum(n.watch.degrading)} degrading`}{' '}latency
+                  </p>
+                )}
                 {series && <Sparkline values={series} color={col} width={114} height={28} stretch />}
               </div>
             );

@@ -67,10 +67,10 @@ function insertDevice(sourceId, o = {}) {
 }
 
 describe('migrations/logicmonitor.js', () => {
-  it('creates all 30 lm_* tables and the four dataset views', () => {
+  it('creates all 31 lm_* tables and the four dataset views', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lm_%'").all().map((r) => r.name);
     for (const t of TABLES) expect(tables, `missing ${t}`).toContain(t);
-    expect(tables.length).toBe(30);
+    expect(tables.length).toBe(31);
     const views = db.prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name LIKE 'logicmonitor_%'").all().map((r) => r.name).sort();
     expect(views).toEqual(['logicmonitor_alerts', 'logicmonitor_checks', 'logicmonitor_devices', 'logicmonitor_interfaces']);
   });

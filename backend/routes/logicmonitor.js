@@ -734,6 +734,7 @@ function alertOut(a) {
     anomaly: Number(a.anomaly) === 1,
     conditionKey: a.condition_key,
     shadowedBy: parseJson(a.shadowed_by, null),
+    duplicateOf: a.duplicate_of || null,
     ingest: a.ingest || null,
   };
 }
@@ -962,7 +963,7 @@ router.get('/summary', (req, res, next) => {
         COALESCE(SUM(CASE WHEN severity_norm = 'warning' THEN 1 ELSE 0 END), 0) warning,
         COALESCE(SUM(CASE WHEN severity_norm = 'info' THEN 1 ELSE 0 END), 0) info,
         COALESCE(SUM(CASE WHEN acked = 1 THEN 1 ELSE 0 END), 0) acked
-      FROM lm_alerts WHERE cleared = 0
+      FROM lm_alerts WHERE cleared = 0 AND duplicate_of IS NULL
     `).get();
     const col = db.prepare(`
       SELECT COUNT(*) total, COALESCE(SUM(CASE WHEN is_down = 1 THEN 1 ELSE 0 END), 0) down
@@ -986,7 +987,7 @@ router.get('/summary', (req, res, next) => {
       GROUP BY COALESCE(host_status, 'unknown') ORDER BY count DESC
     `).all();
     const alertsByDatasource = db.prepare(`
-      SELECT COALESCE(resource_template_name, 'Unknown') name, COUNT(*) count FROM lm_alerts WHERE cleared = 0
+      SELECT COALESCE(resource_template_name, 'Unknown') name, COUNT(*) count FROM lm_alerts WHERE cleared = 0 AND duplicate_of IS NULL
       GROUP BY COALESCE(resource_template_name, 'Unknown') ORDER BY count DESC, name LIMIT 10
     `).all();
     const deadDevices = db.prepare(`
@@ -1478,6 +1479,7 @@ router.get('/alerts', [
   query('deviceId').optional().isInt(),
   query('sourceId').optional().isInt(),
   query('shadowed').optional().isIn(['0', '1']),
+  query('duplicate').optional().isIn(['0', '1', 'all']),
   query('sort').optional().isIn(Object.keys(ALERT_SORTS)),
   query('dir').optional().isIn(['asc', 'desc']),
   query('page').optional().isInt({ min: 1 }),
@@ -1496,6 +1498,9 @@ router.get('/alerts', [
     if (q.sourceId) { where.push('source_id = ?'); params.push(Number(q.sourceId)); }
     if (q.shadowed === '1') where.push('shadowed_by IS NOT NULL');
     if (q.shadowed === '0') where.push('shadowed_by IS NULL');
+    // Round 9: alerts that relay a feed ICC polls directly stay out unless asked for.
+    if (q.duplicate === '1') where.push('duplicate_of IS NOT NULL');
+    else if (q.duplicate !== 'all') where.push('duplicate_of IS NULL');
     if (q.q) {
       where.push("(monitor_object_name LIKE ? ESCAPE '\\' OR resource_template_name LIKE ? ESCAPE '\\' OR instance_name LIKE ? ESCAPE '\\' OR data_point_name LIKE ? ESCAPE '\\')");
       const p = likePat(q.q);
@@ -1514,9 +1519,11 @@ router.get('/alerts', [
         COALESCE(SUM(CASE WHEN severity_norm = 'info' THEN 1 ELSE 0 END), 0) info,
         COALESCE(SUM(CASE WHEN acked = 1 THEN 1 ELSE 0 END), 0) acked,
         COALESCE(SUM(CASE WHEN sdted = 1 THEN 1 ELSE 0 END), 0) sdted
-      FROM lm_alerts WHERE cleared = 0
+      FROM lm_alerts WHERE cleared = 0 AND duplicate_of IS NULL
     `).get();
-    res.json({ items: rows.map(alertOut), total, page, limit, counts });
+    let duplicates = { total: 0, byPlatform: [] };
+    try { duplicates = require('../services/logicmonitorDuplicates').duplicateSummary(db); } catch { /* no duplicate model */ }
+    res.json({ items: rows.map(alertOut), total, page, limit, counts, duplicates });
   } catch (err) { next(err); }
 });
 
@@ -1994,12 +2001,24 @@ router.get('/sites/:siteKey', [
 
 router.get('/circuits', [
   query('sourceId').optional().isInt().toInt(),
+  query('cloud').optional().isIn(['0', '1']),
   query('siteKey').optional().matches(/^[a-z0-9-]{1,80}$/),
   query('state').optional().isIn(['ok', 'warning', 'critical']),
 ], validate, (req, res, next) => {
   try {
     let rows = lmPath().circuitRows(db, { sourceId: req.query.sourceId != null ? req.query.sourceId : null, siteKey: req.query.siteKey || null });
     if (req.query.state) rows = rows.filter((r) => r.state === req.query.state);
+    // Round 9: ?cloud=1 answers {items, cloud} (AWS Direct Connect, Azure ExpressRoute). The plain
+    // request stays a bare array so existing callers keep working.
+    if (req.query.cloud === '1') {
+      let cloud = [];
+      try {
+        cloud = require('../services/logicmonitorCloud').cloudCircuits(db, require('../services/logicmonitorIssues').getThresholds(), {
+          sourceId: req.query.sourceId != null ? req.query.sourceId : undefined, siteKey: req.query.siteKey || null,
+        });
+      } catch { cloud = []; }
+      return res.json({ items: rows, cloud });
+    }
     res.json(rows);
   } catch (err) { next(err); }
 });
@@ -2446,7 +2465,7 @@ const CORRELATION_CSV = {
   backupLoad: (c) => c.backupLoad.map((r) => ({
     deviceName: r.deviceName, port: r.port, host: r.host, hostPlatform: r.hostPlatform, windowStart: r.windowStart, windowEnd: r.windowEnd,
     meanUtilPct: r.meanUtilPct, maxUtilPct: r.maxUtilPct, baselineUtilPct: r.baselineUtilPct, finding: r.finding || '',
-    uplinkRule: r.uplinkRule, runCount: r.runCount,
+    uplinkRule: r.uplinkRule, side: r.side || 'client', runCount: r.runCount,
     runs: (r.runs || []).map((x) => `${x.jobName} (${x.sharePct == null ? 'n/a' : `${x.sharePct}%`})`).join('; '),
   })),
   replicationVsCircuits: (c) => c.replicationVsCircuits.map((r) => ({
@@ -2464,6 +2483,12 @@ const CORRELATION_CSV = {
     subjects: h.subjects.map((x) => `${x.kind}: ${x.subject} (${x.count})`).join('; '), appsAffected: h.appsAffected.join('; '),
   })),
   blameRecent: (c) => c.blameHistory.recent,
+  snapmirror: (c) => (c.snapmirror || []).map((r) => ({
+    relationship: r.relationship, side: r.side, cluster: r.cluster, node: r.node, nodePort: r.nodePort, deviceName: r.deviceName, port: r.port,
+    state: r.state, healthy: r.healthy, lagSeconds: r.lagSeconds, windowStart: r.windowStart, windowEnd: r.windowEnd,
+    meanUtilPct: r.meanUtilPct, maxUtilPct: r.maxUtilPct, baselineUtilPct: r.baselineUtilPct, meanErrors: r.meanErrors, baselineErrors: r.baselineErrors,
+    portRule: r.portRule, finding: r.finding,
+  })),
 };
 
 router.get('/correlation', (req, res, next) => {
@@ -2473,6 +2498,54 @@ router.get('/correlation', (req, res, next) => {
 router.get('/correlation.csv', [query('section').isIn(Object.keys(CORRELATION_CSV))], validate, (req, res, next) => {
   try {
     sendCsv(res, `correlation-${req.query.section}`, CORRELATION_CSV[req.query.section](lmCorrelation().correlation(db)));
+  } catch (err) { next(err); }
+});
+
+// ---- Device lookup for other platforms' popups (round 9) ---------------------
+
+const csvList = (v, max = 20) => (Array.isArray(v) ? v : (v ? [v] : []))
+  .flatMap((x) => String(x).split(',')).map((x) => x.trim()).filter((x) => x && x.length <= 255).slice(0, max);
+
+/**
+ * LogicMonitor view of one object another platform shows (a Brocade switch, a
+ * Cohesity node, a NetApp cluster): the matching LM device (display name, name,
+ * sysname, hostname or system IP), its open non-duplicate alerts, health, and
+ * the switch ports ICC ties to the same names and addresses. 200 with
+ * device: null when LM does not know the object.
+ */
+router.get('/lookup', [
+  query('names').optional(),
+  query('ips').optional(),
+], validate, (req, res, next) => {
+  try {
+    const names = csvList(req.query.names);
+    const ips = csvList(req.query.ips);
+    if (!names.length && !ips.length) return res.status(400).json({ error: 'names or ips required' });
+    const platform = require('../platforms/logicmonitor');
+    const [dev] = platform.matchDevices(db, names, ips, 1);
+    let switchPorts = [];
+    try { switchPorts = lmEndpoints().serverPath(db, { names, ips }).switchPorts; } catch { switchPorts = []; }
+    if (!dev) return res.json({ device: null, alerts: [], health: null, switchPorts });
+    const alerts = platform.openAlertsOf(db, dev, 50).map((a) => ({
+      severity: a.severity_norm, datasource: a.resource_template_name, instanceName: a.instance_name, dataPointName: a.data_point_name,
+      alertValue: a.alert_value, threshold: a.threshold, startedAt: epochIso(a.start_epoch), acked: Number(a.acked) === 1, sdted: Number(a.sdted) === 1,
+    }));
+    const dead = dev.host_status === 'dead' || dev.host_status === 'dead-collector';
+    res.json({
+      device: {
+        id: dev.lm_device_id, sourceId: dev.source_id, displayName: dev.display_name || dev.name, name: dev.name,
+        vendor: dev.vendor || null, model: dev.model || null, version: dev.version || null, siteKey: dev.site_key || null,
+        collector: dev.collector_hostname || dev.collector_desc || null,
+      },
+      alerts,
+      health: {
+        hostStatus: dev.host_status || null,
+        deadSince: dead && deadSinceMs(dev) ? new Date(deadSinceMs(dev)).toISOString() : null,
+        alertStatus: dev.alert_status || null,
+        collectorDown: !!dev.collector_down,
+      },
+      switchPorts,
+    });
   } catch (err) { next(err); }
 });
 
@@ -2711,7 +2784,7 @@ const lmCatalog = () => { try { return require('../services/logicmonitorCatalog'
 
 const DEFAULT_FAMILY_LABELS = {
   firewall: 'Firewalls', loadbalancer: 'Load balancers', health: 'Device health', optics: 'Optics',
-  routing: 'Routing', ipsla: 'IP SLA', voice: 'Voice', wireless: 'Wireless',
+  routing: 'Routing', ipsla: 'IP SLA', voice: 'Voice', wireless: 'Wireless', cloud: 'Cloud circuits',
 };
 const DEFAULT_FAMILIES = Object.keys(DEFAULT_FAMILY_LABELS);
 const familyIds = () => {

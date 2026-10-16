@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { GitMerge, HardDriveDownload, Repeat, GitCommitHorizontal, Crosshair } from 'lucide-react';
+import { GitMerge, HardDriveDownload, Repeat, GitCommitHorizontal, Crosshair, DatabaseBackup } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, arr } from './helpers';
-import { BackupLoadSection, ReplicationSection, ChangesSection, BlameSection } from './correlationSections';
+import { BackupLoadSection, ReplicationSection, ChangesSection, BlameSection, SnapmirrorSection } from './correlationSections';
 
 const DEFAULT_SECTION = 'backupLoad';
 const ALIASES = { backupWindows: 'backupLoad' };
@@ -28,6 +28,7 @@ export default function LmCorrelationPage() {
   const backupLoad = arr(data?.backupLoad);
   const replication = arr(data?.replicationVsCircuits);
   const changes = arr(data?.changesThenIncidents);
+  const snapmirror = arr(data?.snapmirror);
   const blame = data?.blameHistory && typeof data.blameHistory === 'object' ? data.blameHistory : {};
 
   const items = [
@@ -35,6 +36,7 @@ export default function LmCorrelationPage() {
     { id: 'replication', label: 'Replication vs circuits', icon: Repeat, count: replication.length },
     { id: 'changes', label: 'Changes then incidents', icon: GitCommitHorizontal, count: changes.length },
     { id: 'blames', label: 'Blame history', icon: Crosshair, count: arr(blame.hops).length },
+    { id: 'snapmirror', label: 'SnapMirror lag versus node ports', icon: DatabaseBackup, count: snapmirror.length },
   ];
   const requested = searchParams.get('section') || DEFAULT_SECTION;
   const raw = ALIASES[requested] || requested;
@@ -48,7 +50,7 @@ export default function LmCorrelationPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={GitMerge} title="Correlation" description="Cross-platform findings from the network data: backup load on switch ports, replication against circuits, changes followed by incidents, and the hops ICC keeps blaming.">
+      <PageHeader icon={GitMerge} title="Correlation" description="Cross-platform findings from the network data: backup load on switch ports, replication against circuits, changes followed by incidents, the hops ICC keeps blaming, and SnapMirror lag against node ports.">
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -71,6 +73,7 @@ export default function LmCorrelationPage() {
             {section === 'replication' && <ReplicationSection rows={replication} icon={icon} />}
             {section === 'changes' && <ChangesSection rows={changes} icon={icon} />}
             {section === 'blames' && <BlameSection blame={blame} icon={icon} />}
+            {section === 'snapmirror' && <SnapmirrorSection rows={snapmirror} icon={icon} />}
           </div>
         </div>
       )}

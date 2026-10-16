@@ -238,3 +238,18 @@ export function blameText(b) {
 }
 
 export const arr = (v) => (Array.isArray(v) ? v : []);
+
+// Readable names for the latency watch issue types (round 9).
+export const ISSUE_TYPE_LABELS = {
+  'latency-degrading': 'Latency degrading',
+  'loss-degrading': 'Packet loss degrading',
+  'latency-pattern': 'Repeating latency spikes',
+  'latency-drift': 'Latency baseline drift',
+  'cloud-circuit-down': 'Cloud circuit down',
+  'cloud-circuit-saturated': 'Cloud circuit saturated',
+};
+export const issueTypeLabel = (t) => ISSUE_TYPE_LABELS[t] || t;
+
+// Latency watch episode state and outcome, for chips and badges.
+export const EPISODE_STATE_TONE = { watching: 'info', degrading: 'warn', critical: 'crit', closed: 'neutral' };
+export const EPISODE_OUTCOME_LABEL = { 'one-off': 'One-off', sustained: 'Sustained', escalated: 'Escalated' };

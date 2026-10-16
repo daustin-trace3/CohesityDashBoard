@@ -1,9 +1,10 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, Fragment } from 'react';
 import { HardDrive } from 'lucide-react';
 import client from '../api/client';
 import Pagination from '../components/Pagination';
 import { PageHeader, Spinner } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
+import LmDeviceCard from '../components/logicmonitor/LmDeviceCard';
 
 function shortVersion(v) {
   if (!v || v === '—') return '—';
@@ -49,6 +50,7 @@ function SortTh({ label, field, sortField, sortDir, onSort }) {
 export default function HardwarePage() {
   const { toast } = useToast();
   const [nodeRows, setNodeRows] = useState([]);
+  const [openNode, setOpenNode] = useState(null);
   const [clusterCount, setClusterCount] = useState(0);
   const [loadedCount, setLoadedCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -82,6 +84,7 @@ export default function HardwarePage() {
                 clusterId: cluster.id,
                 clusterName: cluster.name,
                 ip: node.ip || node.ipAddress || '—',
+                hostname: node.hostName || node.hostname || node.nodeHostName || null,
                 model: node.productModel || node._v2Model || node.hardwareModel || '—',
                 serial: node.cohesityNodeSerial || node._v2Serial || node.serialNumber || '—',
                 state: deriveNodeState(node),
@@ -281,8 +284,12 @@ export default function HardwarePage() {
                   </td>
                 </tr>
               ) : (
-                pageItems.map((row, i) => (
-                    <tr key={`${row.clusterId}-${row.ip}-${i}`} className="hover:bg-white/[0.02] transition-colors">
+                pageItems.map((row, i) => {
+                  const rowKey = `${row.clusterId}-${row.ip}-${i}`;
+                  return (
+                  <Fragment key={rowKey}>
+                    <tr className="hover:bg-white/[0.02] transition-colors cursor-pointer" onClick={() => setOpenNode((cur) => (cur === rowKey ? null : rowKey))}
+                      title="Show the LogicMonitor view of this node">
                       <td className="px-3 py-2.5 text-cohesity-text font-medium max-w-[160px] truncate">{row.clusterName}</td>
                       <td className="px-3 py-2.5 text-cohesity-text font-mono">{row.ip}</td>
                       <td className="px-3 py-2.5 text-gray-300">{row.model}</td>
@@ -298,7 +305,16 @@ export default function HardwarePage() {
                       <td className="px-3 py-2.5 text-gray-300 font-mono">{row.swVersion}</td>
                       <td className="px-3 py-2.5 text-gray-400 whitespace-nowrap">{row.diskBreakdown}</td>
                     </tr>
-                  ))
+                    {openNode === rowKey && (
+                      <tr className="bg-white/[0.02]">
+                        <td colSpan={9} className="px-3 py-2">
+                          <LmDeviceCard names={[row.hostname]} ips={[/^[0-9a-fA-F:.]+$/.test(String(row.ip)) ? row.ip : null]} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                  );
+                })
               )}
             </tbody>
           </table>

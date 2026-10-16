@@ -16,8 +16,10 @@
 // with a zone, built in JS. Cutoffs are built in JS and bound, never
 // compared with datetime('now') in SQL.
 //
-// IP SLA (subject_kind 'ipsla') is reserved: the table and the summary
-// functions already tolerate it, the sample loop below handles 'check' only.
+// IP SLA (subject_kind 'ipsla', round 9 WP7): the subject iteration, sample
+// series and baseline lookups live in logicmonitorWatchIpsla.js, which feeds
+// the same applySample state machine exported from here. evaluateWatch calls
+// it at the end of a full (not 'only') pass through a guarded require.
 const lmChecks = require('./logicmonitorChecks');
 
 const { median } = lmChecks;
@@ -42,6 +44,13 @@ const SAMPLE_FETCH = 40;
 const DRIFT_MIN_HOURS = 16;
 
 const typeFor = (kind) => (kind === 'loss' ? 'loss-degrading' : 'latency-degrading');
+
+/**
+ * Issue target of an episode. Check subjects keep their label ("<check> @ <location>");
+ * IP SLA subjects are labelled "<device> <instance> (<probe type>)" and the issue
+ * target drops the probe type so the first token stays the device (the Ops Agent host key).
+ */
+const targetOf = (ep) => (ep.subject_kind === 'ipsla' ? String(ep.subject_label || '').replace(/\s+\([^()]*\)$/, '') : ep.subject_label);
 
 /** Last `windows` values strictly increasing. */
 function isRising(trend, windows) {
@@ -280,6 +289,18 @@ function evaluateWatch(dbh, source, t, nowEpoch = nowSec(), opts = {}) {
     saveEpisode(dbh, ep);
     counts.closed += 1;
   }
+  // IP SLA subjects (WP7). Skipped for a single-location replay (opts.only).
+  if (!only) {
+    try {
+      const r = require('./logicmonitorWatchIpsla').evaluateIpsla(dbh, source, t, nowEpoch);
+      counts.opened += r.opened; counts.promoted += r.promoted; counts.closed += r.closed;
+    } catch (err) {
+      if (err && err.code !== 'MODULE_NOT_FOUND') {
+        counts.ipslaError = err.message;
+        try { require('../utils/logger').warn(`[LmWatch] IP SLA pass failed for source ${source && source.id}: ${err.message}`); } catch { /* no logger */ }
+      }
+    }
+  }
   return counts;
 }
 
@@ -328,7 +349,7 @@ function computeWatchIssues(dbh, t, srcName) {
     openSubjects.add(`${ep.source_id}|${ep.subject_key}`);
     issues.push({
       severity: ep.state === 'critical' ? 'critical' : 'warning', type: typeFor(ep.kind), source: nameOf(ep.source_id),
-      target: ep.subject_label, message: degradingMessage(ep),
+      target: targetOf(ep), message: degradingMessage(ep),
     });
   }
 
@@ -360,7 +381,7 @@ function computeWatchIssues(dbh, t, srcName) {
     const peaks = ratios.length ? `, peaks ${range(round(Math.min(...ratios), 1), round(Math.max(...ratios), 1), 'x')} baseline` : '';
     const hop = topHop ? `, likely hop ${topHop.h} in ${topHop.n} of ${list.length}` : '';
     issues.push({
-      severity: 'warning', type: 'latency-pattern', source: nameOf(list[0].source_id), target: list[0].subject_label,
+      severity: 'warning', type: 'latency-pattern', source: nameOf(list[0].source_id), target: targetOf(list[0]),
       message: `${plural(list.length, 'spike')} in ${plural(spanDays, 'day')}, ${range(Math.min(...mins), Math.max(...mins), '')} min each${peaks}${hop}`,
     });
   }
@@ -397,6 +418,7 @@ function computeWatchIssues(dbh, t, srcName) {
       });
     }
   } catch { /* reference table not migrated */ }
+  try { issues.push(...require('./logicmonitorWatchIpsla').computeIpslaDrift(dbh, t, srcName)); } catch { /* ipsla baselines not migrated */ }
   return issues;
 }
 
@@ -500,8 +522,8 @@ function episodeSummary(dbh, opts = {}) {
     if (opts.checkId != null) { where.push('check_id = ?'); args.push(String(opts.checkId)); }
     const names = (opts.names || []).map((n) => String(n || '').trim().toLowerCase()).filter(Boolean);
     if (names.length) {
-      where.push(`(${names.map(() => "lower(subject_label) = ? OR lower(subject_label) LIKE ? ESCAPE '\\'").join(' OR ')})`);
-      for (const n of names) args.push(n, `${n.replace(/[\\%_]/g, '\\$&')} @ %`);
+      where.push(`(${names.map(() => "lower(subject_label) = ? OR lower(subject_label) LIKE ? ESCAPE '\\' OR (subject_kind = 'ipsla' AND lower(subject_label) LIKE ? ESCAPE '\\')").join(' OR ')})`);
+      for (const n of names) args.push(n, `${n.replace(/[\\%_]/g, '\\$&')} @ %`, `${n.replace(/[\\%_]/g, '\\$&')} %`);
     }
     const rows = dbh.prepare(`SELECT * FROM lm_latency_episodes WHERE ${where.join(' AND ')} ORDER BY opened_at DESC`).all(...args);
     if (!rows.length) return empty;
@@ -570,4 +592,6 @@ function pruneEpisodes(dbh, days = 90) {
 module.exports = {
   evaluateWatch, computeWatchIssues, computeReference, episodeSummary, pruneEpisodes,
   episodeView, isRising, typeFor, watchLines,
+  // Shared with logicmonitorWatchIpsla.js (the per-sample state machine and its persistence).
+  applySample, loadEpisode, saveEpisode, closeEpisode, targetOf, isoOf, epochOf, STALE_WATCH_SECONDS,
 };

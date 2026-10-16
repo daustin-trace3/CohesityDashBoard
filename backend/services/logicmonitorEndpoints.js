@@ -719,7 +719,9 @@ function makeVmkernelLookup(dbh) {
  * Row: {sourceId, deviceId, deviceName, instanceId, port, host, hostPlatform,
  * windowStart, windowEnd, meanUtilPct, maxUtilPct, baselineUtilPct, finding?,
  * runs: [{jobName, cluster, objectName, status, start, end, logicalBytes,
- * sharePct}], runCount, uplinkRule}. Never throws.
+ * sharePct}], runCount, uplinkRule, side}. side is 'client' (the protected host)
+ * or 'target' (round 9: a Cohesity cluster node's own ports, hostPlatform
+ * 'cohesity', uplinkRule 'node-ports', from cohesity_nodes). Never throws.
  */
 function backupLoad(dbh, { days = 7, nowMs = Date.now(), endpoints = null } = {}) {
   const out = [];
@@ -806,6 +808,7 @@ function backupLoad(dbh, { days = 7, nowMs = Date.now(), endpoints = null } = {}
       for (const [hk, v] of perHost) {
         if (!byHost.has(hk)) byHost.set(hk, { h: v.h, runs: [] });
         byHost.get(hk).runs.push({
+          id: r.id, clusterId: r.cluster_id,
           jobName: job, cluster: r.cluster_name || null, objectName: [...new Set(v.objects)].slice(0, 3).join(', '),
           status: r.status || null, start: r.s, end: r.e, logicalBytes: r.logical_bytes == null ? null : Number(r.logical_bytes),
         });
@@ -813,15 +816,18 @@ function backupLoad(dbh, { days = 7, nowMs = Date.now(), endpoints = null } = {}
     }
 
     const baseCache = new Map();
-    for (const { h, runs: hostRuns } of byHost.values()) {
-      hostRuns.sort((a, b) => a.start - b.start || a.end - b.end);
+    const mergeWindows = (list) => {
+      list.sort((a, b) => a.start - b.start || a.end - b.end);
       const windows = [];
-      for (const r of hostRuns) {
+      for (const r of list) {
         const cur = windows[windows.length - 1];
         if (cur && r.start <= cur.end + BACKUP_MERGE_GAP_S) { cur.runs.push(r); cur.end = Math.max(cur.end, r.end); } else windows.push({ start: r.start, end: r.end, runs: [r] });
       }
-      const { ports, rule } = portsOf(h.host, h.kind);
-      if (!ports.length) continue;
+      return windows;
+    };
+    // One row per (window, port) for a host or a Cohesity node. side is
+    // 'client' for the protected host and 'target' for the cluster's nodes.
+    const emitWindowRows = (windows, ports, host, hostPlatform, rule, side, extra = {}) => {
       for (const w of windows) {
         const total = w.runs.reduce((a, r) => a + (r.logicalBytes > 0 ? r.logicalBytes : 0), 0);
         let shares = w.runs.map((r) => (total > 0 && r.logicalBytes != null ? Math.round((r.logicalBytes / total) * 1000) / 10 : null));
@@ -855,7 +861,7 @@ function backupLoad(dbh, { days = 7, nowMs = Date.now(), endpoints = null } = {}
           const bMad = bl.length ? bl.reduce((a, b) => a + (b.util_mad || 0), 0) / bl.length : 0;
           const row = {
             sourceId: p.sourceId, deviceId: p.deviceId, deviceName: p.deviceName, instanceId: p.instanceId, port: p.port,
-            host: h.host, hostPlatform: h.hostPlatform,
+            host, hostPlatform, side, ...extra,
             windowStart: new Date(w.start * 1000).toISOString(), windowEnd: new Date(w.end * 1000).toISOString(),
             meanUtilPct: round1(mean), maxUtilPct: round1(Math.max(...utils)), baselineUtilPct: round1(bMed),
           };
@@ -865,6 +871,43 @@ function backupLoad(dbh, { days = 7, nowMs = Date.now(), endpoints = null } = {}
           out.push(row);
         }
       }
+    };
+
+    // Client side: the protected hosts.
+    const runsByCluster = new Map();
+    for (const { h, runs: hostRuns } of byHost.values()) {
+      for (const r of hostRuns) {
+        if (r.clusterId == null) continue;
+        if (!runsByCluster.has(r.clusterId)) runsByCluster.set(r.clusterId, new Map());
+        runsByCluster.get(r.clusterId).set(r.id, r);
+      }
+      const { ports, rule } = portsOf(h.host, h.kind);
+      if (!ports.length) continue;
+      emitWindowRows(mergeWindows(hostRuns), ports, h.host, h.hostPlatform, rule, 'client');
+    }
+
+    // Target side (round 9): the Cohesity cluster's own node ports, one set of
+    // windows per cluster over every run that reached a mapped client.
+    // cohesity_nodes comes from the Cohesity poll (hostname, ip, ips_json).
+    if (tableExists(dbh, 'cohesity_nodes')) {
+      try {
+        const nodeStmt = dbh.prepare('SELECT hostname, ip, ips_json FROM cohesity_nodes WHERE cluster_id = ? ORDER BY hostname');
+        for (const [clusterId, runMap] of runsByCluster) {
+          const nodes = nodeStmt.all(clusterId);
+          if (!nodes.length) continue;
+          const windows = mergeWindows([...runMap.values()]);
+          for (const n of nodes) {
+            const names = [n.hostname].filter(Boolean);
+            const ips = [n.ip, ...(parseJson(n.ips_json, []) || [])].filter((x) => typeof x === 'string' && x);
+            if (!names.length && !ips.length) continue;
+            const seenPort = new Set();
+            const nodePorts = serverPath(dbh, { names, ips }, { endpoints: epRows }).switchPorts
+              .filter((p) => p.instanceId != null && !seenPort.has(`${p.sourceId}:${p.instanceId}`) && seenPort.add(`${p.sourceId}:${p.instanceId}`));
+            if (!nodePorts.length) continue;
+            emitWindowRows(windows, nodePorts, n.hostname || n.ip, 'cohesity', 'node-ports', 'target', { cluster: [...runMap.values()][0].cluster || null });
+          }
+        }
+      } catch { /* no node ports: target side stays empty */ }
     }
     const rank = (r) => (r.finding === 'saturates' ? 0 : r.finding === 'elevated' ? 1 : 2);
     out.sort((a, b) => rank(a) - rank(b) || b.meanUtilPct - a.meanUtilPct || String(b.windowStart).localeCompare(String(a.windowStart)));

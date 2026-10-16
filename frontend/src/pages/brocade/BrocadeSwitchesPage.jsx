@@ -7,6 +7,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum, fmtMs, statusTone, fmtStatus } from './helpers';
+import LmDeviceCard from '../../components/logicmonitor/LmDeviceCard';
 
 // management_state bit decoding — per contract §2 (used both for issues and
 // the switch 360 modal's decoded labels).
@@ -115,6 +116,8 @@ function SwitchDetailModal({ id, onClose }) {
         <Fact label="Max Port" value={sw.maxPort} />
         <Fact label="Cert Expiry" value={fmtMs(sw.tlsCertExpiryMs)} />
       </div>
+
+      <LmDeviceCard names={[sw.name]} ips={[sw.ipAddress]} className="mb-4" />
 
       {mgmtLabels.length > 0 && (
         <div className="mb-4">
