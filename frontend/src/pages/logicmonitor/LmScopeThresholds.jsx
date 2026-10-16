@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { FolderTree, Gauge } from 'lucide-react';
+import { FolderTree } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { LoadingPanel } from '../../components/ui/primitives';
@@ -153,6 +153,7 @@ export function LmScopePanel({ sources, reload }) {
       </div>
       <div className="mt-5 pt-4 border-t border-cohesity-border/50">
         <p className="text-xs font-semibold text-ink mb-1">Site rules</p>
+        <p className="text-[11px] text-ink-faint mb-1">Site rules are set here only.</p>
         <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">A device's site comes from the first rule that matches: a device group under one of the roots below (the next folder is the site), then the device property, then the hostname prefix before the first dash. Leave a field blank to use the global default.</p>
         <div className="grid md:grid-cols-3 gap-3">
           <div>
@@ -169,140 +170,6 @@ export function LmScopePanel({ sources, reload }) {
         </div>
       </div>
       <button onClick={save} disabled={saving} className={`${btnPrimary} mt-4`}>{saving ? 'Saving...' : 'Save scope'}</button>
-    </SectionPanel>
-  );
-}
-
-const THRESHOLD_GROUPS = [
-  { title: 'Interfaces', keys: [
-    ['lm_if_util_warn_pct', 'Utilization warning (%)'],
-    ['lm_if_err_warn', 'Errors in 24 h before warning'],
-    ['lm_if_flap_warn', 'Status changes in 24 h counted as flapping'],
-  ] },
-  { title: 'Devices and alerts', keys: [
-    ['lm_dead_grace_min', 'Dead device grace (minutes)'],
-    ['lm_alert_storm_count', 'Alerts in 15 minutes counted as a storm'],
-    ['lm_new_device_days', 'New device window (days)'],
-  ] },
-  { title: 'Site reachability', keys: [
-    ['lm_check_baseline_days', 'Baseline window (days)'],
-    ['lm_check_baseline_min_samples', 'Samples before anomalies are judged'],
-    ['lm_check_latency_k', 'Latency spread multiplier (k x MAD)'],
-    ['lm_check_latency_floor_ms', 'Latency MAD floor (ms)'],
-    ['lm_check_latency_min_ms', 'Ignore latency below (ms)'],
-    ['lm_check_loss_min_pct', 'Loss anomaly minimum (%)'],
-    ['lm_check_loss_crit_pct', 'Loss critical at (%)'],
-    ['lm_check_location_fold', 'Checks failing at one location to fold into one issue'],
-    ['lm_check_data_calls_per_tick', 'Check data calls per poll'],
-  ] },
-  { title: 'Sites and path', keys: [
-    ['lm_site_group_roots', 'Group roots that name a site (comma list)', 'text'],
-    ['lm_site_property', 'Device property that names a site', 'text'],
-    ['lm_site_from_hostname', 'Use the hostname prefix when nothing else names a site', 'toggle'],
-    ['lm_path_max_hops', 'Maximum hops in a server path'],
-    ['lm_shadow_enabled', 'Hold back alerts behind a failed upstream device', 'toggle'],
-  ] },
-  { title: 'Circuits', keys: [
-    ['lm_circuit_sat_pct', 'Saturated at p95 of (%)'],
-    ['lm_circuit_crit_pct', 'Critical when the daily max reaches (%) three days running'],
-    ['lm_circuit_sat_days', 'Saturation window (days)'],
-    ['lm_wan_overrides', 'Force or exclude WAN ports (device:port list, ! prefix excludes)', 'text'],
-  ] },
-  { title: 'Interface anomalies', keys: [
-    ['lm_if_baseline_days', 'Baseline window (days)'],
-    ['lm_if_baseline_min_samples', 'Samples before anomalies are judged'],
-    ['lm_if_anomaly_k', 'Spread multiplier (k x MAD)'],
-    ['lm_if_anomaly_util_min_pct', 'Ignore utilization below (%)'],
-    ['lm_if_anomaly_err_min', 'Ignore errors below'],
-    ['lm_backup_overlay_util_pct', 'Backup run counted as saturating a port at (%)'],
-  ] },
-  { title: 'Webhook', keys: [
-    ['lm_webhook_rate_per_min', 'Webhook deliveries accepted per minute'],
-  ] },
-  { title: 'Retention', keys: [
-    ['lm_alert_retention_days', 'Cleared alerts (days)'],
-    ['lm_interface_history_days', 'Interface history (days)'],
-    ['lm_check_history_days', 'Check history (days)'],
-  ] },
-];
-
-const TEXT_KEYS = new Set(THRESHOLD_GROUPS.flatMap((g) => g.keys.filter((k) => k[2] === 'text').map((k) => k[0])));
-const TOGGLE_KEYS = new Set(THRESHOLD_GROUPS.flatMap((g) => g.keys.filter((k) => k[2] === 'toggle').map((k) => k[0])));
-
-export function LmThresholdsPanel() {
-  const { toast } = useToast();
-  const [values, setValues] = useState(null);
-  const [ranges, setRanges] = useState({});
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    client.get('/logicmonitor/config')
-      .then(({ data }) => { setValues({ ...(data?.thresholds || {}) }); setRanges(data?.ranges || {}); })
-      .catch(() => setValues({}));
-  }, []);
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      const body = {};
-      for (const [k, v] of Object.entries(values)) {
-        if (v === '' || v == null) continue;
-        if (TEXT_KEYS.has(k)) body[k] = String(v);
-        else if (TOGGLE_KEYS.has(k)) body[k] = typeof v === 'string' ? (Number(v) ? '1' : '0') : (Number(v) ? 1 : 0);
-        else body[k] = Number(v);
-      }
-      const { data } = await client.put('/logicmonitor/config', body);
-      if (data?.thresholds) setValues({ ...data.thresholds });
-      toast({ type: 'success', title: 'Thresholds saved', message: 'Out-of-range values were clamped to their limits.' });
-    } catch (err) {
-      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <SectionPanel icon={Gauge} title="Thresholds"
-      blurb="Rules ICC uses to raise LogicMonitor issues (Issues page, Service Status, Ops Agent and email). These are ICC's own rules on top of LogicMonitor's alerts.">
-      {values == null ? <LoadingPanel label="Loading..." height={100} /> : (
-        <>
-          {THRESHOLD_GROUPS.map((grp) => (
-            <div key={grp.title} className="mb-4">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint mb-2">{grp.title}</p>
-              <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {grp.keys.map(([k, label, kind]) => {
-                  const r = ranges[k] || {};
-                  if (kind === 'toggle') {
-                    return (
-                      <label key={k} className="flex items-center gap-2 text-xs font-semibold text-ink cursor-pointer self-end h-[38px]">
-                        <input type="checkbox" checked={values[k] == null || values[k] === '' ? true : !!Number(values[k])} onChange={(e) => setValues((v) => ({ ...v, [k]: e.target.checked ? '1' : '0' }))} /> {label}
-                      </label>
-                    );
-                  }
-                  if (kind === 'text') {
-                    return (
-                      <div key={k}>
-                        <label className="block text-xs font-semibold text-ink mb-1">{label}</label>
-                        <input type="text" value={values[k] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [k]: e.target.value }))} className={inp} spellCheck={false} />
-                      </div>
-                    );
-                  }
-                  return (
-                    <div key={k}>
-                      <label className="block text-xs font-semibold text-ink mb-1">{label}</label>
-                      <input type="number" min={r.min} max={r.max} value={values[k] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [k]: e.target.value }))} className={inp} />
-                      {(r.min != null || r.default != null) && (
-                        <p className="text-[10px] text-ink-faint mt-0.5">{r.min != null ? `${r.min} to ${r.max}` : ''}{r.default != null ? `, default ${r.default}` : ''}</p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-          <button onClick={save} disabled={saving} className={btnPrimary}>{saving ? 'Saving...' : 'Save thresholds'}</button>
-        </>
-      )}
     </SectionPanel>
   );
 }
