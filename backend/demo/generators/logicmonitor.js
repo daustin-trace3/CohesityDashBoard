@@ -586,6 +586,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
   const linkDesc = new Map(links.map((l) => [`${l.src}|${l.srcPort}`, `to ${l.dst} ${l.dstPort}`]));
   const linkByKey = new Map(links.map((l) => [`${l.src}|${l.srcPort}`, l]));
   const unmonDone = new Set();
+  const demoNeighbors = []; // CDP/LLDP neighbour instances for buildTopologyLinks (round 10)
   const ifaces = [];
   const ifByKey = new Map();
   let instanceSeq = 700000;
@@ -985,20 +986,27 @@ function seedLogicmonitor(db, { now, encrypt }) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 0, datetime('now'))
     `);
     const statusText = (s) => (s === 1 ? 'up' : s === 2 ? 'down' : s == null ? 'unknown' : 'other');
-    // Round 10: predef.externalResourceID as LogicMonitor writes it: local MAC, a cdp token naming the real peer
-    // with its serial and port, an lldp token with the peer's chassis MAC; a few ports see unmonitored neighbours.
+    // Round 10: predef.externalResourceID as LogicMonitor writes it: it describes the interface's OWN device
+    // (local port MAC, the device's sysname with serial, its chassis MAC, and the interface's own port).
+    // The neighbour side is seeded as CDP/LLDP neighbour instances (demoNeighbors) that buildTopologyLinks
+    // resolves through that identity index, with the remote port; a few ports see unmonitored neighbours.
+    const demoPortName = (p) => p.replace(/^Te/, 'TenGigabitEthernet').replace(/^Gi/, 'GigabitEthernet').toLowerCase();
     const ifaceProps = (f) => {
       const props = [{ name: 'auto.interface.alias', value: f.description }, { name: 'auto.interface.speed', value: String(f.speed) }];
-      const tokens = [`interface:${demoPortMac(f.device.id, f.ifIndex)}`];
+      const own = f.full.toLowerCase();
+      const serial = f.device.ident && f.device.ident.serial ? `(${String(f.device.ident.serial).toLowerCase()})` : '';
+      const tokens = [`interface:${demoPortMac(f.device.id, f.ifIndex)}`,
+        `cdp-interface:${f.device.name}.acme.local${serial}--${own}`, `lldp-interface:${demoDeviceMac(f.device.id)}--${own}`];
       const l = linkByKey.get(f.key);
       const peer = l ? byName.get(l.dst) : null;
       if (peer) {
-        const port = l.dstPort.replace(/^Te/, 'TenGigabitEthernet').replace(/^Gi/, 'GigabitEthernet').toLowerCase();
-        const serial = peer.ident && peer.ident.serial ? `(${String(peer.ident.serial).toLowerCase()})` : '';
-        tokens.push(`cdp-interface:${peer.name}.acme.local${serial}--${port}`, `lldp-interface:${demoDeviceMac(peer.id)}--${port}`);
+        const port = demoPortName(l.dstPort);
+        const pSerial = peer.ident && peer.ident.serial ? `(${String(peer.ident.serial).toLowerCase()})` : '';
+        demoNeighbors.push({ protocol: 'cdp', srcDeviceId: f.device.id, instance: { instanceId: f.instanceId, displayName: `${peer.name}.acme.local${pSerial}`, props: { auto: { 'neighbor.local_port': f.full, 'neighbor.remote_port': port } } } });
+        demoNeighbors.push({ protocol: 'lldp', srcDeviceId: f.device.id, instance: { instanceId: f.instanceId, displayName: demoDeviceMac(peer.id), props: { auto: { 'neighbor.local_port': f.full, 'neighbor.remote_port': port } } } });
       } else if (UNMONITORED_CDP[f.device.name] && f.cls !== 'uplink' && !unmonDone.has(f.device.name)) {
         unmonDone.add(f.device.name);
-        tokens.push(`cdp-interface:${UNMONITORED_CDP[f.device.name]}.acme.local--eth0`);
+        demoNeighbors.push({ protocol: 'cdp', srcDeviceId: f.device.id, instance: { instanceId: f.instanceId, displayName: `${UNMONITORED_CDP[f.device.name]}.acme.local`, props: { auto: { 'neighbor.local_port': f.full, 'neighbor.remote_port': 'eth0' } } } });
       }
       props.push({ name: 'predef.externalResourceID', value: tokens.join(',') });
       return props;
@@ -1498,7 +1506,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
 
   const pollerMod = optionalModule('../../services/logicmonitorPoller');
   if (pollerMod && pollerMod.buildTopologyLinks) {
-    pollerMod.buildTopologyLinks(db, sourceId);
+    pollerMod.buildTopologyLinks(db, sourceId, { neighbors: demoNeighbors });
     wp1.poller = true;
   }
   // LLDP neighbours for 10 core/distribution links, added beside whatever the
@@ -1532,6 +1540,11 @@ function seedLogicmonitor(db, { now, encrypt }) {
   try {
     counts.ipslaWatch = require('./logicmonitorIpslaCloudDemo').seedIpslaWatch(db, { sourceId, nowMs });
   } catch (err) { console.warn(`[seedDemo] logicmonitor ip sla watch scenarios skipped: ${err.message}`); }
+
+  // Round 11 WP-R: raw DataSource store derived from the catalog metric rows.
+  try {
+    counts.rawValues = require('./logicmonitorRawDemo').seedRawValues(db, { sourceId });
+  } catch (err) { console.warn(`[seedDemo] logicmonitor raw values skipped: ${err.message}`); }
 
   const issuesMod = optionalModule('../../services/logicmonitorIssues');
   if (issuesMod && issuesMod.reconcileIssueHistory) {

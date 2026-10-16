@@ -50,7 +50,10 @@ describe('parseEri', () => {
   });
 });
 
-describe('buildEriLinks and buildTopologyLinks', () => {
+// The live ERI of an interface on snot-bleaf-1-1: it names the interface's OWN device (different domain than LM's display name).
+const OWN = 'interface:00:3a:9c:03:9b:8c,cdp-interface:snot-bleaf-1-1.capgroup.com(fdo22200gd7)--ethernet1/37,lldp-interface:00:3a:9c:03:9b:67--ethernet1/37';
+
+describe('identity index, resolveNeighbor and buildTopologyLinks', () => {
   let sid;
   const iface = (devId, instId, name, eriText, desc = null) => db.prepare(`
     INSERT INTO lm_interfaces (source_id, lm_device_id, hds_id, instance_id, instance_name, display_name, description, props_json, stale)
@@ -60,87 +63,118 @@ describe('buildEriLinks and buildTopologyLinks', () => {
     INSERT INTO lm_devices (source_id, lm_device_id, name, display_name, device_type, host_status, is_network, role, vendor, serial, eri_json, stale)
     VALUES (?, ?, ?, ?, 0, 'normal', 1, 'switch', 'Cisco', ?, ?, 0)
   `).run(sid, id, name, name, o.serial || null, JSON.stringify({ mac: o.mac || [], ip: [], fqdn: [] }));
+  const nbr = (protocol, srcDeviceId, instanceId, displayName, remotePort = null) => ({
+    protocol, srcDeviceId,
+    instance: { instanceId, displayName, props: { auto: remotePort ? { 'neighbor.remote_port': remotePort } : {} } },
+  });
+  const index = () => new Map([['sw-a', 1], ['snot-bleaf-1-1.cgftdev.com', 2], ['snot-bleaf-1-1', 2], ['sw-c', 3]]);
 
   beforeEach(() => {
     for (const t of ['lm_unmonitored_neighbors', 'lm_topology_links', 'lm_interfaces', 'lm_devices', 'lm_sources']) db.prepare(`DELETE FROM ${t}`).run();
     sid = db.prepare(`INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials, last_poll_status) VALUES ('p', 'acme', 'lmv1', ?, 'success')`)
       .run(encrypt(JSON.stringify({ accessId: 'a', accessKey: 'b' }))).lastInsertRowid;
-    dev(1, 'sw-a', { serial: 'AAA1111111', mac: ['00:11:22:33:44:01'] });
-    dev(2, 'asx1-bsleaf-1', { serial: 'FDO231003GT', mac: ['d4:78:9b:19:69:4b'] });
-    dev(3, 'sw-c', { mac: ['00:11:22:33:44:03'] });
-    // sw-c port MACs share five octets with its chassis MAC
-    iface(3, 301, 'Eth1/1', 'interface:00:11:22:33:44:77');
+    dev(1, 'sw-a');
+    dev(2, 'snot-bleaf-1-1.cgftdev.com', { serial: 'FDO22200GD7' });
+    dev(3, 'sw-c');
+    iface(2, 201, 'Ethernet1/37', OWN);
+    iface(2, 202, 'Ethernet1/38', 'interface:00:3a:9c:03:9b:8d,cdp-interface:snot-bleaf-1-1.capgroup.com(fdo22200gd7)--ethernet1/38,lldp-interface:00:3a:9c:03:9b:67--ethernet1/38');
+    iface(1, 101, 'Eth1/1', 'interface:aa:bb:cc:00:00:01,cdp-interface:sw-a.capgroup.com--eth1/1');
   });
 
-  it('resolves cdp by name and serial, lldp by chassis MAC and by first five octets, ICC by resolver', () => {
-    iface(1, 101, 'Eth1/12', LIVE);
-    iface(1, 102, 'Eth1/13', 'cdp-interface:mystery-host--eth0,lldp-interface:00:11:22:33:44:99--eth0');
-    iface(1, 103, 'Eth1/14', 'cdp-interface:esx-77.corp(zzz9999999)--vmnic0');
-    const index = new Map([['sw-a', 1], ['asx1-bsleaf-1', 2], ['sw-c', 3]]);
-    const resolver = (tok) => (String(tok).startsWith('esx-77') ? { platform: 'vcenter', ref: 'esx-77.corp' } : null);
-    const out = eri.buildEriLinks(db, sid, { deviceIndex: index, resolver });
-    const by = (inst, proto) => out.rows.find((r) => r.srcInstanceId === inst && r.protocol === proto);
-    expect(by(101, 'cdp')).toMatchObject({ dstDeviceId: 2, dstPlatform: 'logicmonitor', confidence: 'high', dstPort: 'ethernet1/12', srcPort: 'Eth1/12' });
-    expect(by(101, 'lldp')).toMatchObject({ dstDeviceId: 2, confidence: 'high' });
-    expect(by(102, 'cdp')).toMatchObject({ dstDeviceId: null, dstPlatform: null, dstName: 'mystery-host', confidence: 'low' });
-    // 00:11:22:33:44:99 is not a known MAC but shares five octets with sw-c's interface MAC and chassis MAC (device 3 only)
-    expect(by(102, 'lldp')).toMatchObject({ dstDeviceId: 3, confidence: 'low' });
-    expect(by(103, 'cdp')).toMatchObject({ dstDeviceId: null, dstPlatform: 'vcenter', dstRef: 'esx-77.corp' });
-    expect(out.interfacesWithEri).toBe(4);
-    expect(out.cdpTokens).toBe(3);
-    expect(out.lldpTokens).toBe(2);
+  it('builds the identity index from the interface ERIs (own device, not a neighbour)', () => {
+    const idn = eri.buildIdentityIndex(db, sid);
+    expect(idn.names.get('snot-bleaf-1-1')).toBe(2);
+    expect(idn.serials.get('fdo22200gd7')).toBe(2);
+    expect(idn.chassis.get('00:3a:9c:03:9b:67')).toBe(2);
+    expect(idn.macs.get('00:3a:9c:03:9b:8c')).toEqual({ deviceId: 2, instanceId: 201, port: 'Ethernet1/37' });
+    expect(idn.ports.get('snot-bleaf-1-1|ethernet1/37')).toMatchObject({ deviceId: 2, instanceId: 201 });
+    expect(idn.ports.get('00:3a:9c:03:9b:67|ethernet1/38')).toMatchObject({ instanceId: 202 });
+    expect(idn.interfacesWithEri).toBe(3);
+    // buildEriLinks emits no links any more
+    const out = eri.buildEriLinks(db, sid);
+    expect(out.rows).toEqual([]);
+    expect(out).toMatchObject({ interfacesWithEri: 3, cdpTokens: 3, lldpTokens: 2 });
   });
 
-  it('name-only matches are medium, serial matches are high, and a serial alone resolves', () => {
-    iface(1, 111, 'Eth1/1', 'cdp-interface:sw-c--e1');
-    iface(1, 112, 'Eth1/2', 'cdp-interface:renamed-sw(FDO231003GT)--e2');
-    const index = new Map([['sw-a', 1], ['asx1-bsleaf-1', 2], ['sw-c', 3]]);
-    const out = eri.buildEriLinks(db, sid, { deviceIndex: index, resolver: null });
-    expect(out.rows.find((r) => r.srcInstanceId === 111)).toMatchObject({ dstDeviceId: 3, confidence: 'medium' });
-    expect(out.rows.find((r) => r.srcInstanceId === 112)).toMatchObject({ dstDeviceId: 2, confidence: 'high' });
+  it('resolveNeighbor: sysname with port, serial, chassis MAC, then the device index, then the ICC resolver', () => {
+    const idn = eri.buildIdentityIndex(db, sid);
+    const r = (o, resolver = null) => eri.resolveNeighbor(idn, index(), resolver, { selfId: 1, ...o });
+    // sysname (different domain than LM's display name) with the remote port resolved to the far interface name
+    expect(r({ name: 'snot-bleaf-1-1.capgroup.com(fdo22200gd7)', port: 'Ethernet1/37' }))
+      .toMatchObject({ dstDeviceId: 2, dstPlatform: 'logicmonitor', confidence: 'high', via: 'eri', dstPort: 'Ethernet1/37' });
+    // serial only
+    expect(r({ name: 'renamed-box', serial: 'FDO22200GD7', port: 'x' })).toMatchObject({ dstDeviceId: 2, confidence: 'high', via: 'eri' });
+    // chassis MAC as the neighbour name
+    expect(r({ name: '00:3a:9c:03:9b:67', port: 'ethernet1/38' })).toMatchObject({ dstDeviceId: 2, via: 'eri', dstPort: 'Ethernet1/38' });
+    // known sysname, unknown port: device kept, port left as the neighbour gave it
+    expect(r({ name: 'snot-bleaf-1-1', port: 'Ethernet1/99' })).toMatchObject({ dstDeviceId: 2, dstPort: 'Ethernet1/99' });
+    // not in the identity index, but the LM device index has it
+    expect(r({ name: 'sw-c.corp.local' })).toMatchObject({ dstDeviceId: 3, confidence: 'medium', via: 'name' });
+    // another platform
+    const icc = (tok) => (String(tok).startsWith('esx-77') ? { platform: 'vcenter', ref: 'esx-77.corp' } : null);
+    expect(r({ name: 'esx-77.corp', port: 'vmnic0' }, icc)).toMatchObject({ dstDeviceId: null, dstPlatform: 'vcenter', dstRef: 'esx-77.corp', via: 'icc' });
+    // nothing knows it
+    expect(r({ name: 'ascx-core-1.capgroup.com(fox2151pjj1)', port: 'e1' }))
+      .toMatchObject({ dstDeviceId: null, dstPlatform: null, confidence: 'low', via: null, dstPort: 'e1' });
+    // a loop back to the source device is not a hit
+    expect(eri.resolveNeighbor(idn, index(), null, { name: 'snot-bleaf-1-1', selfId: 2 }).dstDeviceId).toBeNull();
   });
 
-  it('an ERI link takes precedence over a neighbour-instance link and fills lm_unmonitored_neighbors', () => {
-    iface(1, 121, 'Eth1/21', 'cdp-interface:asx1-bsleaf-1(FDO231003GT)--e9');
-    iface(1, 122, 'Eth1/22', 'cdp-interface:phx-ups-01.acme.local--eth0');
-    iface(3, 123, 'Eth1/23', 'cdp-interface:phx-ups-01.acme.local--eth0,lldp-interface:e4a41ca6bffa--x');
-    iface(3, 124, 'Eth1/24', 'cdp-interface: ,cdp-interface:e4a41ca6bffa--x');
+  it('buildTopologyLinks sends neighbour instances through resolveNeighbor and fills the unmonitored table', () => {
     const neighbors = [
-      { protocol: 'cdp', srcDeviceId: 1, instance: { instanceId: 121, displayName: 'sw-c', props: { auto: {} } } },
-      { protocol: 'cdp', srcDeviceId: 3, instance: { instanceId: 301, displayName: 'sw-a', props: { auto: {} } } },
+      nbr('cdp', 1, 5001, 'snot-bleaf-1-1.capgroup.com(fdo22200gd7)', 'Ethernet1/37'),
+      nbr('lldp', 3, 5002, '00:3a:9c:03:9b:67', 'ethernet1/38'),
+      nbr('cdp', 1, 5003, 'sw-c.corp'),
+      nbr('cdp', 1, 5004, 'ascx-core-1.capgroup.com(fox2151pjj1)', 'e1/1'),
+      nbr('cdp', 3, 5005, 'ascx-core-1.capgroup.com(fox2151pjj1)', 'e1/2'),
+      nbr('lldp', 1, 5006, 'e4a41ca6bffa', 'x'),
+      nbr('cdp', 1, 5007, ' ', 'y'),
+      nbr('cdp', 1, 5008, 'e4a41ca6bffa', 'z'),
+      nbr('lldp', 3, 5009, 'unknown-firewall', 'p1'),
     ];
     const res = lmPoller.buildTopologyLinks(db, sid, { neighbors });
-    const l121 = db.prepare("SELECT * FROM lm_topology_links WHERE src_instance_id = 121 AND protocol = 'cdp'").all();
-    expect(l121.length).toBe(1);
-    expect(l121[0].dst_device_id).toBe(2); // the instance link said sw-c (3); ERI wins
-    expect(db.prepare("SELECT dst_device_id d FROM lm_topology_links WHERE src_instance_id = 301 AND protocol = 'cdp'").get().d).toBe(1);
-    expect(res.eri.cdp).toBeGreaterThanOrEqual(3);
-    const rows = db.prepare("SELECT * FROM lm_unmonitored_neighbors WHERE stale = 0 AND kind = 'cdp' ORDER BY neighbor_key").all();
-    // the lldp chassis token e4a41ca6bffa normalizes to a real MAC, so it is an lldp neighbour; the cdp bare-hex name is dropped
-    expect(db.prepare("SELECT neighbor_key FROM lm_unmonitored_neighbors WHERE kind = 'lldp'").all().map((r) => r.neighbor_key)).toEqual(['e4:a4:1c:a6:bf:fa']);
-    expect(rows.map((r) => r.neighbor_key)).toEqual(['phx-ups-01']);
-    expect(rows[0]).toMatchObject({ kind: 'cdp', ports_seen: 2, devices_seen: 2, neighbor_name: 'phx-ups-01.acme.local' });
-    expect(eri.unmonitoredRows(db).length).toBe(2);
+    const get = (inst, proto) => db.prepare('SELECT * FROM lm_topology_links WHERE src_instance_id = ? AND protocol = ?').get(inst, proto);
+    expect(get(5001, 'cdp')).toMatchObject({ dst_device_id: 2, dst_port: 'Ethernet1/37', confidence: 'high', dst_platform: 'logicmonitor' });
+    expect(get(5002, 'lldp')).toMatchObject({ dst_device_id: 2, dst_port: 'Ethernet1/38', confidence: 'high' });
+    expect(get(5003, 'cdp')).toMatchObject({ dst_device_id: 3, confidence: 'medium' });
+    expect(get(5004, 'cdp')).toMatchObject({ dst_device_id: null, dst_platform: null, dst_name: 'ascx-core-1.capgroup.com(fox2151pjj1)' });
+    expect(res.eri.neighborsResolvedByEri).toBe(2);
+
+    const rows = eri.unmonitoredRows(db);
+    const byKey = Object.fromEntries(rows.map((x) => [x.key, x]));
+    expect(Object.keys(byKey).sort()).toEqual(['ascx-core-1', 'e4:a4:1c:a6:bf:fa', 'unknown-firewall']);
+    expect(byKey['ascx-core-1']).toMatchObject({ kind: 'cdp', portsSeen: 2, devicesSeen: 2, name: 'ascx-core-1.capgroup.com' });
+    expect(byKey['e4:a4:1c:a6:bf:fa'].kind).toBe('lldp');
+    expect(byKey['unknown-firewall'].kind).toBe('lldp');
+    // blank and bare-hex cdp names are skipped
+    expect(rows.find((x) => x.kind === 'cdp' && (x.key === '' || x.key === 'e4a41ca6bffa'))).toBeUndefined();
 
     const issues = eri.unmonitoredNeighborIssues(db, {}, new Map([[sid, 'p']]));
-    expect(issues).toEqual([{ severity: 'info', type: 'unmonitored-neighbor', source: 'p', target: 'p',
-      message: '2 devices seen by CDP/LLDP are not monitored (top: phx-ups-01.acme.local, e4:a4:1c:a6:bf:fa)' }]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ severity: 'info', type: 'unmonitored-neighbor', source: 'p' });
+    expect(issues[0].message.startsWith('3 devices seen by CDP/LLDP are not monitored (top: ascx-core-1.capgroup.com')).toBe(true);
   });
 
-  it('an unmonitored neighbour that disappears goes stale on the next build', () => {
-    iface(1, 131, 'Eth1/31', 'cdp-interface:ghost-01--e1');
+  it('a description-only rebuild leaves the unmonitored table alone, and a neighbour that disappears goes stale', () => {
+    lmPoller.buildTopologyLinks(db, sid, { neighbors: [nbr('cdp', 1, 5101, 'ghost-01.corp', 'e1')] });
+    expect(eri.unmonitoredRows(db).map((x) => x.key)).toEqual(['ghost-01']);
     lmPoller.buildTopologyLinks(db, sid);
-    expect(eri.unmonitoredRows(db).map((r) => r.key)).toEqual(['ghost-01']);
-    db.prepare('UPDATE lm_interfaces SET stale = 1 WHERE instance_id = 131').run();
-    lmPoller.buildTopologyLinks(db, sid);
+    expect(eri.unmonitoredRows(db).map((x) => x.key)).toEqual(['ghost-01']);
+    lmPoller.buildTopologyLinks(db, sid, { neighbors: [] });
     expect(eri.unmonitoredRows(db)).toEqual([]);
     expect(eri.unmonitoredNeighborIssues(db, {}, new Map([[sid, 'p']]))).toEqual([]);
   });
 
-  it('eriSummary counts interfaces, tokens and resolved links', () => {
-    iface(1, 141, 'Eth1/41', LIVE);
-    lmPoller.buildTopologyLinks(db, sid);
+  it('eriSummary reports the identity index, resolved-by-ERI and unmonitored counts', () => {
+    lmPoller.buildTopologyLinks(db, sid, { neighbors: [
+      nbr('cdp', 1, 5201, 'snot-bleaf-1-1.capgroup.com(fdo22200gd7)', 'Ethernet1/37'),
+      nbr('cdp', 1, 5202, 'ghost-02.corp', 'e1'),
+    ] });
     const s = eri.eriSummary(db);
-    expect(s).toMatchObject({ interfacesWithEri: 2, cdpTokens: 1, lldpTokens: 1, resolved: 2, unresolved: 0 });
+    expect(s).toMatchObject({
+      interfacesWithEri: 3, cdpTokens: 3, lldpTokens: 2, identityNames: 2, identitySerials: 1, identityChassis: 1,
+      neighborsResolvedByEri: 1, unmonitored: 1, resolved: 1, unresolved: 1,
+    });
   });
 });
+

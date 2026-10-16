@@ -9,12 +9,13 @@
  *   predef.externalResourceID =
  *     interface:<local mac>,cdp-interface:<name[(serial)]>--<remote port>,lldp-interface:<chassis mac>--<remote port>
  *
- * buildEriLinks turns those tokens into lm_topology_links rows (protocol cdp
- * and lldp). It resolves a CDP name against the LM device index, then the
- * serial against lm_devices.serial, then the ICC identity index; an LLDP
- * chassis MAC against every MAC the portal knows. What nothing resolves is
- * kept as an unmonitored neighbour (lm_unmonitored_neighbors) and raised as
- * one folded info issue per source.
+ * The tokens describe the interface's OWN device (sysname, serial, chassis MAC,
+ * port), not a neighbour (proven on the live portal). They feed an identity
+ * index (buildIdentityIndex); the neighbour side comes from the CDP_Neighbors
+ * and LLDP_Neighbors instances, resolved by resolveNeighbor: identity index
+ * first (exact, with the remote port), then the LM device index, then the ICC
+ * resolver. Neighbours nothing resolves are kept as unmonitored neighbours
+ * (lm_unmonitored_neighbors) and raised as one folded info issue per source.
  *
  * The token grammar is taken from the first live portal (CGSandBox). The
  * property sits in props.auto there; this reader also accepts system and
@@ -90,129 +91,128 @@ function extractEriText(propsJson) {
 const tableExists = (dbh, name) => !!dbh.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
 
 /**
- * Link rows (poller row shape) for one source. deviceIndex is the poller's
- * buildDeviceIndex map; resolver is the ICC resolver (makeIccResolver) or null.
- * Returns { rows, cdp, lldp, resolved, interfacesWithEri, cdpTokens, lldpTokens }.
+ * Identity index of one source (all sources when sourceId is null), built from the
+ * interface ERIs. The ERI of an interface describes that interface's OWN device:
+ * its sysname and serial (cdp token), its chassis MAC (lldp token), its port, and
+ * the interface MAC. So a neighbour seen elsewhere (CDP_Neighbors, LLDP_Neighbors)
+ * resolves to a monitored device by sysname, serial or chassis MAC, and the remote
+ * port resolves to that device's interface by "<identity>|<port>".
  */
-function buildEriLinks(dbh, sourceId, { deviceIndex = new Map(), resolver = null } = {}) {
+function buildIdentityIndex(dbh, sourceId = null) {
+  const identity = {
+    names: new Map(),     // short lower-case sysname -> device id
+    serials: new Map(),   // lower-case serial -> device id
+    chassis: new Map(),   // chassis mac -> device id
+    macs: new Map(),      // local interface mac -> { deviceId, instanceId, port }
+    ports: new Map(),     // "<sysname>|<port>" and "<chassis mac>|<port>" and "<serial>|<port>" -> { deviceId, instanceId, port }
+    interfacesWithEri: 0,
+    cdpTokens: 0,
+    lldpTokens: 0,
+  };
+  if (!tableExists(dbh, 'lm_interfaces')) return identity;
   const ifaces = dbh.prepare(`
     SELECT lm_device_id, instance_id, display_name, props_json FROM lm_interfaces
-    WHERE source_id = ? AND stale = 0 AND props_json IS NOT NULL AND props_json LIKE '%externalResourceID%'
-  `).all(sourceId);
-  const parsed = [];
+    WHERE stale = 0 AND props_json IS NOT NULL AND props_json LIKE '%externalResourceID%' ${sourceId == null ? '' : 'AND source_id = ?'}
+  `).all(...(sourceId == null ? [] : [sourceId]));
+  const setOnce = (map, key, val) => { if (key && !map.has(key)) map.set(key, val); };
+  const portKey = (id, port) => `${id}|${norm(port)}`;
   for (const i of ifaces) {
     const eri = parseEri(extractEriText(i.props_json));
-    if (eri.cdp.length || eri.lldp.length || eri.localMac) parsed.push({ i, eri });
-  }
-
-  const serialIndex = new Map();
-  const macIndex = new Map();      // full mac -> device id
-  const prefixIndex = new Map();   // first five octets -> device id, or null when two devices share it
-  const addMac = (mac, id, prefixToo) => {
-    const m = normMac(mac);
-    if (!m) return;
-    if (!macIndex.has(m)) macIndex.set(m, id);
-    if (prefixToo) {
-      const p = m.split(':').slice(0, 5).join(':');
-      if (!prefixIndex.has(p)) prefixIndex.set(p, id);
-      else if (prefixIndex.get(p) !== id) prefixIndex.set(p, null);
+    if (!eri.cdp.length && !eri.lldp.length && !eri.localMac) continue;
+    identity.interfacesWithEri += 1;
+    identity.cdpTokens += eri.cdp.length;
+    identity.lldpTokens += eri.lldp.length;
+    const c = eri.cdp.find((t) => t.name && t.name.trim());
+    const l = eri.lldp.find((t) => t.chassisMac);
+    const port = (c && c.port) || (l && l.port) || null;
+    const ref = { deviceId: i.lm_device_id, instanceId: i.instance_id, port: i.display_name };
+    if (c) {
+      setOnce(identity.names, c.shortName, i.lm_device_id);
+      if (c.serial) setOnce(identity.serials, norm(c.serial), i.lm_device_id);
     }
-  };
-  for (const d of dbh.prepare('SELECT lm_device_id, serial, eri_json FROM lm_devices WHERE source_id = ? AND stale = 0').all(sourceId)) {
-    if (d.serial && String(d.serial).trim()) serialIndex.set(norm(d.serial), d.lm_device_id);
-    for (const mac of (parseJson(d.eri_json, {}) || {}).mac || []) addMac(mac, d.lm_device_id, false);
+    if (l) setOnce(identity.chassis, l.chassisMac, i.lm_device_id);
+    if (eri.localMac) setOnce(identity.macs, eri.localMac, ref);
+    if (port) {
+      if (c) { setOnce(identity.ports, portKey(c.shortName, port), ref); if (c.serial) setOnce(identity.ports, portKey(norm(c.serial), port), ref); }
+      if (l) setOnce(identity.ports, portKey(l.chassisMac, port), ref);
+    }
   }
-  // Chassis base MAC and port MACs share the OUI plus two octets on Cisco, so the
-  // first five octets of any local interface MAC name the device (confidence low).
-  for (const { i, eri } of parsed) addMac(eri.localMac, i.lm_device_id, true);
+  // Devices the portal knows by serial or by recorded MAC fill gaps the ERIs leave.
+  if (tableExists(dbh, 'lm_devices')) {
+    for (const d of dbh.prepare(`SELECT lm_device_id, serial, eri_json FROM lm_devices WHERE stale = 0 ${sourceId == null ? '' : 'AND source_id = ?'}`).all(...(sourceId == null ? [] : [sourceId]))) {
+      if (d.serial && String(d.serial).trim()) setOnce(identity.serials, norm(d.serial), d.lm_device_id);
+      for (const mac of (parseJson(d.eri_json, {}) || {}).mac || []) setOnce(identity.chassis, normMac(mac), d.lm_device_id);
+    }
+  }
+  return identity;
+}
 
-  const lookupName = (n) => {
-    const k = norm(n).replace(/\s*\([^)]*\)?\s*$/, '').trim();
-    if (!k) return null;
+/**
+ * Resolve one neighbour (a CDP_Neighbors or LLDP_Neighbors instance) to a far end.
+ * { name, serial, mac, port, selfId } describe the neighbour as the instance names it.
+ * Order: ERI identity (sysname, serial, chassis MAC; confidence high, remote port
+ * resolved to the far interface when known), the LM device index by name (medium),
+ * the ICC identity resolver for other platforms, else unresolved.
+ * Returns { dstDeviceId, dstPlatform, dstRef, dstPort, confidence, via }.
+ */
+function resolveNeighbor(identity, deviceIndex, resolver, { name = null, serial = null, mac = null, port = null, selfId = null } = {}) {
+  const rawName = String(name == null ? '' : name).trim();
+  const sm = rawName.match(/\(([^()]*)\)?\s*$/);
+  const serialN = norm(serial || (sm ? sm[1] : ''));
+  const short = shortOf(rawName);
+  const macN = normMac(mac) || normMac(rawName);
+  const unresolved = { dstDeviceId: null, dstPlatform: null, dstRef: null, dstPort: port || null, confidence: 'low', via: null };
+
+  if (identity) {
+    let id = null;
+    let key = null;
+    if (short && identity.names.has(short)) { id = identity.names.get(short); key = short; }
+    if ((id == null || id === selfId) && serialN && identity.serials.has(serialN)) { id = identity.serials.get(serialN); key = serialN; }
+    if ((id == null || id === selfId) && macN && identity.chassis.has(macN)) { id = identity.chassis.get(macN); key = macN; }
+    let remote = null;
+    if ((id == null || id === selfId) && macN && identity.macs.has(macN)) { remote = identity.macs.get(macN); id = remote.deviceId; key = null; }
+    if (id != null && id !== selfId) {
+      if (port && key) remote = identity.ports.get(`${key}|${norm(port)}`) || null;
+      return { dstDeviceId: id, dstPlatform: 'logicmonitor', dstRef: null, dstPort: (remote && remote.port) || port || null, confidence: 'high', via: 'eri' };
+    }
+  }
+
+  const k = rawName.toLowerCase().replace(/\s*\([^)]*\)?\s*$/, '').trim();
+  if (k && deviceIndex) {
     let id = deviceIndex.get(k);
     if (id == null && k.includes('.') && !IPV4.test(k)) id = deviceIndex.get(k.split('.')[0]);
-    return id == null ? null : id;
-  };
-
-  const best = new Map(); // `${instance}|${protocol}` -> row
-  const consider = (row) => {
-    const key = `${row.srcInstanceId}|${row.protocol}`;
-    const had = best.get(key);
-    const isRes = (r) => r.dstDeviceId != null || r.dstPlatform != null;
-    if (!had || (!isRes(had) && isRes(row))) best.set(key, row);
-  };
-  let cdpTokens = 0;
-  let lldpTokens = 0;
-
-  for (const { i, eri } of parsed) {
-    const base = { srcDeviceId: i.lm_device_id, srcInstanceId: i.instance_id, srcPort: i.display_name };
-    for (const c of eri.cdp) {
-      cdpTokens += 1;
-      if (!c.name || !c.name.trim()) continue; // the portal shows ' ' tokens
-      const bareMac = BARE_MAC.test(c.shortName) ? normMac(c.shortName) : null;
-      let id = null;
-      let confidence = 'medium';
-      const byName = lookupName(c.name);
-      const bySerial = c.serial ? serialIndex.get(norm(c.serial)) : null;
-      if (bySerial != null && bySerial !== i.lm_device_id) { id = bySerial; confidence = 'high'; } else if (byName != null && byName !== i.lm_device_id) { id = byName; confidence = 'medium'; }
-      if (id == null && bareMac) {
-        const m = macIndex.get(bareMac);
-        if (m != null && m !== i.lm_device_id) { id = m; confidence = 'high'; }
-      }
-      if (byName === i.lm_device_id || bySerial === i.lm_device_id) continue; // a loop back to itself
-      let dstPlatform = null;
-      let dstRef = null;
-      if (id != null) dstPlatform = 'logicmonitor';
-      else if (resolver) {
-        const hit = resolver(c.name) || (c.serial ? resolver(c.serial) : null);
-        if (hit) { dstPlatform = hit.platform; dstRef = hit.ref; confidence = c.serial ? 'high' : 'medium'; }
-      }
-      if (id == null && dstPlatform == null) confidence = 'low';
-      consider({ ...base, protocol: 'cdp', dstName: c.raw || c.name, dstPort: c.port, confidence, dstDeviceId: id, dstPlatform, dstRef, kindKey: c.shortName });
-    }
-    for (const l of eri.lldp) {
-      lldpTokens += 1;
-      const label = l.chassisMac || String(l.chassisRaw || '').trim();
-      if (!label) continue;
-      let id = null;
-      let confidence = 'high';
-      if (l.chassisMac) {
-        id = macIndex.has(l.chassisMac) ? macIndex.get(l.chassisMac) : null;
-        if (id == null) {
-          const p = prefixIndex.get(l.chassisMac.split(':').slice(0, 5).join(':'));
-          if (p != null) { id = p; confidence = 'low'; }
-        }
-      }
-      if (id === i.lm_device_id) continue;
-      let dstPlatform = null;
-      let dstRef = null;
-      if (id != null) dstPlatform = 'logicmonitor';
-      else if (resolver && l.chassisMac) {
-        const hit = resolver(l.chassisMac);
-        if (hit) { dstPlatform = hit.platform; dstRef = hit.ref; confidence = 'high'; }
-      }
-      if (id == null && dstPlatform == null) confidence = 'low';
-      consider({ ...base, protocol: 'lldp', dstName: label, dstPort: l.port, confidence, dstDeviceId: id, dstPlatform, dstRef, kindKey: l.chassisMac });
+    if (id != null && id !== selfId) {
+      return { dstDeviceId: id, dstPlatform: 'logicmonitor', dstRef: null, dstPort: port || null, confidence: 'medium', via: 'name' };
     }
   }
 
-  const rows = [...best.values()];
-  const resolved = rows.filter((r) => r.dstDeviceId != null || r.dstPlatform != null).length;
+  if (resolver) {
+    const hit = (rawName && resolver(rawName)) || (serialN && resolver(serialN)) || (macN && resolver(macN)) || null;
+    if (hit && hit.platform) {
+      return { dstDeviceId: null, dstPlatform: hit.platform, dstRef: hit.ref, dstPort: port || null, confidence: port || serialN ? 'high' : 'medium', via: 'icc' };
+    }
+  }
+  return unresolved;
+}
+
+/**
+ * Retained for the poller call site: ERI tokens no longer produce links (they
+ * describe the interface's own device). Returns no rows plus the identity index
+ * and the token counts the discovery payload reports.
+ */
+function buildEriLinks(dbh, sourceId) {
+  const identity = buildIdentityIndex(dbh, sourceId);
   return {
-    rows,
-    cdp: rows.filter((r) => r.protocol === 'cdp').length,
-    lldp: rows.filter((r) => r.protocol === 'lldp').length,
-    resolved,
-    interfacesWithEri: parsed.length,
-    cdpTokens,
-    lldpTokens,
+    rows: [], cdp: 0, lldp: 0, resolved: 0, identity,
+    interfacesWithEri: identity.interfacesWithEri, cdpTokens: identity.cdpTokens, lldpTokens: identity.lldpTokens,
   };
 }
 
 /**
- * Upsert lm_unmonitored_neighbors for one source from this build's link rows and
- * mark rows that no longer appear stale. Skips blank tokens and bare MACs
- * written without colons (the live portal shows ' ' and 'e4a41ca6bffa').
+ * Upsert lm_unmonitored_neighbors for one source from this build's unresolved
+ * neighbour-instance link rows (cdp and lldp) and mark rows that no longer appear
+ * stale. One row per distinct neighbour identity. Skips blank tokens and bare
+ * 12-hex cdp names (the live portal shows ' ' and 'e4a41ca6bffa').
  */
 function refreshUnmonitored(dbh, sourceId, rows) {
   if (!tableExists(dbh, 'lm_unmonitored_neighbors')) return 0;
@@ -222,12 +222,12 @@ function refreshUnmonitored(dbh, sourceId, rows) {
     let key;
     let name;
     if (r.protocol === 'cdp') {
-      key = norm(r.kindKey);
+      key = norm(r.kindKey != null ? r.kindKey : shortOf(r.dstName));
       if (!key || key.length < 2 || BARE_MAC.test(key)) continue;
       name = String(r.dstName || '').replace(/\s*\([^)]*\)?\s*$/, '').trim() || key;
     } else if (r.protocol === 'lldp') {
-      key = r.kindKey;
-      if (!key) continue;
+      key = r.kindKey != null ? r.kindKey : (normMac(r.dstName) || norm(r.dstName));
+      if (!key || !String(key).trim()) continue;
       name = key;
     } else continue;
     const k = `${r.protocol}|${key}`;
@@ -295,14 +295,26 @@ function unmonitoredNeighborIssues(dbh, t, srcName) {
 
 /** Discovery block: interfaces with an ERI, token counts, resolved and unresolved links. */
 function eriSummary(dbh) {
-  const out = { interfacesWithEri: 0, cdpTokens: 0, lldpTokens: 0, resolved: 0, unresolved: 0 };
-  for (const r of dbh.prepare("SELECT props_json FROM lm_interfaces WHERE stale = 0 AND props_json LIKE '%externalResourceID%'").all()) {
-    const eri = parseEri(extractEriText(r.props_json));
-    if (!eri.cdp.length && !eri.lldp.length && !eri.localMac) continue;
-    out.interfacesWithEri += 1;
-    out.cdpTokens += eri.cdp.length;
-    out.lldpTokens += eri.lldp.length;
+  const out = {
+    interfacesWithEri: 0, cdpTokens: 0, lldpTokens: 0, identityNames: 0, identitySerials: 0, identityChassis: 0,
+    neighborsResolvedByEri: 0, unmonitored: 0, resolved: 0, unresolved: 0,
+  };
+  const sources = tableExists(dbh, 'lm_sources') ? dbh.prepare('SELECT id FROM lm_sources').all() : [];
+  for (const s of sources) {
+    const idn = buildIdentityIndex(dbh, s.id);
+    out.interfacesWithEri += idn.interfacesWithEri;
+    out.cdpTokens += idn.cdpTokens;
+    out.lldpTokens += idn.lldpTokens;
+    out.identityNames += idn.names.size;
+    out.identitySerials += idn.serials.size;
+    out.identityChassis += idn.chassis.size;
   }
+  if (tableExists(dbh, 'lm_unmonitored_neighbors')) {
+    out.unmonitored = dbh.prepare('SELECT COUNT(*) n FROM lm_unmonitored_neighbors WHERE COALESCE(stale, 0) = 0').get().n;
+  }
+  // Identity-index resolutions are the only cdp/lldp links that are LM-resolved with confidence high
+  // (name-index matches are medium, ICC matches carry no device id).
+  out.neighborsResolvedByEri = dbh.prepare("SELECT COUNT(*) n FROM lm_topology_links WHERE COALESCE(stale, 0) = 0 AND protocol IN ('cdp', 'lldp') AND dst_device_id IS NOT NULL AND confidence = 'high'").get().n;
   const cols = new Set(dbh.prepare("PRAGMA table_info('lm_topology_links')").all().map((c) => c.name));
   const where = "COALESCE(stale, 0) = 0 AND protocol IN ('cdp', 'lldp')";
   if (cols.has('dst_platform')) {
@@ -313,5 +325,5 @@ function eriSummary(dbh) {
 }
 
 module.exports = {
-  parseEri, extractEriText, buildEriLinks, refreshUnmonitored, unmonitoredRows, unmonitoredNeighborIssues, eriSummary,
+  parseEri, extractEriText, buildIdentityIndex, resolveNeighbor, buildEriLinks, refreshUnmonitored, unmonitoredRows, unmonitoredNeighborIssues, eriSummary,
 };

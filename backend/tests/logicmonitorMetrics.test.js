@@ -27,9 +27,9 @@ const wipe = () => { for (const t of [...TABLES].reverse()) db.prepare(`DELETE F
 
 function insertSource(o = {}) {
   return db.prepare(`
-    INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials, metrics_poll_minutes, metrics_families_json, features_json)
-    VALUES (?, 'acme', 'lmv1', 'x', ?, ?, ?)
-  `).run(o.name ?? 'portal1', o.metricsPollMinutes ?? 30, o.families ?? null, o.features ?? null).lastInsertRowid;
+    INSERT INTO lm_sources (name, company, auth_mode, encrypted_credentials, metrics_poll_minutes, metrics_families_json, features_json, raw_poll_enabled)
+    VALUES (?, 'acme', 'lmv1', 'x', ?, ?, ?, ?)
+  `).run(o.name ?? 'portal1', o.metricsPollMinutes ?? 30, o.families ?? null, o.features ?? null, o.raw ?? 0).lastInsertRowid;
 }
 
 function insertDevice(sourceId, id, name = `dev${id}`) {

@@ -5,6 +5,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { LoadingPanel } from '../../components/ui/primitives';
 import { fmtNum, saveBlob } from './helpers';
 import { SectionPanel, inp, btnGhost, headRow, chipBtn } from './ui';
+import { RawCollectionGroup } from './LmRawDatasources';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -89,6 +90,7 @@ export default function LmDataExportPanel() {
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter..." className={`${inp} max-w-[240px] ml-auto`} spellCheck={false} />
           </div>
           <Table cols={cols} rows={rows} />
+          <RawCollectionGroup raw={d.raw} />
         </>
       )}
     </SectionPanel>

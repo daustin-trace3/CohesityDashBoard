@@ -15,13 +15,14 @@ const db = require('../db/database');
 const lmApi = require('./logicmonitorApi');
 const { catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES, CATALOG_VERSION } = require('./logicmonitorCatalog');
 const logger = require('../utils/logger');
+const lmRaw = require('./logicmonitorRaw');
 
 const safeMsg = (e) => lmApi.errMsg(e);
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 // getThreshold throws for a key the issues module does not define yet; fall
 // back to the contract default so the collector never depends on load order.
-const THRESHOLD_FALLBACK = { lm_metrics_data_calls_per_tick: 300, lm_ds_history_days: 14 };
+const THRESHOLD_FALLBACK = { lm_metrics_data_calls_per_tick: 300, lm_raw_calls_per_tick: 600, lm_ds_history_days: 14 };
 function threshold(key) {
   try {
     return require('./logicmonitorIssues').getThreshold(key);
@@ -146,22 +147,40 @@ function enabledFamilies(source) {
   return Array.isArray(list) ? new Set(list.map(String)) : null; // null = every family on
 }
 
+/** Raw ingestion (round 11) is on unless the source switched it off (null = on). */
+const rawEnabled = (source) => source.raw_poll_enabled == null || Number(source.raw_poll_enabled) !== 0;
+
+/** Calls per run: the source's own raw_calls_per_tick, else the estate default; sources with
+ *  raw polling off keep the catalog-only cap. */
+function callCap(source) {
+  if (!rawEnabled(source)) return threshold('lm_metrics_data_calls_per_tick') || 300;
+  const own = Number(source.raw_calls_per_tick);
+  return own > 0 ? own : (threshold('lm_raw_calls_per_tick') || 600);
+}
+
+/**
+ * Candidate device DataSources, oldest poll first. Raw mode (default): every row with
+ * instances that is not the interface or neighbour tier; `entry` is the catalog entry
+ * when its family is on (else null, the row is then raw-only) and `catalogEntry` is the
+ * entry regardless of family. Raw off: only DataSources the catalog names, as before.
+ */
 function candidateRows(source) {
   const families = enabledFamilies(source);
+  const raw = rawEnabled(source);
   const rows = db.prepare(`
-    SELECT x.hds_id, x.lm_device_id, x.datasource_name, x.metrics_last_at, d.display_name, d.name
+    SELECT x.hds_id, x.lm_device_id, x.datasource_name, x.metrics_last_at, x.raw_last_at, d.display_name, d.name
     FROM lm_device_datasources x
     JOIN lm_devices d ON d.source_id = x.source_id AND d.lm_device_id = x.lm_device_id AND d.stale = 0
     WHERE x.source_id = ? AND COALESCE(x.instance_count, 0) > 0 AND COALESCE(x.stop_monitoring, 0) = 0
       AND COALESCE(x.is_interface, 0) = 0 AND COALESCE(x.is_neighbor, 0) = 0
-    ORDER BY (x.metrics_last_at IS NOT NULL), x.metrics_last_at ASC, x.hds_id
+    ORDER BY COALESCE(${raw ? 'x.raw_last_at, ' : ''}x.metrics_last_at, '') ASC, x.hds_id
   `).all(source.id);
   const out = [];
   for (const r of rows) {
-    const entry = catalogFor(r.datasource_name);
-    if (!entry) continue;
-    if (families && !families.has(entry.family)) continue;
-    out.push({ ...r, entry });
+    const catalogEntry = catalogFor(r.datasource_name);
+    const familyOn = !!catalogEntry && !(families && !families.has(catalogEntry.family));
+    if (!raw && !familyOn) continue;
+    out.push({ ...r, entry: familyOn ? catalogEntry : null, catalogEntry });
   }
   return out;
 }
@@ -243,11 +262,18 @@ function markFailed(sourceId, hdsId, message, nowIso) {
     .run(nowIso, String(message).slice(0, 500), sourceId, hdsId);
 }
 
+/** Same back-of-queue rule for the raw tier: raw_last_at moves on with the error. */
+function markRawFailed(sourceId, hdsId, message, nowIso) {
+  db.prepare('UPDATE lm_device_datasources SET raw_last_at = ?, raw_last_error = ? WHERE source_id = ? AND hds_id = ?')
+    .run(nowIso, String(message).slice(0, 500), sourceId, hdsId);
+}
+
 async function pollMetrics(source) {
   const now = nowSec();
   const nowIso = new Date(now * 1000).toISOString().slice(0, 19).replace('T', ' ');
   const pollMin = Math.max(1, Number(source.metrics_poll_minutes) || 30);
-  const cap = threshold('lm_metrics_data_calls_per_tick') || 300;
+  const raw = rawEnabled(source);
+  const cap = callCap(source);
   const all = candidateRows(source);
   const batch = all.slice(0, cap);
   let features = readFeatures(source.id);
@@ -261,48 +287,79 @@ async function pollMetrics(source) {
   let ok = 0;
   let failed = 0;
   let written = 0;
+  let rawDs = 0;
+  let rawValues = 0;
   let lastErr = null;
 
   for (const cand of batch) {
     try {
-      let known = dsColumns[cand.datasource_name];
+      let known = cand.entry ? dsColumns[cand.datasource_name] : null;
       // A mapping learned under an older catalog (metric keys it no longer defines) is relearned.
       if (known && typeof known === 'object' && Object.keys(known).some((k) => !cand.entry.metrics[k])) known = null;
       const knownNames = known && typeof known === 'object' ? [...new Set(Object.values(known))] : [];
-      const datapoints = knownNames.length ? knownNames.join(',') : null;
-      const last = parseDbTime(cand.metrics_last_at);
+      // Raw mode needs every datapoint, so it never narrows the call.
+      const datapoints = !raw && knownNames.length ? knownNames.join(',') : null;
+      const last = parseDbTime((raw ? cand.raw_last_at : null) || cand.metrics_last_at);
       const start = Math.max(last != null ? last - 300 : 0, now - 2 * pollMin * 60);
       const body = await lmApi.fetchDsData(source, cand.lm_device_id, cand.hds_id, { start, end: now, datapoints });
-      const parsed = parseDsBody(body, cand.entry, known || null, now);
-      parsed.hasInstances = !!body && typeof body.instances === 'object' && body.instances !== null;
-      if (cand.entry.instanceNames && parsed.instances.length) {
+      let learnedForRaw = known || dsColumns[cand.datasource_name] || {};
+      let names = null;
+      let catalogOk = true;
+      if (cand.entry) {
         try {
-          const names = instanceNameMap(await lmApi.fetchInstances(source, cand.lm_device_id, cand.hds_id), cand.datasource_name);
-          for (const inst of parsed.instances) if (names.has(inst.key)) inst.name = names.get(inst.key);
+          const parsed = parseDsBody(body, cand.entry, known || null, now);
+          parsed.hasInstances = !!body && typeof body.instances === 'object' && body.instances !== null;
+          if (cand.entry.instanceNames && parsed.instances.length) {
+            try {
+              const nm = instanceNameMap(await lmApi.fetchInstances(source, cand.lm_device_id, cand.hds_id), cand.datasource_name);
+              for (const inst of parsed.instances) if (nm.has(inst.key)) inst.name = nm.get(inst.key);
+            } catch (err) {
+              logger.debug(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} instance names: ${safeMsg(err)}`);
+            }
+          }
+          if (Array.isArray(body?.dataPoints) && body.dataPoints.length && (!datapoints || raw)
+            && JSON.stringify(dsColumns[cand.datasource_name]) !== JSON.stringify(parsed.learned)) {
+            dsColumns[cand.datasource_name] = parsed.learned;
+            dsUnmatched[cand.datasource_name] = parsed.unmatched;
+            features = mergeFeatures(source.id, { dsColumns, dsUnmatched });
+          }
+          written += storeResult(source, cand, parsed, nowIso);
+          learnedForRaw = parsed.learned;
+          names = new Map(parsed.instances.map((i) => [i.key, i.name]));
         } catch (err) {
-          logger.debug(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} instance names: ${safeMsg(err)}`);
+          catalogOk = false;
+          lastErr = safeMsg(err);
+          logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} failed: ${lastErr}`);
+          try { markFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
         }
       }
-      if (!datapoints && Array.isArray(body?.dataPoints) && body.dataPoints.length) {
-        dsColumns[cand.datasource_name] = parsed.learned;
-        dsUnmatched[cand.datasource_name] = parsed.unmatched;
-        features = mergeFeatures(source.id, { dsColumns, dsUnmatched });
+      if (raw) {
+        try {
+          const r = lmRaw.storeRawBody(db, source, cand, body, nowIso, { learned: learnedForRaw, names, nowEpoch: now });
+          rawDs += 1;
+          rawValues += r.values;
+        } catch (err) {
+          lastErr = safeMsg(err);
+          logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} raw store failed: ${lastErr}`);
+          try { markRawFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
+        }
       }
-      written += storeResult(source, cand, parsed, nowIso);
-      ok += 1;
+      // The call succeeded; a catalog parse error alone counts as failed only when raw is off.
+      if (catalogOk || raw) ok += 1; else failed += 1;
     } catch (err) {
       failed += 1;
       lastErr = safeMsg(err);
       logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} failed: ${lastErr}`);
       try { markFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
+      if (raw) { try { markRawFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ } }
     }
   }
   if (batch.length && ok === 0) throw new Error(`metric data failed on every DataSource (${failed}): ${lastErr}`);
   if (all.length > batch.length) {
     logger.info(`[LmMetrics] ${source.name}: ${all.length - batch.length} DataSource(s) deferred to the next run (cap ${cap})`);
   }
-  logger.info(`[LmMetrics] ${source.name}: ${ok} DataSource(s) polled${failed ? `, ${failed} failed` : ''}, ${written} metric value(s)`);
-  return { ok, failed, candidates: all.length, polled: batch.length, written };
+  logger.info(`[LmMetrics] ${source.name}: ${ok} DataSource(s) polled${failed ? `, ${failed} failed` : ''}, ${written} metric value(s)${raw ? `, raw: ${rawDs} DataSources, ${rawValues} values` : ''}`);
+  return { ok, failed, candidates: all.length, polled: batch.length, written, rawDataSources: rawDs, rawValues };
 }
 
 function pruneMetricsHistory(sourceId) {
@@ -315,6 +372,17 @@ function pruneMetricsHistory(sourceId) {
         AND i.hds_id = lm_ds_metrics.hds_id AND i.instance_key = lm_ds_metrics.instance_key AND i.${old})
   `).run(sourceId);
   db.prepare(`DELETE FROM lm_ds_instances WHERE source_id = ? AND ${old}`).run(sourceId);
+  // Raw store (round 11): values of a device DataSource the inventory no longer lists, then
+  // datapoint catalog rows nothing stores any more.
+  db.prepare(`
+    DELETE FROM lm_ds_values WHERE source_id = ? AND NOT EXISTS (
+      SELECT 1 FROM lm_device_datasources x WHERE x.source_id = lm_ds_values.source_id AND x.hds_id = lm_ds_values.hds_id)
+  `).run(sourceId);
+  db.prepare(`
+    DELETE FROM lm_ds_datapoints WHERE source_id = ? AND NOT EXISTS (
+      SELECT 1 FROM lm_ds_values v WHERE v.source_id = lm_ds_datapoints.source_id
+        AND v.datasource_name = lm_ds_datapoints.datasource_name AND v.datapoint = lm_ds_datapoints.datapoint)
+  `).run(sourceId);
 }
 
 // -- Route-facing helpers ----------------------------------------------------------
@@ -357,5 +425,5 @@ function historyFor(sourceId, deviceId, hdsId, instanceKey, metric, hours = 24) 
 module.exports = {
   pollMetrics, pruneMetricsHistory, parseDsBody, latestFor, historyFor,
   // test seams
-  candidateRows, matchDatapoint, instanceNameMap,
+  candidateRows, matchDatapoint, instanceNameMap, rawEnabled, callCap,
 };

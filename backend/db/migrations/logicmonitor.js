@@ -845,4 +845,36 @@ module.exports = [
       `);
     },
   },
+  // Migration v9 (round 11, WP-R). Raw DataSource ingestion: the latest value of every
+  // datapoint of every instance of every DataSource with data, whether or not the catalog
+  // names it, plus an estate-wide datapoint catalog so real names can be read back.
+  {
+    version: 9,
+    up(db) {
+      const addCol = (table, col, ddl) => {
+        const cols = db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name);
+        if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+      };
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lm_ds_values (
+          source_id INTEGER NOT NULL, lm_device_id INTEGER NOT NULL, hds_id INTEGER NOT NULL,
+          datasource_name TEXT NOT NULL, instance_key TEXT NOT NULL, instance_name TEXT,
+          datapoint TEXT NOT NULL, value REAL, value_text TEXT, sampled_at_epoch INTEGER, updated_at TEXT,
+          PRIMARY KEY (source_id, lm_device_id, hds_id, instance_key, datapoint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lm_ds_values_device ON lm_ds_values(source_id, lm_device_id);
+        CREATE INDEX IF NOT EXISTS idx_lm_ds_values_ds ON lm_ds_values(source_id, datasource_name);
+        CREATE TABLE IF NOT EXISTS lm_ds_datapoints (
+          source_id INTEGER NOT NULL, datasource_name TEXT NOT NULL, datapoint TEXT NOT NULL,
+          devices INTEGER, instances INTEGER, numeric INTEGER, first_seen TEXT, last_seen TEXT, catalog_metric TEXT,
+          PRIMARY KEY (source_id, datasource_name, datapoint)
+        );
+      `);
+      addCol('lm_device_datasources', 'raw_last_at', 'TEXT');
+      addCol('lm_device_datasources', 'raw_last_error', 'TEXT');
+      addCol('lm_sources', 'raw_poll_enabled', 'INTEGER DEFAULT 1');
+      addCol('lm_sources', 'raw_calls_per_tick', 'INTEGER DEFAULT 600');
+      addCol('lm_sources', 'raw_history_json', 'TEXT');
+    },
+  },
 ];

@@ -29,7 +29,7 @@ const TABLES = [
   'lm_admins', 'lm_roles', 'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports',
   'lm_sites', 'lm_interface_baseline', 'lm_webhook_events', 'lm_blame_history',
   'lm_ds_instances', 'lm_ds_metrics', 'lm_ds_metrics_history',
-  'lm_latency_episodes', 'lm_check_reference', 'lm_unmonitored_neighbors',
+  'lm_latency_episodes', 'lm_check_reference', 'lm_unmonitored_neighbors', 'lm_ds_values', 'lm_ds_datapoints',
 ];
 
 beforeAll(() => {
@@ -67,10 +67,10 @@ function insertDevice(sourceId, o = {}) {
 }
 
 describe('migrations/logicmonitor.js', () => {
-  it('creates all 32 lm_* tables and the four dataset views', () => {
+  it('creates all 34 lm_* tables and the four dataset views', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lm_%'").all().map((r) => r.name);
     for (const t of TABLES) expect(tables, `missing ${t}`).toContain(t);
-    expect(tables.length).toBe(32);
+    expect(tables.length).toBe(34);
     const views = db.prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name LIKE 'logicmonitor_%'").all().map((r) => r.name).sort();
     expect(views).toEqual(['logicmonitor_alerts', 'logicmonitor_checks', 'logicmonitor_devices', 'logicmonitor_interfaces']);
   });
@@ -556,7 +556,7 @@ describe('topology: description parser and link builder', () => {
     ins.run(sid, 10, 102, 'Gi1/0/51', 'uplink to unknown-sw');
     ins.run(sid, 10, 103, 'Gi1/0/1', 'office desk');
     const res = lmPoller.buildTopologyLinks(db, sid);
-    expect(res).toEqual({ links: 3, resolved: 2, resolvedIcc: 0, eri: { cdp: 0, lldp: 0, resolved: 0 } });
+    expect(res).toEqual({ links: 3, resolved: 2, resolvedIcc: 0, eri: { cdp: 0, lldp: 0, resolved: 0, neighborsResolvedByEri: 0 } });
     const rows = db.prepare('SELECT src_instance_id, dst_device_id, dst_port, confidence FROM lm_topology_links ORDER BY src_instance_id').all();
     expect(rows).toEqual([
       { src_instance_id: 100, dst_device_id: 11, dst_port: 'Gi1/0/1', confidence: 'high' },
@@ -661,7 +661,7 @@ describe('logicmonitorIssues: rules', () => {
     expect(t.lm_if_util_warn_pct).toBe(50);
     expect(t.lm_check_latency_k).toBe(10);
     expect(t.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(t).length).toBe(57);
+    expect(Object.keys(t).length).toBe(58);
     setSetting('lm_if_util_warn_pct', '80');
     setSetting('lm_check_latency_k', '3');
   });
@@ -852,7 +852,7 @@ describe('cross-platform resolver (C1)', () => {
     addIface(sid, 10, 103, 'Gi1/0/4', { desc: 'to esx9 vmnic1' });
     addIface(sid, 10, 104, 'Gi1/0/5', { desc: 'uplink to unknown-sw' });
     const res = lmPoller.buildTopologyLinks(db, sid);
-    expect(res).toEqual({ links: 5, resolved: 1, resolvedIcc: 2, eri: { cdp: 0, lldp: 0, resolved: 0 } });
+    expect(res).toEqual({ links: 5, resolved: 1, resolvedIcc: 2, eri: { cdp: 0, lldp: 0, resolved: 0, neighborsResolvedByEri: 0 } });
     const rows = db.prepare('SELECT src_instance_id, dst_device_id, dst_platform, dst_ref, dst_name, dst_port, confidence FROM lm_topology_links ORDER BY src_instance_id').all();
     expect(rows).toEqual([
       { src_instance_id: 100, dst_device_id: 11, dst_platform: 'logicmonitor', dst_ref: null, dst_name: 'core-sw-01', dst_port: 'Gi1/0/49', confidence: 'high' },

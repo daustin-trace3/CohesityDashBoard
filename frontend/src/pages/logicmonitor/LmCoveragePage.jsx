@@ -6,6 +6,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND } from './helpers';
 import { ListSection, deviceColumns } from './governanceSections';
+import { CatalogCoverageTile } from './LmRawDatasources';
 
 const DEFAULT_SECTION = 'noInterfaceDatasource';
 const deviceSearch = ['displayName', 'vendor', 'role'];
@@ -47,6 +48,8 @@ export default function LmCoveragePage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
+
+      <CatalogCoverageTile />
 
       {data == null ? <LoadingPanel label="Loading coverage data..." height={200} /> : (
         <div className="flex gap-4 items-start">

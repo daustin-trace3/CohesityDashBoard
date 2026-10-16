@@ -211,6 +211,9 @@ const publicSource = (row) => {
     interfacePollMinutes: row.interface_poll_minutes,
     metricsPollMinutes: row.metrics_poll_minutes == null ? 30 : row.metrics_poll_minutes,
     metricsFamilies: (() => { const v = parseJson(row.metrics_families_json, null); return Array.isArray(v) ? v.map(String) : null; })(),
+    rawPollEnabled: row.raw_poll_enabled == null || Number(row.raw_poll_enabled) !== 0,
+    rawCallsPerTick: row.raw_calls_per_tick == null ? 600 : row.raw_calls_per_tick,
+    rawHistory: parseArr(row.raw_history_json).map(String),
     groupFilter: parseArr(row.group_filter_json),
     interfaceCategories: Array.isArray(cats) ? cats : null,
     features: featuresOut,
@@ -275,6 +278,11 @@ const sourceBodyRules = (create) => [
   body('metricsPollMinutes').optional().isInt({ min: 5, max: 1440 }).toInt(),
   body('metricsFamilies').optional({ nullable: true }).isArray({ max: 20 }),
   body('metricsFamilies.*').optional().isString().custom((v) => familyIds().includes(v)),
+  // Round 11 raw DataSource ingestion.
+  body('rawPollEnabled').optional().isBoolean().toBoolean(),
+  body('rawCallsPerTick').optional().isInt({ min: 50, max: 3000 }).toInt(),
+  body('rawHistory').optional({ nullable: true }).isArray({ max: 200 }),
+  body('rawHistory.*').optional().isString().isLength({ min: 3, max: 200 }).matches(/^[^:]+:[^:].*$/),
   body('groupFilter').optional({ nullable: true }).isArray({ max: 1000 }),
   body('groupFilter.*').optional().isInt({ min: 0 }).toInt(),
   body('interfaceCategories').optional({ nullable: true }).isArray({ max: 50 }),
@@ -367,7 +375,8 @@ router.put('/sources/:id', [param('id').isInt().toInt(), ...sourceBodyRules(fals
       UPDATE lm_sources SET name = ?, company = ?, auth_mode = ?, encrypted_credentials = ?, verify_ssl = ?,
         enabled = ?, polling_interval_minutes = ?, interface_poll_minutes = ?, group_filter_json = ?,
         interface_categories_json = ?, features_json = ?, rate_limit_json = ?, site_rule_json = ?,
-        metrics_poll_minutes = ?, metrics_families_json = ?
+        metrics_poll_minutes = ?, metrics_families_json = ?,
+        raw_poll_enabled = ?, raw_calls_per_tick = ?, raw_history_json = ?
       WHERE id = ?
     `).run(
       name, company, mode, encryptedCredentials,
@@ -381,6 +390,9 @@ router.put('/sources/:id', [param('id').isInt().toInt(), ...sourceBodyRules(fals
       b.siteRule !== undefined ? siteRuleIn(b.siteRule) : row.site_rule_json,
       b.metricsPollMinutes || row.metrics_poll_minutes || 30,
       b.metricsFamilies !== undefined ? (Array.isArray(b.metricsFamilies) ? JSON.stringify(b.metricsFamilies) : null) : row.metrics_families_json,
+      b.rawPollEnabled !== undefined ? (b.rawPollEnabled ? 1 : 0) : (row.raw_poll_enabled == null ? 1 : row.raw_poll_enabled),
+      b.rawCallsPerTick || row.raw_calls_per_tick || 600,
+      b.rawHistory !== undefined ? JSON.stringify([...new Set((b.rawHistory || []).map(String))]) : row.raw_history_json,
       row.id,
     );
     if (b.siteRule !== undefined) { try { lmSites().computeSites(db, row.id); } catch { /* next poll recomputes */ } }
@@ -403,6 +415,11 @@ router.delete('/sources/:id', [param('id').isInt().toInt()], validate, (req, res
     try { pollerHandle().cancel(row.id); } catch { /* ignore */ }
     try { const api = lmApi(); if (typeof api.invalidate === 'function') api.invalidate(row.id); } catch { /* ignore */ }
     db.prepare('DELETE FROM lm_sources WHERE id = ?').run(row.id);
+    // The raw store tables (round 11) carry no foreign key.
+    try {
+      db.prepare('DELETE FROM lm_ds_values WHERE source_id = ?').run(row.id);
+      db.prepare('DELETE FROM lm_ds_datapoints WHERE source_id = ?').run(row.id);
+    } catch { /* tables not migrated */ }
     res.status(204).end();
   } catch (err) { next(err); }
 });
@@ -2157,6 +2174,8 @@ function discoveryReport() {
     } catch { /* identity index unavailable */ }
     return res;
   })();
+  // Round 11: raw DataSource ingestion state.
+  try { out.raw = lmRaw().rawSummary(db, require('../services/logicmonitorMetrics')); } catch { out.raw = { enabled: false, callsPerTick: 0, candidates: 0, sweptLast24h: 0, values: 0, datapoints: 0, coveragePct: null, estSweepHours: null }; }
   // Round 10: LogicMonitor's own neighbour discovery (predef.externalResourceID) and how much of it resolved.
   try { out.eri = lmEri().eriSummary(db); } catch { out.eri = { interfacesWithEri: 0, cdpTokens: 0, lldpTokens: 0, resolved: 0, unresolved: 0 }; }
   out.devicesWithoutDatasourceInventory = db.prepare(`
@@ -3843,6 +3862,46 @@ router.get('/wireless/ssids', wlListRules, validate, (req, res, next) => {
       },
     });
   } catch (err) { next(err); }
+});
+
+// ---- Raw DataSource store (round 11, WP-R) ----------------------------------------
+// Sections are the first path segment (devices, datasources); nothing extra.
+
+const lmRaw = () => require('../services/logicmonitorRaw');
+const rawCatalog = () => ({ catalogFor: (n) => catalogEntry(n) });
+
+router.get('/devices/:deviceId/datasources', deviceParams, validate, (req, res, next) => {
+  try {
+    const r = findDevice(req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Device');
+    res.json(lmRaw().deviceDatasources(db, rawCatalog(), r.source_id, r.lm_device_id));
+  } catch (err) { next(err); }
+});
+
+router.get('/devices/:deviceId/datasources/:hdsId/values', [
+  ...deviceParams,
+  param('hdsId').isInt().toInt(),
+  query('q').optional().isString().trim().isLength({ max: 200 }),
+  query('page').optional().isInt({ min: 1, max: 100000 }).toInt(),
+  limitValidator,
+], validate, (req, res, next) => {
+  try {
+    const r = findDevice(req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Device');
+    const limit = req.query.limit === 'all' ? 500 : (Number(req.query.limit) || 25);
+    res.json(lmRaw().dsValues(db, rawCatalog(), r.source_id, r.lm_device_id, req.params.hdsId, { q: req.query.q || '', page: req.query.page || 1, limit }));
+  } catch (err) { next(err); }
+});
+
+const DS_COLUMNS = ['name', 'displayName', 'family', 'devices', 'instances', 'datapoints', 'picks', 'coveragePct', 'polledDevices', 'rawLastAt'];
+router.get('/datasources.csv', (req, res, next) => {
+  try { sendCsv(res, 'datasources', lmRaw().estateDatasources(db, rawCatalog()), DS_COLUMNS); } catch (err) { next(err); }
+});
+router.get('/datasources', (req, res, next) => {
+  try { res.json(lmRaw().estateDatasources(db, rawCatalog())); } catch (err) { next(err); }
+});
+router.get('/datasources/:name/datapoints', [param('name').isString().isLength({ min: 1, max: 200 })], validate, (req, res, next) => {
+  try { res.json(lmRaw().datapointsFor(db, req.params.name)); } catch (err) { next(err); }
 });
 
 // ---- Device 360 Metrics tab -----------------------------------------------------

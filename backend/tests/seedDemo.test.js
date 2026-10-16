@@ -930,4 +930,19 @@ describe('seedDemo.js', () => {
     expect(score).toBeLessThan(99);
   });
 
+  it('seeds the logicmonitor round 11 raw DataSource store (one row per catalog metric plus two uncatalogued datapoints per instance)', () => {
+    const c = (sql) => db.prepare(sql).get().c;
+    const metricRows = c('SELECT COUNT(*) c FROM lm_ds_metrics');
+    const instances = c('SELECT COUNT(*) c FROM (SELECT DISTINCT source_id, lm_device_id, hds_id, instance_key FROM lm_ds_metrics)');
+    expect(metricRows).toBeGreaterThan(0);
+    expect(c('SELECT COUNT(*) c FROM lm_ds_values')).toBe(metricRows + 2 * instances);
+    expect(c("SELECT COUNT(*) c FROM lm_ds_values WHERE datapoint = 'RawStatusText' AND value_text = 'ok' AND value IS NULL")).toBe(instances);
+    // Coverage sits below 100 percent and the catalog picks are labelled.
+    const picks = c('SELECT COUNT(*) c FROM lm_ds_datapoints WHERE catalog_metric IS NOT NULL');
+    const all = c('SELECT COUNT(*) c FROM lm_ds_datapoints');
+    expect(picks).toBeGreaterThan(0);
+    expect(picks).toBeLessThan(all);
+    expect(c('SELECT COUNT(*) c FROM lm_device_datasources WHERE raw_last_at IS NOT NULL')).toBeGreaterThan(0);
+  });
+
 });

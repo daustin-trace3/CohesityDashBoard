@@ -41,6 +41,9 @@ const THRESHOLD_DEFS = {
   lm_webhook_rate_per_min: { def: 600, min: 60, max: 6000, label: 'Webhook rate limit (per minute)' },
   // Round 8 (DataSource metric collector, firewalls, load balancers, device health).
   lm_metrics_data_calls_per_tick: { def: 300, min: 20, max: 2000, label: 'Metrics tier data calls per run' },
+  // Round 11: estate default for raw DataSource calls per run (a source's own raw_calls_per_tick wins; the
+  // catalog-only cap above applies to sources with raw polling switched off).
+  lm_raw_calls_per_tick: { def: 600, min: 50, max: 3000, label: 'Raw DataSource calls per run (estate default)' },
   lm_ds_history_days: { def: 14, min: 3, max: 90, label: 'DataSource metric history retention (days)' },
   lm_fw_session_warn_pct: { def: 80, min: 50, max: 100, label: 'Firewall session table warning (%)' },
   lm_cpu_warn_pct: { def: 85, min: 50, max: 100, label: 'Device CPU warning (%)' },
