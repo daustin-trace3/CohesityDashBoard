@@ -99,14 +99,14 @@ const LIGHTSAIL_SERVICE = 'Amazon Lightsail';
 const RDS_SERVICE = 'Amazon Relational Database Service';
 const LAMBDA_SERVICE = 'AWS Lambda';
 const USAGE_TYPES = [
-  { service: COMPUTE_SERVICE, usageType: 'BoxUsage:m5.large', base: 8 },
-  { service: COMPUTE_SERVICE, usageType: 'BoxUsage:m5.xlarge', base: 6 },
-  { service: 'EC2 - Other', usageType: 'EBS:VolumeUsage.gp3', base: 4 },
-  { service: 'EC2 - Other', usageType: 'NatGateway-Hours', base: 3.5 },
-  { service: COMPUTE_SERVICE, usageType: 'DataTransfer-Out-Bytes', base: 2.5 },
-  { service: S3_SERVICE, usageType: 'TimedStorage-ByteHrs', base: 2 },
-  { service: S3_SERVICE, usageType: 'Requests-Tier1', base: 1.2 },
-  { service: LAMBDA_SERVICE, usageType: 'Lambda-GB-Second', base: 0.8 },
+  { service: COMPUTE_SERVICE, usageType: 'USE2-BoxUsage:m5.large', base: 8 },
+  { service: COMPUTE_SERVICE, usageType: 'USE2-BoxUsage:m5.xlarge', base: 6 },
+  { service: 'EC2 - Other', usageType: 'USE2-EBS:VolumeUsage.gp3', base: 4 },
+  { service: 'EC2 - Other', usageType: 'USE2-NatGateway-Hours', base: 3.5 },
+  { service: COMPUTE_SERVICE, usageType: 'USE2-DataTransfer-Out-Bytes', base: 2.5 },
+  { service: S3_SERVICE, usageType: 'USE2-TimedStorage-ByteHrs', base: 2 },
+  { service: S3_SERVICE, usageType: 'USE2-Requests-Tier1', base: 1.2 },
+  { service: LAMBDA_SERVICE, usageType: 'USE2-Lambda-GB-Second', base: 0.8 },
   // Lightsail sums to the seeded 3.5 a day for 'Amazon Lightsail'.
   { service: LIGHTSAIL_SERVICE, usageType: 'USE2-BundleUsage:2GB', base: 2 },
   { service: LIGHTSAIL_SERVICE, usageType: 'USE2-DatabaseUsage:1GB', base: 1 },
@@ -226,13 +226,86 @@ function seedAws(db, { now, encrypt }) {
 
   const insertLightsail = db.prepare(`
     INSERT INTO aws_lightsail_instances (account_id, name, state, blueprint, bundle, az, public_ip,
-      cpu_util, snapshot_count, latest_snapshot_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?))
+      cpu_util, snapshot_count, latest_snapshot_at, ram_gb, cpu_count, is_windows, arn, private_ip, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), ?, ?, 0, ?, ?, datetime('now', '-200 days'))
   `);
   for (const l of LIGHTSAIL_INSTANCES) {
+    const small = l.bundle.startsWith('small');
     insertLightsail.run(accountId, l.name, l.state, l.blueprint, l.bundle, l.az, l.publicIp,
-      l.cpuUtil, l.snapshotCount, `-${l.latestSnapshotDaysAgo} days`);
+      l.cpuUtil, l.snapshotCount, `-${l.latestSnapshotDaysAgo} days`, small ? 2 : 1, small ? 1 : 2,
+      `arn:aws:lightsail:us-east-2:893373391538:Instance/demo-${l.name}`, `172.26.0.${small ? 21 : 20}`);
   }
+
+  // Lightsail inventory beyond instances: databases, disks, buckets, load balancer,
+  // distribution, DNS zone and static IPs (one deliberately unhealthy of each kind).
+  const insertLsDb = db.prepare(`
+    INSERT INTO aws_lightsail_databases (account_id, name, arn, engine, engine_version, bundle, ram_gb, disk_gb,
+      state, az, master_endpoint, port, backup_retention, publicly_accessible, latest_restorable_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '-5 minutes'), datetime('now', '-300 days'))
+  `);
+  insertLsDb.run(accountId, 'demo-ls-db-01', LIGHTSAIL_DB_ARN, 'mysql', '8.0.35', 'micro_2_0', 1, 40,
+    'available', 'us-east-2a', 'ls-demo01.czzzdemo.us-east-2.rds.amazonaws.com', 3306, 1, 0);
+  insertLsDb.run(accountId, 'demo-ls-pg-02', 'arn:aws:lightsail:us-east-2:893373391538:RelationalDatabase/demo-ls-pg-02',
+    'postgres', '15.4', 'small_2_0', 2, 80, 'available', 'us-east-2b',
+    'ls-demo02.czzzdemo.us-east-2.rds.amazonaws.com', 5432, 0, 0);
+
+  const insertLsDisk = db.prepare(`
+    INSERT INTO aws_lightsail_disks (account_id, name, arn, size_gb, state, attached_to, attachment_state,
+      is_system_disk, iops, az, created_at)
+    VALUES (?, ?, ?, ?, 'in-use', ?, ?, ?, ?, ?, datetime('now', '-200 days'))
+  `);
+  insertLsDisk.run(accountId, 'static-site-01-sys', 'arn:aws:lightsail:us-east-2:893373391538:Disk/demo-sys-01', 40,
+    'static-site-01', 'attached', 1, 120, 'us-east-2a');
+  insertLsDisk.run(accountId, 'wp-blog-01-sys', 'arn:aws:lightsail:us-east-2:893373391538:Disk/demo-sys-02', 60,
+    'wp-blog-01', 'attached', 1, 180, 'us-east-2b');
+  db.prepare(`
+    INSERT INTO aws_lightsail_disks (account_id, name, arn, size_gb, state, attached_to, attachment_state,
+      is_system_disk, iops, az, created_at)
+    VALUES (?, 'scratch-disk-old', 'arn:aws:lightsail:us-east-2:893373391538:Disk/demo-scratch', 32, 'available',
+      NULL, 'detached', 0, 100, 'us-east-2a', datetime('now', '-90 days'))
+  `).run(accountId);
+
+  const insertLsBucket = db.prepare(`
+    INSERT INTO aws_lightsail_buckets (account_id, name, arn, bundle, state, object_versioning,
+      read_only_access, able_to_update_bundle, url, created_at)
+    VALUES (?, ?, ?, 'small_1_0', 'OK', ?, ?, 1, ?, datetime('now', '-150 days'))
+  `);
+  insertLsBucket.run(accountId, 'demo-assets-bucket', 'arn:aws:lightsail:us-east-2:893373391538:Bucket/demo-assets',
+    'Enabled', 1, 'https://demo-assets-bucket.s3.us-east-2.amazonaws.com');
+  insertLsBucket.run(accountId, 'demo-backups-bucket', 'arn:aws:lightsail:us-east-2:893373391538:Bucket/demo-backups',
+    'Suspended', 0, 'https://demo-backups-bucket.s3.us-east-2.amazonaws.com');
+
+  db.prepare(`
+    INSERT INTO aws_lightsail_load_balancers (account_id, name, arn, dns_name, state, protocol, instance_port,
+      health_check_path, attached_instances, healthy_count, unhealthy_count, tls_cert_name, tls_cert_attached,
+      az, created_at)
+    VALUES (?, 'demo-lb-01', 'arn:aws:lightsail:us-east-2:893373391538:LoadBalancer/demo-lb-01',
+      'demo-lb-01-1234567890.us-east-2.elb.amazonaws.com', 'active', 'HTTPS', 443, '/healthz',
+      ?, 1, 1, 'demo-lb-cert', 1, 'us-east-2', datetime('now', '-120 days'))
+  `).run(accountId, JSON.stringify(['wp-blog-01', 'static-site-01']));
+
+  db.prepare(`
+    INSERT INTO aws_lightsail_distributions (account_id, name, arn, status, is_enabled, domain_name, origin_name,
+      origin_region, bundle, cert_name, alternative_domains, created_at)
+    VALUES (?, 'demo-cdn-01', 'arn:aws:lightsail:us-east-1:893373391538:Distribution/demo-cdn-01', 'Deployed', 1,
+      'd1demo0000.cloudfront.net', 'demo-assets-bucket', 'us-east-2', 'small_1_0', 'demo-cdn-cert',
+      ?, datetime('now', '-100 days'))
+  `).run(accountId, JSON.stringify(['cdn.demo-example.com']));
+
+  db.prepare(`
+    INSERT INTO aws_lightsail_domains (account_id, name, arn, entry_count, created_at)
+    VALUES (?, 'demo-example.com', 'arn:aws:lightsail:us-east-1:893373391538:Domain/demo-example.com', 6,
+      datetime('now', '-250 days'))
+  `).run(accountId);
+
+  const insertLsIp = db.prepare(`
+    INSERT INTO aws_lightsail_static_ips (account_id, name, arn, ip_address, is_attached, attached_to, az, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'us-east-2a', datetime('now', '-180 days'))
+  `);
+  insertLsIp.run(accountId, 'wp-blog-ip', 'arn:aws:lightsail:us-east-2:893373391538:StaticIp/demo-wp-ip',
+    '18.220.10.21', 1, 'wp-blog-01');
+  insertLsIp.run(accountId, 'spare-ip', 'arn:aws:lightsail:us-east-2:893373391538:StaticIp/demo-spare-ip',
+    '18.220.10.99', 0, null);
 
   const insertEcsCluster = db.prepare(`
     INSERT INTO aws_ecs_clusters (account_id, cluster_arn, cluster_name, status, running_tasks,
@@ -343,12 +416,16 @@ function seedAws(db, { now, encrypt }) {
   let costRows = 0;
   let dayBeforeTotal = 0;
   let yesterdayTotal = 0;
+  // Yesterday is the day-before amount times the multiplier, service by service, so the
+  // spike survives any random draw (a 0.85 yesterday over a 1.15 day-before once lost it).
+  const dayBeforeByService = new Map();
   for (let i = COST_DAYS - 1; i >= 0; i--) {
     const offset = `-${i} days`;
     for (const svc of COST_SERVICES) {
       const drift = 1 + (COST_DAYS - i) / COST_DAYS * randFloat(costRng, -0.05, 0.2, 3);
       let amount = Math.max(0.05, svc.base * drift * randFloat(costRng, 0.85, 1.15, 3));
-      if (i === 1) amount *= SPIKE_MULTIPLIER;
+      if (i === 2) dayBeforeByService.set(svc.service, amount);
+      if (i === 1) amount = (dayBeforeByService.get(svc.service) || amount) * SPIKE_MULTIPLIER;
       amount = Math.round(amount * 100) / 100;
       insertCost.run(accountId, offset, svc.service, amount);
       costRows++;
@@ -455,19 +532,26 @@ function seedAws(db, { now, encrypt }) {
     VALUES (?, date('now', ?), ?, ?, ?)
   `);
   const resourceRng = rngFor('aws-cost-resource-daily');
+  const LS_RAM_GB = { nano: 0.5, micro: 1, small: 2, medium: 4, large: 8, xlarge: 16 };
   const costResources = [
-    ...EC2_INSTANCES.filter((e) => e.state === 'running').map((e) => ({ service: COMPUTE_SERVICE, id: e.instanceId, base: e.instanceType === 'm5.xlarge' ? 4.6 : e.instanceType === 'r5.large' ? 3.0 : 2.1 })),
-    ...S3_BUCKETS.map((b) => ({ service: S3_SERVICE, id: b.name, base: Math.max(0.02, Math.min(3, b.sizeBytes / 1024 ** 4 * 0.7)) })),
-    ...LIGHTSAIL_INSTANCES.map((l) => ({ service: LIGHTSAIL_SERVICE, id: l.name, base: l.bundle.startsWith('small') ? 0.8 : 0.4 })),
-    { service: LIGHTSAIL_SERVICE, id: LIGHTSAIL_DB_ARN, base: 1 },
-    ...RDS_INSTANCES.map((r) => ({ service: RDS_SERVICE, id: r.dbId, base: r.instanceClass.includes('r5') ? 5.5 : r.instanceClass.includes('m5') ? 3.4 : 1.1 })),
-    ...LAMBDA_FUNCTIONS.map((f) => ({ service: LAMBDA_SERVICE, id: `arn:aws:lambda:us-east-2:893373391538:function:${f.name}`, base: Math.max(0.02, f.invocations24h * f.avgDurationMs / 1e8) })),
+    ...EC2_INSTANCES.filter((e) => e.state === 'running').map((e) => ({ service: COMPUTE_SERVICE, id: e.instanceId, ut: `USE2-BoxUsage:${e.instanceType}`, base: e.instanceType === 'm5.xlarge' ? 4.6 : e.instanceType === 'r5.large' ? 3.0 : 2.1 })),
+    ...S3_BUCKETS.map((b) => ({ service: S3_SERVICE, id: b.name, ut: 'USE2-TimedStorage-ByteHrs', base: Math.max(0.02, Math.min(3, b.sizeBytes / 1024 ** 4 * 0.7)) })),
+    ...LIGHTSAIL_INSTANCES.map((l) => ({ service: LIGHTSAIL_SERVICE, id: l.name, ut: `USE2-BundleUsage:${LS_RAM_GB[l.bundle.split('_')[0]] || 1}GB`, base: l.bundle.startsWith('small') ? 0.8 : 0.4 })),
+    { service: LIGHTSAIL_SERVICE, id: LIGHTSAIL_DB_ARN, ut: 'USE2-DatabaseUsage:1GB', base: 1 },
+    ...RDS_INSTANCES.map((r) => ({ service: RDS_SERVICE, id: r.dbId, ut: `USE2-InstanceUsage:${r.instanceClass}`, base: r.instanceClass.includes('r5') ? 5.5 : r.instanceClass.includes('m5') ? 3.4 : 1.1 })),
+    ...LAMBDA_FUNCTIONS.map((f) => ({ service: LAMBDA_SERVICE, id: `arn:aws:lambda:us-east-2:893373391538:function:${f.name}`, ut: 'USE2-Lambda-GB-Second', base: Math.max(0.02, f.invocations24h * f.avgDurationMs / 1e8) })),
   ];
+  // Exact mapping: the same resources, per usage type (what resource-level billing returns).
+  const insertCostResourceUsage = db.prepare(`
+    INSERT INTO aws_cost_resource_usage_daily (account_id, day, usage_type, resource_id, amount_usd)
+    VALUES (?, date('now', ?), ?, ?, ?)
+  `);
   let costResourceRows = 0;
   for (let i = COST_RESOURCE_DAYS - 1; i >= 0; i--) {
     for (const r of costResources) {
       const amount = Math.round(r.base * randFloat(resourceRng, 0.85, 1.15, 3) * 100) / 100;
       insertCostResource.run(accountId, `-${i} days`, r.service, r.id, amount);
+      insertCostResourceUsage.run(accountId, `-${i} days`, r.ut, r.id, amount);
       costResourceRows++;
     }
   }

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Gauge, Server, DollarSign, Container, Database, BrainCircuit, ShieldAlert, Activity, Network, HardDrive } from 'lucide-react';
+import { Gauge, Server, DollarSign, Container, Database, BrainCircuit, ShieldAlert, Activity, Network, HardDrive, Boxes } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -65,10 +65,13 @@ export default function AwsOverviewPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mb-4">
         <StatCard icon={Server} label="EC2 Instances" value={ec2.total != null ? `${fmtNum(ec2.running)} / ${fmtNum(ec2.total)}` : '—'}
           sub="running / total" tone={ec2.alarmed ? 'crit' : 'brand'}
           onClick={() => navigate('/aws/ec2')} />
+        <StatCard icon={Boxes} label="Lightsail" value={lightsail.total != null ? `${fmtNum(lightsail.running)} / ${fmtNum(lightsail.total)}` : '-'}
+          sub={`${fmtNum(lightsail.databases)} db, ${fmtNum(lightsail.disks)} disks, ${fmtNum(lightsail.buckets)} buckets`}
+          onClick={() => navigate('/aws/lightsail')} />
         <StatCard icon={DollarSign} label="MTD Spend" value={fmtUsd(cost.mtdUsd)}
           sub={cost.deltaPct != null ? `${cost.deltaPct > 0 ? '+' : ''}${cost.deltaPct.toFixed(1)}% vs prior day` : undefined}
           trend={cost.deltaPct}

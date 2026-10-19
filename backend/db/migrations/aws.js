@@ -466,4 +466,167 @@ module.exports = [
       db.exec('UPDATE aws_accounts SET last_cost_capture_at = NULL');
     },
   },
+  {
+    // Full Lightsail inventory: extra instance columns plus databases, disks, buckets, load
+    // balancers, distributions, DNS zones and static IPs. Field mappings UNVERIFIED live.
+    version: 9,
+    up(db) {
+      const cols = db.prepare("PRAGMA table_info('aws_lightsail_instances')").all().map((c) => c.name);
+      const add = (name, type) => {
+        if (!cols.includes(name)) db.exec(`ALTER TABLE aws_lightsail_instances ADD COLUMN ${name} ${type}`);
+      };
+      add('ram_gb', 'REAL');
+      add('cpu_count', 'INTEGER');
+      add('is_windows', 'INTEGER');
+      add('arn', 'TEXT');
+      add('private_ip', 'TEXT');
+      add('created_at', 'DATETIME');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_lightsail_databases (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id            INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name                  TEXT NOT NULL,
+          arn                   TEXT,
+          engine                TEXT,
+          engine_version        TEXT,
+          bundle                TEXT,
+          ram_gb                REAL,
+          disk_gb               INTEGER,
+          state                 TEXT,
+          az                    TEXT,
+          master_endpoint       TEXT,
+          port                  INTEGER,
+          backup_retention      INTEGER,
+          publicly_accessible   INTEGER,
+          latest_restorable_at  DATETIME,
+          created_at            DATETIME,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_ls_databases_account ON aws_lightsail_databases(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_lightsail_disks (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id       INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name             TEXT NOT NULL,
+          arn              TEXT,
+          size_gb          INTEGER,
+          state            TEXT,
+          attached_to      TEXT,
+          attachment_state TEXT,
+          is_system_disk   INTEGER,
+          iops             INTEGER,
+          az               TEXT,
+          created_at       DATETIME,
+          captured_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_ls_disks_account ON aws_lightsail_disks(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_lightsail_buckets (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id            INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name                  TEXT NOT NULL,
+          arn                   TEXT,
+          bundle                TEXT,
+          state                 TEXT,
+          object_versioning     TEXT,
+          read_only_access      INTEGER,
+          able_to_update_bundle INTEGER,
+          url                   TEXT,
+          created_at            DATETIME,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_ls_buckets_account ON aws_lightsail_buckets(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_lightsail_load_balancers (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id         INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name               TEXT NOT NULL,
+          arn                TEXT,
+          dns_name           TEXT,
+          state              TEXT,
+          protocol           TEXT,
+          instance_port      INTEGER,
+          health_check_path  TEXT,
+          attached_instances TEXT,
+          healthy_count      INTEGER,
+          unhealthy_count    INTEGER,
+          tls_cert_name      TEXT,
+          tls_cert_attached  INTEGER,
+          az                 TEXT,
+          created_at         DATETIME,
+          captured_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_ls_lbs_account ON aws_lightsail_load_balancers(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_lightsail_distributions (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id          INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name                TEXT NOT NULL,
+          arn                 TEXT,
+          status              TEXT,
+          is_enabled          INTEGER,
+          domain_name         TEXT,
+          origin_name         TEXT,
+          origin_region       TEXT,
+          bundle              TEXT,
+          cert_name           TEXT,
+          alternative_domains TEXT,
+          created_at          DATETIME,
+          captured_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_ls_dists_account ON aws_lightsail_distributions(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_lightsail_domains (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id  INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name        TEXT NOT NULL,
+          arn         TEXT,
+          entry_count INTEGER,
+          created_at  DATETIME,
+          captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_ls_domains_account ON aws_lightsail_domains(account_id);
+
+        CREATE TABLE IF NOT EXISTS aws_lightsail_static_ips (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id  INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          name        TEXT NOT NULL,
+          arn         TEXT,
+          ip_address  TEXT,
+          is_attached INTEGER,
+          attached_to TEXT,
+          az          TEXT,
+          created_at  DATETIME,
+          captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_ls_static_ips_account ON aws_lightsail_static_ips(account_id);
+      `);
+    },
+  },
+  {
+    // Exact object mapping: per resource per usage type cost (resource-level Cost Explorer).
+    version: 10,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_cost_resource_usage_daily (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id  INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day         TEXT NOT NULL,
+          usage_type  TEXT NOT NULL,
+          resource_id TEXT NOT NULL,
+          amount_usd  REAL,
+          UNIQUE(account_id, day, usage_type, resource_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_cost_res_usage_account ON aws_cost_resource_usage_daily(account_id);
+        CREATE INDEX IF NOT EXISTS idx_aws_cost_res_usage_day ON aws_cost_resource_usage_daily(day);
+      `);
+    },
+  },
 ];

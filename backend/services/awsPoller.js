@@ -106,6 +106,7 @@ function cleanupNonElectedGlobalRows(accountId) {
   db.prepare('DELETE FROM aws_cost_usage_daily WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM aws_cost_instance_type_daily WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM aws_cost_resource_daily WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_cost_resource_usage_daily WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM aws_s3_buckets WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM aws_s3_size_history WHERE account_id = ?').run(accountId);
 }
@@ -152,6 +153,16 @@ const upsertCostResource = db.transaction((accountId, rows) => {
   `);
   for (const r of rows) stmt.run(accountId, r.day, r.service, r.resourceId, r.amountUsd);
   db.prepare("DELETE FROM aws_cost_resource_daily WHERE day < date('now', '-90 days')").run();
+});
+
+const upsertCostResourceUsage = db.transaction((accountId, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_cost_resource_usage_daily (account_id, day, usage_type, resource_id, amount_usd)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day, usage_type, resource_id) DO UPDATE SET amount_usd = excluded.amount_usd
+  `);
+  for (const r of rows) stmt.run(accountId, r.day, r.usageType, r.resourceId, r.amountUsd);
+  db.prepare("DELETE FROM aws_cost_resource_usage_daily WHERE day < date('now', '-90 days')").run();
 });
 
 const upsertCostInstanceType = db.transaction((accountId, rows) => {
@@ -219,16 +230,35 @@ async function collectEc2(account) {
   return { instances, volumes };
 }
 
-async function collectLightsail(account) {
+const EMPTY_LIGHTSAIL = () => ({
+  instances: [], databases: [], disks: [], buckets: [], loadBalancers: [],
+  distributions: [], domains: [], staticIps: [],
+});
+
+async function collectLightsail(account, skipped = [], elected = true) {
+  const empty = EMPTY_LIGHTSAIL();
   let instances;
+  let bundles = null;
+  let dbBundles = null;
   try {
-    instances = await awsApi.fetchLightsailInstances(account);
+    // Bundle maps are an enrichment only: a failure leaves RAM and Windows to the instance itself.
+    bundles = await awsApi.fetchLightsailBundles(account).catch((err) => {
+      if (isCredentialError(err)) throw err;
+      logger.debug(`[AwsPoller] ${account.name}: Lightsail bundles failed: ${safeMsg(err)}`);
+      return null;
+    });
+    dbBundles = await awsApi.fetchLightsailDatabaseBundles(account).catch((err) => {
+      if (isCredentialError(err)) throw err;
+      logger.debug(`[AwsPoller] ${account.name}: Lightsail database bundles failed: ${safeMsg(err)}`);
+      return null;
+    });
+    instances = await awsApi.fetchLightsailInstances(account, bundles);
   } catch (err) {
     // Lightsail has no endpoint in some regions (e.g. us-west-1) — the SDK
     // surfaces that as a DNS ENOTFOUND. Treat as "service not offered here".
     if (String(err.code || '').includes('ENOTFOUND') || String(err.message || '').includes('ENOTFOUND')) {
       logger.debug(`[AwsPoller] ${account.name}: Lightsail unavailable in ${account.region}: ${safeMsg(err)}`);
-      return [];
+      return empty;
     }
     throw err;
   }
@@ -249,7 +279,26 @@ async function collectLightsail(account) {
       i.latestSnapshotAt = null;
     }
   });
-  return instances;
+
+  // Each inventory family degrades on its own: one missing permission or endpoint skips only it.
+  const family = (label, fn) => collectService(account, label, fn, [], skipped);
+  const [databases, disks, buckets, loadBalancers, staticIps] = await Promise.all([
+    family('Lightsail databases', () => awsApi.fetchLightsailDatabases(account, dbBundles)),
+    family('Lightsail disks', () => awsApi.fetchLightsailDisks(account)),
+    family('Lightsail buckets', () => awsApi.fetchLightsailBuckets(account)),
+    family('Lightsail load balancers', () => awsApi.fetchLightsailLoadBalancers(account)),
+    family('Lightsail static IPs', () => awsApi.fetchLightsailStaticIps(account)),
+  ]);
+  // Global resources (us-east-1 only): the elected account row collects them once per credential.
+  let distributions = [];
+  let domains = [];
+  if (elected) {
+    [distributions, domains] = await Promise.all([
+      family('Lightsail distributions', () => awsApi.fetchLightsailDistributions(account)),
+      family('Lightsail DNS zones', () => awsApi.fetchLightsailDomains(account)),
+    ]);
+  }
+  return { instances, databases, disks, buckets, loadBalancers, distributions, domains, staticIps };
 }
 
 async function collectEcs(account) {
@@ -537,7 +586,87 @@ async function collectVpc(account) {
   return { vpcs, subnets };
 }
 
-const storeCore = db.transaction((accountId, { ec2, lightsail, ecs }) => {
+/** Wipe and reinsert the Lightsail inventory families (everything but instances) for one account. */
+function storeLightsailInventory(accountId, ls) {
+  const del = (table) => db.prepare(`DELETE FROM ${table} WHERE account_id = ?`).run(accountId);
+  const prep = (sql) => db.prepare(sql);
+
+  del('aws_lightsail_databases');
+  const dbStmt = prep(`
+    INSERT OR REPLACE INTO aws_lightsail_databases (account_id, name, arn, engine, engine_version, bundle,
+      ram_gb, disk_gb, state, az, master_endpoint, port, backup_retention, publicly_accessible,
+      latest_restorable_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const d of ls.databases || []) {
+    dbStmt.run(accountId, d.name, d.arn, d.engine, d.engineVersion, d.bundle, d.ramGb, d.diskGb, d.state,
+      d.az, d.masterEndpoint, d.port, d.backupRetention, d.publiclyAccessible, d.latestRestorableAt, d.createdAt);
+  }
+
+  del('aws_lightsail_disks');
+  const diskStmt = prep(`
+    INSERT OR REPLACE INTO aws_lightsail_disks (account_id, name, arn, size_gb, state, attached_to,
+      attachment_state, is_system_disk, iops, az, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const d of ls.disks || []) {
+    diskStmt.run(accountId, d.name, d.arn, d.sizeGb, d.state, d.attachedTo, d.attachmentState,
+      d.isSystemDisk, d.iops, d.az, d.createdAt);
+  }
+
+  del('aws_lightsail_buckets');
+  const bucketStmt = prep(`
+    INSERT OR REPLACE INTO aws_lightsail_buckets (account_id, name, arn, bundle, state, object_versioning,
+      read_only_access, able_to_update_bundle, url, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const b of ls.buckets || []) {
+    bucketStmt.run(accountId, b.name, b.arn, b.bundle, b.state, b.objectVersioning, b.readOnlyAccess,
+      b.ableToUpdateBundle, b.url, b.createdAt);
+  }
+
+  del('aws_lightsail_load_balancers');
+  const lbStmt = prep(`
+    INSERT OR REPLACE INTO aws_lightsail_load_balancers (account_id, name, arn, dns_name, state, protocol,
+      instance_port, health_check_path, attached_instances, healthy_count, unhealthy_count, tls_cert_name,
+      tls_cert_attached, az, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const l of ls.loadBalancers || []) {
+    lbStmt.run(accountId, l.name, l.arn, l.dnsName, l.state, l.protocol, l.instancePort, l.healthCheckPath,
+      l.attachedInstances, l.healthyCount, l.unhealthyCount, l.tlsCertName, l.tlsCertAttached, l.az, l.createdAt);
+  }
+
+  del('aws_lightsail_distributions');
+  const distStmt = prep(`
+    INSERT OR REPLACE INTO aws_lightsail_distributions (account_id, name, arn, status, is_enabled, domain_name,
+      origin_name, origin_region, bundle, cert_name, alternative_domains, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const d of ls.distributions || []) {
+    distStmt.run(accountId, d.name, d.arn, d.status, d.isEnabled, d.domainName, d.originName, d.originRegion,
+      d.bundle, d.certName, d.alternativeDomains, d.createdAt);
+  }
+
+  del('aws_lightsail_domains');
+  const domStmt = prep(`
+    INSERT OR REPLACE INTO aws_lightsail_domains (account_id, name, arn, entry_count, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const d of ls.domains || []) domStmt.run(accountId, d.name, d.arn, d.entryCount, d.createdAt);
+
+  del('aws_lightsail_static_ips');
+  const ipStmt = prep(`
+    INSERT OR REPLACE INTO aws_lightsail_static_ips (account_id, name, arn, ip_address, is_attached,
+      attached_to, az, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const s of ls.staticIps || []) {
+    ipStmt.run(accountId, s.name, s.arn, s.ipAddress, s.isAttached, s.attachedTo, s.az, s.createdAt);
+  }
+}
+
+const storeCore = db.transaction((accountId, { ec2, lightsail, ecs, lightsailInventory }) => {
   db.prepare('DELETE FROM aws_ec2_instances WHERE account_id = ?').run(accountId);
   const ec2Stmt = db.prepare(`
     INSERT INTO aws_ec2_instances (account_id, instance_id, name, state, instance_type, az,
@@ -561,13 +690,16 @@ const storeCore = db.transaction((accountId, { ec2, lightsail, ecs }) => {
   db.prepare('DELETE FROM aws_lightsail_instances WHERE account_id = ?').run(accountId);
   const lsStmt = db.prepare(`
     INSERT INTO aws_lightsail_instances (account_id, name, state, blueprint, bundle, az,
-      public_ip, cpu_util, snapshot_count, latest_snapshot_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      public_ip, cpu_util, snapshot_count, latest_snapshot_at, ram_gb, cpu_count, is_windows,
+      arn, private_ip, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const i of lightsail) {
     lsStmt.run(accountId, i.name, i.state, i.blueprint, i.bundle, i.az,
-      i.publicIp, i.cpuUtil, i.snapshotCount, i.latestSnapshotAt);
+      i.publicIp, i.cpuUtil, i.snapshotCount, i.latestSnapshotAt,
+      i.ramGb ?? null, i.cpuCount ?? null, i.isWindows ?? null, i.arn ?? null, i.privateIp ?? null, i.createdAt ?? null);
   }
+  if (lightsailInventory) storeLightsailInventory(accountId, lightsailInventory);
 
   db.prepare('DELETE FROM aws_ecs_clusters WHERE account_id = ?').run(accountId);
   const clStmt = db.prepare(`
@@ -728,6 +860,8 @@ async function captureCostResources(account, serviceRows) {
   try {
     const { rows } = await awsApi.fetchCostByResource(account, { maxPages, services });
     upsertCostResource(account.id, rows);
+    const usage = await awsApi.fetchCostByResourceUsage(account, { maxPages, services });
+    upsertCostResourceUsage(account.id, usage.rows);
     setStatus.run('ok', null, account.id);
   } catch (err) {
     if (isCredentialError(err)) throw err;
@@ -761,9 +895,11 @@ async function pollAccount(account) {
     // Services the account lacks are skipped, not fatal (see collectService).
     const skipped = [];
     const ec2 = await collectService(account, 'EC2', () => collectEc2(account), { instances: [], volumes: [] }, skipped);
-    const lightsail = await collectService(account, 'Lightsail', () => collectLightsail(account), [], skipped);
+    const lightsailInventory = await collectService(account, 'Lightsail',
+      () => collectLightsail(account, skipped, isElected(account)), EMPTY_LIGHTSAIL(), skipped);
+    const lightsail = lightsailInventory.instances;
     const ecs = await collectService(account, 'ECS', () => collectEcs(account), { clusters: [], services: [] }, skipped);
-    storeCore(account.id, { ec2, lightsail, ecs });
+    storeCore(account.id, { ec2, lightsail, ecs, lightsailInventory });
 
     const [rds, lambdaFns, dynamo, ecr, vpc] = await Promise.all([
       collectService(account, 'RDS', () => collectRds(account), [], skipped),
@@ -852,7 +988,7 @@ async function pollAccount(account) {
       UPDATE aws_accounts SET last_poll_status = ?, last_poll_error = ?,
         last_poll_at = datetime('now') WHERE id = ?
     `).run(skipped.length ? 'partial' : 'success', skipped.length ? `Skipped: ${skipped.join('; ')}` : null, account.id);
-    logger.info(`[AwsPoller] ${account.name}: ${ec2.instances.length} EC2, ${lightsail.length} Lightsail, ${ecs.clusters.length} ECS cluster(s)${skipped.length ? `; skipped ${skipped.join(', ')}` : ''}`);
+    logger.info(`[AwsPoller] ${account.name}: ${ec2.instances.length} EC2, ${lightsail.length} Lightsail (${lightsailInventory.databases.length} db, ${lightsailInventory.disks.length} disks, ${lightsailInventory.buckets.length} buckets, ${lightsailInventory.loadBalancers.length} lb), ${ecs.clusters.length} ECS cluster(s)${skipped.length ? `; skipped ${skipped.join(', ')}` : ''}`);
   } catch (err) {
     db.prepare(`
       UPDATE aws_accounts SET last_poll_status = 'error', last_poll_error = ?,
@@ -883,7 +1019,7 @@ module.exports = {
   _collectService: collectService, _isCredentialError: isCredentialError,
   initAwsPoller, awsPoller, pollAccount,
   isElected, cleanupNonElectedGlobalRows,
-  upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType, upsertCostResource, captureCostResources,
+  upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType, upsertCostResource, upsertCostResourceUsage, captureCostResources,
   getHealthLastCheckedAt, HEALTH_SERVICES,
   collectComputeOptimizer, computeHeuristicRecommendations, storeOptimizer,
 };

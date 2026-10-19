@@ -102,6 +102,15 @@ export default function AwsCostPage() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       if (service) next.set('service', service); else next.delete('service');
+      next.delete('usageType');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const selectedUsageType = searchParams.get('usageType') || '';
+  const setSelectedUsageType = useCallback((usageType) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (usageType) next.set('usageType', usageType); else next.delete('usageType');
       return next;
     }, { replace: true });
   }, [setSearchParams]);
@@ -119,6 +128,7 @@ export default function AwsCostPage() {
       ...(accountId ? { accountId } : {}),
       ...(selectedDay ? { day: selectedDay } : {}),
       ...(selectedService ? { service: selectedService } : {}),
+      ...(selectedUsageType ? { usageType: selectedUsageType } : {}),
     };
     return Promise.all([
       client.get('/aws/costs', { params }).then(({ data }) => setData(data)),
@@ -127,7 +137,7 @@ export default function AwsCostPage() {
       client.get('/aws/costs/instance-types', { params: base }).then(({ data }) => setInstanceTypes(data?.rows || [])).catch(() => setInstanceTypes([])),
     ]).then(() => setLastRefreshed(new Date()))
       .catch(() => { setData({ days: [], byService: [] }); toast({ type: 'error', title: 'Failed to load AWS costs' }); });
-  }, [toast, days, accountId, selectedDay, month, selectedService]);
+  }, [toast, days, accountId, selectedDay, month, selectedService, selectedUsageType]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -154,6 +164,10 @@ export default function AwsCostPage() {
   const isMonthly = days === 365 && !month;
 
   const hasComponent = (usageTypes || []).some((u) => u.component);
+  const selectedUsageRow = selectedUsageType
+    ? (usageTypes || []).find((u) => u.usageType === selectedUsageType && (!selectedService || u.service === selectedService))
+    : null;
+  const inventoryView = selectedUsageRow?.objectsMode === 'inventory';
 
   // Why the resource table is empty (or switched off), in order of precedence.
   const resourceNotice = useMemo(() => {
@@ -346,7 +360,8 @@ export default function AwsCostPage() {
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink">{selectedService ? `Usage Types in ${selectedService}` : 'Usage Type Breakdown'} {selectedDay ? `(${fmtDayLabel(selectedDay)})` : ''}</p>
-        <p className="text-[11px] text-ink-muted mb-3">Decomposes bundled service lines like "EC2 - Other" into billable usage types</p>
+        <p className="text-[11px] text-ink-muted">Decomposes bundled service lines like "EC2 - Other" into billable usage types</p>
+        <p className="text-[11px] text-ink-muted mb-3">Objects come from resource-level billing where it is enabled, otherwise from an inventory match on region and size</p>
         {usageTypes == null ? (
           <LoadingPanel label="Loading…" height={140} />
         ) : usageTypes.length === 0 ? (
@@ -358,14 +373,33 @@ export default function AwsCostPage() {
                 {!selectedService && <th className="py-2 pr-3">Service</th>}
                 <th className="py-2 pr-3">Usage Type</th>
                 {hasComponent && <th className="py-2 pr-3">Component</th>}
+                <th className="py-2 pr-3">Objects</th>
                 <th className="py-2 pr-3 text-right">Total</th>
               </tr></thead>
               <tbody>
                 {usageTypes.map((u) => (
-                  <tr key={`${u.service}|${u.usageType}`} className="border-b border-cohesity-border/50">
+                  <tr key={`${u.service}|${u.usageType}`}
+                    onClick={() => setSelectedUsageType(u.usageType === selectedUsageType ? '' : u.usageType)}
+                    className={`border-b border-cohesity-border/50 cursor-pointer hover:bg-brand/5 ${u.usageType === selectedUsageType ? 'bg-brand/10' : ''}`}>
                     {!selectedService && <td className="py-2 pr-3 text-ink-muted">{u.service || '-'}</td>}
                     <td className="py-2 pr-3 text-ink">{u.usageType}</td>
                     {hasComponent && <td className="py-2 pr-3 text-ink-muted">{u.component || '-'}</td>}
+                    <td className="py-2 pr-3 text-ink-muted" onClick={(e) => { if (e.target.closest('a')) e.stopPropagation(); }}>
+                      {(u.objects || []).length === 0 ? '-' : (
+                        <>
+                          {u.objects.slice(0, 3).map((o, idx) => (
+                            <span key={o.resourceId} title={o.totalUsd != null ? `${o.resourceId}: ${fmtUsd(o.totalUsd)}` : o.resourceId}>
+                              {idx > 0 && ', '}
+                              {u.objectsMode === 'billing' && o.link ? <Link to={o.link} className="text-brand hover:underline">{o.label}</Link> : o.label}
+                            </span>
+                          ))}
+                          {(u.objectCount || 0) > 3 && <span> +{u.objectCount - 3} more</span>}
+                          {u.objectsMode === 'inventory' && (
+                            <span className="ml-1 text-[10px] text-ink-faint" title={u.objectsRule || 'Matched on region and size'}>from inventory</span>
+                          )}
+                        </>
+                      )}
+                    </td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(u.totalUsd)}</td>
                   </tr>
                 ))}
@@ -377,9 +411,42 @@ export default function AwsCostPage() {
       </div>
 
       <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink">{selectedService ? `Resources in ${selectedService}` : 'Top Resources'}</p>
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-semibold text-ink">{selectedUsageType ? `Resources using ${selectedUsageType}` : selectedService ? `Resources in ${selectedService}` : 'Top Resources'}</p>
+          {selectedUsageType && (
+            <button onClick={() => setSelectedUsageType('')}
+              className="text-[11px] text-brand hover:underline cursor-pointer">Clear usage type</button>
+          )}
+        </div>
         <p className="text-[11px] text-ink-muted mb-3">Resource-level cost from Cost Explorer, last 14 days, newest capture</p>
-        {resources == null ? (
+        {inventoryView ? (
+          <div>
+            <p className="text-[11px] text-ink-muted mb-2">
+              {selectedUsageRow.objectsRule || 'Matched on region and size'}. These are inventory matches, not billed amounts.
+            </p>
+            {(selectedUsageRow.objects || []).length === 0 ? (
+              <div className="text-sm text-ink-muted py-4 text-center">No inventory objects match this usage type.</div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                  <th className="py-2 pr-3">Resource</th>
+                  <th className="py-2 pr-3">Kind</th>
+                </tr></thead>
+                <tbody>
+                  {selectedUsageRow.objects.map((o) => (
+                    <tr key={o.resourceId} className="border-b border-cohesity-border/50">
+                      <td className="py-2 pr-3 text-ink">{o.link ? <Link to={o.link} className="text-brand hover:underline">{o.label}</Link> : o.label}</td>
+                      <td className="py-2 pr-3 text-ink-muted">{o.kind || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {(selectedUsageRow.objectCount || 0) > (selectedUsageRow.objects || []).length && (
+              <p className="text-[11px] text-ink-faint mt-2">Showing {selectedUsageRow.objects.length} of {selectedUsageRow.objectCount} matches.</p>
+            )}
+          </div>
+        ) : resources == null ? (
           <LoadingPanel label="Loading..." height={140} />
         ) : resourceNotice ? (
           <div className="text-sm text-ink-muted py-6 text-center">

@@ -136,4 +136,133 @@ function resolveCostResource(resourceId, service, db, accountId) {
   }
 }
 
-module.exports = { serviceNotes, lightsailComponent, resolveCostResource, stripRegion };
+// Region prefixes Cost Explorer puts in front of usage types (USE1-BundleUsage:8GB).
+const REGION_PREFIXES = {
+  USE1: 'us-east-1', USE2: 'us-east-2', USW1: 'us-west-1', USW2: 'us-west-2', CAN1: 'ca-central-1',
+  EUW1: 'eu-west-1', EUW2: 'eu-west-2', EUW3: 'eu-west-3', EUC1: 'eu-central-1', EUN1: 'eu-north-1',
+  APN1: 'ap-northeast-1', APN2: 'ap-northeast-2', APS1: 'ap-southeast-1', APS2: 'ap-southeast-2',
+  APS3: 'ap-south-1', SAE1: 'sa-east-1',
+};
+
+const OBJECT_CAP = 25;
+
+/**
+ * Derived mapping: which inventory objects a usage type names (region, bundle size, instance type,
+ * volume type, engine class). Returns { mode: 'inventory', objects, objectCount, rule }.
+ * objects: [{ resourceId, label, kind, link }], at most 25; objectCount is the full match count.
+ */
+function usageTypeObjects(usageType, service, db, accountId) {
+  const raw = String(usageType || '');
+  const m = /^([A-Z]{3,4}\d)-(.+)$/.exec(raw);
+  const prefixRegion = m && REGION_PREFIXES[m[1]] ? REGION_PREFIXES[m[1]] : null;
+  const body = prefixRegion ? m[2] : raw;
+  const svc = String(service || '');
+  const isLightsail = /lightsail/i.test(svc) || /^(BundleUsage|DatabaseUsage|LoadBalancerUsage|DiskUsage)/i.test(body);
+  // Lightsail types without a prefix are unknown-region; EC2, EBS and RDS default to us-east-1.
+  const region = prefixRegion || (isLightsail ? null : 'us-east-1');
+  const regionText = region || 'any region';
+  const acct = accountId ? ' AND account_id = ?' : '';
+  const acctArg = accountId ? [accountId] : [];
+  const empty = (rule = null) => ({ mode: 'inventory', objects: [], objectCount: 0, rule });
+
+  const q = (sql, args = []) => {
+    try { return db.prepare(`${sql}${acct}`).all(...args, ...acctArg); } catch { return []; }
+  };
+  const azLike = region ? ' AND az LIKE ?' : '';
+  const azArg = region ? [`${region}%`] : [];
+  const out = (rows, kind, linkBase, pick, rule) => {
+    const objects = rows.slice(0, OBJECT_CAP).map((r) => {
+      const id = pick(r);
+      return { resourceId: id, label: id, kind, link: linkBase ? `${linkBase}?q=${id}` : null };
+    });
+    return { mode: 'inventory', objects, objectCount: rows.length, rule };
+  };
+
+  let t;
+  if (isLightsail) {
+    if ((t = /^BundleUsage:(\d+(?:\.\d+)?)GB(_win)?$/i.exec(body))) {
+      const win = t[2] ? 1 : 0;
+      const rows = q(`SELECT name FROM aws_lightsail_instances WHERE ram_gb = ? AND COALESCE(is_windows, 0) = ?${azLike}`,
+        [Number(t[1]), win, ...azArg]);
+      return out(rows, 'Lightsail instance', '/aws/lightsail', (r) => r.name,
+        `${win ? 'Windows instances' : 'Instances'} on a ${t[1]} GB bundle in ${regionText}`);
+    }
+    if ((t = /^DatabaseUsage:(\d+(?:\.\d+)?)GB/i.exec(body))) {
+      const rows = q(`SELECT name FROM aws_lightsail_databases WHERE ram_gb = ?${azLike}`, [Number(t[1]), ...azArg]);
+      return out(rows, 'Lightsail database', '/aws/lightsail', (r) => r.name, `Databases on a ${t[1]} GB bundle in ${regionText}`);
+    }
+    const lower = body.toLowerCase();
+    if (lower.startsWith('loadbalancer')) {
+      return out(q(`SELECT name FROM aws_lightsail_load_balancers WHERE 1=1${azLike}`, azArg), 'Lightsail load balancer',
+        '/aws/lightsail', (r) => r.name, `All load balancers in ${regionText}`);
+    }
+    if (lower.startsWith('disk')) {
+      return out(q(`SELECT name FROM aws_lightsail_disks WHERE 1=1${azLike}`, azArg), 'Lightsail disk',
+        '/aws/lightsail', (r) => r.name, `All disks in ${regionText}`);
+    }
+    if (lower.includes('bucket')) {
+      return out(q('SELECT name FROM aws_lightsail_buckets WHERE 1=1'), 'Lightsail bucket', '/aws/lightsail', (r) => r.name, 'All Lightsail buckets');
+    }
+    if (lower.includes('snapshot')) {
+      return out(q(`SELECT name FROM aws_lightsail_instances WHERE snapshot_count > 0${azLike}`, azArg), 'Lightsail instance',
+        '/aws/lightsail', (r) => r.name, `Instances with snapshots in ${regionText}`);
+    }
+    if (lower.includes('distribution') || lower.includes('cdn')) {
+      return out(q('SELECT name FROM aws_lightsail_distributions WHERE 1=1'), 'Lightsail distribution', '/aws/lightsail', (r) => r.name, 'All CDN distributions');
+    }
+    if (lower.includes('dns')) {
+      return out(q('SELECT name FROM aws_lightsail_domains WHERE 1=1'), 'Lightsail domain', '/aws/lightsail', (r) => r.name, 'All DNS domains');
+    }
+    if (lower.includes('staticip') || lower.includes('idleaddress')) {
+      return out(q('SELECT name FROM aws_lightsail_static_ips WHERE 1=1'), 'Lightsail static IP', '/aws/lightsail', (r) => r.name, 'All static IPs');
+    }
+    if (lower.includes('totaldataxfer')) {
+      return out(q(`SELECT name FROM aws_lightsail_instances WHERE 1=1${azLike}`, azArg), 'Lightsail instance',
+        '/aws/lightsail', (r) => r.name, `All instances in ${regionText}, transfer is pooled`);
+    }
+    return empty();
+  }
+
+  if (/dynamo/i.test(svc)) {
+    return out(q('SELECT name FROM aws_dynamo_tables WHERE 1=1'), 'DynamoDB table', '/aws/dynamo', (r) => r.name, 'All DynamoDB tables');
+  }
+  if ((t = /^(?:BoxUsage|SpotUsage|DedicatedUsage|HeavyUsage):(.+)$/i.exec(body))) {
+    const rows = q(`SELECT instance_id, name FROM aws_ec2_instances WHERE instance_type = ?${azLike}`, [t[1], ...azArg]);
+    return out(rows, 'EC2 instance', '/aws/ec2', (r) => r.name || r.instance_id, `EC2 instances of type ${t[1]} in ${regionText}`);
+  }
+  if ((t = /^EBS:VolumeUsage(?:\.(.+))?$/i.exec(body))) {
+    const vt = t[1] || 'standard';
+    const rows = q(`SELECT volume_id FROM aws_ebs_volumes WHERE volume_type = ?${azLike}`, [vt, ...azArg]);
+    return out(rows, 'EBS volume', '/aws/ec2', (r) => r.volume_id, `${vt} volumes in ${regionText}`);
+  }
+  if (/^EBS:SnapshotUsage/i.test(body)) return empty('Snapshots are not inventoried');
+  if (/^PublicIPv4:IdleAddress/i.test(body)) return empty('Idle Elastic IPs are not inventoried');
+  if (/^PublicIPv4:InUseAddress/i.test(body)) {
+    const rows = q(`SELECT instance_id, name FROM aws_ec2_instances WHERE public_ip IS NOT NULL AND public_ip != ''${azLike}`, azArg);
+    return out(rows, 'EC2 instance', '/aws/ec2', (r) => r.name || r.instance_id, `EC2 instances with a public IP in ${regionText}`);
+  }
+  if (/^NatGateway/i.test(body)) return empty('NAT gateways are not inventoried');
+  if ((t = /^InstanceUsage:(.+)$/i.exec(body))) {
+    const rows = q('SELECT db_id FROM aws_rds_instances WHERE instance_class = ?', [t[1]]);
+    return out(rows, 'RDS instance', '/aws/rds', (r) => r.db_id, `RDS instances of class ${t[1]}`);
+  }
+  if (/^Aurora:/i.test(body)) {
+    return out(q("SELECT db_id FROM aws_rds_instances WHERE LOWER(engine) LIKE 'aurora%'"), 'RDS instance', '/aws/rds',
+      (r) => r.db_id, 'Instances running Aurora engines');
+  }
+  if (/^RDS:ChargedBackupUsage/i.test(body)) {
+    return out(q('SELECT db_id FROM aws_rds_instances WHERE 1=1'), 'RDS instance', '/aws/rds', (r) => r.db_id, 'All RDS instances');
+  }
+  if (/^(TimedStorage-|Requests-)/i.test(body)) {
+    const rows = q('SELECT name FROM aws_s3_buckets WHERE region = ?', [region]);
+    return out(rows, 'S3 bucket', '/aws/s3', (r) => r.name, `S3 buckets in ${regionText}`);
+  }
+  if (/^(Lambda-GB-Second|Request)$/i.test(body)) {
+    // Lambda rows carry no region column; the account scope is the best available match.
+    return out(q('SELECT name FROM aws_lambda_functions WHERE 1=1'), 'Lambda function', '/aws/lambda', (r) => r.name, 'All Lambda functions');
+  }
+  return empty();
+}
+
+module.exports = { serviceNotes, lightsailComponent, resolveCostResource, stripRegion, usageTypeObjects, REGION_PREFIXES };
+

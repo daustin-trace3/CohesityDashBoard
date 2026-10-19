@@ -121,6 +121,81 @@ function computeIssues() {
     }
   }
 
+  // 8. Lightsail inventory rules (disks, static IPs, buckets, databases, load balancers, distributions).
+  for (const d of db.prepare(`
+    SELECT d.*, a.name AS account_name FROM aws_lightsail_disks d JOIN aws_accounts a ON a.id = d.account_id
+  `).all()) {
+    if (!d.is_system_disk && d.attachment_state !== 'attached') {
+      issues.push({
+        severity: 'warning', type: 'lightsail-disk-unattached', account: d.account_name, accountId: d.account_id,
+        target: d.name, message: `Lightsail disk ${d.name} (${d.size_gb || '?'} GB) is not attached to an instance and is billed while idle`,
+      });
+    }
+  }
+  for (const s of db.prepare(`
+    SELECT s.*, a.name AS account_name FROM aws_lightsail_static_ips s JOIN aws_accounts a ON a.id = s.account_id
+  `).all()) {
+    if (!s.is_attached) {
+      issues.push({
+        severity: 'warning', type: 'lightsail-static-ip-unattached', account: s.account_name, accountId: s.account_id,
+        target: s.name, message: `Lightsail static IP ${s.name}${s.ip_address ? ` (${s.ip_address})` : ''} is not attached; Lightsail bills unattached static IPs`,
+      });
+    }
+  }
+  for (const b of db.prepare(`
+    SELECT b.*, a.name AS account_name FROM aws_lightsail_buckets b JOIN aws_accounts a ON a.id = b.account_id
+  `).all()) {
+    if (b.read_only_access === 1) {
+      issues.push({
+        severity: 'warning', type: 'lightsail-bucket-public', account: b.account_name, accountId: b.account_id,
+        target: b.name, message: `Lightsail bucket ${b.name} allows public read access to all objects`,
+      });
+    }
+  }
+  for (const d of db.prepare(`
+    SELECT d.*, a.name AS account_name FROM aws_lightsail_databases d JOIN aws_accounts a ON a.id = d.account_id
+  `).all()) {
+    if (d.backup_retention === 0) {
+      issues.push({
+        severity: 'warning', type: 'lightsail-db-no-backup', account: d.account_name, accountId: d.account_id,
+        target: d.name, message: `Lightsail database ${d.name} has automatic backups turned off`,
+      });
+    }
+    if (d.state && !['available', 'backing-up', 'modifying'].includes(String(d.state).toLowerCase())) {
+      issues.push({
+        severity: 'critical', type: 'lightsail-db-unavailable', account: d.account_name, accountId: d.account_id,
+        target: d.name, message: `Lightsail database ${d.name} is ${d.state}`,
+      });
+    }
+  }
+  for (const l of db.prepare(`
+    SELECT l.*, a.name AS account_name FROM aws_lightsail_load_balancers l JOIN aws_accounts a ON a.id = l.account_id
+  `).all()) {
+    let attached = [];
+    try { attached = JSON.parse(l.attached_instances || '[]'); } catch { attached = []; }
+    if ((l.healthy_count ?? 0) === 0 && attached.length > 0) {
+      issues.push({
+        severity: 'critical', type: 'lightsail-lb-unhealthy', account: l.account_name, accountId: l.account_id,
+        target: l.name, message: `Lightsail load balancer ${l.name} has no healthy targets (${attached.length} attached)`,
+      });
+    } else if ((l.unhealthy_count ?? 0) > 0) {
+      issues.push({
+        severity: 'warning', type: 'lightsail-lb-unhealthy', account: l.account_name, accountId: l.account_id,
+        target: l.name, message: `Lightsail load balancer ${l.name} has ${l.unhealthy_count} unhealthy target(s)`,
+      });
+    }
+  }
+  for (const d of db.prepare(`
+    SELECT d.*, a.name AS account_name FROM aws_lightsail_distributions d JOIN aws_accounts a ON a.id = d.account_id
+  `).all()) {
+    if (d.is_enabled === 0) {
+      issues.push({
+        severity: 'info', type: 'lightsail-distribution-disabled', account: d.account_name, accountId: d.account_id,
+        target: d.name, message: `Lightsail distribution ${d.name} is disabled`,
+      });
+    }
+  }
+
   // 5b. Session credentials with an expiry: warn inside the last two hours,
   // critical once past it (polling has stopped for that account).
   for (const acc of accounts) {

@@ -98,11 +98,13 @@ const SEEDED_TABLES = [
   'netbackup_appliance_hw', 'netbackup_appliance_conns',
   // aws
   'aws_ec2_instances', 'aws_ebs_volumes', 'aws_lightsail_instances',
+  'aws_lightsail_databases', 'aws_lightsail_disks', 'aws_lightsail_buckets', 'aws_lightsail_load_balancers',
+  'aws_lightsail_distributions', 'aws_lightsail_domains', 'aws_lightsail_static_ips',
   'aws_ecs_services', 'aws_ecs_clusters', 'aws_s3_buckets', 'aws_bedrock_usage',
   'aws_cost_daily', 'aws_metrics_history', 'aws_issue_history',
   'aws_rds_instances', 'aws_lambda_functions', 'aws_dynamo_tables',
   'aws_ecr_repos', 'aws_subnets', 'aws_vpcs',
-  'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily', 'aws_cost_resource_daily',
+  'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily', 'aws_cost_resource_daily', 'aws_cost_resource_usage_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_optimizer_recommendations',
   'aws_accounts',
   // proxmox (children before the parent)

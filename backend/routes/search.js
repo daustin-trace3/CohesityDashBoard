@@ -78,6 +78,26 @@ const CATEGORIES = [
     sql: `SELECT r.db_id AS title, (COALESCE(r.engine, '') || ' · ' || a.name) AS subtitle
           FROM aws_rds_instances r JOIN aws_accounts a ON a.id = r.account_id
           WHERE r.db_id LIKE ? ESCAPE '\\' ORDER BY r.db_id LIMIT ?` },
+  { key: 'aws-lightsail-databases', label: 'AWS Lightsail Databases', platform: 'aws', perm: 'aws:ec2:view', base: '/aws/lightsail',
+    route: (i) => `/aws/lightsail?tab=databases&q=${encodeURIComponent(i.title)}`,
+    sql: `SELECT d.name AS title, (COALESCE(d.engine, '') || ' ' || COALESCE(d.engine_version, '') || ' - ' || a.name) AS subtitle
+          FROM aws_lightsail_databases d JOIN aws_accounts a ON a.id = d.account_id
+          WHERE d.name LIKE ? ESCAPE '\\' ORDER BY d.name LIMIT ?` },
+  { key: 'aws-lightsail-disks', label: 'AWS Lightsail Disks', platform: 'aws', perm: 'aws:ec2:view', base: '/aws/lightsail',
+    route: (i) => `/aws/lightsail?tab=disks&q=${encodeURIComponent(i.title)}`,
+    sql: `SELECT d.name AS title, (COALESCE(d.size_gb, '?') || ' GB - ' || COALESCE(d.attachment_state, '') || ' - ' || a.name) AS subtitle
+          FROM aws_lightsail_disks d JOIN aws_accounts a ON a.id = d.account_id
+          WHERE d.name LIKE ? ESCAPE '\\' ORDER BY d.name LIMIT ?` },
+  { key: 'aws-lightsail-buckets', label: 'AWS Lightsail Buckets', platform: 'aws', perm: 'aws:ec2:view', base: '/aws/lightsail',
+    route: (i) => `/aws/lightsail?tab=buckets&q=${encodeURIComponent(i.title)}`,
+    sql: `SELECT b.name AS title, (COALESCE(b.bundle, '') || ' - ' || a.name) AS subtitle
+          FROM aws_lightsail_buckets b JOIN aws_accounts a ON a.id = b.account_id
+          WHERE b.name LIKE ? ESCAPE '\\' ORDER BY b.name LIMIT ?` },
+  { key: 'aws-lightsail-lbs', label: 'AWS Lightsail Load Balancers', platform: 'aws', perm: 'aws:ec2:view', base: '/aws/lightsail',
+    route: (i) => `/aws/lightsail?tab=load-balancers&q=${encodeURIComponent(i.title)}`,
+    sql: `SELECT l.name AS title, (COALESCE(l.dns_name, '') || ' - ' || a.name) AS subtitle
+          FROM aws_lightsail_load_balancers l JOIN aws_accounts a ON a.id = l.account_id
+          WHERE l.name LIKE ? ESCAPE '\\' ORDER BY l.name LIMIT ?` },
   { key: 'aws-lambda', label: 'AWS Lambda Functions', platform: 'aws', perm: 'aws:lambda:view', base: '/aws/lambda',
     sql: `SELECT l.name AS title, (COALESCE(l.runtime, '') || ' · ' || a.name) AS subtitle
           FROM aws_lambda_functions l JOIN aws_accounts a ON a.id = l.account_id

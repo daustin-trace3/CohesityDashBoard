@@ -11,6 +11,9 @@ const { EC2Client, DescribeInstancesCommand, DescribeVolumesCommand,
 } = require('@aws-sdk/client-ec2');
 const {
   LightsailClient, GetInstancesCommand, GetInstanceMetricDataCommand, GetInstanceSnapshotsCommand,
+  GetRelationalDatabasesCommand, GetDisksCommand, GetBucketsCommand, GetLoadBalancersCommand,
+  GetDistributionsCommand, GetDomainsCommand, GetStaticIpsCommand, GetBundlesCommand,
+  GetRelationalDatabaseBundlesCommand,
 } = require('@aws-sdk/client-lightsail');
 const {
   ECSClient, ListClustersCommand, DescribeClustersCommand, ListServicesCommand, DescribeServicesCommand,
@@ -195,7 +198,7 @@ function explainAuthError(err, account) {
 }
 
 const ec2Client = (account) => new EC2Client(clientConfig(account));
-const lightsailClient = (account) => new LightsailClient(clientConfig(account));
+const lightsailClient = (account, region) => new LightsailClient(clientConfig(account, region));
 const ecsClient = (account) => new ECSClient(clientConfig(account));
 const s3Client = (account, region) => new S3Client(clientConfig(account, region));
 const cloudwatchClient = (account, region) => new CloudWatchClient(clientConfig(account, region));
@@ -310,13 +313,65 @@ async function fetchEc2Metrics(account, instanceIds) {
 
 // ── Lightsail ────────────────────────────────────────────────────────────────
 
-async function fetchLightsailInstances(account) {
+const isoOrNull = (d) => {
+  if (!d) return null;
+  const t = new Date(d);
+  return Number.isNaN(t.getTime()) ? null : t.toISOString();
+};
+const flag = (v) => (v == null ? null : (v ? 1 : 0));
+
+/** Map bundleId -> { ramGb, cpuCount, diskGb, isWindows } from GetBundles. UNVERIFIED live. */
+async function fetchLightsailBundles(account) {
+  const client = lightsailClient(account);
+  const out = new Map();
+  let pageToken;
+  do {
+    const resp = await client.send(new GetBundlesCommand({ pageToken, includeInactive: true }));
+    for (const b of resp?.bundles || []) {
+      if (!b.bundleId) continue;
+      const platforms = (b.supportedPlatforms || []).map((p) => String(p).toUpperCase());
+      out.set(b.bundleId, {
+        ramGb: b.ramSizeInGb ?? null,
+        cpuCount: b.cpuCount ?? null,
+        diskGb: b.diskSizeInGb ?? null,
+        isWindows: /win/i.test(b.bundleId) || (platforms.includes('WINDOWS') && !platforms.includes('LINUX_UNIX')),
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return out;
+}
+
+/** Map bundleId -> { ramGb, cpuCount, diskGb } from GetRelationalDatabaseBundles. UNVERIFIED live. */
+async function fetchLightsailDatabaseBundles(account) {
+  const client = lightsailClient(account);
+  const out = new Map();
+  let pageToken;
+  do {
+    const resp = await client.send(new GetRelationalDatabaseBundlesCommand({ pageToken, includeInactive: true }));
+    for (const b of resp?.bundles || []) {
+      if (!b.bundleId) continue;
+      out.set(b.bundleId, {
+        ramGb: b.ramSizeInGb ?? null,
+        cpuCount: b.cpuCount ?? null,
+        diskGb: b.diskSizeInGb ?? null,
+        isWindows: false,
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return out;
+}
+
+async function fetchLightsailInstances(account, bundles) {
   const client = lightsailClient(account);
   const instances = [];
   let pageToken;
   do {
     const resp = await client.send(new GetInstancesCommand({ pageToken }));
     for (const i of resp?.instances || []) {
+      const bundle = bundles?.get?.(i.bundleId) || null;
+      const blueprintText = `${i.blueprintId || ''} ${i.blueprintName || ''}`;
       instances.push({
         name: i.name,
         state: i.state?.name || null,
@@ -324,11 +379,198 @@ async function fetchLightsailInstances(account) {
         bundle: i.bundleId || null,
         az: i.location?.availabilityZone || null,
         publicIp: i.publicIpAddress || null,
+        privateIp: i.privateIpAddress || null,
+        arn: i.arn || null,
+        createdAt: isoOrNull(i.createdAt),
+        ramGb: i.hardware?.ramSizeInGb ?? bundle?.ramGb ?? null,
+        cpuCount: i.hardware?.cpuCount ?? bundle?.cpuCount ?? null,
+        isWindows: (bundle?.isWindows || /win/i.test(i.bundleId || '') || /windows/i.test(blueprintText)) ? 1 : 0,
       });
     }
     pageToken = resp?.nextPageToken;
   } while (pageToken);
   return instances;
+}
+
+async function fetchLightsailDatabases(account, dbBundles) {
+  const client = lightsailClient(account);
+  const rows = [];
+  let pageToken;
+  do {
+    const resp = await client.send(new GetRelationalDatabasesCommand({ pageToken }));
+    for (const d of resp?.relationalDatabases || []) {
+      const bundleId = d.relationalDatabaseBundleId || null;
+      const bundle = dbBundles?.get?.(bundleId) || null;
+      rows.push({
+        name: d.name,
+        arn: d.arn || null,
+        engine: d.engine || null,
+        engineVersion: d.engineVersion || null,
+        bundle: bundleId,
+        ramGb: d.hardware?.ramSizeInGb ?? bundle?.ramGb ?? null,
+        diskGb: d.hardware?.diskSizeInGb ?? bundle?.diskGb ?? null,
+        state: d.state || null,
+        az: d.location?.availabilityZone || d.secondaryAvailabilityZone || null,
+        masterEndpoint: d.masterEndpoint?.address || null,
+        port: d.masterEndpoint?.port ?? null,
+        backupRetention: flag(d.backupRetentionEnabled),
+        publiclyAccessible: flag(d.publiclyAccessible),
+        latestRestorableAt: isoOrNull(d.latestRestorableTime),
+        createdAt: isoOrNull(d.createdAt),
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return rows;
+}
+
+async function fetchLightsailDisks(account) {
+  const client = lightsailClient(account);
+  const rows = [];
+  let pageToken;
+  do {
+    const resp = await client.send(new GetDisksCommand({ pageToken }));
+    for (const d of resp?.disks || []) {
+      const attached = d.isAttached === true || d.attachmentState === 'attached';
+      rows.push({
+        name: d.name,
+        arn: d.arn || null,
+        sizeGb: d.sizeInGb ?? null,
+        state: d.state || null,
+        attachedTo: d.attachedTo || null,
+        attachmentState: d.attachmentState || (attached ? 'attached' : 'detached'),
+        isSystemDisk: flag(d.isSystemDisk),
+        iops: d.iops ?? null,
+        az: d.location?.availabilityZone || null,
+        createdAt: isoOrNull(d.createdAt),
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return rows;
+}
+
+async function fetchLightsailBuckets(account) {
+  const client = lightsailClient(account);
+  const rows = [];
+  let pageToken;
+  do {
+    const resp = await client.send(new GetBucketsCommand({ pageToken }));
+    for (const b of resp?.buckets || []) {
+      rows.push({
+        name: b.name,
+        arn: b.arn || null,
+        bundle: b.bundleId || null,
+        state: b.state?.code || null,
+        objectVersioning: b.objectVersioning || null,
+        readOnlyAccess: b.accessRules?.getObject === 'public' ? 1 : 0,
+        ableToUpdateBundle: flag(b.ableToUpdateBundle),
+        url: b.url || null,
+        createdAt: isoOrNull(b.createdAt),
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return rows;
+}
+
+async function fetchLightsailLoadBalancers(account) {
+  const client = lightsailClient(account);
+  const rows = [];
+  let pageToken;
+  do {
+    const resp = await client.send(new GetLoadBalancersCommand({ pageToken }));
+    for (const l of resp?.loadBalancers || []) {
+      const health = l.instanceHealthSummary || [];
+      const certs = l.tlsCertificateSummaries || [];
+      rows.push({
+        name: l.name,
+        arn: l.arn || null,
+        dnsName: l.dnsName || null,
+        state: l.state || null,
+        protocol: l.protocol || null,
+        instancePort: l.instancePort ?? null,
+        healthCheckPath: l.healthCheckPath || null,
+        attachedInstances: JSON.stringify(health.map((h) => h.instanceName).filter(Boolean)),
+        healthyCount: health.filter((h) => h.instanceHealth === 'healthy').length,
+        unhealthyCount: health.filter((h) => h.instanceHealth === 'unhealthy').length,
+        tlsCertName: certs[0]?.name || null,
+        tlsCertAttached: certs.length ? (certs.some((c) => c.isAttached) ? 1 : 0) : 0,
+        az: l.location?.availabilityZone || l.location?.regionName || null,
+        createdAt: isoOrNull(l.createdAt),
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return rows;
+}
+
+// Distributions and DNS zones are global Lightsail resources served only from us-east-1.
+async function fetchLightsailDistributions(account) {
+  const client = lightsailClient(account, 'us-east-1');
+  const rows = [];
+  let pageToken;
+  do {
+    const resp = await client.send(new GetDistributionsCommand({ pageToken }));
+    for (const d of resp?.distributions || []) {
+      rows.push({
+        name: d.name,
+        arn: d.arn || null,
+        status: d.status || null,
+        isEnabled: flag(d.isEnabled),
+        domainName: d.domainName || null,
+        originName: d.origin?.name || null,
+        originRegion: d.origin?.regionName || null,
+        bundle: d.bundleId || null,
+        certName: d.certificateName || null,
+        alternativeDomains: JSON.stringify(d.alternativeDomainNames || []),
+        createdAt: isoOrNull(d.createdAt),
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return rows;
+}
+
+async function fetchLightsailDomains(account) {
+  const client = lightsailClient(account, 'us-east-1');
+  const rows = [];
+  let pageToken;
+  do {
+    const resp = await client.send(new GetDomainsCommand({ pageToken }));
+    for (const d of resp?.domains || []) {
+      rows.push({
+        name: d.name,
+        arn: d.arn || null,
+        entryCount: (d.domainEntries || []).length,
+        createdAt: isoOrNull(d.createdAt),
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return rows;
+}
+
+async function fetchLightsailStaticIps(account) {
+  const client = lightsailClient(account);
+  const rows = [];
+  let pageToken;
+  do {
+    const resp = await client.send(new GetStaticIpsCommand({ pageToken }));
+    for (const s of resp?.staticIps || []) {
+      rows.push({
+        name: s.name,
+        arn: s.arn || null,
+        ipAddress: s.ipAddress || null,
+        isAttached: s.isAttached ? 1 : 0,
+        attachedTo: s.attachedTo || null,
+        az: s.location?.availabilityZone || s.location?.regionName || null,
+        createdAt: isoOrNull(s.createdAt),
+      });
+    }
+    pageToken = resp?.nextPageToken;
+  } while (pageToken);
+  return rows;
 }
 
 /** Average CPUUtilization over the last 15 minutes, per Lightsail instance name. */
@@ -769,7 +1011,7 @@ function classifyCostResourceError(err) {
  * opts.maxPages, default 10). Errors propagate; the poller classifies them.
  * Returns { rows: [{ day, service, resourceId, amountUsd }], pages }.
  */
-async function fetchCostByResource(account, opts = {}) {
+async function fetchCostWithResources(account, opts, secondKey, rowKey) {
   const client = costExplorerClient(account);
   const maxPages = Math.max(1, opts.maxPages || 10);
   const end = new Date();
@@ -781,7 +1023,7 @@ async function fetchCostByResource(account, opts = {}) {
     TimePeriod: { Start: fmt(start), End: fmt(end) },
     Granularity: 'DAILY',
     Metrics: ['UnblendedCost'],
-    GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'RESOURCE_ID' }],
+    GroupBy: [{ Type: 'DIMENSION', Key: secondKey }, { Type: 'DIMENSION', Key: 'RESOURCE_ID' }],
   };
   let filter = { Not: { Dimensions: { Key: 'RECORD_TYPE', Values: ['Tax', 'Refund', 'Credit'] } } };
   let retried = false;
@@ -810,7 +1052,7 @@ async function fetchCostByResource(account, opts = {}) {
         const resourceId = g.Keys?.[1];
         if (!resourceId || resourceId === 'NoResourceId') continue;
         rows.push({
-          day, service: g.Keys?.[0] || 'Unknown', resourceId,
+          day, [rowKey]: g.Keys?.[0] || 'Unknown', resourceId,
           amountUsd: Number(g.Metrics?.UnblendedCost?.Amount) || 0,
         });
       }
@@ -820,6 +1062,11 @@ async function fetchCostByResource(account, opts = {}) {
   }
   return { rows, pages };
 }
+
+const fetchCostByResource = (account, opts = {}) => fetchCostWithResources(account, opts, 'SERVICE', 'service');
+
+/** Same capture grouped by USAGE_TYPE then RESOURCE_ID: [{ day, usageType, resourceId, amountUsd }]. */
+const fetchCostByResourceUsage = (account, opts = {}) => fetchCostWithResources(account, opts, 'USAGE_TYPE', 'usageType');
 
 /** [{ day, instanceType, amountUsd }] — GroupBy DIMENSION/INSTANCE_TYPE, same window as fetchCostAndUsage. */
 async function fetchCostByInstanceType(account) {
@@ -1317,11 +1564,14 @@ module.exports = {
   rdsClient, lambdaClient, dynamoClient, ecrClient,
   fetchEc2Instances, fetchEbsVolumes, fetchEc2Metrics,
   fetchLightsailInstances, fetchLightsailMetric, fetchLightsailSnapshots,
+  fetchLightsailBundles, fetchLightsailDatabaseBundles, fetchLightsailDatabases, fetchLightsailDisks,
+  fetchLightsailBuckets, fetchLightsailLoadBalancers, fetchLightsailDistributions,
+  fetchLightsailDomains, fetchLightsailStaticIps,
   fetchEcsClusters, fetchEcsServices, fetchEcsServiceMetrics,
   fetchS3Buckets, fetchBucketLocation, fetchBucketPublicAccessBlocked, fetchBucketVersioning,
   fetchBucketLifecycleRuleCount, fetchBucketStorageMetrics,
   fetchBedrockModelIds, fetchBedrockDailyUsage,
-  fetchCostAndUsage, fetchCostByUsageType, fetchCostByInstanceType, fetchCostByResource, classifyCostResourceError, pagedCostAndUsage,
+  fetchCostAndUsage, fetchCostByUsageType, fetchCostByInstanceType, fetchCostByResource, fetchCostByResourceUsage, classifyCostResourceError, pagedCostAndUsage,
   fetchHealthRss,
   fetchRdsInstances, fetchRdsMetrics,
   fetchLambdaFunctions, fetchLambdaMetrics,

@@ -12,7 +12,7 @@ const awsApi = require('../services/awsApi');
 const { awsPoller, getHealthLastCheckedAt, HEALTH_SERVICES, isElected } = require('../services/awsPoller');
 const { costSpikePct, rdsStorageWarnPct, computeIssues } = require('../services/awsIssues');
 const awsAdvisor = require('../services/advisors/awsAdvisor');
-const { serviceNotes, lightsailComponent, resolveCostResource } = require('../services/awsCostNotes');
+const { serviceNotes, lightsailComponent, resolveCostResource, usageTypeObjects } = require('../services/awsCostNotes');
 
 const router = express.Router();
 
@@ -463,6 +463,13 @@ router.get('/overview', [query('accountId').optional().isInt().toInt()], validat
       FROM aws_lightsail_instances${W}
     `).get(...args);
 
+    const lsCount = (table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}${W}`).get(...args).n || 0;
+    const lsExtra = {
+      databases: lsCount('aws_lightsail_databases'),
+      disks: lsCount('aws_lightsail_disks'),
+      buckets: lsCount('aws_lightsail_buckets'),
+    };
+
     const ecsAgg = db.prepare(`SELECT COUNT(*) AS clusters FROM aws_ecs_clusters${W}`).get(...args);
     const svcAgg = db.prepare(`
       SELECT COUNT(*) AS services,
@@ -545,7 +552,7 @@ router.get('/overview', [query('accountId').optional().isInt().toInt()], validat
     res.json({
       accounts: accountCount,
       ec2: { total: ec2Agg.total || 0, running: ec2Agg.running || 0, stopped: ec2Agg.stopped || 0, alarmed: ec2Agg.alarmed || 0 },
-      lightsail: { total: lsAgg.total || 0, running: lsAgg.running || 0 },
+      lightsail: { total: lsAgg.total || 0, running: lsAgg.running || 0, ...lsExtra },
       ecs: { clusters: ecsAgg.clusters || 0, services: svcAgg.services || 0, degraded: svcAgg.degraded || 0 },
       s3: { buckets: s3Agg.buckets || 0, totalSizeBytes: s3Agg.totalSizeBytes || 0, totalObjects: s3Agg.totalObjects || 0 },
       cost: {
@@ -605,22 +612,111 @@ router.get('/ebs', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/aws/lightsail — Lightsail instances across all accounts. */
-router.get('/lightsail', (req, res, next) => {
+/** GET /api/aws/lightsail — Lightsail instances across all accounts (?accountId= narrows). */
+router.get('/lightsail', [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
   try {
+    const accountId = req.query.accountId;
     const rows = db.prepare(`
       SELECT i.*, a.name AS account_name FROM aws_lightsail_instances i
-      JOIN aws_accounts a ON a.id = i.account_id ORDER BY a.name, i.name
-    `).all();
+      JOIN aws_accounts a ON a.id = i.account_id
+      ${accountId ? 'WHERE i.account_id = ?' : ''} ORDER BY a.name, i.name
+    `).all(...(accountId ? [accountId] : []));
     res.json({
       instances: rows.map((r) => ({
         name: r.name, state: r.state, blueprint: r.blueprint, bundle: r.bundle, az: r.az,
         publicIp: r.public_ip, cpuUtil: r.cpu_util, snapshotCount: r.snapshot_count,
         latestSnapshotAt: r.latest_snapshot_at, account: r.account_name,
+        ramGb: r.ram_gb ?? null, cpuCount: r.cpu_count ?? null, isWindows: !!r.is_windows,
+        arn: r.arn || null, privateIp: r.private_ip || null, createdAt: r.created_at || null,
       })),
     });
   } catch (err) { next(err); }
 });
+
+const jsonList = (text) => {
+  try { const v = JSON.parse(text || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+};
+
+// Lightsail inventory families: table, response key, row mapper, order column.
+const LIGHTSAIL_FAMILIES = [
+  ['databases', 'aws_lightsail_databases', 'databases', (r) => ({
+    name: r.name, arn: r.arn, engine: r.engine, engineVersion: r.engine_version, bundle: r.bundle,
+    ramGb: r.ram_gb, diskGb: r.disk_gb, state: r.state, az: r.az, endpoint: r.master_endpoint,
+    port: r.port, backupRetention: !!r.backup_retention, publiclyAccessible: !!r.publicly_accessible,
+    latestRestorableAt: r.latest_restorable_at, createdAt: r.created_at, account: r.account_name,
+  })],
+  ['disks', 'aws_lightsail_disks', 'disks', (r) => ({
+    name: r.name, arn: r.arn, sizeGb: r.size_gb, state: r.state, attachedTo: r.attached_to,
+    attachmentState: r.attachment_state, isSystemDisk: !!r.is_system_disk, iops: r.iops, az: r.az,
+    createdAt: r.created_at, account: r.account_name,
+  })],
+  ['buckets', 'aws_lightsail_buckets', 'buckets', (r) => ({
+    name: r.name, arn: r.arn, bundle: r.bundle, state: r.state, objectVersioning: r.object_versioning,
+    publicRead: !!r.read_only_access, ableToUpdateBundle: !!r.able_to_update_bundle, url: r.url,
+    createdAt: r.created_at, account: r.account_name,
+  })],
+  ['load-balancers', 'aws_lightsail_load_balancers', 'loadBalancers', (r) => ({
+    name: r.name, arn: r.arn, dnsName: r.dns_name, state: r.state, protocol: r.protocol,
+    instancePort: r.instance_port, healthCheckPath: r.health_check_path,
+    attachedInstances: jsonList(r.attached_instances), healthyCount: r.healthy_count ?? 0,
+    unhealthyCount: r.unhealthy_count ?? 0, tlsCertName: r.tls_cert_name,
+    tlsCertAttached: !!r.tls_cert_attached, az: r.az, createdAt: r.created_at, account: r.account_name,
+  })],
+  ['distributions', 'aws_lightsail_distributions', 'distributions', (r) => ({
+    name: r.name, arn: r.arn, status: r.status, isEnabled: !!r.is_enabled, domainName: r.domain_name,
+    originName: r.origin_name, originRegion: r.origin_region, bundle: r.bundle, certName: r.cert_name,
+    alternativeDomains: jsonList(r.alternative_domains), createdAt: r.created_at, account: r.account_name,
+  })],
+  ['domains', 'aws_lightsail_domains', 'domains', (r) => ({
+    name: r.name, arn: r.arn, entryCount: r.entry_count ?? 0, createdAt: r.created_at, account: r.account_name,
+  })],
+  ['static-ips', 'aws_lightsail_static_ips', 'staticIps', (r) => ({
+    name: r.name, arn: r.arn, ipAddress: r.ip_address, isAttached: !!r.is_attached,
+    attachedTo: r.attached_to, az: r.az, createdAt: r.created_at, account: r.account_name,
+  })],
+];
+
+/** GET /api/aws/lightsail/summary — counts per family plus the things worth a look. */
+router.get('/lightsail/summary', [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const accountId = req.query.accountId;
+    const W = accountId ? ' WHERE account_id = ?' : '';
+    const A = accountId ? ' AND account_id = ?' : '';
+    const args = accountId ? [accountId] : [];
+    const n = (sql) => db.prepare(sql).get(...args).n || 0;
+    res.json({
+      instances: n(`SELECT COUNT(*) AS n FROM aws_lightsail_instances${W}`),
+      instancesRunning: n(`SELECT COUNT(*) AS n FROM aws_lightsail_instances WHERE state = 'running'${A}`),
+      databases: n(`SELECT COUNT(*) AS n FROM aws_lightsail_databases${W}`),
+      disks: n(`SELECT COUNT(*) AS n FROM aws_lightsail_disks${W}`),
+      buckets: n(`SELECT COUNT(*) AS n FROM aws_lightsail_buckets${W}`),
+      loadBalancers: n(`SELECT COUNT(*) AS n FROM aws_lightsail_load_balancers${W}`),
+      distributions: n(`SELECT COUNT(*) AS n FROM aws_lightsail_distributions${W}`),
+      domains: n(`SELECT COUNT(*) AS n FROM aws_lightsail_domains${W}`),
+      staticIps: n(`SELECT COUNT(*) AS n FROM aws_lightsail_static_ips${W}`),
+      unattachedDisks: n(`SELECT COUNT(*) AS n FROM aws_lightsail_disks WHERE COALESCE(is_system_disk, 0) = 0 AND COALESCE(attachment_state, '') != 'attached'${A}`),
+      unattachedStaticIps: n(`SELECT COUNT(*) AS n FROM aws_lightsail_static_ips WHERE COALESCE(is_attached, 0) = 0${A}`),
+      publicBuckets: n(`SELECT COUNT(*) AS n FROM aws_lightsail_buckets WHERE read_only_access = 1${A}`),
+      databasesWithoutBackups: n(`SELECT COUNT(*) AS n FROM aws_lightsail_databases WHERE COALESCE(backup_retention, 0) = 0${A}`),
+      loadBalancersUnhealthy: n(`SELECT COUNT(*) AS n FROM aws_lightsail_load_balancers WHERE COALESCE(unhealthy_count, 0) > 0${A}`),
+    });
+  } catch (err) { next(err); }
+});
+
+for (const [path, table, key, mapRow] of LIGHTSAIL_FAMILIES) {
+  /** GET /api/aws/lightsail/<family> — one Lightsail inventory family (?accountId= narrows). */
+  router.get(`/lightsail/${path}`, [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
+    try {
+      const accountId = req.query.accountId;
+      const rows = db.prepare(`
+        SELECT t.*, a.name AS account_name FROM ${table} t
+        JOIN aws_accounts a ON a.id = t.account_id
+        ${accountId ? 'WHERE t.account_id = ?' : ''} ORDER BY a.name, t.name
+      `).all(...(accountId ? [accountId] : []));
+      res.json({ [key]: rows.map(mapRow) });
+    } catch (err) { next(err); }
+  });
+}
 
 /** GET /api/aws/ecs — clusters + services across all accounts. */
 router.get('/ecs', (req, res, next) => {
@@ -819,12 +915,35 @@ router.get('/costs/usage-types', [
       WHERE 1=1 ${daySql} ${acctSql} ${svcSql}
       GROUP BY service, usage_type ORDER BY total_usd DESC LIMIT 60
     `).all(...dayArg, ...acctArg, ...svcArg);
+    // Exact objects from resource-level billing when captured for the window, else the derived match.
+    const billingSql = `
+      SELECT resource_id, SUM(amount_usd) AS total_usd FROM aws_cost_resource_usage_daily
+      WHERE usage_type = ? ${daySql} ${acctSql}
+      GROUP BY resource_id ORDER BY total_usd DESC
+    `;
+    const objectsFor = (r) => {
+      let billed = [];
+      try { billed = db.prepare(billingSql).all(r.usage_type, ...dayArg, ...acctArg); } catch { billed = []; }
+      if (billed.length) {
+        return {
+          objectsMode: 'billing',
+          objectCount: billed.length,
+          objects: billed.slice(0, 5).map((b) => {
+            const info = resolveCostResource(b.resource_id, r.service, db, accountId);
+            return { resourceId: b.resource_id, label: info.label, kind: info.kind, link: info.link, totalUsd: b.total_usd || 0 };
+          }),
+        };
+      }
+      const d = usageTypeObjects(r.usage_type, r.service, db, accountId);
+      return { objectsMode: 'inventory', objectCount: d.objectCount, objects: d.objects, objectsRule: d.rule };
+    };
     res.json({
       rows: rows.map((r) => ({
         service: r.service || 'Unattributed (collected before service tagging)',
         usageType: r.usage_type,
         component: r.service === 'Amazon Lightsail' ? lightsailComponent(r.usage_type) : null,
         totalUsd: r.total_usd || 0,
+        ...objectsFor(r),
       })),
     });
   } catch (err) { next(err); }
@@ -834,6 +953,7 @@ router.get('/costs/usage-types', [
  * keeps 14 days). Top 100 resources by total, labelled from the ICC inventory where possible. */
 router.get('/costs/resources', [
   query('service').optional().isString().trim().isLength({ min: 1, max: 200 }),
+  query('usageType').optional().isString().trim().isLength({ min: 1, max: 200 }),
   query('accountId').optional().isInt().toInt(),
   query('days').optional().isInt().toInt(),
   query('day').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
@@ -841,17 +961,32 @@ router.get('/costs/resources', [
   try {
     const days = Math.min(14, Math.max(1, req.query.days || 14));
     const accountId = req.query.accountId;
-    const { service, day } = req.query;
+    const { service, day, usageType } = req.query;
     const where = ['1=1'];
     const args = [];
     if (day) { where.push('day = ?'); args.push(day); } else { where.push("day >= date('now', ?)"); args.push(`-${days} days`); }
     if (accountId) { where.push('account_id = ?'); args.push(accountId); }
-    if (service) { where.push('service = ?'); args.push(service); }
-    const rows = db.prepare(`
-      SELECT service, resource_id, SUM(amount_usd) AS total_usd FROM aws_cost_resource_daily
-      WHERE ${where.join(' AND ')}
-      GROUP BY service, resource_id ORDER BY total_usd DESC LIMIT 100
-    `).all(...args);
+    let rows;
+    if (usageType) {
+      // Exact: resource ids billed under this usage type. The service comes from the usage rows.
+      where.push('usage_type = ?'); args.push(usageType);
+      const svc = db.prepare(`
+        SELECT service FROM aws_cost_usage_daily WHERE usage_type = ? AND service IS NOT NULL
+        ${accountId ? 'AND account_id = ?' : ''} ORDER BY day DESC LIMIT 1
+      `).get(usageType, ...(accountId ? [accountId] : []));
+      rows = db.prepare(`
+        SELECT resource_id, SUM(amount_usd) AS total_usd FROM aws_cost_resource_usage_daily
+        WHERE ${where.join(' AND ')}
+        GROUP BY resource_id ORDER BY total_usd DESC LIMIT 100
+      `).all(...args).map((r) => ({ ...r, service: svc?.service || null }));
+    } else {
+      if (service) { where.push('service = ?'); args.push(service); }
+      rows = db.prepare(`
+        SELECT service, resource_id, SUM(amount_usd) AS total_usd FROM aws_cost_resource_daily
+        WHERE ${where.join(' AND ')}
+        GROUP BY service, resource_id ORDER BY total_usd DESC LIMIT 100
+      `).all(...args);
+    }
     const end = new Date().toISOString().slice(0, 10);
     const start = day || new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
     res.json({
