@@ -52,7 +52,7 @@ const exact = (name) => (Array.isArray(name) ? name.map((n) => `^${n}$`) : `^${n
 // Bump whenever a regex below changes. pollMetrics drops every learned
 // dsColumns/dsUnmatched map when a source's stored catalogVersion differs, so
 // the next poll relearns with the corrected matchers.
-const CATALOG_VERSION = 5; // 5: round 12 exact Palo Alto picks (cpu_pct_used, mem_pct_used, cur_temp, alarms), Ping, Cisco_NTP, F5 memory and interfaces; 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
+const CATALOG_VERSION = 6; // 6: exact ISE, Zscaler ZPA and SBC picks (mem_used_percent, TotalUtilization, utilizationPercent); 5: round 12 exact Palo Alto picks (cpu_pct_used, mem_pct_used, cur_temp, alarms), Ping, Cisco_NTP, F5 memory and interfaces; 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
 
 const CATALOG = [];
 const add = (family, match, label, metrics, opts = {}) => {
@@ -505,13 +505,19 @@ add('voice', /^Cisco_SIP_/i, 'Cisco SIP', {
   sip_traffic_in: counter([noRaw('in(bound)?.?(traffic|bytes|msgs?|messages?)|traffic.?in|received')], 'msgs', 'Traffic in'),
   sip_traffic_out: counter([noRaw('out(bound)?.?(traffic|bytes|msgs?|messages?)|traffic.?out|sent')], 'msgs', 'Traffic out'),
 }, { history: true });
+// Round 12: verified on the live portal. The CPU and memory DataSources each carry one
+// datapoint, utilizationPercent, which the generic SBC regexes below never matched.
+add('voice', 'ntm_sbc_cpu_utilization', 'SBC CPU', { sbc_cpu_pct: pct(exact('utilizationPercent'), 'CPU') }, { history: true });
+add('voice', 'ntm_sbc_memory_utilization', 'SBC memory', { sbc_mem_pct: pct(exact('utilizationPercent'), 'Memory') }, { history: true });
 add('voice', /^ntm_sbc_/i, 'SBC', {
   sbc_cpu_pct: pct(['cpu'], 'CPU'),
   sbc_mem_pct: pct(['mem'], 'Memory'),
   sbc_fan_state: state(['fan'], 'Fan state'),
   sbc_psu_state: state(['psu', 'power'], 'PSU state'),
   sbc_temp_c: gauge(['temp'], 'C', 'Temperature'),
-  sbc_health_state: state(['health'], 'Health state'),
+  // ntm_sbc_system_health carries systemState (1 = up) and healthScorePercent (100 = healthy).
+  sbc_health_state: state(exact(['systemState', 'healthState']), 'Health state'),
+  sbc_health_pct: pct(exact('healthScorePercent'), 'Health score'),
   sbc_retransmissions: counter(['retrans'], 'pkts', 'Retransmissions'),
   sbc_local_connection_state: state(['local.?conn', 'connection.?state'], 'Local connection state'),
 });
@@ -775,28 +781,42 @@ add('voice', 'ntm_ganc_ise_radius_check', 'GANC ISE RADIUS check', {
 add('security', 'Cisco_ISE_ServerSessions', 'Cisco ISE sessions', {
   sessions: gauge(['session', 'active'], 'sessions', 'Active sessions'),
 }, { history: true });
+// Cisco_ISE_Disk has no usage percent on this portal (bytes read and written, request
+// counts and load averages per disk), so the disk column stays a dash until one appears.
 add('security', 'Cisco_ISE_Disk', 'Cisco ISE disk', {
-  disk_used_pct: pct(['percent', 'used', 'util'], 'Disk used'),
+  disk_used_pct: pct(exact(['percent_used', 'used_percent', 'disk_used_percent']), 'Disk used'),
+  disk_load_1m: gauge(exact('disk_load_avg_1m'), '', 'Disk load 1 min'),
 }, { maxInstances: 400 });
 add('security', 'ntm_ise_application_and_certificate_status', 'ISE application and certificates', {
-  app_state: state(['app', 'status'], 'Application state'),
+  app_state: state(exact('Application_Server'), 'Application state'),
+  ca_state: state(exact('Certificate_Authority_Service'), 'Certificate authority state'),
   cert_days: gauge(['days', 'expir'], 'days', 'Certificate days left'),
 });
 add('security', 'ntm_cisco_ise_eap_certificate', 'ISE EAP certificate', {
   eap_cert_days: gauge(['days', 'expir'], 'days', 'EAP certificate days left'),
 });
+// Round 12: verified on the live portal (16 ISE nodes). The memory regex had learned
+// mem_used (kilobytes, 58,637,040) which the Identity Services page showed as a percent.
 add('security', 'ntm_deployment_nodes_status', 'ISE deployment nodes', {
-  node_state: state(['status', 'state'], 'Deployment node state'),
+  node_state: state(exact('nodeStatus'), 'Deployment node state'),
 });
 add('security', 'ntm_cisco_ise_memory_cpu', 'ISE memory and CPU', {
-  cpu_pct: pct(['cpu'], 'CPU'),
-  mem_pct: pct(['mem'], 'Memory'),
+  cpu_pct: pct(exact('cpu_used_percent'), 'CPU'),
+  mem_pct: pct(exact('mem_used_percent'), 'Memory'),
+  swap_pct: pct(exact('swap_used_percent'), 'Swap used'),
+  load_5min: gauge(exact('load_5min'), '', 'Load 5 min'),
 }, { history: true });
 add('security', 'ntm_zpa_app_connector', 'Zscaler ZPA app connector', {
   connector_state: state(['status', 'state', 'health'], 'Connector state'),
 });
+// Round 12: verified on the live portal. The old regex learned UDPPortsUsed (a count of 5);
+// the percent datapoints are TotalUtilization, TCPUtilization and UDPUtilization.
 add('security', 'Zscaler ZPA Port Exhaustion', 'Zscaler ZPA port exhaustion', {
-  port_used_pct: pct(['percent', 'used', 'exhaust'], 'Ports used'),
+  port_used_pct: pct(exact('TotalUtilization'), 'Ports used'),
+  tcp_util_pct: pct(exact('TCPUtilization'), 'TCP ports used'),
+  udp_util_pct: pct(exact('UDPUtilization'), 'UDP ports used'),
+  ports_used: gauge(exact('TotalPortsUsed'), 'ports', 'Ports in use'),
+  ports_available: gauge(exact('AvailablePorts'), 'ports', 'Ports available'),
 }, { history: true });
 add('security', 'ntm_zpa_ntp_time_sync', 'Zscaler ZPA NTP sync', {
   ntp_offset: gauge(['offset', 'drift'], 's', 'NTP offset'),

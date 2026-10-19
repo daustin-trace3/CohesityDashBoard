@@ -151,9 +151,11 @@ export default function Layout() {
     }
   }, [navPlatformKey]);
 
-  const toggleNavGroup = (label) => {
+  // A group with defaultCollapsed starts closed until the user opens it (or holds the
+  // active page); the stored choice wins once the user has clicked it.
+  const toggleNavGroup = (label, defaultCollapsed = false) => {
     setOpenGroups(prev => {
-      const isOpen = prev[label] !== false;
+      const isOpen = prev[label] == null ? !defaultCollapsed : prev[label] !== false;
       const next = { ...prev, [label]: !isOpen };
       localStorage.setItem(`nav-open:${navPlatformKey}`, JSON.stringify(next));
       return next;
@@ -162,6 +164,27 @@ export default function Layout() {
 
   const { user, logout, hasPermission, loading: authLoading } = useAuth();
   const aiEnabled = useAiEnabled();
+
+  // LogicMonitor pages that exist only for a metric family (Voice, Zscaler, Identity
+  // Services, Applications, Firewalls, Load Balancers, Wireless) hide when every portal
+  // has that family unticked under Settings > Scope. Null families means all collected.
+  const [lmFamiliesOff, setLmFamiliesOff] = useState(() => new Set());
+  useEffect(() => {
+    if (!isLogicmonitor) return undefined;
+    let cancelled = false;
+    client.get('/logicmonitor/sources')
+      .then(({ data }) => {
+        if (cancelled) return;
+        const rows = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : []);
+        const lists = rows.map((s) => (Array.isArray(s?.metricsFamilies) ? s.metricsFamilies : null));
+        if (!lists.length || lists.some((l) => l == null)) { setLmFamiliesOff(new Set()); return; }
+        const union = new Set(lists.flat());
+        const all = ['firewall', 'loadbalancer', 'health', 'optics', 'routing', 'ipsla', 'voice', 'wireless', 'cloud', 'cohesity', 'security', 'os', 'apps'];
+        setLmFamiliesOff(new Set(all.filter((f) => !union.has(f))));
+      })
+      .catch(() => { if (!cancelled) setLmFamiliesOff(new Set()); });
+    return () => { cancelled = true; };
+  }, [isLogicmonitor, pathname]);
 
   const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)))];
   const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity');
@@ -497,6 +520,7 @@ export default function Layout() {
       ...group,
       items: group.items.filter(item =>
         (!item.requiresAi || aiEnabled)
+        && (!item.requiresFamily || !lmFamiliesOff.has(item.requiresFamily))
         && (!item.requiresCustomDashboards || customDashboardsEnabled)
         && (authLoading || hasPermission(requiredNavPermission(navPlatformKey, item)))),
     }))
@@ -531,13 +555,13 @@ export default function Layout() {
         <nav className="flex-1 overflow-y-auto py-3 flex flex-col gap-4" aria-label="Primary">
           {activeNavGroups.map(group => {
             const groupHasActiveItem = group.items.some(item => item.isActive(pathname));
-            const groupOpen = collapsed || groupHasActiveItem || openGroups[group.label] !== false;
+            const groupOpen = collapsed || groupHasActiveItem || (openGroups[group.label] == null ? !group.defaultCollapsed : openGroups[group.label] !== false);
             return (
             <div key={group.label}>
               {!collapsed && (
                 <button
                   type="button"
-                  onClick={() => toggleNavGroup(group.label)}
+                  onClick={() => toggleNavGroup(group.label, !!group.defaultCollapsed)}
                   className="w-full flex items-center justify-between gap-1 px-4 mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-ink-faint select-none cursor-pointer hover:text-ink transition-colors"
                 >
                   <span className="truncate">{group.label}</span>

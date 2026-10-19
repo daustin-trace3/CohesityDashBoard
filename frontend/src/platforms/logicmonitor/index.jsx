@@ -51,35 +51,39 @@ const navGroups = [
   },
   {
     label: 'Inventory',
+    defaultCollapsed: true,
     items: [
       { label: 'Devices', route: `${B}/devices`, icon: Server, isActive: under(`${B}/devices`) },
       { label: 'Interfaces', route: `${B}/interfaces`, icon: Cable, isActive: under(`${B}/interfaces`) },
       { label: 'Circuits', route: `${B}/circuits`, icon: Waypoints, isActive: under(`${B}/circuits`) },
-      { label: 'Firewalls', route: `${B}/firewalls`, icon: BrickWall, isActive: under(`${B}/firewalls`) },
-      { label: 'Load Balancers', route: `${B}/load-balancers`, icon: Split, isActive: under(`${B}/load-balancers`) },
+      { label: 'Firewalls', route: `${B}/firewalls`, icon: BrickWall, isActive: under(`${B}/firewalls`), requiresFamily: 'firewall' },
+      { label: 'Load Balancers', route: `${B}/load-balancers`, icon: Split, isActive: under(`${B}/load-balancers`), requiresFamily: 'loadbalancer' },
     ],
   },
   {
     label: 'Wireless',
+    defaultCollapsed: true,
     items: [
-      { label: 'Wireless Overview', route: `${B}/wireless`, icon: Wifi, isActive: (p) => p === `${B}/wireless` },
-      { label: 'Controllers', route: `${B}/wireless/controllers`, icon: RadioTower, isActive: under(`${B}/wireless/controllers`) },
-      { label: 'Access Points', route: `${B}/wireless/aps`, icon: Wifi, isActive: under(`${B}/wireless/aps`) },
-      { label: 'RF Analytics', route: `${B}/wireless/rf`, icon: Radio, isActive: under(`${B}/wireless/rf`) },
-      { label: 'SSIDs & Clients', route: `${B}/wireless/ssids`, icon: Users, isActive: under(`${B}/wireless/ssids`) },
+      { label: 'Wireless Overview', route: `${B}/wireless`, icon: Wifi, isActive: (p) => p === `${B}/wireless`, requiresFamily: 'wireless' },
+      { label: 'Controllers', route: `${B}/wireless/controllers`, icon: RadioTower, isActive: under(`${B}/wireless/controllers`), requiresFamily: 'wireless' },
+      { label: 'Access Points', route: `${B}/wireless/aps`, icon: Wifi, isActive: under(`${B}/wireless/aps`), requiresFamily: 'wireless' },
+      { label: 'RF Analytics', route: `${B}/wireless/rf`, icon: Radio, isActive: under(`${B}/wireless/rf`), requiresFamily: 'wireless' },
+      { label: 'SSIDs & Clients', route: `${B}/wireless/ssids`, icon: Users, isActive: under(`${B}/wireless/ssids`), requiresFamily: 'wireless' },
     ],
   },
   {
     label: 'Services',
+    defaultCollapsed: true,
     items: [
-      { label: 'Voice', route: `${B}/voice`, icon: Phone, isActive: under(`${B}/voice`) },
-      { label: 'Zscaler', route: `${B}/zscaler`, icon: Cloud, isActive: under(`${B}/zscaler`) },
-      { label: 'Identity Services', route: `${B}/ise`, icon: Fingerprint, isActive: under(`${B}/ise`) },
-      { label: 'Applications', route: `${B}/applications`, icon: AppWindow, isActive: under(`${B}/applications`) },
+      { label: 'Voice', route: `${B}/voice`, icon: Phone, isActive: under(`${B}/voice`), requiresFamily: 'voice' },
+      { label: 'Zscaler', route: `${B}/zscaler`, icon: Cloud, isActive: under(`${B}/zscaler`), requiresFamily: 'security' },
+      { label: 'Identity Services', route: `${B}/ise`, icon: Fingerprint, isActive: under(`${B}/ise`), requiresFamily: 'security' },
+      { label: 'Applications', route: `${B}/applications`, icon: AppWindow, isActive: under(`${B}/applications`), requiresFamily: 'apps' },
     ],
   },
   {
     label: 'Analytics',
+    defaultCollapsed: true,
     items: [
       { label: 'Governance', route: `${B}/governance`, icon: Scale, isActive: under(`${B}/governance`) },
       { label: 'Coverage', route: `${B}/coverage`, icon: ShieldAlert, isActive: under(`${B}/coverage`) },
@@ -89,6 +93,7 @@ const navGroups = [
   },
   {
     label: 'System',
+    defaultCollapsed: true,
     items: [
       { label: 'Privacy Inspector', route: `${B}/privacy`, icon: ShieldCheck, isActive: under(`${B}/privacy`), requiresAi: true },
       { label: 'Settings', route: `${B}/settings`, icon: Settings, isActive: under(`${B}/settings`) },

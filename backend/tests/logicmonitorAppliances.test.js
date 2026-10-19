@@ -59,7 +59,7 @@ describe('catalog', () => {
       'ntm_deployment_nodes_status', 'ntm_cisco_ise_memory_cpu', 'ntm_zpa_app_connector', 'Zscaler ZPA Port Exhaustion', 'ntm_zpa_ntp_time_sync', 'ntm_asa_license_authorization']) {
       expect(catalog.catalogFor(name)?.family, name).toBe('security');
     }
-    expect(Object.keys(catalog.catalogFor('ntm_cisco_ise_memory_cpu').metrics)).toEqual(['cpu_pct', 'mem_pct']);
+    expect(Object.keys(catalog.catalogFor('ntm_cisco_ise_memory_cpu').metrics)).toEqual(['cpu_pct', 'mem_pct', 'swap_pct', 'load_5min']);
   });
 
   it('gives the SBC steering pools and the GANC checks voice entries, and keeps the other SBC DataSources on the loose entry', () => {
@@ -74,12 +74,19 @@ describe('catalog', () => {
     expect(catalog.catalogFor('Cisco_SIP_Client_Errors').history).toBe(true);
   });
 
-  it('claims ISE certificate days and ZPA port use by loose datapoint names', () => {
+  it('claims the ISE, ZPA and SBC datapoints by their live names (round 12, CGSandBox)', () => {
     const { parseDsBody } = require('../services/logicmonitorMetrics');
-    const ise = parseDsBody({ dataPoints: ['AdminCertDaysLeft', 'AppStatus'], instances: {} }, catalog.catalogFor('ntm_ise_application_and_certificate_status'));
-    expect(ise.learned).toMatchObject({ cert_days: 'AdminCertDaysLeft', app_state: 'AppStatus' });
-    const zpa = parseDsBody({ dataPoints: ['PortsUsedPercent'], instances: {} }, catalog.catalogFor('Zscaler ZPA Port Exhaustion'));
-    expect(zpa.learned).toMatchObject({ port_used_pct: 'PortsUsedPercent' });
+    const ise = parseDsBody({ dataPoints: ['Application_Server', 'Certificate_Authority_Service'], instances: {} }, catalog.catalogFor('ntm_ise_application_and_certificate_status'));
+    expect(ise.learned).toMatchObject({ app_state: 'Application_Server', ca_state: 'Certificate_Authority_Service' });
+    // The memory regex used to learn mem_used (kilobytes) and show it as a percent.
+    const mem = parseDsBody({ dataPoints: ['cpu_used_percent', 'mem_used', 'mem_used_percent', 'mem_total', 'swap_used_percent', 'load_5min'], instances: {} }, catalog.catalogFor('ntm_cisco_ise_memory_cpu'));
+    expect(mem.learned).toMatchObject({ cpu_pct: 'cpu_used_percent', mem_pct: 'mem_used_percent', swap_pct: 'swap_used_percent' });
+    const zpa = parseDsBody({ dataPoints: ['UDPPortsUsed', 'TotalPortsUsed', 'TotalUtilization', 'TCPUtilization', 'AvailablePorts'], instances: {} }, catalog.catalogFor('Zscaler ZPA Port Exhaustion'));
+    expect(zpa.learned).toMatchObject({ port_used_pct: 'TotalUtilization', tcp_util_pct: 'TCPUtilization', ports_used: 'TotalPortsUsed' });
+    const sbc = parseDsBody({ dataPoints: ['utilizationPercent'], instances: {} }, catalog.catalogFor('ntm_sbc_memory_utilization'));
+    expect(sbc.learned).toMatchObject({ sbc_mem_pct: 'utilizationPercent' });
+    const nodes = parseDsBody({ dataPoints: ['nodeStatus'], instances: {} }, catalog.catalogFor('ntm_deployment_nodes_status'));
+    expect(nodes.learned).toMatchObject({ node_state: 'nodeStatus' });
   });
 });
 
