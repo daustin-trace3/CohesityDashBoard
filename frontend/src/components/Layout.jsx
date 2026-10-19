@@ -7,7 +7,8 @@ import {
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
 import UpdateBanner from './UpdateBanner';
-import { SyncStatusChip, LastUpdated } from './ui/primitives';
+import { LastUpdated } from './ui/primitives';
+import PollerStatusPanel from './PollerStatusPanel';
 import { subscribeNetworkActivity } from '../api/client';
 import { usePollerStatus } from '../api/usePollerStatus';
 import client from '../api/client';
@@ -193,24 +194,28 @@ export default function Layout() {
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
-  const { status: pollerStatus, anySyncing, anyStale, anyError, anyDelayed, hasEntities, newestCapture } = usePollerStatus(isOps ? 'all' : (platformKey || 'cohesity'));
+  const syncScope = isOps ? 'all' : (platformKey || 'cohesity');
+  const { status: pollerStatus, refetch: refetchPoller, anySyncing, anyStale, anyError, anyDelayed, hasEntities, newestCapture } = usePollerStatus(syncScope);
   // What the pill is actually reporting. Error sticks until that source polls
   // cleanly again, so the tooltip has to name it or the pill says nothing.
+  // Scoped to the same platform the chip rolls up (every platform on Ops).
   const syncDetail = useMemo(() => {
     const failed = []; const stale = [];
+    const prefix = (id) => (syncScope === 'all' ? `${id}: ` : '');
     for (const [id, p] of Object.entries(pollerStatus || {})) {
       if (!p || p.enabled === false) continue;
+      if (syncScope !== 'all' && id !== syncScope && !(syncScope === 'cohesity' && id === 'licensing')) continue;
       for (const e of (p.entities || [])) {
-        if (e.lastPollStatus === 'error') failed.push(`${id}: ${e.name || `source ${e.id}`}`);
-        else if (e.isStale) stale.push(`${id}: ${e.name || `source ${e.id}`}`);
+        if (e.lastPollStatus === 'error') failed.push(`${prefix(id)}${e.name || `source ${e.id}`}`);
+        else if (e.isStale) stale.push(`${prefix(id)}${e.name || `source ${e.id}`}`);
       }
-      for (const s of (p.failedSources || [])) failed.push(`${id}: ${s.name || s}`);
+      for (const s of (p.failedSources || [])) failed.push(`${prefix(id)}${s.name || s}`);
     }
     const list = (a) => a.slice(0, 6).join(', ') + (a.length > 6 ? ` and ${a.length - 6} more` : '');
     if (failed.length) return `Last poll failed for ${failed.length} source${failed.length === 1 ? '' : 's'} (${list(failed)}). It stays on Error until each one polls cleanly. Service Status has the detail.`;
     if (stale.length) return `${stale.length} source${stale.length === 1 ? ' has' : 's have'} not reported inside their polling interval (${list(stale)}).`;
     return 'Every polled source reported cleanly on its last run.';
-  }, [pollerStatus]);
+  }, [pollerStatus, syncScope]);
 
   // Ops Monitor header: estate-wide figures from /ops/summary (platform count,
   // critical across every managed platform) instead of the Cohesity feed.
@@ -705,9 +710,15 @@ export default function Layout() {
             {/* Poller / network sync status — scoped to the active platform;
                 hidden when that platform has nothing registered */}
             {((pollerStatus && hasEntities) || networkSyncing) && (
-              <span className="hidden sm:inline-flex flex-shrink-0" title={syncDetail}>
-                <SyncStatusChip
-                  state={networkSyncing || anySyncing ? 'syncing' : anyDelayed ? 'delayed' : anyError ? 'error' : anyStale ? 'stale' : 'live'}
+              <span className="hidden sm:inline-flex flex-shrink-0">
+                <PollerStatusPanel
+                  chipState={networkSyncing || anySyncing ? 'syncing' : anyDelayed ? 'delayed' : anyError ? 'error' : anyStale ? 'stale' : 'live'}
+                  title={syncDetail}
+                  status={pollerStatus}
+                  scope={syncScope}
+                  labelFor={(id) => platforms.find(p => p.id === id)?.label || id}
+                  hasPermission={hasPermission}
+                  refetch={refetchPoller}
                 />
               </span>
             )}

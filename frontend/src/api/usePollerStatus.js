@@ -79,6 +79,7 @@ function rollup(status, platform = 'cohesity') {
 export function usePollerStatus(platform = 'cohesity') {
   const [status, setStatus] = useState(null);
   const timerRef = useRef(null);
+  const refetchRef = useRef(() => {});
 
   useEffect(() => {
     let cancelled = false;
@@ -92,6 +93,7 @@ export function usePollerStatus(platform = 'cohesity') {
         // fail soft — 404 or network error leaves status as-is
       }
     }
+    refetchRef.current = fetch;
 
     fetch();
     timerRef.current = setInterval(fetch, POLL_INTERVAL_MS);
@@ -108,5 +110,5 @@ export function usePollerStatus(platform = 'cohesity') {
     };
   }, []);
 
-  return { status, ...rollup(status, platform) };
+  return { status, refetch: () => refetchRef.current(), ...rollup(status, platform) };
 }

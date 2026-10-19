@@ -4,6 +4,8 @@ const { pollCluster } = require('../services/poller');
 const { listProtectionGroupsV2, getProtectionGroupRunsV2 } = require('../services/cohesityApi');
 const pollerStatus = require('../services/pollerStatus');
 const registry = require('../core/registry');
+const { hasPermission } = require('../services/rbac');
+const logger = require('../utils/logger');
 const { getSetting } = require('../services/settings');
 const router = express.Router();
 
@@ -72,8 +74,27 @@ router.get('/status', (req, res, next) => {
       return Math.round((now - ms) / 60000);
     }
 
+    // Source tables that carry a last_poll_error column (checked once per request).
+    const errorColCache = new Map();
+    function hasErrorColumn(table) {
+      if (!table || !/^[a-z0-9_]+$/i.test(table)) return false;
+      if (!errorColCache.has(table)) {
+        let has = false;
+        try { has = db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === 'last_poll_error'); } catch { /* table missing */ }
+        errorColCache.set(table, has);
+      }
+      return errorColCache.get(table);
+    }
+    function lastErrorOf(table, id) {
+      if (!hasErrorColumn(table)) return null;
+      try {
+        const r = db.prepare(`SELECT last_poll_error FROM ${table} WHERE id = ?`).get(id);
+        return (r && r.last_poll_error) || null;
+      } catch { return null; }
+    }
+
     // Helper: build entity array from a table.
-    function buildEntities(rows, metricsQuery, type) {
+    function buildEntities(rows, metricsQuery, type, table) {
       return rows.map(row => {
         const metricsRow = db.prepare(metricsQuery).get(row.id);
         const lastDataCapture = metricsRow
@@ -95,6 +116,8 @@ router.get('/status', (req, res, next) => {
           lastDataCapture,
           ageMinutes: age,
           isStale: age !== null ? age > interval * 2 + 5 : false,
+          staleAfterMinutes: interval * 2 + 5,
+          lastPollError: lastErrorOf(table, row.id),
         };
       });
     }
@@ -110,7 +133,8 @@ router.get('/status', (req, res, next) => {
     const cohesityEntities = buildEntities(
       clusters,
       'SELECT captured_at FROM metrics_history WHERE cluster_id = ? ORDER BY captured_at DESC LIMIT 1',
-      'cohesity'
+      'cohesity',
+      'clusters'
     );
 
     // Registry-driven platform plugins (pure, netapp): entities + enabled
@@ -124,7 +148,8 @@ router.get('/status', (req, res, next) => {
       const entities = buildEntities(
         arrays,
         `SELECT ${tsColumn} AS captured_at FROM ${cfg.metricsTable} WHERE ${cfg.arrayIdColumn} = ? ORDER BY ${tsColumn} DESC LIMIT 1`,
-        pluginId
+        pluginId,
+        cfg.arraysTable
       );
       platformSections[pluginId] = {
         enabled: plugin ? plugin.enabled : false,
@@ -151,6 +176,7 @@ router.get('/status', (req, res, next) => {
         lastDataCapture: strftime(pure1Capture),
         ageMinutes: pure1Age,
         isStale: pure1Age !== null ? pure1Age > pure1Interval * 2 + 5 : false,
+        staleAfterMinutes: pure1Interval * 2 + 5,
         failedSources: pure1State.lastPollStatus === 'error' ? [{ name: 'Pure1' }] : [],
       };
     }
@@ -199,6 +225,7 @@ router.get('/status', (req, res, next) => {
         lastDataCapture: strftime(licenseCapture),
         ageMinutes: licenseAge,
         isStale: licenseAge !== null ? licenseAge > licensingInterval * 2 + 5 : false,
+        staleAfterMinutes: licensingInterval * 2 + 5,
         failedSources: [],
       },
       views: {
@@ -208,6 +235,7 @@ router.get('/status', (req, res, next) => {
         lastDataCapture: strftime(viewsCapture),
         ageMinutes: viewsAge,
         isStale: viewsAge !== null ? viewsAge > licensingInterval * 2 + 5 : false,
+        staleAfterMinutes: licensingInterval * 2 + 5,
       },
       zerto: {
         enabled: zertoPlugin ? zertoPlugin.enabled : false,
@@ -216,6 +244,7 @@ router.get('/status', (req, res, next) => {
         lastDataCapture: strftime(zertoCapture),
         ageMinutes: zertoAge,
         isStale: zertoAge !== null ? zertoAge > zertoInterval * 2 + 5 : false,
+        staleAfterMinutes: zertoInterval * 2 + 5,
         failedSources: [],
       },
     });
@@ -575,6 +604,51 @@ router.get('/v2/protection-group-runs-test', async (req, res, next) => {
         numRuns: numRunsInt
       }
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/poller/sources/:platform/:entityId/poll - re-poll one source now.
+ * Gated per platform (cohesity:poller:manage for Cohesity, the same grant its
+ * trigger routes use; <platform>:settings:manage for every other platform, the
+ * grant its Settings page needs). Fire and forget: the framework records the
+ * outcome in poller_status, which the next status fetch reads back.
+ */
+router.post('/sources/:platform/:entityId/poll', (req, res, next) => {
+  try {
+    const { platform } = req.params;
+    if (!/^[a-z0-9_-]{1,40}$/.test(platform) || !/^\d+$/.test(req.params.entityId)) {
+      return res.status(400).json({ error: 'Invalid platform or source id.' });
+    }
+    const entityId = Number(req.params.entityId);
+    if (platform !== 'cohesity' && !registry.getPlugin(platform)) {
+      return res.status(404).json({ error: 'Unknown platform.' });
+    }
+    const required = platform === 'cohesity' ? 'cohesity:poller:manage' : `${platform}:settings:manage`;
+    const grants = (req.auth && req.auth.grants) || [];
+    if (!hasPermission(grants, required)) return res.status(403).json({ error: 'forbidden', required });
+
+    let handle = null;
+    if (platform !== 'cohesity') {
+      handle = registry.getPollerHandle(platform);
+      if (!handle || typeof handle.trigger !== 'function') {
+        return res.status(404).json({ error: 'This platform has no on-demand poll ICC can trigger.' });
+      }
+    }
+    if (pollerStatus.getState(platform, entityId).isSyncing) {
+      return res.status(409).json({ error: 'This source is already polling. Let it finish.' });
+    }
+    let result = 'queued';
+    if (platform === 'cohesity') {
+      require('../services/poller').triggerPoll(entityId).catch((err) => logger.warn(`[poller] manual poll of cohesity #${entityId} failed: ${err.message}`));
+    } else {
+      const r = handle.trigger(entityId);
+      Promise.resolve(r).catch((err) => logger.warn(`[poller] manual poll of ${platform} #${entityId} failed: ${err.message}`));
+      if (typeof r === 'string') result = r;
+    }
+    res.json({ ok: true, platform, entityId, result });
   } catch (err) {
     next(err);
   }
