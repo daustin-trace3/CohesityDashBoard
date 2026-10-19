@@ -1092,7 +1092,7 @@ function listEvents({ platform, date }) {
   const nextDay = new Date(Date.parse(dayStart) + 86400000).toISOString();
   const rows = db.prepare(`
     ${EVENT_SELECT}
-    WHERE sae.platform = ? AND sae.detected_at < ? AND (sae.cleared_at IS NULL OR sae.cleared_at >= ?)
+    WHERE sae.platform = ? AND sae.detected_at < ? AND (sae.cleared_at IS NULL OR sae.cleared_at >= ?)${eventFilterFor()}
     ORDER BY sae.detected_at DESC
   `).all(platform, nextDay, dayStart);
   return rows.map(shapeEventRow);
@@ -1129,10 +1129,19 @@ function getEvent(id) {
   return { ...event, analysis };
 }
 
-function countEventsOnDate(platform, dateStr) {
+// Platform mode (Doug, 2026-10-19): the day dots and the day modal show only ICC's own
+// reachability events (poll: and stale:) plus the app service rows; alert events recorded
+// under the legacy rule stay in the table for the legacy mode but are hidden here.
+const PLATFORM_EVENT_FILTER = " AND (sae.source_key LIKE 'poll:%' OR sae.source_key LIKE 'stale:%' OR sae.platform = 'appservice')";
+
+function eventFilterFor(mode = getMode()) {
+  return mode === 'platform' ? PLATFORM_EVENT_FILTER : '';
+}
+
+function countEventsOnDate(platform, dateStr, mode = getMode()) {
   try {
     const row = db.prepare(
-      "SELECT COUNT(*) AS c FROM service_alert_events WHERE platform = ? AND date(detected_at) = ?"
+      `SELECT COUNT(*) AS c FROM service_alert_events sae WHERE sae.platform = ? AND date(sae.detected_at) = ?${eventFilterFor(mode)}`
     ).get(platform, dateStr);
     return row?.c || 0;
   } catch {
@@ -1142,6 +1151,7 @@ function countEventsOnDate(platform, dateStr) {
 
 function getBoard({ days = 30 } = {}) {
   const clamped = Math.max(7, Math.min(120, Number(days) || 30));
+  const boardMode = getMode();
   const today = new Date();
   const dayStrings = [];
   for (let i = clamped - 1; i >= 0; i -= 1) {
@@ -1163,7 +1173,7 @@ function getBoard({ days = 30 } = {}) {
         lastState = timeline[idx].state;
         idx += 1;
       }
-      dayRows.push({ date: dateStr, state: lastState, events: countEventsOnDate(id, dateStr) });
+      dayRows.push({ date: dateStr, state: lastState, events: countEventsOnDate(id, dateStr, boardMode) });
     }
 
     const lastRow = timeline.length ? timeline[timeline.length - 1] : null;

@@ -614,6 +614,26 @@ describe('platform mode (default)', () => {
     `).run(type, id, at, status);
   }
 
+  it('day dots and the day modal list only reachability events in platform mode', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toISOString();
+    const ins = db.prepare(`
+      INSERT INTO service_alert_events (platform, source_key, severity, host, message, first_seen, detected_at, last_seen_at, cleared_at, analysis_status)
+      VALUES (?, ?, 'critical', ?, ?, ?, ?, ?, NULL, 'pending')
+    `);
+    // An alert-era event (legacy rule) and a reachability event on the same day.
+    ins.run('dell', 'alert:device-7', 'r740-07', 'PSU failed', now, now, now);
+    ins.run('dell', 'poll:3', 'ome-prod', 'ICC could not reach this source', now, now, now);
+    const listed = svc.listEvents({ platform: 'dell', date: today });
+    expect(listed.map((e) => e.sourceKey)).toEqual(['poll:3']);
+    const board = svc.getBoard({ days: 7 });
+    const dell = board.platforms.find((p) => p.id === 'dell');
+    expect(dell.days[dell.days.length - 1].events).toBe(1);
+    // The legacy mode still shows both.
+    setSetting('service_status_mode', 'alerts');
+    expect(svc.listEvents({ platform: 'dell', date: today }).length).toBe(2);
+  });
+
   it('the stored default is platform', () => {
     db.prepare("DELETE FROM app_settings WHERE key = 'service_status_mode'").run();
     expect(require('../services/settings').getServiceStatusSettings().serviceStatusMode).toBe('platform');
