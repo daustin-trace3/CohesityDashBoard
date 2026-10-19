@@ -1,5 +1,5 @@
 import { render, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CircuitMap from './CircuitMap';
 
 vi.mock('../../../api/client', () => ({
@@ -59,6 +59,67 @@ describe('CircuitMap linked and unlinked sites', () => {
     expect(getByRole('tooltip')).toBeTruthy();
     expect(getByText('Open issues (3)')).toBeTruthy();
     expect(getByText('warning hardware-fault: sjcx-core-1 Slot 25')).toBeTruthy();
+  });
+});
+
+beforeEach(() => { try { window.localStorage.clear(); } catch { /* none */ } });
+
+describe('CircuitMap zoom', () => {
+  const pair = () => ({
+    nodes: [node(0), node(1)],
+    edges: [{ key: 's0|s1', a: 's0', b: 's1', state: 'ok', circuits: [] }],
+  });
+  const vbOf = (c) => c.querySelector('svg[viewBox]').getAttribute('viewBox').split(' ').map(Number);
+
+  it('wheel up zooms in (the viewBox shrinks) and Fit restores the default viewBox', () => {
+    const { nodes, edges } = pair();
+    const { container, getByTestId } = render(<CircuitMap nodes={nodes} edges={edges} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    const before = container.querySelector('svg[viewBox]').getAttribute('viewBox');
+    fireEvent.wheel(container.querySelector('svg[viewBox]'), { deltaY: -100, clientX: 300, clientY: 100 });
+    const zoomed = vbOf(container);
+    expect(zoomed[2]).toBeLessThan(1400);
+    fireEvent.click(getByTestId('zoom-fit'));
+    expect(container.querySelector('svg[viewBox]').getAttribute('viewBox')).toBe(before);
+  });
+
+  it('zoom stays between 0.5x and 3x', () => {
+    const { nodes, edges } = pair();
+    const { container } = render(<CircuitMap nodes={nodes} edges={edges} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    for (let i = 0; i < 40; i += 1) fireEvent.wheel(container.querySelector('svg[viewBox]'), { deltaY: -100 });
+    expect(vbOf(container)[2]).toBeCloseTo(1400 / 3, 0);
+    for (let i = 0; i < 80; i += 1) fireEvent.wheel(container.querySelector('svg[viewBox]'), { deltaY: 100 });
+    expect(vbOf(container)[2]).toBeCloseTo(2800, 0);
+  });
+});
+
+describe('CircuitMap drag beyond the base area', () => {
+  const pair = () => ({
+    nodes: [node(0), node(1)],
+    edges: [{ key: 's0|s1', a: 's0', b: 's1', state: 'ok', circuits: [] }],
+  });
+  const nodeG = (getAllByTestId) => getAllByTestId('graph-node').find((x) => x.getAttribute('aria-label').startsWith('Site 0'));
+
+  it('a node dragged to x = 1700 keeps that position', () => {
+    const { nodes, edges } = pair();
+    const moves = [];
+    const { getAllByTestId } = render(<CircuitMap nodes={nodes} edges={edges} onMove={(k, p) => moves.push([k, p])} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    const g = nodeG(getAllByTestId);
+    const x0 = Number(g.getAttribute('data-x'));
+    fireEvent.pointerDown(g, { clientX: 0, clientY: 0, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(g, { clientX: 1700 - x0, clientY: 0, pointerId: 1 });
+    fireEvent.pointerUp(g, { clientX: 1700 - x0, clientY: 0, pointerId: 1 });
+    expect(moves).toHaveLength(1);
+    expect(moves[0][1].x).toBe(1700);
+  });
+
+  it('Fit after a node sits outside the base area yields a viewBox containing it', () => {
+    const { nodes, edges } = pair();
+    const { container, getByTestId } = render(<CircuitMap nodes={nodes} edges={edges} overrides={{ s0: { x: 1700, y: 120 } }} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    fireEvent.click(getByTestId('zoom-fit'));
+    const [x, , w] = container.querySelector('svg[viewBox]').getAttribute('viewBox').split(' ').map(Number);
+    expect(x).toBeLessThanOrEqual(1700 - 60);
+    expect(x + w).toBeGreaterThanOrEqual(1700 + 60);
+    expect(w).toBeGreaterThan(1400);
   });
 });
 

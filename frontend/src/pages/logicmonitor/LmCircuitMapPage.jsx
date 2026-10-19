@@ -42,6 +42,7 @@ export default function LmCircuitMapPage() {
   const [shared, setShared] = useState({});
   const [overrides, setOverrides] = useState(() => readLocal());
   const [savingLayout, setSavingLayout] = useState(false);
+  const [viewReset, setViewReset] = useState(0);
 
   useEffect(() => {
     client.get('/logicmonitor/config')
@@ -77,6 +78,7 @@ export default function LmCircuitMapPage() {
     }
     setOverrides(next);
     writeLocal({});
+    setViewReset((n) => n + 1);
   };
 
   const load = useCallback(() => client.get('/logicmonitor/circuit-map')
@@ -174,7 +176,7 @@ export default function LmCircuitMapPage() {
         <div className="panel p-6 text-sm text-ink-muted text-center">The Circuit Map needs the round 13 backend (GET /logicmonitor/circuit-map answered 404).</div>
       ) : (
         <>
-          <CircuitMap nodes={view.nodes} edges={view.edges} onOpenSite={openSite} onOpenEdge={openEdge} onOpenIssues={openIssues} overrides={overrides} onMove={moveNode} />
+          <CircuitMap nodes={view.nodes} edges={view.edges} onOpenSite={openSite} onOpenEdge={openEdge} onOpenIssues={openIssues} overrides={overrides} onMove={moveNode} resetViewSignal={viewReset} />
           {nodes.length > 0 && edges.length === 0 && (
             <p className="text-[11px] text-ink-muted mt-2">No site links identified yet. A link is a circuit whose far end is another site: a CG tag of p2p, b2b or dci, a topology neighbour at another site, or a description that names it. Force one under Settings, Rules, Circuits.</p>
           )}

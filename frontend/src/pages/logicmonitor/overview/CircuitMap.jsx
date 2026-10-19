@@ -143,6 +143,24 @@ function edgeTip(e, nameOf) {
   return lines;
 }
 
+const VIEW_KEY = 'icc.lm.circuitMap.view';
+const DEFAULT_VIEW = { x: 0, y: 0, z: 1 };
+const Z_MIN = 0.5;
+const Z_MAX = 3;
+const r2 = (n) => Math.round(n * 100) / 100;
+
+function readView() {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(VIEW_KEY) || 'null');
+    if (v && [v.x, v.y, v.z].every(Number.isFinite)) return { x: v.x, y: v.y, z: Math.min(Z_MAX, Math.max(Z_MIN, v.z)) };
+  } catch { /* storage blocked or bad JSON */ }
+  return DEFAULT_VIEW;
+}
+
+function hasSavedView() {
+  try { return window.localStorage.getItem(VIEW_KEY) != null; } catch { return false; }
+}
+
 const CARD_W = 420;
 
 /**
@@ -182,7 +200,7 @@ function PinnedFloat({ anchor, panel, width, children }) {
   );
 }
 
-export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite, onOpenEdge, onOpenIssues = () => {}, overrides = null, onMove = () => {} }) {
+export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite, onOpenEdge, onOpenIssues = () => {}, overrides = null, onMove = () => {}, resetViewSignal = 0 }) {
   const nodes = list(nodesIn);
   const edges = list(edgesIn);
   const wrapRef = useRef(null);
@@ -192,6 +210,20 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
   const dragRef = useRef(null);
   const suppressClick = useRef(false);
   const [live, setLive] = useState(null);
+  // Zoom and pan are the SVG viewBox itself (x, y, zoom), so client rects stay true for tips and pinned cards.
+  const [view, setView] = useState(readView);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const hgRef = useRef(1);
+  const boundsRef = useRef({ x1: 0, y1: 0, x2: MAP_W, y2: 1 });
+  const startedWithView = useRef(hasSavedView());
+  const autoFitted = useRef(false);
+  const panRef = useRef(null);
+  const suppressBg = useRef(false);
+  useEffect(() => {
+    try { window.localStorage.setItem(VIEW_KEY, JSON.stringify(view)); } catch { /* storage blocked */ }
+  }, [view]);
+  useEffect(() => { if (resetViewSignal) setView(DEFAULT_VIEW); }, [resetViewSignal]);
   // One pinned card at a time: { kind: 'node'|'edge', key, left, top, panel }.
   const [pinned, setPinned] = useState(null);
   useEffect(() => {
@@ -224,10 +256,94 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
     }
     return { width: MAP_W, height: Math.max(height, 60), positions, chips, side, chipsTop: side ? 0 : (base.height || 0), graphW: side ? MAP_W - SIDE_W : MAP_W, graphH: base.height };
   }, [linked, unlinked]);
-  const clampPt = (pt) => ({
-    x: Math.round(Math.min(Math.max(pt.x, HW), Math.max(HW, layout.graphW - HW))),
-    y: Math.round(Math.min(Math.max(pt.y, HH), Math.max(HH, layout.graphH - HH))),
-  });
+  const hasGraph = linked.length > 0;
+  const Hg = hasGraph ? Math.max(layout.graphH, 1) : 1;
+  hgRef.current = Hg;
+  const vbW = MAP_W / view.z;
+  const vbH = Hg / view.z;
+  const vbStr = `${r2(view.x)} ${r2(view.y)} ${r2(vbW)} ${r2(vbH)}`;
+  const clampView = (v) => {
+    const z = Math.min(Z_MAX, Math.max(Z_MIN, v.z));
+    const w = MAP_W / z;
+    const h = hgRef.current / z;
+    const b = boundsRef.current;
+    return { z, x: Math.min(Math.max(v.x, b.x1 - w * 0.8), b.x2 - w * 0.2), y: Math.min(Math.max(v.y, b.y1 - h * 0.8), b.y2 - h * 0.2) };
+  };
+  // Fit: zoom and centre so the content bounds (base area plus anything dragged outside it) fill the viewport.
+  const fitView = () => {
+    const b = boundsRef.current;
+    const bw = Math.max(1, b.x2 - b.x1);
+    const bh = Math.max(1, b.y2 - b.y1);
+    const z = Math.min(Z_MAX, Math.max(Z_MIN, Math.min(MAP_W / bw, hgRef.current / bh)));
+    setView({ z, x: (b.x1 + b.x2) / 2 - MAP_W / z / 2, y: (b.y1 + b.y2) / 2 - hgRef.current / z / 2 });
+  };
+  // Zoom around a point given as fractions (fx, fy) of the visible area; the point under it stays put.
+  const zoomBy = (factor, fx, fy) => {
+    const v = viewRef.current;
+    const z = Math.min(Z_MAX, Math.max(Z_MIN, v.z * factor));
+    if (z === v.z) return;
+    const ux = v.x + fx * (MAP_W / v.z);
+    const uy = v.y + fy * (hgRef.current / v.z);
+    setView(clampView({ z, x: ux - fx * (MAP_W / z), y: uy - fy * (hgRef.current / z) }));
+  };
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return undefined;
+    const onWheel = (ev) => {
+      ev.preventDefault(); // only while the pointer is over the map; elsewhere the page scrolls
+      const r = el.getBoundingClientRect();
+      zoomBy(ev.deltaY < 0 ? 1.1 : 1 / 1.1, r.width ? (ev.clientX - r.left) / r.width : 0.5, r.height ? (ev.clientY - r.top) / r.height : 0.5);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasGraph]);
+  // Pixels per viewBox unit at the current zoom (1 when the SVG has no layout, as in jsdom).
+  const pxPerUnit = () => {
+    const r = svgRef.current ? svgRef.current.getBoundingClientRect() : null;
+    return r && r.width ? r.width / (MAP_W / viewRef.current.z) : 1;
+  };
+  const graphToClient = (sx, sy) => {
+    const r = svgRef.current ? svgRef.current.getBoundingClientRect() : null;
+    if (!r || !r.width) return null;
+    const v = viewRef.current;
+    const ks = r.width / (MAP_W / v.z);
+    return { x: r.left + (sx - v.x) * ks, y: r.top + (sy - v.y) * ks, ks };
+  };
+  const onBgDown = (ev) => {
+    if (ev.button !== undefined && ev.button !== 0) return;
+    panRef.current = { cx: ev.clientX, cy: ev.clientY, ox: viewRef.current.x, oy: viewRef.current.y, moved: false };
+    try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch { /* not supported */ }
+  };
+  const onBgMove = (ev) => {
+    const d = panRef.current;
+    if (!d) return;
+    const dx = ev.clientX - d.cx;
+    const dy = ev.clientY - d.cy;
+    if (!d.moved && Math.hypot(dx, dy) < 4) return;
+    d.moved = true;
+    const ks = pxPerUnit();
+    setTip(null);
+    setView(clampView({ ...viewRef.current, x: d.ox - dx / ks, y: d.oy - dy / ks }));
+  };
+  const onBgUp = () => {
+    const d = panRef.current;
+    panRef.current = null;
+    if (d && d.moved) { suppressBg.current = true; setTimeout(() => { suppressBg.current = false; }, 0); }
+  };
+  const onBgClick = () => {
+    if (suppressBg.current) { suppressBg.current = false; return; }
+    setPinned(null);
+  };
+  // Drag limit: a canvas 4x the base graph, centred on it. Only a runaway stop, never the default extent.
+  const clampPt = (pt) => {
+    const cx = layout.graphW / 2;
+    const cy = layout.graphH / 2;
+    return {
+      x: Math.round(Math.min(Math.max(pt.x, cx - 2 * MAP_W + HW), cx + 2 * MAP_W - HW)),
+      y: Math.round(Math.min(Math.max(pt.y, cy - 2 * Hg + HH), cy + 2 * Hg - HH)),
+    };
+  };
   // layout.js placement, then saved overrides, then the node being dragged right now.
   const pos = useMemo(() => {
     const out = { ...layout.positions };
@@ -239,6 +355,30 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, overrides, live]);
+  // Content bounds: the base area, plus every placed node (padded by one tile) once any sits outside it.
+  const bounds = useMemo(() => {
+    const base = { x1: 0, y1: 0, x2: MAP_W, y2: Hg };
+    const pts = Object.values(pos);
+    if (!pts.length) return base;
+    const raw = {
+      x1: Math.min(...pts.map((q) => q.x - HW)), x2: Math.max(...pts.map((q) => q.x + HW)),
+      y1: Math.min(...pts.map((q) => q.y - HH)), y2: Math.max(...pts.map((q) => q.y + HH)),
+    };
+    if (raw.x1 >= base.x1 && raw.x2 <= base.x2 && raw.y1 >= base.y1 && raw.y2 <= base.y2) return base;
+    return {
+      x1: Math.min(base.x1, raw.x1 - NW), x2: Math.max(base.x2, raw.x2 + NW),
+      y1: Math.min(base.y1, raw.y1 - NH), y2: Math.max(base.y2, raw.y2 + NH),
+    };
+  }, [pos, Hg]);
+  boundsRef.current = bounds;
+  // A saved layout with nodes outside the base area opens fitted, unless the user already has a saved view.
+  const outside = bounds.x1 < 0 || bounds.y1 < 0 || bounds.x2 > MAP_W || bounds.y2 > Hg;
+  useEffect(() => {
+    if (!outside || autoFitted.current || startedWithView.current) return;
+    autoFitted.current = true;
+    fitView();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outside]);
   const nodeByKey = useMemo(() => { const m = {}; nodes.forEach((n) => { m[String(n.siteKey)] = n; }); return m; }, [nodes]);
   const nameOf = (k) => (nodeByKey[String(k)] ? (nodeByKey[String(k)].siteName || String(k)) : String(k));
   const rects = useMemo(() => nodeRects(pos, 8, NW, NH), [pos]);
@@ -267,9 +407,11 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
     if (!r) return;
     setTip({ ...payload, x: ev.clientX - r.left, y: ev.clientY - r.top, w: r.width });
   };
-  const placeAt = (sx, sy, payload) => {
+  const placeAt = (sx, sy, payload, zoomed = false) => {
     const r = wrapRef.current ? wrapRef.current.getBoundingClientRect() : null;
     if (!r) return;
+    const c = zoomed ? graphToClient(sx, sy) : null;
+    if (c) { setTip({ ...payload, x: c.x - r.left, y: c.y - r.top, w: r.width }); return; }
     const k = r.width / MAP_W;
     setTip({ ...payload, x: sx * k, y: sy * k, w: r.width });
   };
@@ -282,19 +424,18 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
     const w = wr && wr.width ? wr.width : MAP_W;
     const k = w / MAP_W;
     const er = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    const gc = !er ? graphToClient(sx, sy) : null;
     const anchor = er
       ? { left: er.left, right: er.right, top: er.top }
-      : { left: (wr ? wr.left : 0) + (sx - halfW) * k, right: (wr ? wr.left : 0) + (sx + halfW) * k, top: (wr ? wr.top : 0) + (sy - HH) * k };
+      : gc ? { left: gc.x - halfW * gc.ks, right: gc.x + halfW * gc.ks, top: gc.y - HH * gc.ks }
+        : { left: (wr ? wr.left : 0) + (sx - halfW) * k, right: (wr ? wr.left : 0) + (sx + halfW) * k, top: (wr ? wr.top : 0) + (sy - HH) * k };
     const panel = typeof window !== 'undefined' && window.innerWidth < 768;
     setTip(null);
     setPinned({ kind, key, anchor, panel });
   };
 
   // Pointer drag for linked nodes: a 4 px move starts it, so a plain click still pins the card.
-  const viewScale = () => {
-    const r = svgRef.current ? svgRef.current.getBoundingClientRect() : null;
-    return r && r.width ? r.width / layout.width : 1;
-  };
+  const viewScale = pxPerUnit;
   const onNodeDown = (ev, n, p) => {
     if (ev.button !== undefined && ev.button !== 0) return;
     dragRef.current = { key: String(n.siteKey), cx: ev.clientX, cy: ev.clientY, ox: p.x, oy: p.y, moved: false };
@@ -338,6 +479,36 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
     return <div className="panel p-6 text-sm text-ink-muted text-center">No sites to draw. Sites appear once a portal has been polled and circuits computed.</div>;
   }
 
+  const chipsLayer = (
+    <>
+        {unlinked.length > 0 && (
+          <text x={layout.side ? MAP_W - SIDE_W + 24 : 20} y={layout.side ? 20 : layout.chipsTop + 18} fontSize="11" fill="#94A3B3">{`Not linked (${unlinked.length})`}</text>
+        )}
+        {unlinked.map((n) => {
+          const c = layout.chips[String(n.siteKey)];
+          if (!c) return null;
+          const col = nodeColor(n);
+          const wcol = wanColor(n.wanState);
+          const hover = tip && tip.kind === 'node' && tip.key === n.siteKey;
+          const payload = { kind: 'node', key: n.siteKey, lines: nodeTip(n) };
+          return (
+            <g key={n.siteKey} data-testid="unlinked-chip" transform={`translate(${c.x} ${c.y})`} role="button" tabIndex={0} pointerEvents="auto"
+              aria-label={`${n.siteName || n.siteKey}, ${n.wanState ? `WAN ${n.wanState}` : 'no WAN'}`}
+              style={{ cursor: 'pointer', outline: 'none' }}
+              onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
+              onFocus={() => placeAt(c.x + CHIP_W, c.y + CHIP_H, payload)} onBlur={clearTip}
+              onClick={(ev) => pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2, ev.currentTarget)} onKeyDown={(ev) => { if (ev.key === 'Enter') pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2, ev.currentTarget); }}>
+              <rect width={CHIP_W} height={CHIP_H} rx={8} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="1.5" />
+              <rect width={CHIP_W} height={CHIP_H} rx={8} fill={col} fillOpacity="0.09" pointerEvents="none" />
+              <rect x={8} y={0} width={CHIP_W - 16} height={2.5} fill={col} pointerEvents="none" />
+              <circle cx={11} cy={CHIP_H / 2} r="4" fill={wcol} className={n.wanState === 'down' ? 'cmap-dot-crit' : n.wanState === 'degraded' ? 'cmap-dot-warn' : undefined} />
+              <text x={22} y={CHIP_H / 2 + 4} fontSize="11" fontWeight="600" fill="#E8EDF2">{short(n.siteName || String(n.siteKey), 13)}</text>
+            </g>
+          );
+        })}
+    </>
+  );
+
   return (
     <div ref={wrapRef} className="relative panel overflow-hidden" onMouseLeave={clearTip} data-testid="circuit-map">
       <style>{MOTION_CSS}</style>
@@ -359,8 +530,11 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
         </span>
       </div>
 
-      <svg ref={svgRef} viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="xMidYMid meet" className="block w-full h-auto" role="group" aria-label="Circuit map">
-        <rect data-testid="map-bg" x="0" y="0" width={layout.width} height={layout.height} fill="transparent" onClick={() => setPinned(null)} />
+      <div className="relative">
+        {hasGraph && (
+          <svg ref={svgRef} viewBox={vbStr} preserveAspectRatio="xMidYMid meet" className="block w-full h-auto" style={{ touchAction: 'none' }} role="group" aria-label="Circuit map">
+            <rect data-testid="map-bg" x="-6000" y="-6000" width="14000" height="14000" fill="transparent"
+              onPointerDown={onBgDown} onPointerMove={onBgMove} onPointerUp={onBgUp} onPointerCancel={onBgUp} onClick={onBgClick} />
         {drawn.map((e) => {
           const sh = shapes[e.key];
           const col = edgeColor(e.state);
@@ -371,7 +545,7 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
               <path d={sh.geo.d} fill="none" stroke="transparent" strokeWidth="18" style={{ cursor: 'pointer', outline: 'none' }}
                 role="link" tabIndex={0} aria-label={`${nameOf(e.a)} to ${nameOf(e.b)}, ${e.state}`}
                 onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
-                onFocus={() => placeAt(sh.pt.x, sh.pt.y, payload)} onBlur={clearTip}
+                onFocus={() => placeAt(sh.pt.x, sh.pt.y, payload, true)} onBlur={clearTip}
                 onClick={() => pin('edge', e.key, sh.pt.x, sh.pt.y, 0)} onKeyDown={(ev) => { if (ev.key === 'Enter') pin('edge', e.key, sh.pt.x, sh.pt.y, 0); }} />
               <path d={sh.geo.d} fill="none" stroke={col} strokeWidth={edgeWidth(e.state) + (hover ? 2 : 0)} className={`cmap-edge-${e.state}`}
                 strokeDasharray={e.state === 'flapping' ? '7 4' : e.state === 'down' ? '4 2' : undefined} pointerEvents="none" />
@@ -395,7 +569,7 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
               aria-label={`${n.siteName || n.siteKey}, ${n.wanState ? `WAN ${n.wanState}` : 'no WAN'}`}
               style={{ cursor: 'pointer', outline: 'none' }}
               onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
-              onFocus={() => placeAt(p.x + HW, p.y + HH, payload)} onBlur={clearTip}
+              onFocus={() => placeAt(p.x + HW, p.y + HH, payload, true)} onBlur={clearTip}
               onPointerDown={(ev) => onNodeDown(ev, n, p)} onPointerMove={onNodeMove} onPointerUp={onNodeUp} onPointerCancel={onNodeUp}
               onClick={(ev) => onNodeClick(ev, n, p)} onKeyDown={(ev) => onNodeKey(ev, n, p)}>
               <rect x={-HW} y={-HH} width={NW} height={NH} rx={10} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="2" />
@@ -414,32 +588,27 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
           );
         })}
 
-        {unlinked.length > 0 && (
-          <text x={layout.side ? MAP_W - SIDE_W + 24 : 20} y={layout.side ? 20 : layout.chipsTop + 18} fontSize="11" fill="#94A3B3">{`Not linked (${unlinked.length})`}</text>
+          </svg>
         )}
-        {unlinked.map((n) => {
-          const c = layout.chips[String(n.siteKey)];
-          if (!c) return null;
-          const col = nodeColor(n);
-          const wcol = wanColor(n.wanState);
-          const hover = tip && tip.kind === 'node' && tip.key === n.siteKey;
-          const payload = { kind: 'node', key: n.siteKey, lines: nodeTip(n) };
-          return (
-            <g key={n.siteKey} data-testid="unlinked-chip" transform={`translate(${c.x} ${c.y})`} role="button" tabIndex={0}
-              aria-label={`${n.siteName || n.siteKey}, ${n.wanState ? `WAN ${n.wanState}` : 'no WAN'}`}
-              style={{ cursor: 'pointer', outline: 'none' }}
-              onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
-              onFocus={() => placeAt(c.x + CHIP_W, c.y + CHIP_H, payload)} onBlur={clearTip}
-              onClick={(ev) => pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2, ev.currentTarget)} onKeyDown={(ev) => { if (ev.key === 'Enter') pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2, ev.currentTarget); }}>
-              <rect width={CHIP_W} height={CHIP_H} rx={8} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="1.5" />
-              <rect width={CHIP_W} height={CHIP_H} rx={8} fill={col} fillOpacity="0.09" pointerEvents="none" />
-              <rect x={8} y={0} width={CHIP_W - 16} height={2.5} fill={col} pointerEvents="none" />
-              <circle cx={11} cy={CHIP_H / 2} r="4" fill={wcol} className={n.wanState === 'down' ? 'cmap-dot-crit' : n.wanState === 'degraded' ? 'cmap-dot-warn' : undefined} />
-              <text x={22} y={CHIP_H / 2 + 4} fontSize="11" fontWeight="600" fill="#E8EDF2">{short(n.siteName || String(n.siteKey), 13)}</text>
-            </g>
-          );
-        })}
-      </svg>
+        {hasGraph && layout.side && (
+          <svg viewBox={`0 0 ${MAP_W} ${Hg}`} preserveAspectRatio="xMidYMid meet" className="absolute inset-0 w-full h-full" style={{ pointerEvents: 'none' }} aria-label="Unlinked sites">
+            {chipsLayer}
+          </svg>
+        )}
+        {hasGraph && (
+          <div className="absolute left-3 bottom-3 flex gap-1" data-testid="zoom-controls">
+            {[['Zoom in', '+', () => zoomBy(1.25, 0.5, 0.5), 'zoom-in'], ['Zoom out', '-', () => zoomBy(1 / 1.25, 0.5, 0.5), 'zoom-out'], ['Fit to view', 'Fit', fitView, 'zoom-fit']].map(([label, text, fn, id]) => (
+              <button key={id} type="button" aria-label={label} title={label} data-testid={id} onClick={fn}
+                className="min-w-[26px] h-[26px] px-1.5 text-[12px] font-semibold rounded border border-cohesity-border text-ink bg-surface-overlay hover:brightness-125 cursor-pointer">{text}</button>
+            ))}
+          </div>
+        )}
+      </div>
+      {!layout.side && unlinked.length > 0 && (
+        <svg viewBox={`0 ${layout.chipsTop} ${MAP_W} ${Math.max(60, layout.height - layout.chipsTop)}`} preserveAspectRatio="xMidYMid meet" className="block w-full h-auto" aria-label="Unlinked sites">
+          {chipsLayer}
+        </svg>
+      )}
 
       {tip && !(pinned && pinned.kind === tip.kind && String(pinned.key) === String(tip.key)) && <TipCard tip={tip} />}
       {pinned && (() => {
