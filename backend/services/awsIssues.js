@@ -161,7 +161,14 @@ function computeIssues() {
         target: d.name, message: `Lightsail database ${d.name} has automatic backups turned off`,
       });
     }
-    if (d.state && !['available', 'backing-up', 'modifying'].includes(String(d.state).toLowerCase())) {
+    const dbState = String(d.state || '').toLowerCase();
+    if (['stopped', 'stopping', 'starting'].includes(dbState)) {
+      // A stopped Lightsail database is a deliberate state (still billed for storage), not an outage.
+      issues.push({
+        severity: 'info', type: 'lightsail-db-stopped', account: d.account_name, accountId: d.account_id,
+        target: d.name, message: `Lightsail database ${d.name} is ${d.state}`,
+      });
+    } else if (dbState && !['available', 'backing-up', 'modifying', 'configuring-log-exports', 'upgrading'].includes(dbState)) {
       issues.push({
         severity: 'critical', type: 'lightsail-db-unavailable', account: d.account_name, accountId: d.account_id,
         target: d.name, message: `Lightsail database ${d.name} is ${d.state}`,
@@ -173,7 +180,12 @@ function computeIssues() {
   `).all()) {
     let attached = [];
     try { attached = JSON.parse(l.attached_instances || '[]'); } catch { attached = []; }
-    if ((l.healthy_count ?? 0) === 0 && attached.length > 0) {
+    if (attached.length === 0) {
+      issues.push({
+        severity: 'warning', type: 'lightsail-lb-idle', account: l.account_name, accountId: l.account_id,
+        target: l.name, message: `Lightsail load balancer ${l.name} has no attached instances and is billed while idle`,
+      });
+    } else if ((l.healthy_count ?? 0) === 0) {
       issues.push({
         severity: 'critical', type: 'lightsail-lb-unhealthy', account: l.account_name, accountId: l.account_id,
         target: l.name, message: `Lightsail load balancer ${l.name} has no healthy targets (${attached.length} attached)`,

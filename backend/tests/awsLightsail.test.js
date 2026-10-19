@@ -85,7 +85,8 @@ describe('Lightsail issue rules', () => {
 
     const dbs = db.prepare('INSERT INTO aws_lightsail_databases (account_id, name, state, backup_retention) VALUES (?, ?, ?, ?)');
     dbs.run(a, 'nobackup-db', 'available', 0);
-    dbs.run(a, 'down-db', 'stopped', 1);
+    dbs.run(a, 'down-db', 'error', 1);
+    dbs.run(a, 'paused-db', 'stopped', 1);
     dbs.run(a, 'good-db', 'available', 1);
 
     const lb = db.prepare(`INSERT INTO aws_lightsail_load_balancers (account_id, name, attached_instances, healthy_count, unhealthy_count)
@@ -93,6 +94,7 @@ describe('Lightsail issue rules', () => {
     lb.run(a, 'dead-lb', JSON.stringify(['w1']), 0, 1);
     lb.run(a, 'wobbly-lb', JSON.stringify(['w1', 'w2']), 1, 1);
     lb.run(a, 'good-lb', JSON.stringify(['w1']), 1, 0);
+    lb.run(a, 'empty-lb', JSON.stringify([]), 0, 0);
 
     const dist = db.prepare('INSERT INTO aws_lightsail_distributions (account_id, name, is_enabled) VALUES (?, ?, ?)');
     dist.run(a, 'off-cdn', 0);
@@ -112,9 +114,13 @@ describe('Lightsail issue rules', () => {
     expect(has('lightsail-db-no-backup', 'good-db')).toBe(false);
     expect(has('lightsail-db-unavailable', 'down-db', 'critical')).toBe(true);
     expect(has('lightsail-db-unavailable', 'good-db')).toBe(false);
+    expect(has('lightsail-db-unavailable', 'paused-db')).toBe(false);
+    expect(has('lightsail-db-stopped', 'paused-db', 'info')).toBe(true);
     expect(has('lightsail-lb-unhealthy', 'dead-lb', 'critical')).toBe(true);
     expect(has('lightsail-lb-unhealthy', 'wobbly-lb', 'warning')).toBe(true);
     expect(has('lightsail-lb-unhealthy', 'good-lb')).toBe(false);
+    expect(has('lightsail-lb-idle', 'empty-lb', 'warning')).toBe(true);
+    expect(has('lightsail-lb-unhealthy', 'empty-lb')).toBe(false);
     expect(has('lightsail-distribution-disabled', 'off-cdn', 'info')).toBe(true);
     expect(has('lightsail-distribution-disabled', 'on-cdn')).toBe(false);
   });

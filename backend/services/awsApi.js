@@ -496,7 +496,8 @@ async function fetchLightsailLoadBalancers(account) {
         unhealthyCount: health.filter((h) => h.instanceHealth === 'unhealthy').length,
         tlsCertName: certs[0]?.name || null,
         tlsCertAttached: certs.length ? (certs.some((c) => c.isAttached) ? 1 : 0) : 0,
-        az: l.location?.availabilityZone || l.location?.regionName || null,
+        // Load balancers report availabilityZone 'all'; the region is the useful location.
+        az: (l.location?.availabilityZone && l.location.availabilityZone !== 'all' ? l.location.availabilityZone : l.location?.regionName) || null,
         createdAt: isoOrNull(l.createdAt),
       });
     }

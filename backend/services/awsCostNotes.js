@@ -193,7 +193,8 @@ function usageTypeObjects(usageType, service, db, accountId) {
     }
     const lower = body.toLowerCase();
     if (lower.startsWith('loadbalancer')) {
-      return out(q(`SELECT name FROM aws_lightsail_load_balancers WHERE 1=1${azLike}`, azArg), 'Lightsail load balancer',
+      const lbAz = region ? " AND (az LIKE ? OR az = 'all' OR az IS NULL)" : '';
+      return out(q(`SELECT name FROM aws_lightsail_load_balancers WHERE 1=1${lbAz}`, azArg), 'Lightsail load balancer',
         '/aws/lightsail', (r) => r.name, `All load balancers in ${regionText}`);
     }
     if (lower.startsWith('disk')) {
