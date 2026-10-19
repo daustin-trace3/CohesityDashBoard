@@ -654,22 +654,40 @@ async function fetchCostAndUsage(account) {
   const end = new Date();
   const start = new Date(end.getTime() - 35 * 86400000);
   const fmt = (d) => d.toISOString().slice(0, 10);
-  const resp = await client.send(new GetCostAndUsageCommand({
+  const rows = [];
+  for await (const resp of pagedCostAndUsage(client, {
     TimePeriod: { Start: fmt(start), End: fmt(end) },
     Granularity: 'DAILY',
     Metrics: ['UnblendedCost'],
     GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
-  }));
-  const rows = [];
-  for (const period of resp?.ResultsByTime || []) {
-    const day = period.TimePeriod?.Start;
-    for (const g of period.Groups || []) {
-      const service = g.Keys?.[0] || 'Unknown';
-      const amountUsd = Number(g.Metrics?.UnblendedCost?.Amount) || 0;
-      rows.push({ day, service, amountUsd });
+  })) {
+    for (const period of resp?.ResultsByTime || []) {
+      const day = period.TimePeriod?.Start;
+      for (const g of period.Groups || []) {
+        const service = g.Keys?.[0] || 'Unknown';
+        const amountUsd = Number(g.Metrics?.UnblendedCost?.Amount) || 0;
+        rows.push({ day, service, amountUsd });
+      }
     }
   }
   return rows;
+}
+
+/**
+ * GetCostAndUsage pages: a response that exceeds the service's page size carries NextPageToken
+ * and the rest of the window is silently missing unless it is followed (a SERVICE + USAGE_TYPE
+ * grouping on a real account truncated at 5,000 groups, 22 of 35 days). Each page is one
+ * billable request; COST_PAGE_CAP bounds a runaway.
+ */
+const COST_PAGE_CAP = 20;
+async function* pagedCostAndUsage(client, input) {
+  let token;
+  for (let page = 0; page < COST_PAGE_CAP; page++) {
+    const resp = await client.send(new GetCostAndUsageCommand({ ...input, ...(token ? { NextPageToken: token } : {}) }));
+    yield resp;
+    token = resp?.NextPageToken;
+    if (!token) return;
+  }
 }
 
 /**
@@ -682,19 +700,20 @@ async function fetchCostAndUsageGrouped(account, groupByKey) {
   const end = new Date();
   const start = new Date(end.getTime() - 35 * 86400000);
   const fmt = (d) => d.toISOString().slice(0, 10);
-  const resp = await client.send(new GetCostAndUsageCommand({
+  const rows = [];
+  for await (const resp of pagedCostAndUsage(client, {
     TimePeriod: { Start: fmt(start), End: fmt(end) },
     Granularity: 'DAILY',
     Metrics: ['UnblendedCost'],
     GroupBy: [{ Type: 'DIMENSION', Key: groupByKey }],
-  }));
-  const rows = [];
-  for (const period of resp?.ResultsByTime || []) {
-    const day = period.TimePeriod?.Start;
-    for (const g of period.Groups || []) {
-      const key = g.Keys?.[0] || 'Unknown';
-      const amountUsd = Number(g.Metrics?.UnblendedCost?.Amount) || 0;
-      rows.push({ day, key, amountUsd });
+  })) {
+    for (const period of resp?.ResultsByTime || []) {
+      const day = period.TimePeriod?.Start;
+      for (const g of period.Groups || []) {
+        const key = g.Keys?.[0] || 'Unknown';
+        const amountUsd = Number(g.Metrics?.UnblendedCost?.Amount) || 0;
+        rows.push({ day, key, amountUsd });
+      }
     }
   }
   return rows;
@@ -709,22 +728,23 @@ async function fetchCostByUsageType(account) {
   const end = new Date();
   const start = new Date(end.getTime() - 35 * 86400000);
   const fmt = (d) => d.toISOString().slice(0, 10);
-  const resp = await client.send(new GetCostAndUsageCommand({
+  const rows = [];
+  for await (const resp of pagedCostAndUsage(client, {
     TimePeriod: { Start: fmt(start), End: fmt(end) },
     Granularity: 'DAILY',
     Metrics: ['UnblendedCost'],
     GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'USAGE_TYPE' }],
-  }));
-  const rows = [];
-  for (const period of resp?.ResultsByTime || []) {
-    const day = period.TimePeriod?.Start;
-    for (const g of period.Groups || []) {
-      rows.push({
-        day,
-        service: g.Keys?.[0] || 'Unknown',
-        usageType: g.Keys?.[1] || 'Unknown',
-        amountUsd: Number(g.Metrics?.UnblendedCost?.Amount) || 0,
-      });
+  })) {
+    for (const period of resp?.ResultsByTime || []) {
+      const day = period.TimePeriod?.Start;
+      for (const g of period.Groups || []) {
+        rows.push({
+          day,
+          service: g.Keys?.[0] || 'Unknown',
+          usageType: g.Keys?.[1] || 'Unknown',
+          amountUsd: Number(g.Metrics?.UnblendedCost?.Amount) || 0,
+        });
+      }
     }
   }
   return rows;
@@ -1301,7 +1321,7 @@ module.exports = {
   fetchS3Buckets, fetchBucketLocation, fetchBucketPublicAccessBlocked, fetchBucketVersioning,
   fetchBucketLifecycleRuleCount, fetchBucketStorageMetrics,
   fetchBedrockModelIds, fetchBedrockDailyUsage,
-  fetchCostAndUsage, fetchCostByUsageType, fetchCostByInstanceType, fetchCostByResource, classifyCostResourceError,
+  fetchCostAndUsage, fetchCostByUsageType, fetchCostByInstanceType, fetchCostByResource, classifyCostResourceError, pagedCostAndUsage,
   fetchHealthRss,
   fetchRdsInstances, fetchRdsMetrics,
   fetchLambdaFunctions, fetchLambdaMetrics,

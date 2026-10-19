@@ -99,6 +99,7 @@ describe('serviceNotes + lightsailComponent', () => {
     expect(lightsailComponent('USE1-BundleUsage:8GB')).toBe('instances');
     expect(lightsailComponent('USE1-BundleUsage:16GB_win')).toBe('instances');
     expect(lightsailComponent('USE1-DatabaseUsage:1GB')).toBe('databases');
+    expect(lightsailComponent('USE2-TotalDataXfer-Out-Bytes')).toBe('data transfer');
     expect(lightsailComponent('LoadBalancerUsage')).toBe('load balancers');
     expect(lightsailComponent('USE1-LoadBalancerUsage')).toBe('load balancers');
     expect(lightsailComponent('DataTransfer-Out-Bytes')).toBe('data transfer');
@@ -211,6 +212,33 @@ describe('fetchCostByResource (stubbed client)', () => {
     });
     await expect(awsApi.fetchCostByResource(account, { services: ['S'] })).rejects.toThrow('Invalid Filter');
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('fetchCostByUsageType (stubbed client)', () => {
+  const account = { region: 'us-east-1', access_key_id: '', encrypted_credentials: null };
+  let spy;
+  afterEach(() => { spy?.mockRestore(); });
+
+  it('follows NextPageToken so a large SERVICE + USAGE_TYPE grouping is not truncated', async () => {
+    const sent = [];
+    spy = vi.spyOn(CE.CostExplorerClient.prototype, 'send').mockImplementation(async (cmd) => {
+      sent.push(cmd.input);
+      const n = sent.length;
+      return {
+        ResultsByTime: [{ TimePeriod: { Start: `2026-10-0${n}` }, Groups: [
+          { Keys: ['Amazon Lightsail', `USE1-BundleUsage:${n}GB`], Metrics: { UnblendedCost: { Amount: '1.5' } } },
+        ] }],
+        ...(n < 3 ? { NextPageToken: `tok-${n}` } : {}),
+      };
+    });
+    const rows = await awsApi.fetchCostByUsageType(account);
+    expect(sent).toHaveLength(3);
+    expect(sent[0].NextPageToken).toBeUndefined();
+    expect(sent[1].NextPageToken).toBe('tok-1');
+    expect(sent[0].GroupBy).toEqual([{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'USAGE_TYPE' }]);
+    expect(rows.map((r) => r.day)).toEqual(['2026-10-01', '2026-10-02', '2026-10-03']);
+    expect(rows[0]).toEqual({ day: '2026-10-01', service: 'Amazon Lightsail', usageType: 'USE1-BundleUsage:1GB', amountUsd: 1.5 });
   });
 });
 

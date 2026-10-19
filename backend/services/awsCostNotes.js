@@ -14,7 +14,7 @@ function lightsailComponent(usageType) {
   if (t.includes('bucket')) return 'object storage';
   if (t.includes('loadbalancer')) return 'load balancers';
   if (t.includes('distribution') || t.includes('cdn')) return 'CDN distributions';
-  if (t.includes('datatransfer')) return 'data transfer';
+  if (t.includes('datatransfer') || t.includes('dataxfer')) return 'data transfer';
   if (t.includes('snapshot')) return 'snapshots';
   if (t.includes('domain') || t.includes('dns')) return 'DNS';
   if (t.includes('bundleusage') || t.startsWith('bundle')) return 'instances';
