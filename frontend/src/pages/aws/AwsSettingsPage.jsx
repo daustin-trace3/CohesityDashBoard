@@ -130,6 +130,8 @@ export default function AwsSettingsPage() {
   const [probeAccount, setProbeAccount] = useState(null);
   const [costSpikePct, setCostSpikePct] = useState('');
   const [rdsStorageWarnPct, setRdsStorageWarnPct] = useState('');
+  const [costResourcesEnabled, setCostResourcesEnabled] = useState(true);
+  const [costResourcesMaxPages, setCostResourcesMaxPages] = useState('10');
   const [savingConfig, setSavingConfig] = useState(false);
 
   const loadAccounts = () => client.get('/aws/accounts')
@@ -142,6 +144,8 @@ export default function AwsSettingsPage() {
       .then(({ data }) => {
         setCostSpikePct(String(data.costSpikePct));
         setRdsStorageWarnPct(String(data.rdsStorageWarnPct));
+        if (data.costResourcesEnabled !== undefined) setCostResourcesEnabled(!!data.costResourcesEnabled);
+        if (data.costResourcesMaxPages !== undefined) setCostResourcesMaxPages(String(data.costResourcesMaxPages));
       })
       .catch(() => { setCostSpikePct('30'); setRdsStorageWarnPct('15'); });
   }, []);
@@ -149,9 +153,14 @@ export default function AwsSettingsPage() {
   const saveConfig = async () => {
     setSavingConfig(true);
     try {
-      const { data } = await client.put('/aws/config', { costSpikePct: Number(costSpikePct), rdsStorageWarnPct: Number(rdsStorageWarnPct) });
+      const { data } = await client.put('/aws/config', {
+        costSpikePct: Number(costSpikePct), rdsStorageWarnPct: Number(rdsStorageWarnPct),
+        costResourcesEnabled, costResourcesMaxPages: Number(costResourcesMaxPages),
+      });
       setCostSpikePct(String(data.costSpikePct));
       setRdsStorageWarnPct(String(data.rdsStorageWarnPct));
+      setCostResourcesEnabled(!!data.costResourcesEnabled);
+      setCostResourcesMaxPages(String(data.costResourcesMaxPages));
       toast({ type: 'success', title: 'Thresholds saved', message: `Cost spike above ${data.costSpikePct}% day-over-day, RDS storage below ${data.rdsStorageWarnPct}% free.` });
     } catch (err) {
       toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Enter valid threshold values.' });
@@ -432,11 +441,27 @@ export default function AwsSettingsPage() {
           </div>
           <button onClick={saveConfig}
             disabled={savingConfig || !costSpikePct || Number(costSpikePct) < 5 || Number(costSpikePct) > 500
-              || !rdsStorageWarnPct || Number(rdsStorageWarnPct) < 5 || Number(rdsStorageWarnPct) > 50}
+              || !rdsStorageWarnPct || Number(rdsStorageWarnPct) < 5 || Number(rdsStorageWarnPct) > 50
+              || !costResourcesMaxPages || Number(costResourcesMaxPages) < 1 || Number(costResourcesMaxPages) > 50}
             className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
             {savingConfig ? 'Saving…' : 'Save'}
           </button>
         </div>
+        <div className="flex items-end gap-3 mt-4">
+          <label className="flex items-center gap-2 text-xs font-semibold text-ink cursor-pointer pb-2">
+            <input type="checkbox" checked={costResourcesEnabled} onChange={(e) => setCostResourcesEnabled(e.target.checked)} />
+            Capture resource-level cost (14-day window)
+          </label>
+          <div className="w-56">
+            <label className="block text-xs font-semibold text-ink mb-1">Max Cost Explorer pages per capture</label>
+            <input type="number" min={1} max={50} value={costResourcesMaxPages}
+              onChange={(e) => setCostResourcesMaxPages(e.target.value)} className={inp} />
+          </div>
+        </div>
+        <p className="text-[11px] text-ink-muted mt-2 leading-relaxed">
+          Needs daily granularity resource-level data enabled in Cost Explorer preferences and the IAM action
+          ce:GetCostAndUsageWithResources. Each page is one billable Cost Explorer request (USD 0.01).
+        </p>
       </div>
 
       </>)}
@@ -493,6 +518,11 @@ export default function AwsSettingsPage() {
                       </Badge>
                       {(a.lastPollStatus === 'error' || a.lastPollStatus === 'partial') && a.lastPollError && (
                         <PollNote text={a.lastPollError} tone={a.lastPollStatus === 'error' ? 'text-status-crit' : 'text-status-warn'} />
+                      )}
+                      {a.costResourcesStatus && a.costResourcesStatus !== 'ok' && (
+                        <div className="text-[10px] text-ink-faint mt-0.5" title={a.costResourcesError || undefined}>
+                          Resource-level cost: {a.costResourcesStatus.replace('_', ' ')}
+                        </div>
                       )}
                     </td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(a.lastPollAt)}</td>

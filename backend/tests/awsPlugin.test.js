@@ -319,15 +319,15 @@ describe('routes/aws.js basic CRUD + data endpoints (minimal express app, no dis
   it('GET/PUT /api/aws/config round-trips clamped costSpikePct and rdsStorageWarnPct', async () => {
     const before = await request(app).get('/api/aws/config');
     expect(before.status).toBe(200);
-    expect(before.body).toEqual({ costSpikePct: 30, rdsStorageWarnPct: 15 });
+    expect(before.body).toMatchObject({ costSpikePct: 30, rdsStorageWarnPct: 15 });
 
     const saved = await request(app).put('/api/aws/config').send({ costSpikePct: 50 });
     expect(saved.status).toBe(200);
-    expect(saved.body).toEqual({ costSpikePct: 50, rdsStorageWarnPct: 15 });
+    expect(saved.body).toMatchObject({ costSpikePct: 50, rdsStorageWarnPct: 15 });
 
     const savedRds = await request(app).put('/api/aws/config').send({ costSpikePct: 50, rdsStorageWarnPct: 25 });
     expect(savedRds.status).toBe(200);
-    expect(savedRds.body).toEqual({ costSpikePct: 50, rdsStorageWarnPct: 25 });
+    expect(savedRds.body).toMatchObject({ costSpikePct: 50, rdsStorageWarnPct: 25 });
 
     const invalid = await request(app).put('/api/aws/config').send({ costSpikePct: 1 });
     expect(invalid.status).toBe(400);

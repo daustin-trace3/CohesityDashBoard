@@ -102,7 +102,7 @@ const SEEDED_TABLES = [
   'aws_cost_daily', 'aws_metrics_history', 'aws_issue_history',
   'aws_rds_instances', 'aws_lambda_functions', 'aws_dynamo_tables',
   'aws_ecr_repos', 'aws_subnets', 'aws_vpcs',
-  'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily',
+  'aws_s3_size_history', 'aws_rds_storage_history', 'aws_cost_usage_daily', 'aws_cost_resource_daily',
   'aws_cost_instance_type_daily', 'aws_health_events', 'aws_optimizer_recommendations',
   'aws_accounts',
   // proxmox (children before the parent)

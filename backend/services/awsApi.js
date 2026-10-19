@@ -20,7 +20,7 @@ const {
   GetBucketVersioningCommand, GetBucketLifecycleConfigurationCommand,
 } = require('@aws-sdk/client-s3');
 const { CloudWatchClient, ListMetricsCommand, GetMetricDataCommand } = require('@aws-sdk/client-cloudwatch');
-const { CostExplorerClient, GetCostAndUsageCommand } = require('@aws-sdk/client-cost-explorer');
+const { CostExplorerClient, GetCostAndUsageCommand, GetCostAndUsageWithResourcesCommand } = require('@aws-sdk/client-cost-explorer');
 const { RDSClient, DescribeDBInstancesCommand } = require('@aws-sdk/client-rds');
 const { LambdaClient, ListFunctionsCommand } = require('@aws-sdk/client-lambda');
 const {
@@ -700,10 +700,105 @@ async function fetchCostAndUsageGrouped(account, groupByKey) {
   return rows;
 }
 
-/** [{ day, usageType, amountUsd }] — GroupBy DIMENSION/USAGE_TYPE, same window as fetchCostAndUsage. */
+/**
+ * [{ day, service, usageType, amountUsd }] — ONE GetCostAndUsage call grouped by SERVICE then
+ * USAGE_TYPE (Cost Explorer allows two groups), same window as fetchCostAndUsage.
+ */
 async function fetchCostByUsageType(account) {
-  const rows = await fetchCostAndUsageGrouped(account, 'USAGE_TYPE');
-  return rows.map((r) => ({ day: r.day, usageType: r.key, amountUsd: r.amountUsd }));
+  const client = costExplorerClient(account);
+  const end = new Date();
+  const start = new Date(end.getTime() - 35 * 86400000);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const resp = await client.send(new GetCostAndUsageCommand({
+    TimePeriod: { Start: fmt(start), End: fmt(end) },
+    Granularity: 'DAILY',
+    Metrics: ['UnblendedCost'],
+    GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'USAGE_TYPE' }],
+  }));
+  const rows = [];
+  for (const period of resp?.ResultsByTime || []) {
+    const day = period.TimePeriod?.Start;
+    for (const g of period.Groups || []) {
+      rows.push({
+        day,
+        service: g.Keys?.[0] || 'Unknown',
+        usageType: g.Keys?.[1] || 'Unknown',
+        amountUsd: Number(g.Metrics?.UnblendedCost?.Amount) || 0,
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * Classify a resource-level Cost Explorer failure for the poller / UI:
+ * not_enabled (resource-level data not switched on), denied (IAM), error (anything else).
+ */
+function classifyCostResourceError(err) {
+  const msg = String(err?.message || '').toLowerCase();
+  if (msg.includes('resource') && ['enable', 'opt', 'not supported', 'preference'].some((w) => msg.includes(w))) return 'not_enabled';
+  if (err?.name === 'AccessDeniedException' || msg.includes('not authorized')) return 'denied';
+  return 'error';
+}
+
+/**
+ * Resource-level cost: GetCostAndUsageWithResources, DAILY, last 14 days (the API refuses older
+ * starts), grouped by SERVICE then RESOURCE_ID. The API requires a Filter; the default excludes
+ * Tax/Refund/Credit records, and a ValidationException about the filter is retried once with a
+ * SERVICE filter built from opts.services. Each page is one billable request (stops at
+ * opts.maxPages, default 10). Errors propagate; the poller classifies them.
+ * Returns { rows: [{ day, service, resourceId, amountUsd }], pages }.
+ */
+async function fetchCostByResource(account, opts = {}) {
+  const client = costExplorerClient(account);
+  const maxPages = Math.max(1, opts.maxPages || 10);
+  const end = new Date();
+  // 13 days back: the API refuses a start earlier than 14 days ago and the day boundary is AWS's,
+  // so exactly 14 could be refused depending on the hour.
+  const start = new Date(end.getTime() - 13 * 86400000);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const baseInput = {
+    TimePeriod: { Start: fmt(start), End: fmt(end) },
+    Granularity: 'DAILY',
+    Metrics: ['UnblendedCost'],
+    GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'RESOURCE_ID' }],
+  };
+  let filter = { Not: { Dimensions: { Key: 'RECORD_TYPE', Values: ['Tax', 'Refund', 'Credit'] } } };
+  let retried = false;
+  const rows = [];
+  let pages = 0;
+  let token;
+  while (pages < maxPages) {
+    let resp;
+    try {
+      resp = await client.send(new GetCostAndUsageWithResourcesCommand({
+        ...baseInput, Filter: filter, ...(token ? { NextPageToken: token } : {}),
+      }));
+    } catch (err) {
+      const isFilterError = err?.name === 'ValidationException' && /filter/i.test(err.message || '');
+      if (!retried && isFilterError && (opts.services || []).length) {
+        retried = true;
+        filter = { Dimensions: { Key: 'SERVICE', Values: opts.services, MatchOptions: ['EQUALS'] } };
+        continue;
+      }
+      throw err;
+    }
+    pages++;
+    for (const period of resp?.ResultsByTime || []) {
+      const day = period.TimePeriod?.Start;
+      for (const g of period.Groups || []) {
+        const resourceId = g.Keys?.[1];
+        if (!resourceId || resourceId === 'NoResourceId') continue;
+        rows.push({
+          day, service: g.Keys?.[0] || 'Unknown', resourceId,
+          amountUsd: Number(g.Metrics?.UnblendedCost?.Amount) || 0,
+        });
+      }
+    }
+    token = resp?.NextPageToken;
+    if (!token) break;
+  }
+  return { rows, pages };
 }
 
 /** [{ day, instanceType, amountUsd }] — GroupBy DIMENSION/INSTANCE_TYPE, same window as fetchCostAndUsage. */
@@ -1206,7 +1301,7 @@ module.exports = {
   fetchS3Buckets, fetchBucketLocation, fetchBucketPublicAccessBlocked, fetchBucketVersioning,
   fetchBucketLifecycleRuleCount, fetchBucketStorageMetrics,
   fetchBedrockModelIds, fetchBedrockDailyUsage,
-  fetchCostAndUsage, fetchCostByUsageType, fetchCostByInstanceType,
+  fetchCostAndUsage, fetchCostByUsageType, fetchCostByInstanceType, fetchCostByResource, classifyCostResourceError,
   fetchHealthRss,
   fetchRdsInstances, fetchRdsMetrics,
   fetchLambdaFunctions, fetchLambdaMetrics,

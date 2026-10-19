@@ -423,4 +423,47 @@ module.exports = [
       if (!cols.includes('account_number')) db.exec('ALTER TABLE aws_accounts ADD COLUMN account_number TEXT');
     },
   },
+  {
+    // Cost drill-down: usage types carry their service, resource-level cost table, per-account
+    // resource capture status. Legacy usage rows keep service NULL until the next daily capture.
+    version: 8,
+    up(db) {
+      const usageCols = db.prepare("PRAGMA table_info('aws_cost_usage_daily')").all().map((c) => c.name);
+      if (!usageCols.includes('service')) {
+        db.exec(`
+          CREATE TABLE aws_cost_usage_daily_new (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id  INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+            day         TEXT NOT NULL,
+            service     TEXT,
+            usage_type  TEXT NOT NULL,
+            amount_usd  REAL,
+            UNIQUE(account_id, day, service, usage_type)
+          );
+          INSERT INTO aws_cost_usage_daily_new (account_id, day, service, usage_type, amount_usd)
+            SELECT account_id, day, NULL, usage_type, amount_usd FROM aws_cost_usage_daily;
+          DROP TABLE aws_cost_usage_daily;
+          ALTER TABLE aws_cost_usage_daily_new RENAME TO aws_cost_usage_daily;
+          CREATE INDEX IF NOT EXISTS idx_aws_cost_usage_account ON aws_cost_usage_daily(account_id);
+        `);
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_cost_resource_daily (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id  INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day         TEXT NOT NULL,
+          service     TEXT,
+          resource_id TEXT NOT NULL,
+          amount_usd  REAL,
+          UNIQUE(account_id, day, service, resource_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_cost_resource_account ON aws_cost_resource_daily(account_id);
+        CREATE INDEX IF NOT EXISTS idx_aws_cost_resource_day ON aws_cost_resource_daily(day);
+      `);
+      const cols = db.prepare("PRAGMA table_info('aws_accounts')").all().map((c) => c.name);
+      if (!cols.includes('cost_resources_status')) db.exec('ALTER TABLE aws_accounts ADD COLUMN cost_resources_status TEXT');
+      if (!cols.includes('cost_resources_error')) db.exec('ALTER TABLE aws_accounts ADD COLUMN cost_resources_error TEXT');
+      db.exec('UPDATE aws_accounts SET last_cost_capture_at = NULL');
+    },
+  },
 ];

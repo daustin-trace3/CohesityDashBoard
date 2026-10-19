@@ -7,11 +7,12 @@ const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt, decrypt } = require('../services/encryption');
-const { setSetting } = require('../services/settings');
+const { setSetting, getSetting } = require('../services/settings');
 const awsApi = require('../services/awsApi');
 const { awsPoller, getHealthLastCheckedAt, HEALTH_SERVICES, isElected } = require('../services/awsPoller');
 const { costSpikePct, rdsStorageWarnPct, computeIssues } = require('../services/awsIssues');
 const awsAdvisor = require('../services/advisors/awsAdvisor');
+const { serviceNotes, lightsailComponent, resolveCostResource } = require('../services/awsCostNotes');
 
 const router = express.Router();
 
@@ -25,6 +26,7 @@ const publicAccount = (row) => ({
   id: row.id, name: row.name, accessKeyId: row.access_key_id, region: row.region, accountNumber: row.account_number || null,
   pollingIntervalMinutes: row.polling_interval_minutes,
   lastPollStatus: row.last_poll_status, lastPollError: row.last_poll_error, lastPollAt: row.last_poll_at,
+  costResourcesStatus: row.cost_resources_status || null, costResourcesError: row.cost_resources_error || null,
   ...awsApi.credentialSummary(row),
 });
 
@@ -328,9 +330,14 @@ router.get('/accounts/:id/probe', [
 // ── Config ───────────────────────────────────────────────────────────────────
 
 /** GET /api/aws/config — alert thresholds. */
+const costResourcesConfig = () => ({
+  costResourcesEnabled: getSetting('aws_cost_resources_enabled') !== '0',
+  costResourcesMaxPages: Math.min(50, Math.max(1, parseInt(getSetting('aws_cost_resources_max_pages'), 10) || 10)),
+});
+
 router.get('/config', (req, res, next) => {
   try {
-    res.json({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct() });
+    res.json({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct(), ...costResourcesConfig() });
   } catch (err) { next(err); }
 });
 
@@ -338,11 +345,15 @@ router.get('/config', (req, res, next) => {
 router.put('/config', [
   body('costSpikePct').isInt({ min: 5, max: 500 }).toInt(),
   body('rdsStorageWarnPct').optional().isInt({ min: 5, max: 50 }).toInt(),
+  body('costResourcesEnabled').optional().isBoolean().toBoolean(),
+  body('costResourcesMaxPages').optional().isInt({ min: 1, max: 50 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     setSetting('aws_cost_spike_pct', String(req.body.costSpikePct));
     if (req.body.rdsStorageWarnPct !== undefined) setSetting('aws_rds_storage_warn_pct', String(req.body.rdsStorageWarnPct));
-    res.json({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct() });
+    if (req.body.costResourcesEnabled !== undefined) setSetting('aws_cost_resources_enabled', req.body.costResourcesEnabled ? '1' : '0');
+    if (req.body.costResourcesMaxPages !== undefined) setSetting('aws_cost_resources_max_pages', String(req.body.costResourcesMaxPages));
+    res.json({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct(), ...costResourcesConfig() });
   } catch (err) { next(err); }
 });
 
@@ -679,6 +690,20 @@ router.get('/bedrock', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/** Resource-level cost capture state for the Cost page: the ICC toggle plus per-account status. */
+function costResourcesState(accountId) {
+  const rows = db.prepare(`
+    SELECT id, name, cost_resources_status, cost_resources_error FROM aws_accounts
+    ${accountId ? 'WHERE id = ?' : ''} ORDER BY id
+  `).all(...(accountId ? [accountId] : []));
+  return {
+    enabled: getSetting('aws_cost_resources_enabled') !== '0',
+    accounts: rows.map((r) => ({
+      accountId: r.id, name: r.name, status: r.cost_resources_status || null, error: r.cost_resources_error || null,
+    })),
+  };
+}
+
 /** GET /api/aws/costs?days=30&accountId=&month=YYYY-MM — accountId is an optional additive filter;
  * month overrides days and returns that closed month's series instead of the rolling window. */
 router.get('/costs', [
@@ -736,11 +761,27 @@ router.get('/costs', [
       d.services.push({ service: r.service, amountUsd: r.amount_usd || 0 });
     }
 
+    // Usage types seen per service in the same window feed the per-service notes.
+    const usageByService = new Map();
+    const noteDaySql = month ? 'AND substr(day, 1, 7) = ?' : "AND day >= date('now', ?)";
+    const noteDayArg = month ? month : `-${days} days`;
+    for (const u of db.prepare(`
+      SELECT DISTINCT service, usage_type FROM aws_cost_usage_daily
+      WHERE service IS NOT NULL ${noteDaySql} ${acctSql}
+    `).all(noteDayArg, ...acctArg)) {
+      if (!usageByService.has(u.service)) usageByService.set(u.service, []);
+      usageByService.get(u.service).push(u.usage_type);
+    }
+
     res.json({
       days: [...byDay.values()],
       mtdUsd, deltaPct,
-      byService: [...byServiceMap.entries()].map(([service, mtdUsd]) => ({ service, mtdUsd })).sort((a, b) => b.mtdUsd - a.mtdUsd),
+      byService: [...byServiceMap.entries()].map(([service, mtdUsd]) => ({
+        service, mtdUsd,
+        notes: serviceNotes(service, { db, accountId, usageTypes: usageByService.get(service) || [] }),
+      })).sort((a, b) => b.mtdUsd - a.mtdUsd),
       months,
+      costResources: costResourcesState(accountId),
     });
   } catch (err) { next(err); }
 });
@@ -752,10 +793,12 @@ router.get('/costs/usage-types', [
   query('accountId').optional().isInt().toInt(),
   query('day').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
   query('month').optional().matches(/^\d{4}-\d{2}$/),
+  query('service').optional().isString().trim().isLength({ min: 1, max: 200 }),
 ], validate, (req, res, next) => {
   try {
     const days = Math.min(90, Math.max(7, req.query.days || 30));
     const accountId = req.query.accountId;
+    const service = req.query.service;
     const acctSql = accountId ? 'AND account_id = ?' : '';
     const acctArg = accountId ? [accountId] : [];
     let daySql, dayArg;
@@ -769,12 +812,59 @@ router.get('/costs/usage-types', [
       daySql = "AND day >= date('now', ?)";
       dayArg = [`-${days} days`];
     }
+    const svcSql = service ? 'AND service = ?' : '';
+    const svcArg = service ? [service] : [];
     const rows = db.prepare(`
-      SELECT usage_type, SUM(amount_usd) AS total_usd FROM aws_cost_usage_daily
-      WHERE 1=1 ${daySql} ${acctSql}
-      GROUP BY usage_type ORDER BY total_usd DESC LIMIT 40
-    `).all(...dayArg, ...acctArg);
-    res.json({ rows: rows.map((r) => ({ usageType: r.usage_type, totalUsd: r.total_usd || 0 })) });
+      SELECT service, usage_type, SUM(amount_usd) AS total_usd FROM aws_cost_usage_daily
+      WHERE 1=1 ${daySql} ${acctSql} ${svcSql}
+      GROUP BY service, usage_type ORDER BY total_usd DESC LIMIT 60
+    `).all(...dayArg, ...acctArg, ...svcArg);
+    res.json({
+      rows: rows.map((r) => ({
+        service: r.service || 'Unattributed (collected before service tagging)',
+        usageType: r.usage_type,
+        component: r.service === 'Amazon Lightsail' ? lightsailComponent(r.usage_type) : null,
+        totalUsd: r.total_usd || 0,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/costs/resources?service=&accountId=&days=14&day= — resource-level cost (Cost Explorer
+ * keeps 14 days). Top 100 resources by total, labelled from the ICC inventory where possible. */
+router.get('/costs/resources', [
+  query('service').optional().isString().trim().isLength({ min: 1, max: 200 }),
+  query('accountId').optional().isInt().toInt(),
+  query('days').optional().isInt().toInt(),
+  query('day').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
+], validate, (req, res, next) => {
+  try {
+    const days = Math.min(14, Math.max(1, req.query.days || 14));
+    const accountId = req.query.accountId;
+    const { service, day } = req.query;
+    const where = ['1=1'];
+    const args = [];
+    if (day) { where.push('day = ?'); args.push(day); } else { where.push("day >= date('now', ?)"); args.push(`-${days} days`); }
+    if (accountId) { where.push('account_id = ?'); args.push(accountId); }
+    if (service) { where.push('service = ?'); args.push(service); }
+    const rows = db.prepare(`
+      SELECT service, resource_id, SUM(amount_usd) AS total_usd FROM aws_cost_resource_daily
+      WHERE ${where.join(' AND ')}
+      GROUP BY service, resource_id ORDER BY total_usd DESC LIMIT 100
+    `).all(...args);
+    const end = new Date().toISOString().slice(0, 10);
+    const start = day || new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    res.json({
+      rows: rows.map((r) => {
+        const info = resolveCostResource(r.resource_id, r.service, db, accountId);
+        return {
+          resourceId: r.resource_id, label: info.label, service: r.service, kind: info.kind,
+          totalUsd: r.total_usd || 0, link: info.link,
+        };
+      }),
+      window: { start, end: day || end },
+      costResources: costResourcesState(accountId),
+    });
   } catch (err) { next(err); }
 });
 

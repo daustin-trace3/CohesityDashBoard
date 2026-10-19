@@ -21,6 +21,7 @@ const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
 const awsApi = require('./awsApi');
+const { getSetting } = require('./settings');
 const { reconcileIssueHistory } = require('./awsIssues');
 const logger = require('../utils/logger');
 
@@ -104,6 +105,7 @@ function cleanupNonElectedGlobalRows(accountId) {
   db.prepare('DELETE FROM aws_cost_daily WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM aws_cost_usage_daily WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM aws_cost_instance_type_daily WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_cost_resource_daily WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM aws_s3_buckets WHERE account_id = ?').run(accountId);
   db.prepare('DELETE FROM aws_s3_size_history WHERE account_id = ?').run(accountId);
 }
@@ -130,13 +132,26 @@ const upsertRdsStorageHistory = db.transaction((accountId, instances) => {
   }
 });
 
+// A refetched day replaces that day's legacy (service NULL) rows; days outside the fetch keep theirs.
 const upsertCostUsageType = db.transaction((accountId, rows) => {
+  const clearLegacy = db.prepare('DELETE FROM aws_cost_usage_daily WHERE account_id = ? AND day = ? AND service IS NULL');
+  for (const day of new Set(rows.map((r) => r.day))) clearLegacy.run(accountId, day);
   const stmt = db.prepare(`
-    INSERT INTO aws_cost_usage_daily (account_id, day, usage_type, amount_usd)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(account_id, day, usage_type) DO UPDATE SET amount_usd = excluded.amount_usd
+    INSERT INTO aws_cost_usage_daily (account_id, day, service, usage_type, amount_usd)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day, service, usage_type) DO UPDATE SET amount_usd = excluded.amount_usd
   `);
-  for (const r of rows) stmt.run(accountId, r.day, r.usageType, r.amountUsd);
+  for (const r of rows) stmt.run(accountId, r.day, r.service, r.usageType, r.amountUsd);
+});
+
+const upsertCostResource = db.transaction((accountId, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_cost_resource_daily (account_id, day, service, resource_id, amount_usd)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day, service, resource_id) DO UPDATE SET amount_usd = excluded.amount_usd
+  `);
+  for (const r of rows) stmt.run(accountId, r.day, r.service, r.resourceId, r.amountUsd);
+  db.prepare("DELETE FROM aws_cost_resource_daily WHERE day < date('now', '-90 days')").run();
 });
 
 const upsertCostInstanceType = db.transaction((accountId, rows) => {
@@ -698,6 +713,29 @@ function appendMetricsHistory(accountId, { ec2, lightsail, ecs, s3Rows }) {
   pruneInBatches(db, 'aws_metrics_history', "account_id = ? AND captured_at < datetime('now', '-365 days')", [accountId]);
 }
 
+/**
+ * Resource-level cost (14-day window). A sub-feature of the daily capture: a failure here is
+ * recorded on the account row and never fails the account or lands in the skipped list.
+ */
+async function captureCostResources(account, serviceRows) {
+  const setStatus = db.prepare('UPDATE aws_accounts SET cost_resources_status = ?, cost_resources_error = ? WHERE id = ?');
+  if (getSetting('aws_cost_resources_enabled') === '0') {
+    setStatus.run('off', null, account.id);
+    return;
+  }
+  const maxPages = Math.min(50, Math.max(1, parseInt(getSetting('aws_cost_resources_max_pages'), 10) || 10));
+  const services = [...new Set((serviceRows || []).map((r) => r.service).filter(Boolean))];
+  try {
+    const { rows } = await awsApi.fetchCostByResource(account, { maxPages, services });
+    upsertCostResource(account.id, rows);
+    setStatus.run('ok', null, account.id);
+  } catch (err) {
+    if (isCredentialError(err)) throw err;
+    setStatus.run(awsApi.classifyCostResourceError(err), String(err?.message || err).slice(0, 500), account.id);
+    logger.warn(`[AwsPoller] ${account.name}: resource-level cost capture failed: ${safeMsg(err)}`);
+  }
+}
+
 async function pollAccount(account) {
   // Pasted session credentials carry an expiry; once past it every call would
   // fail with ExpiredToken, so record the state and skip the round.
@@ -760,6 +798,7 @@ async function pollAccount(account) {
           upsertCostUsageType(account.id, usageTypeCost);
           const instanceTypeCost = await awsApi.fetchCostByInstanceType(account);
           upsertCostInstanceType(account.id, instanceTypeCost.filter((r) => r.instanceType && r.instanceType !== 'NoInstanceType'));
+          await captureCostResources(account, cost);
           db.prepare('UPDATE aws_accounts SET last_cost_capture_at = datetime(\'now\') WHERE id = ?').run(account.id);
         } catch (err) {
           if (isCredentialError(err)) throw err;
@@ -844,7 +883,7 @@ module.exports = {
   _collectService: collectService, _isCredentialError: isCredentialError,
   initAwsPoller, awsPoller, pollAccount,
   isElected, cleanupNonElectedGlobalRows,
-  upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType,
+  upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType, upsertCostResource, captureCostResources,
   getHealthLastCheckedAt, HEALTH_SERVICES,
   collectComputeOptimizer, computeHeuristicRecommendations, storeOptimizer,
 };

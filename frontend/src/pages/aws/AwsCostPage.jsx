@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { DollarSign } from 'lucide-react';
 import { Bar } from 'react-chartjs-2';
 import {
@@ -94,6 +95,16 @@ export default function AwsCostPage() {
   const [selectedDay, setSelectedDay] = useState('');
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [month, setMonth] = useState('');
+  const [resources, setResources] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedService = searchParams.get('service') || '';
+  const setSelectedService = useCallback((service) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (service) next.set('service', service); else next.delete('service');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   useEffect(() => {
     client.get('/aws/accounts').then(({ data }) => setAccounts(Array.isArray(data) ? data : data?.accounts || [])).catch(() => setAccounts([]));
@@ -102,14 +113,21 @@ export default function AwsCostPage() {
   const load = useCallback(() => {
     const base = accountId ? { days, accountId } : { days };
     const params = month ? { ...base, month } : base;
-    const usageParams = selectedDay ? { ...params, day: selectedDay } : params;
+    const usageBase = selectedDay ? { ...params, day: selectedDay } : params;
+    const usageParams = selectedService ? { ...usageBase, service: selectedService } : usageBase;
+    const resourceParams = {
+      ...(accountId ? { accountId } : {}),
+      ...(selectedDay ? { day: selectedDay } : {}),
+      ...(selectedService ? { service: selectedService } : {}),
+    };
     return Promise.all([
       client.get('/aws/costs', { params }).then(({ data }) => setData(data)),
       client.get('/aws/costs/usage-types', { params: usageParams }).then(({ data }) => setUsageTypes(data?.rows || [])).catch(() => setUsageTypes([])),
+      client.get('/aws/costs/resources', { params: resourceParams }).then(({ data }) => setResources(data)).catch(() => setResources({ rows: [], costResources: null })),
       client.get('/aws/costs/instance-types', { params: base }).then(({ data }) => setInstanceTypes(data?.rows || [])).catch(() => setInstanceTypes([])),
     ]).then(() => setLastRefreshed(new Date()))
       .catch(() => { setData({ days: [], byService: [] }); toast({ type: 'error', title: 'Failed to load AWS costs' }); });
-  }, [toast, days, accountId, selectedDay, month]);
+  }, [toast, days, accountId, selectedDay, month, selectedService]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -124,15 +142,39 @@ export default function AwsCostPage() {
 
   // Day filter: service totals for one selected day, computed from the daily series.
   const serviceRows = useMemo(() => {
-    if (!selectedDay) return byService.map((s) => ({ service: s.service, usd: s.mtdUsd }));
+    if (!selectedDay) return byService.map((s) => ({ service: s.service, usd: s.mtdUsd, notes: s.notes || [] }));
     const day = byDay.find((d) => d.day === selectedDay);
+    const notesFor = (service) => byService.find((b) => b.service === service)?.notes || [];
     return (day?.services || [])
-      .map((s) => ({ service: s.service, usd: s.amountUsd || 0 }))
+      .map((s) => ({ service: s.service, usd: s.amountUsd || 0, notes: notesFor(s.service) }))
       .sort((a, b) => b.usd - a.usd);
   }, [selectedDay, byService, byDay]);
   const fmtDayLabel = (d) => `${Number(String(d).slice(5, 7))}/${Number(String(d).slice(8, 10))}`;
 
   const isMonthly = days === 365 && !month;
+
+  const hasComponent = (usageTypes || []).some((u) => u.component);
+
+  // Why the resource table is empty (or switched off), in order of precedence.
+  const resourceNotice = useMemo(() => {
+    const cr = resources?.costResources;
+    if (!cr) return null;
+    if (cr.enabled === false) {
+      return { text: 'Resource-level cost capture is off. Turn it on under AWS Settings > Alert Thresholds.' };
+    }
+    if ((resources.rows || []).length > 0) return null;
+    const accts = cr.accounts || [];
+    if (accts.length > 0 && accts.every((a) => a.status === 'not_enabled')) {
+      return {
+        text: 'Resource-level cost data is not switched on for this AWS account. In Billing and Cost Management > Cost Management preferences, enable daily granularity resource-level data, then the next daily capture fills this table (14 days of history).',
+        detail: accts.find((a) => a.error)?.error,
+      };
+    }
+    const denied = accts.find((a) => a.status === 'denied');
+    if (denied) return { text: 'The polling credential lacks ce:GetCostAndUsageWithResources.', detail: denied.error };
+    if (accts.every((a) => !a.status)) return { text: 'Waiting for the next daily cost capture.' };
+    return { text: 'No resource-level rows in the window.', detail: accts.find((a) => a.status === 'error')?.error };
+  }, [resources]);
 
   // 12m mode: aggregate the daily series into months client-side (day granularity doesn't apply).
   const byMonth = useMemo(() => {
@@ -255,10 +297,16 @@ export default function AwsCostPage() {
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <div className="flex items-center justify-between mb-3">
           <p className="text-sm font-semibold text-ink">By Service {selectedDay ? `(${fmtDayLabel(selectedDay)})` : month ? `(${fmtMonthLabel(month)})` : '(MTD)'}</p>
-          {selectedDay && (
-            <button onClick={() => setSelectedDay('')}
-              className="text-[11px] text-brand hover:underline cursor-pointer">Clear day filter</button>
-          )}
+          <div className="flex items-center gap-3">
+            {selectedService && (
+              <button onClick={() => setSelectedService('')}
+                className="text-[11px] text-brand hover:underline cursor-pointer">Clear service filter</button>
+            )}
+            {selectedDay && (
+              <button onClick={() => setSelectedDay('')}
+                className="text-[11px] text-brand hover:underline cursor-pointer">Clear day filter</button>
+            )}
+          </div>
         </div>
         {data == null ? (
           <LoadingPanel label="Loading…" height={140} />
@@ -272,12 +320,24 @@ export default function AwsCostPage() {
                 <th className="py-2 pr-3 text-right">{selectedDay ? 'Day Spend' : 'MTD Spend'}</th>
               </tr></thead>
               <tbody>
-                {serviceRows.map((s) => (
-                  <tr key={s.service} className="border-b border-cohesity-border/50">
-                    <td className="py-2 pr-3 text-ink">{s.service}</td>
-                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(s.usd)}</td>
-                  </tr>
-                ))}
+                {serviceRows.map((s) => {
+                  const active = s.service === selectedService;
+                  return (
+                    <tr key={s.service} className={`border-b border-cohesity-border/50 ${active ? 'bg-brand/10' : ''}`}>
+                      <td className="py-2 pr-3 text-ink" style={{ borderLeft: `3px solid ${active ? BRAND : 'transparent'}` }}>
+                        <button type="button" aria-pressed={active}
+                          onClick={() => setSelectedService(active ? '' : s.service)}
+                          className="block w-full text-left pl-2 cursor-pointer hover:text-brand">
+                          {s.service}
+                          {s.notes.map((n) => (
+                            <span key={n} className="block text-[11px] text-ink-muted">{n}</span>
+                          ))}
+                        </button>
+                      </td>
+                      <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(s.usd)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -285,7 +345,7 @@ export default function AwsCostPage() {
       </div>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <p className="text-sm font-semibold text-ink">Usage Type Breakdown {selectedDay ? `(${fmtDayLabel(selectedDay)})` : ''}</p>
+        <p className="text-sm font-semibold text-ink">{selectedService ? `Usage Types in ${selectedService}` : 'Usage Type Breakdown'} {selectedDay ? `(${fmtDayLabel(selectedDay)})` : ''}</p>
         <p className="text-[11px] text-ink-muted mb-3">Decomposes bundled service lines like "EC2 - Other" into billable usage types</p>
         {usageTypes == null ? (
           <LoadingPanel label="Loading…" height={140} />
@@ -295,13 +355,17 @@ export default function AwsCostPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                {!selectedService && <th className="py-2 pr-3">Service</th>}
                 <th className="py-2 pr-3">Usage Type</th>
+                {hasComponent && <th className="py-2 pr-3">Component</th>}
                 <th className="py-2 pr-3 text-right">Total</th>
               </tr></thead>
               <tbody>
                 {usageTypes.map((u) => (
-                  <tr key={u.usageType} className="border-b border-cohesity-border/50">
+                  <tr key={`${u.service}|${u.usageType}`} className="border-b border-cohesity-border/50">
+                    {!selectedService && <td className="py-2 pr-3 text-ink-muted">{u.service || '-'}</td>}
                     <td className="py-2 pr-3 text-ink">{u.usageType}</td>
+                    {hasComponent && <td className="py-2 pr-3 text-ink-muted">{u.component || '-'}</td>}
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(u.totalUsd)}</td>
                   </tr>
                 ))}
@@ -310,6 +374,45 @@ export default function AwsCostPage() {
           </div>
         )}
       </div>
+      </div>
+
+      <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink">{selectedService ? `Resources in ${selectedService}` : 'Top Resources'}</p>
+        <p className="text-[11px] text-ink-muted mb-3">Resource-level cost from Cost Explorer, last 14 days, newest capture</p>
+        {resources == null ? (
+          <LoadingPanel label="Loading..." height={140} />
+        ) : resourceNotice ? (
+          <div className="text-sm text-ink-muted py-6 text-center">
+            <p>{resourceNotice.text}</p>
+            {resourceNotice.detail && <p className="text-[11px] text-ink-faint mt-1 break-words">{resourceNotice.detail}</p>}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                <th className="py-2 pr-3">Resource</th>
+                <th className="py-2 pr-3">Kind</th>
+                {!selectedService && <th className="py-2 pr-3">Service</th>}
+                <th className="py-2 pr-3 text-right">Total</th>
+              </tr></thead>
+              <tbody>
+                {resources.rows.map((r) => (
+                  <tr key={`${r.service}|${r.resourceId}`} className="border-b border-cohesity-border/50">
+                    <td className="py-2 pr-3 text-ink" title={r.resourceId}>
+                      {r.link ? <Link to={r.link} className="text-brand hover:underline">{r.label}</Link> : r.label}
+                      {r.label !== r.resourceId && (
+                        <span className="block text-[11px] text-ink-muted break-all">{r.resourceId}</span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-3 text-ink-muted">{r.kind || '-'}</td>
+                    {!selectedService && <td className="py-2 pr-3 text-ink-muted">{r.service || '-'}</td>}
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(r.totalUsd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>

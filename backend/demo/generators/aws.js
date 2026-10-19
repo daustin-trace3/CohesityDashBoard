@@ -67,6 +67,9 @@ const COST_SERVICES = [
   { service: 'Amazon Bedrock', base: 5 },
   { service: 'Amazon EC2 Container Service', base: 12 },
   { service: 'Amazon Lightsail', base: 3.5 },
+  { service: 'EC2 - Other', base: 7.5 },
+  { service: 'Amazon Relational Database Service', base: 10 },
+  { service: 'AWS Lambda', base: 0.8 },
   { service: 'AmazonCloudWatch', base: 2 },
 ];
 const COST_DAYS = 45;
@@ -89,16 +92,28 @@ const S3_HISTORY_DAYS = 90;
 const RDS_HISTORY_DB = 'demo-analytics-mysql';
 const RDS_HISTORY_DAYS = 30;
 
+// Each usage type carries its Cost Explorer service so the By Service rows can be drilled into.
+const COMPUTE_SERVICE = 'Amazon Elastic Compute Cloud - Compute';
+const S3_SERVICE = 'Amazon Simple Storage Service';
+const LIGHTSAIL_SERVICE = 'Amazon Lightsail';
+const RDS_SERVICE = 'Amazon Relational Database Service';
+const LAMBDA_SERVICE = 'AWS Lambda';
 const USAGE_TYPES = [
-  { usageType: 'BoxUsage:m5.large', base: 8 },
-  { usageType: 'BoxUsage:m5.xlarge', base: 6 },
-  { usageType: 'EBS:VolumeUsage.gp3', base: 4 },
-  { usageType: 'NatGateway-Hours', base: 3.5 },
-  { usageType: 'DataTransfer-Out-Bytes', base: 2.5 },
-  { usageType: 'TimedStorage-ByteHrs', base: 2 },
-  { usageType: 'Requests-Tier1', base: 1.2 },
-  { usageType: 'Lambda-GB-Second', base: 0.8 },
+  { service: COMPUTE_SERVICE, usageType: 'BoxUsage:m5.large', base: 8 },
+  { service: COMPUTE_SERVICE, usageType: 'BoxUsage:m5.xlarge', base: 6 },
+  { service: 'EC2 - Other', usageType: 'EBS:VolumeUsage.gp3', base: 4 },
+  { service: 'EC2 - Other', usageType: 'NatGateway-Hours', base: 3.5 },
+  { service: COMPUTE_SERVICE, usageType: 'DataTransfer-Out-Bytes', base: 2.5 },
+  { service: S3_SERVICE, usageType: 'TimedStorage-ByteHrs', base: 2 },
+  { service: S3_SERVICE, usageType: 'Requests-Tier1', base: 1.2 },
+  { service: LAMBDA_SERVICE, usageType: 'Lambda-GB-Second', base: 0.8 },
+  // Lightsail sums to the seeded 3.5 a day for 'Amazon Lightsail'.
+  { service: LIGHTSAIL_SERVICE, usageType: 'USE2-BundleUsage:2GB', base: 2 },
+  { service: LIGHTSAIL_SERVICE, usageType: 'USE2-DatabaseUsage:1GB', base: 1 },
+  { service: LIGHTSAIL_SERVICE, usageType: 'USE2-LoadBalancerUsage', base: 0.5 },
 ];
+const COST_RESOURCE_DAYS = 14;
+const LIGHTSAIL_DB_ARN = 'arn:aws:lightsail:us-east-2:893373391538:RelationalDatabase/demo-ls-db-01';
 const COST_USAGE_DAYS = 45;
 
 const INSTANCE_TYPE_COSTS = [
@@ -129,7 +144,7 @@ const HEALTH_EVENTS = [
 const RDS_INSTANCES = [
   { dbId: 'demo-prod-postgres', engine: 'postgres', engineVersion: '15.4', instanceClass: 'db.r5.large', status: 'available', multiAz: 1, allocatedGb: 200, freeStorageBytes: Math.round(200 * 1024 ** 3 * 0.45), cpuUtil: 32.1, connections: 24, backupRetentionDays: 7, latestBackupDaysAgo: 0, endpoint: 'demo-prod-postgres.abcdemo.us-east-2.rds.amazonaws.com' },
   { dbId: 'demo-analytics-mysql', engine: 'mysql', engineVersion: '8.0.35', instanceClass: 'db.m5.large', status: 'available', multiAz: 0, allocatedGb: 500, freeStorageBytes: Math.round(500 * 1024 ** 3 * 0.09), cpuUtil: 54.6, connections: 60, backupRetentionDays: 7, latestBackupDaysAgo: 0, endpoint: 'demo-analytics-mysql.abcdemo.us-east-2.rds.amazonaws.com' },
-  { dbId: 'demo-staging-postgres', engine: 'postgres', engineVersion: '15.4', instanceClass: 'db.t3.medium', status: 'available', multiAz: 0, allocatedGb: 50, freeStorageBytes: Math.round(50 * 1024 ** 3 * 0.7), cpuUtil: 8.9, connections: 4, backupRetentionDays: 3, latestBackupDaysAgo: 1, endpoint: 'demo-staging-postgres.abcdemo.us-east-2.rds.amazonaws.com' },
+  { dbId: 'demo-staging-postgres', engine: 'aurora-postgresql', engineVersion: '15.4', instanceClass: 'db.t3.medium', status: 'available', multiAz: 0, allocatedGb: 50, freeStorageBytes: Math.round(50 * 1024 ** 3 * 0.7), cpuUtil: 8.9, connections: 4, backupRetentionDays: 3, latestBackupDaysAgo: 1, endpoint: 'demo-staging-postgres.abcdemo.us-east-2.rds.amazonaws.com' },
 ];
 
 const LAMBDA_FUNCTIONS = [
@@ -421,18 +436,42 @@ function seedAws(db, { now, encrypt }) {
 
   // ── Cost usage-type breakdown: 45 days x 8 usage types ──────────────────
   const insertCostUsage = db.prepare(`
-    INSERT INTO aws_cost_usage_daily (account_id, day, usage_type, amount_usd)
-    VALUES (?, date('now', ?), ?, ?)
+    INSERT INTO aws_cost_usage_daily (account_id, day, service, usage_type, amount_usd)
+    VALUES (?, date('now', ?), ?, ?, ?)
   `);
   const usageRng = rngFor('aws-cost-usage-daily');
   let costUsageRows = 0;
   for (let i = COST_USAGE_DAYS - 1; i >= 0; i--) {
     for (const u of USAGE_TYPES) {
       const amount = Math.round(u.base * randFloat(usageRng, 0.85, 1.15, 3) * 100) / 100;
-      insertCostUsage.run(accountId, `-${i} days`, u.usageType, amount);
+      insertCostUsage.run(accountId, `-${i} days`, u.service, u.usageType, amount);
       costUsageRows++;
     }
   }
+
+  // ── Resource-level cost: 14 days across the demo's own inventory ───────
+  const insertCostResource = db.prepare(`
+    INSERT INTO aws_cost_resource_daily (account_id, day, service, resource_id, amount_usd)
+    VALUES (?, date('now', ?), ?, ?, ?)
+  `);
+  const resourceRng = rngFor('aws-cost-resource-daily');
+  const costResources = [
+    ...EC2_INSTANCES.filter((e) => e.state === 'running').map((e) => ({ service: COMPUTE_SERVICE, id: e.instanceId, base: e.instanceType === 'm5.xlarge' ? 4.6 : e.instanceType === 'r5.large' ? 3.0 : 2.1 })),
+    ...S3_BUCKETS.map((b) => ({ service: S3_SERVICE, id: b.name, base: Math.max(0.02, Math.min(3, b.sizeBytes / 1024 ** 4 * 0.7)) })),
+    ...LIGHTSAIL_INSTANCES.map((l) => ({ service: LIGHTSAIL_SERVICE, id: l.name, base: l.bundle.startsWith('small') ? 0.8 : 0.4 })),
+    { service: LIGHTSAIL_SERVICE, id: LIGHTSAIL_DB_ARN, base: 1 },
+    ...RDS_INSTANCES.map((r) => ({ service: RDS_SERVICE, id: r.dbId, base: r.instanceClass.includes('r5') ? 5.5 : r.instanceClass.includes('m5') ? 3.4 : 1.1 })),
+    ...LAMBDA_FUNCTIONS.map((f) => ({ service: LAMBDA_SERVICE, id: `arn:aws:lambda:us-east-2:893373391538:function:${f.name}`, base: Math.max(0.02, f.invocations24h * f.avgDurationMs / 1e8) })),
+  ];
+  let costResourceRows = 0;
+  for (let i = COST_RESOURCE_DAYS - 1; i >= 0; i--) {
+    for (const r of costResources) {
+      const amount = Math.round(r.base * randFloat(resourceRng, 0.85, 1.15, 3) * 100) / 100;
+      insertCostResource.run(accountId, `-${i} days`, r.service, r.id, amount);
+      costResourceRows++;
+    }
+  }
+  db.prepare("UPDATE aws_accounts SET cost_resources_status = 'ok', cost_resources_error = NULL WHERE id = ?").run(accountId);
 
   // ── Cost instance-type breakdown: 45 days x 3 instance types ────────────
   const insertCostInstanceType = db.prepare(`
@@ -557,6 +596,7 @@ function seedAws(db, { now, encrypt }) {
     s3HistoryRows,
     rdsHistoryRows,
     costUsageRows,
+    costResourceRows,
     costInstanceTypeRows,
     healthRows,
     optimizerRows,
