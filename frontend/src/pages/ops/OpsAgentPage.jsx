@@ -50,25 +50,35 @@ function TickChip({ startedAt }) {
 
 const sevTone = (s) => (s === 'critical' ? 'crit' : s === 'error' || s === 'warning' ? 'warn' : 'info');
 
-function ModalShell({ title, subtitle, icon: Icon, onClose, children, footer }) {
+function ModalShell({ title, subtitle, badges, icon: Icon, onClose, children, footer, size = 'md' }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const xl = size === 'xl';
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative panel w-full max-w-3xl max-h-[88vh] flex flex-col border-t-2 border-brand">
-        <div className="flex items-start justify-between p-4 pb-3 border-b border-cohesity-border">
-          <div className="flex items-center gap-2 min-w-0">
-            {Icon && <Icon size={17} className="text-brand shrink-0" />}
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-ink truncate">{title}</p>
-              {subtitle && <p className="text-[11px] text-ink-faint truncate">{subtitle}</p>}
+      <div className={`relative panel flex flex-col border-t-2 border-brand ${xl ? '' : 'w-full max-w-3xl max-h-[88vh]'}`}
+        style={xl ? { width: 'min(92vw, 1320px)', maxHeight: '92vh' } : undefined}>
+        <div className="p-4 pb-3 border-b border-cohesity-border">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              {Icon && <Icon size={17} className="text-brand shrink-0" />}
+              <div className="min-w-0">
+                <p className="text-[15px] font-semibold text-ink truncate">{title}</p>
+                {subtitle && <p className="text-[11px] text-ink-faint truncate">{subtitle}</p>}
+              </div>
             </div>
+            <button onClick={onClose} aria-label="Close"
+              className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer shrink-0">
+              <X size={15} />
+            </button>
           </div>
-          <button onClick={onClose} aria-label="Close"
-            className="flex items-center justify-center h-7 w-7 rounded-md text-ink-muted hover:text-ink hover:bg-surface-overlay transition-colors cursor-pointer shrink-0">
-            <X size={15} />
-          </button>
+          {badges && <div className="flex items-center gap-2 mt-2.5 flex-wrap">{badges}</div>}
         </div>
-        <div className="p-4 overflow-y-auto">{children}</div>
+        <div className={`overflow-y-auto ${xl ? 'p-5 text-[13px] leading-normal' : 'p-4'}`}>{children}</div>
         {footer && <div className="p-4 pt-3 border-t border-cohesity-border flex items-center justify-end gap-2 flex-wrap">{footer}</div>}
       </div>
     </div>,
@@ -76,9 +86,11 @@ function ModalShell({ title, subtitle, icon: Icon, onClose, children, footer }) 
   );
 }
 
-const Section = ({ title, children }) => (
-  <div className="mb-4">
-    <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-1">{title}</p>
+const SEV_BORDER = { crit: 'border-status-crit/50', warn: 'border-status-warn/50', info: 'border-status-info/50' };
+
+const Section = ({ title, children, className = '', borderClass = 'border-cohesity-border' }) => (
+  <div className={`rounded-lg border ${borderClass} p-4 mb-4 ${className}`}>
+    <p className="text-[11px] uppercase tracking-wide text-ink-faint pb-1.5 mb-2.5 border-b border-cohesity-border">{title}</p>
     {children}
   </div>
 );
@@ -86,9 +98,43 @@ const Section = ({ title, children }) => (
 // The triage summary is one issue per line; old incidents hold a single paragraph.
 const SummaryLines = ({ text, className = 'text-ink' }) => {
   const lines = String(text || '').split('\n').map((s) => s.trim()).filter(Boolean);
-  if (lines.length > 1) return <ul className={`list-disc pl-5 text-sm space-y-0.5 ${className}`}>{lines.map((l, i) => <li key={i}>{l}</li>)}</ul>;
-  return <p className={`text-sm ${className}`}>{lines[0] || '-'}</p>;
+  if (lines.length > 1) return <ul className={`list-disc pl-5 text-[13px] space-y-1 ${className}`}>{lines.map((l, i) => <li key={i}>{l}</li>)}</ul>;
+  return <p className={`text-[13px] ${className}`}>{lines[0] || '-'}</p>;
 };
+
+/** Renders a bulleted or numbered list, collapsing past `limit` items behind a Show all link. */
+function CollapsibleList({ items, render, limit = 6, ordered = false, className = '' }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? items : items.slice(0, limit);
+  const Tag = ordered ? 'ol' : 'ul';
+  return (
+    <>
+      <Tag className={`${ordered ? 'list-decimal' : 'list-disc'} pl-5 text-[13px] space-y-1 ${className}`}>{shown.map((it, i) => <li key={i}>{render(it, i)}</li>)}</Tag>
+      {items.length > limit && (
+        <button onClick={() => setAll((v) => !v)} className="mt-2 text-[11px] text-brand hover:underline cursor-pointer">
+          {all ? 'Show fewer' : `Show all (${items.length})`}
+        </button>
+      )}
+    </>
+  );
+}
+
+function Fact({ label, children }) {
+  return (<><dt className="text-ink-faint">{label}</dt><dd className="text-ink min-w-0 break-words">{children}</dd></>);
+}
+
+function AlertMessage({ text }) {
+  const [open, setOpen] = useState(false);
+  const long = String(text || '').length > 240;
+  return (
+    <div>
+      <span className={!open && long ? 'line-clamp-3' : ''}>{text}</span>
+      {long && <button onClick={() => setOpen((v) => !v)} className="block text-[11px] text-brand hover:underline cursor-pointer">{open ? 'Show less' : 'Show more'}</button>}
+    </div>
+  );
+}
+
+const footBtn = 'flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink transition-colors disabled:opacity-50 cursor-pointer';
 
 function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
   const [inc, setInc] = useState(null);
@@ -115,25 +161,45 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
 
   const a = inc?.analysis;
   const sm = inc ? (STATE_META[inc.state] || STATE_META.collecting) : null;
+  const sev = inc ? sevTone(inc.severity) : 'info';
+  const networkBlocks = Array.isArray(inc?.evidence?.network) ? inc.evidence.network.filter((n) => n && Array.isArray(n.lines) && n.lines.length > 0) : [];
+  const live = inc?.evidence?.liveChecks;
+  const openAlerts = inc ? inc.alerts.filter((x) => !x.clearedAt).length : 0;
+
+  const badges = inc && (
+    <>
+      <Badge tone={sm.tone}>{sm.label}</Badge>
+      <Badge tone={sev}>{String(inc.severity).toUpperCase()}</Badge>
+      {inc.classification && <Badge tone={CLASS_TONE[inc.classification] || 'neutral'}>{inc.classification}{inc.confidence ? ` · ${inc.confidence} confidence` : ''}</Badge>}
+      {a?.source === 'fallback' && <Badge tone="warn">rule-based digest</Badge>}
+      {inc.baseline && <Badge tone="neutral">baseline</Badge>}
+      {inc.humanRequired === true && <Badge tone="crit">human required</Badge>}
+      {inc.humanRequired === false && <Badge tone="ok">no human needed</Badge>}
+      {inc.healAttempted && <Badge tone="info">re-poll attempted</Badge>}
+      {inc.teamsNotifiedAt && <span title={`Last posted ${timeAgo(inc.teamsNotifiedAt)}`}><Badge tone="ok">posted to Teams</Badge></span>}
+      {inc.model && a?.source === 'ai' && <span className="text-[11px] text-ink-faint">analysis by {inc.model}</span>}
+    </>
+  );
+
   return (
     <ModalShell
+      size="xl"
       title={inc ? (inc.title || inc.host || '') : 'Incident'}
       subtitle={inc ? `${KIND_LABEL[inc.kind] || 'Host'} · ${inc.platforms.join(', ')} · opened ${timeAgo(inc.openedAt)} · ${inc.eventCount} alert${inc.eventCount === 1 ? '' : 's'} · id ${inc.id}` : null}
+      badges={badges}
       icon={Bot} onClose={onClose}
       footer={inc && (
         <>
           {inc.state !== 'resolved' && (
-            <button onClick={() => act('resolve', 'Incident resolved')} disabled={!!busy}
-              className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink transition-colors disabled:opacity-50 cursor-pointer">
+            <button onClick={() => act('resolve', 'Incident resolved')} disabled={!!busy} className={footBtn}>
               <CheckCircle2 size={13} /> Resolve
             </button>
           )}
-          <button onClick={() => act('retriage', 'Triage re-run')} disabled={!!busy}
-            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink transition-colors disabled:opacity-50 cursor-pointer">
+          <button onClick={() => act('retriage', 'Triage re-run')} disabled={!!busy} className={footBtn}>
             <RefreshCw size={13} className={busy === 'retriage' ? 'animate-spin' : ''} /> Re-triage
           </button>
           <button onClick={() => act('resend', 'Email sent')} disabled={!!busy}
-            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer">
+            className="flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 bg-brand/10 border border-brand/30 text-brand rounded-lg hover:bg-brand/20 transition-colors disabled:opacity-50 cursor-pointer">
             <Mail size={13} /> {inc.notifyCount ? 'Send again' : 'Send email'}
           </button>
         </>
@@ -142,101 +208,128 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
         : !inc ? <LoadingPanel label="Loading incident…" height={120} />
         : (
           <>
-            <div className="flex items-center gap-2 mb-4 flex-wrap">
-              <Badge tone={sm.tone}>{sm.label}</Badge>
-              <Badge tone={sevTone(inc.severity)}>{String(inc.severity).toUpperCase()}</Badge>
-              {inc.classification && <Badge tone={CLASS_TONE[inc.classification] || 'neutral'}>{inc.classification}{inc.confidence ? ` · ${inc.confidence} confidence` : ''}</Badge>}
-              {a?.source === 'fallback' && <Badge tone="warn">rule-based digest</Badge>}
-              {inc.baseline && <Badge tone="neutral">baseline</Badge>}
-              {inc.humanRequired === true && <Badge tone="crit">human required</Badge>}
-              {inc.humanRequired === false && <Badge tone="ok">no human needed</Badge>}
-              {inc.healAttempted && <Badge tone="info">re-poll attempted</Badge>}
-              {inc.teamsNotifiedAt && <span title={`Last posted ${timeAgo(inc.teamsNotifiedAt)}`}><Badge tone="ok">posted to Teams</Badge></span>}
-              {inc.model && a?.source === 'ai' && <span className="text-[11px] text-ink-faint">analysis by {inc.model}</span>}
-            </div>
-            {inc.triageError && <p className="text-[11px] text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-2.5 py-1.5 mb-3">{inc.triageError}</p>}
-            {inc.teamsError && <p className="text-[11px] text-red-400 bg-red-400/10 border border-red-400/30 rounded-md px-2.5 py-1.5 mb-3">Teams post failed: {inc.teamsError}</p>}
-            {inc.emailError && <p className="text-[11px] text-red-400 bg-red-400/10 border border-red-400/30 rounded-md px-2.5 py-1.5 mb-3">Email failed: {inc.emailError}</p>}
-            {inc.baseline && !inc.emailTo && <p className="text-[11px] text-ink-faint mb-3">Found on the agent's first pass: a backlog that existed before the agent started, triaged and listed but not emailed. Use Send email if it should go out.</p>}
-            {inc.resolution && (
-              <div className="mb-3 rounded-md border border-status-ok/30 bg-status-ok/10 px-2.5 py-2">
-                <p className="text-[10px] uppercase tracking-wide text-ink-faint mb-0.5">Resolution{inc.resolvedBy ? ` (${inc.resolvedBy})` : ''}</p>
-                <p className="text-xs text-ink">{inc.resolution}</p>
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+              <div className="lg:col-span-3 min-w-0">
+                {inc.triageError && <p className="text-xs text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-md px-3 py-2 mb-3">{inc.triageError}</p>}
+                {inc.teamsError && <p className="text-xs text-red-400 bg-red-400/10 border border-red-400/30 rounded-md px-3 py-2 mb-3">Teams post failed: {inc.teamsError}</p>}
+                {inc.emailError && <p className="text-xs text-red-400 bg-red-400/10 border border-red-400/30 rounded-md px-3 py-2 mb-3">Email failed: {inc.emailError}</p>}
+                {inc.baseline && !inc.emailTo && <p className="text-xs text-ink-faint mb-3">Found on the agent's first pass: a backlog that existed before the agent started, triaged and listed but not emailed. Use Send email if it should go out.</p>}
+                {inc.resolution && (
+                  <div className="mb-4 rounded-md border border-status-ok/30 bg-status-ok/10 px-3 py-2.5">
+                    <p className="text-[11px] uppercase tracking-wide text-ink-faint mb-0.5">Resolution{inc.resolvedBy ? ` (${inc.resolvedBy})` : ''}</p>
+                    <p className="text-[13px] text-ink">{inc.resolution}</p>
+                  </div>
+                )}
+                {inc.state === 'clearing' && inc.clearedSince && <p className="text-xs text-ink-faint mb-3">Alerts cleared {timeAgo(inc.clearedSince)}; the incident closes itself if nothing fires again inside the quiet window.</p>}
+                {inc.emailTo && <p className="text-xs text-ink-faint mb-3">Emailed {inc.notifyCount} time{inc.notifyCount === 1 ? '' : 's'} to {inc.emailTo}{inc.notifiedAt ? `, last ${timeAgo(inc.notifiedAt)}` : ''}.</p>}
+                {inc.state === 'collecting' && !a && (
+                  <p className="text-[13px] text-ink-muted mb-4">Collecting related alerts until {new Date(inc.holdUntil).toLocaleTimeString()}; triage runs when the hold window ends.</p>
+                )}
+                {a && (
+                  <>
+                    <Section title="What happened"><SummaryLines text={a.summary} className="text-ink" /></Section>
+                    {a.impact && <Section title="Impact"><p className="text-[13px] text-ink-muted">{a.impact}</p></Section>}
+                    {a.correlation && <Section title="Correlation"><p className="text-[13px] text-ink-muted">{a.correlation}</p></Section>}
+                    {a.likely_cause && <Section title="Likely cause" borderClass={SEV_BORDER[sev] || 'border-cohesity-border'}><p className="text-[13px] text-ink">{a.likely_cause}</p></Section>}
+                    {(a.next_steps || []).length > 0 && (
+                      <Section title="Next steps for the next level">
+                        <div className="space-y-2.5">
+                          {a.next_steps.map((s, i) => (
+                            <div key={i} className="rounded-md border border-cohesity-border bg-surface-overlay px-3 py-2.5">
+                              <p className="mb-1"><span className="text-[11px] text-ink-faint mr-2">Step {i + 1}</span><span className="inline-block text-[11px] font-semibold text-brand bg-brand/10 border border-brand/30 rounded-full px-2 py-0.5">{s.owner}</span></p>
+                              <p className="text-[13px] text-ink">{s.action}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </Section>
+                    )}
+                    {a.escalate && <Section title="Escalation"><p className="text-[13px] text-ink-muted">{a.escalate}</p></Section>}
+                    {a.human_reason && <Section title={a.human_required ? 'Why a human is required' : 'Why no human is needed'}><p className="text-[13px] text-ink-muted">{a.human_reason}</p></Section>}
+                  </>
+                )}
+                {!a && inc.summary && <Section title="Summary"><SummaryLines text={inc.summary} className="text-ink-muted" /></Section>}
               </div>
-            )}
-            {inc.state === 'clearing' && inc.clearedSince && <p className="text-[11px] text-ink-faint mb-3">Alerts cleared {timeAgo(inc.clearedSince)}; the incident closes itself if nothing fires again inside the quiet window.</p>}
-            {inc.emailTo && <p className="text-[11px] text-ink-faint mb-3">Emailed {inc.notifyCount} time{inc.notifyCount === 1 ? '' : 's'} to {inc.emailTo}{inc.notifiedAt ? `, last ${timeAgo(inc.notifiedAt)}` : ''}.</p>}
 
-            {inc.state === 'collecting' && !a && (
-              <p className="text-sm text-ink-muted mb-4">Collecting related alerts until {new Date(inc.holdUntil).toLocaleTimeString()}; triage runs when the hold window ends.</p>
-            )}
-            {inc.recurrence?.isPattern && (
-              <div className="mb-4 rounded-md border border-status-warn/40 bg-status-warn/10 px-3 py-2.5">
-                <p className="text-xs font-bold text-status-warn mb-1">This has happened {inc.recurrence.count} times in {inc.recurrence.windowDays} days</p>
-                <p className="text-[11px] text-ink-muted mb-2">
-                  {inc.recurrence.typicalGapMinutes != null && (inc.recurrence.typicalGapMinutes >= 1440
-                    ? `Roughly every ${(inc.recurrence.typicalGapMinutes / 1440).toFixed(1)} days. `
-                    : inc.recurrence.typicalGapMinutes >= 60
-                      ? `Roughly every ${(inc.recurrence.typicalGapMinutes / 60).toFixed(1)} hours. `
-                      : `Roughly every ${inc.recurrence.typicalGapMinutes} minutes. `)}
-                  {inc.recurrence.closedByAgent > 0 && `${inc.recurrence.closedByAgent} of the earlier ones closed on their own, so nobody was asked to look.`}
-                </p>
-                <table className="w-full text-[11px]">
-                  <thead><tr className="text-left text-ink-faint border-b border-cohesity-border"><th className="py-1 pr-3 font-semibold">Opened</th><th className="py-1 pr-3 font-semibold">Lasted</th><th className="py-1 pr-3 font-semibold">Closed by</th><th className="py-1 font-semibold">Resolution</th></tr></thead>
-                  <tbody>
-                    {inc.recurrence.occurrences.map((o) => (
-                      <tr key={o.id} className="border-b border-cohesity-border/40 last:border-0">
-                        <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{new Date(o.openedAt).toLocaleString()}</td>
-                        <td className="py-1 pr-3 text-ink-muted tnum whitespace-nowrap">{o.minutesOpen == null ? 'still open' : o.minutesOpen >= 60 ? `${(o.minutesOpen / 60).toFixed(1)} h` : `${o.minutesOpen} min`}</td>
-                        <td className="py-1 pr-3 text-ink-muted">{o.closedBy}</td>
-                        <td className="py-1 text-ink-muted">{o.resolution || '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {a && (
-              <>
-                <Section title="What happened"><SummaryLines text={a.summary} className="text-ink" /></Section>
-                {a.impact && <Section title="Impact"><p className="text-sm text-ink-muted">{a.impact}</p></Section>}
-                {a.correlation && <Section title="Correlation"><p className="text-sm text-ink-muted">{a.correlation}</p></Section>}
-                <Section title={`What ${agentName} reviewed`}>
-                  <ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{(a.reviewed || []).map((r, i) => <li key={i}>{r}</li>)}</ul>
+              <div className="lg:col-span-2 min-w-0">
+                <Section title="Facts">
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[13px]">
+                    <Fact label="State">{sm.label}</Fact>
+                    <Fact label="Severity">{String(inc.severity).toUpperCase()}</Fact>
+                    <Fact label="Kind">{KIND_LABEL[inc.kind] || 'Host'}</Fact>
+                    <Fact label="Platforms">{inc.platforms.join(', ')}</Fact>
+                    <Fact label="Host">{inc.host || '-'}</Fact>
+                    <Fact label="Opened">{new Date(inc.openedAt).toLocaleString()}</Fact>
+                    {inc.state === 'collecting' && <Fact label="Hold until">{new Date(inc.holdUntil).toLocaleString()}</Fact>}
+                    <Fact label="Alerts">{inc.alerts.length} ({openAlerts} open, {inc.alerts.length - openAlerts} cleared)</Fact>
+                    <Fact label="Emailed">{inc.notifyCount ? `${inc.notifyCount} time${inc.notifyCount === 1 ? '' : 's'}${inc.emailTo ? ` to ${inc.emailTo}` : ''}${inc.notifiedAt ? `, last ${new Date(inc.notifiedAt).toLocaleString()}` : ''}` : 'not yet'}</Fact>
+                    <Fact label="Teams">{inc.teamsNotifiedAt ? `posted ${new Date(inc.teamsNotifiedAt).toLocaleString()}` : 'not posted'}</Fact>
+                    <Fact label="Model">{inc.model || '-'}</Fact>
+                    <Fact label="Incident id">{inc.id}</Fact>
+                  </dl>
                 </Section>
-                {a.human_reason && <Section title={a.human_required ? 'Why a human is required' : 'Why no human is needed'}><p className="text-sm text-ink-muted">{a.human_reason}</p></Section>}
-                {inc.healActions?.length > 0 && <Section title={`What ${agentName} did`}><ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{inc.healActions.map((h, i) => <li key={i}>{new Date(h.at).toLocaleTimeString()}: {h.action} {h.target}: {h.result}</li>)}</ul></Section>}
-                {Array.isArray(inc.evidence?.network) && inc.evidence.network.filter((n) => n && Array.isArray(n.lines) && n.lines.length > 0).map((n, ni) => (
-                  <Section key={`net-${ni}`} title={n.title || 'Network'}>
-                    <ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">{n.lines.map((l, i) => <li key={i}>{String(l)}</li>)}</ul>
+
+                {inc.recurrence?.isPattern && (
+                  <div className="mb-4 rounded-lg border border-status-warn/40 bg-status-warn/10 p-4">
+                    <p className="text-xs font-bold text-status-warn mb-1">This has happened {inc.recurrence.count} times in {inc.recurrence.windowDays} days</p>
+                    <p className="text-[11px] text-ink-muted mb-2">
+                      {inc.recurrence.typicalGapMinutes != null && (inc.recurrence.typicalGapMinutes >= 1440
+                        ? `Roughly every ${(inc.recurrence.typicalGapMinutes / 1440).toFixed(1)} days. `
+                        : inc.recurrence.typicalGapMinutes >= 60
+                          ? `Roughly every ${(inc.recurrence.typicalGapMinutes / 60).toFixed(1)} hours. `
+                          : `Roughly every ${inc.recurrence.typicalGapMinutes} minutes. `)}
+                      {inc.recurrence.closedByAgent > 0 && `${inc.recurrence.closedByAgent} of the earlier ones closed on their own, so nobody was asked to look.`}
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[11px]">
+                        <thead><tr className="text-left text-ink-faint border-b border-cohesity-border"><th className="py-1 pr-3 font-semibold">Opened</th><th className="py-1 pr-3 font-semibold">Lasted</th><th className="py-1 pr-3 font-semibold">Closed by</th><th className="py-1 font-semibold">Resolution</th></tr></thead>
+                        <tbody>
+                          {inc.recurrence.occurrences.map((o) => (
+                            <tr key={o.id} className="border-b border-cohesity-border/40 last:border-0">
+                              <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{new Date(o.openedAt).toLocaleString()}</td>
+                              <td className="py-1 pr-3 text-ink-muted tnum whitespace-nowrap">{o.minutesOpen == null ? 'still open' : o.minutesOpen >= 60 ? `${(o.minutesOpen / 60).toFixed(1)} h` : `${o.minutesOpen} min`}</td>
+                              <td className="py-1 pr-3 text-ink-muted">{o.closedBy}</td>
+                              <td className="py-1 text-ink-muted">{o.resolution || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {inc.healActions?.length > 0 && (
+                  <Section title={`What ${agentName} did`}>
+                    <CollapsibleList className="text-ink-muted" items={inc.healActions}
+                      render={(h) => `${new Date(h.at).toLocaleTimeString()}: ${h.action} ${h.target}: ${h.result}`} />
                   </Section>
-                ))}
-                {inc.evidence?.liveChecks?.results?.length > 0 && (
+                )}
+                {a && (a.reviewed || []).length > 0 && (
+                  <Section title={`What ${agentName} reviewed`}>
+                    <CollapsibleList className="text-ink-muted" items={a.reviewed} render={(r) => r} />
+                  </Section>
+                )}
+                {live?.results?.length > 0 && (
                   <Section title={`What ${agentName} checked live (from the ICC server)`}>
-                    <ul className="list-disc pl-5 text-sm text-ink-muted space-y-0.5">
-                      {inc.evidence.liveChecks.results.map((c, i) => (
-                        <li key={i}>
+                    <CollapsibleList items={live.results} className="text-ink-muted"
+                      render={(c) => (
+                        <>
                           <span className={c.ok ? 'text-status-ok font-semibold' : 'text-status-crit font-semibold'}>{c.ok ? 'OK' : 'FAILED'}</span>{' '}
                           {c.label || c.capability} on {c.target?.name}{c.target?.address && c.target.address !== c.target.name ? <span className="text-ink-faint"> ({c.target.address})</span> : null}: {c.summary}
-                        </li>
-                      ))}
-                    </ul>
-                    {inc.evidence.liveChecks.unresolved?.length > 0 && <p className="text-[11px] text-ink-faint mt-1">Not checked, no stored address: {inc.evidence.liveChecks.unresolved.join('; ')}.</p>}
+                        </>
+                      )} />
+                    {live.unresolved?.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Not checked, no stored address: {live.unresolved.join('; ')}.</p>}
                   </Section>
                 )}
-                {inc.evidence?.liveChecks && !inc.evidence.liveChecks.ran && inc.evidence.liveChecks.skipped && !/switched on/.test(inc.evidence.liveChecks.skipped) && (
-                  <p className="text-[11px] text-ink-faint mb-4">Live checks did not run: {inc.evidence.liveChecks.skipped}.</p>
+                {networkBlocks.map((n, ni) => (
+                  <Section key={`net-${ni}`} title={n.title || 'Network'}>
+                    <CollapsibleList className="text-ink-muted" items={n.lines.map(String)} render={(l) => l} />
+                  </Section>
+                ))}
+                {live && !live.ran && live.skipped && !/switched on/.test(live.skipped) && (
+                  <p className="text-xs text-ink-faint mb-4">Live checks did not run: {live.skipped}.</p>
                 )}
-                {a.likely_cause && <Section title="Likely cause"><p className="text-sm text-ink">{a.likely_cause}</p></Section>}
-                <Section title="Next steps for the next level">
-                  <ol className="list-decimal pl-5 text-sm text-ink space-y-1">
-                    {(a.next_steps || []).map((s, i) => <li key={i}><span className="text-brand font-semibold">{s.owner}</span>: {s.action}</li>)}
-                  </ol>
-                </Section>
-                {a.escalate && <Section title="Escalation"><p className="text-sm text-ink-muted">{a.escalate}</p></Section>}
-              </>
-            )}
-            {!a && inc.summary && <Section title="Summary"><SummaryLines text={inc.summary} className="text-ink-muted" /></Section>}
+              </div>
+            </div>
 
             <Section title={`Alerts in this incident (${inc.alerts.length})`}>
               <div className="overflow-x-auto">
@@ -246,12 +339,12 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                   </tr></thead>
                   <tbody>
                     {inc.alerts.map((al, i) => (
-                      <tr key={i} className="border-b border-cohesity-border/40">
+                      <tr key={i} className="border-b border-cohesity-border/40 align-top">
                         <td className="py-1.5 pr-3 text-ink">{al.platformLabel}</td>
                         <td className="py-1.5 pr-3"><Badge tone={sevTone(al.severity)}>{al.severity}</Badge></td>
-                        <td className="py-1.5 pr-3 text-ink-muted">{al.host || '—'}</td>
-                        <td className="py-1.5 pr-3 text-ink-muted max-w-[320px]"><span className="line-clamp-2" title={al.message}>{al.message}</span></td>
-                        <td className="py-1.5 pr-3 text-ink-faint tnum whitespace-nowrap">{al.firstSeen ? timeAgo(al.firstSeen) : '—'}</td>
+                        <td className="py-1.5 pr-3 text-ink-muted whitespace-nowrap">{al.host || '-'}</td>
+                        <td className="py-1.5 pr-3 text-ink-muted"><AlertMessage text={al.message} /></td>
+                        <td className="py-1.5 pr-3 text-ink-faint tnum whitespace-nowrap">{al.firstSeen ? <span title={timeAgo(al.firstSeen)}>{new Date(al.firstSeen).toLocaleString()}</span> : '-'}</td>
                         <td className="py-1.5">{al.clearedAt ? <Badge tone="neutral">cleared</Badge> : <Badge tone="ok">open</Badge>}</td>
                       </tr>
                     ))}
