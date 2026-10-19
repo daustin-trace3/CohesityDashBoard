@@ -7,7 +7,7 @@
 // colour is a placeholder until Doug supplies the logo.
 const lmMigrations = require('../../db/migrations/logicmonitor');
 const { createLogicmonitorPollerHandle } = require('../../services/logicmonitorPoller');
-const { computeIssues, isShadowedIssue, shadowedAlertCounts } = require('../../services/logicmonitorIssues');
+const { isShadowedIssue, shadowedAlertCounts } = require('../../services/logicmonitorIssues');
 const lmPath = require('../../services/logicmonitorPath');
 const lmSites = require('../../services/logicmonitorSites');
 const lmEndpoints = require('../../services/logicmonitorEndpoints');
@@ -41,7 +41,8 @@ function opsSummary(coreApi) {
     WHERE m.id IN (SELECT MAX(id) FROM lm_metrics_history GROUP BY source_id)
   `).get().n;
 
-  const issues = computeIssues();
+  // computeIssues() loads every lm_ds_metrics row (~300 MB); the poller keeps lm_issue_history current.
+  const issues = db.prepare("SELECT severity, type FROM lm_issue_history WHERE status = 'open'").all();
   const bySeverity = { critical: 0, warning: 0, info: 0 };
   for (const x of issues) bySeverity[x.severity] = (bySeverity[x.severity] || 0) + 1;
   const exceptions = [];
