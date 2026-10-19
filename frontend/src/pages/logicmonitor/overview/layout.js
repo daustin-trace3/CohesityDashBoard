@@ -60,9 +60,9 @@ export function clipToBorder(a, b, hw = NODE_W / 2, hh = NODE_H / 2) {
 }
 
 // Straight edge between two node centres, shortened to both borders.
-export function edgeLine(a, b) {
-  const p1 = clipToBorder(a, b);
-  const p2 = clipToBorder(b, a);
+export function edgeLine(a, b, hw = NODE_W / 2, hh = NODE_H / 2) {
+  const p1 = clipToBorder(a, b, hw, hh);
+  const p2 = clipToBorder(b, a, hw, hh);
   return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
 }
 
@@ -137,7 +137,7 @@ export const BOW_CAP = 160;
 export function edgeGeometry(a, b, opts = {}) {
   const skipped = a.row === b.row ? Math.abs(a.col - b.col) - 1 : 0;
   if (skipped < 1) {
-    const line = edgeLine(a, b);
+    const line = edgeLine(a, b, opts.hw, opts.hh);
     const dx = line.x2 - line.x1;
     const dy = line.y2 - line.y1;
     const len = Math.hypot(dx, dy) || 1;
@@ -149,8 +149,8 @@ export function edgeGeometry(a, b, opts = {}) {
   const bow = Math.min(BOW_CAP, BOW_PER_NODE * skipped);
   const dirY = opts.arcUp || a.dir !== -1 ? 1 : -1;
   const c = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 + dirY * bow };
-  const p0 = clipToBorder(a, c);
-  const p1 = clipToBorder(b, c);
+  const p0 = clipToBorder(a, c, opts.hw, opts.hh);
+  const p1 = clipToBorder(b, c, opts.hw, opts.hh);
   const f = (n) => Math.round(n * 10) / 10;
   return {
     d: `M${f(p0.x)} ${f(p0.y)} Q${f(c.x)} ${f(c.y)} ${f(p1.x)} ${f(p1.y)}`, curved: true, ctrl: c,
@@ -168,8 +168,8 @@ export function edgeGeometry(a, b, opts = {}) {
 }
 
 // Node rectangles, grown by a margin so the corner badges count as part of the node.
-export function nodeRects(positions, margin = 12) {
-  return Object.values(positions || {}).map((p) => ({ x1: p.x - NODE_W / 2 - margin, y1: p.y - NODE_H / 2 - margin, x2: p.x + NODE_W / 2 + margin, y2: p.y + NODE_H / 2 + margin }));
+export function nodeRects(positions, margin = 12, w = NODE_W, h = NODE_H) {
+  return Object.values(positions || {}).map((p) => ({ x1: p.x - w / 2 - margin, y1: p.y - h / 2 - margin, x2: p.x + w / 2 + margin, y2: p.y + h / 2 + margin }));
 }
 
 const hits = (cx, cy, w, h, rects) => rects.some((r) => cx - w / 2 < r.x2 && cx + w / 2 > r.x1 && cy - h / 2 < r.y2 && cy + h / 2 > r.y1);
@@ -191,8 +191,8 @@ export function pushClear(pt, dir, w, h, rects) {
 const rectsHit = (c, w, h, rects) => rects.some((r) => c.x - w / 2 < r.x2 && c.x + w / 2 > r.x1 && c.y - h / 2 < r.y2 && c.y + h / 2 > r.y1);
 
 // Rectangle of a w x 20 pill centred at pt, in the {x1,y1,x2,y2} form pushClear and placeLabel take.
-export function pillRect(pt, w) {
-  return { x1: pt.x - w / 2, y1: pt.y - 10, x2: pt.x + w / 2, y2: pt.y + 10 };
+export function pillRect(pt, w, h = 20) {
+  return { x1: pt.x - w / 2, y1: pt.y - h / 2, x2: pt.x + w / 2, y2: pt.y + h / 2 };
 }
 
 const overlapArea = (c, w, h, rects) => rects.reduce((sum, r) => {

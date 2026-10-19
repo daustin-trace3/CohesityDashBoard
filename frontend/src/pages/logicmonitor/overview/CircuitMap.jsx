@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  COLORS, NODE_W, NODE_H, MAP_W, layoutNodes, edgeGeometry, nodeRects, pushClear, pillRect,
+  COLORS, MAP_W, layoutNodes, edgeGeometry, nodeRects, pushClear, pillRect,
 } from './layout';
 import { fmtWhen } from '../helpers';
 import { SiteCard, EdgeCard } from './PinnedCards';
@@ -14,8 +14,13 @@ import { SiteCard, EdgeCard } from './PinnedCards';
 
 const list = (v) => (Array.isArray(v) ? v : []);
 const short = (v, n) => (v && v.length > n ? `${v.slice(0, n - 1)}~` : v || '');
-const HW = NODE_W / 2;
-const HH = NODE_H / 2;
+// The circuit map draws smaller tiles than the Overview site map (layout.js constants stay untouched).
+const NW = 120;
+const NH = 38;
+const HW = NW / 2;
+const HH = NH / 2;
+const ROW_SCALE = 0.8; // layout.js rows are 150 apart; here about 120
+const PILL_H = 16;
 const GREY = '#6B7C8D';
 
 export const wanColor = (s) => (s === 'down' ? COLORS.crit : s === 'degraded' ? COLORS.warn : s === 'ok' ? COLORS.ok : GREY);
@@ -34,9 +39,9 @@ const edgeText = (e) => {
   if (e.state === 'down') return n > 1 ? `down x${n}` : 'down';
   if (e.state === 'flapping') return 'flapping';
   if (e.state === 'degraded') return `${list(e.circuits).filter((c) => c.state === 'down').length || 1} of ${n} down`;
-  return n > 1 ? `${n} circuits` : '1 circuit';
+  return `${n || 1} ckt`;
 };
-const pillW = (t) => t.length * 6.6 + 14;
+const pillW = (t) => t.length * 5.6 + 10;
 
 // Layout constants for the unlinked-site chips (sites with no site link are not part of the tiered graph).
 const CHIP_W = 110;
@@ -72,8 +77,8 @@ function Pill({ x, y, text, color }) {
   const w = pillW(text);
   return (
     <g pointerEvents="none">
-      <rect x={x - w / 2} y={y - 10} width={w} height={20} rx={10} fill="#0B1015" stroke={color} strokeWidth="1" />
-      <text x={x} y={y + 4} textAnchor="middle" fontSize="11" fontWeight="600" fill={color}>{text}</text>
+      <rect x={x - w / 2} y={y - PILL_H / 2} width={w} height={PILL_H} rx={PILL_H / 2} fill="#0B1015" stroke={color} strokeWidth="1" />
+      <text x={x} y={y + 3.5} textAnchor="middle" fontSize="10" fontWeight="600" fill={color}>{text}</text>
     </g>
   );
 }
@@ -200,7 +205,8 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
   // Only linked sites take part in the tiered layout. Unlinked sites are chips in a column on the right when
   // it fits next to the graph, else a grid below it. The viewBox width stays MAP_W either way.
   const layout = useMemo(() => {
-    const base = linked.length ? layoutNodes(linked) : { width: MAP_W, height: 0, positions: {} };
+    const raw = linked.length ? layoutNodes(linked) : { width: MAP_W, height: 0, positions: {} };
+    const base = { ...raw, height: Math.round(raw.height * ROW_SCALE), positions: Object.fromEntries(Object.entries(raw.positions).map(([k, p]) => [k, { ...p, y: Math.round(p.y * ROW_SCALE) }])) };
     const colH = unlinked.length * (CHIP_H + CHIP_GAP) + 34;
     const side = unlinked.length > 0 && linked.length > 0 && colH <= base.height;
     const k = side ? (MAP_W - SIDE_W) / MAP_W : 1;
@@ -235,7 +241,7 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
   }, [layout, overrides, live]);
   const nodeByKey = useMemo(() => { const m = {}; nodes.forEach((n) => { m[String(n.siteKey)] = n; }); return m; }, [nodes]);
   const nameOf = (k) => (nodeByKey[String(k)] ? (nodeByKey[String(k)].siteName || String(k)) : String(k));
-  const rects = useMemo(() => nodeRects(pos), [pos]);
+  const rects = useMemo(() => nodeRects(pos, 8, NW, NH), [pos]);
 
   // Problems last so a red or amber line is never hidden under a green one.
   const drawn = useMemo(() => edges
@@ -246,11 +252,11 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
     const placed = [];
     const out = {};
     drawn.forEach((e) => {
-      const geo = edgeGeometry(pos[String(e.a)], pos[String(e.b)]);
+      const geo = edgeGeometry(pos[String(e.a)], pos[String(e.b)], { hw: HW, hh: HH });
       const text = edgeText(e);
       const w = pillW(text);
-      const pt = pushClear(geo.at(0.5), geo.tangent(0.5), w, 20, [...rects, ...placed]);
-      placed.push(pillRect(pt, w));
+      const pt = pushClear(geo.at(0.5), geo.tangent(0.5), w, PILL_H, [...rects, ...placed]);
+      placed.push(pillRect(pt, w, PILL_H));
       out[e.key] = { geo, text, pt };
     });
     return out;
@@ -392,16 +398,16 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
               onFocus={() => placeAt(p.x + HW, p.y + HH, payload)} onBlur={clearTip}
               onPointerDown={(ev) => onNodeDown(ev, n, p)} onPointerMove={onNodeMove} onPointerUp={onNodeUp} onPointerCancel={onNodeUp}
               onClick={(ev) => onNodeClick(ev, n, p)} onKeyDown={(ev) => onNodeKey(ev, n, p)}>
-              <rect x={-HW} y={-HH} width={NODE_W} height={NODE_H} rx={12} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="2" />
-              <rect x={-HW} y={-HH} width={NODE_W} height={NODE_H} rx={12} fill={col} fillOpacity="0.09" pointerEvents="none" />
-              <rect x={-HW + 12} y={-HH} width={NODE_W - 24} height={3} fill={col} pointerEvents="none" />
-              <text x={0} y={-2} textAnchor="middle" fontSize="13" fontWeight="700" fill="#E8EDF2">{short(n.siteName || String(n.siteKey), 20)}</text>
-              <text x={0} y={14} textAnchor="middle" fontSize="10" fill="#94A3B3">{short(sub, 26)}</text>
-              <circle cx={-HW + 10} cy={-HH + 12} r="4.5" fill={wcol} className={n.wanState === 'down' ? 'cmap-dot-crit' : n.wanState === 'degraded' ? 'cmap-dot-warn' : undefined} />
+              <rect x={-HW} y={-HH} width={NW} height={NH} rx={10} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="2" />
+              <rect x={-HW} y={-HH} width={NW} height={NH} rx={10} fill={col} fillOpacity="0.09" pointerEvents="none" />
+              <rect x={-HW + 10} y={-HH} width={NW - 20} height={3} fill={col} pointerEvents="none" />
+              <text x={0} y={-1} textAnchor="middle" fontSize="12" fontWeight="700" fill="#E8EDF2">{short(n.siteName || String(n.siteKey), 16)}</text>
+              <text x={0} y={11} textAnchor="middle" fontSize="10" fill="#94A3B3">{short(sub, 22)}</text>
+              <circle cx={-HW + 9} cy={-HH + 10} r="5" fill={wcol} className={n.wanState === 'down' ? 'cmap-dot-crit' : n.wanState === 'degraded' ? 'cmap-dot-warn' : undefined} />
               {dead > 0 && (
                 <g>
-                  <circle cx={HW - 2} cy={-HH + 2} r="11" fill={COLORS.crit} stroke="#131B23" strokeWidth="3" />
-                  <text x={HW - 2} y={-HH + 6} textAnchor="middle" fontSize="12" fontWeight="800" fill="#0B1015">{dead > 99 ? '99+' : dead}</text>
+                  <circle cx={HW - 2} cy={-HH + 2} r="7" fill={COLORS.crit} stroke="#131B23" strokeWidth="2" />
+                  <text x={HW - 2} y={-HH + 5.5} textAnchor="middle" fontSize="9" fontWeight="800" fill="#0B1015">{dead > 99 ? '99+' : dead}</text>
                 </g>
               )}
             </g>
