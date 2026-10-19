@@ -1231,6 +1231,12 @@ async function pollSource(source) {
     // Sites: cheap, from rows just stored (devices, collectors, checks, locations).
     try { lmSites.computeSites(db, source.id); } catch (err) { logger.warn(`[LmPoller] sites failed: ${err.message}`); }
     // Round 13: computeSites rebuilds lm_sites every tick, so the per-site WAN state is written right after it.
+    // Roles are classified in the daily work; a WAN row without a role (first boot after migration v10)
+    // would leave every site without a WAN state until tomorrow, so backfill once here.
+    try {
+      const unclassified = db.prepare('SELECT 1 FROM lm_interfaces WHERE source_id = ? AND is_wan = 1 AND circuit_role IS NULL LIMIT 1').get(source.id);
+      if (unclassified) lmPath.computeCircuits(db, source.id);
+    } catch (err) { logger.warn(`[LmPoller] circuit role backfill failed: ${err.message}`); }
     try { lmCircuits.computeSiteWanState(db, source.id); } catch (err) { logger.warn(`[LmPoller] site wan state failed: ${err.message}`); }
 
     // New network devices and Uptime checks get their datasources now rather
