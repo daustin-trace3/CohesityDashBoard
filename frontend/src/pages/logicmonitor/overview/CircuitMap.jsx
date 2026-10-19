@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   COLORS, NODE_W, NODE_H, MAP_W, layoutNodes, edgeGeometry, nodeRects, pushClear, pillRect,
 } from './layout';
@@ -137,6 +138,45 @@ function edgeTip(e, nameOf) {
   return lines;
 }
 
+const CARD_W = 420;
+
+/**
+ * Pinned card host: a fixed-position portal on document.body so no scroll container clips it.
+ * Left prefers the right of the anchor, flips to its left, then clamps into the viewport; top starts at
+ * the anchor and is clamped once the real height is measured (again when the content grows).
+ */
+function PinnedFloat({ anchor, panel, width, children }) {
+  const ref = useRef(null);
+  const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight, ch: 0 });
+  useLayoutEffect(() => {
+    const measure = () => {
+      const ch = ref.current ? ref.current.offsetHeight : 0;
+      setVp((cur) => (cur.ch === ch && cur.w === window.innerWidth && cur.h === window.innerHeight ? cur : { w: window.innerWidth, h: window.innerHeight, ch }));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined' && ref.current) { ro = new ResizeObserver(measure); ro.observe(ref.current); }
+    return () => { window.removeEventListener('resize', measure); if (ro) ro.disconnect(); };
+  }, []);
+  let style;
+  if (panel) {
+    style = { position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(420px, 100vw)', maxHeight: '100vh' };
+  } else {
+    let left = anchor.right + 12;
+    if (left + width + 8 > vp.w) left = anchor.left - 12 - width;
+    left = Math.max(8, Math.min(left, vp.w - width - 8));
+    const top = Math.max(8, Math.min(anchor.top, vp.h - vp.ch - 8));
+    style = { position: 'fixed', left, top, width };
+  }
+  return createPortal(
+    <div ref={ref} className="rounded-lg border shadow-modal" data-testid="pinned-float" style={{ ...style, zIndex: 60, background: '#0B1015', borderColor: '#2b3b4b' }} onClick={(ev) => ev.stopPropagation()}>
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite, onOpenEdge, onOpenIssues = () => {}, overrides = null, onMove = () => {} }) {
   const nodes = list(nodesIn);
   const edges = list(edgesIn);
@@ -229,15 +269,19 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
   };
   const clearTip = () => setTip(null);
   const CARD_W = 420;
-  const pin = (kind, key, sx, sy, halfW) => {
-    const r = wrapRef.current ? wrapRef.current.getBoundingClientRect() : null;
-    const w = r && r.width ? r.width : MAP_W;
+  // The card is a fixed-position portal, so the anchor is a viewport rect: the clicked element when given,
+  // else the wrapper rect plus the map coordinates.
+  const pin = (kind, key, sx, sy, halfW, el) => {
+    const wr = wrapRef.current ? wrapRef.current.getBoundingClientRect() : null;
+    const w = wr && wr.width ? wr.width : MAP_W;
     const k = w / MAP_W;
-    const panel = (typeof window !== 'undefined' && window.innerWidth < 768) || w < CARD_W + 120;
-    const right = (sx + halfW) * k + 12;
-    const left = right + CARD_W > w ? Math.max(0, (sx - halfW) * k - 12 - CARD_W) : right;
+    const er = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    const anchor = er
+      ? { left: er.left, right: er.right, top: er.top }
+      : { left: (wr ? wr.left : 0) + (sx - halfW) * k, right: (wr ? wr.left : 0) + (sx + halfW) * k, top: (wr ? wr.top : 0) + (sy - HH) * k };
+    const panel = typeof window !== 'undefined' && window.innerWidth < 768;
     setTip(null);
-    setPinned({ kind, key, left, top: Math.max(0, (sy - HH) * k), panel });
+    setPinned({ kind, key, anchor, panel });
   };
 
   // Pointer drag for linked nodes: a 4 px move starts it, so a plain click still pins the card.
@@ -273,15 +317,15 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
     if (d.last) onMove(d.key, d.last);
   };
   const onNodeKey = (ev, n, p) => {
-    if (ev.key === 'Enter') { pin('node', n.siteKey, p.x, p.y, HW); return; }
+    if (ev.key === 'Enter') { pin('node', n.siteKey, p.x, p.y, HW, ev.currentTarget); return; }
     const step = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[ev.key];
     if (!step) return;
     ev.preventDefault();
     onMove(String(n.siteKey), clampPt({ x: p.x + step[0], y: p.y + step[1] }));
   };
-  const onNodeClick = (n, p) => {
+  const onNodeClick = (ev, n, p) => {
     if (suppressClick.current) { suppressClick.current = false; return; }
-    pin('node', n.siteKey, p.x, p.y, HW);
+    pin('node', n.siteKey, p.x, p.y, HW, ev.currentTarget);
   };
 
   if (nodes.length === 0) {
@@ -347,7 +391,7 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
               onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
               onFocus={() => placeAt(p.x + HW, p.y + HH, payload)} onBlur={clearTip}
               onPointerDown={(ev) => onNodeDown(ev, n, p)} onPointerMove={onNodeMove} onPointerUp={onNodeUp} onPointerCancel={onNodeUp}
-              onClick={() => onNodeClick(n, p)} onKeyDown={(ev) => onNodeKey(ev, n, p)}>
+              onClick={(ev) => onNodeClick(ev, n, p)} onKeyDown={(ev) => onNodeKey(ev, n, p)}>
               <rect x={-HW} y={-HH} width={NODE_W} height={NODE_H} rx={12} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="2" />
               <rect x={-HW} y={-HH} width={NODE_W} height={NODE_H} rx={12} fill={col} fillOpacity="0.09" pointerEvents="none" />
               <rect x={-HW + 12} y={-HH} width={NODE_W - 24} height={3} fill={col} pointerEvents="none" />
@@ -380,7 +424,7 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
               style={{ cursor: 'pointer', outline: 'none' }}
               onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
               onFocus={() => placeAt(c.x + CHIP_W, c.y + CHIP_H, payload)} onBlur={clearTip}
-              onClick={() => pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2)} onKeyDown={(ev) => { if (ev.key === 'Enter') pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2); }}>
+              onClick={(ev) => pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2, ev.currentTarget)} onKeyDown={(ev) => { if (ev.key === 'Enter') pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2, ev.currentTarget); }}>
               <rect width={CHIP_W} height={CHIP_H} rx={8} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="1.5" />
               <rect width={CHIP_W} height={CHIP_H} rx={8} fill={col} fillOpacity="0.09" pointerEvents="none" />
               <rect x={8} y={0} width={CHIP_W - 16} height={2.5} fill={col} pointerEvents="none" />
@@ -396,14 +440,11 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
         const n = pinned.kind === 'node' ? nodeByKey[String(pinned.key)] : null;
         const e = pinned.kind === 'edge' ? edges.find((x) => x.key === pinned.key) : null;
         if (!n && !e) return null;
-        const style = pinned.panel
-          ? { position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(420px, 100vw)', maxHeight: '100vh' }
-          : { position: 'absolute', left: pinned.left, top: pinned.top, width: CARD_W };
         return (
-          <div className="z-20 rounded-lg border shadow-modal" style={{ ...style, background: '#0B1015', borderColor: '#2b3b4b' }} onClick={(ev) => ev.stopPropagation()}>
+          <PinnedFloat anchor={pinned.anchor} panel={pinned.panel} width={CARD_W}>
             {n ? <SiteCard key={n.siteKey} node={n} onClose={() => setPinned(null)} onOpenSite={onOpenSite} onOpenIssues={onOpenIssues} />
               : <EdgeCard key={e.key} edge={e} nameOf={nameOf} onClose={() => setPinned(null)} onOpenEdge={onOpenEdge} />}
-          </div>
+          </PinnedFloat>
         );
       })()}
     </div>

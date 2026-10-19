@@ -79,6 +79,25 @@ describe('CircuitMap pinned card and dragging', () => {
     expect(queryByTestId('site-card')).toBeNull();
   });
 
+  it('a card opened from a node near the bottom is a fixed portal clamped into the viewport', () => {
+    const { nodes, edges } = two();
+    window.innerHeight = 600;
+    window.innerWidth = 1200;
+    const { getAllByTestId, getByTestId } = render(<CircuitMap nodes={nodes} edges={edges} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    const g = getAllByTestId('graph-node')[0];
+    g.getBoundingClientRect = () => ({ left: 1000, right: 1100, top: 590, bottom: 620, width: 100, height: 30 });
+    fireEvent.click(g);
+    const box = getByTestId('pinned-float');
+    expect(box.parentElement).toBe(document.body);
+    expect(box.style.position).toBe('fixed');
+    const top = parseInt(box.style.top, 10);
+    const left = parseInt(box.style.left, 10);
+    expect(top).toBeGreaterThanOrEqual(8);
+    expect(top).toBeLessThanOrEqual(592);
+    expect(left).toBeGreaterThanOrEqual(8);
+    expect(left).toBeLessThanOrEqual(1200 - 420 - 8);
+  });
+
   it('an override position places the node, and the node colour follows worstState', () => {
     const { nodes, edges } = two();
     const { getAllByTestId } = render(<CircuitMap nodes={nodes} edges={edges} overrides={{ s0: { x: 400, y: 200 } }} onOpenSite={() => {}} onOpenEdge={() => {}} />);
