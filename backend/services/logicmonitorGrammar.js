@@ -17,12 +17,27 @@
 const CG_TAG = /\s*\[\s*t=([A-Za-z0-9_]+)[^\]]*\]\s*/;
 // "@<kind>" suffix as in "SNX1-CORE-2 E1/8 @int" or "...-C@uplink-".
 const AT_SUFFIX = /\s*@[A-Za-z0-9_-]+-?\s*$/;
+// Suffix kind to the CG tag class it stands for (round 13b). A tag in the description wins over the suffix.
+const SUFFIX_CLASS = { int: 'inet', inet: 'inet', mpls: 'mpls', dia: 'dia', ptp: 'ptp', p2p: 'p2p', uplink: 'upl' };
 // Pair uplink: "ASX1NACLS-01 & 2 -C@uplink-" (node 01 and 02 as an LACP pair).
 const PAIR_RE = /^([A-Za-z0-9_]+(?:-[A-Za-z][A-Za-z0-9_]*)*)-(\d{1,2})\s*&\s*\d{1,2}\b/;
 const NETAPP_RE = /^([A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*?)\s+(e\d[a-z](?:\s*&\s*e\d[a-z])*)(?![A-Za-z0-9])/i;
 const PURE_RE = /^([A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*?)[-\s](ct[01])\s+(eth\d+|port\s*\d+)(?![A-Za-z0-9])/i;
 const IDRAC_MAC_RE = /^idrac\s*-\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})/i;
 const IDRAC_NAME_RE = /^([A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*?)[\s-]+idrac\b/i;
+
+/**
+ * The "@<kind>" suffix of a description as { kind, cls } (kind as written, lower case; cls the tag class it
+ * maps to), or null when there is no suffix, the kind is unknown, or a [t=...] tag is present (the tag wins).
+ */
+function suffixClass(desc) {
+  const s = String(desc == null ? '' : desc);
+  if (CG_TAG.test(s)) return null;
+  const m = s.match(/@([A-Za-z0-9_-]+?)-?\s*$/);
+  if (!m) return null;
+  const kind = m[1].toLowerCase();
+  return SUFFIX_CLASS[kind] ? { kind, cls: SUFFIX_CLASS[kind] } : null;
+}
 
 /**
  * @returns null | { platformHint, host, nic, confidence, cls }
@@ -84,7 +99,10 @@ function parseEndpointDescription(desc) {
  */
 function linkFromDescription(desc, lmResolve, iccResolve) {
   const g = parseEndpointDescription(desc);
-  if (!g) return { link: null, cls: null };
+  // Round 13b: with no [t=...] tag the "@<kind>" suffix is the class (parseEndpointDescription stays tag-only).
+  const sfx = suffixClass(desc);
+  if (!g) return { link: null, cls: sfx ? sfx.cls : null };
+  if (!g.cls && sfx) g.cls = sfx.cls;
   if (!g.host) return { link: null, cls: g.cls };
   const lmId = lmResolve ? lmResolve(g.host) : null;
   if (lmId != null) {
@@ -102,4 +120,4 @@ function linkFromDescription(desc, lmResolve, iccResolve) {
   return { link: null, cls: g.cls };
 }
 
-module.exports = { parseEndpointDescription, linkFromDescription };
+module.exports = { parseEndpointDescription, linkFromDescription, suffixClass };

@@ -176,12 +176,16 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
   for (const col of collectorRows) {
     for (const n of [col.hostname, col.description]) if (n) collectorByName.set(`${col.source_id}|${String(n).toLowerCase()}`, col);
   }
-  /** Longest leading run of words that names a device; rest is the port. */
+  /** Longest leading name that equals the target or is followed by a space, colon or slash; rest is the port. */
   function resolveDevice(sourceId, target) {
-    const words = String(target || '').split(' ').filter(Boolean);
-    for (let n = words.length; n >= 1; n -= 1) {
-      const d = devByName.get(`${sourceId}|${words.slice(0, n).join(' ').toLowerCase()}`);
-      if (d) return { dev: d, rest: words.slice(n).join(' ') || null };
+    const t = String(target || '').trim();
+    const low = t.toLowerCase();
+    const whole = devByName.get(`${sourceId}|${low}`);
+    if (whole) return { dev: whole, rest: null };
+    for (let i = low.length - 1; i > 0; i -= 1) {
+      if (low[i] !== ' ' && low[i] !== ':' && low[i] !== '/') continue;
+      const d = devByName.get(`${sourceId}|${low.slice(0, i)}`);
+      if (d) return { dev: d, rest: t.slice(i + 1).trim() || null };
     }
     return null;
   }
@@ -211,10 +215,13 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
   }
   const resolved = issues.map((i) => ({ issue: i, res: guard(() => resolveIssue(i), { sourceId: null, siteKey: null, device: null, port: null, check: null, checkpointLabel: null }) }));
   const openIssuesBySite = new Map();
+  const issueListBySite = new Map();
   for (const r of resolved) {
     if (!r.res.siteKey || r.res.sourceId == null) continue;
     const k = `${r.res.sourceId}|${r.res.siteKey}`;
     openIssuesBySite.set(k, (openIssuesBySite.get(k) || 0) + 1);
+    if (!issueListBySite.has(k)) issueListBySite.set(k, []);
+    issueListBySite.get(k).push(r.issue);
   }
 
   // ---- Map: nodes ------------------------------------------------------------
@@ -341,7 +348,8 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
       }
     } catch { /* episode table missing on an unmigrated database */ }
     // Round 13: WAN state, the names behind the dead / degraded counts, ports down, circuits down.
-    const wanBySiteMap = guard(() => require('./logicmonitorCircuits').overviewWan(db, { nowMs }), new Map());
+    const lmCircuitsMod = require('./logicmonitorCircuits');
+    const wanBySiteMap = guard(() => lmCircuitsMod.overviewWan(db, { nowMs }), new Map());
     const deadNames = new Map();
     for (const d of devices) {
       if (d.host_status !== 'dead' || !d.site_key) continue;
@@ -398,6 +406,11 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
         deadDevices: (deadNames.get(k) || []).slice(0, 10),
         degradedDevices: [...(degradedNames.get(k) || [])].slice(0, 10),
         portsDownNames: (portsDown.get(k) || []).slice(0, 5),
+        issuesTop: lmCircuitsMod.topIssues(issueListBySite.get(k) || []),
+        reasons: lmCircuitsMod.siteReasons({
+          wanState: wan.wanState, wanTotal: wan.wanTotal, wanDown: wan.wanDown, devicesDead: s.devicesDead,
+          degradedCount: (degradedNames.get(k) || new Set()).size, openIssues: openIssuesBySite.get(k) || 0,
+        }),
       };
     });
   }, null);

@@ -614,6 +614,16 @@ describe('logicmonitor data routes', () => {
     expect(bad.status).toBe(400);
     expect((await request(app).get(`${API}/config`)).body.thresholds.lm_if_err_warn).toBe(250);
   });
+
+  it('PUT /config stores lm_circuit_map_layout JSON, returns it on GET, and rejects a non-JSON string', async () => {
+    const layout = JSON.stringify({ phx: { x: 300, y: 120 } });
+    const ok = await request(app).put(`${API}/config`).send({ lm_circuit_map_layout: layout });
+    expect(ok.status).toBe(200);
+    expect((await request(app).get(`${API}/config`)).body.lm_circuit_map_layout).toBe(layout);
+    expect((await request(app).put(`${API}/config`).send({ lm_circuit_map_layout: 'not json' })).status).toBe(400);
+    expect((await request(app).put(`${API}/config`).send({ lm_circuit_map_layout: JSON.stringify({ phx: { x: 'a' } }) })).status).toBe(400);
+    expect((await request(app).put(`${API}/config`).send({ lm_circuit_map_layout: '' })).status).toBe(200);
+  });
 });
 
 describe('logicmonitor round 2: model review, endpoints, server path', () => {

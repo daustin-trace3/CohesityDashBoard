@@ -85,7 +85,7 @@ function ReachList({ rows, empty }) {
   );
 }
 
-function SiteModal({ siteKey, onClose }) {
+function SiteModal({ siteKey, initialTab, onClose }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [tab, setTab] = useState('circuits');
@@ -110,7 +110,7 @@ function SiteModal({ siteKey, onClose }) {
   }, [siteKey]);
 
   useEffect(() => {
-    setData(null); setError(null); setTab('circuits');
+    setData(null); setError(null); setTab(['devices', 'circuits', 'reach', 'endpoints', 'issues', 'changes'].includes(initialTab) ? initialTab : 'circuits');
     client.get(`/logicmonitor/sites/${encodeURIComponent(siteKey)}`)
       .then(({ data: d }) => setData(d || {}))
       .catch((e) => setError(e?.response?.status === 404 ? 'Site not found.' : 'Failed to load the site.'));
@@ -330,7 +330,7 @@ export default function LmSitesPage() {
 
   const setSite = (key) => {
     const next = new URLSearchParams(searchParams);
-    if (key) next.set('site', key); else next.delete('site');
+    if (key) next.set('site', key); else { next.delete('site'); next.delete('tab'); }
     setSearchParams(next, { replace: true });
   };
 
@@ -399,7 +399,7 @@ export default function LmSitesPage() {
         )}
       </div>
 
-      {openSite && <SiteModal siteKey={openSite} onClose={() => setSite(null)} />}
+      {openSite && <SiteModal siteKey={openSite} initialTab={searchParams.get('tab')} onClose={() => setSite(null)} />}
     </div>
   );
 }

@@ -424,3 +424,85 @@ describe('recordCircuitTransitions', () => {
     expect(db.prepare('SELECT COUNT(*) n FROM lm_circuit_events').get().n).toBe(1);
   });
 });
+
+describe('round 13b: degraded matcher, suffix classes, far device, reasons', () => {
+  const grammar = require('../services/logicmonitorGrammar');
+  const lookupOf = (names) => (n) => (names.includes(n) ? { name: n } : null);
+
+  it('deviceForTarget matches exact, name + space, name + colon and name + slash, never a longer name', () => {
+    const find = lookupOf(['sjcx-core-1']);
+    expect(lmCirc.deviceForTarget('SJCX-Core-1', find)).toBeTruthy();
+    expect(lmCirc.deviceForTarget('sjcx-core-1 Slot Module-25 4-slot Fabric Module: X [M46]', find)).toBeTruthy();
+    expect(lmCirc.deviceForTarget('sjcx-core-1: BGP peer down', find)).toBeTruthy();
+    expect(lmCirc.deviceForTarget('sjcx-core-1/Gi0/1 down', find)).toBeTruthy();
+    expect(lmCirc.deviceForTarget('sjcx-core-10 Slot 1', find)).toBe(null);
+    expect(lmCirc.deviceForTarget('sjcx-core-10', find)).toBe(null);
+  });
+
+  it('suffix classes: @int is inet (wan), @ptp is a site link, -C@uplink- is an uplink, a tag wins over the suffix', () => {
+    expect(grammar.suffixClass('VZB CKT ID: U336816 @int')).toEqual({ kind: 'int', cls: 'inet' });
+    expect(grammar.suffixClass('SNX1-DCI-1 E1/1 CTL CKT ID:440463607 @ptp')).toEqual({ kind: 'ptp', cls: 'ptp' });
+    expect(grammar.suffixClass('ASX1-SPINE-2 E1/2 -C@uplink-')).toEqual({ kind: 'uplink', cls: 'upl' });
+    expect(grammar.suffixClass('x @int [t=ptp m= q= n=]')).toBe(null);
+    expect(grammar.linkFromDescription('VZB CKT ID: U336816 @int', null, null).cls).toBe('inet');
+    expect(lmCirc.classifyCircuitRole({ ownSiteKey: 'a', tagClass: 'inet', tagReason: 'suffix:int' })).toEqual({ role: 'wan', farSiteKey: null, reason: 'suffix:int' });
+    expect(lmCirc.classifyCircuitRole({ ownSiteKey: 'a', tagClass: 'upl' })).toMatchObject({ role: 'uplink' });
+  });
+
+  it('ibgp and gtw tags are uplinks', () => {
+    expect(lmCirc.classifyCircuitRole({ ownSiteKey: 'a', tagClass: 'ibgp' })).toMatchObject({ role: 'uplink', reason: 'tag:ibgp' });
+    expect(lmCirc.classifyCircuitRole({ ownSiteKey: 'a', tagClass: 'gtw' })).toMatchObject({ role: 'uplink' });
+  });
+
+  it('the far-device rule resolves the first token through lm_devices and computeCircuits records far-device and suffix reasons', () => {
+    wipe();
+    const sid = source();
+    site(sid, 'phoenix', 'Phoenix');
+    site(sid, 'zeta', 'Zeta');
+    const r1 = device(sid, 'phx-rtr-01', 'phoenix', 'Phoenix');
+    device(sid, 'dci-9', 'zeta', 'Zeta');
+    const mk = (name, description, props_json = null) => {
+      instSeq += 1;
+      ins('lm_interfaces', { source_id: sid, lm_device_id: r1, instance_id: instSeq, display_name: name, instance_name: name, status: 1, status_text: 'up', description, props_json });
+      return instSeq;
+    };
+    const far = mk('Gi0/0/0', 'DCI-9.corp.example, Lumen circuit 777');
+    const suf = mk('Gi0/0/1', 'VZB CKT ID: U336816 @int');
+    const up = mk('Gi0/0/2', 'ATO-WAN-2 Gi0/0/2 IBGP [t=ibgp m= q= n=]', JSON.stringify({ iccClass: 'ibgp' }));
+    lmPath.computeCircuits(db, sid);
+    const row = (id) => db.prepare('SELECT circuit_role r, circuit_far_site_key far, circuit_role_reason why FROM lm_interfaces WHERE instance_id = ?').get(id);
+    expect(row(far)).toMatchObject({ r: 'site-link', far: 'zeta', why: 'far-device' });
+    expect(row(suf)).toMatchObject({ r: 'wan', why: 'suffix:int' });
+    expect(row(up)).toMatchObject({ r: 'uplink' });
+    expect(lmCirc.farDeviceSite('dci-9', (n) => (n === 'dci-9' ? 'phoenix' : null), 'phoenix')).toBe(null);
+  });
+
+  it('node reasons for the three states and an issuesTop list critical first', () => {
+    expect(lmCirc.siteReasons({ wanState: 'down', wanTotal: 2, wanDown: 2, devicesDead: 0, degradedCount: 0, openIssues: 0 })).toEqual(['WAN down: 0 of 2 circuits up']);
+    expect(lmCirc.siteReasons({ wanState: 'degraded', wanTotal: 2, wanDown: 1, devicesDead: 3, degradedCount: 2, openIssues: 4 }, [{ farName: 'Dallas', state: 'down' }]))
+      .toEqual(['WAN degraded: 1 of 2 circuits up', '3 dead device(s)', '2 degraded device(s)', '4 open issue(s)', 'site link Dallas down']);
+    expect(lmCirc.siteReasons({ wanState: 'ok', wanTotal: 2, wanDown: 0, devicesDead: 0, degradedCount: 0, openIssues: 0 })).toEqual([]);
+    const top = lmCirc.topIssues([
+      { type: 'a', severity: 'warning', target: 't1', first_seen: '2026-01-02 00:00:00' },
+      { type: 'b', severity: 'critical', target: 't2', first_seen: '2026-01-01 00:00:00' },
+      { type: 'c', severity: 'warning', target: 't3', first_seen: '2026-01-03 00:00:00' },
+    ]);
+    expect(top.map((i) => i.target)).toEqual(['t2', 't3', 't1']);
+  });
+
+  it('the circuit map counts a device degraded when an issue target carries a suffix and carries issuesTop and reasons', () => {
+    wipe();
+    const sid = source('Acme');
+    site(sid, 'sjcx', 'SJCX');
+    device(sid, 'sjcx-core-1', 'sjcx', 'SJCX');
+    device(sid, 'sjcx-core-10', 'sjcx', 'SJCX');
+    ins('lm_issue_history', { issue_key: 'k1', source: 'Acme', severity: 'warning', type: 'hardware-fault', target: 'sjcx-core-1 Slot Module-25 4-slot Fabric Module: X', message: 'm', status: 'open' });
+    ins('lm_issue_history', { issue_key: 'k2', source: 'Acme', severity: 'warning', type: 'fw-tunnel-down', target: 'sjcx-core-1: tunnels', message: 'm', status: 'open' });
+    const node = lmCirc.circuitMap(db).nodes.find((n) => n.siteKey === 'sjcx');
+    expect(node.degradedDevices).toEqual(['sjcx-core-1']);
+    expect(node.openIssues).toBe(2);
+    expect(node.issuesTop).toHaveLength(2);
+    expect(node.reasons).toContain('2 open issue(s)');
+    expect(node.reasons).toContain('1 degraded device(s)');
+  });
+});

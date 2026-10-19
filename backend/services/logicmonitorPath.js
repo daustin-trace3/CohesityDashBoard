@@ -11,6 +11,7 @@
 // more links, then the lower id. When several links reach the chosen far
 // device the healthiest wins, so a down LAG member never reads as the path.
 const lmEndpoints = require('./logicmonitorEndpoints');
+const lmGrammar = require('./logicmonitorGrammar');
 
 const issuesMod = () => require('./logicmonitorIssues');
 const checksMod = () => require('./logicmonitorChecks');
@@ -612,6 +613,11 @@ function computeCircuits(dbh, sourceId = null) {
       tokensBySource.get(s.source_id).push(s);
     }
     for (const [sid, list] of tokensBySource) tokensBySource.set(sid, lmCirc.buildSiteTokens(list));
+    // Device name (display name or name) to site, per portal: the "far device" rule reads the description's first token.
+    const siteByDevName = new Map();
+    for (const d of dbh.prepare(`SELECT source_id, name, display_name, site_key FROM lm_devices WHERE stale = 0 AND site_key IS NOT NULL ${where.replace('i.', '')}`).all(...args)) {
+      for (const n of [d.display_name, d.name]) if (n && !siteByDevName.has(`${d.source_id}|${norm(n)}`)) siteByDevName.set(`${d.source_id}|${norm(n)}`, d.site_key);
+    }
     const upd = dbh.prepare(`UPDATE lm_interfaces SET is_wan = ?, wan_reason = ?, wan_label = ?, circuit_role = ?, circuit_far_site_key = ?, circuit_role_reason = ?
       WHERE source_id = ? AND instance_id = ?`);
     dbh.transaction(() => {
@@ -623,7 +629,11 @@ function computeCircuits(dbh, sourceId = null) {
         const port = cleanPortKey(r.display_name);
         const ov = overrides.filter((o) => o.port === port && (o.device === dev || o.device === alt));
         if (ov.some((o) => o.exclude)) continue;
-        const tagClass = norm(parseJson(r.props_json, {}).iccClass);
+        let tagClass = norm(parseJson(r.props_json, {}).iccClass);
+        // No [t=...] tag: the "@<kind>" suffix of the description is the class (reason suffix:<kind>).
+        const sfx = lmGrammar.suffixClass(r.description);
+        let tagReason = null;
+        if (sfx && (!tagClass || tagClass === sfx.cls)) { tagClass = sfx.cls; tagReason = `suffix:${sfx.kind}`; }
         const tagRole = lmCirc.TAG_ROLE[tagClass] || null;
         let reason = null;
         if (ov.length) reason = 'override';
@@ -639,10 +649,12 @@ function computeCircuits(dbh, sourceId = null) {
         const tokens = tokensBySource.get(r.source_id) || [];
         const topoSites = topo.get(`${r.source_id}|${r.instance_id}`) || [];
         const topoSiteKey = topoSites.find((k) => k !== r.own_site_key) || topoSites[0] || null;
+        const labelFar = lmCirc.farSiteFromLabel(r.description, tokens, r.own_site_key);
+        const farDeviceSiteKey = labelFar ? null : lmCirc.farDeviceSite(r.description, (n) => siteByDevName.get(`${r.source_id}|${n}`) || null, r.own_site_key);
         const cls = lmCirc.classifyCircuitRole({
           overrideRole: (ov.find((o) => o.role) || {}).role || null,
-          tagClass, ownSiteKey: r.own_site_key || null, topoSiteKey,
-          labelFarSiteKey: lmCirc.farSiteFromLabel(r.description, tokens, r.own_site_key),
+          tagClass, tagReason, ownSiteKey: r.own_site_key || null, topoSiteKey,
+          labelFarSiteKey: labelFar, farDeviceSiteKey,
           hasCarrierOrCid: !!(ci.carrier || ci.circuitId || (r.description && WAN_RE.test(r.description))),
           wanReason: reason,
         });

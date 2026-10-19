@@ -6,10 +6,27 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, arr, fmtNum, useVisibleInterval } from './helpers';
 import { inp } from './ui';
-import CircuitMap from './overview/CircuitMap';
+import CircuitMap, { splitLinked } from './overview/CircuitMap';
 import { issuesLink } from './circuitShared';
 
 const REFRESH_MS = 60000;
+const LS_KEY = 'icc.lm.circuitMap.positions';
+
+function readLocal() {
+  try {
+    const o = JSON.parse(window.localStorage.getItem(LS_KEY) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch { return {}; }
+}
+function writeLocal(o) {
+  try { window.localStorage.setItem(LS_KEY, JSON.stringify(o)); } catch { /* storage blocked */ }
+}
+function parseLayout(text) {
+  try {
+    const o = JSON.parse(text || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch { return {}; }
+}
 
 const nodeHasProblem = (n) => n.wanState === 'down' || n.wanState === 'degraded'
   || (Number(n.devicesDead) || 0) > 0 || (Number(n.openIssues) || 0) > 0 || arr(n.degradedDevices).length > 0;
@@ -21,6 +38,46 @@ export default function LmCircuitMapPage() {
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [q, setQ] = useState('');
   const [problemsOnly, setProblemsOnly] = useState(false);
+  // Tile positions: the saved shared layout from the server, with this browser's overrides on top.
+  const [shared, setShared] = useState({});
+  const [overrides, setOverrides] = useState(() => readLocal());
+  const [savingLayout, setSavingLayout] = useState(false);
+
+  useEffect(() => {
+    client.get('/logicmonitor/config')
+      .then(({ data: d }) => {
+        const sh = parseLayout(d?.lm_circuit_map_layout);
+        setShared(sh);
+        setOverrides({ ...sh, ...readLocal() });
+      })
+      .catch(() => { /* no shared layout available; local overrides only */ });
+  }, []);
+
+  const moveNode = useCallback((key, pt) => {
+    setOverrides((cur) => { const next = { ...cur, [key]: { x: pt.x, y: pt.y } }; writeLocal(next); return next; });
+  }, []);
+  const layoutEdited = JSON.stringify(overrides) !== JSON.stringify(shared);
+  const putLayout = (obj) => client.put('/logicmonitor/config', { lm_circuit_map_layout: Object.keys(obj).length ? JSON.stringify(obj) : '' });
+  const saveLayout = async () => {
+    setSavingLayout(true);
+    try {
+      await putLayout(overrides);
+      setShared(overrides);
+      toast({ type: 'success', title: 'Layout saved for everyone' });
+    } catch (e) {
+      toast({ type: 'error', title: 'Layout not saved', message: e?.response?.data?.error || 'The layout could not be saved. Your local layout is kept.' });
+    } finally { setSavingLayout(false); }
+  };
+  const resetLayout = async () => {
+    let next = shared;
+    if (window.confirm('Reset your layout? OK also clears the shared layout for everyone; Cancel keeps the shared layout.')) {
+      try { await putLayout({}); setShared({}); next = {}; } catch (e) {
+        toast({ type: 'error', title: 'Shared layout not cleared', message: e?.response?.data?.error || 'Only your local layout was reset.' });
+      }
+    }
+    setOverrides(next);
+    writeLocal({});
+  };
 
   const load = useCallback(() => client.get('/logicmonitor/circuit-map')
     .then(({ data: d }) => { setData(d && typeof d === 'object' ? d : {}); setLastRefreshed(new Date()); })
@@ -61,13 +118,24 @@ export default function LmCircuitMapPage() {
     return { nodes: keepNodes, edges: keepEdges.filter((e) => present.has(String(e.a)) && present.has(String(e.b))) };
   }, [nodes, edges, q, problemsOnly]);
 
+  const split = useMemo(() => splitLinked(view.nodes, view.edges), [view]);
   const wanDown = nodes.filter((n) => n.wanState === 'down').length;
   const wanDeg = nodes.filter((n) => n.wanState === 'degraded').length;
   const linksDown = edges.filter((e) => e.state === 'down').length;
   const linksFlap = edges.filter((e) => e.state === 'flapping' || e.state === 'degraded').length;
   const loading = data == null;
 
-  const openSite = (key) => navigate(`/logicmonitor/sites?site=${encodeURIComponent(key)}`);
+  const openSite = (key) => {
+    const n = nodes.find((x) => String(x.siteKey) === String(key));
+    const wanProblem = n && (n.wanState === 'down' || n.wanState === 'degraded');
+    // No WAN problem but open issues: land on the Issues tab of Site 360.
+    const tab = n && !wanProblem && (Number(n.openIssues) || 0) > 0 ? '&tab=issues' : '';
+    navigate(`/logicmonitor/sites?site=${encodeURIComponent(key)}${tab}`);
+  };
+  const openIssues = (n) => {
+    const top = arr(n.issuesTop)[0];
+    navigate(`/logicmonitor/issues?q=${encodeURIComponent(top ? top.target : (n.siteName || n.siteKey))}`);
+  };
   const openEdge = (e) => {
     if (e.issueKey) navigate(issuesLink(e.issueKey));
     else openSite(e.a);
@@ -94,7 +162,10 @@ export default function LmCircuitMapPage() {
         <label className={chk}>
           <input type="checkbox" className="accent-brand" checked={problemsOnly} onChange={(e) => setProblemsOnly(e.target.checked)} /> Problems only
         </label>
-        <span className="text-[11px] text-ink-faint tnum ml-auto">{`${fmtNum(view.nodes.length)} of ${fmtNum(nodes.length)} site(s), ${fmtNum(view.edges.length)} link(s)`}</span>
+        <button type="button" onClick={saveLayout} disabled={savingLayout || !layoutEdited} className="text-xs px-2.5 py-1 rounded border border-cohesity-border text-ink hover:bg-surface-overlay cursor-pointer disabled:opacity-40">Save layout</button>
+        <button type="button" onClick={resetLayout} className="text-xs px-2.5 py-1 rounded border border-cohesity-border text-ink-muted hover:bg-surface-overlay cursor-pointer">Reset layout</button>
+        {layoutEdited && <span className="text-[11px] text-status-warn" data-testid="layout-edited">layout edited</span>}
+        <span className="text-[11px] text-ink-faint tnum ml-auto">{`${fmtNum(split.linked.length)} linked sites, ${fmtNum(split.unlinked.length)} unlinked, ${fmtNum(view.edges.length)} links`}</span>
       </div>
 
       {loading ? (
@@ -103,7 +174,7 @@ export default function LmCircuitMapPage() {
         <div className="panel p-6 text-sm text-ink-muted text-center">The Circuit Map needs the round 13 backend (GET /logicmonitor/circuit-map answered 404).</div>
       ) : (
         <>
-          <CircuitMap nodes={view.nodes} edges={view.edges} onOpenSite={openSite} onOpenEdge={openEdge} />
+          <CircuitMap nodes={view.nodes} edges={view.edges} onOpenSite={openSite} onOpenEdge={openEdge} onOpenIssues={openIssues} overrides={overrides} onMove={moveNode} />
           {nodes.length > 0 && edges.length === 0 && (
             <p className="text-[11px] text-ink-muted mt-2">No site links identified yet. A link is a circuit whose far end is another site: a CG tag of p2p, b2b or dci, a topology neighbour at another site, or a description that names it. Force one under Settings, Rules, Circuits.</p>
           )}

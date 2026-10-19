@@ -74,18 +74,29 @@ export function SiteHoverBody({ n }) {
   const dead = list(n.deadDevices);
   const degraded = list(n.degradedDevices);
   const ports = list(n.portsDownNames);
+  const issuesTop = list(n.issuesTop);
   const deadMore = Math.max(0, (Number(n.devicesDead) || 0) - dead.length);
   const portsMore = Math.max(0, (Number(n.interfacesDown) || 0) - ports.length);
   const w = n.watch || {};
   const episodes = (Number(w.critical) || 0) + (Number(w.degrading) || 0);
-  const clean = !dead.length && !degraded.length && !ports.length && !episodes;
+  const clean = !dead.length && !degraded.length && !ports.length && !episodes && !issuesTop.length && !(Number(n.openIssues) > 0);
   return (
     <div data-testid="site-hover">
       <p className="text-[13px] font-bold text-ink">{n.siteName || String(n.siteKey)}</p>
       <p style={{ color: (wanOf(n) || {}).color || '#94A3B3' }}>{wanSentence(n)}</p>
+      {list(n.reasons).map((r, i) => <p key={i} className="text-ink" data-testid="site-reason">{r}</p>)}
       {Number(n.circuitsDown) > 0 && <p className="text-status-warn">{`${n.circuitsDown} circuit(s) down`}</p>}
       <NameList title={`Dead devices (${fmtNum(n.devicesDead)})`} names={dead} color={COLORS.crit} more={deadMore} />
       <NameList title="Degraded devices" names={degraded} color={COLORS.warn} />
+      {(Number(n.openIssues) > 0 || issuesTop.length > 0) && (
+        <div className="mt-1.5">
+          <p className="font-semibold" style={{ color: COLORS.warn }}>{`Open issues (${fmtNum(n.openIssues ?? issuesTop.length)})`}</p>
+          {issuesTop.slice(0, 5).map((i, k) => {
+            const t = String(i.target || '');
+            return <p key={k} className="text-ink-muted truncate" title={t}>{`${i.severity} ${i.type}: ${t.length > 60 ? `${t.slice(0, 59)}~` : t}`}</p>;
+          })}
+        </div>
+      )}
       <NameList title={`Ports down (${fmtNum(n.interfacesDown)})`} names={ports} color={COLORS.warn} more={portsMore} />
       {episodes > 0 && (
         <p className="mt-1.5" style={{ color: w.critical > 0 ? COLORS.crit : COLORS.warn }}>

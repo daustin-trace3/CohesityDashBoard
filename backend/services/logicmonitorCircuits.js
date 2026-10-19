@@ -40,7 +40,7 @@ const ROLES = ['wan', 'site-link', 'uplink'];
 const TAG_ROLE = {
   dia: 'wan', mpls: 'wan', wan: 'wan', inet: 'wan', isp: 'wan',
   p2p: 'site-link', ptp: 'site-link', b2b: 'site-link', dci: 'site-link',
-  upl: 'uplink',
+  upl: 'uplink', ibgp: 'uplink', gtw: 'uplink',
 };
 
 const CIRCUIT_ISSUE_TYPES = new Set(['site-wan-down', 'site-wan-degraded', 'circuit-down', 'site-link-down', 'circuit-flapping', 'circuit-flap-pattern']);
@@ -77,6 +77,66 @@ function farSiteFromLabel(text, tokens, ownSiteKey) {
 }
 
 /**
+ * Far device rule: the first whitespace token of a description, stripped of punctuation and a trailing
+ * domain, looked up by name (lookup(lowerName) -> siteKey | null). Returns the site key when it differs
+ * from the own site, else null.
+ */
+function farDeviceSite(text, lookup, ownSiteKey) {
+  const first = String(text || '').trim().split(/\s+/)[0] || '';
+  const tok = first.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '').toLowerCase();
+  if (!tok) return null;
+  const tries = [tok];
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(tok) && tok.includes('.')) tries.push(tok.split('.')[0]);
+  for (const t of tries) {
+    const site = lookup(t);
+    if (site) return site !== ownSiteKey ? site : null;
+  }
+  return null;
+}
+
+/**
+ * Device named by an issue target: the target equals the name, or begins with the name followed by a
+ * space, colon or slash (case-insensitive). Longest name wins, so "sjcx-core-1" never matches
+ * "sjcx-core-10 ...". lookup(lowerName) -> device | null.
+ */
+function deviceForTarget(target, lookup) {
+  const t = String(target || '').trim().toLowerCase();
+  if (!t) return null;
+  const whole = lookup(t);
+  if (whole) return whole;
+  for (let i = t.length - 1; i > 0; i -= 1) {
+    if (t[i] !== ' ' && t[i] !== ':' && t[i] !== '/') continue;
+    const d = lookup(t.slice(0, i));
+    if (d) return d;
+  }
+  return null;
+}
+
+const SEV_RANK = { critical: 0, warning: 1, info: 2 };
+/** Open issues at a site, critical first then newest first, max 5, as [{type, severity, target}]. */
+function topIssues(list) {
+  return [...list].sort((a, b) => (SEV_RANK[a.severity] ?? 3) - (SEV_RANK[b.severity] ?? 3)
+    || String(b.first_seen || b.firstSeen || b.dedupeSince || '').localeCompare(String(a.first_seen || a.firstSeen || a.dedupeSince || '')))
+    .slice(0, 5).map((i) => ({ type: i.type, severity: i.severity, target: i.target }));
+}
+
+/**
+ * Plain-language reasons that justify a site's worst state, in order, only when true.
+ * n: { wanState, wanTotal, wanDown, devicesDead, degradedCount, openIssues }, farLinks: [{farName, state}].
+ */
+function siteReasons(n, farLinks = []) {
+  const out = [];
+  const total = n.wanTotal || 0;
+  if (n.wanState === 'down') out.push(`WAN down: 0 of ${total} circuits up`);
+  else if (n.wanState === 'degraded') out.push(`WAN degraded: ${total - (n.wanDown || 0)} of ${total} circuits up`);
+  if (n.devicesDead > 0) out.push(`${n.devicesDead} dead device(s)`);
+  if (n.degradedCount > 0) out.push(`${n.degradedCount} degraded device(s)`);
+  if (n.openIssues > 0) out.push(`${n.openIssues} open issue(s)`);
+  for (const l of farLinks) out.push(`site link ${l.farName} ${l.state}`);
+  return out;
+}
+
+/**
  * Role of one circuit. Evidence order, first hit wins:
  *   1 override ("device:port=wan" / "=site-link" / "=uplink")
  *   2 CG tag class (dia, mpls, wan, inet, isp = wan; p2p, ptp, b2b, dci = site-link; upl = uplink)
@@ -84,7 +144,7 @@ function farSiteFromLabel(text, tokens, ownSiteKey) {
  *   4 label names another site = site-link
  *   5 carrier or circuit id present = wan
  *   6 otherwise wan, reason 'assumed-wan'
- * input: { overrideRole, tagClass, ownSiteKey, topoSiteKey, labelFarSiteKey, hasCarrierOrCid, wanReason }.
+ * input: { overrideRole, tagClass, tagReason (optional, e.g. 'suffix:int'), farDeviceSiteKey, ownSiteKey, topoSiteKey, labelFarSiteKey, hasCarrierOrCid, wanReason }.
  * Returns { role, farSiteKey, reason }; farSiteKey is set for site-links only.
  */
 function classifyCircuitRole(input = {}) {
@@ -96,10 +156,11 @@ function classifyCircuitRole(input = {}) {
     return { role: input.overrideRole, farSiteKey: input.overrideRole === 'site-link' ? far() : null, reason: 'override' };
   }
   const tagRole = TAG_ROLE[norm(input.tagClass)] || null;
-  if (tagRole) return { role: tagRole, farSiteKey: tagRole === 'site-link' ? far() : null, reason: `tag:${norm(input.tagClass)}` };
+  if (tagRole) return { role: tagRole, farSiteKey: tagRole === 'site-link' ? far() : null, reason: input.tagReason || `tag:${norm(input.tagClass)}` };
   if (topoFar) return { role: 'site-link', farSiteKey: topoFar, reason: 'topology' };
   if (topoSame) return { role: 'uplink', farSiteKey: null, reason: 'topology-same-site' };
   if (input.labelFarSiteKey) return { role: 'site-link', farSiteKey: input.labelFarSiteKey, reason: 'label' };
+  if (input.farDeviceSiteKey && input.farDeviceSiteKey !== own) return { role: 'site-link', farSiteKey: input.farDeviceSiteKey, reason: 'far-device' };
   if (input.hasCarrierOrCid) return { role: 'wan', farSiteKey: null, reason: 'carrier-or-circuit-id' };
   return { role: 'wan', farSiteKey: null, reason: 'assumed-wan' };
 }
@@ -570,6 +631,11 @@ function buildCircuitMap({ nodes, circuits, issues = new Map(), lastEventBy = ne
     }
     return { key: e.key, a: e.a, b: e.b, state, circuits: e.circuits, issueKey, lastEventAt: lastEventBy.get(e.key) || null };
   }).sort((x, y) => x.key.localeCompare(y.key));
+  const nameOf = new Map(nodes.map((n) => [n.siteKey, n.siteName]));
+  const farLinksFor = (siteKey) => edges.filter((e) => (e.a === siteKey || e.b === siteKey) && e.state !== 'ok').map((e) => {
+    const far = e.a === siteKey ? e.b : e.a;
+    return { farName: nameOf.get(far) || far, state: e.state };
+  });
   const nodeOut = nodes.map((n) => {
     const wanState = siteWanState({ total: n.wanTotal, down: n.wanDown, flapping: n.wanFlapping });
     const edgeBad = edges.some((e) => (e.a === n.siteKey || e.b === n.siteKey) && e.state !== 'ok');
@@ -581,6 +647,9 @@ function buildCircuitMap({ nodes, circuits, issues = new Map(), lastEventBy = ne
       siteKey: n.siteKey, siteName: n.siteName, tier: n.tier, wanState, wanTotal: n.wanTotal || 0, wanDown: n.wanDown || 0,
       devicesDead: dead, deadDevices: (n.deadDevices || []).slice(0, 10), degradedDevices: (n.degradedDevices || []).slice(0, 10),
       openIssues: n.openIssues || 0, worstState,
+      issuesTop: (n.issuesTop || []).slice(0, 5),
+      reasons: siteReasons({ wanState, wanTotal: n.wanTotal || 0, wanDown: n.wanDown || 0, devicesDead: dead,
+        degradedCount: n.degradedCount != null ? n.degradedCount : (n.degradedDevices || []).length, openIssues: n.openIssues || 0 }, farLinksFor(n.siteKey)),
     };
   });
   const wan = nodeOut.filter((n) => n.wanState).map((n) => ({ siteKey: n.siteKey, state: n.wanState, total: n.wanTotal, down: n.wanDown }));
@@ -605,19 +674,21 @@ function circuitMap(dbh, { nowMs = Date.now(), sourceId = null } = {}) {
   // Devices with an open warning / critical issue, by site (issue target begins with the device name).
   const degradedBy = new Map();
   const openBySite = new Map();
+  const issuesBySite = new Map();
   try {
     const nameToDev = new Map();
     for (const d of devices) for (const n of [d.display_name, d.name]) if (n) nameToDev.set(`${d.source_id}|${String(n).toLowerCase()}`, d);
     const srcIds = new Map(dbh.prepare('SELECT id, name FROM lm_sources').all().map((s) => [s.name, s.id]));
-    for (const i of dbh.prepare("SELECT source, severity, type, target FROM lm_issue_history WHERE status = 'open' AND severity IN ('warning', 'critical')").all()) {
+    for (const i of dbh.prepare("SELECT source, severity, type, target, first_seen FROM lm_issue_history WHERE status = 'open' AND severity IN ('warning', 'critical')").all()) {
       const sid = srcIds.get(i.source);
       if (sid == null) continue;
-      const words = String(i.target || '').split(' ').filter(Boolean);
-      let dev = null;
-      for (let n = words.length; n >= 1 && !dev; n -= 1) dev = nameToDev.get(`${sid}|${words.slice(0, n).join(' ').toLowerCase()}`) || null;
+      const dev = deviceForTarget(i.target, (n) => nameToDev.get(`${sid}|${n}`) || null);
+
       if (!dev) continue;
       const k = `${sid}|${dev.site_key}`;
       openBySite.set(k, (openBySite.get(k) || 0) + 1);
+      if (!issuesBySite.has(k)) issuesBySite.set(k, []);
+      issuesBySite.get(k).push(i);
       if (dev.host_status === 'dead') continue;
       const nm = dev.display_name || dev.name;
       if (!degradedBy.has(k)) degradedBy.set(k, new Set());
@@ -636,7 +707,8 @@ function circuitMap(dbh, { nowMs = Date.now(), sourceId = null } = {}) {
       tier: DC_NAME.test(String(s.site_name)) || topKeys.has(k) ? 'dc' : 'site',
       wanTotal: g ? g.total : 0, wanDown: g ? g.down : 0, wanFlapping: g ? g.flapping : 0,
       devicesDead: (deadBy.get(k) || []).length, deadDevices: deadBy.get(k) || [],
-      degradedDevices: [...(degradedBy.get(k) || [])], openIssues: openBySite.get(k) || 0,
+      degradedDevices: [...(degradedBy.get(k) || [])], degradedCount: (degradedBy.get(k) || new Set()).size, openIssues: openBySite.get(k) || 0,
+      issuesTop: topIssues(issuesBySite.get(k) || []),
     };
   });
   const lastEventBy = new Map();
@@ -710,8 +782,8 @@ function siteCircuitEvidence(dbh, siteKey, { nowMs = Date.now() } = {}) {
 }
 
 module.exports = {
-  ROLES, TAG_ROLE, CIRCUIT_ISSUE_TYPES,
-  buildSiteTokens, farSiteFromLabel, classifyCircuitRole,
+  ROLES, TAG_ROLE, CIRCUIT_ISSUE_TYPES, deviceForTarget, topIssues, siteReasons,
+  buildSiteTokens, farSiteFromLabel, farDeviceSite, classifyCircuitRole,
   siteWanState, transitionEvent, edgeState, countChanges, statusIsDown,
   circuitLight, wanBySite, computeSiteWanState,
   recordCircuitTransitions, pruneCircuitEvents, listEvents, setEventNote,

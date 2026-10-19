@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   COLORS, NODE_W, NODE_H, MAP_W, layoutNodes, edgeGeometry, nodeRects, pushClear, pillRect,
 } from './layout';
 import { fmtWhen } from '../helpers';
+import { SiteCard, EdgeCard } from './PinnedCards';
 
 // Circuit map (round 13): sites as nodes coloured by WAN state, site-link
 // circuits as edges coloured by state. Geometry comes from layout.js (the same
@@ -17,6 +18,14 @@ const HH = NODE_H / 2;
 const GREY = '#6B7C8D';
 
 export const wanColor = (s) => (s === 'down' ? COLORS.crit : s === 'degraded' ? COLORS.warn : s === 'ok' ? COLORS.ok : GREY);
+// Node colour follows the site overall state; grey only when it has no WAN and nothing wrong.
+export const nodeColor = (n) => {
+  const w = n.worstState;
+  if (w === 'down') return COLORS.crit;
+  if (w === 'degraded') return COLORS.warn;
+  if (w === 'ok') return n.wanState || (Number(n.openIssues) || 0) > 0 || (Number(n.devicesDead) || 0) > 0 ? COLORS.ok : GREY;
+  return wanColor(n.wanState);
+};
 export const edgeColor = (s) => (s === 'down' ? COLORS.crit : s === 'degraded' || s === 'flapping' ? COLORS.warn : COLORS.ok);
 const edgeWidth = (s) => (s === 'down' ? 3 : s === 'ok' ? 1.75 : 2.5);
 const edgeText = (e) => {
@@ -27,6 +36,36 @@ const edgeText = (e) => {
   return n > 1 ? `${n} circuits` : '1 circuit';
 };
 const pillW = (t) => t.length * 6.6 + 14;
+
+// Layout constants for the unlinked-site chips (sites with no site link are not part of the tiered graph).
+const CHIP_W = 110;
+const CHIP_H = 26;
+const CHIP_GAP = 6;
+const SIDE_W = 180;
+
+/** Sites that take part in at least one drawn site link, and the rest. */
+export function splitLinked(nodes, edges) {
+  const have = new Set(list(nodes).map((n) => String(n.siteKey)));
+  const touched = new Set();
+  list(edges).forEach((e) => {
+    if (e && have.has(String(e.a)) && have.has(String(e.b)) && String(e.a) !== String(e.b)) { touched.add(String(e.a)); touched.add(String(e.b)); }
+  });
+  const linked = list(nodes).filter((n) => touched.has(String(n.siteKey)));
+  return { linked, unlinked: list(nodes).filter((n) => !touched.has(String(n.siteKey))) };
+}
+
+// Motion is CSS only and animates stroke-dashoffset and opacity, nothing else. Reduced-motion users get a static map.
+const MOTION_CSS = `
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes cmap-flow { to { stroke-dashoffset: -12; } }
+  @keyframes cmap-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes cmap-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+  .cmap-edge-ok { stroke-dasharray: 6 6; animation: cmap-flow 3s linear infinite; }
+  .cmap-edge-degraded { stroke-dasharray: 6 6; animation: cmap-flow 1.5s linear infinite; }
+  .cmap-edge-down { animation: cmap-pulse 1.4s ease-in-out infinite; }
+  .cmap-edge-flapping { animation: cmap-blink 0.9s ease-in-out infinite; }
+  .cmap-dot-warn, .cmap-dot-crit { animation: cmap-pulse 2.2s ease-in-out infinite; }
+}`;
 
 function Pill({ x, y, text, color }) {
   const w = pillW(text);
@@ -44,7 +83,7 @@ function TipCard({ tip }) {
   return (
     <div className="absolute z-10 pointer-events-none rounded-lg border p-3 text-[11px] leading-relaxed shadow-modal" style={{ ...style, background: '#0B1015', borderColor: '#2b3b4b' }} role="tooltip">
       {tip.lines.map((l, i) => (
-        <p key={i} className={l.cls || 'text-ink-muted'} style={l.bold ? { fontWeight: 700, fontSize: 13 } : undefined}>{l.text}</p>
+        <p key={i} title={l.title} className={l.cls || 'text-ink-muted'} style={l.bold ? { fontWeight: 700, fontSize: 13 } : undefined}>{l.text}</p>
       ))}
     </div>
   );
@@ -59,14 +98,16 @@ function wanLine(n) {
   return { text: 'No WAN circuit identified', cls: 'text-ink-faint' };
 }
 
-function nodeTip(n) {
+export function nodeTip(n) {
   const dead = list(n.deadDevices);
   const deg = list(n.degradedDevices);
+  const top = list(n.issuesTop);
   const lines = [
     { text: n.siteName || n.siteKey, bold: true, cls: 'text-ink' },
     wanLine(n),
-    { text: `${n.tier === 'dc' ? 'Data center' : 'Site'}, ${n.openIssues ?? 0} open issue(s)` },
   ];
+  list(n.reasons).forEach((r) => lines.push({ text: r, cls: 'text-ink' }));
+  lines.push({ text: n.tier === 'dc' ? 'Data center' : 'Site' });
   if (dead.length) {
     lines.push({ text: `Dead devices (${n.devicesDead ?? dead.length})`, cls: 'text-status-crit font-semibold' });
     dead.slice(0, 10).forEach((d) => lines.push({ text: d }));
@@ -74,6 +115,10 @@ function nodeTip(n) {
   if (deg.length) {
     lines.push({ text: 'Degraded devices', cls: 'text-status-warn font-semibold' });
     deg.slice(0, 10).forEach((d) => lines.push({ text: d }));
+  }
+  if ((Number(n.openIssues) || 0) > 0 || top.length) {
+    lines.push({ text: `Open issues (${n.openIssues ?? top.length})`, cls: 'text-status-warn font-semibold' });
+    top.slice(0, 5).forEach((i) => lines.push({ text: `${i.severity} ${i.type}: ${short(i.target, 60)}`, title: i.target }));
   }
   lines.push({ text: 'Click opens Site 360', cls: 'text-ink-faint' });
   return lines;
@@ -92,14 +137,62 @@ function edgeTip(e, nameOf) {
   return lines;
 }
 
-export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite, onOpenEdge }) {
+export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite, onOpenEdge, onOpenIssues = () => {}, overrides = null, onMove = () => {} }) {
   const nodes = list(nodesIn);
   const edges = list(edgesIn);
   const wrapRef = useRef(null);
   const [tip, setTip] = useState(null);
+  const svgRef = useRef(null);
+  // Drag state: the ref holds the gesture, `live` is the dragged node position while moving.
+  const dragRef = useRef(null);
+  const suppressClick = useRef(false);
+  const [live, setLive] = useState(null);
+  // One pinned card at a time: { kind: 'node'|'edge', key, left, top, panel }.
+  const [pinned, setPinned] = useState(null);
+  useEffect(() => {
+    if (!pinned) return undefined;
+    const onKey = (ev) => { if (ev.key === 'Escape') setPinned(null); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [pinned]);
 
-  const layout = useMemo(() => layoutNodes(nodes), [nodes]);
-  const pos = layout.positions;
+  const { linked, unlinked } = useMemo(() => splitLinked(nodes, edges), [nodes, edges]);
+  // Only linked sites take part in the tiered layout. Unlinked sites are chips in a column on the right when
+  // it fits next to the graph, else a grid below it. The viewBox width stays MAP_W either way.
+  const layout = useMemo(() => {
+    const base = linked.length ? layoutNodes(linked) : { width: MAP_W, height: 0, positions: {} };
+    const colH = unlinked.length * (CHIP_H + CHIP_GAP) + 34;
+    const side = unlinked.length > 0 && linked.length > 0 && colH <= base.height;
+    const k = side ? (MAP_W - SIDE_W) / MAP_W : 1;
+    const positions = {};
+    Object.entries(base.positions).forEach(([key, p]) => { positions[key] = { ...p, x: Math.round(p.x * k) }; });
+    const chips = {};
+    let height = base.height;
+    if (side) {
+      unlinked.forEach((n, i) => { chips[String(n.siteKey)] = { x: MAP_W - SIDE_W + 24, y: 34 + i * (CHIP_H + CHIP_GAP) }; });
+    } else if (unlinked.length) {
+      const cols = Math.max(1, Math.floor((MAP_W - 40) / (CHIP_W + 10)));
+      const top = base.height ? base.height + 28 : 28;
+      unlinked.forEach((n, i) => { chips[String(n.siteKey)] = { x: 20 + (i % cols) * (CHIP_W + 10), y: top + Math.floor(i / cols) * (CHIP_H + CHIP_GAP) }; });
+      height = top + Math.ceil(unlinked.length / cols) * (CHIP_H + CHIP_GAP) + 10;
+    }
+    return { width: MAP_W, height: Math.max(height, 60), positions, chips, side, chipsTop: side ? 0 : (base.height || 0), graphW: side ? MAP_W - SIDE_W : MAP_W, graphH: base.height };
+  }, [linked, unlinked]);
+  const clampPt = (pt) => ({
+    x: Math.round(Math.min(Math.max(pt.x, HW), Math.max(HW, layout.graphW - HW))),
+    y: Math.round(Math.min(Math.max(pt.y, HH), Math.max(HH, layout.graphH - HH))),
+  });
+  // layout.js placement, then saved overrides, then the node being dragged right now.
+  const pos = useMemo(() => {
+    const out = { ...layout.positions };
+    Object.keys(out).forEach((k) => {
+      const o = overrides && overrides[k];
+      if (o && Number.isFinite(o.x) && Number.isFinite(o.y)) out[k] = { ...out[k], ...clampPt(o) };
+    });
+    if (live && out[live.key]) out[live.key] = { ...out[live.key], x: live.x, y: live.y };
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout, overrides, live]);
   const nodeByKey = useMemo(() => { const m = {}; nodes.forEach((n) => { m[String(n.siteKey)] = n; }); return m; }, [nodes]);
   const nameOf = (k) => (nodeByKey[String(k)] ? (nodeByKey[String(k)].siteName || String(k)) : String(k));
   const rects = useMemo(() => nodeRects(pos), [pos]);
@@ -135,6 +228,61 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
     setTip({ ...payload, x: sx * k, y: sy * k, w: r.width });
   };
   const clearTip = () => setTip(null);
+  const CARD_W = 420;
+  const pin = (kind, key, sx, sy, halfW) => {
+    const r = wrapRef.current ? wrapRef.current.getBoundingClientRect() : null;
+    const w = r && r.width ? r.width : MAP_W;
+    const k = w / MAP_W;
+    const panel = (typeof window !== 'undefined' && window.innerWidth < 768) || w < CARD_W + 120;
+    const right = (sx + halfW) * k + 12;
+    const left = right + CARD_W > w ? Math.max(0, (sx - halfW) * k - 12 - CARD_W) : right;
+    setTip(null);
+    setPinned({ kind, key, left, top: Math.max(0, (sy - HH) * k), panel });
+  };
+
+  // Pointer drag for linked nodes: a 4 px move starts it, so a plain click still pins the card.
+  const viewScale = () => {
+    const r = svgRef.current ? svgRef.current.getBoundingClientRect() : null;
+    return r && r.width ? r.width / layout.width : 1;
+  };
+  const onNodeDown = (ev, n, p) => {
+    if (ev.button !== undefined && ev.button !== 0) return;
+    dragRef.current = { key: String(n.siteKey), cx: ev.clientX, cy: ev.clientY, ox: p.x, oy: p.y, moved: false };
+    try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch { /* not supported */ }
+  };
+  const onNodeMove = (ev) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = ev.clientX - d.cx;
+    const dy = ev.clientY - d.cy;
+    if (!d.moved && Math.hypot(dx, dy) < 4) return;
+    d.moved = true;
+    const k = viewScale();
+    setTip(null);
+    const pt = clampPt({ x: d.ox + dx / k, y: d.oy + dy / k });
+    d.last = pt;
+    setLive({ key: d.key, ...pt });
+  };
+  const onNodeUp = () => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (!d || !d.moved) return;
+    suppressClick.current = true;
+    setTimeout(() => { suppressClick.current = false; }, 0);
+    setLive(null);
+    if (d.last) onMove(d.key, d.last);
+  };
+  const onNodeKey = (ev, n, p) => {
+    if (ev.key === 'Enter') { pin('node', n.siteKey, p.x, p.y, HW); return; }
+    const step = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] }[ev.key];
+    if (!step) return;
+    ev.preventDefault();
+    onMove(String(n.siteKey), clampPt({ x: p.x + step[0], y: p.y + step[1] }));
+  };
+  const onNodeClick = (n, p) => {
+    if (suppressClick.current) { suppressClick.current = false; return; }
+    pin('node', n.siteKey, p.x, p.y, HW);
+  };
 
   if (nodes.length === 0) {
     return <div className="panel p-6 text-sm text-ink-muted text-center">No sites to draw. Sites appear once a portal has been polled and circuits computed.</div>;
@@ -142,10 +290,15 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
 
   return (
     <div ref={wrapRef} className="relative panel overflow-hidden" onMouseLeave={clearTip} data-testid="circuit-map">
+      <style>{MOTION_CSS}</style>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-5 pt-3.5 text-[11px] text-ink-muted" data-testid="circuit-map-legend">
         <span className="text-ink-faint uppercase tracking-wide text-[10px]">Site WAN</span>
         {[['up', COLORS.ok], ['degraded', COLORS.warn], ['down', COLORS.crit], ['no WAN circuit', GREY]].map(([l, c]) => (
           <span key={l} className="inline-flex items-center"><i className="inline-block w-2.5 h-2.5 rounded-full mr-1.5" style={{ background: c }} />{l}</span>
+        ))}
+        <span className="text-ink-faint uppercase tracking-wide text-[10px] ml-2">Site state</span>
+        {[['up', COLORS.ok], ['degraded', COLORS.warn], ['down', COLORS.crit]].map(([l, c]) => (
+          <span key={`s-${l}`} className="inline-flex items-center"><i className="inline-block w-3 h-2.5 rounded-sm mr-1.5" style={{ border: `2px solid ${c}`, background: `${c}22` }} />{l}</span>
         ))}
         <span className="text-ink-faint uppercase tracking-wide text-[10px] ml-2">Link</span>
         <span className="inline-flex items-center"><i className="inline-block w-[18px] h-[3px] rounded mr-1.5" style={{ background: COLORS.ok }} />ok</span>
@@ -156,7 +309,8 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
         </span>
       </div>
 
-      <svg viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="xMidYMid meet" className="block w-full h-auto" role="group" aria-label="Circuit map">
+      <svg ref={svgRef} viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="xMidYMid meet" className="block w-full h-auto" role="group" aria-label="Circuit map">
+        <rect data-testid="map-bg" x="0" y="0" width={layout.width} height={layout.height} fill="transparent" onClick={() => setPinned(null)} />
         {drawn.map((e) => {
           const sh = shapes[e.key];
           const col = edgeColor(e.state);
@@ -168,34 +322,38 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
                 role="link" tabIndex={0} aria-label={`${nameOf(e.a)} to ${nameOf(e.b)}, ${e.state}`}
                 onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
                 onFocus={() => placeAt(sh.pt.x, sh.pt.y, payload)} onBlur={clearTip}
-                onClick={() => onOpenEdge(e)} onKeyDown={(ev) => { if (ev.key === 'Enter') onOpenEdge(e); }} />
-              <path d={sh.geo.d} fill="none" stroke={col} strokeWidth={edgeWidth(e.state) + (hover ? 2 : 0)}
+                onClick={() => pin('edge', e.key, sh.pt.x, sh.pt.y, 0)} onKeyDown={(ev) => { if (ev.key === 'Enter') pin('edge', e.key, sh.pt.x, sh.pt.y, 0); }} />
+              <path d={sh.geo.d} fill="none" stroke={col} strokeWidth={edgeWidth(e.state) + (hover ? 2 : 0)} className={`cmap-edge-${e.state}`}
                 strokeDasharray={e.state === 'flapping' ? '7 4' : e.state === 'down' ? '4 2' : undefined} pointerEvents="none" />
               <Pill x={sh.pt.x} y={sh.pt.y} text={sh.text} color={col} />
             </g>
           );
         })}
 
-        {nodes.map((n) => {
+        {linked.map((n) => {
           const p = pos[String(n.siteKey)];
           if (!p) return null;
-          const col = wanColor(n.wanState);
+          const col = nodeColor(n);
+          const wcol = wanColor(n.wanState);
           const dead = Number(n.devicesDead) || 0;
           const hover = tip && tip.kind === 'node' && tip.key === n.siteKey;
           const payload = { kind: 'node', key: n.siteKey, lines: nodeTip(n) };
           const wt = Number(n.wanTotal) || 0;
           const sub = n.wanState ? `WAN ${Math.max(0, wt - (Number(n.wanDown) || 0))}/${wt} ${n.wanState}` : 'no WAN circuit';
           return (
-            <g key={n.siteKey} transform={`translate(${p.x} ${p.y})`} role="button" tabIndex={0}
+            <g key={n.siteKey} data-testid="graph-node" data-x={p.x} data-y={p.y} transform={`translate(${p.x} ${p.y})`} role="button" tabIndex={0}
               aria-label={`${n.siteName || n.siteKey}, ${n.wanState ? `WAN ${n.wanState}` : 'no WAN'}`}
               style={{ cursor: 'pointer', outline: 'none' }}
               onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
               onFocus={() => placeAt(p.x + HW, p.y + HH, payload)} onBlur={clearTip}
-              onClick={() => onOpenSite(n.siteKey)} onKeyDown={(ev) => { if (ev.key === 'Enter') onOpenSite(n.siteKey); }}>
+              onPointerDown={(ev) => onNodeDown(ev, n, p)} onPointerMove={onNodeMove} onPointerUp={onNodeUp} onPointerCancel={onNodeUp}
+              onClick={() => onNodeClick(n, p)} onKeyDown={(ev) => onNodeKey(ev, n, p)}>
               <rect x={-HW} y={-HH} width={NODE_W} height={NODE_H} rx={12} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="2" />
+              <rect x={-HW} y={-HH} width={NODE_W} height={NODE_H} rx={12} fill={col} fillOpacity="0.09" pointerEvents="none" />
+              <rect x={-HW + 12} y={-HH} width={NODE_W - 24} height={3} fill={col} pointerEvents="none" />
               <text x={0} y={-2} textAnchor="middle" fontSize="13" fontWeight="700" fill="#E8EDF2">{short(n.siteName || String(n.siteKey), 20)}</text>
               <text x={0} y={14} textAnchor="middle" fontSize="10" fill="#94A3B3">{short(sub, 26)}</text>
-              <circle cx={-HW + 10} cy={-HH + 10} r="4.5" fill={col} />
+              <circle cx={-HW + 10} cy={-HH + 12} r="4.5" fill={wcol} className={n.wanState === 'down' ? 'cmap-dot-crit' : n.wanState === 'degraded' ? 'cmap-dot-warn' : undefined} />
               {dead > 0 && (
                 <g>
                   <circle cx={HW - 2} cy={-HH + 2} r="11" fill={COLORS.crit} stroke="#131B23" strokeWidth="3" />
@@ -205,9 +363,49 @@ export default function CircuitMap({ nodes: nodesIn, edges: edgesIn, onOpenSite,
             </g>
           );
         })}
+
+        {unlinked.length > 0 && (
+          <text x={layout.side ? MAP_W - SIDE_W + 24 : 20} y={layout.side ? 20 : layout.chipsTop + 18} fontSize="11" fill="#94A3B3">{`Not linked (${unlinked.length})`}</text>
+        )}
+        {unlinked.map((n) => {
+          const c = layout.chips[String(n.siteKey)];
+          if (!c) return null;
+          const col = nodeColor(n);
+          const wcol = wanColor(n.wanState);
+          const hover = tip && tip.kind === 'node' && tip.key === n.siteKey;
+          const payload = { kind: 'node', key: n.siteKey, lines: nodeTip(n) };
+          return (
+            <g key={n.siteKey} data-testid="unlinked-chip" transform={`translate(${c.x} ${c.y})`} role="button" tabIndex={0}
+              aria-label={`${n.siteName || n.siteKey}, ${n.wanState ? `WAN ${n.wanState}` : 'no WAN'}`}
+              style={{ cursor: 'pointer', outline: 'none' }}
+              onMouseEnter={(ev) => place(ev, payload)} onMouseMove={(ev) => place(ev, payload)} onMouseLeave={clearTip}
+              onFocus={() => placeAt(c.x + CHIP_W, c.y + CHIP_H, payload)} onBlur={clearTip}
+              onClick={() => pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2)} onKeyDown={(ev) => { if (ev.key === 'Enter') pin('node', n.siteKey, c.x + CHIP_W / 2, c.y + CHIP_H / 2, CHIP_W / 2); }}>
+              <rect width={CHIP_W} height={CHIP_H} rx={8} fill={hover ? '#22303d' : '#18222C'} stroke={col} strokeWidth="1.5" />
+              <rect width={CHIP_W} height={CHIP_H} rx={8} fill={col} fillOpacity="0.09" pointerEvents="none" />
+              <rect x={8} y={0} width={CHIP_W - 16} height={2.5} fill={col} pointerEvents="none" />
+              <circle cx={11} cy={CHIP_H / 2} r="4" fill={wcol} className={n.wanState === 'down' ? 'cmap-dot-crit' : n.wanState === 'degraded' ? 'cmap-dot-warn' : undefined} />
+              <text x={22} y={CHIP_H / 2 + 4} fontSize="11" fontWeight="600" fill="#E8EDF2">{short(n.siteName || String(n.siteKey), 13)}</text>
+            </g>
+          );
+        })}
       </svg>
 
-      {tip && <TipCard tip={tip} />}
+      {tip && !(pinned && pinned.kind === tip.kind && String(pinned.key) === String(tip.key)) && <TipCard tip={tip} />}
+      {pinned && (() => {
+        const n = pinned.kind === 'node' ? nodeByKey[String(pinned.key)] : null;
+        const e = pinned.kind === 'edge' ? edges.find((x) => x.key === pinned.key) : null;
+        if (!n && !e) return null;
+        const style = pinned.panel
+          ? { position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(420px, 100vw)', maxHeight: '100vh' }
+          : { position: 'absolute', left: pinned.left, top: pinned.top, width: CARD_W };
+        return (
+          <div className="z-20 rounded-lg border shadow-modal" style={{ ...style, background: '#0B1015', borderColor: '#2b3b4b' }} onClick={(ev) => ev.stopPropagation()}>
+            {n ? <SiteCard key={n.siteKey} node={n} onClose={() => setPinned(null)} onOpenSite={onOpenSite} onOpenIssues={onOpenIssues} />
+              : <EdgeCard key={e.key} edge={e} nameOf={nameOf} onClose={() => setPinned(null)} onOpenEdge={onOpenEdge} />}
+          </div>
+        );
+      })()}
     </div>
   );
 }

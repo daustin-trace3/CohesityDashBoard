@@ -1,6 +1,10 @@
 import { render, fireEvent } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import CircuitMap from './CircuitMap';
+
+vi.mock('../../../api/client', () => ({
+  default: { get: vi.fn(() => Promise.resolve({ data: { wan: { state: 'ok', total: 2, down: 0, flapping: 0 }, circuits: [], siteLinks: [], events: [] } })) },
+}));
 import { SiteHoverBody } from './SitesBand';
 
 const node = (i, extra = {}) => ({ siteKey: `s${i}`, siteName: `Site ${i}`, tier: i === 0 ? 'dc' : 'site', wanState: 'ok', wanTotal: 2, wanDown: 0, devicesDead: 0, openIssues: 0, ...extra });
@@ -14,7 +18,7 @@ describe('CircuitMap', () => {
       { key: 's0|s5', a: 's0', b: 's5', state: 'flapping', circuits: [{ port: 'Gi0/3', state: 'ok', flaps24h: 5 }] },
     ];
     let opened = null;
-    const { container } = render(<CircuitMap nodes={nodes} edges={edges} onOpenSite={() => {}} onOpenEdge={(e) => { opened = e.key; }} />);
+    const { container, getByText } = render(<CircuitMap nodes={nodes} edges={edges} onOpenSite={() => {}} onOpenEdge={(e) => { opened = e.key; }} />);
     const svg = container.querySelector('svg[viewBox]');
     expect(svg).toBeTruthy();
     expect(container.querySelectorAll('g[role="button"]')).toHaveLength(24);
@@ -22,12 +26,96 @@ describe('CircuitMap', () => {
     const flap = container.querySelector('g[data-edge="s0|s5"] path[stroke-dasharray="7 4"]');
     expect(flap).toBeTruthy();
     fireEvent.click(container.querySelector('g[data-edge="s0|s2"] path[role="link"]'));
+    // An edge click pins a card; its button then opens the issue.
+    expect(opened).toBe(null);
+    fireEvent.click(getByText('Open issue'));
     expect(opened).toBe('s0|s2');
   });
 
   it('renders with no edges and tolerates missing fields', () => {
     const { container } = render(<CircuitMap nodes={[{ siteKey: 'a' }]} edges={undefined} onOpenSite={() => {}} onOpenEdge={() => {}} />);
     expect(container.querySelectorAll('g[role="button"]')).toHaveLength(1);
+  });
+});
+
+describe('CircuitMap linked and unlinked sites', () => {
+  it('draws linked sites in the graph and unlinked sites as chips in the side column', () => {
+    const nodes = Array.from({ length: 6 }, (_, i) => node(i));
+    const edges = [
+      { key: 's0|s1', a: 's0', b: 's1', state: 'ok', circuits: [{ port: 'Gi0/1', state: 'ok' }] },
+      { key: 's2|s3', a: 's2', b: 's3', state: 'degraded', circuits: [{ port: 'Gi0/2', state: 'down' }, { port: 'Gi0/3', state: 'ok' }] },
+    ];
+    const { container, getAllByTestId } = render(<CircuitMap nodes={nodes} edges={edges} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    expect(getAllByTestId('graph-node')).toHaveLength(4);
+    expect(getAllByTestId('unlinked-chip')).toHaveLength(2);
+    expect(container.querySelector('svg[viewBox]').getAttribute('viewBox').startsWith('0 0 1400 ')).toBe(true);
+  });
+
+  it('a node with open issues and no degraded device names still lists Open issues (3) in its hover body', () => {
+    const nodes = [node(0, { openIssues: 3, degradedDevices: [], reasons: ['3 open issue(s)'], issuesTop: [{ type: 'hardware-fault', severity: 'warning', target: 'sjcx-core-1 Slot 25' }] }), node(1)];
+    const edges = [{ key: 's0|s1', a: 's0', b: 's1', state: 'ok', circuits: [] }];
+    const { getAllByTestId, getByRole, getByText } = render(<CircuitMap nodes={nodes} edges={edges} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    fireEvent.mouseEnter(getAllByTestId('graph-node')[0], { clientX: 10, clientY: 10 });
+    expect(getByRole('tooltip')).toBeTruthy();
+    expect(getByText('Open issues (3)')).toBeTruthy();
+    expect(getByText('warning hardware-fault: sjcx-core-1 Slot 25')).toBeTruthy();
+  });
+});
+
+describe('CircuitMap pinned card and dragging', () => {
+  const two = () => ({
+    nodes: [node(0, { worstState: 'degraded', reasons: ['1 open issue(s)'] }), node(1)],
+    edges: [{ key: 's0|s1', a: 's0', b: 's1', state: 'ok', circuits: [] }],
+  });
+
+  it('clicking a node pins a card with the site name and does not navigate', () => {
+    const { nodes, edges } = two();
+    let opened = 0;
+    const { getAllByTestId, getByTestId, queryByTestId } = render(<CircuitMap nodes={nodes} edges={edges} onOpenSite={() => { opened += 1; }} onOpenEdge={() => { opened += 1; }} />);
+    fireEvent.click(getAllByTestId('graph-node')[0]);
+    expect(getByTestId('site-card').textContent).toContain('Site 0');
+    expect(opened).toBe(0);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(queryByTestId('site-card')).toBeNull();
+  });
+
+  it('an override position places the node, and the node colour follows worstState', () => {
+    const { nodes, edges } = two();
+    const { getAllByTestId } = render(<CircuitMap nodes={nodes} edges={edges} overrides={{ s0: { x: 400, y: 200 } }} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    const g = getAllByTestId('graph-node').find((x) => x.getAttribute('aria-label').startsWith('Site 0'));
+    expect(g.getAttribute('transform')).toBe('translate(400 200)');
+    expect(g.querySelector('rect').getAttribute('stroke')).toBe('#FBBF24');
+  });
+
+  it('a drag under 4 px still clicks, a longer drag moves the node and swallows the click', () => {
+    const { nodes, edges } = two();
+    const moves = [];
+    const { getAllByTestId, queryByTestId } = render(<CircuitMap nodes={nodes} edges={edges} onMove={(k, p) => moves.push([k, p])} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    const g = () => getAllByTestId('graph-node').find((x) => x.getAttribute('aria-label').startsWith('Site 0'));
+    fireEvent.pointerDown(g(), { clientX: 100, clientY: 100, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(g(), { clientX: 102, clientY: 101, pointerId: 1 });
+    fireEvent.pointerUp(g(), { clientX: 102, clientY: 101, pointerId: 1 });
+    fireEvent.click(g());
+    expect(moves).toHaveLength(0);
+    expect(queryByTestId('site-card')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.pointerDown(g(), { clientX: 100, clientY: 100, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(g(), { clientX: 160, clientY: 130, pointerId: 1 });
+    fireEvent.pointerUp(g(), { clientX: 160, clientY: 130, pointerId: 1 });
+    fireEvent.click(g());
+    expect(moves).toHaveLength(1);
+    expect(moves[0][0]).toBe('s0');
+    expect(queryByTestId('site-card')).toBeNull();
+  });
+
+  it('arrow keys move a focused node by 10 units', () => {
+    const { nodes, edges } = two();
+    const moves = [];
+    const { getAllByTestId } = render(<CircuitMap nodes={nodes} edges={edges} onMove={(k, p) => moves.push([k, p])} onOpenSite={() => {}} onOpenEdge={() => {}} />);
+    const g = getAllByTestId('graph-node').find((x) => x.getAttribute('aria-label').startsWith('Site 0'));
+    const x0 = Number(g.getAttribute('data-x'));
+    fireEvent.keyDown(g, { key: 'ArrowRight' });
+    expect(moves[0][1].x).toBe(x0 + 10);
   });
 });
 
@@ -38,5 +126,12 @@ describe('SiteHoverBody', () => {
     expect(getByText('sw-2')).toBeTruthy();
     expect(getByText(/WAN degraded: running on 1 of 2/)).toBeTruthy();
     expect(getByText('sw-9 Gi1/0/1')).toBeTruthy();
+  });
+
+  it('shows reasons first and the open issues list', () => {
+    const { getAllByTestId, getByText } = render(<SiteHoverBody n={{ siteKey: 'a', siteName: 'A', wanState: 'degraded', wanTotal: 2, wanDown: 1, openIssues: 3, reasons: ['WAN degraded: 1 of 2 circuits up', '3 open issue(s)'], issuesTop: [{ type: 'fw-tunnel-down', severity: 'warning', target: 'sjcx-fwp-01-1 IPSec tunnels' }] }} />);
+    expect(getAllByTestId('site-reason')).toHaveLength(2);
+    expect(getByText('Open issues (3)')).toBeTruthy();
+    expect(getByText('warning fw-tunnel-down: sjcx-fwp-01-1 IPSec tunnels')).toBeTruthy();
   });
 });

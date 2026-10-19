@@ -2909,7 +2909,27 @@ router.get('/topology-links', [query('deviceId').optional().isInt().toInt(), que
 
 // ---- Config ----------------------------------------------------------------
 
-const configPayload = () => ({ thresholds: allThresholds(), ranges: buildRanges(), labels: buildLabels() });
+// Circuit map tile positions shared by everyone (round 13b): a JSON object { siteKey: { x, y } } kept as one
+// app_settings text value. It is not a threshold, so it has no THRESHOLD_DEFS entry.
+const MAP_LAYOUT_KEY = 'lm_circuit_map_layout';
+const MAP_LAYOUT_MAX = 64 * 1024;
+function mapLayoutValue() {
+  try { return String(getSetting(MAP_LAYOUT_KEY) || ''); } catch { return ''; }
+}
+/** '' clears the layout; otherwise a JSON object of {x, y} numbers. Returns an error string or null. */
+function checkMapLayout(v) {
+  if (typeof v !== 'string') return 'must be a JSON string';
+  if (v.length > MAP_LAYOUT_MAX) return 'must be 64 KB or less';
+  if (!v.trim()) return null;
+  let o;
+  try { o = JSON.parse(v); } catch { return 'must be valid JSON'; }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return 'must be a JSON object of site positions';
+  for (const val of Object.values(o)) {
+    if (!val || !Number.isFinite(val.x) || !Number.isFinite(val.y)) return 'every position needs numeric x and y';
+  }
+  return null;
+}
+const configPayload = () => ({ thresholds: allThresholds(), [MAP_LAYOUT_KEY]: mapLayoutValue(), ranges: buildRanges(), labels: buildLabels() });
 
 router.get('/config', (req, res, next) => {
   try { res.json(configPayload()); } catch (err) { next(err); }
@@ -2941,8 +2961,18 @@ router.put('/config', (req, res, next) => {
         writes.push([key, String(clampTo(key, v))]);
       }
     }
+    if (src[MAP_LAYOUT_KEY] !== undefined) {
+      const why = checkMapLayout(src[MAP_LAYOUT_KEY]);
+      if (why) bad.push({ path: MAP_LAYOUT_KEY, msg: why }); else writes.push([MAP_LAYOUT_KEY, src[MAP_LAYOUT_KEY].trim()]);
+    }
     if (bad.length) return res.status(400).json({ error: 'Invalid parameters', details: bad });
+    const circuitKeys = new Set(['lm_wan_overrides', 'lm_carrier_aliases']);
+    const circuitsChanged = writes.some(([k, v]) => circuitKeys.has(k) && String(lmIssues().getTextSetting(k) || '') !== String(v));
     for (const [k, v] of writes) setSetting(k, v);
+    // Round 13b: overrides and carrier aliases change circuit roles, so re-classify now instead of at the daily run.
+    if (circuitsChanged) {
+      try { lmPath().computeCircuits(db); require('../services/logicmonitorCircuits').computeSiteWanState(db); } catch { /* next daily run recomputes */ }
+    }
     res.json(configPayload());
   } catch (err) { next(err); }
 });
