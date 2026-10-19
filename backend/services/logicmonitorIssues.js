@@ -5,6 +5,7 @@
 // collector health, dead devices, interface trends, alert storms, new devices
 // and the check rules from logicmonitorChecks. Issue identity is
 // `type|source|target`.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 const checks = require('./logicmonitorChecks');
@@ -1011,7 +1012,6 @@ const reconcileIssueHistoryTxn = db.transaction(() => {
     if (!openKeys.has(key)) insert.run(key, i.source, i.severity, i.type, i.target, i.message);
   }
   recordCheckBlames(current);
-  db.prepare("DELETE FROM lm_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
 });
 
 /** Open alerts shadowed under each culprit device: Map "source:device" -> count. */
@@ -1078,7 +1078,9 @@ function computeShadows(dbh = db, opts = {}) {
 // first so the issue pass and collectAlerts read the same upstream picture.
 const reconcileIssueHistory = () => {
   try { computeShadows(db); } catch { /* best effort */ }
-  return reconcileIssueHistoryTxn.immediate();
+  const out = reconcileIssueHistoryTxn.immediate();
+  pruneInBatches(db, 'lm_issue_history', "status = 'resolved' AND resolved_at < datetime('now', '-90 days')");
+  return out;
 };
 
 module.exports = {

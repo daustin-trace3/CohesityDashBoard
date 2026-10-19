@@ -6,6 +6,7 @@
 // error). Inventory tables are replaced per instance; a metrics snapshot is
 // appended per poll. Hardware logs are swept in the background after each
 // poll, incrementally from each device's stored MAX(seq).
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, callsInFlight } = require('../core/concurrency');
@@ -188,7 +189,7 @@ async function sweepHardwareLogs(ome, serverDevices) {
         }
       }
     });
-    db.prepare("DELETE FROM dell_hardware_logs WHERE created_at < datetime('now', '-365 days')").run();
+    pruneInBatches(db, 'dell_hardware_logs', "created_at < datetime('now', '-365 days')");
     logger.info(`[DellPoller] ${ome.name}: hardware-log sweep stored ${added} new entr${added === 1 ? 'y' : 'ies'}${backlogDevices ? ` (${backlogDevices} device(s) backlogged from scratch)` : ''}`);
   } finally {
     hwlogSweepInFlight.delete(ome.id);
@@ -385,13 +386,13 @@ const store = db.transaction((omeId, { info, devices, components, alerts, warran
     devices.filter(isSrv).length,
     db.prepare("SELECT COUNT(*) AS n FROM dell_alerts WHERE ome_id = ? AND severity = 'critical' AND created_at >= datetime('now', '-7 days')").get(omeId).n,
     devices.reduce((n, d) => n + (d.powerW || 0), 0) || null);
-  db.prepare("DELETE FROM dell_metrics_history WHERE captured_at < datetime('now', '-365 days')").run();
 });
 
 async function pollDell(ome) {
   try {
     const data = await collect(ome);
     store(ome.id, data);
+    pruneInBatches(db, 'dell_metrics_history', "captured_at < datetime('now', '-365 days')");
     db.prepare(`
       UPDATE dell_ome_instances SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

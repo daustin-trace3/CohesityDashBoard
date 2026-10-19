@@ -37,7 +37,11 @@ function beat(role) {
   setSetting(KEY, JSON.stringify({ at: new Date(now).toISOString(), pid: process.pid, startedAt, role }));
   if (now - lastLog >= LOG_MS) {
     lastLog = now;
-    logger.info(`[Worker] heartbeat: ${role} pid ${process.pid} up ${uptimeText()}`);
+    // Memory split so a pm2 max-memory restart can be read: a large rss with a
+    // small heap is native memory (sqlite statements, buffers), not JS objects.
+    const mu = process.memoryUsage();
+    const mb = (n) => Math.round(n / 1048576);
+    logger.info(`[Worker] heartbeat: ${role} pid ${process.pid} up ${uptimeText()}, rss ${mb(mu.rss)} MB, heap ${mb(mu.heapUsed)} of ${mb(mu.heapTotal)} MB, external ${mb(mu.external)} MB`);
   }
 }
 

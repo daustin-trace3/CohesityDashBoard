@@ -12,6 +12,7 @@
 // window before triage so a burst arrives as one email, not twenty.
 // The model narrates and classifies; when it is not configured or fails the
 // agent still sends a plain evidence digest, never per-alert flooding.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const logger = require('../utils/logger');
 const alertNotifier = require('./alertNotifier');
@@ -1442,7 +1443,7 @@ async function runOnce({ force = false } = {}) {
     try {
       db.prepare('INSERT INTO ops_agent_runs (at, alerts_seen, new_alerts, incidents_opened, triaged, emails_sent, error) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(stats.at, stats.alertsSeen, stats.newAlerts, stats.incidentsOpened, stats.triaged, stats.emailsSent, stats.error);
-      db.prepare('DELETE FROM ops_agent_runs WHERE at < ?').run(isoAgo(RUN_LOG_DAYS * 86400000));
+      pruneInBatches(db, 'ops_agent_runs', 'at < ?', [isoAgo(RUN_LOG_DAYS * 86400000)]);
       const did = stats.incidentsOpened + stats.triaged + stats.emailsSent + stats.teamsPosted + stats.healAttempts + stats.resolvedQuiet + stats.resolvedEvidence;
       if (did) {
         logger.info(`[OpsAgent] tick: ${stats.alertsSeen} alerts seen, ${stats.newAlerts} new, ${stats.incidentsOpened} opened, ${stats.healAttempts} re-poll(s), ${stats.triaged} triaged, ${stats.emailsSent} emailed, ${stats.teamsPosted} posted to Teams, ${stats.resolvedQuiet + stats.resolvedEvidence} resolved`);

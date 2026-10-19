@@ -2,6 +2,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 const { runMigrations } = require('../core/migrations');
+const { installTransactionShim } = require('../core/dbTransactions');
 const coreMigrations = require('./migrations/core');
 const cohesityMigrations = require('./migrations/cohesity');
 const pureMigrations = require('./migrations/pure');
@@ -35,6 +36,13 @@ db.exec("PRAGMA foreign_keys = ON");
 // Two processes (API + poller) share this file — wait out the other
 // process's write transactions instead of failing with SQLITE_BUSY.
 db.pragma('busy_timeout = 15000');
+// WAL + NORMAL is crash safe: a power loss can lose the last committed
+// transactions but never corrupts the file. Accepted for a monitoring store.
+db.pragma('synchronous = NORMAL');
+db.pragma('wal_autocheckpoint = 1000');
+// db.transaction() runs IMMEDIATE by default, times runs, and (poller only)
+// retries a run that hit SQLITE_BUSY. See core/dbTransactions.js.
+installTransactionShim(db, { logger: require('../utils/logger'), role: process.env.ICC_PROCESS_ROLE || 'web' });
 
 // Run versioned migrations, scope by scope. Idempotent — safe on both a
 // fresh DB and an existing populated DB with an empty schema_migrations.

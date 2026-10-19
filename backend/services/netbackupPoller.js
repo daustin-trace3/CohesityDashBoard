@@ -3,6 +3,7 @@
 // and pruned at 30d), policies, storage units, disk pools, media servers,
 // hosts (appliances) and alerts, replaces the inventory tables for that
 // source and appends a metrics snapshot.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const netbackupApi = require('./netbackupApi');
@@ -50,7 +51,6 @@ const store = db.transaction((sourceId, { jobs, policies, storageUnits, diskPool
       j.startTime ?? null, j.endTime ?? null
     );
   }
-  db.prepare("DELETE FROM netbackup_jobs WHERE source_id = ? AND started_at IS NOT NULL AND started_at < datetime('now', '-30 days')").run(sourceId);
 
   db.prepare('DELETE FROM netbackup_policies WHERE source_id = ?').run(sourceId);
   const polStmt = db.prepare(`
@@ -149,7 +149,6 @@ const store = db.transaction((sourceId, { jobs, policies, storageUnits, diskPool
   for (const [workload, w] of byWorkload) {
     whStmt.run(sourceId, workload, w.clients.size, w.jobCount, w.success, w.failed, w.bytes);
   }
-  db.prepare("DELETE FROM netbackup_workload_history WHERE captured_at < datetime('now', '-400 days')").run();
 
   const jobs24h = jobs.filter((j) => j.startTime && (Date.now() - new Date(j.startTime).getTime()) < 86400000);
   const failed24h = jobs24h.filter(netbackupApi.isFailedState);
@@ -165,13 +164,15 @@ const store = db.transaction((sourceId, { jobs, policies, storageUnits, diskPool
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(sourceId, jobs24h.length, failed24h.length, successRate, activePolicies, protectedClients,
     storageCapacity, storageUsed, mediaServers.length, hosts.length);
-  db.prepare("DELETE FROM netbackup_metrics_history WHERE captured_at < datetime('now', '-365 days')").run();
 });
 
 async function pollSource(source) {
   try {
     const data = await collect(source);
     store(source.id, data);
+    pruneInBatches(db, 'netbackup_jobs', "source_id = ? AND started_at IS NOT NULL AND started_at < datetime('now', '-30 days')", [source.id]);
+    pruneInBatches(db, 'netbackup_workload_history', "captured_at < datetime('now', '-400 days')");
+    pruneInBatches(db, 'netbackup_metrics_history', "captured_at < datetime('now', '-365 days')");
     db.prepare(`
       UPDATE netbackup_sources SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

@@ -3,6 +3,7 @@
 // token → real-name mapping). Rows are tagged with the owning platform and
 // retained for 30 days (pruned on insert).
 
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 
 const RETENTION_DAYS = 30;
@@ -13,7 +14,7 @@ const RETENTION_DAYS = 30;
  * `mappings` is the local token → real-name table (never sent).
  */
 function recordExchange({ platform = 'cohesity', feature, label, model, messages, mappings }) {
-  db.prepare(`DELETE FROM ai_audit_exchanges WHERE sent_at < datetime('now', '-${RETENTION_DAYS} days')`).run();
+  pruneInBatches(db, 'ai_audit_exchanges', `sent_at < datetime('now', '-${RETENTION_DAYS} days')`);
   const info = db.prepare(`
     INSERT INTO ai_audit_exchanges (platform, feature, label, model, sent_at, messages, mappings, mapped_count)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)

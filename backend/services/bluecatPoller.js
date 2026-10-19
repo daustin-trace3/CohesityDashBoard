@@ -4,6 +4,7 @@
 // servers, roles, deployments, metrics) and id 'bluecat-enumerate' (per-
 // network address enumeration + counts). Every section runs through
 // trySection so a transient API failure keeps prior rows in place.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
@@ -147,7 +148,6 @@ const appendMetricsHistory = db.transaction((sourceId, m) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(sourceId, m.views, m.zones, m.records, m.networks, m.networksLowSpace, m.rangesLowSpace,
     m.devices, m.servers, m.serversDown);
-  db.prepare("DELETE FROM bluecat_metrics_history WHERE captured_at < datetime('now', '-90 days')").run();
 });
 
 // ── Zone view resolution (walk parent chain when a zone carries no view) ───
@@ -450,6 +450,7 @@ async function pollInventory(source) {
       networks: counts.networks || 0, networksLowSpace, rangesLowSpace,
       devices: counts.devices || 0, servers: counts.servers || 0, serversDown: counts.servers_down || 0,
     });
+    pruneInBatches(db, 'bluecat_metrics_history', "captured_at < datetime('now', '-90 days')");
 
     db.prepare(`
       UPDATE bluecat_sources SET last_poll_status = 'success', last_poll_error = NULL, last_poll_at = datetime('now') WHERE id = ?

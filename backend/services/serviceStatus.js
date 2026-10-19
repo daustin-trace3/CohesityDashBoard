@@ -5,6 +5,7 @@
 // state timeline (service_status_timeline) the board API carries forward
 // per day. Code derives the verdict from evidence it gathers itself; the AI
 // may narrate and may only override the verdict when it states a reason.
+const { pruneInBatches } = require('../core/dbPrune');
 const crypto = require('crypto');
 const db = require('../db/database');
 const logger = require('../utils/logger');
@@ -270,7 +271,7 @@ function pruneOld(now) {
       for (const row of stale) { delAnalysis.run(row.id); delEvent.run(row.id); }
     }
     const cutoff400 = new Date(Date.now() - 400 * 86400000).toISOString();
-    db.prepare('DELETE FROM service_status_timeline WHERE at < ?').run(cutoff400);
+    pruneInBatches(db, 'service_status_timeline', 'at < ?', [cutoff400]);
   } catch (err) {
     logger.error('[ServiceStatus] prune failed:', err.message);
   }

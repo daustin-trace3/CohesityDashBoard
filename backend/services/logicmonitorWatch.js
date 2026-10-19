@@ -20,6 +20,7 @@
 // series and baseline lookups live in logicmonitorWatchIpsla.js, which feeds
 // the same applySample state machine exported from here. evaluateWatch calls
 // it at the end of a full (not 'only') pass through a guarded require.
+const { pruneInBatches } = require('../core/dbPrune');
 const lmChecks = require('./logicmonitorChecks');
 
 const { median } = lmChecks;
@@ -586,7 +587,7 @@ function watchLines(dbh, opts = {}) {
 /** Closed episodes older than `days` days. Returns the number removed. */
 function pruneEpisodes(dbh, days = 90) {
   const cutoff = isoOf(nowSec() - days * 86400);
-  return dbh.prepare("DELETE FROM lm_latency_episodes WHERE state = 'closed' AND closed_at < ?").run(cutoff).changes;
+  return pruneInBatches(dbh, 'lm_latency_episodes', "state = 'closed' AND closed_at < ?", [cutoff]).deleted;
 }
 
 module.exports = {

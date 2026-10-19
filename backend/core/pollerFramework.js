@@ -2,6 +2,11 @@ const nodeCron = require('node-cron');
 const logger = require('../utils/logger');
 const pollerStatus = require('../services/pollerStatus');
 
+// A poll that grows the process by this much, or leaves it above the high
+// mark, gets one memory line in the log (see runWrapped).
+const MEM_LOG_GROWTH_BYTES = 64 * 1048576;
+const MEM_LOG_HIGH_BYTES = 400 * 1048576;
+
 function resolveInterval(intervalMinutes, source, defaultIntervalMinutes) {
   const raw = typeof intervalMinutes === 'function' ? intervalMinutes(source) : intervalMinutes;
   const n = Number(raw);
@@ -24,12 +29,23 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
 
   async function runWrapped(source) {
     pollerStatus.markStart(id, source.id);
+    const rssBefore = process.memoryUsage().rss;
     try {
       await poll(source);
       pollerStatus.markEnd(id, source.id, 'success');
     } catch (err) {
       logger.error(`[${id}] Poll failed for ${source.name || source.id}:`, err?.message || err);
       pollerStatus.markEnd(id, source.id, 'error');
+    } finally {
+      // Which poll grows the process: pm2 restarts the poller past its memory
+      // limit without saying what was running (seen 2026-10-19, ten kills an
+      // hour). Logged only when this poll moved the needle or left it high.
+      const mu = process.memoryUsage();
+      const grew = mu.rss - rssBefore;
+      if (grew > MEM_LOG_GROWTH_BYTES || mu.rss > MEM_LOG_HIGH_BYTES) {
+        const mb = (n) => Math.round(n / 1048576);
+        logger.info(`[${id}] ${source.name || source.id}: rss ${mb(mu.rss)} MB (${grew >= 0 ? '+' : ''}${mb(grew)} MB during this poll), heap ${mb(mu.heapUsed)} MB, external ${mb(mu.external)} MB`);
+      }
     }
   }
 

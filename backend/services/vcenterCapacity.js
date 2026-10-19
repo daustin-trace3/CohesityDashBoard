@@ -2,6 +2,7 @@
 // tables), N+1 usable math, site rollups, the failover matrix, and the hourly
 // history sampler. Pure math functions take/return plain camelCase objects so
 // they are unit-testable without a DB.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 
 const SAMPLE_GAP_MINUTES = 55;
@@ -194,11 +195,12 @@ function writeCapacitySample(vcId, { force = false } = {}) {
       SELECT vcenter_id, name, cluster_name, power_state, cpu_count, memory_mb, cpu_usage_mhz, mem_usage_mb, storage_committed_bytes
       FROM vcenter_vms WHERE vcenter_id = ? AND name IS NOT NULL
     `).run(vcId);
-    db.prepare("DELETE FROM vcenter_capacity_history WHERE vcenter_id = ? AND captured_at < datetime('now', ?)").run(vcId, `-${CLUSTER_RETENTION_DAYS} days`);
-    db.prepare("DELETE FROM vcenter_vm_capacity_history WHERE vcenter_id = ? AND captured_at < datetime('now', ?)").run(vcId, `-${VM_RETENTION_DAYS} days`);
     return { clusters: clusters.length, vms: vmInfo.changes };
   });
-  return { sampled: true, ...run() };
+  const out = run();
+  pruneInBatches(db, 'vcenter_capacity_history', "vcenter_id = ? AND captured_at < datetime('now', ?)", [vcId, `-${CLUSTER_RETENTION_DAYS} days`]);
+  pruneInBatches(db, 'vcenter_vm_capacity_history', "vcenter_id = ? AND captured_at < datetime('now', ?)", [vcId, `-${VM_RETENTION_DAYS} days`]);
+  return { sampled: true, ...out };
 }
 
 /**

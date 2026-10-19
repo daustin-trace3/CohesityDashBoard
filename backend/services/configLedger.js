@@ -3,6 +3,7 @@
 // becomes append-only rows in config_changes. The very first snapshot of a
 // (platform, scope, system) seeds the baseline silently, so turning the
 // ledger on never floods the log with "added" rows for existing config.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 const logger = require('../utils/logger');
@@ -67,8 +68,7 @@ function recordSnapshot({ platform, scope, system, items }) {
     const res = snapshotTxn.immediate(platform, scope, String(system || '(unknown)'), items || [], new Date().toISOString());
     if (res.changes) logger.info(`[ConfigLedger] ${platform}/${scope} ${system}: ${res.changes} change(s) recorded`);
     const retention = Math.min(1825, Math.max(30, Number(getSetting(RETENTION_SETTING)) || 365));
-    db.prepare('DELETE FROM config_changes WHERE detected_at < ?')
-      .run(new Date(Date.now() - retention * 86400000).toISOString());
+    pruneInBatches(db, 'config_changes', 'detected_at < ?', [new Date(Date.now() - retention * 86400000).toISOString()]);
     return res;
   } catch (err) {
     logger.warn(`[ConfigLedger] snapshot ${platform}/${scope} ${system} failed: ${err.message}`);

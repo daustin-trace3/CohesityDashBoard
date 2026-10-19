@@ -1,6 +1,7 @@
 // Computed BlueCat issues (shared by routes and the poller) plus their
 // lifecycle history — unifiIssues.js model exactly. Issue identity is
 // `type|source|target`.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 
@@ -127,11 +128,14 @@ const reconcileIssueHistoryTxn = db.transaction(() => {
   for (const [key, i] of current) {
     if (!openKeys.has(key)) insert.run(key, i.source, i.severity, i.type, i.target, i.message);
   }
-  db.prepare("DELETE FROM bluecat_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
 });
 
 // BEGIN IMMEDIATE, same rationale as unifiIssues.js.
-const reconcileIssueHistory = () => reconcileIssueHistoryTxn.immediate();
+const reconcileIssueHistory = () => {
+  const out = reconcileIssueHistoryTxn.immediate();
+  pruneInBatches(db, 'bluecat_issue_history', "status = 'resolved' AND resolved_at < datetime('now', '-90 days')");
+  return out;
+};
 
 module.exports = {
   lowFreeWarn, lowFreePct,

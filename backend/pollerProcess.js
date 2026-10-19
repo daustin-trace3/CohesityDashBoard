@@ -5,6 +5,9 @@
 // (services/pollerStatus.js). Started by pm2 as 'icc-poller' alongside
 // 'icc-dashboard' (see pm2.config.js) and by `npm run dev`.
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+// Read by db/database.js when it opens the handle: the poller may block to
+// retry a busy transaction, the web process may not.
+process.env.ICC_PROCESS_ROLE = 'poller';
 
 const logger = require('./utils/logger');
 const registry = require('./core/registry');
@@ -14,6 +17,7 @@ const { initAlertNotifier } = require('./services/alertNotifier');
 const { initServiceStatus } = require('./services/serviceStatus');
 const { initOpsAgent } = require('./services/opsAgent');
 const { startHeartbeat } = require('./services/workerHeartbeat');
+const { startWalCheckpoint } = require('./services/walCheckpoint');
 const { initLicensing } = require('./services/licensing');
 const { initViews } = require('./services/views');
 const { initGflags } = require('./services/gflags');
@@ -75,6 +79,7 @@ if (isDemo()) {
   initGflags();
   initDnsPrewarm();
   startHeartbeat('poller');
+  startWalCheckpoint();
   logger.info('[Poller process] All pollers scheduled (Cohesity, plugins, licensing, views, gflags, alert notifier, DNS prewarm).');
 }
 

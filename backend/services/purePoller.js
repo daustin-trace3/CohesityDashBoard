@@ -1,3 +1,4 @@
+const { pruneInBatches } = require('../core/dbPrune');
 const cron = require('node-cron');
 const db = require('../db/database');
 const {
@@ -12,17 +13,13 @@ const { createPoller } = require('../core/pollerFramework');
 // Retention: prune Pure metrics older than 90 days, daily at 02:10.
 cron.schedule('10 2 * * *', () => {
   try {
-    const result = db.prepare(
-      "DELETE FROM pure_metrics_history WHERE captured_at < datetime('now', '-90 days')"
-    ).run();
-    if (result.changes > 0) {
-      logger.info(`[PurePoller] Pruned ${result.changes} old metrics row(s)`);
+    const result = pruneInBatches(db, 'pure_metrics_history', "captured_at < datetime('now', '-90 days')");
+    if (result.deleted > 0) {
+      logger.info(`[PurePoller] Pruned ${result.deleted} old metrics row(s)`);
     }
-    const volResult = db.prepare(
-      "DELETE FROM pure_volume_history WHERE captured_at < datetime('now', '-90 days')"
-    ).run();
-    if (volResult.changes > 0) {
-      logger.info(`[PurePoller] Pruned ${volResult.changes} old volume-history row(s)`);
+    const volResult = pruneInBatches(db, 'pure_volume_history', "captured_at < datetime('now', '-90 days')");
+    if (volResult.deleted > 0) {
+      logger.info(`[PurePoller] Pruned ${volResult.deleted} old volume-history row(s)`);
     }
   } catch (err) {
     logger.error('[PurePoller] Failed to prune Pure history:', err.message);

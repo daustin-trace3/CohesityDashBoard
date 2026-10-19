@@ -11,6 +11,7 @@
 // Candidate rows come from lm_device_datasources, which has no stale column
 // (the table is delete-and-reinsert per device refresh), so "not stale" is
 // enforced on the device join only.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const lmApi = require('./logicmonitorApi');
 const { catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES, CATALOG_VERSION } = require('./logicmonitorCatalog');
@@ -436,25 +437,19 @@ async function pollMetrics(source) {
 
 function pruneMetricsHistory(sourceId) {
   const days = threshold('lm_ds_history_days') || 14;
-  db.prepare('DELETE FROM lm_ds_metrics_history WHERE source_id = ? AND sampled_at_epoch < ?').run(sourceId, nowSec() - days * 86400);
+  pruneInBatches(db, 'lm_ds_metrics_history', 'source_id = ? AND sampled_at_epoch < ?', [sourceId, nowSec() - days * 86400]);
   const old = "stale = 1 AND updated_at < datetime('now', '-7 days')";
-  db.prepare(`
-    DELETE FROM lm_ds_metrics WHERE source_id = ? AND EXISTS (
+  pruneInBatches(db, 'lm_ds_metrics', `source_id = ? AND EXISTS (
       SELECT 1 FROM lm_ds_instances i WHERE i.source_id = lm_ds_metrics.source_id AND i.lm_device_id = lm_ds_metrics.lm_device_id
-        AND i.hds_id = lm_ds_metrics.hds_id AND i.instance_key = lm_ds_metrics.instance_key AND i.${old})
-  `).run(sourceId);
-  db.prepare(`DELETE FROM lm_ds_instances WHERE source_id = ? AND ${old}`).run(sourceId);
+        AND i.hds_id = lm_ds_metrics.hds_id AND i.instance_key = lm_ds_metrics.instance_key AND i.${old})`, [sourceId]);
+  pruneInBatches(db, 'lm_ds_instances', `source_id = ? AND ${old}`, [sourceId]);
   // Raw store (round 11): values of a device DataSource the inventory no longer lists, then
   // datapoint catalog rows nothing stores any more.
-  db.prepare(`
-    DELETE FROM lm_ds_values WHERE source_id = ? AND NOT EXISTS (
-      SELECT 1 FROM lm_device_datasources x WHERE x.source_id = lm_ds_values.source_id AND x.hds_id = lm_ds_values.hds_id)
-  `).run(sourceId);
-  db.prepare(`
-    DELETE FROM lm_ds_datapoints WHERE source_id = ? AND NOT EXISTS (
+  pruneInBatches(db, 'lm_ds_values', `source_id = ? AND NOT EXISTS (
+      SELECT 1 FROM lm_device_datasources x WHERE x.source_id = lm_ds_values.source_id AND x.hds_id = lm_ds_values.hds_id)`, [sourceId]);
+  pruneInBatches(db, 'lm_ds_datapoints', `source_id = ? AND NOT EXISTS (
       SELECT 1 FROM lm_ds_values v WHERE v.source_id = lm_ds_datapoints.source_id
-        AND v.datasource_name = lm_ds_datapoints.datasource_name AND v.datapoint = lm_ds_datapoints.datapoint)
-  `).run(sourceId);
+        AND v.datasource_name = lm_ds_datapoints.datasource_name AND v.datapoint = lm_ds_datapoints.datapoint)`, [sourceId]);
 }
 
 // -- Route-facing helpers ----------------------------------------------------------

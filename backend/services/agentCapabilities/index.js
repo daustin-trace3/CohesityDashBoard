@@ -14,6 +14,7 @@
 // The agent triages once per incident, so the playbook runs once per
 // incident too, right before the model call, and its results ride in the
 // evidence as liveChecks.
+const { pruneInBatches } = require('../../core/dbPrune');
 const fs = require('fs');
 const path = require('path');
 const db = require('../../db/database');
@@ -287,7 +288,7 @@ async function runPlaybook(inc, alerts, { evidence = null } = {}) {
   } catch (err) {
     logger.warn(`[AgentCapabilities] ${err.message}; ${results.length} of ${jobs.length} checks completed`);
   }
-  try { db.prepare('DELETE FROM ops_capability_runs WHERE ran_at < ?').run(new Date(Date.now() - RUN_LOG_DAYS * 86400000).toISOString()); } catch { /* best effort */ }
+  try { pruneInBatches(db, 'ops_capability_runs', 'ran_at < ?', [new Date(Date.now() - RUN_LOG_DAYS * 86400000).toISOString()]); } catch { /* best effort */ }
   logger.info(`[OpsAgent] ACTION live checks: incident #${inc.id}, ${results.length} check(s) on ${targets.length} target(s): ${results.map((r) => `${r.capability} ${r.target.name} ${r.ok ? 'ok' : 'FAILED'}`).join('; ')}`);
   return { ran: true, results, unresolved: unresolvedNotes(inc, alerts) };
 }

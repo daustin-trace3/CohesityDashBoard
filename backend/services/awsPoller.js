@@ -16,6 +16,7 @@
 // history and the AWS Service Health RSS feeds are unaffected (regional /
 // estate-wide respectively) and run for every account (health is additionally
 // module-level throttled to once per 15 minutes regardless of account count).
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
@@ -183,7 +184,7 @@ async function maybeCollectHealth() {
       }
     }
   }
-  db.prepare("DELETE FROM aws_health_events WHERE fetched_at < datetime('now', '-90 days')").run();
+  pruneInBatches(db, 'aws_health_events', "fetched_at < datetime('now', '-90 days')");
 }
 
 async function collectEc2(account) {
@@ -694,7 +695,7 @@ function appendMetricsHistory(accountId, { ec2, lightsail, ecs, s3Rows }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(accountId, ec2Running, ec2Stopped, ec2Alarmed, lightsailRunning,
     ecs.services.length, ecsDegraded, s3TotalBytes || null, (s3Rows || []).length || null, mtd?.s ?? null);
-  db.prepare("DELETE FROM aws_metrics_history WHERE account_id = ? AND captured_at < datetime('now', '-365 days')").run(accountId);
+  pruneInBatches(db, 'aws_metrics_history', "account_id = ? AND captured_at < datetime('now', '-365 days')", [accountId]);
 }
 
 async function pollAccount(account) {
@@ -736,7 +737,7 @@ async function pollAccount(account) {
     storeR2(account.id, { rds, lambda: lambdaFns, dynamo, ecr, vpc });
 
     upsertRdsStorageHistory(account.id, rds);
-    db.prepare("DELETE FROM aws_rds_storage_history WHERE account_id = ? AND day < date('now', '-365 days')").run(account.id);
+    pruneInBatches(db, 'aws_rds_storage_history', "account_id = ? AND day < date('now', '-365 days')", [account.id]);
 
     try {
       const bedrock = await collectBedrock(account);

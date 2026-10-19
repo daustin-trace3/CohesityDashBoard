@@ -5,6 +5,7 @@
 // (null = section unavailable this poll, [] = genuinely empty). The poll as
 // a whole only fails — and only then does it throw, so the framework marks
 // the instance in error — when reachability or login itself fails.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const {
@@ -394,13 +395,13 @@ const store = db.transaction((instanceId, data) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(instanceId, depAgg.total, depAgg.failed, depAgg.lease_expiring,
     reqAgg.total, reqAgg.failed, epAgg.total, epAgg.unhealthy, runsFailed, approvalsPending);
-  db.prepare("DELETE FROM aria_metrics_history WHERE captured_at < datetime('now', '-365 days')").run();
 });
 
 async function pollAria(row) {
   try {
     const data = await collect(row);
     store(row.id, data);
+    pruneInBatches(db, 'aria_metrics_history', "captured_at < datetime('now', '-365 days')");
     db.prepare(`
       UPDATE aria_instances SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

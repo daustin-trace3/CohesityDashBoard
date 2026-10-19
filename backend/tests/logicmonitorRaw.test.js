@@ -144,6 +144,38 @@ describe('storeRawBody', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM lm_ds_metrics_history WHERE source_id = ?').get(sid).c).toBe(2);
   });
 
+  it('stores 450 instances in chunks and still deletes a vanished instance', () => {
+    const sid = insertSource();
+    insertDevice(sid, 1);
+    insertDs(sid, 1, 51, 'Custom_Widget');
+    const keys = Array.from({ length: 450 }, (_, i) => `inst${i}`);
+    const v = (k, i) => 1 + i;
+    const r = raw.storeRawBody(db, sourceRow(sid), cand(sid, 1, 51, 'Custom_Widget'), bodyFor('Custom_Widget', keys, v), NOW_ISO);
+    expect(r.instances).toBe(450);
+    expect(db.prepare('SELECT COUNT(DISTINCT instance_key) c FROM lm_ds_values WHERE hds_id = 51').get().c).toBe(450);
+    expect(r.values).toBe(db.prepare('SELECT COUNT(*) c FROM lm_ds_values WHERE hds_id = 51').get().c);
+    // Second body drops inst449: the delete runs after the chunks.
+    raw.storeRawBody(db, sourceRow(sid), cand(sid, 1, 51, 'Custom_Widget'), bodyFor('Custom_Widget', keys.slice(0, 449), v), NOW_ISO);
+    expect(db.prepare("SELECT COUNT(*) c FROM lm_ds_values WHERE hds_id = 51 AND instance_key = 'inst449'").get().c).toBe(0);
+    expect(db.prepare('SELECT COUNT(DISTINCT instance_key) c FROM lm_ds_values WHERE hds_id = 51').get().c).toBe(449);
+  });
+
+  it('honours the prefetched history floor: samples at or below it are not inserted', () => {
+    const dps = fixture.F5_BigIP_Memory;
+    const sid = insertSource({ history: [`F5_BigIP_Memory:${dps[0]}`] });
+    insertDevice(sid, 1);
+    insertDs(sid, 1, 52, 'F5_BigIP_Memory');
+    const t = now();
+    const body = bodyFor('F5_BigIP_Memory', ['Global'], (k, i, s) => 20 + s);
+    // Floor is newer than the older sample (t-120) and older than the newer one (t-60).
+    db.prepare('INSERT INTO lm_ds_metrics_history (source_id, lm_device_id, hds_id, instance_key, metric, value, sampled_at_epoch) VALUES (?, 1, 52, ?, ?, 1, ?)')
+      .run(sid, 'Global', `raw:${dps[0]}`, t - 90);
+    raw.storeRawBody(db, sourceRow(sid), cand(sid, 1, 52, 'F5_BigIP_Memory'), body, NOW_ISO, { nowEpoch: t });
+    const h = db.prepare('SELECT value, sampled_at_epoch e FROM lm_ds_metrics_history WHERE source_id = ? ORDER BY e').all(sid);
+    expect(h.length).toBe(2);
+    expect(h[1].value).toBe(21);
+  });
+
   it('aggregates lm_ds_datapoints per DataSource and flags catalog picks', () => {
     const sid = insertSource();
     insertDevice(sid, 1);

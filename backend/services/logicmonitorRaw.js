@@ -13,6 +13,7 @@ const { cleanInstanceKey } = require('./logicmonitorCatalog');
 // rest are named in raw_last_error, so a runaway DataSource cannot grow the table without
 // bound or stall a tick.
 const RAW_MAX_INSTANCES = 2000;
+const RAW_STORE_CHUNK = 200;           // instances per write transaction
 
 const cellNum = (v) => (typeof v === 'number' && Number.isFinite(v) ? v
   : (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null));
@@ -107,38 +108,51 @@ function storeRawBody(dbh, source, cand, body, nowIso, opts = {}) {
       datasource_name = excluded.datasource_name, instance_name = excluded.instance_name, value = excluded.value,
       value_text = excluded.value_text, sampled_at_epoch = excluded.sampled_at_epoch, updated_at = excluded.updated_at
   `);
-  const lastHist = dbh.prepare('SELECT MAX(sampled_at_epoch) e FROM lm_ds_metrics_history WHERE source_id = ? AND lm_device_id = ? AND hds_id = ? AND instance_key = ? AND metric = ?');
   const insHist = dbh.prepare('INSERT INTO lm_ds_metrics_history (source_id, lm_device_id, hds_id, instance_key, metric, value, sampled_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)');
 
-  const run = dbh.transaction(() => {
-    const seen = [];
-    let values = 0;
-    for (const inst of instances) {
-      seen.push(inst.key);
+  // Every history floor of this (source, device, hds) in one read, before any
+  // write lock is taken. Key: instance_key + '|' + metric.
+  const floors = new Map();
+  if (history.size) {
+    for (const r of dbh.prepare('SELECT instance_key, metric, MAX(sampled_at_epoch) e FROM lm_ds_metrics_history WHERE source_id = ? AND lm_device_id = ? AND hds_id = ? GROUP BY instance_key, metric').all(sid, dev, hds)) {
+      floors.set(`${r.instance_key}|${r.metric}`, r.e);
+    }
+  }
+
+  const storeChunk = dbh.transaction((chunk) => {
+    let n = 0;
+    for (const inst of chunk) {
       const name = (opts.names && opts.names.get(inst.key)) || inst.name;
       for (const p of inst.points) {
         upVal.run(sid, dev, hds, ds, inst.key, name, p.datapoint, p.value, p.valueText, p.epoch, nowIso);
-        values += 1;
+        n += 1;
         if (p.value != null && history.has(`${ds}:${p.datapoint}`)) {
           const metric = `raw:${p.datapoint}`;
-          const floor = lastHist.get(sid, dev, hds, inst.key, metric).e;
+          const floor = floors.get(`${inst.key}|${metric}`);
           const fresh = p.samples.filter((s) => floor == null || s.epoch > floor).sort((a, b) => a.epoch - b.epoch);
           for (const s of fresh) insHist.run(sid, dev, hds, inst.key, metric, s.value, s.epoch);
         }
       }
     }
+    return n;
+  });
+  // Chunked so the write lock is released between 200-instance slices; a
+  // 5,000-instance DataSource used to hold it for the whole body.
+  let values = 0;
+  for (let i = 0; i < instances.length; i += RAW_STORE_CHUNK) {
+    values += storeChunk(instances.slice(i, i + RAW_STORE_CHUNK));
+  }
+  dbh.transaction(() => {
     if (hasInstances) {
       dbh.prepare(`
         DELETE FROM lm_ds_values WHERE source_id = ? AND lm_device_id = ? AND hds_id = ?
           AND instance_key NOT IN (SELECT value FROM json_each(?))
-      `).run(sid, dev, hds, JSON.stringify(seen));
+      `).run(sid, dev, hds, JSON.stringify(instances.map((i) => i.key)));
     }
     refreshDatapoints(dbh, sid, ds, learnedByDp, nowIso);
     dbh.prepare('UPDATE lm_device_datasources SET raw_last_at = ?, raw_last_error = ? WHERE source_id = ? AND hds_id = ?')
       .run(nowIso, capped ? `capped ${capped} to ${RAW_MAX_INSTANCES}` : null, sid, hds);
-    return values;
-  });
-  const values = run();
+  })();
   return { instances: instances.length, values, capped, total: parsed.total };
 }
 

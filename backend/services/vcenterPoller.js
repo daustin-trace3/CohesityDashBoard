@@ -4,6 +4,7 @@
 // TLS cert via REST, enriches hosts with maintenance mode + CPU/memory
 // quickstats via SOAP (best-effort), replaces the inventory tables for that
 // vCenter and appends a metrics snapshot.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
@@ -208,7 +209,6 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
       }
     }
     // Two years of daily rows is plenty for growth; older ones go.
-    db.prepare("DELETE FROM vcenter_vm_filesystem_history WHERE vcenter_id = ? AND day < date('now', '-730 days')").run(vcId);
   }
 
   // Networking rows are wholesale-replaced only when SOAP produced them —
@@ -314,7 +314,6 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
     hosts.some(h => h.vmCount != null) ? hosts.reduce((n, h) => n + (h.vmCount || 0), 0) : null,
     datastores.reduce((n, d) => n + (d.capacity || 0), 0),
     datastores.reduce((n, d) => n + (d.free_space || 0), 0));
-  db.prepare("DELETE FROM vcenter_metrics_history WHERE captured_at < datetime('now', '-365 days')").run();
 });
 
 // Native vSphere events, appended incrementally: query from the newest stored
@@ -329,7 +328,6 @@ const storeEvents = db.transaction((vcId, events) => {
   for (const e of events) {
     inserted += stmt.run(vcId, e.eventKey, e.eventType, e.severity, e.message, e.username, e.entityName, e.createdAt).changes;
   }
-  db.prepare("DELETE FROM vcenter_events WHERE created_at < datetime('now', '-30 days')").run();
   return inserted;
 });
 
@@ -340,6 +338,7 @@ async function collectEvents(vc) {
       ? new Date(new Date(latest).getTime() - 5 * 60000).toISOString()
       : new Date(Date.now() - 48 * 3600000).toISOString();
     const inserted = storeEvents(vc.id, await fetchEvents(vc, since));
+    pruneInBatches(db, 'vcenter_events', "created_at < datetime('now', '-30 days')");
     if (inserted) logger.debug(`[VcPoller] ${vc.name}: ${inserted} new event(s)`);
   } catch (err) {
     logger.debug(`[VcPoller] event fetch failed for ${vc.name}: ${safeMsg(err)}`);
@@ -350,6 +349,8 @@ async function pollVcenter(vc) {
   try {
     const data = await collect(vc);
     store(vc.id, data);
+    pruneInBatches(db, 'vcenter_vm_filesystem_history', "vcenter_id = ? AND day < date('now', '-730 days')", [vc.id]);
+    pruneInBatches(db, 'vcenter_metrics_history', "captured_at < datetime('now', '-365 days')");
     db.prepare(`
       UPDATE vcenter_vcenters SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

@@ -2,6 +2,7 @@
 // history: each poll reconciles the freshly computed issue set against
 // aws_issue_history so every issue gets first-seen / resolved timestamps
 // instead of existing only as a live snapshot. Pattern mirrors vcenterIssues.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 
@@ -200,12 +201,15 @@ const reconcileIssueHistoryTxn = db.transaction(() => {
   for (const [key, i] of current) {
     if (!openKeys.has(key)) insert.run(key, i.accountId ?? null, i.account, i.severity, i.type, i.target, i.message);
   }
-  db.prepare("DELETE FROM aws_issue_history WHERE status = 'resolved' AND resolved_at < datetime('now', '-90 days')").run();
 });
 
 // Run as BEGIN IMMEDIATE so the write lock is taken up front — a deferred
 // read→write upgrade in WAL fails as SQLITE_BUSY (snapshot) when the other
 // process writes mid-transaction, and that error ignores busy_timeout.
-const reconcileIssueHistory = () => reconcileIssueHistoryTxn.immediate();
+const reconcileIssueHistory = () => {
+  const out = reconcileIssueHistoryTxn.immediate();
+  pruneInBatches(db, 'aws_issue_history', "status = 'resolved' AND resolved_at < datetime('now', '-90 days')");
+  return out;
+};
 
 module.exports = { costSpikePct, rdsStorageWarnPct, computeIssues, reconcileIssueHistory };

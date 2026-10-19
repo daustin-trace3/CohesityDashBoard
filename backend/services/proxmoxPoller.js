@@ -6,6 +6,7 @@
 // cluster/backup, cluster/status, cluster/log, replaces the inventory tables
 // for that server and appends one metrics row per node. rrddata is NOT
 // polled/stored — routes proxy it live from upstream.
+const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const proxmoxApi = require('./proxmoxApi');
@@ -418,7 +419,6 @@ const store = db.transaction((serverId, data) => {
   for (const e of events) {
     eventStmt.run(serverId, e.eventKey, e.node, e.eventTime, e.user, e.tag, e.pri, e.message);
   }
-  db.prepare("DELETE FROM proxmox_events WHERE server_id = ? AND event_time < datetime('now', '-14 days')").run(serverId);
 
   db.prepare('DELETE FROM proxmox_backup_jobs WHERE server_id = ?').run(serverId);
   const jobStmt = db.prepare(`
@@ -443,7 +443,6 @@ const store = db.transaction((serverId, data) => {
   for (const t of tasks) {
     taskStmt.run(serverId, t.upid, t.node, t.type, t.target, t.user, t.status, t.startedAt, t.endedAt);
   }
-  db.prepare("DELETE FROM proxmox_tasks WHERE server_id = ? AND started_at < datetime('now', '-14 days')").run(serverId);
 
   // One metrics row per node per poll.
   const metricsStmt = db.prepare(`
@@ -475,6 +474,8 @@ async function pollProxmox(server) {
   try {
     const data = await collect(server);
     store(server.id, data);
+    pruneInBatches(db, 'proxmox_events', "server_id = ? AND event_time < datetime('now', '-14 days')", [server.id]);
+    pruneInBatches(db, 'proxmox_tasks', "server_id = ? AND started_at < datetime('now', '-14 days')", [server.id]);
     db.prepare(`
       UPDATE proxmox_servers SET last_poll_status = 'success', last_poll_error = NULL,
         last_poll_at = datetime('now') WHERE id = ?

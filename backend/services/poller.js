@@ -1,3 +1,4 @@
+const { pruneInBatches } = require('../core/dbPrune');
 const cron = require('node-cron');
 const db = require('../db/database');
 const {
@@ -15,22 +16,18 @@ const { getCohesityAlertWindowDays } = require('./settings');
 // Retention: delete metrics older than 90 days — runs daily at 02:00
 cron.schedule('0 2 * * *', () => {
   try {
-    const result = db.prepare(
-      "DELETE FROM metrics_history WHERE captured_at < datetime('now', '-90 days')"
-    ).run();
-    if (result.changes > 0) {
-      logger.info(`[Retention] Pruned ${result.changes} old metrics row(s)`);
+    const result = pruneInBatches(db, 'metrics_history', "captured_at < datetime('now', '-90 days')");
+    if (result.deleted > 0) {
+      logger.info(`[Retention] Pruned ${result.deleted} old metrics row(s)`);
     }
   } catch (err) {
     logger.error('[Retention] Failed to prune metrics_history:', err.message);
   }
   // Workload trend snapshots keep 2 years of daily history.
   try {
-    const result = db.prepare(
-      "DELETE FROM workload_history WHERE captured_at < datetime('now', '-730 days')"
-    ).run();
-    if (result.changes > 0) {
-      logger.info(`[Retention] Pruned ${result.changes} old workload row(s)`);
+    const result = pruneInBatches(db, 'workload_history', "captured_at < datetime('now', '-730 days')");
+    if (result.deleted > 0) {
+      logger.info(`[Retention] Pruned ${result.deleted} old workload row(s)`);
     }
   } catch (err) {
     logger.error('[Retention] Failed to prune workload_history:', err.message);
