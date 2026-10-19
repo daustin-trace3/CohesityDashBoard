@@ -6,6 +6,7 @@
 // trySection so a transient API failure keeps prior rows in place.
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
+const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
 const bluecatApi = require('./bluecatApi');
 const { reconcileIssueHistory, lowFreeWarn } = require('./bluecatIssues');
 const logger = require('../utils/logger');
@@ -412,13 +413,13 @@ async function pollInventory(source) {
       for (const s of servers) s.roles = rolesByServerId.get(s.id) || [];
 
       const firstFifty = servers.slice(0, 50);
-      for (const s of firstFifty) {
+      await mapLimit(firstFifty, callsInFlight('bluecat'), async (s) => {
         const dep = await trySection(`deployment(${s.id})`, () => bluecatApi.fetchLatestDeployment(source, s.id, timeout));
         if (dep.ok && dep.data) {
           s.lastDeployStatus = dep.data.status || dep.data.state || null;
           s.lastDeployAt = null;
         }
-      }
+      });
       storeServers(source.id, servers);
     }
 

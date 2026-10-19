@@ -16,6 +16,7 @@ const lmApi = require('./logicmonitorApi');
 const { catalogFor, cleanInstanceKey, DEFAULT_MAX_INSTANCES, CATALOG_VERSION } = require('./logicmonitorCatalog');
 const logger = require('../utils/logger');
 const lmRaw = require('./logicmonitorRaw');
+const { mapLimit, callsInFlight } = require('../core/concurrency');
 
 const safeMsg = (e) => lmApi.errMsg(e);
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -329,75 +330,108 @@ async function pollMetrics(source) {
   let rawValues = 0;
   let lastErr = null;
 
-  for (const cand of batch) {
-    try {
-      let known = cand.entry ? dsColumns[cand.datasource_name] : null;
-      // A mapping learned under an older catalog (metric keys it no longer defines) is relearned.
-      if (known && typeof known === 'object' && Object.keys(known).some((k) => !cand.entry.metrics[k])) known = null;
-      const knownNames = known && typeof known === 'object' ? [...new Set(Object.values(known))] : [];
-      // Raw mode needs every datapoint, so it never narrows the call.
-      const datapoints = !raw && knownNames.length ? knownNames.join(',') : null;
-      const last = parseDbTime((raw ? cand.raw_last_at : null) || cand.metrics_last_at);
-      const start = Math.max(last != null ? last - 300 : 0, now - 2 * pollMin * 60);
-      const body = await lmApi.fetchDsData(source, cand.lm_device_id, cand.hds_id, { start, end: now, datapoints });
-      let learnedForRaw = known || dsColumns[cand.datasource_name] || {};
-      let names = null;
-      let catalogOk = true;
-      if (cand.entry) {
-        try {
-          const parsed = parseDsBody(body, cand.entry, known || null, now);
-          parsed.hasInstances = !!body && typeof body.instances === 'object' && body.instances !== null;
-          if (cand.entry.instanceNames && parsed.instances.length) {
-            try {
-              const nm = instanceNameMap(await lmApi.fetchInstances(source, cand.lm_device_id, cand.hds_id), cand.datasource_name);
-              for (const inst of parsed.instances) if (nm.has(inst.key)) inst.name = nm.get(inst.key);
-            } catch (err) {
-              logger.debug(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} instance names: ${safeMsg(err)}`);
-            }
-          }
-          if (Array.isArray(body?.dataPoints) && body.dataPoints.length && (!datapoints || raw)
-            && JSON.stringify(dsColumns[cand.datasource_name]) !== JSON.stringify(parsed.learned)) {
-            dsColumns[cand.datasource_name] = parsed.learned;
-            dsUnmatched[cand.datasource_name] = parsed.unmatched;
-            features = mergeFeatures(source.id, { dsColumns, dsUnmatched });
-          }
-          written += storeResult(source, cand, parsed, nowIso);
-          learnedForRaw = parsed.learned;
-          names = new Map(parsed.instances.map((i) => [i.key, i.name]));
-        } catch (err) {
-          catalogOk = false;
-          lastErr = safeMsg(err);
-          logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} failed: ${lastErr}`);
-          try { markFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
-        }
+  const inFlight = callsInFlight('logicmonitor');
+  const startedAt = Date.now();
+
+  const fail = (cand, err) => {
+    failed += 1;
+    lastErr = safeMsg(err);
+    logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} failed: ${lastErr}`);
+    try { markFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
+    if (raw) { try { markRawFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ } }
+  };
+
+  // Network stage: only the calls run concurrently. The learned map is read here to
+  // narrow the request, and the same value is carried to the store stage so the body
+  // is parsed against the columns it was requested with.
+  const fetchStage = async (cand) => {
+    let known = cand.entry ? dsColumns[cand.datasource_name] : null;
+    // A mapping learned under an older catalog (metric keys it no longer defines) is relearned.
+    if (known && typeof known === 'object' && Object.keys(known).some((k) => !cand.entry.metrics[k])) known = null;
+    const knownNames = known && typeof known === 'object' ? [...new Set(Object.values(known))] : [];
+    // Raw mode needs every datapoint, so it never narrows the call.
+    const datapoints = !raw && knownNames.length ? knownNames.join(',') : null;
+    const last = parseDbTime((raw ? cand.raw_last_at : null) || cand.metrics_last_at);
+    const start = Math.max(last != null ? last - 300 : 0, now - 2 * pollMin * 60);
+    const body = await lmApi.fetchDsData(source, cand.lm_device_id, cand.hds_id, { start, end: now, datapoints });
+    let instanceRows = null;
+    if (cand.entry?.instanceNames && body && typeof body.instances === 'object' && body.instances !== null && Object.keys(body.instances).length) {
+      try {
+        instanceRows = await lmApi.fetchInstances(source, cand.lm_device_id, cand.hds_id);
+      } catch (err) {
+        logger.debug(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} instance names: ${safeMsg(err)}`);
       }
-      if (raw) {
-        try {
-          const r = lmRaw.storeRawBody(db, source, cand, body, nowIso, { learned: learnedForRaw, names, nowEpoch: now });
-          rawDs += 1;
-          rawValues += r.values;
-        } catch (err) {
-          lastErr = safeMsg(err);
-          logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} raw store failed: ${lastErr}`);
-          try { markRawFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
-        }
-      }
-      // The call succeeded; a catalog parse error alone counts as failed only when raw is off.
-      if (catalogOk || raw) ok += 1; else failed += 1;
-    } catch (err) {
-      failed += 1;
-      lastErr = safeMsg(err);
-      logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} failed: ${lastErr}`);
-      try { markFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
-      if (raw) { try { markRawFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ } }
     }
-  }
+    return { body, known, datapoints, instanceRows };
+  };
+
+  // Store stage: fully synchronous (better-sqlite3), so it runs to the end between two
+  // awaits of the network stage. Two bodies of one DataSource therefore never race the
+  // learned map; each body is one set of statements and rows are never written per call.
+  const storeStage = (cand, { body, known, datapoints, instanceRows }) => {
+    let learnedForRaw = known || dsColumns[cand.datasource_name] || {};
+    let names = null;
+    let catalogOk = true;
+    if (cand.entry) {
+      try {
+        const parsed = parseDsBody(body, cand.entry, known || null, now);
+        parsed.hasInstances = !!body && typeof body.instances === 'object' && body.instances !== null;
+        if (instanceRows && parsed.instances.length) {
+          const nm = instanceNameMap(instanceRows, cand.datasource_name);
+          for (const inst of parsed.instances) if (nm.has(inst.key)) inst.name = nm.get(inst.key);
+        }
+        if (Array.isArray(body?.dataPoints) && body.dataPoints.length && (!datapoints || raw)
+          && JSON.stringify(dsColumns[cand.datasource_name]) !== JSON.stringify(parsed.learned)) {
+          dsColumns[cand.datasource_name] = parsed.learned;
+          dsUnmatched[cand.datasource_name] = parsed.unmatched;
+          features = mergeFeatures(source.id, { dsColumns, dsUnmatched });
+        }
+        written += storeResult(source, cand, parsed, nowIso);
+        learnedForRaw = parsed.learned;
+        names = new Map(parsed.instances.map((i) => [i.key, i.name]));
+      } catch (err) {
+        catalogOk = false;
+        lastErr = safeMsg(err);
+        logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} failed: ${lastErr}`);
+        try { markFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
+      }
+    }
+    if (raw) {
+      try {
+        const r = lmRaw.storeRawBody(db, source, cand, body, nowIso, { learned: learnedForRaw, names, nowEpoch: now });
+        rawDs += 1;
+        rawValues += r.values;
+      } catch (err) {
+        lastErr = safeMsg(err);
+        logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} raw store failed: ${lastErr}`);
+        try { markRawFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
+      }
+    }
+    // The call succeeded; a catalog parse error alone counts as failed only when raw is off.
+    if (catalogOk || raw) ok += 1; else failed += 1;
+  };
+
+  await mapLimit(batch, inFlight, async (cand) => {
+    let fetched;
+    try {
+      fetched = await fetchStage(cand);
+    } catch (err) {
+      fail(cand, err);
+      return;
+    }
+    try {
+      storeStage(cand, fetched);
+    } catch (err) {
+      fail(cand, err);
+    }
+  });
   if (batch.length && ok === 0) throw new Error(`metric data failed on every DataSource (${failed}): ${lastErr}`);
   if (all.length > batch.length) {
     logger.info(`[LmMetrics] ${source.name}: ${all.length - batch.length} DataSource(s) deferred to the next run (cap ${cap})`);
   }
-  logger.info(`[LmMetrics] ${source.name}: ${ok} DataSource(s) polled${failed ? `, ${failed} failed` : ''}, ${written} metric value(s)${raw ? `, raw: ${rawDs} DataSources, ${rawValues} values` : ''}`);
-  return { ok, failed, candidates: all.length, polled: batch.length, written, rawDataSources: rawDs, rawValues };
+  const seconds = Math.round((Date.now() - startedAt) / 100) / 10;
+  logger.info(`[LmMetrics] ${source.name}: ${ok} DataSource(s) polled${failed ? `, ${failed} failed` : ''}, ${written} metric value(s)${raw ? `, raw: ${rawDs} DataSources, ${rawValues} values` : ''}, in flight ${inFlight}, ${seconds} s`);
+  return { ok, failed, candidates: all.length, polled: batch.length, written, rawDataSources: rawDs, rawValues, inFlight, seconds };
 }
 
 function pruneMetricsHistory(sourceId) {

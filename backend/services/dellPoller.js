@@ -8,6 +8,7 @@
 // poll, incrementally from each device's stored MAX(seq).
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
+const { mapLimit, callsInFlight } = require('../core/concurrency');
 const {
   fetchApplianceInfo, fetchDeviceTypeMap, fetchDevices, fetchDeviceInventory,
   summarizeComponents, fetchAlerts, fetchWarranties, fetchFirmwareCompliance,
@@ -35,19 +36,24 @@ async function collect(ome) {
   if (serverDevices.length) {
     components = [];
     let failures = 0;
-    for (const d of serverDevices) {
+    let succeeded = 0;
+    let stopped = false;
+    const perDevice = await mapLimit(serverDevices, callsInFlight('dell'), async (d) => {
+      if (stopped) return null;
       try {
-        components.push(...await fetchDeviceInventory(ome, d.deviceId));
+        const rows = await fetchDeviceInventory(ome, d.deviceId);
+        succeeded += 1;
+        return rows;
       } catch (err) {
         failures += 1;
         logger.debug(`[DellPoller] inventory failed for device ${d.deviceId} (${d.name}): ${safeMsg(err)}`);
-        if (failures >= 5 && components.length === 0) {
-          // Endpoint clearly not working — keep prior rows instead of wiping.
-          components = null;
-          break;
-        }
+        // Endpoint clearly not working: stop issuing calls and keep prior rows instead of wiping.
+        if (failures >= 5 && succeeded === 0) stopped = true;
+        return null;
       }
-    }
+    });
+    if (stopped) components = null;
+    else for (const r of perDevice) if (r.ok && r.value) components.push(...r.value);
   }
   if (components) {
     const summary = summarizeComponents(components);
@@ -72,28 +78,28 @@ async function collect(ome) {
   // needed, but no CPU/memory utilization either).
   let metricsAvailable = true;
   let baseAvailable = true;
-  for (const d of serverDevices.slice(0, METRICS_DEVICE_CAP)) {
+  await mapLimit(serverDevices.slice(0, METRICS_DEVICE_CAP), callsInFlight('dell'), async (d) => {
     const dev = devices.find((x) => x.deviceId === d.deviceId);
-    if (!dev) continue;
+    if (!dev) return;
     if (metricsAvailable) {
       try {
         const m = await fetchDeviceMetrics(ome, d.deviceId);
         Object.assign(dev, { powerW: m.powerW, inletTempC: m.inletTempC, cpuUtilPct: m.cpuUtilPct, memUtilPct: m.memUtilPct });
-        continue;
+        return;
       } catch (err) {
         metricsAvailable = false;
         logger.debug(`[DellPoller] ${ome.name}: Power Manager metrics unavailable, falling back to device Power/Temperature (${safeMsg(err)})`);
       }
     }
-    if (!baseAvailable) break;
+    if (!baseAvailable) return;
     const pt = await fetchDevicePowerThermal(ome, d.deviceId);
     if (pt.powerW == null && pt.inletTempC == null && d === serverDevices[0]) {
       // Neither endpoint answered on the first device — assume unsupported.
       baseAvailable = false;
-      break;
+      return;
     }
     Object.assign(dev, { powerW: pt.powerW, inletTempC: pt.inletTempC });
-  }
+  });
 
   let alerts = [];
   try { alerts = await fetchAlerts(ome); } catch (err) {
@@ -159,7 +165,9 @@ async function sweepHardwareLogs(ome, serverDevices) {
     let added = 0;
     let backlogDevices = 0;
     let hwlogFailures = 0;
-    for (const d of serverDevices.slice(0, HWLOG_DEVICE_CAP)) {
+    let stopped = false;
+    await mapLimit(serverDevices.slice(0, HWLOG_DEVICE_CAP), callsInFlight('dell'), async (d) => {
+      if (stopped) return;
       try {
         const lastSeq = maxSeqStmt.get(ome.id, d.deviceId).s;
         if (lastSeq == null) backlogDevices += 1;
@@ -176,10 +184,10 @@ async function sweepHardwareLogs(ome, serverDevices) {
         logger[log](`[DellPoller] ${ome.name}: hardware logs failed for device ${d.deviceId} (${d.name}): ${safeMsg(err)}`);
         if (hwlogFailures >= 3 && added === 0) {
           logger.warn(`[DellPoller] ${ome.name}: hardware-log sweep disabled for this poll after ${hwlogFailures} device failures with no rows`);
-          break;
+          stopped = true;
         }
       }
-    }
+    });
     db.prepare("DELETE FROM dell_hardware_logs WHERE created_at < datetime('now', '-365 days')").run();
     logger.info(`[DellPoller] ${ome.name}: hardware-log sweep stored ${added} new entr${added === 1 ? 'y' : 'ies'}${backlogDevices ? ` (${backlogDevices} device(s) backlogged from scratch)` : ''}`);
   } finally {

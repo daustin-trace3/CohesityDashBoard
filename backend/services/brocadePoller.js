@@ -7,6 +7,7 @@
 // omitted them).
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
+const { mapLimit, callsInFlight } = require('../core/concurrency');
 const brocadeApi = require('./brocadeApi');
 const brocadeFosApi = require('./brocadeFosApi');
 const { reconcileIssueHistory } = require('./brocadeIssues');
@@ -759,9 +760,9 @@ async function pollPortStatsDirect(source, switches, timeout) {
 
 async function pollPortStatsProxy(source, switches, timeout) {
   let unsupported = false;
-  for (const sw of switches) {
-    if (unsupported) break;
-    if (!sw.ip_address) continue;
+  await mapLimit(switches, callsInFlight('brocade'), async (sw) => {
+    if (unsupported) return;
+    if (!sw.ip_address) return;
     const vfId = sw.virtual_fabric_id != null && sw.virtual_fabric_id >= 0 ? sw.virtual_fabric_id : -1;
     try {
       const stats = await brocadeApi.fetchPortStats(source, { switchIp: sw.ip_address, vfId, timeout });
@@ -780,7 +781,7 @@ async function pollPortStatsProxy(source, switches, timeout) {
         logger.warn(`[BrocadePoller] portstats (${sw.name}) failed: ${safeMsg(err)}`);
       }
     }
-  }
+  });
 }
 
 async function pollPortStats(source) {

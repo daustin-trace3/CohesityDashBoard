@@ -305,6 +305,11 @@ router.put('/', (req, res, next) => {
       if (!(n >= 0 && n <= 365)) return res.status(400).json({ error: 'cohesityAlertWindowDays must be between 0 and 365' });
       setSetting('cohesity_alert_window_days', String(Math.round(n)));
     }
+    if (req.body?.pollerCallsInFlight !== undefined) {
+      const n = Number(req.body.pollerCallsInFlight);
+      if (!(n >= 1 && n <= 16)) return res.status(400).json({ error: 'pollerCallsInFlight must be between 1 and 16' });
+      setSetting('poller_calls_in_flight', String(Math.round(n)));
+    }
     if (req.body?.appServiceBackupStaleHours !== undefined) {
       const n = Number(req.body.appServiceBackupStaleHours);
       if (!(n >= 1 && n <= 720)) return res.status(400).json({ error: 'appServiceBackupStaleHours must be between 1 and 720' });

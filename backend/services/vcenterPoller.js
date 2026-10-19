@@ -6,6 +6,7 @@
 // vCenter and appends a metrics snapshot.
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
+const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
 const {
   fetchClusters, fetchHosts, fetchDatastores, fetchVmsForHost, fetchTlsCert,
   fetchInventorySoap, fetchEvents, fetchVmTags,
@@ -22,11 +23,10 @@ async function collect(vc) {
   // Host list per cluster gives us cluster membership; a final unfiltered list
   // catches standalone hosts outside any cluster.
   const hostRows = new Map(); // host_id -> row
-  for (const c of clusters) {
-    for (const h of await fetchHosts(vc, c.cluster)) {
-      hostRows.set(h.host, { ...h, clusterName: c.name, clusterId: c.cluster });
-    }
-  }
+  const perCluster = valuesOrThrow(await mapLimit(clusters, callsInFlight('vcenter'), (c) => fetchHosts(vc, c.cluster)));
+  clusters.forEach((c, i) => {
+    for (const h of perCluster[i]) hostRows.set(h.host, { ...h, clusterName: c.name, clusterId: c.cluster });
+  });
   for (const h of await fetchHosts(vc)) {
     if (!hostRows.has(h.host)) hostRows.set(h.host, { ...h, clusterName: null, clusterId: null });
   }
@@ -50,21 +50,25 @@ async function collect(vc) {
     for (const row of hostRows.values()) row.vmCount = vmCountByHost.get(row.name) ?? 0;
   } else {
     // REST fallback: per-host VM lists (basic fields only).
-    for (const row of hostRows.values()) {
+    const fetched = await mapLimit([...hostRows.values()], callsInFlight('vcenter'), async (row) => {
       try {
-        const hostVms = await fetchVmsForHost(vc, row.host);
-        row.vmCount = hostVms.length;
-        vms = vms.concat(hostVms.map(v => ({
-          vmId: v.vm, name: v.name, hostName: row.name,
-          powerState: v.power_state ?? null, guestOs: null,
-          cpuCount: v.cpu_count ?? null, memoryMb: v.memory_size_MiB ?? null,
-          ipAddress: null, toolsStatus: null, hwVersion: null,
-        })));
+        return await fetchVmsForHost(vc, row.host);
       } catch (err) {
         logger.debug(`[VcPoller] VM list failed for host ${row.name}: ${safeMsg(err)}`);
-        row.vmCount = null;
+        return null;
       }
-    }
+    });
+    [...hostRows.values()].forEach((row, i) => {
+      const hostVms = fetched[i].value;
+      if (hostVms == null) { row.vmCount = null; return; }
+      row.vmCount = hostVms.length;
+      vms = vms.concat(hostVms.map(v => ({
+        vmId: v.vm, name: v.name, hostName: row.name,
+        powerState: v.power_state ?? null, guestOs: null,
+        cpuCount: v.cpu_count ?? null, memoryMb: v.memory_size_MiB ?? null,
+        ipAddress: null, toolsStatus: null, hwVersion: null,
+      })));
+    });
   }
 
   for (const row of hostRows.values()) {

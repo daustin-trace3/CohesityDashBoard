@@ -5,6 +5,7 @@ import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import AdminNav from '../components/AdminNav';
+import { SettingRow, numberCls } from '../components/settings/SettingRow';
 import IntelligenceSettingsPage from './IntelligenceSettingsPage';
 import { SWITCHER_MODES, getSwitcherMode } from '../components/PlatformSwitcher';
 
@@ -44,6 +45,7 @@ export default function AdminSettingsPage() {
   const [opsOverviewStyle, setOpsOverviewStyle] = useState('classic');
   const [dnsServer, setDnsServer] = useState('');
   const [cohesityAlertWindowDays, setCohesityAlertWindowDays] = useState(5);
+  const [pollerCallsInFlight, setPollerCallsInFlight] = useState(4);
   const [license, setLicense] = useState(null);
   const [licenseKeyInput, setLicenseKeyInput] = useState('');
   const [activating, setActivating] = useState(false);
@@ -70,6 +72,7 @@ export default function AdminSettingsPage() {
         setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
         setCohesityAlertWindowDays(d.cohesityAlertWindowDays ?? 5);
+        setPollerCallsInFlight(d.pollerCallsInFlight ?? 4);
       }
     }).finally(() => setLoading(false));
   }, []);
@@ -83,6 +86,7 @@ export default function AdminSettingsPage() {
         opsOverviewStyle,
         dnsServer,
         cohesityAlertWindowDays: Number(cohesityAlertWindowDays) || 0,
+        pollerCallsInFlight: Math.min(16, Math.max(1, Number(pollerCallsInFlight) || 4)),
       });
       window.dispatchEvent(new Event('platforms-changed'));
       window.dispatchEvent(new Event('ops-style-changed'));
@@ -281,6 +285,15 @@ export default function AdminSettingsPage() {
               <input id="cohesity-alert-window" type="number" min="0" max="365" step="1" value={cohesityAlertWindowDays}
                 onChange={e => setCohesityAlertWindowDays(e.target.value)}
                 className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum" />
+            </div>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <SettingRow label="Calls in flight per platform" htmlFor="poller-calls-in-flight"
+                tip="How many API calls a poller keeps open at once inside one tick. Raise it on a fast vendor API, lower it if the vendor rate-limits or the database reports lock contention.">
+                <input id="poller-calls-in-flight" type="number" min="1" max="16" step="1" value={pollerCallsInFlight}
+                  onChange={e => setPollerCallsInFlight(e.target.value)} className={numberCls} />
+                <p className="text-[11px] text-ink-muted mt-1">1 to 16, default 4</p>
+              </SettingRow>
             </div>
 
             <div className="flex items-center gap-2 pt-1">

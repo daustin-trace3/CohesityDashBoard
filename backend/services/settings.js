@@ -85,6 +85,7 @@ const DEFAULTS = {
   lm_webhook_rate_per_min: '600',
   dns_server: '',
   cohesity_alert_window_days: '5',
+  poller_calls_in_flight: '4',
   smtp_enabled: '0',
   smtp_host: '',
   smtp_port: '587',
@@ -195,6 +196,7 @@ function getPlatformSettings() {
     opsOverviewStyle: getSetting('ops_overview_style') || 'classic',
     dnsServer: getSetting('dns_server') || '',
     cohesityAlertWindowDays: getCohesityAlertWindowDays(),
+    pollerCallsInFlight: require('../core/concurrency').callsInFlight(null),
   };
 }
 

@@ -18,6 +18,7 @@
 // module-level throttled to once per 15 minutes regardless of account count).
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
+const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
 const awsApi = require('./awsApi');
 const { reconcileIssueHistory } = require('./awsIssues');
 const logger = require('../utils/logger');
@@ -215,7 +216,7 @@ async function collectLightsail(account) {
     }
     throw err;
   }
-  for (const i of instances) {
+  await mapLimit(instances, callsInFlight('aws'), async (i) => {
     try {
       i.cpuUtil = await awsApi.fetchLightsailMetric(account, i.name);
     } catch (err) {
@@ -231,20 +232,21 @@ async function collectLightsail(account) {
       i.snapshotCount = null;
       i.latestSnapshotAt = null;
     }
-  }
+  });
   return instances;
 }
 
 async function collectEcs(account) {
   const clusters = await awsApi.fetchEcsClusters(account);
   const services = [];
-  for (const c of clusters) {
+  const perCluster = await mapLimit(clusters, callsInFlight('aws'), async (c) => {
+    const out = [];
     let svcs = [];
     try {
       svcs = await awsApi.fetchEcsServices(account, c.clusterArn);
     } catch (err) {
       logger.warn(`[AwsPoller] ${account.name}: ECS services failed for ${c.clusterName}: ${safeMsg(err)}`);
-      continue;
+      return out;
     }
     let metrics = new Map();
     try {
@@ -254,26 +256,25 @@ async function collectEcs(account) {
     }
     for (const s of svcs) {
       const m = metrics.get(s.serviceName);
-      services.push({ ...s, clusterName: c.clusterName, cpuUtil: m?.cpuUtil ?? null, memoryUtil: m?.memoryUtil ?? null });
+      out.push({ ...s, clusterName: c.clusterName, cpuUtil: m?.cpuUtil ?? null, memoryUtil: m?.memoryUtil ?? null });
     }
-  }
+    return out;
+  });
+  for (const v of valuesOrThrow(perCluster)) services.push(...v);
   return { clusters, services };
 }
 
 async function collectBedrock(account) {
   const modelIds = await awsApi.fetchBedrockModelIds(account);
   const rows = [];
-  for (const modelId of modelIds) {
-    const daily = await awsApi.fetchBedrockDailyUsage(account, modelId);
-    for (const d of daily) rows.push({ modelId, ...d });
-  }
+  const perModel = await mapLimit(modelIds, callsInFlight('aws'), (modelId) => awsApi.fetchBedrockDailyUsage(account, modelId));
+  valuesOrThrow(perModel).forEach((daily, i) => { for (const d of daily) rows.push({ modelId: modelIds[i], ...d }); });
   return rows;
 }
 
 async function collectS3(account) {
   const buckets = await awsApi.fetchS3Buckets(account);
-  const out = [];
-  for (const b of buckets) {
+  const perBucket = await mapLimit(buckets, callsInFlight('aws'), async (b) => {
     const region = await awsApi.fetchBucketLocation(account, b.name);
     const [publicAccessBlocked, versioning, lifecycleRules, storage] = await Promise.all([
       awsApi.fetchBucketPublicAccessBlocked(account, b.name, region),
@@ -281,13 +282,13 @@ async function collectS3(account) {
       awsApi.fetchBucketLifecycleRuleCount(account, b.name, region),
       awsApi.fetchBucketStorageMetrics(account, b.name, region),
     ]);
-    out.push({
+    return {
       name: b.name, region, createdAtAws: b.createdAt,
       publicAccessBlocked: publicAccessBlocked ? 1 : 0, versioning, lifecycleRules,
       sizeBytes: storage.sizeBytes, objectCount: storage.objectCount,
-    });
-  }
-  return out;
+    };
+  });
+  return valuesOrThrow(perBucket);
 }
 
 async function collectRds(account) {
@@ -331,22 +332,22 @@ async function collectLambda(account) {
 async function collectDynamo(account) {
   return degradeGracefully(account, 'DynamoDB', async () => {
     const names = await awsApi.fetchDynamoTableNames(account);
-    const tables = [];
-    for (const name of names) {
+    const found = await mapLimit(names, callsInFlight('aws'), async (name) => {
       try {
-        tables.push(await awsApi.fetchDynamoTable(account, name));
+        return await awsApi.fetchDynamoTable(account, name);
       } catch (err) {
         logger.debug(`[AwsPoller] ${account.name}: DynamoDB DescribeTable failed for ${name}: ${safeMsg(err)}`);
+        return null;
       }
-    }
-    return tables;
+    });
+    return found.map((r) => r.value).filter((t) => t != null);
   }, []);
 }
 
 async function collectEcr(account) {
   return degradeGracefully(account, 'ECR', async () => {
     const repos = await awsApi.fetchEcrRepos(account);
-    for (const r of repos) {
+    await mapLimit(repos, callsInFlight('aws'), async (r) => {
       try {
         const images = await awsApi.fetchEcrRepoImages(account, r.name);
         r.imageCount = images.imageCount;
@@ -358,7 +359,7 @@ async function collectEcr(account) {
         r.sizeBytes = null;
         r.latestPushAt = null;
       }
-    }
+    });
     return repos;
   }, []);
 }

@@ -229,10 +229,11 @@ async function waitForBudget(sourceId, family) {
 /** Data calls are spaced DATA_SPACING_MS apart per source. */
 async function paceDataCall(sourceId) {
   const key = sourceId == null ? 'adhoc' : sourceId;
-  const last = lastDataCall.get(key) || 0;
-  const wait = last + DATA_SPACING_MS - Date.now();
+  // Reserve the slot before awaiting so concurrent callers queue one spacing apart.
+  const slot = Math.max(Date.now(), (lastDataCall.get(key) || 0) + DATA_SPACING_MS);
+  lastDataCall.set(key, slot);
+  const wait = slot - Date.now();
   if (wait > 0) await sleepFn(wait);
-  lastDataCall.set(key, Date.now());
 }
 
 // -- Low-level request ---------------------------------------------------------
@@ -277,7 +278,7 @@ async function request(source, method, path, { params, data, timeout = 60000, re
   const body = res.data;
   if (res.status === 429) {
     if (retried429) throw lmError(`rate limited on ${family} (HTTP 429)`, res);
-    const window = numOrNull(headerOf(res.headers, 'x-rate-limit-window')) || 60;
+    const window = numOrNull(headerOf(res.headers, 'retry-after')) || numOrNull(headerOf(res.headers, 'x-rate-limit-window')) || 60;
     logger.warn(`[LmApi] 429 on ${family}, sleeping ${window} s then retrying once`);
     await sleepFn(window * 1000);
     return request(source, method, path, { params, data, timeout, retried429: true });

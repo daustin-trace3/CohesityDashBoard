@@ -12,6 +12,7 @@
 const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const lmApi = require('./logicmonitorApi');
+const { mapLimit, callsInFlight } = require('../core/concurrency');
 const lmChecks = require('./logicmonitorChecks');
 const { reconcileIssueHistory, getThreshold, isBehind, computeShadows } = require('./logicmonitorIssues');
 const lmSites = require('./logicmonitorSites');
@@ -400,7 +401,11 @@ async function pollCheckData(source) {
   let calls = 0;
   let failures = 0;
   let rows = 0;
-  for (const job of jobs.slice(0, cap)) {
+  const inFlight = callsInFlight('logicmonitor');
+  const startedAt = Date.now();
+  // Only the network call overlaps; everything after each await is synchronous, so the
+  // learned columns and the row writes of two jobs never interleave.
+  await mapLimit(jobs.slice(0, cap), inFlight, async (job) => {
     calls += 1;
     try {
       if (job.type === 'website') {
@@ -436,12 +441,13 @@ async function pollCheckData(source) {
       failures += 1;
       logger.warn(`[LmPoller] check data call failed: ${safeMsg(err)}`);
     }
-  }
+  });
   if (Object.keys(learnedPatch).length) {
     features = mergeFeatures(source.id, { checkColumns: { ...(features.checkColumns || {}), ...learnedPatch } });
   }
   if (calls && failures === calls) throw new Error(`every check data call failed (${calls})`);
-  return { calls, failures, rows };
+  if (calls) logger.info(`[LmPoller] ${source.name}: ${calls} check data call(s)${failures ? `, ${failures} failed` : ''}, ${rows} row(s), in flight ${inFlight}, ${Math.round((Date.now() - startedAt) / 100) / 10} s`);
+  return { calls, failures, rows, inFlight };
 }
 
 /** Match a data response instance key ("DataSource-alias") to a stored row:
@@ -1430,8 +1436,10 @@ async function pollInterfaces(source) {
   let failed = 0;
   let lastErr = null;
   const ifRowsStmt = db.prepare('SELECT instance_id, instance_name, display_name FROM lm_interfaces WHERE source_id = ? AND lm_device_id = ? AND stale = 0');
+  const inFlight = callsInFlight('logicmonitor');
+  const startedAt = Date.now();
   try {
-    for (const d of devices) {
+    await mapLimit(devices, inFlight, async (d) => {
       try {
         const known = Array.isArray(features.ifColumns) && features.ifColumns.length ? features.ifColumns : null;
         // First call per portal goes without datapoints= to learn the
@@ -1442,7 +1450,7 @@ async function pollInterfaces(source) {
           datapoints = wanted.length ? wanted.join(',') : null;
         }
         const body = await lmApi.fetchDsData(source, d.lm_device_id, d.hds_id, { ...interfaceWindow(d.last_sample), aggregate: 'average', datapoints });
-        if (!known && Array.isArray(body?.dataPoints) && body.dataPoints.length) {
+        if (!known && Array.isArray(body?.dataPoints) && body.dataPoints.length && !(Array.isArray(features.ifColumns) && features.ifColumns.length)) {
           features = mergeFeatures(source.id, { ifColumns: body.dataPoints.map(String) });
         }
         const samples = mapInterfaceResponse(body, ifRowsStmt.all(source.id, d.lm_device_id));
@@ -1453,14 +1461,14 @@ async function pollInterfaces(source) {
         lastErr = safeMsg(err);
         logger.warn(`[LmPoller] interface data for ${d.display_name || d.lm_device_id} failed: ${lastErr}`);
       }
-    }
+    });
     if (devices.length && ok === 0) throw new Error(`interface data failed on every device (${failed}): ${lastErr}`);
     db.prepare(`
       UPDATE lm_sources SET last_interface_poll_at = datetime('now'), last_interface_poll_error = ?, rate_limit_json = ? WHERE id = ?
     `).run(failed ? `Skipped ${failed} of ${devices.length} device(s): ${lastErr}` : null,
       JSON.stringify(lmApi.getRateLimitSnapshot(source.id)), source.id);
-    logger.info(`[LmPoller] ${source.name}: interfaces polled on ${ok} device(s)${failed ? `, ${failed} failed` : ''}`);
-    return { ok, failed, devices: devices.length };
+    logger.info(`[LmPoller] ${source.name}: interfaces polled on ${ok} device(s)${failed ? `, ${failed} failed` : ''}, in flight ${inFlight}, ${Math.round((Date.now() - startedAt) / 100) / 10} s`);
+    return { ok, failed, devices: devices.length, inFlight };
   } catch (err) {
     db.prepare("UPDATE lm_sources SET last_interface_poll_at = datetime('now'), last_interface_poll_error = ? WHERE id = ?")
       .run(safeMsg(err), source.id);
