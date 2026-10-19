@@ -100,7 +100,7 @@ export function PlatformDropdown({ platforms, currentId, onSelect, status }) {
                 className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-[12px] transition-colors cursor-pointer ${active ? 'bg-surface-overlay text-ink' : 'text-ink-muted hover:bg-surface-overlay hover:text-ink'}`}>
                 <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
                 <span className="flex-1 text-left font-medium">{p.label}</span>
-                <span className="w-1.5 h-1.5 rounded-full" title={h.label} style={{ backgroundColor: h.tone }} />
+                <span className="w-1.5 h-1.5 rounded-full" title={p.id === 'ops' ? undefined : h.label} style={{ backgroundColor: h.tone }} />
                 {active && <Check size={13} className="text-brand" />}
               </button>
             );
@@ -119,7 +119,7 @@ export function PlatformRail({ platforms, currentId, onSelect, status }) {
         const h = platformHealth(status, p.id);
         const active = p.id === currentId;
         return (
-          <button key={p.id} onClick={() => onSelect(p)} title={`${p.label} — ${h.label}`}
+          <button key={p.id} onClick={() => onSelect(p)} title={p.id === 'ops' ? p.label : `${p.label} — ${h.label}`}
             className={`relative w-9 h-9 rounded-xl flex items-center justify-center text-[11px] font-bold transition-all duration-150 cursor-pointer ${active ? 'scale-105' : 'opacity-70 hover:opacity-100'}`}
             style={{
               backgroundColor: active ? `${p.color}33` : `${p.color}22`,
@@ -165,7 +165,7 @@ export function PlatformGrid({ platforms, currentId, onSelect, status }) {
                   </span>
                   <span className="flex items-center gap-1.5 text-[10px] text-ink-faint">
                     <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: h.tone }} />
-                    {h.label}
+                    {p.id === 'ops' ? null : h.label}
                   </span>
                 </button>
               );

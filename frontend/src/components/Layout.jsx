@@ -190,7 +190,20 @@ export default function Layout() {
   }, [isLogicmonitor, pathname]);
 
   const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)))];
-  const currentPlatformId = isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || 'cohesity');
+  const pathPlatformId = (pathname.startsWith('/admin') || pathname.startsWith('/login'))
+    ? null
+    : (isOps ? 'ops' : (platforms.find(p => isActivePlatform(p.id, pathname))?.id || null));
+  // Remember the last platform context so non-platform pages (Global Settings) keep the rail where the user came from.
+  const [lastPlatformId, setLastPlatformId] = useState(() => {
+    try { return sessionStorage.getItem('icc.lastPlatform') || null; } catch { return null; }
+  });
+  useEffect(() => {
+    if (!pathPlatformId) return;
+    setLastPlatformId(pathPlatformId);
+    try { sessionStorage.setItem('icc.lastPlatform', pathPlatformId); } catch { /* ignore */ }
+  }, [pathPlatformId]);
+  const rememberedId = lastPlatformId && visiblePlatforms.some(p => p.id === lastPlatformId) ? lastPlatformId : null;
+  const currentPlatformId = pathPlatformId || (pathname.startsWith('/admin') || pathname.startsWith('/login') ? (rememberedId || 'ops') : 'cohesity');
   const gotoPlatform = (p) => navigate(p.route);
   const multiPlatform = visiblePlatforms.length > 1;
 
