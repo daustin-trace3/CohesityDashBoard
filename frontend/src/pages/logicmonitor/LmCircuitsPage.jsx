@@ -14,6 +14,8 @@ import {
 } from './helpers';
 import { Modal, Fact, headRow, chipBtn } from './ui';
 import Sparkline from './overview/Sparkline';
+import CircuitEventsSection from './LmCircuitEvents';
+import { roleLabel, whenText } from './circuitShared';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend);
 
@@ -189,10 +191,18 @@ export default function LmCircuitsPage() {
     stateRank: stateRank(c.state),
     siteLabel: c.siteName || c.siteKey || '',
     carrierLabel: c.carrier || 'Unknown',
+    roleText: c.role ? roleLabel(c.role) : 'Unclassified',
+    farSiteLabel: c.farSiteName || c.farSiteKey || '',
   })).filter((c) => !stateFilter || stateTone(c.state) === stateFilter), [rows, stateFilter]);
 
+  const siteOptions = useMemo(() => {
+    const m = new Map();
+    (rows || []).forEach((c) => { if (c.siteKey) m.set(c.siteKey, c.siteName || c.siteKey); });
+    return [...m.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+  }, [rows]);
+
   const ctl = useTableControls(list, {
-    searchKeys: ['deviceName', 'port', 'label', 'siteLabel', 'circuitId', 'carrier'], defaultSortKey: 'stateRank', defaultSortDir: 'desc', paginate: true,
+    searchKeys: ['deviceName', 'port', 'label', 'siteLabel', 'circuitId', 'carrier', 'farSiteLabel'], defaultSortKey: 'stateRank', defaultSortDir: 'desc', paginate: true,
   });
 
   const recompute = async () => {
@@ -240,6 +250,7 @@ export default function LmCircuitsPage() {
           <TableSearch ctl={ctl} placeholder="Search site, device, port or label..." />
           <FilterSelect ctl={ctl} k="siteLabel" rows={list} label="sites" />
           <FilterSelect ctl={ctl} k="carrierLabel" rows={list} label="carriers" />
+          <FilterSelect ctl={ctl} k="roleText" rows={list} label="roles" />
           <span className="text-[11px] text-ink-faint tnum">{fmtNum(ctl.rows.length)} circuit(s)</span>
           <button onClick={recompute} disabled={busy} className={`${btn} ml-auto`} title="Re-mark WAN interfaces (admin)">
             <RefreshCw size={12} className={busy ? 'animate-spin' : ''} /> Recompute circuits
@@ -255,8 +266,10 @@ export default function LmCircuitsPage() {
               <table className="w-full text-sm">
                 <thead><tr className={headRow}>
                   <SortTh k="siteLabel" label="Site" ctl={ctl} />
+                  <SortTh k="roleText" label="Role" ctl={ctl} />
                   <SortTh k="deviceName" label="Device" ctl={ctl} />
                   <SortTh k="port" label="Port" ctl={ctl} />
+                  <SortTh k="farSiteLabel" label="Far site" ctl={ctl} />
                   <SortTh k="label" label="Label" ctl={ctl} />
                   <SortTh k="circuitId" label="Circuit ID" ctl={ctl} />
                   <SortTh k="carrier" label="Carrier" ctl={ctl} />
@@ -268,15 +281,19 @@ export default function LmCircuitsPage() {
                   <SortTh k="headroomPct" label="Headroom" ctl={ctl} align="right" />
                   <SortTh k="busiestHour" label="Busiest" ctl={ctl} align="right" />
                   <SortTh k="errors24h" label="Errors" ctl={ctl} align="right" />
-                  <SortTh k="flaps24h" label="Flaps" ctl={ctl} align="right" />
+                  <SortTh k="flaps24h" label="Flaps 24 h" ctl={ctl} align="right" />
+                  <SortTh k="flaps7d" label="Flaps 7 d" ctl={ctl} align="right" />
+                  <SortTh k="lastDownAt" label="Last down" ctl={ctl} />
                   <SortTh k="stateRank" label="State" ctl={ctl} />
                 </tr></thead>
                 <tbody>
                   {ctl.pageRows.map((c) => (
                     <tr key={c.instanceId} className="border-b border-cohesity-border/50 cursor-pointer hover:bg-surface-overlay" onClick={() => setProfile(c)}>
                       <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.siteLabel || '-'}</td>
+                      <td className="py-2 pr-3 text-[12px]">{c.role ? <span title={c.roleReason ? `Classified by ${c.roleReason}` : undefined}><Badge tone={c.role === 'wan' ? 'info' : 'neutral'}>{roleLabel(c.role)}</Badge></span> : <span className="text-ink-faint">-</span>}</td>
                       <td className="py-2 pr-3 text-ink text-[12px]">{c.deviceName}</td>
                       <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.port}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.farSiteLabel || '-'}</td>
                       <td className="py-2 pr-3 text-ink-muted text-[12px] truncate max-w-[220px]" title={c.label}>{c.label || '-'}{c.wanReason === 'override' ? <Badge tone="neutral" className="ml-1">Forced</Badge> : null}</td>
                       <td className="py-2 pr-3 text-ink text-[12px] font-mono" title={c.circuitIdSource ? `from ${c.circuitIdSource}` : undefined}>{c.circuitId || '-'}</td>
                       <td className="py-2 pr-3 text-[12px]">{c.carrier ? <span className="text-ink-muted">{c.carrier}</span> : <span className="text-ink-faint" title={c.label || 'No label text'}>Unknown</span>}</td>
@@ -289,6 +306,8 @@ export default function LmCircuitsPage() {
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{c.busiestHour != null ? `${String(c.busiestHour).padStart(2, '0')}:00` : '-'}</td>
                       <td className={`py-2 pr-3 text-right tnum ${c.errors24h ? 'text-status-warn' : 'text-ink-faint'}`}>{fmtNum(c.errors24h)}</td>
                       <td className={`py-2 pr-3 text-right tnum ${c.flaps24h ? 'text-status-warn' : 'text-ink-faint'}`}>{fmtNum(c.flaps24h)}</td>
+                      <td className={`py-2 pr-3 text-right tnum ${c.flaps7d ? 'text-status-warn' : 'text-ink-faint'}`}>{fmtNum(c.flaps7d)}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px] whitespace-nowrap">{whenText(c.lastDownAt)}</td>
                       <td className="py-2 pr-3"><Badge tone={stateTone(c.state)}>{stateLabel(c.state)}</Badge></td>
                     </tr>
                   ))}
@@ -299,6 +318,8 @@ export default function LmCircuitsPage() {
           </>
         )}
       </div>
+
+      <CircuitEventsSection sites={siteOptions} />
 
       <CloudCircuits rows={cloud} />
 

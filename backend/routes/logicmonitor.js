@@ -2069,6 +2069,72 @@ router.get('/circuits/unknown-carriers', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ---- Site circuits (round 13) ------------------------------------------------
+// Roles (wan / site-link / uplink), the per-site WAN picture, the circuit event log with operator
+// notes, and the site-to-site circuit map. Logic lives in services/logicmonitorCircuits.js.
+
+const lmCircuits = () => require('../services/logicmonitorCircuits');
+
+router.get('/sites/:siteKey/circuits', [
+  param('siteKey').matches(/^[a-z0-9-]{1,80}$/),
+  query('sourceId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const out = lmCircuits().siteCircuits(db, req.params.siteKey, { sourceId: req.query.sourceId != null ? req.query.sourceId : null });
+    if (!out) return notFound(res, 'Site');
+    res.json(out);
+  } catch (err) { next(err); }
+});
+
+const circuitEventRules = [
+  query('siteKey').optional().matches(/^[a-z0-9-]{1,80}$/),
+  query('instanceId').optional().isInt().toInt(),
+  query('event').optional().isIn(['down', 'up', 'flap-start', 'flap-stop', 'saturated', 'cleared']),
+  query('days').optional().isInt({ min: 1, max: 1095 }).toInt(),
+  query('q').optional().isString().trim().isLength({ max: 120 }),
+];
+const circuitEventFilter = (req) => ({
+  siteKey: req.query.siteKey || null, instanceId: req.query.instanceId != null ? req.query.instanceId : null,
+  event: req.query.event || null, days: req.query.days || 30, q: req.query.q || null,
+});
+
+router.get('/circuits/events', [
+  ...circuitEventRules,
+  query('page').optional().isInt({ min: 1 }).toInt(),
+  query('pageSize').optional().isInt({ min: 1, max: 500 }).toInt(),
+  limitValidator,
+], validate, (req, res, next) => {
+  try {
+    const pageSize = req.query.pageSize || (req.query.limit === 'all' ? 500 : parseInt(req.query.limit, 10)) || 50;
+    res.json(lmCircuits().listEvents(db, { ...circuitEventFilter(req), page: req.query.page || 1, pageSize }));
+  } catch (err) { next(err); }
+});
+
+const CIRCUIT_EVENT_CSV = ['at', 'event', 'deviceName', 'port', 'role', 'siteKey', 'farSiteKey', 'note', 'notedBy', 'issueKey'];
+router.get('/circuits/events.csv', circuitEventRules, validate, (req, res, next) => {
+  try {
+    sendCsv(res, 'circuit-events', lmCircuits().listEvents(db, { ...circuitEventFilter(req), page: 1, pageSize: 5000 }).rows, CIRCUIT_EVENT_CSV);
+  } catch (err) { next(err); }
+});
+
+router.put('/circuits/events/:id/note', [
+  param('id').isInt({ min: 1 }).toInt(),
+  body('note').isString().trim().isLength({ min: 1, max: 2000 }),
+], validate, (req, res, next) => {
+  try {
+    const by = req.auth?.user?.username || req.user?.username || 'unknown';
+    const row = lmCircuits().setEventNote(db, req.params.id, req.body.note, by);
+    if (!row) return notFound(res, 'Circuit event');
+    res.json(row);
+  } catch (err) { next(err); }
+});
+
+router.get('/circuit-map', [query('sourceId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    res.json(lmCircuits().circuitMap(db, { sourceId: req.query.sourceId != null ? req.query.sourceId : null }));
+  } catch (err) { next(err); }
+});
+
 // ---- Raw datapoint rules (round 12) -----------------------------------------
 // Rules live in the text setting lm_raw_rules; every save re-evaluates the issues so the Issues page
 // shows the result without waiting for the next tick.

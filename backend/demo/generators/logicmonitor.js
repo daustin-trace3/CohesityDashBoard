@@ -538,6 +538,51 @@ const R3_DESC = {
   'phx-acc-06|Gi1/0/20': 'Users VLAN 20 third floor',
   'phx-acc-08|Gi1/0/25': 'Printer cluster',
 };
+// Round 13: circuit roles. Every circuit port carries the CG ifAlias tag class as props_json.iccClass
+// (the poller stores it from "[t=<class> ...]"); dia and mpls are provider WAN circuits, p2p is a
+// site-to-site link. The Zayo pair phx<->dal is a site link and flaps; the Lumen MPLS and CenturyLink
+// ports are the DC WANs. Branch sites get one or two WANs: abq WAN2 is down for 3 days (site degraded),
+// both tus WANs are down (site down; the tus collector is down too).
+const R13_CLASS = {
+  'phx-wan-rtr-01|Gi0/0/0': 'dia', 'phx-wan-rtr-02|Gi0/0/0': 'mpls', 'phx-wan-rtr-01|Gi0/0/1': 'p2p',
+  'dal-wan-rtr-01|Gi0/0/0': 'dia', 'dal-wan-rtr-02|Gi0/0/0': 'mpls', 'dal-wan-rtr-01|Gi0/0/1': 'p2p',
+  'den-rtr-01|Gi0/0/0': 'dia', 'den-rtr-01|Te0/1/0': 'mpls',
+  'slc-rtr-01|Gi0/0/0': 'dia',
+  'abq-rtr-01|Gi0/0/0': 'dia', 'abq-rtr-01|Te0/1/0': 'mpls',
+  'tus-rtr-01|Gi0/0/0': 'dia', 'tus-rtr-01|Te0/1/0': 'mpls',
+};
+const R13_DESC = {
+  'phx-wan-rtr-01|Gi0/0/1': 'Zayo p2p circuit 12345 to Dallas DC',
+  'dal-wan-rtr-01|Gi0/0/1': 'Zayo p2p circuit 12346 to Phoenix DC',
+  'den-rtr-01|Te0/1/0': 'WAN Lumen MPLS circuit 61010',
+  'abq-rtr-01|Te0/1/0': 'WAN AT&T MPLS circuit 72031',
+  'tus-rtr-01|Te0/1/0': 'WAN Cogent circuit 33077',
+};
+// Circuit ports that had no history before round 13: 5 days each (own PRNG stream, so no v1 or round 3 row moves,
+// and the total stays under the 150000 history rows seedDemo.test.js allows).
+const R13_HISTORY = ['den-rtr-01|Te0/1/0', 'abq-rtr-01|Gi0/0/0', 'abq-rtr-01|Te0/1/0', 'tus-rtr-01|Gi0/0/0', 'tus-rtr-01|Te0/1/0'];
+// Down now: abq WAN2 since 3 days, both tus WANs since 6 hours.
+const R13_DOWN_SINCE_K = { 'abq-rtr-01|Te0/1/0': 288, 'tus-rtr-01|Gi0/0/0': 24, 'tus-rtr-01|Te0/1/0': 24 };
+// The Zayo site link flaps on 5 of the last 7 days: a 30 minute outage at about 5 hours past the same
+// time of day on day offsets 0,1,2,4,5; day 0 also had an earlier single-sample drop.
+const R13_FLAP_KEYS = new Set(['phx-wan-rtr-01|Gi0/0/1', 'dal-wan-rtr-01|Gi0/0/1']);
+const R13_FLAP_DAYS = [0, 1, 2, 4, 5];
+const r13FlapDown = (k) => {
+  if (k === 24) return true;
+  return R13_FLAP_DAYS.some((d) => k === d * 96 + 20 || k === d * 96 + 21);
+};
+// Event meta per circuit port: role and the far site (a device of that site resolves its site_key).
+const R13_CIRCUITS = {
+  'phx-wan-rtr-01|Gi0/0/0': { role: 'wan' }, 'phx-wan-rtr-02|Gi0/0/0': { role: 'wan' },
+  'phx-wan-rtr-01|Gi0/0/1': { role: 'site-link', far: 'dal-wan-rtr-01' },
+  'dal-wan-rtr-01|Gi0/0/0': { role: 'wan' }, 'dal-wan-rtr-02|Gi0/0/0': { role: 'wan' },
+  'dal-wan-rtr-01|Gi0/0/1': { role: 'site-link', far: 'phx-wan-rtr-01' },
+  'den-rtr-01|Gi0/0/0': { role: 'wan' }, 'den-rtr-01|Te0/1/0': { role: 'wan' },
+  'slc-rtr-01|Gi0/0/0': { role: 'wan' },
+  'abq-rtr-01|Gi0/0/0': { role: 'wan' }, 'abq-rtr-01|Te0/1/0': { role: 'wan' },
+  'tus-rtr-01|Gi0/0/0': { role: 'wan' }, 'tus-rtr-01|Te0/1/0': { role: 'wan' },
+};
+
 // 30 days of history: the WAN circuits (phx-wan-rtr-01 Gi0/0/0 is the saturated one).
 const SAT_KEY = 'phx-wan-rtr-01|Gi0/0/0';
 // The saturated circuit runs hot from SAT_HOUR_FROM to SAT_HOUR_TO UTC every day.
@@ -565,7 +610,7 @@ const FLAP_PORTS = new Set(['phx-acc-03|Gi1/0/17', 'abq-acc-01|Gi1/0/18']);
 const DOWN_UPLINKS = new Set(['phx-dist-03|Te1/0/48', 'phx-core-02|Te1/0/3']);
 const DOWN_PORTS = new Set([
   ...DOWN_UPLINKS, 'phx-acc-01|Gi1/0/12', 'phx-acc-02|Gi1/0/30', 'phx-acc-04|Gi1/0/7', 'dal-acc-01|Gi1/0/41',
-  'dal-acc-03|Gi1/0/2', 'slc-acc-02|Gi1/0/11', 'den-acc-01|Gi1/0/15', 'abq-acc-02|Gi1/0/8',
+  'abq-acc-02|Gi1/0/8',
 ]);
 const DORMANT_PORTS = new Set(['dal-wan-rtr-02|Gi0/0/3', 'phx-wan-rtr-02|Gi0/0/3', 'den-rtr-01|Gi0/0/3', 'slc-rtr-01|Gi0/0/3']);
 const FLAP_ROWS = new Set([9, 33, 34, 61, 80]);
@@ -647,10 +692,13 @@ function seedLogicmonitor(db, { now, encrypt }) {
         instanceId: instanceSeq,
         instanceName: `SNMP_Network_Interfaces-${p.full} [ID:${ifIndex}]`,
         baseIn: baseUtil, baseOut: Math.max(0.01, Number((baseUtil * randFloat(ifRng, 0.5, 1.2, 2)).toFixed(2))),
-        status: DOWN_PORTS.has(key) ? 2 : DORMANT_PORTS.has(key) ? 5 : 1,
+        status: DOWN_PORTS.has(key) || R13_DOWN_SINCE_K[key] ? 2 : DORMANT_PORTS.has(key) ? 5 : 1,
         history: 0,
       };
       if (R3_DESC[key]) f.description = R3_DESC[key];
+      if (R13_DESC[key]) f.description = R13_DESC[key];
+      // The CG ifAlias tag the poller turns into props_json.iccClass (buildTopologyLinks reads it from the text).
+      if (R13_CLASS[key]) f.description = `${f.description} [t=${R13_CLASS[key]} m= q= n=]`;
       if (key === UTIL_ANOM_KEY || key === ERR_ANOM_KEY || BACKUP_PORTS.has(key)) { f.cls = 'active'; f.baseIn = randFloat(r3IfRng, 2, 5, 2); f.baseOut = Number((f.baseIn * 0.8).toFixed(2)); }
       if (WAN_HISTORY.includes(key) && key !== SAT_KEY) { f.baseIn = randFloat(r3IfRng, 18, 40, 1); f.baseOut = randFloat(r3IfRng, 12, 30, 1); }
       if (key === SAT_KEY) { f.baseIn = 50; f.baseOut = 40; }
@@ -671,6 +719,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
   // Round 3 history sets are added after the v1 cap so the v1 picks do not move.
   for (const k of WAN_HISTORY) { const f = ifByKey.get(k); if (f && !full.includes(f)) { f.history = 30; full.push(f); } }
   for (const k of R3_HISTORY8) { const f = ifByKey.get(k); if (f && !f.history) f.history = 8; }
+  for (const k of R13_HISTORY) { const f = ifByKey.get(k); if (f) { f.history = 5; f.r13 = true; } }
   const dayOnly = ifaces.filter((f) => !f.history && eligible(f) && (f.cls === 'uplink' || f.cls === 'trunk')).slice(0, 60);
   for (const f of dayOnly) f.history = 1;
 
@@ -757,9 +806,12 @@ function seedLogicmonitor(db, { now, encrypt }) {
   ifAlert('phx-dist-03|Te1/0/48', 'Status', 4, 118, { value: '2', threshold: '= 2' });
   ifAlert('phx-core-02|Te1/0/3', 'Status', 4, 118, { value: '2', threshold: '= 2' });
   ifAlert('phx-acc-01|Gi1/0/12', 'Status', 3, 2200, { value: '2', threshold: '= 2', ackedMin: 2100, ackComment: 'Desk move, port to be re-patched' });
-  ifAlert('dal-acc-03|Gi1/0/2', 'Status', 3, 640, { value: '2', threshold: '= 2' });
-  ifAlert('slc-acc-02|Gi1/0/11', 'Status', 3, 3100, { value: '2', threshold: '= 2', ackedMin: 3000 });
+  // Round 13: two access-port Status alerts (dal-acc-03, slc-acc-02) moved onto the circuit ports that went
+  // down, and three access ports (dal-acc-03, slc-acc-02, den-acc-01) came back up, so the pinned alert and
+  // down-interface counts hold: abq WAN2 down for 3 days, both tus WANs down for 6 hours (one alert, acked).
+  ifAlert('abq-rtr-01|Te0/1/0', 'Status', 3, 4320, { value: '2', threshold: '= 2' });
   ifAlert('abq-acc-02|Gi1/0/8', 'Status', 3, 95, { value: '2', threshold: '= 2' });
+  ifAlert('tus-rtr-01|Te0/1/0', 'Status', 3, 345, { value: '2', threshold: '= 2', ackedMin: 300, ackComment: 'Collector and carrier both down, ticket open' });
   ifAlert('phx-core-01|Te1/0/46', 'OutUtilizationPercent', 3, 230, { value: '91.4', threshold: '> 80 90 95' });
   ifAlert('dal-dist-01|Te1/0/47', 'InUtilizationPercent', 3, 205, { value: '87.2', threshold: '> 80 90 95' });
   ifAlert('phx-acc-05|Te1/1/1', 'InErrors', 3, 1300, { value: '4.6', threshold: '> 1 5 10' });
@@ -1030,7 +1082,11 @@ function seedLogicmonitor(db, { now, encrypt }) {
         demoNeighbors.push({ protocol: 'cdp', srcDeviceId: f.device.id, instance: { instanceId: f.instanceId, displayName: `${UNMONITORED_CDP[f.device.name]}.acme.local`, props: { auto: { 'neighbor.local_port': f.full, 'neighbor.remote_port': 'eth0' } } } });
       }
       props.push({ name: 'predef.externalResourceID', value: tokens.join(',') });
-      return props;
+      // Round 13: circuit ports carry the CG tag class, so they use the object shape the poller writes
+      // ({auto, iccClass}); every other port keeps the name/value list.
+      const cgClass = R13_CLASS[f.key];
+      if (!cgClass) return props;
+      return { auto: Object.fromEntries(props.map((p) => [p.name, p.value])), iccClass: cgClass };
     };
     for (const f of ifaces) {
       const d = f.device;
@@ -1238,6 +1294,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
     `);
     const hRng = rngFor('logicmonitor-if-history');
     const r3hRng = rngFor('logicmonitor-r3-if-history');
+    const r13hRng = rngFor('logicmonitor-r13-if-history');
     const spikeDays = new Set([1, 2, 3].map((d) => dayOf(d * 1440)));
     // Backup nights: 01:00 to 03:00 UTC, one and three nights ago. Only the
     // night one night ago runs hot on the ports (see seedRound3Data).
@@ -1248,7 +1305,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
       const daily = new Map();
       if (f.history) {
         const n = f.history * 96;
-        const rr = f.r3 ? r3hRng : hRng;
+        const rr = f.r13 ? r13hRng : f.r3 ? r3hRng : hRng;
         let prevStatus = null;
         for (let k = n - 1; k >= 0; k -= 1) {
           const m = k * IF_STEP_MIN + 3;
@@ -1278,6 +1335,8 @@ function seedLogicmonitor(db, { now, encrypt }) {
           let status = 1;
           if (DOWN_UPLINKS.has(f.key) && k < 8) status = 2;
           if (FLAP_PORTS.has(f.key) && (k < 96 ? FLAP_ROWS.has(k) : chance(hRng, 0.004))) status = 2;
+          if (R13_DOWN_SINCE_K[f.key] && k < R13_DOWN_SINCE_K[f.key]) status = 2;
+          if (R13_FLAP_KEYS.has(f.key) && r13FlapDown(k)) status = 2;
           if (status !== 1) { inU = 0; outU = 0; }
           const inErr = inErr3 ? inErr3[0] : ERR_PORTS.has(f.key) && k < 96 ? randFloat(hRng, 2, 6, 1) : 0;
           const outErr = inErr3 ? inErr3[1] : ERR_PORTS.has(f.key) && k < 96 ? randFloat(hRng, 0, 1, 1) : 0;
@@ -1304,7 +1363,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
         if (dOff * 1440 < deadMin) continue;
         if (daily.has(day)) continue;
         if (f.history === 30) continue;
-        const down = f.status === 2 && !DOWN_UPLINKS.has(f.key) ? 96 : 0;
+        const down = f.status === 2 && !DOWN_UPLINKS.has(f.key) && !R13_DOWN_SINCE_K[f.key] ? 96 : 0;
         const k = down ? 0 : 1;
         const maxIn = f.baseIn * randFloat(hRng, 1.1, 1.4, 2) * k;
         const maxOut = f.baseOut * randFloat(hRng, 1.1, 1.4, 2) * k;
@@ -1552,6 +1611,7 @@ function seedLogicmonitor(db, { now, encrypt }) {
 
   // -- Round 3: WP-S1 passes, each skipped with a log line when absent -----------------
   wp1.s1 = runS1Passes(db, sourceId, counts, nowMs);
+  counts.circuitEvents = seedCircuitEvents(db, { sourceId, nowMs });
   counts.blameHistory = seedBlameHistory(db, { sourceId, byName });
   // Round 9: replay the latency watch engine over the scenario locations and compute the drift reference.
   try {
@@ -1576,6 +1636,87 @@ function seedLogicmonitor(db, { now, encrypt }) {
   counts.openIssueTypes = db.prepare("SELECT DISTINCT type FROM lm_issue_history WHERE status = 'open' ORDER BY type").all().map((r) => r.type);
 
   return { sources: 2, ...counts, wp1 };
+}
+
+// -- Round 13: circuit event log ------------------------------------------------
+// One lm_circuit_events row per status transition of a circuit port, read back from the
+// lm_interface_history rows written above (same walk, same captured_at stamps as
+// logicmonitorCircuits.recordCircuitTransitions, so that code adds nothing on a rerun). The Zayo
+// site link (both ends) also gets a flap-start at the third change inside 24 hours; the saturated
+// phx circuit gets a saturated event at the start of today's hot window; the first abq down event
+// carries an operator note.
+function seedCircuitEvents(db, { sourceId, nowMs }) {
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lm_circuit_events'").get()) return 0;
+    const sqlStamp = (ms) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+    const siteOf = db.prepare('SELECT site_key AS k FROM lm_devices WHERE source_id = ? AND display_name = ?');
+    const siteKeyOf = (name) => { const r = siteOf.get(sourceId, name); return r ? r.k : null; };
+    const instOf = db.prepare(`
+      SELECT i.instance_id AS id, i.display_name AS port FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
+      WHERE i.source_id = ? AND d.display_name = ? AND i.display_name = ?
+    `);
+    const hist = db.prepare('SELECT status, captured_at FROM lm_interface_history WHERE source_id = ? AND instance_id = ? AND status IS NOT NULL ORDER BY captured_at, id');
+    db.prepare('DELETE FROM lm_circuit_events WHERE source_id = ?').run(sourceId);
+    const ins = db.prepare(`
+      INSERT INTO lm_circuit_events (source_id, instance_id, device_name, port, site_key, far_site_key, role, event, at, details_json, note, noted_by, noted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const dayMs = 86400000;
+    const parseTs = (t) => Date.parse(`${t.replace(' ', 'T')}Z`);
+    let noted = false;
+    let n = 0;
+    db.transaction(() => {
+      for (const [key, m] of Object.entries(R13_CIRCUITS)) {
+        const [dev, short] = key.split('|');
+        const port = ({ 'Gi': 'GigabitEthernet', 'Te': 'TenGigabitEthernet' })[short.slice(0, 2)] + short.slice(2);
+        const inst = instOf.get(sourceId, dev, port);
+        if (!inst) continue;
+        const site = siteKeyOf(dev);
+        const far = m.far ? siteKeyOf(m.far) : null;
+        const put = (event, at, details, note) => {
+          ins.run(sourceId, inst.id, dev, port, site, far, m.role, event, at, details ? JSON.stringify(details) : null,
+            note ? note : null, note ? 'netops' : null, note ? sqlStamp(parseTs(at) + 2 * 3600000) : null);
+          n += 1;
+        };
+        const rows = hist.all(sourceId, inst.id);
+        const changes = [];
+        let prev = null;
+        for (const h of rows) {
+          const was = prev ? Number(prev.status) : null;
+          const now = Number(h.status);
+          if ((was === 1 && now === 2) || (was === 2 && now === 1)) {
+            const event = now === 1 ? 'up' : 'down';
+            const note = !noted && key === 'abq-rtr-01|Te0/1/0' && event === 'down'
+              ? 'Carrier ticket CHG0041877 opened with AT&T, field tech dispatched, ETA tomorrow morning.' : null;
+            if (note) noted = true;
+            put(event, h.captured_at, { from: prev.status, to: h.status }, note);
+            changes.push(parseTs(h.captured_at));
+          }
+          prev = h;
+        }
+        if (R13_FLAP_KEYS.has(key)) {
+          // Flap episode: opens at the change that makes three inside 24 hours, closes after 24 hours
+          // with no change (same rule as the recorder); the last episode is still open.
+          let active = false;
+          changes.forEach((t, i) => {
+            if (active && t - changes[i - 1] > dayMs) { put('flap-stop', sqlStamp(changes[i - 1] + dayMs), { changes24h: 0 }); active = false; }
+            const inWindow = changes.filter((c) => c <= t && c >= t - dayMs).length;
+            if (!active && inWindow >= 3) { put('flap-start', sqlStamp(t + 1000), { changes24h: inWindow, threshold: 3 }); active = true; }
+          });
+        }
+        if (key === 'phx-wan-rtr-01|Gi0/0/0') {
+          const d = new Date(nowMs);
+          d.setUTCHours(SAT_HOUR_FROM, 0, 0, 0);
+          const at = d.getTime() > nowMs ? d.getTime() - dayMs : d.getTime();
+          put('saturated', sqlStamp(at), { state: 'critical' });
+        }
+      }
+    })();
+    return n;
+  } catch (err) {
+    console.warn(`[seedDemo] logicmonitor circuit events skipped: ${err.message}`);
+    return 0;
+  }
 }
 
 const WEBHOOK_TOKEN = 'demo-webhook-token';

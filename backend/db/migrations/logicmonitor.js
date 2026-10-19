@@ -877,4 +877,44 @@ module.exports = [
       addCol('lm_sources', 'raw_history_json', 'TEXT');
     },
   },
+  // Migration v10 (round 13, WP-A). Circuit role (wan / site-link / uplink), per-site WAN
+  // state, and an event log of circuit transitions with operator notes.
+  {
+    version: 10,
+    up(db) {
+      const addCol = (table, col, ddl) => {
+        const cols = db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name);
+        if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+      };
+      addCol('lm_interfaces', 'circuit_role', 'TEXT');
+      addCol('lm_interfaces', 'circuit_far_site_key', 'TEXT');
+      addCol('lm_interfaces', 'circuit_role_reason', 'TEXT');
+      addCol('lm_sites', 'wan_state', 'TEXT');
+      addCol('lm_sites', 'wan_total', 'INTEGER');
+      addCol('lm_sites', 'wan_down', 'INTEGER');
+      addCol('lm_sites', 'wan_flapping', 'INTEGER');
+      addCol('lm_sites', 'wan_updated_at', 'TEXT');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lm_circuit_events (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id      INTEGER NOT NULL REFERENCES lm_sources(id) ON DELETE CASCADE,
+          instance_id    INTEGER,
+          device_name    TEXT,
+          port           TEXT,
+          site_key       TEXT,
+          far_site_key   TEXT,
+          role           TEXT,
+          event          TEXT NOT NULL,
+          at             TEXT NOT NULL,
+          details_json   TEXT,
+          note           TEXT,
+          noted_by       TEXT,
+          noted_at       TEXT,
+          issue_key      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_lm_circuit_events_inst ON lm_circuit_events(source_id, instance_id, at);
+        CREATE INDEX IF NOT EXISTS idx_lm_circuit_events_site ON lm_circuit_events(site_key, at);
+      `);
+    },
+  },
 ];

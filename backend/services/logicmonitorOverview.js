@@ -340,8 +340,39 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
         watchBySite.set(key, w);
       }
     } catch { /* episode table missing on an unmigrated database */ }
+    // Round 13: WAN state, the names behind the dead / degraded counts, ports down, circuits down.
+    const wanBySiteMap = guard(() => require('./logicmonitorCircuits').overviewWan(db, { nowMs }), new Map());
+    const deadNames = new Map();
+    for (const d of devices) {
+      if (d.host_status !== 'dead' || !d.site_key) continue;
+      const dk = `${d.source_id}|${d.site_key}`;
+      if (!deadNames.has(dk)) deadNames.set(dk, []);
+      deadNames.get(dk).push(d.display_name || d.name);
+    }
+    const degradedNames = new Map();
+    for (const r of resolved) {
+      const dev = r.res.device;
+      if (!dev || !dev.site_key || dev.host_status === 'dead' || !['warning', 'critical'].includes(r.issue.severity)) continue;
+      const dk = `${dev.source_id}|${dev.site_key}`;
+      const nm = dev.display_name || dev.name;
+      if (!degradedNames.has(dk)) degradedNames.set(dk, new Set());
+      degradedNames.get(dk).add(nm);
+    }
+    const portsDown = new Map();
+    for (const r of all(`
+      SELECT d.source_id, d.site_key, d.display_name AS dev_name, d.name AS dev_alt, i.display_name AS port
+      FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
+      WHERE i.stale = 0 AND d.stale = 0 AND d.site_key IS NOT NULL AND COALESCE(i.stop_monitoring, 0) = 0
+        AND (i.status_text = 'down' OR (i.status_text IS NULL AND i.status = 2))
+      ORDER BY d.display_name, i.display_name
+    `)) {
+      const dk = `${r.source_id}|${r.site_key}`;
+      if (!portsDown.has(dk)) portsDown.set(dk, []);
+      portsDown.get(dk).push(`${r.dev_name || r.dev_alt} ${r.port}`);
+    }
     out.map.nodes = sites.map((s) => {
       const k = `${s.sourceId}|${s.siteKey}`;
+      const wan = wanBySiteMap.get(k) || { wanState: null, wanTotal: 0, wanDown: 0, circuitsDown: 0 };
       let viaCollector = null;
       if (!s.collectors.length) {
         const use = collectorUse.get(k);
@@ -363,6 +394,10 @@ function buildOverview(db, { nowMs = Date.now(), helpers = null } = {}) {
         openIssues: openIssuesBySite.get(k) || 0,
         reachability: reach(k),
         watch: watchBySite.get(k) || { degrading: 0, critical: 0, oneOff7d: 0 },
+        wanState: wan.wanState, wanTotal: wan.wanTotal, wanDown: wan.wanDown, circuitsDown: wan.circuitsDown,
+        deadDevices: (deadNames.get(k) || []).slice(0, 10),
+        degradedDevices: [...(degradedNames.get(k) || [])].slice(0, 10),
+        portsDownNames: (portsDown.get(k) || []).slice(0, 5),
       };
     });
   }, null);

@@ -604,7 +604,9 @@ function incidentEvidence(coreApi, ctx) {
       lines.push(...eps.lines);
     } catch { /* episode history is best effort */ }
     if (siteKey) lines.push(...siteLines(db, siteKey));
-    return lines.length ? { title: 'LogicMonitor network', lines: lines.slice(0, 46) } : null;
+    // Round 13: WAN picture of the site (a site with one WAN up is degraded, not down).
+    if (siteKey) lines.push(...require('../../services/logicmonitorCircuits').siteCircuitEvidence(db, siteKey));
+    return lines.length ? { title: 'LogicMonitor network', lines: lines.slice(0, 60) } : null;
   } catch {
     return null;
   }

@@ -123,7 +123,7 @@ const SEEDED_TABLES = [
   'bluecat_records', 'bluecat_zones', 'bluecat_views', 'bluecat_servers', 'bluecat_devices',
   'bluecat_sources',
   // logicmonitor (children before the parent)
-  'lm_webhook_events', 'lm_interface_baseline', 'lm_sites',
+  'lm_webhook_events', 'lm_interface_baseline', 'lm_sites', 'lm_circuit_events',
   'lm_ai_reports', 'lm_issue_history', 'lm_metrics_history', 'lm_topology_links',
   'lm_check_daily', 'lm_check_baseline', 'lm_check_history', 'lm_check_locations', 'lm_checks',
   'lm_interface_daily', 'lm_interface_history', 'lm_interfaces', 'lm_device_datasources',
@@ -134,7 +134,7 @@ const SEEDED_TABLES = [
 ];
 
 // Tables a parallel migration may not have created yet; a missing one is skipped.
-const OPTIONAL_TABLES = new Set(['vcenter_host_nic_neighbors', 'lm_webhook_events', 'lm_interface_baseline', 'lm_sites']);
+const OPTIONAL_TABLES = new Set(['vcenter_host_nic_neighbors', 'lm_webhook_events', 'lm_interface_baseline', 'lm_sites', 'lm_circuit_events']);
 
 function wipeSeededTables(database) {
   database.transaction(() => {

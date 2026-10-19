@@ -718,6 +718,9 @@ function buildMessages(evidence, anon) {
     'switch-port health, the path from the server toward the WAN, a likely failing hop, reachability checks, scheduled ' +
     'downtime, recent configuration changes); when a block names a likely hop or a downed upstream device, say so in ' +
     'likely_cause and name it in next_steps ahead of host-level work. ' +
+    'A site with one of two WAN circuits down is degraded, not down: say which circuit carries the site now; ' +
+    'a circuit that flapped on several days before failing is a failing circuit, not a one-off, so recommend the ' +
+    'carrier ticket and name the circuit id. ' +
     'liveChecks, when present, are probes ICC itself ran from its own server at triage time (ping, TCP ports, DNS, ' +
     'TLS) against the hosts and sources in this incident; quote each result in reviewed and weigh it in likely_cause. ' +
     'A failed probe means ICC could not reach the target from where it runs, which is not proof the target is down; ' +

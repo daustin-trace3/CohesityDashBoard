@@ -38,7 +38,11 @@ const THRESHOLD_DEFS = {
   lm_if_anomaly_util_min_pct: { def: 20, min: 1, max: 100, label: 'Interface utilization anomaly minimum (%)' },
   lm_if_anomaly_err_min: { def: 5, min: 1, max: 100000, label: 'Interface error anomaly minimum' },
   lm_backup_overlay_util_pct: { def: 70, min: 30, max: 100, label: 'Backup window port utilization (%)' },
-  lm_wan_overrides: { type: 'text', def: '', maxLength: 2000, label: 'WAN circuit overrides (device:port, prefix ! to exclude)' },
+  lm_wan_overrides: { type: 'text', def: '', maxLength: 2000, label: 'WAN circuit overrides (device:port, prefix ! to exclude, suffix =wan or =site-link to force the role)' },
+  // Round 13 (site circuits).
+  lm_circuit_flap_warn: { def: 3, min: 1, max: 100, label: 'Circuit status changes in 24 h warning' },
+  lm_circuit_flap_days: { def: 3, min: 1, max: 7, label: 'Days with a circuit drop in the last 7 that mean a failing circuit' },
+  lm_circuit_event_days: { def: 365, min: 30, max: 1095, label: 'Circuit event log retention (days)' },
   lm_webhook_rate_per_min: { def: 600, min: 60, max: 6000, label: 'Webhook rate limit (per minute)' },
   // Round 8 (DataSource metric collector, firewalls, load balancers, device health).
   lm_metrics_data_calls_per_tick: { def: 300, min: 20, max: 2000, label: 'Metrics tier data calls per run' },
@@ -820,6 +824,8 @@ function computeIssues({ nowMs = Date.now() } = {}) {
       FROM lm_interfaces i LEFT JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
       WHERE i.source_id = ? AND i.instance_id = ?
     `);
+    // Round 13: wan / site-link circuits raise circuit-flapping instead of interface-flapping.
+    const circuitInst = require('./logicmonitorCircuits').circuitInstanceSet(db);
     for (const [k, rows] of byInst) {
       const [sid, iid] = k.split('|').map(Number);
       const info = ifInfo.get(sid, iid) || {};
@@ -863,7 +869,7 @@ function computeIssues({ nowMs = Date.now() } = {}) {
         if (prev != null && r.status !== prev) flaps += 1;
         prev = r.status;
       }
-      if (flaps >= t.lm_if_flap_warn) {
+      if (flaps >= t.lm_if_flap_warn && !circuitInst.has(k)) {
         issues.push({ severity: 'warning', type: 'interface-flapping', source, target,
           message: `${target} changed status ${flaps} times in 24 h` });
       }
@@ -880,6 +886,11 @@ function computeIssues({ nowMs = Date.now() } = {}) {
         message: `WAN circuit ${target}${c.label ? ` (${c.label})` : ''} p95 ${Math.round(peak)}% over ${t.lm_circuit_sat_days} days${c.satState === 'critical' ? `, daily peak at or above ${t.lm_circuit_crit_pct}% for ${c.critDays} days running` : ''}${c.maxDailyPct != null ? ` (highest daily peak ${Math.round(c.maxDailyPct)}%)` : ''}` });
     }
   } catch { /* circuit metrics unavailable */ }
+
+  // Round 13: site WAN state, circuit down / flapping / flap pattern, site links.
+  try {
+    issues.push(...require('./logicmonitorCircuits').computeCircuitIssues(db, t, srcName, nowMs));
+  } catch { /* a circuit rule fault must not hide the other issues */ }
 
   // alert-storm
   const stormSince = Math.floor(nowMs / 1000) - 900;
@@ -979,6 +990,8 @@ function recordCheckBlames(current) {
 // (lm_issue_history.absent_polls counts them; a poll that has the key resets it).
 const ANOMALY_TYPES = new Set(['latency-anomaly', 'packet-loss-anomaly', 'interface-util-anomaly', 'interface-error-anomaly', 'latency-degrading', 'loss-degrading']);
 
+const circuits = require('./logicmonitorCircuits');
+
 const reconcileIssueHistoryTxn = db.transaction(() => {
   const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
   const open = db.prepare("SELECT * FROM lm_issue_history WHERE status = 'open'").all();
@@ -1009,7 +1022,10 @@ const reconcileIssueHistoryTxn = db.transaction(() => {
     }
   }
   for (const [key, i] of current) {
-    if (!openKeys.has(key)) insert.run(key, i.source, i.severity, i.type, i.target, i.message);
+    if (!openKeys.has(key)) {
+      insert.run(key, i.source, i.severity, i.type, i.target, i.message);
+      if (circuits.CIRCUIT_ISSUE_TYPES.has(i.type)) circuits.linkIssueToEvents(db, i, key);
+    }
   }
   recordCheckBlames(current);
 });
@@ -1078,6 +1094,7 @@ function computeShadows(dbh = db, opts = {}) {
 // first so the issue pass and collectAlerts read the same upstream picture.
 const reconcileIssueHistory = () => {
   try { computeShadows(db); } catch { /* best effort */ }
+  try { circuits.computeSiteWanState(db); } catch { /* best effort */ }
   const out = reconcileIssueHistoryTxn.immediate();
   pruneInBatches(db, 'lm_issue_history', "status = 'resolved' AND resolved_at < datetime('now', '-90 days')");
   return out;

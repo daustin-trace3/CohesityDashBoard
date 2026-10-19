@@ -557,50 +557,101 @@ function circuitInfo(description, props, aliasesArg) {
   return { circuitId, carrier: normaliseCarrier(carrier, aliases), alias, source };
 }
 
-/** Parse lm_wan_overrides: "dev:port,!dev:port" -> [{device, port, exclude}]. */
+/**
+ * Parse lm_wan_overrides: "dev:port,!dev:port,dev:port=wan,dev:port=site-link" ->
+ * [{device, port, exclude, role?}]. The optional "=role" suffix (wan, site-link or uplink)
+ * forces the circuit role; without it the role is classified from the other evidence.
+ */
 function parseWanOverrides(text) {
   return String(text || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
     const exclude = x.startsWith('!');
-    const body = exclude ? x.slice(1) : x;
+    let body = exclude ? x.slice(1) : x;
+    let role = null;
+    const rm = body.match(/^(.*)=\s*(wan|site-link|uplink)\s*$/i);
+    if (rm) { body = rm[1]; role = rm[2].toLowerCase(); }
     const i = body.indexOf(':');
     if (i <= 0) return null;
-    return { device: norm(body.slice(0, i)), port: cleanPortKey(body.slice(i + 1)), exclude };
+    return { device: norm(body.slice(0, i)), port: cleanPortKey(body.slice(i + 1)), exclude, ...(role ? { role } : {}) };
   }).filter((o) => o && o.port);
 }
 
-/** Mark lm_interfaces.is_wan by rule for one portal (or all). Returns {marked}. */
+/**
+ * Mark lm_interfaces.is_wan by rule for one portal (or all) and classify each circuit's role
+ * (wan, site-link, uplink; round 13, see logicmonitorCircuits.classifyCircuitRole). Returns {marked}.
+ */
 function computeCircuits(dbh, sourceId = null) {
   let marked = 0;
   try {
+    const lmCirc = require('./logicmonitorCircuits');
     const overrides = parseWanOverrides(issuesMod().getTextSetting('lm_wan_overrides'));
     const aliases = loadCarrierAliases();
     const where = sourceId != null ? 'AND i.source_id = ?' : '';
     const args = sourceId != null ? [sourceId] : [];
     const rows = dbh.prepare(`
       SELECT i.source_id, i.instance_id, i.display_name, i.description, i.props_json, d.display_name AS dev_name, d.name AS dev_alt, d.role,
+        d.site_key AS own_site_key,
         EXISTS (SELECT 1 FROM lm_topology_links l WHERE l.source_id = i.source_id AND l.src_instance_id = i.instance_id
           AND COALESCE(l.stale, 0) = 0 AND l.dst_device_id IS NULL AND l.dst_platform IS NULL) AS unresolved
       FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
       WHERE i.stale = 0 AND d.stale = 0 ${where}
     `).all(...args);
-    const upd = dbh.prepare('UPDATE lm_interfaces SET is_wan = ?, wan_reason = ?, wan_label = ? WHERE source_id = ? AND instance_id = ?');
+    // Far end evidence: the site of the device a topology link resolves to, and site-name tokens per portal.
+    const topo = new Map();
+    for (const l of dbh.prepare(`
+      SELECT l.source_id, l.src_instance_id, dd.site_key
+      FROM lm_topology_links l JOIN lm_devices dd ON dd.source_id = l.source_id AND dd.lm_device_id = l.dst_device_id
+      WHERE COALESCE(l.stale, 0) = 0 AND l.dst_device_id IS NOT NULL AND dd.site_key IS NOT NULL AND dd.stale = 0 ${sourceId != null ? 'AND l.source_id = ?' : ''}
+    `).all(...args)) {
+      const k = `${l.source_id}|${l.src_instance_id}`;
+      if (!topo.has(k)) topo.set(k, []);
+      topo.get(k).push(l.site_key);
+    }
+    const tokensBySource = new Map();
+    for (const s of dbh.prepare(`SELECT source_id, site_key, site_name FROM lm_sites ${sourceId != null ? 'WHERE source_id = ?' : ''}`).all(...args)) {
+      if (!tokensBySource.has(s.source_id)) tokensBySource.set(s.source_id, []);
+      tokensBySource.get(s.source_id).push(s);
+    }
+    for (const [sid, list] of tokensBySource) tokensBySource.set(sid, lmCirc.buildSiteTokens(list));
+    const upd = dbh.prepare(`UPDATE lm_interfaces SET is_wan = ?, wan_reason = ?, wan_label = ?, circuit_role = ?, circuit_far_site_key = ?, circuit_role_reason = ?
+      WHERE source_id = ? AND instance_id = ?`);
     dbh.transaction(() => {
-      dbh.prepare(`UPDATE lm_interfaces SET is_wan = 0, wan_reason = NULL, wan_label = NULL WHERE is_wan != 0 ${sourceId != null ? 'AND source_id = ?' : ''}`).run(...args);
+      dbh.prepare(`UPDATE lm_interfaces SET is_wan = 0, wan_reason = NULL, wan_label = NULL, circuit_role = NULL, circuit_far_site_key = NULL, circuit_role_reason = NULL
+        WHERE (is_wan != 0 OR circuit_role IS NOT NULL) ${sourceId != null ? 'AND source_id = ?' : ''}`).run(...args);
       for (const r of rows) {
         const dev = norm(r.dev_name);
         const alt = norm(r.dev_alt);
         const port = cleanPortKey(r.display_name);
         const ov = overrides.filter((o) => o.port === port && (o.device === dev || o.device === alt));
         if (ov.some((o) => o.exclude)) continue;
+        const tagClass = norm(parseJson(r.props_json, {}).iccClass);
+        const tagRole = lmCirc.TAG_ROLE[tagClass] || null;
         let reason = null;
         if (ov.length) reason = 'override';
         else if (r.role === 'router' || r.role === 'firewall') {
           if (r.description && WAN_RE.test(r.description)) reason = 'carrier-description';
           else if (r.role === 'router' && r.unresolved && r.description && LINKISH_RE.test(r.description)) reason = 'unresolved-uplink';
         }
-        if (!reason && circuitInfo(r.description, r.props_json, aliases).circuitId) reason = 'circuit-id';
-        if (!reason) continue;
-        upd.run(1, reason, r.description || `${r.dev_name || r.dev_alt} ${r.display_name}`, r.source_id, r.instance_id);
+        const ci = circuitInfo(r.description, r.props_json, aliases);
+        if (!reason && ci.circuitId) reason = 'circuit-id';
+        if (!reason && (tagRole === 'wan' || tagRole === 'site-link')) reason = 'tag-class';
+        // An uplink tag marks nothing as a circuit but records the role.
+        if (!reason && tagRole !== 'uplink') continue;
+        const tokens = tokensBySource.get(r.source_id) || [];
+        const topoSites = topo.get(`${r.source_id}|${r.instance_id}`) || [];
+        const topoSiteKey = topoSites.find((k) => k !== r.own_site_key) || topoSites[0] || null;
+        const cls = lmCirc.classifyCircuitRole({
+          overrideRole: (ov.find((o) => o.role) || {}).role || null,
+          tagClass, ownSiteKey: r.own_site_key || null, topoSiteKey,
+          labelFarSiteKey: lmCirc.farSiteFromLabel(r.description, tokens, r.own_site_key),
+          hasCarrierOrCid: !!(ci.carrier || ci.circuitId || (r.description && WAN_RE.test(r.description))),
+          wanReason: reason,
+        });
+        const label = r.description || `${r.dev_name || r.dev_alt} ${r.display_name}`;
+        if (cls.role === 'uplink' && !ov.length) {
+          upd.run(0, null, null, 'uplink', null, cls.reason, r.source_id, r.instance_id);
+          continue;
+        }
+        upd.run(1, reason || 'tag-class', label, cls.role, cls.farSiteKey || null, cls.reason, r.source_id, r.instance_id);
         marked += 1;
       }
     })();
@@ -614,6 +665,13 @@ const p95 = (arr) => {
   return a[Math.min(a.length - 1, Math.max(0, Math.ceil(0.95 * a.length) - 1))];
 };
 const round1 = (v) => (v == null ? null : Math.round(v * 10) / 10);
+
+/** Status changes in an ordered list of {status} rows (nulls skipped). */
+function countFlaps(rows) {
+  let flaps = 0; let prev = null;
+  for (const h of rows) { if (h.status == null) continue; if (prev != null && h.status !== prev) flaps += 1; prev = h.status; }
+  return flaps;
+}
 
 /** Longest run of consecutive calendar days in a sorted list of YYYY-MM-DD. */
 function longestDayRun(days) {
@@ -657,6 +715,15 @@ function circuitRows(dbh, { sourceId = null, siteKey = null, nowMs = Date.now() 
     const dailyFrom = new Date(nowMs - Math.max(days, 3) * 86400000).toISOString().slice(0, 10);
     const histStmt = dbh.prepare('SELECT status, in_util_pct, out_util_pct, in_errors, out_errors, captured_at FROM lm_interface_history WHERE source_id = ? AND instance_id = ? AND captured_at >= ? ORDER BY captured_at, id');
     const dailyStmt = dbh.prepare('SELECT day, max_in_util_pct, max_out_util_pct FROM lm_interface_daily WHERE source_id = ? AND instance_id = ? AND day >= ? ORDER BY day');
+    // Round 13: role, far site, 7 day flaps and the last down / up from the circuit event log.
+    const weekAgo = sqlTs(nowMs - 7 * 86400000);
+    const weekStmt = dbh.prepare('SELECT status FROM lm_interface_history WHERE source_id = ? AND instance_id = ? AND captured_at >= ? ORDER BY captured_at, id');
+    let lastEvStmt = null;
+    try { lastEvStmt = dbh.prepare("SELECT MAX(at) AS at FROM lm_circuit_events WHERE source_id = ? AND instance_id = ? AND event = ?"); } catch { /* events table missing */ }
+    const siteNames = new Map();
+    try {
+      for (const s of dbh.prepare('SELECT source_id, site_key, site_name FROM lm_sites').all()) siteNames.set(`${s.source_id}|${s.site_key}`, s.site_name);
+    } catch { /* no sites yet */ }
     for (const w of wans) {
       const hist = histStmt.all(w.source_id, w.instance_id, winStart);
       const daily = dailyStmt.all(w.source_id, w.instance_id, dailyFrom);
@@ -696,6 +763,12 @@ function circuitRows(dbh, { sourceId = null, siteKey = null, nowMs = Date.now() 
         headroomPct: hi >= 0 ? round1(Math.max(0, 100 - hi)) : null,
         errors24h: Math.round(last24.reduce((s, h) => s + (h.in_errors || 0) + (h.out_errors || 0), 0)),
         flaps24h: flaps, busiestHour, critDays: critRun, satState, state: down ? 'critical' : satState,
+        role: w.circuit_role || 'wan', farSiteKey: w.circuit_far_site_key || null,
+        farSiteName: w.circuit_far_site_key ? (siteNames.get(`${w.source_id}|${w.circuit_far_site_key}`) || w.circuit_far_site_key) : null,
+        roleReason: w.circuit_role_reason || null,
+        flaps7d: countFlaps(weekStmt.all(w.source_id, w.instance_id, weekAgo)),
+        lastDownAt: lastEvStmt ? lastEvStmt.get(w.source_id, w.instance_id, 'down')?.at || null : null,
+        lastUpAt: lastEvStmt ? lastEvStmt.get(w.source_id, w.instance_id, 'up')?.at || null : null,
       });
     }
   } catch { /* no circuits */ }

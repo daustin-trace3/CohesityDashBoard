@@ -67,10 +67,10 @@ function insertDevice(sourceId, o = {}) {
 }
 
 describe('migrations/logicmonitor.js', () => {
-  it('creates all 34 lm_* tables and the four dataset views', () => {
+  it('creates all 35 lm_* tables and the four dataset views', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'lm_%'").all().map((r) => r.name);
     for (const t of TABLES) expect(tables, `missing ${t}`).toContain(t);
-    expect(tables.length).toBe(34);
+    expect(tables.length).toBe(35);
     const views = db.prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name LIKE 'logicmonitor_%'").all().map((r) => r.name).sort();
     expect(views).toEqual(['logicmonitor_alerts', 'logicmonitor_checks', 'logicmonitor_devices', 'logicmonitor_interfaces']);
   });
@@ -682,7 +682,7 @@ describe('logicmonitorIssues: rules', () => {
     expect(t.lm_if_util_warn_pct).toBe(50);
     expect(t.lm_check_latency_k).toBe(10);
     expect(t.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(t).length).toBe(62);
+    expect(Object.keys(t).length).toBe(65);
     setSetting('lm_if_util_warn_pct', '80');
     setSetting('lm_check_latency_k', '3');
   });

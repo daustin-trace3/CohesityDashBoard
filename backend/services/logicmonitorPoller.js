@@ -24,6 +24,7 @@ const lmEri = require('./logicmonitorEri');
 const lmGrammar = require('./logicmonitorGrammar');
 const lmMetrics = require('./logicmonitorMetrics');
 const lmWatch = require('./logicmonitorWatch');
+const lmCircuits = require('./logicmonitorCircuits');
 const { isDemo } = require('./demoMode');
 const logger = require('../utils/logger');
 
@@ -1128,6 +1129,7 @@ async function dailyWork(source, note) {
   try { lmPath.computeCircuits(db, source.id); } catch (err) { logger.warn(`[LmPoller] circuits failed: ${err.message}`); }
   try { computeInterfaceBaselines(db, source.id); } catch (err) { logger.warn(`[LmPoller] interface baselines failed: ${err.message}`); }
   try { require('./logicmonitorMetricBaselines').computeMetricBaselines(db, source.id, require('./logicmonitorIssues').getThresholds()); } catch (err) { logger.warn(`[LmPoller] metric baselines failed: ${err.message}`); }
+  try { lmCircuits.pruneCircuitEvents(db); } catch (err) { logger.warn(`[LmPoller] circuit event prune failed: ${err.message}`); }
   try { lmWatch.pruneEpisodes(db); } catch (err) { logger.warn(`[LmPoller] episode prune failed: ${err.message}`); }
   // Weekly (computeReference skips itself while its newest row is under 6 days old).
   try { lmWatch.computeReference(db, source.id, require('./logicmonitorIssues').getThresholds()); } catch (err) { logger.warn(`[LmPoller] check reference failed: ${err.message}`); }
@@ -1228,6 +1230,8 @@ async function pollSource(source) {
 
     // Sites: cheap, from rows just stored (devices, collectors, checks, locations).
     try { lmSites.computeSites(db, source.id); } catch (err) { logger.warn(`[LmPoller] sites failed: ${err.message}`); }
+    // Round 13: computeSites rebuilds lm_sites every tick, so the per-site WAN state is written right after it.
+    try { lmCircuits.computeSiteWanState(db, source.id); } catch (err) { logger.warn(`[LmPoller] site wan state failed: ${err.message}`); }
 
     // New network devices and Uptime checks get their datasources now rather
     // than waiting for the daily refresh (capped per tick).
@@ -1463,6 +1467,9 @@ async function pollInterfaces(source) {
       }
     });
     if (devices.length && ok === 0) throw new Error(`interface data failed on every device (${failed}): ${lastErr}`);
+    // Round 13: history is fresh, so record circuit down / up / flap transitions and refresh the site WAN state.
+    try { lmCircuits.recordCircuitTransitions(db, source.id); } catch (err) { logger.warn(`[LmPoller] circuit events failed: ${err.message}`); }
+    try { lmCircuits.computeSiteWanState(db, source.id); } catch (err) { logger.warn(`[LmPoller] site wan state failed: ${err.message}`); }
     db.prepare(`
       UPDATE lm_sources SET last_interface_poll_at = datetime('now'), last_interface_poll_error = ?, rate_limit_json = ? WHERE id = ?
     `).run(failed ? `Skipped ${failed} of ${devices.length} device(s): ${lastErr}` : null,

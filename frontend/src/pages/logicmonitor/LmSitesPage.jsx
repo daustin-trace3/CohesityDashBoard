@@ -14,6 +14,8 @@ import {
 import { Modal, Tabs, Fact, headRow, SortThTip } from './ui';
 import EndpointsTable from './endpointsTable';
 import LmDevice360 from './LmDevice360';
+import SiteCircuitsPanel from './LmSiteCircuits';
+import { WanBadge } from './circuitShared';
 
 const REFRESH_MS = 60000;
 
@@ -86,7 +88,7 @@ function ReachList({ rows, empty }) {
 function SiteModal({ siteKey, onClose }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
-  const [tab, setTab] = useState('devices');
+  const [tab, setTab] = useState('circuits');
   const [device, setDevice] = useState(null);
   const [advisor, setAdvisor] = useState(null); // { enabled } once loaded
   const [showAdvisor, setShowAdvisor] = useState(false);
@@ -108,7 +110,7 @@ function SiteModal({ siteKey, onClose }) {
   }, [siteKey]);
 
   useEffect(() => {
-    setData(null); setError(null); setTab('devices');
+    setData(null); setError(null); setTab('circuits');
     client.get(`/logicmonitor/sites/${encodeURIComponent(siteKey)}`)
       .then(({ data: d }) => setData(d || {}))
       .catch((e) => setError(e?.response?.status === 404 ? 'Site not found.' : 'Failed to load the site.'));
@@ -130,6 +132,7 @@ function SiteModal({ siteKey, onClose }) {
         <>
           <div className="flex items-center gap-2 mb-3 flex-wrap">
             <StateBadge state={data.state} />
+            {(data.wanState || data.wan?.state) ? <WanBadge state={data.wanState || data.wan?.state} total={data.wanTotal ?? data.wan?.total} down={data.wanDown ?? data.wan?.down} withCount /> : null}
             {data.devicesDead ? <Badge tone="crit">{fmtNum(data.devicesDead)} dead</Badge> : null}
             {ifDown.length ? <Badge tone="warn">{fmtNum(ifDown.length)} interface(s) down</Badge> : null}
             <button type="button" disabled={advisor?.enabled !== true} onClick={() => setShowAdvisor(true)}
@@ -161,8 +164,8 @@ function SiteModal({ siteKey, onClose }) {
             </p>
           )}
           <Tabs active={tab} onSelect={setTab} tabs={[
-            { key: 'devices', label: 'Devices', count: devices.length },
             { key: 'circuits', label: 'Circuits', count: circuits.length },
+            { key: 'devices', label: 'Devices', count: devices.length },
             { key: 'reach', label: 'Reachability', count: reachIn.length + reachOut.length },
             { key: 'endpoints', label: 'Endpoints', count: endpoints.length },
             { key: 'issues', label: 'Issues', count: issues.length },
@@ -213,22 +216,7 @@ function SiteModal({ siteKey, onClose }) {
             </>
           )}
 
-          {tab === 'circuits' && (circuits.length === 0 ? <p className="text-sm text-ink-muted py-4 text-center">No WAN circuits at this site.</p> : (
-            <table className="w-full text-sm">
-              <thead><tr className={headRow}><th className="py-1.5 pr-3">Device</th><th className="py-1.5 pr-3">Port</th><th className="py-1.5 pr-3">State</th><th className="py-1.5 pr-3 text-right">p95 in</th><th className="py-1.5 pr-3 text-right">p95 out</th></tr></thead>
-              <tbody>
-                {circuits.map((c, i) => (
-                  <tr key={i} className="border-b border-cohesity-border/40">
-                    <td className="py-1.5 pr-3 text-ink text-[12px]">{c.deviceName}</td>
-                    <td className="py-1.5 pr-3 text-ink-muted text-[12px]">{c.port}</td>
-                    <td className="py-1.5 pr-3"><StateBadge state={c.state} /></td>
-                    <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{fmtPct(c.p95InPct)}</td>
-                    <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{fmtPct(c.p95OutPct)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ))}
+          {tab === 'circuits' && <SiteCircuitsPanel siteKey={data.siteKey || siteKey} />}
 
           {tab === 'reach' && (
             <>
@@ -326,6 +314,10 @@ export default function LmSitesPage() {
       collectorsDown: (arr(s.pollingCollectors).length ? arr(s.pollingCollectors) : collectors).filter((c) => c.isDown).length,
       collectorLabel: (arr(s.pollingCollectors).length ? arr(s.pollingCollectors) : collectors).map((c) => c.hostname).join(', '),
       polling: arr(s.pollingCollectors),
+      wanStateV: s.wanState ?? s.wan?.state ?? null,
+      wanTotalV: s.wanTotal ?? s.wan?.total ?? null,
+      wanDownV: s.wanDown ?? s.wan?.down ?? null,
+      wanRank: { down: 3, degraded: 2, ok: 1 }[String(s.wanState ?? s.wan?.state ?? '').toLowerCase()] || 0,
       reachInState: worstState(arr(s.reachabilityIn).map((r) => r.state)),
       reachOutState: worstState(arr(s.reachabilityOut).map((r) => r.state)),
     };
@@ -378,6 +370,7 @@ export default function LmSitesPage() {
                   <SortTh k="deviceCount" label="Devices" ctl={ctl} align="right" />
                   <SortTh k="devicesDead" label="Dead" ctl={ctl} align="right" />
                   <SortTh k="interfacesDown" label="Ifaces down" ctl={ctl} align="right" />
+                  <SortThTip k="wanRank" label="WAN" ctl={ctl} tip="Provider WAN circuits at this site. One circuit down with another up is degraded, not down. Links to other sites are not counted." />
                   <SortTh k="circuitRank" label="Circuits" ctl={ctl} />
                   <SortThTip k="collectorsDown" label="Collector" ctl={ctl} tip="The collector that polls this site's devices. Remote means it sits at another site." />
                   <SortThTip k="reachInState" label="Reach in" ctl={ctl} tip="Checks whose target is a device at this site, worst location" />
@@ -391,6 +384,7 @@ export default function LmSitesPage() {
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(s.deviceCount)}<p className="text-[10px] text-ink-faint">{fmtNum(s.networkCount)} network</p></td>
                       <td className={`py-2 pr-3 text-right tnum ${s.devicesDead ? 'text-status-crit' : 'text-ink-faint'}`}>{fmtNum(s.devicesDead)}</td>
                       <td className={`py-2 pr-3 text-right tnum ${s.interfacesDown ? 'text-status-warn' : 'text-ink-faint'}`}>{fmtNum(s.interfacesDown)}</td>
+                      <td className="py-2 pr-3"><WanBadge state={s.wanStateV} total={s.wanTotalV} down={s.wanDownV} withCount /></td>
                       <td className="py-2 pr-3">{s.circuitState ? <><StateBadge state={s.circuitState} /><p className="text-[10px] text-ink-faint tnum">p95 {fmtPct(s.circuitP95)}</p></> : <span className="text-[11px] text-ink-faint">-</span>}</td>
                       <td className="py-2 pr-3 text-[12px]"><CollectorCell site={s} /></td>
                       <td className="py-2 pr-3">{s.reachInState ? <StateBadge state={s.reachInState} /> : <span className="text-[11px] text-ink-faint">-</span>}</td>

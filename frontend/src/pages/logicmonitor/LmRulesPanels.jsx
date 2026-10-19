@@ -228,16 +228,27 @@ export function LmReachabilityRulesPanel() {
   );
 }
 
-// Stored format "dev:port,!dev:port" (see parseWanOverrides in
-// backend/services/logicmonitorPath.js) <-> list rows { entry, exclude }.
+// Stored format "dev:port,!dev:port,dev:port=wan,dev:port=site-link" (see
+// parseWanOverrides in backend/services/logicmonitorPath.js) <-> list rows
+// { entry, exclude, role }. role is '' (rules decide), 'wan' or 'site-link'.
+const WAN_ROLES = ['wan', 'site-link'];
 function parseWan(text) {
-  return String(text || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => (
-    x.startsWith('!') ? { entry: x.slice(1), exclude: true } : { entry: x, exclude: false }));
+  return String(text || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
+    const exclude = x.startsWith('!');
+    let entry = exclude ? x.slice(1) : x;
+    let role = '';
+    const eq = entry.lastIndexOf('=');
+    if (eq > 0 && WAN_ROLES.includes(entry.slice(eq + 1).trim().toLowerCase())) {
+      role = entry.slice(eq + 1).trim().toLowerCase();
+      entry = entry.slice(0, eq);
+    }
+    return { entry, exclude, role };
+  });
 }
 const serializeWan = (rows) => rows.filter((r) => String(r.entry || '').trim())
-  .map((r) => `${r.exclude ? '!' : ''}${String(r.entry).trim()}`).join(',');
+  .map((r) => `${r.exclude ? '!' : ''}${String(r.entry).trim()}${!r.exclude && r.role ? `=${r.role}` : ''}`).join(',');
 
-const CIRC_KEYS = ['lm_circuit_sat_pct', 'lm_circuit_crit_pct', 'lm_circuit_sat_days', 'lm_wan_overrides', 'lm_carrier_aliases'];
+const CIRC_KEYS = ['lm_circuit_sat_pct', 'lm_circuit_crit_pct', 'lm_circuit_sat_days', 'lm_circuit_flap_warn', 'lm_circuit_flap_days', 'lm_circuit_event_days', 'lm_wan_overrides', 'lm_carrier_aliases'];
 
 const BUILTIN_ALIASES = 'VZB Verizon, CTL and L3 Lumen, CGT Cogent, ECX Equinix, ZYO Zayo, ATT AT&T';
 
@@ -310,8 +321,16 @@ export function LmCircuitsRulesPanel() {
         <NumRow cfg={cfg} k="lm_circuit_sat_days" label="Saturation window" unit="days"
           tip="How many days of interface history the p95 is taken over." />
       </SettingGroup>
+      <SettingGroup title="Flapping and events">
+        <NumRow cfg={cfg} k="lm_circuit_flap_warn" label="Circuit flapping at" unit="changes in 24 h"
+          tip="A WAN or site-link circuit raises a warning circuit-flapping issue when its status changed this many times in 24 hours." />
+        <NumRow cfg={cfg} k="lm_circuit_flap_days" label="Flap pattern on" unit="days of 7"
+          tip="A circuit that flapped on at least this many distinct days in the last 7 raises a circuit-flap-pattern warning, the early warning that a failure is likely." />
+        <NumRow cfg={cfg} k="lm_circuit_event_days" label="Keep circuit events" unit="days"
+          tip="Circuit down, up, flap and saturation events (and the notes on them) older than this are deleted." />
+      </SettingGroup>
       <SettingGroup title="WAN port overrides">
-        <Lead>ICC marks WAN ports by rule (router and firewall ports whose description names a carrier, unresolved uplinks, circuit IDs). List a port here to force it in, or tick Exclude to keep it out. Circuits are recomputed from the Circuits page.</Lead>
+        <Lead>ICC marks WAN ports by rule (router and firewall ports whose description names a carrier, unresolved uplinks, circuit IDs) and then tells a provider WAN circuit from a link to another site. List a port here to force it in, or tick Exclude to keep it out. The role forces the type: WAN is a provider circuit, Site link is a connection to another location (stored as device:port=wan or device:port=site-link). Circuits are recomputed from the Circuits page.</Lead>
         <SettingRow label="Ports" dirty={cfg.isDirty('lm_wan_overrides')}
           tip="One entry per port, written device:port, matched case-insensitively against the device name and the interface name. An Exclude entry wins over a rule match. Stored as a comma list with ! in front of excluded ports.">
           <div className="flex flex-col gap-2 md:pt-1">
@@ -320,6 +339,11 @@ export function LmCircuitsRulesPanel() {
               <div key={i} className="flex items-center gap-3 flex-wrap">
                 <input type="text" value={r.entry} onChange={(e) => update(i, { entry: e.target.value })} placeholder="device:port" spellCheck={false}
                   aria-label="Device and port" className={`${inputCls} max-w-xs`} />
+                <select value={r.role} disabled={r.exclude} onChange={(e) => update(i, { role: e.target.value })} aria-label="Circuit role" className={sel}>
+                  <option value="">Role by rules</option>
+                  <option value="wan">WAN</option>
+                  <option value="site-link">Site link</option>
+                </select>
                 <label className="inline-flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer">
                   <input type="checkbox" className="accent-brand" checked={r.exclude} onChange={(e) => update(i, { exclude: e.target.checked })} /> Exclude
                 </label>
@@ -328,7 +352,7 @@ export function LmCircuitsRulesPanel() {
               </div>
             ))}
             <div>
-              <button type="button" onClick={() => setRows([...rows, { entry: '', exclude: false }])}
+              <button type="button" onClick={() => setRows([...rows, { entry: '', exclude: false, role: '' }])}
                 className={`${btnGhost} !px-3 !py-1.5 !text-xs inline-flex items-center gap-1.5`}>
                 <Plus size={13} /> Add port
               </button>
