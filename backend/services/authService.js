@@ -115,6 +115,13 @@ function bootClaimTokenCheck() {
   if (userCount() !== 0) return;
   claimTokenGenerated = true;
   claimToken = generateToken(16);
+  // Once per web-process boot. With authentication switched off the install runs open
+  // access on purpose, so this is information, not a warning: the token only matters
+  // when someone turns auth on and needs to create the first admin.
+  if (!authEnabled()) {
+    logger.info(`[auth] Authentication is disabled and no users exist. First-run claim token (needed only if auth is enabled): ${claimToken}`);
+    return;
+  }
   logger.warn(`[auth] No users exist. First-run setup claim token: ${claimToken}  (enter it at /login to create the admin account)`);
 }
 
