@@ -114,7 +114,7 @@ describe('catalogFor', () => {
   it('carries every metric key the pages depend on', () => {
     const keys = new Set(catalog.CATALOG.flatMap((e) => Object.keys(e.metrics)));
     for (const k of ['sessions_util_pct', 'ha_peer_state', 'tunnel_state', 'tunnels_up', 'gp_users_active', 'config_synced', 'threats_total',
-      'failover_state', 'member_avail', 'wideip_avail', 'vip_avail', 'daemon_state', 'cert_days_left', 'cpu_pct', 'mem_pct',
+      'failover_state', 'member_avail', 'wideip_avail', 'vip_avail', 'daemon_exit', 'cert_days_left', 'cpu_pct', 'mem_pct',
       'psu_state', 'fan_state', 'temp_state', 'linecard_state', 'sup_state', 'stack_member_state', 'rx_power_dbm', 'rx_low_warn',
       'bgp_peer_state', 'ospf_nbr_state', 'rtt_ms', 'loss_pct', 'sip_connections', 'sbc_cpu_pct', 'ap_oper', 'radio_util_pct',
       'radio_oper', 'ess_clients', 'wlc_ha_peer_ok', 'wlc_ap_available_pct', 'wlc_mobility_status', 'radius_timeouts']) {
@@ -483,7 +483,7 @@ describe('catalog against the live datapoint lists', () => {
   });
 
   it('exports a numeric catalog version', () => {
-    expect(catalog.CATALOG_VERSION).toBe(6);
+    expect(catalog.CATALOG_VERSION).toBe(7);
   });
 });
 

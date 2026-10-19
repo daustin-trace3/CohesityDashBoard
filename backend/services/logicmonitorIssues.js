@@ -541,11 +541,18 @@ function computeMetricIssues(dbh, t, srcName) {
       }
     }
 
-    // Daemons.
+    // Daemons: daemon_state follows the LM enum (1 = running); daemon_exit is the exit-code
+    // convention of the customer's script DataSources (0 = running), a warning because a GTM
+    // daemon legitimately reports non-zero on an LTM-only unit.
     if (!suppressed) {
       for (const i of devInstances(dev, 'daemon_state')) {
         if (Math.round(i.m.daemon_state.value) !== 1) {
           push(dev, 'critical', 'lb-daemon-down', `${name} ${i.name}`, `Service ${i.name} on ${name} is not running (state ${fmtNum(i.m.daemon_state.value)})`);
+        }
+      }
+      for (const i of devInstances(dev, 'daemon_exit')) {
+        if (i.m.daemon_exit.value != null && Math.round(i.m.daemon_exit.value) !== 0) {
+          push(dev, 'warning', 'lb-daemon-down', `${name} ${i.name}`, `Service ${i.name} on ${name} reports exit status ${fmtNum(i.m.daemon_exit.value)} (0 = running)`);
         }
       }
     }

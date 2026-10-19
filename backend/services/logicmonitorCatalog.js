@@ -52,7 +52,7 @@ const exact = (name) => (Array.isArray(name) ? name.map((n) => `^${n}$`) : `^${n
 // Bump whenever a regex below changes. pollMetrics drops every learned
 // dsColumns/dsUnmatched map when a source's stored catalogVersion differs, so
 // the next poll relearns with the corrected matchers.
-const CATALOG_VERSION = 6; // 6: exact ISE, Zscaler ZPA and SBC picks (mem_used_percent, TotalUtilization, utilizationPercent); 5: round 12 exact Palo Alto picks (cpu_pct_used, mem_pct_used, cur_temp, alarms), Ping, Cisco_NTP, F5 memory and interfaces; 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
+const CATALOG_VERSION = 7; // 7: F5 custom service status DataSources are exit codes (daemon_exit, 0 = running); 6: 6: exact ISE, Zscaler ZPA and SBC picks (mem_used_percent, TotalUtilization, utilizationPercent); 5: round 12 exact Palo Alto picks (cpu_pct_used, mem_pct_used, cur_temp, alarms), Ping, Cisco_NTP, F5 memory and interfaces; 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
 
 const CATALOG = [];
 const add = (family, match, label, metrics, opts = {}) => {
@@ -262,10 +262,15 @@ add('loadbalancer', 'F5_GTM_Global', 'F5 GTM global', {
   gtm_resolutions: counter(exact('Resolutions'), 'res', 'Resolutions'),
 });
 
+// Round 12, verified on the live portal: these are the customer's own script DataSources
+// with one datapoint each (big3d_status, mcpd_status, ...) that follows the exit-code
+// convention, 0 = running. mcpd and tmm read 0 on every live unit, so the LM daemon enum
+// (1 = running) the old entry assumed produced 80 false lb-daemon-down issues.
 for (const d of ['f5_big3d_service_status', 'f5_mcpd_service_status', 'f5_tmm_service_status',
   'f5_tmrouted_service_status', 'f5_gtmd_service_status', 'f5_gtm_gslb_status']) {
+  const dp = d.replace(/^f5_/, '').replace(/_service_status$/, '_status');
   add('loadbalancer', d, `F5 daemon ${d.replace(/^f5_/, '').replace(/_service_status$|_status$/, '')}`, {
-    daemon_state: state(['status', 'state', 'running', 'service'], 'Daemon state'),
+    daemon_exit: gauge(exact([dp, 'gslb_status', 'status']), '', 'Service exit status (0 = running)'),
   });
 }
 

@@ -3378,7 +3378,8 @@ function lbRow(r, lk, dev, issues, certWarn) {
     wideIpsDown: down(wide, 'wideip_avail'),
     vips: vips.length,
     vipsDown: down(vips, 'vip_avail'),
-    daemonsDown: L.devInstances(dv, 'daemon_state').filter((i) => Math.round(i.m.daemon_state.value) !== 1).length,
+    daemonsDown: L.devInstances(dv, 'daemon_state').filter((i) => Math.round(i.m.daemon_state.value) !== 1).length
+      + L.devInstances(dv, 'daemon_exit').filter((i) => i.m.daemon_exit.value != null && Math.round(i.m.daemon_exit.value) !== 0).length,
     certsExpiring: L.devInstances(dv, 'cert_days_left').filter((i) => i.m.cert_days_left.value < certWarn).length,
     state: stateFromIssues(devIssues, hasData),
     sampledAt: epochToIso(maxEpoch(dv)),
@@ -3445,7 +3446,9 @@ router.get('/load-balancers/:deviceId', [...deviceParams, query('page').optional
     const { limit, page, offset } = pageArgs({ query: { page: req.query.page, limit: req.query.limit || '50' } });
     const gtmServers = rowsOf(dev, 'gtm_server_avail').map((i) => ({ name: i.name, ...availOut(i, 'gtm_server_avail') })).sort(byName);
     const datacenters = rowsOf(dev, 'dc_avail').map((i) => ({ name: i.name, ...availOut(i, 'dc_avail') })).sort(byName);
-    const daemons = rowsOf(dev, 'daemon_state').map((i) => ({ name: i.name, state: Math.round(num(i, 'daemon_state')) === 1 ? 'running' : 'down', raw: num(i, 'daemon_state') })).sort(byName);
+    const daemons = rowsOf(dev, 'daemon_state').map((i) => ({ name: i.name, state: Math.round(num(i, 'daemon_state')) === 1 ? 'running' : 'down', raw: num(i, 'daemon_state') }))
+      .concat(rowsOf(dev, 'daemon_exit').map((i) => ({ name: i.name, state: num(i, 'daemon_exit') == null || Math.round(num(i, 'daemon_exit')) === 0 ? 'running' : 'down', raw: num(i, 'daemon_exit') })))
+      .sort(byName);
     const certs = rowsOf(dev, 'cert_days_left').map((i) => ({ name: i.name, daysLeft: rnd1(num(i, 'cert_days_left')) })).sort((a, b) => a.daysLeft - b.daysLeft);
     const hardware = {
       fans: rowsOf(dev, 'fan_state').concat(rowsOf(dev, 'f5os_fan_state')).map((i) => ({ name: i.name, state: num(i, 'fan_state') ?? num(i, 'f5os_fan_state') })).sort(byName),
