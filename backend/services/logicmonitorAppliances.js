@@ -22,6 +22,8 @@ const { isDownValue } = require('./logicmonitorCohesity');
 
 const fmtNum = (v) => (v == null ? 'n/a' : Number.isInteger(v) ? String(v) : String(Math.round(v * 10) / 10));
 const rnd1 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 10) / 10);
+// A percent outside 0..100 is not a percent (a wrong learned pick, or a stale row written under one): dash it.
+const pctOnly = (v) => (v == null || !Number.isFinite(Number(v)) || Number(v) < 0 || Number(v) > 100 ? null : rnd1(v));
 
 // Fixed rule constants (no new settings keys this round).
 const SIP_ERR_PER_SEC = 1; // client plus server SIP errors per second on one CUBE
@@ -260,15 +262,15 @@ function sbcFacts(dev) {
   return {
     healthRaw: health ? health.m.sbc_health_state.value : null,
     healthBad: health ? stateBad(health.m.sbc_health_state.value, health.m.sbc_health_state.datapoint) : null,
-    cpuPct: rnd1(maxOf(dev, 'sbc_cpu_pct')),
-    memPct: rnd1(maxOf(dev, 'sbc_mem_pct')),
+    cpuPct: pctOnly(maxOf(dev, 'sbc_cpu_pct')),
+    memPct: pctOnly(maxOf(dev, 'sbc_mem_pct')),
     fans: fans.length,
     fansBad: badOf(fans, 'sbc_fan_state'),
     psus: psus.length,
     psusBad: badOf(psus, 'sbc_psu_state'),
     tempMaxC: rnd1(maxOf(dev, 'sbc_temp_c')),
     pools: pools.length,
-    poolUtilMaxPct: rnd1(maxOf(dev, 'sbc_pool_util_pct')),
+    poolUtilMaxPct: pctOnly(maxOf(dev, 'sbc_pool_util_pct')),
     poolSessions: sumOf(dev, 'sbc_pool_sessions'),
     poolFailures: sumOf(dev, 'sbc_pool_failures'),
     retransmissions: sumOf(dev, 'sbc_retransmissions'),
@@ -314,10 +316,10 @@ function iseFacts(dev, modes = new Map()) {
   const apps = insts(dev, 'app_state');
   return {
     sessions: sumOf(dev, 'sessions'),
-    diskUsedMaxPct: rnd1(maxOf(dev, 'disk_used_pct')),
+    diskUsedMaxPct: pctOnly(maxOf(dev, 'disk_used_pct')),
     disks: disks.length,
-    cpuPct: rnd1(maxOf(dev, 'cpu_pct')),
-    memPct: rnd1(maxOf(dev, 'mem_pct')),
+    cpuPct: pctOnly(maxOf(dev, 'cpu_pct')),
+    memPct: pctOnly(maxOf(dev, 'mem_pct')),
     appStateRaw: apps.length ? apps[0].m.app_state.value : null,
     appDown: apps.some((i) => readsDown(i.m.app_state.value, modes.get('app_state'))),
     certDaysMin: certDays.length ? Math.min(...certDays) : null,
@@ -334,7 +336,7 @@ function zpaFacts(dev, modes = new Map()) {
     connectors: conns.length,
     connectorRaw: conns.length ? conns[0].m.connector_state.value : null,
     connectorDown: conns.some((i) => readsDown(i.m.connector_state.value, modes.get('connector_state'))),
-    portUsedPct: rnd1(maxOf(dev, 'port_used_pct')),
+    portUsedPct: pctOnly(maxOf(dev, 'port_used_pct')),
     ntpOffset: first(dev, 'ntp_offset'),
     ntpStateRaw: first(dev, 'ntp_state'),
   };
@@ -344,10 +346,10 @@ function zpaFacts(dev, modes = new Map()) {
 function nssFacts(dev, fsWarnPct = 85) {
   const fs = insts(dev, 'fs_used_pct');
   return {
-    cpuPct: rnd1(maxOf(dev, 'cpu_pct')),
-    memPct: rnd1(maxOf(dev, 'mem_pct')),
+    cpuPct: pctOnly(maxOf(dev, 'cpu_pct')),
+    memPct: pctOnly(maxOf(dev, 'mem_pct')),
     filesystems: fs.length,
-    fsUsedMaxPct: rnd1(maxOf(dev, 'fs_used_pct')),
+    fsUsedMaxPct: pctOnly(maxOf(dev, 'fs_used_pct')),
     fsOverWarn: fs.filter((i) => i.m.fs_used_pct.value >= fsWarnPct).length,
   };
 }

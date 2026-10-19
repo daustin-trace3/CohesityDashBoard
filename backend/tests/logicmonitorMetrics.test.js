@@ -492,6 +492,24 @@ describe('catalog version relearn', () => {
   beforeEach(() => { wipe(); });
   afterEach(() => { if (spy) spy.mockRestore(); spy = null; });
 
+  it('purges stored values written under an old pick when the catalog version changes', () => {
+    const dbh = require('../db/database');
+    const sid = insertSource({ features: JSON.stringify({ dsColumns: {}, dsUnmatched: {}, catalogVersion: 1 }) });
+    insertDevice(sid, 1);
+    const ins = dbh.prepare('INSERT INTO lm_ds_metrics (source_id, lm_device_id, hds_id, datasource_name, family, instance_key, metric, datapoint, value, sampled_at_epoch, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    // The Identity Services case: mem_pct was learned as mem_used (kilobytes), cpu_pct was right.
+    ins.run(sid, 1, 900, 'ntm_cisco_ise_memory_cpu', 'security', 'ntm_cisco_ise_memory_cpu', 'mem_pct', 'mem_used', 58637040, now(), 'x');
+    ins.run(sid, 1, 900, 'ntm_cisco_ise_memory_cpu', 'security', 'ntm_cisco_ise_memory_cpu', 'cpu_pct', 'cpu_used_percent', 1.2, now(), 'x');
+    // A DataSource the raw store has not described yet keeps its rows.
+    ins.run(sid, 1, 901, 'Cisco_ISE_ServerSessions', 'security', 'Cisco_ISE_ServerSessions', 'sessions', 'ActiveSessions', 1492, now(), 'x');
+    const dp = dbh.prepare('INSERT INTO lm_ds_datapoints (source_id, datasource_name, datapoint, devices, instances, numeric, first_seen, last_seen, catalog_metric) VALUES (?, ?, ?, 1, 1, 1, ?, ?, NULL)');
+    for (const name of ['cpu_used_percent', 'mem_used', 'mem_used_percent', 'mem_total', 'swap_used_percent', 'load_5min']) dp.run(sid, 'ntm_cisco_ise_memory_cpu', name, 'x', 'x');
+    const purged = metrics.purgeStaleMetrics(sid);
+    expect(purged).toBe(1);
+    const left = dbh.prepare('SELECT metric, datapoint FROM lm_ds_metrics WHERE source_id = ? ORDER BY metric').all(sid);
+    expect(left).toEqual([{ metric: 'cpu_pct', datapoint: 'cpu_used_percent' }, { metric: 'sessions', datapoint: 'ActiveSessions' }]);
+  });
+
   it('drops learned maps written under another catalog version and stamps the current one', async () => {
     const stale = { PaloAlto_FW_GlobalSessions: { sessions_active: 'MaxSessions' } };
     const sid = insertSource({ features: JSON.stringify({ dsColumns: stale, dsUnmatched: { PaloAlto_FW_GlobalSessions: ['ActiveSessions'] }, probedAt: 'keep' }) });

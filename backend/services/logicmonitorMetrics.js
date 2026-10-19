@@ -268,6 +268,42 @@ function markRawFailed(sourceId, hdsId, message, nowIso) {
     .run(nowIso, String(message).slice(0, 500), sourceId, hdsId);
 }
 
+// A catalog correction leaves lm_ds_metrics rows written under the old pick (the Identity
+// Services page kept showing mem_used kilobytes as a percent for hours after the fix). On
+// a version change every stored row whose datapoint is not what the corrected catalog would
+// pick from the DataSource's known datapoint list is deleted; the sweep refills the metric
+// and the pages show a dash meanwhile. DataSources whose datapoint list is unknown keep
+// their rows.
+function purgeStaleMetrics(sourceId) {
+  let purged = 0;
+  try {
+    const names = db.prepare('SELECT DISTINCT datasource_name FROM lm_ds_metrics WHERE source_id = ?').all(sourceId).map((r) => r.datasource_name);
+    const dpStmt = db.prepare('SELECT datapoint FROM lm_ds_datapoints WHERE source_id = ? AND datasource_name = ?');
+    const rowsStmt = db.prepare('SELECT id, metric, datapoint FROM lm_ds_metrics WHERE source_id = ? AND datasource_name = ?');
+    const del = db.prepare('DELETE FROM lm_ds_metrics WHERE id = ?');
+    const txn = db.transaction(() => {
+      for (const name of names) {
+        const entry = catalogFor(name);
+        const dps = dpStmt.all(sourceId, name).map((r) => r.datapoint);
+        if (entry && !dps.length) continue;
+        let learned = {};
+        if (entry) {
+          try { learned = parseDsBody({ dataPoints: dps, instances: {} }, entry).learned || {}; } catch { learned = {}; }
+        }
+        for (const r of rowsStmt.all(sourceId, name)) {
+          if (entry && learned[r.metric] && learned[r.metric] === r.datapoint) continue;
+          del.run(r.id);
+          purged += 1;
+        }
+      }
+    });
+    txn();
+  } catch (err) {
+    logger.warn(`[LmMetrics] stale metric purge skipped: ${err.message}`);
+  }
+  return purged;
+}
+
 async function pollMetrics(source) {
   const now = nowSec();
   const nowIso = new Date(now * 1000).toISOString().slice(0, 19).replace('T', ' ');
@@ -281,6 +317,8 @@ async function pollMetrics(source) {
   // them so this poll relearns with the new matchers, then stamp the version.
   if (features.catalogVersion !== CATALOG_VERSION) {
     features = mergeFeatures(source.id, { dsColumns: {}, dsUnmatched: {}, catalogVersion: CATALOG_VERSION });
+    const purged = purgeStaleMetrics(source.id);
+    if (purged) logger.info(`[LmMetrics] ${source.name}: catalog ${CATALOG_VERSION}, purged ${purged} stored value(s) written under old picks`);
   }
   const dsColumns = { ...(features.dsColumns || {}) };
   const dsUnmatched = { ...(features.dsUnmatched || {}) };
@@ -423,6 +461,7 @@ function historyFor(sourceId, deviceId, hdsId, instanceKey, metric, hours = 24) 
 }
 
 module.exports = {
+  purgeStaleMetrics,
   pollMetrics, pruneMetricsHistory, parseDsBody, latestFor, historyFor,
   // test seams
   candidateRows, matchDatapoint, instanceNameMap, rawEnabled, callCap,
