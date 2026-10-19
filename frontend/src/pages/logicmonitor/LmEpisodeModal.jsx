@@ -8,6 +8,7 @@ import client from '../../api/client';
 import { LoadingPanel, Badge } from '../../components/ui/primitives';
 import { BRAND, fmtMs, fmtPct, fmtNum, fmtWhen, fmtShortTime, toDate, chartOpts, EPISODE_STATE_TONE, EPISODE_OUTCOME_LABEL } from './helpers';
 import { Modal, Fact } from './ui';
+import { WhyBlock } from './LmEpisodeWhy';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
 
@@ -92,6 +93,7 @@ export default function LmEpisodeModal({ id, onClose }) {
               {ep.outcome && <Badge tone="neutral">{EPISODE_OUTCOME_LABEL[ep.outcome] || ep.outcome}</Badge>}
               {ep.promoteReason && <span className="text-[11px] text-ink-muted">Promoted: {ep.promoteReason}</span>}
             </div>
+            <WhyBlock why={ep.why} />
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <Fact label="Opened">{fmtWhen(ep.openedAt)}</Fact>
               <Fact label="Promoted">{ep.promotedAt ? fmtWhen(ep.promotedAt) : '-'}</Fact>

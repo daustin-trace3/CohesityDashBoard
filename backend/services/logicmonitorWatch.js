@@ -473,9 +473,78 @@ function computeReference(dbh, sourceId, t, opts = {}) {
   return { skipped: false, written };
 }
 
+// -- Plain-English reason for an episode state -----------------------------------------
+
+const numText = (v, d = 1) => (v == null || !Number.isFinite(Number(v)) ? null : String(Number(Number(v).toFixed(d))));
+
+/** Measurement lines shared by every state: peak, baseline and how many samples were elevated. */
+function measureLines(ep) {
+  const lines = [];
+  const peak = numText(ep.peak_ms);
+  const ratio = numText(ep.peak_ratio, 1);
+  const base = numText(ep.baseline_median);
+  if (ep.kind === 'loss') {
+    lines.push(`Peak loss ${numText(ep.loss_max_pct) == null ? 'unknown' : `${numText(ep.loss_max_pct)}%`}`);
+  } else if (peak != null) {
+    const against = base != null && ratio != null ? `, ${ratio}x the baseline of ${base} ms (${ep.baseline_samples == null ? 'unknown' : ep.baseline_samples} samples)` : '';
+    lines.push(`Peak ${peak} ms${against}`);
+  } else {
+    lines.push('No peak recorded yet');
+  }
+  if (ep.kind !== 'loss' && numText(ep.loss_max_pct) != null && Number(ep.loss_max_pct) > 0) lines.push(`Packet loss up to ${numText(ep.loss_max_pct)}%`);
+  lines.push(`${ep.elevated_samples == null ? 0 : ep.elevated_samples} of ${ep.samples == null ? 0 : ep.samples} samples elevated since ${ep.opened_at || 'unknown'}`);
+  return lines;
+}
+
+let whyCache = null;
+/** Current watch thresholds for the `why` text; cached 30 s so list routes do not reread settings per row. */
+function whyThresholds() {
+  const now = Date.now();
+  if (whyCache && now - whyCache.at < 30000) return whyCache.t;
+  let t = {};
+  try { t = require('./logicmonitorIssues').getThresholds(); } catch { /* defaults */ }
+  whyCache = { at: now, t };
+  return t;
+}
+
+/**
+ * Why an episode is in its state, in plain words with the numbers. Pure.
+ * ep is a lm_latency_episodes row (snake_case); t the threshold set (missing keys use the defaults).
+ * Returns { headline, lines[] }; times stay ISO strings for the page to format.
+ */
+function episodeWhy(ep, t = {}) {
+  const sustain = t.lm_watch_sustain_minutes != null ? t.lm_watch_sustain_minutes : 15;
+  const trend = t.lm_watch_trend_windows != null ? t.lm_watch_trend_windows : 3;
+  const severe = t.lm_watch_severe_ratio != null ? t.lm_watch_severe_ratio : 2;
+  const clear = t.lm_watch_clear_samples != null ? t.lm_watch_clear_samples : 3;
+  const kind = ep.kind === 'loss' ? 'packet loss' : 'latency';
+  const lines = measureLines(ep);
+  const closeRule = `Closes after ${clear} normal samples (${ep.consecutive_normal == null ? 0 : ep.consecutive_normal} so far)`;
+  if (ep.state === 'watching') {
+    lines.push(`Becomes degrading after ${sustain} min elevated, ${trend} rising windows, packet loss with latency, or two samples over ${severe}x the baseline`);
+    return { headline: `Watching: ${kind} above baseline, not yet promoted`, lines };
+  }
+  if (ep.state === 'degrading') {
+    lines.push(`Becomes critical when the location goes down or the severe condition (over ${severe}x the baseline, or critical loss) holds for ${sustain} min`);
+    lines.push(closeRule);
+    return { headline: `Degrading: ${ep.promote_reason || 'promoted'} (promoted ${ep.promoted_at || 'unknown'})`, lines };
+  }
+  if (ep.state === 'critical') {
+    if (ep.likely_hop) lines.push(`Likely hop: ${ep.likely_hop}`);
+    lines.push(closeRule);
+    return { headline: `Critical: ${ep.promote_reason || 'promoted'} (promoted ${ep.promoted_at || 'unknown'})`, lines };
+  }
+  const meaning = {
+    'one-off': 'One-off: it cleared without ever being promoted past watching.',
+    sustained: 'Sustained: it reached degrading but never critical.',
+    escalated: 'Escalated: it reached critical before it cleared.',
+  }[ep.outcome];
+  return { headline: `Closed ${ep.closed_at || 'unknown'}, outcome ${ep.outcome || 'unknown'}`, lines: [...(meaning ? [meaning] : []), ...lines.filter((l) => l.startsWith('Peak'))] };
+}
+
 // -- Summaries -----------------------------------------------------------------------
 
-function episodeView(r) {
+function episodeView(r, thresholds = null) {
   const openedEpoch = epochOf(r.opened_at);
   const end = r.state === 'closed'
     ? (r.last_elevated_epoch != null ? r.last_elevated_epoch : r.last_sample_epoch)
@@ -502,6 +571,7 @@ function episodeView(r) {
     baselineMedian: round(r.baseline_median, 1),
     likelyHop: r.likely_hop,
     promoteReason: r.promote_reason,
+    why: episodeWhy(r, thresholds || whyThresholds()),
   };
 }
 
@@ -532,7 +602,7 @@ function episodeSummary(dbh, opts = {}) {
     out.total = rows.length;
     const hopCounts = new Map();
     const durations = [];
-    const views = rows.map(episodeView);
+    const views = rows.map((r) => episodeView(r));
     for (let i = 0; i < rows.length; i += 1) {
       const r = rows[i];
       out.byState[r.state] = (out.byState[r.state] || 0) + 1;
@@ -592,7 +662,7 @@ function pruneEpisodes(dbh, days = 90) {
 
 module.exports = {
   evaluateWatch, computeWatchIssues, computeReference, episodeSummary, pruneEpisodes,
-  episodeView, isRising, typeFor, watchLines,
+  episodeView, episodeWhy, isRising, typeFor, watchLines,
   // Shared with logicmonitorWatchIpsla.js (the per-sample state machine and its persistence).
   applySample, loadEpisode, saveEpisode, closeEpisode, targetOf, isoOf, epochOf, STALE_WATCH_SECONDS,
 };

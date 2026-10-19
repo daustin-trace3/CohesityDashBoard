@@ -5,6 +5,7 @@ import { useTableControls, SortTh, TableSearch, FilterSelect, TablePager, CsvExp
 import { fmtNum, fmtMs, fmtWhen, EPISODE_STATE_TONE, EPISODE_OUTCOME_LABEL } from './helpers';
 import { SectionPanel, headRow } from './ui';
 import { WatchLegend } from './LmWatchBand';
+import { WhyHover } from './LmEpisodeWhy';
 
 const CSV = [
   { label: 'Check', get: 'checkName' }, { label: 'From', get: 'label' }, { label: 'Site', get: 'siteKey' }, { label: 'Kind', get: 'kind' },
@@ -65,7 +66,7 @@ export default function LmEpisodesTable({ rows, onOpen, chipLabel, chip = '' }) 
                     <td className="py-2 pr-3"><p className="text-ink truncate max-w-[220px]">{r.checkName}</p><p className="text-[10px] text-ink-faint">{r.kind === 'loss' ? 'packet loss' : 'latency'}{r.siteKey ? ` - ${r.siteKey}` : ''}</p></td>
                     <td className="py-2 pr-3 text-ink-muted text-[12px]">{r.label || '-'}</td>
                     <td className="py-2 pr-3">
-                      <Badge tone={EPISODE_STATE_TONE[r.state] || 'neutral'}>{r.state}</Badge>
+                      <WhyHover why={r.why}><Badge tone={EPISODE_STATE_TONE[r.state] || 'neutral'}>{r.state}</Badge></WhyHover>
                       {r.outcomeLabel && <span className="ml-1.5 text-[11px] text-ink-muted">{r.outcomeLabel}</span>}
                     </td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(r.openedAt)}</td>
