@@ -46,7 +46,7 @@ const AI_TOKEN_FIELDS = [
 const TAB_FIELDS = {
   provider: ['llmProvider', 'llmCustomEndpoint', 'llmModel'],
   context: ['llmEstateContext', 'llmFlagUnprotected', 'llmAnalysisTtlHours', 'appServiceBackupStaleHours'],
-  status: ['serviceStatusAiEnabled', 'serviceStatusAnalysesPerMinute', 'serviceStatusDedupeMinutes'],
+  status: ['serviceStatusMode', 'serviceStatusStaleMinutes', 'serviceStatusAiEnabled', 'serviceStatusAnalysesPerMinute', 'serviceStatusDedupeMinutes'],
   agent: ['agentEnabled', 'agentName', 'agentGrouping', 'agentMinSeverity', 'agentHoldMinutes', 'agentAnalysesPerHour',
     'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays'],
   email: ['agentEmailEnabled', 'agentRecipients'],
@@ -55,6 +55,7 @@ const TAB_FIELDS = {
 const DEFAULT_FORM = {
   llmProvider: 'auto', llmCustomEndpoint: '', llmModel: '',
   llmEstateContext: '', llmFlagUnprotected: false, llmAnalysisTtlHours: 24, appServiceBackupStaleHours: 24,
+  serviceStatusMode: 'platform', serviceStatusStaleMinutes: 120,
   serviceStatusAiEnabled: true, serviceStatusAnalysesPerMinute: 3, serviceStatusDedupeMinutes: 60,
   agentEnabled: false, agentName: 'ICC Operations Agent', agentGrouping: 'platform', agentMinSeverity: 'warning',
   agentHoldMinutes: 10, agentAnalysesPerHour: 20, agentRenotifyMinutes: 60, agentAutoResolveMinutes: 30,
@@ -72,6 +73,8 @@ function formFromSettings(d) {
     llmFlagUnprotected: !!d.llmFlagUnprotected,
     llmAnalysisTtlHours: d.llmAnalysisTtlHours || 24,
     appServiceBackupStaleHours: d.appServiceBackupStaleHours || 24,
+    serviceStatusMode: d.serviceStatusMode === 'alerts' ? 'alerts' : 'platform',
+    serviceStatusStaleMinutes: d.serviceStatusStaleMinutes || 120,
     serviceStatusAiEnabled: d.serviceStatusAiEnabled !== false,
     serviceStatusAnalysesPerMinute: d.serviceStatusAnalysesPerMinute || 3,
     serviceStatusDedupeMinutes: d.serviceStatusDedupeMinutes ?? 60,
@@ -105,6 +108,8 @@ function payloadFor(tab, f) {
       };
     case 'status':
       return {
+        serviceStatusMode: f.serviceStatusMode,
+        serviceStatusStaleMinutes: Number(f.serviceStatusStaleMinutes) || 120,
         serviceStatusAiEnabled: f.serviceStatusAiEnabled,
         serviceStatusAnalysesPerMinute: Number(f.serviceStatusAnalysesPerMinute) || 3,
         serviceStatusDedupeMinutes: Number(f.serviceStatusDedupeMinutes) || 0,
@@ -479,9 +484,21 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
     if (tab === 'status') {
       return (
         <TabPanel title="Service Status AI"
-          intro="Each critical alert on the Service Status page gets one AI analysis. The cap limits how many run per minute; the rest wait in a queue.">
+          intro="Sets what the Service Status page reflects. Each event on the page (an unreachable source, or a critical alert in legacy mode) gets one AI analysis; the cap limits how many run per minute and the rest wait in a queue.">
           {loading ? loadingNote : (
             <>
+              <SettingRow label="Service Status reflects" htmlFor="service-status-mode" dirty={isDirty('serviceStatusMode')}
+                tip="Platform availability only: the page states whether ICC can reach and poll each platform, as ICC sees it. An alert raised by a device or object the platform monitors belongs on that platform's Alerts page and does not move the state. The legacy option also turns open critical alerts into events and degrades the platform for them.">
+                <select id="service-status-mode" value={form.serviceStatusMode} onChange={set('serviceStatusMode')} className={`${selectCls} max-w-md`}>
+                  <option value="platform">Platform availability only</option>
+                  <option value="alerts">Availability and critical alerts (legacy)</option>
+                </select>
+              </SettingRow>
+              <SettingRow label="Stale poll after (minutes)" htmlFor="service-status-stale" dirty={isDirty('serviceStatusStaleMinutes')}
+                tip="A source whose last completed poll is older than this degrades its platform, unless its last poll already failed. Used in platform mode only. 10 to 1440, default 120.">
+                <input id="service-status-stale" type="number" min="10" max="1440" step="1" value={form.serviceStatusStaleMinutes} onChange={set('serviceStatusStaleMinutes')} className={numberCls} />
+                <p className="text-[11px] text-ink-faint mt-1">Range 10 to 1440, default 120.</p>
+              </SettingRow>
               <SettingRow label="Analyze critical alerts automatically" htmlFor="service-status-ai" dirty={isDirty('serviceStatusAiEnabled')}
                 tip="Off leaves analysis on request only: the Analyze button on an alert still works.">
                 <Toggle id="service-status-ai" checked={form.serviceStatusAiEnabled} onChange={set('serviceStatusAiEnabled')} />

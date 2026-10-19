@@ -127,6 +127,8 @@ const SEEDED_TABLES = [
   'lm_interface_daily', 'lm_interface_history', 'lm_interfaces', 'lm_device_datasources',
   'lm_alerts', 'lm_sdts', 'lm_admins', 'lm_roles', 'lm_devices', 'lm_device_groups',
   'lm_collectors', 'lm_sources',
+  // service status history written by scenarios/serviceStatusPlatform.js
+  'service_alert_analyses', 'service_alert_events', 'service_status_timeline',
 ];
 
 // Tables a parallel migration may not have created yet; a missing one is skipped.
@@ -182,6 +184,10 @@ async function main() {
   // Dell iDRAC MAC / OS hostname and the vCenter host serial + service tag join.
   const { applyHostIdentity } = require('./generators/hostIdentity');
   db.transaction(() => applyHostIdentity(db))();
+  // Service Status in platform mode: poller statuses plus a 30 day reachability history.
+  const { refreshDemoPollerStatus, seedServiceStatusHistory } = require('./scenarios/serviceStatusPlatform');
+  refreshDemoPollerStatus(db, { now });
+  const statusResult = seedServiceStatusHistory(db, { now });
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -216,6 +222,7 @@ async function main() {
     ['logicmonitor round 3 passes (sites/tiers/wan/shadows/baselines)', ['sites', 'tiers', 'wan', 'shadows', 'baselines'].map((k) => (lmResult.wp1.s1[k] ? 'yes' : 'no')).join('/')],
     ['scenario san-boot-path-down (vcenter/brocade/dell)', `${scenarioResult.vcenter.applied}/${scenarioResult.brocade.applied}/${scenarioResult.dell.applied}`],
     ['scenario app-service-linking (objects/vpgs/zerto vms)', `${linkResult.objects}/${linkResult.vpgs}/${linkResult.zertoVms}`],
+    ['service status history (timeline rows/events, degraded platform)', `${statusResult.timelineRows}/${statusResult.events}, ${statusResult.degradedPlatform || 'none'}`],
     ['users', 1],
   ];
 

@@ -125,6 +125,21 @@ if (require.main === module) {
       } catch (err) {
         logger.warn(`[Demo] logicmonitor cross-platform rows failed: ${err.message}`);
       }
+      // Service Status states whether ICC reaches each platform's sources, and
+      // nothing polls here, so stamp a fresh successful poll on every seeded
+      // source (one stays errored for the degraded story) before the first
+      // sweep and every 5 minutes after, well inside the 120 minute stale window.
+      try {
+        const db = require('./db/database');
+        const { refreshDemoPollerStatus } = require('./demo/scenarios/serviceStatusPlatform');
+        const stamp = () => {
+          try { refreshDemoPollerStatus(db); } catch (err) { logger.warn(`[Demo] poller status refresh failed: ${err.message}`); }
+        };
+        stamp();
+        setInterval(stamp, 5 * 60 * 1000).unref();
+      } catch (err) {
+        logger.warn(`[Demo] poller status refresh failed: ${err.message}`);
+      }
       // The demo's poller process idles (pollers disabled above), so the API
       // process is the only place Service Status can run its 1-minute sweep.
       initServiceStatus();

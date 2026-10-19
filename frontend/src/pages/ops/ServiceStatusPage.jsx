@@ -18,8 +18,19 @@ const STATE_META = {
   unknown: { label: 'No data', color: '#94A3B3', hint: 'No sweep recorded for this day' },
 };
 
-function stateMeta(state) {
-  return STATE_META[state] || STATE_META.unknown;
+// Platform mode (Doug, 2026-10-19): the state is ICC's own reachability of the
+// platform's sources, so the hints say that. Legacy 'alerts' mode keeps STATE_META.
+const PLATFORM_HINTS = {
+  ok: 'ICC reaches and polls every source of this platform',
+  degraded: 'ICC cannot poll some sources, or a poll has gone stale',
+  offline: 'ICC cannot reach any source of this platform',
+  unknown: 'No sources configured, or no poll yet',
+};
+
+function stateMeta(state, mode) {
+  const base = STATE_META[state] || STATE_META.unknown;
+  if (mode !== 'platform') return base;
+  return { ...base, hint: PLATFORM_HINTS[state] || PLATFORM_HINTS.unknown };
 }
 
 function StatePill({ state }) {
@@ -35,8 +46,9 @@ function StatePill({ state }) {
   );
 }
 
-function Dot({ day, onOpen }) {
-  const m = stateMeta(day.state);
+function Dot({ day, onOpen, mode }) {
+  const m = stateMeta(day.state, mode);
+  const eventWord = mode === 'platform' ? 'reachability event' : 'critical alert';
   const isToday = day.isToday;
   const clickable = day.events > 0 || day.state === 'degraded' || day.state === 'offline';
   const style = day.state === 'unknown'
@@ -47,7 +59,7 @@ function Dot({ day, onOpen }) {
       type="button"
       aria-disabled={!clickable}
       onClick={() => clickable && onOpen(day)}
-      title={`${day.date}: ${m.label}, ${day.events} critical alert${day.events === 1 ? '' : 's'}`}
+      title={`${day.date}: ${m.label}, ${day.events} ${eventWord}${day.events === 1 ? '' : 's'}`}
       className={`w-3 h-3 rounded-full flex-shrink-0 transition-transform ${clickable ? 'cursor-pointer hover:scale-125' : 'cursor-default'} ${isToday ? 'ring-2 ring-offset-1 ring-offset-cohesity-gray' : ''}`}
       style={{ ...style, ...(isToday ? { '--tw-ring-color': m.color } : {}) }}
     />
@@ -100,7 +112,7 @@ function verdictTone(event) {
   return ANALYSIS_TONE.disabled;
 }
 
-function DayEventsModal({ platform, date, onClose, onOpenAnalysis }) {
+function DayEventsModal({ platform, date, onClose, onOpenAnalysis, mode }) {
   const [events, setEvents] = useState(null);
   const [error, setError] = useState(null);
 
@@ -123,7 +135,7 @@ function DayEventsModal({ platform, date, onClose, onOpenAnalysis }) {
           <button onClick={load} className="text-xs font-semibold text-brand hover:text-brand-bright cursor-pointer">Retry</button>
         </div>
       ) : events.length === 0 ? (
-        <p className="text-xs text-ink-muted py-6 text-center">No critical alerts recorded on this day.</p>
+        <p className="text-xs text-ink-muted py-6 text-center">{mode === 'platform' ? 'No reachability events recorded on this day.' : 'No critical alerts recorded on this day.'}</p>
       ) : (
         <div className="flex flex-col gap-2.5">
           {events.map((ev) => {
@@ -309,7 +321,7 @@ function AnalysisModal({ eventId, onClose }) {
 }
 
 /* ---- Platform row ---- */
-function PlatformRow({ platform, onOpenDay }) {
+function PlatformRow({ platform, onOpenDay, mode }) {
   const cur = platform.current || { state: 'unknown' };
   const today = platform.days[platform.days.length - 1]?.date;
   return (
@@ -324,8 +336,17 @@ function PlatformRow({ platform, onOpenDay }) {
             <div className="flex items-center gap-2 flex-wrap mt-0.5">
               <StatePill state={cur.state} />
               {cur.since && <span className="text-[11px] text-ink-faint">since {timeAgo(cur.since)}</span>}
+              {mode === 'platform' && platform.alertsRoute && (
+                <Link to={platform.alertsRoute} className="text-[11px] font-semibold text-brand hover:text-brand-bright">Alerts</Link>
+              )}
             </div>
-            {(cur.openEvents > 0) && (
+            {mode === 'platform' ? (cur.sourcesPolled > 0 && (
+              <p className="text-[11px] text-ink-faint mt-0.5">
+                {cur.sourcesUnreachable > 0
+                  ? `${cur.sourcesUnreachable} of ${cur.sourcesPolled} source${cur.sourcesPolled === 1 ? '' : 's'} unreachable${cur.sourcesStale > 0 ? `, ${cur.sourcesStale} stale` : ''}`
+                  : `All ${cur.sourcesPolled} source${cur.sourcesPolled === 1 ? '' : 's'} reachable`}
+              </p>
+            )) : (cur.openEvents > 0) && (
               <p className="text-[11px] text-ink-faint mt-0.5">
                 {cur.openEvents} open critical alert{cur.openEvents === 1 ? '' : 's'}
                 {cur.sourcesUnreachable > 0 && `, ${cur.sourcesUnreachable} of ${cur.sourcesPolled} source${cur.sourcesPolled === 1 ? '' : 's'} unreachable`}
@@ -336,7 +357,7 @@ function PlatformRow({ platform, onOpenDay }) {
         </div>
         <div className="flex-1 flex items-center gap-1 flex-wrap min-w-0">
           {platform.days.map((day) => (
-            <Dot key={day.date} day={{ ...day, isToday: day.date === today }} onOpen={(d) => onOpenDay(platform, d.date)} />
+            <Dot key={day.date} day={{ ...day, isToday: day.date === today }} mode={mode} onOpen={(d) => onOpenDay(platform, d.date)} />
           ))}
         </div>
       </div>
@@ -345,11 +366,11 @@ function PlatformRow({ platform, onOpenDay }) {
 }
 
 /* ---- Legend ---- */
-function Legend() {
+function Legend({ mode }) {
   return (
     <div className="flex items-center gap-4 flex-wrap text-[11px] text-ink-muted">
       {['ok', 'degraded', 'offline', 'unknown'].map((s) => {
-        const m = stateMeta(s);
+        const m = stateMeta(s, mode);
         return (
           <span key={s} className="inline-flex items-center gap-1.5 cursor-help" title={m.hint}>
             <span
@@ -404,7 +425,9 @@ export default function ServiceStatusPage() {
       <PageHeader
         icon={HeartPulse}
         title="Service status"
-        description="Point-in-time platform state driven by critical alerts. One dot per day, today is live."
+        description={board?.mode === 'platform'
+          ? "Platform availability as ICC sees it: whether each platform's sources answer ICC's polls. Alerts from the monitored estate live on each platform's Alerts page."
+          : 'Point-in-time platform state driven by critical alerts. One dot per day, today is live.'}
       >
         <div className="flex items-center gap-1 rounded-lg border border-cohesity-border p-0.5">
           {DAY_OPTIONS.map((n) => (
@@ -423,7 +446,7 @@ export default function ServiceStatusPage() {
       </PageHeader>
 
       <div className="mb-4">
-        <Legend />
+        <Legend mode={board?.mode} />
       </div>
 
       {!board && !error ? (
@@ -438,7 +461,7 @@ export default function ServiceStatusPage() {
       ) : (
         <div className="flex flex-col gap-2.5">
           {board.platforms.map((p) => (
-            <PlatformRow key={p.id} platform={p} onOpenDay={(platform, date) => setDayModal({ platform, date })} />
+            <PlatformRow key={p.id} platform={p} mode={board.mode} onOpenDay={(platform, date) => setDayModal({ platform, date })} />
           ))}
         </div>
       )}
@@ -449,6 +472,7 @@ export default function ServiceStatusPage() {
           date={dayModal.date}
           onClose={() => setDayModal(null)}
           onOpenAnalysis={(id) => setAnalysisEventId(id)}
+          mode={board?.mode}
         />
       )}
       {analysisEventId != null && (

@@ -122,6 +122,37 @@ function gatherReachabilityItems(enabledIds) {
   return items;
 }
 
+/** Platform mode (Doug, 2026-10-19): a live source whose last completed poll is
+ *  older than the stale window and whose last status is not already 'error'
+ *  (that one is a poll: item) is a critical stale: item. A source that has
+ *  never completed a poll is not stale, it is simply not polled yet. */
+function gatherStaleItems(enabledIds, staleMinutes, nowMs = Date.now()) {
+  const items = [];
+  for (const platform of enabledIds) {
+    for (const source of polledSourcesFor(platform)) {
+      if (source.lastPollStatus === 'error' || !source.lastPollEnd) continue;
+      const endMs = Date.parse(source.lastPollEnd);
+      if (!Number.isFinite(endMs)) continue;
+      const ageMin = Math.floor((nowMs - endMs) / 60000);
+      if (ageMin <= staleMinutes) continue;
+      items.push({
+        platform,
+        sourceKey: `stale:${source.entityId}`,
+        severity: 'critical',
+        host: source.sourceName,
+        message: `No completed poll in ${ageMin} minutes (last ${source.lastPollEnd})`,
+        firstSeen: source.lastPollEnd,
+        lastSeen: source.lastPollEnd,
+      });
+    }
+  }
+  return items;
+}
+
+function getMode() {
+  return getServiceStatusSettings().serviceStatusMode;
+}
+
 function upsertEvent(item, now) {
   const severity = String(item.severity || '').toLowerCase();
   const existing = db.prepare(
@@ -157,23 +188,35 @@ function upsertEvent(item, now) {
  *  the platform, how many of those are unreachable, and how many analyses
  *  judged a host offline. Shared by recomputeStates and getBoard. */
 function summarizeOpenEvents(platform, openEvents) {
-  const unreachable = openEvents.filter((e) => e.sourceKey.startsWith('poll:')).length;
-  const offlineVerdicts = openEvents.filter((e) => !e.sourceKey.startsWith('poll:') && e.verdict === 'offline').length;
+  const stale = openEvents.filter((e) => e.sourceKey.startsWith('stale:')).length;
+  const unreachable = openEvents.filter((e) => e.sourceKey.startsWith('poll:')).length + stale;
+  const offlineVerdicts = openEvents.filter((e) => !e.sourceKey.startsWith('poll:') && !e.sourceKey.startsWith('stale:') && e.verdict === 'offline').length;
   const polled = polledSourcesFor(platform).length;
-  return { openEvents: openEvents.length, polled, unreachable, offlineVerdicts };
+  return { openEvents: openEvents.length, polled, unreachable, stale, offlineVerdicts };
 }
 
 /** Platform state (Doug, 2026-09-17): red (offline) only when ICC has lost
  *  every polled source of the platform; one unreachable source among several,
  *  or a host judged offline by its analysis, leaves the platform degraded.
  *  Per-event verdicts are untouched by this rollup. */
-function platformStateFor(summary) {
+function platformStateFor(summary, mode = getMode()) {
+  if (mode === 'platform') {
+    if (summary.polled === 0) return 'unknown';
+    if (summary.unreachable >= summary.polled) return 'offline';
+    return summary.unreachable > 0 ? 'degraded' : 'ok';
+  }
   if (summary.openEvents === 0) return 'ok';
   if (summary.unreachable > 0 && summary.unreachable >= summary.polled) return 'offline';
   return 'degraded';
 }
 
-function platformReasonFor(state, s) {
+function platformReasonFor(state, s, mode = getMode()) {
+  if (mode === 'platform') {
+    if (state === 'unknown') return 'No sources configured';
+    if (state === 'ok') return `ICC reaches all ${s.polled} source${s.polled === 1 ? '' : 's'}`;
+    if (state === 'offline') return s.polled > 1 ? `all ${s.polled} sources unreachable` : 'source unreachable';
+    return `${s.unreachable} of ${s.polled} sources unreachable${s.stale ? `, ${s.stale} stale` : ''}`;
+  }
   if (state === 'ok') return 'No open critical alerts';
   let reason = `${s.openEvents} open critical alert${s.openEvents === 1 ? '' : 's'}`;
   if (state === 'offline') {
@@ -188,6 +231,7 @@ function platformReasonFor(state, s) {
 /** Per-platform state from the open events, with a new timeline row written
  *  only when the state actually changed since the last row. */
 function recomputeStates(now, platformIds) {
+  const mode = getMode();
   for (const platform of platformIds) {
     const openEvents = db.prepare(`
       SELECT sae.id AS id, sae.source_key AS sourceKey, saa.verdict AS verdict
@@ -197,7 +241,7 @@ function recomputeStates(now, platformIds) {
     `).all(platform);
 
     const summary = summarizeOpenEvents(platform, openEvents);
-    const state = platformStateFor(summary);
+    const state = platformStateFor(summary, mode);
 
     const last = db.prepare(
       'SELECT state FROM service_status_timeline WHERE platform = ? ORDER BY at DESC, id DESC LIMIT 1'
@@ -205,7 +249,7 @@ function recomputeStates(now, platformIds) {
 
     if (last && last.state === state) continue;
 
-    const reason = platformReasonFor(state, summary);
+    const reason = platformReasonFor(state, summary, mode);
 
     db.prepare(`
       INSERT INTO service_status_timeline (platform, state, at, reason, event_ids_json)
@@ -249,22 +293,30 @@ async function sweep() {
     const now = new Date().toISOString();
     const enabledIds = getEnabledPlatformIds();
 
+    const settings = getServiceStatusSettings();
+    const platformMode = settings.serviceStatusMode === 'platform';
     let items = [];
     let failed = [];
-    try {
-      ({ items = [], failed = [] } = collectorFn() || {});
-    } catch (err) {
-      logger.error('[ServiceStatus] collector threw:', err.message);
+    // Platform mode never calls the alert collector. Alert events that were
+    // open under the legacy mode are no longer seen, so the clearing loop below
+    // closes them on the first platform-mode sweep.
+    if (!platformMode) {
+      try {
+        ({ items = [], failed = [] } = collectorFn() || {});
+      } catch (err) {
+        logger.error('[ServiceStatus] collector threw:', err.message);
+      }
     }
 
     const reachability = gatherReachabilityItems(enabledIds);
+    const staleItems = platformMode ? gatherStaleItems(enabledIds, settings.serviceStatusStaleMinutes) : [];
     let appItems = [];
     try {
       appItems = appSvc.collectItems(now);
     } catch (err) {
       logger.error('[ServiceStatus] app service evaluation failed:', err.message);
     }
-    const allItems = [...items, ...reachability, ...appItems];
+    const allItems = [...items, ...reachability, ...staleItems, ...appItems];
 
     db.transaction(() => {
       const seen = new Set();
@@ -284,8 +336,8 @@ async function sweep() {
         // A reachability event whose source is gone from its table clears for
         // that reason, not because the source came back; say so in the label
         // that past-day modals will keep showing.
-        if (ev.sourceKey.startsWith('poll:') && SOURCE_TABLES[ev.platform]) {
-          const entityId = Number(ev.sourceKey.slice(5));
+        if (/^(poll|stale):/.test(ev.sourceKey) && SOURCE_TABLES[ev.platform]) {
+          const entityId = Number(ev.sourceKey.slice(ev.sourceKey.indexOf(':') + 1));
           if (!sourceRowFor(ev.platform, entityId)) {
             db.prepare(`
               UPDATE service_alert_events
@@ -635,6 +687,9 @@ function deriveVerdict(event, evidence) {
   const sourceKey = event?.source_key || event?.sourceKey || evidence?.alert?.sourceKey || '';
   if (String(sourceKey).startsWith('poll:')) {
     return { verdict: 'offline', reason: 'ICC could not reach the source on its last poll', confidence: 'high' };
+  }
+  if (String(sourceKey).startsWith('stale:')) {
+    return { verdict: 'degraded', reason: 'No poll of this source has completed inside the stale window', confidence: 'medium' };
   }
 
   const platform = event?.platform || evidence?.alert?.platform;
@@ -1006,7 +1061,7 @@ const EVENT_SELECT = `
 
 function shapeEventRow(row) {
   const meta = platformMeta(row.platform);
-  const isPoll = row.source_key.startsWith('poll:');
+  const isPoll = row.source_key.startsWith('poll:') || row.source_key.startsWith('stale:');
   const hostTerm = isPoll ? '' : String(row.host || '').split(' (')[0].trim();
   const alertLink = isPoll
     ? meta.route
@@ -1126,6 +1181,7 @@ function getBoard({ days = 30 } = {}) {
     current.openEvents = summary.openEvents;
     current.sourcesPolled = summary.polled;
     current.sourcesUnreachable = summary.unreachable;
+    current.sourcesStale = summary.stale;
     current.openOffline = summary.offlineVerdicts;
 
     return { id, label: meta.label, color: meta.color, route: meta.route, alertsRoute: meta.alertsRoute, current, days: dayRows };
@@ -1134,7 +1190,7 @@ function getBoard({ days = 30 } = {}) {
   // Polling happens in the poller process; if that is not alive, nothing on
   // this board moves no matter what the platforms are doing.
   const worker = require('./workerHeartbeat').readHeartbeat();
-  return { generatedAt: new Date().toISOString(), days: dayStrings, platforms, worker };
+  return { generatedAt: new Date().toISOString(), mode: getMode(), days: dayStrings, platforms, worker };
 }
 
 let intervalHandle = null;
@@ -1170,6 +1226,7 @@ module.exports = {
   isCriticalSeverity,
   gatherEvidence,
   gatherReachabilityItems,
+  gatherStaleItems,
   getEnabledPlatformIds,
   polledSourcesFor,
   sourceRowFor,

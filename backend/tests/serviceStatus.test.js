@@ -74,6 +74,10 @@ beforeEach(() => {
   setSetting('llm_custom_endpoint', '');
   setSetting('service_status_analyses_per_minute', '3');
   setSetting('service_status_dedupe_minutes', '60');
+  // The suites below exercise the alert-event pipeline, which is the legacy
+  // 'alerts' mode; the 'platform mode' suite switches back to the default.
+  setSetting('service_status_mode', 'alerts');
+  setSetting('service_status_stale_minutes', '120');
   svc._resetTestSeams();
 });
 
@@ -588,5 +592,134 @@ describe('cross-platform evidence (SAN path down)', () => {
     expect(evidence.hostRecords.some((r) => r.platform === 'vcenter' && r.up === false)).toBe(true);
     // The host is judged offline, but Dell's own OME source still answers, so the platform is degraded.
     expect(lastTimeline('dell').state).toBe('degraded');
+  });
+});
+
+
+describe('platform mode (default)', () => {
+  beforeEach(() => { setSetting('service_status_mode', 'platform'); });
+
+  function addOme(id, name) {
+    db.prepare(`
+      INSERT INTO dell_ome_instances (id, name, host, username, encrypted_credentials)
+      VALUES (?, ?, ?, 'admin', 'enc')
+    `).run(id, name, `${name}.corp.local`);
+  }
+  function endedMinutesAgo(type, id, minutes, status = 'success') {
+    const at = new Date(Date.now() - minutes * 60000).toISOString();
+    db.prepare(`
+      INSERT INTO poller_status (type, entity_id, last_poll_end, last_poll_status, is_syncing)
+      VALUES (?, ?, ?, ?, 0)
+      ON CONFLICT(type, entity_id) DO UPDATE SET last_poll_end = excluded.last_poll_end, last_poll_status = excluded.last_poll_status
+    `).run(type, id, at, status);
+  }
+
+  it('the stored default is platform', () => {
+    db.prepare("DELETE FROM app_settings WHERE key = 'service_status_mode'").run();
+    expect(require('../services/settings').getServiceStatusSettings().serviceStatusMode).toBe('platform');
+  });
+
+  it('a critical platform alert raises no event and leaves the platform ok', async () => {
+    addOme(1, 'ome-a');
+    pollerStatus.markEnd('dell', 1, 'success');
+    let called = 0;
+    svc._setCollector(() => { called += 1; return { items: [makeItem('dell', { sourceKey: 'crit-1' })], failed: [] }; });
+    await svc.sweep();
+
+    expect(called).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) c FROM service_alert_events WHERE platform = 'dell'").get().c).toBe(0);
+    expect(lastTimeline('dell').state).toBe('ok');
+    expect(lastTimeline('dell').reason).toBe('ICC reaches all 1 source');
+    const board = svc.getBoard({ days: 7 });
+    expect(board.mode).toBe('platform');
+    expect(board.platforms.find((p) => p.id === 'dell').current).toMatchObject({ state: 'ok', sourcesPolled: 1, sourcesUnreachable: 0, sourcesStale: 0 });
+  });
+
+  it('alert events left open from the legacy mode are cleared on the first platform sweep', async () => {
+    addOme(1, 'ome-a');
+    pollerStatus.markEnd('dell', 1, 'success');
+    setSetting('service_status_mode', 'alerts');
+    svc._setCollector(() => ({ items: [makeItem('dell', { sourceKey: 'crit-1' })], failed: [] }));
+    await svc.sweep();
+    expect(openEvents('dell')).toHaveLength(1);
+    expect(lastTimeline('dell').state).toBe('degraded');
+
+    setSetting('service_status_mode', 'platform');
+    await svc.sweep();
+    expect(openEvents('dell')).toHaveLength(0);
+    expect(lastTimeline('dell').state).toBe('ok');
+  });
+
+  it('one errored source of two is degraded; both errored is offline', async () => {
+    addOme(1, 'ome-a');
+    addOme(2, 'ome-b');
+    pollerStatus.markEnd('dell', 1, 'error');
+    pollerStatus.markEnd('dell', 2, 'success');
+    await svc.sweep();
+    expect(lastTimeline('dell').state).toBe('degraded');
+    expect(lastTimeline('dell').reason).toBe('1 of 2 sources unreachable');
+
+    pollerStatus.markEnd('dell', 2, 'error');
+    await svc.sweep();
+    expect(lastTimeline('dell').state).toBe('offline');
+    expect(lastTimeline('dell').reason).toBe('all 2 sources unreachable');
+  });
+
+  it('a stale source is degraded with a stale: event and the stale count; a fresh poll clears it', async () => {
+    addOme(1, 'ome-a');
+    addOme(2, 'ome-b');
+    endedMinutesAgo('dell', 1, 300);
+    endedMinutesAgo('dell', 2, 5);
+    await svc.sweep();
+
+    const ev = db.prepare("SELECT * FROM service_alert_events WHERE platform = 'dell' AND cleared_at IS NULL").all();
+    expect(ev.map((e) => e.source_key)).toEqual(['stale:1']);
+    expect(ev[0].host).toBe('ome-a');
+    expect(ev[0].message).toMatch(/^No completed poll in 300 minutes \(last /);
+    expect(lastTimeline('dell').state).toBe('degraded');
+    expect(lastTimeline('dell').reason).toBe('1 of 2 sources unreachable, 1 stale');
+    expect(svc.getBoard({ days: 7 }).platforms.find((p) => p.id === 'dell').current).toMatchObject({ sourcesStale: 1, sourcesUnreachable: 1 });
+
+    endedMinutesAgo('dell', 1, 1);
+    await svc.sweep();
+    expect(openEvents('dell')).toHaveLength(0);
+    expect(lastTimeline('dell').state).toBe('ok');
+  });
+
+  it('the stale window comes from service_status_stale_minutes and an errored source is not also stale', async () => {
+    addOme(1, 'ome-a');
+    endedMinutesAgo('dell', 1, 30);
+    await svc.sweep();
+    expect(lastTimeline('dell').state).toBe('ok');
+
+    setSetting('service_status_stale_minutes', '10');
+    await svc.sweep();
+    expect(openEvents('dell').map((e) => e.source_key)).toEqual(['stale:1']);
+    expect(lastTimeline('dell').state).toBe('offline');
+
+    endedMinutesAgo('dell', 1, 30, 'error');
+    await svc.sweep();
+    expect(openEvents('dell').map((e) => e.source_key)).toEqual(['poll:1']);
+  });
+
+  it('zero polled sources is unknown', async () => {
+    await svc.sweep();
+    expect(lastTimeline('dell').state).toBe('unknown');
+    expect(lastTimeline('dell').reason).toBe('No sources configured');
+  });
+
+  it('switching to alerts restores the legacy behaviour', async () => {
+    addOme(1, 'ome-a');
+    pollerStatus.markEnd('dell', 1, 'success');
+    svc._setCollector(() => ({ items: [makeItem('dell', { sourceKey: 'crit-1' })], failed: [] }));
+    await svc.sweep();
+    expect(lastTimeline('dell').state).toBe('ok');
+
+    setSetting('service_status_mode', 'alerts');
+    await svc.sweep();
+    expect(openEvents('dell')).toHaveLength(1);
+    expect(lastTimeline('dell').state).toBe('degraded');
+    expect(lastTimeline('dell').reason).toBe('1 open critical alert');
+    expect(svc.getBoard({ days: 7 }).mode).toBe('alerts');
   });
 });

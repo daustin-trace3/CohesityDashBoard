@@ -100,6 +100,8 @@ const DEFAULTS = {
   service_status_ai_enabled: '1',
   service_status_analyses_per_minute: '3',
   service_status_dedupe_minutes: '60',
+  service_status_mode: 'platform',
+  service_status_stale_minutes: '120',
 };
 
 function getSetting(key) {
@@ -291,7 +293,10 @@ function getServiceStatusSettings() {
   const perMinute = Number(getSetting('service_status_analyses_per_minute'));
   const dedupe = Number(getSetting('service_status_dedupe_minutes'));
   const staleHours = Number(getSetting('app_service_backup_stale_hours'));
+  const staleMin = Number(getSetting('service_status_stale_minutes'));
   return {
+    serviceStatusMode: getSetting('service_status_mode') === 'alerts' ? 'alerts' : 'platform',
+    serviceStatusStaleMinutes: (staleMin >= 10 && staleMin <= 1440) ? Math.round(staleMin) : 120,
     serviceStatusAiEnabled: getSetting('service_status_ai_enabled') !== '0',
     serviceStatusAnalysesPerMinute: (perMinute >= 1 && perMinute <= 30) ? Math.round(perMinute) : 3,
     serviceStatusDedupeMinutes: (dedupe >= 0 && dedupe <= 1440) ? Math.round(dedupe) : 60,
