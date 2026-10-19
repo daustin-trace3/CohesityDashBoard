@@ -84,6 +84,8 @@ export default function Layout() {
   }, []);
   // Vendor-platform fleet summary, loaded only while a platform (Pure/NetApp) is active.
   const [platformCount, setPlatformCount] = useState(0);
+  // Monitored-object count for platforms whose count is sources (LogicMonitor devices, EON resources); null elsewhere.
+  const [platformObjects, setPlatformObjects] = useState(null);
   const [platformAlerts, setPlatformAlerts] = useState(0);
   const [platformHealthy, setPlatformHealthy] = useState(0);
   const [platformAlertList, setPlatformAlertList] = useState([]);
@@ -421,8 +423,9 @@ export default function Layout() {
           : proxmox ? (r.data?.totals?.guests || 0)
           : brocade ? (r.data?.fabrics?.total || 0)
           : bluecat ? (r.data?.counts?.networks || 0)
-          : logicmonitor ? (r.data?.totals?.devices || 0)
+          : logicmonitor ? (r.data?.sources || []).length
           : rows.length);
+        setPlatformObjects(logicmonitor ? (r.data?.totals?.devices ?? null) : null);
         const now = Date.now();
         if (zerto) {
           setPlatformHealthy(rows.filter(s => s.connection_status === 'Connected').length);
@@ -532,7 +535,7 @@ export default function Layout() {
     .filter(group => group.items.length > 0);
 
   // Sidebar footer status — per-node health on a platform, API reachability elsewhere.
-  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isNetbackup ? 'server' : isAws ? 'instance' : isProxmox ? 'guest' : isBrocade ? 'fabric' : isBluecat ? 'network' : isLogicmonitor ? 'device' : 'array';
+  const noun = isNetapp ? 'cluster' : isZerto ? 'site' : isVcenter ? 'host' : isDell ? 'device' : isAria ? 'instance' : isAriaOps ? 'resource' : isNetbackup ? 'server' : isAws ? 'instance' : isProxmox ? 'guest' : isBrocade ? 'fabric' : isBluecat ? 'network' : isLogicmonitor ? 'portal' : 'array';
   const platformAllOk = platformCount > 0 && platformHealthy === platformCount;
   const footerOk = isPlatform ? platformAllOk : apiOnline;
   const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
@@ -628,7 +631,9 @@ export default function Layout() {
                   {isOps
                     ? `${opsTotals?.platforms ?? 0} platform${opsTotals?.platforms === 1 ? '' : 's'} monitored`
                     : isPlatform
-                    ? `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''} monitored`
+                    ? (platformObjects != null && isLogicmonitor
+                      ? `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''}, ${platformObjects} device${platformObjects !== 1 ? 's' : ''} in LogicMonitor`
+                      : `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''} monitored`)
                     : `${clusterCount} cluster${clusterCount !== 1 ? 's' : ''} monitored`}
                 </p>
                 {newestCapture && <LastUpdated date={newestCapture} prefix="Data" />}
@@ -672,7 +677,7 @@ export default function Layout() {
             <span className="chip bg-surface-overlay border-cohesity-border text-ink-muted hidden lg:inline-flex tnum flex-shrink-0">
               {isPlatform ? <HardDrive size={11} className="text-brand" /> : <Server size={11} className="text-brand" />}
               {isPlatform
-                ? `${platformCount} ${platformLabel}${platformCount !== 1 ? 's' : ''}`
+                ? `${platformObjects ?? platformCount} ${platformLabel}${(platformObjects ?? platformCount) !== 1 ? 's' : ''}`
                 : `${clusterCount} Cohesity Cluster${clusterCount !== 1 ? 's' : ''}`}
             </span>
             )}
