@@ -3,7 +3,8 @@
 // page fade-in creates a containing block (cohesity-dashboard-ui-gotchas).
 import { createPortal } from 'react-dom';
 import { X, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from 'lucide-react';
-import { BRAND, fmtNum } from './helpers';
+import { BRAND, fmtNum, fmtPct } from './helpers';
+import { InfoTip } from '../../components/settings/SettingRow';
 
 export const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 export const sel = 'bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-2 text-xs text-ink outline-none cursor-pointer';
@@ -116,6 +117,14 @@ export function Fact({ label, children }) {
   );
 }
 
+// A percent cell: a value outside 0..100 is not a percent (a wrong catalog pick), so show a dash with the reason.
+export const pctInRange = (v) => v != null && Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 100;
+export function PctValue({ v, digits = 0 }) {
+  if (v == null || !Number.isFinite(Number(v))) return <>{fmtPct(v, digits)}</>;
+  if (!pctInRange(v)) return <span title="not a percent, check the catalog pick">-</span>;
+  return <>{fmtPct(v, digits)}</>;
+}
+
 export function UtilBar({ pct }) {
   if (pct == null || !Number.isFinite(Number(pct))) return <span className="text-ink-faint text-[11px]">-</span>;
   const v = Math.max(0, Math.min(100, Number(pct)));
@@ -125,5 +134,22 @@ export function UtilBar({ pct }) {
       <div className="h-1.5 flex-1 rounded-full bg-surface-overlay overflow-hidden"><div className={`h-full ${tone}`} style={{ width: `${v}%` }} /></div>
       <span className="text-[11px] tnum text-ink w-9 text-right">{Math.round(v)}%</span>
     </div>
+  );
+}
+
+// SortTh from the table kit plus an info tip beside the label (a tip cannot
+// live inside the sort button, buttons do not nest).
+export function SortThTip({ k, label, ctl, tip, align = 'left' }) {
+  const active = ctl.sortKey === k;
+  return (
+    <th className={`py-2 pr-3 ${align === 'right' ? 'text-right' : 'text-left'}`}>
+      <span className="inline-flex items-center gap-1">
+        <button onClick={() => ctl.toggleSort(k)}
+          className={`inline-flex items-center gap-1 uppercase tracking-wide cursor-pointer transition-colors hover:text-ink ${active ? 'text-ink' : ''}`}>
+          {label}{active && (ctl.sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+        </button>
+        <InfoTip label={typeof label === 'string' ? label : undefined}>{tip}</InfoTip>
+      </span>
+    </th>
   );
 }

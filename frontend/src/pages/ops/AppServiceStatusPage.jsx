@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
 import { Layers, Sparkles, X, ChevronDown, ChevronRight, Search, Plus, Trash2, Upload } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
@@ -220,6 +221,79 @@ function StorageSection({ storage }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ---- Network summary: the sites the servers sit in, single-switch and unresolved notes ---- */
+const CIRCUIT_RANK = { ok: 0, warning: 1, critical: 2 };
+function worstCircuit(circuits) {
+  return circuits.reduce((acc, c) => ((CIRCUIT_RANK[c.state] || 0) > (CIRCUIT_RANK[acc] || 0) ? c.state : acc), 'ok');
+}
+function circuitTone(state) {
+  return state === 'critical' ? 'text-status-crit' : state === 'warning' ? 'text-status-warn' : 'text-ink-muted';
+}
+function episodeText(e) {
+  const parts = [];
+  if (e.critical) parts.push(`${e.critical} critical`);
+  if (e.degrading) parts.push(`${e.degrading} degrading`);
+  if (e.watching) parts.push(`${e.watching} watching`);
+  return parts.length ? parts.join(', ') : '-';
+}
+
+function NetworkSitesSection({ summary }) {
+  const sites = Array.isArray(summary?.sites) ? summary.sites : [];
+  const single = Array.isArray(summary?.singleSwitchServers) ? summary.singleSwitchServers : [];
+  const unresolved = summary?.unresolvedServers || 0;
+  if (!sites.length && !single.length && !unresolved) return null;
+  return (
+    <div className="flex flex-col gap-2 overflow-x-auto">
+      {sites.length > 0 && (
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-ink-faint">
+              <th className="font-medium pb-1.5 pr-2">Site</th>
+              <th className="font-medium pb-1.5 pr-2">Servers</th>
+              <th className="font-medium pb-1.5 pr-2">State</th>
+              <th className="font-medium pb-1.5 pr-2">Circuits</th>
+              <th className="font-medium pb-1.5 pr-2">Open episodes</th>
+              <th className="font-medium pb-1.5">Collector</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sites.map((st) => {
+              const circuits = Array.isArray(st.circuits) ? st.circuits : [];
+              const worstC = worstCircuit(circuits);
+              const eps = st.openEpisodes || {};
+              return (
+                <tr key={st.siteKey} className="border-t border-cohesity-border/60">
+                  <td className="py-1.5 pr-2">
+                    <Link to={`/logicmonitor/sites?site=${encodeURIComponent(st.siteKey)}`} className="text-brand hover:underline">{st.siteName || st.siteKey}</Link>
+                    {st.deadNetworkDevices > 0 && <span className="text-status-crit ml-1.5">{st.deadNetworkDevices} dead network device{st.deadNetworkDevices === 1 ? '' : 's'}</span>}
+                  </td>
+                  <td className="py-1.5 pr-2 text-ink-muted tnum">{st.servers}</td>
+                  <td className="py-1.5 pr-2"><StatePill state={st.state} /></td>
+                  <td className="py-1.5 pr-2">
+                    {circuits.length
+                      ? <span className={circuitTone(worstC)}>{worstC === 'ok' ? 'OK' : worstC === 'critical' ? 'Critical' : 'Warning'}<span className="text-ink-faint"> ({circuits.length} circuit{circuits.length === 1 ? '' : 's'})</span></span>
+                      : <span className="text-ink-faint">-</span>}
+                  </td>
+                  <td className={`py-1.5 pr-2 ${eps.critical ? 'text-status-crit' : eps.degrading ? 'text-status-warn' : 'text-ink-muted'}`}>{episodeText(eps)}</td>
+                  <td className="py-1.5">
+                    {st.collectorsDown > 0 ? <span className="text-status-crit">{st.collectorsDown} down</span> : <span className="text-ink-faint">-</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {single.length > 0 && (
+        <p className="text-[11px] text-ink-muted">Single switch: {single.slice(0, 6).join(', ')}{single.length > 6 ? `, +${single.length - 6} more` : ''} depend on one switch each.</p>
+      )}
+      {unresolved > 0 && (
+        <p className="text-[11px] text-ink-muted">{unresolved} server{unresolved === 1 ? ' has' : 's have'} no switch path in LogicMonitor.</p>
+      )}
     </div>
   );
 }
@@ -446,13 +520,17 @@ function buildSections(detail) {
       body: <IssuesFirst items={storage} render={(rows) => <StorageSection storage={rows} />} />,
     });
   }
-  if (netPorts.length || netChecks.length) {
+  const netSummary = detail.networkSummary || {};
+  const netSites = Array.isArray(netSummary.sites) ? netSummary.sites : [];
+  if (netPorts.length || netChecks.length || netSites.length) {
     const bad = netPorts.filter((n) => n.state !== 'ok').length + netChecks.filter((n) => n.state !== 'ok').length;
+    const siteStates = netSites.map((st) => (st.state === 'critical' ? 'degraded' : st.state));
     out.push({
-      key: 'network', title: 'Network', state: worstState([...netPorts, ...netChecks].map((n) => n.state)),
-      summary: `${netPorts.length} switch port${netPorts.length === 1 ? '' : 's'}${netChecks.length ? `, ${netChecks.length} reachability check${netChecks.length === 1 ? '' : 's'}` : ''}${bad ? `, ${bad} with issues` : ''}`,
+      key: 'network', title: 'Network', state: worstState([...netPorts, ...netChecks].map((n) => n.state).concat(siteStates)),
+      summary: `${netPorts.length} switch port${netPorts.length === 1 ? '' : 's'}${netChecks.length ? `, ${netChecks.length} reachability check${netChecks.length === 1 ? '' : 's'}` : ''}${bad ? `, ${bad} with issues` : ''}${netSites.length ? `, ${netSites.length} site${netSites.length === 1 ? '' : 's'}` : ''}`,
       body: (
         <div className="flex flex-col gap-2">
+          <NetworkSitesSection summary={netSummary} />
           {netPorts.length > 0 && <IssuesFirst items={netPorts} render={(rows) => <NetworkSection ports={rows} checks={[]} />} />}
           {netChecks.length > 0 && <IssuesFirst items={netChecks} render={(rows) => <NetworkSection ports={[]} checks={rows} />} />}
         </div>

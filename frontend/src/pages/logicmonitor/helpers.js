@@ -268,6 +268,13 @@ export const ISSUE_TYPE_LABELS = {
   'app-service-down': 'Application service down',
   'app-capacity-high': 'Application capacity high',
   'app-queue-high': 'Application queue high',
+  // Round 12 (raw rules and uncovered datapoints).
+  'raw-threshold': 'Raw datapoint threshold',
+  'device-ping-loss': 'Ping loss',
+  'ntp-unsynced': 'NTP not synchronised',
+  'stack-member-degraded': 'Stack member degraded',
+  'device-rebooted': 'Device rebooted',
+  'filesystem-inaccessible': 'Filesystem inaccessible',
 };
 export const issueTypeLabel = (t) => ISSUE_TYPE_LABELS[t] || t;
 

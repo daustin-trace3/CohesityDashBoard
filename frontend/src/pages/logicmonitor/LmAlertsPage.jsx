@@ -119,6 +119,7 @@ export default function LmAlertsPage() {
   };
 
   const dsNames = datasources.map((d) => d.name);
+  const dsCounts = Object.fromEntries(datasources.map((d) => [d.name, d.count]));
   const dsOptions = datasource && !dsNames.includes(datasource) ? [datasource, ...dsNames] : dsNames;
 
   return (
@@ -129,50 +130,44 @@ export default function LmAlertsPage() {
       </PageHeader>
 
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <div className="flex flex-wrap items-center gap-1.5 mb-3">
-          <button onClick={() => setParam('severity', '')} className={chipBtn(!severity)}>All open</button>
-          {SEVERITIES.map(([k, l]) => (
-            <button key={k} onClick={() => setParam('severity', severity === k ? '' : k)} className={chipBtn(severity === k)}>
-              {l} <span className="tnum opacity-80">{fmtNum(counts[k] || 0)}</span>
-            </button>
-          ))}
-          <button onClick={() => setParam('acked', acked === '1' ? '' : '1')} className={chipBtn(acked === '1')}>Acked <span className="tnum opacity-80">{fmtNum(counts.acked || 0)}</span></button>
-          {(duplicates.total > 0 || duplicate === '1') && (
-            <button
-              onClick={() => setParam('duplicate', duplicate === '1' ? '' : '1')}
-              className={chipBtn(duplicate === '1')}
-              title={duplicates.byPlatform.length
-                ? `Relays of feeds ICC already polls directly, kept out of the counts and the Ops Agent: ${duplicates.byPlatform.map((p) => `${p.label} ${p.count}`).join(', ')}`
-                : 'Alerts that relay a feed ICC already polls directly'}
-            >
-              Duplicates <span className="tnum opacity-80">{fmtNum(duplicates.total || 0)}</span>
-            </button>
-          )}
-          <span className="text-[11px] text-ink-faint ml-1">In SDT: {fmtNum(counts.sdted || 0)} (counts are over the open set)</span>
-        </div>
-        {datasources.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 mb-3">
-            <span className="text-[10px] uppercase tracking-wide text-ink-faint mr-1">Open alerts by DataSource</span>
-            {datasources.map((d) => (
-              <button key={d.name} onClick={() => setParam('datasource', datasource === d.name ? '' : d.name)} className={chipBtn(datasource === d.name)} title={d.name}>
-                <span className="truncate max-w-[200px] inline-block align-bottom">{d.name}</span> <span className="tnum opacity-80">{fmtNum(d.count || 0)}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="flex flex-wrap items-center gap-2 mb-2">
           <input value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} placeholder="Search resource, instance or datapoint..." className={`${inp} flex-1 min-w-[200px]`} spellCheck={false} />
-          <select value={cleared} onChange={(e) => setParam('cleared', e.target.value === '0' ? '' : e.target.value)} className={sel}>
+          <select value={severity} onChange={(e) => setParam('severity', e.target.value)} className={sel} aria-label="Severity">
+            <option value="">{`All open (${fmtNum(counts.total ?? ((counts.critical || 0) + (counts.warning || 0) + (counts.info || 0)))})`}</option>
+            {SEVERITIES.map(([k, l]) => <option key={k} value={k}>{`${l} (${fmtNum(counts[k] || 0)})`}</option>)}
+          </select>
+          <select value={cleared} onChange={(e) => setParam('cleared', e.target.value === '0' ? '' : e.target.value)} className={sel} aria-label="State">
             <option value="0">Open</option>
             <option value="1">Cleared</option>
             <option value="all">Open and cleared</option>
           </select>
-          <select value={datasource} onChange={(e) => setParam('datasource', e.target.value)} className={sel}>
+          <select value={acked} onChange={(e) => setParam('acked', e.target.value)} className={sel} aria-label="Acked">
+            <option value="">Any ack state</option>
+            <option value="1">{`Acked (${fmtNum(counts.acked || 0)})`}</option>
+            <option value="0">Unacked</option>
+          </select>
+          {(duplicates.total > 0 || duplicate === '1' || duplicate === 'all') && (
+            <select
+              value={duplicate}
+              onChange={(e) => setParam('duplicate', e.target.value)}
+              className={sel}
+              aria-label="Relays"
+              title={duplicates.byPlatform.length
+                ? `Relays of feeds ICC already polls directly, kept out of the counts and the Ops Agent: ${duplicates.byPlatform.map((p) => `${p.label} ${p.count}`).join(', ')}`
+                : 'Alerts that relay a feed ICC already polls directly'}
+            >
+              <option value="">Hide relays</option>
+              <option value="1">{`Only relays (${fmtNum(duplicates.total || 0)})`}</option>
+              <option value="all">Include relays</option>
+            </select>
+          )}
+          <select value={datasource} onChange={(e) => setParam('datasource', e.target.value)} className={sel} aria-label="DataSource">
             <option value="">All DataSources</option>
-            {dsOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+            {dsOptions.map((d) => <option key={d} value={d}>{dsCounts[d] != null ? `${d} (${fmtNum(dsCounts[d])})` : d}</option>)}
           </select>
           {deviceId && <button onClick={() => setParam('deviceId', '')} className={chipBtn(true)}>Device {deviceId} x</button>}
         </div>
+        <p className="text-[11px] text-ink-faint mb-3">In SDT: {fmtNum(counts.sdted || 0)} (counts are over the open set)</p>
 
         {rows == null ? <LoadingPanel label="Loading alerts..." height={200} /> : rows.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">No alerts match.</div>

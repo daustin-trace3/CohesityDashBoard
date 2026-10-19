@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Eye } from 'lucide-react';
 import { Badge } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableSearch, FilterSelect, TablePager, CsvExportButton } from '../../components/ui/tableTools';
 import { fmtNum, fmtMs, fmtWhen, EPISODE_STATE_TONE, EPISODE_OUTCOME_LABEL } from './helpers';
 import { SectionPanel, headRow } from './ui';
+import { WatchLegend } from './LmWatchBand';
 
 const CSV = [
   { label: 'Check', get: 'checkName' }, { label: 'From', get: 'label' }, { label: 'Site', get: 'siteKey' }, { label: 'Kind', get: 'kind' },
@@ -14,14 +15,29 @@ const CSV = [
 
 // Episodes (GET /watch/episodes) in the shared table kit. `rows` is already
 // narrowed by the band chip; search and the two dropdowns narrow further.
-export default function LmEpisodesTable({ rows, onOpen, chipLabel }) {
-  const list = useMemo(() => (rows || []).map((r) => ({ ...r, outcomeLabel: r.outcome ? (EPISODE_OUTCOME_LABEL[r.outcome] || r.outcome) : '' })), [rows]);
+export default function LmEpisodesTable({ rows, onOpen, chipLabel, chip = '' }) {
+  const [showClosed, setShowClosed] = useState(false);
+  const closedChip = chip === 'oneoff' || chip === 'repeating';
+  useEffect(() => { setShowClosed(false); }, [chip]);
+  const closedCount = useMemo(() => (rows || []).filter((r) => r.state === 'closed').length, [rows]);
+  const includeClosed = showClosed || closedChip;
+  const list = useMemo(() => (rows || []).filter((r) => includeClosed || r.state !== 'closed').map((r) => ({ ...r, outcomeLabel: r.outcome ? (EPISODE_OUTCOME_LABEL[r.outcome] || r.outcome) : '' })), [rows, includeClosed]);
   const ctl = useTableControls(list, {
     searchKeys: ['checkName', 'label', 'siteKey', 'likelyHop'], defaultSortKey: 'openedAt', defaultSortDir: 'desc', paginate: true, defaultPageSize: 10, deepLink: false,
   });
   return (
-    <SectionPanel icon={Eye} title="Latency Episodes"
-      right={<CsvExportButton filename="lm-latency-episodes" rows={ctl.rows} columns={CSV} />}
+    <SectionPanel icon={Eye} title={<span className="inline-flex items-center gap-1.5">Latency Episodes <WatchLegend /></span>}
+      right={(
+        <span className="flex items-center gap-2">
+          {!closedChip && (
+            <button type="button" onClick={() => setShowClosed((v) => !v)} data-testid="toggle-closed"
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40">
+              {showClosed ? 'Hide closed' : `Show closed (${fmtNum(closedCount)})`}
+            </button>
+          )}
+          <CsvExportButton filename="lm-latency-episodes" rows={ctl.rows} columns={CSV} />
+        </span>
+      )}
       blurb={`Every stretch where a check location ran above its hour-of-day baseline, last 7 days. A spike that clears on its own is a one-off and raises nothing; one that lasts, climbs or is severe becomes an issue.${chipLabel ? ` Showing: ${chipLabel}.` : ''}`}>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <TableSearch ctl={ctl} placeholder="Search check, location, site or hop..." />

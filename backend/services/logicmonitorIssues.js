@@ -72,6 +72,9 @@ const THRESHOLD_DEFS = {
   lm_watch_drift_crit_pct: { def: 50, min: 10, max: 400, label: 'Baseline drift warning (%)' },
   lm_watch_reference_days: { def: 28, min: 14, max: 90, label: 'Drift reference window (days)' },
   lm_issue_clear_absences: { def: 2, min: 1, max: 10, label: 'Polls an anomaly must be absent before its issue clears' },
+  // Round 12: carrier aliases for circuit labels and operator-defined raw datapoint rules.
+  lm_carrier_aliases: { type: 'text', def: '', maxLength: 2000, label: 'Carrier aliases (token=Carrier, comma list)' },
+  lm_raw_rules: { type: 'text', def: '[]', maxLength: 20000, label: 'Raw datapoint rules (JSON)' },
 };
 
 /** Text settings (site roots, WAN overrides): a trimmed string, capped. */
@@ -156,10 +159,30 @@ const tunnelIsDown = (v) => v != null && Math.round(v) === 0;
 // (active) on a healthy switch too; 2 is cefcModuleOperStatus ok.
 const NEXUS_HEALTHY = [1, 2, 5, 9, 14];
 const HEALTHY_STATES = { sup_state: NEXUS_HEALTHY, sup1_state: NEXUS_HEALTHY, sup2_state: NEXUS_HEALTHY, linecard_state: NEXUS_HEALTHY };
-const stateIsFault = (v, metric = null) => v != null && !(HEALTHY_STATES[metric] || [1, 5]).includes(Math.round(v));
+// Round 12: a metric named *_alarm is a flag, 0 = fine and 1 or more = alarm (Palo Alto power and temperature).
+const isAlarmMetric = (metric) => typeof metric === 'string' && /_alarm$/.test(metric);
+const stateIsFault = (v, metric = null) => {
+  if (v == null) return false;
+  if (isAlarmMetric(metric)) return Math.round(v) >= 1;
+  return !(HEALTHY_STATES[metric] || [1, 5]).includes(Math.round(v));
+};
+// stack_member_state has its own rule (stack-member-degraded: cswSwitchState 4 ready is the healthy value).
 const HW_STATE_LABELS = {
   psu_state: 'power supply', fan_state: 'fan', temp_state: 'temperature sensor',
-  linecard_state: 'line card', sup_state: 'supervisor', stack_member_state: 'stack member',
+  linecard_state: 'line card', sup_state: 'supervisor',
+  psu_low_alarm: 'power supply low alarm', psu_high_alarm: 'power supply high alarm', temp_alarm: 'temperature alarm',
+};
+
+// cswSwitchState (Cisco stack member state) and cswSwitchRole.
+const STACK_STATE_TEXT = { 1: 'waiting', 2: 'progressing', 3: 'added', 4: 'ready', 5: 'sdmMismatch', 6: 'verMismatch', 7: 'featureMismatch', 8: 'newMasterInit', 9: 'provisioned', 10: 'invalid', 11: 'removed' };
+const stackStateText = (v) => (v == null ? null : (STACK_STATE_TEXT[Math.round(v)] || String(Math.round(v))));
+const STACK_HEALTHY = [4, 9];
+const STACK_ROLE_TEXT = { 1: 'master', 2: 'member', 3: 'notMember', 4: 'standby' };
+const stackRoleText = (v) => (v == null ? null : (STACK_ROLE_TEXT[Math.round(v)] || String(Math.round(v))));
+
+const fmtUptime = (sec) => {
+  const mins = Math.floor(sec / 60);
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 };
 
 /**
@@ -335,6 +358,8 @@ const METRIC_ISSUE_TYPES = [
   'fw-ha-degraded', 'fw-tunnel-down', 'fw-session-high', 'fw-config-unsynced',
   'lb-failover-degraded', 'lb-pool-degraded', 'lb-cert-expiring', 'lb-daemon-down',
   'device-cpu-high', 'device-memory-high', 'hardware-fault', 'bgp-peer-down', 'ospf-neighbor-down', 'optic-power-low',
+  // Round 12
+  'device-ping-loss', 'ntp-unsynced', 'stack-member-degraded', 'device-rebooted', 'filesystem-inaccessible', 'raw-threshold',
   'cloud-circuit-down', 'cloud-circuit-saturated',
   ...WIRELESS_ISSUE_TYPES,
 ];
@@ -418,6 +443,10 @@ function computeMetricIssues(dbh, t, srcName) {
   if (!index.size) return issues;
   const push = (dev, severity, type, target, message) => issues.push({ severity, type, source: srcName.get(dev.sourceId), target, message });
   const missingAps = loadMissingAps(dbh);
+  let deadDevices = new Set();
+  try {
+    deadDevices = new Set(dbh.prepare("SELECT source_id, lm_device_id FROM lm_devices WHERE stale = 0 AND host_status = 'dead'").all().map((r) => r.source_id + ':' + r.lm_device_id));
+  } catch { /* no device table: nothing is dead */ }
 
   // F5 pairs: devices with a failover state, grouped by site.
   const failoverBySite = new Map();
@@ -533,6 +562,43 @@ function computeMetricIssues(dbh, t, srcName) {
       push(dev, 'warning', 'device-memory-high', name, `${name} memory at ${fmtNum(mem.value)}% (threshold ${t.lm_mem_warn_pct}%)`);
     }
 
+    // Round 12: ping loss, NTP, stack members, reboots, inaccessible filesystems.
+    if (!suppressed) {
+      const loss = devMax(dev, 'ping_loss_pct');
+      if (pctOk(loss) && loss.value > 0 && loss.value >= t.lm_check_loss_min_pct && !deadDevices.has(dev.sourceId + ':' + dev.deviceId)) {
+        const rtt = devVal(dev, 'ping_rtt_ms');
+        push(dev, loss.value >= t.lm_check_loss_crit_pct ? 'critical' : 'warning', 'device-ping-loss', name,
+          `${name} loses ${fmtNum(loss.value)}% of its pings${rtt != null ? ` (average round trip ${fmtNum(rtt)} ms)` : ''}`);
+      }
+      for (const i of devInstances(dev, 'ntp_synced')) {
+        if (Math.round(i.m.ntp_synced.value) === 0) {
+          const st = i.m.ntp_stratum ? i.m.ntp_stratum.value : null;
+          push(dev, 'warning', 'ntp-unsynced', name, `NTP is not synchronised on ${name}${st != null ? ` (stratum ${fmtNum(st)})` : ''}`);
+          break;
+        }
+      }
+      for (const i of devInstances(dev, 'stack_member_state')) {
+        const v = Math.round(i.m.stack_member_state.value);
+        if (!STACK_HEALTHY.includes(v)) {
+          const role = i.m.stack_role ? stackRoleText(i.m.stack_role.value) : null;
+          push(dev, 'warning', 'stack-member-degraded', `${name} ${i.name}`,
+            `Stack member ${i.name} on ${name} is ${stackStateText(v)} (state ${v}, ready is 4)${role ? `, role ${role}` : ''}`);
+        }
+      }
+      for (const i of devInstances(dev, 'fs_not_accessible')) {
+        if (Math.round(i.m.fs_not_accessible.value) === 1) {
+          push(dev, 'warning', 'filesystem-inaccessible', `${name} ${i.name}`, `Filesystem ${i.name} on ${name} is not accessible`);
+        }
+      }
+    }
+    // A device that is also dead gets device-dead, not a reboot notice.
+    if (!suppressed && !deadDevices.has(dev.sourceId + ':' + dev.deviceId)) {
+      const up = devMax(dev, 'uptime_s');
+      if (up && up.value >= 0 && up.value < 86400) {
+        push(dev, 'info', 'device-rebooted', name, `${name} rebooted: up for ${fmtUptime(up.value)}`);
+      }
+    }
+
     // Hardware components; more than 5 faults on one device fold into one issue.
     if (!suppressed) {
       const faults = [];
@@ -547,8 +613,10 @@ function computeMetricIssues(dbh, t, srcName) {
           `${faults.length} hardware components report a fault on ${name} (${faults.slice(0, 3).map((f) => f.i.name).join(', ')}, ...)`);
       } else {
         for (const f of faults) {
+          const label = HW_STATE_LABELS[f.metric][0].toUpperCase() + HW_STATE_LABELS[f.metric].slice(1);
           push(dev, 'warning', 'hardware-fault', `${name} ${f.i.name}`,
-            `${HW_STATE_LABELS[f.metric][0].toUpperCase()}${HW_STATE_LABELS[f.metric].slice(1)} ${f.i.name} on ${name} reports state ${fmtNum(f.v)} (expected 1 = ok)`);
+            isAlarmMetric(f.metric) ? `${label} is set on ${f.i.name} of ${name} (value ${fmtNum(f.v)}, 0 = fine)`
+              : `${label} ${f.i.name} on ${name} reports state ${fmtNum(f.v)} (expected 1 = ok)`);
         }
       }
     }
@@ -850,6 +918,11 @@ function computeIssues({ nowMs = Date.now() } = {}) {
   try {
     issues.push(...computeMetricIssues(db, t, srcName));
   } catch { /* a metric rule fault must not hide the other issues */ }
+
+  // Round 12: operator-defined raw datapoint rules (lm_raw_rules).
+  try {
+    issues.push(...require('./logicmonitorRawRules').rawRuleIssues(db, t, srcName, getTextSetting('lm_raw_rules')));
+  } catch { /* a raw rule fault must not hide the other issues */ }
 
   const order = { critical: 0, warning: 1, info: 2 };
   return issues.sort((a, b) => order[a.severity] - order[b.severity]);

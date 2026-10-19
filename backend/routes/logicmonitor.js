@@ -1895,7 +1895,11 @@ function buildSites({ sourceId = null, siteKey = null } = {}) {
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY s.site_name, s.source_id
   `).all(...args);
   if (!sites.length) return [];
-  const devices = db.prepare('SELECT source_id, lm_device_id, site_key, host_status, is_network FROM lm_devices WHERE stale = 0 AND site_key IS NOT NULL').all();
+  const devices = db.prepare('SELECT source_id, lm_device_id, site_key, host_status, is_network, collector_id FROM lm_devices WHERE stale = 0 AND site_key IS NOT NULL').all();
+  // Round 12: every collector (sited or not) so a site can name the collectors that poll its devices.
+  const allCollectors = new Map(db.prepare('SELECT source_id, collector_id, hostname, description, is_down, site_key FROM lm_collectors WHERE stale = 0').all()
+    .map((c) => [`${c.source_id}:${c.collector_id}`, c]));
+  const siteNames = new Map(sites.map((x) => [`${x.source_id}:${x.site_key}`, x.site_name || x.site_key]));
   const ifDown = new Map(db.prepare(`
     SELECT source_id, lm_device_id, COUNT(*) n FROM lm_interfaces
     WHERE stale = 0 AND status_text = 'down' AND COALESCE(stop_monitoring, 0) = 0 GROUP BY source_id, lm_device_id
@@ -1950,8 +1954,23 @@ function buildSites({ sourceId = null, siteKey = null } = {}) {
       state = worseOf(state, ls.severity);
       reachabilityOut.push({ checkName: l.checkName, fromLabel: l.label, state: ls.state, rttAvgMs: l.rttAvgMs, lossPct: l.lossPct, anomaly: l.anomaly || null });
     }
+    const polling = new Map();
+    for (const d of devs) {
+      if (d.collector_id == null) continue;
+      polling.set(d.collector_id, (polling.get(d.collector_id) || 0) + 1);
+    }
+    const pollingCollectors = [...polling.entries()].map(([id, n]) => {
+      if (id < 0) return { id, hostname: 'LogicMonitor cloud', siteKey: null, siteName: null, isDown: false, devices: n };
+      const c = allCollectors.get(`${st.source_id}:${id}`);
+      return {
+        id, hostname: c ? (c.hostname || c.description || `collector ${id}`) : `collector ${id}`,
+        siteKey: c ? (c.site_key || null) : null, siteName: c && c.site_key ? (siteNames.get(`${st.source_id}:${c.site_key}`) || c.site_key) : null,
+        isDown: !!c && Number(c.is_down) === 1, devices: n,
+      };
+    }).sort((a, b) => b.devices - a.devices || String(a.hostname).localeCompare(String(b.hostname)));
     return {
       siteKey: st.site_key, siteName: st.site_name || st.site_key, source: st.source_name, sourceId: st.source_id,
+      pollingCollectors,
       deviceCount: devs.length, networkCount: devs.filter((d) => Number(d.is_network) === 1).length,
       devicesDead: dead.length,
       interfacesDown: devs.reduce((n, d) => n + (ifDown.get(`${d.source_id}:${d.lm_device_id}`) || 0), 0),
@@ -2038,6 +2057,49 @@ router.get('/circuits', [
       return res.json({ items: rows, cloud });
     }
     res.json(rows);
+  } catch (err) { next(err); }
+});
+
+// Round 12: WAN circuits whose carrier could not be read, so the settings panel can offer aliases.
+// /circuits stays a bare array; the list lives here.
+router.get('/circuits/unknown-carriers', (req, res, next) => {
+  try {
+    res.json(lmPath().circuitRows(db).filter((r) => !r.carrier).slice(0, 200)
+      .map((r) => ({ deviceName: r.deviceName, port: r.port, label: r.label })));
+  } catch (err) { next(err); }
+});
+
+// ---- Raw datapoint rules (round 12) -----------------------------------------
+// Rules live in the text setting lm_raw_rules; every save re-evaluates the issues so the Issues page
+// shows the result without waiting for the next tick.
+
+const lmRawRules = () => require('../services/logicmonitorRawRules');
+
+router.get('/raw-rules', (req, res, next) => {
+  try { res.json({ rules: lmRawRules().parseRules(lmIssues().getTextSetting('lm_raw_rules')) }); } catch (err) { next(err); }
+});
+
+router.put('/raw-rules', (req, res, next) => {
+  try {
+    const v = lmRawRules().validateRules(req.body && req.body.rules);
+    if (v.error) return res.status(400).json({ error: v.error });
+    const text = JSON.stringify(v.rules);
+    if (text.length > defs().lm_raw_rules.maxLength) return res.status(400).json({ error: 'the rules are too large to store' });
+    setSetting('lm_raw_rules', text);
+    let issues = null;
+    try {
+      lmIssues().reconcileIssueHistory();
+      issues = db.prepare("SELECT COUNT(*) n FROM lm_issue_history WHERE type = 'raw-threshold' AND status = 'open'").get().n;
+    } catch { /* the next tick will reconcile */ }
+    res.json({ rules: v.rules, raw_threshold_issues: issues });
+  } catch (err) { next(err); }
+});
+
+router.post('/raw-rules/preview', (req, res, next) => {
+  try {
+    const out = lmRawRules().previewRule(db, req.body && req.body.rule);
+    if (out.error) return res.status(400).json({ error: out.error });
+    res.json(out);
   } catch (err) { next(err); }
 });
 
@@ -2140,8 +2202,9 @@ function discoveryReport() {
     return [['system', p.system], ['auto', p.auto], ['custom', p.custom]];
   });
   const cov = { interfaces: ifRows.length, withDescription: 0, withAlias: 0, withCircuitId: 0, wan: 0, wanWithCircuitId: 0, circuitIdSources: {} };
+  const covAliases = lmPath().loadCarrierAliases();
   for (const r of ifRows) {
-    const ci = lmPath().circuitInfo(r.description, r.props_json);
+    const ci = lmPath().circuitInfo(r.description, r.props_json, covAliases);
     if (r.description) cov.withDescription += 1;
     if (ci.alias) cov.withAlias += 1;
     if (Number(r.is_wan) === 1) cov.wan += 1;
@@ -2176,6 +2239,15 @@ function discoveryReport() {
   })();
   // Round 11: raw DataSource ingestion state.
   try { out.raw = lmRaw().rawSummary(db, require('../services/logicmonitorMetrics')); } catch { out.raw = { enabled: false, callsPerTick: 0, candidates: 0, sweptLast24h: 0, values: 0, datapoints: 0, coveragePct: null, estSweepHours: null }; }
+  // Round 12: DataSource-level coverage next to the datapoint figure (coveragePct stays the datapoint one).
+  try {
+    const dsAgg = db.prepare(`
+      SELECT COUNT(*) total, SUM(CASE WHEN picks > 0 THEN 1 ELSE 0 END) catalogued FROM (
+        SELECT datasource_name, SUM(CASE WHEN catalog_metric IS NOT NULL THEN 1 ELSE 0 END) picks FROM lm_ds_datapoints GROUP BY datasource_name
+      )`).get();
+    out.raw.datasourcesTotal = dsAgg.total || 0;
+    out.raw.datasourcesCatalogued = dsAgg.catalogued || 0;
+  } catch { out.raw.datasourcesTotal = null; out.raw.datasourcesCatalogued = null; }
   // Round 10: LogicMonitor's own neighbour discovery (predef.externalResourceID) and how much of it resolved.
   try { out.eri = lmEri().eriSummary(db); } catch { out.eri = { interfacesWithEri: 0, cdpTokens: 0, lldpTokens: 0, resolved: 0, unresolved: 0 }; }
   out.devicesWithoutDatasourceInventory = db.prepare(`
@@ -2711,7 +2783,8 @@ router.get('/issue-history', [query('days').optional().isInt({ min: 1, max: 90 }
 const TREND_RANGES = { '24h': 24, '7d': 168, '30d': 720 };
 router.get('/trends', [query('range').optional().isIn(Object.keys(TREND_RANGES))], validate, (req, res, next) => {
   try {
-    const hours = TREND_RANGES[req.query.range || '24h'];
+    const range = req.query.range || '7d';
+    const hours = TREND_RANGES[range];
     // One row per poll tick summed across portals (minute resolution), then
     // thinned to <= 200 points keeping the last row of each bucket (point in
     // time, not an average).
@@ -2731,7 +2804,10 @@ router.get('/trends', [query('range').optional().isIn(Object.keys(TREND_RANGES))
     // Metrics carry critical, error and warning columns; the route vocabulary
     // is critical | warning | info, so error counts as warning (severity 3)
     // and alertsInfo is not stored per tick (null).
+    let extra = {};
+    try { extra = require('../services/logicmonitorTrends').getTrends(db, range); } catch (err) { extra = { range, daily: null, movers: null }; }
     res.json({
+      range: extra.range, daily: extra.daily, movers: extra.movers,
       points: picked.slice(-200).map((r) => ({
         at: sqlIso(r.at), devicesNormal: r.dn, devicesDead: r.dd, devicesDeadCollector: r.ddc,
         interfacesUp: r.iu, interfacesDown: r.idn, alertsCritical: r.ac, alertsWarning: r.aw + r.ae, alertsInfo: null,
@@ -3102,6 +3178,8 @@ const devBase = (r, lk) => {
 // ---- Firewalls ---------------------------------------------------------------
 
 const fwBool = (v) => (v == null ? null : Math.round(v) === 1);
+// Round 12: a percent outside 0..100 is a wrong catalog pick, never shown as a number.
+const pctOnly = (v) => (v == null || !Number.isFinite(Number(v)) || v < 0 || v > 100 ? null : rnd1(v));
 
 function firewallRow(r, lk, dev, issues, rates) {
   const L = lmIssues();
@@ -3140,10 +3218,10 @@ function firewallRow(r, lk, dev, issues, rates) {
     haText: !hasData || (haLocalRaw == null && haPeerRaw == null) ? null : (haOn ? `${haLocal || 'n/a'} / ${haPeer || 'n/a'}` : 'off'),
     sessionsActive: act,
     sessionsMax: max,
-    sessionsUtilPct: rnd1(util),
-    dataplaneCpuPct: core ? rnd1(core.value) : null,
-    mgmtCpuPct: rnd1(mgmt),
-    memPct: rnd1(mem),
+    sessionsUtilPct: pctOnly(util),
+    dataplaneCpuPct: core ? pctOnly(core.value) : null,
+    mgmtCpuPct: pctOnly(mgmt),
+    memPct: pctOnly(mem),
     tunnelsUp: tUp,
     tunnelsDown: tDown,
     gpUsers: L.devVal(dv, 'gp_users_active'),
@@ -3225,7 +3303,11 @@ router.get('/firewalls/:deviceId', deviceParams, validate, (req, res, next) => {
     const logForwarding = rowsOf(dev, 'log_forwarded').map((i) => ({ name: i.name, forwarded: num(i, 'log_forwarded'), dropped: num(i, 'log_dropped') })).sort(byKey);
     const hardware = {
       disks: rowsOf(dev, 'disk_used_pct').map((i) => ({ name: i.name, usedPct: rnd1(num(i, 'disk_used_pct')) })).sort(byKey),
-      psus: rowsOf(dev, 'psu_state').map((i) => ({ name: i.name, state: num(i, 'psu_state'), ok: !L.stateIsFault(num(i, 'psu_state')) })).sort(byKey),
+      psus: [...new Map([...rowsOf(dev, 'psu_state'), ...rowsOf(dev, 'psu_low_alarm'), ...rowsOf(dev, 'psu_high_alarm')].map((i) => [i.name, i])).values()].map((i) => {
+        const alarm = (num(i, 'psu_low_alarm') || 0) + (num(i, 'psu_high_alarm') || 0);
+        const st = num(i, 'psu_state');
+        return { name: i.name, state: st != null ? st : alarm, ok: !(L.stateIsFault(st) || alarm >= 1), voltage: rnd1(num(i, 'cur_voltage')) };
+      }).sort(byKey),
       temps: rowsOf(dev, 'temp_c').map((i) => ({ name: i.name, tempC: rnd1(num(i, 'temp_c')), alarm: i.m.temp_alarm ? Math.round(i.m.temp_alarm.value) !== 0 : null })).sort(byKey),
       chassisWatts: L.devVal(dev, 'chassis_watts'),
     };
@@ -3284,8 +3366,8 @@ function lbRow(r, lk, dev, issues, certWarn) {
     failoverState: foRaw == null ? null : Math.round(foRaw),
     failoverText: foRaw == null ? null : L.failoverText(foRaw),
     syncState: enumText(SYNC_TEXT, syncRaw),
-    cpuPct: rnd1(L.devVal(dv, 'cpu_pct')),
-    memPct: rnd1(L.devVal(dv, 'mem_pct') ?? L.devVal(dv, 'host_mem_pct')),
+    cpuPct: pctOnly(L.devVal(dv, 'cpu_pct')),
+    memPct: pctOnly(L.devVal(dv, 'mem_pct') ?? L.devVal(dv, 'host_mem_pct')),
     clientConnections: L.devVal(dv, 'client_connections'),
     serverConnections: L.devVal(dv, 'server_connections'),
     pools: pools.size,
@@ -3370,10 +3452,19 @@ router.get('/load-balancers/:deviceId', [...deviceParams, query('page').optional
       psus: rowsOf(dev, 'psu_state').map((i) => ({ name: i.name, state: num(i, 'psu_state'), ok: !L.stateIsFault(num(i, 'psu_state')) })).sort(byName),
       temps: rowsOf(dev, 'temp_c').concat(rowsOf(dev, 'f5os_temp_c')).map((i) => ({ name: i.name, tempC: rnd1(num(i, 'temp_c') ?? num(i, 'f5os_temp_c')) })).sort(byName),
       filesystems: rowsOf(dev, 'fs_used_pct').map((i) => ({ name: i.name, usedPct: rnd1(num(i, 'fs_used_pct')) })).sort(byName),
-      tmmMemPct: rnd1(L.devVal(dev, 'tmm_mem_pct')),
-      hostMemPct: rnd1(L.devVal(dev, 'host_mem_pct')),
+      tmmMemPct: pctOnly(L.devVal(dev, 'tmm_mem_pct')),
+      // F5_BigIP_Memory carries byte counts only (RealMemTotal, RealMemAvailable), so the host
+      // percent is derived when the pick is absent.
+      hostMemPct: pctOnly(L.devVal(dev, 'host_mem_pct') ?? (() => {
+        const total = L.devVal(dev, 'mem_total_bytes');
+        const avail = L.devVal(dev, 'mem_avail_bytes');
+        return total > 0 && avail != null ? (100 * (1 - avail / total)) : null;
+      })()),
     };
-    const interfaces = rowsOf(dev, 'if_status').map((i) => ({ name: i.name, status: num(i, 'if_status'), inBps: num(i, 'if_in_bps'), outBps: num(i, 'if_out_bps') })).sort(byName);
+    // Round 12: F5_BigIP_Interfaces has no status datapoint and reports bytes per second; bps = bytes x 8.
+    const bitsOf = (v) => (v == null ? null : Math.round(v * 8));
+    const interfaces = [...new Map([...rowsOf(dev, 'if_status'), ...rowsOf(dev, 'if_in_bytes')].map((i) => [i.name, i])).values()]
+      .map((i) => ({ name: i.name, status: num(i, 'if_status'), inBps: num(i, 'if_in_bps') ?? bitsOf(num(i, 'if_in_bytes')), outBps: num(i, 'if_out_bps') ?? bitsOf(num(i, 'if_out_bytes')) })).sort(byName);
     res.json({
       device: deviceOut(r, lk),
       summary,

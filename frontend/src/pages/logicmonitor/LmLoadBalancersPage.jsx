@@ -6,9 +6,9 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableSearch, FilterSelect, TablePager } from '../../components/ui/tableTools';
 import {
-  BRAND, DASH, arr, fmtNum, fmtPct, stateTone, stateLabel, stateRank, downloadCsv, useVisibleInterval,
+  BRAND, DASH, arr, fmtNum, stateTone, stateLabel, stateRank, downloadCsv, useVisibleInterval,
 } from './helpers';
-import { headRow, chipBtn } from './ui';
+import { PctValue, pctInRange, headRow, chipBtn } from './ui';
 import LmLoadBalancer360 from './LmLoadBalancer360';
 import { num } from './LmFirewall360';
 
@@ -148,8 +148,8 @@ export default function LmLoadBalancersPage() {
                       <td className="py-2 pr-3 text-ink-muted text-[12px]">{r.siteLabel || DASH}</td>
                       <td className="py-2 pr-3"><Badge tone={failoverTone(r.failoverText)}>{r.failoverText || 'Unknown'}</Badge></td>
                       <td className="py-2 pr-3 text-ink-muted text-[12px]">{r.syncState ?? DASH}</td>
-                      <td className={`py-2 pr-3 text-right tnum ${cpuCls(r.cpuPct)}`}>{fmtPct(r.cpuPct)}</td>
-                      <td className={`py-2 pr-3 text-right tnum ${num(r.memPct) >= 90 ? 'text-status-warn' : 'text-ink-muted'}`}>{fmtPct(r.memPct)}</td>
+                      <td className={`py-2 pr-3 text-right tnum ${cpuCls(pctInRange(r.cpuPct) ? r.cpuPct : null)}`}><PctValue v={r.cpuPct} /></td>
+                      <td className={`py-2 pr-3 text-right tnum ${(pctInRange(r.memPct) && num(r.memPct) >= 90) ? 'text-status-warn' : 'text-ink-muted'}`}><PctValue v={r.memPct} /></td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(r.clientConnections)}</td>
                       <td className="py-2 pr-3 text-right text-[12px]"><Frac bad={r.poolsDegraded} total={r.pools} /></td>
                       <td className="py-2 pr-3 text-right text-[12px]"><Frac bad={r.membersDown} total={r.membersTotal} /></td>

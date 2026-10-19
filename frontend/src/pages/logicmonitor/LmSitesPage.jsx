@@ -11,7 +11,7 @@ import {
   BRAND, arr, fmtNum, fmtPct, fmtMs, fmtWhen, hostStatusTone, hostStatusLabel, severityTone, titleCase,
   stateTone, stateLabel, stateRank, worstState, blameText, useVisibleInterval,
 } from './helpers';
-import { Modal, Tabs, Fact, headRow } from './ui';
+import { Modal, Tabs, Fact, headRow, SortThTip } from './ui';
 import EndpointsTable from './endpointsTable';
 import LmDevice360 from './LmDevice360';
 
@@ -27,6 +27,33 @@ function circuitSummary(circuits) {
   const worst = worstState(list.map((c) => c.state));
   const p95 = Math.max(...list.map((c) => Math.max(Number(c.p95InPct) || 0, Number(c.p95OutPct) || 0)));
   return { state: worst, p95 };
+}
+
+function collectorName(c, siteKey) {
+  if (c.id != null && Number(c.id) < 0) return <span className="text-ink-muted">LogicMonitor cloud</span>;
+  return (
+    <span className={c.isDown ? 'text-status-crit' : 'text-ink-muted'}>
+      {c.hostname}
+      {c.isDown ? ' (down)' : ''}
+      {c.siteKey && c.siteKey !== siteKey ? <span className="text-ink-faint"> (remote)</span> : null}
+    </span>
+  );
+}
+
+function CollectorCell({ site }) {
+  const polling = arr(site.pollingCollectors);
+  if (polling.length) {
+    const shown = polling.slice(0, 2);
+    return (
+      <div className="flex flex-col">
+        {shown.map((c) => <span key={c.id} className="truncate max-w-[200px]" title={c.hostname}>{collectorName(c, site.siteKey)}</span>)}
+        {polling.length > shown.length ? <span className="text-[10px] text-ink-faint">{`and ${polling.length - shown.length} more`}</span> : null}
+      </div>
+    );
+  }
+  const own = arr(site.collectors);
+  if (!own.length) return <span className="text-ink-faint">-</span>;
+  return <span className={site.collectorsDown ? 'text-status-crit' : 'text-ink-muted'}>{site.collectorsDown ? `${site.collectorsDown} down` : 'Up'}</span>;
 }
 
 function ReachList({ rows, empty }) {
@@ -122,6 +149,7 @@ function SiteModal({ siteKey, onClose }) {
             <Fact label="Network devices">{fmtNum(data.networkCount)}</Fact>
             <Fact label="Servers">{fmtNum(data.servers)}</Fact>
             <Fact label="Collectors">{arr(data.collectors).map((c) => `${c.hostname}${c.isDown ? ' (down)' : ''}`).join(', ') || '-'}</Fact>
+            <Fact label="Polled by">{arr(data.pollingCollectors).map((c) => `${c.hostname}${c.isDown ? ' (down)' : ''} x${fmtNum(c.devices)}`).join(', ') || '-'}</Fact>
             <Fact label="Circuits">{circuits.length ? `${circuits.length}` : '-'}</Fact>
             <Fact label="Site key">{data.siteKey || siteKey}</Fact>
           </div>
@@ -295,8 +323,9 @@ export default function LmSitesPage() {
       circuitState: cs.state,
       circuitRank: stateRank(cs.state),
       circuitP95: cs.p95,
-      collectorsDown: collectors.filter((c) => c.isDown).length,
-      collectorLabel: collectors.map((c) => c.hostname).join(', '),
+      collectorsDown: (arr(s.pollingCollectors).length ? arr(s.pollingCollectors) : collectors).filter((c) => c.isDown).length,
+      collectorLabel: (arr(s.pollingCollectors).length ? arr(s.pollingCollectors) : collectors).map((c) => c.hostname).join(', '),
+      polling: arr(s.pollingCollectors),
       reachInState: worstState(arr(s.reachabilityIn).map((r) => r.state)),
       reachOutState: worstState(arr(s.reachabilityOut).map((r) => r.state)),
     };
@@ -350,9 +379,9 @@ export default function LmSitesPage() {
                   <SortTh k="devicesDead" label="Dead" ctl={ctl} align="right" />
                   <SortTh k="interfacesDown" label="Ifaces down" ctl={ctl} align="right" />
                   <SortTh k="circuitRank" label="Circuits" ctl={ctl} />
-                  <SortTh k="collectorsDown" label="Collector" ctl={ctl} />
-                  <SortTh k="reachInState" label="Reach in" ctl={ctl} />
-                  <SortTh k="reachOutState" label="Reach out" ctl={ctl} />
+                  <SortThTip k="collectorsDown" label="Collector" ctl={ctl} tip="The collector that polls this site's devices. Remote means it sits at another site." />
+                  <SortThTip k="reachInState" label="Reach in" ctl={ctl} tip="Checks whose target is a device at this site, worst location" />
+                  <SortThTip k="reachOutState" label="Reach out" ctl={ctl} tip="Internal checks run from a collector at this site" />
                 </tr></thead>
                 <tbody>
                   {ctl.pageRows.map((s) => (
@@ -363,7 +392,7 @@ export default function LmSitesPage() {
                       <td className={`py-2 pr-3 text-right tnum ${s.devicesDead ? 'text-status-crit' : 'text-ink-faint'}`}>{fmtNum(s.devicesDead)}</td>
                       <td className={`py-2 pr-3 text-right tnum ${s.interfacesDown ? 'text-status-warn' : 'text-ink-faint'}`}>{fmtNum(s.interfacesDown)}</td>
                       <td className="py-2 pr-3">{s.circuitState ? <><StateBadge state={s.circuitState} /><p className="text-[10px] text-ink-faint tnum">p95 {fmtPct(s.circuitP95)}</p></> : <span className="text-[11px] text-ink-faint">-</span>}</td>
-                      <td className="py-2 pr-3 text-[12px]">{arr(s.collectors).length ? <span className={s.collectorsDown ? 'text-status-crit' : 'text-ink-muted'}>{s.collectorsDown ? `${s.collectorsDown} down` : 'Up'}</span> : <span className="text-ink-faint">-</span>}</td>
+                      <td className="py-2 pr-3 text-[12px]"><CollectorCell site={s} /></td>
                       <td className="py-2 pr-3">{s.reachInState ? <StateBadge state={s.reachInState} /> : <span className="text-[11px] text-ink-faint">-</span>}</td>
                       <td className="py-2 pr-3">{s.reachOutState ? <StateBadge state={s.reachOutState} /> : <span className="text-[11px] text-ink-faint">-</span>}</td>
                     </tr>

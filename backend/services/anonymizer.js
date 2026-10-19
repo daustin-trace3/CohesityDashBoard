@@ -306,6 +306,14 @@ function loadDictionary() {
     }
   } catch { /* LogicMonitor tables not present on this instance */ }
 
+  // App Services (usage-id groups): operator-chosen app labels, catalog names and the usage ids
+  // travel in the daily brief, recovery readiness and network dependency reports.
+  try {
+    add(db.prepare("SELECT DISTINCT label AS name FROM app_service_watch WHERE label IS NOT NULL AND label != ''").all(), 'TAG');
+    add(db.prepare("SELECT DISTINCT display_id AS name FROM app_service_watch WHERE display_id IS NOT NULL AND display_id != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT name FROM app_service_catalog WHERE name IS NOT NULL AND name != ''").all(), 'TAG');
+  } catch { /* App Services tables not present on this instance */ }
+
   return entries;
 }
 

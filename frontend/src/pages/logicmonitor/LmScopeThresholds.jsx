@@ -3,7 +3,8 @@ import { FolderTree } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { LoadingPanel } from '../../components/ui/primitives';
-import { fmtNum } from './helpers';
+import { InfoTip } from '../../components/settings/SettingRow';
+import { fmtNum, fmtWhen } from './helpers';
 import { SectionPanel, inp, sel, btnPrimary } from './ui';
 
 const NETWORK_ROLES = [
@@ -184,22 +185,43 @@ export function LmScopePanel({ sources, reload }) {
       </div>
       <div className="mt-5 pt-4 border-t border-cohesity-border/50">
         <p className="text-xs font-semibold text-ink mb-1">Metric families</p>
-        <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">The DataSource metrics tier reads one data call per device and DataSource for every family ticked here. Untick a family to stop collecting it; values already stored stay until they age out. {families == null ? 'All families are collected.' : `${families.length} of ${METRIC_FAMILIES.length} families collected.`}</p>
-        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-x-4 gap-y-2">
-          {METRIC_FAMILIES.map(([id, label, blurb]) => {
-            const info = famInfo[id];
-            return (
-              <label key={id} className="flex items-start gap-2 text-xs text-ink cursor-pointer">
-                <input type="checkbox" className="mt-0.5" checked={families == null || families.includes(id)} onChange={() => toggleFamily(id)} />
-                <span>
-                  <span className="font-semibold">{info?.label || label}</span>
-                  {info && info.instances != null ? <span className="text-ink-faint tnum"> ({fmtNum(info.datasources)} DataSources, {fmtNum(info.instances)} instances)</span> : null}
-                  <span className="block text-[11px] text-ink-faint leading-snug">{blurb}</span>
-                </span>
-              </label>
-            );
-          })}
+        <div className="flex items-center gap-3 mb-2 flex-wrap">
+          <span className="text-[12px] text-ink-muted tnum">{`${families == null ? METRIC_FAMILIES.length : families.length} of ${METRIC_FAMILIES.length} families collected`}</span>
+          <button type="button" onClick={() => setFamilies(null)} className="text-[11px] text-brand hover:underline cursor-pointer">All</button>
+          <button type="button" onClick={() => setFamilies([])} className="text-[11px] text-brand hover:underline cursor-pointer">None</button>
         </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+              <th className="py-2 pr-3 w-16">Collect</th>
+              <th className="py-2 pr-3">Family</th>
+              <th className="py-2 pr-3 text-right">DataSources</th>
+              <th className="py-2 pr-3 text-right">Instances</th>
+              <th className="py-2 pr-3">Last read</th>
+            </tr></thead>
+            <tbody>
+              {METRIC_FAMILIES.map(([id, label, blurb]) => {
+                const info = famInfo[id];
+                const on = families == null || families.includes(id);
+                return (
+                  <tr key={id} className="border-b border-cohesity-border/40">
+                    <td className="py-1.5 pr-3"><input type="checkbox" checked={on} onChange={() => toggleFamily(id)} aria-label={`Collect ${info?.label || label}`} className="accent-brand cursor-pointer" /></td>
+                    <td className="py-1.5 pr-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs">
+                        <span className={`font-semibold ${on ? 'text-ink' : 'text-ink-muted'}`}>{info?.label || label}</span>
+                        <InfoTip label={info?.label || label}>{blurb}</InfoTip>
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-3 text-right tnum text-xs text-ink-muted">{info && info.datasources != null ? fmtNum(info.datasources) : '-'}</td>
+                    <td className="py-1.5 pr-3 text-right tnum text-xs text-ink-muted">{info && info.instances != null ? fmtNum(info.instances) : '-'}</td>
+                    <td className="py-1.5 pr-3 text-[11px] text-ink-faint whitespace-nowrap">{info?.lastPollAt ? fmtWhen(info.lastPollAt) : '-'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] text-ink-muted mt-2">Each ticked family costs one data call per device and DataSource; values already stored stay until they age out.</p>
       </div>
       <div className="mt-5 pt-4 border-t border-cohesity-border/50">
         <p className="text-xs font-semibold text-ink mb-1">Site rules</p>

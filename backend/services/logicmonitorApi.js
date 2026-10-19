@@ -806,6 +806,7 @@ const pingKnobs = (w) => ({
   timeoutInMSPktsNotReceive: numOrNull(w.timeoutInMSPktsNotReceive),
 });
 
+/** Exported for tests (round 12). */
 function checkpointLocations(w, isInternal) {
   const collectors = safeArr(w.collectors);
   const byName = new Map();
@@ -819,13 +820,19 @@ function checkpointLocations(w, isInternal) {
     // smgId 0 for Overall is UNVERIFIED; geoInfo text is the second signal and
     // the datapoint set (totalSmCount / failSmCount) the third, set at data time.
     const isOverall = (geo && /overall/i.test(geo)) || smgId === 0 ? 1 : 0;
-    const coll = geo ? byName.get(geo.toLowerCase()) : null;
+    // Round 12: an internal checkpoint's geoInfo is "<collector id>_<hostname>" on a live portal (48_CGUSER\W860345).
+    const pm = geo ? geo.match(/^(\d+)_(.+)$/) : null;
+    const prefixId = pm ? Number(pm[1]) : null;
+    const geoHost = pm ? pm[2] : geo;
+    let coll = geoHost ? byName.get(geoHost.toLowerCase()) : null;
+    if (!coll && pm) coll = collectors.find((c) => numOrNull(c?.id) === prefixId) || null;
+    const collectorId = !isInternal ? null : (coll ? numOrNull(coll.id) : (pm && !collectors.length ? prefixId : null));
     return {
       checkpointId: isOverall ? 'overall' : String(cp.id),
       lmCheckpointId: numOrNull(cp.id),
-      label: isOverall ? 'Overall' : (coll?.hostname || geo || `checkpoint ${cp.id}`),
+      label: isOverall ? 'Overall' : (coll?.hostname || geoHost || `checkpoint ${cp.id}`),
       smgId,
-      collectorId: isInternal && coll ? numOrNull(coll.id) : null,
+      collectorId,
       isOverall,
     };
   }).filter((l) => l.lmCheckpointId != null);
@@ -1121,7 +1128,7 @@ module.exports = {
   parseAlertStatus, hasSdt, severityNorm, conditionKey, compareBuildStr,
   // normalizers
   normalizeDevice, normalizeGroup, normalizeDeviceDatasource, normalizeInstance, normalizeAlert,
-  normalizeCollector, normalizeSdt, normalizeWebsite, normalizeUptimeCheck, isUptimeDevice,
+  normalizeCollector, normalizeSdt, normalizeWebsite, checkpointLocations, normalizeUptimeCheck, isUptimeDevice,
   normalizeAdmin, normalizeRole,
   // fetchers
   fetchDevices, fetchUptimeDevices, fetchGroups, fetchDeviceDatasources, fetchInstances, fetchDsData,

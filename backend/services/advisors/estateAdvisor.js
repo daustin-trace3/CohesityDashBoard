@@ -25,6 +25,65 @@ function one(sql, ...params) {
 
 // ── 1. Daily brief ──────────────────────────────────────────────────────────
 
+// -- LogicMonitor network estate (shared by the daily brief and network_dependency) --
+
+const countOf = (sql, ...params) => one(sql, ...params).n || 0;
+
+/** Network health across the LogicMonitor portals, from the tables and services the LogicMonitor
+ *  pages read. Null when LogicMonitor has no portal registered. */
+function gatherNetworkEstate() {
+  if (!tableExists('lm_sources')) return null;
+  const portals = countOf('SELECT COUNT(*) n FROM lm_sources WHERE enabled = 1');
+  if (!one('SELECT 1 x FROM lm_sources LIMIT 1').x) return null;
+
+  let circuitRows = [];
+  try { circuitRows = require('../logicmonitorPath').circuitRows(db); } catch { circuitRows = []; }
+  const circuitsNotOk = circuitRows.filter((c) => c.state !== 'ok')
+    .sort((a, b) => (b.state === 'critical') - (a.state === 'critical'))
+    .slice(0, 10)
+    .map((c) => ({ deviceName: c.deviceName, port: c.port, label: c.label, carrier: c.carrier || null, state: c.state }));
+
+  const episodes = { watching: 0, degrading: 0, critical: 0 };
+  if (tableExists('lm_latency_episodes')) {
+    for (const r of rows("SELECT state, COUNT(*) n FROM lm_latency_episodes WHERE state != 'closed' GROUP BY state")) {
+      if (r.state in episodes) episodes[r.state] = r.n;
+    }
+  }
+
+  // Sites in trouble: a dead network device, a collector down, a critical WAN circuit or a
+  // critical reachability episode at the site.
+  const bad = new Set();
+  for (const r of rows("SELECT DISTINCT source_id sid, site_key sk FROM lm_devices WHERE stale = 0 AND is_network = 1 AND host_status = 'dead' AND site_key IS NOT NULL")) bad.add(`${r.sid}|${r.sk}`);
+  if (tableExists('lm_collectors')) {
+    for (const r of rows('SELECT DISTINCT source_id sid, site_key sk FROM lm_collectors WHERE stale = 0 AND is_down = 1 AND site_key IS NOT NULL')) bad.add(`${r.sid}|${r.sk}`);
+  }
+  for (const c of circuitRows) if (c.state === 'critical' && c.siteKey) bad.add(`${c.sourceId}|${c.siteKey}`);
+  if (tableExists('lm_latency_episodes')) {
+    for (const r of rows("SELECT DISTINCT source_id sid, site_key sk FROM lm_latency_episodes WHERE state = 'critical' AND site_key IS NOT NULL")) bad.add(`${r.sid}|${r.sk}`);
+  }
+  const siteNames = new Map(rows('SELECT source_id sid, site_key sk, site_name nm FROM lm_sites').map((r) => [`${r.sid}|${r.sk}`, r.nm || r.sk]));
+  const sitesCritical = [...bad].map((k) => siteNames.get(k) || k.split('|')[1]).sort().slice(0, 10);
+
+  const alerts = one(`
+    SELECT COALESCE(SUM(CASE WHEN severity_norm = 'critical' THEN 1 ELSE 0 END), 0) critical,
+           COALESCE(SUM(CASE WHEN severity_norm = 'warning' THEN 1 ELSE 0 END), 0) warning,
+           COALESCE(SUM(CASE WHEN severity_norm = 'info' THEN 1 ELSE 0 END), 0) info
+    FROM lm_alerts WHERE cleared = 0 AND duplicate_of IS NULL
+  `);
+
+  return {
+    portals,
+    devicesDead: countOf("SELECT COUNT(*) n FROM lm_devices WHERE stale = 0 AND host_status = 'dead'"),
+    networkDevicesDead: countOf("SELECT COUNT(*) n FROM lm_devices WHERE stale = 0 AND is_network = 1 AND host_status = 'dead'"),
+    collectorsDown: tableExists('lm_collectors') ? countOf('SELECT COUNT(*) n FROM lm_collectors WHERE stale = 0 AND is_down = 1') : 0,
+    circuitsNotOk,
+    latencyEpisodesOpen: episodes,
+    sitesCritical,
+    unmonitoredNeighbours: tableExists('lm_unmonitored_neighbors') ? countOf('SELECT COUNT(*) n FROM lm_unmonitored_neighbors WHERE stale = 0') : 0,
+    alertsOpenBySeverity: { critical: alerts.critical || 0, warning: alerts.warning || 0, info: alerts.info || 0 },
+  };
+}
+
 function gatherDailyBrief() {
   // Required lazily: serviceStatus and opsAgent pull in large trees.
   const serviceStatus = require('../serviceStatus');
@@ -61,6 +120,9 @@ function gatherDailyBrief() {
       .map((a) => ({ app: a.label || a.displayId, state: a.state, reason: a.reason, since: a.since, counts: a.counts }));
   } catch { /* app services absent */ }
 
+  let network;
+  try { network = gatherNetworkEstate() || undefined; } catch { network = undefined; }
+
   const day = one(`
     SELECT COUNT(*) opened,
            SUM(CASE WHEN state = 'resolved' AND resolved_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) resolvedToday
@@ -74,12 +136,66 @@ function gatherDailyBrief() {
     platformStatus: platforms,
     openIncidentsByImpact: incidents,
     appServicesNotOperational: apps,
+    network,
     last24h: { incidentsOpened: day.opened || 0, incidentsResolved: resolved24.n || 0, analysesEmailed: emailed24.n || 0 },
     note: platforms.length === 0 && incidents.length === 0 ? 'Service Status and the Ops Agent have no data yet.' : undefined,
   };
 }
 
 // ── 2. Certificate audit ────────────────────────────────────────────────────
+
+// -- 1b. Network dependency --
+
+const NET_DEP_APP_CAP = 25;
+
+function gatherNetworkDependency() {
+  const appServices = require('../appServiceStatus');
+  let board = [];
+  try { board = appServices.getBoard().apps; } catch { board = []; }
+
+  const apps = [];
+  for (const b of board.slice(0, NET_DEP_APP_CAP)) {
+    let detail = null;
+    try { detail = appServices.evaluate(b.usageId); } catch { detail = null; }
+    const ns = (detail && detail.networkSummary) || b.networkSummary || { state: 'unknown' };
+    apps.push({
+      app: b.label || b.displayId,
+      state: detail ? detail.state : b.state,
+      servers: detail ? (detail.servers || []).length : (b.counts && b.counts.vms) || 0,
+      networkSummary: ns.sites ? {
+        ...ns,
+        singleSwitchServers: (ns.singleSwitchServers || []).slice(0, 10),
+        sites: ns.sites.map((st) => ({ ...st, circuits: (st.circuits || []).slice(0, 5).map((c) => ({ deviceName: c.deviceName, port: c.port, label: c.label, state: c.state })) })),
+      } : ns,
+    });
+  }
+  const rank = { critical: 3, degraded: 2, ok: 0, unknown: 1 };
+  apps.sort((a, b) => (rank[b.networkSummary.state] || 0) - (rank[a.networkSummary.state] || 0));
+
+  const estate = gatherNetworkEstate();
+  let repeatingChecks = [];
+  if (tableExists('lm_latency_episodes')) {
+    const cutoff = new Date(Date.now() - 7 * 86400000).toISOString();
+    repeatingChecks = rows(`
+      SELECT subject_label label, site_key siteKey, COUNT(*) oneOff FROM lm_latency_episodes
+      WHERE state = 'closed' AND outcome = 'one-off' AND opened_at >= ? GROUP BY source_id, subject_key HAVING COUNT(*) >= 3
+      ORDER BY oneOff DESC LIMIT 10
+    `, cutoff).map((r) => ({ check: r.label, siteKey: r.siteKey, oneOffsIn7Days: r.oneOff }));
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    appsRankedByNetworkState: apps,
+    estate: estate ? {
+      circuitsNotOk: estate.circuitsNotOk,
+      sitesCritical: estate.sitesCritical,
+      repeatingChecks,
+      unmonitoredNeighbours: estate.unmonitoredNeighbours,
+      collectorsDown: estate.collectorsDown,
+      networkDevicesDead: estate.networkDevicesDead,
+    } : undefined,
+    note: apps.length === 0 ? 'No app services are on the watch list.' : (estate ? undefined : 'LogicMonitor has no portal registered, so site and circuit data are absent.'),
+  };
+}
 
 function gatherCertificateAudit() {
   const out = [];
@@ -336,9 +452,29 @@ module.exports = createPlatformAdvisor({
         'the last 24 hours of incident counts. Write the brief a day-shift engineer reads in two minutes: what needs ' +
         'a person today (in order), what changed overnight, and what is degraded but stable. Do not invent data and ' +
         'do not pad; a quiet estate deserves a short brief that says so. Markdown sections: **Needs a person today**, ' +
-        '**Overnight changes**, **Degraded but stable**, **Estate at a glance**. Keep under ~400 words.',
+        '**Overnight changes**, **Degraded but stable**, **Estate at a glance**. Keep under ~400 words. ' +
+        'When the data carries a network block it comes from LogicMonitor: dead devices, collectors down, WAN circuits that are ' +
+        'not ok, open latency episodes (watching, degrading, critical), sites with a critical condition, neighbours ICC cannot ' +
+        'see and open alerts by severity. Fold it into the brief where it matters (a critical site or circuit belongs under needs ' +
+        'a person today) and leave it out when it is quiet.',
       gather: gatherDailyBrief,
       noun: 'estate daily brief',
+    },
+    network_dependency: {
+      system:
+        'You are assessing how much each application service depends on the network under it. You are given the watched ' +
+        'applications with their state and a network summary: the sites their servers sit in (with dead network devices, WAN ' +
+        'circuits and their state, open latency episodes, collectors down), servers that depend on a single switch, servers ' +
+        'with no switch path in LogicMonitor, port and reachability problems, plus estate-wide WAN circuits that are not ok, ' +
+        'critical sites, checks whose one-off latency episodes keep repeating and neighbours ICC cannot monitor. Rank the ' +
+        'applications by network risk (dead network device at a site, degraded WAN, open episodes, single-switch servers, ' +
+        'unresolved servers), name the single points of failure, and say what to verify first. A site problem makes an app ' +
+        'degraded, not down, because the app may not ride the failing link; do not claim an outage the data does not show. ' +
+        'Write plain sentences; pipe tables are fine. Do not invent data and do not praise any vendor. ' +
+        'Markdown sections: **Network risk ranking**, **Single points of failure**, **Estate network conditions**, ' +
+        '**Verify first**. Keep under ~450 words.',
+      gather: gatherNetworkDependency,
+      noun: 'network dependency assessment',
     },
     certificate_audit: {
       system:

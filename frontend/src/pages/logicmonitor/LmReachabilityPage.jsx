@@ -190,7 +190,7 @@ export default function LmReachabilityPage() {
       <LmWatchBand summary={summary} active={chip} onPick={setChip} />
 
       <div className="mb-4">
-        <LmEpisodesTable rows={chipRows} onOpen={setEpisodeId} chipLabel={chip ? CHIPS.find((c) => c.key === chip)?.label : ''} />
+        <LmEpisodesTable rows={chipRows} chip={chip} onOpen={setEpisodeId} chipLabel={chip ? CHIPS.find((c) => c.key === chip)?.label : ''} />
       </div>
 
       <div className="flex items-center gap-1 mb-3">

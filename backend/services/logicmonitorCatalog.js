@@ -46,12 +46,13 @@ const gauge = (match, unit, label) => m(match, 'gauge', unit, label);
 const state = (match, label) => m(match, 'state', '', label);
 const counter = (match, unit, label) => m(match, 'counter', unit, label);
 const pct = (match, label) => m(match, 'pct', '%', label);
-const exact = (name) => `^${name}$`;
+// exact('a') is one anchored regex; exact(['a', 'b']) is a priority list (first name present wins).
+const exact = (name) => (Array.isArray(name) ? name.map((n) => `^${n}$`) : `^${name}$`);
 
 // Bump whenever a regex below changes. pollMetrics drops every learned
 // dsColumns/dsUnmatched map when a source's stored catalogVersion differs, so
 // the next poll relearns with the corrected matchers.
-const CATALOG_VERSION = 4; // 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
+const CATALOG_VERSION = 5; // 5: round 12 exact Palo Alto picks (cpu_pct_used, mem_pct_used, cur_temp, alarms), Ping, Cisco_NTP, F5 memory and interfaces; 4: F5_BigIP_System memory percent is MemoryUsage (MemoryUsed is bytes); 3: round 11 families
 
 const CATALOG = [];
 const add = (family, match, label, metrics, opts = {}) => {
@@ -80,9 +81,12 @@ add('firewall', 'PaloAlto_FW_GlobalPerformance', 'PAN global performance', {
 }, { history: true });
 
 add('firewall', 'PaloAlto_FW_SystemResources', 'PAN system resources', {
-  mgmt_cpu_pct: pct(['mgmt.*cpu', 'management.*cpu', 'cpu.*mgmt', '^cpu'], 'Management CPU'),
-  mem_pct: pct(['mem.*(used|util|percent|pct)', '^mem(ory)?$'], 'Memory used'),
-  swap_pct: pct(['swap'], 'Swap used'),
+  // Round 12: verified on the live portal. The old regexes picked cpu_nice (always 0) and mem_used (bytes).
+  mgmt_cpu_pct: pct(exact('cpu_pct_used'), 'Management CPU'),
+  mem_pct: pct(exact('mem_pct_used'), 'Memory used'),
+  swap_pct: pct(exact(['swap_pct_used', 'memory_swap_pct_used']), 'Swap used'),
+  mem_used_bytes: gauge(exact('mem_used'), 'bytes', 'Memory used'),
+  mem_total_bytes: gauge(exact('mem_total'), 'bytes', 'Memory total'),
 }, { history: true });
 
 add('firewall', 'PaloAlto_FW_DataplaneCores', 'PAN dataplane cores', {
@@ -156,8 +160,11 @@ add('firewall', 'PaloAlto_FW_Disk', 'PAN disks', {
   disk_used_pct: pct(['used.?(pct|percent)?', 'util', 'percent', 'usage'], 'Disk used'),
 });
 
+// Round 12: the DataSource reports alarm flags (0 = fine, 1 = alarm) and a voltage, no state enum.
 add('firewall', 'PaloAlto_FW_Power', 'PAN power supplies', {
-  psu_state: state(['state', 'status', 'alarm'], 'PSU state'),
+  psu_low_alarm: gauge(exact('low_alarm'), '', 'PSU low alarm'),
+  psu_high_alarm: gauge(exact('high_alarm'), '', 'PSU high alarm'),
+  cur_voltage: gauge(exact('cur_voltage'), 'V', 'Voltage'),
 });
 
 add('firewall', 'PaloAlto_FW_ChassisPower', 'PAN chassis power', {
@@ -165,8 +172,8 @@ add('firewall', 'PaloAlto_FW_ChassisPower', 'PAN chassis power', {
 });
 
 add('firewall', 'PaloAlto_FW_Temperature', 'PAN temperature', {
-  temp_c: gauge(['temp(erature)?(.?c)?$', 'celsius', 'temp'], 'C', 'Temperature'),
-  temp_alarm: state(['alarm', 'status', 'state'], 'Temperature alarm'),
+  temp_c: gauge(exact('cur_temp'), 'C', 'Temperature'),
+  temp_alarm: gauge(exact('temp_alarm'), '', 'Temperature alarm'),
 });
 
 add('firewall', 'PaloAlto_FW_BGP', 'PAN BGP', {
@@ -266,9 +273,13 @@ add('loadbalancer', 'F5_BigIP_SSL_VIP_Certs', 'F5 SSL certificates', {
   cert_days_left: gauge(['days', 'expir', 'remaining'], 'days', 'Days to expiry'),
 });
 
+// Round 12: verified on the live portal. The DataSource has byte counts only, no percent datapoint.
 add('loadbalancer', 'F5_BigIP_Memory', 'F5 memory', {
-  tmm_mem_pct: pct(['tmm.*(percent|pct|util|used)', 'tmm'], 'TMM memory'),
-  host_mem_pct: pct(['host.*(percent|pct|util|used)', 'host', 'other'], 'Host memory'),
+  mem_total_bytes: gauge(exact('RealMemTotal'), 'bytes', 'Memory total'),
+  mem_avail_bytes: gauge(exact('RealMemAvailable'), 'bytes', 'Memory available'),
+  mem_free_bytes: gauge(exact('TotalMemFree'), 'bytes', 'Memory free'),
+  swap_total_bytes: gauge(exact('SwapTotal'), 'bytes', 'Swap total'),
+  swap_avail_bytes: gauge(exact('SwapAvailable'), 'bytes', 'Swap available'),
 }, { history: true });
 
 add('loadbalancer', 'F5_BigIP_Filesystem', 'F5 filesystem', {
@@ -276,10 +287,14 @@ add('loadbalancer', 'F5_BigIP_Filesystem', 'F5 filesystem', {
   fs_inode_pct: pct(exact('NodeUtilization'), 'Inodes used'),
 });
 
+// Round 12: verified on the live portal. BytesIn/BytesOut are per second rates (bytes), there is no status datapoint.
 add('loadbalancer', 'F5_BigIP_Interfaces', 'F5 interfaces', {
-  if_status: state(['status', 'state'], 'Interface status'),
-  if_in_bps: gauge(['in.?(bps|bits|rate)', '^in$', 'bits.?in'], 'bps', 'In'),
-  if_out_bps: gauge(['out.?(bps|bits|rate)', '^out$', 'bits.?out'], 'bps', 'Out'),
+  if_in_bytes: gauge(exact('BytesIn'), 'B/s', 'In'),
+  if_out_bytes: gauge(exact('BytesOut'), 'B/s', 'Out'),
+  if_errors_in: gauge(exact('ErrorsIn'), '/s', 'Errors in'),
+  if_errors_out: gauge(exact('ErrorsOut'), '/s', 'Errors out'),
+  if_drops_in: gauge(exact('DropsIn'), '/s', 'Drops in'),
+  if_drops_out: gauge(exact('DropsOut'), '/s', 'Drops out'),
 });
 
 add('loadbalancer', 'F5_BigIP_Fans', 'F5 fans', { fan_state: state(exact('FanStatus'), 'Fan state') });
@@ -336,7 +351,21 @@ add('health', 'Cisco_Nexus_Line_Card_Status', 'Cisco Nexus line cards', {
   sup2_state: state(exact('StatusSup2'), 'Supervisor 2 state'),
 });
 add('health', 'Cisco_Nexus_Supervisor_Status', 'Cisco Nexus supervisors', { sup_state: state(exact('cRFStatusUnitState'), 'Supervisor state') });
-add('health', 'Cisco Switch Stack-', 'Cisco switch stack', { stack_member_state: state(['state', 'status', 'role'], 'Stack member state') });
+add('health', 'Cisco Switch Stack-', 'Cisco switch stack', {
+  stack_member_state: state(exact('StackState'), 'Stack member state'),
+  stack_role: gauge(exact('SwitchRole'), '', 'Stack role'),
+});
+// Round 12: verified on the live portal (Ping 217 devices, Cisco_NTP 54).
+add('health', 'Ping', 'Ping', {
+  ping_loss_pct: pct(exact('PingLossPercent'), 'Ping loss'),
+  ping_rtt_ms: gauge(exact('average'), 'ms', 'Ping RTT'),
+  ping_rtt_max_ms: gauge(exact('maxrtt'), 'ms', 'Ping max RTT'),
+});
+add('health', 'Cisco_NTP', 'Cisco NTP', {
+  ntp_synced: state(exact('synced'), 'NTP synchronised'),
+  ntp_stratum: gauge(exact('Stratum'), '', 'NTP stratum'),
+  ntp_offset_ms: gauge(exact('Offset'), 'ms', 'NTP offset'),
+});
 add('health', 'Cisco Switch Stack Ports-', 'Cisco switch stack ports', { stack_port_state: state(['state', 'status', 'oper'], 'Stack port state') });
 add('health', 'Cisco_PowerOverEthernet', 'Cisco PoE', {
   poe_used_pct: pct(['percent', 'pct', 'util'], 'PoE used'),
@@ -788,6 +817,7 @@ add('security', 'ntm_asa_license_authorization', 'ASA license authorization', {
 // byte metrics, which stay in the health family so the existing DataSource lists hold).
 // State enums are unknown: logicmonitorServers.js prints the raw value in every message.
 add('os', 'SNMP_Filesystem_Status', 'SNMP filesystem status', {
+  fs_not_accessible: state(exact('StorageNotAccessible'), 'Filesystem not accessible'),
   fs_status: state(['status', 'state'], 'Filesystem status'),
 }, { maxInstances: 400 });
 add('os', 'NetSNMPdiskIO-', 'Net-SNMP disk I/O', {

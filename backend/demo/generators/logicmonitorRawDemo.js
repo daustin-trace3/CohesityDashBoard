@@ -58,6 +58,30 @@ function seedRawValues(db, { sourceId }) {
     UPDATE lm_device_datasources SET raw_last_at = datetime('now', '-4 minutes')
     WHERE source_id = ? AND EXISTS (SELECT 1 FROM lm_ds_values v WHERE v.source_id = lm_device_datasources.source_id AND v.hds_id = lm_device_datasources.hds_id)
   `).run(sourceId);
+
+  // Round 12: two raw datapoint rules over the uncatalogued RawCounter. The first matches the
+  // busiest instance (so the demo Issues page shows a raw-threshold row), the second matches nothing.
+  try {
+    const top = db.prepare(`
+      SELECT datasource_name, MAX(value) mx FROM lm_ds_values WHERE source_id = ? AND datapoint = 'RawCounter'
+      GROUP BY datasource_name ORDER BY mx DESC, datasource_name LIMIT 2
+    `).all(sourceId);
+    if (top.length) {
+      const rules = [{
+        id: 'demo-raw-1', datasource: top[0].datasource_name, datapoint: 'RawCounter', op: '>=', value: top[0].mx,
+        severity: 'warning', label: 'Raw counter high', instanceMatch: '', deviceMatch: '', enabled: true,
+      }];
+      if (top[1]) {
+        rules.push({
+          id: 'demo-raw-2', datasource: top[1].datasource_name, datapoint: 'RawCounter', op: '>', value: 1000000,
+          severity: 'info', label: 'Raw counter far above normal', instanceMatch: '', deviceMatch: '', enabled: true,
+        });
+      }
+      db.prepare(`INSERT INTO app_settings (key, value, updated_at) VALUES ('lm_raw_rules', ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`).run(JSON.stringify(rules));
+      out.rules = rules.length;
+    }
+  } catch (err) { console.warn(`[seedDemo] logicmonitor raw rules skipped: ${err.message}`); }
   return out;
 }
 

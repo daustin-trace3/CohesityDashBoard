@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Settings, Network, FolderTree, Activity, Server, Globe, Cable, BellRing, Database, Archive, Layers, Cpu } from 'lucide-react';
+import { Settings, Network, FolderTree, Activity, Server, Globe, Cable, BellRing, Database, Archive, Layers, Cpu, ListChecks } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
@@ -8,7 +8,7 @@ import PlatformAlertNotifications from '../../components/PlatformAlertNotificati
 import { BRAND } from './helpers';
 import LmPortalsPanel from './LmPortalsPanel';
 import { LmScopePanel } from './LmScopeThresholds';
-import { LmInterfacesRulesPanel, LmDevicesRulesPanel, LmReachabilityRulesPanel, LmCircuitsRulesPanel, LmServicesRulesPanel, LmRetentionPanel } from './LmRulesPanels';
+import { LmInterfacesRulesPanel, LmDevicesRulesPanel, LmReachabilityRulesPanel, LmCircuitsRulesPanel, LmServicesRulesPanel, LmRetentionPanel, LmRawRulesPanel } from './LmRulesPanels';
 import LmDataExportPanel from './LmDataExportPanel';
 import LmCollectorsPage from './LmCollectorsPage';
 
@@ -21,6 +21,7 @@ const SECTIONS = [
   { key: 'reachability', label: 'Site reachability', icon: Globe, group: 'Rules' },
   { key: 'circuits', label: 'Circuits', icon: Cable, group: 'Rules' },
   { key: 'services', label: 'Services', icon: Layers, group: 'Rules' },
+  { key: 'rawrules', label: 'Raw datapoints', icon: ListChecks, group: 'Rules' },
   { key: 'notify', label: 'Alert Notifications', icon: BellRing, group: 'Notifications' },
   { key: 'retention', label: 'Retention and limits', icon: Archive, group: 'Data' },
   { key: 'export', label: 'Data Export', icon: Database, group: 'Data' },
@@ -56,6 +57,7 @@ export default function LmSettingsPage() {
         {section === 'reachability' && <LmReachabilityRulesPanel />}
         {section === 'circuits' && <LmCircuitsRulesPanel />}
         {section === 'services' && <LmServicesRulesPanel />}
+        {section === 'rawrules' && <LmRawRulesPanel />}
         {section === 'notify' && <PlatformAlertNotifications platform="logicmonitor" label="LogicMonitor" />}
         {section === 'retention' && <LmRetentionPanel />}
         {section === 'export' && <LmDataExportPanel />}

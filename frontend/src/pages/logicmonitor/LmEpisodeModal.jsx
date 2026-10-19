@@ -35,6 +35,13 @@ const marksPlugin = {
   },
 };
 
+const STATE_MEANING = {
+  watching: 'Above its hour-of-day baseline; nothing is raised yet.',
+  degrading: 'Sustained, rising, severe or lossy; a warning issue is open.',
+  critical: 'The location is down or the severe condition holds; the issue is critical.',
+  closed: 'Back to normal for the required run of samples; the outcome is kept.',
+};
+
 export default function LmEpisodeModal({ id, onClose }) {
   const [ep, setEp] = useState(null);
   const [error, setError] = useState(false);
@@ -81,7 +88,7 @@ export default function LmEpisodeModal({ id, onClose }) {
         : ep == null ? <LoadingPanel label="Loading episode..." height={160} /> : (
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-2 flex-wrap">
-              <Badge tone={EPISODE_STATE_TONE[ep.state] || 'neutral'}>{ep.state}</Badge>
+              <span title={STATE_MEANING[ep.state]}><Badge tone={EPISODE_STATE_TONE[ep.state] || 'neutral'}>{ep.state}</Badge></span>
               {ep.outcome && <Badge tone="neutral">{EPISODE_OUTCOME_LABEL[ep.outcome] || ep.outcome}</Badge>}
               {ep.promoteReason && <span className="text-[11px] text-ink-muted">Promoted: {ep.promoteReason}</span>}
             </div>

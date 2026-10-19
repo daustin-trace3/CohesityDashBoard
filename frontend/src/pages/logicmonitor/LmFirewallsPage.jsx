@@ -6,9 +6,9 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableSearch, FilterSelect, TablePager } from '../../components/ui/tableTools';
 import {
-  BRAND, DASH, arr, fmtNum, fmtPct, stateTone, stateLabel, stateRank, downloadCsv, useVisibleInterval,
+  BRAND, DASH, arr, fmtNum, stateTone, stateLabel, stateRank, downloadCsv, useVisibleInterval,
 } from './helpers';
-import { UtilBar, headRow, chipBtn } from './ui';
+import { UtilBar, PctValue, pctInRange, headRow, chipBtn } from './ui';
 import LmFirewall360, { syncedOf, num } from './LmFirewall360';
 
 const REFRESH_MS = 60000;
@@ -137,12 +137,12 @@ export default function LmFirewallsPage() {
                           {r.haEnabled ? <Badge tone={haBad ? 'crit' : 'info'}>{r.haText || 'HA'}</Badge> : <span className="text-ink-faint">Standalone</span>}
                         </td>
                         <td className="py-2 pr-3 min-w-[130px]">
-                          <UtilBar pct={r.sessionsUtilPct} />
+                          <UtilBar pct={pctInRange(r.sessionsUtilPct) ? r.sessionsUtilPct : null} />
                           <p className="text-[10px] text-ink-faint tnum">{fmtNum(r.sessionsActive)} / {fmtNum(r.sessionsMax)}</p>
                         </td>
-                        <td className={`py-2 pr-3 text-right tnum ${cpuCls(r.dataplaneCpuPct)}`}>{fmtPct(r.dataplaneCpuPct)}</td>
-                        <td className={`py-2 pr-3 text-right tnum ${cpuCls(r.mgmtCpuPct)}`}>{fmtPct(r.mgmtCpuPct)}</td>
-                        <td className={`py-2 pr-3 text-right tnum ${num(r.memPct) >= 90 ? 'text-status-warn' : 'text-ink-muted'}`}>{fmtPct(r.memPct)}</td>
+                        <td className={`py-2 pr-3 text-right tnum ${cpuCls(pctInRange(r.dataplaneCpuPct) ? r.dataplaneCpuPct : null)}`}><PctValue v={r.dataplaneCpuPct} /></td>
+                        <td className={`py-2 pr-3 text-right tnum ${cpuCls(pctInRange(r.mgmtCpuPct) ? r.mgmtCpuPct : null)}`}><PctValue v={r.mgmtCpuPct} /></td>
+                        <td className={`py-2 pr-3 text-right tnum ${(pctInRange(r.memPct) && num(r.memPct) >= 90) ? 'text-status-warn' : 'text-ink-muted'}`}><PctValue v={r.memPct} /></td>
                         <td className="py-2 pr-3 text-right tnum whitespace-nowrap">
                           {r.tunnelsUp == null && r.tunnelsDown == null ? <span className="text-ink-faint">{DASH}</span> : (
                             <><span className="text-ink-muted">{fmtNum(r.tunnelsUp)}</span><span className="text-ink-faint"> / </span><span className={num(r.tunnelsDown) > 0 ? 'text-status-warn' : 'text-ink-faint'}>{fmtNum(r.tunnelsDown)}</span></>

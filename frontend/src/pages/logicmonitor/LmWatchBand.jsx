@@ -1,6 +1,40 @@
+import { useEffect, useState } from 'react';
 import { Eye, Activity, XCircle, Repeat, TrendingUp, CheckCircle2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import client from '../../api/client';
+import { InfoTip } from '../../components/settings/SettingRow';
 import { fmtNum } from './helpers';
+
+const WATCH_DEFAULTS = {
+  lm_watch_sustain_minutes: 15, lm_watch_trend_windows: 3, lm_watch_severe_ratio: 2, lm_watch_clear_samples: 3,
+  lm_watch_repeat_min: 3, lm_watch_repeat_days: 7, lm_watch_drift_pct: 25, lm_watch_reference_days: 28,
+};
+
+// Plain-language legend for the latency watch states, values read live from
+// the thresholds (GET /logicmonitor/config) with the defaults as fallback.
+export function WatchLegend() {
+  const [t, setT] = useState(WATCH_DEFAULTS);
+  useEffect(() => {
+    client.get('/logicmonitor/config')
+      .then(({ data }) => setT({ ...WATCH_DEFAULTS, ...Object.fromEntries(Object.entries(data?.thresholds || {}).filter(([k, v]) => k in WATCH_DEFAULTS && v != null && v !== '')) }))
+      .catch(() => {});
+  }, []);
+  const rows = [
+    ['Watching', 'The latest sample on a check location is above its hour-of-day baseline. Nothing is raised.'],
+    ['Degrading', `The watch has run ${t.lm_watch_sustain_minutes} minutes, risen for ${t.lm_watch_trend_windows} windows in a row, hit ${t.lm_watch_severe_ratio}x the baseline twice, or packet loss joined it. A warning issue opens and the Ops Agent sees it.`],
+    ['Critical', 'The location is down or the severe condition holds. The issue turns critical.'],
+    ['Closed', `${t.lm_watch_clear_samples} normal samples in a row. The outcome is kept: one-off (never promoted), sustained (was degrading), escalated (reached critical).`],
+    ['Repeating', `${t.lm_watch_repeat_min} one-offs on one location inside ${t.lm_watch_repeat_days} days raise a latency-pattern issue.`],
+    ['Drifting', `The baseline itself sits ${t.lm_watch_drift_pct}% above its ${t.lm_watch_reference_days}-day reference (latency-drift issue).`],
+  ];
+  return (
+    <InfoTip label="latency watch states">
+      <span className="block space-y-1.5">
+        {rows.map(([k, v]) => <span key={k} className="block"><span className="text-ink font-semibold">{k}: </span>{v}</span>)}
+      </span>
+    </InfoTip>
+  );
+}
 
 // Chip filters for the episodes table, fed by GET /logicmonitor/watch/summary.
 // `active` is a key from CHIPS or ''. Drifting has no episodes; it links to the
@@ -22,6 +56,7 @@ export default function LmWatchBand({ summary, active, onPick }) {
     <div className="mb-4" data-testid="watch-band">
       <div className="flex items-baseline gap-2 mb-2 mx-1">
         <b className="text-[13px] font-bold text-ink">Latency watch</b>
+        <WatchLegend />
         <span className="text-[11px] text-ink-muted">Click a count to filter the episodes below.</span>
       </div>
       <div className="flex flex-wrap gap-2">

@@ -11,6 +11,12 @@ import { useTableControls, SortTh, TableSearch, TablePager } from '../../compone
 import { DASH, arr, fmtNum, fmtWhen, downloadCsv } from './helpers';
 import { Modal, ServerPager, inp, btnGhost, btnPrimary, headRow } from './ui';
 
+export const rawRuleLink = (datasource, datapoint) => {
+  const q = new URLSearchParams({ section: 'rawrules' });
+  if (datasource) q.set('datasource', datasource);
+  if (datapoint) q.set('datapoint', datapoint);
+  return `/logicmonitor/settings?${q.toString()}`;
+};
 const pctText = (v) => (v == null ? DASH : `${v}%`);
 const valueText = (r) => {
   if (r.value != null) {
@@ -57,7 +63,7 @@ function ValuesTable({ deviceId, sourceId, ds, onBack }) {
               <table className="w-full text-sm">
                 <thead><tr className={headRow}>
                   <th className="py-2 pr-3">Instance</th><th className="py-2 pr-3">Datapoint</th>
-                  <th className="py-2 pr-3 text-right">Value</th><th className="py-2 pr-3">Catalog</th><th className="py-2 pr-3">Sampled</th>
+                  <th className="py-2 pr-3 text-right">Value</th><th className="py-2 pr-3">Catalog</th><th className="py-2 pr-3">Sampled</th><th className="py-2 pr-3">Rule</th>
                 </tr></thead>
                 <tbody>
                   {arr(data.items).map((r) => (
@@ -67,10 +73,15 @@ function ValuesTable({ deviceId, sourceId, ds, onBack }) {
                       <td className="py-1.5 pr-3 text-right tnum text-[12px] text-ink-muted whitespace-nowrap">{valueText(r)}</td>
                       <td className="py-1.5 pr-3 text-[12px] text-ink-faint">{r.catalogMetric ? (r.label || r.catalogMetric) : DASH}</td>
                       <td className="py-1.5 pr-3 text-[11px] text-ink-faint whitespace-nowrap">{r.sampledAt ? fmtWhen(r.sampledAt) : DASH}</td>
+                      <td className="py-1.5 pr-3 text-[11px] whitespace-nowrap">
+                        {r.value != null
+                          ? <Link to={rawRuleLink(ds.datasourceName, r.datapoint)} className="text-brand hover:underline" title="Raise an issue from this datapoint">Rule</Link>
+                          : <span className="text-ink-faint">-</span>}
+                      </td>
                     </tr>
                   ))}
                   {arr(data.items).length === 0 && (
-                    <tr><td colSpan={5} className="py-6 text-center text-sm text-ink-muted">No stored values{term ? ' match that search' : ' yet. The raw tier has not read this DataSource'}.</td></tr>
+                    <tr><td colSpan={6} className="py-6 text-center text-sm text-ink-muted">No stored values{term ? ' match that search' : ' yet. The raw tier has not read this DataSource'}.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -149,7 +160,7 @@ export function DeviceDatasourcesTab({ deviceId, sourceId }) {
 }
 
 /** Datapoint names and shapes for one DataSource across the estate. */
-function DatapointsModal({ name, onClose }) {
+export function DatapointsModal({ name, onClose }) {
   const [rows, setRows] = useState(null);
   useEffect(() => {
     client.get(`/logicmonitor/datasources/${encodeURIComponent(name)}/datapoints`)
@@ -322,46 +333,65 @@ export function RawCollectionGroup({ raw }) {
   );
 }
 
-/** Coverage page tile: percent of stored datapoints the catalog labels, and the work queue. */
+/** Coverage page tile: DataSource and datapoint coverage, and the DataSources with no catalog entry. */
 export function CatalogCoverageTile() {
   const [d, setD] = useState(null);
   const [rows, setRows] = useState(null);
+  const [open, setOpen] = useState(null);
   useEffect(() => {
     client.get('/logicmonitor/settings/discovery').then(({ data }) => setD(data?.raw || {})).catch(() => setD({}));
     client.get('/logicmonitor/datasources').then(({ data }) => setRows(arr(data))).catch(() => setRows([]));
   }, []);
   const queue = useMemo(() => arr(rows)
-    .filter((r) => r.datapoints > 0 && !r.isInterface && !r.isNeighbor && (r.picks || 0) < r.datapoints)
-    .sort((a, b) => b.instances - a.instances).slice(0, 10), [rows]);
+    .filter((r) => r.datapoints > 0 && !r.isInterface && !r.isNeighbor && !(r.picks > 0))
+    .sort((a, b) => (b.devices - a.devices) || (b.instances - a.instances)).slice(0, 10), [rows]);
   if (d == null || rows == null) return <LoadingPanel label="Loading catalog coverage..." height={120} />;
+  const dsTotal = d.datasourcesTotal;
+  const dsCat = d.datasourcesCatalogued;
+  const dsPct = dsTotal ? Math.round((dsCat / dsTotal) * 1000) / 10 : null;
+  const labelled = d.datapointsLabelled ?? (d.datapoints != null && d.coveragePct != null ? Math.round((d.datapoints * d.coveragePct) / 100) : null);
   return (
     <div className="panel p-4 mb-4">
-      <div className="flex items-baseline gap-3 flex-wrap">
+      <div className="flex items-baseline gap-3 flex-wrap mb-2">
         <p className="text-sm font-semibold text-ink">Catalog coverage</p>
-        <span className="text-2xl font-semibold tnum text-ink">{pctText(d.coveragePct)}</span>
-        <span className="text-[12px] text-ink-muted">of {fmtNum(d.datapoints)} stored datapoint(s) have a catalog metric. The rest are kept raw only.</span>
         <Link to="/logicmonitor/settings?section=export" className="text-[11px] text-brand hover:underline ml-auto">Raw collection settings</Link>
       </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-2">
+        <div className="rounded-lg bg-surface-overlay px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wide text-ink-faint">DataSources with a catalog entry</p>
+          <p className="text-ink"><span className="text-2xl font-semibold tnum">{dsTotal == null ? DASH : `${fmtNum(dsCat)} of ${fmtNum(dsTotal)}`}</span> <span className="text-[12px] text-ink-muted tnum">{pctText(dsPct)}</span></p>
+        </div>
+        <div className="rounded-lg bg-surface-overlay px-3 py-2">
+          <p className="text-[10px] uppercase tracking-wide text-ink-faint">Datapoints labelled</p>
+          <p className="text-ink"><span className="text-2xl font-semibold tnum">{d.datapoints == null || labelled == null ? DASH : `${fmtNum(labelled)} of ${fmtNum(d.datapoints)}`}</span> <span className="text-[12px] text-ink-muted tnum">{pctText(d.coveragePct)}</span></p>
+        </div>
+      </div>
+      <p className="text-[12px] text-ink-muted">Unlabelled datapoints stay in the raw store (Device 360 &gt; DataSources) and can drive a rule here; the catalog grows from this list.</p>
       {queue.length === 0 ? (
-        <p className="text-[12px] text-ink-muted mt-2">{d.datapoints ? 'Every stored DataSource is fully labelled.' : 'No raw datapoints stored yet. The metrics tier fills them after its next run.'}</p>
+        <p className="text-[12px] text-ink-muted mt-2">{d.datapoints ? 'Every stored DataSource has a catalog entry.' : 'No raw datapoints stored yet. The metrics tier fills them after its next run.'}</p>
       ) : (
         <>
-          <p className="text-[11px] uppercase tracking-wide text-ink-faint mt-3 mb-1">Top uncovered DataSources by instances</p>
+          <p className="text-[11px] uppercase tracking-wide text-ink-faint mt-3 mb-1">DataSources with no catalog entry</p>
           <table className="w-full text-sm">
-            <thead><tr className={headRow}><th className="py-1.5 pr-3">DataSource</th><th className="py-1.5 pr-3 text-right">Instances</th><th className="py-1.5 pr-3 text-right">Datapoints</th><th className="py-1.5 pr-3 text-right">Coverage</th></tr></thead>
+            <thead><tr className={headRow}><th className="py-1.5 pr-3">DataSource</th><th className="py-1.5 pr-3 text-right">Devices</th><th className="py-1.5 pr-3 text-right">Instances</th><th className="py-1.5 pr-3 text-right">Datapoints</th><th className="py-1.5 pr-3"></th></tr></thead>
             <tbody>
               {queue.map((r) => (
                 <tr key={r.name} className="border-b border-cohesity-border/40">
                   <td className="py-1 pr-3 text-[12px] text-ink truncate max-w-[360px]" title={r.name}>{r.name}</td>
+                  <td className="py-1 pr-3 text-right tnum text-[12px] text-ink-muted">{fmtNum(r.devices)}</td>
                   <td className="py-1 pr-3 text-right tnum text-[12px] text-ink-muted">{fmtNum(r.instances)}</td>
                   <td className="py-1 pr-3 text-right tnum text-[12px] text-ink-muted">{fmtNum(r.datapoints)}</td>
-                  <td className="py-1 pr-3 text-right tnum text-[12px] text-ink-muted">{pctText(r.coveragePct)}</td>
+                  <td className="py-1 pr-3 text-right text-[11px] whitespace-nowrap">
+                    <button type="button" onClick={() => setOpen(r.name)} className="text-brand hover:underline cursor-pointer mr-3">Datapoints</button>
+                    <Link to={rawRuleLink(r.name)} className="text-brand hover:underline">Rule</Link>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </>
       )}
+      {open && <DatapointsModal name={open} onClose={() => setOpen(null)} />}
     </div>
   );
 }

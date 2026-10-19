@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, Server, Globe, Cable, Archive, Layers, Plus, Trash2 } from 'lucide-react';
+import { Activity, Server, Globe, Cable, Archive, Layers, Plus, Trash2, ListChecks } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { LoadingPanel } from '../../components/ui/primitives';
+import { LoadingPanel, Badge } from '../../components/ui/primitives';
 import { SettingRow, SettingGroup, Toggle, TabSaveBar, numberCls, inputCls } from '../../components/settings/SettingRow';
-import { SectionPanel, btnGhost } from './ui';
+import { SectionPanel, btnGhost, btnPrimary, headRow, sel, inp } from './ui';
+import { severityTone, fmtNum, arr } from './helpers';
 
 // Shared load / dirty / save / reset for one panel's keys. Values are held as
 // typed (strings); only changed keys go to PUT /logicmonitor/config.
@@ -235,7 +237,52 @@ function parseWan(text) {
 const serializeWan = (rows) => rows.filter((r) => String(r.entry || '').trim())
   .map((r) => `${r.exclude ? '!' : ''}${String(r.entry).trim()}`).join(',');
 
-const CIRC_KEYS = ['lm_circuit_sat_pct', 'lm_circuit_crit_pct', 'lm_circuit_sat_days', 'lm_wan_overrides'];
+const CIRC_KEYS = ['lm_circuit_sat_pct', 'lm_circuit_crit_pct', 'lm_circuit_sat_days', 'lm_wan_overrides', 'lm_carrier_aliases'];
+
+const BUILTIN_ALIASES = 'VZB Verizon, CTL and L3 Lumen, CGT Cogent, ECX Equinix, ZYO Zayo, ATT AT&T';
+
+function UnknownCarriers({ refreshKey }) {
+  const [list, setList] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    client.get('/logicmonitor/circuits/unknown-carriers', { params: { _: Date.now() } })
+      .then(({ data }) => {
+        const rows = Array.isArray(data) ? data : arr(data?.items);
+        if (alive) setList(rows);
+      })
+      .catch(() => { if (alive) setList([]); });
+    return () => { alive = false; };
+  }, [refreshKey]);
+  if (list == null) return <LoadingPanel label="Loading circuits..." height={60} />;
+  const cap = showAll ? list.length : 50;
+  return (
+    <div className="mt-3">
+      <p className="text-xs font-semibold text-ink mb-1">{`Circuits with no carrier (${fmtNum(list.length)})`}</p>
+      {list.length === 0 ? <p className="text-xs text-ink-muted">Every WAN circuit has a carrier.</p> : (
+        <>
+          <div className="overflow-x-auto max-h-72 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead><tr className={headRow}><th className="py-1.5 pr-3">Device</th><th className="py-1.5 pr-3">Port</th><th className="py-1.5 pr-3">Label</th></tr></thead>
+              <tbody>
+                {list.slice(0, cap).map((r, i) => (
+                  <tr key={i} className="border-b border-cohesity-border/40">
+                    <td className="py-1 pr-3 text-[12px] text-ink">{r.deviceName || '-'}</td>
+                    <td className="py-1 pr-3 text-[12px] text-ink-muted">{r.port || '-'}</td>
+                    <td className="py-1 pr-3 text-[11px] text-ink-faint truncate max-w-[480px]" title={r.label || ''}>{r.label || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {list.length > 50 && !showAll && (
+            <button type="button" onClick={() => setShowAll(true)} className="text-[11px] text-brand hover:underline cursor-pointer mt-1">{`and ${fmtNum(list.length - 50)} more`}</button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 export function LmCircuitsRulesPanel() {
   const cfg = useLmConfig(CIRC_KEYS);
@@ -288,6 +335,16 @@ export function LmCircuitsRulesPanel() {
             </div>
           </div>
         </SettingRow>
+      </SettingGroup>
+      <SettingGroup title="Carrier aliases">
+        <SettingRow label="Aliases" htmlFor="lm-lm_carrier_aliases" dirty={cfg.isDirty('lm_carrier_aliases')}
+          tip="Written token=Carrier, token2=Other. Tokens are whole words, case does not matter, and your entries win over the built-in list. Applies from the next circuit recompute.">
+          <input id="lm-lm_carrier_aliases" type="text" value={cfg.values?.lm_carrier_aliases ?? ''} onChange={(e) => cfg.set('lm_carrier_aliases', e.target.value)}
+            placeholder="token=Carrier, token2=Other" spellCheck={false} maxLength={2000} className={inputCls} />
+          <p className="text-[10px] text-ink-faint mt-1">token=Carrier, token2=Other; tokens are whole words, case does not matter; your entries win over the built-in list</p>
+        </SettingRow>
+        <p className="text-[11px] text-ink-muted mt-1">{`Built in: ${BUILTIN_ALIASES}.`}</p>
+        <UnknownCarriers refreshKey={cfg.saving ? 'saving' : 'idle'} />
       </SettingGroup>
     </PanelShell>
   );
@@ -369,5 +426,225 @@ export function LmRetentionPanel() {
           tip="Cap on LogicMonitor data calls the DataSource metrics tier makes each round, least recently polled first. One call reads all instances of one DataSource on one device. Raise it if devices fall behind, at the cost of more API load." />
       </SettingGroup>
     </PanelShell>
+  );
+}
+
+// ---- Raw datapoint rules (round 12) ------------------------------------------------
+const OPS = ['>', '>=', '<', '<=', '==', '!='];
+const SEVS = ['info', 'warning', 'critical'];
+const blankRule = { datasource: '', datapoint: '', op: '>', value: '', severity: 'warning', label: '', instanceMatch: '', deviceMatch: '' };
+
+export function LmRawRulesPanel() {
+  const { toast } = useToast();
+  const [params] = useSearchParams();
+  const [rules, setRules] = useState(null);
+  const [saved, setSaved] = useState('[]');
+  const [saving, setSaving] = useState(false);
+  const [datasources, setDatasources] = useState([]);
+  const [datapoints, setDatapoints] = useState([]);
+  const [form, setForm] = useState({ ...blankRule, datasource: params.get('datasource') || '', datapoint: params.get('datapoint') || '' });
+  const [preview, setPreview] = useState(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [counts, setCounts] = useState({});
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    client.get('/logicmonitor/raw-rules', { params: { _: Date.now() } })
+      .then(({ data }) => { const r = arr(data?.rules); setRules(r); setSaved(JSON.stringify(r)); })
+      .catch(() => { setLoadError(true); setRules([]); });
+    client.get('/logicmonitor/datasources').then(({ data }) => setDatasources(arr(data))).catch(() => setDatasources([]));
+  }, []);
+
+  useEffect(() => {
+    if (!form.datasource) { setDatapoints([]); return; }
+    client.get(`/logicmonitor/datasources/${encodeURIComponent(form.datasource)}/datapoints`)
+      .then(({ data }) => setDatapoints(arr(data))).catch(() => setDatapoints([]));
+  }, [form.datasource]);
+
+  const dirty = rules != null && JSON.stringify(rules) !== saved;
+  const setF = (patch) => { setForm((f) => ({ ...f, ...patch })); setPreview(null); };
+  const valueOk = form.value !== '' && Number.isFinite(Number(form.value));
+  const formOk = form.datasource && form.datapoint && valueOk;
+
+  const ruleBody = (f) => {
+    const r = { datasource: f.datasource, datapoint: f.datapoint, op: f.op, value: Number(f.value), severity: f.severity, enabled: true };
+    if (f.label.trim()) r.label = f.label.trim();
+    if (f.instanceMatch.trim()) r.instanceMatch = f.instanceMatch.trim();
+    if (f.deviceMatch.trim()) r.deviceMatch = f.deviceMatch.trim();
+    return r;
+  };
+
+  const runPreview = async (rule) => {
+    try {
+      const { data } = await client.post('/logicmonitor/raw-rules/preview', { rule });
+      return data || { matches: 0, sample: [] };
+    } catch (err) {
+      if (err?.response?.status === 403) toast({ type: 'error', title: 'The demo refuses changes' });
+      else toast({ type: 'error', title: 'Preview failed', message: err?.response?.data?.error });
+      return null;
+    }
+  };
+
+  const doPreview = async () => {
+    setPreviewing(true);
+    const r = await runPreview(ruleBody(form));
+    if (r) setPreview(r);
+    setPreviewing(false);
+  };
+
+  const countFor = async (rule) => {
+    setCounts((c) => ({ ...c, [rule.id]: '...' }));
+    const r = await runPreview(rule);
+    setCounts((c) => ({ ...c, [rule.id]: r ? r.matches : '-' }));
+  };
+
+  const add = () => {
+    const rule = { id: `r-${Date.now().toString(36)}`, ...ruleBody(form) };
+    setRules((cur) => [...(cur || []), rule]);
+    setForm({ ...blankRule });
+    setPreview(null);
+  };
+
+  const patchRule = (id, patch) => setRules((cur) => cur.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const remove = (r) => {
+    if (!window.confirm(`Delete the rule on ${r.datasource} / ${r.datapoint}? It applies when you press Save.`)) return;
+    setRules((cur) => cur.filter((x) => x.id !== r.id));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const { data } = await client.put('/logicmonitor/raw-rules', { rules });
+      const next = Array.isArray(data?.rules) ? data.rules : rules;
+      setRules(next); setSaved(JSON.stringify(next)); setCounts({});
+      toast({ type: 'success', title: 'Raw rules saved', message: 'Issues were re-evaluated.' });
+    } catch (err) {
+      if (err?.response?.status === 403) toast({ type: 'error', title: 'The demo refuses changes' });
+      else toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const dpRow = datapoints.find((d) => d.datapoint === form.datapoint);
+
+  return (
+    <SectionPanel icon={ListChecks} title="Raw datapoints"
+      blurb="Raise an ICC issue from any datapoint in the raw store, no catalog change needed.">
+      {rules == null ? <LoadingPanel label="Loading rules..." height={100} /> : (
+        <>
+          {loadError && <p className="text-xs text-ink-muted mb-2">Rules are not available until the backend is updated.</p>}
+          <p className="text-xs font-semibold text-ink mb-1">{`Saved rules (${rules.length})`}</p>
+          {rules.length === 0 ? <p className="text-xs text-ink-muted mb-3">No rules yet.</p> : (
+            <div className="overflow-x-auto mb-3">
+              <table className="w-full text-sm">
+                <thead><tr className={headRow}>
+                  <th className="py-1.5 pr-3">On</th><th className="py-1.5 pr-3">DataSource</th><th className="py-1.5 pr-3">Datapoint</th>
+                  <th className="py-1.5 pr-3">Condition</th><th className="py-1.5 pr-3">Severity</th><th className="py-1.5 pr-3">Label</th>
+                  <th className="py-1.5 pr-3 text-right">Matches</th><th className="py-1.5 pr-3"></th>
+                </tr></thead>
+                <tbody>
+                  {rules.map((r) => (
+                    <tr key={r.id} className="border-b border-cohesity-border/40">
+                      <td className="py-1.5 pr-3"><input type="checkbox" className="accent-brand cursor-pointer" checked={r.enabled !== false} onChange={(e) => patchRule(r.id, { enabled: e.target.checked })} aria-label="Enabled" /></td>
+                      <td className="py-1.5 pr-3 text-[12px] text-ink truncate max-w-[220px]" title={r.datasource}>{r.datasource}</td>
+                      <td className="py-1.5 pr-3 text-[12px] text-ink-muted font-mono">{r.datapoint}</td>
+                      <td className="py-1.5 pr-3 text-[12px] text-ink tnum whitespace-nowrap">{`${r.op} ${r.value}`}</td>
+                      <td className="py-1.5 pr-3"><Badge tone={severityTone(r.severity)}>{r.severity}</Badge></td>
+                      <td className="py-1.5 pr-3 text-[12px] text-ink-muted truncate max-w-[200px]" title={r.label || ''}>{r.label || '-'}</td>
+                      <td className="py-1.5 pr-3 text-right text-[12px] tnum text-ink-muted">
+                        {counts[r.id] != null ? counts[r.id] : <button type="button" onClick={() => countFor(r)} className="text-brand hover:underline cursor-pointer">Check</button>}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right"><button type="button" onClick={() => remove(r)} aria-label="Delete rule" className="text-ink-faint hover:text-red-400 cursor-pointer"><Trash2 size={14} /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="border-t border-cohesity-border/50 pt-3">
+            <p className="text-xs font-semibold text-ink mb-2">Add a rule</p>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-ink-faint mb-1" htmlFor="rr-ds">DataSource</label>
+                <select id="rr-ds" value={form.datasource} onChange={(e) => setF({ datasource: e.target.value, datapoint: '' })} className={`${sel} w-full`}>
+                  <option value="">Pick a DataSource...</option>
+                  {form.datasource && !datasources.some((d) => d.name === form.datasource) && <option value={form.datasource}>{form.datasource}</option>}
+                  {datasources.map((d) => <option key={d.name} value={d.name}>{`${d.name} (${fmtNum(d.instances)} instances)`}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] text-ink-faint mb-1" htmlFor="rr-dp">Datapoint</label>
+                <select id="rr-dp" value={form.datapoint} onChange={(e) => setF({ datapoint: e.target.value })} className={`${sel} w-full`} disabled={!form.datasource}>
+                  <option value="">Pick a datapoint...</option>
+                  {form.datapoint && !dpRow && <option value={form.datapoint}>{form.datapoint}</option>}
+                  {datapoints.map((d) => (
+                    <option key={d.datapoint} value={d.datapoint}>
+                      {`${d.datapoint} (sample: ${arr(d.samples).join(', ') || '-'})${d.catalogMetric ? ' - in catalog' : ''}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <div className="w-28">
+                  <label className="block text-[11px] text-ink-faint mb-1" htmlFor="rr-op">Operator</label>
+                  <select id="rr-op" value={form.op} onChange={(e) => setF({ op: e.target.value })} className={`${sel} w-full`}>
+                    {OPS.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-[11px] text-ink-faint mb-1" htmlFor="rr-val">Value</label>
+                  <input id="rr-val" type="number" step="any" value={form.value} onChange={(e) => setF({ value: e.target.value })} className={inp} />
+                </div>
+                <div className="w-32">
+                  <label className="block text-[11px] text-ink-faint mb-1" htmlFor="rr-sev">Severity</label>
+                  <select id="rr-sev" value={form.severity} onChange={(e) => setF({ severity: e.target.value })} className={`${sel} w-full`}>
+                    {SEVS.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] text-ink-faint mb-1" htmlFor="rr-label">Label (optional)</label>
+                <input id="rr-label" type="text" value={form.label} onChange={(e) => setF({ label: e.target.value })} className={inp} maxLength={120} placeholder="Shown in the issue message" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-ink-faint mb-1" htmlFor="rr-inst">Instance regex (optional)</label>
+                <input id="rr-inst" type="text" value={form.instanceMatch} onChange={(e) => setF({ instanceMatch: e.target.value })} className={inp} spellCheck={false} />
+              </div>
+              <div>
+                <label className="block text-[11px] text-ink-faint mb-1" htmlFor="rr-dev">Device regex (optional)</label>
+                <input id="rr-dev" type="text" value={form.deviceMatch} onChange={(e) => setF({ deviceMatch: e.target.value })} className={inp} spellCheck={false} />
+              </div>
+            </div>
+            <div className="flex items-center gap-2 mt-3">
+              <button type="button" onClick={doPreview} disabled={!formOk || previewing} className={btnGhost}>{previewing ? 'Previewing...' : 'Preview'}</button>
+              <button type="button" onClick={add} disabled={!formOk} className={btnGhost}><Plus size={13} className="inline mr-1" />Add rule</button>
+              {preview && <span className="text-xs text-ink-muted tnum">{`${fmtNum(preview.matches)} match${preview.matches === 1 ? '' : 'es'}`}</span>}
+            </div>
+            {preview && arr(preview.sample).length > 0 && (
+              <div className="overflow-x-auto max-h-56 overflow-y-auto mt-2">
+                <table className="w-full text-sm">
+                  <thead><tr className={headRow}><th className="py-1 pr-3">Device</th><th className="py-1 pr-3">Instance</th><th className="py-1 pr-3 text-right">Value</th></tr></thead>
+                  <tbody>
+                    {preview.sample.map((r, i) => (
+                      <tr key={i} className="border-b border-cohesity-border/40">
+                        <td className="py-1 pr-3 text-[12px] text-ink">{r.deviceName}</td>
+                        <td className="py-1 pr-3 text-[12px] text-ink-muted">{r.instanceName || '-'}</td>
+                        <td className="py-1 pr-3 text-right text-[12px] tnum text-ink-muted">{r.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div className="mt-4">
+            <button type="button" onClick={save} disabled={saving || !dirty} className={btnPrimary}>{saving ? 'Saving...' : 'Save rules'}</button>
+            {dirty && <span className="text-[10px] text-amber-400 ml-2">unsaved</span>}
+          </div>
+        </>
+      )}
+    </SectionPanel>
   );
 }

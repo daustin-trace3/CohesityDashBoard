@@ -188,6 +188,7 @@ export default function LmCircuitsPage() {
     ...c,
     stateRank: stateRank(c.state),
     siteLabel: c.siteName || c.siteKey || '',
+    carrierLabel: c.carrier || 'Unknown',
   })).filter((c) => !stateFilter || stateTone(c.state) === stateFilter), [rows, stateFilter]);
 
   const ctl = useTableControls(list, {
@@ -238,6 +239,7 @@ export default function LmCircuitsPage() {
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <TableSearch ctl={ctl} placeholder="Search site, device, port or label..." />
           <FilterSelect ctl={ctl} k="siteLabel" rows={list} label="sites" />
+          <FilterSelect ctl={ctl} k="carrierLabel" rows={list} label="carriers" />
           <span className="text-[11px] text-ink-faint tnum">{fmtNum(ctl.rows.length)} circuit(s)</span>
           <button onClick={recompute} disabled={busy} className={`${btn} ml-auto`} title="Re-mark WAN interfaces (admin)">
             <RefreshCw size={12} className={busy ? 'animate-spin' : ''} /> Recompute circuits
@@ -277,7 +279,7 @@ export default function LmCircuitsPage() {
                       <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.port}</td>
                       <td className="py-2 pr-3 text-ink-muted text-[12px] truncate max-w-[220px]" title={c.label}>{c.label || '-'}{c.wanReason === 'override' ? <Badge tone="neutral" className="ml-1">Forced</Badge> : null}</td>
                       <td className="py-2 pr-3 text-ink text-[12px] font-mono" title={c.circuitIdSource ? `from ${c.circuitIdSource}` : undefined}>{c.circuitId || '-'}</td>
-                      <td className="py-2 pr-3 text-ink-muted text-[12px]">{c.carrier || '-'}</td>
+                      <td className="py-2 pr-3 text-[12px]">{c.carrier ? <span className="text-ink-muted">{c.carrier}</span> : <span className="text-ink-faint" title={c.label || 'No label text'}>Unknown</span>}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtSpeed(c.speedBps)}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtPct(c.inUtilPct)}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtPct(c.outUtilPct)}</td>

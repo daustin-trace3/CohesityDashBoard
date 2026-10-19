@@ -42,6 +42,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: B, icon: Gauge, isActive: (p) => p === B },
+      { label: 'AI Advisor', route: `${B}/advisor`, icon: Sparkles, isActive: under(`${B}/advisor`), requiresAi: true },
       { label: 'Site Reachability', route: `${B}/reachability`, icon: Radar, isActive: under(`${B}/reachability`) },
       { label: 'Sites', route: `${B}/sites`, icon: MapPin, isActive: under(`${B}/sites`) },
       { label: 'Alerts', route: `${B}/alerts`, icon: Bell, isActive: under(`${B}/alerts`) },
@@ -84,7 +85,6 @@ const navGroups = [
       { label: 'Coverage', route: `${B}/coverage`, icon: ShieldAlert, isActive: under(`${B}/coverage`) },
       { label: 'Correlation', route: `${B}/correlation`, icon: GitMerge, isActive: under(`${B}/correlation`) },
       { label: 'Trends', route: `${B}/trends`, icon: LineChart, isActive: under(`${B}/trends`) },
-      { label: 'AI Advisor', route: `${B}/advisor`, icon: Sparkles, isActive: under(`${B}/advisor`), requiresAi: true },
     ],
   },
   {

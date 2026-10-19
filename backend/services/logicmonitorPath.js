@@ -467,15 +467,67 @@ const cleanPortKey = (p) => norm(lmEndpoints.cleanPort(p)).replace(/\s+/g, '');
 const CID_TEXT_RE = /\b(?:cid|ckt(?:\s*id)?|circuit(?:\s*(?:id|ref|no|number))?)\s*[:#=-]?\s*([A-Za-z0-9][A-Za-z0-9./_:-]{3,})/i;
 const CID_KEY_RE = /(circuit[._ -]?(id|ref|no|number)?$|\.cid$|^cid$|ckt)/i;
 const CARRIER_KEY_RE = /(carrier|provider|isp|telco)$/i;
-const CARRIER_RE = /\b(at&t|att|verizon|vzb|lumen|centurylink|level ?3|zayo|cogent|cgt|comcast|spectrum|charter|cox|windstream|frontier|gtt|bt|colt|vodafone|telstra|ntt|orange|tata|virgin media|openreach|megaport|equinix)\b/i;
-const CARRIER_ALIASES = { vzb: 'Verizon', cgt: 'Cogent', att: 'AT&T' };
+// Round 12: google, ctl, l3, ecx, webex, zyo and cogentco added (live descriptions such as
+// "Google Direct Peering- Order ID ...", "CTL/L3 CKT ID: ..." and "ECX Circuit ..." named no carrier).
+const CARRIER_RE = /\b(at&t|att|verizon|vzb|lumen|centurylink|ctl|level ?3|l3|zayo|zyo|cogentco|cogent|cgt|comcast|spectrum|charter|cox|windstream|frontier|gtt|bt|colt|vodafone|telstra|ntt|orange|tata|virgin media|openreach|megaport|equinix|ecx|google|webex)\b/i;
+const CARRIER_ALIASES = {
+  google: 'Google', ctl: 'Lumen', l3: 'Lumen', level3: 'Lumen', 'level 3': 'Lumen', centurylink: 'Lumen', lumen: 'Lumen',
+  ecx: 'Equinix', equinix: 'Equinix', webex: 'Cisco Webex', zyo: 'Zayo', zayo: 'Zayo', cogentco: 'Cogent', cogent: 'Cogent', cgt: 'Cogent',
+  'at&t': 'AT&T', att: 'AT&T', vzb: 'Verizon', verizon: 'Verizon', colt: 'Colt',
+};
+
+/**
+ * Parse lm_carrier_aliases: "token=Carrier Name, token2=Other" (commas or new lines)
+ * -> { token: 'Carrier Name' } with lowercase tokens. Entries without a token, a carrier
+ * or an '=' are ignored.
+ */
+function parseCarrierAliases(text) {
+  const out = {};
+  for (const part of String(text || '').split(/[,\n]/)) {
+    const i = part.indexOf('=');
+    if (i <= 0) continue;
+    const token = part.slice(0, i).trim().toLowerCase().replace(/\s+/g, ' ');
+    const carrier = part.slice(i + 1).trim();
+    if (!token || !carrier || token.length > 60 || carrier.length > 80) continue;
+    out[token] = carrier;
+  }
+  return out;
+}
+
+/** Saved aliases (parsed); {} when the setting is unreadable. */
+function loadCarrierAliases() {
+  try { return parseCarrierAliases(issuesMod().getTextSetting('lm_carrier_aliases')); } catch { return {}; }
+}
+
+/** A carrier name through the alias tables (user entries first), so VZB and Verizon read the same. */
+function normaliseCarrier(name, aliases) {
+  if (name == null) return null;
+  const raw = String(name).trim();
+  if (!raw) return null;
+  const key = raw.toLowerCase().replace(/\s+/g, ' ');
+  const compact = key.replace(/ /g, '');
+  const user = aliases || {};
+  return user[key] || user[compact] || CARRIER_ALIASES[key] || CARRIER_ALIASES[compact] || raw;
+}
+
+const escapeRx = (x) => x.replace(/[.*+?^|$(){}[\]\\]/g, '\\$&');
+/** First user alias token found as a whole word in the text, or null. */
+function userAliasIn(text, aliases) {
+  const tokens = Object.keys(aliases || {}).sort((a, b) => b.length - a.length);
+  for (const tok of tokens) {
+    const rx = new RegExp('(^|[^A-Za-z0-9])' + escapeRx(tok).replace(/ /g, '\\s+') + '(?![A-Za-z0-9])', 'i');
+    if (rx.test(text)) return aliases[tok];
+  }
+  return null;
+}
 
 /**
  * Circuit reference for one interface: {circuitId, carrier, alias, source}.
  * Instance custom properties win, then auto properties, then the ifAlias /
  * description text. props is lm_interfaces.props_json ({auto, system, custom}).
  */
-function circuitInfo(description, props) {
+function circuitInfo(description, props, aliasesArg) {
+  const aliases = aliasesArg === undefined ? loadCarrierAliases() : (aliasesArg || {});
   const p = typeof props === 'string' ? parseJson(props, {}) : (props || {});
   const alias = (p.auto && p.auto['auto.interface.alias']) || null;
   let circuitId = null; let carrier = null; let source = null;
@@ -494,11 +546,15 @@ function circuitInfo(description, props) {
       if (m && /\d/.test(m[1])) { circuitId = m[1].replace(/[.,;:]+$/, ''); source = text === alias ? 'ifAlias' : 'description'; }
     }
     if (!carrier) {
-      const c = CARRIER_RE.exec(text);
-      if (c) carrier = CARRIER_ALIASES[c[1].toLowerCase()] || c[1];
+      const own = userAliasIn(text, aliases);
+      if (own) carrier = own;
+      else {
+        const c = CARRIER_RE.exec(text);
+        if (c) carrier = c[1];
+      }
     }
   }
-  return { circuitId, carrier, alias, source };
+  return { circuitId, carrier: normaliseCarrier(carrier, aliases), alias, source };
 }
 
 /** Parse lm_wan_overrides: "dev:port,!dev:port" -> [{device, port, exclude}]. */
@@ -517,6 +573,7 @@ function computeCircuits(dbh, sourceId = null) {
   let marked = 0;
   try {
     const overrides = parseWanOverrides(issuesMod().getTextSetting('lm_wan_overrides'));
+    const aliases = loadCarrierAliases();
     const where = sourceId != null ? 'AND i.source_id = ?' : '';
     const args = sourceId != null ? [sourceId] : [];
     const rows = dbh.prepare(`
@@ -541,7 +598,7 @@ function computeCircuits(dbh, sourceId = null) {
           if (r.description && WAN_RE.test(r.description)) reason = 'carrier-description';
           else if (r.role === 'router' && r.unresolved && r.description && LINKISH_RE.test(r.description)) reason = 'unresolved-uplink';
         }
-        if (!reason && circuitInfo(r.description, r.props_json).circuitId) reason = 'circuit-id';
+        if (!reason && circuitInfo(r.description, r.props_json, aliases).circuitId) reason = 'circuit-id';
         if (!reason) continue;
         upd.run(1, reason, r.description || `${r.dev_name || r.dev_alt} ${r.display_name}`, r.source_id, r.instance_id);
         marked += 1;
@@ -582,6 +639,7 @@ function circuitRows(dbh, { sourceId = null, siteKey = null, nowMs = Date.now() 
   const out = [];
   try {
     const satPct = threshold('lm_circuit_sat_pct', 80);
+    const aliases = loadCarrierAliases();
     const critPct = threshold('lm_circuit_crit_pct', 95);
     const days = threshold('lm_circuit_sat_days', 7);
     const where = ['i.is_wan = 1', 'i.stale = 0', 'd.stale = 0'];
@@ -628,9 +686,9 @@ function circuitRows(dbh, { sourceId = null, siteKey = null, nowMs = Date.now() 
       if (critRun >= 3) satState = 'critical';
       const statusText = w.status_text || (w.status == null ? 'unknown' : Number(w.status) === 1 ? 'up' : Number(w.status) === 2 ? 'down' : 'other');
       const down = statusText === 'down' && Number(w.stop_monitoring) !== 1;
-      const ci = circuitInfo(w.description, w.props_json);
+      const ci = circuitInfo(w.description, w.props_json, aliases);
       out.push({
-        circuitId: ci.circuitId, carrier: ci.carrier, alias: ci.alias, circuitIdSource: ci.source,
+        circuitId: ci.circuitId, carrier: ci.carrier, carrierKnown: !!ci.carrier, alias: ci.alias, circuitIdSource: ci.source,
         sourceId: w.source_id, deviceId: w.lm_device_id, deviceName: w.dev_name || w.dev_alt, siteKey: w.site_key || null, siteName: w.site_name || null,
         instanceId: w.instance_id, port: w.display_name, label: w.wan_label || w.description || `${w.dev_name || w.dev_alt} ${w.display_name}`,
         wanReason: w.wan_reason, speedBps: w.speed_bps, statusText, inUtilPct: w.in_util_pct, outUtilPct: w.out_util_pct,
@@ -750,4 +808,5 @@ module.exports = {
   tierValue, computeTiers, makeContext, hopHealth, pathFor, blame, blameForCheck, likelyHopText, shadowCause,
   buildChain, findLmDevices, portObj,
   computeCircuits, parseWanOverrides, circuitRows, circuitProfile, p95, longestDayRun, circuitInfo,
+  parseCarrierAliases, loadCarrierAliases, normaliseCarrier, CARRIER_RE, CARRIER_ALIASES,
 };

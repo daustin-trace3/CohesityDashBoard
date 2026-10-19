@@ -483,7 +483,7 @@ describe('catalog against the live datapoint lists', () => {
   });
 
   it('exports a numeric catalog version', () => {
-    expect(catalog.CATALOG_VERSION).toBe(4);
+    expect(catalog.CATALOG_VERSION).toBe(5);
   });
 });
 
