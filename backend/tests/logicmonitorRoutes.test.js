@@ -551,6 +551,7 @@ describe('logicmonitor data routes', () => {
 
   it('GET /issues contract and /issue-history bare array', async () => {
     insertSource({ name: 'Broken Portal', company: 'broken', last_poll_status: 'error', last_poll_error: 'credentials rejected' });
+    require('../services/logicmonitorIssues').reconcileIssueHistory();
     const res = await request(app).get(`${API}/issues`);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.issues)).toBe(true);
@@ -574,6 +575,38 @@ describe('logicmonitor data routes', () => {
     expect(hist.body[0].firstSeen).toBe(hist.body[0].first_seen);
     expect(hist.body[1].resolvedAt).toMatch(/Z$/);
     expect((await request(app).get(`${API}/issue-history?days=90`)).body).toHaveLength(3);
+  });
+
+  it('GET /issues returns the open history rows with asOf, and request paths never run the engine', async () => {
+    db.prepare('DELETE FROM lm_issue_history').run();
+    const empty = await request(app).get(`${API}/issues`);
+    expect(empty.body).toEqual({ issues: [], asOf: null });
+
+    ins('lm_issue_history', { issue_key: 'k-info', source: 'Acme', severity: 'info', type: 'device-new', target: 'a', message: 'new', status: 'open', first_seen: sqlTs(HOUR), last_seen: sqlTs(0) });
+    ins('lm_issue_history', { issue_key: 'k-crit', source: 'Acme', severity: 'critical', type: 'device-dead', target: 'edge-rt1', message: 'dead', status: 'open', first_seen: sqlTs(2 * HOUR), last_seen: sqlTs(5 * MIN) });
+    ins('lm_issue_history', { issue_key: 'k-old', source: 'Acme', severity: 'warning', type: 'x', target: 'b', message: 'old', status: 'resolved', first_seen: sqlTs(3 * DAY), last_seen: sqlTs(2 * DAY), resolved_at: sqlTs(DAY) });
+
+    const lmIssues = require('../services/logicmonitorIssues');
+    const spy = vi.spyOn(lmIssues, 'computeIssues');
+    try {
+      const res = await request(app).get(`${API}/issues`);
+      expect(res.status).toBe(200);
+      expect(res.body.issues.map((i) => i.issueKey)).toEqual(['k-crit', 'k-info']);
+      expect(res.body.issues[0]).toMatchObject({ severity: 'critical', type: 'device-dead', source: 'Acme', target: 'edge-rt1', message: 'dead' });
+      expect(res.body.issues[0].firstSeen).toMatch(/Z$/);
+      expect(res.body.issues[0].lastSeen).toMatch(/Z$/);
+      expect(res.body.asOf).toBe(res.body.issues.map((i) => i.lastSeen).sort().pop());
+
+      expect((await request(app).get(`${API}/summary`)).status).toBe(200);
+      expect((await request(app).get(`${API}/overview`)).status).toBe(200);
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+
+    // No open rows: asOf falls back to the newest resolved_at.
+    db.prepare(`UPDATE lm_issue_history SET status = 'resolved', resolved_at = ? WHERE status = 'open'`).run(sqlTs(HOUR));
+    const resolved = await request(app).get(`${API}/issues`);
+    expect(resolved.body.issues).toEqual([]);
+    expect(resolved.body.asOf).toMatch(/Z$/);
   });
 
   it('GET /trends buckets by range', async () => {
@@ -1259,6 +1292,7 @@ describe('logicmonitor round 8 routes: metrics, firewalls, load balancers', () =
     met(299, 'Cisco_CPU_SNMP', 'health', 'c1', 'cpu_pct', 91);
     met(299, 'Cisco_FRU_Power', 'health', 'PS2', 'psu_state', 3);
     ins('lm_device_datasources', { source_id: sid8, lm_device_id: 201, hds_id: hdsOf.get('201|PaloAlto_FW_GlobalSessions'), datasource_id: 1, datasource_name: 'PaloAlto_FW_GlobalSessions', datasource_display_name: 'PAN sessions', instance_count: 1, metrics_last_at: sqlTs(5 * MIN) });
+    require('../services/logicmonitorIssues').reconcileIssueHistory();
   });
   afterEach(() => { wipe(); });
 
@@ -1523,6 +1557,7 @@ describe('logicmonitor wireless routes', () => {
     wm(402, 'Cisco_Wireless_RADIUSAuthServers', '10.0.0.1', 'radius_status', 1);
     wm(402, 'Cisco_Wireless_RADIUSAuthServers', '10.0.0.1', 'radius_timeouts', 3);
     wm(402, 'Cisco_Wireless_HighAvailability', '0', 'wlc_primary_unit', 1);
+    require('../services/logicmonitorIssues').reconcileIssueHistory();
   });
   afterEach(() => { wipe(); });
 
@@ -1712,6 +1747,7 @@ describe('logicmonitor round 11 routes: voice, zscaler, ise', () => {
       metV(id, 'ntm_cisco_ise_memory_cpu', 'security', 'system', 'cpu_pct', 20);
       metV(id, 'ntm_deployment_nodes_status', 'security', 'node', 'node_state', 1);
     }
+    require('../services/logicmonitorIssues').reconcileIssueHistory();
   });
   afterEach(() => { wipe(); db.prepare('DELETE FROM lm_latency_episodes').run(); });
 

@@ -182,6 +182,8 @@ describe('Applications routes', () => {
     m(3, 'EMC_Unity_Pool', 'Pool_1', 'emc_health', 1);
     m(3, 'EMC_Unity_Pool', 'Pool_1', 'emc_cap_used_pct', 88);
     dev(4, 'phx-core-01', { vendor: 'Cisco', role: 'switch' });
+    // Routes read the reconciled table, so reconcile after seeding (the poller does this per tick).
+    lmIssues.reconcileIssueHistory();
   });
 
   it('GET /applications lists one row per device with apps data, with kinds, figures and state', async () => {

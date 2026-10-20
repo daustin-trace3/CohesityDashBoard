@@ -60,7 +60,7 @@ function CurrentIssuesPanel({ cfg, rows, history }) {
   return (
     <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${cfg.brand}` }}>
       <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="text-xs font-semibold text-ink">Open Issues <span className="text-ink-faint font-normal">— current state, recomputed on every request</span></div>
+        <div className="text-xs font-semibold text-ink">Open Issues <span className="text-ink-faint font-normal">- {cfg.base === '/logicmonitor' ? 'as last reconciled by the poller' : 'current state, recomputed on every request'}</span></div>
         <CsvExportButton filename={`${cfg.base.slice(1)}-issues`} rows={ctl.rows} columns={csvColumns} />
       </div>
       <TableControls ctl={ctl} rows={list} searchPlaceholder="Filter by message, type or target…"
@@ -163,9 +163,10 @@ export default function IssueAlertsPage({ platform }) {
   const [history, setHistory] = useState(null);
   const [days, setDays] = useState(30);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [asOf, setAsOf] = useState(null);
 
   const load = useCallback(() => Promise.all([
-    client.get(`${cfg.base}/issues`).then(({ data }) => setIssues(Array.isArray(data) ? data : data?.issues || [])),
+    client.get(`${cfg.base}/issues`).then(({ data }) => { setIssues(Array.isArray(data) ? data : data?.issues || []); setAsOf(data?.asOf ? new Date(data.asOf) : null); }),
     client.get(`${cfg.base}/issue-history`, { params: { days } }).then(({ data }) => setHistory(data)).catch(() => setHistory([])),
   ]).then(() => setLastRefreshed(new Date()))
     .catch(() => { setIssues([]); toast({ type: 'error', title: 'Failed to load alerts' }); }), [toast, cfg.base, days]);
@@ -183,6 +184,7 @@ export default function IssueAlertsPage({ platform }) {
             </button>
           ))}
         </div>
+        {asOf && <LastUpdated date={asOf} prefix="As of" />}
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>

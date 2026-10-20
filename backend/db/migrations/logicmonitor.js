@@ -917,4 +917,13 @@ module.exports = [
       `);
     },
   },
+
+  // Migration v11. Open-alert lookups ("WHERE cleared = 0" with no source_id)
+  // scanned the whole table; every other index starts with source_id.
+  {
+    version: 11,
+    up(db) {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lm_alerts_open ON lm_alerts(cleared);');
+    },
+  },
 ];

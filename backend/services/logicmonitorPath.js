@@ -705,7 +705,7 @@ function longestDayRun(days) {
  * lm_circuit_crit_pct on 3 consecutive days); state also turns critical when
  * the circuit is down.
  */
-function circuitRows(dbh, { sourceId = null, siteKey = null, nowMs = Date.now() } = {}) {
+function circuitRowsUncached(dbh, { sourceId = null, siteKey = null, nowMs = Date.now() } = {}) {
   const out = [];
   try {
     const satPct = threshold('lm_circuit_sat_pct', 80);
@@ -785,6 +785,13 @@ function circuitRows(dbh, { sourceId = null, siteKey = null, nowMs = Date.now() 
     }
   } catch { /* no circuits */ }
   return out;
+}
+
+const { memoByDbState: memoPath } = require('../core/dbMemo');
+/** Memoized per db state and 10 s bucket; callers must treat the result as read-only. */
+function circuitRows(dbh, opts = {}) {
+  const { sourceId = null, siteKey = null, nowMs = Date.now() } = opts || {};
+  return memoPath(dbh, `circuits|${sourceId}|${siteKey}|${Math.floor(nowMs / 10000)}`, () => circuitRowsUncached(dbh, { sourceId, siteKey, nowMs }));
 }
 
 /** Hour-of-day profile (UTC) and the last 30 daily rows of one circuit; null when unknown. */

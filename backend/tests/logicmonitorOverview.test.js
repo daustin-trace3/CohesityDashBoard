@@ -43,6 +43,7 @@ function ins(table, row) {
   return db.prepare(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`)
     .run(...cols.map((c) => row[c])).lastInsertRowid;
 }
+const reconcile = () => require('../services/logicmonitorIssues').reconcileIssueHistory();
 const sqlTs = (msAgo) => new Date(Date.now() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
 const nowSec = () => Math.floor(Date.now() / 1000);
 const MIN = 60 * 1000;
@@ -146,6 +147,11 @@ describe('buildOverview', () => {
 
   it('rolls the seeded estate into counters, health, nodes, edges, circuits, burning and trends', async () => {
     seed();
+    reconcile();
+    // seed() hand-dates three history rows; every other row the reconcile just
+    // opened is older than those, so the ranking assertions below keep their meaning.
+    db.prepare(`UPDATE lm_issue_history SET first_seen = ? WHERE status = 'open' AND issue_key NOT IN (?, ?, ?)`)
+      .run(sqlTs(10 * HOUR), 'check-down|Acme Ops|Ping den', 'device-dead|Acme Ops|den-sw1', 'circuit-saturated|Acme Ops|phx-rtr1 Gi0/0/1');
     const res = await request(app).get('/api/logicmonitor/overview');
     expect(res.status).toBe(200);
     const o = res.body;
@@ -238,6 +244,7 @@ describe('buildOverview', () => {
     ins('lm_checks', { source_id: sid, check_id: 'w:9', kind: 'ping', origin: 'website', name: 'Ping ext', target: '8.8.8.8', is_internal: 1, site_key: 'denver', stale: 0 });
     ins('lm_check_locations', { source_id: sid, check_id: 'w:9', checkpoint_id: 'c9', label: 'phx-col01', collector_id: 1, site_key: 'phoenix', is_overall: 0, last_status: 'down', last_sample_epoch: nowSec(), stale: 0 });
     ins('lm_check_locations', { source_id: sid, check_id: 'w:9', checkpoint_id: 'overall9', label: 'Overall', is_overall: 1, last_status: 'down', last_sample_epoch: nowSec(), stale: 0 });
+    reconcile();
     const o = buildOverview(db, {});
     const ext = o.burning.find((b) => b.type === 'check-down' && b.target === 'Ping ext');
     expect(ext).toBeTruthy();
@@ -258,6 +265,7 @@ describe('buildOverview', () => {
       ins('lm_check_locations', { source_id: sid, check_id: `w:${n}0`, checkpoint_id: `d${n}`, label: 'den-col01', collector_id: 2, site_key: 'denver', is_overall: 0, last_status: 'down', last_sample_epoch: nowSec(), stale: 0 });
       ins('lm_check_locations', { source_id: sid, check_id: `w:${n}0`, checkpoint_id: `o${n}`, label: 'Overall', is_overall: 1, last_status: 'up', last_sample_epoch: nowSec(), stale: 0 });
     }
+    reconcile();
     const o = buildOverview(db, {});
     const row = o.burning.find((b) => b.type === 'location-degraded');
     expect(row).toBeTruthy();

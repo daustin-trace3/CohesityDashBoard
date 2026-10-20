@@ -164,8 +164,28 @@ function buildRanges() {
 }
 const buildLabels = () => Object.fromEntries(Object.entries(defs()).map(([k, d]) => [k, d.label]));
 
+// RULE: request paths read the reconciled lm_issue_history table (open rows);
+// the issue engine runs only in the poller, inside the
+// reconcile transaction. Never run the engine from a route.
 function safeIssues() {
-  return lmIssues().computeIssues() || [];
+  return db.prepare(`
+    SELECT issue_key, source, severity, type, target, message, first_seen, last_seen
+    FROM lm_issue_history
+    WHERE status = 'open'
+    ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 WHEN 'info' THEN 2 ELSE 3 END,
+             last_seen DESC
+  `).all().map((r) => ({
+    severity: r.severity, type: r.type, source: r.source, target: r.target, message: r.message,
+    issueKey: r.issue_key, firstSeen: sqlIso(r.first_seen), lastSeen: sqlIso(r.last_seen),
+  }));
+}
+
+/** ISO time of the newest open last_seen, else newest resolved_at, else null. */
+function issuesAsOf() {
+  const open = db.prepare(`SELECT MAX(last_seen) AS t FROM lm_issue_history WHERE status = 'open'`).get();
+  if (open && open.t) return sqlIso(open.t);
+  const res = db.prepare(`SELECT MAX(resolved_at) AS t FROM lm_issue_history WHERE resolved_at IS NOT NULL`).get();
+  return (res && res.t) ? sqlIso(res.t) : null;
 }
 
 // ---- Public source shape (never a secret) ----------------------------------
@@ -2822,7 +2842,7 @@ router.get('/endpoints/summary', [
 // ---- Issues, history, trends, SDT, topology --------------------------------
 
 router.get('/issues', (req, res, next) => {
-  try { res.json({ issues: safeIssues() }); } catch (err) { next(err); }
+  try { res.json({ issues: safeIssues(), asOf: issuesAsOf() }); } catch (err) { next(err); }
 });
 
 // BARE ARRAY. Raw snake_case columns (what IssueAlertsPage reads: type,

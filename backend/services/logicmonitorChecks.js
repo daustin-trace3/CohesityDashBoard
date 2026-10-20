@@ -372,7 +372,7 @@ function evaluateLocationRule({ lastStatus, recent, baseline, t }) {
  *   baselineSamples, meanRttMs, meanLossPct, anomaly, severity, lmAlertOpen}]
  * The routes use this for the /checks matrix cells.
  */
-function evaluateLocations(db, { nowMs = Date.now(), sourceId = null } = {}) {
+function evaluateLocationsUncached(db, { nowMs = Date.now(), sourceId = null } = {}) {
   const t = checkThresholds();
   const hour = new Date(nowMs).getUTCHours();
   const locs = db.prepare(`
@@ -438,6 +438,13 @@ function evaluateLocations(db, { nowMs = Date.now(), sourceId = null } = {}) {
     });
   }
   return out;
+}
+
+const { memoByDbState: memoChecks } = require('../core/dbMemo');
+/** Memoized per db state and 10 s bucket; callers must treat the result as read-only. */
+function evaluateLocations(db, opts = {}) {
+  const { nowMs = Date.now(), sourceId = null } = opts || {};
+  return memoChecks(db, `evalLoc|${sourceId}|${Math.floor(nowMs / 10000)}`, () => evaluateLocationsUncached(db, { nowMs, sourceId }));
 }
 
 function fromText(loc) {
