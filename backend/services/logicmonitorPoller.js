@@ -236,18 +236,45 @@ function runAlertUpsert(stmt, sourceId, a, cleared, ingest) {
  * a row still open locally that neither pass reported is closed with
  * closed_reason 'not_reported' (the fallback when the cleared pass misses it).
  */
-const storeAlerts = db.transaction((sourceId, openRows, clearedRows, { openOk = true } = {}) => {
+const ALERT_WRITE_CHUNK = 200;
+const alertWriteChunk = db.transaction((sourceId, part) => {
   const stmt = prepareAlertUpsert(db);
-  const openIds = [];
-  for (const a of openRows || []) { if (a.cleared) continue; openIds.push(a.lmAlertId); runAlertUpsert(stmt, sourceId, a, false, 'poll'); }
-  for (const a of clearedRows || []) runAlertUpsert(stmt, sourceId, a, true, 'poll');
-  if (openOk) {
-    db.prepare(`
-      UPDATE lm_alerts SET cleared = 1, closed_reason = 'not_reported', end_epoch = ?, updated_at = datetime('now')
-      WHERE source_id = ? AND cleared = 0 AND lm_alert_id NOT IN (SELECT value FROM json_each(?))
-    `).run(nowSec(), sourceId, JSON.stringify(openIds));
-  }
+  for (const [a, c] of part) runAlertUpsert(stmt, sourceId, a, c, 'poll');
 });
+const alertCloseUnreported = db.transaction((sourceId, openIds) => {
+  db.prepare(`
+    UPDATE lm_alerts SET cleared = 1, closed_reason = 'not_reported', end_epoch = ?, updated_at = datetime('now')
+    WHERE source_id = ? AND cleared = 0 AND lm_alert_id NOT IN (SELECT value FROM json_each(?))
+  `).run(nowSec(), sourceId, JSON.stringify(openIds));
+});
+function storeAlerts(sourceId, openRows, clearedRows, { openOk = true } = {}) {
+  const open = (openRows || []).filter((a) => !a.cleared && a.lmAlertId != null);
+  const cleared = (clearedRows || []).filter((a) => a.lmAlertId != null);
+  const openIds = open.map((a) => a.lmAlertId);
+  // One read of what is already on record, outside any write lock: a row that
+  // the portal still reports unchanged is not rewritten (the raw_json blob is
+  // most of the write), and a cleared row stays as it was closed.
+  const known = new Map();
+  const ids = [...new Set([...openIds, ...cleared.map((a) => a.lmAlertId)])];
+  for (let i = 0; i < ids.length; i += 500) {
+    const rows = db.prepare(`
+      SELECT lm_alert_id, cleared, acked, sdted, alert_value, ack_comment, suppressor, severity
+      FROM lm_alerts WHERE source_id = ? AND lm_alert_id IN (SELECT value FROM json_each(?))
+    `).all(sourceId, JSON.stringify(ids.slice(i, i + 500)));
+    for (const r of rows) known.set(String(r.lm_alert_id), r);
+  }
+  const str = (v) => (v == null ? '' : String(v));
+  const unchangedOpen = (a, r) => !!r && !r.cleared && Number(r.acked || 0) === Number(a.acked || 0)
+    && Number(r.sdted || 0) === Number(a.sdted || 0) && str(r.alert_value) === str(a.alertValue)
+    && str(r.ack_comment) === str(a.ackComment) && str(r.suppressor) === str(a.suppressor)
+    && Number(r.severity) === Number(a.severity);
+  const writes = [];
+  for (const a of open) if (!unchangedOpen(a, known.get(String(a.lmAlertId)))) writes.push([a, false]);
+  for (const a of cleared) { const r = known.get(String(a.lmAlertId)); if (!(r && r.cleared)) writes.push([a, true]); }
+  for (let i = 0; i < writes.length; i += ALERT_WRITE_CHUNK) alertWriteChunk(sourceId, writes.slice(i, i + ALERT_WRITE_CHUNK));
+  if (openOk) alertCloseUnreported(sourceId, openIds);
+  return { written: writes.length, skipped: open.length + cleared.length - writes.length };
+}
 
 /**
  * The one writer both ingest paths share. alertLike carries the REST field
