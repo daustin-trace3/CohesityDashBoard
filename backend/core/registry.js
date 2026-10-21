@@ -248,6 +248,14 @@ function setEnabled(id, enabled) {
   return true;
 }
 
+/** Platform profiles a pack or built-in hands the Operations Agent
+ *  (manifest.agentProfile, partial allowed). */
+function getAgentProfileProviders() {
+  return Array.from(plugins.values())
+    .filter((e) => e.manifest && e.manifest.agentProfile && typeof e.manifest.agentProfile === 'object')
+    .map((e) => ({ id: e.id, profile: e.manifest.agentProfile }));
+}
+
 /** Capabilities a pack hands the Operations Agent (manifest.agentCapabilities,
  *  an array of the same shape as backend/services/agentCapabilities/capabilities/*).
  *  The agent namespaces their ids by pack id. */
@@ -288,6 +296,7 @@ module.exports = {
   getIncidentEvidenceProviders,
   getSiteProviders,
   getAgentCapabilityProviders,
+  getAgentProfileProviders,
   setEnabled,
   isEntitled,
   setIsEntitledFn,

@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Sparkles, KeyRound, FileText, Activity, Bot, Mail, Wrench, ShieldCheck } from 'lucide-react';
+import { Sparkles, KeyRound, FileText, Activity, Bot, Mail, Wrench, ShieldCheck, Layers } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
 import { useToast } from '../components/ui/Toaster';
 import { useAuth } from '../auth/AuthContext';
 import PrivacyInspectorPage from '../components/PrivacyInspectorPage';
 import AgentCapabilitiesPanel from '../components/AgentCapabilitiesPanel';
+import AgentProfilesPanel from '../components/AgentProfilesPanel';
 import TeamsNotifyPanel from '../components/settings/TeamsNotifyPanel';
 import {
   SettingRow, SettingGroup, Toggle, TabSaveBar, inputCls, numberCls, selectCls,
@@ -24,6 +25,7 @@ export const INTEL_TABS = [
   { key: 'agent', label: 'Operations Agent', icon: Bot, requiresAi: true },
   { key: 'email', label: 'Agent notifications', icon: Mail, requiresAi: true },
   { key: 'capabilities', label: 'Capabilities', icon: Wrench, requiresAi: true },
+  { key: 'profiles', label: 'Platform profiles', icon: Layers, requiresAi: true },
   { key: 'privacy', label: 'Privacy', icon: ShieldCheck, requiresAi: true, permission: 'admin:ai-audit:view' },
 ];
 
@@ -324,6 +326,7 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
 
   const renderTab = () => {
     if (tab === 'capabilities') return <AgentCapabilitiesPanel />;
+    if (tab === 'profiles') return <AgentProfilesPanel />;
     if (tab === 'privacy') {
       return (
         <PrivacyInspectorPage platform="ops-agent" embedded title="Operations Agent privacy"

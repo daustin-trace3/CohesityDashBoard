@@ -264,6 +264,15 @@ router.put('/', (req, res, next) => {
       if (a.emailEnabled !== undefined) setSetting('ops_agent_email_enabled', a.emailEnabled ? '1' : '0');
       if (a.recipients !== undefined) setSetting('ops_agent_recipients', String(a.recipients).trim().slice(0, 2000));
       if (a.capabilities && typeof a.capabilities === 'object') require('../services/agentCapabilities').saveEnabled(a.capabilities);
+      if (a.platformProfiles !== undefined) {
+        try {
+          const actor = req.auth?.user || req.user || null;
+          require('../services/agentProfiles').saveOverrides(a.platformProfiles, actor);
+        } catch (err) {
+          if (err.code === 'BAD_PROFILE') return res.status(400).json({ error: err.message, field: err.field });
+          throw err;
+        }
+      }
       if (a.teamsEnabled !== undefined) setSetting('ops_agent_teams_enabled', a.teamsEnabled ? '1' : '0');
       if (a.teamsOnResolve !== undefined) setSetting('ops_agent_teams_on_resolve', a.teamsOnResolve ? '1' : '0');
       // Write-only secret: a URL saves it encrypted, null clears it, a blank

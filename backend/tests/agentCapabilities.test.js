@@ -71,7 +71,7 @@ describe('targets come from inventory, never free text', () => {
     attach(inc, 'dell', `poll:${ome}`, 'OME-A');
     const t = caps.targetsFor(inc, alertsOf(inc.id));
     expect(t).toEqual([
-      expect.objectContaining({ kind: 'host', platform: 'dell', name: 'r740-07', address: '10.1.2.3', ports: [443] }),
+      expect.objectContaining({ kind: 'host', platform: 'dell', name: 'r740-07', address: '10.1.2.3', hostKind: 'device', ports: [443, 22, 5900] }),
       expect.objectContaining({ kind: 'source', platform: 'dell', name: 'OME-A', address: 'ome.lab.local', ports: [443] }),
     ]);
   });
@@ -82,6 +82,95 @@ describe('targets come from inventory, never free text', () => {
     expect(caps.targetsFor(inc, alertsOf(inc.id))).toEqual([]);
     expect(caps.hostAddress('pure', 'mystery')).toMatchObject({ address: null });
     expect(caps.hostAddress('pure', 'filer.corp.example')).toMatchObject({ address: 'filer.corp.example' });
+  });
+});
+
+describe('ports come from the platform profile', () => {
+  beforeEach(() => {
+    db.exec('DELETE FROM vcenter_vms; DELETE FROM vcenter_hosts; DELETE FROM vcenter_vcenters;');
+    setSetting('ops_agent_platform_profiles', '');
+    db.prepare("INSERT INTO vcenter_vcenters (id, name, host, username, encrypted_credentials) VALUES (1, 'vc-a', 'vc-a.lab.local', 'u', 'x')").run();
+  });
+
+  const vm = (name, os, ip) => db.prepare('INSERT INTO vcenter_vms (vcenter_id, vm_id, name, guest_os, ip_address) VALUES (1, ?, ?, ?, ?)').run(`vm-${name}`, name, os, ip);
+  const targetFor = (host) => {
+    const inc = insertIncident(`host:${host}`, host, ['vcenter']);
+    attach(inc, 'vcenter', `v:${host}`, host);
+    return caps.targetsFor(inc, alertsOf(inc.id));
+  };
+
+  it('a Windows guest gets 3389, 445 and 5985; a Linux guest gets 22', () => {
+    vm('win-app-01', 'Microsoft Windows Server 2022 (64-bit)', '10.5.0.11');
+    vm('lnx-app-01', 'Red Hat Enterprise Linux 9 (64-bit)', '10.5.0.12');
+    vm('odd-app-01', 'FreeBSD (64-bit)', '10.5.0.13');
+    const w = targetFor('win-app-01')[0];
+    expect(w).toMatchObject({ kind: 'host', hostKind: 'vm', osFamily: 'windows', address: '10.5.0.11', ports: [3389, 445, 5985] });
+    expect(w.portEntries[0]).toEqual({ port: 3389, label: 'RDP', expect: true });
+    expect(targetFor('lnx-app-01')[0]).toMatchObject({ hostKind: 'vm', osFamily: 'linux', ports: [22] });
+    expect(targetFor('odd-app-01')[0]).toMatchObject({ hostKind: 'vm', osFamily: 'other', ports: [443] });
+  });
+
+  it('an ESX host gets 443, 902, 22 and 903, the two reachable ones expected', () => {
+    db.prepare("INSERT INTO vcenter_hosts (vcenter_id, host_id, name, cluster_name) VALUES (1, 'host-1', 'esx-07.lab.local', 'prod')").run();
+    const t = targetFor('esx-07')[0];
+    expect(t).toMatchObject({ hostKind: 'esx', address: 'esx-07.lab.local', ports: [443, 902, 22, 903] });
+    expect(t.portEntries.filter((e) => e.expect).map((e) => e.port)).toEqual([443, 902]);
+  });
+
+  it('a user override changes the ports a target gets', () => {
+    db.prepare("INSERT INTO vcenter_hosts (vcenter_id, host_id, name, cluster_name) VALUES (1, 'host-1', 'esx-07.lab.local', 'prod')").run();
+    require('../services/agentProfiles').saveOverrides({ vcenter: { ports: { host: [{ port: 8443, label: 'alt', expect: true }] } } }, 'tester');
+    expect(targetFor('esx-07')[0]).toMatchObject({ ports: [8443] });
+  });
+});
+
+describe('tcp_port against a profile port list', () => {
+  const tcp = require('../services/agentCapabilities/capabilities/tcp_port');
+  let open; let openPort; let closedPort;
+  beforeEach(async () => {
+    open = net.createServer((s) => s.end());
+    await new Promise((r) => open.listen(0, '127.0.0.1', r));
+    openPort = open.address().port;
+    const tmp = net.createServer();
+    await new Promise((r) => tmp.listen(0, '127.0.0.1', r));
+    closedPort = tmp.address().port;
+    await new Promise((r) => tmp.close(r));
+  });
+  afterEach(() => new Promise((r) => open.close(r)));
+
+  it('is ok when every expected port is open and lists the informational ones apart', async () => {
+    const r = await tcp.run({ address: '127.0.0.1', portEntries: [
+      { port: openPort, label: 'HTTPS', expect: true },
+      { port: closedPort, label: 'console', expect: false },
+    ] });
+    expect(r.ok).toBe(true);
+    expect(r.summary).toMatch(new RegExp(`^1 of 1 expected open: ${openPort} HTTPS \\(\\d+ ms\\); not expected from ICC: ${closedPort} console closed`));
+    expect(r.data.ports).toHaveLength(2);
+    expect(r.data.ports[1]).toMatchObject({ port: closedPort, label: 'console', expect: false, open: false });
+  });
+
+  it('fails when an expected port is closed, even with another open', async () => {
+    const r = await tcp.run({ address: '127.0.0.1', portEntries: [
+      { port: openPort, label: 'SSH', expect: true },
+      { port: closedPort, label: 'HTTPS', expect: true },
+    ] });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/^1 of 2 expected open:/);
+  });
+
+  it('with nothing expected, any open port is ok; bare numbers count as expected', async () => {
+    const any = await tcp.run({ address: '127.0.0.1', portEntries: [{ port: openPort, label: '', expect: false }, { port: closedPort, label: '', expect: false }] });
+    expect(any.ok).toBe(true);
+    const none = await tcp.run({ address: '127.0.0.1', portEntries: [{ port: closedPort, label: '', expect: false }] });
+    expect(none.ok).toBe(false);
+    const nums = await tcp.run({ address: '127.0.0.1', ports: [openPort, closedPort] });
+    expect(nums.ok).toBe(false);
+    expect(nums.summary).toMatch(/^1 of 2 expected open/);
+  });
+
+  it('applies only when the target has ports to try', () => {
+    expect(tcp.appliesTo({ ports: [], portEntries: [] })).toBe(false);
+    expect(tcp.appliesTo({ ports: [443], portEntries: [{ port: 443, label: '', expect: true }] })).toBe(true);
   });
 });
 

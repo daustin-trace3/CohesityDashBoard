@@ -802,3 +802,97 @@ describe('webhook wake flag', () => {
     expect(agent.wakeCheck()).toBe(false);          // same flag again
   });
 });
+
+describe('platform profiles: relations and evidence budget', () => {
+  const registry = require('../core/registry');
+  const added = [];
+  const fake = (id) => {
+    try {
+      registry.registerPlugin({ id, name: id, apiVersion: registry.PLUGIN_API_VERSION, migrations: [], createRouter: () => (req, res, next) => next() });
+      added.push(id);
+    } catch { /* already registered by another suite */ }
+  };
+  afterEach(() => { while (added.length) registry.unregisterPlugin(added.pop()); });
+
+  const seedIncident = (host, platforms = ['vcenter'], alertCount = 1) => {
+    const id = db.prepare(`
+      INSERT INTO ops_incidents (incident_key, title, host, platforms, severity, state, opened_at, hold_until, last_event_at, event_count)
+      VALUES (?, ?, ?, ?, 'critical', 'collecting', ?, ?, ?, ?)
+    `).run(`host:${host}`, host, host, JSON.stringify(platforms), NOW, NOW, NOW, alertCount).lastInsertRowid;
+    for (let i = 0; i < alertCount; i++) {
+      db.prepare(`INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, first_seen, attached_at)
+        VALUES (?, ?, ?, 'critical', ?, ?, ?, ?)`).run(id, platforms[0], `k${i}`, host, `alert ${i}`, new Date(Date.parse(NOW) + i * 1000).toISOString(), NOW);
+    }
+    return id;
+  };
+
+  const seedChain = () => {
+    db.exec(`DELETE FROM vcenter_vms; DELETE FROM vcenter_hosts; DELETE FROM vcenter_vcenters; DELETE FROM cohesity_objects; DELETE FROM clusters;
+             DELETE FROM zerto_vms; DELETE FROM dell_devices; DELETE FROM dell_ome_instances;`);
+    db.prepare("INSERT INTO vcenter_vcenters (id, name, host, username, encrypted_credentials) VALUES (1, 'vc-a', 'vc-a.lab', 'u', 'x')").run();
+    db.prepare("INSERT INTO vcenter_hosts (vcenter_id, host_id, name, cluster_name, service_tag) VALUES (1, 'h1', 'esx-07.lab.local', 'prod', 'TAG1')").run();
+    db.prepare("INSERT INTO vcenter_vms (vcenter_id, vm_id, name, host_name, cluster_name, guest_os) VALUES (1, 'v1', 'web-01', 'esx-07.lab.local', 'prod', 'Ubuntu Linux (64-bit)')").run();
+    const cl = db.prepare("INSERT INTO clusters (name, connection_type, vip, auth_type, encrypted_credentials) VALUES ('snx2', 'direct', '10.0.0.1', 'apikey', 'x')").run().lastInsertRowid;
+    db.prepare("INSERT INTO cohesity_objects (cluster_id, object_id, name, is_protected, last_backup_ms, protection_groups) VALUES (?, 1, 'web-01', 1, ?, '[\"PG-Gold\"]')").run(cl, Date.now() - 5 * 3600000);
+    db.prepare("INSERT INTO zerto_vms (vm_identifier, name, vpg_names, vpg_statuses) VALUES ('z1', 'web-01', 'VPG-Web', 'MeetingSLA')").run();
+    const ome = db.prepare("INSERT INTO dell_ome_instances (name, host, username, encrypted_credentials) VALUES ('OME', 'ome.lab', 'u', 'x')").run().lastInsertRowid;
+    db.prepare("INSERT INTO dell_devices (ome_id, device_id, name, service_tag, model, health) VALUES (?, 1, 'esx-07', 'TAG1', 'PowerEdge R740', 'Healthy')").run(ome);
+  };
+
+  it('writes the VM -> host -> Cohesity -> Zerto -> Dell chain into evidence.relations', async () => {
+    ['vcenter', 'zerto', 'dell'].forEach(fake);
+    seedChain();
+    const id = seedIncident('web-01');
+    await agent.retriage(id);
+    const rel = agent.getIncident(id).evidence.relations;
+    expect(rel).toEqual(expect.arrayContaining([
+      'VM web-01 runs on host esx-07.lab.local in cluster prod (vc-a)',
+      expect.stringMatching(/^web-01 is protected by Cohesity group PG-Gold on snx2, last good backup 5 hours ago$/),
+      'web-01 is replicated by Zerto VPG VPG-Web (MeetingSLA)',
+      'host esx-07.lab.local is Dell PowerEdge R740, service tag TAG1, OME status Healthy',
+    ]));
+    expect(rel.length).toBeLessThanOrEqual(8);
+    for (const l of rel) expect(l.length).toBeLessThanOrEqual(200);
+  });
+
+  it('emits nothing for platforms that are not enabled, and nothing when no rows match', async () => {
+    seedChain();
+    const id = seedIncident('web-01'); // no platform registered at all, Cohesity setting on
+    await agent.retriage(id);
+    expect(agent.getIncident(id).evidence.relations).toEqual([]);
+    ['vcenter'].forEach(fake);
+    const id2 = seedIncident('unknown-box');
+    await agent.retriage(id2);
+    expect(agent.getIncident(id2).evidence.relations).toEqual([]);
+  });
+
+  it('trims each platform to its evidence budget and counts the rest as omitted', () => {
+    const id = seedIncident('esx-01', ['vcenter'], 20);
+    const inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
+    const ev = agent.gatherIncidentEvidence(inc, alertsOf(id));
+    expect(ev.alerts).toHaveLength(15);
+    expect(ev.alertsTotal).toBe(20);
+    expect(ev.alertsOmitted).toBe(5);
+    // newest first inside the same severity
+    expect(ev.alerts[0].message).toBe('alert 19');
+  });
+
+  it('puts How these systems connect in the text and html email only when there are relations', () => {
+    const inc = { id: 9, platforms: '["vcenter"]', severity: 'critical', title: 'x', opened_at: NOW, triage_error: null };
+    const analysis = agent.fallbackTriage({ incident: { platforms: ['vcenter'] }, alerts: [], hosts: [] });
+    const relations = ['VM web-01 runs on host esx-07 in cluster prod (vc-a)'];
+    const mail = agent.renderEmail(inc, [], analysis, { relations });
+    expect(mail.text).toContain('HOW THESE SYSTEMS CONNECT\n- VM web-01 runs on host esx-07 in cluster prod (vc-a)');
+    expect(mail.html).toContain('How these systems connect');
+    const plain = agent.renderEmail(inc, [], analysis, {});
+    expect(plain.text).not.toContain('HOW THESE SYSTEMS CONNECT');
+    expect(plain.html).not.toContain('How these systems connect');
+  });
+
+  it('builds the triage system prompt from the incident platforms only', () => {
+    const built = agent.systemPromptFor({ incident: { platforms: ['vcenter'] }, alerts: [{ platform: 'vcenter', cleared: false }] });
+    expect(built.focusUsed).toEqual(['vcenter']);
+    expect(built.system).toMatch(/Platform notes, vCenter:/);
+    expect(built.system).not.toMatch(/Cohesity/);
+  });
+});

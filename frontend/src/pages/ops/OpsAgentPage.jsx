@@ -320,6 +320,11 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                     {live.unresolved?.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Not checked, no stored address: {live.unresolved.join('; ')}.</p>}
                   </Section>
                 )}
+                {Array.isArray(inc.evidence?.relations) && inc.evidence.relations.length > 0 && (
+                  <Section title="How these systems connect">
+                    <CollapsibleList className="text-ink-muted" items={inc.evidence.relations.map(String)} render={(l) => l} />
+                  </Section>
+                )}
                 {networkBlocks.map((n, ni) => (
                   <Section key={`net-${ni}`} title={n.title || 'Network'}>
                     <CollapsibleList className="text-ink-muted" items={n.lines.map(String)} render={(l) => l} />

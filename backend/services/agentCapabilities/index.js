@@ -22,6 +22,7 @@ const logger = require('../../utils/logger');
 const { getSetting, setSetting } = require('../settings');
 const { isDemo } = require('../demoMode');
 const registry = require('../../core/registry');
+const agentProfiles = require('../agentProfiles');
 
 const SETTING_KEY = 'ops_agent_capabilities';
 const RISK_CLASSES = ['read-only', 'network-probe', 'platform-api', 'action'];
@@ -31,17 +32,10 @@ const CONCURRENCY = 4;
 const MAX_TARGETS = 6;
 const RUN_LOG_DAYS = 30;
 
-// Management ports ICC may probe per platform source. Fixed on purpose: the
-// list is part of the audit story ("ICC only ever connects to these").
-const SOURCE_PORTS = {
-  cohesity: [443], pure: [443], netapp: [443], vcenter: [443], dell: [443], aria: [443], ariaops: [443],
-  unifi: [443], brocade: [443], bluecat: [443], eon: [443], zerto: [443], logicmonitor: [443],
-};
-const HOST_PORTS = {
-  dell: [443], vcenter: [443, 902], brocade: [22, 443], bluecat: [22, 443], unifi: [22, 443], zerto: [443, 9669],
-  logicmonitor: [22, 443, 161],
-};
-const DEFAULT_PORTS = [443];
+// Which ports ICC probes comes from the platform profile (agentProfiles):
+// defaults shipped with ICC, a pack's manifest.agentProfile, or the customer's
+// own map under Global Settings > Platform profiles. A profile never adds a
+// target, only says which ports to try on targets the incident already names.
 
 // ---------------------------------------------------------------------------
 // Catalog
@@ -182,27 +176,32 @@ function hostAddress(platform, host) {
   if (!name) return null;
   const short = name.replace(/\s*\([^)]*\)\s*$/, '').split(/[\s,]/)[0];
   const lc = short.toLowerCase();
+  // [platform, sql, args, kind]. kind picks the port list: an ESX host and a VM
+  // guest each have their own, every other inventory row is a device.
   const lookups = [
-    ['dell', 'SELECT ip_address a FROM dell_devices WHERE lower(name) = ? OR lower(service_tag) = ?', [lc, lc]],
-    ['vcenter', 'SELECT ip_address a FROM vcenter_vms WHERE lower(name) = ? OR lower(guest_hostname) = ?', [lc, lc]],
-    ['brocade', 'SELECT ip_address a FROM brocade_switches WHERE lower(name) = ?', [lc]],
-    ['bluecat', 'SELECT address a FROM bluecat_servers WHERE lower(name) = ?', [lc]],
-    ['zerto', 'SELECT zvm_ip a FROM zerto_sites WHERE lower(name) = ?', [lc]],
-    ['unifi', 'SELECT ip a FROM unifi_devices WHERE lower(name) = ?', [lc]],
-    ['logicmonitor', "SELECT COALESCE(NULLIF(name,''), display_name) a FROM lm_devices WHERE lower(display_name) = ?", [lc]],
+    ['dell', 'SELECT ip_address a FROM dell_devices WHERE lower(name) = ? OR lower(service_tag) = ?', [lc, lc], 'device'],
+    ['vcenter', "SELECT name a FROM vcenter_hosts WHERE lower(name) = ? OR lower(substr(name, 1, instr(name || '.', '.') - 1)) = ?", [lc, lc], 'esx'],
+    ['vcenter', 'SELECT ip_address a, guest_os os FROM vcenter_vms WHERE lower(name) = ? OR lower(guest_hostname) = ?', [lc, lc], 'vm'],
+    ['brocade', 'SELECT ip_address a FROM brocade_switches WHERE lower(name) = ?', [lc], 'device'],
+    ['bluecat', 'SELECT address a FROM bluecat_servers WHERE lower(name) = ?', [lc], 'device'],
+    ['zerto', 'SELECT zvm_ip a FROM zerto_sites WHERE lower(name) = ?', [lc], 'device'],
+    ['unifi', 'SELECT ip a FROM unifi_devices WHERE lower(name) = ?', [lc], 'device'],
+    ['logicmonitor', "SELECT COALESCE(NULLIF(name,''), display_name) a FROM lm_devices WHERE lower(display_name) = ?", [lc], 'device'],
   ];
   // The alerting platform's own table first, then any other that knows the name.
   lookups.sort((x, y) => (x[0] === platform ? -1 : 0) - (y[0] === platform ? -1 : 0));
-  for (const [, sql, args] of lookups) {
+  for (const [via, sql, args, kind] of lookups) {
     const r = sq(sql, ...args);
-    if (r && r.a) return { name: short, address: hostPart(r.a) };
+    if (r && r.a) return { name: short, address: hostPart(r.a), kind, via, osFamily: kind === 'vm' ? agentProfiles.osFamilyOf(r.os) : undefined };
   }
-  if (IPV4.test(short) || short.includes('.')) return { name: short, address: short };
-  return { name: short, address: null, note: 'no address on record' };
+  if (IPV4.test(short) || short.includes('.')) return { name: short, address: short, kind: 'device', via: platform };
+  return { name: short, address: null, note: 'no address on record', kind: 'device', via: platform };
 }
 
 /** Targets for one incident: alert hosts and the sources behind poll:/stale:
- *  alerts, de-duplicated, capped. Each carries the fixed port list for its kind. */
+ *  alerts, de-duplicated, capped. Each carries the port list the platform
+ *  profile gives for its kind: portEntries ({ port, label, expect }) for
+ *  tcp_port, and ports (the same port numbers) for the other capabilities. */
 function targetsFor(inc, alerts) {
   const out = [];
   const seen = new Set();
@@ -217,12 +216,18 @@ function targetsFor(inc, alerts) {
     const m = /^(poll|stale):(\d+)$/.exec(String(a.source_key || ''));
     if (m) {
       const s = sourceAddress(a.platform, m[2]);
-      if (s) push({ kind: 'source', platform: a.platform, name: s.name, address: s.address, ports: SOURCE_PORTS[a.platform] || DEFAULT_PORTS, note: s.note });
+      if (s) {
+        const portEntries = agentProfiles.portsForTarget({ platform: a.platform, kind: 'source' });
+        push({ kind: 'source', platform: a.platform, name: s.name, address: s.address, ports: portEntries.map((e) => e.port), portEntries, note: s.note });
+      }
       continue;
     }
     if (!a.host) continue;
     const h = hostAddress(a.platform, a.host);
-    if (h) push({ kind: 'host', platform: a.platform, name: h.name, address: h.address, ports: HOST_PORTS[a.platform] || DEFAULT_PORTS, note: h.note });
+    if (h) {
+      const portEntries = agentProfiles.portsForTarget({ platform: h.via || a.platform, kind: h.kind || 'device', osFamily: h.osFamily });
+      push({ kind: 'host', hostKind: h.kind || 'device', osFamily: h.osFamily, platform: a.platform, name: h.name, address: h.address, ports: portEntries.map((e) => e.port), portEntries, note: h.note });
+    }
   }
   return out;
 }

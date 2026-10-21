@@ -4,6 +4,7 @@
 const express = require('express');
 const agent = require('../services/opsAgent');
 const capabilities = require('../services/agentCapabilities');
+const agentProfiles = require('../services/agentProfiles');
 const { requirePermission } = require('../middleware/requirePermission');
 
 const router = express.Router();
@@ -88,6 +89,34 @@ router.get('/capability-runs', (req, res, next) => {
     const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
     const incidentId = req.query.incident ? Number(req.query.incident) : null;
     res.json(capabilities.listRuns({ limit, incidentId }));
+  } catch (err) { next(err); }
+});
+
+/** Platform profiles for the enabled platforms: focus text, port map, guest
+ *  ports, evidence budget and relation sentences, each with its default and
+ *  where the current value comes from. Saved through PUT /api/settings
+ *  { opsAgent: { platformProfiles: { <id>: { focus, ports, guestPorts } } } }. */
+router.get('/profiles', (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ profiles: agentProfiles.listProfiles(), maxFocus: agentProfiles.MAX_FOCUS, osFamilies: agentProfiles.OS_FAMILIES });
+  } catch (err) { next(err); }
+});
+
+/** The system prompt a triage of this incident would send, built from its
+ *  stored evidence. No model call and no probes. */
+router.get('/prompt-preview', requirePermission(() => 'admin:settings:view'), (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const inc = agent.getIncident(Number(req.query.incidentId));
+    if (!inc) return res.status(404).json({ error: 'Incident not found.' });
+    const evidence = inc.evidence || { incident: { platforms: inc.platforms }, alerts: [] };
+    if (!evidence.incident) evidence.incident = { platforms: inc.platforms };
+    const built = agent.systemPromptFor(evidence);
+    res.json({
+      system: built.system, focusUsed: built.focusUsed, chars: built.chars, approxTokens: Math.ceil(built.chars / 4),
+      evidenceChars: JSON.stringify(evidence).length, relations: evidence.relations || [],
+    });
   } catch (err) { next(err); }
 });
 
