@@ -88,8 +88,9 @@ if (getLicenseStatus().state === 'missing') {
 // Only listen + start pollers when run directly (pm2/node server.js).
 // Tests build the app via createApp() without side effects.
 if (require.main === module) {
-  app.listen(PORT, '0.0.0.0', () => {
-    logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT})`);
+  const { installLifecycle, identity } = require('./utils/processLifecycle');
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    logger.info(`Backend listening on 0.0.0.0:${PORT} (local: http://localhost:${PORT}) ${identity()}`);
     if (isDemo()) {
       logger.info('[Demo] Demo mode — pollers disabled');
       // Packs re-seed their own platform tables at boot (fresh relative
@@ -174,6 +175,7 @@ if (require.main === module) {
     }
     initLicense();
   });
+  installLifecycle(server, PORT);
 }
 
 module.exports = app;
