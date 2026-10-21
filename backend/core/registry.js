@@ -163,6 +163,17 @@ function toPublic(entry) {
   };
 }
 
+/** Drop a registered plugin (tests and pack upgrades). */
+function unregisterPlugin(id) {
+  const entry = plugins.get(id);
+  if (!entry) return false;
+  const h = entry.poller;
+  if (h && typeof h.stopAll === 'function') { try { h.stopAll(); } catch { /* best effort */ } }
+  datasetCatalog.unregisterNamespace(id);
+  plugins.delete(id);
+  return true;
+}
+
 function getPlugin(id) {
   const entry = plugins.get(id);
   return entry ? toPublic(entry) : undefined;
@@ -297,6 +308,7 @@ module.exports = {
   getSiteProviders,
   getAgentCapabilityProviders,
   getAgentProfileProviders,
+  unregisterPlugin,
   setEnabled,
   isEntitled,
   setIsEntitledFn,
