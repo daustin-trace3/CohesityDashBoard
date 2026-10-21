@@ -89,6 +89,16 @@ function scanAndRegisterInstalled({ registry, settings } = {}) {
     const indexPath = path.join(pluginsDir, id, 'backend', 'index.cjs');
     if (!fs.existsSync(indexPath)) continue;
 
+    // On this branch a compiled-in platform registers before the installed
+    // packs are scanned and the registry refuses a second manifest with the
+    // same id, so an installed pack for a built-in platform never runs (the
+    // CG box carried a brocade pack this way, 2026-10-21). Say so once per
+    // boot instead of logging a registration error.
+    if (reg.getPlugin(id)) {
+      logger.warn(`[pluginBoot] installed pack '${id}' skipped: the platform is compiled into this build and already registered, so the pack never runs. Remove it from Global Settings > Plugins or delete ${path.join(pluginsDir, id)}.`);
+      continue;
+    }
+
     let pluginModule;
     try {
       const resolved = require.resolve(path.resolve(indexPath));

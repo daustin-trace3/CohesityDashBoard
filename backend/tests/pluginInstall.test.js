@@ -11,7 +11,7 @@
  * and services/pluginInstaller.js all resolve to the SAME module instances
  * (see the equivalent note in tests/platformPlugins.test.js).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createRequire } from 'module';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -185,6 +185,31 @@ describe('plugin install lifecycle', () => {
     pluginBoot.scanAndRegisterInstalled();
 
     expect(registry.getPlugin('demo').version).toBe('0.2.0');
+  });
+
+  it('an installed pack whose id is already registered as a built-in is skipped with a warning, not an error', () => {
+    const logger = require('../utils/logger');
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      registry.registerPlugin({
+        id: 'brocade', name: 'Brocade SAN (built-in)', apiVersion: 1, version: 'built-in',
+        createRouter() { return (req, res, next) => next(); },
+      });
+      const dir = path.join(pluginsDir, 'brocade', 'backend');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'index.cjs'), "module.exports = { id: 'brocade', name: 'Brocade pack', apiVersion: 1, createRouter() { return (req, res, next) => next(); } };");
+      fs.writeFileSync(path.join(pluginsDir, 'brocade', 'manifest.json'), JSON.stringify({ id: 'brocade', version: '1.0.4' }));
+
+      expect(() => pluginBoot.scanAndRegisterInstalled()).not.toThrow();
+
+      expect(registry.getPlugin('brocade').version).toBe('built-in');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/installed pack 'brocade' skipped/));
+      expect(error).not.toHaveBeenCalledWith(expect.stringMatching(/failed to register/), expect.anything());
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('rejects an install claiming a built-in platform id', async () => {
