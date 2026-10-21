@@ -993,8 +993,9 @@ const ANOMALY_TYPES = new Set(['latency-anomaly', 'packet-loss-anomaly', 'interf
 
 const circuits = require('./logicmonitorCircuits');
 
-const reconcileIssueHistoryTxn = db.transaction(() => {
-  const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
+// The issue engine runs OUTSIDE the write lock (it takes a second or more on a
+// large estate); only the row reconciliation holds the transaction.
+const reconcileIssueHistoryTxn = db.transaction((current) => {
   const open = db.prepare("SELECT * FROM lm_issue_history WHERE status = 'open'").all();
   const clearAbsences = getThreshold('lm_issue_clear_absences');
 
@@ -1073,10 +1074,14 @@ function computeShadows(dbh = db, opts = {}) {
     const causes = new Map();
     const upd = dbh.prepare('UPDATE lm_alerts SET shadowed_by = ? WHERE id = ?');
     const culprits = new Set();
+    // Causes are resolved outside the write lock; the transaction only writes.
+    for (const r of rows) {
+      const k = `${r.source_id}:${r.lm_device_id}`;
+      if (!causes.has(k)) causes.set(k, lmPath.shadowCause(dbh, ctx, r.source_id, r.lm_device_id));
+    }
     dbh.transaction(() => {
       for (const r of rows) {
         const k = `${r.source_id}:${r.lm_device_id}`;
-        if (!causes.has(k)) causes.set(k, lmPath.shadowCause(dbh, ctx, r.source_id, r.lm_device_id));
         const c = causes.get(k);
         const next = c ? JSON.stringify({ deviceId: c.deviceId, deviceName: c.deviceName, port: c.port, reason: c.reason, sourceId: c.sourceId }) : null;
         if (c) { res.shadowed += 1; culprits.add(`${c.sourceId}:${c.deviceId}`); }
@@ -1096,7 +1101,8 @@ function computeShadows(dbh = db, opts = {}) {
 const reconcileIssueHistory = () => {
   try { computeShadows(db); } catch { /* best effort */ }
   try { circuits.computeSiteWanState(db); } catch { /* best effort */ }
-  const out = reconcileIssueHistoryTxn.immediate();
+  const current = new Map(computeIssues().map((i) => [issueKey(i), i]));
+  const out = reconcileIssueHistoryTxn.immediate(current);
   pruneInBatches(db, 'lm_issue_history', "status = 'resolved' AND resolved_at < datetime('now', '-90 days')");
   return out;
 };
