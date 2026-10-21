@@ -244,7 +244,8 @@ function withTimeout(promise, ms, what) {
 
 async function runOne(cap, target, ctx) {
   const started = Date.now();
-  const rec = { capability: cap.id, label: cap.label, risk: cap.risk, target: { kind: target.kind, platform: target.platform, name: target.name, address: target.address }, at: new Date(started).toISOString() };
+  const requestedBy = ctx.requestedBy || 'playbook';
+  const rec = { capability: cap.id, label: cap.label, risk: cap.risk, requestedBy, target: { kind: target.kind, platform: target.platform, name: target.name, address: target.address }, at: new Date(started).toISOString() };
   try {
     const r = await withTimeout(Promise.resolve(cap.run(target, ctx)), RUN_TIMEOUT_MS, `${cap.id} on ${target.name}`);
     rec.ok = r && r.ok !== false;
@@ -256,9 +257,10 @@ async function runOne(cap, target, ctx) {
     rec.data = null;
   }
   rec.durationMs = Date.now() - started;
+  if (ctx.reason) rec.reason = String(ctx.reason).slice(0, 200);
   try {
-    db.prepare('INSERT INTO ops_capability_runs (incident_id, capability, risk, target_kind, platform, target_name, target_address, ok, summary, result_json, ran_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(ctx.incidentId ?? null, cap.id, cap.risk, target.kind, target.platform, target.name, target.address, rec.ok ? 1 : 0, String(rec.summary).slice(0, 500), JSON.stringify(rec.data), rec.at, rec.durationMs);
+    db.prepare('INSERT INTO ops_capability_runs (incident_id, capability, risk, target_kind, platform, target_name, target_address, ok, summary, result_json, ran_at, duration_ms, requested_by, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(ctx.incidentId ?? null, cap.id, cap.risk, target.kind, target.platform, target.name, target.address, rec.ok ? 1 : 0, String(rec.summary).slice(0, 500), JSON.stringify(rec.data), rec.at, rec.durationMs, requestedBy, rec.reason || null);
   } catch (err) {
     logger.warn(`[AgentCapabilities] run log not written: ${err.message}`);
   }
@@ -315,7 +317,7 @@ function unresolvedNotes(inc, alerts) {
 function listRuns({ limit = 50, incidentId = null } = {}) {
   const where = incidentId ? 'WHERE incident_id = ?' : '';
   const args = incidentId ? [incidentId, limit] : [limit];
-  return db.prepare(`SELECT id, incident_id incidentId, capability, risk, target_kind targetKind, platform, target_name targetName, target_address targetAddress, ok, summary, ran_at ranAt, duration_ms durationMs FROM ops_capability_runs ${where} ORDER BY id DESC LIMIT ?`)
+  return db.prepare(`SELECT id, incident_id incidentId, capability, risk, target_kind targetKind, platform, target_name targetName, target_address targetAddress, ok, summary, ran_at ranAt, duration_ms durationMs, requested_by requestedBy, reason FROM ops_capability_runs ${where} ORDER BY id DESC LIMIT ?`)
     .all(...args).map((r) => ({ ...r, ok: !!r.ok }));
 }
 
@@ -325,4 +327,5 @@ function _setBuiltins(list) { builtins = list; }
 module.exports = {
   catalog, listCapabilities, isEnabled, saveEnabled, enabledMap, targetsFor, runPlaybook, listRuns,
   sourceAddress, hostAddress, hostPart, RISK_CLASSES, SETTING_KEY, _setBuiltins,
+  runOne, withTimeout, unresolvedNotes, PLAYBOOK_TIMEOUT_MS, RUN_TIMEOUT_MS,
 };

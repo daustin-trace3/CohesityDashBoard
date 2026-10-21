@@ -309,12 +309,13 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                   </Section>
                 )}
                 {live?.results?.length > 0 && (
-                  <Section title={`What ${agentName} checked live (from the ICC server)`}>
+                  <Section title={`What ${agentName} checked live (from the ICC server)${live.results.some((c) => c.requestedBy === 'model') ? ' (asked for by the agent)' : ''}`}>
                     <CollapsibleList items={live.results} className="text-ink-muted"
                       render={(c) => (
                         <>
                           <span className={c.ok ? 'text-status-ok font-semibold' : 'text-status-crit font-semibold'}>{c.ok ? 'OK' : 'FAILED'}</span>{' '}
                           {c.label || c.capability} on {c.target?.name}{c.target?.address && c.target.address !== c.target.name ? <span className="text-ink-faint"> ({c.target.address})</span> : null}: {c.summary}
+                          {c.requestedBy === 'model' && c.reason ? <span className="block text-[11px] text-ink-faint">Asked for by the agent: {c.reason}</span> : null}
                         </>
                       )} />
                     {live.unresolved?.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Not checked, no stored address: {live.unresolved.join('; ')}.</p>}

@@ -261,6 +261,11 @@ router.put('/', (req, res, next) => {
       if (a.evidenceResolve !== undefined) setSetting('ops_agent_evidence_resolve', a.evidenceResolve ? '1' : '0');
       if (a.patternMin !== undefined) { const n = Number(a.patternMin); setSetting('ops_agent_pattern_min', n >= 2 && n <= 20 ? String(Math.round(n)) : ''); }
       if (a.patternDays !== undefined) { const n = Number(a.patternDays); setSetting('ops_agent_pattern_days', n >= 1 && n <= 90 ? String(Math.round(n)) : ''); }
+      if (a.capabilityMode !== undefined) {
+        if (!['playbook', 'tools'].includes(a.capabilityMode)) return res.status(400).json({ error: 'capabilityMode must be playbook or tools' });
+        setSetting('ops_agent_capability_mode', a.capabilityMode);
+      }
+      if (a.maxToolCalls !== undefined) { const n = Number(a.maxToolCalls); setSetting('ops_agent_max_tool_calls', n >= 1 && n <= 12 ? String(Math.round(n)) : ''); }
       if (a.emailEnabled !== undefined) setSetting('ops_agent_email_enabled', a.emailEnabled ? '1' : '0');
       if (a.recipients !== undefined) setSetting('ops_agent_recipients', String(a.recipients).trim().slice(0, 2000));
       if (a.capabilities && typeof a.capabilities === 'object') require('../services/agentCapabilities').saveEnabled(a.capabilities);

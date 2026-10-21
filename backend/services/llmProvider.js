@@ -150,7 +150,7 @@ function failedError(e, provider, model) {
  * LLM_REQUEST_FAILED. No temperature/max_tokens are sent (GPT-5 family rejects
  * a custom temperature and uses max_completion_tokens).
  */
-async function chatCompletion(messages, { responseFormat, timeout = 90000 } = {}) {
+async function chatCompletionRaw(messages, { responseFormat, tools, toolChoice, timeout = 90000 } = {}) {
   const p = resolveProvider();
   if (!p.configured) throw notConfigured();
   let model = p.model;
@@ -160,15 +160,23 @@ async function chatCompletion(messages, { responseFormat, timeout = 90000 } = {}
   const body = { messages };
   if (model) body.model = model;
   if (responseFormat) body.response_format = responseFormat;
+  if (tools && tools.length) body.tools = tools;
+  if (toolChoice) body.tool_choice = toolChoice;
   try {
     const resp = await axios.post(`${p.endpoint}/chat/completions`, body, {
       headers: authHeaders(p.apiToken, { 'Content-Type': 'application/json' }),
       timeout,
     });
-    return resp.data?.choices?.[0]?.message?.content?.trim();
+    const choice = resp.data?.choices?.[0] || {};
+    return { message: choice.message || { role: 'assistant', content: null }, finishReason: choice.finish_reason || null };
   } catch (e) {
     throw failedError(e, p.provider, model);
   }
+}
+
+async function chatCompletion(messages, { responseFormat, timeout = 90000 } = {}) {
+  const { message } = await chatCompletionRaw(messages, { responseFormat, timeout });
+  return message?.content?.trim();
 }
 
 /**
@@ -207,4 +215,4 @@ async function testEndpoint({ endpoint, apiToken, model }) {
   return out;
 }
 
-module.exports = { PROVIDERS, normalizeEndpoint, authHeaders, resolveProvider, isConfigured, chatCompletion, listModels, testEndpoint };
+module.exports = { PROVIDERS, normalizeEndpoint, authHeaders, resolveProvider, isConfigured, chatCompletion, chatCompletionRaw, listModels, testEndpoint };

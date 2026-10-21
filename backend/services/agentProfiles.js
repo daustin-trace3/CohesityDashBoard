@@ -54,6 +54,13 @@ const CORE_HEAD =
   'Platform notes below apply only to the platforms in this incident. ' +
   'Say plainly when the evidence is thin. ';
 
+// Tools mode only (ops_agent_capability_mode = 'tools'): one block placed right
+// after the relations sentence in the core.
+const TOOLS_SENTENCE =
+  'You may call the listed checks against the targets in this incident. Call a check only when its result would ' +
+  'change your conclusion, give the reason in the call, and never call the same check on the same target twice. ' +
+  'Each call costs time; when you have enough evidence, answer. In reviewed, state each check you ran and what it showed. ';
+
 const CORE_TAIL =
   'Respond ONLY with a JSON object: ' +
   '{"classification": "incident" | "one-off" | "recurring" | "noise", "confidence": "high"|"medium"|"low", ' +
@@ -290,11 +297,16 @@ function pickFocus(platforms, evidence) {
 
 /** { system, focusUsed, chars }. reserve = characters the caller will append
  *  afterwards (estate context, anonymizer note), counted against the 6000 guard. */
-function buildSystemPrompt({ platforms = [], evidence = null, reserve = 0 } = {}) {
+function buildSystemPrompt({ platforms = [], evidence = null, reserve = 0, tools = false } = {}) {
   const picked = pickFocus(platforms, evidence);
+  let head = CORE_HEAD;
+  if (tools) {
+    const at = head.indexOf('network, when present');
+    head = at > 0 ? head.slice(0, at) + TOOLS_SENTENCE + head.slice(at) : head + TOOLS_SENTENCE;
+  }
   const blockOf = (x, text) => `Platform notes, ${x.name}: ${text} `;
   const blocks = picked.map((x) => ({ ...x, text: x.focus }));
-  const size = () => CORE_HEAD.length + CORE_TAIL.length + reserve + blocks.reduce((n, b) => n + blockOf(b, b.text).length, 0);
+  const size = () => head.length + CORE_TAIL.length + reserve + blocks.reduce((n, b) => n + blockOf(b, b.text).length, 0);
   // Over the guard: shorten notes from the last platform backwards.
   while (blocks.length && size() > PROMPT_CHAR_LIMIT) {
     const last = blocks[blocks.length - 1];
@@ -303,7 +315,7 @@ function buildSystemPrompt({ platforms = [], evidence = null, reserve = 0 } = {}
     if (keep >= 80) last.text = `${last.text.slice(0, keep - 3).trimEnd()}...`;
     else blocks.pop();
   }
-  const system = CORE_HEAD + blocks.map((b) => blockOf(b, b.text)).join('') + CORE_TAIL;
+  const system = head + blocks.map((b) => blockOf(b, b.text)).join('') + CORE_TAIL;
   return { system, focusUsed: blocks.map((b) => b.id), chars: system.length };
 }
 

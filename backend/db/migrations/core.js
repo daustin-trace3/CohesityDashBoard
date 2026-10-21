@@ -655,4 +655,14 @@ module.exports = [
       if (!cols.has('teams_error')) db.exec('ALTER TABLE ops_incidents ADD COLUMN teams_error TEXT');
     },
   },
+  // Agent decides mode: who asked for a capability run (the playbook or the
+  // model) and the reason the model gave.
+  {
+    version: 28, // feat/multi-tenant numbers this v29
+    up(db) {
+      const cols = new Set(db.prepare('PRAGMA table_info(ops_capability_runs)').all().map((c) => c.name));
+      if (!cols.has('requested_by')) db.exec('ALTER TABLE ops_capability_runs ADD COLUMN requested_by TEXT');
+      if (!cols.has('reason')) db.exec('ALTER TABLE ops_capability_runs ADD COLUMN reason TEXT');
+    },
+  },
 ];

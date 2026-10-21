@@ -260,6 +260,10 @@ function getOpsAgentSettings() {
     // window it takes before the agent says so and asks for a person.
     patternMin: numSetting('ops_agent_pattern_min', 3, 2, 20),
     patternDays: numSetting('ops_agent_pattern_days', 14, 1, 90),
+    // 'playbook' runs every enabled check on every target before triage;
+    // 'tools' offers them to the model, which calls the ones it needs.
+    capabilityMode: getSetting('ops_agent_capability_mode') === 'tools' ? 'tools' : 'playbook',
+    maxToolCalls: numSetting('ops_agent_max_tool_calls', 6, 1, 12),
     emailEnabled: getSetting('ops_agent_email_enabled') !== '0',
     recipients: (getSetting('ops_agent_recipients') || '').trim(),
     // Teams is a second channel beside email (a Power Automate workflow URL,

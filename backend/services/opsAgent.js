@@ -19,7 +19,9 @@ const alertNotifier = require('./alertNotifier');
 const serviceStatus = require('./serviceStatus');
 const appSvc = require('./appServiceStatus');
 const registry = require('../core/registry');
-const { chatCompletion, resolveProvider, isConfigured } = require('./llmProvider');
+const llmProvider = require('./llmProvider');
+const { chatCompletion, resolveProvider, isConfigured } = llmProvider;
+const agentTools = require('./agentCapabilities/tools');
 const { createAnonymizer, PROMPT_NOTE } = require('./anonymizer');
 const { recordExchange, attachResponse } = require('./aiAudit');
 const { getSetting, setSetting, getNotificationSettings, getOpsAgentSettings, getTeamsWebhook } = require('./settings');
@@ -727,19 +729,19 @@ function humanFromEvidence(evidence) {
 /** The triage system prompt for one incident's evidence: core + focus blocks
  *  for the platforms present (agentProfiles) + estate context + anonymizer
  *  note. Shared by the triage call and the prompt preview route. */
-function systemPromptFor(evidence) {
+function systemPromptFor(evidence, { tools = false } = {}) {
   const inc = (evidence && evidence.incident) || {};
   const platforms = [...new Set([...(inc.platforms || []), ...((evidence && evidence.alerts) || []).map((a) => a.platform)].filter(Boolean))];
   const ec = (getSetting('llm_estate_context') || '').trim();
   const tail = (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
-  const built = agentProfiles.buildSystemPrompt({ platforms, evidence, reserve: tail.length });
+  const built = agentProfiles.buildSystemPrompt({ platforms, evidence, reserve: tail.length, tools });
   const system = built.system + tail;
   logger.debug(`[OpsAgent] prompt chars=${system.length} focus=[${built.focusUsed.join(',')}] relations=${((evidence && evidence.relations) || []).length}`);
   return { system, focusUsed: built.focusUsed, chars: system.length };
 }
 
-function buildMessages(evidence, anon) {
-  const { system } = systemPromptFor(evidence);
+function buildMessages(evidence, anon, { tools = false } = {}) {
+  const { system } = systemPromptFor(evidence, { tools });
   return [
     { role: 'system', content: system },
     { role: 'user', content: `Incident and evidence (JSON):\n${JSON.stringify(anon.anonymize(evidence))}` },
@@ -778,16 +780,101 @@ function shapeAnalysis(parsed, anon, fallback) {
   return out;
 }
 
+let toolRejectWarned = false;
+const FINAL_NUDGE = 'No more checks are available. Answer now with the JSON object only, using the evidence you have.';
+
+/** Agent decides mode: offer the enabled capabilities to the model as tools and
+ *  run the ones it asks for, within the call budget and the time budget.
+ *  Returns { content, liveChecks, transcript }. A provider that rejects tool
+ *  calling gets the playbook instead (one warning per process). */
+async function triageWithTools(inc, alerts, evidence, settings, anon, messages) {
+  const toolset = agentTools.buildToolset(inc, alerts, anon, { evidence });
+  const unresolved = capabilities.unresolvedNotes(inc, alerts);
+  const none = (skipped) => ({ ran: false, skipped, results: [], unresolved });
+  const plainCall = async (lc) => {
+    evidence.liveChecks = lc;
+    const plain = buildMessages(evidence, anon, { tools: false });
+    const content = await chatCompletion(plain, { responseFormat: { type: 'json_object' }, timeout: 90000 });
+    return { content, liveChecks: lc, transcript: null };
+  };
+  if (!toolset.tools.length) {
+    const anyOn = capabilities.catalog().some((c) => c.playbook !== false && capabilities.isEnabled(c.id));
+    return plainCall(none(anyOn ? 'no target with a stored address' : 'no capability is switched on'));
+  }
+  const maxCalls = settings.maxToolCalls || 6;
+  const started = Date.now();
+  const conv = [...messages];
+  const results = [];
+  const transcript = [];
+  let calls = 0;
+  let nudged = false;
+  for (let round = 0; round < maxCalls + 2; round += 1) {
+    const exhausted = calls >= maxCalls || Date.now() - started >= agentTools.MAX_TOOL_LOOP_MS;
+    if (exhausted && !nudged) { conv.push({ role: 'user', content: FINAL_NUDGE }); nudged = true; }
+    const opts = { tools: toolset.tools, timeout: 90000 };
+    if (exhausted) { opts.toolChoice = 'none'; opts.responseFormat = { type: 'json_object' }; }
+    let resp;
+    try {
+      resp = await llmProvider.chatCompletionRaw(conv, opts);
+    } catch (err) {
+      if (round === 0 && err.code === 'LLM_REQUEST_FAILED' && /HTTP 4\d\d/.test(err.message || '')) {
+        if (!toolRejectWarned) { toolRejectWarned = true; logger.warn('[OpsAgent] provider rejected tool calling, this triage uses the playbook'); }
+        let lc;
+        try { lc = await capabilities.runPlaybook(inc, alerts, { evidence }); }
+        catch (e2) { lc = none(`live checks failed: ${e2.message}`); }
+        return plainCall(lc);
+      }
+      throw err;
+    }
+    const msg = resp.message || {};
+    const wanted = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    if (!wanted.length || exhausted) {
+      const lc = results.length ? { ran: true, results, unresolved } : none('agent decided no live check was needed');
+      return { content: typeof msg.content === 'string' ? msg.content.trim() : '', liveChecks: lc, transcript };
+    }
+    conv.push({ role: 'assistant', content: msg.content ?? null, tool_calls: wanted });
+    const jobs = wanted.map((call) => {
+      if (calls >= maxCalls) return Promise.resolve({ call, over: true });
+      calls += 1;
+      return agentTools.runToolCall(call, toolset, inc, { alerts, evidence, logger }).then((r) => ({ call, r }));
+    });
+    for (const d of await Promise.all(jobs)) {
+      const fn = d.call.function || {};
+      let content;
+      if (d.over) {
+        content = JSON.stringify({ ok: false, summary: 'refused: the call budget for this triage is spent' });
+        transcript.push({ name: fn.name, args: fn.arguments, result: 'refused: call budget spent' });
+      } else {
+        content = d.r.content;
+        if (d.r.rec) results.push({ ...d.r.rec });
+        transcript.push({ name: fn.name, args: fn.arguments, result: d.r.summary });
+      }
+      conv.push({ role: 'tool', tool_call_id: d.call.id, content });
+    }
+  }
+  const lc = results.length ? { ran: true, results, unresolved } : none('agent decided no live check was needed');
+  return { content: '', liveChecks: lc, transcript };
+}
+
 async function triageIncident(inc, { force = false } = {}) {
   const settings = getOpsAgentSettings();
   const alerts = incidentAlerts(inc.id);
   const evidence = gatherIncidentEvidence(inc, alerts, settings);
-  // Live checks: whatever capabilities the customer switched on, run once
-  // here against the incident's own hosts and sources, before the model sees
-  // the evidence. A retriage runs them again, so the page shows current state.
-  try { evidence.liveChecks = await capabilities.runPlaybook(inc, alerts, { evidence }); }
-  catch (err) { evidence.liveChecks = { ran: false, skipped: `live checks failed: ${err.message}`, results: [] }; }
-  const fallback = fallbackTriage(evidence);
+  // Live checks. Playbook mode (default): whatever capabilities the customer
+  // switched on run once here against the incident's own hosts and sources,
+  // before the model sees the evidence. Tools mode: the model is offered the
+  // same checks and asks for the ones it needs (triageWithTools). A retriage
+  // runs them again, so the page shows current state.
+  const toolsMode = settings.capabilityMode === 'tools';
+  if (!toolsMode) {
+    try { evidence.liveChecks = await capabilities.runPlaybook(inc, alerts, { evidence }); }
+    catch (err) { evidence.liveChecks = { ran: false, skipped: `live checks failed: ${err.message}`, results: [] }; }
+  } else if (isDemo()) {
+    evidence.liveChecks = { ran: false, skipped: 'demo mode: the agent never probes anything from the public demo', results: [] };
+  } else if (!isConfigured()) {
+    evidence.liveChecks = { ran: false, skipped: 'no AI provider is configured, so the agent could not ask for any check', results: [] };
+  }
+  let fallback = fallbackTriage(evidence);
   let analysis = { ...fallback, source: 'fallback' };
   let model = null;
   let error = null;
@@ -796,13 +883,26 @@ async function triageIncident(inc, { force = false } = {}) {
       const p = resolveProvider();
       model = p.model || `${p.provider} default model`;
       const anon = createAnonymizer();
-      const messages = buildMessages(evidence, anon);
+      const useTools = toolsMode && !isDemo();
+      let messages = buildMessages(evidence, anon, { tools: useTools });
       const auditId = recordExchange({
         platform: 'ops-agent', feature: 'Operations Agent',
         label: `#${inc.id} ${String(inc.title || '').slice(0, 60)}`, model, messages, mappings: anon.mappings(),
       });
-      const content = await chatCompletion(messages, { responseFormat: { type: 'json_object' }, timeout: 90000 });
-      attachResponse(auditId, content);
+      let content;
+      if (useTools) {
+        const t = await triageWithTools(inc, alerts, evidence, settings, anon, messages);
+        content = t.content;
+        evidence.liveChecks = t.liveChecks;
+        fallback = fallbackTriage(evidence);
+        attachResponse(auditId, t.transcript ? JSON.stringify({ toolCalls: t.transcript, answer: content }) : content);
+        // The retry must see the checks, so rebuild the prompt from the
+        // evidence as it now stands (liveChecks included, no tools block).
+        messages = buildMessages(evidence, anon, { tools: false });
+      } else {
+        content = await chatCompletion(messages, { responseFormat: { type: 'json_object' }, timeout: 90000 });
+        attachResponse(auditId, content);
+      }
       let parsed = parseModelJson(content);
       if (!parsed) {
         // Bridges that ignore response_format answer in prose, and a low output
@@ -897,7 +997,13 @@ function occurrenceRows(rec, esc) {
 }
 
 function liveCheckLine(c) {
-  return `- ${fmtStamp(c.at)}: ${c.label || c.capability} on ${c.target.name}${c.target.address && c.target.address !== c.target.name ? ` (${c.target.address})` : ''}: ${c.ok ? 'OK' : 'FAILED'}, ${c.summary}`;
+  return `- ${fmtStamp(c.at)}: ${c.label || c.capability} on ${c.target.name}${c.target.address && c.target.address !== c.target.name ? ` (${c.target.address})` : ''}: ${c.ok ? 'OK' : 'FAILED'}, ${c.summary}${c.requestedBy === 'model' ? ` (asked for by the agent${c.reason ? `: ${c.reason}` : ''})` : ''}`;
+}
+
+/** Heading suffix for the live-check section: who chose the checks. */
+function liveCheckMode(checks) {
+  if (!checks.length) return '';
+  return checks.some((c) => c.requestedBy === 'model') ? ' (asked for by the agent)' : ' (playbook)';
 }
 
 function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [] } = {}) {
@@ -965,7 +1071,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     ...(analysis.reviewed || []).map((r) => `- ${r}`),
     ...(netBlocks.length ? ['', 'NETWORK', ...netBlocks.flatMap((b) => [b.title, ...b.lines.map((l) => `- ${l}`)])] : []),
     ...(did.length ? ['', `WHAT ${agentName.toUpperCase()} DID`, ...did] : []),
-    ...(checkLines.length ? ['', `WHAT ${agentName.toUpperCase()} CHECKED LIVE (from the ICC server)`, ...checkLines] : []),
+    ...(checkLines.length ? ['', `WHAT ${agentName.toUpperCase()} CHECKED LIVE (from the ICC server)${liveCheckMode(checks).toUpperCase()}`, ...checkLines] : []),
     '',
     'LIKELY CAUSE',
     analysis.likely_cause || '-',
@@ -1002,7 +1108,7 @@ ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')
 ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
 ${netBlocks.length ? section('Network', netBlocks.map((b) => `<p style="margin:6px 0 2px;font-weight:600">${esc(b.title)}</p>${list(b.lines)}`).join('')) : ''}
 ${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.replace(/^- /, '')))) : ''}
-${checkLines.length ? section(`What ${esc(agentName)} checked live (from the ICC server)`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Check</th><th style="padding:3px 8px">Target</th><th style="padding:3px 8px">Result</th></tr>${checks.map((c) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.label || c.capability)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.target.name)}${c.target.address && c.target.address !== c.target.name ? ` <span style="color:#64748b">${esc(c.target.address)}</span>` : ''}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0"><span style="font-weight:600;color:${c.ok ? '#166534' : '#B91C1C'}">${c.ok ? 'OK' : 'FAILED'}</span> ${esc(c.summary)}</td></tr>`).join('')}</table>`) : ''}
+${checkLines.length ? section(`What ${esc(agentName)} checked live (from the ICC server)${esc(liveCheckMode(checks))}`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Check</th><th style="padding:3px 8px">Target</th><th style="padding:3px 8px">Result</th></tr>${checks.map((c) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.label || c.capability)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.target.name)}${c.target.address && c.target.address !== c.target.name ? ` <span style="color:#64748b">${esc(c.target.address)}</span>` : ''}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0"><span style="font-weight:600;color:${c.ok ? '#166534' : '#B91C1C'}">${c.ok ? 'OK' : 'FAILED'}</span> ${esc(c.summary)}${c.requestedBy === 'model' && c.reason ? ` <span style="color:#64748b">(asked for by the agent: ${esc(c.reason)})</span>` : ''}</td></tr>`).join('')}</table>`) : ''}
 ${section('Likely cause', `<p style="margin:0">${esc(analysis.likely_cause || '-')}</p>`)}
 ${section('Next steps for the next level', `<ol style="margin:0;padding-left:18px">${(analysis.next_steps || []).map((s) => `<li style="margin:2px 0"><b>${esc(s.owner)}</b>: ${esc(s.action)}</li>`).join('')}</ol>`)}
 ${section('Escalation', `<p style="margin:0">${esc(analysis.escalate || '-')}</p>`)}

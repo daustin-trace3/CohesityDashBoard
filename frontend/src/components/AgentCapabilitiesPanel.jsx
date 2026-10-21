@@ -5,6 +5,10 @@ import client from '../api/client';
 import { Badge, timeAgo } from './ui/primitives';
 import { useToast } from './ui/Toaster';
 import { useTableControls, TableControls, SortTh, TablePager } from './ui/tableTools';
+import { SettingGroup, SettingRow, selectCls, numberCls } from './settings/SettingRow';
+
+const MODE_DEFAULT = 'playbook';
+const MAX_CALLS_DEFAULT = 6;
 
 // Global Settings > Agent Capabilities: what the Operations Agent may do
 // beyond reading ICC's own tables. Each row is one capability the backend
@@ -23,14 +27,25 @@ export default function AgentCapabilitiesPanel() {
   const [runs, setRuns] = useState([]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(null);
+  const [mode, setMode] = useState(MODE_DEFAULT);
+  const [maxCalls, setMaxCalls] = useState(MAX_CALLS_DEFAULT);
+  const [savedMode, setSavedMode] = useState({ mode: MODE_DEFAULT, maxCalls: MAX_CALLS_DEFAULT });
   const { toast } = useToast();
 
   const load = useCallback(async () => {
     try {
-      const [{ data: c }, { data: r }] = await Promise.all([
+      const [{ data: c }, { data: r }, { data: s }] = await Promise.all([
         client.get('/ops-agent/capabilities'),
         client.get('/ops-agent/capability-runs', { params: { limit: 50 } }),
+        client.get('/settings'),
       ]);
+      const oa = s?.opsAgent || {};
+      const m = oa.capabilityMode === 'tools' ? 'tools' : MODE_DEFAULT;
+      const n = Number(oa.maxToolCalls);
+      const mc = Number.isFinite(n) && n >= 1 ? Math.min(12, Math.round(n)) : MAX_CALLS_DEFAULT;
+      setMode(m);
+      setMaxCalls(mc);
+      setSavedMode({ mode: m, maxCalls: mc });
       setCaps(c.capabilities || []);
       setRuns(Array.isArray(r) ? r : []);
       setPending({});
@@ -41,17 +56,25 @@ export default function AgentCapabilitiesPanel() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const runList = useMemo(() => runs.map((r) => ({ ...r, incidentLabel: r.incidentId ? '#' + r.incidentId : '', resultLabel: r.ok ? 'OK' : 'FAILED' })), [runs]);
-  const ctl = useTableControls(runList, { searchKeys: ['capability', 'targetName', 'targetAddress', 'platform', 'summary', 'incidentLabel'], defaultSortKey: 'ranAt', defaultSortDir: 'desc', paginate: true, defaultPageSize: 10 });
+  const runList = useMemo(() => runs.map((r) => ({ ...r, incidentLabel: r.incidentId ? '#' + r.incidentId : '', resultLabel: r.ok ? 'OK' : 'FAILED', requestedByLabel: r.requestedBy === 'model' ? 'Agent' : 'Playbook' })), [runs]);
+  const ctl = useTableControls(runList, { searchKeys: ['capability', 'targetName', 'targetAddress', 'platform', 'summary', 'reason', 'incidentLabel'], defaultSortKey: 'ranAt', defaultSortDir: 'desc', paginate: true, defaultPageSize: 10 });
 
   const effective = (c) => (Object.prototype.hasOwnProperty.call(pending, c.id) ? pending[c.id] : c.enabled);
-  const dirty = Object.keys(pending).some((id) => { const c = caps?.find((x) => x.id === id); return c && pending[id] !== c.enabled; });
+  const capsDirty = Object.keys(pending).some((id) => { const c = caps?.find((x) => x.id === id); return c && pending[id] !== c.enabled; });
+  const modeDirty = mode !== savedMode.mode || (mode === 'tools' && maxCalls !== savedMode.maxCalls);
+  const dirty = capsDirty || modeDirty;
   const setAll = (v) => { const next = {}; for (const c of caps || []) next[c.id] = v; setPending(next); };
 
   const save = async () => {
     setSaving(true);
     try {
-      await client.put('/settings', { opsAgent: { capabilities: pending } });
+      const opsAgent = {};
+      if (capsDirty) opsAgent.capabilities = pending;
+      if (modeDirty) {
+        opsAgent.capabilityMode = mode;
+        if (mode === 'tools') opsAgent.maxToolCalls = maxCalls;
+      }
+      await client.put('/settings', { opsAgent });
       toast({ type: 'success', title: 'Capabilities saved', message: 'The agent uses the new set at its next triage.' });
       await load();
     } catch (e) {
@@ -75,13 +98,34 @@ export default function AgentCapabilitiesPanel() {
             <p className="text-[11px] text-ink-muted">
               What the Operations Agent may do beyond reading ICC's own data. Every capability is off until it is switched on
               here, except the re-poll the agent has always done. Checks run from the ICC server, once per incident, right
-              before triage, only against the hosts and sources already in that incident (the model never names a target),
-              and every run is listed below. A failed check means ICC could not reach the target from where it runs, which
-              is not the same as the target being down.
+              before triage, only against the hosts and sources already in that incident (the model picks from that list and
+              never names a target of its own), and every run is listed below. A failed check means ICC could not reach the
+              target from where it runs, which is not the same as the target being down.
             </p>
           </div>
         </div>
         {failed && <p className="mt-3 text-[11px] text-red-400 bg-red-400/10 border border-red-400/30 rounded-md px-2.5 py-1.5">{failed}</p>}
+        {caps && (
+          <div className="mt-4">
+            <SettingGroup title="How the agent uses these checks">
+              <SettingRow label="Mode" htmlFor="agent-cap-mode" dirty={mode !== savedMode.mode}
+                tip="Playbook runs every enabled check against every target before triage. Agent decides offers the enabled checks to the model as tools; it calls the ones it needs and gives a reason for each.">
+                <select id="agent-cap-mode" value={mode} onChange={(e) => setMode(e.target.value)} className={selectCls}>
+                  <option value="playbook">Playbook: every enabled check runs against every target before triage</option>
+                  <option value="tools">Agent decides: the model calls the checks it needs and gives a reason</option>
+                </select>
+              </SettingRow>
+              {mode === 'tools' && (
+                <SettingRow label="Most tool calls per triage" htmlFor="agent-cap-max" dirty={maxCalls !== savedMode.maxCalls}
+                  tip="Upper limit on checks the model may request in one triage, 1 to 12. Each call adds a model round trip, so a higher limit means a slower triage. Default 6.">
+                  <input id="agent-cap-max" type="number" min={1} max={12} value={maxCalls}
+                    onChange={(e) => { const n = parseInt(e.target.value, 10); setMaxCalls(Number.isFinite(n) ? Math.max(1, Math.min(12, n)) : MAX_CALLS_DEFAULT); }}
+                    className={numberCls} />
+                </SettingRow>
+              )}
+            </SettingGroup>
+          </div>
+        )}
         {!caps ? (
           <p className="text-gray-400 text-sm mt-4">Loading...</p>
         ) : (
@@ -131,7 +175,7 @@ export default function AgentCapabilitiesPanel() {
           <p className="text-[12px] text-ink-faint">Nothing yet. Runs appear once a capability is on and the agent triages an incident.</p>
         ) : (
           <>
-          <TableControls ctl={ctl} rows={runList} searchPlaceholder="Filter by check, target, incident..." filters={[{ k: 'resultLabel', label: 'Result' }, { k: 'capability', label: 'Check' }]} />
+          <TableControls ctl={ctl} rows={runList} searchPlaceholder="Filter by check, target, incident..." filters={[{ k: 'resultLabel', label: 'Result' }, { k: 'capability', label: 'Check' }, { k: 'requestedByLabel', label: 'Requested by' }]} />
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
               <thead>
@@ -140,6 +184,7 @@ export default function AgentCapabilitiesPanel() {
                   <SortTh k="capability" label="Check" ctl={ctl} />
                   <SortTh k="targetName" label="Target" ctl={ctl} />
                   <SortTh k="resultLabel" label="Result" ctl={ctl} />
+                  <SortTh k="requestedByLabel" label="Requested by" ctl={ctl} />
                   <SortTh k="incidentId" label="Incident" ctl={ctl} />
                 </tr>
               </thead>
@@ -149,7 +194,8 @@ export default function AgentCapabilitiesPanel() {
                     <td className="py-1 pr-3 text-ink-muted whitespace-nowrap" title={r.ranAt}>{timeAgo(r.ranAt)}</td>
                     <td className="py-1 pr-3 text-ink whitespace-nowrap">{r.capability} <span className="text-ink-faint">({r.durationMs} ms)</span></td>
                     <td className="py-1 pr-3 text-ink-muted">{r.targetName}{r.targetAddress && r.targetAddress !== r.targetName ? <span className="text-ink-faint"> {r.targetAddress}</span> : null} <span className="text-ink-faint">{r.platform}</span></td>
-                    <td className="py-1 pr-3 text-ink-muted"><span className={r.ok ? 'text-status-ok font-semibold' : 'text-status-crit font-semibold'}>{r.ok ? 'OK' : 'FAILED'}</span> {r.summary}</td>
+                    <td className="py-1 pr-3 text-ink-muted"><span className={r.ok ? 'text-status-ok font-semibold' : 'text-status-crit font-semibold'}>{r.ok ? 'OK' : 'FAILED'}</span> {r.summary}{r.reason ? <span className="block text-ink-faint">Reason: {r.reason}</span> : null}</td>
+                    <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{r.requestedByLabel}</td>
                     <td className="py-1 text-ink-muted">{r.incidentId ? <Link to={`/ops/agent?incident=${r.incidentId}`} className="text-brand hover:underline">#{r.incidentId}</Link> : '-'}</td>
                   </tr>
                 ))}
