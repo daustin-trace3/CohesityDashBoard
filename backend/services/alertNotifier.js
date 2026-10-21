@@ -802,7 +802,7 @@ let cronTask = null;
 
 function initAlertNotifier() {
   if (cronTask) return cronTask;
-  cronTask = cron.schedule('*/5 * * * *', () => { run(); });
+  cronTask = cron.schedule('*/5 * * * *', () => { run(); }, { recoverMissedExecutions: true });
   return cronTask;
 }
 

@@ -159,7 +159,7 @@ function initGflags() {
   // the panel has a manual refresh for support-case moments.
   cron.schedule('30 3 * * *', () => {
     refreshAllGflags().catch((err) => logger.error('[Gflags] Daily refresh failed:', err.message));
-  });
+  }, { recoverMissedExecutions: true });
   const unseeded = gflagClusters().filter(
     (c) => !db.prepare('SELECT 1 FROM cluster_gflags WHERE cluster_id = ? LIMIT 1').get(c.id)
   );

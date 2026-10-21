@@ -19,6 +19,11 @@ function cronExpression(intervalMinutes) {
 
 const RECONCILE_CRON = '2,7,12,17,22,27,32,37,42,47,52,57 * * * *';
 
+// node-cron only checks once a second and silently drops a tick whose second
+// passed while the event loop was busy (other tasks firing at :00) unless told
+// to recover it.
+const CRON_OPTS = { recoverMissedExecutions: true };
+
 /**
  * Shared poller lifecycle for a platform's per-source polling: cron
  * scheduling, task bookkeeping, pollerStatus markStart/markEnd wrapping, and
@@ -124,7 +129,7 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
         return;
       }
       run(row);
-    });
+    }, CRON_OPTS);
     tasks.set(source.id, { task, interval });
     logger.info(`[${id}] Scheduled source ${source.id} (${source.name}) every ${interval} min`);
     return task;
@@ -211,7 +216,7 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
     for (const source of sources) schedule(source);
     // Off the multiples of five, so the reconcile never shares a minute with
     // a scheduled poll (every interval is a multiple of 5).
-    if (!reconcileTask) reconcileTask = cronLib.schedule(RECONCILE_CRON, reconcile);
+    if (!reconcileTask) reconcileTask = cronLib.schedule(RECONCILE_CRON, reconcile, CRON_OPTS);
     return sources;
   }
 
@@ -249,7 +254,7 @@ function createGlobalTask({ id, sourceId = 0, intervalMinutes, run, defaultInter
     const interval = resolveInterval(intervalMinutes, undefined, defaultIntervalMinutes);
     task = cronLib.schedule(cronExpression(interval), () => {
       runWrapped();
-    });
+    }, CRON_OPTS);
     return task;
   }
 

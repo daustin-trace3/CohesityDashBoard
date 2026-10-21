@@ -480,7 +480,7 @@ function getViewDetail(systemId) {
 function initLicensing() {
   cron.schedule('0 * * * *', () => {
     refreshLicensing().catch(e => logger.error('[Licensing] scheduled refresh failed:', e.message));
-  });
+  }, { recoverMissedExecutions: true });
   refreshLicensing().catch(e => logger.error('[Licensing] initial refresh failed:', e.message));
 }
 

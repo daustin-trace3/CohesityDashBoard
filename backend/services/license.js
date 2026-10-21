@@ -195,7 +195,7 @@ function initLicense() {
 
   cron.schedule('30 3 * * *', () => {
     checkRenewal().then(r => { if (r.renewed) logger.info('[License] Renewed automatically via renewal server.'); });
-  });
+  }, { recoverMissedExecutions: true });
   checkRenewal().then(r => { if (r.renewed) logger.info('[License] Renewed automatically via renewal server.'); });
 }
 

@@ -187,7 +187,7 @@ function initViews() {
   // cluster and share the same rate limit.
   cron.schedule('30 * * * *', () => {
     refreshViews().catch(err => logger.error(`[Views] Scheduled refresh failed: ${err.message}`));
-  });
+  }, { recoverMissedExecutions: true });
   refreshViews().catch(err => logger.error(`[Views] Initial refresh failed: ${err.message}`));
 }
 
