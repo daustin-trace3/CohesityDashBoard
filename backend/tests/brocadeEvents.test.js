@@ -10,6 +10,10 @@ const require = createRequire(import.meta.url);
 const db = require('../db/database');
 const brocadeApi = require('../services/brocadeApi');
 const brocadePoller = require('../services/brocadePoller');
+const registry = require('../core/registry');
+const brocadeManifest = require('../platforms/brocade');
+const { createApp } = require('../app');
+const request = require('supertest');
 
 const WINDOW = 115 * 60000;
 let seedCounter = 0;
@@ -97,5 +101,27 @@ describe('pollEvents', () => {
     const second = b.endTime - b.startTime;
     expect(Math.abs(second - first / 2)).toBeLessThanOrEqual(1);
     expect(fresh(src.id).last_event_poll_status).toBe('success');
+  });
+});
+
+describe('events page size (SANnav 3.0.1 accepts 100 to 5000)', () => {
+  it('the poller and the probe both send a page size inside the range', async () => {
+    const src = seedSource();
+    spy.mockResolvedValue({ events: [], nextPageIndex: null, totalRecords: 0 });
+    await brocadePoller.pollEvents(src);
+    const pollSize = spy.mock.calls[0][1].pageSize;
+    expect(pollSize).toBeGreaterThanOrEqual(100);
+    expect(pollSize).toBeLessThanOrEqual(5000);
+
+    registry._reset();
+    registry.init();
+    registry.registerPlugin(brocadeManifest);
+    registry.setEnabled('brocade', true);
+    const app = createApp({ licenseGate: (req, res, next) => next() });
+    const res = await request(app).get(`/api/brocade/sources/${src.id}/probe?section=events`).set('x-api-key', 'test-api-key');
+    expect(res.status).toBe(200);
+    const probeSize = spy.mock.calls[spy.mock.calls.length - 1][1].pageSize;
+    expect(probeSize).toBeGreaterThanOrEqual(100);
+    expect(probeSize).toBeLessThanOrEqual(5000);
   });
 });
