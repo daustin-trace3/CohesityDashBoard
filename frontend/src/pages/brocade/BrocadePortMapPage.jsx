@@ -5,7 +5,7 @@ import { Grid3x3, X, Search, HeartPulse, LayoutGrid, Waypoints, Server, AlertTri
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { BRAND, fmtWhen, statusTone, fmtStatus, severityTone, scoreTone, parseJsonArr } from './helpers';
+import { BRAND, fmtWhen, fmtMs, statusTone, fmtStatus, severityTone, scoreTone, parseJsonArr } from './helpers';
 
 const COL_GAP_EVERY = 8;
 const SQ = 18;
@@ -645,7 +645,7 @@ function EventsPanel({ events }) {
                 <span className="text-ink-faint shrink-0">{e.messageId}</span>
                 <span className="text-ink truncate">{e.description || ''}</span>
               </div>
-              <span className="text-ink-faint tnum shrink-0">{fmtWhen(e.lastOccurredMs)}</span>
+              <span className="text-ink-faint tnum shrink-0">{fmtMs(e.lastOccurredMs)}</span>
             </div>
           ))}
         </div>

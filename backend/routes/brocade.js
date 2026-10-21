@@ -54,6 +54,8 @@ const publicSource = (row) => ({
   lastPollStatus: row.last_poll_status,
   lastPollError: row.last_poll_error,
   lastEventPollAt: row.last_event_poll_at,
+  lastEventPollStatus: row.last_event_poll_status,
+  lastEventPollError: row.last_event_poll_error,
   sectionErrors: parseJson(row.section_errors),
   createdAt: row.created_at,
 });

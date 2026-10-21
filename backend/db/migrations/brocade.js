@@ -504,4 +504,19 @@ module.exports = [
       `);
     },
   },
+
+  // v6 (2026-10-21): events poll outcome, so a failing events poll shows on
+  // the Settings page instead of only in the log.
+  {
+    version: 6,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(brocade_sources)').all().map((c) => c.name);
+      if (!cols.includes('last_event_poll_status')) {
+        db.exec('ALTER TABLE brocade_sources ADD COLUMN last_event_poll_status TEXT');
+      }
+      if (!cols.includes('last_event_poll_error')) {
+        db.exec('ALTER TABLE brocade_sources ADD COLUMN last_event_poll_error TEXT');
+      }
+    },
+  },
 ];
