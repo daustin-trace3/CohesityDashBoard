@@ -49,7 +49,7 @@ const sessionCache = new Map();
 function errMsg(err) {
   if (err?.response) {
     const d = err.response.data;
-    let msg = (d && (d.errorMessage || d.message || d.detailedErrorMessage || d.error
+    let msg = (d && (d.detailedErrorMessage || d.errorMessage || d.message || d.error
       || (Array.isArray(d.errors) && d.errors[0] && (d.errors[0].message || d.errors[0])))) || null;
     if (msg && typeof msg !== 'string') msg = JSON.stringify(msg).slice(0, 200);
     if (!msg && d && (typeof d === 'string' ? d.length : Object.keys(d).length)) {

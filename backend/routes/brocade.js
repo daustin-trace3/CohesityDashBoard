@@ -353,7 +353,8 @@ router.get('/sources/:id/probe', [
         case 'health': raw = await brocadeApi.fetchHealthSummary(row, 'FABRIC', 30000); break;
         case 'events': {
           const now = Date.now();
-          const page = await brocadeApi.fetchEventsPage(row, { startTime: now - 3600000, endTime: now, pageSize: 50, timeout: 30000 });
+          // SANnav 3.x rejects pageSize outside 100-5000.
+          const page = await brocadeApi.fetchEventsPage(row, { startTime: now - 3600000, endTime: now, pageSize: 100, timeout: 30000 });
           raw = page.events;
           break;
         }
