@@ -238,8 +238,14 @@ function SourceTable({ sources, onEdit, onDelete, onPoll, onPollEvents, onProbe,
                 {s.lastPollStatus === 'error' && s.lastPollError && (
                   <p className="text-[10px] text-status-crit mt-0.5 max-w-[220px] truncate" title={s.lastPollError}>{s.lastPollError}</p>
                 )}
+                {s.lastEventPollStatus === 'error' && (
+                  <p className="text-[10px] text-status-crit mt-0.5 max-w-[220px] truncate" title={s.lastEventPollError}>Events: {s.lastEventPollError}</p>
+                )}
               </td>
-              <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(s.lastPollAt)}</td>
+              <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">
+                {fmtWhen(s.lastPollAt)}
+                {s.lastEventPollAt && <p className="text-[10px] text-ink-faint mt-0.5">Events {fmtWhen(s.lastEventPollAt)}</p>}
+              </td>
               <td className="py-2 pr-3">
                 <div className="flex items-center justify-end gap-1.5">
                   <button onClick={() => onProbe(s)} title="Raw probe" aria-label={`Probe ${s.name}`} className={iconBtn}><Search size={13} /></button>

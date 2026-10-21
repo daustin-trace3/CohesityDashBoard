@@ -5,7 +5,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtWhen, severityTone } from './helpers';
+import { BRAND, fmtMs, severityTone } from './helpers';
 
 const HOURS_OPTIONS = [{ label: '1h', v: 1 }, { label: '6h', v: 6 }, { label: '24h', v: 24 }, { label: '7d', v: 168 }];
 const AUTO_REFRESH_MS = 60000;
@@ -155,7 +155,7 @@ export default function BrocadeEventsPage() {
                         {e.description || e.messageId || '—'}
                       </button>
                     </td>
-                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(e.lastOccurredMs)}</td>
+                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtMs(e.lastOccurredMs)}</td>
                     <td className="py-2 pr-3">
                       <Badge tone={e.acknowledged ? 'ok' : 'neutral'}>{e.acknowledged ? 'Ack' : 'Open'}</Badge>
                     </td>
@@ -197,8 +197,8 @@ export default function BrocadeEventsPage() {
                 ['Source', detailEvent.sourceName],
                 ['Source Address', detailEvent.sourceAddress],
                 ['Fabric', detailEvent.fabricName],
-                ['First Seen', detailEvent.firstOccurredMs ? fmtWhen(detailEvent.firstOccurredMs) : null],
-                ['Last Seen', detailEvent.lastOccurredMs ? fmtWhen(detailEvent.lastOccurredMs) : null],
+                ['First Seen', detailEvent.firstOccurredMs ? fmtMs(detailEvent.firstOccurredMs) : null],
+                ['Last Seen', detailEvent.lastOccurredMs ? fmtMs(detailEvent.lastOccurredMs) : null],
                 ['Occurrences', detailEvent.count],
                 ['Status', detailEvent.acknowledged ? 'Acknowledged' : 'Open'],
               ].filter(([, v]) => v != null && v !== '').map(([k, v]) => (

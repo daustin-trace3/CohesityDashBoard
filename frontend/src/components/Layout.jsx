@@ -96,22 +96,32 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const pathname = location.pathname;
-  const isPure = pathname.startsWith('/pure');
-  const isNetapp = pathname.startsWith('/netapp');
-  const isZerto = pathname.startsWith('/zerto');
-  const isVcenter = pathname.startsWith('/vcenter');
-  const isDell = pathname.startsWith('/dell');
+  // Global Settings and the login page belong to no platform: the side nav, the
+  // header title and the sync chip follow the platform the user came from
+  // (sessionStorage icc.lastPlatform, written below), Ops when nothing is known.
+  const isAdminPath = pathname.startsWith('/admin') || pathname.startsWith('/login');
+  const navPath = (() => {
+    if (!isAdminPath) return pathname;
+    let last = null;
+    try { last = sessionStorage.getItem('icc.lastPlatform'); } catch { last = null; }
+    return last && last !== 'ops' ? `/${last}` : '/ops';
+  })();
+  const isPure = navPath.startsWith('/pure');
+  const isNetapp = navPath.startsWith('/netapp');
+  const isZerto = navPath.startsWith('/zerto');
+  const isVcenter = navPath.startsWith('/vcenter');
+  const isDell = navPath.startsWith('/dell');
   // 'ariaops' contains 'aria' — check it before/independent of isAria so a
   // plain prefix match doesn't misfire across the two platforms.
-  const isAriaOps = pathname === '/ariaops' || pathname.startsWith('/ariaops/');
-  const isAria = !isAriaOps && (pathname === '/aria' || pathname.startsWith('/aria/'));
-  const isNetbackup = pathname.startsWith('/netbackup');
-  const isAws = pathname.startsWith('/aws');
-  const isProxmox = pathname.startsWith('/proxmox');
-  const isBrocade = pathname.startsWith('/brocade');
-  const isBluecat = pathname.startsWith('/bluecat');
-  const isLogicmonitor = pathname === '/logicmonitor' || pathname.startsWith('/logicmonitor/');
-  const isOps = pathname.startsWith('/ops');
+  const isAriaOps = navPath === '/ariaops' || navPath.startsWith('/ariaops/');
+  const isAria = !isAriaOps && (navPath === '/aria' || navPath.startsWith('/aria/'));
+  const isNetbackup = navPath.startsWith('/netbackup');
+  const isAws = navPath.startsWith('/aws');
+  const isProxmox = navPath.startsWith('/proxmox');
+  const isBrocade = navPath.startsWith('/brocade');
+  const isBluecat = navPath.startsWith('/bluecat');
+  const isLogicmonitor = navPath === '/logicmonitor' || navPath.startsWith('/logicmonitor/');
+  const isOps = navPath.startsWith('/ops');
   const isPlatform = isPure || isNetapp || isZerto || isVcenter || isDell || isAria || isAriaOps || isNetbackup || isAws || isProxmox || isBrocade || isBluecat || isLogicmonitor;
   const platformKey = isPure ? 'pure' : isNetapp ? 'netapp' : isZerto ? 'zerto' : isVcenter ? 'vcenter' : isDell ? 'dell' : isAria ? 'aria' : isAriaOps ? 'ariaops' : isNetbackup ? 'netbackup' : isAws ? 'aws' : isProxmox ? 'proxmox' : isBrocade ? 'brocade' : isBluecat ? 'bluecat' : isLogicmonitor ? 'logicmonitor' : null;
   const platformLabel = isPure ? 'Pure Array' : isNetapp ? 'NetApp Cluster' : isZerto ? 'Zerto Site' : isVcenter ? 'ESX Host' : isDell ? 'Device' : isAria ? 'Deployment' : isAriaOps ? 'Resource' : isNetbackup ? 'Server' : isAws ? 'Instance' : isProxmox ? 'Guest' : isBrocade ? 'Fabric' : isBluecat ? 'Network' : isLogicmonitor ? 'Device' : '';
@@ -141,7 +151,7 @@ export default function Layout() {
   // Non-built-in (installed plugin) platform whose routes match the current
   // path, so plugin nav/branding shows up without special-casing each plugin.
   const activePluginPlatform = !isPlatform
-    ? allPlatforms.find(p => !builtinIds.includes(p.id) && p.isActive(pathname))
+    ? allPlatforms.find(p => !builtinIds.includes(p.id) && p.isActive(navPath))
     : null;
   const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
 

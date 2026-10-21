@@ -10,7 +10,7 @@ import {
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
-import { BRAND, fmtNum, fmtWhen, statusTone, fmtStatus, severityTone, scoreColor } from './helpers';
+import { BRAND, fmtNum, fmtWhen, fmtMs, statusTone, fmtStatus, severityTone, scoreColor } from './helpers';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
 
@@ -175,7 +175,7 @@ export default function BrocadeOverviewPage() {
                     <Badge tone={severityTone(e.severityNorm)}>{e.severity}</Badge>
                     <span className="text-ink truncate">{e.description || e.messageId}</span>
                   </div>
-                  <span className="text-ink-faint tnum shrink-0">{fmtWhen(e.lastOccurredMs)}</span>
+                  <span className="text-ink-faint tnum shrink-0">{fmtMs(e.lastOccurredMs)}</span>
                 </div>
               ))}
             </div>

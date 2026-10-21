@@ -622,41 +622,75 @@ const upsertEvents = db.transaction((sourceId, rows) => {
   }
 });
 
+// SANnav 400s an events span over 2 hours; 5 min of margin covers clock skew
+// between ICC and SANnav and request latency.
+const EVENT_WINDOW_MS = 115 * 60000;
+
 async function pollEvents(source) {
   const timeout = 30000;
+  const now = Date.now();
+  const overlapMs = 60000;
+  let startTime = source.event_cursor_ms ? source.event_cursor_ms - overlapMs : now - EVENT_WINDOW_MS;
+  if (now - startTime > EVENT_WINDOW_MS) startTime = now - EVENT_WINDOW_MS;
+  const endTime = now;
+  let cursorMax = source.event_cursor_ms || 0;
+  let totalFetched = 0;
+  let pageNo = 0;
+  let failure = null;
   try {
-    const now = Date.now();
-    const overlapMs = 60000;
-    const twoHoursMs = 2 * 3600000;
-    let startTime = source.event_cursor_ms ? source.event_cursor_ms - overlapMs : now - twoHoursMs;
-    if (now - startTime > twoHoursMs) startTime = now - twoHoursMs;
-    const endTime = now;
-
     let nextPageIndex = null;
-    let cursorMax = source.event_cursor_ms || 0;
-    let totalFetched = 0;
+    let startIndex = 0;
+    let retried = false;
     for (let i = 0; i < 50; i++) {
-      const page = await brocadeApi.fetchEventsPage(source, { startTime, endTime, pageSize: 1000, startIndex: 0, nextPageIndex, timeout });
+      pageNo = i + 1;
+      let page;
+      try {
+        page = await brocadeApi.fetchEventsPage(source, { startTime, endTime, pageSize: 1000, startIndex, nextPageIndex, timeout });
+      } catch (err) {
+        if (i === 0 && !retried && err?.response?.status === 400) {
+          retried = true;
+          const oldMin = Math.round((endTime - startTime) / 60000);
+          startTime = endTime - Math.floor((endTime - startTime) / 2);
+          const newMin = Math.round((endTime - startTime) / 60000);
+          logger.warn(`[BrocadePoller] ${source.name}: events window ${oldMin} min rejected (${safeMsg(err)}), retrying with ${newMin} min`);
+          i -= 1;
+          continue;
+        }
+        throw err;
+      }
       if (page.events.length) {
         upsertEvents(source.id, page.events);
         totalFetched += page.events.length;
+        startIndex += page.events.length;
         for (const e of page.events) {
           if (e.lastOccurredMs != null && e.lastOccurredMs > cursorMax) cursorMax = e.lastOccurredMs;
         }
       }
-      if (!page.nextPageIndex) break;
+      if (!page.nextPageIndex || !page.events.length) break;
+      if (page.totalRecords != null && startIndex >= page.totalRecords) break;
       nextPageIndex = page.nextPageIndex;
     }
+  } catch (err) {
+    const minutes = Math.round((endTime - startTime) / 60000);
+    failure = `${safeMsg(err)} (page ${pageNo}, window ${minutes} min, ${new Date(startTime).toISOString()} to ${new Date(endTime).toISOString()})`;
+    logger.warn(`[BrocadePoller] events poll failed for ${source.name}: ${failure}`);
+  }
 
+  try {
     const retentionDays = require('./brocadeIssues').eventRetentionDays();
     pruneInBatches(db, 'brocade_events', 'source_id = ? AND last_occurred_ms < ?', [source.id, Date.now() - retentionDays * 86400000]);
 
-    db.prepare(`UPDATE brocade_sources SET last_event_poll_at=datetime('now'), event_cursor_ms=? WHERE id=?`)
-      .run(cursorMax || endTime, source.id);
-
-    logger.info(`[BrocadePoller] ${source.name}: ${totalFetched} event(s) fetched`);
+    if (!failure) {
+      db.prepare(`UPDATE brocade_sources SET last_event_poll_at=datetime('now'), last_event_poll_status='success',
+        last_event_poll_error=NULL, event_cursor_ms=? WHERE id=?`).run(cursorMax || endTime, source.id);
+      logger.info(`[BrocadePoller] ${source.name}: ${totalFetched} event(s) fetched`);
+    } else {
+      // Rows from earlier pages are already stored, so keep the progress.
+      db.prepare(`UPDATE brocade_sources SET last_event_poll_status='error', last_event_poll_error=?,
+        event_cursor_ms=? WHERE id=?`).run(failure, cursorMax, source.id);
+    }
   } catch (err) {
-    logger.warn(`[BrocadePoller] events poll failed for ${source.name}: ${safeMsg(err)}`);
+    logger.warn(`[BrocadePoller] events poll bookkeeping failed for ${source.name}: ${safeMsg(err)}`);
   } finally {
     try { reconcileIssueHistory(); } catch (e2) {
       logger.warn(`[BrocadePoller] issue-history reconcile (events) failed: ${e2.message}`);
