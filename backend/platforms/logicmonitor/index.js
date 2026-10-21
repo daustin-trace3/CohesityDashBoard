@@ -575,6 +575,20 @@ function incidentEvidence(coreApi, ctx) {
       }
       if (live.length > 8) lines.push(`... and ${live.length - 8} more open LM alert(s) on this device`);
       if (open.length - live.length) lines.push(`${open.length - live.length} further LM alert(s) on this device are shadowed by an upstream failure`);
+      // Long-term history (decision 7): two lines, each omitted when its table has no rows for the device.
+      try {
+        const hist = require('../../services/logicmonitorHistory');
+        const base = hist.cpuMemBaseline(db, dev.source_id, dev.lm_device_id, 30);
+        if (base) {
+          const pc = (v) => (v == null ? '-' : `${Math.round(v)}%`);
+          lines.push(`30-day baseline: CPU avg ${pc(base.cpuAvg)} max ${pc(base.cpuMax)}, memory avg ${pc(base.memAvg)} max ${pc(base.memMax)} (${base.days} days)`);
+        }
+        const dd = hist.deviceDailyRows(db, dev.source_id, dev.lm_device_id, 30);
+        if (dd.rows.length) {
+          const sm = dd.summary;
+          lines.push(`Last 30 days: dead on ${sm.daysDead} days, in SDT on ${sm.daysInSdt} days, ${sm.alertsOpened} alerts opened (${sm.alertsCritical} critical)`);
+        }
+      } catch (e) { /* evidence must never fail on history */ }
     }
     const sp = require('../../services/logicmonitorEndpoints').serverPath(db, anchor, { endpoints: pctx.endpoints() });
     for (const p of sp.switchPorts.slice(0, 6)) {

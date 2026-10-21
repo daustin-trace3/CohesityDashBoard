@@ -18,7 +18,7 @@ const metrics = require('../services/logicmonitorMetrics');
 const { catalogFor, cleanInstanceKey } = catalog;
 
 const TABLES = [
-  'lm_sources', 'lm_devices', 'lm_device_datasources', 'lm_ds_instances', 'lm_ds_metrics', 'lm_ds_metrics_history',
+  'lm_sources', 'lm_devices', 'lm_device_datasources', 'lm_ds_instances', 'lm_ds_metrics', 'lm_ds_metrics_history', 'lm_ds_daily',
 ];
 
 beforeAll(() => { runMigrations(db, 'logicmonitor', lmMigrations); });

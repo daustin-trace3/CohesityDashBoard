@@ -230,6 +230,77 @@ export default function VcCapacityOverviewPage() {
           </div>
         )}
       </div>
+
+      <HostWindowPanel />
+    </div>
+  );
+}
+
+const fmtPct1 = (p) => (p == null ? '-' : `${Number(p).toFixed(1)}%`);
+
+function fmtUp(secs) {
+  if (secs == null) return '-';
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  return d >= 1 ? `${d}d ${h}h` : `${h}h`;
+}
+
+/** Per-host CPU and memory average and peak, disconnected and maintenance share over 30 or 90 days. */
+function HostWindowPanel() {
+  const [days, setDays] = useState(30);
+  const [rows, setRows] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    setRows(null);
+    client.get(`/vcenter/capacity/host-daily?days=${days}`)
+      .then(({ data }) => { if (live) setRows(data.hosts || []); })
+      .catch(() => { if (live) setRows([]); });
+    return () => { live = false; };
+  }, [days]);
+
+  return (
+    <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <PanelTitle icon={Server} meta="from the daily history, memory average first">{`Hosts, last ${days} days`}</PanelTitle>
+      <div className="flex items-center gap-2 mb-3">
+        <select value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="Host history range"
+          className="bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1 text-xs text-ink focus:border-brand/60 outline-none" style={{ width: 'auto', cursor: 'pointer' }}>
+          <option value={30}>30 days</option>
+          <option value={90}>90 days</option>
+        </select>
+      </div>
+      {rows == null ? <LoadingPanel label="Loading host history..." height={120} />
+        : rows.length === 0 ? <p className="text-sm text-ink-muted py-6 text-center">No host history yet. Daily rollups start with the next hourly sample.</p>
+          : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                    <th className="py-1.5 pr-3">Host</th><th className="py-1.5 pr-3">Cluster</th>
+                    <th className="py-1.5 pr-3 text-right">CPU avg</th><th className="py-1.5 pr-3 text-right">CPU max</th>
+                    <th className="py-1.5 pr-3 text-right">Memory avg</th><th className="py-1.5 pr-3 text-right">Memory max</th>
+                    <th className="py-1.5 pr-3 text-right">Disconnected</th><th className="py-1.5 pr-3 text-right">Maintenance</th>
+                    <th className="py-1.5 pr-3 text-right">Uptime</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((h) => (
+                    <tr key={`${h.vcenterId}|${h.host}`} className="border-b border-cohesity-border/50">
+                      <td className="py-1.5 pr-3 text-ink">{h.host}</td>
+                      <td className="py-1.5 pr-3 text-ink-muted">{h.cluster || '-'}</td>
+                      <td className="py-1.5 pr-3 text-right tnum">{fmtPct1(h.cpuAvgPct)}</td>
+                      <td className="py-1.5 pr-3 text-right tnum">{fmtPct1(h.cpuMaxPct)}</td>
+                      <td className="py-1.5 pr-3 text-right tnum">{fmtPct1(h.memAvgPct)}</td>
+                      <td className="py-1.5 pr-3 text-right tnum">{fmtPct1(h.memMaxPct)}</td>
+                      <td className={`py-1.5 pr-3 text-right tnum ${h.disconnectedPct > 0 ? 'text-status-warn' : 'text-ink-muted'}`}>{fmtPct1(h.disconnectedPct)}</td>
+                      <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{fmtPct1(h.maintenancePct)}</td>
+                      <td className="py-1.5 pr-3 text-right tnum text-ink-muted">{fmtUp(h.uptimeSeconds)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
     </div>
   );
 }

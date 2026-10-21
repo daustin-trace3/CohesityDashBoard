@@ -8,7 +8,7 @@
 // icc-phase1: single tenant, one plain Map for the install.
 const tenantMap = () => new Map();
 
-const RANGE_HOURS = { '24h': 24, '7d': 168, '30d': 720 };
+const RANGE_HOURS = { '24h': 24, '7d': 168, '30d': 720, '90d': 2160, '365d': 8760 };
 const CACHE_MS = 60 * 1000;
 const cache = tenantMap(); // range -> { at, value }
 
@@ -32,7 +32,7 @@ const tableExists = (dbh, name) => {
 /** Complete bucket list for a range: hourly for 24h, daily for 7d and 30d, ending with the bucket of now. */
 function bucketKeys(range, nowMs) {
   const hourly = range === '24h';
-  const n = hourly ? 24 : (range === '30d' ? 30 : 7);
+  const n = hourly ? 24 : ({ '30d': 30, '90d': 90, '365d': 365 }[range] || 7);
   const step = hourly ? 3600000 : 86400000;
   const endBucket = Math.floor(nowMs / step) * step;
   const keys = [];

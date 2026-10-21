@@ -6,6 +6,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import { BRAND, fmtNum, fmtBytes, fmtWhen, hostStateTone, hostStateLabel } from './helpers';
+import UsageTrend from './UsageTrend';
 
 const pct = (used, cap) => (cap > 0 && used != null ? (used / cap) * 100 : null);
 
@@ -144,7 +145,11 @@ function HostModal({ host, onClose }) {
           </div>
           <button onClick={onClose} aria-label="Close" className="text-ink-faint hover:text-ink flex-shrink-0 cursor-pointer"><X size={16} /></button>
         </div>
-        <div className="overflow-y-auto pr-1 min-h-0">
+        <div className="overflow-y-auto pr-1 min-h-0 flex flex-col gap-4">
+          <div>
+            <p className="text-xs font-semibold text-ink mb-1.5 flex items-center gap-1.5"><Cpu size={13} className="text-brand" /> Usage trend</p>
+            <UsageTrend kind="host" vcenterId={host.vcenter_id} name={host.name} chartHeight={150} />
+          </div>
           <NicNeighborsPanel hostName={host.name} />
         </div>
       </div>

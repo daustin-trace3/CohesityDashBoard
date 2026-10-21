@@ -13,7 +13,7 @@ import { chipBtn, headRow } from './ui';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend, Filler);
 
-const RANGES = ['24h', '7d', '30d'];
+const RANGES = ['24h', '7d', '30d', '90d', '365d'];
 
 function ChartPanel({ title, children }) {
   return (
@@ -148,6 +148,40 @@ function DayByDay({ daily, range }) {
   );
 }
 
+// Long-term device history (lm_device_daily): which devices were dead on the most days, which opened the most alerts.
+function DeviceHistory({ block }) {
+  const dead = arr(block.topDead);
+  const alerting = arr(block.topAlerting);
+  const byDay = arr(block.alertsByDay);
+  const data = {
+    labels: byDay.map((d) => String(d.day).slice(5)),
+    datasets: [
+      { label: 'Critical', data: byDay.map((d) => d.critical), backgroundColor: '#C75D5D', borderWidth: 0 },
+      { label: 'Warning', data: byDay.map((d) => d.warning), backgroundColor: '#D4A24E', borderWidth: 0 },
+    ],
+  };
+  const devLink = (r) => (r.deviceId ? lnk(`/logicmonitor/devices?device=${r.deviceId}`, r.name || '-') : (r.name || '-'));
+  return (
+    <div className="grid lg:grid-cols-2 xl:grid-cols-3 gap-4 mb-6 items-start">
+      <MoverTable title="Most days dead" rows={dead} empty="No device was dead in this range." cols={[
+        { label: 'Device', render: devLink, cls: () => '' },
+        { label: 'Days dead', render: (r) => fmtNum(r.daysDead), right: true, cls: () => 'text-status-crit' },
+        { label: 'Dead time', render: (r) => pctText(r.deadPct), right: true },
+      ]} />
+      <MoverTable title="Most alerts opened" rows={alerting} empty="No device opened alerts in this range." cols={[
+        { label: 'Device', render: devLink, cls: () => '' },
+        { label: 'Alerts', render: (r) => fmtNum(r.alertsOpened), right: true },
+        { label: 'Critical', render: (r) => fmtNum(r.alertsCritical), right: true, cls: () => 'text-status-crit' },
+      ]} />
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-3">Device alerts opened by day</p>
+        {byDay.length === 0 ? <p className="text-xs text-ink-muted py-3">No daily device history yet. It builds with each inventory poll.</p>
+          : <div className="h-[220px]"><Bar data={data} options={stackedOpts} /></div>}
+      </div>
+    </div>
+  );
+}
+
 const NA = <p className="text-xs text-ink-muted mb-6">Not available until the backend is updated.</p>;
 const H = ({ children }) => <p className="text-[11px] uppercase tracking-wide text-ink-faint mb-2 mx-1">{children}</p>;
 
@@ -155,11 +189,11 @@ export default function LmTrendsPage() {
   const { toast } = useToast();
   const [range, setRange] = useState('7d');
   const [points, setPoints] = useState(null);
-  const [extra, setExtra] = useState({ daily: null, movers: null });
+  const [extra, setExtra] = useState({ daily: null, movers: null, deviceDaily: null });
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
   const load = useCallback(() => client.get('/logicmonitor/trends', { params: { range } })
-    .then(({ data }) => { setPoints(Array.isArray(data?.points) ? data.points : []); setExtra({ daily: data?.daily || null, movers: data?.movers || null }); setLastRefreshed(new Date()); })
+    .then(({ data }) => { setPoints(Array.isArray(data?.points) ? data.points : []); setExtra({ daily: data?.daily || null, movers: data?.movers || null, deviceDaily: data?.deviceDaily || null }); setLastRefreshed(new Date()); })
     .catch(() => { setPoints([]); toast({ type: 'error', title: 'Failed to load trends' }); }), [range, toast]);
 
   useEffect(() => { load(); }, [load]);
@@ -190,6 +224,8 @@ export default function LmTrendsPage() {
           {extra.movers ? <Movers movers={extra.movers} /> : NA}
           <H>Day by day</H>
           {extra.daily ? <DayByDay daily={extra.daily} range={range} /> : NA}
+          <H>Devices</H>
+          {extra.deviceDaily ? <DeviceHistory block={extra.deviceDaily} /> : NA}
           <H>Estate</H>
           {list.length < 2 ? (
             <div className="panel p-6 text-sm text-ink-muted text-center">Not enough history yet. Each poll adds one snapshot.</div>

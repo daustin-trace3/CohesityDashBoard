@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { TrendingUp, MemoryStick, Cpu, MonitorSmartphone } from 'lucide-react';
+import { TrendingUp, MemoryStick, Cpu, MonitorSmartphone, Server, Database } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { Line } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend } from 'chart.js';
 import client from '../../api/client';
@@ -7,6 +8,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtNum, fmtBytes } from './helpers';
 import { fmtMhz, PanelTitle, NoSitesState } from './capacityShared';
+import UsageTrend from './UsageTrend';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
 
@@ -33,8 +35,38 @@ function monthsLabel(m) {
   return `${m.toFixed(1)} months`;
 }
 
+const lookupSelect = 'bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
+
+/** vCenter select + exact name box + Look up, then the shared range-picker trend for the chosen object. */
+function LookupPanel({ kind, icon, title, placeholder, vcs, initial }) {
+  const [vcenterId, setVcenterId] = useState(initial ? String(initial.vcenterId) : '');
+  const [name, setName] = useState(initial ? initial.name : '');
+  const [active, setActive] = useState(initial ? { vcenterId: String(initial.vcenterId), name: initial.name } : null);
+  const go = () => { if (vcenterId && name.trim()) setActive({ vcenterId, name: name.trim() }); };
+  return (
+    <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <PanelTitle icon={icon} meta="daily history kept long term">{title}</PanelTitle>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <select value={vcenterId} onChange={(e) => setVcenterId(e.target.value)} className={lookupSelect} style={{ width: 'auto', cursor: 'pointer' }}>
+          <option value="">Select a vCenter...</option>
+          {vcs.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+        <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') go(); }}
+          placeholder={placeholder} className={`w-full max-w-xs ${lookupSelect}`} spellCheck={false} />
+        <button onClick={go} disabled={!vcenterId || !name.trim()} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
+          Look up
+        </button>
+      </div>
+      {active ? <UsageTrend kind={kind} vcenterId={active.vcenterId} name={active.name} chartHeight={190} />
+        : <p className="text-[11px] text-ink-faint">Pick a vCenter and enter the exact name to chart its history.</p>}
+    </div>
+  );
+}
+
 export default function VcCapacityTrendsPage() {
   const { toast } = useToast();
+  const [searchParams] = useSearchParams();
+  const dsParams = { datastore: searchParams.get('datastore'), vcenterId: searchParams.get('vcenterId') };
   const [sites, setSites] = useState(null);
   const [clusters, setClusters] = useState([]);
   const [scope, setScope] = useState('all');
@@ -42,9 +74,6 @@ export default function VcCapacityTrendsPage() {
   const [trend, setTrend] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [vcs, setVcs] = useState([]);
-  const [lookup, setLookup] = useState({ vcenterId: '', vm: '' });
-  const [vmTrend, setVmTrend] = useState(null);
-  const [vmLoading, setVmLoading] = useState(false);
 
   useEffect(() => {
     client.get('/vcenter/capacity/sites').then(({ data: j }) => { setSites(j.sites || []); setClusters(j.clusters || []); }).catch(() => { setSites([]); });
@@ -90,19 +119,6 @@ export default function VcCapacityTrendsPage() {
   const memOpts = useMemo(() => chartOptions('TB'), []);
   const cpuOpts = useMemo(() => chartOptions('GHz'), []);
 
-  const runLookup = async () => {
-    if (!lookup.vcenterId || !lookup.vm.trim()) return;
-    setVmLoading(true);
-    try {
-      const { data: j } = await client.get(`/vcenter/capacity/vm-trends?vcenterId=${lookup.vcenterId}&vm=${encodeURIComponent(lookup.vm.trim())}&days=${days}`);
-      setVmTrend(j.points || []);
-    } catch { setVmTrend([]); } finally { setVmLoading(false); }
-  };
-
-  const vmLabels = (vmTrend || []).map((p) => String(p.t).slice(5, 16).replace('T', ' '));
-  const vmMem = useMemo(() => ({ labels: vmLabels, datasets: [line('Memory used (GB)', (vmTrend || []).map((p) => (p.memUsageMb || 0) / 1024), '#0091DA', { fill: true, backgroundColor: 'rgba(0,145,218,0.12)' })] }), [vmTrend]);
-  const vmCpu = useMemo(() => ({ labels: vmLabels, datasets: [line('CPU used (GHz)', (vmTrend || []).map((p) => (p.cpuUsageMhz || 0) / GHZ), '#6CB33F', { fill: true, backgroundColor: 'rgba(108,179,63,0.12)' })] }), [vmTrend]);
-
   const scopeLabel = scope === 'all' ? 'all sites' : scope.startsWith('site:') ? (sites || []).find((s) => String(s.id) === scope.slice(5))?.name || 'site' : scope.slice(8).split('|').slice(1).join('|');
   const last = points[points.length - 1];
 
@@ -120,6 +136,15 @@ export default function VcCapacityTrendsPage() {
     </>
   );
 
+  const lookups = (
+    <div className="grid xl:grid-cols-2 gap-4">
+        <LookupPanel kind="vm" icon={MonitorSmartphone} title="VM History" placeholder="Exact VM name" vcs={vcs} initial={null} />
+        <LookupPanel kind="host" icon={Server} title="Host History" placeholder="Exact host name" vcs={vcs} initial={null} />
+        <LookupPanel kind="datastore" icon={Database} title="Datastore History" placeholder="Exact datastore name" vcs={vcs}
+          initial={dsParams.datastore && dsParams.vcenterId ? { vcenterId: dsParams.vcenterId, name: dsParams.datastore } : null} />
+    </div>
+  );
+
   if (sites == null) {
     return (
       <div className="animate-fade-in">
@@ -134,6 +159,7 @@ export default function VcCapacityTrendsPage() {
       <div className="animate-fade-in">
         <PageHeader icon={TrendingUp} title="Capacity Trends" description="Hourly samples rolled up per site or cluster — average and peak demand against N+1 usable, with a linear growth projection" />
         <NoSitesState what="trend history" />
+        <div className="mt-4">{lookups}</div>
       </div>
     );
   }
@@ -177,30 +203,7 @@ export default function VcCapacityTrendsPage() {
             : <div style={{ height: 260 }}><Line data={cpuData} options={cpuOpts} /></div>}
       </div>
 
-      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
-        <PanelTitle icon={MonitorSmartphone} meta={`${days}-day window · 90 days retained per VM`}>VM History</PanelTitle>
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <select value={lookup.vcenterId} onChange={(e) => setLookup((l) => ({ ...l, vcenterId: e.target.value }))} className="bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none" style={{ width: 'auto', cursor: 'pointer' }}>
-            <option value="">Select a vCenter…</option>
-            {vcs.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-          <input value={lookup.vm} onChange={(e) => setLookup((l) => ({ ...l, vm: e.target.value }))} onKeyDown={(e) => { if (e.key === 'Enter') runLookup(); }}
-            placeholder="Exact VM name" className="w-full max-w-md bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none" spellCheck={false} />
-          <button onClick={runLookup} disabled={vmLoading || !lookup.vcenterId || !lookup.vm.trim()} className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50">
-            {vmLoading ? 'Loading…' : 'Look up'}
-          </button>
-        </div>
-        {vmTrend == null ? (
-          <p className="text-[11px] text-ink-faint">Pick a vCenter and enter a VM name to chart its sampled CPU and memory demand.</p>
-        ) : vmTrend.length === 0 ? (
-          <div className="text-sm text-ink-muted py-6 text-center">No history for that VM in the last {days} days — check the name (it must match exactly).</div>
-        ) : (
-          <div className="grid md:grid-cols-2 gap-4">
-            <div><p className="text-[11px] text-ink-faint mb-1">Memory used (GB)</p><div style={{ height: 200 }}><Line data={vmMem} options={{ plugins: { legend: { display: false } } }} /></div></div>
-            <div><p className="text-[11px] text-ink-faint mb-1">CPU used (GHz)</p><div style={{ height: 200 }}><Line data={vmCpu} options={{ plugins: { legend: { display: false } } }} /></div></div>
-          </div>
-        )}
-      </div>
+      {lookups}
     </div>
   );
 }

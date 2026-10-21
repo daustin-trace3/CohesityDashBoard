@@ -5,6 +5,9 @@ import client from '../../api/client';
 import { Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import { fmtNum, fmtBytes, fmtWhen, severityTone } from './helpers';
 import LmDeviceCard from '../../components/logicmonitor/LmDeviceCard';
+import UsageTrend from './UsageTrend';
+
+const VM_MODAL_RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 
 const powerTone = (p) => p === 'POWERED_ON' ? 'ok' : p === 'POWERED_OFF' ? 'neutral' : 'warn';
 const powerLabel = (p) => String(p || '—').replace(/^POWERED_/, '');
@@ -149,6 +152,11 @@ export function VmDetailModal({ vmId, onClose }) {
           {vm.annotation && (
             <p className="text-xs text-ink-muted bg-surface-overlay rounded-lg px-3 py-2 whitespace-pre-wrap">{vm.annotation}</p>
           )}
+
+          <div>
+            <p className="text-xs font-semibold text-ink mb-1.5 flex items-center gap-1.5"><Cpu size={13} className="text-brand" /> Usage trend</p>
+            <UsageTrend kind="vm" vcenterId={vm.vcenter_id} name={vm.name} ranges={VM_MODAL_RANGES} defaultDays={30} chartHeight={150} />
+          </div>
 
           <div>
             <p className="text-xs font-semibold text-ink mb-1.5 flex items-center gap-1.5"><HardDrive size={13} className="text-brand" /> Storage</p>

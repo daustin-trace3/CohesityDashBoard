@@ -413,6 +413,21 @@ function latestCaptured(table, idCol, tsCol, id) {
 
 // Each entry is try/catch-guarded individually at the call site , a missing
 // table (platform never polled on this instance) degrades to no rows.
+// 30-day baseline for a vCenter VM or host from the daily rollup tables (null when no rows).
+function vcenterBaseline30d(table, nameCol, vcenterId, name, cpuCol, memCol) {
+  try {
+    const b = db.prepare(`
+      SELECT SUM(${cpuCol.sum}) AS cs, SUM(${cpuCol.n}) AS cn, MAX(${cpuCol.max}) AS cm,
+        SUM(${memCol.sum}) AS ms, SUM(${memCol.n}) AS mn, MAX(${memCol.max}) AS mm
+      FROM ${table} WHERE vcenter_id = ? AND ${nameCol} = ? AND day >= date('now', '-30 days')
+    `).get(vcenterId, name);
+    return {
+      cpuAvg: b && b.cn > 0 ? Math.round(b.cs / b.cn) : null, cpuMax: b ? b.cm : null,
+      memAvg: b && b.mn > 0 ? Math.round(b.ms / b.mn) : null, memMax: b ? b.mm : null,
+    };
+  } catch { return { cpuAvg: null, cpuMax: null, memAvg: null, memMax: null }; }
+}
+
 const HOST_TABLE_DEFS = [
   {
     platform: 'dell',
@@ -423,13 +438,30 @@ const HOST_TABLE_DEFS = [
   {
     platform: 'vcenter',
     find: (c) => oneInQuery('vcenter_hosts', 'name', c),
-    fields: (r) => ({ connection_state: r.connection_state, power_state: r.power_state, in_maintenance: r.in_maintenance, cluster_name: r.cluster_name, captured_at: r.captured_at }),
+    fields: (r) => {
+      const b = vcenterBaseline30d('vcenter_host_daily', 'host_name', r.vcenter_id, r.name,
+        { sum: 'cpu_sum_mhz', n: 'cpu_samples', max: 'cpu_max_mhz' }, { sum: 'mem_sum_bytes', n: 'mem_samples', max: 'mem_max_bytes' });
+      return {
+        connection_state: r.connection_state, power_state: r.power_state, in_maintenance: r.in_maintenance, cluster_name: r.cluster_name, captured_at: r.captured_at,
+        cpu_mhz_used: r.cpu_mhz_used, cpu_mhz_capacity: r.cpu_mhz_capacity, mem_bytes_used: r.mem_bytes_used, mem_bytes_capacity: r.mem_bytes_capacity,
+        uptime_seconds: r.uptime_seconds,
+        cpu_30d_avg_mhz: b.cpuAvg, cpu_30d_max_mhz: b.cpuMax, mem_30d_avg_bytes: b.memAvg, mem_30d_max_bytes: b.memMax,
+      };
+    },
     up: (r) => String(r.connection_state || '').toUpperCase() === 'CONNECTED',
   },
   {
     platform: 'vcenter',
     find: (c) => twoInQuery('vcenter_vms', 'name', 'guest_hostname', c),
-    fields: (r) => ({ power_state: r.power_state, tools_status: r.tools_status, host_name: r.host_name, ip_address: r.ip_address, captured_at: r.captured_at }),
+    fields: (r) => {
+      const b = vcenterBaseline30d('vcenter_vm_daily', 'vm_name', r.vcenter_id, r.name,
+        { sum: 'cpu_sum_mhz', n: 'cpu_samples', max: 'cpu_max_mhz' }, { sum: 'mem_sum_mb', n: 'mem_samples', max: 'mem_max_mb' });
+      return {
+        power_state: r.power_state, tools_status: r.tools_status, host_name: r.host_name, ip_address: r.ip_address, captured_at: r.captured_at,
+        cpu_now_mhz: r.cpu_usage_mhz, mem_now_mb: r.mem_usage_mb, memory_mb: r.memory_mb,
+        cpu_30d_avg_mhz: b.cpuAvg, cpu_30d_max_mhz: b.cpuMax, mem_30d_avg_mb: b.memAvg, mem_30d_max_mb: b.memMax,
+      };
+    },
     up: (r) => /ON$/i.test(String(r.power_state || '')),
   },
   {

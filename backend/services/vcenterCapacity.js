@@ -4,10 +4,30 @@
 // they are unit-testable without a DB.
 const { pruneInBatches } = require('../core/dbPrune');
 const db = require('../db/database');
+const { getSetting } = require('./settings');
 
 const SAMPLE_GAP_MINUTES = 55;
-const CLUSTER_RETENTION_DAYS = 365;
-const VM_RETENTION_DAYS = 90;
+
+// Retention windows (days) are settings: name -> [setting key, default, min, max].
+// A never saved or non-numeric value returns the default; others clamp into range.
+const RETENTION_DEFS = {
+  vmHistoryDays: ['vcenter_vm_history_days', 90, 30, 365],
+  hostHistoryDays: ['vcenter_host_history_days', 90, 30, 365],
+  clusterHistoryDays: ['vcenter_cluster_history_days', 365, 90, 1095],
+  datastoreHistoryDays: ['vcenter_datastore_history_days', 365, 30, 1095],
+  dailyHistoryDays: ['vcenter_daily_history_days', 730, 90, 1095],
+  eventRetentionDays: ['vcenter_event_retention_days', 90, 7, 365],
+};
+
+function retentionDays() {
+  const out = {};
+  for (const [name, [key, dflt, min, max]] of Object.entries(RETENTION_DEFS)) {
+    const raw = getSetting(key);
+    const n = raw == null || raw === '' ? NaN : Number(raw);
+    out[name] = Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt;
+  }
+  return out;
+}
 
 /** N+1 usable = cluster capacity minus its largest host (0 for single-host clusters). */
 function n1Usable(cluster) {
@@ -195,11 +215,91 @@ function writeCapacitySample(vcId, { force = false } = {}) {
       SELECT vcenter_id, name, cluster_name, power_state, cpu_count, memory_mb, cpu_usage_mhz, mem_usage_mb, storage_committed_bytes
       FROM vcenter_vms WHERE vcenter_id = ? AND name IS NOT NULL
     `).run(vcId);
-    return { clusters: clusters.length, vms: vmInfo.changes };
+    const hostInfo = db.prepare(`
+      INSERT INTO vcenter_host_capacity_history (vcenter_id, host_name, cluster_name, connection_state, in_maintenance,
+        vm_count, cpu_mhz_capacity, cpu_mhz_used, mem_bytes_capacity, mem_bytes_used, uptime_seconds)
+      SELECT vcenter_id, name, cluster_name, connection_state, in_maintenance, vm_count, cpu_mhz_capacity,
+        cpu_mhz_used, mem_bytes_capacity, mem_bytes_used, uptime_seconds
+      FROM vcenter_hosts WHERE vcenter_id = ? AND name IS NOT NULL
+    `).run(vcId);
+    const dsInfo = db.prepare(`
+      INSERT INTO vcenter_datastore_history (vcenter_id, datastore_name, capacity_bytes, free_bytes)
+      SELECT vcenter_id, name, capacity_bytes, free_bytes
+      FROM vcenter_datastores WHERE vcenter_id = ? AND name IS NOT NULL
+    `).run(vcId);
+    // Daily rollups, upserted incrementally: samples, min, sum, max and last per UTC day.
+    db.prepare(`
+      INSERT INTO vcenter_vm_daily (vcenter_id, vm_name, day, cluster_name, samples, on_samples,
+        cpu_samples, cpu_min_mhz, cpu_sum_mhz, cpu_max_mhz, cpu_last_mhz,
+        mem_samples, mem_min_mb, mem_sum_mb, mem_max_mb, mem_last_mb,
+        cpu_count_last, memory_mb_last, storage_last_bytes)
+      SELECT vcenter_id, name, date('now'), cluster_name, 1, CASE WHEN upper(coalesce(power_state, '')) LIKE '%ON' THEN 1 ELSE 0 END,
+        CASE WHEN cpu_usage_mhz IS NULL THEN 0 ELSE 1 END, cpu_usage_mhz, cpu_usage_mhz, cpu_usage_mhz, cpu_usage_mhz,
+        CASE WHEN mem_usage_mb IS NULL THEN 0 ELSE 1 END, mem_usage_mb, mem_usage_mb, mem_usage_mb, mem_usage_mb,
+        cpu_count, memory_mb, storage_committed_bytes
+      FROM vcenter_vms WHERE vcenter_id = ? AND name IS NOT NULL
+      ON CONFLICT(vcenter_id, vm_name, day) DO UPDATE SET
+        samples = samples + 1,
+        on_samples = on_samples + excluded.on_samples,
+        cluster_name = excluded.cluster_name,
+        cpu_samples = cpu_samples + excluded.cpu_samples,
+        cpu_min_mhz = min(coalesce(cpu_min_mhz, excluded.cpu_min_mhz), coalesce(excluded.cpu_min_mhz, cpu_min_mhz)),
+        cpu_sum_mhz = coalesce(cpu_sum_mhz, 0) + coalesce(excluded.cpu_sum_mhz, 0),
+        cpu_max_mhz = max(coalesce(cpu_max_mhz, excluded.cpu_max_mhz), coalesce(excluded.cpu_max_mhz, cpu_max_mhz)),
+        cpu_last_mhz = coalesce(excluded.cpu_last_mhz, cpu_last_mhz),
+        mem_samples = mem_samples + excluded.mem_samples,
+        mem_min_mb = min(coalesce(mem_min_mb, excluded.mem_min_mb), coalesce(excluded.mem_min_mb, mem_min_mb)),
+        mem_sum_mb = coalesce(mem_sum_mb, 0) + coalesce(excluded.mem_sum_mb, 0),
+        mem_max_mb = max(coalesce(mem_max_mb, excluded.mem_max_mb), coalesce(excluded.mem_max_mb, mem_max_mb)),
+        mem_last_mb = coalesce(excluded.mem_last_mb, mem_last_mb),
+        cpu_count_last = excluded.cpu_count_last,
+        memory_mb_last = excluded.memory_mb_last,
+        storage_last_bytes = excluded.storage_last_bytes
+    `).run(vcId);
+    db.prepare(`
+      INSERT INTO vcenter_host_daily (vcenter_id, host_name, day, cluster_name, samples, disconnected_samples, maintenance_samples,
+        cpu_samples, cpu_min_mhz, cpu_sum_mhz, cpu_max_mhz, cpu_last_mhz, cpu_capacity_mhz_last,
+        mem_samples, mem_min_bytes, mem_sum_bytes, mem_max_bytes, mem_last_bytes, mem_capacity_bytes_last,
+        vm_count_last, uptime_last_seconds)
+      SELECT vcenter_id, name, date('now'), cluster_name, 1,
+        CASE WHEN upper(coalesce(connection_state, '')) != 'CONNECTED' THEN 1 ELSE 0 END,
+        CASE WHEN in_maintenance = 1 THEN 1 ELSE 0 END,
+        CASE WHEN cpu_mhz_used IS NULL THEN 0 ELSE 1 END, cpu_mhz_used, cpu_mhz_used, cpu_mhz_used, cpu_mhz_used, cpu_mhz_capacity,
+        CASE WHEN mem_bytes_used IS NULL THEN 0 ELSE 1 END, mem_bytes_used, mem_bytes_used, mem_bytes_used, mem_bytes_used, mem_bytes_capacity,
+        vm_count, uptime_seconds
+      FROM vcenter_hosts WHERE vcenter_id = ? AND name IS NOT NULL
+      ON CONFLICT(vcenter_id, host_name, day) DO UPDATE SET
+        samples = samples + 1,
+        disconnected_samples = disconnected_samples + excluded.disconnected_samples,
+        maintenance_samples = maintenance_samples + excluded.maintenance_samples,
+        cluster_name = excluded.cluster_name,
+        cpu_samples = cpu_samples + excluded.cpu_samples,
+        cpu_min_mhz = min(coalesce(cpu_min_mhz, excluded.cpu_min_mhz), coalesce(excluded.cpu_min_mhz, cpu_min_mhz)),
+        cpu_sum_mhz = coalesce(cpu_sum_mhz, 0) + coalesce(excluded.cpu_sum_mhz, 0),
+        cpu_max_mhz = max(coalesce(cpu_max_mhz, excluded.cpu_max_mhz), coalesce(excluded.cpu_max_mhz, cpu_max_mhz)),
+        cpu_last_mhz = coalesce(excluded.cpu_last_mhz, cpu_last_mhz),
+        cpu_capacity_mhz_last = excluded.cpu_capacity_mhz_last,
+        mem_samples = mem_samples + excluded.mem_samples,
+        mem_min_bytes = min(coalesce(mem_min_bytes, excluded.mem_min_bytes), coalesce(excluded.mem_min_bytes, mem_min_bytes)),
+        mem_sum_bytes = coalesce(mem_sum_bytes, 0) + coalesce(excluded.mem_sum_bytes, 0),
+        mem_max_bytes = max(coalesce(mem_max_bytes, excluded.mem_max_bytes), coalesce(excluded.mem_max_bytes, mem_max_bytes)),
+        mem_last_bytes = coalesce(excluded.mem_last_bytes, mem_last_bytes),
+        mem_capacity_bytes_last = excluded.mem_capacity_bytes_last,
+        vm_count_last = excluded.vm_count_last,
+        uptime_last_seconds = excluded.uptime_last_seconds
+    `).run(vcId);
+    return { clusters: clusters.length, vms: vmInfo.changes, hosts: hostInfo.changes, datastores: dsInfo.changes };
   });
   const out = run();
-  pruneInBatches(db, 'vcenter_capacity_history', "vcenter_id = ? AND captured_at < datetime('now', ?)", [vcId, `-${CLUSTER_RETENTION_DAYS} days`]);
-  pruneInBatches(db, 'vcenter_vm_capacity_history', "vcenter_id = ? AND captured_at < datetime('now', ?)", [vcId, `-${VM_RETENTION_DAYS} days`]);
+  const r = retentionDays();
+  const byAge = (table, days) => pruneInBatches(db, table, "vcenter_id = ? AND captured_at < datetime('now', ?)", [vcId, `-${days} days`]);
+  byAge('vcenter_capacity_history', r.clusterHistoryDays);
+  byAge('vcenter_vm_capacity_history', r.vmHistoryDays);
+  byAge('vcenter_host_capacity_history', r.hostHistoryDays);
+  byAge('vcenter_datastore_history', r.datastoreHistoryDays);
+  for (const t of ['vcenter_vm_daily', 'vcenter_host_daily']) {
+    pruneInBatches(db, t, "vcenter_id = ? AND day < date('now', ?)", [vcId, `-${r.dailyHistoryDays} days`]);
+  }
   return { sampled: true, ...out };
 }
 
@@ -308,7 +408,7 @@ function ensureDefaultSites() {
 }
 
 module.exports = {
-  SAMPLE_GAP_MINUTES, CLUSTER_RETENTION_DAYS, VM_RETENTION_DAYS,
+  SAMPLE_GAP_MINUTES, RETENTION_DEFS, retentionDays,
   n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, writeCapacitySample, bucketHistory, growthOf,
   autoCreateSites, ensureDefaultSites, pairSummary,
 };

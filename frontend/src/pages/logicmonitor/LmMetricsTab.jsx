@@ -12,7 +12,11 @@ import { Modal, chipBtn, headRow } from './ui';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler);
 
-const RANGES = [{ label: '24h', v: 24 }, { label: '7d', v: 168 }];
+// 24h and 7d come from the raw history (hours); the rest from the daily rollup (days).
+const RANGES = [
+  { label: '24h', hours: 24 }, { label: '7d', hours: 168 },
+  { label: '30d', days: 30 }, { label: '90d', days: 90 }, { label: '365d', days: 365 },
+];
 
 const numOrNull = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
@@ -41,38 +45,74 @@ const epochDate = (e) => {
 };
 
 export function MetricHistoryModal({ deviceId, sourceId, hdsId, instanceKey, instanceName, metric, unit, title, onClose }) {
-  const [hours, setHours] = useState(24);
+  const [range, setRange] = useState(RANGES[0]);
   const [points, setPoints] = useState(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
     setPoints(null);
     setError(false);
-    const params = { deviceId, hdsId, instanceKey, metric, hours };
+    const params = { deviceId, hdsId, instanceKey, metric };
+    if (range.days) params.days = range.days; else params.hours = range.hours;
     if (sourceId) params.sourceId = sourceId;
     client.get('/logicmonitor/metrics/history', { params })
       .then(({ data }) => setPoints(Array.isArray(data) ? data : arr(data?.points)))
       .catch(() => setError(true));
-  }, [deviceId, sourceId, hdsId, instanceKey, metric, hours]);
+  }, [deviceId, sourceId, hdsId, instanceKey, metric, range]);
 
-  const labels = useMemo(() => arr(points).map((p) => fmtShortTime(epochDate(p.epoch)?.toISOString())), [points]);
+  const daily = !!range.days;
+  const labels = useMemo(() => arr(points).map((p) => (p.t ? String(p.t).slice(5) : fmtShortTime(epochDate(p.epoch)?.toISOString()))), [points]);
+  const name = `${metricLabel(metric)}${unit ? ` (${unit})` : ''}`;
+  const avgSet = {
+    label: daily ? `${name} avg` : name, data: arr(points).map((p) => numOrNull(p.value)),
+    borderColor: BRAND, backgroundColor: 'rgba(26,115,232,0.12)', fill: !daily, pointRadius: 0, borderWidth: 2, tension: 0.2,
+  };
+  // Daily points draw the avg line over a min to max band (min first, max fills down to it).
   const chart = {
     labels,
-    datasets: [{
-      label: `${metricLabel(metric)}${unit ? ` (${unit})` : ''}`, data: arr(points).map((p) => numOrNull(p.value)),
-      borderColor: BRAND, backgroundColor: 'rgba(26,115,232,0.12)', fill: true, pointRadius: 0, borderWidth: 2, tension: 0.2,
-    }],
+    datasets: daily ? [
+      { label: 'Min', data: arr(points).map((p) => numOrNull(p.min)), borderColor: 'rgba(26,115,232,0.25)', borderWidth: 1, pointRadius: 0, fill: false, tension: 0.2 },
+      { label: 'Max', data: arr(points).map((p) => numOrNull(p.max)), borderColor: 'rgba(26,115,232,0.25)', borderWidth: 1, pointRadius: 0, backgroundColor: 'rgba(26,115,232,0.14)', fill: '-1', tension: 0.2 },
+      avgSet,
+    ] : [avgSet],
   };
+  const options = daily ? {
+    ...chartOpts,
+    plugins: { ...chartOpts.plugins, legend: { ...chartOpts.plugins.legend, labels: { ...chartOpts.plugins.legend.labels, filter: (item) => item.text !== 'Min' && item.text !== 'Max' } } },
+  } : chartOpts;
+  const stat = useMemo(() => {
+    const rows = arr(points);
+    if (!rows.length) return null;
+    const vals = rows.map((p) => numOrNull(p.value)).filter((v) => v != null);
+    const maxes = rows.map((p) => numOrNull(daily ? p.max : p.value)).filter((v) => v != null);
+    const last = rows[rows.length - 1];
+    return {
+      avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
+      max: maxes.length ? Math.max(...maxes) : null,
+      last: numOrNull(daily ? last.last ?? last.value : last.value),
+      samples: daily ? rows.reduce((n, p) => n + (Number(p.samples) || 0), 0) : rows.length,
+    };
+  }, [points, daily]);
+  const f = (v) => (v == null ? DASH : `${+Number(v).toFixed(2)}${unit === '%' ? '%' : unit ? ` ${unit}` : ''}`);
 
   return (
     <Modal icon={Activity} title={title || metricLabel(metric)} subtitle={instanceName || instanceKey} onClose={onClose} width="max-w-3xl">
       <div className="flex items-center gap-1 mb-3">
-        {RANGES.map((r) => <button key={r.v} onClick={() => setHours(r.v)} className={chipBtn(hours === r.v)}>{r.label}</button>)}
+        {RANGES.map((r) => <button key={r.label} onClick={() => setRange(r)} className={chipBtn(range.label === r.label)}>{r.label}</button>)}
       </div>
       {error ? <p className="text-sm text-status-crit py-8 text-center">Failed to load the metric history.</p>
         : points == null ? <LoadingPanel label="Loading history..." height={160} />
-          : points.length === 0 ? <p className="text-sm text-ink-muted py-8 text-center">No history stored for this metric. Only DataSources the catalog marks for history keep samples.</p>
-            : <div className="h-64"><Line data={chart} options={chartOpts} /></div>}
+          : points.length === 0 ? <p className="text-sm text-ink-muted py-8 text-center">{daily ? 'No daily history stored for this metric yet. It builds from the next metrics poll.' : 'No history stored for this metric. Only DataSources the catalog marks for history keep samples.'}</p>
+            : (
+              <>
+                <div className="h-64"><Line data={chart} options={options} /></div>
+                {stat && (
+                  <p className="text-[12px] text-ink-muted mt-2 tnum">
+                    Avg {f(stat.avg)}, max {f(stat.max)}, last {f(stat.last)}, {fmtNum(stat.samples)} samples{daily ? ` over ${fmtNum(points.length)} day(s)` : ''}
+                  </p>
+                )}
+              </>
+            )}
     </Modal>
   );
 }

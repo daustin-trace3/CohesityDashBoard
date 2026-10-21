@@ -14,7 +14,7 @@ const {
 } = require('../services/vcenterIssues');
 const guestStorage = require('../services/vcenterGuestStorage');
 const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
-const { writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites, pairSummary } = require('../services/vcenterCapacity');
+const { RETENTION_DEFS, retentionDays, writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites, pairSummary } = require('../services/vcenterCapacity');
 
 const router = express.Router();
 
@@ -245,7 +245,7 @@ router.get('/issue-history', (req, res, next) => {
 /** GET /api/vcenter/config — platform-level settings (alert thresholds). */
 const configOut = () => {
   const gd = guestDiskThresholds();
-  return { certWarnDays: certWarnDays(), guestDiskWarnPct: gd.warn, guestDiskCritPct: gd.crit };
+  return { certWarnDays: certWarnDays(), guestDiskWarnPct: gd.warn, guestDiskCritPct: gd.crit, ...retentionDays() };
 };
 
 router.get('/config', (req, res, next) => {
@@ -259,9 +259,13 @@ router.put('/config', [
   body('certWarnDays').optional().isInt({ min: 1, max: 365 }).toInt(),
   body('guestDiskWarnPct').optional().isInt({ min: 1, max: 100 }).toInt(),
   body('guestDiskCritPct').optional().isInt({ min: 1, max: 100 }).toInt(),
+  ...Object.entries(RETENTION_DEFS).map(([name, [, , min, max]]) => body(name).optional().isInt({ min, max }).toInt()),
 ], validate, (req, res, next) => {
   try {
     const b = req.body;
+    for (const [name, [key]] of Object.entries(RETENTION_DEFS)) {
+      if (b[name] != null) setSetting(key, String(b[name]));
+    }
     if (b.certWarnDays != null) setSetting('vcenter_cert_warn_days', String(b.certWarnDays));
     if (b.guestDiskWarnPct != null) setSetting('vcenter_guest_disk_warn_pct', String(b.guestDiskWarnPct));
     if (b.guestDiskCritPct != null) setSetting('vcenter_guest_disk_crit_pct', String(b.guestDiskCritPct));
@@ -647,13 +651,39 @@ router.get('/datastores', (req, res, next) => {
       FROM vcenter_vms m, json_each(COALESCE(m.datastores, '[]')) jd
       GROUP BY m.vcenter_id, jd.value
     `).all()) vmCounts.set(`${r.vcenter_id}|${r.name}`, r.n);
+    // 30-day growth from the first and last history sample per datastore, one grouped query.
+    const trend = new Map();
+    for (const r of db.prepare(`
+      WITH w AS (
+        SELECT vcenter_id, datastore_name, MIN(captured_at) AS f, MAX(captured_at) AS l,
+          COUNT(DISTINCT date(captured_at)) AS nd
+        FROM vcenter_datastore_history WHERE captured_at >= datetime('now', '-30 days')
+        GROUP BY vcenter_id, datastore_name
+      )
+      SELECT w.vcenter_id, w.datastore_name, w.nd, julianday(w.l) - julianday(w.f) AS span,
+        (SELECT h.capacity_bytes - h.free_bytes FROM vcenter_datastore_history h
+          WHERE h.vcenter_id = w.vcenter_id AND h.datastore_name = w.datastore_name AND h.captured_at = w.f LIMIT 1) AS used_first,
+        (SELECT h.capacity_bytes - h.free_bytes FROM vcenter_datastore_history h
+          WHERE h.vcenter_id = w.vcenter_id AND h.datastore_name = w.datastore_name AND h.captured_at = w.l LIMIT 1) AS used_last
+      FROM w
+    `).all()) trend.set(`${r.vcenter_id}|${r.datastore_name}`, r);
     res.json(db.prepare(`
       SELECT d.*, v.name AS vcenter_name FROM vcenter_datastores d
       JOIN vcenter_vcenters v ON v.id = d.vcenter_id ORDER BY v.name, d.name
-    `).all().map(d => ({
-      ...d, used_pct: dsUsedPct(d),
-      vm_count: vmCounts.get(`${d.vcenter_id}|${d.name}`) ?? 0,
-    })));
+    `).all().map(d => {
+      const t = trend.get(`${d.vcenter_id}|${d.name}`);
+      let perDay = null;
+      let toFull = null;
+      if (t && t.span >= 3 && t.used_first != null && t.used_last != null) {
+        perDay = Math.round((t.used_last - t.used_first) / t.span);
+        if (perDay > 0 && d.free_bytes != null) toFull = Math.round((d.free_bytes / perDay) * 10) / 10;
+      }
+      return {
+        ...d, used_pct: dsUsedPct(d),
+        vm_count: vmCounts.get(`${d.vcenter_id}|${d.name}`) ?? 0,
+        usedBytesPerDay: perDay, daysToFull: toFull, trendBasisDays: t ? t.nd : 0,
+      };
+    }));
   } catch (err) { next(err); }
 });
 
@@ -935,21 +965,233 @@ router.get('/capacity/trends', [
   } catch (err) { next(err); }
 });
 
-/** GET /api/vcenter/capacity/vm-trends?vcenterId=&vm=&days= — raw hourly history for one VM. */
+/** Round to one decimal, null stays null. */
+const r1 = (n) => (n == null || !Number.isFinite(n) ? null : Math.round(n * 10) / 10);
+const pct = (n, d) => (d > 0 && n != null ? (n * 100) / d : null);
+
+/** GET /api/vcenter/capacity/vm-trends?vcenterId=&vm=&days= - raw rows for 7 days or less, daily rollups beyond. */
 router.get('/capacity/vm-trends', [
   query('vcenterId').isInt().toInt(),
   query('vm').isString().trim().notEmpty(),
   query('days').optional().isInt({ min: 1, max: 365 }).toInt(),
 ], validate, (req, res, next) => {
   try {
-    const points = db.prepare(`
-      SELECT captured_at AS t, cpu_usage_mhz AS cpuUsageMhz, mem_usage_mb AS memUsageMb,
-        storage_committed_bytes AS storageCommittedBytes, power_state AS powerState
-      FROM vcenter_vm_capacity_history
-      WHERE vcenter_id = ? AND vm_name = ? AND captured_at >= datetime('now', ?)
-      ORDER BY captured_at LIMIT 2200
-    `).all(req.query.vcenterId, req.query.vm, `-${req.query.days || 30} days`);
-    res.json({ points });
+    const { vcenterId, vm } = req.query;
+    const days = req.query.days || 30;
+    const hourly = days <= 7;
+    let points;
+    let cpuAvg = null;
+    let memAvg = null;
+    if (hourly) {
+      points = db.prepare(`
+        SELECT captured_at AS t, cpu_usage_mhz AS cpuUsageMhz, mem_usage_mb AS memUsageMb,
+          storage_committed_bytes AS storageCommittedBytes, power_state AS powerState
+        FROM vcenter_vm_capacity_history
+        WHERE vcenter_id = ? AND vm_name = ? AND captured_at >= datetime('now', ?)
+        ORDER BY captured_at LIMIT 2200
+      `).all(vcenterId, vm, `-${days} days`).map((p) => ({
+        ...p, cpuMinMhz: p.cpuUsageMhz, cpuMaxMhz: p.cpuUsageMhz, memMinMb: p.memUsageMb, memMaxMb: p.memUsageMb,
+        onPct: /ON$/i.test(p.powerState || '') ? 100 : 0, samples: 1,
+      }));
+      const cv = points.map((p) => p.cpuUsageMhz).filter((x) => x != null);
+      const mv = points.map((p) => p.memUsageMb).filter((x) => x != null);
+      cpuAvg = cv.length ? cv.reduce((a, b) => a + b, 0) / cv.length : null;
+      memAvg = mv.length ? mv.reduce((a, b) => a + b, 0) / mv.length : null;
+    } else {
+      const rows = db.prepare(`
+        SELECT day, cpu_samples, cpu_sum_mhz, cpu_min_mhz, cpu_max_mhz, mem_samples, mem_sum_mb, mem_min_mb, mem_max_mb,
+          storage_last_bytes, samples, on_samples
+        FROM vcenter_vm_daily
+        WHERE vcenter_id = ? AND vm_name = ? AND day >= date('now', ?)
+        ORDER BY day
+      `).all(vcenterId, vm, `-${days} days`);
+      points = rows.map((p) => ({
+        t: p.day,
+        cpuUsageMhz: p.cpu_samples > 0 ? p.cpu_sum_mhz / p.cpu_samples : null,
+        cpuMinMhz: p.cpu_min_mhz, cpuMaxMhz: p.cpu_max_mhz,
+        memUsageMb: p.mem_samples > 0 ? p.mem_sum_mb / p.mem_samples : null,
+        memMinMb: p.mem_min_mb, memMaxMb: p.mem_max_mb,
+        storageCommittedBytes: p.storage_last_bytes, powerState: null,
+        onPct: p.samples > 0 ? (p.on_samples * 100) / p.samples : null, samples: p.samples,
+      }));
+      const cs = rows.reduce((a, p) => a + (p.cpu_samples || 0), 0);
+      const ms = rows.reduce((a, p) => a + (p.mem_samples || 0), 0);
+      cpuAvg = cs > 0 ? rows.reduce((a, p) => a + (p.cpu_sum_mhz || 0), 0) / cs : null;
+      memAvg = ms > 0 ? rows.reduce((a, p) => a + (p.mem_sum_mb || 0), 0) / ms : null;
+    }
+    const maxOf = (key) => { const v = points.map((p) => p[key]).filter((x) => x != null); return v.length ? Math.max(...v) : null; };
+    const now = db.prepare('SELECT cpu_usage_mhz, mem_usage_mb, cpu_count, memory_mb FROM vcenter_vms WHERE vcenter_id = ? AND name = ? LIMIT 1').get(vcenterId, vm);
+    res.json({
+      vm, vcenterId, days, granularity: hourly ? 'hour' : 'day', points,
+      summary: {
+        cpuAvgMhz: cpuAvg == null ? null : Math.round(cpuAvg), cpuMaxMhz: maxOf('cpuMaxMhz'),
+        memAvgMb: memAvg == null ? null : Math.round(memAvg), memMaxMb: maxOf('memMaxMb'),
+        cpuNowMhz: now ? now.cpu_usage_mhz : null, memNowMb: now ? now.mem_usage_mb : null,
+        cpuCount: now ? now.cpu_count : null, memoryMb: now ? now.memory_mb : null,
+        samples: points.reduce((a, p) => a + (p.samples || 0), 0),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/capacity/host-trends?vcenterId=&host=&days= - raw rows for 7 days or less, daily rollups beyond. */
+router.get('/capacity/host-trends', [
+  query('vcenterId').isInt().toInt(),
+  query('host').isString().trim().notEmpty(),
+  query('days').optional().isInt({ min: 1, max: 365 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const { vcenterId, host } = req.query;
+    const days = req.query.days || 30;
+    const hourly = days <= 7;
+    let points;
+    if (hourly) {
+      points = db.prepare(`
+        SELECT captured_at AS t, cpu_mhz_used, cpu_mhz_capacity, mem_bytes_used, mem_bytes_capacity,
+          connection_state, in_maintenance, uptime_seconds, vm_count
+        FROM vcenter_host_capacity_history
+        WHERE vcenter_id = ? AND host_name = ? AND captured_at >= datetime('now', ?)
+        ORDER BY captured_at LIMIT 2200
+      `).all(vcenterId, host, `-${days} days`).map((p) => ({
+        t: p.t, cpuUsedMhz: p.cpu_mhz_used, cpuMinMhz: p.cpu_mhz_used, cpuMaxMhz: p.cpu_mhz_used, cpuCapacityMhz: p.cpu_mhz_capacity,
+        memUsedBytes: p.mem_bytes_used, memMinBytes: p.mem_bytes_used, memMaxBytes: p.mem_bytes_used, memCapacityBytes: p.mem_bytes_capacity,
+        disconnectedPct: String(p.connection_state || '').toUpperCase() !== 'CONNECTED' ? 100 : 0,
+        maintenancePct: p.in_maintenance === 1 ? 100 : 0,
+        uptimeSeconds: p.uptime_seconds, vmCount: p.vm_count, samples: 1,
+      }));
+    } else {
+      points = db.prepare(`
+        SELECT day, samples, disconnected_samples, maintenance_samples, cpu_samples, cpu_sum_mhz, cpu_min_mhz, cpu_max_mhz,
+          cpu_capacity_mhz_last, mem_samples, mem_sum_bytes, mem_min_bytes, mem_max_bytes, mem_capacity_bytes_last,
+          vm_count_last, uptime_last_seconds
+        FROM vcenter_host_daily
+        WHERE vcenter_id = ? AND host_name = ? AND day >= date('now', ?)
+        ORDER BY day
+      `).all(vcenterId, host, `-${days} days`).map((p) => ({
+        t: p.day,
+        cpuUsedMhz: p.cpu_samples > 0 ? p.cpu_sum_mhz / p.cpu_samples : null,
+        cpuMinMhz: p.cpu_min_mhz, cpuMaxMhz: p.cpu_max_mhz, cpuCapacityMhz: p.cpu_capacity_mhz_last,
+        memUsedBytes: p.mem_samples > 0 ? p.mem_sum_bytes / p.mem_samples : null,
+        memMinBytes: p.mem_min_bytes, memMaxBytes: p.mem_max_bytes, memCapacityBytes: p.mem_capacity_bytes_last,
+        disconnectedPct: p.samples > 0 ? (p.disconnected_samples * 100) / p.samples : null,
+        maintenancePct: p.samples > 0 ? (p.maintenance_samples * 100) / p.samples : null,
+        uptimeSeconds: p.uptime_last_seconds, vmCount: p.vm_count_last, samples: p.samples,
+      }));
+    }
+    const avgPct = (used, cap) => {
+      const v = points.map((p) => pct(p[used], p[cap])).filter((x) => x != null);
+      return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+    };
+    const maxPct = (max, cap) => {
+      const v = points.map((p) => pct(p[max], p[cap])).filter((x) => x != null);
+      return v.length ? Math.max(...v) : null;
+    };
+    const total = points.reduce((a, p) => a + (p.samples || 0), 0);
+    const wtd = (key) => (total > 0 ? points.reduce((a, p) => a + (p[key] || 0) * (p.samples || 0), 0) / total : null);
+    const last = points[points.length - 1];
+    res.json({
+      host, vcenterId, days, granularity: hourly ? 'hour' : 'day', points,
+      summary: {
+        cpuAvgPct: r1(avgPct('cpuUsedMhz', 'cpuCapacityMhz')), cpuMaxPct: r1(maxPct('cpuMaxMhz', 'cpuCapacityMhz')),
+        memAvgPct: r1(avgPct('memUsedBytes', 'memCapacityBytes')), memMaxPct: r1(maxPct('memMaxBytes', 'memCapacityBytes')),
+        disconnectedPct: r1(wtd('disconnectedPct')), maintenancePct: r1(wtd('maintenancePct')),
+        uptimeSeconds: last ? last.uptimeSeconds : null, samples: total,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/vcenter/capacity/host-daily?cluster=vcenterId|name&days= - per-host usage over a window, memory average first. */
+router.get('/capacity/host-daily', [
+  query('cluster').optional().isString(),
+  query('days').optional().isInt({ min: 7, max: 365 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const days = req.query.days || 30;
+    let where = '';
+    const args = [`-${days} days`];
+    if (req.query.cluster) {
+      const [vcId, ...rest] = String(req.query.cluster).split('|');
+      where = 'AND vcenter_id = ? AND cluster_name = ?';
+      args.push(Number(vcId), rest.join('|'));
+    }
+    const lastOf = (col) => `(SELECT d2.${col} FROM vcenter_host_daily d2 WHERE d2.vcenter_id = d.vcenter_id AND d2.host_name = d.host_name ORDER BY d2.day DESC LIMIT 1)`;
+    const rows = db.prepare(`
+      SELECT vcenter_id, host_name, MAX(cluster_name) AS cluster_name, SUM(samples) AS samples, COUNT(*) AS days,
+        SUM(disconnected_samples) AS disc, SUM(maintenance_samples) AS maint,
+        SUM(cpu_sum_mhz) AS cpu_sum, SUM(cpu_samples) AS cpu_n, MAX(cpu_max_mhz) AS cpu_max,
+        SUM(mem_sum_bytes) AS mem_sum, SUM(mem_samples) AS mem_n, MAX(mem_max_bytes) AS mem_max,
+        ${lastOf('cpu_capacity_mhz_last')} AS cpu_cap, ${lastOf('mem_capacity_bytes_last')} AS mem_cap,
+        ${lastOf('vm_count_last')} AS vm_count, ${lastOf('uptime_last_seconds')} AS uptime
+      FROM vcenter_host_daily d
+      WHERE day >= date('now', ?) ${where}
+      GROUP BY vcenter_id, host_name
+    `).all(...args);
+    const hosts = rows.map((r) => ({
+      vcenterId: r.vcenter_id, host: r.host_name, cluster: r.cluster_name,
+      cpuAvgPct: r1(pct(r.cpu_n > 0 ? r.cpu_sum / r.cpu_n : null, r.cpu_cap)),
+      cpuMaxPct: r1(pct(r.cpu_max, r.cpu_cap)),
+      memAvgPct: r1(pct(r.mem_n > 0 ? r.mem_sum / r.mem_n : null, r.mem_cap)),
+      memMaxPct: r1(pct(r.mem_max, r.mem_cap)),
+      disconnectedPct: r1(pct(r.disc, r.samples)), maintenancePct: r1(pct(r.maint, r.samples)),
+      uptimeSeconds: r.uptime, vmCount: r.vm_count, samples: r.samples, days: r.days,
+    })).sort((a, b) => (b.memAvgPct ?? -1) - (a.memAvgPct ?? -1));
+    res.json({ days, hosts });
+  } catch (err) { next(err); }
+});
+
+/** Least-squares slope of used bytes per day over points [{ ms, used }]. */
+function usedSlopePerDay(pts) {
+  const n = pts.length;
+  if (n < 2) return null;
+  const mx = pts.reduce((a, p) => a + p.ms, 0) / n;
+  const my = pts.reduce((a, p) => a + p.used, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (const p of pts) { num += (p.ms - mx) * (p.used - my); den += (p.ms - mx) ** 2; }
+  return den > 0 ? (num / den) * 86400000 : null;
+}
+
+/** GET /api/vcenter/capacity/datastore-trends?vcenterId=&datastore=&days= - used space history and growth. */
+router.get('/capacity/datastore-trends', [
+  query('vcenterId').isInt().toInt(),
+  query('datastore').isString().trim().notEmpty(),
+  query('days').optional().isInt({ min: 1, max: 1095 }).toInt(),
+], validate, (req, res, next) => {
+  try {
+    const { vcenterId, datastore } = req.query;
+    const days = req.query.days || 30;
+    const hourly = days <= 7;
+    const sql = hourly
+      ? `SELECT captured_at AS t, capacity_bytes, free_bytes FROM vcenter_datastore_history
+         WHERE vcenter_id = ? AND datastore_name = ? AND captured_at >= datetime('now', ?) ORDER BY captured_at LIMIT 2200`
+      : `SELECT h.captured_at AS t, h.capacity_bytes, h.free_bytes FROM vcenter_datastore_history h
+         JOIN (SELECT MAX(id) AS id FROM vcenter_datastore_history
+               WHERE vcenter_id = ? AND datastore_name = ? AND captured_at >= datetime('now', ?)
+               GROUP BY date(captured_at)) l ON l.id = h.id
+         ORDER BY h.captured_at`;
+    const points = db.prepare(sql).all(vcenterId, datastore, `-${days} days`).map((p) => {
+      const used = p.capacity_bytes != null && p.free_bytes != null ? p.capacity_bytes - p.free_bytes : null;
+      return {
+        t: p.t, capacityBytes: p.capacity_bytes, freeBytes: p.free_bytes, usedBytes: used,
+        usedPct: used != null && p.capacity_bytes > 0 ? r1((used * 100) / p.capacity_bytes) : null,
+      };
+    });
+    const usable = points.filter((p) => p.usedBytes != null);
+    const basisDays = new Set(usable.map((p) => String(p.t).slice(0, 10))).size;
+    let growth = null;
+    if (basisDays >= 3) {
+      const slope = usedSlopePerDay(usable.map((p) => ({ ms: new Date(`${String(p.t).replace(' ', 'T')}Z`).getTime(), used: p.usedBytes })));
+      if (slope != null) {
+        const freeNow = usable[usable.length - 1].freeBytes;
+        growth = {
+          usedBytesPerDay: Math.round(slope),
+          daysToFull: slope > 0 && freeNow != null ? Math.round((freeNow / slope) * 10) / 10 : null,
+          basisDays,
+        };
+      }
+    }
+    res.json({ datastore, vcenterId, days, granularity: hourly ? 'hour' : 'day', points, growth });
   } catch (err) { next(err); }
 });
 

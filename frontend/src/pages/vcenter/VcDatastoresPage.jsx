@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Database, Layers } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -81,24 +82,31 @@ export default function VcDatastoresPage() {
                 <SortTh k="capacity_bytes" label="Capacity" ctl={ctl} align="right" />
                 <SortTh k="free_bytes" label="Free" ctl={ctl} align="right" />
                 <SortTh k="used_pct" label="Used" ctl={ctl} align="right" />
+                <SortTh k="usedBytesPerDay" label="Growth/day" ctl={ctl} align="right" />
+                <SortTh k="daysToFull" label="Days to full" ctl={ctl} align="right" />
               </tr></thead>
               <tbody>
                 {ctl.pageRows.map((d) => (
                   <tr key={`${d.vcenter_id}|${d.datastore_id}`} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3">
+                      <Link to={`/vcenter/capacity/trends?datastore=${encodeURIComponent(d.name || '')}&vcenterId=${d.vcenter_id}`}
+                        className="text-brand hover:underline text-left" title="Open the datastore history">{d.name || '-'}</Link>
+                    </td>
+                    <td className="py-2 pr-3 text-ink-muted text-[11px]">{d.ds_type || '-'}</td>
+                    <td className="py-2 pr-3 text-ink-muted">{d.vcenter_name}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink">
                       <button onClick={() => setVmModal({
                         title: `VMs on ${d.name}`,
                         subtitle: `${d.ds_type || 'Datastore'} · ${d.vcenter_name}`,
                         icon: Database,
                         filter: { datastore: d.name, vcenterId: d.vcenter_id },
-                      })} className="text-brand hover:underline cursor-pointer text-left">{d.name || '—'}</button>
+                      })} className="text-brand hover:underline cursor-pointer" title="List the VMs on this datastore">{fmtNum(d.vm_count)}</button>
                     </td>
-                    <td className="py-2 pr-3 text-ink-muted text-[11px]">{d.ds_type || '—'}</td>
-                    <td className="py-2 pr-3 text-ink-muted">{d.vcenter_name}</td>
-                    <td className="py-2 pr-3 text-right tnum text-ink">{fmtNum(d.vm_count)}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(d.capacity_bytes)}</td>
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtBytes(d.free_bytes)}</td>
                     <td className="py-2 pr-3"><UsageBar pct={d.used_pct} /></td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{d.usedBytesPerDay == null ? '-' : `${d.usedBytesPerDay < 0 ? '-' : ''}${fmtBytes(Math.abs(d.usedBytesPerDay))}`}</td>
+                    <td className={`py-2 pr-3 text-right tnum ${d.daysToFull != null && d.daysToFull <= 30 ? 'text-status-crit font-semibold' : 'text-ink-muted'}`}>{d.daysToFull == null ? '-' : d.daysToFull > 3650 ? '> 10 y' : fmtNum(Math.round(d.daysToFull))}</td>
                   </tr>
                 ))}
               </tbody>

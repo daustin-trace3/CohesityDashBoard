@@ -180,6 +180,31 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_metrics_history').get().c).toBe(8 * 31);
   });
 
+  it('seeds vcenter long-term history: host, datastore, VM daily and host daily', () => {
+    const n = (sql) => db.prepare(sql).get().c;
+    expect(n('SELECT COUNT(*) c FROM vcenter_host_capacity_history')).toBeGreaterThan(0);
+    expect(n('SELECT COUNT(*) c FROM vcenter_datastore_history')).toBeGreaterThan(0);
+    expect(n('SELECT COUNT(*) c FROM vcenter_vm_daily')).toBeGreaterThan(0);
+    expect(n('SELECT COUNT(*) c FROM vcenter_host_daily')).toBeGreaterThan(0);
+    // The planted outage: one host DISCONNECTED for 6 hours on one day.
+    expect(n('SELECT COUNT(*) c FROM vcenter_host_daily WHERE disconnected_samples = 6')).toBeGreaterThanOrEqual(1);
+    // The planted growth: one datastore about 18 days from full over the last 30 days.
+    const rows = db.prepare(`
+      SELECT d.vcenter_id, d.name, d.free_bytes,
+        (SELECT capacity_bytes - free_bytes FROM vcenter_datastore_history h WHERE h.vcenter_id = d.vcenter_id AND h.datastore_name = d.name
+          AND h.captured_at >= datetime('now', '-30 days') ORDER BY h.captured_at LIMIT 1) AS used_first,
+        (SELECT julianday('now') - julianday(MIN(h.captured_at)) FROM vcenter_datastore_history h WHERE h.vcenter_id = d.vcenter_id AND h.datastore_name = d.name
+          AND h.captured_at >= datetime('now', '-30 days')) AS span,
+        (SELECT capacity_bytes - free_bytes FROM vcenter_datastore_history h WHERE h.vcenter_id = d.vcenter_id AND h.datastore_name = d.name
+          ORDER BY h.captured_at DESC LIMIT 1) AS used_last
+      FROM vcenter_datastores d
+    `).all();
+    const days = rows
+      .map((r) => (r.span >= 3 && r.used_last > r.used_first ? r.free_bytes / ((r.used_last - r.used_first) / r.span) : null))
+      .filter((x) => x != null && x >= 10 && x <= 30);
+    expect(days.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('seeds dell governance data: config compliance with drift detail, jobs, profiles, hardware logs', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM dell_config_baselines').get().c).toBe(2);
     expect(db.prepare("SELECT COUNT(*) c FROM dell_config_compliance WHERE status = 'noncompliant' AND detail IS NOT NULL").get().c).toBeGreaterThan(0);
@@ -950,6 +975,27 @@ describe('seedDemo.js', () => {
     expect(picks).toBeGreaterThan(0);
     expect(picks).toBeLessThan(all);
     expect(c('SELECT COUNT(*) c FROM lm_device_datasources WHERE raw_last_at IS NOT NULL')).toBeGreaterThan(0);
+  });
+
+  it('seeds logicmonitor long-term history: lm_ds_daily and lm_device_daily with the dal-core-02 dead-day pattern', () => {
+    const c = (sql, ...args) => db.prepare(sql).get(...args).c;
+    expect(c('SELECT COUNT(*) c FROM lm_ds_daily')).toBeGreaterThan(0);
+    expect(c('SELECT COUNT(*) c FROM lm_device_daily')).toBeGreaterThan(0);
+    const dayAt = (k) => new Date(Date.now() - k * 86400000).toISOString().slice(0, 10);
+    const dev = db.prepare("SELECT lm_device_id id FROM lm_devices WHERE display_name = 'dal-core-02'").get().id;
+    const row = (k) => db.prepare('SELECT * FROM lm_device_daily WHERE lm_device_id = ? AND day = ?').get(dev, dayAt(k));
+    for (const k of [20, 19, 3]) {
+      expect(row(k).dead_samples, `day -${k}`).toBeGreaterThanOrEqual(100);
+      expect(row(k).worst_host_status).toBe('dead');
+    }
+    for (const k of [8, 7]) expect(row(k).sdt_samples, `day -${k}`).toBeGreaterThan(0);
+    expect(row(10).dead_samples).toBe(0);
+    // phx-fw-01 management CPU climbs from 35 to 80 over the last 14 days.
+    const fw = db.prepare(`SELECT d.day, d.sum_value / d.samples avg FROM lm_ds_daily d JOIN lm_devices v ON v.source_id = d.source_id AND v.lm_device_id = d.lm_device_id
+      WHERE v.display_name = 'phx-fw-01' AND d.metric = 'mgmt_cpu_pct' ORDER BY d.day`).all();
+    expect(fw.length).toBeGreaterThanOrEqual(90);
+    expect(fw[fw.length - 14].avg).toBeLessThan(40);
+    expect(fw[fw.length - 2].avg).toBeGreaterThan(70);
   });
 
 });

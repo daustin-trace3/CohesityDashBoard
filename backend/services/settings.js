@@ -54,7 +54,7 @@ const DEFAULTS = {
   lm_if_flap_warn: '3',
   lm_dead_grace_min: '10',
   lm_alert_storm_count: '50',
-  lm_alert_retention_days: '30',
+  lm_alert_retention_days: '90',
   lm_new_device_days: '3',
   lm_interface_history_days: '30',
   lm_check_history_days: '30',

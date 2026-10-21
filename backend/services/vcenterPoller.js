@@ -13,7 +13,7 @@ const {
   fetchInventorySoap, fetchEvents, fetchVmTags,
 } = require('./vcenterApi');
 const { reconcileIssueHistory } = require('./vcenterIssues');
-const { writeCapacitySample, ensureDefaultSites } = require('./vcenterCapacity');
+const { writeCapacitySample, ensureDefaultSites, retentionDays } = require('./vcenterCapacity');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e));
@@ -338,7 +338,7 @@ async function collectEvents(vc) {
       ? new Date(new Date(latest).getTime() - 5 * 60000).toISOString()
       : new Date(Date.now() - 48 * 3600000).toISOString();
     const inserted = storeEvents(vc.id, await fetchEvents(vc, since));
-    pruneInBatches(db, 'vcenter_events', "created_at < datetime('now', '-30 days')");
+    pruneInBatches(db, 'vcenter_events', "created_at < datetime('now', ?)", [`-${retentionDays().eventRetentionDays} days`]);
     if (inserted) logger.debug(`[VcPoller] ${vc.name}: ${inserted} new event(s)`);
   } catch (err) {
     logger.debug(`[VcPoller] event fetch failed for ${vc.name}: ${safeMsg(err)}`);

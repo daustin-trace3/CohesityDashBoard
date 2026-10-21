@@ -2866,11 +2866,12 @@ router.get('/issue-history', [query('days').optional().isInt({ min: 1, max: 90 }
   } catch (err) { next(err); }
 });
 
-const TREND_RANGES = { '24h': 24, '7d': 168, '30d': 720 };
+const TREND_RANGES = { '24h': 24, '7d': 168, '30d': 720, '90d': 2160, '365d': 8760 };
 router.get('/trends', [query('range').optional().isIn(Object.keys(TREND_RANGES))], validate, (req, res, next) => {
   try {
     const range = req.query.range || '7d';
     const hours = TREND_RANGES[range];
+    const history = () => require('../services/logicmonitorHistory');
     // One row per poll tick summed across portals (minute resolution), then
     // thinned to <= 200 points keeping the last row of each bucket (point in
     // time, not an average).
@@ -2887,14 +2888,18 @@ router.get('/trends', [query('range').optional().isIn(Object.keys(TREND_RANGES))
     const picked = [];
     for (let i = step - 1; i < rows.length; i += step) picked.push(rows[i]);
     if (rows.length && picked[picked.length - 1] !== rows[rows.length - 1]) picked.push(rows[rows.length - 1]);
+    // 90d and 365d: one point per UTC day (average of each column over the day's ticks).
+    const dailyPoints = hours > 720 ? history().metricsHistoryByDay(db, hours / 24) : null;
     // Metrics carry critical, error and warning columns; the route vocabulary
     // is critical | warning | info, so error counts as warning (severity 3)
     // and alertsInfo is not stored per tick (null).
     let extra = {};
     try { extra = require('../services/logicmonitorTrends').getTrends(db, range); } catch (err) { extra = { range, daily: null, movers: null }; }
+    let deviceDaily = { range, topDead: [], topAlerting: [], alertsByDay: [] };
+    try { deviceDaily = history().deviceDailyBlock(db, range); } catch (err) { /* history tables missing */ }
     res.json({
-      range: extra.range, daily: extra.daily, movers: extra.movers,
-      points: picked.slice(-200).map((r) => ({
+      range: extra.range, daily: extra.daily, movers: extra.movers, deviceDaily,
+      points: dailyPoints || picked.slice(-200).map((r) => ({
         at: sqlIso(r.at), devicesNormal: r.dn, devicesDead: r.dd, devicesDeadCollector: r.ddc,
         interfacesUp: r.iu, interfacesDown: r.idn, alertsCritical: r.ac, alertsWarning: r.aw + r.ae, alertsInfo: null,
         collectorsDown: r.cd, checksDown: r.chd, checksDegraded: r.chg,
@@ -4583,18 +4588,55 @@ router.get('/metrics/history', [
   query('instanceKey').isString().isLength({ min: 1, max: 500 }),
   query('metric').isString().matches(/^[a-z0-9_]{1,64}$/),
   query('hours').optional().isInt({ min: 1, max: 168 }).toInt(),
+  query('days').optional().isInt({ min: 8, max: 1095 }).toInt(),
   query('sourceId').optional().isInt().toInt(),
 ], validate, (req, res, next) => {
   try {
     const q = req.query;
     let sourceId = q.sourceId;
+    if (q.days != null) {
+      // Daily series from lm_ds_daily; hours is ignored when days is given.
+      if (sourceId == null) {
+        const hit = db.prepare('SELECT source_id FROM lm_ds_daily WHERE lm_device_id = ? AND hds_id = ? AND instance_key = ? AND metric = ? LIMIT 1')
+          .get(q.deviceId, q.hdsId, q.instanceKey, q.metric);
+        sourceId = hit ? hit.source_id : null;
+      }
+      if (sourceId == null) return res.json([]);
+      return res.json(require('../services/logicmonitorHistory').metricDaySeries(db, sourceId, q.deviceId, q.hdsId, q.instanceKey, q.metric, q.days));
+    }
     if (sourceId == null) {
       const hit = db.prepare('SELECT source_id FROM lm_ds_metrics_history WHERE lm_device_id = ? AND hds_id = ? AND instance_key = ? AND metric = ? LIMIT 1')
         .get(q.deviceId, q.hdsId, q.instanceKey, q.metric);
       sourceId = hit ? hit.source_id : null;
     }
     if (sourceId == null) return res.json([]);
-    res.json(historySeries(sourceId, q.deviceId, q.hdsId, q.instanceKey, q.metric, q.hours || 24));
+    res.json(historySeries(sourceId, q.deviceId, q.hdsId, q.instanceKey, q.metric, q.hours || 24).map((p) => ({ ...p, granularity: 'hour' })));
+  } catch (err) { next(err); }
+});
+
+// Long-term device history (lm_device_daily): one row per UTC day.
+router.get('/devices/:deviceId/daily', [...deviceParams, query('days').optional().isInt({ min: 7, max: 1095 }).toInt()], validate, (req, res, next) => {
+  try {
+    const r = findDevice(req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Device');
+    const days = req.query.days || 30;
+    const out = require('../services/logicmonitorHistory').deviceDailyRows(db, r.source_id, r.lm_device_id, days);
+    res.json({ device: { id: r.lm_device_id, name: r.name, displayName: r.display_name }, days, rows: out.rows, summary: out.summary });
+  } catch (err) { next(err); }
+});
+
+// Window baseline per DataSource, instance and metric (lm_ds_daily).
+router.get('/devices/:deviceId/baseline', [
+  ...deviceParams,
+  query('days').optional().isInt({ min: 7, max: 365 }).toInt(),
+  query('kind').optional().isIn(['catalog', 'raw', 'all']),
+], validate, (req, res, next) => {
+  try {
+    const r = findDevice(req.params.deviceId, req.query.sourceId);
+    if (!r) return notFound(res, 'Device');
+    const days = req.query.days || 30;
+    const metrics = require('../services/logicmonitorHistory').deviceBaseline(db, r.source_id, r.lm_device_id, days, req.query.kind || 'catalog');
+    res.json({ device: { id: r.lm_device_id, name: r.name, displayName: r.display_name }, days, metrics });
   } catch (err) { next(err); }
 });
 

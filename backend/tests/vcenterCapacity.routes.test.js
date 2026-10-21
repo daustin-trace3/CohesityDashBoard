@@ -20,7 +20,7 @@ let vcId;
 beforeAll(() => {
   runMigrations(db, 'vcenter', vcenterMigrations);
   for (const t of ['vcenter_site_members', 'vcenter_sites', 'vcenter_capacity_history', 'vcenter_datastore_history',
-    'vcenter_vm_capacity_history', 'vcenter_vms', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores']) {
+    'vcenter_vm_capacity_history', 'vcenter_host_capacity_history', 'vcenter_vm_daily', 'vcenter_host_daily', 'vcenter_vms', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores']) {
     db.prepare(`DELETE FROM ${t}`).run();
   }
   db.prepare("DELETE FROM vcenter_vcenters WHERE name = 'cap-vc'").run();
@@ -198,5 +198,84 @@ describe('vCenter site capacity routes', () => {
     const res = await request(app).get('/api/vcenter/capacity/sites');
     expect(res.body.members.every((m) => m.siteId === siteA.id)).toBe(true);
     expect(res.body.unmapped.clusters.map((c) => c.name)).toEqual(['cl-b']);
+  });
+});
+
+describe('vCenter long-term history sampling', () => {
+  const cap = () => require('../services/vcenterCapacity');
+  const vmDaily = (name) => db.prepare('SELECT * FROM vcenter_vm_daily WHERE vcenter_id = ? AND vm_name = ?').get(vcId, name);
+  const hostDaily = (name) => db.prepare('SELECT * FROM vcenter_host_daily WHERE vcenter_id = ? AND host_name = ?').get(vcId, name);
+
+  it('the first sample wrote host and datastore raw rows and one daily row per object', () => {
+    expect(db.prepare('SELECT COUNT(*) n FROM vcenter_host_capacity_history').get().n).toBe(5);
+    expect(db.prepare('SELECT COUNT(*) n FROM vcenter_datastore_history').get().n).toBe(3);
+    expect(db.prepare('SELECT COUNT(*) n FROM vcenter_vm_daily').get().n).toBe(3);
+    expect(db.prepare('SELECT COUNT(*) n FROM vcenter_host_daily').get().n).toBe(5);
+    const h = db.prepare("SELECT * FROM vcenter_host_capacity_history WHERE host_name = 'esx-a1'").get();
+    expect(h.cpu_mhz_used).toBe(30000);
+    expect(h.mem_bytes_capacity).toBe(512 * GIB);
+  });
+
+  it('two samples on one day fold into one VM row; a NULL usage sample is not counted', () => {
+    const out = cap().writeCapacitySample(vcId, { force: true });
+    expect(out).toMatchObject({ sampled: true, clusters: 2, vms: 3, hosts: 5, datastores: 3 });
+    let d = vmDaily('app01');
+    expect(d).toMatchObject({ samples: 2, on_samples: 2, cpu_samples: 2, cpu_min_mhz: 4000, cpu_sum_mhz: 8000, cpu_max_mhz: 4000, cpu_last_mhz: 4000 });
+    expect(d.mem_sum_mb).toBe(32768);
+    expect(db.prepare('SELECT COUNT(*) n FROM vcenter_vm_daily').get().n).toBe(3);
+
+    db.prepare("UPDATE vcenter_vms SET cpu_usage_mhz = NULL WHERE name = 'app01'").run();
+    cap().writeCapacitySample(vcId, { force: true });
+    d = vmDaily('app01');
+    expect(d).toMatchObject({ samples: 3, cpu_samples: 2, cpu_min_mhz: 4000, cpu_sum_mhz: 8000, cpu_max_mhz: 4000, cpu_last_mhz: 4000, mem_samples: 3 });
+    db.prepare("UPDATE vcenter_vms SET cpu_usage_mhz = 4000 WHERE name = 'app01'").run();
+    // A powered-off VM adds samples but no on_samples.
+    expect(vmDaily('app02')).toMatchObject({ samples: 3, on_samples: 0 });
+  });
+
+  it('a DISCONNECTED host sample counts in disconnected_samples', () => {
+    db.prepare("UPDATE vcenter_hosts SET connection_state = 'DISCONNECTED', cpu_mhz_used = 50000 WHERE name = 'esx-a1'").run();
+    cap().writeCapacitySample(vcId, { force: true });
+    db.prepare("UPDATE vcenter_hosts SET connection_state = 'CONNECTED', cpu_mhz_used = 30000 WHERE name = 'esx-a1'").run();
+    const d = hostDaily('esx-a1');
+    expect(d).toMatchObject({ samples: 4, disconnected_samples: 1, cpu_samples: 4, cpu_min_mhz: 30000, cpu_max_mhz: 50000, cpu_sum_mhz: 140000, cpu_last_mhz: 50000, cpu_capacity_mhz_last: 100000 });
+    expect(hostDaily('esx-a2')).toMatchObject({ samples: 4, disconnected_samples: 0 });
+  });
+
+  it('retentionDays defaults and clamps', () => {
+    const del = () => db.prepare("DELETE FROM app_settings WHERE key IN ('vcenter_vm_history_days', 'vcenter_host_history_days', 'vcenter_cluster_history_days', 'vcenter_datastore_history_days', 'vcenter_daily_history_days', 'vcenter_event_retention_days')").run();
+    const { setSetting } = require('../services/settings');
+    del();
+    expect(cap().retentionDays()).toEqual({
+      vmHistoryDays: 90, hostHistoryDays: 90, clusterHistoryDays: 365, datastoreHistoryDays: 365, dailyHistoryDays: 730, eventRetentionDays: 90,
+    });
+    setSetting('vcenter_vm_history_days', '5');
+    setSetting('vcenter_event_retention_days', '9999');
+    setSetting('vcenter_host_history_days', 'abc');
+    setSetting('vcenter_cluster_history_days', '200');
+    const r = cap().retentionDays();
+    expect(r.vmHistoryDays).toBe(30);
+    expect(r.eventRetentionDays).toBe(365);
+    expect(r.hostHistoryDays).toBe(90);
+    expect(r.clusterHistoryDays).toBe(200);
+    del();
+  });
+
+  it('prune honours a saved vcenter_vm_history_days and the daily window', () => {
+    const { setSetting } = require('../services/settings');
+    const ins = db.prepare("INSERT INTO vcenter_vm_capacity_history (vcenter_id, captured_at, vm_name) VALUES (?, datetime('now', '-40 days'), 'old-vm')");
+    ins.run(vcId);
+    cap().writeCapacitySample(vcId, { force: true });
+    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_capacity_history WHERE vm_name = 'old-vm'").get().n).toBe(1); // default 90 d keeps it
+    setSetting('vcenter_vm_history_days', '30');
+    cap().writeCapacitySample(vcId, { force: true });
+    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_capacity_history WHERE vm_name = 'old-vm'").get().n).toBe(0);
+
+    db.prepare("INSERT INTO vcenter_vm_daily (vcenter_id, vm_name, day) VALUES (?, 'gone-vm', date('now', '-800 days'))").run(vcId);
+    db.prepare("INSERT INTO vcenter_host_daily (vcenter_id, host_name, day) VALUES (?, 'gone-host', date('now', '-800 days'))").run(vcId);
+    cap().writeCapacitySample(vcId, { force: true });
+    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_vm_daily WHERE vm_name = 'gone-vm'").get().n).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) n FROM vcenter_host_daily WHERE host_name = 'gone-host'").get().n).toBe(0);
+    db.prepare("DELETE FROM app_settings WHERE key = 'vcenter_vm_history_days'").run();
   });
 });

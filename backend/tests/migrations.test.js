@@ -259,7 +259,7 @@ const NEW_TABLES = [
   'alert_notify_platform', 'alert_notify_types',
   'ops_incidents', 'ops_incident_alerts', 'ops_agent_runs', 'ops_capability_runs',
   'vcenter_vm_disks', 'vcenter_vm_filesystems', 'vcenter_vm_filesystem_history',
-  'vcenter_host_nic_neighbors',
+  'vcenter_host_nic_neighbors', 'vcenter_host_capacity_history', 'vcenter_vm_daily', 'vcenter_host_daily',
   'zerto_events', 'estate_ai_reports', 'config_state', 'config_changes',
   'lm_sources', 'lm_devices', 'lm_device_groups', 'lm_device_datasources',
   'lm_interfaces', 'lm_interface_history', 'lm_interface_daily', 'lm_alerts',
@@ -268,7 +268,7 @@ const NEW_TABLES = [
   'lm_issue_history', 'lm_metrics_history', 'lm_ai_reports',
   'lm_sites', 'lm_interface_baseline', 'lm_webhook_events', 'lm_blame_history',
   'lm_ds_instances', 'lm_ds_metrics', 'lm_ds_metrics_history',
-  'lm_circuit_events',
+  'lm_circuit_events', 'lm_ds_daily', 'lm_device_daily',
   'lm_latency_episodes', 'lm_check_reference', 'lm_ds_metric_baseline', 'lm_unmonitored_neighbors', 'lm_ds_values', 'lm_ds_datapoints',
   // Legacy tables extended by post-refactor migrations (netapp v4 volume
   // detail, netapp v5 aiqum_instance_id, cohesity v11 last_backup_ms, cohesity

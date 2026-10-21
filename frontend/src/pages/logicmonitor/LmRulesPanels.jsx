@@ -426,7 +426,7 @@ export function LmServicesRulesPanel() {
   );
 }
 
-const RET_KEYS = ['lm_alert_retention_days', 'lm_interface_history_days', 'lm_check_history_days', 'lm_ds_history_days', 'lm_webhook_rate_per_min', 'lm_metrics_data_calls_per_tick'];
+const RET_KEYS = ['lm_alert_retention_days', 'lm_interface_history_days', 'lm_check_history_days', 'lm_ds_history_days', 'lm_daily_history_days', 'lm_webhook_rate_per_min', 'lm_metrics_data_calls_per_tick'];
 
 export function LmRetentionPanel() {
   const cfg = useLmConfig(RET_KEYS);
@@ -442,6 +442,8 @@ export function LmRetentionPanel() {
           tip="Ping and website check samples older than this are deleted. The latency baseline can only use the history that is kept." />
         <NumRow cfg={cfg} k="lm_ds_history_days" label="DataSource metric history" unit="days"
           tip="History samples from the DataSource metrics tier (session counts, CPU, memory and similar) older than this are deleted. Latest values are always kept." />
+        <NumRow cfg={cfg} k="lm_daily_history_days" label="Daily history" unit="days"
+          tip="One row per day is kept for every DataSource metric, per-device dead, collector and SDT time, alert counts, and the estate snapshots on the Trends page. Rows older than this are deleted. This is what the 30, 90 and 365 day ranges read." />
       </SettingGroup>
       <SettingGroup title="Limits">
         <NumRow cfg={cfg} k="lm_webhook_rate_per_min" label="Webhook deliveries accepted" unit="per minute"

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Building2, Layers, ArrowLeftRight } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Building2, Layers, ArrowLeftRight, Database } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
@@ -15,6 +15,17 @@ const SECTIONS = [
   { key: 'pairs', label: 'Failover pairs', icon: ArrowLeftRight },
   { key: 'alerts', label: 'Alert thresholds', icon: BellRing },
   { key: 'notify', label: 'Alert Notifications', icon: BellRing },
+  { key: 'data', label: 'Data retention', icon: Database },
+];
+
+// Retention windows: [config key, label, what it keeps, min, max, default].
+const RETENTION_FIELDS = [
+  ['vmHistoryDays', 'VM samples', 'Hourly CPU and memory per VM, used for the 24 hour and 7 day charts.', 30, 365, 90],
+  ['hostHistoryDays', 'Host samples', 'Hourly CPU, memory and connection state per host.', 30, 365, 90],
+  ['clusterHistoryDays', 'Cluster samples', 'Hourly cluster totals behind Capacity Trends.', 90, 1095, 365],
+  ['datastoreHistoryDays', 'Datastore samples', 'Hourly capacity and free space, behind the growth and days-to-full figures.', 30, 1095, 365],
+  ['dailyHistoryDays', 'Daily rollups', 'One row per VM and per host per day (average, min, max). Drives the 30, 90 and 365 day charts.', 90, 1095, 730],
+  ['eventRetentionDays', 'Events', 'vCenter events kept for the Events page and VM detail.', 7, 365, 90],
 ];
 const tabFromHash = () => {
   const h = (typeof window !== 'undefined' ? window.location.hash : '').replace('#', '');
@@ -36,6 +47,8 @@ export default function VcSettingsPage() {
   const [guestWarnPct, setGuestWarnPct] = useState('');
   const [guestCritPct, setGuestCritPct] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
+  const [ret, setRet] = useState({});
+  const [savingRet, setSavingRet] = useState(false);
   const [tagCategories, setTagCategories] = useState([]);
   const [savingOwnerId, setSavingOwnerId] = useState(null);
   const flash = (type, title, message) => toast({ type, title, message });
@@ -59,6 +72,7 @@ export default function VcSettingsPage() {
         setCertWarnDays(String(data.certWarnDays));
         setGuestWarnPct(String(data.guestDiskWarnPct ?? 80));
         setGuestCritPct(String(data.guestDiskCritPct ?? 90));
+        setRet(Object.fromEntries(RETENTION_FIELDS.map(([k, , , , , d]) => [k, String(data[k] ?? d)])));
       })
       .catch(() => { setCertWarnDays('60'); setGuestWarnPct('80'); setGuestCritPct('90'); });
     client.get('/vcenter/tag-categories')
@@ -86,6 +100,25 @@ export default function VcSettingsPage() {
       toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Check the values: days 1 to 365, percentages 1 to 100 with critical at or above warning.' });
     } finally {
       setSavingConfig(false);
+    }
+  };
+
+  const retValid = RETENTION_FIELDS.every(([k, , , min, max]) => {
+    const n = Number(ret[k]);
+    return Number.isInteger(n) && n >= min && n <= max;
+  });
+
+  const saveRetention = async () => {
+    setSavingRet(true);
+    try {
+      const body = Object.fromEntries(RETENTION_FIELDS.map(([k]) => [k, Number(ret[k])]));
+      const { data } = await client.put('/vcenter/config', body);
+      setRet(Object.fromEntries(RETENTION_FIELDS.map(([k, , , , , d]) => [k, String(data[k] ?? d)])));
+      toast({ type: 'success', title: 'Retention saved', message: 'Older rows are removed at the next hourly sample.' });
+    } catch (err) {
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Check each value against its range.' });
+    } finally {
+      setSavingRet(false);
     }
   };
 
@@ -365,6 +398,28 @@ export default function VcSettingsPage() {
       </div>
           )}
           {tab === 'notify' && <PlatformAlertNotifications platform="vcenter" label="vCenter" />}
+          {tab === 'data' && (
+            <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+              <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Database size={15} className="text-brand" /> Data retention</p>
+              <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
+                How long each kind of history stays in the database. Hourly samples are kept for a short window; the daily rollups
+                keep one row per VM and host per day for long-term trends. Lowering a value deletes the older rows at the next hourly sample.
+              </p>
+              <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
+                {RETENTION_FIELDS.map(([k, label, what, min, max, dflt]) => (
+                  <div key={k}>
+                    <label className="block text-xs font-semibold text-ink mb-1">{label} (days)</label>
+                    <input type="number" min={min} max={max} value={ret[k] ?? ''} onChange={(e) => setRet((r) => ({ ...r, [k]: e.target.value }))} className={inp} />
+                    <p className="text-[11px] text-ink-faint mt-1 leading-snug">{what} Range {min} to {max} days, default {dflt}.</p>
+                  </div>
+                ))}
+              </div>
+              <button onClick={saveRetention} disabled={savingRet || !retValid}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
+                {savingRet ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          )}
         </div>
       </PlatformSettingsLayout>
     </div>

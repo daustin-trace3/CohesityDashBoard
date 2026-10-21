@@ -12,6 +12,7 @@ import { Modal, Tabs, Fact, UtilBar, headRow } from './ui';
 import LmInterfaceHistoryModal from './LmInterfaceHistoryModal';
 import EndpointsTable from './endpointsTable';
 import LmMetricsTab from './LmMetricsTab';
+import LmDeviceHistoryTab from './LmDeviceHistoryTab';
 import { DeviceDatasourcesTab } from './LmRawDatasources';
 
 function InterfacesTab({ rows, onOpen }) {
@@ -247,6 +248,7 @@ export default function LmDevice360({ deviceId, sourceId, onClose, onSwitchDevic
             { key: 'interfaces', label: 'Interfaces', count: interfaces.length },
             { key: 'alerts', label: 'Alerts', count: alerts.length },
             { key: 'metrics', label: 'Metrics', count: metricDs },
+            { key: 'history', label: 'History' },
             { key: 'datasources', label: 'DataSources' },
             { key: 'properties', label: 'Properties', count: propCount },
             { key: 'sdt', label: 'SDT', count: sdts.length },
@@ -256,6 +258,7 @@ export default function LmDevice360({ deviceId, sourceId, onClose, onSwitchDevic
           {tab === 'interfaces' && <InterfacesTab rows={interfaces} onOpen={setIface} />}
           {tab === 'alerts' && <AlertsTab rows={alerts} />}
           {tab === 'metrics' && <LmMetricsTab payload={metrics} deviceId={deviceId} sourceId={sourceId || d.sourceId} />}
+          {tab === 'history' && <LmDeviceHistoryTab deviceId={deviceId} sourceId={sourceId || d.sourceId} />}
           {tab === 'datasources' && <DeviceDatasourcesTab deviceId={deviceId} sourceId={sourceId || d.sourceId} />}
           {tab === 'properties' && <PropertiesTab properties={props} />}
           {tab === 'sdt' && <SdtTab rows={sdts} />}

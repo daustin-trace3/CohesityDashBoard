@@ -1627,6 +1627,11 @@ function seedLogicmonitor(db, { now, encrypt }) {
     counts.rawValues = require('./logicmonitorRawDemo').seedRawValues(db, { sourceId });
   } catch (err) { console.warn(`[seedDemo] logicmonitor raw values skipped: ${err.message}`); }
 
+  // Long-term history: device state per day (after the alerts, whose open counts land on the last row).
+  try {
+    counts.deviceDaily = seedDeviceDaily(db, { sourceId, devices, nowMs });
+  } catch (err) { console.warn(`[seedDemo] logicmonitor device daily history skipped: ${err.message}`); }
+
   const issuesMod = optionalModule('../../services/logicmonitorIssues');
   if (issuesMod && issuesMod.reconcileIssueHistory) {
     issuesMod.reconcileIssueHistory();
@@ -1947,7 +1952,7 @@ function seedCohesityViaLm(devices, { put }) {
 function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   const out = { instances: 0, metrics: 0, history: 0, devices: 0 };
   if (!hasTable(db, 'lm_ds_instances') || !hasTable(db, 'lm_ds_metrics') || !hasTable(db, 'lm_ds_metrics_history')) return out;
-  for (const t of ['lm_ds_metrics_history', 'lm_ds_metrics', 'lm_ds_instances', ...(hasTable(db, 'lm_ds_metric_baseline') ? ['lm_ds_metric_baseline'] : [])]) {
+  for (const t of ['lm_ds_metrics_history', 'lm_ds_metrics', 'lm_ds_instances', ...(hasTable(db, 'lm_ds_metric_baseline') ? ['lm_ds_metric_baseline'] : []), ...(hasTable(db, 'lm_ds_daily') ? ['lm_ds_daily'] : [])]) {
     db.prepare(`DELETE FROM ${t} WHERE source_id = ? OR source_id NOT IN (SELECT id FROM lm_sources)`).run(sid);
   }
   const rng = rngFor('logicmonitor-r8');
@@ -1997,6 +2002,7 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
     return hds;
   };
 
+  const dailyItems = []; // every seeded numeric metric, rolled into lm_ds_daily at the end (history round)
   /** One instance with its latest metric values; hist maps metric -> 336 values (oldest first). */
   function put(dev, ds, display, family, key, metrics, hist = null, name = null) {
     const hds = hdsFor(dev, ds, display);
@@ -2004,6 +2010,9 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
     out.instances += 1;
     for (const [metric, value] of Object.entries(metrics)) {
       if (value == null) continue;
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        dailyItems.push({ dev, hds, ds, key, metric, value, varies: !!(hist && hist[metric]) });
+      }
       insMet.run(sid, dev.id, hds, ds, family, key, metric, metric, value, latest);
       out.metrics += 1;
     }
@@ -2232,7 +2241,114 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
   // Keep the datasource inventory counts in step with what was collected.
   for (const { dev, hds, n } of instN.values()) ddsUpd.run(n, n, sid, dev.id, hds);
   out.devices = new Set([...instN.values()].map((x) => x.dev.id)).size;
+  out.dailyRows = seedDsDaily(db, { sid, items: dailyItems, nowMs });
   return out;
+}
+
+// ---- Long-term history (lm_ds_daily, lm_device_daily) -------------------------------
+// 90 days per seeded metric: a smooth curve around the current value (min and max within 15 percent,
+// 48 samples a day), flat for state values. Two metrics tell a story: phx-fw-01 management CPU
+// climbs from 35 to 80 percent over the last 14 days; phx-core-01 CPU climbs from 40 to its 91.
+const HIST_DAYS = 90;
+const DAILY_RAMPS = { 'phx-fw-01|mgmt_cpu_pct': [35, 80], 'phx-core-01|cpu_pct': [40, null] };
+
+function seedDsDaily(db, { sid, items, nowMs }) {
+  if (!hasTable(db, 'lm_ds_daily')) return 0;
+  const ins = db.prepare(`
+    INSERT OR REPLACE INTO lm_ds_daily (source_id, lm_device_id, hds_id, datasource_name, instance_key, metric, kind, day,
+      samples, min_value, sum_value, max_value, last_value, last_epoch)
+    VALUES (?, ?, ?, ?, ?, ?, 'catalog', ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const rnd = rngFor('logicmonitor-ds-daily');
+  const r2 = (v) => Math.round(v * 100) / 100;
+  let n = 0;
+  db.transaction(() => {
+    for (const it of items) {
+      const isPct = /pct$/.test(it.metric);
+      const ramp = DAILY_RAMPS[`${it.dev.name}|${it.metric}`];
+      const phase = rnd() * 6.28;
+      for (let k = HIST_DAYS - 1; k >= 0; k -= 1) {
+        const ms = nowMs - k * 86400000;
+        const day = new Date(ms).toISOString().slice(0, 10);
+        let avg = it.value;
+        let lo = it.value;
+        let hi = it.value;
+        if (it.varies) {
+          avg = it.value * (1 + 0.06 * Math.sin(k * 0.9 + phase) + 0.02 * (rnd() - 0.5));
+          if (ramp && k < 14) {
+            const to = ramp[1] == null ? it.value : ramp[1];
+            avg = ramp[0] + (to - ramp[0]) * ((13 - k) / 13);
+          }
+          if (isPct) avg = Math.min(99, Math.max(0, avg));
+          lo = avg * (1 - 0.15 * (0.4 + 0.6 * rnd()));
+          hi = avg * (1 + 0.15 * (0.4 + 0.6 * rnd()));
+          if (isPct) hi = Math.min(100, hi);
+        }
+        const samples = k === 0 ? 20 : 48;
+        const epoch = Math.floor(ms / 1000);
+        ins.run(sid, it.dev.id, it.hds, it.ds, it.key, it.metric, day, samples, r2(lo), r2(avg * samples), r2(hi), r2(k === 0 ? it.value : avg), epoch);
+        n += 1;
+      }
+    }
+  })();
+  return n;
+}
+
+/** Device state and alert-count history, 90 days per seeded device. dal-core-02 is the story device. */
+function seedDeviceDaily(db, { sourceId, devices, nowMs }) {
+  if (!hasTable(db, 'lm_device_daily')) return 0;
+  db.prepare('DELETE FROM lm_device_daily WHERE source_id = ?').run(sourceId);
+  const ids = new Map(db.prepare('SELECT display_name, name, lm_device_id FROM lm_devices WHERE source_id = ?').all(sourceId)
+    .map((r) => [r.display_name || r.name, r.lm_device_id]));
+  const open = new Map();
+  for (const r of db.prepare(`
+    SELECT lm_device_id, COUNT(*) opened, SUM(CASE WHEN severity_norm = 'critical' THEN 1 ELSE 0 END) critical,
+      SUM(CASE WHEN severity_norm = 'warning' THEN 1 ELSE 0 END) warning
+    FROM lm_alerts WHERE source_id = ? AND cleared = 0 AND duplicate_of IS NULL AND lm_device_id IS NOT NULL GROUP BY lm_device_id
+  `).all(sourceId)) open.set(r.lm_device_id, r);
+  const ins = db.prepare(`
+    INSERT OR REPLACE INTO lm_device_daily (source_id, lm_device_id, day, samples, dead_samples, dead_collector_samples, sdt_samples,
+      worst_host_status, alerts_opened, alerts_critical, alerts_warning)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const rnd = rngFor('logicmonitor-device-daily');
+  let n = 0;
+  db.transaction(() => {
+    for (const d of devices) {
+      const id = ids.get(d.name);
+      if (id == null) continue;
+      for (let k = HIST_DAYS - 1; k >= 0; k -= 1) {
+        const day = new Date(nowMs - k * 86400000).toISOString().slice(0, 10);
+        const samples = k === 0 ? 120 : 288;
+        let dead = 0;
+        let deadC = 0;
+        let sdt = 0;
+        if (d.name === 'dal-core-02') {
+          if (k === 20) dead = 100; else if (k === 19) dead = 288; else if (k === 3) dead = 190;
+          if (k === 8 || k === 7) sdt = 96;
+        }
+        if (k === 0) {
+          if (d.hostStatus === 'dead') dead = Math.min(samples, Math.max(1, Math.round((DEAD_MIN[d.name] || 60) / 5)));
+          if (d.hostStatus === 'dead-collector') deadC = samples;
+          if (d.inSdt) sdt = samples;
+        }
+        let opened = Math.floor(rnd() * 3.4);
+        let crit = opened ? Math.floor(rnd() * (opened + 0.99)) : 0;
+        let warn = opened - crit;
+        if (k === 0 && open.has(id)) {
+          const o = open.get(id);
+          crit = Math.max(crit, o.critical || 0);
+          warn = Math.max(warn, o.warning || 0);
+          opened = Math.max(opened, o.opened, crit + warn);
+        }
+        if (dead && opened === 0) { opened = 1; crit = 1; }
+        const worst = dead ? 'dead' : deadC ? 'dead-collector' : 'normal';
+        ins.run(sourceId, id, day, samples, dead, deadC, sdt, worst, opened, crit, warn);
+        n += 1;
+      }
+    }
+  })();
+  return n;
 }
 
 function hasTable(db, name) {

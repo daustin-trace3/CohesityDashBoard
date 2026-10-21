@@ -438,4 +438,47 @@ module.exports = [
       }
     },
   },
+  {
+    version: 13,
+    up(db) {
+      // Long-term history: raw host samples plus incremental daily rollups
+      // (one row per object per UTC day: samples, min, sum, max, last).
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vcenter_host_capacity_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          captured_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          host_name TEXT NOT NULL, cluster_name TEXT,
+          connection_state TEXT, in_maintenance INTEGER, vm_count INTEGER,
+          cpu_mhz_capacity INTEGER, cpu_mhz_used INTEGER,
+          mem_bytes_capacity INTEGER, mem_bytes_used INTEGER, uptime_seconds INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_hosthist_vc ON vcenter_host_capacity_history(vcenter_id, host_name, captured_at);
+
+        CREATE TABLE IF NOT EXISTS vcenter_vm_daily (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          vm_name TEXT NOT NULL, day TEXT NOT NULL, cluster_name TEXT,
+          samples INTEGER NOT NULL DEFAULT 0, on_samples INTEGER NOT NULL DEFAULT 0,
+          cpu_samples INTEGER NOT NULL DEFAULT 0, cpu_min_mhz INTEGER, cpu_sum_mhz INTEGER, cpu_max_mhz INTEGER, cpu_last_mhz INTEGER,
+          mem_samples INTEGER NOT NULL DEFAULT 0, mem_min_mb INTEGER, mem_sum_mb INTEGER, mem_max_mb INTEGER, mem_last_mb INTEGER,
+          cpu_count_last INTEGER, memory_mb_last INTEGER, storage_last_bytes INTEGER,
+          UNIQUE(vcenter_id, vm_name, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_vm_daily_day ON vcenter_vm_daily(vcenter_id, day);
+
+        CREATE TABLE IF NOT EXISTS vcenter_host_daily (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          host_name TEXT NOT NULL, day TEXT NOT NULL, cluster_name TEXT,
+          samples INTEGER NOT NULL DEFAULT 0, disconnected_samples INTEGER NOT NULL DEFAULT 0, maintenance_samples INTEGER NOT NULL DEFAULT 0,
+          cpu_samples INTEGER NOT NULL DEFAULT 0, cpu_min_mhz INTEGER, cpu_sum_mhz INTEGER, cpu_max_mhz INTEGER, cpu_last_mhz INTEGER, cpu_capacity_mhz_last INTEGER,
+          mem_samples INTEGER NOT NULL DEFAULT 0, mem_min_bytes INTEGER, mem_sum_bytes INTEGER, mem_max_bytes INTEGER, mem_last_bytes INTEGER, mem_capacity_bytes_last INTEGER,
+          vm_count_last INTEGER, uptime_last_seconds INTEGER,
+          UNIQUE(vcenter_id, host_name, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_host_daily_day ON vcenter_host_daily(vcenter_id, day);
+      `);
+    },
+  },
 ];

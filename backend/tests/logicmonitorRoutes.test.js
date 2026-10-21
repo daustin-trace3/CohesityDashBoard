@@ -39,7 +39,7 @@ const TABLES = ['lm_ds_metrics_history', 'lm_ds_metrics', 'lm_ds_instances', 'lm
   'lm_collectors', 'lm_alerts', 'lm_interface_daily', 'lm_interface_history', 'lm_interfaces',
   'lm_device_datasources', 'lm_device_groups', 'lm_devices', 'lm_sources'];
 const THRESHOLD_KEYS = ['lm_if_util_warn_pct', 'lm_if_err_warn', 'lm_if_flap_warn', 'lm_check_baseline_min_samples',
-  'lm_check_latency_k', 'lm_check_latency_floor_ms', 'lm_check_latency_min_ms', 'lm_check_loss_min_pct'];
+  'lm_check_latency_k', 'lm_check_latency_floor_ms', 'lm_check_latency_min_ms', 'lm_check_loss_min_pct', 'lm_daily_history_days'];
 
 function wipe() {
   for (const t of TABLES) db.prepare(`DELETE FROM ${t}`).run();
@@ -633,7 +633,7 @@ describe('logicmonitor data routes', () => {
     const g = await request(app).get(`${API}/config`);
     expect(g.body.thresholds.lm_if_util_warn_pct).toBe(80);
     expect(g.body.thresholds.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(g.body.thresholds)).toHaveLength(65);
+    expect(Object.keys(g.body.thresholds)).toHaveLength(66);
     for (const k of THRESHOLD_KEYS) expect(g.body.thresholds).toHaveProperty(k);
     expect(g.body.ranges.lm_if_util_warn_pct).toEqual({ min: 50, max: 100, default: 80 });
     const put = await request(app).put(`${API}/config`).send({ lm_if_util_warn_pct: 150, lm_if_flap_warn: 0, lm_dead_grace_min: 15 });
@@ -1444,7 +1444,7 @@ describe('logicmonitor round 8 routes: metrics, firewalls, load balancers', () =
     const res = await request(app).get(`${API}/metrics/history?deviceId=201&hdsId=${h}&instanceKey=g&metric=sessions_util_pct&hours=3`);
     expect(res.status).toBe(200);
     expect(res.body.map((p) => p.value)).toEqual([60, 70, 87]);
-    expect(Object.keys(res.body[0]).sort()).toEqual(['epoch', 'value']);
+    expect(Object.keys(res.body[0]).sort()).toEqual(['epoch', 'granularity', 'value']);
     const short = await request(app).get(`${API}/metrics/history?deviceId=201&hdsId=${h}&instanceKey=g&metric=sessions_util_pct&hours=1`);
     expect(short.body.map((p) => p.value)).toEqual([87]);
     expect((await request(app).get(`${API}/metrics/history?deviceId=201&hdsId=${h}&metric=sessions_util_pct`)).status).toBe(400);

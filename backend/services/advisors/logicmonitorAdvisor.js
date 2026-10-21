@@ -115,6 +115,8 @@ function gatherNetworkHealth() {
     openAlertsBySeverity: alertsBySeverity,
     openAlertsByDatasource: alertsByDatasource,
     collectorsDown,
+    // Long-term history: the 25 busiest devices by 30-day CPU average (CPU/memory avg and max).
+    baselines30d: safe(() => require('../logicmonitorHistory').topCpuBaselines(db, 30, 25), []),
     note: noteIfEmpty(),
   };
 }
@@ -511,6 +513,7 @@ function gatherNetworkBrief() {
       degradation: { linksDegraded: lastN(degr.linksDegraded, 6), portsDown: lastN(degr.portsDown, 6) },
     },
     changedLast24h: { issuesOpenedTotal: issuesOpened24hTotal, issuesOpened, issuesResolved: issuesResolved24h, configChangesByScope: configChanges24h },
+    deviceHistory30d: safe(() => require('../logicmonitorHistory').deviceDailyBlock(db, '30d'), null),
     note: noteIfEmpty(),
   };
 }
@@ -1042,6 +1045,8 @@ const REPORTS = {
       + '(dead-collector means the monitoring collector is down, not the device), interfaces that are down with '
       + 'their descriptions, open LogicMonitor alerts by severity and datasource, and collectors that are down. '
       + 'Lead with outages on network devices, then collector problems that blind monitoring. '
+      + 'baselines30d lists the busiest devices by 30-day CPU average with memory average and maximum; mention a device only '
+      + 'when its numbers are high. '
       + `${RULES} Keep it under ~400 words.`,
     gather: gatherNetworkHealth,
     noun: 'network health report',
@@ -1148,7 +1153,8 @@ const REPORTS = {
       + 'metric summary, the last six hourly points of alert and degradation trends, and what changed in the last 24 '
       + 'hours (issues opened and resolved, configuration changes). Lead with what changed in the last 24 hours, name the '
       + 'sites to look at first and why, then say how healthy the monitoring itself is (collectors, coverage score, '
-      + `shadowed alerts). ${RULES} Keep it to about 350 words.`,
+      + 'shadowed alerts). deviceHistory30d gives the devices dead on the most days and the devices that opened the most '
+      + `alerts over 30 days; use it to separate a chronic device from a new one. ${RULES} Keep it to about 350 words.`,
     gather: gatherNetworkBrief,
     noun: 'network brief',
   },

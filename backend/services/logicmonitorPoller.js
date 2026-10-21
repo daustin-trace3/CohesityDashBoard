@@ -970,7 +970,10 @@ function pruneHistories(sourceId) {
   pruneInBatches(db, 'lm_interface_history', "source_id = ? AND captured_at < datetime('now', ?)", [sourceId, `-${ifDays} days`]);
   pruneInBatches(db, 'lm_check_history', "source_id = ? AND captured_at < datetime('now', ?)", [sourceId, `-${ckDays} days`]);
   pruneInBatches(db, 'lm_alerts', 'source_id = ? AND cleared = 1 AND COALESCE(end_epoch, start_epoch, 0) < ?', [sourceId, nowSec() - alertDays * 86400]);
-  pruneInBatches(db, 'lm_metrics_history', "source_id = ? AND captured_at < datetime('now', '-90 days')", [sourceId]);
+  const dailyDays = getThreshold('lm_daily_history_days');
+  pruneInBatches(db, 'lm_metrics_history', "source_id = ? AND captured_at < datetime('now', ?)", [sourceId, `-${dailyDays} days`]);
+  pruneInBatches(db, 'lm_ds_daily', "source_id = ? AND day < date('now', ?)", [sourceId, `-${dailyDays} days`]);
+  pruneInBatches(db, 'lm_device_daily', "source_id = ? AND day < date('now', ?)", [sourceId, `-${dailyDays} days`]);
   pruneInBatches(db, 'lm_webhook_events', "source_id = ? AND received_at < datetime('now', '-7 days')", [sourceId]);
   pruneInBatches(db, 'lm_blame_history', "source_id = ? AND at < datetime('now', '-90 days')", [sourceId]);
   pruneInBatches(db, 'lm_interface_daily', "source_id = ? AND day < date('now', '-400 days')", [sourceId]);
@@ -1082,6 +1085,7 @@ async function hourlyWork(source) {
   if (row?.last_hourly_at && String(row.last_hourly_at).slice(0, 13) === hourKey) return { skipped: true };
   const baselines = lmChecks.computeBaselines(db, source.id);
   const daily = lmChecks.rollupCheckDaily(db, source.id, utcDay(Date.now() - 86400000));
+  try { fillDeviceAlertCounts(source.id); } catch (err) { logger.warn(`[LmPoller] device alert counts failed: ${err.message}`); }
   // raw_json is kept for the first 24 h of a sample only (probe loop), then dropped.
   db.prepare("UPDATE lm_check_history SET raw_json = NULL WHERE source_id = ? AND raw_json IS NOT NULL AND captured_at < datetime('now', '-1 day')").run(source.id);
   db.prepare('UPDATE lm_sources SET last_hourly_at = ? WHERE id = ?').run(new Date().toISOString(), source.id);
@@ -1119,6 +1123,7 @@ async function dailyWork(source, note) {
   try { rollupInterfaceDaily(source.id, utcDay(Date.now() - 86400000)); } catch (err) {
     logger.warn(`[LmPoller] interface daily rollup failed: ${err.message}`);
   }
+  try { fillDeviceAlertCounts(source.id); } catch (err) { logger.warn(`[LmPoller] device alert counts failed: ${err.message}`); }
   try { pruneHistories(source.id); } catch (err) { logger.warn(`[LmPoller] retention prune failed: ${err.message}`); }
   try { lmMetrics.pruneMetricsHistory(source.id); } catch (err) { logger.warn(`[LmPoller] metrics prune failed: ${err.message}`); }
   try { recordLedger(source); } catch (err) { logger.warn(`[LmPoller] config ledger failed: ${err.message}`); }
@@ -1140,7 +1145,58 @@ async function dailyWork(source, note) {
   db.prepare('UPDATE lm_sources SET last_daily_at = ? WHERE id = ?').run(localDay(), source.id);
 }
 
+// Long-term device history: one row per device per UTC day. Counted once per inventory
+// tick from the stored host_status and sdt_status; worst_host_status keeps the worst of the day.
+function rollupDeviceDaily(sourceId) {
+  const rank = (x) => `(CASE ${x} WHEN 'dead' THEN 2 WHEN 'dead-collector' THEN 1 ELSE 0 END)`;
+  db.prepare(`
+    INSERT INTO lm_device_daily (source_id, lm_device_id, day, samples, dead_samples, dead_collector_samples, sdt_samples, worst_host_status)
+    SELECT source_id, lm_device_id, date('now'), 1,
+      CASE WHEN host_status = 'dead' THEN 1 ELSE 0 END,
+      CASE WHEN host_status = 'dead-collector' THEN 1 ELSE 0 END,
+      CASE WHEN sdt_status IS NOT NULL AND lower(trim(sdt_status)) NOT IN ('', 'none', 'null', 'none-none-none') THEN 1 ELSE 0 END,
+      CASE WHEN host_status IN ('dead', 'dead-collector') THEN host_status ELSE 'normal' END
+    FROM lm_devices WHERE source_id = ? AND stale = 0
+    ON CONFLICT(source_id, lm_device_id, day) DO UPDATE SET
+      samples = samples + 1,
+      dead_samples = dead_samples + excluded.dead_samples,
+      dead_collector_samples = dead_collector_samples + excluded.dead_collector_samples,
+      sdt_samples = sdt_samples + excluded.sdt_samples,
+      worst_host_status = CASE WHEN worst_host_status IS NULL OR ${rank('excluded.worst_host_status')} > ${rank('worst_host_status')}
+        THEN excluded.worst_host_status ELSE worst_host_status END
+  `).run(sourceId);
+}
+
+// Alert counts per device per UTC day, SET (not added) from lm_alerts for today and yesterday,
+// so a second run never doubles. A device with alerts but no samples yet gets a row with samples 0.
+function fillDeviceAlertCounts(sourceId) {
+  const days = [utcDay(Date.now()), utcDay(Date.now() - 86400000)];
+  const sel = db.prepare(`
+    SELECT lm_device_id, COUNT(*) opened,
+      COALESCE(SUM(CASE WHEN severity_norm = 'critical' THEN 1 ELSE 0 END), 0) critical,
+      COALESCE(SUM(CASE WHEN severity_norm = 'warning' THEN 1 ELSE 0 END), 0) warning
+    FROM lm_alerts
+    WHERE source_id = ? AND duplicate_of IS NULL AND lm_device_id IS NOT NULL AND start_epoch >= ? AND start_epoch < ?
+    GROUP BY lm_device_id
+  `);
+  const zero = db.prepare('UPDATE lm_device_daily SET alerts_opened = 0, alerts_critical = 0, alerts_warning = 0 WHERE source_id = ? AND day = ?');
+  const up = db.prepare(`
+    INSERT INTO lm_device_daily (source_id, lm_device_id, day, samples, alerts_opened, alerts_critical, alerts_warning)
+    VALUES (?, ?, ?, 0, ?, ?, ?)
+    ON CONFLICT(source_id, lm_device_id, day) DO UPDATE SET
+      alerts_opened = excluded.alerts_opened, alerts_critical = excluded.alerts_critical, alerts_warning = excluded.alerts_warning
+  `);
+  db.transaction(() => {
+    for (const day of days) {
+      const from = Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000);
+      zero.run(sourceId, day);
+      for (const r of sel.all(sourceId, from, from + 86400)) up.run(sourceId, r.lm_device_id, day, r.opened, r.critical, r.warning);
+    }
+  })();
+}
+
 function writeMetrics(sourceId) {
+  try { rollupDeviceDaily(sourceId); } catch (err) { logger.warn(`[LmPoller] device daily rollup failed: ${err.message}`); }
   const c = db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM lm_devices WHERE source_id = @s AND stale = 0) devices_total,
@@ -1573,6 +1629,6 @@ module.exports = {
   buildTopologyLinks, parseLinkDescription, parseNeighborInstance, buildDeviceIndex, makeResolver,
   storeAlerts, upsertAlertRow, computeInterfaceBaselines, refreshCandidates, storeDevices, storeCollectors, storeChecks, appendCheckRows, clearedSince,
   mapInterfaceColumns, summarizeInterfaceSeries, mapInterfaceResponse, matchInstance, statusText,
-  checkWindow, interfaceWindow, rollupInterfaceDaily, pruneHistories, writeMetrics,
+  checkWindow, interfaceWindow, rollupInterfaceDaily, pruneHistories, writeMetrics, rollupDeviceDaily, fillDeviceAlertCounts,
   IF_COLUMNS,
 };

@@ -926,4 +926,40 @@ module.exports = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_lm_alerts_open ON lm_alerts(cleared);');
     },
   },
+
+  // Migration v12. Long-term daily history: one row per object per UTC day
+  // (samples, min, sum, max, last), written incrementally at sample time.
+  {
+    version: 12,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lm_ds_daily (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id INTEGER NOT NULL REFERENCES lm_sources(id) ON DELETE CASCADE,
+          lm_device_id INTEGER NOT NULL, hds_id INTEGER NOT NULL,
+          datasource_name TEXT, instance_key TEXT NOT NULL, metric TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'catalog',
+          day TEXT NOT NULL,
+          samples INTEGER NOT NULL DEFAULT 0,
+          min_value REAL, sum_value REAL, max_value REAL, last_value REAL, last_epoch INTEGER,
+          UNIQUE(source_id, lm_device_id, hds_id, instance_key, metric, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lm_ds_daily_device ON lm_ds_daily(source_id, lm_device_id, day);
+
+        CREATE TABLE IF NOT EXISTS lm_device_daily (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id INTEGER NOT NULL REFERENCES lm_sources(id) ON DELETE CASCADE,
+          lm_device_id INTEGER NOT NULL, day TEXT NOT NULL,
+          samples INTEGER NOT NULL DEFAULT 0,
+          dead_samples INTEGER NOT NULL DEFAULT 0, dead_collector_samples INTEGER NOT NULL DEFAULT 0,
+          sdt_samples INTEGER NOT NULL DEFAULT 0,
+          worst_host_status TEXT,
+          alerts_opened INTEGER NOT NULL DEFAULT 0, alerts_critical INTEGER NOT NULL DEFAULT 0,
+          alerts_warning INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(source_id, lm_device_id, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_lm_device_daily_day ON lm_device_daily(source_id, day);
+      `);
+    },
+  },
 ];

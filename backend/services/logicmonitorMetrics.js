@@ -214,6 +214,7 @@ const storeResult = db.transaction((source, cand, parsed, nowIso) => {
       value = excluded.value, sampled_at_epoch = excluded.sampled_at_epoch, updated_at = datetime('now')
   `);
   const insHist = db.prepare('INSERT INTO lm_ds_metrics_history (source_id, lm_device_id, hds_id, instance_key, metric, value, sampled_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const upDaily = lmRaw.dailyUpserter(db);
   const seen = [];
   let written = 0;
   for (const inst of instances) {
@@ -224,6 +225,10 @@ const storeResult = db.transaction((source, cand, parsed, nowIso) => {
       if (stored == null || l.epoch >= stored) {
         upMetric.run(sid, dev, hds, cand.datasource_name, entry.family, inst.key, metric, l.datapoint, l.value, l.epoch);
         written += 1;
+      }
+      // Daily rollup: every numeric sample newer than the stored one, history flag or not.
+      if (stored == null || l.epoch > stored) {
+        upDaily(sid, dev, hds, cand.datasource_name, inst.key, metric, 'catalog', l.value, l.epoch);
       }
       if (entry.history) {
         const floor = stored == null ? -1 : stored;
@@ -315,6 +320,11 @@ async function pollMetrics(source) {
   const all = candidateRows(source);
   const batch = all.slice(0, cap);
   let features = readFeatures(source.id);
+  // Raw rules name the only raw datapoints that get daily history; read once per sweep.
+  let dailyRawKeys = new Set();
+  if (raw) {
+    try { dailyRawKeys = lmRaw.rawRuleKeySet(require('./logicmonitorIssues').getTextSetting('lm_raw_rules')); } catch { dailyRawKeys = new Set(); }
+  }
   // A catalog corrected since the last poll invalidates every learned map: drop
   // them so this poll relearns with the new matchers, then stamp the version.
   if (features.catalogVersion !== CATALOG_VERSION) {
@@ -399,7 +409,7 @@ async function pollMetrics(source) {
     }
     if (raw) {
       try {
-        const r = lmRaw.storeRawBody(db, source, cand, body, nowIso, { learned: learnedForRaw, names, nowEpoch: now });
+        const r = lmRaw.storeRawBody(db, source, cand, body, nowIso, { learned: learnedForRaw, names, nowEpoch: now, dailyRawKeys });
         rawDs += 1;
         rawValues += r.values;
       } catch (err) {
@@ -438,6 +448,7 @@ async function pollMetrics(source) {
 function pruneMetricsHistory(sourceId) {
   const days = threshold('lm_ds_history_days') || 14;
   pruneInBatches(db, 'lm_ds_metrics_history', 'source_id = ? AND sampled_at_epoch < ?', [sourceId, nowSec() - days * 86400]);
+  // Daily history is pruned with the other daily tables (pruneHistories, lm_daily_history_days).
   const old = "stale = 1 AND updated_at < datetime('now', '-7 days')";
   pruneInBatches(db, 'lm_ds_metrics', `source_id = ? AND EXISTS (
       SELECT 1 FROM lm_ds_instances i WHERE i.source_id = lm_ds_metrics.source_id AND i.lm_device_id = lm_ds_metrics.lm_device_id

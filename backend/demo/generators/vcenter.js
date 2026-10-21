@@ -724,6 +724,8 @@ function seedVcenter(db, { now, encrypt }) {
     }
   });
 
+  const longHistory = seedLongHistory(db, now);
+
   const siteMemRows = db.prepare('SELECT COUNT(*) n FROM vcenter_site_members').get().n;
   const capHistRows = db.prepare('SELECT COUNT(*) n FROM vcenter_capacity_history').get().n;
   const vmHistRows = db.prepare('SELECT COUNT(*) n FROM vcenter_vm_capacity_history').get().n;
@@ -733,7 +735,172 @@ function seedVcenter(db, { now, encrypt }) {
     datastores: dsTotal, orphans: orphanTotal, events: eventTotal,
     issueHistory: db.prepare('SELECT COUNT(*) n FROM vcenter_issue_history').get().n,
     siteMembers: siteMemRows, capacityHistory: capHistRows, vmCapacityHistory: vmHistRows,
-    nicNeighbors,
+    nicNeighbors, ...longHistory,
+  };
+}
+
+const HOUR_MS = 3600000;
+const sqlTime = (ms) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+/**
+ * Long-term history for trending: hourly host and datastore samples for 30
+ * days, and per-day rollups for 90 days of every VM and host. Three planted
+ * stories: one host DISCONNECTED for 6 hours on day -12, one datastore growing
+ * to about 18 days from full, one VM (the data warehouse usage-id when the
+ * estate has it) whose memory climbs from 40 to 85 percent over the last
+ * 10 days. Returns the counts and the names of the planted objects.
+ */
+function seedLongHistory(db, now) {
+  const hasTables = db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type = 'table' AND name IN ('vcenter_host_capacity_history', 'vcenter_vm_daily', 'vcenter_host_daily')").get().n === 3;
+  if (!hasTables) return {};
+  const rng = rngFor('vcenter-long-history');
+  const nowHour = Math.floor(now / HOUR_MS) * HOUR_MS;
+  const DAYS = 90;
+  const rawHours = 30 * 24;
+  const sine = (ms) => 1 + 0.12 * Math.cos(((new Date(ms).getUTCHours() - 14) / 24) * 2 * Math.PI);
+
+  // -- Hosts --
+  const hosts = db.prepare(`
+    SELECT vcenter_id, name, cluster_name, connection_state, in_maintenance, vm_count, cpu_mhz_capacity,
+      mem_bytes_capacity, uptime_seconds
+    FROM vcenter_hosts WHERE name IS NOT NULL ORDER BY vcenter_id, cluster_name, name
+  `).all();
+  const outageHost = hosts.find((x) => x.connection_state === 'CONNECTED' && x.in_maintenance !== 1) || null;
+  const outageStart = Date.parse(`${dayKey(nowHour - 12 * 24 * HOUR_MS)}T00:00:00Z`);
+  const outageEnd = outageStart + 6 * HOUR_MS;
+  const insHostRaw = db.prepare(`
+    INSERT INTO vcenter_host_capacity_history (vcenter_id, captured_at, host_name, cluster_name, connection_state,
+      in_maintenance, vm_count, cpu_mhz_capacity, cpu_mhz_used, mem_bytes_capacity, mem_bytes_used, uptime_seconds)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insHostDaily = db.prepare(`
+    INSERT INTO vcenter_host_daily (vcenter_id, host_name, day, cluster_name, samples, disconnected_samples, maintenance_samples,
+      cpu_samples, cpu_min_mhz, cpu_sum_mhz, cpu_max_mhz, cpu_last_mhz, cpu_capacity_mhz_last,
+      mem_samples, mem_min_bytes, mem_sum_bytes, mem_max_bytes, mem_last_bytes, mem_capacity_bytes_last,
+      vm_count_last, uptime_last_seconds)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let hostRaw = 0;
+  let hostDaily = 0;
+  for (const h of hosts) {
+    const cpuBase = randFloat(rng, 0.45, 0.7, 2);
+    const memBase = randFloat(rng, 0.45, 0.7, 2);
+    const days = new Map();
+    for (let back = DAYS * 24; back >= 0; back--) {
+      const t = nowHour - back * HOUR_MS;
+      const down = h === outageHost && t >= outageStart && t < outageEnd;
+      const state = down ? 'DISCONNECTED' : (h.connection_state || 'CONNECTED');
+      const live = state === 'CONNECTED';
+      const f = sine(t);
+      const cpuUsed = live && h.cpu_mhz_capacity ? Math.round(h.cpu_mhz_capacity * Math.min(0.95, cpuBase * f * randFloat(rng, 0.95, 1.05, 3))) : null;
+      const memUsed = live && h.mem_bytes_capacity ? Math.round(h.mem_bytes_capacity * Math.min(0.95, memBase * (1 + (f - 1) * 0.3))) : null;
+      const uptime = (h.uptime_seconds || 0) + (DAYS * 24 - back) * 3600 - DAYS * 24 * 3600;
+      if (back <= rawHours) {
+        insHostRaw.run(h.vcenter_id, sqlTime(t), h.name, h.cluster_name, state, h.in_maintenance || 0, h.vm_count,
+          h.cpu_mhz_capacity, cpuUsed, h.mem_bytes_capacity, memUsed, Math.max(0, uptime));
+        hostRaw += 1;
+      }
+      const k = dayKey(t);
+      const d = days.get(k) || { n: 0, disc: 0, maint: 0, cn: 0, cs: 0, cmin: null, cmax: null, clast: null, mn: 0, ms: 0, mmin: null, mmax: null, mlast: null, up: 0 };
+      d.n += 1;
+      if (!live) d.disc += 1;
+      if (h.in_maintenance === 1) d.maint += 1;
+      if (cpuUsed != null) {
+        d.cn += 1; d.cs += cpuUsed; d.clast = cpuUsed;
+        d.cmin = d.cmin == null ? cpuUsed : Math.min(d.cmin, cpuUsed);
+        d.cmax = d.cmax == null ? cpuUsed : Math.max(d.cmax, cpuUsed);
+      }
+      if (memUsed != null) {
+        d.mn += 1; d.ms += memUsed; d.mlast = memUsed;
+        d.mmin = d.mmin == null ? memUsed : Math.min(d.mmin, memUsed);
+        d.mmax = d.mmax == null ? memUsed : Math.max(d.mmax, memUsed);
+      }
+      d.up = Math.max(0, uptime);
+      days.set(k, d);
+    }
+    for (const [k, d] of days) {
+      insHostDaily.run(h.vcenter_id, h.name, k, h.cluster_name, d.n, d.disc, d.maint,
+        d.cn, d.cmin, d.cs, d.cmax, d.clast, h.cpu_mhz_capacity,
+        d.mn, d.mmin, d.ms, d.mmax, d.mlast, h.mem_bytes_capacity, h.vm_count, d.up);
+      hostDaily += 1;
+    }
+  }
+
+  // -- Datastores --
+  const dsRows = db.prepare('SELECT id, vcenter_id, name, capacity_bytes, free_bytes FROM vcenter_datastores WHERE name IS NOT NULL ORDER BY vcenter_id, name').all();
+  const growing = dsRows.find((d) => d.capacity_bytes > 0) || null;
+  if (growing && growing.free_bytes > growing.capacity_bytes * 0.3) {
+    // Keep the planted story consistent: 30 days of linear growth must fit below today's used figure.
+    growing.free_bytes = Math.round(growing.capacity_bytes * 0.25);
+    db.prepare('UPDATE vcenter_datastores SET free_bytes = ? WHERE id = ?').run(growing.free_bytes, growing.id);
+  }
+  const insDs = db.prepare(`
+    INSERT INTO vcenter_datastore_history (vcenter_id, captured_at, datastore_name, capacity_bytes, free_bytes)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  let dsRaw = 0;
+  for (const d of dsRows) {
+    if (!(d.capacity_bytes > 0)) continue;
+    const usedNow = d.capacity_bytes - d.free_bytes;
+    const slope = d === growing ? d.free_bytes / 18 / 24 : 0; // bytes per hour
+    for (let back = rawHours; back >= 0; back--) {
+      const t = nowHour - back * HOUR_MS;
+      const noise = back === 0 ? 0 : d.capacity_bytes * randFloat(rng, -0.002, 0.002, 4);
+      const used = Math.min(d.capacity_bytes, Math.max(0, Math.round(usedNow - slope * back + noise)));
+      insDs.run(d.vcenter_id, sqlTime(t), d.name, d.capacity_bytes, d.capacity_bytes - used);
+      dsRaw += 1;
+    }
+  }
+
+  // -- VM daily --
+  const vms = db.prepare('SELECT vcenter_id, name, cluster_name, power_state, cpu_count, memory_mb, cpu_usage_mhz, mem_usage_mb, storage_committed_bytes, tags FROM vcenter_vms WHERE name IS NOT NULL ORDER BY vcenter_id, name').all();
+  const poweredOn = (v) => /ON$/i.test(v.power_state || '');
+  const warehouse = vms.find((v) => poweredOn(v) && /usage-id: pp00003117/i.test(v.tags || '')) || vms.find(poweredOn) || null;
+  const insVmDaily = db.prepare(`
+    INSERT INTO vcenter_vm_daily (vcenter_id, vm_name, day, cluster_name, samples, on_samples,
+      cpu_samples, cpu_min_mhz, cpu_sum_mhz, cpu_max_mhz, cpu_last_mhz,
+      mem_samples, mem_min_mb, mem_sum_mb, mem_max_mb, mem_last_mb,
+      cpu_count_last, memory_mb_last, storage_last_bytes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let vmDaily = 0;
+  const todayHours = new Date(nowHour).getUTCHours() + 1;
+  for (const v of vms) {
+    const on = poweredOn(v);
+    const cpuBase = v.cpu_usage_mhz || Math.round(2400 * (v.cpu_count || 1) * 0.4);
+    const memBase = v.mem_usage_mb || Math.round((v.memory_mb || 4096) * 0.5);
+    for (let back = DAYS; back >= 0; back--) {
+      const t = nowHour - back * 24 * HOUR_MS;
+      const n = back === 0 ? todayHours : 24;
+      const dow = new Date(t).getUTCDay();
+      const weekday = dow === 0 || dow === 6 ? 0.8 : 1;
+      const trend = 0.85 + 0.15 * ((DAYS - back) / DAYS);
+      const cpuAvg = on ? cpuBase * trend * weekday * randFloat(rng, 0.9, 1.1, 3) : null;
+      let memAvg = on ? memBase * (0.95 + 0.05 * ((DAYS - back) / DAYS)) * randFloat(rng, 0.98, 1.02, 3) : null;
+      if (v === warehouse && v.memory_mb) {
+        // 40 percent of memory until day -10, then a straight climb to 85 percent today.
+        const frac = back >= 10 ? 0.4 : 0.4 + (0.45 * (10 - back)) / 10;
+        memAvg = v.memory_mb * frac;
+      }
+      const cn = on ? n : 0;
+      const cMin = on ? Math.round(cpuAvg * 0.6) : null;
+      const cMax = on ? Math.round(cpuAvg * 1.35) : null;
+      const mMin = on ? Math.round(memAvg * 0.96) : null;
+      const mMax = on ? Math.round(memAvg * 1.05) : null;
+      insVmDaily.run(v.vcenter_id, v.name, dayKey(t), v.cluster_name, n, on ? n : 0,
+        cn, cMin, on ? Math.round(cpuAvg * n) : null, cMax, on ? Math.round(cpuAvg) : null,
+        cn, mMin, on ? Math.round(memAvg * n) : null, mMax, on ? Math.round(memAvg) : null,
+        v.cpu_count, v.memory_mb, v.storage_committed_bytes);
+      vmDaily += 1;
+    }
+  }
+
+  return {
+    hostCapacityHistory: hostRaw, datastoreHistory: dsRaw, vmDaily, hostDaily,
+    plantedGrowingDatastore: growing ? growing.name : null,
+    plantedMemoryClimbVm: warehouse ? warehouse.name : null,
+    plantedDisconnectedHost: outageHost ? outageHost.name : null,
   };
 }
 

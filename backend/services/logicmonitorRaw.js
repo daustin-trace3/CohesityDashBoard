@@ -76,6 +76,42 @@ function parseRawBody(body, dsName, nowEpoch) {
   return out;
 }
 
+const utcDayOf = (epochSec) => new Date(epochSec * 1000).toISOString().slice(0, 10);
+
+/**
+ * Prepared daily rollup upsert (lm_ds_daily): one row per object per UTC day holding
+ * samples, min, sum, max and last. Returns run(sid, dev, hds, ds, instanceKey, metric, kind, value, epoch).
+ */
+function dailyUpserter(dbh) {
+  const st = dbh.prepare(`
+    INSERT INTO lm_ds_daily (source_id, lm_device_id, hds_id, datasource_name, instance_key, metric, kind, day,
+      samples, min_value, sum_value, max_value, last_value, last_epoch)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+    ON CONFLICT(source_id, lm_device_id, hds_id, instance_key, metric, day) DO UPDATE SET
+      samples = samples + 1,
+      min_value = min(coalesce(min_value, excluded.min_value), excluded.min_value),
+      sum_value = coalesce(sum_value, 0) + excluded.sum_value,
+      max_value = max(coalesce(max_value, excluded.max_value), excluded.max_value),
+      datasource_name = excluded.datasource_name,
+      last_value = excluded.last_value, last_epoch = excluded.last_epoch
+  `);
+  return (sid, dev, hds, ds, instanceKey, metric, kind, value, epoch) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(epoch)) return;
+    st.run(sid, dev, hds, ds, instanceKey, metric, kind, utcDayOf(epoch), value, value, value, value, epoch);
+  };
+}
+
+/** Set of "DataSource:datapoint" pairs named by enabled raw rules (opts.dailyRawKeys of storeRawBody). */
+function rawRuleKeySet(rulesText) {
+  const out = new Set();
+  try {
+    for (const r of require('./logicmonitorRawRules').parseRules(rulesText)) {
+      if (r.enabled) out.add(`${r.datasource}:${r.datapoint}`);
+    }
+  } catch { /* no rules */ }
+  return out;
+}
+
 /**
  * Store one fetched body for one device DataSource (cand = candidateRows row).
  *   opts.learned  { metric: datapoint } of the catalog picks for this DataSource (labels coverage)
@@ -109,6 +145,10 @@ function storeRawBody(dbh, source, cand, body, nowIso, opts = {}) {
       value_text = excluded.value_text, sampled_at_epoch = excluded.sampled_at_epoch, updated_at = excluded.updated_at
   `);
   const insHist = dbh.prepare('INSERT INTO lm_ds_metrics_history (source_id, lm_device_id, hds_id, instance_key, metric, value, sampled_at_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  // Daily history only for datapoints a raw rule names (opts.dailyRawKeys, built once per sweep).
+  const dailyKeys = opts.dailyRawKeys instanceof Set ? opts.dailyRawKeys : null;
+  const upDaily = dailyKeys && dailyKeys.size ? dailyUpserter(dbh) : null;
+  const getStored = upDaily ? dbh.prepare('SELECT sampled_at_epoch e FROM lm_ds_values WHERE source_id = ? AND lm_device_id = ? AND hds_id = ? AND instance_key = ? AND datapoint = ?') : null;
 
   // Every history floor of this (source, device, hds) in one read, before any
   // write lock is taken. Key: instance_key + '|' + metric.
@@ -124,8 +164,13 @@ function storeRawBody(dbh, source, cand, body, nowIso, opts = {}) {
     for (const inst of chunk) {
       const name = (opts.names && opts.names.get(inst.key)) || inst.name;
       for (const p of inst.points) {
+        const rollDaily = upDaily && p.value != null && dailyKeys.has(`${ds}:${p.datapoint}`);
+        const prevEpoch = rollDaily ? getStored.get(sid, dev, hds, inst.key, p.datapoint)?.e : null;
         upVal.run(sid, dev, hds, ds, inst.key, name, p.datapoint, p.value, p.valueText, p.epoch, nowIso);
         n += 1;
+        if (rollDaily && (prevEpoch == null || p.epoch > prevEpoch)) {
+          upDaily(sid, dev, hds, ds, inst.key, p.datapoint, 'raw', p.value, p.epoch);
+        }
         if (p.value != null && history.has(`${ds}:${p.datapoint}`)) {
           const metric = `raw:${p.datapoint}`;
           const floor = floors.get(`${inst.key}|${metric}`);
@@ -321,6 +366,6 @@ function rawSummary(dbh, metrics) {
 }
 
 module.exports = {
-  RAW_MAX_INSTANCES, parseRawBody, storeRawBody, refreshDatapoints, historySetOf, isNoData,
+  RAW_MAX_INSTANCES, parseRawBody, storeRawBody, dailyUpserter, rawRuleKeySet, utcDayOf, refreshDatapoints, historySetOf, isNoData,
   deviceDatasources, dsValues, estateDatasources, datapointsFor, rawSummary,
 };
