@@ -1,4 +1,5 @@
 const nodeCron = require('node-cron');
+const { scheduleCron } = require('./cronSchedule');
 const logger = require('../utils/logger');
 const pollerStatus = require('../services/pollerStatus');
 
@@ -18,11 +19,6 @@ function cronExpression(intervalMinutes) {
 }
 
 const RECONCILE_CRON = '2,7,12,17,22,27,32,37,42,47,52,57 * * * *';
-
-// node-cron only checks once a second and silently drops a tick whose second
-// passed while the event loop was busy (other tasks firing at :00) unless told
-// to recover it.
-const CRON_OPTS = { recoverMissedExecutions: true };
 
 /**
  * Shared poller lifecycle for a platform's per-source polling: cron
@@ -120,7 +116,7 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
   function schedule(source) {
     cancel(source.id);
     const interval = resolveInterval(intervalMinutes, source, defaultIntervalMinutes);
-    const task = cronLib.schedule(cronExpression(interval), () => {
+    const task = scheduleCron(cronExpression(interval), () => {
       const row = currentRow(source);
       // The gate only guards SCHEDULED polls (backoff after repeated total
       // failures); a manual trigger() bypasses it on purpose.
@@ -129,7 +125,7 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
         return;
       }
       run(row);
-    }, CRON_OPTS);
+    }, cronLib);
     tasks.set(source.id, { task, interval });
     logger.info(`[${id}] Scheduled source ${source.id} (${source.name}) every ${interval} min`);
     return task;
@@ -216,7 +212,7 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
     for (const source of sources) schedule(source);
     // Off the multiples of five, so the reconcile never shares a minute with
     // a scheduled poll (every interval is a multiple of 5).
-    if (!reconcileTask) reconcileTask = cronLib.schedule(RECONCILE_CRON, reconcile, CRON_OPTS);
+    if (!reconcileTask) reconcileTask = scheduleCron(RECONCILE_CRON, reconcile, cronLib);
     return sources;
   }
 
@@ -252,9 +248,9 @@ function createGlobalTask({ id, sourceId = 0, intervalMinutes, run, defaultInter
   function start() {
     stop();
     const interval = resolveInterval(intervalMinutes, undefined, defaultIntervalMinutes);
-    task = cronLib.schedule(cronExpression(interval), () => {
+    task = scheduleCron(cronExpression(interval), () => {
       runWrapped();
-    }, CRON_OPTS);
+    }, cronLib);
     return task;
   }
 

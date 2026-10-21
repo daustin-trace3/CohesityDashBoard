@@ -4,7 +4,7 @@
 // replicate to another cluster? Stored wholesale per refresh (current state,
 // not history), mirroring the licensing breakdown tables.
 const axios = require('axios');
-const cron = require('node-cron');
+const { scheduleCron } = require('../core/cronSchedule');
 const db = require('../db/database');
 const logger = require('../utils/logger');
 const pollerStatus = require('./pollerStatus');
@@ -185,9 +185,9 @@ function getViews() {
 function initViews() {
   // Offset from the licensing refresh (top of hour) — both walk every Helios
   // cluster and share the same rate limit.
-  cron.schedule('30 * * * *', () => {
+  scheduleCron('30 * * * *', () => {
     refreshViews().catch(err => logger.error(`[Views] Scheduled refresh failed: ${err.message}`));
-  }, { recoverMissedExecutions: true });
+  });
   refreshViews().catch(err => logger.error(`[Views] Initial refresh failed: ${err.message}`));
 }
 

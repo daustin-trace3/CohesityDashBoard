@@ -1,4 +1,4 @@
-const cron = require('node-cron');
+const { scheduleCron } = require('../core/cronSchedule');
 const axios = require('axios');
 const db = require('../db/database');
 const { buildHeliosClient } = require('./helios');
@@ -478,9 +478,9 @@ function getViewDetail(systemId) {
  * Schedule hourly refresh + one refresh shortly after startup.
  */
 function initLicensing() {
-  cron.schedule('0 * * * *', () => {
+  scheduleCron('0 * * * *', () => {
     refreshLicensing().catch(e => logger.error('[Licensing] scheduled refresh failed:', e.message));
-  }, { recoverMissedExecutions: true });
+  });
   refreshLicensing().catch(e => logger.error('[Licensing] initial refresh failed:', e.message));
 }
 

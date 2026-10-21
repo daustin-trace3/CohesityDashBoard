@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const cron = require('node-cron');
+const { scheduleCron } = require('../core/cronSchedule');
 const { getSetting, setSetting } = require('./settings');
 const logger = require('../utils/logger');
 
@@ -193,9 +193,9 @@ function initLicense() {
   else if (s.state === 'invalid') logger.error('[License] LICENSE_KEY is invalid — the dashboard is locked.');
   else logger.info(`[License] ${s.customer} — ${s.state}, expires ${s.effectiveExpiry}${s.state === 'grace' ? ` (grace, ${s.graceDaysLeft}d left)` : ''}`);
 
-  cron.schedule('30 3 * * *', () => {
+  scheduleCron('30 3 * * *', () => {
     checkRenewal().then(r => { if (r.renewed) logger.info('[License] Renewed automatically via renewal server.'); });
-  }, { recoverMissedExecutions: true });
+  });
   checkRenewal().then(r => { if (r.renewed) logger.info('[License] Renewed automatically via renewal server.'); });
 }
 

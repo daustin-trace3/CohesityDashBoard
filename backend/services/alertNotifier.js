@@ -1,4 +1,4 @@
-const cron = require('node-cron');
+const { scheduleCron } = require('../core/cronSchedule');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const db = require('../db/database');
@@ -802,7 +802,7 @@ let cronTask = null;
 
 function initAlertNotifier() {
   if (cronTask) return cronTask;
-  cronTask = cron.schedule('*/5 * * * *', () => { run(); }, { recoverMissedExecutions: true });
+  cronTask = scheduleCron('*/5 * * * *', () => { run(); });
   return cronTask;
 }
 

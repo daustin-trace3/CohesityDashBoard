@@ -1,4 +1,4 @@
-const cron = require('node-cron');
+const { scheduleCron } = require('../core/cronSchedule');
 const db = require('../db/database');
 const { fetchGflags } = require('./cohesityApi');
 const pollerStatus = require('./pollerStatus');
@@ -157,9 +157,9 @@ function getGflagChanges({ clusterId, flag, days } = {}) {
 function initGflags() {
   // Deliberately daily, not the regular poll cadence — gflags rarely change and
   // the panel has a manual refresh for support-case moments.
-  cron.schedule('30 3 * * *', () => {
+  scheduleCron('30 3 * * *', () => {
     refreshAllGflags().catch((err) => logger.error('[Gflags] Daily refresh failed:', err.message));
-  }, { recoverMissedExecutions: true });
+  });
   const unseeded = gflagClusters().filter(
     (c) => !db.prepare('SELECT 1 FROM cluster_gflags WHERE cluster_id = ? LIMIT 1').get(c.id)
   );
