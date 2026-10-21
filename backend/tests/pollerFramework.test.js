@@ -141,7 +141,7 @@ it('trigger(id) resolves the full source row through loadSources, and trigger(ro
         { id: 1, name: 'src-1', host: 'a.example', encrypted_credentials: 'x' },
         { id: 2, name: 'src-2', host: 'b.example', encrypted_credentials: 'y' },
       ];
-      const poller = createPoller({ id: 'test', loadSources: () => rows, poll: async (s) => { polled.push(s); }, cronLib });
+      const poller = createPoller({ id: 'test', loadSources: () => rows, poll: async (s) => { polled.push(s); }, cronLib, intervalMinutes: (s) => s.polling_interval_minutes });
 
       await poller.trigger(2);
       expect(polled).toHaveLength(1);
@@ -235,6 +235,60 @@ it('trigger(id) resolves the full source row through loadSources, and trigger(ro
 
       expect(poller.taskCount()).toBe(0);
       for (const task of cronLib.scheduled) expect(task.stop).toHaveBeenCalled();
+    });
+
+    it('reconcile() leaves a source alone when only poll-status columns changed', () => {
+      const cronLib = makeFakeCronLib();
+      const rows = [{ id: 1, name: 'a', polling_interval_minutes: 10, last_poll_at: '2026-10-21 15:00:00', event_cursor_ms: 1 }];
+      const poller = createPoller({ id: 'test', loadSources: () => rows, poll: async () => {}, cronLib, intervalMinutes: (s) => s.polling_interval_minutes });
+      poller.init();
+      const sourceTask = cronLib.scheduled[0];
+      rows[0] = { ...rows[0], last_poll_at: '2026-10-21 15:05:00', event_cursor_ms: 2, section_errors: '{}' };
+
+      poller.reconcile();
+
+      expect(sourceTask.stop).not.toHaveBeenCalled();
+      expect(cronLib.scheduled.filter((t) => t.expression === '*/10 * * * *')).toHaveLength(1);
+    });
+
+    it('reconcile() reschedules a source whose interval changed', () => {
+      const cronLib = makeFakeCronLib();
+      const rows = [{ id: 1, name: 'a', polling_interval_minutes: 10 }];
+      const poller = createPoller({ id: 'test', loadSources: () => rows, poll: async () => {}, cronLib, intervalMinutes: (s) => s.polling_interval_minutes });
+      poller.init();
+      const sourceTask = cronLib.scheduled[0];
+      rows[0] = { ...rows[0], polling_interval_minutes: 20 };
+
+      poller.reconcile();
+
+      expect(sourceTask.stop).toHaveBeenCalledTimes(1);
+      expect(cronLib.scheduled.at(-1).expression).toBe('*/20 * * * *');
+      expect(poller.taskCount()).toBe(1);
+    });
+
+    it('a cron fire polls the current row, not the one captured when scheduled', async () => {
+      const cronLib = makeFakeCronLib();
+      const rows = [{ id: 1, name: 'a', host: 'old', polling_interval_minutes: 10 }];
+      const polled = [];
+      const poller = createPoller({ id: 'test', loadSources: () => rows, poll: async (s) => { polled.push(s); }, cronLib, intervalMinutes: (s) => s.polling_interval_minutes });
+      poller.init();
+      rows[0] = { ...rows[0], host: 'new' };
+
+      cronLib.scheduled[0].cb();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(polled).toHaveLength(1);
+      expect(polled[0].host).toBe('new');
+    });
+
+    it('the reconcile cron never shares a minute with a scheduled poll', () => {
+      const cronLib = makeFakeCronLib();
+      const poller = createPoller({ id: 'test', loadSources: () => [{ id: 1, name: 'a', polling_interval_minutes: 5 }], poll: async () => {}, cronLib });
+      poller.init();
+      const reconcileExpr = cronLib.scheduled.at(-1).expression;
+      const minutes = reconcileExpr.split(' ')[0].split(',').map(Number);
+      expect(minutes.length).toBe(12);
+      for (const m of minutes) expect(m % 5).not.toBe(0);
     });
 
     it('init() logs and continues with zero tasks when loadSources() throws', () => {

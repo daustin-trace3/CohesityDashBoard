@@ -17,6 +17,8 @@ function cronExpression(intervalMinutes) {
   return `*/${intervalMinutes} * * * *`;
 }
 
+const RECONCILE_CRON = '2,7,12,17,22,27,32,37,42,47,52,57 * * * *';
+
 /**
  * Shared poller lifecycle for a platform's per-source polling: cron
  * scheduling, task bookkeeping, pollerStatus markStart/markEnd wrapping, and
@@ -24,8 +26,22 @@ function cronExpression(intervalMinutes) {
  * the `poll` callback and is untouched by this framework.
  */
 function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null, serialize = false, maxRunMinutes = 20, defaultIntervalMinutes = 15, cronLib = nodeCron }) {
-  const tasks = new Map(); // sourceId -> { task, snapshot }
+  const tasks = new Map(); // sourceId -> { task, interval }
   let reconcileTask = null;
+
+  // A cron fire polls the CURRENT row, not the one captured when the task was
+  // scheduled: the poll itself writes columns on the source row (last_*
+  // stamps, cursors, learned features), so the captured row goes stale after
+  // one poll. Falls back to the captured row when loadSources no longer
+  // returns it (the reconcile cancels such a task within five minutes).
+  function currentRow(source) {
+    let rows = [];
+    try { rows = loadSources() || []; } catch (err) {
+      logger.warn(`[${id}] could not re-read source ${source.id} before polling: ${err?.message || err}`);
+      return source;
+    }
+    return rows.find((s) => Number(s.id) === Number(source.id)) || source;
+  }
 
   async function runWrapped(source) {
     pollerStatus.markStart(id, source.id);
@@ -100,15 +116,16 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
     cancel(source.id);
     const interval = resolveInterval(intervalMinutes, source, defaultIntervalMinutes);
     const task = cronLib.schedule(cronExpression(interval), () => {
+      const row = currentRow(source);
       // The gate only guards SCHEDULED polls (backoff after repeated total
       // failures); a manual trigger() bypasses it on purpose.
-      if (shouldRun && !shouldRun(source)) {
-        logger.debug(`[${id}] Skipping scheduled poll of ${source.name || source.id}: backing off`);
+      if (shouldRun && !shouldRun(row)) {
+        logger.debug(`[${id}] Skipping scheduled poll of ${row.name || row.id}: backing off`);
         return;
       }
-      run(source);
+      run(row);
     });
-    tasks.set(source.id, { task, snapshot: JSON.stringify(source) });
+    tasks.set(source.id, { task, interval });
     logger.info(`[${id}] Scheduled source ${source.id} (${source.name}) every ${interval} min`);
     return task;
   }
@@ -116,8 +133,13 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
   // Sources registered through the WEB process never reached a long-running
   // POLLER process (init() ran once at boot) — arrays added later sat
   // unpolled/stale until a restart. Re-read sources every 5 minutes: new rows
-  // get scheduled AND polled immediately, changed rows rescheduled, deleted
-  // rows cancelled.
+  // get scheduled AND polled immediately, rows whose interval changed are
+  // rescheduled, deleted rows cancelled. Only the interval decides a
+  // reschedule: comparing whole rows rescheduled every source on every poll
+  // (the poll writes last_* stamps and cursors on the row), and the reconcile
+  // shared the :00/:05 minute with the 5 minute polls it then cancelled
+  // (CG box, 2026-10-21). Other column changes reach the poll through
+  // currentRow() at the next fire.
   function reconcile() {
     let sources = [];
     try {
@@ -134,9 +156,12 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
         logger.info(`[${id}] Reconcile: new source ${source.id} (${source.name}) — scheduling + polling now`);
         schedule(source);
         run(source);
-      } else if (existing.snapshot !== JSON.stringify(source)) {
-        logger.info(`[${id}] Reconcile: source ${source.id} (${source.name}) changed — rescheduling`);
-        schedule(source);
+      } else {
+        const interval = resolveInterval(intervalMinutes, source, defaultIntervalMinutes);
+        if (existing.interval !== interval) {
+          logger.info(`[${id}] Reconcile: source ${source.id} (${source.name}) interval ${existing.interval} -> ${interval} min — rescheduling`);
+          schedule(source);
+        }
       }
     }
     for (const sourceId of [...tasks.keys()]) {
@@ -184,7 +209,9 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
       sources = [];
     }
     for (const source of sources) schedule(source);
-    if (!reconcileTask) reconcileTask = cronLib.schedule('*/5 * * * *', reconcile);
+    // Off the multiples of five, so the reconcile never shares a minute with
+    // a scheduled poll (every interval is a multiple of 5).
+    if (!reconcileTask) reconcileTask = cronLib.schedule(RECONCILE_CRON, reconcile);
     return sources;
   }
 

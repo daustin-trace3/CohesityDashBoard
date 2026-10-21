@@ -57,7 +57,7 @@ function readFeatures(sourceId) {
 }
 
 /** Merge keys into features_json; writes only when something changed (the
- *  column is in loadSources, so a write reschedules the source). */
+ *  framework re-reads the row at each cron fire, so the next poll sees it). */
 function mergeFeatures(sourceId, patch) {
   const cur = readFeatures(sourceId);
   const next = { ...cur, ...patch };
