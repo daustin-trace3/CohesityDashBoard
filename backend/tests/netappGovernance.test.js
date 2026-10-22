@@ -233,4 +233,26 @@ describe('GET /api/netapp/governance - populated estate', () => {
     // flagged behind, not a separately maintained count.
     expect(res.body.clusters.filter((c) => c.behind)).toHaveLength(res.body.summary.clusters_behind_newest);
   });
+
+  it('adds ONTAP support dates to versions, clusters, nodes and the summary', async () => {
+    const { lookup } = require('../services/ontapSupportDates');
+    const res = await request(app).get('/api/netapp/governance');
+    // Phases move with the calendar, so compare against the lookup itself and
+    // pin only what can never change: 9.9.1 left full support long ago.
+    for (const v of res.body.versions) {
+      expect(v.support.phase).toBe(lookup(v.version).phase);
+      expect(v.support.line).not.toBeNull();
+    }
+    const byName = Object.fromEntries(res.body.clusters.map((c) => [c.name, c]));
+    expect(byName['cg-ontap-1'].support_phase).toBe(lookup('9.13.1P8').phase);
+    expect(byName['cg-ontap-1'].support_line).toBe('9.13.1');
+    expect(byName['cg-ontap-1'].end_full_support).toBe('2026-06-30');
+    expect(byName['cg-ontap-3'].support_phase).not.toBe('full');
+    expect(res.body.nodes.every((n) => typeof n.support_phase === 'string')).toBe(true);
+    expect(res.body.support_table).toMatchObject({ line_count: 24 });
+    const past = res.body.clusters.filter((c) => ['limited', 'self-service', 'unsupported'].includes(c.support_phase)).length;
+    expect(res.body.summary.clusters_past_full_support).toBe(past);
+    expect(res.body.summary.clusters_unsupported).toBe(res.body.clusters.filter((c) => c.support_phase === 'unsupported').length);
+    expect(res.body.summary.clusters_support_unknown).toBe(0);
+  });
 });

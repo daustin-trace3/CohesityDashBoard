@@ -1,0 +1,31 @@
+{
+  "source": "https://kb.netapp.com/on-prem/ontap/Ontap_OS/OS-KBs/What_are_the_ONTAP_Software_Version_Support_dates",
+  "captured": "2026-10-22",
+  "note": "Each line includes all its related maintenance and patch releases (P levels). Dates are the last day of each support phase as published by NetApp; ICC does not invent release dates. The 7-Mode table on the page is omitted because ICC only polls clustered ONTAP.",
+  "lines": [
+    { "product": "ONTAP", "line": "9.19.1", "end_full_support": "2029-07-31", "end_limited_support": "2031-07-31", "end_self_service_support": "2034-07-31" },
+    { "product": "ONTAP", "line": "9.18.1", "end_full_support": "2029-01-31", "end_limited_support": "2031-01-31", "end_self_service_support": "2034-01-31" },
+    { "product": "ONTAP", "line": "9.17.1", "end_full_support": "2028-09-30", "end_limited_support": "2030-09-30", "end_self_service_support": "2033-09-30" },
+    { "product": "ONTAP", "line": "9.16.1", "end_full_support": "2028-02-26", "end_limited_support": "2030-01-31", "end_self_service_support": "2033-01-31" },
+    { "product": "ONTAP", "line": "9.15.1", "end_full_support": "2027-07-31", "end_limited_support": "2029-07-31", "end_self_service_support": "2032-07-31" },
+    { "product": "ONTAP", "line": "9.14.1", "end_full_support": "2027-01-31", "end_limited_support": "2029-01-31", "end_self_service_support": "2032-01-31" },
+    { "product": "ONTAP", "line": "9.13.1", "end_full_support": "2026-06-30", "end_limited_support": "2028-06-30", "end_self_service_support": "2031-06-30" },
+    { "product": "ONTAP", "line": "9.12.1", "end_full_support": "2026-02-28", "end_limited_support": "2028-02-28", "end_self_service_support": "2031-02-28" },
+    { "product": "ONTAP", "line": "9.11.1", "end_full_support": "2025-07-31", "end_limited_support": "2027-07-31", "end_self_service_support": "2030-07-31" },
+    { "product": "ONTAP", "line": "9.10.1", "end_full_support": "2025-01-31", "end_limited_support": "2027-01-31", "end_self_service_support": "2030-01-31" },
+    { "product": "ONTAP", "line": "9.9.1", "end_full_support": "2024-06-30", "end_limited_support": "2026-06-30", "end_self_service_support": "2029-06-30" },
+    { "product": "ONTAP", "line": "9.8", "end_full_support": "2023-12-31", "end_limited_support": "2025-12-31", "end_self_service_support": "2028-12-31" },
+    { "product": "ONTAP", "line": "9.7", "end_full_support": "2023-07-31", "end_limited_support": "2025-07-31", "end_self_service_support": "2028-07-31" },
+    { "product": "ONTAP", "line": "9.6", "end_full_support": "2022-06-30", "end_limited_support": "2024-06-30", "end_self_service_support": "2027-06-30" },
+    { "product": "ONTAP", "line": "9.5", "end_full_support": "2022-01-31", "end_limited_support": "2024-01-31", "end_self_service_support": "2027-01-31" },
+    { "product": "ONTAP", "line": "9.4", "end_full_support": "2019-06-30", "end_limited_support": "2021-06-30", "end_self_service_support": "2024-06-30" },
+    { "product": "ONTAP", "line": "9.3", "end_full_support": "2021-01-31", "end_limited_support": "2023-01-31", "end_self_service_support": "2026-01-31" },
+    { "product": "ONTAP", "line": "9.2", "end_full_support": "2018-07-31", "end_limited_support": "2020-07-31", "end_self_service_support": "2023-07-31" },
+    { "product": "ONTAP", "line": "9.1", "end_full_support": "2020-01-31", "end_limited_support": "2022-01-31", "end_self_service_support": "2025-01-31" },
+    { "product": "ONTAP", "line": "9.0", "end_full_support": "2017-12-31", "end_limited_support": "2019-12-31", "end_self_service_support": "2022-12-31" },
+    { "product": "Clustered Data ONTAP", "line": "8.3", "end_full_support": "2017-10-31", "end_limited_support": "2019-04-30", "end_self_service_support": "2022-04-30" },
+    { "product": "Clustered Data ONTAP", "line": "8.2", "end_full_support": "2017-07-31", "end_limited_support": "2019-01-31", "end_self_service_support": "2022-01-31" },
+    { "product": "Clustered Data ONTAP", "line": "8.1", "end_full_support": "2015-08-30", "end_limited_support": "2017-02-28", "end_self_service_support": "2020-02-28" },
+    { "product": "Clustered Data ONTAP", "line": "8.0", "end_full_support": "2014-06-30", "end_limited_support": "2015-12-31", "end_self_service_support": "2018-12-31" }
+  ]
+}

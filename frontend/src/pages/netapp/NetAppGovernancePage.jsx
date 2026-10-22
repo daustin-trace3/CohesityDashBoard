@@ -22,7 +22,32 @@ function readFilters(sp) {
     state: sp.get('state') || '',
     behind: sp.get('behind') === '1',
     mixed: sp.get('mixed') === '1',
+    support: sp.get('support') || '',
   };
+}
+
+const SUPPORT_BADGES = {
+  full: { tone: 'ok', label: 'Full support' },
+  limited: { tone: 'warn', label: 'Limited' },
+  'self-service': { tone: 'crit', label: 'Self-service' },
+  unsupported: { tone: 'crit', label: 'Unsupported' },
+  unknown: { tone: 'neutral', label: 'Not in table' },
+};
+
+function SupportBadge({ phase, title, className }) {
+  const b = SUPPORT_BADGES[phase] || SUPPORT_BADGES.unknown;
+  return <span title={title || undefined}><Badge tone={b.tone} className={className}>{b.label}</Badge></span>;
+}
+
+// Short lines under the Support badge: days to the next milestone when it is
+// within a year, and how long ago full support ended.
+function supportNotes(sp) {
+  const notes = [];
+  if (!sp || sp.phase === 'unknown') return notes;
+  const m = sp.next_milestone;
+  if (m && m.label && m.days != null && m.days <= 365) notes.push(`${m.days} days left`);
+  if (sp.days_to_end_full_support != null && sp.days_to_end_full_support < 0) notes.push(`ended ${-sp.days_to_end_full_support} days ago`);
+  return notes;
 }
 
 function Section({ icon: Icon, title, children }) {
@@ -76,6 +101,7 @@ function FilterBar({ filters, setFilter, clearFilter, clearAll, options, matched
   if (filters.state) chips.push({ k: 'state', label: `State: ${filters.state}` });
   if (filters.behind) chips.push({ k: 'behind', label: 'Behind newest' });
   if (filters.mixed) chips.push({ k: 'mixed', label: 'Mixed versions' });
+  if (filters.support) chips.push({ k: 'support', label: `Support: ${filters.support}` });
 
   return (
     <div className="mb-3">
@@ -105,6 +131,11 @@ function FilterBar({ filters, setFilter, clearFilter, clearAll, options, matched
           className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-sm text-ink focus:border-brand/60 outline-none cursor-pointer">
           <option value="">All states</option>
           {options.states.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={filters.support} onChange={(e) => setFilter('support', e.target.value)}
+          className="bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-sm text-ink focus:border-brand/60 outline-none cursor-pointer">
+          <option value="">Any support</option>
+          {['full', 'limited', 'self-service', 'unsupported', 'unknown'].map((v) => <option key={v} value={v}>{v}</option>)}
         </select>
         <label className="flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer select-none">
           <input type="checkbox" checked={filters.behind} onChange={(e) => setFilter('behind', e.target.checked)} className="accent-brand cursor-pointer" />
@@ -227,7 +258,7 @@ export default function NetAppGovernancePage() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set('section', section);
-      for (const k of ['q', 'version', 'model', 'source', 'state']) {
+      for (const k of ['q', 'version', 'model', 'source', 'state', 'support']) {
         if (filters[k]) next.set(k, filters[k]); else next.delete(k);
       }
       if (filters.behind) next.set('behind', '1'); else next.delete('behind');
@@ -246,7 +277,7 @@ export default function NetAppGovernancePage() {
 
   const setFilter = (k, v) => setFiltersState((f) => ({ ...f, [k]: v }));
   const clearFilter = (k) => setFiltersState((f) => ({ ...f, [k]: (k === 'behind' || k === 'mixed') ? false : '' }));
-  const clearAll = () => setFiltersState({ q: '', version: '', model: '', source: '', state: '', behind: false, mixed: false });
+  const clearAll = () => setFiltersState({ q: '', version: '', model: '', source: '', state: '', behind: false, mixed: false, support: '' });
 
   const jumpToVersion = (version) => { setFiltersState((f) => ({ ...f, version })); setSection('filers'); };
   const jumpToModel = (model) => { setFiltersState((f) => ({ ...f, model })); setSection('nodes'); };
@@ -306,6 +337,7 @@ export default function NetAppGovernancePage() {
     if (filters.state && !(c.node_states || []).includes(filters.state)) return false;
     if (filters.behind && !c.behind) return false;
     if (filters.mixed && !c.mixed_versions) return false;
+    if (filters.support && c.support_phase !== filters.support) return false;
     if (term) {
       const hay = [c.name, c.mgmt_host, c.source, c.ontap_version, c.ontap_release, ...(c.models || []), ...(c.serials || []), ...(c.node_versions || [])];
       if (!hay.some((v) => String(v || '').toLowerCase().includes(term))) return false;
@@ -320,6 +352,7 @@ export default function NetAppGovernancePage() {
     if (filters.state && n.state !== filters.state) return false;
     if (filters.behind && !n.behind) return false;
     if (filters.mixed && !n.mixed_versions) return false;
+    if (filters.support && n.support_phase !== filters.support) return false;
     if (term) {
       const hay = [n.array_name, n.name, n.model, n.serial_number, n.version, n.release, n.mgmt_host];
       if (!hay.some((v) => String(v || '').toLowerCase().includes(term))) return false;
@@ -388,7 +421,7 @@ export default function NetAppGovernancePage() {
         <StatCard icon={HardDrive} label="Clusters" value={fmtNum(summary?.cluster_count)} tone="brand" />
         <StatCard icon={Cpu} label="Nodes" value={fmtNum(summary?.node_count)} />
         <StatCard icon={GitCommitVertical} label="Code levels" value={fmtNum(summary?.distinct_versions)}
-          sub={newestVersion ? `newest ${newestVersion}${majorityVersion && majorityVersion !== newestVersion ? `, majority ${majorityVersion}` : ''}` : undefined} />
+          sub={newestVersion ? `newest ${newestVersion}${majorityVersion && majorityVersion !== newestVersion ? `, majority ${majorityVersion}` : ''}${summary?.clusters_past_full_support > 0 ? `, ${summary.clusters_past_full_support} past full support` : ''}` : undefined} />
         <StatCard icon={Layers} label="Models" value={fmtNum(summary?.distinct_models)} />
       </div>
 
@@ -419,6 +452,7 @@ export default function NetAppGovernancePage() {
                 <CsvExportButton filename="netapp-governance-filers" rows={filerCtl.rows} columns={[
                   { label: 'Cluster', get: 'name' }, { label: 'Source', get: 'source' },
                   { label: 'ONTAP', get: 'ontap_release' },
+                  { label: 'Support phase', get: 'support_phase' }, { label: 'End of full support', get: 'end_full_support' },
                   { label: 'Models', get: (c) => (c.models || []).join('; ') },
                   { label: 'Nodes', get: 'node_count' },
                   { label: 'Used (GB)', get: (c) => c.capacity_used_bytes != null ? (c.capacity_used_bytes / 1024 ** 3).toFixed(2) : '' },
@@ -436,6 +470,7 @@ export default function NetAppGovernancePage() {
                       <SortTh k="name" label="Cluster" ctl={filerCtl} />
                       <SortTh k="source" label="Source" ctl={filerCtl} />
                       <SortTh k="ontap_release" label="ONTAP" ctl={filerCtl} />
+                      <SortTh k="support_phase" label="Support" ctl={filerCtl} />
                       <th className="py-2 pr-3">Models</th>
                       <SortTh k="node_count" label="Nodes" ctl={filerCtl} align="right" />
                       <th className="py-2 pr-3">Capacity</th>
@@ -454,6 +489,9 @@ export default function NetAppGovernancePage() {
                             <span className="text-ink-muted tnum" title={c.ontap_version || ''}>{c.ontap_release || '-'}</span>
                             {c.mixed_versions && <Badge tone="warn" className="ml-1.5">mixed</Badge>}
                             {c.behind && <Badge tone="info" className="ml-1.5">behind</Badge>}
+                          </td>
+                          <td className="py-2 pr-3">
+                            <SupportBadge phase={c.support_phase} title={c.end_full_support ? `End of full support ${c.end_full_support}` : ''} />
                           </td>
                           <td className="py-2 pr-3 text-ink-muted text-[11px] truncate max-w-[160px]" title={(c.models || []).join(', ')}>{(c.models || []).join(', ') || '-'}</td>
                           <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(c.node_count)}</td>
@@ -506,7 +544,7 @@ export default function NetAppGovernancePage() {
                           <td className="py-2 pr-3 text-ink">{n.name}</td>
                           <td className="py-2 pr-3 text-ink-muted">{n.model || '-'}</td>
                           <td className="py-2 pr-3 text-ink-faint tnum">{n.serial_number || '-'}</td>
-                          <td className="py-2 pr-3 text-ink-muted text-[11px]" title={n.version || ''}>{n.release || '-'}{n.behind && <Badge tone="info" className="ml-1.5">behind</Badge>}</td>
+                          <td className="py-2 pr-3 text-ink-muted text-[11px]" title={n.version || ''}>{n.release || '-'}{n.behind && <Badge tone="info" className="ml-1.5">behind</Badge>}{n.support_phase && n.support_phase !== 'full' && <SupportBadge phase={n.support_phase} className="ml-1.5" title={n.end_full_support ? `End of full support ${n.end_full_support}` : ''} />}</td>
                           <td className="py-2 pr-3"><Badge tone={statusTone(n.state)}>{n.state || 'unknown'}</Badge></td>
                         </tr>
                       ))}
@@ -520,6 +558,19 @@ export default function NetAppGovernancePage() {
 
           {section === 'versions' && (
             <Section icon={GitCommitVertical} title="Code levels">
+              {versions.length > 0 && (
+                <div className="flex justify-end mb-2">
+                  <CsvExportButton filename="netapp-governance-code-levels" rows={versions} columns={[
+                    { label: 'Version', get: 'version' },
+                    { label: 'Support phase', get: (v) => v.support?.phase },
+                    { label: 'End of full support', get: (v) => v.support?.end_full_support },
+                    { label: 'End of limited support', get: (v) => v.support?.end_limited_support },
+                    { label: 'End of self-service support', get: (v) => v.support?.end_self_service_support },
+                    { label: 'Clusters', get: 'cluster_count' }, { label: 'Nodes', get: 'node_count' },
+                    { label: 'Cluster names', get: (v) => (v.clusters || []).join('; ') },
+                  ]} />
+                </div>
+              )}
               {versions.length === 0 ? (
                 <p className="text-sm text-ink-muted py-4 text-center">No version data.</p>
               ) : (
@@ -527,6 +578,10 @@ export default function NetAppGovernancePage() {
                   <table className="w-full text-sm">
                     <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
                       <th className="py-2 pr-3">Version</th>
+                      <th className="py-2 pr-3">Support</th>
+                      <th className="py-2 pr-3">End of full support</th>
+                      <th className="py-2 pr-3">End of limited support</th>
+                      <th className="py-2 pr-3">End of self-service</th>
                       <th className="py-2 pr-3 text-right">Clusters</th>
                       <th className="py-2 pr-3 text-right">Nodes</th>
                       <th className="py-2 pr-3">Cluster names</th>
@@ -540,6 +595,13 @@ export default function NetAppGovernancePage() {
                             {v.version === newestVersion && <Badge tone="ok" className="ml-1.5">newest</Badge>}
                             {v.version === majorityVersion && <Badge tone="brand" className="ml-1.5">majority</Badge>}
                           </td>
+                          <td className="py-2 pr-3">
+                            <SupportBadge phase={v.support?.phase} />
+                            {supportNotes(v.support).map((t) => <div key={t} className="text-[11px] text-ink-faint">{t}</div>)}
+                          </td>
+                          <td className="py-2 pr-3 text-ink-muted tnum">{v.support?.end_full_support || '-'}</td>
+                          <td className="py-2 pr-3 text-ink-muted tnum">{v.support?.end_limited_support || '-'}</td>
+                          <td className="py-2 pr-3 text-ink-muted tnum">{v.support?.end_self_service_support || '-'}</td>
                           <td className="py-2 pr-3 text-right tnum text-ink-muted">{v.cluster_count}</td>
                           <td className="py-2 pr-3 text-right tnum text-ink-muted">{v.node_count}</td>
                           <td className="py-2 pr-3 text-ink-muted text-[11px] truncate max-w-[320px]" title={(v.clusters || []).join(', ')}>{(v.clusters || []).join(', ')}</td>
@@ -548,6 +610,12 @@ export default function NetAppGovernancePage() {
                     </tbody>
                   </table>
                 </div>
+              )}
+              {versions.length > 0 && data?.support_table && (
+                <p className="text-[11px] text-ink-faint mb-3">
+                  Support dates from <a href={data.support_table.source} target="_blank" rel="noreferrer" className="text-brand hover:underline">NetApp KB</a>,
+                  {' '}table captured {data.support_table.captured}. Patch releases follow their base release.
+                </p>
               )}
               {clusters.some((c) => c.mixed_versions) && (
                 <div className="pt-3 border-t border-cohesity-border">

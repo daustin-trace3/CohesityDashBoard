@@ -7,6 +7,7 @@ const { syncAndPollAll, syncAndPollInstance, triggerPoll, reschedule, scheduleAr
 const cacheControl = require('../middleware/cache');
 const netappAdvisor = require('../services/advisors/netappAdvisor');
 const pollerStatus = require('../services/pollerStatus');
+const { parseOntapVersion, lookup: lookupOntapSupport, tableInfo: ontapSupportTableInfo } = require('../services/ontapSupportDates');
 
 const router = express.Router();
 
@@ -437,12 +438,6 @@ router.get('/arrays/:id/hardware', [param('id').isInt()], validate, cacheControl
 // Numeric-aware compare on the dotted ONTAP version string ("9.13.1P8"
 // style: dotted release plus an optional patch letter+number). Unparsable or
 // missing versions sort lowest so junk data never throws.
-function parseOntapVersion(v) {
-  if (!v) return null;
-  const m = String(v).replace(/^NetApp Release\s*/i, '').match(/(\d+(?:\.\d+){1,4})(?:P(\d+))?/);
-  if (!m) return null;
-  return { parts: m[1].split('.').map(Number), patch: m[2] != null ? Number(m[2]) : 0 };
-}
 function compareOntapVersion(a, b) {
   const pa = parseOntapVersion(a);
   const pb = parseOntapVersion(b);
@@ -578,7 +573,7 @@ router.get('/governance', cacheControl(30), (req, res, next) => {
       }
     }
     const versions = [...versionMap.values()]
-      .map((v) => ({ version: v.version, cluster_count: v.clusterIds.size, node_count: v.nodeCount, clusters: [...v.clusterNames].sort() }))
+      .map((v) => ({ version: v.version, cluster_count: v.clusterIds.size, node_count: v.nodeCount, clusters: [...v.clusterNames].sort(), support: lookupOntapSupport(v.version) }))
       .sort((a, b) => compareOntapVersion(b.version, a.version));
     const models = [...modelMap.values()]
       .map((v) => ({ model: v.model, node_count: v.nodeCount, cluster_count: v.clusterIds.size, clusters: [...v.clusterNames].sort() }))
@@ -595,6 +590,7 @@ router.get('/governance', cacheControl(30), (req, res, next) => {
       const nodeVersions = [...new Set(nodeReleases)];
       const clusterVersion = c.version || (myNodes.find((n) => n.version) || {}).version || null;
       const ontapRelease = canonicalOntapRelease(clusterVersion);
+      const support = lookupOntapSupport(ontapRelease);
       const cap = capByArray.get(c.id);
       const totalBytes = cap?.size || 0;
       const usedBytes = cap?.used || 0;
@@ -616,6 +612,11 @@ router.get('/governance', cacheControl(30), (req, res, next) => {
         node_versions: nodeVersions,
         mixed_versions: nodeVersions.length > 1,
         behind: ontapRelease ? ontapRelease !== newestVersion : false,
+        support_phase: support.phase,
+        support_line: support.line,
+        end_full_support: support.end_full_support,
+        end_limited_support: support.end_limited_support,
+        days_to_end_full_support: support.days_to_end_full_support,
         capacity_total_bytes: totalBytes,
         capacity_used_bytes: usedBytes,
         capacity_used_percent: totalBytes ? Math.round((usedBytes / totalBytes) * 1000) / 10 : null,
@@ -647,6 +648,7 @@ router.get('/governance', cacheControl(30), (req, res, next) => {
       clusters: clusterRows,
       nodes: nodes.map((n) => {
         const release = canonicalOntapRelease(n.version);
+        const support = lookupOntapSupport(release);
         return {
           array_id: n.array_id,
           array_name: clusterById.get(n.array_id)?.name || null,
@@ -657,12 +659,15 @@ router.get('/governance', cacheControl(30), (req, res, next) => {
           version: n.version,
           release,
           behind: release ? release !== newestVersion : false,
+          support_phase: support.phase,
+          end_full_support: support.end_full_support,
         };
       }),
       versions,
       models,
       newest_version: newestVersion,
       majority_version: majorityVersion,
+      support_table: ontapSupportTableInfo(),
       summary: {
         cluster_count: clusters.length,
         node_count: nodes.length,
@@ -671,6 +676,9 @@ router.get('/governance', cacheControl(30), (req, res, next) => {
         clusters_with_mixed_versions: clusterRows.filter((c) => c.mixed_versions).length,
         clusters_behind_newest: clusterRows.filter((c) => c.behind).length,
         clusters_with_poll_issue: clustersWithPollIssue,
+        clusters_past_full_support: clusterRows.filter((c) => ['limited', 'self-service', 'unsupported'].includes(c.support_phase)).length,
+        clusters_unsupported: clusterRows.filter((c) => c.support_phase === 'unsupported').length,
+        clusters_support_unknown: clusterRows.filter((c) => c.support_phase === 'unknown').length,
       },
     });
   } catch (err) { next(err); }

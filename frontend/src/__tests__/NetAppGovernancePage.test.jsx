@@ -16,6 +16,7 @@ const GOVERNANCE = {
       id: 1, name: 'cg-ontap-1', mgmt_host: 'cg-ontap-1.corp.local', source: 'direct',
       ontap_version: '9.13.1P8', ontap_release: '9.13.1P8', node_count: 2, models: ['FAS8300'], serials: ['SN-A1', 'SN-A2'],
       node_versions: ['9.13.1', '9.13.1P8'], mixed_versions: true, behind: true,
+      support_phase: 'limited', support_line: '9.13.1', end_full_support: '2026-06-30', end_limited_support: '2028-06-30', days_to_end_full_support: -114,
       capacity_total_bytes: 1000, capacity_used_bytes: 400, capacity_used_percent: 40,
       aggregate_count: 1, volume_count: 2, disk_count: 4, disk_failed_count: 0, svm_count: 1,
       open_alert_count: 0, open_alerts_by_severity: {}, snapmirror_count: 0,
@@ -30,6 +31,7 @@ const GOVERNANCE = {
       ontap_version: 'NetApp Release 9.14.1: Thu Mar 14 12:00:00 UTC 2024', ontap_release: '9.14.1',
       node_count: 1, models: ['AFF-A400'], serials: ['SN-B1'],
       node_versions: ['9.14.1'], mixed_versions: false, behind: false,
+      support_phase: 'full', support_line: '9.14.1', end_full_support: '2027-02-28', end_limited_support: '2029-02-28', days_to_end_full_support: 129,
       capacity_total_bytes: 2000, capacity_used_bytes: 1000, capacity_used_percent: 50,
       aggregate_count: 1, volume_count: 1, disk_count: 2, disk_failed_count: 0, svm_count: 1,
       open_alert_count: 1, open_alerts_by_severity: { critical: 1 }, snapmirror_count: 0,
@@ -42,9 +44,21 @@ const GOVERNANCE = {
     { array_id: 2, array_name: 'cg-ontap-2', name: 'b-node-1', model: 'AFF-A400', serial_number: 'SN-B1', state: 'up', version: '9.14.1', release: '9.14.1', behind: false },
   ],
   versions: [
-    { version: '9.14.1', cluster_count: 1, node_count: 1, clusters: ['cg-ontap-2'] },
-    { version: '9.13.1P8', cluster_count: 1, node_count: 1, clusters: ['cg-ontap-1'] },
-    { version: '9.13.1', cluster_count: 1, node_count: 1, clusters: ['cg-ontap-1'] },
+    {
+      version: '9.14.1', cluster_count: 1, node_count: 1, clusters: ['cg-ontap-2'],
+      support: {
+        line: '9.14.1', phase: 'full', end_full_support: '2027-02-28', end_limited_support: '2029-02-28', end_self_service_support: '2032-02-28',
+        days_to_end_full_support: 129, days_to_end_limited_support: 859, next_milestone: { label: 'end of full support', date: '2027-02-28', days: 129 },
+      },
+    },
+    {
+      version: '9.13.1P8', cluster_count: 1, node_count: 1, clusters: ['cg-ontap-1'],
+      support: {
+        line: '9.13.1', phase: 'limited', end_full_support: '2026-06-30', end_limited_support: '2028-06-30', end_self_service_support: '2031-06-30',
+        days_to_end_full_support: -114, days_to_end_limited_support: 616, next_milestone: { label: 'end of limited support', date: '2028-06-30', days: 616 },
+      },
+    },
+    { version: '9.13.1', cluster_count: 1, node_count: 1, clusters: ['cg-ontap-1'], support: { phase: 'unknown', next_milestone: {} } },
   ],
   models: [
     { model: 'FAS8300', node_count: 2, cluster_count: 1, clusters: ['cg-ontap-1'] },
@@ -52,9 +66,11 @@ const GOVERNANCE = {
   ],
   newest_version: '9.14.1',
   majority_version: '9.13.1',
+  support_table: { source: 'https://kb.netapp.com/example', captured: '2026-10-22', line_count: 24 },
   summary: {
     cluster_count: 2, node_count: 3, distinct_versions: 3, distinct_models: 2,
     clusters_with_mixed_versions: 1, clusters_behind_newest: 1, clusters_with_poll_issue: 0,
+    clusters_past_full_support: 1, clusters_unsupported: 0, clusters_support_unknown: 0,
   },
 };
 
@@ -135,6 +151,31 @@ describe('NetAppGovernancePage', () => {
     await waitFor(() => expect(screen.queryByText('cg-ontap-1')).not.toBeInTheDocument());
     expect(screen.getByText('cg-ontap-2')).toBeInTheDocument();
     expect(screen.getByText(/Version: 9.14.1/)).toBeInTheDocument();
+  });
+
+  it('Code levels shows the support phase, the three dates and the KB footnote', async () => {
+    renderPage();
+    await screen.findByText('cg-ontap-1');
+    fireEvent.click(screen.getByRole('button', { name: /Code levels/ }));
+    const row = screen.getAllByRole('row').find((r) => r.textContent.includes('9.13.1P8'));
+    expect(within(row).getByText('Limited')).toBeInTheDocument();
+    expect(within(row).getByText('2026-06-30')).toBeInTheDocument();
+    expect(within(row).getByText('2028-06-30')).toBeInTheDocument();
+    expect(within(row).getByText('2031-06-30')).toBeInTheDocument();
+    expect(within(row).getByText('ended 114 days ago')).toBeInTheDocument();
+    expect(screen.getByText('Not in table')).toBeInTheDocument();
+    expect(screen.getByText(/table captured 2026-10-22/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'NetApp KB' })).toHaveAttribute('href', 'https://kb.netapp.com/example');
+    expect(screen.getByText(/1 past full support/)).toBeInTheDocument();
+  });
+
+  it('the Support filter narrows Filers and shows a chip', async () => {
+    renderPage();
+    await screen.findByText('cg-ontap-1');
+    fireEvent.change(screen.getByDisplayValue('Any support'), { target: { value: 'full' } });
+    await waitFor(() => expect(screen.queryByText('cg-ontap-1')).not.toBeInTheDocument());
+    expect(screen.getByText('cg-ontap-2')).toBeInTheDocument();
+    expect(screen.getByText(/Support: full/)).toBeInTheDocument();
   });
 
   // Seen on the ICC box 2026-09-21: a backend still running older code answered
