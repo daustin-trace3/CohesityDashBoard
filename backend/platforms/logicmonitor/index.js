@@ -135,7 +135,57 @@ function collectAlerts(coreApi) {
     const prev = seen.get(item.sourceKey);
     if (!prev || (item.severity === 'critical' && prev.severity !== 'critical')) seen.set(item.sourceKey, item);
   }
-  return [...issues, ...seen.values()];
+  const alertItems = [...seen.values()];
+  try { annotateGroups(db, issues, alertItems); } catch { /* grouping hints are best effort */ }
+  return [...issues, ...alertItems];
+}
+
+const slugOf = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+const LOCATION_FOLD_TYPES = (type) => /^latency-/.test(type) || type === 'loss-degrading' || type === 'check-location-down' || type === 'packet-loss-anomaly';
+const CHECK_ISSUE_TYPES = (type) => /^latency-/.test(type) || /^loss-/.test(type) || type === 'check-down' || type === 'check-location-down' || type === 'packet-loss-anomaly' || type === 'location-latency';
+const IF_DATASOURCE = /^(SNMP_)?Network[ _]Interfaces/i;
+
+/**
+ * Deterministic grouping hints for the Ops Agent (item.groupKey, honoured by
+ * its incident keying in platform and site modes). Check issues from a probe
+ * location with an open location-latency issue fold under lm-location:<slug>;
+ * interface items on the devices of an open link-burst fold under
+ * lm-burst:<target>. Check issues also carry checkName and location. The
+ * host stays "<check> @ <location>" so the agent's host key can keep the check.
+ */
+function annotateGroups(db, issueItems, alertItems) {
+  const locations = new Set(issueItems.filter((i) => i.type === 'location-latency').map((i) => slugOf(i.host)));
+  for (const it of issueItems) {
+    if (!CHECK_ISSUE_TYPES(it.type || '')) continue;
+    const target = String(it.host || '');
+    const at = target.lastIndexOf(' @ ');
+    if (at >= 0) { it.checkName = target.slice(0, at); it.location = target.slice(at + 3); }
+    else if (it.type === 'location-latency') it.location = target;
+    else it.checkName = target;
+    if (it.location && locations.has(slugOf(it.location)) && (it.type === 'location-latency' || LOCATION_FOLD_TYPES(it.type))) {
+      it.groupKey = `lm-location:${slugOf(it.location)}`;
+    }
+  }
+  const links = require('../../services/logicmonitorLinks');
+  if (!links.hasOpenBurst(db)) return;
+  const bursts = links.currentBursts(db);
+  const burstFor = (deviceLower) => bursts.find((b) => b.deviceNames.has(deviceLower));
+  for (const it of issueItems) {
+    if (it.type === 'link-burst') { it.groupKey = `lm-burst:${it.host}`; continue; }
+    if (!/^interface-/.test(it.type || '')) continue;
+    const t = String(it.host || '').toLowerCase();
+    for (const b of bursts) {
+      for (const n of b.deviceNames) {
+        if (t.startsWith(`${n} `)) { it.groupKey = `lm-burst:${b.target}`; break; }
+      }
+      if (it.groupKey) break;
+    }
+  }
+  for (const it of alertItems) {
+    if (!IF_DATASOURCE.test(String(it.type || ''))) continue;
+    const b = burstFor(String(it.host || '').toLowerCase());
+    if (b) it.groupKey = `lm-burst:${b.target}`;
+  }
 }
 
 function matchDevices(db, names, ips, limit = 6) {
@@ -522,7 +572,7 @@ function siteLines(db, siteKey) {
       SELECT COUNT(*) n FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
       WHERE d.source_id = ? AND d.site_key = ? AND d.stale = 0 AND i.stale = 0 AND i.status_text = 'down' AND COALESCE(i.stop_monitoring, 0) = 0
     `).get(st.source_id, siteKey).n;
-    lines.push(`Site ${st.site_name || siteKey}: ${dev.normal}/${dev.total} devices normal, ${dev.dead} dead, ${ifd} interface(s) down`);
+    lines.push(`Site ${st.site_name || siteKey}: ${dev.normal}/${dev.total} devices normal, ${dev.dead} dead, ${ifd} interface(s) down, ${require('../../services/logicmonitorLinks').siteInterfaceAlertCount(db, st.source_id, siteKey)} open LM interface alerts`);
     for (const c of lmPath.circuitRows(db, { sourceId: st.source_id, siteKey })) {
       lines.push(`Circuit ${c.deviceName} ${c.port}: ${c.state}, ${c.statusText}, p95 in ${c.p95InPct ?? '-'}% out ${c.p95OutPct ?? '-'}%`);
     }
@@ -531,6 +581,40 @@ function siteLines(db, siteKey) {
     }
   }
   return lines;
+}
+
+/**
+ * "Probe location <loc>: N of M checks elevated (K critical), median 1.3x" for each open
+ * location-latency issue that touches the incident: the location is the incident's host, one of
+ * the incident's checks is elevated from it, or the location is probed by a collector at the site.
+ */
+function probeLocationLines(db, names, siteKey) {
+  const open = db.prepare("SELECT target, message FROM lm_issue_history WHERE status = 'open' AND type = 'location-latency'").all();
+  if (!open.length) return [];
+  // A check host label is "<check> @ <location>"; the check part is what the episodes are matched on.
+  const lowNames = names.map((n) => String(n).toLowerCase()).map((n) => (n.includes(' @ ') ? n.slice(0, n.lastIndexOf(' @ ')) : n));
+  const epStmt = db.prepare("SELECT 1 FROM lm_latency_episodes WHERE subject_kind = 'check' AND state IN ('watching', 'degrading', 'critical') AND instr(lower(subject_label), ?) > 0 LIMIT 1");
+  const collStmt = db.prepare(`
+    SELECT 1 FROM lm_check_locations l JOIN lm_collectors c ON c.source_id = l.source_id AND c.collector_id = l.collector_id
+    WHERE l.label = ? AND l.stale = 0 AND c.site_key = ? LIMIT 1
+  `);
+  const out = [];
+  for (const o of open) {
+    const loc = String(o.target || '');
+    let touches = lowNames.includes(loc.toLowerCase());
+    if (!touches) {
+      for (const n of lowNames) {
+        if (epStmt.get(`${n} @ ${loc.toLowerCase()}`)) { touches = true; break; }
+      }
+    }
+    if (!touches && siteKey) { try { touches = !!collStmt.get(loc, siteKey); } catch { /* no collectors */ } }
+    if (!touches) continue;
+    const m = /^(\d+) of (\d+) checks probed from .* are elevated now \((\d+) critical(?:, median peak ([\d.]+)x)?\)/.exec(String(o.message || ''));
+    out.push(m
+      ? `Probe location ${loc}: ${m[1]} of ${m[2]} checks elevated (${m[3]} critical)${m[4] ? `, median ${m[4]}x` : ''}`
+      : `Probe location ${loc}: several checks elevated`);
+  }
+  return out.slice(0, 4);
 }
 
 /**
@@ -565,6 +649,16 @@ function incidentEvidence(coreApi, ctx) {
     const [dev] = matchDevices(db, names, ips, 1);
     if (dev) {
       lines.push(`Device ${dev.display_name || dev.name}: host status ${dev.host_status || 'unknown'}${dev.collector_hostname || dev.collector_desc ? `, collector ${dev.collector_hostname || dev.collector_desc}${dev.collector_down ? ' (DOWN)' : ''}` : ''}${dev.site_name ? `, site ${dev.site_name}` : ''}`);
+      lines.push(...require('../../services/logicmonitorLinks').deviceInterfaceLines(db, dev));
+    }
+    const siteKey = ctx?.siteKey || (lmSites.siteOf(db, anchor) || {}).siteKey || null;
+    // Agent signals: estate-wide link burst and the probe locations that touch this incident.
+    try {
+      const burst = require('../../services/logicmonitorLinks').estateBurstLine(db);
+      if (burst) lines.push(burst);
+      lines.push(...probeLocationLines(db, names, siteKey));
+    } catch { /* signals are best effort */ }
+    if (dev) {
       const open = db.prepare(`
         SELECT severity_norm, resource_template_name, instance_name, data_point_name, alert_value, start_epoch, shadowed_by
         FROM lm_alerts WHERE source_id = ? AND lm_device_id = ? AND cleared = 0 AND duplicate_of IS NULL ORDER BY severity DESC, start_epoch
@@ -603,7 +697,6 @@ function incidentEvidence(coreApi, ctx) {
         ? `Reachability ${c.name} from ${w.label}: ${fmtNum(w.rttAvgMs, ' ms')}, ${fmtNum(w.lossPct, '%')} loss (${w.anomaly || 'ok'})`
         : `Reachability ${c.name}: no locations reported`);
     }
-    const siteKey = ctx?.siteKey || (lmSites.siteOf(db, anchor) || {}).siteKey || null;
     for (const d of lmPath.sdtLookup(db, anchor, { siteKey, ctx: pctx }).slice(0, 6)) {
       lines.push(`Scheduled downtime (${d.scope}) ${d.name}${d.until ? ` until ${isoShort(d.until)}` : ''}${d.comment ? `: ${d.comment}` : ''}`);
     }
@@ -614,14 +707,21 @@ function incidentEvidence(coreApi, ctx) {
         for (const c of changes) lines.push(`Config change ${isoShort(c.detected_at)} ${c.scope} ${c.item}: ${String(c.old_value ?? '-').slice(0, 80)} -> ${String(c.new_value ?? '-').slice(0, 80)}`);
       }
     } catch { /* ledger unavailable */ }
+    if (siteKey) lines.push(...siteLines(db, siteKey));
+    // Round 13: WAN picture of the site (a site with one WAN up is degraded, not down).
+    if (siteKey) lines.push(...require('../../services/logicmonitorCircuits').siteCircuitEvidence(db, siteKey));
     try {
       const eps = require('../../services/logicmonitorWatch').watchLines(db, { names: [...names, dev && (dev.display_name || dev.name)].filter(Boolean), siteKey, days: 30, max: 6 });
       lines.push(...eps.lines);
     } catch { /* episode history is best effort */ }
-    if (siteKey) lines.push(...siteLines(db, siteKey));
-    // Round 13: WAN picture of the site (a site with one WAN up is degraded, not down).
-    if (siteKey) lines.push(...require('../../services/logicmonitorCircuits').siteCircuitEvidence(db, siteKey));
-    return lines.length ? { title: 'LogicMonitor network', lines: lines.slice(0, 60) } : null;
+    let title = 'LogicMonitor network';
+    if (!names.length && siteKey) {
+      // Site-only context: a distinct title so the agent's dedup keeps it beside a host block.
+      let siteName = null;
+      try { siteName = (db.prepare('SELECT site_name FROM lm_sites WHERE site_key = ? LIMIT 1').get(siteKey) || {}).site_name || null; } catch { /* no sites table */ }
+      title = `LogicMonitor site ${siteName || siteKey}`;
+    }
+    return lines.length ? { title, lines: lines.slice(0, 60) } : null;
   } catch {
     return null;
   }

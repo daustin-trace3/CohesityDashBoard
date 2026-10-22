@@ -78,6 +78,10 @@ const THRESHOLD_DEFS = {
   lm_watch_drift_crit_pct: { def: 50, min: 10, max: 400, label: 'Baseline drift warning (%)' },
   lm_watch_reference_days: { def: 28, min: 14, max: 90, label: 'Drift reference window (days)' },
   lm_issue_clear_absences: { def: 2, min: 1, max: 10, label: 'Polls an anomaly must be absent before its issue clears' },
+  // Agent signals: probe-location rollup and interface link bursts.
+  lm_location_rollup_min: { def: 3, min: 2, max: 20, label: 'Elevated checks from one probe location that raise a location issue' },
+  lm_link_burst_min: { def: 5, min: 2, max: 100, label: 'Interfaces down inside the burst window that raise a link burst' },
+  lm_link_burst_minutes: { def: 30, min: 5, max: 240, label: 'Link burst window (minutes)' },
   // Round 12: carrier aliases for circuit labels and operator-defined raw datapoint rules.
   lm_carrier_aliases: { type: 'text', def: '', maxLength: 2000, label: 'Carrier aliases (token=Carrier, comma list)' },
   lm_raw_rules: { type: 'text', def: '[]', maxLength: 20000, label: 'Raw datapoint rules (JSON)' },
@@ -913,6 +917,11 @@ function computeIssues({ nowMs = Date.now() } = {}) {
     issues.push(...require('./logicmonitorWatch').computeWatchIssues(db, t, srcName));
   } catch { /* a watch fault must not hide the other issues */ }
 
+  // Agent signals: several interfaces going down together is one burst, not N flaps.
+  try {
+    issues.push(...require('./logicmonitorLinks').linkBurstIssues(db, t, srcName, nowMs));
+  } catch { /* a burst fault must not hide the other issues */ }
+
   // Round 10: neighbours CDP/LLDP see that nothing monitors (one folded info issue per source).
   try {
     issues.push(...require('./logicmonitorEri').unmonitoredNeighborIssues(db, t, srcName));
@@ -989,7 +998,7 @@ function recordCheckBlames(current) {
 // Anomaly issues flap with the data, so an open row survives
 // lm_issue_clear_absences consecutive polls without its key before it resolves
 // (lm_issue_history.absent_polls counts them; a poll that has the key resets it).
-const ANOMALY_TYPES = new Set(['latency-anomaly', 'packet-loss-anomaly', 'interface-util-anomaly', 'interface-error-anomaly', 'latency-degrading', 'loss-degrading']);
+const ANOMALY_TYPES = new Set(['latency-anomaly', 'packet-loss-anomaly', 'interface-util-anomaly', 'interface-error-anomaly', 'latency-degrading', 'loss-degrading', 'location-latency']);
 
 const circuits = require('./logicmonitorCircuits');
 

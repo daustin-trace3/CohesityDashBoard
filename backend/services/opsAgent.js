@@ -29,6 +29,7 @@ const { platformMeta } = require('./platformMeta');
 const capabilities = require('./agentCapabilities');
 const agentProfiles = require('./agentProfiles');
 const agentRelations = require('./agentRelations');
+const agentTimeline = require('./agentTimeline');
 const teams = require('./opsAgentTeams');
 const { isDemo } = require('./demoMode');
 
@@ -78,6 +79,10 @@ function maxSeverity(list) {
 function hostKey(host) {
   let h = String(host || '').trim().toLowerCase();
   if (!h) return '';
+  // A monitoring check target reads "<check name> @ <location>": the check name
+  // is the identity (the first word alone made every "Web ..." check one host).
+  const at = h.indexOf(' @ ');
+  if (at > 0) return h.slice(0, at).trim().replace(/\s+/g, '-');
   h = h.replace(/\s*\([^)]*\)\s*$/, '');
   h = h.split(/[\s,]/)[0];
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) h = h.split('.')[0];
@@ -106,6 +111,9 @@ function sourceTokenOf(item) {
  *               platform rule. */
 function incidentKeyFor(item, wide, { mode = 'platform', appOf = null, siteOf = null } = {}) {
   if (item.platform === 'appservice') return `app:${item.sourceKey}`;
+  // A collector can fold related items itself (probe-location latency, a burst
+  // of link-downs). Component and service grouping keep the items apart.
+  if (item.groupKey && (mode === 'platform' || mode === 'site')) return String(item.groupKey);
   const hk = hostKey(item.host);
   // site: every alert from one site folds into one incident; an alert with no
   // site (or a poll:/stale: item, which names a source) takes the platform rule.
@@ -157,6 +165,35 @@ function makeSiteResolver() {
   };
 }
 
+/** Incident kind from its key. */
+function kindOfKey(key) {
+  const k = String(key || '');
+  return k.startsWith('app:') ? 'app-service'
+    : k.endsWith(':wide') ? 'platform-wide'
+    : k.startsWith('site:') ? 'site'
+    : k.startsWith('lm-location:') ? 'location'
+    : k.startsWith('lm-burst:') ? 'network-burst'
+    : k.startsWith('src:') ? 'source' : 'host';
+}
+
+const GROUP_HEAD_RE = /^(location-latency|link-burst)\|/;
+const isGroupKey = (key) => /^(lm-location|lm-burst):/.test(String(key || ''));
+
+/** Title of a collector-folded incident (probe-location latency, link-down
+ *  burst). Placeholder until the head item (the location-latency or
+ *  link-burst issue) is seen, then the real wording. */
+function groupTitle(key, it, liveCount) {
+  const isHead = it && GROUP_HEAD_RE.test(String(it.sourceKey || ''));
+  if (String(key).startsWith('lm-location:')) {
+    const loc = (it && (it.location || (isHead && it.host))) || String(key).slice('lm-location:'.length);
+    if (!isHead) return `Latency from ${loc}`;
+    const m = String(it.message || '').match(/^(\d+) of /);
+    const n = m ? Number(m[1]) : liveCount;
+    return `Latency from ${loc}: ${n} check${n === 1 ? '' : 's'} elevated`;
+  }
+  return isHead ? String(it.message || 'Link-downs').slice(0, 80) : 'Link-downs across several devices';
+}
+
 const NETWORK_LINE_CAP = 40;
 const NETWORK_BLAME_RE = /^(blame|likely hop)/i;
 
@@ -177,7 +214,8 @@ function gatherNetworkEvidence(inc, hostLabels, siteResolver) {
     contexts.push({ names: [String(label), hk], ips: IPV4_RE.test(hk) ? [hk] : [], siteKey: site ? site.siteKey : incidentSite });
     if (!incidentSite && site) incidentSite = site.siteKey;
   }
-  if (incidentSite) contexts.push({ names: [], ips: [], siteKey: incidentSite });
+  // The site context goes first so the per-platform block budget never cuts it.
+  if (incidentSite) contexts.unshift({ names: [], ips: [], siteKey: incidentSite });
   const blocks = [];
   const seen = new Set();
   for (const p of providers) {
@@ -186,8 +224,13 @@ function gatherNetworkEvidence(inc, hostLabels, siteResolver) {
         const r = p.run(ctx);
         if (!r || !Array.isArray(r.lines) || !r.lines.length) continue;
         const title = String(r.title || p.name || p.id).slice(0, 120);
-        if (seen.has(title)) continue;
-        seen.add(title);
+        // Same title from a host and from the site is two blocks (the site one
+        // carries the circuits and the site-wide counts); only a repeat of the
+        // same title for the same context is a duplicate.
+        const ctxLabel = ctx.names && ctx.names.length ? String(ctx.names[0]).toLowerCase() : `site:${ctx.siteKey || ''}`;
+        const dedupKey = `${title}|${ctxLabel}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
         blocks.push({ title, lines: r.lines.map((l) => String(l).slice(0, 400)).slice(0, NETWORK_LINE_CAP) });
       } catch (err) { logger.warn(`[OpsAgent] evidence provider ${p.id} failed: ${err.message}`); }
     }
@@ -315,6 +358,7 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
   const appOf = collected.appOf || null;
   const siteOf = mode === 'site' ? (collected.siteOf || makeSiteResolver()) : null;
   const siteTouched = new Map();   // incident key -> { id, name }
+  const groupHeads = new Map();    // folded incident key -> { id, item } (the head issue seen this tick)
   // Platform-wide: a source unreachable, or a burst of new alerts. Only the
   // 'platform' mode folds; the others keep each component apart.
   const wide = new Set();
@@ -351,19 +395,22 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         const meta = platformMeta(it.platform);
         const isWide = key.endsWith(':wide');
         const isSite = key.startsWith('site:');
+        const isGroup = isGroupKey(key);
         const siteInfo = isSite ? (it.siteKey ? { siteName: it.siteName || it.siteKey } : (siteOf ? siteOf(it) : null)) : null;
         const app = key.startsWith('app:') && it.platform !== 'appservice' && appOf ? appOf.get(hostKey(it.host)) : null;
         const title = it.platform === 'appservice' ? `App service ${it.host || it.sourceKey}`
           : app ? `App service ${app.displayId}${app.label ? ` (${app.label})` : ''}`
+          : isGroup ? groupTitle(key, it, 1)
           : isSite ? `${siteInfo && siteInfo.siteName ? siteInfo.siteName : key.slice(5)}: 1 alert across 1 device`
           : isWide ? `${meta.label}: platform-wide alerts`
           : (it.host ? `${it.host}` : `${meta.label} alerts`);
-        const id = insertIncident.run(key, title, isWide || isSite || (key.startsWith('src:') && !it.host) ? null : (it.host || null), JSON.stringify([it.platform]), normalizeSeverity(it.severity), now, holdUntil, now, baseline ? 1 : 0).lastInsertRowid;
+        const id = insertIncident.run(key, title, isWide || isSite || isGroup || (key.startsWith('src:') && !it.host) ? null : (it.host || null), JSON.stringify([it.platform]), normalizeSeverity(it.severity), now, holdUntil, now, baseline ? 1 : 0).lastInsertRowid;
         inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
         byKey.set(key, inc);
         stats.incidentsOpened += 1;
         act('opened incident', `#${inc.id} ${title} [${key}] first alert ${platformMeta(it.platform).label} ${normalizeSeverity(it.severity)}${baseline ? ', baseline (pre-existing backlog, will not email)' : ''}`);
       }
+      if (isGroupKey(key) && GROUP_HEAD_RE.test(String(it.sourceKey || ''))) groupHeads.set(key, { id: inc.id, item: it });
       if (key.startsWith('site:')) {
         const info = it.siteKey ? { siteName: it.siteName || it.siteKey } : (siteOf ? siteOf(it) : null);
         siteTouched.set(key, { id: inc.id, name: (info && info.siteName) || (siteTouched.get(key) || {}).name || key.slice(5) });
@@ -402,6 +449,12 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
       const n = live.length;
       db.prepare('UPDATE ops_incidents SET title = ? WHERE id = ? AND triaged_at IS NULL')
         .run(`${name}: ${n} alert${n === 1 ? '' : 's'} across ${devices} device${devices === 1 ? '' : 's'}`, id);
+    }
+
+    // Folded incidents take the wording of their head issue until triaged.
+    for (const [key, { id, item }] of groupHeads) {
+      const n = db.prepare('SELECT COUNT(*) c FROM ops_incident_alerts WHERE incident_id = ? AND cleared_at IS NULL').get(id).c;
+      db.prepare('UPDATE ops_incidents SET title = ? WHERE id = ? AND triaged_at IS NULL').run(groupTitle(key, item, Math.max(1, n - 1)), id);
     }
 
     // Clear alerts that are gone (skip platforms whose collector failed).
@@ -595,7 +648,13 @@ function budgetedAlerts(alerts, budgets) {
 function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   const hosts = [];
   const seen = new Set();
-  for (const a of alerts) {
+  // A folded incident's head item (the location or link-burst issue) names the
+  // subject the model should read about first, so it gets a host slot before the
+  // alerts it folded; the evidence cap would otherwise hand those slots to the
+  // first few member alerts.
+  const isHead = (a) => /^(location-latency|link-burst)\|/.test(String(a.source_key || ''));
+  const ordered = [...alerts].sort((x, y) => Number(isHead(y)) - Number(isHead(x)));
+  for (const a of ordered) {
     const hk = hostKey(a.host);
     if (!hk || seen.has(hk) || a.cleared_at) continue;
     seen.add(hk);
@@ -616,6 +675,19 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     } catch (err) {
       hosts.push({ host: a.host, platform: a.platform, error: `evidence gather failed: ${err.message}` });
     }
+  }
+  // Other-platform alerts for the same object come from the agent's own alert
+  // rows (Service Status stopped writing alert events in platform mode).
+  const anchorMs = alerts.map((a) => agentTimeline.parseTs(a.first_seen)).filter((x) => x != null).sort((x, y) => x - y)[0]
+    ?? agentTimeline.parseTs(inc.opened_at) ?? Date.now();
+  for (const h of hosts) {
+    if (!h.host || h.error) continue;
+    const own = agentTimeline.relatedOtherPlatformEvents({ incidentId: inc.id, platform: h.platform, host: h.host, anchorMs });
+    const kept = (h.relatedOtherPlatformEvents || []).map((e) => ({
+      platform: e.platform, severity: e.severity, host: e.host, message: e.message, firstSeen: e.firstSeen || e.detectedAt || null, incidentId: e.incidentId || null,
+    }));
+    const seenEv = new Set(own.map((e) => `${e.platform}|${e.host}|${e.message}`));
+    h.relatedOtherPlatformEvents = [...own, ...kept.filter((e) => !seenEv.has(`${e.platform}|${e.host}|${e.message}`))].slice(0, 10);
   }
   const incPlatforms = JSON.parse(inc.platforms || '[]');
   const budgetPlatforms = [...new Set([...incPlatforms, ...alerts.map((a) => a.platform), 'logicmonitor'].filter(Boolean))];
@@ -643,7 +715,7 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   const shownAlerts = budgetedAlerts(alerts, budgets)
     .map((a) => ({ platform: a.platform, severity: a.severity, host: a.host, message: a.message, type: a.type, firstSeen: a.first_seen, cleared: !!a.cleared_at }));
   const evidence = {
-    incident: { id: inc.id, key: inc.incident_key, title: inc.title, host: inc.host, platforms: incPlatforms, severity: inc.severity, openedAt: inc.opened_at, kind: inc.incident_key.startsWith('app:') ? 'app-service' : inc.incident_key.endsWith(':wide') ? 'platform-wide' : inc.incident_key.startsWith('site:') ? 'site' : inc.incident_key.startsWith('src:') ? 'source' : 'host' },
+    incident: { id: inc.id, key: inc.incident_key, title: inc.title, host: inc.host, platforms: incPlatforms, severity: inc.severity, openedAt: inc.opened_at, kind: kindOfKey(inc.incident_key) },
     relatedIncidents,
     selfHeal,
     alerts: shownAlerts,
@@ -656,6 +728,7 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     failedBackupJobs: collectFailedBackupJobs(incPlatforms, alerts, budgets),
   };
   evidence.relations = agentRelations.relationLines(evidence, alerts);
+  evidence.timeline = agentTimeline.buildTimeline(inc, alerts, evidence);
   return evidence;
 }
 
@@ -1011,7 +1084,7 @@ function liveCheckMode(checks) {
   return checks.some((c) => c.requestedBy === 'model') ? ' (asked for by the agent)' : ' (playbook)';
 }
 
-function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [] } = {}) {
+function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [], timeline = [] } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
   const rec = recurrence && recurrence.isPattern ? recurrence : null;
@@ -1035,6 +1108,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const checks = (liveChecks && liveChecks.results) || [];
   const checkLines = checks.map(liveCheckLine);
   const relationLines = (Array.isArray(relations) ? relations : []).filter((l) => typeof l === 'string' && l.trim());
+  const timelineRows = (Array.isArray(timeline) ? timeline : []).filter((t) => t && t.at && t.text);
   const netBlocks = (network || []).filter((b) => b && Array.isArray(b.lines) && b.lines.length);
   const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
   const happened = String(analysis.summary || '-').split('\n').map((s) => s.trim()).filter(Boolean);
@@ -1065,6 +1139,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     ...(cleared.length ? ['Cleared while collecting:', ...clearedShown.map(alertLine),
       ...(clearedMore > 0 ? [`... and ${clearedMore} more cleared.`] : [])] : []),
     ...(relationLines.length ? ['', 'HOW THESE SYSTEMS CONNECT', ...relationLines.map((l) => `- ${l}`)] : []),
+    ...(timelineRows.length ? ['', 'TIMELINE (NEWEST FIRST)', ...timelineRows.map((t) => `- ${fmtStamp(t.at)} | ${platformMeta(t.platform).label} | ${t.text}`)] : []),
     ...(jobsShown.length ? ['', `FAILED BACKUP JOBS (LAST 24H, ${(failedJobs || []).length} total)`,
       ...jobsShown.map(jobLine),
       ...(jobsMore > 0 ? [`... and ${jobsMore} more; see the platform's job pages.`] : [])] : []),
@@ -1108,6 +1183,7 @@ ${section('What happened', happened.length > 1 ? list(happened) : `<p style="mar
 ${section('Impact', `<p style="margin:0">${esc(analysis.impact || '-')}</p>`)}
 ${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(aliveShown)}${aliveMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.</td></tr>` : ''}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(clearedShown)}${clearedMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${clearedMore} more cleared.</td></tr>` : ''}` : ''}</table>`)}
 ${relationLines.length ? section('How these systems connect', list(relationLines)) : ''}
+${timelineRows.length ? section('Timeline (newest first)', list(timelineRows.map((t) => `${fmtStamp(t.at)} | ${platformMeta(t.platform).label} | ${t.text}`))) : ''}
 ${jobsShown.length ? section(`Failed backup jobs (last 24h, ${(failedJobs || []).length} total)`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Source</th><th style="padding:3px 8px">Job</th><th style="padding:3px 8px">Status</th><th style="padding:3px 8px">Finished</th><th style="padding:3px 8px">Error</th></tr>${jobsShown.map((j) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(platformMeta(j.platform).label)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.source || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.job || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.status)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.finished ? fmtStamp(j.finished) : '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.error || '-')}</td></tr>`).join('')}${jobsMore > 0 ? `<tr><td colspan="6" style="padding:6px 8px;color:#64748b">... and ${jobsMore} more; see the platform's job pages.</td></tr>` : ''}</table>`) : ''}
 ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')}</p>`)}
 ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
@@ -1154,7 +1230,7 @@ async function notifyIncident(inc, settings, config, { force = false } = {}) {
   try { healActions = JSON.parse(inc.heal_actions_json || '[]'); } catch { /* ignore */ }
   let storedEvidence = null;
   try { storedEvidence = JSON.parse(inc.evidence_json || 'null'); } catch { storedEvidence = null; }
-  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [], relations: storedEvidence?.relations || [] });
+  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [], relations: storedEvidence?.relations || [], timeline: storedEvidence?.timeline || [] });
   const now = new Date().toISOString();
   try {
     const transport = alertNotifier.createTransport(config);
@@ -1585,7 +1661,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
     resolvedAt: row.resolved_at, classification: row.classification, confidence: row.confidence,
     summary: row.summary, eventCount: row.event_count, emailTo: row.email_to, emailError: row.email_error,
     model: row.model, triageError: row.triage_error, baseline: !!row.baseline, resolvedBy: row.resolved_by || null,
-    kind: row.incident_key.startsWith('app:') ? 'app-service' : row.incident_key.endsWith(':wide') ? 'platform-wide' : row.incident_key.startsWith('site:') ? 'site' : row.incident_key.startsWith('src:') ? 'source' : 'host',
+    kind: kindOfKey(row.incident_key),
     healAttempted: !!row.heal_attempted, healAt: row.heal_at || null,
     resolution: row.resolution || null, clearedSince: row.cleared_since || null,
     teamsNotifiedAt: row.teams_notified_at || null, teamsError: row.teams_error || null,
@@ -1597,7 +1673,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
   // Ordering key: severity first, then how much is affected and what the
   // triage made of it. Bigger = higher on the page.
   out.impactScore = rank(row.severity) * 1000
-    + (out.kind === 'app-service' ? 700 : out.kind === 'platform-wide' ? 200 : out.kind === 'source' ? 150 : out.kind === 'site' ? 100 : 0)
+    + (out.kind === 'app-service' ? 700 : out.kind === 'platform-wide' ? 200 : out.kind === 'source' ? 150 : (out.kind === 'site' || out.kind === 'location' || out.kind === 'network-burst') ? 100 : 0)
     + Math.min(row.event_count || 0, 100) * 5 + out.platforms.length * 25
     + (CLASS_WEIGHT[row.classification] ?? 150)
     + (out.humanRequired ? 100 : 0);

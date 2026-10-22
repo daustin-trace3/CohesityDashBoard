@@ -389,3 +389,68 @@ describe('episodeSummary and pruneEpisodes', () => {
     expect(db.prepare('SELECT COUNT(*) n FROM lm_latency_episodes').get().n).toBe(1);
   });
 });
+
+describe('location-latency (agent signals)', () => {
+  const srcMap = () => new Map([[sid, 'Acme']]);
+  /** Check "<name>" probed from `loc`; with `state` an open episode with the given peak ratio. */
+  function checkAt(n, loc, state = null, ratio = 1.3) {
+    const cid = `w:${200 + n}`;
+    const cp = `${200 + n}1`;
+    db.prepare(`INSERT OR IGNORE INTO lm_checks (source_id, check_id, kind, origin, name, target, status, polling_interval, is_internal, stop_monitoring, stale)
+      VALUES (?, ?, 'ping', 'website', ?, '10.0.0.9', 'active', 5, 1, 0, 0)`).run(sid, cid, `Chk${n}`);
+    db.prepare(`INSERT INTO lm_check_locations (source_id, check_id, checkpoint_id, label, is_overall, last_status, stale) VALUES (?, ?, ?, ?, 0, 'up', 0)`)
+      .run(sid, cid, cp, loc);
+    if (state) {
+      db.prepare(`INSERT INTO lm_latency_episodes (source_id, subject_kind, check_id, checkpoint_id, subject_key, subject_label, kind, state, opened_at, last_sample_epoch, baseline_median, peak_ms, peak_ratio, trend_json)
+        VALUES (?, 'check', ?, ?, ?, ?, 'latency', ?, ?, ?, 30, 60, ?, '[]')`)
+        .run(sid, cid, cp, `check:${cid}:${cp}`, `Chk${n} @ ${loc}`, state, new Date().toISOString(), Math.floor(Date.now() / 1000), ratio);
+    }
+  }
+  const locIssues = () => lmWatch.computeWatchIssues(db, t, srcMap()).filter((i) => i.type === 'location-latency');
+
+  it('stays quiet below lm_location_rollup_min elevated checks from one location', () => {
+    checkAt(1, 'au-col01', 'degrading'); checkAt(2, 'au-col01', 'watching'); checkAt(3, 'au-col01');
+    expect(locIssues()).toEqual([]);
+  });
+
+  it('raises a warning at 3 of 8 with the message, counting watching episodes and the median peak', () => {
+    checkAt(1, 'au-col01', 'degrading', 1.2); checkAt(2, 'au-col01', 'watching', 1.3); checkAt(3, 'au-col01', 'degrading', 1.5);
+    for (let n = 4; n <= 8; n += 1) checkAt(n, 'au-col01');
+    const [i] = locIssues();
+    expect(i).toMatchObject({ severity: 'warning', source: 'Acme', target: 'au-col01' });
+    expect(i.message).toBe('3 of 8 checks probed from au-col01 are elevated now (0 critical, median peak 1.3x): Chk1, Chk2, Chk3; this points at the probe location or its upstream, not the destinations');
+  });
+
+  it('is critical when any episode is critical, or when half of the location checks are elevated', () => {
+    checkAt(1, 'au-col01', 'degrading'); checkAt(2, 'au-col01', 'degrading'); checkAt(3, 'au-col01', 'critical');
+    for (let n = 4; n <= 8; n += 1) checkAt(n, 'au-col01');
+    expect(locIssues()[0].severity).toBe('critical');
+    expect(locIssues()[0].message).toContain('(1 critical,');
+    db.prepare("UPDATE lm_latency_episodes SET state = 'degrading'").run();
+    expect(locIssues()[0].severity).toBe('warning');
+    checkAt(9, 'au-col01', 'degrading');
+    checkAt(10, 'au-col01', 'degrading');
+    checkAt(11, 'au-col01', 'degrading');
+    // 6 of 11 checks elevated: half or more
+    expect(locIssues()[0].severity).toBe('critical');
+  });
+
+  it('keeps locations apart, ignores closed episodes and lists at most 4 check names', () => {
+    for (let n = 1; n <= 6; n += 1) checkAt(n, 'au-col01', 'watching');
+    checkAt(7, 'us-col02', 'degrading'); checkAt(8, 'us-col02', 'degrading');
+    checkAt(9, 'us-col02');
+    db.prepare("UPDATE lm_latency_episodes SET state = 'closed', outcome = 'one-off' WHERE subject_label LIKE 'Chk7 @%'").run();
+    const issues = locIssues();
+    expect(issues).toHaveLength(1);
+    expect(issues[0].target).toBe('au-col01');
+    expect(issues[0].message.split(': ')[1].split(';')[0]).toBe('Chk1, Chk2, Chk3, Chk4');
+  });
+
+  it('the issue key is type|source|location and reaches computeIssues', () => {
+    checkAt(1, 'au-col01', 'degrading'); checkAt(2, 'au-col01', 'degrading'); checkAt(3, 'au-col01', 'degrading');
+    const all = lmIssues.computeIssues();
+    const i = all.find((x) => x.type === 'location-latency');
+    expect(i).toBeTruthy();
+    expect(`${i.type}|${i.source}|${i.target}`).toBe('location-latency|Acme|au-col01');
+  });
+});

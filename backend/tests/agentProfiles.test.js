@@ -116,8 +116,8 @@ describe('validation', () => {
 });
 
 describe('buildSystemPrompt', () => {
-  it('keeps the core under 450 words and carries the relations sentence', () => {
-    expect(profiles.coreWordCount()).toBeLessThan(450);
+  it('keeps the core under 470 words and carries the relations sentence', () => {
+    expect(profiles.coreWordCount()).toBeLessThan(470);
     const { system } = profiles.buildSystemPrompt({ platforms: [], evidence: evidenceOf() });
     expect(system).toMatch(/relations lists how the systems in this incident connect/);
     expect(system).toMatch(/Platform notes below apply only to the platforms in this incident/);
@@ -220,5 +220,20 @@ describe('routes', () => {
     const ok = await put({ opsAgent: { platformProfiles: { pure: { focus: 'saved through the route' } } } });
     expect(ok.status).toBeLessThan(300);
     expect(profiles.profileFor('pure')).toMatchObject({ focus: 'saved through the route', focusSource: 'custom' });
+  });
+});
+
+describe('LogicMonitor signals: timeline sentence and identity_links', () => {
+  it('carries the timeline sentence in the core prompt', () => {
+    const { system } = profiles.buildSystemPrompt({ platforms: [], evidence: evidenceOf() });
+    expect(system).toMatch(/timeline lists dated events across platforms, newest first; use order and proximity when you judge correlation/);
+  });
+
+  it('lists identity_links on every platform profile and has a sentence for it', () => {
+    const { DEFAULTS, GENERIC, RELATION_TEMPLATES } = require('../services/agentProfiles/defaults');
+    expect(RELATION_TEMPLATES.identity_links).toMatch(/is also/);
+    for (const [id, p] of Object.entries(DEFAULTS)) expect(p.relations, `${id} relations`).toContain('identity_links');
+    expect(GENERIC.relations).toContain('identity_links');
+    expect(profiles.profileFor('pure').relations.map((r) => r.id || r)).toContain('identity_links');
   });
 });

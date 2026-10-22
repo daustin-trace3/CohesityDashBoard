@@ -333,6 +333,58 @@ function hopName(text) {
   return m ? m[0] : null;
 }
 
+/** Probe location of an episode label "<check> @ <location>" (null for labels without one). */
+function locationOf(label) {
+  const s = String(label || '');
+  const at = s.lastIndexOf(' @ ');
+  return at >= 0 ? s.slice(at + 3).trim() || null : null;
+}
+
+/**
+ * One issue per probe location with several elevated checks. Elevated = an
+ * open episode (watching, degrading or critical) on a check subject. When many
+ * checks are slow from one place, the place is the story, not the destinations.
+ * Warning at lm_location_rollup_min elevated checks; critical when half of the
+ * location's checks are elevated or any of the episodes is critical. M (the
+ * checks probed from the location) comes from lm_check_locations.
+ */
+function locationLatencyIssues(dbh, t, nameOf) {
+  const rows = dbh.prepare("SELECT * FROM lm_latency_episodes WHERE subject_kind = 'check' AND state IN ('watching', 'degrading', 'critical')").all();
+  const groups = new Map();
+  for (const r of rows) {
+    const loc = locationOf(r.subject_label);
+    if (!loc) continue;
+    const k = `${r.source_id}\u0000${loc}`;
+    if (!groups.has(k)) groups.set(k, { sourceId: r.source_id, loc, checks: new Map(), ratios: [], critical: 0 });
+    const g = groups.get(k);
+    const name = String(r.subject_label).slice(0, String(r.subject_label).lastIndexOf(' @ '));
+    if (!g.checks.has(r.check_id)) g.checks.set(r.check_id, name);
+    if (r.peak_ratio != null) g.ratios.push(r.peak_ratio);
+    if (r.state === 'critical') g.critical += 1;
+  }
+  const totalStmt = dbh.prepare(`
+    SELECT COUNT(DISTINCT l.check_id) n FROM lm_check_locations l
+    JOIN lm_checks c ON c.source_id = l.source_id AND c.check_id = l.check_id
+    WHERE l.source_id = ? AND l.label = ? AND l.stale = 0 AND l.is_overall = 0 AND c.stale = 0
+  `);
+  const out = [];
+  for (const g of groups.values()) {
+    const n = g.checks.size;
+    if (n < t.lm_location_rollup_min) continue;
+    let m = 0;
+    try { m = totalStmt.get(g.sourceId, g.loc).n || 0; } catch { m = 0; }
+    m = Math.max(m, n);
+    const critical = g.critical > 0 || n * 2 >= m;
+    const med = g.ratios.length ? round(median(g.ratios), 1) : null;
+    const names = [...g.checks.values()].sort().slice(0, 4).join(', ');
+    out.push({
+      severity: critical ? 'critical' : 'warning', type: 'location-latency', source: nameOf(g.sourceId), target: g.loc,
+      message: `${n} of ${m} checks probed from ${g.loc} are elevated now (${g.critical} critical${med != null ? `, median peak ${med}x` : ''}): ${names}; this points at the probe location or its upstream, not the destinations`,
+    });
+  }
+  return out;
+}
+
 /**
  * Issue rows for computeIssues. srcName is a Map of source id to source name.
  * Open degrading and critical episodes become latency-degrading (or
@@ -353,6 +405,8 @@ function computeWatchIssues(dbh, t, srcName) {
       target: targetOf(ep), message: degradingMessage(ep),
     });
   }
+
+  try { issues.push(...locationLatencyIssues(dbh, t, nameOf)); } catch { /* the rollup must not hide the episode issues */ }
 
   // Repeating one-offs (latency episodes only: a loss-kind pattern has no issue type in this round).
   const cutoff = isoOf(nowSec() - t.lm_watch_repeat_days * 86400);
@@ -662,7 +716,7 @@ function pruneEpisodes(dbh, days = 90) {
 
 module.exports = {
   evaluateWatch, computeWatchIssues, computeReference, episodeSummary, pruneEpisodes,
-  episodeView, episodeWhy, isRising, typeFor, watchLines,
+  episodeView, episodeWhy, isRising, typeFor, watchLines, locationOf, locationLatencyIssues,
   // Shared with logicmonitorWatchIpsla.js (the per-sample state machine and its persistence).
   applySample, loadEpisode, saveEpisode, closeEpisode, targetOf, isoOf, epochOf, STALE_WATCH_SECONDS,
 };

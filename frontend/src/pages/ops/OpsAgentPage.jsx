@@ -18,7 +18,7 @@ const STATE_META = {
   resolved: { label: 'Resolved', tone: 'neutral', hint: 'Every alert cleared or closed by hand' },
 };
 const CLASS_TONE = { incident: 'crit', recurring: 'warn', 'one-off': 'info', noise: 'neutral', 'self-cleared': 'neutral', 'self-healed': 'ok' };
-const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', source: 'Source', host: 'Host' };
+const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', source: 'Source', host: 'Host', site: 'Site', location: 'Probe location', 'network-burst': 'Link-down burst' };
 /** The run row is written when a tick ends, so a tick that hangs leaves
  *  "last tick" frozen while its work still shows up. This says one is in
  *  flight, and turns red when it has been in flight too long to be normal. */
@@ -324,6 +324,18 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                 {Array.isArray(inc.evidence?.relations) && inc.evidence.relations.length > 0 && (
                   <Section title="How these systems connect">
                     <CollapsibleList className="text-ink-muted" items={inc.evidence.relations.map(String)} render={(l) => l} />
+                  </Section>
+                )}
+                {Array.isArray(inc.evidence?.timeline) && inc.evidence.timeline.length > 0 && (
+                  <Section title="Timeline">
+                    <CollapsibleList className="text-ink-muted" items={inc.evidence.timeline} limit={8}
+                      render={(t) => (
+                        <>
+                          <span className="text-ink-faint">{new Date(t.at).toLocaleString()}</span>{' '}
+                          <span className="inline-block px-1.5 rounded border border-cohesity-border text-[11px] text-ink-faint align-middle">{t.platform}</span>{' '}
+                          {t.text}
+                        </>
+                      )} />
                   </Section>
                 )}
                 {networkBlocks.map((n, ni) => (

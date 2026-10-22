@@ -47,6 +47,7 @@ const CORE_HEAD =
   'relations lists how the systems in this incident connect across platforms; use them to explain one platform\'s ' +
   'alert with another\'s evidence and name both. ' +
   'network, when present, is {title, lines[]} blocks from the network monitoring platform. ' +
+  'timeline lists dated events across platforms, newest first; use order and proximity when you judge correlation. ' +
   'liveChecks, when present, are probes ICC ran from its own server at triage time (ping, TCP ports, DNS, TLS) ' +
   'against the hosts and sources in this incident; quote each result in reviewed and weigh it in likely_cause. ' +
   'A failed probe means ICC could not reach the target from where it runs, which is not proof the target is down; ' +

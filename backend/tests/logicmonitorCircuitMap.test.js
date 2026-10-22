@@ -381,6 +381,6 @@ describe('demo scenario (seeded in a child process)', () => {
   });
 
   it('the pinned counts survive: 10 interfaces down, nothing else flagged as interface-flapping on a wan router', () => {
-    expect(c("SELECT COUNT(*) n FROM lm_interfaces WHERE status_text = 'down'").n).toBe(10);
+    expect(c("SELECT COUNT(*) n FROM lm_interfaces WHERE status_text = 'down'").n).toBe(16); // 10 original plus the 6 link-burst ports on dal-acc-01..03
   });
 });

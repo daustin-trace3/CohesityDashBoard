@@ -896,3 +896,141 @@ describe('platform profiles: relations and evidence budget', () => {
     expect(built.system).not.toMatch(/Cohesity/);
   });
 });
+
+describe('LogicMonitor signals: check hostKey, collector groupKey, cross-platform evidence, timeline', () => {
+  const registry = require('../core/registry');
+  const hostIdentity = require('../services/hostIdentity');
+  const realEvidence = registry.getIncidentEvidenceProviders;
+  const realSites = registry.getSiteProviders;
+  const added = [];
+  afterEach(() => {
+    registry.getIncidentEvidenceProviders = realEvidence;
+    registry.getSiteProviders = realSites;
+    while (added.length) registry.unregisterPlugin(added.pop());
+  });
+  const fake = (id) => {
+    try {
+      registry.registerPlugin({ id, name: id, apiVersion: registry.PLUGIN_API_VERSION, migrations: [], createRouter: () => (req, res, next) => next() });
+      added.push(id);
+    } catch { /* already registered by another suite */ }
+  };
+
+  const group = (platform, sourceKey, o = {}) => ({ ...item(platform, sourceKey, o), groupKey: o.groupKey, location: o.location });
+
+  it('hostKey keeps the whole check name for a "check @ location" target', () => {
+    expect(agent.hostKey('Web Portal @ Australia - Sydney')).toBe('web-portal');
+    expect(agent.hostKey('DAL  core   reachability @ abq')).toBe('dal-core-reachability');
+    expect(agent.hostKey('ESX-01.lab.local')).toBe('esx-01');
+    expect(agent.hostKey('r740-07 (ABC1234)')).toBe('r740-07');
+  });
+
+  it('incidentKeyFor honours groupKey in platform and site modes only', () => {
+    const it1 = { platform: 'logicmonitor', sourceKey: 'latency-degrading|1|chk', host: 'Web Portal @ Sydney', groupKey: 'lm-location:australia-sydney' };
+    expect(agent.incidentKeyFor(it1, new Set(), { mode: 'platform' })).toBe('lm-location:australia-sydney');
+    expect(agent.incidentKeyFor(it1, new Set(['logicmonitor']), { mode: 'platform' })).toBe('lm-location:australia-sydney');
+    expect(agent.incidentKeyFor(it1, new Set(), { mode: 'site', siteOf: () => ({ siteKey: 'phoenix' }) })).toBe('lm-location:australia-sydney');
+    expect(agent.incidentKeyFor(it1, new Set(), { mode: 'component' })).toBe('host:web-portal');
+    expect(agent.incidentKeyFor(it1, new Set(), { mode: 'service', appOf: new Map() })).toBe('host:web-portal');
+    expect(agent.incidentKeyFor({ ...it1, groupKey: undefined }, new Set(), { mode: 'platform' })).toBe('host:web-portal');
+  });
+
+  it('folds location and burst items into one incident each, with head titles and kinds', () => {
+    agent.groupTick(NOW, { ...settings, grouping: 'platform' }, { items: [
+      group('logicmonitor', 'latency-degrading|1|Web @ Sydney', { host: 'Web @ Australia - Sydney', groupKey: 'lm-location:australia-sydney', location: 'Australia - Sydney' }),
+      group('logicmonitor', 'check-down|1|Api @ Sydney', { host: 'Api @ Australia - Sydney', groupKey: 'lm-location:australia-sydney', location: 'Australia - Sydney' }),
+      group('logicmonitor', 'location-latency|1|Australia - Sydney', { host: 'Australia - Sydney', groupKey: 'lm-location:australia-sydney', location: 'Australia - Sydney', message: '3 of 8 checks probed from Australia - Sydney are elevated now (1 critical, median peak 1.3x): Web, Api' }),
+      group('logicmonitor', 'link-burst|1|estate', { host: 'estate', groupKey: 'lm-burst:estate', message: '6 interfaces went down in the last 30 min on 3 devices (sites dallas): dal-sw-01 Gi1/0/1' }),
+      group('logicmonitor', 'interface-flapping|1|dal-sw-01 Gi1/0/1', { host: 'dal-sw-01', groupKey: 'lm-burst:estate' }),
+      group('vcenter', 'v1', { host: 'esx-01' }),
+    ], failed: [] });
+    const rows = incidents();
+    const loc = rows.find((r) => r.incident_key === 'lm-location:australia-sydney');
+    const burst = rows.find((r) => r.incident_key === 'lm-burst:estate');
+    expect(rows).toHaveLength(3);
+    expect(loc.event_count).toBe(3);
+    expect(loc.host).toBeNull();
+    expect(loc.title).toBe('Latency from Australia - Sydney: 3 checks elevated');
+    expect(burst.event_count).toBe(2);
+    expect(burst.title).toBe('6 interfaces went down in the last 30 min on 3 devices (sites dallas): dal-sw-01');   // first 80 characters
+    expect(agent.getIncident(loc.id).kind).toBe('location');
+    expect(agent.getIncident(burst.id).kind).toBe('network-burst');
+    expect(alertsOf(loc.id).map((a) => a.source_key).sort()).toEqual(['check-down|1|Api @ Sydney', 'latency-degrading|1|Web @ Sydney', 'location-latency|1|Australia - Sydney']);
+  });
+
+  it('component mode keeps the folded items apart', () => {
+    agent.groupTick(NOW, { ...settings, grouping: 'component' }, { items: [
+      group('logicmonitor', 'latency-degrading|1|Web @ Sydney', { host: 'Web @ Sydney', groupKey: 'lm-location:australia-sydney' }),
+      group('logicmonitor', 'latency-degrading|1|Api @ Sydney', { host: 'Api @ Sydney', groupKey: 'lm-location:australia-sydney' }),
+    ], failed: [] });
+    expect(incidents().map((r) => r.incident_key).sort()).toEqual(['host:api', 'host:web']);
+  });
+
+  it('keeps a site-only block beside a host block that has the same title', () => {
+    registry.getSiteProviders = () => [{ id: 'logicmonitor', run: () => ({ siteKey: 'phoenix', siteName: 'Phoenix' }) }];
+    registry.getIncidentEvidenceProviders = () => [{ id: 'logicmonitor', name: 'LogicMonitor network', run: (ctx) => (
+      ctx.names.length ? { title: 'LogicMonitor network', lines: ['Device phx-esx-01'] } : { title: 'LogicMonitor network', lines: ['Site Phoenix: 3/4 devices normal'] }) }];
+    const inc = { incident_key: 'host:phx-esx-01' };
+    const blocks = agent.gatherNetworkEvidence(inc, ['phx-esx-01']);
+    expect(blocks).toHaveLength(2);
+    expect(blocks.map((b) => b.lines[0]).sort()).toEqual(['Device phx-esx-01', 'Site Phoenix: 3/4 devices normal']);
+    // the same title for the same context is still a duplicate
+    expect(agent.gatherNetworkEvidence(inc, ['phx-esx-01', 'phx-esx-01'])).toHaveLength(2);
+  });
+
+  const seedInc = (key, host, platform, firstSeen, state = 'collecting') => {
+    const id = db.prepare(`INSERT INTO ops_incidents (incident_key, title, host, platforms, severity, state, opened_at, hold_until, last_event_at, event_count)
+      VALUES (?, ?, ?, ?, 'critical', ?, ?, ?, ?, 1)`).run(key, host, host, JSON.stringify([platform]), state, firstSeen, firstSeen, firstSeen).lastInsertRowid;
+    db.prepare(`INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, first_seen, attached_at)
+      VALUES (?, ?, ?, 'critical', ?, ?, ?, ?)`).run(id, platform, `k-${id}`, host, `${platform} alert on ${host}`, firstSeen, firstSeen);
+    return id;
+  };
+  const minutesAfter = (min) => new Date(Date.parse(NOW) + min * 60000).toISOString();
+
+  it('fills relatedOtherPlatformEvents from the agent alert rows, inside 24 h only, and adds a timeline', () => {
+    const mine = seedInc('host:esx-01', 'esx-01', 'vcenter', NOW);
+    seedInc('host:esx-01-d', 'esx-01 (TAG1)', 'dell', minutesAfter(30));
+    seedInc('host:esx-01-b', 'esx-01.lab.local', 'brocade', minutesAfter(25 * 60));
+    const inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(mine);
+    const ev = agent.gatherIncidentEvidence(inc, alertsOf(mine));
+    const rel = ev.hosts[0].relatedOtherPlatformEvents;
+    expect(rel.map((r) => r.platform)).toEqual(['dell']);
+    expect(rel[0]).toMatchObject({ host: 'esx-01 (TAG1)', severity: 'critical', message: 'dell alert on esx-01 (TAG1)' });
+    expect(rel[0].incidentId).not.toBe(mine);
+    expect(Array.isArray(ev.timeline)).toBe(true);
+    expect(ev.timeline.some((t) => t.platform === 'vcenter' && /^Alert \(critical\)/.test(t.text))).toBe(true);
+  });
+
+  it('relates a Dell alert to a vCenter alert through the identity index', () => {
+    db.exec('DELETE FROM vcenter_hosts; DELETE FROM dell_devices; DELETE FROM dell_ome_instances;');
+    hostIdentity.invalidateIdentityIndex(db);
+    const ome = db.prepare("INSERT INTO dell_ome_instances (name, host, username, encrypted_credentials) VALUES ('OME', 'ome.lab', 'u', 'x')").run().lastInsertRowid;
+    db.prepare("INSERT INTO vcenter_vcenters (id, name, host, username, encrypted_credentials) VALUES (1, 'vc-a', 'vc-a.lab', 'u', 'x') ON CONFLICT(id) DO NOTHING").run();
+    db.prepare("INSERT INTO vcenter_hosts (vcenter_id, host_id, name, service_tag, serial) VALUES (1, 'h9', 'esx-99.lab.local', 'IDTAG99', 'IDTAG99')").run();
+    db.prepare("INSERT INTO dell_devices (ome_id, device_id, name, service_tag, model) VALUES (?, 9, 'rack-dell-99', 'IDTAG99', 'R650')").run(ome);
+    const mine = seedInc('host:esx-99', 'esx-99.lab.local', 'vcenter', NOW);
+    seedInc('host:rack-dell-99', 'rack-dell-99', 'dell', minutesAfter(5));
+    const inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(mine);
+    const ev = agent.gatherIncidentEvidence(inc, alertsOf(mine));
+    expect(ev.hosts[0].relatedOtherPlatformEvents.map((r) => r.host)).toEqual(['rack-dell-99']);
+    // and the identity_links relation names the other platform
+    ['vcenter', 'dell'].forEach(fake);
+    hostIdentity.invalidateIdentityIndex(db);
+    const lines = require('../services/agentRelations').relationLines({ hosts: [{ host: 'esx-99.lab.local' }], alerts: [] }, [{ platform: 'vcenter', host: 'esx-99.lab.local', cleared_at: null }]);
+    expect(lines.some((l) => /^esx-99\.lab\.local is also Dell /.test(l))).toBe(true);
+    db.exec('DELETE FROM vcenter_hosts; DELETE FROM dell_devices; DELETE FROM dell_ome_instances;');
+    hostIdentity.invalidateIdentityIndex(db);
+  });
+
+  it('renders a Timeline section in the text and html email only when there are rows', () => {
+    const inc = { id: 9, platforms: '["vcenter"]', severity: 'critical', title: 'x', opened_at: NOW, triage_error: null };
+    const analysis = agent.fallbackTriage({ incident: { platforms: ['vcenter'] }, alerts: [], hosts: [] });
+    const timeline = [{ at: NOW, platform: 'vcenter', text: 'Alert (critical) esx-01: host lost' }];
+    const mail = agent.renderEmail(inc, [], analysis, { timeline });
+    expect(mail.text).toContain('TIMELINE (NEWEST FIRST)\n- ');
+    expect(mail.text).toContain('| vCenter | Alert (critical) esx-01: host lost');
+    expect(mail.html).toContain('Timeline (newest first)');
+    const plain = agent.renderEmail(inc, [], analysis, {});
+    expect(plain.text).not.toContain('TIMELINE');
+    expect(plain.html).not.toContain('Timeline (newest first)');
+  });
+});

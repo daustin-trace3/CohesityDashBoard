@@ -200,8 +200,8 @@ describe('A1/A5: metric issues', () => {
     expect(got[0].target).toBe('srv-a /data');
   });
 
-  it('threshold keys: 66 including lm_carrier_aliases, lm_raw_rules and the round 13 circuit keys', () => {
-    expect(Object.keys(lmIssues.THRESHOLD_DEFS)).toHaveLength(66);
+  it('threshold keys: 69 including lm_carrier_aliases, lm_raw_rules and the round 13 circuit keys', () => {
+    expect(Object.keys(lmIssues.THRESHOLD_DEFS)).toHaveLength(69);
     expect(lmIssues.THRESHOLD_DEFS.lm_raw_rules).toMatchObject({ type: 'text', def: '[]', maxLength: 20000 });
     expect(lmIssues.THRESHOLD_DEFS.lm_carrier_aliases).toMatchObject({ type: 'text', def: '', maxLength: 2000 });
   });

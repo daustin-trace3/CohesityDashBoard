@@ -22,6 +22,8 @@
 //   latency-anomaly           "DAL DR replication link" 3x baseline for the last 2 hours
 //   packet-loss-anomaly       "PHX VoIP gateway" 15% loss from slc-col01 for 2 hours
 //   location-degraded         3 checks from den-col01 slow at once (fold)
+//   location-latency          6 checks from den-col01 elevated now (agent signals: the probe location is the story)
+//   link-burst                6 interfaces on dal-acc-01..03 went down inside the last 20 minutes (agent signals)
 // Round 9 latency watch (generators/logicmonitorWatchDemo.js): latency-degrading "NYC ... reachability @ phx-col01"
 //   (1.85x for 41 min, open episode), latency-pattern "DAL core reachability @ abq-col01" (four one-off spikes in
 //   6 days), latency-drift "PHX core reachability @ abq-col01" (35% above the earlier weeks for 7 days).
@@ -1613,10 +1615,15 @@ function seedLogicmonitor(db, { now, encrypt }) {
   wp1.s1 = runS1Passes(db, sourceId, counts, nowMs);
   counts.circuitEvents = seedCircuitEvents(db, { sourceId, nowMs });
   counts.blameHistory = seedBlameHistory(db, { sourceId, byName });
+  counts.linkBurst = seedLinkBurst(db, { sourceId, nowMs });
   // Round 9: replay the latency watch engine over the scenario locations and compute the drift reference.
   try {
     counts.watch = require('./logicmonitorWatchDemo').seedWatchRows(db, { sourceId, nowMs, checks: CHECKS });
   } catch (err) { console.warn(`[seedDemo] logicmonitor latency watch scenarios skipped: ${err.message}`); }
+  // Agent signals: six checks elevated from den-col01 at once (after the watch rows, which clear the episode table).
+  try {
+    counts.locationLatency = seedLocationLatency(db, { sourceId, nowMs, checks: CHECKS });
+  } catch (err) { console.warn(`[seedDemo] logicmonitor location latency scenario skipped: ${err.message}`); }
   // Round 9 WP7: IP SLA metric baselines and the IP SLA watch replay (after the check episodes, which clear the table).
   try {
     counts.ipslaWatch = require('./logicmonitorIpslaCloudDemo').seedIpslaWatch(db, { sourceId, nowMs });
@@ -1641,6 +1648,80 @@ function seedLogicmonitor(db, { now, encrypt }) {
   counts.openIssueTypes = db.prepare("SELECT DISTINCT type FROM lm_issue_history WHERE status = 'open' ORDER BY type").all().map((r) => r.type);
 
   return { sources: 2, ...counts, wp1 };
+}
+
+// -- Agent signals: link burst and probe-location latency -------------------------
+// Link burst: ports 7 and 8 on dal-acc-01, -02 and -03 went down 18 minutes ago (up at 33 and 48
+// minutes ago, down at 18 and 3), so lm_interface_history holds six 1 -> 2 transitions on three
+// devices inside the 30 minute window and lm_interfaces shows them down now. Reseed-safe: the
+// newest history rows of those instances are replaced.
+function seedLinkBurst(db, { sourceId, nowMs }) {
+  const find = db.prepare(`
+    SELECT i.instance_id AS id FROM lm_interfaces i JOIN lm_devices d ON d.source_id = i.source_id AND d.lm_device_id = i.lm_device_id
+    WHERE i.source_id = ? AND d.display_name = ? AND i.display_name = ?
+  `);
+  const del = db.prepare("DELETE FROM lm_interface_history WHERE source_id = ? AND instance_id = ? AND captured_at >= datetime('now', '-55 minutes')");
+  const ins = db.prepare(`
+    INSERT INTO lm_interface_history (source_id, instance_id, captured_at, status, in_mbps, out_mbps, in_errors, out_errors, in_discards, out_discards, in_util_pct, out_util_pct)
+    VALUES (?, ?, datetime('now', ?), ?, ?, ?, 0, 0, 0, 0, ?, ?)
+  `);
+  const down = db.prepare("UPDATE lm_interfaces SET status = 2, status_text = 'down', in_mbps = 0, out_mbps = 0, in_util_pct = 0, out_util_pct = 0 WHERE source_id = ? AND instance_id = ?");
+  let n = 0;
+  db.transaction(() => {
+    for (const dev of ['dal-acc-01', 'dal-acc-02', 'dal-acc-03']) {
+      for (const port of [7, 8]) {
+        const r = find.get(sourceId, dev, `GigabitEthernet1/0/${port}`);
+        if (!r) continue;
+        del.run(sourceId, r.id);
+        ins.run(sourceId, r.id, '-48 minutes', 1, 4, 3, 4, 3);
+        ins.run(sourceId, r.id, '-33 minutes', 1, 4, 3, 4, 3);
+        ins.run(sourceId, r.id, '-18 minutes', 2, 0, 0, 0, 0);
+        ins.run(sourceId, r.id, '-3 minutes', 2, 0, 0, 0, 0);
+        down.run(sourceId, r.id);
+        n += 1;
+      }
+    }
+  })();
+  return n;
+}
+
+// Probe location: six ping checks are elevated from den-col01 now. PHX core, DAL core and PHX DC
+// firewall are already 2.6x for the last hour (degradeDen in the plan); PHX ERP VIP, DAL DC firewall
+// and PHX DNS anycast are bent to 1.7x for the last 41 minutes here, then the real episode engine is
+// replayed over all six so the states come from code (location-latency fires at 3 elevated checks).
+function seedLocationLatency(db, { sourceId, nowMs, checks }) {
+  const watch = require('../../services/logicmonitorWatch');
+  const t = require('../../services/logicmonitorIssues').getThresholds();
+  const source = db.prepare('SELECT * FROM lm_sources WHERE id = ?').get(sourceId);
+  const nowS = Math.floor(nowMs / 1000);
+  const subjects = [];
+  for (const [name, bend] of [['PHX core reachability', 0], ['DAL core reachability', 0], ['PHX DC firewall', 0],
+    ['PHX ERP VIP', 1.7], ['DAL DC firewall', 1.7], ['PHX DNS anycast', 1.7]]) {
+    const c = checks.find((x) => x.name === name);
+    const l = c && c.locations.find((x) => x.key === 'den');
+    if (l) subjects.push({ checkId: c.checkId, checkpointId: l.cpId, bend });
+  }
+  const scale = db.prepare(`
+    UPDATE lm_check_history SET rtt_avg_ms = round(rtt_avg_ms * ?, 2), rtt_min_ms = round(rtt_min_ms * ?, 2), rtt_max_ms = round(rtt_max_ms * ?, 2)
+    WHERE source_id = ? AND check_id = ? AND checkpoint_id = ? AND sample_epoch >= ? AND sample_epoch <= ? AND rtt_avg_ms IS NOT NULL
+  `);
+  const last = db.prepare('SELECT rtt_avg_ms FROM lm_check_history WHERE source_id = ? AND check_id = ? AND checkpoint_id = ? AND sample_epoch IS NOT NULL ORDER BY sample_epoch DESC LIMIT 1');
+  const setLast = db.prepare('UPDATE lm_check_locations SET last_rtt_ms = ? WHERE source_id = ? AND check_id = ? AND checkpoint_id = ?');
+  db.transaction(() => {
+    for (const s of subjects) {
+      if (!s.bend) continue;
+      scale.run(s.bend, s.bend, s.bend, sourceId, s.checkId, s.checkpointId, nowS - 41 * 60, nowS);
+      const row = last.get(sourceId, s.checkId, s.checkpointId);
+      if (row) setLast.run(row.rtt_avg_ms, sourceId, s.checkId, s.checkpointId);
+    }
+  })();
+  let opened = 0;
+  for (const s of subjects) {
+    for (let e = nowS - 3600; e <= nowS; e += 300) {
+      opened += watch.evaluateWatch(db, source, t, e, { only: { checkId: s.checkId, checkpointId: s.checkpointId } }).opened;
+    }
+  }
+  return { subjects: subjects.length, opened };
 }
 
 // -- Round 13: circuit event log ------------------------------------------------

@@ -134,6 +134,31 @@ const TEMPLATES = {
     return `host ${target} uplinks: ${ports.map((p) => `${p.deviceName} ${p.port || '?'} (${p.statusText || p.tone || 'unknown'})`).join(', ')}`;
   },
 
+  // The identity index says this host is also an object on other platforms
+  // (a Dell server that is an ESX host and an LM device, a VM that is a
+  // Cohesity object). One line per host listing every other platform.
+  identity_links(h, ctx) {
+    let rec = null;
+    try {
+      const hi = require('./hostIdentity');
+      rec = hi.resolveToken(hi.buildIdentityIndex(db), h);
+    } catch { return null; }
+    if (!rec) return null;
+    const entries = [{ platform: rec.platform, ref: rec.label || rec.refKey }];
+    for (const a of rec.alsoKnownAs || []) entries.push({ platform: a.platform, ref: a.refKey });
+    for (const p of rec.platforms || []) if (!entries.some((e) => e.platform === p)) entries.push({ platform: p, ref: rec.label || rec.refKey });
+    if (entries.length < 2) return null;
+    const { platformMeta } = require('./platformMeta');
+    const seen = new Set();
+    const others = entries.filter((e) => {
+      if (!e.platform || seen.has(e.platform) || ctx.alertsOn(e.platform) || !platformOn(e.platform)) return false;
+      seen.add(e.platform);
+      return true;
+    });
+    if (!others.length) return null;
+    return `${h} is also ${others.slice(0, 4).map((e) => `${platformMeta(e.platform).label} ${e.ref}`).join(', ')}`;
+  },
+
   // Reverse of vm_cohesity: the incident host is a Cohesity object that is a vCenter VM.
   cohesity_vm(h, ctx) {
     if (!ctx.alertsOn('cohesity') || !platformOn('vcenter') || !platformOn('cohesity')) return null;

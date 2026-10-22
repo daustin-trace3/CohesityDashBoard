@@ -694,7 +694,10 @@ describe('seedDemo.js', () => {
     expect(c('SELECT COUNT(*) c FROM lm_sdts')).toBe(7);
 
     expect(c('SELECT COUNT(*) c FROM lm_interfaces')).toBe(2024);
-    expect(c("SELECT COUNT(*) c FROM lm_interfaces WHERE status_text = 'down'")).toBe(10);
+    // 10 original down ports plus the six link-burst ports on dal-acc-01..03 (agent signals scenario).
+    expect(c("SELECT COUNT(*) c FROM lm_interfaces WHERE status_text = 'down'")).toBe(16);
+    expect(c("SELECT COUNT(*) c FROM lm_issue_history WHERE status = 'open' AND type = 'link-burst' AND target = 'dallas-dc' AND message LIKE '6 interfaces went down in the last 30 min on 3 devices%'")).toBe(1);
+    expect(c("SELECT COUNT(*) c FROM lm_issue_history WHERE status = 'open' AND type = 'location-latency' AND target = 'den-col01'")).toBe(1);
     const ifHist = c('SELECT COUNT(*) c FROM lm_interface_history');
     expect(ifHist).toBeGreaterThan(100000);
     expect(ifHist).toBeLessThan(150000);
