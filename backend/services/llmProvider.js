@@ -150,6 +150,12 @@ function failedError(e, provider, model) {
  * LLM_REQUEST_FAILED. No temperature/max_tokens are sent (GPT-5 family rejects
  * a custom temperature and uses max_completion_tokens).
  */
+// The model the provider says answered the last call (its response `model`
+// field), beside the one ICC asked for. A bridge that routes by its own policy
+// can answer with another model; this is how that becomes visible.
+let lastReported = { requested: null, reported: null, at: 0 };
+function lastReportedModel() { return { ...lastReported }; }
+
 async function chatCompletionRaw(messages, { responseFormat, tools, toolChoice, timeout = 90000 } = {}) {
   const p = resolveProvider();
   if (!p.configured) throw notConfigured();
@@ -168,7 +174,8 @@ async function chatCompletionRaw(messages, { responseFormat, tools, toolChoice, 
       timeout,
     });
     const choice = resp.data?.choices?.[0] || {};
-    return { message: choice.message || { role: 'assistant', content: null }, finishReason: choice.finish_reason || null };
+    lastReported = { requested: model || null, reported: resp.data?.model ? String(resp.data.model) : null, at: Date.now() };
+    return { message: choice.message || { role: 'assistant', content: null }, finishReason: choice.finish_reason || null, model: lastReported.reported };
   } catch (e) {
     throw failedError(e, p.provider, model);
   }
@@ -215,4 +222,4 @@ async function testEndpoint({ endpoint, apiToken, model }) {
   return out;
 }
 
-module.exports = { PROVIDERS, normalizeEndpoint, authHeaders, resolveProvider, isConfigured, chatCompletion, chatCompletionRaw, listModels, testEndpoint };
+module.exports = { lastReportedModel, PROVIDERS, normalizeEndpoint, authHeaders, resolveProvider, isConfigured, chatCompletion, chatCompletionRaw, listModels, testEndpoint };

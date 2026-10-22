@@ -921,6 +921,11 @@ async function triageIncident(inc, { force = false } = {}) {
         else logger.info(`[OpsAgent] incident #${inc.id}: first model answer was unparsable (${describeUnparsed(content)}), the retry parsed.`);
       }
       analysis = shapeAnalysis(parsed, anon, fallback);
+      const reported = llmProvider.lastReportedModel();
+      if (reported.reported && reported.reported !== model && !String(model).includes(reported.reported)) {
+        logger.warn(`[OpsAgent] incident #${inc.id}: asked the provider for ${model}, it answered with ${reported.reported}`);
+        model = `${model} (answered by ${reported.reported})`;
+      }
     } catch (err) {
       error = err.detail ? `${err.message} ${err.detail}` : err.message;
       if (err.code === 'LLM_RATE_LIMITED' && !force) throw err;
