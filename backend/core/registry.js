@@ -276,6 +276,15 @@ function getAgentCapabilityProviders() {
     .map((e) => ({ id: e.id, name: e.manifest.name, capabilities: e.manifest.agentCapabilities }));
 }
 
+/** Observers a pack hands the Operations Agent (manifest.agentObservers, an
+ *  array of the same shape as services/agentObservations/observers/*).
+ *  The engine namespaces their ids by pack id. */
+function getAgentObserverProviders() {
+  return Array.from(plugins.values())
+    .filter((e) => e.enabled && e.status !== 'error' && Array.isArray(e.manifest.agentObservers) && e.manifest.agentObservers.length)
+    .map((e) => ({ id: e.id, name: e.manifest.name, observers: e.manifest.agentObservers }));
+}
+
 /** Express middleware mounted at `/api/:pluginId`. */
 function dispatch(req, res, next) {
   const entry = plugins.get(req.params.pluginId);
@@ -307,6 +316,7 @@ module.exports = {
   getIncidentEvidenceProviders,
   getSiteProviders,
   getAgentCapabilityProviders,
+  getAgentObserverProviders,
   getAgentProfileProviders,
   unregisterPlugin,
   setEnabled,

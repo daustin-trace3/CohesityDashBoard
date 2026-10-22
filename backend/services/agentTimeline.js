@@ -250,6 +250,24 @@ function buildTimeline(inc, alerts, evidence, { dbh = db, now = Date.now() } = {
       }
     }
 
+    // 6b. Observation episodes already gathered for the incident: opened,
+    // promoted, closed.
+    {
+      let n = 0;
+      const addObs = (iso, platform, text) => {
+        const ms = parseTs(iso);
+        if (!inWindow(ms) || n >= 12) return;
+        n += 1;
+        items.push({ at: new Date(ms).toISOString(), platform, text: clip(text), source: 'observation' });
+      };
+      for (const e of (evidence && evidence.observations && evidence.observations.episodes) || []) {
+        const u = e.unit || '';
+        addObs(e.openedAt, e.platform, `Observation opened: ${e.label} ${e.subject} went over ${e.thresholdWarn}${u}`);
+        if (e.promotedAt) addObs(e.promotedAt, e.platform, `Promoted: ${e.promoteReason || e.state}`);
+        if (e.closedAt) addObs(e.closedAt, e.platform, `Closed: ${e.outcome || 'closed'}`);
+      }
+    }
+
     // 7. The incident's own alerts, earliest first, so the model sees onset order.
     {
       const own = list.map((a) => ({ a, ms: parseTs(a.first_seen) })).filter((x) => x.ms != null).sort((x, y) => x.ms - y.ms).slice(0, 5);

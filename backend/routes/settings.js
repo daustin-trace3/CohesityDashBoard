@@ -269,6 +269,27 @@ router.put('/', (req, res, next) => {
       if (a.emailEnabled !== undefined) setSetting('ops_agent_email_enabled', a.emailEnabled ? '1' : '0');
       if (a.recipients !== undefined) setSetting('ops_agent_recipients', String(a.recipients).trim().slice(0, 2000));
       if (a.capabilities && typeof a.capabilities === 'object') require('../services/agentCapabilities').saveEnabled(a.capabilities);
+      if (a.observations !== undefined) {
+        const o = a.observations;
+        if (!o || typeof o !== 'object' || Array.isArray(o)) return res.status(400).json({ error: 'observations must be an object', field: 'observations' });
+        const ranges = { sustainSamples: [1, 24, 'ops_obs_sustain_samples'], clearSamples: [1, 12, 'ops_obs_clear_samples'], patternMin: [2, 10, 'ops_obs_pattern_min'], patternDays: [1, 30, 'ops_obs_pattern_days'], historyDays: [7, 365, 'ops_obs_history_days'] };
+        const writes = [];
+        for (const [field, [lo, hi, key]] of Object.entries(ranges)) {
+          if (o[field] === undefined) continue;
+          const n = Number(o[field]);
+          if (!Number.isInteger(n) || n < lo || n > hi) return res.status(400).json({ error: `${field} must be a whole number from ${lo} to ${hi}`, field });
+          writes.push([key, String(n)]);
+        }
+        if (o.enabled !== undefined) writes.push(['ops_obs_enabled', o.enabled ? '1' : '0']);
+        if (o.disabledIds !== undefined) {
+          const known = new Set(require('../services/agentObservations').listObservers().map((x) => x.id));
+          if (!Array.isArray(o.disabledIds) || o.disabledIds.some((x) => typeof x !== 'string' || !known.has(x))) {
+            return res.status(400).json({ error: 'disabledIds must be a list of known observer ids', field: 'disabledIds' });
+          }
+          writes.push(['ops_obs_disabled_ids', JSON.stringify([...new Set(o.disabledIds)])]);
+        }
+        for (const [k, v] of writes) setSetting(k, v);
+      }
       if (a.platformProfiles !== undefined) {
         try {
           const actor = req.auth?.user || req.user || null;

@@ -243,6 +243,23 @@ function numSetting(key, def, min, max) {
   return (n >= min && n <= max) ? Math.round(n) : def;
 }
 
+function getObservationSettings() {
+  let disabledIds = [];
+  try {
+    const raw = JSON.parse(getSetting('ops_obs_disabled_ids') || '[]');
+    if (Array.isArray(raw)) disabledIds = raw.filter((x) => typeof x === 'string');
+  } catch { /* unreadable list = none disabled */ }
+  return {
+    enabled: getSetting('ops_obs_enabled') !== '0',
+    sustainSamples: numSetting('ops_obs_sustain_samples', 3, 1, 24),
+    clearSamples: numSetting('ops_obs_clear_samples', 2, 1, 12),
+    patternMin: numSetting('ops_obs_pattern_min', 3, 2, 10),
+    patternDays: numSetting('ops_obs_pattern_days', 7, 1, 30),
+    historyDays: numSetting('ops_obs_history_days', 90, 7, 365),
+    disabledIds,
+  };
+}
+
 function getOpsAgentSettings() {
   const sev = getSetting('ops_agent_min_severity');
   return {
@@ -264,6 +281,9 @@ function getOpsAgentSettings() {
     // 'tools' offers them to the model, which calls the ones it needs.
     capabilityMode: getSetting('ops_agent_capability_mode') === 'tools' ? 'tools' : 'playbook',
     maxToolCalls: numSetting('ops_agent_max_tool_calls', 6, 1, 12),
+    // Observations: sustained-signal episodes over polled metrics
+    // (services/agentObservations).
+    observations: getObservationSettings(),
     emailEnabled: getSetting('ops_agent_email_enabled') !== '0',
     recipients: (getSetting('ops_agent_recipients') || '').trim(),
     // Teams is a second channel beside email (a Power Automate workflow URL,
@@ -326,6 +346,6 @@ function getSmtpPassword() {
 module.exports = {
   getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
   getAnalysisTtlHours, getAiSettings, getLicenseSettings, getPlatformSettings,
-  getNotificationSettings, getSmtpPassword, getServiceStatusSettings, getOpsAgentSettings, getCohesityAlertWindowDays,
+  getNotificationSettings, getSmtpPassword, getServiceStatusSettings, getOpsAgentSettings, getObservationSettings, getCohesityAlertWindowDays,
   getIccBaseUrl, getTeamsWebhook,
 };

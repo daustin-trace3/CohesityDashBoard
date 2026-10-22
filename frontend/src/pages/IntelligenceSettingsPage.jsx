@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Sparkles, KeyRound, FileText, Activity, Bot, Mail, Wrench, ShieldCheck, Layers } from 'lucide-react';
 import client from '../api/client';
 import { Badge } from '../components/ui/primitives';
@@ -50,7 +50,8 @@ const TAB_FIELDS = {
   context: ['llmEstateContext', 'llmFlagUnprotected', 'llmAnalysisTtlHours', 'appServiceBackupStaleHours'],
   status: ['serviceStatusMode', 'serviceStatusStaleMinutes', 'serviceStatusAiEnabled', 'serviceStatusAnalysesPerMinute', 'serviceStatusDedupeMinutes'],
   agent: ['agentEnabled', 'agentName', 'agentGrouping', 'agentMinSeverity', 'agentHoldMinutes', 'agentAnalysesPerHour',
-    'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays'],
+    'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays',
+    'obsEnabled', 'obsSustainSamples', 'obsClearSamples', 'obsPatternMin', 'obsPatternDays', 'obsHistoryDays', 'obsDisabledIds'],
   email: ['agentEmailEnabled', 'agentRecipients'],
 };
 
@@ -63,6 +64,7 @@ const DEFAULT_FORM = {
   agentHoldMinutes: 10, agentAnalysesPerHour: 20, agentRenotifyMinutes: 60, agentAutoResolveMinutes: 30,
   agentEvidenceResolve: true, agentPatternMin: 3, agentPatternDays: 14,
   agentEmailEnabled: true, agentRecipients: '',
+  obsEnabled: true, obsSustainSamples: 3, obsClearSamples: 2, obsPatternMin: 3, obsPatternDays: 7, obsHistoryDays: 90, obsDisabledIds: [],
 };
 
 function formFromSettings(d) {
@@ -93,6 +95,13 @@ function formFromSettings(d) {
     agentPatternDays: a.patternDays ?? 14,
     agentEmailEnabled: a.emailEnabled !== false,
     agentRecipients: a.recipients || '',
+    obsEnabled: a.observations?.enabled !== false,
+    obsSustainSamples: a.observations?.sustainSamples ?? 3,
+    obsClearSamples: a.observations?.clearSamples ?? 2,
+    obsPatternMin: a.observations?.patternMin ?? 3,
+    obsPatternDays: a.observations?.patternDays ?? 7,
+    obsHistoryDays: a.observations?.historyDays ?? 90,
+    obsDisabledIds: Array.isArray(a.observations?.disabledIds) ? a.observations.disabledIds : [],
   };
 }
 
@@ -123,6 +132,11 @@ function payloadFor(tab, f) {
           holdMinutes: Number(f.agentHoldMinutes), analysesPerHour: Number(f.agentAnalysesPerHour) || 20,
           renotifyMinutes: Number(f.agentRenotifyMinutes), autoResolveMinutes: Number(f.agentAutoResolveMinutes),
           evidenceResolve: f.agentEvidenceResolve, patternMin: Number(f.agentPatternMin), patternDays: Number(f.agentPatternDays),
+          observations: {
+            enabled: f.obsEnabled, sustainSamples: Number(f.obsSustainSamples), clearSamples: Number(f.obsClearSamples),
+            patternMin: Number(f.obsPatternMin), patternDays: Number(f.obsPatternDays), historyDays: Number(f.obsHistoryDays),
+            disabledIds: f.obsDisabledIds,
+          },
         },
       };
     case 'email':
@@ -173,6 +187,7 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
   const [testingLlm, setTestingLlm] = useState(false);
   const [llmTest, setLlmTest] = useState(null);
   const [testingAgent, setTestingAgent] = useState(false);
+  const [observers, setObservers] = useState(null); // GET /ops-agent/observers, null until loaded
 
   const visibleTabs = INTEL_TABS.filter(t =>
     (!t.requiresAi || aiEnabled !== false) && (!t.permission || authLoading || hasPermission(t.permission)));
@@ -228,6 +243,16 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
       refreshModels(model);
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    client.get('/ops-agent/observers').then(({ data }) => setObservers(Array.isArray(data) ? data : [])).catch(() => setObservers([]));
+  }, []);
+
+  const toggleObserver = (id, on) => setForm(f => {
+    const off = new Set(f.obsDisabledIds);
+    if (on) off.delete(id); else off.add(id);
+    return { ...f, obsDisabledIds: [...off] };
+  });
 
   const saveTab = async (t) => {
     setSavingTab(t);
@@ -588,6 +613,73 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
                   tip="How far back the agent counts occurrences of the same incident key. 1 to 90.">
                   <input id="agent-pattern-days" type="number" min={1} max={90} value={form.agentPatternDays} onChange={set('agentPatternDays')} className={numberCls} />
                 </SettingRow>
+              </SettingGroup>
+              <SettingGroup title="Observations">
+                <SettingRow label="Observations on" htmlFor="obs-enabled" dirty={isDirty('obsEnabled')}
+                  tip="The agent samples polled metrics (VM and host CPU and memory to start) and watches anything over its warning line. A subject only becomes an incident once it has stayed over the line long enough; short blips are recorded and counted as one-offs.">
+                  <Toggle id="obs-enabled" checked={form.obsEnabled} onChange={set('obsEnabled')} />
+                </SettingRow>
+                <SettingRow label="Samples to confirm" htmlFor="obs-sustain" dirty={isDirty('obsSustainSamples')}
+                  tip="Elevated polls in a row before a watched subject becomes an incident. vCenter polls every 15 minutes by default, so 3 is about 45 minutes. The same count of critical polls moves it from warning to critical. 1 to 24.">
+                  <div className="flex items-center gap-2">
+                    <input id="obs-sustain" type="number" min={1} max={24} value={form.obsSustainSamples} onChange={set('obsSustainSamples')} className={numberCls} />
+                    <span className="text-[11px] text-ink-faint">samples</span>
+                  </div>
+                </SettingRow>
+                <SettingRow label="Samples to clear" htmlFor="obs-clear" dirty={isDirty('obsClearSamples')}
+                  tip="Normal polls in a row that close an episode. 1 to 12.">
+                  <div className="flex items-center gap-2">
+                    <input id="obs-clear" type="number" min={1} max={12} value={form.obsClearSamples} onChange={set('obsClearSamples')} className={numberCls} />
+                    <span className="text-[11px] text-ink-faint">samples</span>
+                  </div>
+                </SettingRow>
+                <SettingRow label="Call it a pattern after" htmlFor="obs-pattern-min" dirty={isDirty('obsPatternMin') || isDirty('obsPatternDays')}
+                  tip="A subject that goes hot, clears itself and goes hot again is not a sizing problem one blip at a time. Once it collects this many one-offs inside the window, the agent raises a pattern item so the bursts get triaged together. One-offs 2 to 10, window 1 to 30 days.">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input id="obs-pattern-min" type="number" min={2} max={10} value={form.obsPatternMin} onChange={set('obsPatternMin')} className={numberCls} />
+                    <span className="text-[11px] text-ink-faint">one-offs within</span>
+                    <input id="obs-pattern-days" aria-label="Pattern window in days" type="number" min={1} max={30} value={form.obsPatternDays} onChange={set('obsPatternDays')} className={numberCls} />
+                    <span className="text-[11px] text-ink-faint">days</span>
+                  </div>
+                </SettingRow>
+                <SettingRow label="Keep history" htmlFor="obs-history" dirty={isDirty('obsHistoryDays')}
+                  tip="Closed episodes older than this are deleted. 7 to 365.">
+                  <div className="flex items-center gap-2">
+                    <input id="obs-history" type="number" min={7} max={365} value={form.obsHistoryDays} onChange={set('obsHistoryDays')} className={numberCls} />
+                    <span className="text-[11px] text-ink-faint">days</span>
+                  </div>
+                </SettingRow>
+              </SettingGroup>
+              <SettingGroup title="Observers">
+                {observers == null ? <p className="text-[11px] text-ink-faint py-3">Loading observers...</p>
+                  : observers.length === 0 ? <p className="text-[11px] text-ink-faint py-3">No observers are registered.</p>
+                  : (
+                    <div className="overflow-x-auto py-2">
+                      <table className="w-full text-xs">
+                        <thead><tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                          <th className="py-1.5 pr-3">Observer</th><th className="py-1.5 pr-3">Platform</th><th className="py-1.5 pr-3">Watches</th><th className="py-1.5 pr-3">Thresholds</th><th className="py-1.5">Active</th>
+                        </tr></thead>
+                        <tbody>
+                          {observers.map((o) => {
+                            const on = !form.obsDisabledIds.includes(o.id);
+                            const unit = o.unit || '';
+                            return (
+                              <tr key={o.id} className="border-b border-cohesity-border/40 align-top">
+                                <td className="py-2 pr-3 text-ink font-semibold whitespace-nowrap">{o.label}</td>
+                                <td className="py-2 pr-3 text-ink-muted">{o.platform}</td>
+                                <td className="py-2 pr-3 text-ink-muted">{o.description}</td>
+                                <td className="py-2 pr-3 text-ink-muted">
+                                  {o.thresholds ? `warn ${o.thresholds.warn}${unit} crit ${o.thresholds.crit}${unit}` : '-'}
+                                  {o.platform === 'vcenter' && <>, set under <Link to="/vcenter/settings#alerts" className="text-brand hover:underline">vCenter Settings &gt; Alert thresholds</Link></>}
+                                </td>
+                                <td className="py-2"><Toggle id={`obs-${o.id}`} checked={on} onChange={(v) => toggleObserver(o.id, v)} /></td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
               </SettingGroup>
               {saveBar('agent', 'Save agent settings')}
             </>

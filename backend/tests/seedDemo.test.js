@@ -1001,4 +1001,11 @@ describe('seedDemo.js', () => {
     expect(fw[fw.length - 2].avg).toBeGreaterThan(70);
   });
 
+  it('seeds a closed sustained host-memory observation', () => {
+    // Host memory episode closed yesterday as sustained.
+    const hostEp = db.prepare("SELECT * FROM ops_observations WHERE observer_id = 'vcenter:host-memory'").get();
+    expect(hostEp.state).toBe('closed');
+    expect(hostEp.outcome).toBe('sustained');
+  });
+
 });

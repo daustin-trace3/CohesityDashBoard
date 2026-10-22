@@ -191,6 +191,10 @@ async function main() {
   const { refreshDemoPollerStatus, seedServiceStatusHistory } = require('./scenarios/serviceStatusPlatform');
   refreshDemoPollerStatus(db, { now });
   const statusResult = seedServiceStatusHistory(db, { now });
+  // Ops Agent observations: five vCenter subjects replayed through the real
+  // engine (critical, degrading, watching, pattern, closed host); see opsObservations.js.
+  const { applyOpsObservations } = require('./scenarios/opsObservations');
+  const obsResult = applyOpsObservations(db, { now });
 
   const summary = [
     ['clusters', cohesityResult.clusters],
@@ -226,6 +230,7 @@ async function main() {
     ['scenario san-boot-path-down (vcenter/brocade/dell)', `${scenarioResult.vcenter.applied}/${scenarioResult.brocade.applied}/${scenarioResult.dell.applied}`],
     ['scenario app-service-linking (objects/vpgs/zerto vms)', `${linkResult.objects}/${linkResult.vpgs}/${linkResult.zertoVms}`],
     ['service status history (timeline rows/events, degraded platform)', `${statusResult.timelineRows}/${statusResult.events}, ${statusResult.degradedPlatform || 'none'}`],
+    ['ops observations (applied, episodes by state)', obsResult.applied ? `yes ${JSON.stringify(obsResult.byState)}` : `no (${obsResult.reason})`],
     ['users', 1],
   ];
 

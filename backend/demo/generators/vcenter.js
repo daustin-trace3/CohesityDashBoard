@@ -619,8 +619,10 @@ function seedVcenter(db, { now, encrypt }) {
     if (totalMemUsedBytes > 0) {
       const scaleFactor = targetBytes / totalMemUsedBytes;
       if (scaleFactor > 0 && scaleFactor < 5) {
-        // Update vcenter_vms mem_usage_mb
-        const updateVm = db.prepare('UPDATE vcenter_vms SET mem_usage_mb = CAST(CAST(mem_usage_mb AS REAL) * ? AS INTEGER) WHERE power_state = ? AND mem_usage_mb IS NOT NULL');
+        // Update vcenter_vms mem_usage_mb. A guest cannot use more than its
+        // configured memory, so the per-VM figure is capped at 97% of it; the
+        // cluster figure below carries the over-commit story on its own.
+        const updateVm = db.prepare('UPDATE vcenter_vms SET mem_usage_mb = MIN(CAST(CAST(mem_usage_mb AS REAL) * ? AS INTEGER), CAST(memory_mb * 0.97 AS INTEGER)) WHERE power_state = ? AND mem_usage_mb IS NOT NULL');
         updateVm.run(scaleFactor, 'POWERED_ON');
 
         // Update vcenter_clusters mem_bytes_used (sum of host mem_bytes_used in that cluster)

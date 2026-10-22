@@ -27,6 +27,14 @@ const RETENTION_FIELDS = [
   ['dailyHistoryDays', 'Daily rollups', 'One row per VM and per host per day (average, min, max). Drives the 30, 90 and 365 day charts.', 90, 1095, 730],
   ['eventRetentionDays', 'Events', 'vCenter events kept for the Events page and VM detail.', 7, 365, 90],
 ];
+// Sustained-usage lines the Ops Agent watches: [config key, label, default, max].
+const USAGE_ROWS = [
+  ['VM CPU', 'vmCpuWarnPct', 90, 'vmCpuCritPct', 100, 200],
+  ['VM memory', 'vmMemWarnPct', 90, 'vmMemCritPct', 95, 100],
+  ['ESX host CPU', 'hostCpuWarnPct', 85, 'hostCpuCritPct', 95, 200],
+  ['ESX host memory', 'hostMemWarnPct', 85, 'hostMemCritPct', 95, 100],
+];
+const USAGE_DEFAULTS = Object.fromEntries(USAGE_ROWS.flatMap(([, wk, wd, ck, cd]) => [[wk, String(wd)], [ck, String(cd)]]));
 const tabFromHash = () => {
   const h = (typeof window !== 'undefined' ? window.location.hash : '').replace('#', '');
   return SECTIONS.some((x) => x.key === h) ? h : 'registration';
@@ -46,6 +54,7 @@ export default function VcSettingsPage() {
   const [certWarnDays, setCertWarnDays] = useState('');
   const [guestWarnPct, setGuestWarnPct] = useState('');
   const [guestCritPct, setGuestCritPct] = useState('');
+  const [usage, setUsage] = useState(USAGE_DEFAULTS);
   const [savingConfig, setSavingConfig] = useState(false);
   const [ret, setRet] = useState({});
   const [savingRet, setSavingRet] = useState(false);
@@ -73,6 +82,7 @@ export default function VcSettingsPage() {
         setGuestWarnPct(String(data.guestDiskWarnPct ?? 80));
         setGuestCritPct(String(data.guestDiskCritPct ?? 90));
         setRet(Object.fromEntries(RETENTION_FIELDS.map(([k, , , , , d]) => [k, String(data[k] ?? d)])));
+        setUsage(Object.fromEntries(Object.entries(USAGE_DEFAULTS).map(([k, d]) => [k, String(data[k] ?? d)])));
       })
       .catch(() => { setCertWarnDays('60'); setGuestWarnPct('80'); setGuestCritPct('90'); });
     client.get('/vcenter/tag-categories')
@@ -82,7 +92,9 @@ export default function VcSettingsPage() {
 
   const thresholdsValid = Number(certWarnDays) >= 1 && Number(certWarnDays) <= 365
     && Number(guestWarnPct) >= 1 && Number(guestWarnPct) <= 100
-    && Number(guestCritPct) >= Number(guestWarnPct) && Number(guestCritPct) <= 100;
+    && Number(guestCritPct) >= Number(guestWarnPct) && Number(guestCritPct) <= 100
+    && USAGE_ROWS.every(([, wk, , ck, , max]) => Number(usage[wk]) >= 1 && Number(usage[wk]) <= max
+      && Number(usage[ck]) >= Number(usage[wk]) && Number(usage[ck]) <= max);
 
   const saveConfig = async () => {
     setSavingConfig(true);
@@ -91,10 +103,12 @@ export default function VcSettingsPage() {
         certWarnDays: Number(certWarnDays),
         guestDiskWarnPct: Number(guestWarnPct),
         guestDiskCritPct: Number(guestCritPct),
+        ...Object.fromEntries(Object.entries(usage).map(([k, v]) => [k, Number(v)])),
       });
       setCertWarnDays(String(data.certWarnDays));
       setGuestWarnPct(String(data.guestDiskWarnPct));
       setGuestCritPct(String(data.guestDiskCritPct));
+      setUsage(Object.fromEntries(Object.entries(USAGE_DEFAULTS).map(([k, d]) => [k, String(data[k] ?? d)])));
       toast({ type: 'success', title: 'Thresholds saved', message: `Certificate warnings at ${data.certWarnDays} days; guest volumes warn at ${data.guestDiskWarnPct}%, critical at ${data.guestDiskCritPct}%.` });
     } catch (err) {
       toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Check the values: days 1 to 365, percentages 1 to 100 with critical at or above warning.' });
@@ -390,6 +404,30 @@ export default function VcSettingsPage() {
             <input type="number" min={1} max={100} value={guestCritPct}
               onChange={(e) => setGuestCritPct(e.target.value)} className={inp} />
           </div>
+        </div>
+        <p className="text-[11px] text-ink-muted mt-4 mb-2 leading-relaxed">
+          Sustained usage the Ops Agent watches, as a percent of the VM's or host's own allocation. A subject over the warning line is
+          sampled each poll and only becomes an incident once it stays there (see Global Settings &gt; Intelligence &gt; Operations Agent &gt; Observations).
+          CPU can read above 100% on turbo, so its lines go to 200; memory stops at 100. Critical is held at or above warning.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          {USAGE_ROWS.map(([label, wk, wd, ck, cd, max]) => (
+            <div key={wk} className="flex items-end gap-2">
+              <div className="w-40">
+                <label className="block text-xs font-semibold text-ink mb-1">{label} warning (%)</label>
+                <input type="number" min={1} max={max} value={usage[wk]} aria-describedby={`${wk}-help`}
+                  onChange={(e) => setUsage((u) => ({ ...u, [wk]: e.target.value }))} className={inp} />
+              </div>
+              <div className="w-40">
+                <label className="block text-xs font-semibold text-ink mb-1">{label} critical (%)</label>
+                <input type="number" min={1} max={max} value={usage[ck]}
+                  onChange={(e) => setUsage((u) => ({ ...u, [ck]: e.target.value }))} className={inp} />
+              </div>
+              <span id={`${wk}-help`} className="text-[10px] text-ink-faint pb-2.5 whitespace-nowrap">default {wd} / {cd}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4">
           <button onClick={saveConfig} disabled={savingConfig || !thresholdsValid}
             className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
             {savingConfig ? 'Saving…' : 'Save'}

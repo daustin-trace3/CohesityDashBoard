@@ -6,7 +6,8 @@ const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const db = require('../db/database');
 const { encrypt } = require('../services/encryption');
-const { setSetting } = require('../services/settings');
+const { setSetting, getSetting } = require('../services/settings');
+const obsThresholds = require('../services/agentObservations/observers/vcenter');
 const vcenterApi = require('../services/vcenterApi');
 const { vcenterPoller } = require('../services/vcenterPoller');
 const {
@@ -243,9 +244,27 @@ router.get('/issue-history', (req, res, next) => {
 });
 
 /** GET /api/vcenter/config — platform-level settings (alert thresholds). */
+// CPU and memory lines the Ops Agent watches (services/agentObservations).
+// camelCase name -> [settings group in observers/vcenter.js KEYS, warn|crit].
+const OBS_THRESHOLDS = {
+  vmCpuWarnPct: ['vmCpu', 'warn'], vmCpuCritPct: ['vmCpu', 'crit'],
+  vmMemWarnPct: ['vmMem', 'warn'], vmMemCritPct: ['vmMem', 'crit'],
+  hostCpuWarnPct: ['hostCpu', 'warn'], hostCpuCritPct: ['hostCpu', 'crit'],
+  hostMemWarnPct: ['hostMem', 'warn'], hostMemCritPct: ['hostMem', 'crit'],
+};
+const obsThresholdsOut = () => {
+  const out = {};
+  for (const group of ['vmCpu', 'vmMem', 'hostCpu', 'hostMem']) {
+    const p = obsThresholds.pairOf(getSetting, obsThresholds.KEYS[group]);
+    out[`${group}WarnPct`] = p.warn;
+    out[`${group}CritPct`] = p.crit;
+  }
+  return out;
+};
+
 const configOut = () => {
   const gd = guestDiskThresholds();
-  return { certWarnDays: certWarnDays(), guestDiskWarnPct: gd.warn, guestDiskCritPct: gd.crit, ...retentionDays() };
+  return { certWarnDays: certWarnDays(), guestDiskWarnPct: gd.warn, guestDiskCritPct: gd.crit, ...obsThresholdsOut(), ...retentionDays() };
 };
 
 router.get('/config', (req, res, next) => {
@@ -260,9 +279,22 @@ router.put('/config', [
   body('guestDiskWarnPct').optional().isInt({ min: 1, max: 100 }).toInt(),
   body('guestDiskCritPct').optional().isInt({ min: 1, max: 100 }).toInt(),
   ...Object.entries(RETENTION_DEFS).map(([name, [, , min, max]]) => body(name).optional().isInt({ min, max }).toInt()),
+  ...Object.entries(OBS_THRESHOLDS).map(([name, [group]]) => body(name).optional().isInt({ min: 1, max: obsThresholds.KEYS[group].max }).toInt()),
 ], validate, (req, res, next) => {
   try {
     const b = req.body;
+    // Check crit >= warn against the values that will be in force BEFORE saving.
+    const cur = obsThresholdsOut();
+    for (const group of ['vmCpu', 'vmMem', 'hostCpu', 'hostMem']) {
+      const warn = b[`${group}WarnPct`] != null ? b[`${group}WarnPct`] : cur[`${group}WarnPct`];
+      const crit = b[`${group}CritPct`] != null ? b[`${group}CritPct`] : cur[`${group}CritPct`];
+      if ((b[`${group}WarnPct`] != null || b[`${group}CritPct`] != null) && crit < warn) {
+        return res.status(400).json({ error: 'The critical threshold must not be below the warning threshold.', field: `${group}CritPct` });
+      }
+    }
+    for (const [name, [group, which]] of Object.entries(OBS_THRESHOLDS)) {
+      if (b[name] != null) setSetting(obsThresholds.KEYS[group][`${which}Key`], String(b[name]));
+    }
     for (const [name, [key]] of Object.entries(RETENTION_DEFS)) {
       if (b[name] != null) setSetting(key, String(b[name]));
     }

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings } from 'lucide-react';
+import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings, Activity } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import WorkerChip from '../../components/WorkerChip';
 import { useToast } from '../../components/ui/Toaster';
 import { useTableControls, SortTh, TablePager } from '../../components/ui/tableTools';
+import Sparkline from '../../components/ops/Sparkline';
+import ObservationModal, { OBS_STATE_TONE, fmtObs, fmtMinutes } from '../../components/ops/ObservationModal';
 
 const REFRESH_MS = 60_000;   // floor: a full reload even when nothing changed
 const PULSE_MS = 5_000;      // change probe, so a tick shows up within seconds
@@ -47,6 +49,12 @@ function TickChip({ startedAt }) {
     : 'A tick is running now. The last tick line only moves when a tick finishes.';
   return <span title={why}><Badge tone={tone}>Tick running {mins < 1 ? 'now' : `${mins}m`}</Badge></span>;
 }
+
+const OBS_SPARK = { watching: '#38BDF8', degrading: '#F59E0B', critical: '#F87171', closed: '#94A3B8' };
+const obsValues = (series) => (Array.isArray(series) ? series.map((p) => (p ? p.v : null)) : []);
+const isObservationAlert = (al) => String(al?.kind || '').startsWith('observation')
+  || String(al?.sourceKey || al?.source_key || '').startsWith('obs')
+  || /-(hot|pattern)$/.test(String(al?.type || ''));
 
 const sevTone = (s) => (s === 'critical' ? 'crit' : s === 'error' || s === 'warning' ? 'warn' : 'info');
 
@@ -164,6 +172,8 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
   const sev = inc ? sevTone(inc.severity) : 'info';
   const networkBlocks = Array.isArray(inc?.evidence?.network) ? inc.evidence.network.filter((n) => n && Array.isArray(n.lines) && n.lines.length > 0) : [];
   const live = inc?.evidence?.liveChecks;
+  const observedEpisodes = Array.isArray(inc?.evidence?.observations?.episodes) ? inc.evidence.observations.episodes : [];
+  const observedHistory = Array.isArray(inc?.evidence?.observations?.history) ? inc.evidence.observations.history : [];
   const openAlerts = inc ? inc.alerts.filter((x) => !x.clearedAt).length : 0;
 
   const badges = inc && (
@@ -321,6 +331,26 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                     {live.unresolved?.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Not checked, no stored address: {live.unresolved.join('; ')}.</p>}
                   </Section>
                 )}
+                {observedEpisodes.length > 0 && (
+                  <Section title={`What ${agentName} observed`}>
+                    <div className="space-y-2">
+                      {observedEpisodes.map((ep, i) => (
+                        <div key={ep.id ?? i} className="flex items-center gap-3 rounded-md border border-cohesity-border bg-surface-overlay px-3 py-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[13px] text-ink truncate">{ep.label} <span className="text-ink-muted">{ep.subject}</span></p>
+                            <p className="text-[11px] text-ink-faint">now {fmtObs(ep.value, ep.unit)}, peak {fmtObs(ep.peak, ep.unit)}, elevated {fmtMinutes(ep.minutes)}</p>
+                          </div>
+                          <Badge tone={OBS_STATE_TONE[ep.state] || 'neutral'}>{ep.state}</Badge>
+                          <Sparkline values={obsValues(ep.series)} color={OBS_SPARK[ep.state] || OBS_SPARK.watching} width={90} height={22} fill={false} />
+                        </div>
+                      ))}
+                    </div>
+                    {observedHistory.length > 0 && (
+                      <CollapsibleList className="text-ink-muted mt-2" items={observedHistory} limit={4}
+                        render={(h) => `${h.subject}: ${h.label || h.observerId} ${h.outcome || 'closed'}${h.minutes != null ? ` after ${fmtMinutes(h.minutes)}` : ''}${h.peak != null ? `, peak ${fmtObs(h.peak, '')}` : ''}${h.closedAt ? `, closed ${timeAgo(h.closedAt)}` : ''}`} />
+                    )}
+                  </Section>
+                )}
                 {Array.isArray(inc.evidence?.relations) && inc.evidence.relations.length > 0 && (
                   <Section title="How these systems connect">
                     <CollapsibleList className="text-ink-muted" items={inc.evidence.relations.map(String)} render={(l) => l} />
@@ -361,7 +391,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                         <td className="py-1.5 pr-3 text-ink">{al.platformLabel}</td>
                         <td className="py-1.5 pr-3"><Badge tone={sevTone(al.severity)}>{al.severity}</Badge></td>
                         <td className="py-1.5 pr-3 text-ink-muted whitespace-nowrap">{al.host || '-'}</td>
-                        <td className="py-1.5 pr-3 text-ink-muted"><AlertMessage text={al.message} /></td>
+                        <td className="py-1.5 pr-3 text-ink-muted">{isObservationAlert(al) && <span className="mr-1.5 inline-block px-1.5 rounded border border-status-info/40 text-[10px] text-status-info align-middle">observation</span>}<AlertMessage text={al.message} /></td>
                         <td className="py-1.5 pr-3 text-ink-faint tnum whitespace-nowrap">{al.firstSeen ? <span title={timeAgo(al.firstSeen)}>{new Date(al.firstSeen).toLocaleString()}</span> : '-'}</td>
                         <td className="py-1.5">{al.clearedAt ? <Badge tone="neutral">cleared</Badge> : <Badge tone="ok">open</Badge>}</td>
                       </tr>
@@ -390,6 +420,9 @@ export default function OpsAgentPage() {
   const [status, setStatus] = useState(null);
   const [rows, setRows] = useState(null);
   const [scope, setScope] = useState('open');
+  const [obsScope, setObsScope] = useState('active');
+  const [obsRows, setObsRows] = useState(null);
+  const [obsOpenId, setObsOpenId] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   // ?incident=<id> (the Open in ICC link on a Teams card) opens that incident.
   const [params] = useSearchParams();
@@ -402,11 +435,13 @@ export default function OpsAgentPage() {
   const load = useCallback(() => Promise.allSettled([
     client.get('/ops-agent/status'),
     client.get('/ops-agent/incidents', { params: { state: scope, limit: 300 } }),
-  ]).then(([s, i]) => {
+    client.get('/ops-agent/observations', { params: { scope: obsScope, limit: 300 } }),
+  ]).then(([s, i, o]) => {
     if (s.status === 'fulfilled') setStatus(s.value.data);
     if (i.status === 'fulfilled') setRows(i.value.data); else setRows([]);
+    if (o.status === 'fulfilled') setObsRows(Array.isArray(o.value.data) ? o.value.data : []); else setObsRows([]);
     setLastRefreshed(new Date());
-  }), [scope]);
+  }), [scope, obsScope]);
 
   // A hidden tab does no work at all; coming back refreshes immediately.
   useEffect(() => {
@@ -455,12 +490,23 @@ export default function OpsAgentPage() {
 
   const list = useMemo(() => (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', '), idLabel: '#' + r.id })), [rows]);
   const ctl = useTableControls(list, { searchKeys: ['idLabel', 'title', 'host', 'platformsLabel', 'classification', 'summary'], defaultSortKey: 'openedAt', defaultSortDir: 'desc', paginate: true });
+  // Closed (24h): the route returns newest closed first; keep the last day.
+  const obsList = useMemo(() => {
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    return (obsRows || [])
+      .filter((r) => obsScope !== 'closed' || (r.closedAt && Date.parse(r.closedAt) >= cutoff))
+      .map((r) => ({ ...r, stateLabel: r.state === 'closed' ? `closed ${r.outcome || ''}`.trim() : r.state, nowValue: r.value }));
+  }, [obsRows, obsScope]);
+  const obsCtl = useTableControls(obsList, {
+    searchKeys: ['subject', 'platform', 'label', 'stateLabel', 'host'],
+    defaultSortKey: obsScope === 'closed' ? 'closedAt' : 'openedAt', defaultSortDir: 'desc', paginate: true, defaultPageSize: 10, deepLink: false,
+  });
   const s = status;
   const counts = s?.counts || {};
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Newest first; sort any column.">
+      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Newest first; sort any column. It also watches polled metrics for sustained conditions before they become incidents.">
         <span className={`inline-flex items-center gap-1.5 text-[11px] ${live ? 'text-status-ok' : 'text-status-warn'}`} title={live ? `Watching for changes every ${PULSE_MS / 1000}s` : 'Lost contact with ICC; retrying'}>
           <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-status-ok animate-pulse' : 'bg-status-warn'}`} />
           {live ? 'Live' : 'Reconnecting'}
@@ -487,12 +533,71 @@ export default function OpsAgentPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
         <Stat label="Collecting" value={counts.collecting || 0} tone="text-status-info" />
+        <span className="block" title="Subjects the agent is sampling over threshold that have not yet held long enough to count"><Stat label="Watching" value={counts.watching || 0} tone="text-status-info" /></span>
         <Stat label="Triaged, not emailed" value={counts.triaged || 0} tone="text-status-warn" />
         <Stat label="Notified" value={counts.notified || 0} tone="text-status-ok" />
         <Stat label="Resolved (24h)" value={counts.resolved24h || 0} />
         <Stat label="Emails (24h)" value={counts.emails24h || 0} />
+      </div>
+
+      <div className="mb-4">
+        <Panel title="Observations" icon={Activity}>
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            {[['active', 'Active'], ['closed', 'Closed (24h)']].map(([k, l]) => (
+              <button key={k} onClick={() => { setObsRows(null); setObsScope(k); }}
+                className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors cursor-pointer ${obsScope === k ? 'bg-brand/15 border-brand/40 text-brand' : 'border-cohesity-border text-ink-muted hover:text-ink'}`}>
+                {l}
+              </button>
+            ))}
+            <input value={obsCtl.q} onChange={(e) => obsCtl.setQ(e.target.value)} placeholder="Filter by subject, observer, platform, state..."
+              className="ml-auto bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-1.5 text-xs text-ink focus:border-brand/60 outline-none w-72 max-w-full" />
+          </div>
+          {obsRows == null ? <LoadingPanel label="Loading observations..." height={100} />
+            : obsCtl.rows.length === 0 ? <p className="text-sm text-ink-muted py-6 text-center">{obsScope === 'active' ? 'Nothing is over a threshold right now.' : 'No episodes closed in the last 24 hours.'}</p>
+            : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
+                    <SortTh k="subject" label="Subject" ctl={obsCtl} />
+                    <SortTh k="label" label="Observer" ctl={obsCtl} />
+                    <SortTh k="stateLabel" label="State" ctl={obsCtl} />
+                    <SortTh k="nowValue" label="Now" ctl={obsCtl} align="right" />
+                    <SortTh k="peak" label="Peak" ctl={obsCtl} align="right" />
+                    <SortTh k="minutes" label="Elevated" ctl={obsCtl} align="right" />
+                    <th className="py-2 pr-3 font-semibold">Trend</th>
+                    <SortTh k="incidentId" label="Incident" ctl={obsCtl} />
+                  </tr></thead>
+                  <tbody>
+                    {obsCtl.pageRows.map((r) => (
+                      <tr key={r.id} onClick={() => setObsOpenId(r.id)} className="border-b border-cohesity-border/50 cursor-pointer hover:bg-surface-overlay">
+                        <td className="py-2 pr-3 max-w-[260px]">
+                          <span className="text-brand">{r.subject}</span>
+                          <p className="text-[10px] text-ink-faint">{r.platform}{r.sourceName ? ` / ${r.sourceName}` : ''}</p>
+                        </td>
+                        <td className="py-2 pr-3 text-ink-muted text-[12px]">{r.label}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap">
+                          <Badge tone={OBS_STATE_TONE[r.state] || 'neutral'}>{r.state}</Badge>
+                          {r.state === 'closed' && r.outcome && <span className="ml-1.5 text-[11px] text-ink-faint">{r.outcome}</span>}
+                        </td>
+                        <td className="py-2 pr-3 text-right tnum text-ink">{fmtObs(r.value, r.unit)}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtObs(r.peak, r.unit)}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted whitespace-nowrap">{fmtMinutes(r.minutes)}</td>
+                        <td className="py-2 pr-3"><Sparkline values={obsValues(r.series)} color={OBS_SPARK[r.state] || OBS_SPARK.watching} width={90} height={22} fill={false} /></td>
+                        <td className="py-2 pr-3 text-[11px] whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                          {r.incidentId ? <button onClick={() => setOpenId(r.incidentId)} className="text-brand hover:underline cursor-pointer">#{r.incidentId}</button>
+                            : <span className="text-ink-faint">{r.state === 'watching' ? 'not yet' : '-'}</span>}
+                          {r.inPattern && <span className="ml-1.5"><Badge tone="warn">pattern</Badge></span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          <TablePager ctl={obsCtl} />
+        </Panel>
       </div>
 
       <Panel title="Incidents" icon={Bot}>
@@ -551,6 +656,7 @@ export default function OpsAgentPage() {
         <TablePager ctl={ctl} />
       </Panel>
 
+      {obsOpenId != null && <ObservationModal id={obsOpenId} Shell={ModalShell} onClose={() => setObsOpenId(null)} />}
       {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} />}
     </div>
   );

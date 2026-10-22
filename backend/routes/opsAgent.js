@@ -5,6 +5,8 @@ const express = require('express');
 const agent = require('../services/opsAgent');
 const capabilities = require('../services/agentCapabilities');
 const agentProfiles = require('../services/agentProfiles');
+const observations = require('../services/agentObservations');
+const { getSetting, getObservationSettings } = require('../services/settings');
 const { requirePermission } = require('../middleware/requirePermission');
 
 const router = express.Router();
@@ -68,6 +70,54 @@ router.post('/run', async (req, res, next) => {
   try {
     const stats = await agent.runOnce({ force: true });
     res.json({ ran: Boolean(stats), stats: stats || null, status: agent.status() });
+  } catch (err) { next(err); }
+});
+
+/** Observation episodes (sustained-signal findings over polled metrics). */
+router.get('/observations', (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const scope = ['active', 'closed', 'all'].includes(req.query.scope) ? req.query.scope : 'active';
+    const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
+    const settings = getObservationSettings();
+    const obs = new Map(observations.listObservers(settings).map((o) => [o.id, o]));
+    const rows = observations.listEpisodes({ scope, limit });
+    const patterns = new Map();
+    for (const g of observations.patternGroups(new Date().toISOString(), settings)) patterns.set(`${g[0].observer_id}|${g[0].subject_key}`, g.length);
+    res.json(rows.map((r) => {
+      const n = patterns.get(`${r.observer_id}|${r.subject_key}`) || 0;
+      return { ...observations.describe(r, { obs }), inPattern: n > 0, patternCount: n };
+    }));
+  } catch (err) { next(err); }
+});
+
+router.get('/observations/:id', (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const row = observations.getEpisode(Number(req.params.id));
+    if (!row) return res.status(404).json({ error: 'Observation not found.' });
+    const settings = getObservationSettings();
+    const obs = new Map(observations.listObservers(settings).map((o) => [o.id, o]));
+    const history = observations.episodeHistory(row.subject_key, 30)
+      .filter((h) => h.id !== row.id)
+      .map((h) => observations.describe(h, { seriesCap: 0, obs }));
+    const n = observations.patternGroups(new Date().toISOString(), settings)
+      .filter((g) => g[0].observer_id === row.observer_id && g[0].subject_key === row.subject_key).map((g) => g.length)[0] || 0;
+    res.json({ ...observations.describe(row, { seriesCap: 0, obs }), inPattern: n > 0, patternCount: n, history });
+  } catch (err) { next(err); }
+});
+
+/** Every observer (built-in and pack) with its enabled state and the live
+ *  warn and crit lines read from the owning platform's settings. */
+router.get('/observers', (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const settings = getObservationSettings();
+    res.json(observations.listObservers(settings).map((o) => {
+      let thresholds = { warn: null, crit: null };
+      try { thresholds = observations.getObserver(o.id).thresholds(getSetting); } catch { /* observer threshold read failed */ }
+      return { ...o, thresholds: { warn: thresholds.warn, crit: thresholds.crit } };
+    }));
   } catch (err) { next(err); }
 });
 

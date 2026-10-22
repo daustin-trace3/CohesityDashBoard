@@ -126,6 +126,17 @@ if (require.main === module) {
       } catch (err) {
         logger.warn(`[Demo] logicmonitor cross-platform rows failed: ${err.message}`);
       }
+      // Same reason: the Ops Agent observation story sets vCenter VM and host
+      // usage columns the vcenter pack re-seeds, and its episodes are dated
+      // relative to now, so replay it after every boot.
+      try {
+        const db = require('./db/database');
+        const { applyOpsObservations } = require('./demo/scenarios/opsObservations');
+        const r = applyOpsObservations(db, { now: Date.now() });
+        logger.info(`[Demo] ops observations re-applied: ${r.applied ? JSON.stringify(r.byState) : `skipped (${r.reason})`}`);
+      } catch (err) {
+        logger.warn(`[Demo] ops observations failed: ${err.message}`);
+      }
       // Service Status states whether ICC reaches each platform's sources, and
       // nothing polls here, so stamp a fresh successful poll on every seeded
       // source (one stays errored for the degraded story) before the first

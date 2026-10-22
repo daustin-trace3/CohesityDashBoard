@@ -30,6 +30,7 @@ const capabilities = require('./agentCapabilities');
 const agentProfiles = require('./agentProfiles');
 const agentRelations = require('./agentRelations');
 const agentTimeline = require('./agentTimeline');
+const observations = require('./agentObservations');
 const teams = require('./opsAgentTeams');
 const { isDemo } = require('./demoMode');
 
@@ -278,7 +279,24 @@ function appServiceItems(now, details) {
     }));
 }
 
-function collectItems(now) {
+/** Observation episodes the agent treats as alerts: advance the engine over
+ *  the freshest polled samples, then hand over the promoted episodes and the
+ *  one-off patterns. A throw marks the observer platforms failed so the
+ *  agent does not clear rows it merely could not read this tick. */
+function observationItems(now, settings, failed) {
+  try {
+    const obsSettings = (settings && settings.observations) || getOpsAgentSettings().observations;
+    observations.evaluate(now, obsSettings);
+    return observations.collectItems(now, obsSettings);
+  } catch (err) {
+    logger.error(`[OpsAgent] observations failed: ${err.message}`);
+    failed.push('observations');
+    for (const o of observations.listObservers()) if (!failed.includes(o.platform)) failed.push(o.platform);
+    return [];
+  }
+}
+
+function collectItems(now, settings = null) {
   const { items, failed } = alertNotifier.collectOpenAlerts();
   const enabled = serviceStatus.getEnabledPlatformIds();
   const reach = serviceStatus.gatherReachabilityItems(enabled);
@@ -296,7 +314,8 @@ function collectItems(now) {
       }
     }
   } catch (err) { logger.error(`[OpsAgent] app service evaluation failed: ${err.message}`); failed.push('appservice'); }
-  return { items: [...items, ...reach, ...staleItems(now), ...apps], failed, appOf };
+  const obsItems = observationItems(now, settings, failed);
+  return { items: [...items, ...reach, ...staleItems(now), ...apps, ...obsItems], failed, appOf };
 }
 
 /** Re-poll one source now. Fire and forget: the framework records the outcome
@@ -416,6 +435,7 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         siteTouched.set(key, { id: inc.id, name: (info && info.siteName) || (siteTouched.get(key) || {}).name || key.slice(5) });
       }
       insertAlert.run(inc.id, it.platform, String(it.sourceKey), normalizeSeverity(it.severity), it.host || null, String(it.message || '').slice(0, 1000), it.type || null, it.firstSeen || null, now);
+      if (it.observationId) db.prepare('UPDATE ops_observations SET incident_id = ? WHERE id = ?').run(inc.id, it.observationId);
       const platforms = new Set(JSON.parse(inc.platforms || '[]'));
       platforms.add(it.platform);
       const sev = maxSeverity([inc.severity, it.severity]);
@@ -440,6 +460,14 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         WHERE id = ?
       `).run(JSON.stringify([...platforms]), sev, now, nextState, reopen ? 1 : 0, new Date(Date.parse(now) + Math.min(holdMs, 5 * 60000)).toISOString(), inc.id);
       inc.platforms = JSON.stringify([...platforms]); inc.severity = sev; inc.state = nextState;
+    }
+
+    // An episode that reopened under the same key is already attached to an
+    // incident; point its row at that incident too.
+    for (const it of items) {
+      if (!it.observationId) continue;
+      const iid = attached.get(`${it.platform}:${it.sourceKey}`);
+      if (iid) db.prepare('UPDATE ops_observations SET incident_id = ? WHERE id = ? AND (incident_id IS NULL OR incident_id != ?)').run(iid, it.observationId, iid);
     }
 
     // Site incident titles carry live counts until triage sets its own.
@@ -645,6 +673,47 @@ function budgetedAlerts(alerts, budgets) {
   return kept.slice(0, EVIDENCE_ALERT_CAP);
 }
 
+const fmtNum = (v) => (v == null ? '?' : String(Math.round(v * 10) / 10));
+
+/** The observation block of an incident's evidence: open episodes attached to
+ *  this incident or sitting on one of its hosts, the closed history of those
+ *  subjects, and the pattern items. Null when there is nothing to say. */
+function observationEvidence(alerts) {
+  const live = alerts.filter((a) => !a.cleared_at);
+  const hostKeys = [...new Set(live.map((a) => hostKey(a.host)).filter(Boolean))];
+  const issueKeys = live.map((a) => String(a.source_key || ''));
+  const rows = observations.openEpisodes({ hosts: hostKeys, issueKeys, hostKey });
+  const patterns = live.filter((a) => String(a.source_key || '').startsWith('obs-pattern:'))
+    .map((a) => ({ subject: a.host, type: a.type || null, message: a.message }));
+  const since = new Date(Date.now() - 30 * 86400000).toISOString();
+  const subjects = new Set(rows.map((r) => r.row.subject_key));
+  const closed = db.prepare("SELECT * FROM ops_observations WHERE state = 'closed' AND closed_at >= ? ORDER BY closed_at DESC").all(since)
+    .filter((r) => subjects.has(r.subject_key) || (r.host && hostKeys.includes(hostKey(r.host))));
+  if (!rows.length && !closed.length && !patterns.length) return null;
+  const obs = new Map(observations.listObservers().map((o) => [o.id, o]));
+  const episodes = rows.map(({ row, attached }) => ({ ...observations.describe(row), attached }));
+  const history = closed.slice(0, 12).map((r) => ({
+    subject: r.subject_label, observerId: r.observer_id, label: (obs.get(r.observer_id) || {}).label || r.observer_id,
+    closedAt: r.closed_at, outcome: r.outcome, minutes: observations.minutesOf(r), peak: r.peak_value,
+  }));
+  const lines = episodes.map((e) => {
+    const tail = e.series.slice(-12).map((p) => fmtNum(p.v)).join(' ');
+    return `${e.label} ${e.subject}: ${e.state}, ${fmtNum(e.value)}${e.unit || ''} now, peak ${fmtNum(e.peak)}${e.unit || ''} at ${e.peakAt || '?'}, elevated ${e.minutes} min, ${e.samples} samples, warn ${fmtNum(e.thresholdWarn)} crit ${fmtNum(e.thresholdCrit)}; series ${tail}`;
+  });
+  const bySubject = new Map();
+  for (const h of closed) {
+    const k = h.subject_key;
+    if (!bySubject.has(k)) bySubject.set(k, []);
+    bySubject.get(k).push(h);
+  }
+  for (const group of bySubject.values()) {
+    const n = (o) => group.filter((g) => g.outcome === o).length;
+    const longest = Math.max(...group.map((g) => observations.minutesOf(g)));
+    lines.push(`${group[0].subject_label} history (30 d): ${group.length} episodes, ${n('one-off')} one-off, ${n('sustained')} sustained, ${n('escalated')} escalated, longest ${longest} min`);
+  }
+  return { episodes, history, patterns, lines };
+}
+
 function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   const hosts = [];
   const seen = new Set();
@@ -712,6 +781,8 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     const stillFailing = alerts.filter((a) => !a.cleared_at && /^(poll|stale):/.test(a.source_key)).map((a) => `${platformMeta(a.platform).label} ${a.host || a.source_key}`);
     selfHeal = { attemptedAt: inc.heal_at, actions, outcome: stillFailing.length ? `still failing after the re-poll: ${stillFailing.join(', ')}` : 're-poll completed, source answered' };
   }
+  let obsEv = null;
+  try { obsEv = observationEvidence(alerts); } catch (err) { logger.warn(`[OpsAgent] observation evidence failed for #${inc.id}: ${err.message}`); }
   const shownAlerts = budgetedAlerts(alerts, budgets)
     .map((a) => ({ platform: a.platform, severity: a.severity, host: a.host, message: a.message, type: a.type, firstSeen: a.first_seen, cleared: !!a.cleared_at }));
   const evidence = {
@@ -721,6 +792,8 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     alerts: shownAlerts,
     alertsTotal: alerts.length,
     alertsOmitted: Math.max(0, alerts.length - shownAlerts.length),
+    // Right after the alerts, where the prompt expects to read it.
+    ...(obsEv ? { observations: obsEv } : {}),
     hosts,
     network,
     recurrence,
@@ -771,6 +844,10 @@ function fallbackTriage(evidence) {
   for (const b of (evidence.network || [])) reviewed.push(`Network, ${b.title}: ${(b.lines || []).slice(0, 3).join('; ')}${(b.lines || []).length > 3 ? ` (+${b.lines.length - 3} more in the Network section)` : ''}`);
   const jobs = evidence.failedBackupJobs || [];
   if (jobs.length) reviewed.push(`Backup job log: ${jobs.length} failed or canceled run(s) in 24h on ${[...new Set(jobs.map((j) => j.source).filter(Boolean))].join(', ') || 'the platform'}; the newest is ${jobs[0].job || 'unnamed'} (${jobs[0].status}${jobs[0].error ? `: ${jobs[0].error.slice(0, 120)}` : ''}).`);
+  const obsEv = evidence.observations || null;
+  const promoted = ((obsEv && obsEv.episodes) || []).filter((e) => e.state === 'degrading' || e.state === 'critical');
+  const obsPatterns = (obsEv && obsEv.patterns) || [];
+  for (const e of ((obsEv && obsEv.episodes) || [])) reviewed.push(`Observation, ${e.label} ${e.subject}: ${e.state}, ${fmtNum(e.value)}${e.unit || ''} now, peak ${fmtNum(e.peak)}${e.unit || ''}, elevated ${e.minutes} min over ${e.samples} samples.`);
   reviewed.push(`Incident history: ${rec.occurrences.length ? `${rec.occurrences.length} earlier occurrence(s) of this same incident in ${rec.windowDays} days, the most recent ${fmtStamp(rec.occurrences[0].openedAt)}` : `none on this key in ${rec.windowDays} days`}.`);
   const down = evidence.hosts.some((h) => h.verdict === 'offline');
   const pollTrouble = alive.some((a) => /stale|could not reach/i.test(a.message || ''));
@@ -781,7 +858,8 @@ function fallbackTriage(evidence) {
     classification: rec.isPattern ? 'recurring' : (alive.length > 1 ? 'incident' : 'one-off'),
     confidence: 'low',
     title: evidence.incident.title,
-    summary: `${alive.length} open alert${alive.length === 1 ? '' : 's'} on ${platforms.join(', ')}${evidence.incident.host ? ` for ${evidence.incident.host}` : ''}. ${down ? 'ICC evidence shows the host offline.' : 'ICC evidence shows the host still reachable.'}`,
+    summary: [`${alive.length} open alert${alive.length === 1 ? '' : 's'} on ${platforms.join(', ')}${evidence.incident.host ? ` for ${evidence.incident.host}` : ''}. ${down ? 'ICC evidence shows the host offline.' : 'ICC evidence shows the host still reachable.'}`,
+      ...promoted.map((e) => `${e.label} ${e.subject} has been ${e.state === 'critical' ? 'over the critical line' : 'elevated'} for ${e.minutes} min (peak ${fmtNum(e.peak)}${e.unit || ''})`)].join('\n'),
     impact: down ? 'Host offline: workloads on it are affected until it is back.' : 'Degraded: the system is up but impaired.',
     correlation: alive.length > 1 ? 'Alerts grouped by shared host or platform inside the hold window; causal link not established.' : 'Single alert.',
     likely_cause: down ? 'Host or its management path is down; see the platform records reviewed.' : 'See the alert text; no stronger signal in the evidence.',
@@ -790,6 +868,8 @@ function fallbackTriage(evidence) {
       { owner: 'L2', action: `Open the ${platforms[0] || 'platform'} alerts page for ${evidence.incident.host || 'the platform'} and confirm the alert is still active.` },
       { owner: 'L2', action: down ? 'Confirm power and management network for the host, then check the hypervisor or array console.' : 'Check the component named in the alert and its recent hardware log.' },
       { owner: 'L2', action: 'If the condition persists after the checks, escalate with this incident id and the reviewed evidence.' },
+      ...promoted.map((e) => ({ owner: 'Virtualization', action: `Check what is driving ${e.subject} (top processes, recent change, backup or batch window) and right-size or move it.` })),
+      ...obsPatterns.map((p) => ({ owner: 'Virtualization', action: `Correlate the burst times of ${p.subject} with scheduled jobs; a recurring short spike is usually a job, not a sizing problem.` })),
     ],
     escalate: 'Escalate to L3 or the vendor if the condition survives the L2 checks or affects more than one host.',
   };
@@ -802,11 +882,14 @@ function humanFromEvidence(evidence) {
 /** The triage system prompt for one incident's evidence: core + focus blocks
  *  for the platforms present (agentProfiles) + estate context + anonymizer
  *  note. Shared by the triage call and the prompt preview route. */
+const OBSERVATIONS_SENTENCE = ' Observations are ICC\'s own sustained-signal findings over polled metrics (an episode with its samples, peak and outcome history); treat a watching episode as context, a promoted one as a confirmed condition, and use the history to say whether this is a blip, a repeat, or a change.';
+
 function systemPromptFor(evidence, { tools = false } = {}) {
   const inc = (evidence && evidence.incident) || {};
   const platforms = [...new Set([...(inc.platforms || []), ...((evidence && evidence.alerts) || []).map((a) => a.platform)].filter(Boolean))];
   const ec = (getSetting('llm_estate_context') || '').trim();
-  const tail = (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
+  const hasObs = !!(evidence && evidence.observations && ((evidence.observations.episodes || []).length || (evidence.observations.history || []).length));
+  const tail = (hasObs ? OBSERVATIONS_SENTENCE : '') + (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
   const built = agentProfiles.buildSystemPrompt({ platforms, evidence, reserve: tail.length, tools });
   const system = built.system + tail;
   logger.debug(`[OpsAgent] prompt chars=${system.length} focus=[${built.focusUsed.join(',')}] relations=${((evidence && evidence.relations) || []).length}`);
@@ -1084,7 +1167,7 @@ function liveCheckMode(checks) {
   return checks.some((c) => c.requestedBy === 'model') ? ' (asked for by the agent)' : ' (playbook)';
 }
 
-function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [], timeline = [] } = {}) {
+function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [], timeline = [], observations: obsEvidence = null } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
   const rec = recurrence && recurrence.isPattern ? recurrence : null;
@@ -1109,6 +1192,9 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const checkLines = checks.map(liveCheckLine);
   const relationLines = (Array.isArray(relations) ? relations : []).filter((l) => typeof l === 'string' && l.trim());
   const timelineRows = (Array.isArray(timeline) ? timeline : []).filter((t) => t && t.at && t.text);
+  const obsEpisodes = (obsEvidence && Array.isArray(obsEvidence.episodes)) ? obsEvidence.episodes : [];
+  const obsHistoryLines = obsEpisodes.length ? ((obsEvidence.lines || []).filter((l) => / history \(30 d\): /.test(l))) : [];
+  const obsLine = (e) => `- ${e.label} | ${e.subject} | ${e.state} | now ${fmtNum(e.value)}${e.unit || ''} | peak ${fmtNum(e.peak)}${e.unit || ''} | elevated ${e.minutes} min | since ${fmtStamp(e.openedAt)}`;
   const netBlocks = (network || []).filter((b) => b && Array.isArray(b.lines) && b.lines.length);
   const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
   const happened = String(analysis.summary || '-').split('\n').map((s) => s.trim()).filter(Boolean);
@@ -1152,6 +1238,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     ...(netBlocks.length ? ['', 'NETWORK', ...netBlocks.flatMap((b) => [b.title, ...b.lines.map((l) => `- ${l}`)])] : []),
     ...(did.length ? ['', `WHAT ${agentName.toUpperCase()} DID`, ...did] : []),
     ...(checkLines.length ? ['', `WHAT ${agentName.toUpperCase()} CHECKED LIVE (from the ICC server)${liveCheckMode(checks).toUpperCase()}`, ...checkLines] : []),
+    ...(obsEpisodes.length ? ['', `WHAT ${agentName.toUpperCase()} OBSERVED`, ...obsEpisodes.map(obsLine), ...obsHistoryLines.map((l) => `- ${l}`)] : []),
     '',
     'LIKELY CAUSE',
     analysis.likely_cause || '-',
@@ -1190,6 +1277,7 @@ ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
 ${netBlocks.length ? section('Network', netBlocks.map((b) => `<p style="margin:6px 0 2px;font-weight:600">${esc(b.title)}</p>${list(b.lines)}`).join('')) : ''}
 ${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.replace(/^- /, '')))) : ''}
 ${checkLines.length ? section(`What ${esc(agentName)} checked live (from the ICC server)${esc(liveCheckMode(checks))}`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Check</th><th style="padding:3px 8px">Target</th><th style="padding:3px 8px">Result</th></tr>${checks.map((c) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.label || c.capability)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.target.name)}${c.target.address && c.target.address !== c.target.name ? ` <span style="color:#64748b">${esc(c.target.address)}</span>` : ''}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0"><span style="font-weight:600;color:${c.ok ? '#166534' : '#B91C1C'}">${c.ok ? 'OK' : 'FAILED'}</span> ${esc(c.summary)}${c.requestedBy === 'model' && c.reason ? ` <span style="color:#64748b">(asked for by the agent: ${esc(c.reason)})</span>` : ''}</td></tr>`).join('')}</table>`) : ''}
+${obsEpisodes.length ? section(`What ${esc(agentName)} observed`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Observer</th><th style="padding:3px 8px">Subject</th><th style="padding:3px 8px">State</th><th style="padding:3px 8px">Now</th><th style="padding:3px 8px">Peak</th><th style="padding:3px 8px">Elevated</th><th style="padding:3px 8px">Since</th></tr>${obsEpisodes.map((e) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(e.label)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(e.subject)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(e.state)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(fmtNum(e.value) + (e.unit || ''))}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(fmtNum(e.peak) + (e.unit || ''))}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(String(e.minutes))} min</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(fmtStamp(e.openedAt))}</td></tr>`).join('')}</table>${obsHistoryLines.length ? list(obsHistoryLines) : ''}`) : ''}
 ${section('Likely cause', `<p style="margin:0">${esc(analysis.likely_cause || '-')}</p>`)}
 ${section('Next steps for the next level', `<ol style="margin:0;padding-left:18px">${(analysis.next_steps || []).map((s) => `<li style="margin:2px 0"><b>${esc(s.owner)}</b>: ${esc(s.action)}</li>`).join('')}</ol>`)}
 ${section('Escalation', `<p style="margin:0">${esc(analysis.escalate || '-')}</p>`)}
@@ -1230,7 +1318,7 @@ async function notifyIncident(inc, settings, config, { force = false } = {}) {
   try { healActions = JSON.parse(inc.heal_actions_json || '[]'); } catch { /* ignore */ }
   let storedEvidence = null;
   try { storedEvidence = JSON.parse(inc.evidence_json || 'null'); } catch { storedEvidence = null; }
-  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [], relations: storedEvidence?.relations || [], timeline: storedEvidence?.timeline || [] });
+  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [], relations: storedEvidence?.relations || [], timeline: storedEvidence?.timeline || [], observations: storedEvidence?.observations || null });
   const now = new Date().toISOString();
   try {
     const transport = alertNotifier.createTransport(config);
@@ -1556,7 +1644,7 @@ async function runOnce({ force = false } = {}) {
     // incidents are triaged and shown, flagged baseline, and not emailed.
     const lastRun = db.prepare('SELECT at FROM ops_agent_runs ORDER BY id DESC LIMIT 1').get();
     const coldStart = !lastRun || Date.parse(lastRun.at) < Date.now() - COLD_START_HOURS * 3600000;
-    const collected = collectItems(now);
+    const collected = collectItems(now, settings);
     Object.assign(stats, groupTick(now, settings, collected, { baseline: coldStart }));
 
     stats.healAttempts = selfHealPass(now);
@@ -1684,6 +1772,8 @@ function shapeIncident(row, { withDetail = false } = {}) {
     out.alerts = incidentAlerts(row.id).map((a) => ({
       platform: a.platform, platformLabel: platformMeta(a.platform).label, sourceKey: a.source_key, severity: a.severity,
       host: a.host, message: a.message, type: a.type, firstSeen: a.first_seen, attachedAt: a.attached_at, clearedAt: a.cleared_at,
+      source_key: a.source_key,
+      kind: String(a.source_key || '').startsWith('obs-pattern:') ? 'observation-pattern' : String(a.source_key || '').startsWith('obs:') ? 'observation' : null,
     }));
   }
   return out;
@@ -1722,8 +1812,9 @@ function pulse() {
     FROM ops_incidents`).get();
   const open = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE state != 'resolved'").get().c;
   const run = db.prepare('SELECT at FROM ops_agent_runs ORDER BY id DESC LIMIT 1').get();
+  const ob = db.prepare("SELECT COALESCE(MAX(updated_at), '') u, COUNT(*) n FROM ops_observations").get();
   return {
-    token: [a.n, open, a.o, a.e, a.t, a.nt, a.r, a.c, a.tm, a.s, run?.at || ''].join('|'),
+    token: [a.n, open, a.o, a.e, a.t, a.nt, a.r, a.c, a.tm, a.s, run?.at || '', ob.u, ob.n].join('|'),
     lastRunAt: run?.at || null,
     openIncidents: open,
   };
@@ -1739,9 +1830,12 @@ function status() {
   counts.emails24h = db.prepare('SELECT COALESCE(SUM(emails_sent), 0) c FROM ops_agent_runs WHERE at >= ?').get(isoAgo(86400000)).c;
   counts.baseline = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE baseline = 1 AND state != 'resolved'").get().c;
   counts.triagedLastHour = db.prepare('SELECT COUNT(*) c FROM ops_incidents WHERE triaged_at >= ?').get(isoAgo(3600000)).c;
+  counts.watching = db.prepare("SELECT COUNT(*) c FROM ops_observations WHERE state = 'watching'").get().c;
+  counts.observing = db.prepare("SELECT COUNT(*) c FROM ops_observations WHERE state != 'closed'").get().c;
   const p = resolveProvider();
   return {
     settings,
+    observations: { enabled: settings.observations.enabled, observers: observations.listObservers(settings.observations).filter((o) => o.enabled).length },
     aiConfigured: isConfigured(),
     aiProvider: p.provider, aiModel: p.model || null,
     smtpReady: Boolean(config.smtpEnabled && config.smtpHost && config.smtpFrom),
@@ -1881,10 +1975,16 @@ function wakeCheck() {
 let intervalHandle = null;
 let timeoutHandle = null;
 let wakeHandle = null;
+let pruneHandle = null;
 function initOpsAgent() {
   if (intervalHandle) return;
   // Exchanges logged before the agent had its own Privacy Inspector tag.
   try { db.prepare("UPDATE ai_audit_exchanges SET platform = 'ops-agent' WHERE feature = 'Operations Agent' AND platform != 'ops-agent'").run(); } catch { /* table absent on a fresh db */ }
+  observations.registerBuiltins();
+  pruneHandle = setInterval(() => {
+    try { observations.prune(); } catch (err) { logger.warn(`[OpsAgent] observation prune failed: ${err.message}`); }
+  }, 3600000);
+  if (pruneHandle.unref) pruneHandle.unref();
   // A rejection here would otherwise be unhandled; the timer survives either
   // way, but an unlogged failure is how a quiet agent goes unnoticed.
   const tick = () => { runOnce().catch((err) => logger.error(`[OpsAgent] tick rejected: ${err.message}`)); };
@@ -1897,6 +1997,7 @@ function stopOpsAgent() {
   if (intervalHandle) { clearInterval(intervalHandle); intervalHandle = null; }
   if (timeoutHandle) { clearTimeout(timeoutHandle); timeoutHandle = null; }
   if (wakeHandle) { clearInterval(wakeHandle); wakeHandle = null; }
+  if (pruneHandle) { clearInterval(pruneHandle); pruneHandle = null; }
 }
 
 module.exports = {
@@ -1906,6 +2007,6 @@ module.exports = {
   // pure helpers for tests
   systemPromptFor, gatherIncidentEvidence, hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,
   closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson, collectFailedBackupJobs,
-  recurrenceFor, recurrenceLine, triageIncident, selfHealPass, makeSiteResolver, gatherNetworkEvidence,
+  recurrenceFor, recurrenceLine, triageIncident, selfHealPass, makeSiteResolver, gatherNetworkEvidence, collectItems, observationEvidence,
 };
 void chatFn;

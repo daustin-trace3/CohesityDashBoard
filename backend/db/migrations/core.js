@@ -665,4 +665,38 @@ module.exports = [
       if (!cols.has('reason')) db.exec('ALTER TABLE ops_capability_runs ADD COLUMN reason TEXT');
     },
   },
+  // Ops Agent observations: sustained-signal episodes over polled metrics
+  // (services/agentObservations).
+  {
+    version: 29, // feat/multi-tenant numbers this v30
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ops_observations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          observer_id TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          subject_key TEXT NOT NULL,
+          subject_label TEXT NOT NULL,
+          host TEXT,
+          source_id INTEGER, source_name TEXT,
+          kind TEXT NOT NULL DEFAULT 'sustained',
+          state TEXT NOT NULL DEFAULT 'watching',
+          outcome TEXT,
+          unit TEXT, threshold_warn REAL, threshold_crit REAL,
+          opened_at TEXT NOT NULL, promoted_at TEXT, promote_reason TEXT, closed_at TEXT,
+          last_sample_at TEXT, samples INTEGER NOT NULL DEFAULT 0, elevated_samples INTEGER NOT NULL DEFAULT 0,
+          consecutive_normal INTEGER NOT NULL DEFAULT 0, severe_run INTEGER NOT NULL DEFAULT 0,
+          elevated_run_start TEXT,
+          last_value REAL, peak_value REAL, peak_at TEXT,
+          series_json TEXT NOT NULL DEFAULT '[]',
+          context_json TEXT NOT NULL DEFAULT '{}',
+          issue_key TEXT,
+          incident_id INTEGER,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_obs_open ON ops_observations(state, subject_key);
+        CREATE INDEX IF NOT EXISTS idx_ops_obs_subject ON ops_observations(subject_key, closed_at);
+      `);
+    },
+  },
 ];
