@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams, Link } from 'react-router-dom';
-import { CalendarCheck, Search, X, ArrowLeftRight } from 'lucide-react';
+import { CalendarCheck, Search, X, ArrowLeftRight, Download, Loader2 } from 'lucide-react';
 import client from '../api/client';
+import { downloadCsv } from '../api/download';
 import { useToast } from '../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel } from '../components/ui/primitives';
+import { DateRangeControl, RangeNote, useDateRange, csvFilename } from '../components/ui/DateRangeControl';
 
 const fmtBytes = (b) => {
   if (b == null) return '—';
@@ -27,12 +29,6 @@ const STATUS_LABEL = { kSuccess: 'Success', kWarning: 'Warning', kFailure: 'Fail
 // Unknown statuses (kSkipped, k6Abort…) render without the Cohesity 'k' prefix.
 const statusLabel = (s) => (s ? (STATUS_LABEL[s] || String(s).replace(/^k/, '')) : null);
 
-/** Local YYYY-MM-DD key for a timestamp. */
-const dayKey = (ms) => {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
-
 /** Worst-of-day rollup for the bubble color. */
 function dayRollup(runs) {
   if (!runs || runs.length === 0) return null;
@@ -54,7 +50,9 @@ export default function BackupHistoryPage() {
   const [sp, setSp] = useSearchParams();
   const [input, setInput] = useState(sp.get('q') || '');
   const [q, setQ] = useState(sp.get('q') || '');
-  const [days, setDays] = useState(30);
+  const dr = useDateRange(sp, setSp);
+  const { params: rangeParams, timeout: rangeTimeout, dayKeyFor } = dr;
+  const [exporting, setExporting] = useState(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState(null); // { server, date, runs }
@@ -67,10 +65,12 @@ export default function BackupHistoryPage() {
       .catch(() => setDetails((d) => ({ ...d, [runId]: { data: { failed: true } } })));
   };
 
-  const search = useCallback((term, nDays) => {
+  const search = useCallback((term, rParams, rTimeout) => {
     const query = String(term || '').trim();
     setLoading(true);
-    client.get(`/cohesity/backup-history?q=${encodeURIComponent(query)}&days=${nDays}`)
+    const config = { params: { q: query, ...rParams } };
+    if (rTimeout) config.timeout = rTimeout;
+    client.get('/cohesity/backup-history', config)
       .then(({ data }) => {
         // A not-yet-restarted backend serves the SPA index.html with 200 on
         // unknown API paths — validate the shape instead of crashing/blanking.
@@ -84,50 +84,57 @@ export default function BackupHistoryPage() {
       .finally(() => setLoading(false));
   }, [toast]);
 
-  useEffect(() => { search(q, days); }, [q, days, search]);
+  useEffect(() => { search(q, rangeParams, rangeTimeout); }, [q, rangeParams, rangeTimeout, search]);
 
   const submit = (e) => {
     e?.preventDefault();
     const term = input.trim();
     setQ(term);
-    setSp(term ? { q: term } : {}, { replace: true });
+    const next = new URLSearchParams(sp);
+    if (term) next.set('q', term); else next.delete('q');
+    setSp(next, { replace: true });
   };
 
-  // Day columns, newest first (like the classic backup-matrix view).
+  // Day columns, newest first. The response's dayKeys win; the hook's own
+  // keys draw the grid before the first response and for an older backend.
   const dayCols = useMemo(() => {
-    const cols = [];
-    const now = new Date();
-    for (let i = 0; i < days; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-      cols.push({
-        key: dayKey(d.getTime()),
-        label: d.toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' }),
-      });
-    }
-    return cols;
-  }, [days]);
+    const keys = Array.isArray(data?.dayKeys) && data.dayKeys.length ? data.dayKeys : dr.dayKeys;
+    return keys.map((key) => {
+      const [y, m, d] = key.split('-').map(Number);
+      return { key, label: new Date(y, m - 1, d).toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' }) };
+    });
+  }, [data, dr.dayKeys]);
 
   const servers = useMemo(() => (data?.servers || []).map((s) => {
     const byDay = new Map();
     for (const r of s.runs || []) {
       if (!r.startMs) continue;
-      const k = dayKey(r.startMs);
+      const k = dayKeyFor(r.startMs);
       if (!byDay.has(k)) byDay.set(k, []);
       byDay.get(k).push(r);
     }
     return { ...s, byDay };
-  }), [data]);
+  }), [data, dayKeyFor]);
+
+  const exportCsv = () => {
+    const keys = dayCols.map((c) => c.key);
+    setExporting(true);
+    downloadCsv('/cohesity/backup-history/export.csv', { q: q.trim(), ...rangeParams },
+      csvFilename('cohesity', keys), rangeTimeout)
+      .catch((err) => toast({ type: 'error', title: 'Export failed', message: err.message }))
+      .finally(() => setExporting(false));
+  };
 
   return (
     <div className="animate-fade-in">
       <PageHeader icon={CalendarCheck} title="Backup History"
         description="Day-by-day protection history for a server — search by name, click a day for run details">
-        <select value={days} onChange={(e) => setDays(Number(e.target.value))}
-          className="bg-surface border border-cohesity-border text-[13px] text-ink rounded-lg px-3 py-1.5 focus:border-brand/60">
-          <option value={7}>7 days</option>
-          <option value={14}>14 days</option>
-          <option value={30}>30 days</option>
-        </select>
+        <DateRangeControl value={dr.range} onChange={dr.apply} />
+        <button type="button" onClick={exportCsv} disabled={loading || exporting || servers.length === 0}
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
+          {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+          Export CSV
+        </button>
       </PageHeader>
 
       <form onSubmit={submit} className="panel p-3 mb-4 flex items-center gap-2">
@@ -141,6 +148,8 @@ export default function BackupHistoryPage() {
           Search
         </button>
       </form>
+
+      <RangeNote historyDays={data?.historyDays} truncated={data?.truncated} />
 
       {loading ? (
         <LoadingPanel label="Loading backup history…" />
@@ -159,12 +168,12 @@ export default function BackupHistoryPage() {
             green = success, amber = warning/canceled, red = failure · bubble marks the day the run started
           </p>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm border-separate border-spacing-0">
+            <table className="w-full text-sm border-separate border-spacing-0" style={{ minWidth: 240 + dayCols.length * 26 }}>
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint">
                   <th className="py-2 pr-3 sticky left-0 bg-surface z-10 min-w-[240px] border-b border-cohesity-border">Server / Group / Cluster</th>
                   {dayCols.map((c) => (
-                    <th key={c.key} className="py-2 px-1 text-center tnum font-semibold border-b border-cohesity-border">{c.label}</th>
+                    <th key={c.key} className="py-2 px-1 text-center tnum font-semibold border-b border-cohesity-border min-w-[26px]">{c.label}</th>
                   ))}
                 </tr>
               </thead>
@@ -184,12 +193,12 @@ export default function BackupHistoryPage() {
                       const tone = dayRollup(runs);
                       const bytes = (runs || []).reduce((t, r) => t + (r.logicalBytes || 0), 0);
                       return (
-                        <td key={c.key} className="py-2 px-1 text-center border-b border-cohesity-border/50">
+                        <td key={c.key} className="py-2 px-1 text-center border-b border-cohesity-border/50 min-w-[26px]">
                           {tone ? (
                             <button
                               onClick={() => setModal({ server: s, date: c.key, runs })}
                               title={`${runs.length} run${runs.length === 1 ? '' : 's'} · ${fmtBytes(bytes)} logical`}
-                              className={`inline-block h-3.5 w-3.5 rounded-full ${BUBBLE[tone]} hover:ring-2 hover:ring-brand/50 transition-shadow cursor-pointer`}
+                              className={`inline-block h-3.5 w-3.5 min-w-[10px] shrink-0 rounded-full ${BUBBLE[tone]} hover:ring-2 hover:ring-brand/50 transition-shadow cursor-pointer`}
                               aria-label={`Backups on ${c.key}`}
                             />
                           ) : (

@@ -89,6 +89,14 @@ describe('seedDemo.js', () => {
     expect(row).toBeTruthy();
   });
 
+  it('seeds protection_runs at least 95 days deep for Backup History ranges', () => {
+    const oldest = db.prepare(`
+      SELECT MIN(CAST(CASE WHEN start_time LIKE '20%' THEN strftime('%s', start_time) ELSE start_time END AS INTEGER)) s
+      FROM protection_runs
+    `).get().s;
+    expect(Date.now() / 1000 - oldest).toBeGreaterThanOrEqual(95 * 86400);
+  });
+
   it('seeds alerts with lowercase severity', () => {
     const row = db.prepare('SELECT severity FROM alerts LIMIT 1').get();
     expect(row.severity).toBe(row.severity.toLowerCase());

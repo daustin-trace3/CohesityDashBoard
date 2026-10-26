@@ -45,6 +45,9 @@ export default function AdminSettingsPage() {
   const [opsOverviewStyle, setOpsOverviewStyle] = useState('classic');
   const [dnsServer, setDnsServer] = useState('');
   const [cohesityAlertWindowDays, setCohesityAlertWindowDays] = useState(5);
+  const [cohesityRunHistoryDays, setCohesityRunHistoryDays] = useState(90);
+  const [cohesityRunRetentionDays, setCohesityRunRetentionDays] = useState(0);
+  const [netbackupJobHistoryDays, setNetbackupJobHistoryDays] = useState(30);
   const [pollerCallsInFlight, setPollerCallsInFlight] = useState(4);
   const [license, setLicense] = useState(null);
   const [licenseKeyInput, setLicenseKeyInput] = useState('');
@@ -72,6 +75,9 @@ export default function AdminSettingsPage() {
         setOpsOverviewStyle(d.opsOverviewStyle || 'classic');
         setDnsServer(d.dnsServer || '');
         setCohesityAlertWindowDays(d.cohesityAlertWindowDays ?? 5);
+        setCohesityRunHistoryDays(d.cohesityRunHistoryDays ?? 90);
+        setCohesityRunRetentionDays(d.cohesityRunRetentionDays ?? 0);
+        setNetbackupJobHistoryDays(d.netbackupJobHistoryDays ?? 30);
         setPollerCallsInFlight(d.pollerCallsInFlight ?? 4);
       }
     }).finally(() => setLoading(false));
@@ -86,6 +92,9 @@ export default function AdminSettingsPage() {
         opsOverviewStyle,
         dnsServer,
         cohesityAlertWindowDays: Number(cohesityAlertWindowDays) || 0,
+        cohesityRunHistoryDays: Math.min(365, Math.max(30, Number(cohesityRunHistoryDays) || 90)),
+        cohesityRunRetentionDays: (Number(cohesityRunRetentionDays) || 0) === 0 ? 0 : Math.min(3650, Math.max(30, Number(cohesityRunRetentionDays))),
+        netbackupJobHistoryDays: Math.min(365, Math.max(7, Number(netbackupJobHistoryDays) || 30)),
         pollerCallsInFlight: Math.min(16, Math.max(1, Number(pollerCallsInFlight) || 4)),
       });
       window.dispatchEvent(new Event('platforms-changed'));
@@ -285,6 +294,33 @@ export default function AdminSettingsPage() {
               <input id="cohesity-alert-window" type="number" min="0" max="365" step="1" value={cohesityAlertWindowDays}
                 onChange={e => setCohesityAlertWindowDays(e.target.value)}
                 className="w-full max-w-[10rem] bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-xs text-ink focus:border-brand/60 outline-none tnum" />
+            </div>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <SettingRow label="Cohesity run history (days)" htmlFor="cohesity-run-history"
+                tip="How far back the Cohesity poller fetches protection runs. Raising it backfills the missing days at the next poll. Stored runs are kept until the retention below says otherwise.">
+                <input id="cohesity-run-history" type="number" min="30" max="365" step="1" value={cohesityRunHistoryDays}
+                  onChange={e => setCohesityRunHistoryDays(e.target.value)} className={numberCls} />
+                <p className="text-[11px] text-ink-muted mt-1">30 to 365, default 90. Fetch depth only; nothing is removed.</p>
+              </SettingRow>
+            </div>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <SettingRow label="Cohesity run retention (days)" htmlFor="cohesity-run-retention"
+                tip="0 keeps every stored protection run (the default, and how ICC has always behaved). A value from 30 to 3650 removes runs older than that after each poll.">
+                <input id="cohesity-run-retention" type="number" min="0" max="3650" step="1" value={cohesityRunRetentionDays}
+                  onChange={e => setCohesityRunRetentionDays(e.target.value)} className={numberCls} />
+                <p className="text-[11px] text-ink-muted mt-1">0 = keep everything (default). 30 to 3650 removes older runs.</p>
+              </SettingRow>
+            </div>
+
+            <div className="pt-2 border-t border-cohesity-border/60">
+              <SettingRow label="NetBackup job history (days)" htmlFor="netbackup-job-history"
+                tip="How far back the NetBackup poller fetches jobs and how long it keeps them. Rows older than this are removed at the next poll.">
+                <input id="netbackup-job-history" type="number" min="7" max="365" step="1" value={netbackupJobHistoryDays}
+                  onChange={e => setNetbackupJobHistoryDays(e.target.value)} className={numberCls} />
+                <p className="text-[11px] text-ink-muted mt-1">7 to 365, default 30. Rows older than this are removed.</p>
+              </SettingRow>
             </div>
 
             <div className="pt-2 border-t border-cohesity-border/60">

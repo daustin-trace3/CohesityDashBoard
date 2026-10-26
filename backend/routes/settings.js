@@ -340,6 +340,21 @@ router.put('/', (req, res, next) => {
       if (!(n >= 0 && n <= 365)) return res.status(400).json({ error: 'cohesityAlertWindowDays must be between 0 and 365' });
       setSetting('cohesity_alert_window_days', String(Math.round(n)));
     }
+    for (const [field, key, min, max] of [
+      ['cohesityRunHistoryDays', 'cohesity_run_history_days', 30, 365],
+      ['netbackupJobHistoryDays', 'netbackup_job_history_days', 7, 365],
+    ]) {
+      if (req.body?.[field] !== undefined) {
+        const n = Number(req.body[field]);
+        if (!(n >= min && n <= max)) return res.status(400).json({ error: `${field} must be between ${min} and ${max}` });
+        setSetting(key, String(Math.round(n)));
+      }
+    }
+    if (req.body?.cohesityRunRetentionDays !== undefined) {
+      const n = Number(req.body.cohesityRunRetentionDays);
+      if (!(n === 0 || (n >= 30 && n <= 3650))) return res.status(400).json({ error: 'cohesityRunRetentionDays must be 0 (keep everything) or between 30 and 3650' });
+      setSetting('cohesity_run_retention_days', String(Math.round(n)));
+    }
     if (req.body?.pollerCallsInFlight !== undefined) {
       const n = Number(req.body.pollerCallsInFlight);
       if (!(n >= 1 && n <= 16)) return res.status(400).json({ error: 'pollerCallsInFlight must be between 1 and 16' });

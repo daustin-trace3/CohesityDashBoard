@@ -195,7 +195,8 @@ function seedCohesity(db, { now, encrypt }) {
     }
   }
 
-  // ── Protection runs: 14 days, 6-10 jobs/cluster, 4 runs/day/job ─────────
+  // Protection runs: 100 days, 6-10 jobs/cluster, 4 runs/day/job for the
+  // newest 14 days, then 1 run/day/job.
   let protRunCount = 0;
   const protRunsByCluster = new Map();
   for (const cluster of clusters) {
@@ -204,8 +205,9 @@ function seedCohesity(db, { now, encrypt }) {
     const rows = [];
     for (let jobIdx = 1; jobIdx <= jobCount; jobIdx++) {
       const jobName = `${pick(rng, JOB_TYPES)}_${jobIdx}`;
-      for (let day = 0; day < 14; day++) {
-        for (let run = 0; run < 4; run++) {
+      for (let day = 0; day < 100; day++) {
+        const runsToday = day < 14 ? 4 : 1;
+        for (let run = 0; run < runsToday; run++) {
           const isLatest = day === 0 && run === 3;
           const startTime = new Date(now - (day * 24 + run * 6) * 3600000);
           const roll = rng();

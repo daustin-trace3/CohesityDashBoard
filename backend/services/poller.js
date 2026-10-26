@@ -11,7 +11,7 @@ const { fetchWorkloads, insertWorkloadSnapshot } = require('./workloads');
 const logger = require('../utils/logger');
 const { createPoller } = require('../core/pollerFramework');
 const pollerStatus = require('./pollerStatus');
-const { getCohesityAlertWindowDays } = require('./settings');
+const { getCohesityAlertWindowDays, getCohesityRunHistoryDays, getCohesityRunRetentionDays, getSetting, setSetting } = require('./settings');
 
 // Retention: delete metrics older than 90 days — runs daily at 02:00
 cron.schedule('0 2 * * *', () => {
@@ -372,10 +372,9 @@ function safeErrorMessage(err) {
   return 'Unknown error';
 }
 
-// Protection-run fetch sizing. The first poll of a cluster backfills 90 days;
-// after that, each poll only asks for runs since the last stored run (with an
+// Protection-run fetch sizing. The first poll of a cluster backfills the
+// configured history depth (cohesity_run_history_days, default 90); after that, each poll only asks for runs since the last stored run (with an
 // overlap), so requests stay small instead of re-pulling the whole window.
-const BACKFILL_DAYS = 90;
 const NUM_RUNS_BACKFILL = 2000;
 const NUM_RUNS_INCREMENTAL = 500;
 const INCREMENTAL_OVERLAP_MS = 6 * 60 * 60 * 1000; // re-fetch recent runs whose status may have changed
@@ -393,28 +392,42 @@ const smallWindowClusters = new Set();
 /**
  * Fetch window for a cluster's protection runs: from the newest stored run
  * minus an overlap — pushed back to the oldest run still in flight so its
- * final status is always picked up. Empty table → full 90-day backfill.
+ * final status is always picked up. Empty table: full backfill of the
+ * configured depth. A raised depth backfills once per cluster (marker).
  */
 // start_time is epoch seconds (pre-May-2026 pollers) or an ISO string — the
 // epoch-seconds epoch expression keeps window math correct for both.
 const START_EPOCH_SQL = "CAST(CASE WHEN start_time LIKE '20%' THEN strftime('%s', start_time) ELSE start_time END AS INTEGER)";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+function backfillMarkerKey(clusterId) { return `cohesity_runs_backfilled_days_${clusterId}`; }
+
 function runsFetchWindow(clusterId) {
   if (smallWindowClusters.has(clusterId)) {
     return {
-      sinceUsecs: (Date.now() - FALLBACK_WINDOW_DAYS * 24 * 60 * 60 * 1000) * 1000,
+      sinceUsecs: (Date.now() - FALLBACK_WINDOW_DAYS * DAY_MS) * 1000,
       numRuns: NUM_RUNS_INCREMENTAL,
       incremental: true,
     };
   }
-  const backfillMs = Date.now() - BACKFILL_DAYS * 24 * 60 * 60 * 1000;
+  const depth = getCohesityRunHistoryDays();
+  const backfillMs = Date.now() - depth * DAY_MS;
   const row = db.prepare(`
     SELECT MAX(${START_EPOCH_SQL}) AS newest,
+           MIN(${START_EPOCH_SQL}) AS oldest,
            MIN(CASE WHEN status IN ('kRunning', 'kAccepted') THEN ${START_EPOCH_SQL} END) AS oldestOpen
     FROM protection_runs WHERE cluster_id = ?
   `).get(clusterId);
   if (!row?.newest) {
-    return { sinceUsecs: backfillMs * 1000, numRuns: NUM_RUNS_BACKFILL, incremental: false };
+    return { sinceUsecs: backfillMs * 1000, numRuns: NUM_RUNS_BACKFILL, incremental: false, depth };
+  }
+  // Depth was raised after rows were stored: the oldest row is newer than the
+  // new floor, so fetch the missing stretch once (marker per cluster).
+  if (row.oldest * 1000 > backfillMs + DAY_MS) {
+    const marker = Number(getSetting(backfillMarkerKey(clusterId)));
+    if (!(marker >= depth)) {
+      return { sinceUsecs: backfillMs * 1000, numRuns: NUM_RUNS_BACKFILL, incremental: false, backfill: true, depth };
+    }
   }
   let sinceMs = row.newest * 1000 - INCREMENTAL_OVERLAP_MS;
   if (row.oldestOpen) {
@@ -425,7 +438,22 @@ function runsFetchWindow(clusterId) {
     if (openMs >= Date.now() - OPEN_RUN_MAX_LOOKBACK_MS && openMs < sinceMs) sinceMs = openMs;
   }
   if (sinceMs < backfillMs) sinceMs = backfillMs;
-  return { sinceUsecs: Math.floor(sinceMs) * 1000, numRuns: NUM_RUNS_INCREMENTAL, incremental: true };
+  return { sinceUsecs: Math.floor(sinceMs) * 1000, numRuns: NUM_RUNS_INCREMENTAL, incremental: true, depth };
+}
+
+/** Remove runs (and their replication legs) older than the history depth. */
+function pruneRunHistory(clusterId, depth = getCohesityRunHistoryDays()) {
+  const cutoffSec = Math.floor(Date.now() / 1000) - depth * 86400;
+  const runs = pruneInBatches(db, 'protection_runs', `cluster_id = ? AND ${START_EPOCH_SQL} < ?`, [clusterId, cutoffSec]);
+  const legs = pruneInBatches(
+    db, 'replication_runs',
+    'cluster_id = ? AND protection_run_id NOT IN (SELECT id FROM protection_runs WHERE cluster_id = ?)',
+    [clusterId, clusterId],
+  );
+  if (runs.deleted > 0 || legs.deleted > 0) {
+    logger.info(`[CohesityPoller] Pruned ${runs.deleted} protection run(s) and ${legs.deleted} replication run(s) older than ${depth} days for cluster ${clusterId}`);
+  }
+  return { runs: runs.deleted, replication: legs.deleted };
 }
 
 async function doPollCluster(cluster) {
@@ -547,6 +575,9 @@ async function doPollCluster(cluster) {
     if (protRuns !== null) {
       try {
         upsertProtectionRuns(cluster, protRuns);
+        // Any full-depth fetch (first poll or a raised depth) records the depth reached, so a
+        // cluster younger than the depth does not re-run the 2000-run backfill on every poll.
+        if (!window.incremental && !usedFallback && window.depth) setSetting(backfillMarkerKey(cluster.id), String(window.depth));
       } catch (err) {
         logger.error(`[CohesityPoller] Protection runs upsert failed for cluster ${cluster.id}:`, err.message);
       }
@@ -595,6 +626,15 @@ async function doPollCluster(cluster) {
     } else if (protectionData.status !== 'fulfilled' && smallWindowClusters.has(cluster.id)) {
       // Pinned cluster failed even at the small window — already at minimum.
       logger.error(`[CohesityPoller] Protection runs fetch failed for cluster ${cluster.id}:`, safeErrorMessage(protectionData.reason));
+    }
+
+    // Retention is opt-in (cohesity_run_retention_days, default 0 = keep everything):
+    // existing installs have never pruned protection_runs and must not start silently.
+    try {
+      const retention = getCohesityRunRetentionDays();
+      if (retention > 0) pruneRunHistory(cluster.id, retention);
+    } catch (err) {
+      logger.error(`[CohesityPoller] Run history prune failed for cluster ${cluster.id}:`, err.message);
     }
   } finally {
     // Rebuild the cached dashboard payload so the next page load is instant.
@@ -692,4 +732,4 @@ async function triggerPoll(clusterId) {
   await pollCluster(cluster);
 }
 
-module.exports = { initPoller, scheduleCluster, cancelCluster, pollCluster, triggerPoll, _upsertAlerts: upsertAlerts };
+module.exports = { initPoller, scheduleCluster, cancelCluster, pollCluster, triggerPoll, _upsertAlerts: upsertAlerts, _runsFetchWindow: runsFetchWindow, _pruneRunHistory: pruneRunHistory };

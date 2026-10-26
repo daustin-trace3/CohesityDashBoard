@@ -85,6 +85,9 @@ const DEFAULTS = {
   lm_webhook_rate_per_min: '600',
   dns_server: '',
   cohesity_alert_window_days: '5',
+  cohesity_run_history_days: '90',
+  cohesity_run_retention_days: '0',
+  netbackup_job_history_days: '30',
   poller_calls_in_flight: '4',
   smtp_enabled: '0',
   smtp_host: '',
@@ -196,6 +199,9 @@ function getPlatformSettings() {
     opsOverviewStyle: getSetting('ops_overview_style') || 'classic',
     dnsServer: getSetting('dns_server') || '',
     cohesityAlertWindowDays: getCohesityAlertWindowDays(),
+    cohesityRunHistoryDays: getCohesityRunHistoryDays(),
+    cohesityRunRetentionDays: getCohesityRunRetentionDays(),
+    netbackupJobHistoryDays: getNetbackupJobHistoryDays(),
     pollerCallsInFlight: require('../core/concurrency').callsInFlight(null),
   };
 }
@@ -315,6 +321,17 @@ function getCohesityAlertWindowDays() {
   return (n >= 0 && n <= 365) ? Math.round(n) : 5;
 }
 
+/** Backup history depth per platform: how far back the poller fetches. */
+function getCohesityRunHistoryDays() { return numSetting('cohesity_run_history_days', 90, 30, 365); }
+/** Cohesity run retention: 0 (default) keeps every stored run; 30..3650 prunes older rows after each poll.
+ *  Separate from the fetch depth on purpose: stored history is never deleted unless an admin turns this on. */
+function getCohesityRunRetentionDays() {
+  const raw = getSetting('cohesity_run_retention_days');
+  if (raw == null || String(raw).trim() === '' || Number(raw) === 0) return 0;
+  return numSetting('cohesity_run_retention_days', 0, 30, 3650);
+}
+function getNetbackupJobHistoryDays() { return numSetting('netbackup_job_history_days', 30, 7, 365); }
+
 function getServiceStatusSettings() {
   const perMinute = Number(getSetting('service_status_analyses_per_minute'));
   const dedupe = Number(getSetting('service_status_dedupe_minutes'));
@@ -347,5 +364,6 @@ module.exports = {
   getSetting, setSetting, getSecretSetting, secretSource, getHeliosApiKey,
   getAnalysisTtlHours, getAiSettings, getLicenseSettings, getPlatformSettings,
   getNotificationSettings, getSmtpPassword, getServiceStatusSettings, getOpsAgentSettings, getObservationSettings, getCohesityAlertWindowDays,
+  getCohesityRunHistoryDays, getCohesityRunRetentionDays, getNetbackupJobHistoryDays,
   getIccBaseUrl, getTeamsWebhook,
 };
