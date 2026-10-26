@@ -13,6 +13,8 @@ const router = express.Router();
 
 function fail(res, err) {
   if (err.code === 'NOT_FOUND') return res.status(404).json({ error: err.message });
+  if (err.code === 'NOTE_REQUIRED') return res.status(400).json({ error: err.message, field: 'note' });
+  if (err.code === 'BAD_DAYS') return res.status(400).json({ error: err.message, field: 'days' });
   if (err.code === 'LLM_NOT_CONFIGURED') return res.status(503).json({ error: err.message });
   if (err.code === 'LLM_RATE_LIMITED') return res.status(429).json({ error: err.message, retryAfter: err.retryAfter });
   if (err.code === 'SMTP_NOT_CONFIGURED' || err.code === 'NO_RECIPIENTS') return res.status(409).json({ error: err.message });
@@ -38,7 +40,8 @@ router.get('/incidents', (req, res, next) => {
   try {
     const state = ['open', 'resolved', 'all'].includes(req.query.state) ? req.query.state : 'open';
     const limit = Number(req.query.limit) || 100;
-    res.json(agent.listIncidents({ state, limit }));
+    const needsHuman = req.query.needsHuman === '1' || req.query.needsHuman === 'true';
+    res.json(agent.listIncidents({ state, limit, needsHuman }));
   } catch (err) { next(err); }
 });
 
@@ -58,11 +61,27 @@ router.post('/incidents/:id/resend', async (req, res, next) => {
   try { res.json(await agent.resend(Number(req.params.id))); } catch (err) { if (!fail(res, err)) next(err); }
 });
 
+const actor = (req) => req.auth?.user?.username || req.user?.username || 'manual';
+const noteOf = (req) => (req.body && typeof req.body.note === 'string' ? req.body.note : null);
+
 router.post('/incidents/:id/resolve', (req, res, next) => {
   try {
-    const by = req.auth?.user?.username || req.user?.username || 'manual';
-    res.json(agent.resolve(Number(req.params.id), by));
+    res.json(agent.resolve(Number(req.params.id), actor(req), noteOf(req)));
   } catch (err) { if (!fail(res, err)) next(err); }
+});
+
+/** Acknowledge: someone has it. Stops reminders; the incident stays open. */
+router.post('/incidents/:id/ack', (req, res, next) => {
+  try { res.json(agent.acknowledge(Number(req.params.id), actor(req), noteOf(req))); } catch (err) { if (!fail(res, err)) next(err); }
+});
+
+router.post('/incidents/:id/unack', (req, res, next) => {
+  try { res.json(agent.unacknowledge(Number(req.params.id), actor(req))); } catch (err) { if (!fail(res, err)) next(err); }
+});
+
+/** Snooze: pause reminders for 1 to 90 days; 0 clears the snooze. */
+router.post('/incidents/:id/snooze', (req, res, next) => {
+  try { res.json(agent.snooze(Number(req.params.id), req.body && req.body.days, actor(req))); } catch (err) { if (!fail(res, err)) next(err); }
 });
 
 /** Run one tick now, even when the agent is switched off (manual check). */

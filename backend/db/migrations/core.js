@@ -699,4 +699,21 @@ module.exports = [
       `);
     },
   },
+  // Sticky incidents: a repeating condition stays open until a person resolves
+  // it; acknowledge, snooze, reminders and resolution notes.
+  {
+    version: 30, // feat/multi-tenant numbers this v31
+    up(db) {
+      const cols = new Set(db.prepare('PRAGMA table_info(ops_incidents)').all().map((c) => c.name));
+      if (!cols.has('requires_human')) db.exec('ALTER TABLE ops_incidents ADD COLUMN requires_human INTEGER NOT NULL DEFAULT 0');
+      if (!cols.has('acknowledged_at')) db.exec('ALTER TABLE ops_incidents ADD COLUMN acknowledged_at TEXT');
+      if (!cols.has('acknowledged_by')) db.exec('ALTER TABLE ops_incidents ADD COLUMN acknowledged_by TEXT');
+      if (!cols.has('snoozed_until')) db.exec('ALTER TABLE ops_incidents ADD COLUMN snoozed_until TEXT');
+      if (!cols.has('reminder_at')) db.exec('ALTER TABLE ops_incidents ADD COLUMN reminder_at TEXT');
+      if (!cols.has('reminder_count')) db.exec('ALTER TABLE ops_incidents ADD COLUMN reminder_count INTEGER NOT NULL DEFAULT 0');
+      if (!cols.has('occurrences')) db.exec('ALTER TABLE ops_incidents ADD COLUMN occurrences INTEGER NOT NULL DEFAULT 1');
+      if (!cols.has('notes_json')) db.exec('ALTER TABLE ops_incidents ADD COLUMN notes_json TEXT');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_ops_incidents_human ON ops_incidents(requires_human, state)');
+    },
+  },
 ];

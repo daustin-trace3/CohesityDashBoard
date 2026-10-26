@@ -245,7 +245,7 @@ describe('one-off patterns', () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
       platform: 'fakeplat', sourceKey: `obs-pattern:${OBS}:fk:1:box:b1`, severity: 'warning', host: 'b1',
-      type: 'fake-hot-pattern', kind: 'observation-pattern', observationId: null, firstSeen: at(2),
+      type: 'fake-hot-pattern', kind: 'observation-pattern', observationId: null, firstSeen: at(10), groupKey: `pattern:${OBS}:fk:1:box:b1`,
     });
     expect(items[0].message).toBe('Box b1 load ran hot in 3 short bursts in the last 7 days (longest 0 min, peak 95%); each cleared on its own.');
     const later = new Date(T0 + 9 * 86400000).toISOString();

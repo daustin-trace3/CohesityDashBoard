@@ -261,6 +261,9 @@ router.put('/', (req, res, next) => {
       if (a.evidenceResolve !== undefined) setSetting('ops_agent_evidence_resolve', a.evidenceResolve ? '1' : '0');
       if (a.patternMin !== undefined) { const n = Number(a.patternMin); setSetting('ops_agent_pattern_min', n >= 2 && n <= 20 ? String(Math.round(n)) : ''); }
       if (a.patternDays !== undefined) { const n = Number(a.patternDays); setSetting('ops_agent_pattern_days', n >= 1 && n <= 90 ? String(Math.round(n)) : ''); }
+      if (a.stickyRepeats !== undefined) setSetting('ops_agent_sticky_repeats', a.stickyRepeats ? '1' : '0');
+      if (a.reminderHours !== undefined) { const n = Number(a.reminderHours); setSetting('ops_agent_reminder_hours', n >= 0 && n <= 168 ? String(Math.round(n)) : ''); }
+      if (a.patternCooldownDays !== undefined) { const n = Number(a.patternCooldownDays); setSetting('ops_agent_pattern_cooldown_days', n >= 0 && n <= 90 ? String(Math.round(n)) : ''); }
       if (a.capabilityMode !== undefined) {
         if (!['playbook', 'tools'].includes(a.capabilityMode)) return res.status(400).json({ error: 'capabilityMode must be playbook or tools' });
         setSetting('ops_agent_capability_mode', a.capabilityMode);

@@ -50,7 +50,7 @@ const TAB_FIELDS = {
   context: ['llmEstateContext', 'llmFlagUnprotected', 'llmAnalysisTtlHours', 'appServiceBackupStaleHours'],
   status: ['serviceStatusMode', 'serviceStatusStaleMinutes', 'serviceStatusAiEnabled', 'serviceStatusAnalysesPerMinute', 'serviceStatusDedupeMinutes'],
   agent: ['agentEnabled', 'agentName', 'agentGrouping', 'agentMinSeverity', 'agentHoldMinutes', 'agentAnalysesPerHour',
-    'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays',
+    'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays', 'agentStickyRepeats', 'agentReminderHours', 'agentPatternCooldownDays',
     'obsEnabled', 'obsSustainSamples', 'obsClearSamples', 'obsPatternMin', 'obsPatternDays', 'obsHistoryDays', 'obsDisabledIds'],
   email: ['agentEmailEnabled', 'agentRecipients'],
 };
@@ -62,7 +62,7 @@ const DEFAULT_FORM = {
   serviceStatusAiEnabled: true, serviceStatusAnalysesPerMinute: 3, serviceStatusDedupeMinutes: 60,
   agentEnabled: false, agentName: 'ICC Operations Agent', agentGrouping: 'platform', agentMinSeverity: 'warning',
   agentHoldMinutes: 10, agentAnalysesPerHour: 20, agentRenotifyMinutes: 60, agentAutoResolveMinutes: 30,
-  agentEvidenceResolve: true, agentPatternMin: 3, agentPatternDays: 14,
+  agentEvidenceResolve: true, agentPatternMin: 3, agentPatternDays: 14, agentStickyRepeats: true, agentReminderHours: 24, agentPatternCooldownDays: 14,
   agentEmailEnabled: true, agentRecipients: '',
   obsEnabled: true, obsSustainSamples: 3, obsClearSamples: 2, obsPatternMin: 3, obsPatternDays: 7, obsHistoryDays: 90, obsDisabledIds: [],
 };
@@ -93,6 +93,9 @@ function formFromSettings(d) {
     agentEvidenceResolve: a.evidenceResolve !== false,
     agentPatternMin: a.patternMin ?? 3,
     agentPatternDays: a.patternDays ?? 14,
+    agentStickyRepeats: a.stickyRepeats !== false,
+    agentReminderHours: a.reminderHours ?? 24,
+    agentPatternCooldownDays: a.patternCooldownDays ?? 14,
     agentEmailEnabled: a.emailEnabled !== false,
     agentRecipients: a.recipients || '',
     obsEnabled: a.observations?.enabled !== false,
@@ -132,6 +135,7 @@ function payloadFor(tab, f) {
           holdMinutes: Number(f.agentHoldMinutes), analysesPerHour: Number(f.agentAnalysesPerHour) || 20,
           renotifyMinutes: Number(f.agentRenotifyMinutes), autoResolveMinutes: Number(f.agentAutoResolveMinutes),
           evidenceResolve: f.agentEvidenceResolve, patternMin: Number(f.agentPatternMin), patternDays: Number(f.agentPatternDays),
+          stickyRepeats: f.agentStickyRepeats, reminderHours: Number(f.agentReminderHours), patternCooldownDays: Number(f.agentPatternCooldownDays),
           observations: {
             enabled: f.obsEnabled, sustainSamples: Number(f.obsSustainSamples), clearSamples: Number(f.obsClearSamples),
             patternMin: Number(f.obsPatternMin), patternDays: Number(f.obsPatternDays), historyDays: Number(f.obsHistoryDays),
@@ -612,6 +616,18 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
                 <SettingRow label="Repeat window (days)" htmlFor="agent-pattern-days" dirty={isDirty('agentPatternDays')}
                   tip="How far back the agent counts occurrences of the same incident key. 1 to 90.">
                   <input id="agent-pattern-days" type="number" min={1} max={90} value={form.agentPatternDays} onChange={set('agentPatternDays')} className={numberCls} />
+                </SettingRow>
+                <SettingRow label="Keep repeats open until a person resolves them" htmlFor="agent-sticky" dirty={isDirty('agentStickyRepeats')}
+                  tip="When on, an incident the agent calls a repeat is never closed by the agent. It stays open until someone resolves it with a note. Incidents opened on repeated short bursts of a watched signal always stay open this way.">
+                  <Toggle id="agent-sticky" checked={form.agentStickyRepeats} onChange={set('agentStickyRepeats')} />
+                </SettingRow>
+                <SettingRow label="Remind every (hours)" htmlFor="agent-reminder" dirty={isDirty('agentReminderHours')}
+                  tip="An incident that waits on a person is emailed again this often until someone acknowledges or resolves it. Snoozing pauses the reminders. 0 turns reminders off. 0 to 168.">
+                  <input id="agent-reminder" type="number" min={0} max={168} value={form.agentReminderHours} onChange={set('agentReminderHours')} className={numberCls} />
+                </SettingRow>
+                <SettingRow label="Cooldown after a person resolves (days)" htmlFor="agent-cooldown" dirty={isDirty('agentPatternCooldownDays')}
+                  tip="After a person resolves a repeat, the same condition is not held open again until it has repeated the full number of times since the resolve, or this many days have passed. 0 to 90.">
+                  <input id="agent-cooldown" type="number" min={0} max={90} value={form.agentPatternCooldownDays} onChange={set('agentPatternCooldownDays')} className={numberCls} />
                 </SettingRow>
               </SettingGroup>
               <SettingGroup title="Observations">

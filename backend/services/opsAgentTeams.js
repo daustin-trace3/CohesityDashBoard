@@ -53,7 +53,8 @@ function footer(link, agentName) {
 /**
  * The incident card. inc is an ops_incidents row (platforms as its JSON
  * string), analysis the stored triage. opts: agentName, baseUrl, tenantId,
- * update (true when this incident was posted before).
+ * update (true when this incident was posted before), reminder (the
+ * reminder number when this post is a reminder).
  */
 function buildCard(inc, analysis, opts = {}) {
   const a = analysis || {};
@@ -66,7 +67,7 @@ function buildCard(inc, analysis, opts = {}) {
 
   const body = [
     text(`${sev} | ${a.title || inc.title || `Incident #${inc.id}`}`, { size: 'Medium', weight: 'Bolder', color: severityColor(inc.severity) }),
-    text(`${agentName}, incident #${inc.id}${opts.update ? ' (update)' : ''}`, { isSubtle: true, spacing: 'None' }),
+    text(`${agentName}, incident #${inc.id}${opts.reminder ? ` (reminder ${opts.reminder})` : opts.update ? ' (update)' : ''}`, { isSubtle: true, spacing: 'None' }),
   ];
   if (a.human_required === true) {
     body.push(text(`Human required${a.human_reason ? `: ${a.human_reason}` : ''}`, { weight: 'Bolder', color: 'Attention' }));
@@ -75,6 +76,7 @@ function buildCard(inc, analysis, opts = {}) {
   if (inc.host) facts.push({ title: 'Host', value: String(inc.host) });
   if (labels.length) facts.push({ title: 'Platforms', value: labels.join(', ') });
   if (a.classification) facts.push({ title: 'Classification', value: `${a.classification} (${a.confidence || 'low'} confidence)` });
+  if (inc.requires_human && !inc.acknowledged_at) facts.push({ title: 'Awaiting investigation', value: 'yes' });
   if (facts.length) body.push({ type: 'FactSet', facts });
 
   const lines = String(a.summary || '').split('\n').map((s) => s.trim()).filter(Boolean).slice(0, SUMMARY_LINES);

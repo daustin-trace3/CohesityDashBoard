@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings } from 'lucide-react';
+import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings, Bell, BellOff, Clock } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import WorkerChip from '../../components/WorkerChip';
 import { useToast } from '../../components/ui/Toaster';
 import { useTableControls, SortTh, TablePager } from '../../components/ui/tableTools';
 import Sparkline from '../../components/ops/Sparkline';
+import ResolveNoteDialog from '../../components/ops/ResolveNoteDialog';
 import ObservationModal, { OBS_STATE_TONE, fmtObs, fmtMinutes } from '../../components/ops/ObservationModal';
 
 const REFRESH_MS = 60_000;   // floor: a full reload even when nothing changed
@@ -21,7 +22,10 @@ const STATE_META = {
   resolved: { label: 'Resolved', tone: 'neutral', hint: 'Every alert cleared or closed by hand' },
 };
 const CLASS_TONE = { incident: 'crit', recurring: 'warn', 'one-off': 'info', noise: 'neutral', 'self-cleared': 'neutral', 'self-healed': 'ok' };
-const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', source: 'Source', host: 'Host', site: 'Site', location: 'Probe location', 'network-burst': 'Link-down burst' };
+const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', source: 'Source', host: 'Host', site: 'Site', location: 'Probe location', 'network-burst': 'Link-down burst', pattern: 'Pattern' };
+const SNOOZE_DAYS = [1, 3, 7, 14, 30];
+const fmtDays = (n) => `${n} day${n === 1 ? '' : 's'}`;
+const fmtLasted = (m) => (m == null ? '-' : m >= 60 ? `${(m / 60).toFixed(1)} h` : `${m} min`);
 /** The run row is written when a tick ends, so a tick that hangs leaves
  *  "last tick" frozen while its work still shows up. This says one is in
  *  flight, and turns red when it has been in flight too long to be normal. */
@@ -145,10 +149,12 @@ function AlertMessage({ text }) {
 
 const footBtn = 'flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink transition-colors disabled:opacity-50 cursor-pointer';
 
-function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpenObservation }) {
+function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpenObservation, reminderHours = 0 }) {
   const [inc, setInc] = useState(null);
   const [failed, setFailed] = useState(null);
   const [busy, setBusy] = useState(null);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const [resolving, setResolving] = useState(false);
   const { toast } = useToast();
 
   const load = useCallback(() => client.get(`/ops-agent/incidents/${id}`)
@@ -156,16 +162,23 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
     .catch((e) => setFailed(e?.response?.data?.error || 'Failed to load incident.')), [id]);
   useEffect(() => { load(); }, [load, pulse]);
 
-  const act = async (verb, label) => {
+  const act = async (verb, label, body) => {
     setBusy(verb);
     try {
-      const { data } = await client.post(`/ops-agent/incidents/${id}/${verb}`);
+      const { data } = await client.post(`/ops-agent/incidents/${id}/${verb}`, body);
       setInc(data);
       onChanged?.();
       toast({ type: 'success', title: label });
+      return true;
     } catch (e) {
       toast({ type: 'error', title: `${label} failed`, message: e?.response?.data?.error || 'Try again.' });
+      return false;
     } finally { setBusy(null); }
+  };
+  const doSnooze = (days) => { setSnoozeOpen(false); act('snooze', days ? `Snoozed for ${fmtDays(days)}` : 'Snooze cleared', { days }); };
+  const doResolve = async (note) => {
+    const ok = await act('resolve', 'Incident resolved', note ? { note } : {});
+    if (ok) setResolving(false);
   };
 
   const a = inc?.analysis;
@@ -176,6 +189,11 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
   const observedEpisodes = Array.isArray(inc?.evidence?.observations?.episodes) ? inc.evidence.observations.episodes : [];
   const observedHistory = Array.isArray(inc?.evidence?.observations?.history) ? inc.evidence.observations.history : [];
   const openAlerts = inc ? inc.alerts.filter((x) => !x.clearedAt).length : 0;
+  const isOpen = !!inc && inc.state !== 'resolved';
+  const snoozed = !!(inc && (inc.snoozed || (inc.snoozedUntil && Date.parse(inc.snoozedUntil) > Date.now())));
+  const awaiting = !!(inc && inc.awaitingHuman);
+  const patternBursts = Array.isArray(inc?.evidence?.pattern?.bursts) ? inc.evidence.pattern.bursts : [];
+  const notes = Array.isArray(inc?.notes) ? inc.notes : [];
 
   const badges = inc && (
     <>
@@ -184,6 +202,10 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
       {inc.classification && <Badge tone={CLASS_TONE[inc.classification] || 'neutral'}>{inc.classification}{inc.confidence ? ` · ${inc.confidence} confidence` : ''}</Badge>}
       {a?.source === 'fallback' && <Badge tone="warn">rule-based digest</Badge>}
       {inc.baseline && <Badge tone="neutral">baseline</Badge>}
+      {awaiting && <Badge tone="crit">awaiting investigation</Badge>}
+      {inc.acknowledgedAt && <span title={new Date(inc.acknowledgedAt).toLocaleString()}><Badge tone="warn">acknowledged by {inc.acknowledgedBy || 'a user'}</Badge></span>}
+      {snoozed && inc.snoozedUntil && <span title={new Date(inc.snoozedUntil).toLocaleString()}><Badge tone="neutral">snoozed until {new Date(inc.snoozedUntil).toLocaleDateString()}</Badge></span>}
+      {inc.reminderCount > 0 && <span title={inc.reminderAt ? new Date(inc.reminderAt).toLocaleString() : ''}><Badge tone="info">reminder {inc.reminderCount} sent{inc.reminderAt ? ` ${timeAgo(inc.reminderAt)}` : ''}</Badge></span>}
       {inc.humanRequired === true && <Badge tone="crit">human required</Badge>}
       {inc.humanRequired === false && <Badge tone="ok">no human needed</Badge>}
       {inc.healAttempted && <Badge tone="info">re-poll attempted</Badge>}
@@ -201,8 +223,35 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
       icon={Bot} onClose={onClose}
       footer={inc && (
         <>
-          {inc.state !== 'resolved' && (
-            <button onClick={() => act('resolve', 'Incident resolved')} disabled={!!busy} className={footBtn}>
+          {isOpen && inc.requiresHuman && (
+            inc.acknowledgedAt
+              ? (
+                <button onClick={() => act('unack', 'Acknowledgement removed')} disabled={!!busy} className={footBtn}>
+                  <BellOff size={13} /> Unacknowledge
+                </button>
+              ) : (
+                <button onClick={() => act('ack', 'Incident acknowledged')} disabled={!!busy} className={footBtn}>
+                  <Bell size={13} /> Acknowledge
+                </button>
+              )
+          )}
+          {isOpen && inc.requiresHuman && (
+            <div className="relative">
+              <button onClick={() => setSnoozeOpen((v) => !v)} disabled={!!busy} className={footBtn} aria-haspopup="menu" aria-expanded={snoozeOpen}>
+                <Clock size={13} /> Snooze
+              </button>
+              {snoozeOpen && (
+                <div role="menu" className="absolute bottom-full right-0 mb-1 w-40 rounded-lg border border-cohesity-border bg-surface-raised shadow-lg py-1 z-10">
+                  {SNOOZE_DAYS.map((d) => (
+                    <button key={d} role="menuitem" onClick={() => doSnooze(d)} className="block w-full text-left px-3 py-1.5 text-[13px] text-ink-muted hover:text-ink hover:bg-surface-overlay cursor-pointer">{fmtDays(d)}</button>
+                  ))}
+                  {snoozed && <button role="menuitem" onClick={() => doSnooze(0)} className="block w-full text-left px-3 py-1.5 text-[13px] text-brand hover:bg-surface-overlay cursor-pointer border-t border-cohesity-border">Clear snooze</button>}
+                </div>
+              )}
+            </div>
+          )}
+          {isOpen && (
+            <button onClick={() => setResolving(true)} disabled={!!busy} className={footBtn}>
               <CheckCircle2 size={13} /> Resolve
             </button>
           )}
@@ -281,6 +330,61 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
                     <Fact label="Incident id">{inc.id}</Fact>
                   </dl>
                 </Section>
+
+                {inc.requiresHuman && (
+                  <div className="mb-4 rounded-lg border border-status-crit/40 bg-status-crit/10 p-4">
+                    <p className="text-xs font-bold text-status-crit mb-1">Why this stays open</p>
+                    <p className="text-[11px] text-ink-muted mb-2">
+                      {agentName} does not close this incident, even when its alerts clear. It stays open until a person resolves it with a note.
+                      {reminderHours > 0
+                        ? ` Reminders go out every ${reminderHours} hour${reminderHours === 1 ? '' : 's'} until it is acknowledged or resolved.`
+                        : ' Reminders are off.'}
+                    </p>
+                    {patternBursts.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-[11px]">
+                          <thead><tr className="text-left text-ink-faint border-b border-cohesity-border"><th className="py-1 pr-3 font-semibold">Started</th><th className="py-1 pr-3 font-semibold">Lasted</th><th className="py-1 font-semibold">Peak</th></tr></thead>
+                          <tbody>
+                            {patternBursts.map((b, i) => (
+                              <tr key={i} className="border-b border-cohesity-border/40 last:border-0">
+                                <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{b.openedAt ? new Date(b.openedAt).toLocaleString() : '-'}</td>
+                                <td className="py-1 pr-3 text-ink-muted tnum whitespace-nowrap">{fmtLasted(b.minutes)}</td>
+                                <td className="py-1 text-ink-muted tnum">{b.peak != null ? `${fmtObs(b.peak, '')}${inc.evidence.pattern.unit || ''}` : '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : Array.isArray(inc.recurrence?.occurrences) && inc.recurrence.occurrences.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-[11px]">
+                          <thead><tr className="text-left text-ink-faint border-b border-cohesity-border"><th className="py-1 pr-3 font-semibold">Opened</th><th className="py-1 pr-3 font-semibold">Lasted</th><th className="py-1 font-semibold">Closed by</th></tr></thead>
+                          <tbody>
+                            {inc.recurrence.occurrences.map((o) => (
+                              <tr key={o.id} className="border-b border-cohesity-border/40 last:border-0">
+                                <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{new Date(o.openedAt).toLocaleString()}</td>
+                                <td className="py-1 pr-3 text-ink-muted tnum whitespace-nowrap">{fmtLasted(o.minutesOpen)}</td>
+                                <td className="py-1 text-ink-muted">{o.closedBy}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                    {notes.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-[11px] uppercase tracking-wide text-ink-faint mb-1">Notes</p>
+                        <ul className="space-y-1 text-[12px]">
+                          {notes.map((n, i) => (
+                            <li key={i} className="text-ink-muted">
+                              <span className="text-ink-faint">{n.at ? new Date(n.at).toLocaleString() : ''} {n.by || ''} {n.kind || ''}:</span> {n.text}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {inc.recurrence?.isPattern && (
                   <div className="mb-4 rounded-lg border border-status-warn/40 bg-status-warn/10 p-4">
@@ -409,6 +513,9 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
             </Section>
           </>
         )}
+      {resolving && inc && (
+        <ResolveNoteDialog required={!!inc.requiresHuman} busy={busy === 'resolve'} onSubmit={doResolve} onCancel={() => setResolving(false)} />
+      )}
     </ModalShell>
   );
 }
@@ -439,7 +546,7 @@ export default function OpsAgentPage() {
 
   const load = useCallback(() => Promise.allSettled([
     client.get('/ops-agent/status'),
-    client.get('/ops-agent/incidents', { params: { state: scope, limit: 300 } }),
+    client.get('/ops-agent/incidents', { params: scope === 'needs' ? { state: 'open', needsHuman: 1, limit: 300 } : { state: scope, limit: 300 } }),
   ]).then(([s, i]) => {
     if (s.status === 'fulfilled') setStatus(s.value.data);
     if (i.status === 'fulfilled') setRows(i.value.data); else setRows([]);
@@ -525,9 +632,10 @@ export default function OpsAgentPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-3 mb-4">
         <Stat label="Collecting" value={counts.collecting || 0} tone="text-status-info" />
         <span className="block" title="Incidents the agent opened on its own observations that have not yet held long enough to triage"><Stat label="Watching" value={counts.watching || 0} tone="text-status-info" /></span>
+        <span className="block" title="Incidents that stay open until a person looks: not acknowledged and not snoozed"><Stat label="Awaiting investigation" value={counts.awaitingHuman || 0} tone={counts.awaitingHuman > 0 ? 'text-status-crit' : undefined} /></span>
         <Stat label="Triaged, not emailed" value={counts.triaged || 0} tone="text-status-warn" />
         <Stat label="Notified" value={counts.notified || 0} tone="text-status-ok" />
         <Stat label="Resolved (24h)" value={counts.resolved24h || 0} />
@@ -536,10 +644,10 @@ export default function OpsAgentPage() {
 
       <Panel title="Incidents" icon={Bot}>
         <div className="flex items-center gap-2 mb-3 flex-wrap">
-          {['open', 'resolved', 'all'].map((k) => (
+          {['open', 'needs', 'resolved', 'all'].map((k) => (
             <button key={k} onClick={() => setScope(k)}
               className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors cursor-pointer ${scope === k ? 'bg-brand/15 border-brand/40 text-brand' : 'border-cohesity-border text-ink-muted hover:text-ink'}`}>
-              {k === 'open' ? 'Open' : k === 'resolved' ? 'Resolved' : 'All'}
+              {k === 'open' ? 'Open' : k === 'needs' ? 'Needs a person' : k === 'resolved' ? 'Resolved' : 'All'}
             </button>
           ))}
           <input value={ctl.q} onChange={(e) => ctl.setQ(e.target.value)} placeholder="Filter by id, title, host, platform, classification..."
@@ -571,6 +679,10 @@ export default function OpsAgentPage() {
                         <td className="py-2 pr-3"><Badge tone={sevTone(r.severity)}>{String(r.severity).toUpperCase()}</Badge></td>
                         <td className="py-2 pr-3 max-w-[360px]">
                           <button onClick={() => setOpenId(r.id)} className="text-brand hover:underline cursor-pointer text-left">{r.title || r.host || r.key}</button>
+                          {r.kind === 'pattern' && r.occurrences > 1 && <span className="ml-1.5 text-[10px] font-semibold text-status-warn tnum" title={`${r.occurrences} bursts so far`}>x{r.occurrences}</span>}
+                          {r.awaitingHuman && <span className="ml-1.5"><Badge tone="crit">awaiting investigation</Badge></span>}
+                          {r.acknowledgedAt && <span className="ml-1.5" title={new Date(r.acknowledgedAt).toLocaleString()}><Badge tone="warn">acknowledged by {r.acknowledgedBy || 'a user'}</Badge></span>}
+                          {r.snoozed && r.snoozedUntil && <span className="ml-1.5" title={new Date(r.snoozedUntil).toLocaleString()}><Badge tone="neutral">snoozed until {new Date(r.snoozedUntil).toLocaleDateString()}</Badge></span>}
                           <span className="ml-1.5 text-[10px] text-ink-faint">{KIND_LABEL[r.kind] || ''}{r.humanRequired ? ' · human required' : ''}</span>
                           {r.isPattern && <span className="ml-1.5 text-[10px] font-semibold text-status-warn" title={`The same incident has opened ${r.repeatCount} times inside the repeat window. The repetition is the thing to investigate.`}>repeat {r.repeatCount}x</span>}
                           {r.summary && <p className="text-[11px] text-ink-faint line-clamp-1" title={r.summary}>{r.summary.split('\n').filter(Boolean).join('; ')}</p>}
@@ -591,7 +703,7 @@ export default function OpsAgentPage() {
       </Panel>
 
       {obsOpenId != null && <ObservationModal id={obsOpenId} Shell={ModalShell} onClose={() => setObsOpenId(null)} />}
-      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} onOpenObservation={setObsOpenId} />}
+      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} onOpenObservation={setObsOpenId} reminderHours={Number(s?.settings?.reminderHours) || 0} />}
     </div>
   );
 }

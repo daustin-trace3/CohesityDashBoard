@@ -8,6 +8,10 @@
 //   - a VM with a CPU episode still watching (2 elevated samples, not promoted)
 //   - a VM with four closed one-off CPU bursts in the last 7 days (in pattern)
 //   - an ESX host with a memory episode that closed yesterday (sustained, 90 min)
+//   - a second VM with five one-off CPU bursts in the last 6 days: its sticky
+//     pattern incident is emailed 30 h ago, reminded once, and still waiting
+//     on a person; the four-burst VM above has the same kind of incident,
+//     acknowledged by "demo" two hours ago with a note
 // The matching vcenter_vms / vcenter_hosts usage columns are set so the
 // inventory pages agree with the episodes. The demo has no agent tick, so the
 // scenario also opens the incidents the tick would have opened (watching,
@@ -17,7 +21,7 @@
 // Re-runnable: it deletes the observer rows for these four observers and the
 // incidents made only of their alerts first.
 const STEP_MS = 15 * 60 * 1000;
-const PREFERRED = { cpuCritical: 'app-db-01', memDegrading: 'web-02', cpuWatching: 'batch-01', cpuPattern: 'report-01' };
+const PREFERRED = { cpuCritical: 'app-db-01', memDegrading: 'web-02', cpuWatching: 'batch-01', cpuPattern: 'report-01', cpuPatternSticky: 'file-01' };
 const OBSERVER_IDS = ['vcenter:vm-cpu', 'vcenter:vm-memory', 'vcenter:host-cpu', 'vcenter:host-memory'];
 const SETTINGS = { enabled: true, sustainSamples: 3, clearSamples: 2, patternMin: 3, patternDays: 7, historyDays: 90, disabledIds: [] };
 
@@ -43,6 +47,7 @@ function pickVms(db) {
     memDegrading: take(PREFERRED.memDegrading),
     cpuWatching: take(PREFERRED.cpuWatching),
     cpuPattern: take(PREFERRED.cpuPattern),
+    cpuPatternSticky: take(PREFERRED.cpuPatternSticky),
   };
 }
 
@@ -90,6 +95,9 @@ function clearOldIncidents(db) {
     SELECT incident_id id FROM ops_incident_alerts GROUP BY incident_id
     HAVING SUM(CASE WHEN ${isObsKey('source_key')} THEN 0 ELSE 1 END) = 0
   `).all().map((r) => r.id);
+  // Sticky pattern incidents are keyed pattern:<observer>:<subject>; take them
+  // whatever else got attached to them.
+  for (const r of db.prepare("SELECT id FROM ops_incidents WHERE incident_key LIKE 'pattern:vcenter:%'").all()) if (!ids.includes(r.id)) ids.push(r.id);
   const delAlerts = db.prepare('DELETE FROM ops_incident_alerts WHERE incident_id = ?');
   const delInc = db.prepare('DELETE FROM ops_incidents WHERE id = ?');
   db.transaction(() => { for (const id of ids) { delAlerts.run(id); delInc.run(id); } })();
@@ -131,6 +139,38 @@ function cannedAnalysis(vm, ep, engine) {
   };
 }
 
+/** Triage a sticky pattern incident the way a tick would have, from the real
+ *  evidence, then set the notified / reminded / acknowledged story on it. */
+function storyForPattern(db, agent, vm, { now, notifiedHoursAgo, reminderHoursAgo, reminderCount, ack }) {
+  const key = `pattern:vcenter:vm-cpu:vcenter:${vm.vcenter_id}:vm:${vm.name}`;
+  const inc = db.prepare('SELECT * FROM ops_incidents WHERE incident_key = ? AND state != ? ORDER BY id DESC LIMIT 1').get(key, 'resolved');
+  if (!inc) return null;
+  const alerts = db.prepare('SELECT * FROM ops_incident_alerts WHERE incident_id = ? ORDER BY attached_at, rowid').all(inc.id);
+  const evidence = agent.gatherIncidentEvidence(inc, alerts);
+  const base = agent.fallbackTriage(evidence);
+  const analysis = {
+    ...base,
+    source: 'ai',
+    confidence: 'medium',
+    impact: `${vm.name} is not down. Each burst is short and clears by itself, so users rarely notice, but the same spike keeps coming back.`,
+    correlation: `${evidence.pattern ? evidence.pattern.count : 'Several'} separate bursts fit one cadence rather than one long episode, so no single burst is worth an incident; the repetition is.`,
+    likely_cause: `A scheduled job or batch window on ${vm.name} that starts at about the same time and runs for a few polls (a report, an export or a backup agent). ICC cannot see the guest, so this is a hypothesis.`,
+  };
+  const at = (hoursAgo) => new Date(now - hoursAgo * 3600000).toISOString();
+  const notes = ack ? JSON.stringify([{ at: at(ack.hoursAgo), by: 'demo', kind: 'ack', text: ack.note }]) : null;
+  db.prepare(`
+    UPDATE ops_incidents SET state = 'notified', triaged_at = ?, classification = 'recurring', confidence = 'medium', title = ?, summary = ?,
+      analysis_json = ?, evidence_json = ?, model = 'demo', triage_error = NULL, hold_until = ?,
+      notified_at = ?, notify_count = 1, email_to = 'oncall@example.com',
+      reminder_at = ?, reminder_count = ?, requires_human = 1,
+      acknowledged_at = ?, acknowledged_by = ?, notes_json = ?
+    WHERE id = ?
+  `).run(at(notifiedHoursAgo), inc.title, analysis.summary, JSON.stringify(analysis), JSON.stringify(evidence), at(notifiedHoursAgo),
+    at(notifiedHoursAgo), reminderHoursAgo == null ? null : at(reminderHoursAgo), reminderCount,
+    ack ? at(ack.hoursAgo) : null, ack ? 'demo' : null, notes, inc.id);
+  return inc.id;
+}
+
 /** Open the incidents the agent tick would have opened and triage the critical one. */
 function openIncidents(db, { now, vms }) {
   const hasTables = db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type = 'table' AND name IN ('ops_incidents', 'ops_incident_alerts')").get().c === 2;
@@ -161,7 +201,14 @@ function openIncidents(db, { now, vms }) {
       `).run(nowIso, analysis.title, analysis.summary, JSON.stringify(analysis), JSON.stringify(evidence), nowIso, inc.id);
       triaged = inc.id;
     }
-    return { applied: true, removed, opened: r.incidentsOpened, triaged };
+    // The two sticky pattern incidents: one waiting on a person and already
+    // reminded, one acknowledged with a note.
+    const patternWaiting = storyForPattern(db, agent, vms.cpuPatternSticky, { now, notifiedHoursAgo: 30, reminderHoursAgo: 6, reminderCount: 1, ack: null });
+    const patternAcked = storyForPattern(db, agent, vms.cpuPattern, {
+      now, notifiedHoursAgo: 52, reminderHoursAgo: 28, reminderCount: 2,
+      ack: { hoursAgo: 2, note: `Looking at the nightly job schedule on ${vms.cpuPattern.name}; will report back.` },
+    });
+    return { applied: true, removed, opened: r.incidentsOpened, triaged, patternWaiting, patternAcked };
   } catch (err) {
     return { applied: false, reason: err.message };
   }
@@ -182,7 +229,7 @@ function applyOpsObservations(db, { now = Date.now() } = {}) {
 
   const vms = pickVms(db);
   const host = pickHost(db);
-  if (!vms.cpuCritical || !vms.memDegrading || !vms.cpuWatching || !vms.cpuPattern || !host) {
+  if (!vms.cpuCritical || !vms.memDegrading || !vms.cpuWatching || !vms.cpuPattern || !vms.cpuPatternSticky || !host) {
     return { applied: false, reason: 'not enough powered-on VMs or connected hosts' };
   }
 
@@ -209,6 +256,14 @@ function applyOpsObservations(db, { now = Date.now() } = {}) {
   }
   replay(cpu, vmSamples(vms.cpuPattern, 'cpu', burst), SETTINGS, getSetting, engine);
 
+  // 4b. Five bursts in the last 6 days on a second VM (a sticky pattern incident).
+  const burst5 = [];
+  for (const daysAgo of [5.5, 4.2, 3, 1.5, 0.5]) {
+    const start = end - Math.round(daysAgo * day) + 2 * 60 * 60 * 1000;
+    burst5.push(...[91, 96, 38, 33].map((v, i) => ({ value: v, ms: start + i * STEP_MS })));
+  }
+  replay(cpu, vmSamples(vms.cpuPatternSticky, 'cpu', burst5), SETTINGS, getSetting, engine);
+
   // 5. Host memory: elevated for 90 minutes starting 30 h ago, then closed.
   const hostStart = end - 30 * 60 * 60 * 1000;
   const hostSeries = [88, 89, 90, 91, 90, 89, 62, 60].map((v, i) => ({ value: v, ms: hostStart + i * STEP_MS }));
@@ -232,6 +287,7 @@ function applyOpsObservations(db, { now = Date.now() } = {}) {
   setVmMem.run(memMb(vms.memDegrading, 93), vms.memDegrading.vcenter_id, vms.memDegrading.name);
   setVmCpu.run(cpuMhz(vms.cpuWatching, 95), vms.cpuWatching.vcenter_id, vms.cpuWatching.name);
   setVmCpu.run(cpuMhz(vms.cpuPattern, 35), vms.cpuPattern.vcenter_id, vms.cpuPattern.name);
+  setVmCpu.run(cpuMhz(vms.cpuPatternSticky, 33), vms.cpuPatternSticky.vcenter_id, vms.cpuPatternSticky.name);
   db.prepare('UPDATE vcenter_hosts SET mem_bytes_used = ? WHERE vcenter_id = ? AND name = ?')
     .run(Math.round(0.6 * host.mem_bytes_capacity), host.vcenter_id, host.name);
 

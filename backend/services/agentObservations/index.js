@@ -372,10 +372,19 @@ function collectItems(nowIso, settings = getObservationSettings()) {
     const first = group[0];
     const o = obs.get(first.observer_id);
     if (!o || off.has(o.id)) continue;
+    const newest = group[group.length - 1];
     items.push({
       platform: first.platform, sourceKey: `obs-pattern:${first.observer_id}:${first.subject_key}`, severity: 'warning',
       host: first.host, type: `${o.issueType}-pattern`, message: patternMessage(o, group, settings),
-      firstSeen: group[0].closed_at, lastSeen: nowIso, kind: 'observation-pattern', observationId: null,
+      // The newest burst, so a pattern a person already resolved only returns
+      // once a burst newer than the resolution exists (groupTick suppression).
+      firstSeen: newest.closed_at, lastSeen: nowIso, kind: 'observation-pattern', observationId: null,
+      groupKey: `pattern:${first.observer_id}:${first.subject_key}`,
+      title: `${first.subject_label}: ${o.label || o.id} bursts (${group.length} in ${settings.patternDays ?? 7} days)`,
+      pattern: {
+        observerId: first.observer_id, subjectKey: first.subject_key, subjectLabel: first.subject_label, count: group.length,
+        bursts: group.map((r) => ({ openedAt: r.opened_at, closedAt: r.closed_at, minutes: minutesOf(r), peak: r.peak_value ?? null, unit: r.unit || '' })),
+      },
     });
   }
   return items;

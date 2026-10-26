@@ -1009,7 +1009,36 @@ describe('seedDemo.js', () => {
     expect(fw[fw.length - 2].avg).toBeGreaterThan(70);
   });
 
-  it('seeds a closed sustained host-memory observation', () => {
+  it('seeds ops agent observations: one critical, one degrading, one watching, a pattern subject and a closed host episode', () => {
+    const open = db.prepare("SELECT state, observer_id, subject_label FROM ops_observations WHERE state != 'closed'").all();
+    const byState = (s) => open.filter((r) => r.state === s);
+    expect(byState('critical')).toHaveLength(1);
+    expect(byState('critical')[0].observer_id).toBe('vcenter:vm-cpu');
+    expect(byState('degrading')).toHaveLength(1);
+    expect(byState('degrading')[0].observer_id).toBe('vcenter:vm-memory');
+    expect(byState('watching')).toHaveLength(1);
+    expect(byState('watching')[0].observer_id).toBe('vcenter:vm-cpu');
+
+    const critical = db.prepare("SELECT * FROM ops_observations WHERE state = 'critical'").get();
+    expect(critical.samples).toBe(10);
+    expect(critical.last_value).toBeCloseTo(118, 0);
+    expect(critical.peak_value).toBeCloseTo(124, 0);
+    expect(critical.issue_key).toMatch(/^obs:vcenter:vm-cpu:/);
+    const vmRow = db.prepare('SELECT cpu_usage_mhz FROM vcenter_vms WHERE name = ?').get(critical.subject_label);
+    expect(vmRow.cpu_usage_mhz).toBeGreaterThan(0);
+
+    const watching = byState('watching')[0];
+    const w = db.prepare("SELECT promoted_at, elevated_samples FROM ops_observations WHERE state = 'watching'").get();
+    expect(w.promoted_at).toBeNull();
+    expect(w.elevated_samples).toBe(2);
+    expect(watching.subject_label).toBeTruthy();
+
+    // Two pattern subjects: report-01 style with four closed one-offs inside
+    // 7 days, and a sticky-incident VM with five.
+    const patterns = db.prepare(`SELECT subject_key, COUNT(*) c FROM ops_observations
+      WHERE state = 'closed' AND outcome = 'one-off' AND observer_id = 'vcenter:vm-cpu' GROUP BY subject_key ORDER BY c`).all();
+    expect(patterns.map((p) => p.c)).toEqual([4, 5]);
+
     // Host memory episode closed yesterday as sustained.
     const hostEp = db.prepare("SELECT * FROM ops_observations WHERE observer_id = 'vcenter:host-memory'").get();
     expect(hostEp.state).toBe('closed');

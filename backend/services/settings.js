@@ -283,6 +283,12 @@ function getOpsAgentSettings() {
     // window it takes before the agent says so and asks for a person.
     patternMin: numSetting('ops_agent_pattern_min', 3, 2, 20),
     patternDays: numSetting('ops_agent_pattern_days', 14, 1, 90),
+    // A repeat stays open until a person resolves it; reminders go out every
+    // reminderHours until it is acknowledged; after a person resolves one, it
+    // takes patternMin new occurrences inside the cooldown to make another.
+    stickyRepeats: getSetting('ops_agent_sticky_repeats') !== '0',
+    reminderHours: numSetting('ops_agent_reminder_hours', 24, 0, 168),
+    patternCooldownDays: numSetting('ops_agent_pattern_cooldown_days', 14, 0, 90),
     // 'playbook' runs every enabled check on every target before triage;
     // 'tools' offers them to the model, which calls the ones it needs.
     capabilityMode: getSetting('ops_agent_capability_mode') === 'tools' ? 'tools' : 'playbook',
