@@ -9,9 +9,13 @@
 //   - a VM with four closed one-off CPU bursts in the last 7 days (in pattern)
 //   - an ESX host with a memory episode that closed yesterday (sustained, 90 min)
 // The matching vcenter_vms / vcenter_hosts usage columns are set so the
-// inventory pages agree with the episodes. The seed does not open incidents;
-// the agent's own tick does that from the promoted episodes.
-// Re-runnable: it deletes the observer rows for these four observers first.
+// inventory pages agree with the episodes. The demo has no agent tick, so the
+// scenario also opens the incidents the tick would have opened (watching,
+// degrading and critical episodes, plus the pattern item) through the agent's
+// own grouping code, and gives the critical one a canned triaged analysis built
+// from the real evidence gatherer so the demo shows the full incident page.
+// Re-runnable: it deletes the observer rows for these four observers and the
+// incidents made only of their alerts first.
 const STEP_MS = 15 * 60 * 1000;
 const PREFERRED = { cpuCritical: 'app-db-01', memDegrading: 'web-02', cpuWatching: 'batch-01', cpuPattern: 'report-01' };
 const OBSERVER_IDS = ['vcenter:vm-cpu', 'vcenter:vm-memory', 'vcenter:host-cpu', 'vcenter:host-memory'];
@@ -75,6 +79,91 @@ function replay(observer, samples, settings, getSetting, engine) {
   const thresholds = observer.thresholds(getSetting);
   for (const sample of samples) {
     engine.ingest(observer, [sample], sample.capturedAt, settings, thresholds);
+  }
+}
+
+const isObsKey = (col) => `(${col} LIKE 'obs:vcenter:%' OR ${col} LIKE 'obs-pattern:vcenter:%')`;
+
+/** Remove incidents (and their alert rows) made only of these observers' alerts. */
+function clearOldIncidents(db) {
+  const ids = db.prepare(`
+    SELECT incident_id id FROM ops_incident_alerts GROUP BY incident_id
+    HAVING SUM(CASE WHEN ${isObsKey('source_key')} THEN 0 ELSE 1 END) = 0
+  `).all().map((r) => r.id);
+  const delAlerts = db.prepare('DELETE FROM ops_incident_alerts WHERE incident_id = ?');
+  const delInc = db.prepare('DELETE FROM ops_incidents WHERE id = ?');
+  db.transaction(() => { for (const id of ids) { delAlerts.run(id); delInc.run(id); } })();
+  return ids.length;
+}
+
+/** The canned triage for the critical VM, tied to the names picked above. */
+function cannedAnalysis(vm, ep, engine) {
+  const minutes = engine.minutesOf(ep);
+  const peak = Math.round(ep.peak_value);
+  const now = Math.round(ep.last_value);
+  const where = `${vm.name} on ${vm.host_name} (${vm.cluster_name}, ${vm.vcenter_name})`;
+  return {
+    classification: 'incident',
+    confidence: 'high',
+    title: `${vm.name}: sustained CPU saturation on ${vm.host_name}`,
+    summary: [
+      `${vm.name} CPU has been over its critical line for ${minutes} min (now ${now}%, peak ${peak}%).`,
+      `The ${vm.cpu_count} vCPU guest is asking for more than it is granted, so the condition held across ${ep.samples} polls and was promoted by the watch.`,
+      `No other platform reported a fault for ${vm.name}; this is load, not an outage.`,
+    ].join('\n'),
+    impact: `${where} is CPU bound. Anything served from it is slower than normal and queue depth can grow while the saturation lasts.`,
+    correlation: `The episode started as a watched blip and held for ${ep.elevated_samples} elevated samples, so it is not a one-off. Other VMs on ${vm.host_name} show no matching episode in the history ICC holds.`,
+    likely_cause: `A workload on ${vm.name} is using more CPU than its ${vm.cpu_count} vCPU allow (a batch job, a runaway process or a change in demand). The host is not the limit.`,
+    reviewed: [
+      `Observation, VM CPU ${vm.name}: ${ep.state}, ${now}% now, peak ${peak}%, warn ${ep.threshold_warn}% crit ${ep.threshold_crit}%`,
+      `vCenter inventory for ${vm.name} (powered on, ${vm.cpu_count} vCPU) and its ESX host ${vm.host_name}`,
+      `History of earlier CPU episodes on ${vm.name}`,
+    ],
+    next_steps: [
+      { owner: 'Virtualization', action: `Check what is driving ${vm.name} (top processes, scheduled jobs started around ${ep.opened_at}) before changing anything.` },
+      { owner: 'Application owner', action: `Confirm whether the load on ${vm.name} is expected; if it is, size the VM above ${vm.cpu_count} vCPU.` },
+      { owner: 'Virtualization', action: `If the saturation continues, compare ${vm.name} against the ready time on ${vm.host_name} to rule out host contention.` },
+    ],
+    escalate: `Escalate to the application owner if ${vm.name} stays over ${ep.threshold_crit}% for another hour.`,
+    human_required: true,
+    human_reason: 'The condition has held past the critical line and needs someone to find what is driving the load; ICC can only observe it.',
+    source: 'ai',
+  };
+}
+
+/** Open the incidents the agent tick would have opened and triage the critical one. */
+function openIncidents(db, { now, vms }) {
+  const hasTables = db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type = 'table' AND name IN ('ops_incidents', 'ops_incident_alerts')").get().c === 2;
+  if (!hasTables) return { applied: false, reason: 'ops incident tables missing' };
+  try {
+    const agent = require('../../services/opsAgent');
+    const engine = require('../../services/agentObservations');
+    const removed = clearOldIncidents(db);
+    const nowIso = new Date(now).toISOString();
+    const r = agent.openObservationIncidents(nowIso, { baseline: false });
+    const crit = db.prepare("SELECT * FROM ops_observations WHERE state = 'critical' AND subject_key = ? ORDER BY id DESC LIMIT 1")
+      .get(`vcenter:${vms.cpuCritical.vcenter_id}:vm:${vms.cpuCritical.name}`);
+    let triaged = null;
+    if (crit && crit.incident_id) {
+      const inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(crit.incident_id);
+      const alerts = db.prepare('SELECT * FROM ops_incident_alerts WHERE incident_id = ? ORDER BY attached_at, rowid').all(inc.id);
+      const analysis = cannedAnalysis(vms.cpuCritical, crit, engine);
+      let evidence;
+      try {
+        evidence = agent.gatherIncidentEvidence(inc, alerts);
+      } catch (err) {
+        evidence = { incident: { id: inc.id, key: inc.incident_key, title: analysis.title, host: inc.host, severity: inc.severity }, observations: agent.observationEvidence(alerts) };
+      }
+      db.prepare(`
+        UPDATE ops_incidents SET state = 'triaged', triaged_at = ?, classification = 'incident', confidence = 'high', title = ?, summary = ?,
+          analysis_json = ?, evidence_json = ?, model = 'demo', triage_error = NULL, hold_until = ?
+        WHERE id = ?
+      `).run(nowIso, analysis.title, analysis.summary, JSON.stringify(analysis), JSON.stringify(evidence), nowIso, inc.id);
+      triaged = inc.id;
+    }
+    return { applied: true, removed, opened: r.incidentsOpened, triaged };
+  } catch (err) {
+    return { applied: false, reason: err.message };
   }
 }
 
@@ -146,10 +235,13 @@ function applyOpsObservations(db, { now = Date.now() } = {}) {
   db.prepare('UPDATE vcenter_hosts SET mem_bytes_used = ? WHERE vcenter_id = ? AND name = ?')
     .run(Math.round(0.6 * host.mem_bytes_capacity), host.vcenter_id, host.name);
 
+  const incidents = openIncidents(db, { now, vms });
+
   const counts = db.prepare(`SELECT state, COUNT(*) c FROM ops_observations WHERE observer_id IN (${ph}) GROUP BY state`)
     .all(...OBSERVER_IDS);
   return {
     applied: true,
+    incidents,
     subjects: { ...Object.fromEntries(Object.entries(vms).map(([k, v]) => [k, v.name])), hostMemory: host.name },
     byState: Object.fromEntries(counts.map((r) => [r.state, r.c])),
   };

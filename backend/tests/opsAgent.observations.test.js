@@ -43,11 +43,12 @@ describe('observations feeding the agent', () => {
     expect(ep.incident_id).toBe(inc.id);
   });
 
-  it('a watching episode opens nothing', () => {
+  it('a watching episode opens a collecting info incident', () => {
     feed([sample(0, 95)]);
     const stats = agent.groupTick(NOW, settings, { items: items(), failed: [] });
-    expect(stats.incidentsOpened).toBe(0);
-    expect(incidents()).toHaveLength(0);
+    expect(stats.incidentsOpened).toBe(1);
+    const [inc] = incidents();
+    expect(inc).toMatchObject({ incident_key: 'host:web-01', severity: 'info', state: 'collecting' });
   });
 
   it('closing the episode clears the alert at the next tick', () => {
@@ -181,8 +182,9 @@ describe('prompt, fallback digest and email', () => {
 });
 
 describe('status and pulse', () => {
-  it('status counts watching and observing episodes and reports the observer count', () => {
+  it('status counts watching incidents and observing episodes and reports the observer count', () => {
     feed([sample(0, 95)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
     const s = agent.status();
     expect(s.counts.watching).toBe(1);
     expect(s.counts.observing).toBe(1);
@@ -197,5 +199,138 @@ describe('status and pulse', () => {
     expect(mid).not.toBe(before);
     feed([sample(1, 96)]);
     expect(agent.pulse().token).not.toBe(mid);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Observations as incidents: a watching episode opens a quiet incident that
+// promotes into a normal triaged one.
+
+const T = (min) => new Date(Date.parse(NOW) + min * 60000).toISOString();
+const dueIds = (nowIso) => db.prepare("SELECT id FROM ops_incidents WHERE state = 'collecting' AND hold_until <= ?").all(nowIso).map((r) => r.id);
+const listed = (id) => agent.listIncidents({ state: 'all' }).find((i) => i.id === id);
+
+describe('watching observations as incidents', () => {
+  it('a watching episode is one collecting info incident, listed as watching, never due for triage', () => {
+    feed([sample(0, 94)]);
+    const stats = agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    expect(stats.incidentsOpened).toBe(1);
+    const [inc] = incidents();
+    expect(inc).toMatchObject({ severity: 'info', state: 'collecting', title: 'web-01: VM CPU 94%' });
+    expect(listed(inc.id)).toMatchObject({ watching: true, severity: 'info' });
+    expect(Date.parse(inc.hold_until)).toBeGreaterThanOrEqual(Date.parse(NOW) + 10 * 60000);
+    const [a] = alertsOf(inc.id);
+    expect(a).toMatchObject({ severity: 'info', source_key: `obs:vcenter:vm-cpu:${KEY}` });
+    expect(a.message).toContain('VM web-01 CPU at 94% of 4 vCPU, watching');
+    // a second tick pushes the hold again; nothing is ever due
+    const later = T(5);
+    agent.groupTick(later, settings, { items: engine.collectItems(later, OBS_SETTINGS), failed: [] });
+    const again = incidents()[0];
+    expect(Date.parse(again.hold_until)).toBeGreaterThanOrEqual(Date.parse(later) + 10 * 60000);
+    expect(dueIds(T(8))).toEqual([]);
+    expect(agent.status().counts.watching).toBe(1);
+  });
+
+  it('promotion to degrading raises the alert and incident to warning and makes it due at once', () => {
+    feed([sample(0, 95)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    const [inc] = incidents();
+    feed([sample(1, 95), sample(2, 95)]);
+    const now2 = T(1);
+    const stats = agent.groupTick(now2, settings, { items: engine.collectItems(now2, OBS_SETTINGS), failed: [] });
+    expect(stats.incidentsOpened).toBe(0);
+    const after = incidents()[0];
+    expect(alertsOf(inc.id)[0].severity).toBe('warning');
+    expect(alertsOf(inc.id)[0].message).toContain('for 30 min');
+    expect(after.severity).toBe('warning');
+    expect(after.state).toBe('collecting');
+    expect(listed(inc.id).watching).toBe(false);
+    expect(dueIds(now2)).toEqual([inc.id]);
+  });
+
+  it('degrading to critical after a triage reopens the incident, due now', () => {
+    feed([sample(0, 95), sample(1, 95), sample(2, 95)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    const [inc] = incidents();
+    db.prepare("UPDATE ops_incidents SET state = 'triaged', triaged_at = ? WHERE id = ?").run(T(-300), inc.id);
+    feed([sample(3, 105), sample(4, 105), sample(5, 105)]);
+    const now2 = T(2);
+    agent.groupTick(now2, settings, { items: engine.collectItems(now2, OBS_SETTINGS), failed: [] });
+    const after = incidents()[0];
+    expect(alertsOf(inc.id)[0].severity).toBe('critical');
+    expect(after).toMatchObject({ severity: 'critical', state: 'collecting' });
+    expect(Date.parse(after.hold_until)).toBeLessThanOrEqual(Date.parse(now2));
+    expect(dueIds(now2)).toEqual([inc.id]);
+  });
+
+  it('inside the re-triage cooldown a rising severity raises the incident but does not reopen it', () => {
+    feed([sample(0, 95), sample(1, 95), sample(2, 95)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    const [inc] = incidents();
+    db.prepare("UPDATE ops_incidents SET state = 'triaged', triaged_at = ? WHERE id = ?").run(T(-5), inc.id);
+    feed([sample(3, 105), sample(4, 105), sample(5, 105)]);
+    const now2 = T(2);
+    agent.groupTick(now2, settings, { items: engine.collectItems(now2, OBS_SETTINGS), failed: [] });
+    expect(incidents()[0]).toMatchObject({ severity: 'critical', state: 'triaged' });
+  });
+
+  it('a watching episode that closes as a one-off resolves its incident with an observation-aware reason', () => {
+    feed([sample(0, 95), sample(1, 96)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    const [inc] = incidents();
+    feed([sample(2, 40), sample(3, 40)]);
+    expect(items()).toEqual([]);
+    const now2 = T(1);
+    agent.groupTick(now2, settings, { items: [], failed: [] });
+    const done = incidents()[0];
+    expect(done).toMatchObject({ id: inc.id, state: 'resolved', classification: 'one-off', resolved_by: 'agent' });
+    expect(done.resolution).toContain('web-01');
+    expect(done.resolution).toContain('VM CPU');
+    expect(done.resolution).toContain('one-off');
+    expect(done.resolution).toContain('(peak 96%)');
+    expect(done.notify_count || 0).toBe(0);
+  });
+
+  it('a watching item stays keyed host:<vm> in a wide platform, and a burst of watching items never folds', () => {
+    const watchItem = (i) => ({
+      platform: 'vcenter', sourceKey: `obs:vcenter:vm-cpu:k${i}`, severity: 'info', watch: true, kind: 'observation',
+      host: `vm-${i}`, type: 'vm-cpu-hot', title: `vm-${i}: VM CPU 95%`, message: 'watching', firstSeen: NOW, lastSeen: NOW,
+    });
+    const burst = Array.from({ length: 12 }, (_, i) => watchItem(i));
+    const poll = { platform: 'vcenter', sourceKey: 'poll:1', severity: 'critical', host: 'vc-a', type: 'poll-failed', message: 'down', firstSeen: NOW, lastSeen: NOW };
+    agent.groupTick(NOW, settings, { items: [...burst, poll], failed: [] });
+    const keys = incidents().map((i) => i.incident_key);
+    expect(keys.filter((k) => /^host:vm-\d+$/.test(k))).toHaveLength(12);
+    expect(keys).toContain('platform:vcenter:wide');
+    // twelve watching items alone make no platform-wide incident
+    db.exec('DELETE FROM ops_incident_alerts; DELETE FROM ops_incidents;');
+    agent.groupTick(NOW, settings, { items: burst, failed: [] });
+    expect(incidents().some((i) => i.incident_key.endsWith(':wide'))).toBe(false);
+    expect(incidents()).toHaveLength(12);
+  });
+
+  it('observation items bypass the minimum severity', () => {
+    const strict = { ...settings, minSeverity: 'critical' };
+    const other = (n, label) => ({ ...sample(n, 95), subjectKey: `vcenter:1:vm:${label}`, label, host: label });
+    feed([sample(0, 95)]);                                              // watching (info)
+    engine.ingest(cpu(), [other(0, 'db-01'), other(1, 'db-01'), other(2, 'db-01')], T(3), OBS_SETTINGS, { warn: 90, crit: 100 });   // degrading (warning)
+    const stats = agent.groupTick(NOW, strict, { items: items(), failed: [] });
+    expect(stats.incidentsOpened).toBe(2);
+    expect(incidents().map((i) => i.incident_key).sort()).toEqual(['host:db-01', 'host:web-01']);
+  });
+
+  it('openObservationIncidents opens incidents for live episodes and leaves other incidents alone', () => {
+    agent.groupTick(NOW, settings, { items: [
+      { platform: 'vcenter', sourceKey: 'v-guest-9', severity: 'warning', host: 'file-01', type: 'guest-volume-full', message: 'Guest volume D: is 95% full', firstSeen: NOW, lastSeen: NOW },
+    ], failed: [] });
+    feed([sample(0, 95)]);
+    const r = agent.openObservationIncidents(NOW);
+    expect(r.incidentsOpened).toBe(1);
+    const keys = incidents().map((i) => i.incident_key).sort();
+    expect(keys).toEqual(['host:file-01', 'host:web-01']);
+    const other = incidents().find((i) => i.incident_key === 'host:file-01');
+    expect(alertsOf(other.id)[0].cleared_at).toBeNull();
+    const mine = incidents().find((i) => i.incident_key === 'host:web-01');
+    expect(listed(mine.id).watching).toBe(true);
   });
 });

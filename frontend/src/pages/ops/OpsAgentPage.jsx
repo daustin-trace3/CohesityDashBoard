@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings, Activity } from 'lucide-react';
+import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings } from 'lucide-react';
 import client from '../../api/client';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import WorkerChip from '../../components/WorkerChip';
@@ -13,6 +13,7 @@ import ObservationModal, { OBS_STATE_TONE, fmtObs, fmtMinutes } from '../../comp
 const REFRESH_MS = 60_000;   // floor: a full reload even when nothing changed
 const PULSE_MS = 5_000;      // change probe, so a tick shows up within seconds
 const STATE_META = {
+  watching: { label: 'Watching', tone: 'info', hint: 'The agent opened this on its own observation and is watching whether the condition holds' },
   collecting: { label: 'Collecting', tone: 'info', hint: 'Holding for related alerts before triage' },
   triaged: { label: 'Triaged', tone: 'warn', hint: 'Analysis written, email pending or off' },
   notified: { label: 'Notified', tone: 'ok', hint: 'Analysis emailed' },
@@ -144,7 +145,7 @@ function AlertMessage({ text }) {
 
 const footBtn = 'flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink transition-colors disabled:opacity-50 cursor-pointer';
 
-function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
+function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpenObservation }) {
   const [inc, setInc] = useState(null);
   const [failed, setFailed] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -168,7 +169,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
   };
 
   const a = inc?.analysis;
-  const sm = inc ? (STATE_META[inc.state] || STATE_META.collecting) : null;
+  const sm = inc ? (STATE_META[inc.watching ? 'watching' : inc.state] || STATE_META.collecting) : null;
   const sev = inc ? sevTone(inc.severity) : 'info';
   const networkBlocks = Array.isArray(inc?.evidence?.network) ? inc.evidence.network.filter((n) => n && Array.isArray(n.lines) && n.lines.length > 0) : [];
   const live = inc?.evidence?.liveChecks;
@@ -232,7 +233,10 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                 )}
                 {inc.state === 'clearing' && inc.clearedSince && <p className="text-xs text-ink-faint mb-3">Alerts cleared {timeAgo(inc.clearedSince)}; the incident closes itself if nothing fires again inside the quiet window.</p>}
                 {inc.emailTo && <p className="text-xs text-ink-faint mb-3">Emailed {inc.notifyCount} time{inc.notifyCount === 1 ? '' : 's'} to {inc.emailTo}{inc.notifiedAt ? `, last ${timeAgo(inc.notifiedAt)}` : ''}.</p>}
-                {inc.state === 'collecting' && !a && (
+                {inc.watching && !a && (
+                  <p className="text-[13px] text-ink-muted mb-4">{agentName} is watching this condition. It triages once the condition holds for the configured samples, or closes the incident if it returns to normal.</p>
+                )}
+                {inc.state === 'collecting' && !inc.watching && !a && (
                   <p className="text-[13px] text-ink-muted mb-4">Collecting related alerts until {new Date(inc.holdUntil).toLocaleTimeString()}; triage runs when the hold window ends.</p>
                 )}
                 {a && (
@@ -269,7 +273,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                     <Fact label="Platforms">{inc.platforms.join(', ')}</Fact>
                     <Fact label="Host">{inc.host || '-'}</Fact>
                     <Fact label="Opened">{new Date(inc.openedAt).toLocaleString()}</Fact>
-                    {inc.state === 'collecting' && <Fact label="Hold until">{new Date(inc.holdUntil).toLocaleString()}</Fact>}
+                    {inc.state === 'collecting' && !inc.watching && <Fact label="Hold until">{new Date(inc.holdUntil).toLocaleString()}</Fact>}
                     <Fact label="Alerts">{inc.alerts.length} ({openAlerts} open, {inc.alerts.length - openAlerts} cleared)</Fact>
                     <Fact label="Emailed">{inc.notifyCount ? `${inc.notifyCount} time${inc.notifyCount === 1 ? '' : 's'}${inc.emailTo ? ` to ${inc.emailTo}` : ''}${inc.notifiedAt ? `, last ${new Date(inc.notifiedAt).toLocaleString()}` : ''}` : 'not yet'}</Fact>
                     <Fact label="Teams">{inc.teamsNotifiedAt ? `posted ${new Date(inc.teamsNotifiedAt).toLocaleString()}` : 'not posted'}</Fact>
@@ -335,7 +339,10 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC' }) {
                   <Section title={`What ${agentName} observed`}>
                     <div className="space-y-2">
                       {observedEpisodes.map((ep, i) => (
-                        <div key={ep.id ?? i} className="flex items-center gap-3 rounded-md border border-cohesity-border bg-surface-overlay px-3 py-2">
+                        <div key={ep.id ?? i} role="button" tabIndex={0} title="Open the observation"
+                          onClick={() => ep.id != null && onOpenObservation?.(ep.id)}
+                          onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && ep.id != null) { e.preventDefault(); onOpenObservation?.(ep.id); } }}
+                          className="flex items-center gap-3 rounded-md border border-cohesity-border bg-surface-overlay px-3 py-2 cursor-pointer hover:ring-1 hover:ring-brand/50 focus:ring-1 focus:ring-brand/50 outline-none">
                           <div className="min-w-0 flex-1">
                             <p className="text-[13px] text-ink truncate">{ep.label} <span className="text-ink-muted">{ep.subject}</span></p>
                             <p className="text-[11px] text-ink-faint">now {fmtObs(ep.value, ep.unit)}, peak {fmtObs(ep.peak, ep.unit)}, elevated {fmtMinutes(ep.minutes)}</p>
@@ -420,8 +427,6 @@ export default function OpsAgentPage() {
   const [status, setStatus] = useState(null);
   const [rows, setRows] = useState(null);
   const [scope, setScope] = useState('open');
-  const [obsScope, setObsScope] = useState('active');
-  const [obsRows, setObsRows] = useState(null);
   const [obsOpenId, setObsOpenId] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   // ?incident=<id> (the Open in ICC link on a Teams card) opens that incident.
@@ -435,13 +440,11 @@ export default function OpsAgentPage() {
   const load = useCallback(() => Promise.allSettled([
     client.get('/ops-agent/status'),
     client.get('/ops-agent/incidents', { params: { state: scope, limit: 300 } }),
-    client.get('/ops-agent/observations', { params: { scope: obsScope, limit: 300 } }),
-  ]).then(([s, i, o]) => {
+  ]).then(([s, i]) => {
     if (s.status === 'fulfilled') setStatus(s.value.data);
     if (i.status === 'fulfilled') setRows(i.value.data); else setRows([]);
-    if (o.status === 'fulfilled') setObsRows(Array.isArray(o.value.data) ? o.value.data : []); else setObsRows([]);
     setLastRefreshed(new Date());
-  }), [scope, obsScope]);
+  }), [scope]);
 
   // A hidden tab does no work at all; coming back refreshes immediately.
   useEffect(() => {
@@ -488,25 +491,14 @@ export default function OpsAgentPage() {
     } finally { setRunning(false); }
   };
 
-  const list = useMemo(() => (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', '), idLabel: '#' + r.id })), [rows]);
-  const ctl = useTableControls(list, { searchKeys: ['idLabel', 'title', 'host', 'platformsLabel', 'classification', 'summary'], defaultSortKey: 'openedAt', defaultSortDir: 'desc', paginate: true });
-  // Closed (24h): the route returns newest closed first; keep the last day.
-  const obsList = useMemo(() => {
-    const cutoff = Date.now() - 24 * 3600 * 1000;
-    return (obsRows || [])
-      .filter((r) => obsScope !== 'closed' || (r.closedAt && Date.parse(r.closedAt) >= cutoff))
-      .map((r) => ({ ...r, stateLabel: r.state === 'closed' ? `closed ${r.outcome || ''}`.trim() : r.state, nowValue: r.value }));
-  }, [obsRows, obsScope]);
-  const obsCtl = useTableControls(obsList, {
-    searchKeys: ['subject', 'platform', 'label', 'stateLabel', 'host'],
-    defaultSortKey: obsScope === 'closed' ? 'closedAt' : 'openedAt', defaultSortDir: 'desc', paginate: true, defaultPageSize: 10, deepLink: false,
-  });
+  const list = useMemo(() => (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', '), idLabel: '#' + r.id, stateKey: r.watching ? 'watching' : r.state })), [rows]);
+  const ctl = useTableControls(list, { searchKeys: ['idLabel', 'title', 'host', 'platformsLabel', 'classification', 'summary', 'stateKey'], defaultSortKey: 'openedAt', defaultSortDir: 'desc', paginate: true });
   const s = status;
   const counts = s?.counts || {};
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Newest first; sort any column. It also watches polled metrics for sustained conditions before they become incidents.">
+      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Newest first; sort any column. It also watches polled metrics: a VM or host over its line opens a watching incident at once, which is triaged if the condition holds and closes itself if it does not.">
         <span className={`inline-flex items-center gap-1.5 text-[11px] ${live ? 'text-status-ok' : 'text-status-warn'}`} title={live ? `Watching for changes every ${PULSE_MS / 1000}s` : 'Lost contact with ICC; retrying'}>
           <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-status-ok animate-pulse' : 'bg-status-warn'}`} />
           {live ? 'Live' : 'Reconnecting'}
@@ -535,69 +527,11 @@ export default function OpsAgentPage() {
 
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
         <Stat label="Collecting" value={counts.collecting || 0} tone="text-status-info" />
-        <span className="block" title="Subjects the agent is sampling over threshold that have not yet held long enough to count"><Stat label="Watching" value={counts.watching || 0} tone="text-status-info" /></span>
+        <span className="block" title="Incidents the agent opened on its own observations that have not yet held long enough to triage"><Stat label="Watching" value={counts.watching || 0} tone="text-status-info" /></span>
         <Stat label="Triaged, not emailed" value={counts.triaged || 0} tone="text-status-warn" />
         <Stat label="Notified" value={counts.notified || 0} tone="text-status-ok" />
         <Stat label="Resolved (24h)" value={counts.resolved24h || 0} />
         <Stat label="Emails (24h)" value={counts.emails24h || 0} />
-      </div>
-
-      <div className="mb-4">
-        <Panel title="Observations" icon={Activity}>
-          <div className="flex items-center gap-2 mb-3 flex-wrap">
-            {[['active', 'Active'], ['closed', 'Closed (24h)']].map(([k, l]) => (
-              <button key={k} onClick={() => { setObsRows(null); setObsScope(k); }}
-                className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors cursor-pointer ${obsScope === k ? 'bg-brand/15 border-brand/40 text-brand' : 'border-cohesity-border text-ink-muted hover:text-ink'}`}>
-                {l}
-              </button>
-            ))}
-            <input value={obsCtl.q} onChange={(e) => obsCtl.setQ(e.target.value)} placeholder="Filter by subject, observer, platform, state..."
-              className="ml-auto bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-1.5 text-xs text-ink focus:border-brand/60 outline-none w-72 max-w-full" />
-          </div>
-          {obsRows == null ? <LoadingPanel label="Loading observations..." height={100} />
-            : obsCtl.rows.length === 0 ? <p className="text-sm text-ink-muted py-6 text-center">{obsScope === 'active' ? 'Nothing is over a threshold right now.' : 'No episodes closed in the last 24 hours.'}</p>
-            : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
-                    <SortTh k="subject" label="Subject" ctl={obsCtl} />
-                    <SortTh k="label" label="Observer" ctl={obsCtl} />
-                    <SortTh k="stateLabel" label="State" ctl={obsCtl} />
-                    <SortTh k="nowValue" label="Now" ctl={obsCtl} align="right" />
-                    <SortTh k="peak" label="Peak" ctl={obsCtl} align="right" />
-                    <SortTh k="minutes" label="Elevated" ctl={obsCtl} align="right" />
-                    <th className="py-2 pr-3 font-semibold">Trend</th>
-                    <SortTh k="incidentId" label="Incident" ctl={obsCtl} />
-                  </tr></thead>
-                  <tbody>
-                    {obsCtl.pageRows.map((r) => (
-                      <tr key={r.id} onClick={() => setObsOpenId(r.id)} className="border-b border-cohesity-border/50 cursor-pointer hover:bg-surface-overlay">
-                        <td className="py-2 pr-3 max-w-[260px]">
-                          <span className="text-brand">{r.subject}</span>
-                          <p className="text-[10px] text-ink-faint">{r.platform}{r.sourceName ? ` / ${r.sourceName}` : ''}</p>
-                        </td>
-                        <td className="py-2 pr-3 text-ink-muted text-[12px]">{r.label}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap">
-                          <Badge tone={OBS_STATE_TONE[r.state] || 'neutral'}>{r.state}</Badge>
-                          {r.state === 'closed' && r.outcome && <span className="ml-1.5 text-[11px] text-ink-faint">{r.outcome}</span>}
-                        </td>
-                        <td className="py-2 pr-3 text-right tnum text-ink">{fmtObs(r.value, r.unit)}</td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtObs(r.peak, r.unit)}</td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted whitespace-nowrap">{fmtMinutes(r.minutes)}</td>
-                        <td className="py-2 pr-3"><Sparkline values={obsValues(r.series)} color={OBS_SPARK[r.state] || OBS_SPARK.watching} width={90} height={22} fill={false} /></td>
-                        <td className="py-2 pr-3 text-[11px] whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                          {r.incidentId ? <button onClick={() => setOpenId(r.incidentId)} className="text-brand hover:underline cursor-pointer">#{r.incidentId}</button>
-                            : <span className="text-ink-faint">{r.state === 'watching' ? 'not yet' : '-'}</span>}
-                          {r.inPattern && <span className="ml-1.5"><Badge tone="warn">pattern</Badge></span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          <TablePager ctl={obsCtl} />
-        </Panel>
       </div>
 
       <Panel title="Incidents" icon={Bot}>
@@ -618,7 +552,7 @@ export default function OpsAgentPage() {
               <table className="w-full text-sm">
                 <thead><tr className="text-left text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
                   <SortTh k="id" label="ID" ctl={ctl} />
-                  <SortTh k="state" label="State" ctl={ctl} />
+                  <SortTh k="stateKey" label="State" ctl={ctl} />
                   <SortTh k="impactScore" label="Severity" ctl={ctl} />
                   <SortTh k="title" label="Incident" ctl={ctl} />
                   <SortTh k="platformsLabel" label="Platforms" ctl={ctl} />
@@ -629,7 +563,7 @@ export default function OpsAgentPage() {
                 </tr></thead>
                 <tbody>
                   {ctl.pageRows.map((r) => {
-                    const sm = STATE_META[r.state] || STATE_META.collecting;
+                    const sm = STATE_META[r.watching ? 'watching' : r.state] || STATE_META.collecting;
                     return (
                       <tr key={r.id} className="border-b border-cohesity-border/50">
                         <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">#{r.id}</td>
@@ -657,7 +591,7 @@ export default function OpsAgentPage() {
       </Panel>
 
       {obsOpenId != null && <ObservationModal id={obsOpenId} Shell={ModalShell} onClose={() => setObsOpenId(null)} />}
-      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} />}
+      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} onOpenObservation={setObsOpenId} />}
     </div>
   );
 }

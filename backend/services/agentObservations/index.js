@@ -8,9 +8,10 @@
 //   watching -> degrading -> critical -> closed
 //
 // driven by sample counts (the poll interval is the clock), the same shape as
-// the LogicMonitor latency watch. A watching episode is context only and never
-// opens an incident; a degrading or critical one is handed to the agent as an
-// ordinary item (collectItems) so it groups, triages and emails like an alert.
+// the LogicMonitor latency watch. A watching episode opens an info-level
+// "watching" incident that is never triaged or emailed; a degrading or critical
+// one is handed to the agent as an ordinary item (collectItems) so it triages
+// and emails like an alert.
 // An episode that closes without ever being promoted is a one-off; enough
 // one-offs on one subject inside the pattern window raise a pattern item.
 //
@@ -130,6 +131,17 @@ function defaultMessage(o, row) {
   return crit ? `${head}, over the critical line for ${min} min ${tail}` : `${head} for ${min} min ${tail}`;
 }
 
+/** Message for a watching episode: elevated but not yet held long enough. */
+function watchMessage(o, row) {
+  const ctx = parseJson(row.context_json, {});
+  const unit = row.unit || '';
+  const noun = o.noun || o.label || 'Subject';
+  const metric = o.metric ? ` ${o.metric}` : '';
+  const cap = typeof o.capacity === 'function' ? o.capacity(ctx) : null;
+  return `${noun} ${row.subject_label}${metric} at ${num(row.last_value)}${unit}${cap ? ` of ${cap}` : ''}, watching `
+    + `(${row.elevated_samples} elevated of ${row.samples} samples, warn ${num(row.threshold_warn)}${unit}, crit ${num(row.threshold_crit)}${unit})`;
+}
+
 // ---------------------------------------------------------------------------
 // state machine
 
@@ -138,10 +150,10 @@ function openRow(observer, s, t, nowIso) {
   const info = db.prepare(`
     INSERT INTO ops_observations (observer_id, platform, subject_key, subject_label, host, source_id, source_name, kind, state,
       unit, threshold_warn, threshold_crit, opened_at, samples, elevated_samples, consecutive_normal, severe_run,
-      series_json, context_json, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'watching', ?, ?, ?, ?, 0, 0, 0, 0, '[]', '{}', ?)
+      series_json, context_json, issue_key, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'watching', ?, ?, ?, ?, 0, 0, 0, 0, '[]', '{}', ?, ?)
   `).run(observer.id, observer.platform, s.subjectKey, s.label, s.host || s.label, s.sourceId ?? null, s.sourceName ?? null,
-    observer.kind || 'sustained', unit, t.warn, t.crit, s.capturedAt, nowIso);
+    observer.kind || 'sustained', unit, t.warn, t.crit, s.capturedAt, `obs:${observer.id}:${s.subjectKey}`, nowIso);
   return db.prepare('SELECT * FROM ops_observations WHERE id = ?').get(info.lastInsertRowid);
 }
 
@@ -330,14 +342,29 @@ function collectItems(nowIso, settings = getObservationSettings()) {
   const obs = allObservers();
   const off = new Set(settings.disabledIds || []);
   const items = [];
-  const open = db.prepare("SELECT * FROM ops_observations WHERE state IN ('degrading', 'critical') AND issue_key IS NOT NULL ORDER BY id").all();
+  const open = db.prepare("SELECT * FROM ops_observations WHERE state IN ('watching', 'degrading', 'critical') ORDER BY id").all();
+  const backfill = db.prepare('UPDATE ops_observations SET issue_key = ? WHERE id = ?');
   for (const ep of open) {
     const o = obs.get(ep.observer_id);
     if (!o || off.has(o.id)) continue;
+    if (!ep.issue_key) {
+      ep.issue_key = `obs:${ep.observer_id}:${ep.subject_key}`;
+      backfill.run(ep.issue_key, ep.id);
+    }
+    const unit = ep.unit || '';
+    const title = `${ep.subject_label}: ${o.label || o.id} ${num(ep.last_value)}${unit}`;
+    if (ep.state === 'watching') {
+      items.push({
+        platform: ep.platform, sourceKey: ep.issue_key, severity: 'info', watch: true, kind: 'observation',
+        observationId: ep.id, host: ep.host, type: o.issueType, firstSeen: ep.opened_at, lastSeen: nowIso,
+        title, message: watchMessage(o, ep),
+      });
+      continue;
+    }
     const message = typeof o.message === 'function' ? o.message(ep, ep.state) : defaultMessage(o, ep);
     items.push({
       platform: ep.platform, sourceKey: ep.issue_key, severity: ep.state === 'critical' ? 'critical' : 'warning',
-      host: ep.host, type: o.issueType, message: message || defaultMessage(o, ep),
+      host: ep.host, type: o.issueType, message: message || defaultMessage(o, ep), title, watch: false,
       firstSeen: ep.promoted_at, lastSeen: nowIso, kind: 'observation', observationId: ep.id,
     });
   }

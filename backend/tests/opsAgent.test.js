@@ -282,10 +282,13 @@ describe('manual resolve and baseline', () => {
   it('an alert resolved by hand stays quiet until it fires again later', () => {
     agent.groupTick(NOW, settings, { items: [item('dell', 'd1', { firstSeen: NOW })], failed: [] });
     const id = incidents()[0].id;
-    db.prepare("UPDATE ops_incidents SET state = 'resolved', resolved_at = ?, resolved_by = 'doug' WHERE id = ?").run('2026-09-25T20:10:00.000Z', id);
-    agent.groupTick('2026-09-25T20:11:00.000Z', settings, { items: [{ ...item('dell', 'd1'), firstSeen: NOW }], failed: [] });
+    // The suppression window is 30 days from the real clock, so these stamps
+    // are relative to now rather than to the fixed NOW of the other tests.
+    const at = (secAgo) => new Date(Date.now() - secAgo * 1000).toISOString();
+    db.prepare("UPDATE ops_incidents SET state = 'resolved', resolved_at = ?, resolved_by = 'doug' WHERE id = ?").run(at(120), id);
+    agent.groupTick(at(60), settings, { items: [{ ...item('dell', 'd1'), firstSeen: NOW }], failed: [] });
     expect(incidents()).toHaveLength(1);
-    agent.groupTick('2026-09-25T20:12:00.000Z', settings, { items: [{ ...item('dell', 'd1'), firstSeen: '2026-09-25T20:11:30.000Z' }], failed: [] });
+    agent.groupTick(at(0), settings, { items: [{ ...item('dell', 'd1'), firstSeen: at(30) }], failed: [] });
     expect(incidents()).toHaveLength(2);
   });
 

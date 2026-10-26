@@ -53,7 +53,7 @@ describe('episode state machine', () => {
     expect(rows()).toHaveLength(0);
     feed([sample(2, 95)]);
     const [r] = rows();
-    expect(r).toMatchObject({ state: 'watching', samples: 1, elevated_samples: 1, observer_id: OBS, subject_label: 'b1', issue_key: null, promoted_at: null });
+    expect(r).toMatchObject({ state: 'watching', samples: 1, elevated_samples: 1, observer_id: OBS, subject_label: 'b1', issue_key: `obs:${OBS}:fk:1:box:b1`, promoted_at: null });
     expect(r.elevated_run_start).toBe(at(2));
   });
 
@@ -175,9 +175,22 @@ describe('evaluate', () => {
 });
 
 describe('collectItems', () => {
-  it('hands nothing over for a watching episode', () => {
+  it('hands over a watching episode as an info item flagged watch, with a title and a watching message', () => {
     feed([sample(0, 95)]);
-    expect(engine.collectItems(NOW, S)).toEqual([]);
+    const [it] = engine.collectItems(NOW, S);
+    expect(it).toMatchObject({
+      platform: 'fakeplat', sourceKey: `obs:${OBS}:fk:1:box:b1`, severity: 'info', watch: true, kind: 'observation',
+      observationId: rows()[0].id, host: 'b1', type: 'fake-hot', firstSeen: at(0), lastSeen: NOW, title: 'b1: Fake load 95%',
+    });
+    expect(it.message).toBe('Box b1 load at 95% of 4 cores, watching (1 elevated of 1 samples, warn 90%, crit 100%)');
+  });
+
+  it('backfills a null issue_key on a watching row opened before the key was written at open', () => {
+    feed([sample(0, 95)]);
+    db.prepare('UPDATE ops_observations SET issue_key = NULL').run();
+    const [it] = engine.collectItems(NOW, S);
+    expect(it.sourceKey).toBe(`obs:${OBS}:fk:1:box:b1`);
+    expect(rows()[0].issue_key).toBe(`obs:${OBS}:fk:1:box:b1`);
   });
 
   it('degrading item: warning with the exact message', () => {
@@ -185,7 +198,7 @@ describe('collectItems', () => {
     const [it] = engine.collectItems(NOW, S);
     expect(it).toMatchObject({
       platform: 'fakeplat', sourceKey: `obs:${OBS}:fk:1:box:b1`, severity: 'warning', host: 'b1', type: 'fake-hot',
-      firstSeen: at(2), lastSeen: NOW, kind: 'observation', observationId: rows()[0].id,
+      firstSeen: at(2), lastSeen: NOW, kind: 'observation', observationId: rows()[0].id, watch: false, title: 'b1: Fake load 99%',
     });
     expect(it.message).toBe('Box b1 load at 99% of 4 cores for 30 min (peak 99%, warn 90%, crit 100%)');
   });

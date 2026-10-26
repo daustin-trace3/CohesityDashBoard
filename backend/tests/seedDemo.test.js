@@ -1008,4 +1008,19 @@ describe('seedDemo.js', () => {
     expect(hostEp.outcome).toBe('sustained');
   });
 
+  it('opens incidents for the observation episodes and triages the critical one', () => {
+    const inc = db.prepare("SELECT i.* FROM ops_incidents i JOIN ops_observations o ON o.incident_id = i.id WHERE o.state = 'critical'").get();
+    expect(inc).toBeTruthy();
+    expect(inc.state).toBe('triaged');
+    expect(inc.severity).toBe('critical');
+    const analysis = JSON.parse(inc.analysis_json);
+    expect(analysis.classification).toBe('incident');
+    expect(analysis.next_steps.length).toBeGreaterThan(0);
+    expect(JSON.parse(inc.evidence_json).observations.episodes.length).toBeGreaterThan(0);
+    const watching = db.prepare("SELECT i.state, i.severity FROM ops_incidents i JOIN ops_observations o ON o.incident_id = i.id WHERE o.state = 'watching'").get();
+    expect(watching).toMatchObject({ state: 'collecting', severity: 'info' });
+    const degrading = db.prepare("SELECT i.severity FROM ops_incidents i JOIN ops_observations o ON o.incident_id = i.id WHERE o.state = 'degrading'").get();
+    expect(degrading.severity).toBe('warning');
+  });
+
 });

@@ -102,6 +102,8 @@ describe('status counts', () => {
   it('reports watching, observing and the observer block', async () => {
     feed('vcenter:vm-cpu', [sample('vcenter:1:vm:w', 'w', 0, 95)]);
     feed('vcenter:vm-cpu', [sample('vcenter:1:vm:x', 'x', 0, 95), sample('vcenter:1:vm:x', 'x', 1, 95), sample('vcenter:1:vm:x', 'x', 2, 95)]);
+    // watching counts watching incidents, so open the incidents first
+    agent.openObservationIncidents(NOW);
     const res = await get('/api/ops-agent/status');
     expect(res.status).toBe(200);
     expect(res.body.counts).toMatchObject({ watching: 1, observing: 2 });
