@@ -16,7 +16,7 @@ export function PageHeader({ icon: Icon, title, description, children }) {
           {description && <p className="text-xs text-ink-muted mt-0.5">{description}</p>}
         </div>
       </div>
-      {children && <div className="flex items-center gap-2 flex-wrap">{children}</div>}
+      {children && <div className="flex items-center gap-2 flex-wrap ml-auto">{children}</div>}
     </div>
   );
 }

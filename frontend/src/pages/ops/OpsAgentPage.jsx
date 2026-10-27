@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings, Bell, BellOff, Clock } from 'lucide-react';
 import client from '../../api/client';
-import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated, timeAgo } from '../../components/ui/primitives';
+import { PageHeader, Panel, Badge, LoadingPanel, LastUpdated, timeAgo } from '../../components/ui/primitives';
 import WorkerChip from '../../components/WorkerChip';
 import { useToast } from '../../components/ui/Toaster';
 import { useTableControls, SortTh, TablePager } from '../../components/ui/tableTools';
@@ -605,7 +605,7 @@ export default function OpsAgentPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and stale or unreachable sources into incidents, re-polls what it can, triages each incident against the evidence ICC holds, and emails the analysis with next steps. Newest first; sort any column. It also watches polled metrics: a VM or host over its line opens a watching incident at once, which is triaged if the condition holds and closes itself if it does not.">
+      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and unreachable sources into incidents, re-polls what it can, triages each against the evidence ICC holds and emails the analysis. It also watches polled metrics: a VM or host over its line becomes a watching incident that is triaged if the condition holds.">
         <span className={`inline-flex items-center gap-1.5 text-[11px] ${live ? 'text-status-ok' : 'text-status-warn'}`} title={live ? `Watching for changes every ${PULSE_MS / 1000}s` : 'Lost contact with ICC; retrying'}>
           <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-status-ok animate-pulse' : 'bg-status-warn'}`} />
           {live ? 'Live' : 'Reconnecting'}
@@ -618,7 +618,9 @@ export default function OpsAgentPage() {
         <Link to="/admin/agent" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
           <Settings size={13} /> Settings
         </Link>
-        <RefreshButton onClick={load} />
+        <button onClick={load} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
+          <RefreshCw size={13} /> Refresh
+        </button>
       </PageHeader>
 
       {s && (
