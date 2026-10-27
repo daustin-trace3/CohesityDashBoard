@@ -23,10 +23,11 @@ const { getSetting, setSetting } = require('../settings');
 const { isDemo } = require('../demoMode');
 const registry = require('../../core/registry');
 const agentProfiles = require('../agentProfiles');
+const hostIdentity = require('../hostIdentity');
 
 const SETTING_KEY = 'ops_agent_capabilities';
 const RISK_CLASSES = ['read-only', 'network-probe', 'platform-api', 'action'];
-const RUN_TIMEOUT_MS = 4000;      // one capability against one target
+const RUN_TIMEOUT_MS = 4000;      // one capability against one target (a capability may set its own timeoutMs)
 const PLAYBOOK_TIMEOUT_MS = 25000; // the whole playbook for one incident
 const CONCURRENCY = 4;
 const MAX_TARGETS = 6;
@@ -45,10 +46,24 @@ let builtins = null;
 function loadBuiltins() {
   if (builtins) return builtins;
   builtins = [];
-  const dir = path.join(__dirname, 'capabilities');
-  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.js')).sort()) {
+  // Static requires so a bundler carries the files; keep sorted by file name.
+  const files = {
+    'brocade_port_stats.js': () => require('./capabilities/brocade_port_stats.js'),
+    'cohesity_run_detail.js': () => require('./capabilities/cohesity_run_detail.js'),
+    'dell_hardware_log.js': () => require('./capabilities/dell_hardware_log.js'),
+    'dns.js': () => require('./capabilities/dns.js'),
+    'history_slice.js': () => require('./capabilities/history_slice.js'),
+    'ping.js': () => require('./capabilities/ping.js'),
+    'pure_perf_now.js': () => require('./capabilities/pure_perf_now.js'),
+    'repoll.js': () => require('./capabilities/repoll.js'),
+    'tcp_port.js': () => require('./capabilities/tcp_port.js'),
+    'tls.js': () => require('./capabilities/tls.js'),
+    'vcenter_events_live.js': () => require('./capabilities/vcenter_events_live.js'),
+    'zerto_events_live.js': () => require('./capabilities/zerto_events_live.js'),
+  };
+  for (const f of Object.keys(files).sort()) {
     try {
-      const cap = require(path.join(dir, f));
+      const cap = files[f]();
       validate(cap, f);
       builtins.push({ ...cap, source: 'built-in' });
     } catch (err) {
@@ -64,6 +79,8 @@ function validate(cap, where) {
   if (!cap.label) throw new Error(`${where}: label missing`);
   if (!RISK_CLASSES.includes(cap.risk)) throw new Error(`${where}: risk must be one of ${RISK_CLASSES.join(', ')}`);
   if (cap.playbook !== false && typeof cap.run !== 'function') throw new Error(`${where}: run() missing`);
+  if (cap.timeoutMs !== undefined && !(Number.isFinite(cap.timeoutMs) && cap.timeoutMs >= 500 && cap.timeoutMs <= 20000)) throw new Error(`${where}: timeoutMs must be 500 to 20000`);
+  if (cap.params !== undefined && !(cap.params && typeof cap.params === 'object' && cap.params.properties && typeof cap.params.properties === 'object')) throw new Error(`${where}: params needs a properties object`);
 }
 
 /** Pack-contributed capabilities, ids namespaced by pack so two packs cannot
@@ -127,6 +144,7 @@ function listCapabilities() {
   return catalog().map((c) => ({
     id: c.id, label: c.label, description: c.description || '', risk: c.risk, source: c.source,
     platform: c.platform || null, playbook: c.playbook !== false,
+    deepOnly: !!c.deepOnly, timeoutMs: c.timeoutMs || RUN_TIMEOUT_MS,
     defaultEnabled: !!c.defaultEnabled,
     enabled: Object.prototype.hasOwnProperty.call(m, c.id) ? !!m[c.id] : !!c.defaultEnabled,
   }));
@@ -198,6 +216,23 @@ function hostAddress(platform, host) {
   return { name: short, address: null, note: 'no address on record', kind: 'device', via: platform };
 }
 
+const SOURCE_TABLES = {
+  cohesity: 'clusters', vcenter: 'vcenter_vcenters', hyperv: 'hyperv_sources', dell: 'dell_ome_instances',
+  brocade: 'brocade_sources', logicmonitor: 'lm_sources', pure: 'pure_arrays', netapp: 'netapp_arrays',
+};
+
+/** { platform, id, row } for a polled source: the stored row the platform API module takes. Zerto has
+ *  no source row (its configuration is global), so it gets none. The row carries credentials
+ *  (encrypted) and is therefore NOT enumerable: it never reaches a JSON dump of the target. */
+function sourceRef(platform, entityId) {
+  const table = SOURCE_TABLES[platform];
+  const ref = { platform, id: Number(entityId) };
+  if (!table) return ref;
+  const row = sq(`SELECT * FROM ${table} WHERE id = ?`, ref.id);
+  Object.defineProperty(ref, 'row', { value: row, enumerable: false, writable: true, configurable: true });
+  return ref;
+}
+
 /** Targets for one incident: alert hosts and the sources behind poll:/stale:
  *  alerts, de-duplicated, capped. Each carries the port list the platform
  *  profile gives for its kind: portEntries ({ port, label, expect }) for
@@ -205,10 +240,20 @@ function hostAddress(platform, host) {
 function targetsFor(inc, alerts) {
   const out = [];
   const seen = new Set();
+  let idx = null;
+  try { idx = hostIdentity.buildIdentityIndex(db); } catch { idx = null; }
   const push = (t) => {
     const key = `${t.kind}:${(t.address || t.name || '').toLowerCase()}`;
     if (!t.address || seen.has(key) || out.length >= MAX_TARGETS) return;
     seen.add(key);
+    // identity: what the host identity index makes of the name (platforms that know it).
+    // Used by the platform-api capabilities to pick their own row; absent when nothing matches.
+    if (idx) {
+      try {
+        const { ref } = hostIdentity.explainToken(idx, t.name);
+        if (ref) t.identity = { ref, platforms: [...ref.platforms] };
+      } catch { /* identity is optional */ }
+    }
     out.push(t);
   };
   for (const a of alerts) {
@@ -218,7 +263,9 @@ function targetsFor(inc, alerts) {
       const s = sourceAddress(a.platform, m[2]);
       if (s) {
         const portEntries = agentProfiles.portsForTarget({ platform: a.platform, kind: 'source' });
-        push({ kind: 'source', platform: a.platform, name: s.name, address: s.address, ports: portEntries.map((e) => e.port), portEntries, note: s.note });
+        const t = { kind: 'source', platform: a.platform, name: s.name, address: s.address, ports: portEntries.map((e) => e.port), portEntries, note: s.note };
+        t.source = sourceRef(a.platform, m[2]);
+        push(t);
       }
       continue;
     }
@@ -242,12 +289,16 @@ function withTimeout(promise, ms, what) {
   return Promise.race([promise, timer]).finally(() => clearTimeout(t));
 }
 
-async function runOne(cap, target, ctx) {
+async function runOne(cap, target, ctx, args = {}) {
   const started = Date.now();
   const requestedBy = ctx.requestedBy || 'playbook';
   const rec = { capability: cap.id, label: cap.label, risk: cap.risk, requestedBy, target: { kind: target.kind, platform: target.platform, name: target.name, address: target.address }, at: new Date(started).toISOString() };
   try {
-    const r = await withTimeout(Promise.resolve(cap.run(target, ctx)), RUN_TIMEOUT_MS, `${cap.id} on ${target.name}`);
+    const timeoutMs = cap.timeoutMs || RUN_TIMEOUT_MS;
+    const r = await withTimeout(Promise.resolve(cap.run(target, ctx, args || {})), timeoutMs, `${cap.id} on ${target.name}`);
+    // null from a capability means "nothing applies here" (history_slice with no mapped metric):
+    // skipped, not a failure, and not worth an audit row.
+    if (r === null) return null;
     rec.ok = r && r.ok !== false;
     rec.summary = (r && r.summary) || (rec.ok ? 'ok' : 'failed');
     rec.data = r && r.data !== undefined ? r.data : null;
@@ -269,9 +320,12 @@ async function runOne(cap, target, ctx) {
 
 /** Run every enabled playbook capability that applies, against every target
  *  the incident resolves to. Never throws; returns { ran, skipped, results }. */
-async function runPlaybook(inc, alerts, { evidence = null } = {}) {
-  if (isDemo()) return { ran: false, skipped: 'demo mode: the agent never probes anything from the public demo', results: [] };
-  const caps = catalog().filter((c) => c.playbook !== false && isEnabled(c.id));
+async function runPlaybook(inc, alerts, { evidence = null, deep = false } = {}) {
+  const demo = isDemo();
+  // The public demo never probes anything. A capability that only reads ICC's own database
+  // (localOnly) is the one exception: it never leaves the box.
+  const caps = catalog().filter((c) => c.playbook !== false && isEnabled(c.id) && (deep || !c.deepOnly) && (!demo || c.localOnly));
+  if (demo && !caps.length) return { ran: false, skipped: 'demo mode: the agent never probes anything from the public demo', results: [] };
   if (!caps.length) return { ran: false, skipped: 'no capability is switched on', results: [] };
   const targets = targetsFor(inc, alerts);
   const ctx = { incidentId: inc.id, incident: inc, alerts, evidence, logger };
@@ -284,12 +338,13 @@ async function runPlaybook(inc, alerts, { evidence = null } = {}) {
     }
   }
   if (!jobs.length) {
+    if (demo) return { ran: false, skipped: 'demo mode: the agent never probes anything from the public demo', results: [] };
     const why = targets.length ? 'nothing applied to these targets' : 'no target with a stored address';
     return { ran: false, skipped: why, results: [], unresolved: unresolvedNotes(inc, alerts) };
   }
   const results = [];
   let i = 0;
-  const worker = async () => { while (i < jobs.length) { const [cap, t] = jobs[i++]; results.push(await runOne(cap, t, ctx)); } };
+  const worker = async () => { while (i < jobs.length) { const [cap, t] = jobs[i++]; const rec = await runOne(cap, t, ctx); if (rec) results.push(rec); } };
   try {
     await withTimeout(Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length) }, worker)), PLAYBOOK_TIMEOUT_MS, 'live checks');
   } catch (err) {

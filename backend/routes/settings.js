@@ -271,6 +271,7 @@ router.put('/', (req, res, next) => {
         if (!['playbook', 'tools'].includes(a.capabilityMode)) return res.status(400).json({ error: 'capabilityMode must be playbook or tools' });
         setSetting('ops_agent_capability_mode', a.capabilityMode);
       }
+      if (a.deepPass !== undefined) setSetting('ops_agent_deep_pass', a.deepPass ? '1' : '0');
       if (a.maxToolCalls !== undefined) { const n = Number(a.maxToolCalls); setSetting('ops_agent_max_tool_calls', n >= 1 && n <= 12 ? String(Math.round(n)) : ''); }
       if (a.emailEnabled !== undefined) setSetting('ops_agent_email_enabled', a.emailEnabled ? '1' : '0');
       if (a.recipients !== undefined) setSetting('ops_agent_recipients', String(a.recipients).trim().slice(0, 2000));

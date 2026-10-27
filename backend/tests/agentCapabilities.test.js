@@ -35,7 +35,8 @@ describe('catalog and settings', () => {
     expect(ids).toEqual(expect.arrayContaining(['ping', 'tcp_port', 'dns', 'tls', 'repoll']));
     for (const c of list) {
       expect(caps.RISK_CLASSES).toContain(c.risk);
-      expect(c.enabled).toBe(c.id === 'repoll');
+      // history_slice reads only ICC's own tables, so it ships on; every platform-api check ships off
+      expect(c.enabled).toBe(c.id === 'repoll' || c.id === 'history_slice');
     }
     expect(list.find((c) => c.id === 'repoll').playbook).toBe(false);
   });
@@ -238,6 +239,7 @@ describe('executor', () => {
   });
 
   it('says why nothing ran when no capability is on', async () => {
+    caps.saveEnabled({ history_slice: false }); // the one read-only check that ships on
     const inc = incidentOnLoopback();
     const out = await caps.runPlaybook(inc, alertsOf(inc.id), {});
     expect(out).toMatchObject({ ran: false, skipped: 'no capability is switched on' });

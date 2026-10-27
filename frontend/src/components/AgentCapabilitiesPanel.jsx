@@ -5,7 +5,7 @@ import client from '../api/client';
 import { Badge, timeAgo } from './ui/primitives';
 import { useToast } from './ui/Toaster';
 import { useTableControls, TableControls, SortTh, TablePager } from './ui/tableTools';
-import { SettingGroup, SettingRow, selectCls, numberCls } from './settings/SettingRow';
+import { SettingGroup, SettingRow, Toggle, selectCls, numberCls } from './settings/SettingRow';
 
 const MODE_DEFAULT = 'playbook';
 const MAX_CALLS_DEFAULT = 6;
@@ -29,7 +29,8 @@ export default function AgentCapabilitiesPanel() {
   const [failed, setFailed] = useState(null);
   const [mode, setMode] = useState(MODE_DEFAULT);
   const [maxCalls, setMaxCalls] = useState(MAX_CALLS_DEFAULT);
-  const [savedMode, setSavedMode] = useState({ mode: MODE_DEFAULT, maxCalls: MAX_CALLS_DEFAULT });
+  const [deepPass, setDeepPass] = useState(true);
+  const [savedMode, setSavedMode] = useState({ mode: MODE_DEFAULT, maxCalls: MAX_CALLS_DEFAULT, deepPass: true });
   const { toast } = useToast();
 
   const load = useCallback(async () => {
@@ -45,7 +46,9 @@ export default function AgentCapabilitiesPanel() {
       const mc = Number.isFinite(n) && n >= 1 ? Math.min(12, Math.round(n)) : MAX_CALLS_DEFAULT;
       setMode(m);
       setMaxCalls(mc);
-      setSavedMode({ mode: m, maxCalls: mc });
+      const dp = oa.deepPass !== false;
+      setDeepPass(dp);
+      setSavedMode({ mode: m, maxCalls: mc, deepPass: dp });
       setCaps(c.capabilities || []);
       setRuns(Array.isArray(r) ? r : []);
       setPending({});
@@ -62,7 +65,8 @@ export default function AgentCapabilitiesPanel() {
   const effective = (c) => (Object.prototype.hasOwnProperty.call(pending, c.id) ? pending[c.id] : c.enabled);
   const capsDirty = Object.keys(pending).some((id) => { const c = caps?.find((x) => x.id === id); return c && pending[id] !== c.enabled; });
   const modeDirty = mode !== savedMode.mode || (mode === 'tools' && maxCalls !== savedMode.maxCalls);
-  const dirty = capsDirty || modeDirty;
+  const deepDirty = deepPass !== savedMode.deepPass;
+  const dirty = capsDirty || modeDirty || deepDirty;
   const setAll = (v) => { const next = {}; for (const c of caps || []) next[c.id] = v; setPending(next); };
 
   const save = async () => {
@@ -74,6 +78,7 @@ export default function AgentCapabilitiesPanel() {
         opsAgent.capabilityMode = mode;
         if (mode === 'tools') opsAgent.maxToolCalls = maxCalls;
       }
+      if (deepDirty) opsAgent.deepPass = deepPass;
       await client.put('/settings', { opsAgent });
       toast({ type: 'success', title: 'Capabilities saved', message: 'The agent uses the new set at its next triage.' });
       await load();
@@ -123,6 +128,10 @@ export default function AgentCapabilitiesPanel() {
                     className={numberCls} />
                 </SettingRow>
               )}
+              <SettingRow label="Second pass on critical or low-confidence incidents" htmlFor="agent-deep-pass" dirty={deepDirty}
+                tip="Runs one more investigation with the deep-only checks and the first answer as context. Counts against the hourly triage budget. Never on a manual re-triage.">
+                <Toggle id="agent-deep-pass" checked={deepPass} onChange={setDeepPass} />
+              </SettingRow>
             </SettingGroup>
           </div>
         )}
@@ -141,7 +150,8 @@ export default function AgentCapabilitiesPanel() {
                       <span className="text-sm text-ink font-medium">{c.label}</span>
                       <Badge tone={r.tone}>{r.label}</Badge>
                       {c.source !== 'built-in' && <Badge tone="neutral">from {c.source} pack</Badge>}
-                      {!c.playbook && <Badge tone="neutral">runs on its own trigger</Badge>}
+                      {c.deepOnly && <Badge tone="neutral">deep pass only</Badge>}
+                      {!c.playbook && !c.deepOnly && <Badge tone="neutral">runs on its own trigger</Badge>}
                       {c.enabled !== on && <span className="text-[10px] text-amber-400">unsaved</span>}
                     </span>
                     <span className="block text-[11px] text-ink-muted mt-0.5">{c.description}</span>

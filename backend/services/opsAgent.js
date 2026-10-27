@@ -1578,6 +1578,8 @@ const NOTES_SENTENCE = ' humanNotes are notes people left on this incident (ackn
 
 const PLATFORM_SENTENCE = ' platformEvidence holds what ICC itself has recorded about the affected systems (state, components, the platform\'s own alerts, events, history, protection); prefer it over guesses and cite its lines in reviewed.';
 
+const DEEP_SENTENCE = ' This is a second, deeper pass. priorAnalysis is your first answer; liveChecks and history are what is new. Confirm, refine or overturn it and say which in correlation.';
+
 const PATTERN_SENTENCE = ' This incident exists because the same short condition keeps returning; judge the cadence and what changed, not the latest burst.';
 
 function systemPromptFor(evidence, { tools = false } = {}) {
@@ -1585,7 +1587,7 @@ function systemPromptFor(evidence, { tools = false } = {}) {
   const platforms = [...new Set([...(inc.platforms || []), ...((evidence && evidence.alerts) || []).map((a) => a.platform)].filter(Boolean))];
   const ec = (getSetting('llm_estate_context') || '').trim();
   const hasObs = !!(evidence && evidence.observations && ((evidence.observations.episodes || []).length || (evidence.observations.history || []).length));
-  const tail = (hasObs ? OBSERVATIONS_SENTENCE : '') + (evidence && evidence.pattern ? PATTERN_SENTENCE : '') + (evidence && (evidence.blastRadius || evidence.shared) ? BLAST_SENTENCE : '') + (evidence && evidence.humanNotes && evidence.humanNotes.length ? NOTES_SENTENCE : '') + (evidence && evidence.platformEvidence && evidence.platformEvidence.length ? PLATFORM_SENTENCE : '') + (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
+  const tail = (hasObs ? OBSERVATIONS_SENTENCE : '') + (evidence && evidence.pattern ? PATTERN_SENTENCE : '') + (evidence && (evidence.blastRadius || evidence.shared) ? BLAST_SENTENCE : '') + (evidence && evidence.humanNotes && evidence.humanNotes.length ? NOTES_SENTENCE : '') + (evidence && evidence.priorAnalysis ? DEEP_SENTENCE : '') + (evidence && evidence.platformEvidence && evidence.platformEvidence.length ? PLATFORM_SENTENCE : '') + (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
   const built = agentProfiles.buildSystemPrompt({ platforms, evidence, reserve: tail.length, tools });
   const system = built.system + tail;
   logger.debug(`[OpsAgent] prompt chars=${system.length} focus=[${built.focusUsed.join(',')}] relations=${((evidence && evidence.relations) || []).length}`);
@@ -1639,8 +1641,8 @@ const FINAL_NUDGE = 'No more checks are available. Answer now with the JSON obje
  *  run the ones it asks for, within the call budget and the time budget.
  *  Returns { content, liveChecks, transcript }. A provider that rejects tool
  *  calling gets the playbook instead (one warning per process). */
-async function triageWithTools(inc, alerts, evidence, settings, anon, messages) {
-  const toolset = agentTools.buildToolset(inc, alerts, anon, { evidence });
+async function triageWithTools(inc, alerts, evidence, settings, anon, messages, deep = false) {
+  const toolset = agentTools.buildToolset(inc, alerts, anon, { evidence, deep });
   const unresolved = capabilities.unresolvedNotes(inc, alerts);
   const none = (skipped) => ({ ran: false, skipped, results: [], unresolved });
   const plainCall = async (lc) => {
@@ -1672,7 +1674,7 @@ async function triageWithTools(inc, alerts, evidence, settings, anon, messages) 
       if (round === 0 && err.code === 'LLM_REQUEST_FAILED' && /HTTP 4\d\d/.test(err.message || '')) {
         if (!toolRejectWarned) { toolRejectWarned = true; logger.warn('[OpsAgent] provider rejected tool calling, this triage uses the playbook'); }
         let lc;
-        try { lc = await capabilities.runPlaybook(inc, alerts, { evidence }); }
+        try { lc = await capabilities.runPlaybook(inc, alerts, { evidence, deep }); }
         catch (e2) { lc = none(`live checks failed: ${e2.message}`); }
         return plainCall(lc);
       }
@@ -1708,12 +1710,18 @@ async function triageWithTools(inc, alerts, evidence, settings, anon, messages) 
   return { content: '', liveChecks: lc, transcript };
 }
 
-async function triageIncident(inc, { force = false, trigger = null } = {}) {
-  const triggerKind = trigger || (force ? 'retriage' : (inc.triaged_at ? 'growth' : 'tick'));
+async function triageIncident(inc, { force = false, trigger = null, deep = false, prior = null } = {}) {
+  const triggerKind = deep ? 'deep-pass' : trigger || (force ? 'retriage' : (inc.triaged_at ? 'growth' : 'tick'));
   let promptChars = null;
   const settings = getOpsAgentSettings();
   const alerts = incidentAlerts(inc.id);
   const evidence = gatherIncidentEvidence(inc, alerts, settings);
+  if (deep && prior) {
+    evidence.priorAnalysis = {
+      classification: prior.classification, confidence: prior.confidence, likely_cause: prior.likely_cause,
+      summary: prior.summary, next_steps: prior.next_steps,
+    };
+  }
   // Live checks. Playbook mode (default): whatever capabilities the customer
   // switched on run once here against the incident's own hosts and sources,
   // before the model sees the evidence. Tools mode: the model is offered the
@@ -1721,7 +1729,7 @@ async function triageIncident(inc, { force = false, trigger = null } = {}) {
   // runs them again, so the page shows current state.
   const toolsMode = settings.capabilityMode === 'tools';
   if (!toolsMode) {
-    try { evidence.liveChecks = await capabilities.runPlaybook(inc, alerts, { evidence }); }
+    try { evidence.liveChecks = await capabilities.runPlaybook(inc, alerts, { evidence, deep }); }
     catch (err) { evidence.liveChecks = { ran: false, skipped: `live checks failed: ${err.message}`, results: [] }; }
   } else if (isDemo()) {
     evidence.liveChecks = { ran: false, skipped: 'demo mode: the agent never probes anything from the public demo', results: [] };
@@ -1746,7 +1754,7 @@ async function triageIncident(inc, { force = false, trigger = null } = {}) {
       });
       let content;
       if (useTools) {
-        const t = await triageWithTools(inc, alerts, evidence, settings, anon, messages);
+        const t = await triageWithTools(inc, alerts, evidence, settings, anon, messages, deep);
         content = t.content;
         evidence.liveChecks = t.liveChecks;
         fallback = fallbackTriage(evidence);
@@ -1789,6 +1797,20 @@ async function triageIncident(inc, { force = false, trigger = null } = {}) {
   } else {
     error = 'AI provider not configured; rule-based digest used.';
   }
+  // A deep pass that got no model answer must not replace a real first
+  // answer with a rule-based digest: record the attempt, keep the analysis.
+  if (deep && prior && analysis.source !== 'ai') {
+    const failedAt = new Date().toISOString();
+    db.transaction(() => {
+      db.prepare('UPDATE ops_incidents SET deep_pass_at = ? WHERE id = ?').run(failedAt, inc.id);
+      const earlier = db.prepare('SELECT COUNT(*) c FROM ops_incident_analyses WHERE incident_id = ?').get(inc.id).c;
+      db.prepare(`
+        INSERT INTO ops_incident_analyses (incident_id, at, trigger, pass, model, classification, confidence, analysis_json, evidence_json, prompt_chars, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(inc.id, failedAt, 'deep-pass', earlier + 1, model, analysis.classification, analysis.confidence, JSON.stringify(analysis), JSON.stringify(evidence), promptChars, error || 'deep pass produced no model answer; the first answer stands');
+    })();
+    return prior;
+  }
   // Recurrence is counted, so it is not the model's call. A repeating fault
   // that keeps closing itself is exactly the thing an agent hides from people.
   if (evidence.pattern) {
@@ -1824,6 +1846,7 @@ async function triageIncident(inc, { force = false, trigger = null } = {}) {
       WHERE id = ?
     `).run(now, analysis.classification, analysis.confidence, analysis.title || inc.title, analysis.summary,
       analysisJson, evidenceJson, model, error, sticky ? 1 : 0, repeatOccurrences, inc.id);
+    if (deep) db.prepare('UPDATE ops_incidents SET deep_pass_at = ? WHERE id = ?').run(now, inc.id);
     const earlier = db.prepare('SELECT COUNT(*) c FROM ops_incident_analyses WHERE incident_id = ?').get(inc.id).c;
     db.prepare(`
       INSERT INTO ops_incident_analyses (incident_id, at, trigger, pass, model, classification, confidence, analysis_json, evidence_json, prompt_chars, error)
@@ -2415,6 +2438,74 @@ let chatFn = null; // test seam
 
 function markTick(at) { try { setSetting(TICK_MARK, at); } catch { /* the marker is diagnostic only */ } }
 
+/** The poll source behind a parent component: the vCenter that holds an ESX
+ *  host, the Hyper-V or Brocade source that holds a host or switch, the
+ *  Cohesity cluster itself, the single Zerto source. Names are compared by
+ *  hostKey. Null when the parent does not resolve to one source. */
+function parentSourceFor(platform, parent) {
+  const want = hostKey(parent);
+  if (!want) return null;
+  const pick = (sql, idCol) => {
+    const row = db.prepare(sql).all().find((r) => [r.name, r.fqdn].some((n) => n && hostKey(n) === want));
+    return row ? { id: row[idCol], name: parent } : null;
+  };
+  try {
+    if (platform === 'vcenter') return pick('SELECT vcenter_id, name FROM vcenter_hosts', 'vcenter_id');
+    if (platform === 'hyperv') return pick('SELECT source_id, name, fqdn FROM hyperv_hosts', 'source_id');
+    if (platform === 'brocade') return pick('SELECT source_id, name FROM brocade_switches', 'source_id');
+    if (platform === 'cohesity') return pick('SELECT id, name FROM clusters', 'id');
+    if (platform === 'zerto') {
+      const s = serviceStatus.polledSourcesFor('zerto')[0];
+      return s ? { id: s.entityId, name: s.name || 'Zerto' } : null;
+    }
+  } catch { /* a platform whose tables are absent has no parent source */ }
+  return null;
+}
+
+/** After a consequence fold this tick, re-poll the parent's source once and
+ *  re-evaluate the app services the fault touches, so the next tick judges
+ *  fresh state. Once per source per incident, and once per source per tick.
+ *  Same 'repoll' gate as the rest of self-heal. Returns incidents acted on. */
+function consequenceHealPass(now) {
+  let attempts = 0;
+  const polledThisTick = new Set();
+  const rows = db.prepare(`
+    SELECT DISTINCT i.* FROM ops_incidents i JOIN ops_incident_alerts a ON a.incident_id = i.id
+    WHERE i.state != 'resolved' AND a.relation = 'consequence' AND a.cleared_at IS NULL AND a.attached_at = ?
+  `).all(now);
+  for (const inc of rows) {
+    let corr;
+    try { corr = correlationEvidence(inc, incidentAlerts(inc.id)); } catch { continue; }
+    const blast = corr && corr.blastRadius;
+    if (!blast || !blast.parentPlatform) continue;
+    const src = parentSourceFor(blast.parentPlatform, blast.parent);
+    if (!src) continue;
+    let earlier = [];
+    try { earlier = JSON.parse(inc.heal_actions_json || '[]'); } catch { earlier = []; }
+    const marker = `${blast.parentPlatform}:${src.id}`;
+    const done = earlier.some((x) => x.action === 'repoll-parent' && x.key === marker);
+    if (done) continue;
+    const actions = [];
+    if (!polledThisTick.has(marker)) {
+      polledThisTick.add(marker);
+      const rec = triggerPoll(blast.parentPlatform, src.id, blast.parent);
+      actions.push({ ...rec, action: 'repoll-parent', key: marker });
+      act('re-poll parent', `${platformMeta(blast.parentPlatform).label} source #${src.id} (parent ${blast.parent} of ${blast.childrenTotal} consequence${blast.childrenTotal === 1 ? '' : 's'}) -> ${rec.result}, incident #${inc.id}`);
+    } else {
+      actions.push({ at: now, action: 'repoll-parent', key: marker, platform: blast.parentPlatform, target: blast.parent, result: 'already re-polled this tick for another incident' });
+    }
+    for (const app of (blast.appsAffected || [])) {
+      let result;
+      try { result = (appSvc.evaluate(app.usageId) || {}).state || 'evaluated'; } catch (err) { result = `could not evaluate: ${err.message}`; }
+      actions.push({ at: now, action: 're-evaluate app service', platform: 'appservice', target: app.label || app.usageId, result });
+    }
+    const holdUntil = new Date(Math.max(Date.parse(inc.hold_until), Date.parse(now) + HEAL_HOLD_MINUTES * 60000)).toISOString();
+    db.prepare('UPDATE ops_incidents SET heal_at = ?, heal_actions_json = ?, hold_until = ? WHERE id = ?').run(now, JSON.stringify([...earlier, ...actions]), holdUntil, inc.id);
+    attempts += 1;
+  }
+  return attempts;
+}
+
 /** Self-heal: an incident holding a poll:/stale: alert gets one re-poll of
  *  each such source before triage, and a little more hold so the result
  *  lands. The next tick sees the item clear (self-healed) or persist. It is
@@ -2422,7 +2513,7 @@ function markTick(at) { try { setSetting(TICK_MARK, at); } catch { /* the marker
  *  incidents got a re-poll this pass. */
 function selfHealPass(now) {
   if (!capabilities.isEnabled('repoll')) return 0;
-  let attempts = 0;
+  let attempts = consequenceHealPass(now);
   for (const inc of db.prepare("SELECT * FROM ops_incidents WHERE state = 'collecting' AND heal_attempted = 0").all()) {
     const targets = incidentAlerts(inc.id).filter((a) => !a.cleared_at && /^(poll|stale):/.test(a.source_key));
     if (!targets.length) continue;
@@ -2442,7 +2533,7 @@ function selfHealPass(now) {
       return rec;
     });
     const holdUntil = new Date(Math.max(Date.parse(inc.hold_until), Date.parse(now) + HEAL_HOLD_MINUTES * 60000)).toISOString();
-    db.prepare('UPDATE ops_incidents SET heal_attempted = 1, heal_at = ?, heal_actions_json = ?, hold_until = ? WHERE id = ?').run(now, JSON.stringify(actions), holdUntil, inc.id);
+    db.prepare('UPDATE ops_incidents SET heal_attempted = 1, heal_at = ?, heal_actions_json = ?, hold_until = ? WHERE id = ?').run(now, JSON.stringify([...(() => { try { return JSON.parse(inc.heal_actions_json || '[]'); } catch { return []; } })(), ...actions]), holdUntil, inc.id);
     attempts += 1;
   }
   return attempts;
@@ -2498,6 +2589,18 @@ async function runOnce({ force = false } = {}) {
         stats.triaged += 1;
         const fresh = db.prepare('SELECT model, triage_error FROM ops_incidents WHERE id = ?').get(inc.id);
         act('triaged incident', `#${inc.id} ${a.classification}, ${a.confidence} confidence, human ${a.human_required ? 'required' : 'not needed'}, ${a.source === 'ai' ? `analysis by ${fresh?.model || 'the model'}` : `rule-based digest${fresh?.triage_error ? ` (no AI narrative: ${fresh.triage_error})` : ''}`}`);
+        // Deep pass: one more investigation, with the deep-only checks and the
+        // first answer as context, for a critical or low-confidence incident.
+        // It spends a budget unit of its own, runs once per incident, and never
+        // in demo mode or on a hand re-triage (retriage() does not come here).
+        if (settings.deepPass && !isDemo() && a.source === 'ai' && budget > 0) {
+          const cur = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(inc.id);
+          if (cur && !cur.deep_pass_at && (a.confidence === 'low' || cur.severity === 'critical')) {
+            budget -= 1;
+            const b = await triageIncident(cur, { force: true, deep: true, prior: a });
+            act('deep pass', `#${inc.id} ${cur.severity === 'critical' && a.confidence !== 'low' ? 'critical incident' : 'low confidence'}: second pass ${b === a ? 'gave no model answer, first answer stands' : `${b.classification}, ${b.confidence} confidence (first pass ${a.classification}, ${a.confidence})`}`);
+          }
+        }
       } catch (err) {
         if (err.code === 'LLM_RATE_LIMITED') break;
         logger.error(`[OpsAgent] triage failed for #${inc.id}: ${err.message}`);

@@ -737,8 +737,8 @@ function siteOf(coreApi, ctx) {
   }
 }
 
-// Capabilities for the Operations Agent. Database only: none of them touches
-// the network or the LogicMonitor API. The agent registers pack capabilities
+// Capabilities for the Operations Agent. The first four are database only;
+// lm_ds_data is the one deep-pass platform-API read. The agent registers pack capabilities
 // as <pack id>:<id> and runs them against incident targets of this platform.
 const lmDb = () => require('../../db/database');
 const targetAnchor = (target) => ({ names: [target && target.name].filter(Boolean), ips: [target && target.address].filter((a) => a && /^\d{1,3}(\.\d{1,3}){3}$/.test(a)) });
@@ -801,6 +801,62 @@ const agentCapabilities = [
       });
       if (!found.lines.length) return { ok: true, summary: 'no latency episodes in the last 30 days', data: { episodes: 0 } };
       return { ok: true, summary: found.lines.join('; '), data: { episodes: found.lines.length, scope: found.scope } };
+    },
+  },
+  {
+    id: 'lm_ds_data',
+    label: 'LogicMonitor datasource data (live)',
+    description: 'Asks LogicMonitor for the last hour of raw datapoints of the datasource that is alerting on the host, using the stored portal connection. One read call, deep pass only.',
+    platform: '*',
+    risk: 'platform-api',
+    defaultEnabled: false,
+    timeoutMs: 8000,
+    deepOnly: true,
+    async run(target, ctx) {
+      const db = lmDb();
+      const names = [target && target.name, target && target.address].filter(Boolean).map((n) => String(n).toLowerCase());
+      if (!names.length) return { ok: false, summary: 'no LogicMonitor device matches the target', data: null };
+      const marks = names.map(() => '?').join(', ');
+      const dev = db.prepare(`SELECT source_id, lm_device_id, display_name FROM lm_devices WHERE stale = 0 AND (LOWER(name) IN (${marks}) OR LOWER(display_name) IN (${marks})) ORDER BY id LIMIT 1`).get(...names, ...names);
+      if (!dev) return { ok: false, summary: 'no LogicMonitor device matches the target', data: null };
+      const source = db.prepare('SELECT * FROM lm_sources WHERE id = ?').get(dev.source_id);
+      if (!source) return { ok: false, summary: 'the LogicMonitor portal row is gone', data: null };
+      // lm_alerts carries no hds_id. The join to lm_device_datasources is by
+      // NAME: alert resource_template_name = datasource_name (inferred from the
+      // LM data model, not verified against a live portal).
+      const open = db.prepare('SELECT resource_template_name AS name FROM lm_alerts WHERE source_id = ? AND lm_device_id = ? AND cleared = 0 AND resource_template_name IS NOT NULL ORDER BY start_epoch DESC').all(dev.source_id, dev.lm_device_id);
+      let hds = null;
+      for (const a of open) {
+        hds = db.prepare('SELECT hds_id, datasource_name FROM lm_device_datasources WHERE source_id = ? AND lm_device_id = ? AND datasource_name = ? LIMIT 1').get(dev.source_id, dev.lm_device_id, a.name);
+        if (hds) break;
+      }
+      if (!hds) hds = db.prepare("SELECT hds_id, datasource_name FROM lm_device_datasources WHERE source_id = ? AND lm_device_id = ? AND LOWER(datasource_name) LIKE '%cpu%' ORDER BY hds_id LIMIT 1").get(dev.source_id, dev.lm_device_id);
+      if (!hds) return { ok: false, summary: `no datasource row for ${dev.display_name}`, data: null };
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const firsts = ((ctx && ctx.alerts) || []).map((a) => Date.parse(String(a.first_seen || '').replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(a.first_seen || '')) ? '' : 'Z'))).filter(Number.isFinite);
+      const onsetSec = firsts.length ? Math.floor(Math.min(...firsts) / 1000) : nowSec;
+      const start = Math.min(onsetSec, nowSec) - 3600;
+      const body = await require('../../services/logicmonitorApi').fetchDsData(source, dev.lm_device_id, hds.hds_id, { start, end: nowSec });
+
+      const d = body && typeof body === 'object' && body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body;
+      const points = d && Array.isArray(d.dataPoints) ? d.dataPoints : null;
+      let rows = null;
+      if (d && Array.isArray(d.values)) rows = d.values;
+      else if (d && d.values && typeof d.values === 'object') rows = [].concat(...Object.values(d.values).filter(Array.isArray));
+      if (!points || !rows) {
+        const keys = d && typeof d === 'object' ? Object.keys(d).slice(0, 12).join(', ') : typeof d;
+        return { ok: false, summary: `LogicMonitor answered in a shape ICC does not read (top-level keys: ${keys})`, data: { keys } };
+      }
+      const lines = [];
+      for (let k = 0; k < points.length && lines.length < 8; k += 1) {
+        const vals = rows.map((r) => (Array.isArray(r) ? Number(r[k]) : NaN)).filter((v) => Number.isFinite(v));
+        if (!vals.length) continue;
+        const f = (v) => Math.round(v * 100) / 100;
+        lines.push(`${String(points[k]).slice(0, 60)}: last ${f(vals[vals.length - 1])}, min ${f(Math.min(...vals))}, max ${f(Math.max(...vals))} over the window`);
+      }
+      if (!lines.length) return { ok: false, summary: `${hds.datasource_name} returned no numeric samples in the last hour`, data: { lines: [] } };
+      return { ok: true, summary: `${hds.datasource_name} on ${dev.display_name}: ${lines.length} datapoint(s) read`, data: { datasource: hds.datasource_name, lines } };
     },
   },
 ];

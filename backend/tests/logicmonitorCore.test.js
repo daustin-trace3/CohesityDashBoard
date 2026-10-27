@@ -1352,10 +1352,10 @@ describe('round 3: manifest seams (C6)', () => {
 
   it('exposes three read-only database capabilities that pass the host validator', () => {
     const manifest = require('../platforms/logicmonitor');
-    expect(manifest.agentCapabilities.map((c) => c.id)).toEqual(['lm_port_history', 'lm_sdt_lookup', 'lm_path_blame', 'lm_latency_watch']);
+    expect(manifest.agentCapabilities.map((c) => c.id)).toEqual(['lm_port_history', 'lm_sdt_lookup', 'lm_path_blame', 'lm_latency_watch', 'lm_ds_data']);
     for (const c of manifest.agentCapabilities) {
       expect(/^[a-z0-9_-]{2,40}$/.test(c.id)).toBe(true);
-      expect(c.risk).toBe('read-only');
+      expect(c.risk).toBe(c.id === 'lm_ds_data' ? 'platform-api' : 'read-only');
       expect(typeof c.run).toBe('function');
     }
     expect(manifest.navSections).toEqual(expect.arrayContaining(['sites', 'circuits']));
@@ -1382,6 +1382,27 @@ describe('round 3: manifest seams (C6)', () => {
     expect(pb.ok).toBe(true);
     expect(pb.summary).toContain('blame: Likely hop: phx-dist-01 Te1/1/1');
     expect(caps.lm_port_history.run({ name: 'nobody', address: null }).ok).toBe(false);
+  });
+
+  it('lm_ds_data reads the alerting datasource of the matched device and names unknown shapes', async () => {
+    const sid = seedPathEstate();
+    const cap = require('../platforms/logicmonitor').agentCapabilities.find((c) => c.id === 'lm_ds_data');
+    expect(cap).toMatchObject({ risk: 'platform-api', defaultEnabled: false, timeoutMs: 8000, deepOnly: true, platform: '*' });
+    db.prepare("INSERT INTO lm_device_datasources (source_id, lm_device_id, hds_id, datasource_name) VALUES (?, 5, 501, 'WinCPU'), (?, 5, 502, 'Disk')").run(sid, sid);
+    db.prepare("INSERT INTO lm_alerts (source_id, lm_alert_id, lm_device_id, resource_template_name, cleared, start_epoch, condition_key) VALUES (?, 'a1', 5, 'Disk', 0, 100, 'k1')").run(sid);
+    let seen = null;
+    lmApi._setTransport(async (cfg) => { seen = cfg; return { status: 200, data: { dataPoints: ['Used', 'Free'], values: [[10, 90], [30, 70], ['No Data', null]], time: [1, 2, 3] }, headers: {} }; });
+    const target = { kind: 'host', platform: 'vcenter', name: 'WEB01', address: '10.9.9.9' };
+    const ok = await cap.run(target, { alerts: [{ first_seen: '2026-10-27 10:00:00' }] });
+    expect(String(seen.url)).toContain('/device/devices/5/devicedatasources/502/data');
+    expect(ok.ok).toBe(true);
+    expect(ok.data.lines[0]).toBe('Used: last 30, min 10, max 30 over the window');
+    expect(ok.data.lines.length).toBeLessThanOrEqual(8);
+    lmApi._setTransport(async () => ({ status: 200, data: { surprise: 1, other: 2 }, headers: {} }));
+    const bad = await cap.run(target, { alerts: [] });
+    expect(bad.ok).toBe(false);
+    expect(bad.summary).toContain('surprise, other');
+    expect((await cap.run({ name: 'nobody', address: null }, {})).ok).toBe(false);
   });
 
   it('incidentEvidence for a VM anchor names the likely hop, ports, site and changes; siteOf wraps the resolver', () => {

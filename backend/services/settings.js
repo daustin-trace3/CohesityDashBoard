@@ -315,6 +315,8 @@ function getOpsAgentSettings() {
     // 'tools' offers them to the model, which calls the ones it needs.
     capabilityMode: getSetting('ops_agent_capability_mode') === 'tools' ? 'tools' : 'playbook',
     maxToolCalls: numSetting('ops_agent_max_tool_calls', 6, 1, 12),
+    // One more, deeper investigation for a critical or low-confidence incident.
+    deepPass: getSetting('ops_agent_deep_pass') !== '0',
     // Observations: sustained-signal episodes over polled metrics
     // (services/agentObservations).
     observations: getObservationSettings(),

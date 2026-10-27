@@ -1104,3 +1104,36 @@ describe('record: human notes and platform evidence', () => {
     expect(ev.incident.id).toBe(inc.id);
   });
 });
+
+describe('self-heal after a consequence fold', () => {
+  it('re-polls the parent source once and records repoll-parent', () => {
+    const seed = require('./helpers/opsCorrelationSeed');
+    const hostIdentity = require('../services/hostIdentity');
+    const registry = require('../core/registry');
+    seed.reset();
+    hostIdentity.invalidateIdentityIndex(seed.db);
+    seed.host('esx-01');
+    for (const n of ['vm-a', 'vm-b']) seed.vm(n, { onHost: 'esx-01' });
+    const at = (m) => new Date(Date.parse(NOW) + m * 60000).toISOString();
+    const items = [
+      { platform: 'vcenter', sourceKey: 'v:down-esx-01', severity: 'critical', host: 'esx-01', type: 'host-down', message: 'Host esx-01 is not responding', firstSeen: at(-6), lastSeen: NOW },
+      { platform: 'vcenter', sourceKey: 'v:vol-vm-a', severity: 'warning', host: 'vm-a', type: 'guest-volume-full', message: 'Volume C: on vm-a is 96% full', firstSeen: at(-5), lastSeen: NOW },
+      { platform: 'vcenter', sourceKey: 'v:vol-vm-b', severity: 'warning', host: 'vm-b', type: 'guest-volume-full', message: 'Volume C: on vm-b is 96% full', firstSeen: at(-4), lastSeen: NOW },
+    ];
+    const calls = [];
+    const realGet = registry.getPollerHandle;
+    registry.getPollerHandle = (p) => ({ trigger: (id) => { calls.push([p, id]); return Promise.resolve(); } });
+    try {
+      agent.groupTick(NOW, { minSeverity: 'warning', holdMinutes: 10, consequenceMinutes: 30, onsetMinutes: 10 }, { items, failed: [] });
+      expect(agent.selfHealPass(NOW)).toBe(1);
+      expect(calls).toEqual([['vcenter', 1]]);
+      const inc = incidents()[0];
+      const acts = JSON.parse(inc.heal_actions_json);
+      expect(acts.filter((x) => x.action === 'repoll-parent')).toHaveLength(1);
+      expect(acts[0]).toMatchObject({ platform: 'vcenter', target: 'esx-01', result: 'poll triggered' });
+      // A second pass in the same state does not poll again.
+      expect(agent.selfHealPass(NOW)).toBe(0);
+      expect(calls).toHaveLength(1);
+    } finally { registry.getPollerHandle = realGet; }
+  });
+});

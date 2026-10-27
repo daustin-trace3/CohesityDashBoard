@@ -160,4 +160,21 @@ const GENERIC = {
 
 const BUDGET_DEFAULTS = { alerts: 15, failedBackupJobs: 10, networkBlocks: 3 };
 
-module.exports = { DEFAULTS, GENERIC, GUEST_PORTS, RELATION_TEMPLATES, BUDGET_DEFAULTS };
+/** Which stored metric the history_slice capability reads in playbook mode, by platform and alert
+ *  type. Metric names are the friendly names history_slice builds per target. Alert type names here
+ *  are best effort: a type with no entry (or a metric the target has no history for) is skipped. */
+const historyMetricFor = {
+  vcenter: {
+    'datastore-usage': 'vcenter_datastore_free_pct',
+    'host-cpu': 'vcenter_host_cpu_pct',
+    'host-memory': 'vcenter_host_mem_pct',
+    'vm-cpu': 'vcenter_vm_cpu_mhz',
+    'vm-memory': 'vcenter_vm_mem_mb',
+  },
+  pure: { 'capacity-high': 'pure_used_pct', 'latency-high': 'pure_read_latency_us' },
+  netapp: { 'capacity-high': 'netapp_used_pct', 'latency-high': 'netapp_read_latency_us' },
+  cohesity: { 'capacity-high': 'cohesity_used_pct' },
+  brocade: { 'port-errors': 'brocade_crc_errors', 'crc-errors': 'brocade_crc_errors' },
+};
+
+module.exports = { DEFAULTS, GENERIC, GUEST_PORTS, RELATION_TEMPLATES, BUDGET_DEFAULTS, historyMetricFor };
