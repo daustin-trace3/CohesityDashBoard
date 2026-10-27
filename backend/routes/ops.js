@@ -318,17 +318,33 @@ function awsSummary() {
     const s = String(r.severity || '').toLowerCase();
     if (s === 'critical') sev.critical += num(r.c);
     else if (s === 'warning') sev.warning += num(r.c);
-    if (r.type === 'cost-spike') costSpike = true;
+    if (r.type === 'cost-spike' || r.type === 'cost-anomaly') costSpike = true;
   }
   const exceptions = [];
   if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical issue${sev.critical === 1 ? '' : 's'}`, '/aws/alerts'));
   if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} warning issue${sev.warning === 1 ? '' : 's'}${costSpike ? ' (cost spike)' : ''}`, '/aws/alerts'));
+  // FinOps additions (v11 tables): each query is guarded so a db without them still renders.
+  const headline = [
+    { label: 'MTD Spend', value: `$${mtd.toFixed(2)}` },
+    { label: 'EC2 Running', value: `${ec2Running}/${ec2Total}` },
+  ];
+  try {
+    const fc = one("SELECT mean_usd FROM aws_cost_forecast WHERE scope = 'total' AND period_start >= strftime('%Y-%m-01', 'now') ORDER BY generated_on DESC, id DESC LIMIT 1");
+    if (fc && fc.mean_usd != null) headline.splice(1, 0, { label: 'Forecast', value: `$${num(fc.mean_usd).toFixed(2)}` });
+  } catch { /* aws_cost_forecast not present */ }
+  try {
+    const month = new Date().toISOString().slice(0, 7);
+    const budgetCounts = { crit: 0, warn: 0 };
+    for (const r of all(`
+      SELECT s.state, COUNT(*) c FROM aws_budget_status s JOIN aws_budgets b ON b.id = s.budget_id
+      WHERE s.month = ? AND b.enabled = 1 AND s.state IN ('crit', 'warn') GROUP BY s.state
+    `, month)) budgetCounts[r.state] = num(r.c);
+    if (budgetCounts.crit) exceptions.push(exception('critical', budgetCounts.crit, `${fnum(budgetCounts.crit)} budget${budgetCounts.crit === 1 ? '' : 's'} over the limit`, '/aws/finops/budgets'));
+    if (budgetCounts.warn) exceptions.push(exception('warning', budgetCounts.warn, `${fnum(budgetCounts.warn)} budget${budgetCounts.warn === 1 ? '' : 's'} near the limit`, '/aws/finops/budgets'));
+  } catch { /* aws_budgets not present */ }
   return {
     objects: ec2Total + lightsailTotal + ecsServices + s3Buckets,
-    headline: [
-      { label: 'MTD Spend', value: `$${mtd.toFixed(2)}` },
-      { label: 'EC2 Running', value: `${ec2Running}/${ec2Total}` },
-    ],
+    headline,
     exceptions,
     spark: spark7(all(
       "SELECT date(captured_at) d, MAX(mtd_spend_usd) c FROM aws_metrics_history WHERE captured_at >= datetime('now','-7 days') GROUP BY date(captured_at)"

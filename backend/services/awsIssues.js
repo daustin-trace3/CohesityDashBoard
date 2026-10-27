@@ -11,6 +11,11 @@ function costSpikePct() {
   return Number.isFinite(n) && n >= 5 && n <= 500 ? Math.round(n) : 30;
 }
 
+function finopsIntSetting(key, fallback, min, max) {
+  const n = Number(getSetting(key));
+  return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : fallback;
+}
+
 function rdsStorageWarnPct() {
   const n = Number(getSetting('aws_rds_storage_warn_pct'));
   return Number.isFinite(n) && n >= 5 && n <= 50 ? Math.round(n) : 15;
@@ -207,6 +212,86 @@ function computeIssues() {
       });
     }
   }
+
+  // 9. FinOps rules (round of 2026-10-27). Stored rows only: the capture computes them, this reads them.
+  try {
+    const usd = (n) => (Number(n) || 0).toFixed(2);
+    const accountName = (id) => accountsById.get(id)?.name || '';
+
+    // cost-anomaly: one per open anomaly that no other row supersedes.
+    for (const a of db.prepare(`
+      SELECT * FROM aws_cost_anomalies WHERE status = 'open' AND superseded_by IS NULL
+    `).all()) {
+      const acc = accountsById.get(a.account_id);
+      if (!acc) continue;
+      const basis = a.source === 'icc' ? ' per-service baseline' : '';
+      issues.push({
+        severity: 'warning', type: 'cost-anomaly', account: acc.name, accountId: acc.id, target: a.scope_key,
+        message: `Cost anomaly on ${a.scope_key}: $${usd(a.actual_usd)} vs expected $${usd(a.expected_usd)} (${(Number(a.impact_pct) || 0).toFixed(0)}%) since ${a.start_day}${basis}`,
+      });
+    }
+
+    // budgets are not account-scoped: report them on the lowest account id.
+    const first = [...accounts].sort((x, y) => x.id - y.id)[0];
+    if (first) {
+      const month = new Date().toISOString().slice(0, 7);
+      for (const b of db.prepare(`
+        SELECT b.name, b.amount_usd, b.warn_pct, b.crit_pct, s.state, s.actual_usd, s.forecast_usd, s.pct_actual
+        FROM aws_budgets b JOIN aws_budget_status s ON s.budget_id = b.id AND s.month = ?
+        WHERE b.enabled = 1
+      `).all(month)) {
+        const pct = (Number(b.pct_actual) || 0).toFixed(0);
+        if (b.state === 'crit') {
+          issues.push({
+            severity: 'critical', type: 'budget-exceeded', account: first.name, accountId: first.id, target: b.name,
+            message: `Budget ${b.name} is at $${usd(b.actual_usd)} of $${usd(b.amount_usd)} (${pct}%), over its ${b.crit_pct}% limit`,
+          });
+        } else if (b.state === 'warn') {
+          issues.push({
+            severity: 'warning', type: 'budget-warning', account: first.name, accountId: first.id, target: b.name,
+            message: `Budget ${b.name} is at $${usd(b.actual_usd)} of $${usd(b.amount_usd)} (${pct}%), past its ${b.warn_pct}% warning`,
+          });
+        } else if (b.state === 'forecast_warn') {
+          issues.push({
+            severity: 'info', type: 'budget-forecast', account: first.name, accountId: first.id, target: b.name,
+            message: `Budget ${b.name} is at $${usd(b.actual_usd)} of $${usd(b.amount_usd)} (${pct}%) and forecast to reach $${usd(b.forecast_usd)} by month end`,
+          });
+        }
+      }
+    }
+
+    // commitment-expiring: a Savings Plan whose term ends inside the warning window.
+    const expiryDays = finopsIntSetting('aws_finops_sp_expiry_warn_days', 30, 1, 365);
+    for (const sp of db.prepare('SELECT * FROM aws_savings_plans').all()) {
+      const ms = Date.parse(sp.end_at || '');
+      if (!Number.isFinite(ms)) continue;
+      const daysLeft = Math.ceil((ms - Date.now()) / 86400000);
+      if (daysLeft < 0 || daysLeft > expiryDays) continue;
+      const tail = String(sp.sp_arn).split('/').pop();
+      issues.push({
+        severity: 'warning', type: 'commitment-expiring', account: accountName(sp.account_id), accountId: sp.account_id, target: tail,
+        message: `Savings Plan ${tail} expires in ${daysLeft} day(s) ($${(Number(sp.hourly_commitment_usd) || 0).toFixed(3)}/h commitment)`,
+      });
+    }
+
+    // commitment-underutilized: the last seven days of Savings Plan utilization average under the warning line.
+    const utilWarn = finopsIntSetting('aws_finops_sp_util_warn_pct', 80, 1, 100);
+    for (const acc of accounts) {
+      const last = db.prepare(`
+        SELECT utilization_pct, commitment_usd FROM aws_sp_utilization_daily
+        WHERE account_id = ? ORDER BY day DESC LIMIT 7
+      `).all(acc.id);
+      const pcts = last.map((r) => r.utilization_pct).filter((v) => v != null);
+      if (!pcts.length || !last.some((r) => (r.commitment_usd || 0) > 0)) continue;
+      const mean = pcts.reduce((n, v) => n + v, 0) / pcts.length;
+      if (mean < utilWarn) {
+        issues.push({
+          severity: 'warning', type: 'commitment-underutilized', account: acc.name, accountId: acc.id, target: 'savings-plans',
+          message: `Savings Plans are ${mean.toFixed(1)}% utilized over the last ${pcts.length} day(s) (below ${utilWarn}%); unused commitment is billed anyway`,
+        });
+      }
+    }
+  } catch { /* a database without migration v11 simply has no FinOps issues */ }
 
   // 5b. Session credentials with an expiry: warn inside the last two hours,
   // critical once past it (polling has stopped for that account).

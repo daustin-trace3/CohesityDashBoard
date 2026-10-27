@@ -7,6 +7,10 @@
 // its desired count, yesterday's total AWS cost ~40% above the day before
 // (tripping the 30% cost-spike threshold), a publicly-accessible S3 bucket,
 // and unattached EBS volumes.
+// FinOps round (2026-10-27): amortized cost beside unblended, a Savings Plan line, per-model Bedrock
+// billing services with token usage quantities, tag allocation (Environment, Team), Savings Plan
+// utilization and coverage, two plans, anomalies, forecasts, budgets, recommendation lifecycle and
+// capability status. Everything is relative to now and rewritten (DELETE then INSERT) on each seed.
 const { randInt, randFloat, pick, chance, rngFor } = require('./core');
 
 const EC2_INSTANCES = [
@@ -61,10 +65,15 @@ const S3_BUCKETS = [
   { name: 'demo-aws-data-lake', region: 'us-east-2', sizeBytes: Math.round(5.6 * 1024 ** 4), objectCount: 2100000, publicAccessBlocked: 1, versioning: 'Disabled', lifecycleRules: 4, createdDaysAgo: 250 },
 ];
 
+const BEDROCK_OPUS_SERVICE = 'Claude Opus 4.6 (Amazon Bedrock Edition)';
+const BEDROCK_SONNET_SERVICE = 'Claude Sonnet 4.6 (Amazon Bedrock Edition)';
+const SP_SERVICE = 'Savings Plans for AWS Compute usage';
 const COST_SERVICES = [
   { service: 'Amazon Elastic Compute Cloud - Compute', base: 45 },
   { service: 'Amazon Simple Storage Service', base: 8 },
-  { service: 'Amazon Bedrock', base: 5 },
+  { service: BEDROCK_OPUS_SERVICE, base: 6 },
+  { service: BEDROCK_SONNET_SERVICE, base: 3 },
+  { service: SP_SERVICE, base: 15 },
   { service: 'Amazon EC2 Container Service', base: 12 },
   { service: 'Amazon Lightsail', base: 3.5 },
   { service: 'EC2 - Other', base: 7.5 },
@@ -76,8 +85,8 @@ const COST_DAYS = 45;
 const SPIKE_MULTIPLIER = 1.4; // yesterday vs day-before -> ~40% above, trips 30% rule
 
 const BEDROCK_MODELS = [
-  'anthropic.claude-3-sonnet-20240229-v1:0',
-  'anthropic.claude-3-haiku-20240307-v1:0',
+  'us.anthropic.claude-opus-4-6-v1',
+  'us.anthropic.claude-sonnet-4-6-v1',
   'amazon.titan-text-express-v1',
 ];
 const BEDROCK_DAYS = 30;
@@ -111,6 +120,16 @@ const USAGE_TYPES = [
   { service: LIGHTSAIL_SERVICE, usageType: 'USE2-BundleUsage:2GB', base: 2 },
   { service: LIGHTSAIL_SERVICE, usageType: 'USE2-DatabaseUsage:1GB', base: 1 },
   { service: LIGHTSAIL_SERVICE, usageType: 'USE2-LoadBalancerUsage', base: 0.5 },
+];
+const BEDROCK_BILLING = [
+  { service: BEDROCK_OPUS_SERVICE, price: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 } },
+  { service: BEDROCK_SONNET_SERVICE, price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+];
+const BEDROCK_TOKEN_KINDS = [
+  { id: 'cacheRead', usage: 'CacheReadInput', share: 0.45 },
+  { id: 'cacheWrite', usage: 'CacheWriteInput', share: 0.2 },
+  { id: 'input', usage: 'Input', share: 0.1 },
+  { id: 'output', usage: 'Output', share: 0.25 },
 ];
 const COST_RESOURCE_DAYS = 14;
 const LIGHTSAIL_DB_ARN = 'arn:aws:lightsail:us-east-2:893373391538:RelationalDatabase/demo-ls-db-01';
@@ -407,30 +426,47 @@ function seedAws(db, { now, encrypt }) {
   }
   const optimizerRows = OPTIMIZER_RECOMMENDATIONS.length;
 
-  // ── Cost Explorer: 45 days x 6 services, yesterday ~40% above day-before ──
+  // -- Cost Explorer: 45 days x services, yesterday ~40% above day-before --
   const insertCost = db.prepare(`
-    INSERT INTO aws_cost_daily (account_id, day, service, amount_usd, currency)
-    VALUES (?, date('now', ?), ?, ?, 'USD')
+    INSERT INTO aws_cost_daily (account_id, day, service, amount_usd, amortized_usd, currency)
+    VALUES (?, date('now', ?), ?, ?, ?, 'USD')
   `);
   const costRng = rngFor('aws-cost-daily');
   let costRows = 0;
   let dayBeforeTotal = 0;
   let yesterdayTotal = 0;
+  // Per service and day offset: { unblended, amortized }. Later blocks (usage rows, allocation,
+  // budgets, forecast) read these so every table agrees.
+  const svcDaily = new Map(COST_SERVICES.map((c) => [c.service, new Map()]));
+  const utcDay = (i) => new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
   // Yesterday is the day-before amount times the multiplier, service by service, so the
   // spike survives any random draw (a 0.85 yesterday over a 1.15 day-before once lost it).
   const dayBeforeByService = new Map();
   for (let i = COST_DAYS - 1; i >= 0; i--) {
     const offset = `-${i} days`;
+    const dayAmounts = [];
     for (const svc of COST_SERVICES) {
       const drift = 1 + (COST_DAYS - i) / COST_DAYS * randFloat(costRng, -0.05, 0.2, 3);
       let amount = Math.max(0.05, svc.base * drift * randFloat(costRng, 0.85, 1.15, 3));
       if (i === 2) dayBeforeByService.set(svc.service, amount);
       if (i === 1) amount = (dayBeforeByService.get(svc.service) || amount) * SPIKE_MULTIPLIER;
       amount = Math.round(amount * 100) / 100;
-      insertCost.run(accountId, offset, svc.service, amount);
-      costRows++;
+      dayAmounts.push({ service: svc.service, amount });
       if (i === 1) yesterdayTotal += amount;
       if (i === 2) dayBeforeTotal += amount;
+    }
+    // Amortized spreads the Savings Plan fee over compute: the plan line keeps 5% of its unblended
+    // amount and the difference lands on EC2 compute, so the day total is the same in both metrics.
+    const spAmount = dayAmounts.find((d) => d.service === SP_SERVICE).amount;
+    const spAmortized = Math.round(spAmount * 0.05 * 100) / 100;
+    const spShift = Math.round((spAmount - spAmortized) * 100) / 100;
+    for (const d of dayAmounts) {
+      let amortized = d.amount;
+      if (d.service === SP_SERVICE) amortized = spAmortized;
+      if (d.service === COMPUTE_SERVICE) amortized = Math.round((d.amount + spShift) * 100) / 100;
+      insertCost.run(accountId, offset, d.service, d.amount, amortized);
+      svcDaily.get(d.service).set(i, { unblended: d.amount, amortized });
+      costRows++;
     }
   }
 
@@ -513,16 +549,41 @@ function seedAws(db, { now, encrypt }) {
 
   // ── Cost usage-type breakdown: 45 days x 8 usage types ──────────────────
   const insertCostUsage = db.prepare(`
-    INSERT INTO aws_cost_usage_daily (account_id, day, service, usage_type, amount_usd)
-    VALUES (?, date('now', ?), ?, ?, ?)
+    INSERT INTO aws_cost_usage_daily (account_id, day, service, usage_type, amount_usd, amortized_usd, usage_qty, usage_unit)
+    VALUES (?, date('now', ?), ?, ?, ?, ?, ?, ?)
   `);
   const usageRng = rngFor('aws-cost-usage-daily');
   let costUsageRows = 0;
+  // Usage quantities: BoxUsage in hours (24 x running instances of the type), storage in GB-Mo, Lambda in GB-seconds.
+  const runningOf = (type) => EC2_INSTANCES.filter((e) => e.state === 'running' && e.instanceType === type).length;
+  const s3Gb = S3_BUCKETS.reduce((a, b) => a + b.sizeBytes, 0) / 1024 ** 3;
+  const ebsGb = EBS_VOLUMES.reduce((a, v) => a + v.sizeGb, 0);
+  const lambdaGbSec = LAMBDA_FUNCTIONS.reduce((a, f) => a + f.invocations24h * (f.avgDurationMs / 1000) * (f.memoryMb / 1024), 0);
+  const usageQty = (u) => {
+    if (u.usageType.startsWith('USE2-BoxUsage:')) return { qty: 24 * runningOf(u.usageType.split(':')[1]), unit: 'Hrs' };
+    if (u.usageType === 'USE2-TimedStorage-ByteHrs') return { qty: Math.round(s3Gb / 30 * 100) / 100, unit: 'GB-Mo' };
+    if (u.usageType === 'USE2-EBS:VolumeUsage.gp3') return { qty: Math.round(ebsGb / 30 * 100) / 100, unit: 'GB-Mo' };
+    if (u.usageType === 'USE2-NatGateway-Hours') return { qty: 48, unit: 'Hrs' };
+    if (u.usageType === 'USE2-Lambda-GB-Second') return { qty: Math.round(lambdaGbSec), unit: 'GB-Second' };
+    return { qty: null, unit: null };
+  };
   for (let i = COST_USAGE_DAYS - 1; i >= 0; i--) {
     for (const u of USAGE_TYPES) {
       const amount = Math.round(u.base * randFloat(usageRng, 0.85, 1.15, 3) * 100) / 100;
-      insertCostUsage.run(accountId, `-${i} days`, u.service, u.usageType, amount);
+      const q = usageQty(u);
+      insertCostUsage.run(accountId, `-${i} days`, u.service, u.usageType, amount, amount, q.qty, q.unit);
       costUsageRows++;
+    }
+    // Bedrock bills one service per model with token counts in millions. The four token kinds split the
+    // service's own daily cost (cache reads dominate, as they do on a real bill), so cost and quantity agree.
+    for (const model of BEDROCK_BILLING) {
+      const day = svcDaily.get(model.service).get(i);
+      for (const kind of BEDROCK_TOKEN_KINDS) {
+        const amount = Math.round(day.unblended * kind.share * 100) / 100;
+        const mTokens = Math.round((day.unblended * kind.share / model.price[kind.id]) * 1000) / 1000;
+        insertCostUsage.run(accountId, `-${i} days`, model.service, `USE2-MP:USE2_${kind.usage}TokenCount-Units`, amount, amount, mTokens, '1M tokens');
+        costUsageRows++;
+      }
     }
   }
 
@@ -559,15 +620,15 @@ function seedAws(db, { now, encrypt }) {
 
   // ── Cost instance-type breakdown: 45 days x 3 instance types ────────────
   const insertCostInstanceType = db.prepare(`
-    INSERT INTO aws_cost_instance_type_daily (account_id, day, instance_type, amount_usd)
-    VALUES (?, date('now', ?), ?, ?)
+    INSERT INTO aws_cost_instance_type_daily (account_id, day, instance_type, amount_usd, amortized_usd)
+    VALUES (?, date('now', ?), ?, ?, ?)
   `);
   const instTypeRng = rngFor('aws-cost-instance-type-daily');
   let costInstanceTypeRows = 0;
   for (let i = COST_INSTANCE_TYPE_DAYS - 1; i >= 0; i--) {
     for (const t of INSTANCE_TYPE_COSTS) {
       const amount = Math.round(t.base * randFloat(instTypeRng, 0.85, 1.15, 3) * 100) / 100;
-      insertCostInstanceType.run(accountId, `-${i} days`, t.instanceType, amount);
+      insertCostInstanceType.run(accountId, `-${i} days`, t.instanceType, amount, amount);
       costInstanceTypeRows++;
     }
   }
@@ -582,6 +643,231 @@ function seedAws(db, { now, encrypt }) {
     insertHealth.run(h.feed, h.service, h.region, h.title, h.summary, `-${h.hoursAgo} hours`);
     healthRows++;
   }
+
+  // -- FinOps: allocation, commitments, anomalies, forecast, budgets, lifecycle, capabilities --
+  // Reseed safety: every table is cleared for this account (budgets are not account scoped, so they are
+  // cleared by the names this seed owns) before it is filled.
+  const FINOPS_TABLES = [
+    'aws_cost_alloc_daily', 'aws_sp_utilization_daily', 'aws_sp_coverage_daily', 'aws_ri_utilization_daily',
+    'aws_ri_coverage_daily', 'aws_savings_plans', 'aws_cost_anomalies', 'aws_cost_forecast',
+    'aws_recommendation_state', 'aws_capability_status',
+  ];
+  for (const t of FINOPS_TABLES) db.prepare(`DELETE FROM ${t} WHERE account_id = ?`).run(accountId);
+  const DEMO_BUDGETS = ['Total AWS spend', 'Bedrock models', 'Environment dev'];
+  db.prepare(`DELETE FROM aws_budgets WHERE name IN (${DEMO_BUDGETS.map(() => '?').join(',')})`).run(...DEMO_BUDGETS);
+  db.prepare("DELETE FROM aws_optimizer_recommendations WHERE account_id = ? AND source = 'ce-savings-plan'").run(accountId);
+
+  const finopsRng = rngFor('aws-finops');
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const isoAgo = (days) => new Date(Date.now() - days * 86400000).toISOString();
+  const nowIso = new Date().toISOString();
+
+  // Tag allocation: Environment and Team split each service's daily cost, 10% left untagged.
+  const ALLOC_KEYS = [
+    { key: 'Environment', split: [['prod', 0.55], ['staging', 0.2], ['dev', 0.15], ['', 0.1]] },
+    { key: 'Team', split: [['platform', 0.4], ['data', 0.3], ['apps', 0.2], ['', 0.1]] },
+  ];
+  const insertAlloc = db.prepare(`
+    INSERT INTO aws_cost_alloc_daily (account_id, day, dimension, key, value, service, amount_usd, amortized_usd)
+    VALUES (?, ?, 'tag', ?, ?, ?, ?, ?)
+  `);
+  const ALLOC_DAYS = 35;
+  const monthPrefix = utcDay(0).slice(0, 7);
+  let allocRows = 0;
+  let devMtd = 0;
+  let totalMtd = 0;
+  let opusMtd = 0;
+  for (let i = ALLOC_DAYS - 1; i >= 0; i--) {
+    const day = utcDay(i);
+    for (const [service, byDay] of svcDaily) {
+      const d = byDay.get(i);
+      if (!d) continue;
+      for (const k of ALLOC_KEYS) {
+        for (const [value, share] of k.split) {
+          const unblended = r2(d.unblended * share);
+          const amortized = r2(d.amortized * share);
+          if (unblended === 0 && amortized === 0) continue;
+          insertAlloc.run(accountId, day, k.key, value, service, unblended, amortized);
+          allocRows++;
+          if (k.key === 'Environment' && value === 'dev' && day.startsWith(monthPrefix)) devMtd += amortized;
+        }
+      }
+    }
+  }
+  const dayTotals = [];
+  for (let i = COST_DAYS - 1; i >= 0; i--) {
+    let amortizedTotal = 0;
+    for (const [service, byDay] of svcDaily) {
+      const d = byDay.get(i);
+      if (!d) continue;
+      amortizedTotal += d.amortized;
+      if (utcDay(i).startsWith(monthPrefix)) {
+        totalMtd += d.amortized;
+        if (service === BEDROCK_OPUS_SERVICE) opusMtd += d.amortized;
+      }
+    }
+    dayTotals.push(amortizedTotal);
+  }
+
+  // Savings Plan utilization (88..97) and coverage (58..70), 35 days, commitment 72 a day.
+  const insertSpUtil = db.prepare(`
+    INSERT INTO aws_sp_utilization_daily (account_id, day, utilization_pct, commitment_usd, used_usd, unused_usd, net_savings_usd, on_demand_equivalent_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertSpCov = db.prepare(`
+    INSERT INTO aws_sp_coverage_daily (account_id, day, coverage_pct, covered_usd, on_demand_usd, total_usd)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  let spRows = 0;
+  for (let i = ALLOC_DAYS; i >= 1; i--) {
+    const day = utcDay(i);
+    const util = randFloat(finopsRng, 88, 97, 2);
+    const commitment = 72;
+    const used = r2(commitment * util / 100);
+    insertSpUtil.run(accountId, day, util, commitment, used, r2(commitment - used), r2(used * 0.28), r2(used * 1.28));
+    const cov = randFloat(finopsRng, 58, 70, 2);
+    const total = r2(randFloat(finopsRng, 150, 190, 2));
+    const covered = r2(total * cov / 100);
+    insertSpCov.run(accountId, day, cov, covered, r2(total - covered), total);
+    spRows += 2;
+  }
+  // Reserved Instance tables stay empty: the demo account holds none.
+
+  // Two plans, one ending in 21 days.
+  const insertPlan = db.prepare(`
+    INSERT INTO aws_savings_plans (account_id, sp_arn, sp_type, payment_option, term, hourly_commitment_usd, region,
+      instance_family, start_at, end_at, utilization_pct, net_savings_usd, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  insertPlan.run(accountId, 'arn:aws:savingsplans::893373391538:savingsplan/sp-0demo1111compute', 'ComputeSavingsPlans',
+    'No Upfront', '1yr', 3.0, null, null, isoAgo(365 - 21), isoAgo(-21), 93.4, 4120.5, nowIso);
+  insertPlan.run(accountId, 'arn:aws:savingsplans::893373391538:savingsplan/sp-0demo2222ec2', 'EC2InstanceSavingsPlans',
+    'Partial Upfront', '3yr', 1.25, 'us-east-2', 'm5', isoAgo(300), isoAgo(-(3 * 365 - 300)), 96.1, 2210.75, nowIso);
+
+  // Savings Plan purchase recommendation from Cost Explorer (listed on Optimizer and Commitments).
+  db.prepare(`
+    INSERT INTO aws_optimizer_recommendations (account_id, source, resource_type, resource_id, resource_name,
+      region, finding, current_config, recommended_config, reason, est_monthly_savings_usd, captured_at)
+    VALUES (?, 'ce-savings-plan', 'savings-plan', 'COMPUTE_SP|ONE_YEAR|NO_UPFRONT', 'Compute Savings Plan', NULL,
+      'purchase-savings-plan', 'on-demand $2410/mo', '$1.85/h commitment',
+      'Cost Explorer: 30 days of eligible on-demand compute spend', 310, datetime('now', '-6 hours'))
+  `).run(accountId);
+
+  // Anomalies: two from Cost Anomaly Detection (one open three days), one open from ICC's per-service
+  // rule plus three closed ones.
+  const insertAnomaly = db.prepare(`
+    INSERT INTO aws_cost_anomalies (account_id, anomaly_id, source, monitor_arn, monitor_name, scope, scope_key, start_day, end_day,
+      actual_usd, expected_usd, impact_usd, impact_pct, root_causes_json, status, normal_days, superseded_by, first_seen_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+  `);
+  const MONITOR_ARN = 'arn:aws:ce::893373391538:anomalymonitor/demo-services-monitor';
+  const cause = (service, usageType, linked) => JSON.stringify([{ service, region: 'us-east-2', usageType, linkedAccount: '893373391538', linkedAccountName: linked }]);
+  insertAnomaly.run(accountId, 'demo-aws-anom-opensearch', 'aws', MONITOR_ARN, 'Services monitor', 'service', 'Amazon OpenSearch Service',
+    utcDay(3), null, 96.4, 41.2, 55.2, 134, cause('Amazon OpenSearch Service', 'USE2-ESInstance:r6g.large.search', 'Demo AWS'), 'open', 0, isoAgo(3), nowIso);
+  insertAnomaly.run(accountId, 'demo-aws-anom-rds', 'aws', MONITOR_ARN, 'Services monitor', 'service', 'Amazon Relational Database Service',
+    utcDay(18), utcDay(15), 61.0, 38.5, 22.5, 58, cause('Amazon Relational Database Service', 'USE2-RDS:StorageIOUsage', 'Demo AWS'), 'closed', 0, isoAgo(18), isoAgo(15));
+  const opusDay = utcDay(1);
+  const opusActual = svcDaily.get(BEDROCK_OPUS_SERVICE).get(1).amortized;
+  const opusBase = svcDaily.get(BEDROCK_OPUS_SERVICE).get(2).amortized;
+  insertAnomaly.run(accountId, `icc:service:${BEDROCK_OPUS_SERVICE}:${opusDay}`, 'icc', null, null, 'service', BEDROCK_OPUS_SERVICE,
+    opusDay, null, r2(opusActual), r2(opusBase), r2(opusActual - opusBase), r2((opusActual - opusBase) / opusBase * 100),
+    JSON.stringify([{ usageType: 'USE2-MP:USE2_CacheReadInputTokenCount-Units', usd: r2(opusActual * 0.45), baselineUsd: r2(opusBase * 0.45 * 0.8) }]),
+    'open', 0, isoAgo(1), nowIso);
+  const closedIcc = [
+    { service: 'EC2 - Other', start: 24, end: 22, actual: 19.8, expected: 9.4 },
+    { service: S3_SERVICE, start: 16, end: 14, actual: 17.2, expected: 9.1 },
+    { service: 'AmazonCloudWatch', start: 9, end: 7, actual: 6.3, expected: 2.3 },
+  ];
+  for (const c of closedIcc) {
+    insertAnomaly.run(accountId, `icc:service:${c.service}:${utcDay(c.start)}`, 'icc', null, null, 'service', c.service,
+      utcDay(c.start), utcDay(c.end), c.actual, c.expected, r2(c.actual - c.expected), r2((c.actual - c.expected) / c.expected * 100),
+      JSON.stringify([]), 'closed', 2, isoAgo(c.start), isoAgo(c.end));
+  }
+
+  // Forecast: 10 days of generated_on rows, Cost Explorer source, around the 14-day run rate.
+  const insertForecast = db.prepare(`
+    INSERT INTO aws_cost_forecast (account_id, scope, metric, period_start, period_end, generated_on, mean_usd, lower_usd, upper_usd, source)
+    VALUES (?, 'total', 'amortized', ?, ?, ?, ?, ?, ?, 'ce')
+  `);
+  const runRate = dayTotals.slice(-14).reduce((a, b) => a + b, 0) / 14;
+  for (let k = 9; k >= 0; k--) {
+    const gen = utcDay(k);
+    const y = Number(gen.slice(0, 4));
+    const m = Number(gen.slice(5, 7));
+    const start = `${gen.slice(0, 7)}-01`;
+    const end = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
+    const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const mean = r2(runRate * daysInMonth * (1 + ((k % 3) - 1) * 0.01));
+    insertForecast.run(accountId, start, end, gen, mean, r2(mean * 0.9), r2(mean * 1.1));
+  }
+
+  // Budgets: Total (ok), Bedrock models (crit), Environment dev (warn). Amounts follow the live month
+  // to date so the states hold on any day of the month; status rows are stored as the nightly pass would.
+  const insertBudget = db.prepare(`
+    INSERT INTO aws_budgets (name, scope_type, scope_key, scope_value, amount_usd, warn_pct, crit_pct, forecast_alert, enabled, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 80, 100, 1, 1, ?, ?, ?)
+  `);
+  const insertBudgetStatus = db.prepare(`
+    INSERT INTO aws_budget_status (budget_id, month, actual_usd, forecast_usd, forecast_source, pct_actual, pct_forecast, state, evaluated_at)
+    VALUES (?, ?, ?, ?, 'linear', ?, ?, ?, ?)
+  `);
+  const dom = Number(utcDay(0).slice(8, 10));
+  const dim = new Date(Date.UTC(Number(utcDay(0).slice(0, 4)), Number(utcDay(0).slice(5, 7)), 0)).getUTCDate();
+  const budgetDefs = [
+    { name: 'Total AWS spend', type: 'total', key: null, value: null, actual: totalMtd, amount: Math.max(5000, Math.ceil(totalMtd / 0.7 / 100) * 100), notes: 'Monthly ceiling for the whole account.' },
+    { name: 'Bedrock models', type: 'service', key: null, value: BEDROCK_OPUS_SERVICE, actual: opusMtd, amount: Math.max(50, Math.round(opusMtd / 1.25)), notes: 'Opus spend against the model budget.' },
+    { name: 'Environment dev', type: 'tag', key: 'Environment', value: 'dev', actual: devMtd, amount: Math.max(50, Math.round(devMtd / 0.85)), notes: 'Development spend by Environment tag.' },
+  ];
+  for (const b of budgetDefs) {
+    const id = insertBudget.run(b.name, b.type, b.key, b.value, b.amount, b.notes, isoAgo(60), isoAgo(60)).lastInsertRowid;
+    const actual = r2(b.actual);
+    const forecast = r2(b.actual / Math.max(1, dom) * dim);
+    const pct = r2(actual / b.amount * 100);
+    const state = pct >= 100 ? 'crit' : (pct >= 80 ? 'warn' : (forecast >= b.amount ? 'forecast_warn' : 'ok'));
+    insertBudgetStatus.run(id, monthPrefix, actual, forecast, pct, r2(forecast / b.amount * 100), state, nowIso);
+  }
+
+  // Recommendation lifecycle: two accepted, one dismissed, two done (one booked by hand, one by the next poll).
+  const insertRecState = db.prepare(`
+    INSERT INTO aws_recommendation_state (account_id, rec_key, status, note, updated_by, resolved_by, est_monthly_savings_usd,
+      realized_usd, realized_at, first_seen_at, last_seen_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  insertRecState.run(accountId, 'compute-optimizer|Overprovisioned|i-0aaa4444demo04', 'accepted', 'Resize in the next change window.', 'demo', null, 45, null, null, isoAgo(12), nowIso, isoAgo(4));
+  insertRecState.run(accountId, 'heuristic|nat-gateway-consolidation|vpc-0demo1111prod', 'accepted', 'Approved by platform team.', 'demo', null, 32.85, null, null, isoAgo(20), nowIso, isoAgo(6));
+  insertRecState.run(accountId, 'compute-optimizer|NotOptimized|vol-0bbb5555demo05', 'dismissed', 'Database needs the provisioned IOPS.', 'demo', null, 62, null, null, isoAgo(30), nowIso, isoAgo(10));
+  insertRecState.run(accountId, 'heuristic|ebs-unattached|vol-0bbbdemoold01', 'done', null, null, 'auto', 40, 40, isoAgo(21), isoAgo(45), isoAgo(22), isoAgo(21));
+  insertRecState.run(accountId, 'heuristic|stopped-ec2-ebs|i-0demo-retired-01', 'done', 'Terminated and volumes deleted.', 'demo', 'user', 58, 58, isoAgo(9), isoAgo(40), isoAgo(9), isoAgo(9));
+
+  // Capability status: everything ok except rightsizing, which needs the console preference.
+  const CAPS = [
+    ['tag_keys', 1], ['cost_tags', 2], ['linked_accounts', 2], ['forecast', 1], ['sp_utilization', 2], ['sp_coverage', 1],
+    ['ri_utilization', 1], ['ri_coverage', 1], ['anomalies', 2], ['rightsizing', 1], ['sp_recommendation', 1],
+  ];
+  const insertCap = db.prepare(`
+    INSERT INTO aws_capability_status (account_id, capability, status, error, requests, last_ok_at, last_checked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const [id, requests] of CAPS) {
+    if (id === 'rightsizing') {
+      insertCap.run(accountId, id, 'not_enabled',
+        'Rightsizing recommendations are not enabled for this account. Turn them on in Cost Management preferences (Recommendations, EC2 rightsizing).',
+        requests, null, isoAgo(0.25));
+    } else {
+      insertCap.run(accountId, id, 'ok', null, requests, isoAgo(0.25), isoAgo(0.25));
+    }
+  }
+  db.prepare('UPDATE aws_accounts SET last_finops_capture_at = datetime(\'now\', \'-6 hours\'), finops_backfill_at = datetime(\'now\', \'-300 days\') WHERE id = ?').run(accountId);
+  const upsertSetting = db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `);
+  upsertSetting.run('aws_finops_tag_keys', JSON.stringify(['Environment', 'Team']));
+  upsertSetting.run('aws_finops_tag_keys_seen', JSON.stringify(['Environment', 'Team', 'CostCenter']));
+  upsertSetting.run('aws_finops_anomaly_monitors', JSON.stringify([
+    { monitorArn: MONITOR_ARN, name: 'Services monitor', type: 'DIMENSIONAL', dimension: 'SERVICE' },
+  ]));
+  const finops = { allocRows, spRows, plans: 2, anomalies: 6, forecasts: 10, budgets: budgetDefs.length, recStates: 5, capabilities: CAPS.length };
 
   // ── Issue history: one open row per demoed trouble scenario ────────────
   const accountName = 'Demo AWS';
@@ -684,6 +970,7 @@ function seedAws(db, { now, encrypt }) {
     costInstanceTypeRows,
     healthRows,
     optimizerRows,
+    finops,
   };
 }
 

@@ -23,7 +23,13 @@ const {
   GetBucketVersioningCommand, GetBucketLifecycleConfigurationCommand,
 } = require('@aws-sdk/client-s3');
 const { CloudWatchClient, ListMetricsCommand, GetMetricDataCommand } = require('@aws-sdk/client-cloudwatch');
-const { CostExplorerClient, GetCostAndUsageCommand, GetCostAndUsageWithResourcesCommand } = require('@aws-sdk/client-cost-explorer');
+const {
+  CostExplorerClient, GetCostAndUsageCommand, GetCostAndUsageWithResourcesCommand,
+  GetCostForecastCommand, GetSavingsPlansUtilizationCommand, GetSavingsPlansUtilizationDetailsCommand,
+  GetSavingsPlansCoverageCommand, GetReservationUtilizationCommand, GetReservationCoverageCommand,
+  GetAnomalyMonitorsCommand, GetAnomaliesCommand, GetRightsizingRecommendationCommand,
+  GetSavingsPlansPurchaseRecommendationCommand, ListCostAllocationTagsCommand, GetDimensionValuesCommand,
+} = require('@aws-sdk/client-cost-explorer');
 const { RDSClient, DescribeDBInstancesCommand } = require('@aws-sdk/client-rds');
 const { LambdaClient, ListFunctionsCommand } = require('@aws-sdk/client-lambda');
 const {
@@ -888,8 +894,8 @@ async function fetchBedrockDailyUsage(account, modelId) {
 // ── Cost Explorer ────────────────────────────────────────────────────────────
 
 /**
- * ONE GetCostAndUsage call ($0.01) — daily granularity, last 35 days through
- * today, grouped by SERVICE. Returns [{ day, service, amountUsd }]. Callers
+ * ONE GetCostAndUsage call ($0.01) - daily granularity, last 35 days through
+ * today, grouped by SERVICE. Returns [{ day, service, amountUsd, amortizedUsd }]. Callers
  * MUST gate this behind the daily last_cost_capture_at stamp.
  */
 async function fetchCostAndUsage(account) {
@@ -901,20 +907,30 @@ async function fetchCostAndUsage(account) {
   for await (const resp of pagedCostAndUsage(client, {
     TimePeriod: { Start: fmt(start), End: fmt(end) },
     Granularity: 'DAILY',
-    Metrics: ['UnblendedCost'],
+    Metrics: COST_METRICS,
     GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
   })) {
     for (const period of resp?.ResultsByTime || []) {
       const day = period.TimePeriod?.Start;
       for (const g of period.Groups || []) {
         const service = g.Keys?.[0] || 'Unknown';
-        const amountUsd = Number(g.Metrics?.UnblendedCost?.Amount) || 0;
-        rows.push({ day, service, amountUsd });
+        rows.push({ day, service, ...costAmounts(g) });
       }
     }
   }
   return rows;
 }
+
+/** Cost Explorer returns every metric in one request, so asking for both costs nothing extra. */
+const COST_METRICS = ['UnblendedCost', 'AmortizedCost'];
+const numOr0 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const numOrNull = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+/** { amountUsd, amortizedUsd } from a Group's Metrics (money fields arrive as strings). */
+const costAmounts = (g) => ({
+  amountUsd: numOr0(g.Metrics?.UnblendedCost?.Amount),
+  amortizedUsd: numOrNull(g.Metrics?.AmortizedCost?.Amount),
+});
+const ceDay = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d || '').slice(0, 10));
 
 /**
  * GetCostAndUsage pages: a response that exceeds the service's page size carries NextPageToken
@@ -934,37 +950,51 @@ async function* pagedCostAndUsage(client, input) {
 }
 
 /**
- * Shared GroupBy helper for the two additional Cost Explorer groupings
- * (USAGE_TYPE, INSTANCE_TYPE) — same 35d DAILY window/client as
- * fetchCostAndUsage. Returns [{ day, key, amountUsd }].
+ * Shared GroupBy helper for the additional Cost Explorer groupings. Two call forms:
+ *  - fetchCostAndUsageGrouped(account, 'USAGE_TYPE') - 35d DAILY window, one DIMENSION group,
+ *    returns [{ day, key, amountUsd, amortizedUsd }] (the legacy form).
+ *  - fetchCostAndUsageGrouped(account, { start, end, groupBy }) - start/end are YYYY-MM-DD (end
+ *    exclusive) or Dates, groupBy is an array of CE GroupBy objects, e.g.
+ *    [{ Type: 'TAG', Key: 'Environment' }, { Type: 'DIMENSION', Key: 'SERVICE' }]. Returns
+ *    { rows: [{ day, keys: [...], amountUsd, amortizedUsd }], requests }. A TAG key comes back
+ *    as 'Environment$prod' or 'Environment$' (nothing after the dollar = untagged); the caller splits.
  */
-async function fetchCostAndUsageGrouped(account, groupByKey) {
+async function fetchCostAndUsageGrouped(account, groupByOrOpts) {
   const client = costExplorerClient(account);
-  const end = new Date();
-  const start = new Date(end.getTime() - 35 * 86400000);
-  const fmt = (d) => d.toISOString().slice(0, 10);
+  const opts = groupByOrOpts && typeof groupByOrOpts === 'object' ? groupByOrOpts : null;
+  const end = opts?.end ? new Date(ceDay(opts.end)) : new Date();
+  const start = opts?.start ? new Date(ceDay(opts.start)) : new Date(end.getTime() - 35 * 86400000);
+  const groupBy = opts ? opts.groupBy : [{ Type: 'DIMENSION', Key: groupByOrOpts }];
   const rows = [];
-  for await (const resp of pagedCostAndUsage(client, {
-    TimePeriod: { Start: fmt(start), End: fmt(end) },
+  let requests = 0;
+  const input = {
+    TimePeriod: { Start: ceDay(start), End: ceDay(end) },
     Granularity: 'DAILY',
-    Metrics: ['UnblendedCost'],
-    GroupBy: [{ Type: 'DIMENSION', Key: groupByKey }],
-  })) {
+    Metrics: COST_METRICS,
+    GroupBy: groupBy,
+  };
+  let token;
+  for (let page = 0; page < COST_PAGE_CAP; page++) {
+    const resp = await client.send(new GetCostAndUsageCommand({ ...input, ...(token ? { NextPageToken: token } : {}) }));
+    requests++;
     for (const period of resp?.ResultsByTime || []) {
       const day = period.TimePeriod?.Start;
       for (const g of period.Groups || []) {
-        const key = g.Keys?.[0] || 'Unknown';
-        const amountUsd = Number(g.Metrics?.UnblendedCost?.Amount) || 0;
-        rows.push({ day, key, amountUsd });
+        const keys = (g.Keys || []).map((k) => k || 'Unknown');
+        if (opts) rows.push({ day, keys, ...costAmounts(g) });
+        else rows.push({ day, key: keys[0] || 'Unknown', ...costAmounts(g) });
       }
     }
+    token = resp?.NextPageToken;
+    if (!token) break;
   }
-  return rows;
+  return opts ? { rows, requests } : rows;
 }
 
 /**
- * [{ day, service, usageType, amountUsd }] — ONE GetCostAndUsage call grouped by SERVICE then
- * USAGE_TYPE (Cost Explorer allows two groups), same window as fetchCostAndUsage.
+ * [{ day, service, usageType, amountUsd, amortizedUsd, usageQty, usageUnit }] - ONE GetCostAndUsage
+ * call grouped by SERVICE then USAGE_TYPE (Cost Explorer allows two groups), same window as
+ * fetchCostAndUsage. UsageQuantity rides in the same request.
  */
 async function fetchCostByUsageType(account) {
   const client = costExplorerClient(account);
@@ -975,7 +1005,7 @@ async function fetchCostByUsageType(account) {
   for await (const resp of pagedCostAndUsage(client, {
     TimePeriod: { Start: fmt(start), End: fmt(end) },
     Granularity: 'DAILY',
-    Metrics: ['UnblendedCost'],
+    Metrics: [...COST_METRICS, 'UsageQuantity'],
     GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'USAGE_TYPE' }],
   })) {
     for (const period of resp?.ResultsByTime || []) {
@@ -985,7 +1015,9 @@ async function fetchCostByUsageType(account) {
           day,
           service: g.Keys?.[0] || 'Unknown',
           usageType: g.Keys?.[1] || 'Unknown',
-          amountUsd: Number(g.Metrics?.UnblendedCost?.Amount) || 0,
+          ...costAmounts(g),
+          usageQty: numOrNull(g.Metrics?.UsageQuantity?.Amount),
+          usageUnit: g.Metrics?.UsageQuantity?.Unit || null,
         });
       }
     }
@@ -993,16 +1025,26 @@ async function fetchCostByUsageType(account) {
   return rows;
 }
 
+/** 'ce:GetCostForecast' from "... is not authorized to perform: ce:GetCostForecast on resource ...", or null. */
+function actionFromDeniedMessage(msg) {
+  const m = String(msg || '').match(/perform:\s*([a-z0-9-]+:[A-Za-z0-9*]+)/);
+  return m ? m[1] : null;
+}
+
 /**
- * Classify a resource-level Cost Explorer failure for the poller / UI:
- * not_enabled (resource-level data not switched on), denied (IAM), error (anything else).
+ * Classify a Cost Explorer failure for the poller / UI:
+ *  denied      AccessDeniedException or a "not authorized" message (IAM)
+ *  not_enabled a ValidationException, or a message about a preference / opt-in / unsupported feature
+ *  error       anything else
+ * Denied wins over not_enabled so an IAM message that happens to mention a preference stays denied.
  */
-function classifyCostResourceError(err) {
-  const msg = String(err?.message || '').toLowerCase();
-  if (msg.includes('resource') && ['enable', 'opt', 'not supported', 'preference'].some((w) => msg.includes(w))) return 'not_enabled';
-  if (err?.name === 'AccessDeniedException' || msg.includes('not authorized')) return 'denied';
+function classifyCeError(err) {
+  const msg = String(err?.message || '');
+  if (err?.name === 'AccessDeniedException' || /not authorized/i.test(msg)) return 'denied';
+  if (err?.name === 'ValidationException' || /enable|opt[ -]?in|preference|not supported|has not been/i.test(msg)) return 'not_enabled';
   return 'error';
 }
+const classifyCostResourceError = classifyCeError;
 
 /**
  * Resource-level cost: GetCostAndUsageWithResources, DAILY, last 14 days (the API refuses older
@@ -1072,7 +1114,305 @@ const fetchCostByResourceUsage = (account, opts = {}) => fetchCostWithResources(
 /** [{ day, instanceType, amountUsd }] — GroupBy DIMENSION/INSTANCE_TYPE, same window as fetchCostAndUsage. */
 async function fetchCostByInstanceType(account) {
   const rows = await fetchCostAndUsageGrouped(account, 'INSTANCE_TYPE');
-  return rows.map((r) => ({ day: r.day, instanceType: r.key, amountUsd: r.amountUsd }));
+  return rows.map((r) => ({ day: r.day, instanceType: r.key, amountUsd: r.amountUsd, amortizedUsd: r.amortizedUsd }));
+}
+
+// -- FinOps fetchers (2026-10-27). Each returns { rows, requests } where requests counts the pages
+// sent (0.01 USD each). Errors propagate; awsFinops.capability() classifies them. Money and
+// percentage fields arrive as strings, hence numOr0 / numOrNull.
+
+/** Run a paged Cost Explorer command; collect() receives each page. Token field names differ per command. */
+async function cePaged(account, makeCommand, tokenIn, tokenOut, cap, collect) {
+  const client = costExplorerClient(account);
+  let token;
+  let requests = 0;
+  for (let page = 0; page < cap; page++) {
+    const resp = await client.send(makeCommand(token ? { [tokenIn]: token } : {}));
+    requests++;
+    collect(resp);
+    token = resp?.[tokenOut];
+    if (!token) break;
+  }
+  return requests;
+}
+
+/** [{ tagKey, type, status, lastUpdatedDate }] - ListCostAllocationTags. Caller keeps Status 'Active'. */
+async function fetchCostAllocationTags(account) {
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new ListCostAllocationTagsCommand({ MaxResults: 1000, ...extra }), 'NextToken', 'NextToken', 5,
+    (resp) => {
+      for (const t of resp?.CostAllocationTags || []) {
+        rows.push({ tagKey: t.TagKey || null, type: t.Type || null, status: t.Status || null, lastUpdatedDate: t.LastUpdatedDate ? String(t.LastUpdatedDate) : null });
+      }
+    });
+  return { rows: rows.filter((r) => r.tagKey), requests };
+}
+
+/** [{ value, description }] - GetDimensionValues LINKED_ACCOUNT over the last 35 days. */
+async function fetchLinkedAccountValues(account) {
+  const end = new Date();
+  const start = new Date(end.getTime() - 35 * 86400000);
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new GetDimensionValuesCommand({
+      TimePeriod: { Start: ceDay(start), End: ceDay(end) }, Dimension: 'LINKED_ACCOUNT', ...extra,
+    }), 'NextPageToken', 'NextPageToken', 5,
+    (resp) => {
+      for (const v of resp?.DimensionValues || []) {
+        if (v.Value) rows.push({ value: v.Value, description: v.Attributes?.description || null });
+      }
+    });
+  return { rows, requests };
+}
+
+/**
+ * [{ periodStart, periodEnd, meanUsd, lowerUsd, upperUsd }] - GetCostForecast, MONTHLY, 80% interval.
+ * The caller skips the call when start >= end (last day of the month).
+ */
+async function fetchCostForecast(account, { metric = 'AMORTIZED_COST', start, end } = {}) {
+  const client = costExplorerClient(account);
+  const resp = await client.send(new GetCostForecastCommand({
+    TimePeriod: { Start: ceDay(start), End: ceDay(end) },
+    Metric: metric,
+    Granularity: 'MONTHLY',
+    PredictionIntervalLevel: 80,
+  }));
+  const rows = (resp?.ForecastResultsByTime || []).map((f) => ({
+    periodStart: f.TimePeriod?.Start || null,
+    periodEnd: f.TimePeriod?.End || null,
+    meanUsd: numOrNull(f.MeanValue),
+    lowerUsd: numOrNull(f.PredictionIntervalLowerBound),
+    upperUsd: numOrNull(f.PredictionIntervalUpperBound),
+  }));
+  return { rows, requests: 1 };
+}
+
+/** [{ day, utilizationPct, commitmentUsd, usedUsd, unusedUsd, netSavingsUsd, onDemandEquivalentUsd }] */
+async function fetchSavingsPlansUtilization(account, { start, end }) {
+  const client = costExplorerClient(account);
+  const resp = await client.send(new GetSavingsPlansUtilizationCommand({
+    TimePeriod: { Start: ceDay(start), End: ceDay(end) }, Granularity: 'DAILY',
+  }));
+  const rows = (resp?.SavingsPlansUtilizationsByTime || []).map((u) => ({
+    day: u.TimePeriod?.Start || null,
+    utilizationPct: numOrNull(u.Utilization?.UtilizationPercentage),
+    commitmentUsd: numOrNull(u.Utilization?.TotalCommitment),
+    usedUsd: numOrNull(u.Utilization?.UsedCommitment),
+    unusedUsd: numOrNull(u.Utilization?.UnusedCommitment),
+    netSavingsUsd: numOrNull(u.Savings?.NetSavings),
+    onDemandEquivalentUsd: numOrNull(u.Savings?.OnDemandCostEquivalent),
+  })).filter((r) => r.day);
+  return { rows, requests: 1 };
+}
+
+/** Case-insensitive attribute read from a Record<string, string>. */
+function attr(attrs, ...names) {
+  if (!attrs) return null;
+  const wanted = names.map((n) => n.toLowerCase());
+  for (const [k, v] of Object.entries(attrs)) {
+    if (wanted.includes(String(k).toLowerCase()) && v != null && v !== '') return v;
+  }
+  return null;
+}
+
+/** [{ spArn, spType, paymentOption, term, hourlyCommitmentUsd, region, instanceFamily, startAt, endAt, utilizationPct, netSavingsUsd }] */
+async function fetchSavingsPlansUtilizationDetails(account, { start, end }) {
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new GetSavingsPlansUtilizationDetailsCommand({
+      TimePeriod: { Start: ceDay(start), End: ceDay(end) }, ...extra,
+    }), 'NextToken', 'NextToken', 5,
+    (resp) => {
+      for (const d of resp?.SavingsPlansUtilizationDetails || []) {
+        if (!d.SavingsPlanArn) continue;
+        const a = d.Attributes || {};
+        rows.push({
+          spArn: d.SavingsPlanArn,
+          spType: attr(a, 'SavingsPlansType', 'SavingsPlanType'),
+          paymentOption: attr(a, 'PaymentOption'),
+          term: attr(a, 'PurchaseTerm', 'Term', 'TermInYears'),
+          hourlyCommitmentUsd: numOrNull(attr(a, 'HourlyCommitment', 'HourlyCommitmentToPurchase')),
+          region: attr(a, 'Region'),
+          instanceFamily: attr(a, 'InstanceFamily'),
+          startAt: attr(a, 'StartDateTime', 'StartTime', 'Start'),
+          endAt: attr(a, 'EndDateTime', 'EndTime', 'End'),
+          utilizationPct: numOrNull(d.Utilization?.UtilizationPercentage),
+          netSavingsUsd: numOrNull(d.Savings?.NetSavings),
+        });
+      }
+    });
+  return { rows, requests };
+}
+
+/** [{ day, coveragePct, coveredUsd, onDemandUsd, totalUsd }] */
+async function fetchSavingsPlansCoverage(account, { start, end }) {
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new GetSavingsPlansCoverageCommand({
+      TimePeriod: { Start: ceDay(start), End: ceDay(end) }, Granularity: 'DAILY',
+      Metrics: ['SpendCoveredBySavingsPlans'], ...extra,
+    }), 'NextToken', 'NextToken', 5,
+    (resp) => {
+      for (const c of resp?.SavingsPlansCoverages || []) {
+        const day = c.TimePeriod?.Start;
+        if (!day) continue;
+        rows.push({
+          day,
+          coveragePct: numOrNull(c.Coverage?.CoveragePercentage),
+          coveredUsd: numOrNull(c.Coverage?.SpendCoveredBySavingsPlans),
+          onDemandUsd: numOrNull(c.Coverage?.OnDemandCost),
+          totalUsd: numOrNull(c.Coverage?.TotalCost),
+        });
+      }
+    });
+  return { rows, requests };
+}
+
+/** [{ day, utilizationPct, purchasedHours, usedHours, unusedHours, netSavingsUsd }] */
+async function fetchReservationUtilization(account, { start, end }) {
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new GetReservationUtilizationCommand({
+      TimePeriod: { Start: ceDay(start), End: ceDay(end) }, Granularity: 'DAILY', ...extra,
+    }), 'NextPageToken', 'NextPageToken', 5,
+    (resp) => {
+      for (const u of resp?.UtilizationsByTime || []) {
+        const day = u.TimePeriod?.Start;
+        if (!day) continue;
+        rows.push({
+          day,
+          utilizationPct: numOrNull(u.Total?.UtilizationPercentage),
+          purchasedHours: numOrNull(u.Total?.PurchasedHours),
+          usedHours: numOrNull(u.Total?.TotalActualHours),
+          unusedHours: numOrNull(u.Total?.UnusedHours),
+          netSavingsUsd: numOrNull(u.Total?.NetRISavings),
+        });
+      }
+    });
+  return { rows, requests };
+}
+
+/** [{ day, coveragePct, reservedHours, onDemandHours, totalHours }] */
+async function fetchReservationCoverage(account, { start, end }) {
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new GetReservationCoverageCommand({
+      TimePeriod: { Start: ceDay(start), End: ceDay(end) }, Granularity: 'DAILY', ...extra,
+    }), 'NextPageToken', 'NextPageToken', 5,
+    (resp) => {
+      for (const c of resp?.CoveragesByTime || []) {
+        const day = c.TimePeriod?.Start;
+        if (!day) continue;
+        const h = c.Total?.CoverageHours;
+        rows.push({
+          day,
+          coveragePct: numOrNull(h?.CoverageHoursPercentage),
+          reservedHours: numOrNull(h?.ReservedHours),
+          onDemandHours: numOrNull(h?.OnDemandHours),
+          totalHours: numOrNull(h?.TotalRunningHours),
+        });
+      }
+    });
+  return { rows, requests };
+}
+
+/** [{ monitorArn, name, type, dimension }] - GetAnomalyMonitors. */
+async function fetchAnomalyMonitors(account) {
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new GetAnomalyMonitorsCommand({ ...extra }), 'NextPageToken', 'NextPageToken', 5,
+    (resp) => {
+      for (const m of resp?.AnomalyMonitors || []) {
+        rows.push({ monitorArn: m.MonitorArn || null, name: m.MonitorName || null, type: m.MonitorType || null, dimension: m.MonitorDimension || null });
+      }
+    });
+  return { rows, requests };
+}
+
+/** [{ anomalyId, startDay, endDay, monitorArn, dimensionValue, actualUsd, expectedUsd, impactUsd, impactPct, score, feedback, rootCauses }] */
+async function fetchAnomalies(account, { start, end }) {
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new GetAnomaliesCommand({
+      DateInterval: { StartDate: ceDay(start), EndDate: ceDay(end) }, MaxResults: 100, ...extra,
+    }), 'NextPageToken', 'NextPageToken', 5,
+    (resp) => {
+      for (const a of resp?.Anomalies || []) {
+        if (!a.AnomalyId) continue;
+        rows.push({
+          anomalyId: a.AnomalyId,
+          startDay: a.AnomalyStartDate ? String(a.AnomalyStartDate).slice(0, 10) : null,
+          endDay: a.AnomalyEndDate ? String(a.AnomalyEndDate).slice(0, 10) : null,
+          monitorArn: a.MonitorArn || null,
+          dimensionValue: a.DimensionValue || null,
+          actualUsd: numOrNull(a.Impact?.TotalActualSpend),
+          expectedUsd: numOrNull(a.Impact?.TotalExpectedSpend),
+          impactUsd: numOrNull(a.Impact?.TotalImpact),
+          impactPct: numOrNull(a.Impact?.TotalImpactPercentage),
+          score: numOrNull(a.AnomalyScore?.CurrentScore),
+          feedback: a.Feedback || null,
+          rootCauses: (a.RootCauses || []).map((r) => ({
+            service: r.Service || null, region: r.Region || null, usageType: r.UsageType || null,
+            linkedAccount: r.LinkedAccount || null, linkedAccountName: r.LinkedAccountName || null,
+          })),
+        });
+      }
+    });
+  return { rows, requests };
+}
+
+/** EC2 rightsizing rows from Cost Explorer (needs the console preference, else not_enabled). */
+async function fetchRightsizingRecommendations(account) {
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new GetRightsizingRecommendationCommand({ Service: 'AmazonEC2', PageSize: 100, ...extra }),
+    'NextPageToken', 'NextPageToken', 5,
+    (resp) => {
+      for (const r of resp?.RightsizingRecommendations || []) {
+        const cur = r.CurrentInstance || {};
+        const ec2 = cur.ResourceDetails?.EC2ResourceDetails || {};
+        const action = r.RightsizingType || null;
+        const target = r.ModifyRecommendationDetail?.TargetInstances?.[0];
+        const savings = action === 'Terminate'
+          ? numOrNull(r.TerminateRecommendationDetail?.EstimatedMonthlySavings)
+          : numOrNull(target?.EstimatedMonthlySavings);
+        rows.push({
+          resourceId: cur.ResourceId || null,
+          resourceName: cur.InstanceName || null,
+          region: ec2.Region || null,
+          currentType: ec2.InstanceType || null,
+          action,
+          recommendedType: target?.ResourceDetails?.EC2ResourceDetails?.InstanceType || null,
+          estMonthlySavingsUsd: savings,
+          currentMonthlyCostUsd: numOrNull(cur.MonthlyCost),
+          cpuMaxPct: numOrNull(cur.ResourceUtilization?.EC2ResourceUtilization?.MaxCpuUtilizationPercentage),
+        });
+      }
+    });
+  return { rows: rows.filter((r) => r.resourceId), requests };
+}
+
+/** Compute Savings Plan purchase recommendation (1 year, no upfront, 30 day lookback). */
+async function fetchSavingsPlansPurchaseRecommendation(account) {
+  const client = costExplorerClient(account);
+  const resp = await client.send(new GetSavingsPlansPurchaseRecommendationCommand({
+    SavingsPlansType: 'COMPUTE_SP', TermInYears: 'ONE_YEAR', PaymentOption: 'NO_UPFRONT',
+    LookbackPeriodInDays: 'THIRTY_DAYS', PageSize: 10,
+  }));
+  const rec = resp?.SavingsPlansPurchaseRecommendation || {};
+  const rows = (rec.SavingsPlansPurchaseRecommendationDetails || []).map((d) => ({
+    spType: rec.SavingsPlansType || 'COMPUTE_SP',
+    term: rec.TermInYears || 'ONE_YEAR',
+    paymentOption: rec.PaymentOption || 'NO_UPFRONT',
+    hourlyCommitmentUsd: numOrNull(d.HourlyCommitmentToPurchase),
+    estMonthlySavingsUsd: numOrNull(d.EstimatedMonthlySavingsAmount),
+    estSavingsPct: numOrNull(d.EstimatedSavingsPercentage),
+    estOnDemandCostUsd: numOrNull(d.EstimatedOnDemandCost),
+    currentAvgHourlyOnDemandUsd: numOrNull(d.CurrentAverageHourlyOnDemandSpend),
+    lookbackDays: 30,
+  }));
+  return { rows, requests: 1 };
 }
 
 // ── AWS Service Health RSS ──────────────────────────────────────────────────
@@ -1572,7 +1912,11 @@ module.exports = {
   fetchS3Buckets, fetchBucketLocation, fetchBucketPublicAccessBlocked, fetchBucketVersioning,
   fetchBucketLifecycleRuleCount, fetchBucketStorageMetrics,
   fetchBedrockModelIds, fetchBedrockDailyUsage,
-  fetchCostAndUsage, fetchCostByUsageType, fetchCostByInstanceType, fetchCostByResource, fetchCostByResourceUsage, classifyCostResourceError, pagedCostAndUsage,
+  fetchCostAndUsage, fetchCostAndUsageGrouped, fetchCostByUsageType, fetchCostByInstanceType, fetchCostByResource, fetchCostByResourceUsage, classifyCostResourceError, classifyCeError, actionFromDeniedMessage, pagedCostAndUsage,
+  fetchCostAllocationTags, fetchLinkedAccountValues, fetchCostForecast, fetchSavingsPlansUtilization,
+  fetchSavingsPlansUtilizationDetails, fetchSavingsPlansCoverage, fetchReservationUtilization,
+  fetchReservationCoverage, fetchAnomalyMonitors, fetchAnomalies, fetchRightsizingRecommendations,
+  fetchSavingsPlansPurchaseRecommendation,
   fetchHealthRss,
   fetchRdsInstances, fetchRdsMetrics,
   fetchLambdaFunctions, fetchLambdaMetrics,

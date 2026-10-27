@@ -210,6 +210,13 @@ function loadDictionary() {
   } catch { /* AWS v2 tables not present until migration v2 lands */ }
 
   try {
+    // FinOps tables ship in AWS migration v11; guarded separately like the blocks above.
+    add(db.prepare("SELECT name FROM aws_budgets WHERE name IS NOT NULL AND name != ''").all(), 'JOB');
+    add(db.prepare("SELECT DISTINCT value AS name FROM aws_cost_alloc_daily WHERE value IS NOT NULL AND value != ''").all(), 'OBJECT');
+    add(db.prepare("SELECT DISTINCT monitor_name AS name FROM aws_cost_anomalies WHERE monitor_name IS NOT NULL AND monitor_name != ''").all(), 'OBJECT');
+  } catch { /* AWS v11 tables not present until migration v11 lands */ }
+
+  try {
     add(db.prepare("SELECT name FROM bluecat_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
     addHostOrIp(db.prepare("SELECT host AS name FROM bluecat_sources WHERE host IS NOT NULL AND host != ''").all());
     add(db.prepare("SELECT name FROM bluecat_views WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');

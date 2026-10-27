@@ -1,6 +1,7 @@
 const db = require('../../db/database');
 const { createPlatformAdvisor } = require('../platformAdvisor');
 const { computeIssues, costSpikePct } = require('../awsIssues');
+const { getSetting } = require('../settings');
 
 function instanceTypeTotals(days) {
   const rows = db.prepare(`
@@ -131,8 +132,36 @@ function gatherFinopsWaste() {
     WHERE snapshot_count > 0 ORDER BY snapshot_count DESC LIMIT 20
   `).all();
 
+  // Recommendation lifecycle (FinOps v11 tables): top 25 by estimate with the state a person set.
+  let recommendations = [];
+  let realizedSavings90dUsd = 0;
+  let potentialSavingsUsd = 0;
+  try {
+    recommendations = db.prepare(`
+      SELECT o.source, o.finding, o.resource_type, o.resource_id, o.resource_name, o.est_monthly_savings_usd,
+             COALESCE(st.status, 'open') AS status, st.note
+      FROM aws_optimizer_recommendations o
+      LEFT JOIN aws_recommendation_state st ON st.account_id = o.account_id
+        AND st.rec_key = o.source || '|' || o.finding || '|' || o.resource_id
+      ORDER BY (o.est_monthly_savings_usd IS NULL) ASC, o.est_monthly_savings_usd DESC LIMIT 25
+    `).all().map((r) => ({
+      key: `${r.source}|${r.finding}|${r.resource_id}`, source: r.source, finding: r.finding, resourceType: r.resource_type,
+      resource: r.resource_name || r.resource_id, estMonthlySavingsUsd: r.est_monthly_savings_usd, status: r.status, note: r.note || null,
+    }));
+    const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
+    realizedSavings90dUsd = +(db.prepare(`
+      SELECT COALESCE(SUM(realized_usd), 0) AS s FROM aws_recommendation_state WHERE status = 'done' AND realized_at >= ?
+    `).get(cutoff).s || 0).toFixed(2);
+    potentialSavingsUsd = +(db.prepare(`
+      SELECT COALESCE(SUM(o.est_monthly_savings_usd), 0) AS s FROM aws_optimizer_recommendations o
+      LEFT JOIN aws_recommendation_state st ON st.account_id = o.account_id
+        AND st.rec_key = o.source || '|' || o.finding || '|' || o.resource_id
+      WHERE COALESCE(st.status, 'open') IN ('open', 'accepted')
+    `).get().s || 0).toFixed(2);
+  } catch { /* FinOps v11 tables not present */ }
+
   const empty = !unattachedEbs.length && !stoppedEc2.length && !natGatewaysByVpc.length
-    && !s3NoLifecycle.length && !instanceTypeCosts.length && !lightsailSnapshots.length;
+    && !s3NoLifecycle.length && !instanceTypeCosts.length && !lightsailSnapshots.length && !recommendations.length;
 
   return {
     generatedAt: new Date().toISOString(),
@@ -142,7 +171,99 @@ function gatherFinopsWaste() {
     s3NoLifecycle,
     instanceTypeCosts,
     lightsailSnapshots,
+    recommendations,
+    realizedSavings90dUsd,
+    potentialSavingsUsd,
     note: empty ? 'No inventory captured yet.' : undefined,
+  };
+}
+
+const round2 = (v) => (v == null ? null : +Number(v).toFixed(2));
+const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+
+function gatherCommitments() {
+  const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const spUtil = db.prepare(`
+    SELECT day, utilization_pct, commitment_usd, used_usd, unused_usd, net_savings_usd FROM aws_sp_utilization_daily
+    WHERE day >= ? ORDER BY day ASC
+  `).all(since);
+  const spCov = db.prepare('SELECT day, coverage_pct, covered_usd, on_demand_usd FROM aws_sp_coverage_daily WHERE day >= ? ORDER BY day ASC').all(since);
+  const riUtil = db.prepare('SELECT day, utilization_pct, unused_hours, net_savings_usd FROM aws_ri_utilization_daily WHERE day >= ? ORDER BY day ASC').all(since);
+  const riCov = db.prepare('SELECT day, coverage_pct, on_demand_hours FROM aws_ri_coverage_daily WHERE day >= ? ORDER BY day ASC').all(since);
+  const now = Date.now();
+  const plans = db.prepare('SELECT * FROM aws_savings_plans ORDER BY end_at ASC').all().map((p) => ({
+    type: p.sp_type, term: p.term, paymentOption: p.payment_option, hourlyCommitmentUsd: round2(p.hourly_commitment_usd),
+    region: p.region || null, instanceFamily: p.instance_family || null, endAt: p.end_at,
+    daysToExpiry: p.end_at && Number.isFinite(Date.parse(p.end_at)) ? Math.ceil((Date.parse(p.end_at) - now) / 86400000) : null,
+    utilizationPct: round2(p.utilization_pct), netSavingsUsd: round2(p.net_savings_usd),
+  }));
+  const purchase = db.prepare(`
+    SELECT finding, current_config, recommended_config, est_monthly_savings_usd FROM aws_optimizer_recommendations
+    WHERE source = 'ce-savings-plan' ORDER BY est_monthly_savings_usd DESC LIMIT 3
+  `).all().map((r) => ({
+    finding: r.finding, onDemandToday: r.current_config, commitment: r.recommended_config, estMonthlySavingsUsd: r.est_monthly_savings_usd,
+  }));
+  const empty = !spUtil.length && !spCov.length && !riUtil.length && !riCov.length && !plans.length;
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays: 30,
+    savingsPlans: {
+      avgUtilizationPct: round2(avg(spUtil.map((r) => r.utilization_pct).filter((v) => v != null))),
+      avgCoveragePct: round2(avg(spCov.map((r) => r.coverage_pct).filter((v) => v != null))),
+      unusedCommitmentUsd: round2(spUtil.reduce((a, r) => a + (r.unused_usd || 0), 0)),
+      netSavingsUsd: round2(spUtil.reduce((a, r) => a + (r.net_savings_usd || 0), 0)),
+      lastSevenUtilizationPct: spUtil.slice(-7).map((r) => round2(r.utilization_pct)),
+      lastSevenCoveragePct: spCov.slice(-7).map((r) => round2(r.coverage_pct)),
+    },
+    reservedInstances: {
+      avgUtilizationPct: round2(avg(riUtil.map((r) => r.utilization_pct).filter((v) => v != null))),
+      avgCoveragePct: round2(avg(riCov.map((r) => r.coverage_pct).filter((v) => v != null))),
+      unusedHours: round2(riUtil.reduce((a, r) => a + (r.unused_hours || 0), 0)),
+      samples: riUtil.length + riCov.length,
+    },
+    plans,
+    purchaseRecommendations: purchase,
+    note: empty ? 'No commitment data captured yet. Either the account has no Savings Plans or Reserved Instances, or the Cost Explorer commitment permissions are not granted.' : undefined,
+  };
+}
+
+function gatherAllocation() {
+  const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  let keys = [];
+  try {
+    const configured = JSON.parse(getSetting('aws_finops_tag_keys') || '[]');
+    if (Array.isArray(configured)) keys = configured.map(String);
+  } catch { keys = []; }
+  if (!keys.length) {
+    keys = db.prepare("SELECT DISTINCT key FROM aws_cost_alloc_daily WHERE dimension = 'tag' ORDER BY key").all().map((r) => r.key);
+  }
+  const metricCol = getSetting('aws_finops_metric') === 'unblended' ? 'amount_usd' : 'COALESCE(amortized_usd, amount_usd)';
+  const tagKeys = keys.slice(0, 10).map((key) => {
+    const total = db.prepare(`SELECT COALESCE(SUM(${metricCol}), 0) AS s FROM aws_cost_alloc_daily WHERE dimension = 'tag' AND key = ? AND day >= ?`).get(key, since).s || 0;
+    const untagged = db.prepare(`SELECT COALESCE(SUM(${metricCol}), 0) AS s FROM aws_cost_alloc_daily WHERE dimension = 'tag' AND key = ? AND day >= ? AND value = ''`).get(key, since).s || 0;
+    const values = db.prepare(`
+      SELECT value, SUM(${metricCol}) AS usd FROM aws_cost_alloc_daily
+      WHERE dimension = 'tag' AND key = ? AND day >= ? AND value <> '' GROUP BY value ORDER BY usd DESC LIMIT 10
+    `).all(key, since).map((r) => ({ value: r.value, usd: round2(r.usd), pct: total > 0 ? round2((r.usd / total) * 100) : null }));
+    const untaggedServices = db.prepare(`
+      SELECT service, SUM(${metricCol}) AS usd FROM aws_cost_alloc_daily
+      WHERE dimension = 'tag' AND key = ? AND day >= ? AND value = '' GROUP BY service ORDER BY usd DESC LIMIT 10
+    `).all(key, since).map((r) => ({ service: r.service, usd: round2(r.usd) }));
+    return {
+      key,
+      totalUsd: round2(total),
+      coveragePct: total > 0 ? round2(((total - untagged) / total) * 100) : null,
+      unallocatedPct: total > 0 ? round2((untagged / total) * 100) : null,
+      topValues: values,
+      topUntaggedServices: untaggedServices,
+    };
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays: 30,
+    metric: getSetting('aws_finops_metric') === 'unblended' ? 'unblended' : 'amortized',
+    tagKeys,
+    note: tagKeys.length === 0 ? 'No cost allocation tag data captured yet. Tags must be activated as cost allocation tags in the AWS Billing console and listed under Settings, FinOps.' : undefined,
   };
 }
 
@@ -200,11 +321,33 @@ module.exports = createPlatformAdvisor({
       system:
         'You are a senior FinOps analyst hunting for AWS waste. You are given unattached EBS volumes, stopped EC2 ' +
         'instances, NAT gateway counts per VPC, S3 buckets with no lifecycle rules, per-instance-type cost vs ' +
-        'running count, and Lightsail snapshot counts. Identify concrete monthly savings opportunities, estimate ' +
+        'running count, Lightsail snapshot counts, and the top recommendations with the status a person set ' +
+        '(open, accepted, dismissed, done), the savings still open and the savings realized in the last 90 days. Identify concrete monthly savings opportunities, estimate ' +
         'rough dollar savings where computable from the given figures, and rank the list by impact. Do not invent ' +
         'data. Markdown, under ~400 words.',
       gather: gatherFinopsWaste,
       noun: 'waste and savings report',
+    },
+    commitments: {
+      system:
+        'You are a senior FinOps analyst reviewing AWS commitment discounts. You are given 30 days of Savings Plan ' +
+        'utilization and coverage, unused commitment in dollars, Reserved Instance utilization and coverage, each ' +
+        'plan with its term, hourly commitment and days to expiry, and any purchase recommendation from Cost ' +
+        'Explorer. State whether commitments are used well, what is lost to unused commitment, which plans expire ' +
+        'soonest and what to do before then, and whether more commitment is justified by the coverage gap and the ' +
+        'recommendation. Say plainly when there is no commitment data. Do not invent data. Markdown, under ~350 words.',
+      gather: gatherCommitments,
+      noun: 'commitments report',
+    },
+    allocation: {
+      system:
+        'You are a senior FinOps analyst reviewing cost allocation. You are given, per cost allocation tag key, the ' +
+        'share of 30-day spend that carries a tag value, the share that does not, the ten largest values and the ten ' +
+        'services with the most untagged spend. Say which tag keys are usable for showback, which services leave ' +
+        'the most spend unallocated, and which tagging fixes recover the most allocation. Say plainly when no tag ' +
+        'data exists. Do not invent data. Markdown, under ~350 words.',
+      gather: gatherAllocation,
+      noun: 'cost allocation report',
     },
     monthly_trend: {
       system:

@@ -12,6 +12,10 @@ const awsApi = require('../services/awsApi');
 const { awsPoller, getHealthLastCheckedAt, HEALTH_SERVICES, isElected } = require('../services/awsPoller');
 const { costSpikePct, rdsStorageWarnPct, computeIssues } = require('../services/awsIssues');
 const awsAdvisor = require('../services/advisors/awsAdvisor');
+const awsFinops = require('../services/awsFinops');
+const { parseDateRange, rangeResponse } = require('../utils/dateRange');
+const { sendCsv } = require('../utils/csv');
+const { recordSnapshot } = require('../services/configLedger');
 const { serviceNotes, lightsailComponent, resolveCostResource, usageTypeObjects } = require('../services/awsCostNotes');
 
 const router = express.Router();
@@ -21,6 +25,17 @@ const validate = (req, res, next) => {
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Invalid parameters', details: errors.array() });
   next();
 };
+
+const round2 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 100) / 100);
+
+// Cost metric: unblended stays the default for the Cost Explorer routes (output unchanged when the
+// param is omitted); amortized falls back to the unblended figure for rows captured before v11.
+const costMetric = (req) => (req.query.metric === 'amortized' ? 'amortized' : 'unblended');
+const amountExpr = (metric) => (metric === 'amortized' ? 'COALESCE(amortized_usd, amount_usd)' : 'amount_usd');
+function amortizedFrom() {
+  try { return db.prepare('SELECT MIN(day) AS d FROM aws_cost_daily WHERE amortized_usd IS NOT NULL').get().d || null; } catch { return null; }
+}
+const METRIC_VALIDATOR = query('metric').optional().isIn(['amortized', 'unblended']);
 
 const publicAccount = (row) => ({
   id: row.id, name: row.name, accessKeyId: row.access_key_id, region: row.region, accountNumber: row.account_number || null,
@@ -222,7 +237,7 @@ router.post('/accounts/:id/refresh', [param('id').isInt().toInt()], validate, as
 
 // ── Probe (blind-build fix loop) ─────────────────────────────────────────────
 
-const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost', 'rds', 'lambda', 'dynamo', 'ecr', 'vpc', 'optimizer'];
+const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost', 'rds', 'lambda', 'dynamo', 'ecr', 'vpc', 'optimizer', 'finops'];
 
 function truncate(raw) {
   if (Array.isArray(raw)) return { items: raw.slice(0, 2), _count: raw.length };
@@ -235,6 +250,60 @@ function truncate(raw) {
     return out;
   }
   return raw;
+}
+
+const ymd = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+/** Raw FinOps probe: runs every Cost Explorer fetcher once and reports ok / status plus a truncated sample. */
+async function probeFinops(row) {
+  const now = Date.now();
+  const win = { start: ymd(now - 35 * 86400000), end: ymd(now) };
+  const monthEnd = new Date(Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth() + 1, 1));
+  const tagKey = finopsConfig().finopsTagKeys[0] || null;
+  const steps = {
+    tag_keys: () => awsApi.fetchCostAllocationTags(row),
+    cost_tags: tagKey
+      ? () => awsApi.fetchCostAndUsageGrouped(row, { ...win, groupBy: [{ Type: 'TAG', Key: tagKey }, { Type: 'DIMENSION', Key: 'SERVICE' }] })
+      : null,
+    linked_accounts: () => awsApi.fetchLinkedAccountValues(row),
+    forecast: () => awsApi.fetchCostForecast(row, {
+      metric: finopsConfig().finopsMetric === 'unblended' ? 'UNBLENDED_COST' : 'AMORTIZED_COST',
+      start: ymd(now + 86400000), end: ymd(monthEnd.getTime()),
+    }),
+    sp_utilization: async () => ({
+      utilization: await awsApi.fetchSavingsPlansUtilization(row, win),
+      details: await awsApi.fetchSavingsPlansUtilizationDetails(row, win),
+    }),
+    sp_coverage: () => awsApi.fetchSavingsPlansCoverage(row, win),
+    ri_utilization: () => awsApi.fetchReservationUtilization(row, win),
+    ri_coverage: () => awsApi.fetchReservationCoverage(row, win),
+    anomalies: async () => ({
+      monitors: await awsApi.fetchAnomalyMonitors(row),
+      anomalies: await awsApi.fetchAnomalies(row, win),
+    }),
+    rightsizing: () => awsApi.fetchRightsizingRecommendations(row),
+    sp_recommendation: () => awsApi.fetchSavingsPlansPurchaseRecommendation(row),
+  };
+  const out = {};
+  for (const [id, fn] of Object.entries(steps)) {
+    if (!fn) { out[id] = { ok: false, status: 'skipped', error: 'No cost allocation tag key is configured.' }; continue; }
+    try {
+      const r = await fn();
+      const pick = (x) => (Array.isArray(x) ? x : (x && Array.isArray(x.rows) ? x.rows : x));
+      const sample = (r && !Array.isArray(r) && !Array.isArray(r.rows) && typeof r === 'object')
+        ? Object.fromEntries(Object.entries(r).map(([k, v]) => [k, truncate(pick(v))]))
+        : truncate(pick(r));
+      out[id] = { ok: true, status: 'ok', sample };
+    } catch (err) {
+      let status = 'error';
+      try {
+        const c = awsApi.classifyCeError ? awsApi.classifyCeError(err) : null;
+        status = (typeof c === 'string' ? c : c && c.status) || 'error';
+      } catch { status = 'error'; }
+      out[id] = { ok: false, status, error: String(err?.message || err).slice(0, 500) };
+    }
+  }
+  return out;
 }
 
 /** GET /api/aws/accounts/:id/probe?service= — raw-shape probe. */
@@ -314,6 +383,10 @@ router.get('/accounts/:id/probe', [
         raw = { vpcs, subnets };
         break;
       }
+      case 'finops': {
+        // One raw page per Cost Explorer capability; never stamps or stores anything.
+        return res.json({ service, raw: await probeFinops(row) });
+      }
       case 'optimizer': {
         const enrollment = await awsApi.fetchCoEnrollmentStatus(row);
         const ec2Recommendations = enrollment.status === 'Active' ? await awsApi.fetchCoEc2Recommendations(row) : [];
@@ -335,11 +408,71 @@ const costResourcesConfig = () => ({
   costResourcesMaxPages: Math.min(50, Math.max(1, parseInt(getSetting('aws_cost_resources_max_pages'), 10) || 10)),
 });
 
+const intSetting = (key, min, max, def) => {
+  const n = parseInt(getSetting(key), 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
+};
+const floatSetting = (key, min, max, def) => {
+  const n = parseFloat(getSetting(key));
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
+};
+const settingList = (key) => {
+  try {
+    const v = JSON.parse(getSetting(key) || '[]');
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch { return []; }
+};
+
+/** FinOps settings as camelCase, parsed and clamped (same keys the contract lists for /config). */
+function finopsConfig() {
+  const linked = getSetting('aws_finops_linked_accounts');
+  return {
+    finopsMetric: getSetting('aws_finops_metric') === 'unblended' ? 'unblended' : 'amortized',
+    finopsTagKeys: settingList('aws_finops_tag_keys'),
+    finopsLinkedAccounts: ['auto', 'on', 'off'].includes(linked) ? linked : 'auto',
+    anomalyPct: intSetting('aws_finops_anomaly_pct', 5, 500, 30),
+    anomalyFloorUsd: floatSetting('aws_finops_anomaly_floor_usd', 0, 100000, 5),
+    anomalyBaselineDays: intSetting('aws_finops_anomaly_baseline_days', 3, 30, 7),
+    anomalyClearDays: intSetting('aws_finops_anomaly_clear_days', 1, 14, 2),
+    spUtilWarnPct: intSetting('aws_finops_sp_util_warn_pct', 1, 100, 80),
+    spExpiryWarnDays: intSetting('aws_finops_sp_expiry_warn_days', 1, 365, 30),
+    priceGp2ToGp3PerGb: floatSetting('aws_price_gp2_to_gp3_per_gb', 0, 10, 0.02),
+    priceEbsGp2PerGb: floatSetting('aws_price_ebs_gp2_per_gb', 0, 10, 0.10),
+    priceEbsGp3PerGb: floatSetting('aws_price_ebs_gp3_per_gb', 0, 10, 0.08),
+    priceNatGatewayMonth: floatSetting('aws_price_nat_gateway_month', 0, 1000, 32.85),
+    finopsDigestEnabled: getSetting('aws_finops_digest_enabled') === '1',
+    finopsDigestRecipients: getSetting('aws_finops_digest_recipients') || '',
+    finopsDigestWeekday: intSetting('aws_finops_digest_weekday', 1, 7, 1),
+    tagKeysSeen: settingList('aws_finops_tag_keys_seen'),
+  };
+}
+
+const fullConfig = () => ({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct(), ...costResourcesConfig(), ...finopsConfig() });
+
 router.get('/config', (req, res, next) => {
   try {
-    res.json({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct(), ...costResourcesConfig() });
+    res.json(fullConfig());
   } catch (err) { next(err); }
 });
+
+// Body key -> [setting key, serializer]. Every FinOps key is optional on PUT.
+const FINOPS_PUT = {
+  finopsMetric: ['aws_finops_metric', String],
+  finopsLinkedAccounts: ['aws_finops_linked_accounts', String],
+  anomalyPct: ['aws_finops_anomaly_pct', String],
+  anomalyFloorUsd: ['aws_finops_anomaly_floor_usd', String],
+  anomalyBaselineDays: ['aws_finops_anomaly_baseline_days', String],
+  anomalyClearDays: ['aws_finops_anomaly_clear_days', String],
+  spUtilWarnPct: ['aws_finops_sp_util_warn_pct', String],
+  spExpiryWarnDays: ['aws_finops_sp_expiry_warn_days', String],
+  priceGp2ToGp3PerGb: ['aws_price_gp2_to_gp3_per_gb', String],
+  priceEbsGp2PerGb: ['aws_price_ebs_gp2_per_gb', String],
+  priceEbsGp3PerGb: ['aws_price_ebs_gp3_per_gb', String],
+  priceNatGatewayMonth: ['aws_price_nat_gateway_month', String],
+  finopsDigestEnabled: ['aws_finops_digest_enabled', (v) => (v ? '1' : '0')],
+  finopsDigestRecipients: ['aws_finops_digest_recipients', (v) => String(v).trim()],
+  finopsDigestWeekday: ['aws_finops_digest_weekday', String],
+};
 
 /** PUT /api/aws/config — save alert thresholds. */
 router.put('/config', [
@@ -347,13 +480,37 @@ router.put('/config', [
   body('rdsStorageWarnPct').optional().isInt({ min: 5, max: 50 }).toInt(),
   body('costResourcesEnabled').optional().isBoolean().toBoolean(),
   body('costResourcesMaxPages').optional().isInt({ min: 1, max: 50 }).toInt(),
+  body('finopsMetric').optional().isIn(['amortized', 'unblended']),
+  body('finopsTagKeys').optional().isArray({ max: 10 }),
+  body('finopsTagKeys.*').isString().trim().isLength({ min: 1, max: 128 }),
+  body('finopsLinkedAccounts').optional().isIn(['auto', 'on', 'off']),
+  body('anomalyPct').optional().isInt({ min: 5, max: 500 }).toInt(),
+  body('anomalyFloorUsd').optional().isFloat({ min: 0, max: 100000 }).toFloat(),
+  body('anomalyBaselineDays').optional().isInt({ min: 3, max: 30 }).toInt(),
+  body('anomalyClearDays').optional().isInt({ min: 1, max: 14 }).toInt(),
+  body('spUtilWarnPct').optional().isInt({ min: 1, max: 100 }).toInt(),
+  body('spExpiryWarnDays').optional().isInt({ min: 1, max: 365 }).toInt(),
+  body('priceGp2ToGp3PerGb').optional().isFloat({ min: 0, max: 10 }).toFloat(),
+  body('priceEbsGp2PerGb').optional().isFloat({ min: 0, max: 10 }).toFloat(),
+  body('priceEbsGp3PerGb').optional().isFloat({ min: 0, max: 10 }).toFloat(),
+  body('priceNatGatewayMonth').optional().isFloat({ min: 0, max: 1000 }).toFloat(),
+  body('finopsDigestEnabled').optional().isBoolean().toBoolean(),
+  body('finopsDigestRecipients').optional().isString().isLength({ max: 1000 }),
+  body('finopsDigestWeekday').optional().isInt({ min: 1, max: 7 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     setSetting('aws_cost_spike_pct', String(req.body.costSpikePct));
     if (req.body.rdsStorageWarnPct !== undefined) setSetting('aws_rds_storage_warn_pct', String(req.body.rdsStorageWarnPct));
     if (req.body.costResourcesEnabled !== undefined) setSetting('aws_cost_resources_enabled', req.body.costResourcesEnabled ? '1' : '0');
     if (req.body.costResourcesMaxPages !== undefined) setSetting('aws_cost_resources_max_pages', String(req.body.costResourcesMaxPages));
-    res.json({ costSpikePct: costSpikePct(), rdsStorageWarnPct: rdsStorageWarnPct(), ...costResourcesConfig() });
+    for (const [field, [key, ser]] of Object.entries(FINOPS_PUT)) {
+      if (req.body[field] !== undefined) setSetting(key, ser(req.body[field]));
+    }
+    if (req.body.finopsTagKeys !== undefined) {
+      const keys = [...new Set(req.body.finopsTagKeys.map((k) => String(k).trim()).filter(Boolean))];
+      setSetting('aws_finops_tag_keys', JSON.stringify(keys));
+    }
+    res.json(fullConfig());
   } catch (err) { next(err); }
 });
 
@@ -435,6 +592,50 @@ router.get('/issue-history', (req, res, next) => {
 });
 
 // ── Overview ─────────────────────────────────────────────────────────────────
+
+const monthBounds = (now = new Date()) => {
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth();
+  return { start: ymd(Date.UTC(y, m, 1)), next: ymd(Date.UTC(y, m + 1, 1)), month: ymd(Date.UTC(y, m, 1)).slice(0, 7) };
+};
+
+/** Newest stored forecast for the current month and scope; the metric column is matched loosely. */
+function latestForecast(metric, scope = 'total') {
+  try {
+    const b = monthBounds();
+    return db.prepare(`
+      SELECT * FROM aws_cost_forecast
+      WHERE scope = ? AND LOWER(metric) LIKE ? AND period_start >= ? AND period_start < ?
+      ORDER BY generated_on DESC, id DESC LIMIT 1
+    `).get(scope, `${metric}%`, b.start, b.next) || null;
+  } catch { return null; }
+}
+
+/** Additive FinOps keys on GET /overview cost; null-safe on a db without the v11 tables. */
+function overviewFinopsExtras() {
+  const out = { forecastUsd: null, forecastSource: null, openAnomalies: 0, budgetState: { worst: null, count: 0 } };
+  try {
+    const fc = latestForecast(finopsConfig().finopsMetric);
+    if (fc && fc.mean_usd != null) { out.forecastUsd = round2(fc.mean_usd); out.forecastSource = fc.source; }
+  } catch { /* ignore */ }
+  try {
+    out.openAnomalies = db.prepare("SELECT COUNT(*) AS n FROM aws_cost_anomalies WHERE status = 'open' AND superseded_by IS NULL").get().n || 0;
+  } catch { /* ignore */ }
+  try {
+    const states = db.prepare(`
+      SELECT s.state FROM aws_budgets b LEFT JOIN aws_budget_status s ON s.budget_id = b.id AND s.month = ?
+      WHERE b.enabled = 1
+    `).all(monthBounds().month);
+    if (states.length) {
+      const have = states.map((r) => r.state).filter(Boolean);
+      out.budgetState = {
+        worst: have.includes('crit') ? 'crit' : (have.includes('warn') ? 'warn' : (have.length ? 'ok' : null)),
+        count: states.length,
+      };
+    }
+  } catch { /* ignore */ }
+  return out;
+}
 
 /** GET /api/aws/overview — estate rollup + computed issue counts. */
 router.get('/overview', [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
@@ -558,6 +759,7 @@ router.get('/overview', [query('accountId').optional().isInt().toInt()], validat
       cost: {
         mtdUsd, prevDayUsd, dayBeforeUsd, deltaPct,
         topServices: topServices.map((r) => ({ service: r.service, mtdUsd: r.mtdUsd })),
+        ...overviewFinopsExtras(),
       },
       bedrock: {
         invocations30d: bedrockAgg.invocations30d || 0,
@@ -806,8 +1008,11 @@ router.get('/costs', [
   query('days').optional().isInt().toInt(),
   query('accountId').optional().isInt().toInt(),
   query('month').optional().matches(/^\d{4}-\d{2}$/),
+  METRIC_VALIDATOR,
 ], validate, (req, res, next) => {
   try {
+    const metric = costMetric(req);
+    const AMT = amountExpr(metric);
     const days = Math.min(365, Math.max(7, req.query.days || 30));
     const accountId = req.query.accountId;
     const month = req.query.month;
@@ -819,31 +1024,31 @@ router.get('/costs', [
     let rows, mtdUsd, deltaPct, byServiceMap;
     if (month) {
       rows = db.prepare(`
-        SELECT day, service, amount_usd FROM aws_cost_daily
+        SELECT day, service, ${AMT} AS amount_usd FROM aws_cost_daily
         WHERE substr(day, 1, 7) = ? ${acctSql} ORDER BY day ASC
       `).all(month, ...acctArg);
-      mtdUsd = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE substr(day, 1, 7) = ? ${acctSql}`)
+      mtdUsd = db.prepare(`SELECT SUM(${AMT}) AS s FROM aws_cost_daily WHERE substr(day, 1, 7) = ? ${acctSql}`)
         .get(month, ...acctArg).s || 0;
       deltaPct = null;
       byServiceMap = new Map();
-      for (const r of db.prepare(`SELECT service, SUM(amount_usd) AS mtdUsd FROM aws_cost_daily WHERE substr(day, 1, 7) = ? ${acctSql} GROUP BY service`)
+      for (const r of db.prepare(`SELECT service, SUM(${AMT}) AS mtdUsd FROM aws_cost_daily WHERE substr(day, 1, 7) = ? ${acctSql} GROUP BY service`)
         .all(month, ...acctArg)) {
         byServiceMap.set(r.service, r.mtdUsd || 0);
       }
     } else {
       rows = db.prepare(`
-        SELECT day, service, amount_usd FROM aws_cost_daily
+        SELECT day, service, ${AMT} AS amount_usd FROM aws_cost_daily
         WHERE day >= date('now', ?) ${acctSql} ORDER BY day ASC
       `).all(`-${days} days`, ...acctArg);
       const monthStart = `${new Date().toISOString().slice(0, 7)}-01`;
-      mtdUsd = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day >= ? ${acctSql}`).get(monthStart, ...acctArg).s || 0;
+      mtdUsd = db.prepare(`SELECT SUM(${AMT}) AS s FROM aws_cost_daily WHERE day >= ? ${acctSql}`).get(monthStart, ...acctArg).s || 0;
       const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
       const dayBefore = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
-      const yTotal = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(yesterday, ...acctArg).s || 0;
-      const dbTotal = db.prepare(`SELECT SUM(amount_usd) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(dayBefore, ...acctArg).s || 0;
+      const yTotal = db.prepare(`SELECT SUM(${AMT}) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(yesterday, ...acctArg).s || 0;
+      const dbTotal = db.prepare(`SELECT SUM(${AMT}) AS s FROM aws_cost_daily WHERE day = ? ${acctSql}`).get(dayBefore, ...acctArg).s || 0;
       deltaPct = dbTotal > 0 ? ((yTotal - dbTotal) / dbTotal) * 100 : null;
       byServiceMap = new Map();
-      for (const r of db.prepare(`SELECT service, SUM(amount_usd) AS mtdUsd FROM aws_cost_daily WHERE day >= ? ${acctSql} GROUP BY service`)
+      for (const r of db.prepare(`SELECT service, SUM(${AMT}) AS mtdUsd FROM aws_cost_daily WHERE day >= ? ${acctSql} GROUP BY service`)
         .all(monthStart, ...acctArg)) {
         byServiceMap.set(r.service, r.mtdUsd || 0);
       }
@@ -878,6 +1083,7 @@ router.get('/costs', [
       })).sort((a, b) => b.mtdUsd - a.mtdUsd),
       months,
       costResources: costResourcesState(accountId),
+      metric, amortizedFrom: amortizedFrom(),
     });
   } catch (err) { next(err); }
 });
@@ -890,8 +1096,11 @@ router.get('/costs/usage-types', [
   query('day').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
   query('month').optional().matches(/^\d{4}-\d{2}$/),
   query('service').optional().isString().trim().isLength({ min: 1, max: 200 }),
+  METRIC_VALIDATOR,
 ], validate, (req, res, next) => {
   try {
+    const metric = costMetric(req);
+    const AMT = amountExpr(metric);
     const days = Math.min(90, Math.max(7, req.query.days || 30));
     const accountId = req.query.accountId;
     const service = req.query.service;
@@ -911,7 +1120,7 @@ router.get('/costs/usage-types', [
     const svcSql = service ? 'AND service = ?' : '';
     const svcArg = service ? [service] : [];
     const rows = db.prepare(`
-      SELECT service, usage_type, SUM(amount_usd) AS total_usd FROM aws_cost_usage_daily
+      SELECT service, usage_type, SUM(${AMT}) AS total_usd, SUM(usage_qty) AS usage_qty, MAX(usage_unit) AS usage_unit FROM aws_cost_usage_daily
       WHERE 1=1 ${daySql} ${acctSql} ${svcSql}
       GROUP BY service, usage_type ORDER BY total_usd DESC LIMIT 60
     `).all(...dayArg, ...acctArg, ...svcArg);
@@ -943,8 +1152,11 @@ router.get('/costs/usage-types', [
         usageType: r.usage_type,
         component: r.service === 'Amazon Lightsail' ? lightsailComponent(r.usage_type) : null,
         totalUsd: r.total_usd || 0,
+        usageQty: r.usage_qty == null ? null : r.usage_qty,
+        usageUnit: r.usage_unit || null,
         ...objectsFor(r),
       })),
+      metric, amortizedFrom: amortizedFrom(),
     });
   } catch (err) { next(err); }
 });
@@ -1007,14 +1219,17 @@ router.get('/costs/resources', [
 router.get('/costs/instance-types', [
   query('days').optional().isInt().toInt(),
   query('accountId').optional().isInt().toInt(),
+  METRIC_VALIDATOR,
 ], validate, (req, res, next) => {
   try {
+    const metric = costMetric(req);
+    const AMT = amountExpr(metric);
     const days = Math.min(90, Math.max(7, req.query.days || 30));
     const accountId = req.query.accountId;
     const acctSql = accountId ? 'AND account_id = ?' : '';
     const acctArg = accountId ? [accountId] : [];
     const rows = db.prepare(`
-      SELECT instance_type, SUM(amount_usd) AS total_usd FROM aws_cost_instance_type_daily
+      SELECT instance_type, SUM(${AMT}) AS total_usd FROM aws_cost_instance_type_daily
       WHERE day >= date('now', ?) ${acctSql}
       GROUP BY instance_type ORDER BY total_usd DESC
     `).all(`-${days} days`, ...acctArg);
@@ -1030,6 +1245,7 @@ router.get('/costs/instance-types', [
           estPerInstanceUsd: running > 0 ? (r.total_usd || 0) / running : null,
         };
       }),
+      metric, amortizedFrom: amortizedFrom(),
     });
   } catch (err) { next(err); }
 });
@@ -1183,18 +1399,49 @@ router.get('/vpc', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** GET /api/aws/optimizer?accountId= — Compute Optimizer + heuristic recommendations, savings desc. */
-router.get('/optimizer', [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
+const REC_STATUSES = ['open', 'accepted', 'dismissed', 'done'];
+const REC_KEY_SQL = "(o.source || '|' || o.finding || '|' || o.resource_id)";
+
+/** Optimizer rows joined to their lifecycle state, savings desc with nulls last. */
+function recommendationRows({ accountId, source, status }) {
+  const where = ['1=1'];
+  const args = [];
+  if (accountId) { where.push('o.account_id = ?'); args.push(accountId); }
+  if (source) { where.push('o.source = ?'); args.push(source); }
+  if (status && status !== 'all') { where.push("COALESCE(st.status, 'open') = ?"); args.push(status); }
+  return db.prepare(`
+    SELECT o.*, a.name AS account_name, st.status AS st_status, st.note AS st_note,
+           st.updated_at AS st_updated_at, st.realized_usd AS st_realized_usd
+    FROM aws_optimizer_recommendations o
+    JOIN aws_accounts a ON a.id = o.account_id
+    LEFT JOIN aws_recommendation_state st ON st.account_id = o.account_id AND st.rec_key = ${REC_KEY_SQL}
+    WHERE ${where.join(' AND ')}
+    ORDER BY (o.est_monthly_savings_usd IS NULL) ASC, o.est_monthly_savings_usd DESC
+  `).all(...args);
+}
+
+const mapRecommendation = (r) => ({
+  key: `${r.source}|${r.finding}|${r.resource_id}`,
+  source: r.source, resourceType: r.resource_type, resourceId: r.resource_id, resourceName: r.resource_name,
+  region: r.region, finding: r.finding, currentConfig: r.current_config, recommendedConfig: r.recommended_config,
+  reason: r.reason, estMonthlySavingsUsd: r.est_monthly_savings_usd, account: r.account_name,
+  state: {
+    status: r.st_status || 'open', note: r.st_note || null, updatedAt: r.st_updated_at || null,
+    realizedUsd: r.st_realized_usd == null ? null : r.st_realized_usd,
+  },
+});
+
+/** GET /api/aws/optimizer?accountId=&status= - Compute Optimizer, heuristic and Cost Explorer recommendations, savings desc. */
+router.get('/optimizer', [
+  query('accountId').optional().isInt().toInt(),
+  query('status').optional().isIn([...REC_STATUSES, 'all']),
+], validate, (req, res, next) => {
   try {
     const accountId = req.query.accountId;
+    const status = req.query.status || 'all';
     const acctSql = accountId ? 'AND o.account_id = ?' : '';
     const acctArg = accountId ? [accountId] : [];
-    const rows = db.prepare(`
-      SELECT o.*, a.name AS account_name FROM aws_optimizer_recommendations o
-      JOIN aws_accounts a ON a.id = o.account_id
-      WHERE 1=1 ${acctSql}
-      ORDER BY (o.est_monthly_savings_usd IS NULL) ASC, o.est_monthly_savings_usd DESC
-    `).all(...acctArg);
+    const rows = recommendationRows({ accountId, status });
 
     const accounts = db.prepare('SELECT * FROM aws_accounts').all();
     const electedRow = accounts.find((a) => isElected(a));
@@ -1207,18 +1454,73 @@ router.get('/optimizer', [query('accountId').optional().isInt().toInt()], valida
       ? db.prepare('SELECT last_optimizer_capture_at AS c FROM aws_accounts WHERE id = ?').get(accountId)
       : db.prepare('SELECT MAX(last_optimizer_capture_at) AS c FROM aws_accounts').get();
 
+    const byStatus = { open: 0, accepted: 0, dismissed: 0, done: 0 };
+    for (const r of db.prepare(`
+      SELECT COALESCE(st.status, 'open') AS status, COUNT(*) AS n FROM aws_optimizer_recommendations o
+      LEFT JOIN aws_recommendation_state st ON st.account_id = o.account_id AND st.rec_key = ${REC_KEY_SQL}
+      WHERE 1=1 ${acctSql} GROUP BY COALESCE(st.status, 'open')
+    `).all(...acctArg)) byStatus[r.status] = r.n;
+    const realized = db.prepare(`
+      SELECT COALESCE(SUM(realized_usd), 0) AS s FROM aws_recommendation_state
+      WHERE status = 'done' AND realized_at >= ? ${accountId ? 'AND account_id = ?' : ''}
+    `).get(new Date(Date.now() - 90 * 86400000).toISOString(), ...acctArg).s || 0;
+
     res.json({
       totals: {
         count: totalsRow.n || 0,
         estMonthlySavingsUsd: totalsRow.s || 0,
         coEnrollment: electedRow?.co_enrollment ?? null,
         lastCapture: lastCaptureRow?.c ?? null,
+        byStatus,
+        realized90dUsd: round2(realized) || 0,
       },
-      recommendations: rows.map((r) => ({
-        source: r.source, resourceType: r.resource_type, resourceId: r.resource_id, resourceName: r.resource_name,
-        region: r.region, finding: r.finding, currentConfig: r.current_config, recommendedConfig: r.recommended_config,
-        reason: r.reason, estMonthlySavingsUsd: r.est_monthly_savings_usd, account: r.account_name,
-      })),
+      recommendations: rows.map(mapRecommendation),
+    });
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/aws/optimizer/state { key, status, note? } - lifecycle of one recommendation. The key is
+ * source|finding|resourceId; 404 when no recommendation row carries it. A manual done books the estimate
+ * as realized savings.
+ */
+router.post('/optimizer/state', [
+  body('key').isString().isLength({ min: 1, max: 600 }),
+  body('status').isIn(REC_STATUSES),
+  body('note').optional({ nullable: true }).isString().isLength({ max: 500 }),
+], validate, (req, res, next) => {
+  try {
+    const { key, status } = req.body;
+    const recs = db.prepare(`
+      SELECT o.account_id, o.est_monthly_savings_usd FROM aws_optimizer_recommendations o WHERE ${REC_KEY_SQL} = ?
+    `).all(key);
+    if (!recs.length) return res.status(404).json({ error: 'Recommendation not found.' });
+    const now = new Date().toISOString();
+    const user = req.user?.username || 'user';
+    const write = db.transaction(() => {
+      for (const rec of recs) {
+        const existing = db.prepare('SELECT note FROM aws_recommendation_state WHERE account_id = ? AND rec_key = ?').get(rec.account_id, key);
+        const note = req.body.note !== undefined ? (req.body.note || null) : (existing?.note ?? null);
+        const done = status === 'done';
+        db.prepare(`
+          INSERT INTO aws_recommendation_state (account_id, rec_key, status, note, updated_by, resolved_by,
+            est_monthly_savings_usd, realized_usd, realized_at, first_seen_at, last_seen_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(account_id, rec_key) DO UPDATE SET
+            status = excluded.status, note = excluded.note, updated_by = excluded.updated_by,
+            resolved_by = excluded.resolved_by, est_monthly_savings_usd = excluded.est_monthly_savings_usd,
+            realized_usd = excluded.realized_usd, realized_at = excluded.realized_at, updated_at = excluded.updated_at
+        `).run(rec.account_id, key, status, note, user, done ? 'user' : null, rec.est_monthly_savings_usd,
+          done ? (rec.est_monthly_savings_usd ?? 0) : null, done ? now : null, now, now, now);
+      }
+    });
+    write();
+    const row = db.prepare('SELECT * FROM aws_recommendation_state WHERE account_id = ? AND rec_key = ?').get(recs[0].account_id, key);
+    res.json({
+      state: {
+        key, status: row.status, note: row.note || null, updatedAt: row.updated_at,
+        realizedUsd: row.realized_usd == null ? null : row.realized_usd,
+      },
     });
   } catch (err) { next(err); }
 });
@@ -1236,6 +1538,474 @@ router.post('/optimizer/refresh', [query('accountId').optional().isInt().toInt()
     }
     res.status(202).json({ ok: true });
   } catch (err) { next(err); }
+});
+
+// -- FinOps ------------------------------------------------------------
+
+const finopsMetric = (req) => (['amortized', 'unblended'].includes(req.query.metric) ? req.query.metric : finopsConfig().finopsMetric);
+const RANGE_VALIDATORS = [
+  query('days').optional().isInt({ min: 1, max: 365 }),
+  query('from').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
+  query('to').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
+  query('tz').optional().isInt({ min: -840, max: 840 }),
+];
+
+/** Parsed range, or null after answering 400. */
+function rangeOf(req, res) {
+  try {
+    return parseDateRange(req.query, { defaultDays: 30, maxDays: 365 });
+  } catch (err) {
+    if (err.status === 400) { res.status(400).json({ error: err.message }); return null; }
+    throw err;
+  }
+}
+const rangeBlock = (range) => rangeResponse(range, null).range;
+
+/** Last capture stamp and the Cost Explorer request count of that capture (resource-level cost is separate). */
+function captureInfo(capabilities) {
+  let lastCaptureAt = null;
+  try { lastCaptureAt = db.prepare('SELECT MAX(last_finops_capture_at) AS c FROM aws_accounts').get().c || null; } catch { lastCaptureAt = null; }
+  const lastCaptureRequests = (capabilities || []).filter((c) => c.capability !== 'cost_resources')
+    .reduce((a, c) => a + (Number(c.requests) || 0), 0);
+  return { lastCaptureAt, lastCaptureRequests };
+}
+
+/** GET /api/aws/finops/overview?metric=&accountId= */
+router.get('/finops/overview', [
+  METRIC_VALIDATOR,
+  query('accountId').optional().isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const metric = finopsMetric(req);
+    const overview = awsFinops.buildFinopsOverview({ metric, accountId: req.query.accountId || null });
+    const capabilities = awsFinops.capabilityRows();
+    res.json({ ...overview, metric, capabilities, ...captureInfo(capabilities) });
+  } catch (err) { next(err); }
+});
+
+// Allocation ----------------------------------------------------------------
+
+function allocationKeys() {
+  const cfg = finopsConfig();
+  const distinct = (dimension) => {
+    try { return db.prepare('SELECT DISTINCT key FROM aws_cost_alloc_daily WHERE dimension = ? AND key <> \'\' ORDER BY key').all(dimension).map((r) => r.key); } catch { return []; }
+  };
+  return {
+    tag: [...new Set([...cfg.finopsTagKeys, ...cfg.tagKeysSeen, ...distinct('tag')])],
+    cost_category: distinct('cost_category'),
+    linked_account: distinct('linked_account'),
+  };
+}
+
+const ALLOC_VALIDATORS = [
+  query('dimension').optional().isIn(['tag', 'cost_category', 'linked_account']),
+  query('key').optional().isString().trim().isLength({ max: 128 }),
+  METRIC_VALIDATOR,
+  ...RANGE_VALIDATORS,
+];
+
+function allocationRows(dimension, key, range, metric) {
+  const amt = amountExpr(metric);
+  return db.prepare(`
+    SELECT day, value, service, ${amt} AS usd FROM aws_cost_alloc_daily
+    WHERE dimension = ? AND key = ? AND day >= ? AND day <= ?
+    ORDER BY day ASC, value ASC, service ASC
+  `).all(dimension, key, range.fromDay, range.toDay);
+}
+
+/** GET /api/aws/finops/allocation?dimension=&key=&days=|from=&to=&tz=&metric= */
+router.get('/finops/allocation', ALLOC_VALIDATORS, validate, (req, res, next) => {
+  try {
+    const range = rangeOf(req, res);
+    if (!range) return;
+    const metric = finopsMetric(req);
+    const dimension = req.query.dimension || 'tag';
+    const keysAvailable = allocationKeys();
+    const key = req.query.key || (keysAvailable[dimension] || [])[0] || '';
+    const rows = key ? allocationRows(dimension, key, range, metric) : [];
+    const costRows = db.prepare(`
+      SELECT day, SUM(${amountExpr(metric)}) AS usd FROM aws_cost_daily WHERE day >= ? AND day <= ? GROUP BY day ORDER BY day ASC
+    `).all(range.fromDay, range.toDay);
+    const summary = awsFinops.allocationSummary({ rows, costRows });
+    res.json({
+      dimension, key, keysAvailable, metric, range: rangeBlock(range),
+      ...summary,
+      coverageGapFlag: summary.coverageGapPct != null && summary.coverageGapPct > 1,
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/finops/allocation/export.csv - one row per day, value and service. */
+router.get('/finops/allocation/export.csv', ALLOC_VALIDATORS, validate, (req, res, next) => {
+  try {
+    const key = String(req.query.key || '').trim();
+    if (!key) return res.status(400).json({ error: 'key is required for the allocation export.' });
+    const range = rangeOf(req, res);
+    if (!range) return;
+    const metric = finopsMetric(req);
+    const dimension = req.query.dimension || 'tag';
+    const rows = allocationRows(dimension, key, range, metric);
+    sendCsv(res, `aws-allocation-${key.replace(/[^\w.-]+/g, '_')}-${range.fromDay}_${range.toDay}.csv`,
+      ['Day', 'Dimension', 'Key', 'Value', 'Service', `Cost USD (${metric})`],
+      rows.map((r) => [r.day, dimension, key, r.value || '(unallocated)', r.service, round2(r.usd)]));
+  } catch (err) { next(err); }
+});
+
+// Commitments ---------------------------------------------------------------
+
+const mean = (arr) => {
+  const v = arr.filter((x) => x != null && Number.isFinite(Number(x))).map(Number);
+  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+};
+
+/** GET /api/aws/finops/commitments?days=|from=&to=&tz= */
+router.get('/finops/commitments', RANGE_VALIDATORS, validate, (req, res, next) => {
+  try {
+    const range = rangeOf(req, res);
+    if (!range) return;
+    const win = [range.fromDay, range.toDay];
+    const spUtil = db.prepare(`
+      SELECT day, utilization_pct, commitment_usd, used_usd, unused_usd, net_savings_usd FROM aws_sp_utilization_daily
+      WHERE day >= ? AND day <= ? ORDER BY day ASC
+    `).all(...win);
+    const spCov = db.prepare(`
+      SELECT day, coverage_pct, covered_usd, on_demand_usd FROM aws_sp_coverage_daily
+      WHERE day >= ? AND day <= ? ORDER BY day ASC
+    `).all(...win);
+    const riUtil = db.prepare(`
+      SELECT day, utilization_pct, purchased_hours, used_hours, unused_hours, net_savings_usd FROM aws_ri_utilization_daily
+      WHERE day >= ? AND day <= ? ORDER BY day ASC
+    `).all(...win);
+    const riCov = db.prepare(`
+      SELECT day, coverage_pct, reserved_hours, on_demand_hours, total_hours FROM aws_ri_coverage_daily
+      WHERE day >= ? AND day <= ? ORDER BY day ASC
+    `).all(...win);
+    const now = Date.now();
+    const plans = db.prepare('SELECT * FROM aws_savings_plans ORDER BY end_at ASC').all().map((p) => {
+      const end = p.end_at ? Date.parse(p.end_at) : NaN;
+      return {
+        arn: p.sp_arn, arnTail: String(p.sp_arn || '').split('/').pop(), type: p.sp_type, term: p.term,
+        paymentOption: p.payment_option, hourlyCommitmentUsd: round2(p.hourly_commitment_usd), region: p.region || null,
+        instanceFamily: p.instance_family || null, startAt: p.start_at, endAt: p.end_at,
+        daysToExpiry: Number.isFinite(end) ? Math.ceil((end - now) / 86400000) : null,
+        utilizationPct: round2(p.utilization_pct), netSavingsUsd: round2(p.net_savings_usd),
+      };
+    });
+    const capabilities = awsFinops.capabilityRows().filter((c) => /^(sp|ri)_/.test(c.capability));
+    res.json({
+      range: rangeBlock(range),
+      savingsPlans: {
+        utilization: spUtil.map((r) => ({
+          day: r.day, utilizationPct: round2(r.utilization_pct), commitmentUsd: round2(r.commitment_usd),
+          usedUsd: round2(r.used_usd), unusedUsd: round2(r.unused_usd), netSavingsUsd: round2(r.net_savings_usd),
+        })),
+        coverage: spCov.map((r) => ({
+          day: r.day, coveragePct: round2(r.coverage_pct), coveredUsd: round2(r.covered_usd), onDemandUsd: round2(r.on_demand_usd),
+        })),
+        plans,
+        recommendations: recommendationRows({ source: 'ce-savings-plan', status: 'all' }).map(mapRecommendation),
+        summary: {
+          avgUtilizationPct: round2(mean(spUtil.map((r) => r.utilization_pct))),
+          avgCoveragePct: round2(mean(spCov.map((r) => r.coverage_pct))),
+          unusedUsd: round2(spUtil.reduce((a, r) => a + (r.unused_usd || 0), 0)),
+          netSavingsUsd: round2(spUtil.reduce((a, r) => a + (r.net_savings_usd || 0), 0)),
+        },
+      },
+      reservations: {
+        utilization: riUtil.map((r) => ({
+          day: r.day, utilizationPct: round2(r.utilization_pct), purchasedHours: round2(r.purchased_hours),
+          usedHours: round2(r.used_hours), unusedHours: round2(r.unused_hours), netSavingsUsd: round2(r.net_savings_usd),
+        })),
+        coverage: riCov.map((r) => ({
+          day: r.day, coveragePct: round2(r.coverage_pct), reservedHours: round2(r.reserved_hours),
+          onDemandHours: round2(r.on_demand_hours), totalHours: round2(r.total_hours),
+        })),
+      },
+      capabilities,
+    });
+  } catch (err) { next(err); }
+});
+
+// Anomalies -----------------------------------------------------------------
+
+const parseJson = (text, fallback) => { try { return text ? JSON.parse(text) : fallback; } catch { return fallback; } };
+
+/** GET /api/aws/finops/anomalies?status=&source=&days=|from=&to=&tz= */
+router.get('/finops/anomalies', [
+  query('status').optional().isIn(['open', 'closed', 'all']),
+  query('source').optional().isIn(['aws', 'icc', 'all']),
+  ...RANGE_VALIDATORS,
+], validate, (req, res, next) => {
+  try {
+    const range = rangeOf(req, res);
+    if (!range) return;
+    const status = req.query.status || 'all';
+    const source = req.query.source || 'all';
+    // An anomaly belongs to the window when its days overlap it; an open one has no end day.
+    const where = ['start_day <= ?', '(end_day IS NULL OR end_day >= ?)'];
+    const args = [range.toDay, range.fromDay];
+    if (status !== 'all') { where.push('status = ?'); args.push(status); }
+    if (source !== 'all') { where.push('source = ?'); args.push(source); }
+    const rows = db.prepare(`
+      SELECT * FROM aws_cost_anomalies WHERE ${where.join(' AND ')} ORDER BY (status = 'open') DESC, start_day DESC, impact_usd DESC
+    `).all(...args);
+    const cfg = finopsConfig();
+    res.json({
+      range: rangeBlock(range),
+      anomalies: rows.map((r) => ({
+        id: r.id, anomalyId: r.anomaly_id, source: r.source, scope: r.scope, scopeKey: r.scope_key,
+        monitorName: r.monitor_name || null, startDay: r.start_day, endDay: r.end_day,
+        actualUsd: round2(r.actual_usd), expectedUsd: round2(r.expected_usd), impactUsd: round2(r.impact_usd),
+        impactPct: round2(r.impact_pct), rootCauses: parseJson(r.root_causes_json, []), status: r.status,
+        supersededBy: r.superseded_by || null, firstSeenAt: r.first_seen_at, lastSeenAt: r.last_seen_at,
+      })),
+      monitors: parseJson(getSetting('aws_finops_anomaly_monitors'), []),
+      rule: { pct: cfg.anomalyPct, floorUsd: cfg.anomalyFloorUsd, baselineDays: cfg.anomalyBaselineDays, clearDays: cfg.anomalyClearDays },
+      capabilities: awsFinops.capabilityRows().filter((c) => c.capability === 'anomalies'),
+    });
+  } catch (err) { next(err); }
+});
+
+// Budgets -------------------------------------------------------------------
+
+const SCOPE_TYPES = ['total', 'account', 'service', 'tag'];
+
+const publicBudget = (b, st) => ({
+  id: b.id, name: b.name, scopeType: b.scope_type, scopeKey: b.scope_key || null, scopeValue: b.scope_value || null,
+  amountUsd: round2(b.amount_usd), warnPct: b.warn_pct, critPct: b.crit_pct, forecastAlert: !!b.forecast_alert,
+  enabled: !!b.enabled, notes: b.notes || null, createdAt: b.created_at, updatedAt: b.updated_at,
+  status: st ? {
+    month: st.month, actualUsd: round2(st.actual_usd), forecastUsd: round2(st.forecast_usd), forecastSource: st.forecast_source || null,
+    pctActual: round2(st.pct_actual), pctForecast: round2(st.pct_forecast), state: st.state,
+  } : null,
+});
+
+function loadBudget(id) {
+  const b = db.prepare('SELECT * FROM aws_budgets WHERE id = ?').get(id);
+  if (!b) return null;
+  const st = db.prepare('SELECT * FROM aws_budget_status WHERE budget_id = ? AND month = ?').get(id, monthBounds().month);
+  return publicBudget(b, st);
+}
+
+/** Config ledger: the whole budget set is one snapshot, so adds, edits and deletes land as ledger rows. */
+function ledgerBudgets() {
+  try {
+    const items = db.prepare('SELECT * FROM aws_budgets ORDER BY name').all().map((b) => ({
+      item: `budget:${b.name}`,
+      value: JSON.stringify({
+        scopeType: b.scope_type, scopeKey: b.scope_key || null, scopeValue: b.scope_value || null, amountUsd: b.amount_usd,
+        warnPct: b.warn_pct, critPct: b.crit_pct, forecastAlert: !!b.forecast_alert, enabled: !!b.enabled,
+      }),
+    }));
+    recordSnapshot({ platform: 'aws', scope: 'finops', system: 'budgets', items });
+  } catch { /* ledger never blocks a budget write */ }
+}
+
+/** Scope rules; returns an error string or null. */
+function budgetScopeError(b) {
+  if (b.scopeType === 'account' && !/^\d+$/.test(String(b.scopeKey || ''))) return 'An account budget needs scopeKey set to the account id.';
+  if (b.scopeType === 'service' && !String(b.scopeValue || '').trim()) return 'A service budget needs scopeValue set to the service name.';
+  if (b.scopeType === 'tag' && (!String(b.scopeKey || '').trim() || !String(b.scopeValue || '').trim())) return 'A tag budget needs scopeKey (tag key) and scopeValue (tag value).';
+  return null;
+}
+
+const budgetValidators = (required) => {
+  const opt = (chain) => (required ? chain : chain.optional());
+  return [
+    opt(body('name')).isString().trim().isLength({ min: 1, max: 80 }),
+    opt(body('scopeType')).isIn(SCOPE_TYPES),
+    body('scopeKey').optional({ nullable: true }).isString().trim().isLength({ max: 200 }),
+    body('scopeValue').optional({ nullable: true }).isString().trim().isLength({ max: 200 }),
+    opt(body('amountUsd')).isFloat({ gt: 0, max: 1e9 }).toFloat(),
+    body('warnPct').optional().isInt({ min: 1, max: 100 }).toInt(),
+    body('critPct').optional().isInt({ min: 1, max: 1000 }).toInt(),
+    body('forecastAlert').optional().isBoolean().toBoolean(),
+    body('enabled').optional().isBoolean().toBoolean(),
+    body('notes').optional({ nullable: true }).isString().isLength({ max: 1000 }),
+  ];
+};
+
+/** GET /api/aws/finops/budgets */
+router.get('/finops/budgets', (req, res, next) => {
+  try {
+    const month = monthBounds().month;
+    const statuses = new Map(db.prepare('SELECT * FROM aws_budget_status WHERE month = ?').all(month).map((r) => [r.budget_id, r]));
+    const budgets = db.prepare('SELECT * FROM aws_budgets ORDER BY name').all().map((b) => publicBudget(b, statuses.get(b.id)));
+    const tagValues = {};
+    for (const r of db.prepare("SELECT DISTINCT key, value FROM aws_cost_alloc_daily WHERE dimension = 'tag' AND key <> '' AND value <> '' ORDER BY key, value").all()) {
+      (tagValues[r.key] = tagValues[r.key] || []).push(r.value);
+    }
+    res.json({
+      budgets,
+      scopes: {
+        services: db.prepare('SELECT DISTINCT service FROM aws_cost_daily WHERE service IS NOT NULL ORDER BY service').all().map((r) => r.service),
+        tagKeys: allocationKeys().tag,
+        tagValues,
+        accounts: db.prepare('SELECT id, name FROM aws_accounts ORDER BY name').all(),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/aws/finops/budgets */
+router.post('/finops/budgets', budgetValidators(true), validate, (req, res, next) => {
+  try {
+    const b = req.body;
+    const warnPct = b.warnPct ?? 80;
+    const critPct = b.critPct ?? 100;
+    if (critPct < warnPct) return res.status(400).json({ error: 'critPct must not be below warnPct.' });
+    const scope = {
+      scopeType: b.scopeType,
+      scopeKey: b.scopeType === 'total' ? null : (b.scopeKey || null),
+      scopeValue: ['service', 'tag'].includes(b.scopeType) ? (b.scopeValue || null) : null,
+    };
+    const scopeErr = budgetScopeError(scope);
+    if (scopeErr) return res.status(400).json({ error: scopeErr });
+    if (db.prepare('SELECT id FROM aws_budgets WHERE name = ?').get(b.name)) return res.status(409).json({ error: 'duplicate' });
+    ledgerBudgets(); // seeds the baseline silently on the first budget ever saved
+    const info = db.prepare(`
+      INSERT INTO aws_budgets (name, scope_type, scope_key, scope_value, amount_usd, warn_pct, crit_pct, forecast_alert, enabled, notes,
+        created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(b.name, scope.scopeType, scope.scopeKey, scope.scopeValue, b.amountUsd, warnPct, critPct,
+      (b.forecastAlert ?? true) ? 1 : 0, (b.enabled ?? true) ? 1 : 0, b.notes || null, new Date().toISOString(), new Date().toISOString());
+    ledgerBudgets();
+    awsFinops.evaluateBudgets();
+    res.status(201).json({ budget: loadBudget(info.lastInsertRowid) });
+  } catch (err) { next(err); }
+});
+
+/** PUT /api/aws/finops/budgets/:id */
+router.put('/finops/budgets/:id', [param('id').isInt().toInt(), ...budgetValidators(false)], validate, (req, res, next) => {
+  try {
+    const cur = db.prepare('SELECT * FROM aws_budgets WHERE id = ?').get(req.params.id);
+    if (!cur) return res.status(404).json({ error: 'Budget not found.' });
+    const b = req.body;
+    const merged = {
+      name: b.name ?? cur.name,
+      scopeType: b.scopeType ?? cur.scope_type,
+      scopeKey: b.scopeKey !== undefined ? (b.scopeKey || null) : cur.scope_key,
+      scopeValue: b.scopeValue !== undefined ? (b.scopeValue || null) : cur.scope_value,
+      amountUsd: b.amountUsd ?? cur.amount_usd,
+      warnPct: b.warnPct ?? cur.warn_pct,
+      critPct: b.critPct ?? cur.crit_pct,
+      forecastAlert: b.forecastAlert ?? !!cur.forecast_alert,
+      enabled: b.enabled ?? !!cur.enabled,
+      notes: b.notes !== undefined ? (b.notes || null) : cur.notes,
+    };
+    if (merged.critPct < merged.warnPct) return res.status(400).json({ error: 'critPct must not be below warnPct.' });
+    if (merged.scopeType === 'total') { merged.scopeKey = null; merged.scopeValue = null; }
+    if (merged.scopeType === 'account') merged.scopeValue = null;
+    const scopeErr = budgetScopeError(merged);
+    if (scopeErr) return res.status(400).json({ error: scopeErr });
+    const dup = db.prepare('SELECT id FROM aws_budgets WHERE name = ? AND id <> ?').get(merged.name, cur.id);
+    if (dup) return res.status(409).json({ error: 'duplicate' });
+    ledgerBudgets();
+    db.prepare(`
+      UPDATE aws_budgets SET name = ?, scope_type = ?, scope_key = ?, scope_value = ?, amount_usd = ?, warn_pct = ?, crit_pct = ?,
+        forecast_alert = ?, enabled = ?, notes = ?, updated_at = ? WHERE id = ?
+    `).run(merged.name, merged.scopeType, merged.scopeKey, merged.scopeValue, merged.amountUsd, merged.warnPct, merged.critPct,
+      merged.forecastAlert ? 1 : 0, merged.enabled ? 1 : 0, merged.notes, new Date().toISOString(), cur.id);
+    ledgerBudgets();
+    awsFinops.evaluateBudgets();
+    res.json({ budget: loadBudget(cur.id) });
+  } catch (err) { next(err); }
+});
+
+/** DELETE /api/aws/finops/budgets/:id */
+router.delete('/finops/budgets/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const cur = db.prepare('SELECT id FROM aws_budgets WHERE id = ?').get(req.params.id);
+    if (!cur) return res.status(404).json({ error: 'Budget not found.' });
+    ledgerBudgets();
+    db.prepare('DELETE FROM aws_budgets WHERE id = ?').run(cur.id);
+    ledgerBudgets();
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+/** POST /api/aws/finops/budgets/evaluate - re-evaluate every budget now. */
+router.post('/finops/budgets/evaluate', (req, res, next) => {
+  try {
+    const out = awsFinops.evaluateBudgets();
+    res.status(202).json({ evaluated: Array.isArray(out) ? out.length : 0 });
+  } catch (err) { next(err); }
+});
+
+// Forecast, unit economics, capabilities -------------------------------------
+
+/** GET /api/aws/finops/forecast?scope=total */
+router.get('/finops/forecast', [query('scope').optional().isString().trim().isLength({ min: 1, max: 200 })], validate, (req, res, next) => {
+  try {
+    const scope = req.query.scope || 'total';
+    const metric = finopsConfig().finopsMetric;
+    const b = monthBounds();
+    const cur = latestForecast(metric, scope);
+    const history = db.prepare(`
+      SELECT generated_on, mean_usd, lower_usd, upper_usd, source FROM aws_cost_forecast
+      WHERE scope = ? AND LOWER(metric) LIKE ? AND period_start >= ? AND period_start < ?
+      ORDER BY generated_on ASC, id ASC
+    `).all(scope, `${metric}%`, b.start, b.next);
+    res.json({
+      current: cur ? {
+        scope, metric, periodStart: cur.period_start, periodEnd: cur.period_end, generatedOn: cur.generated_on,
+        meanUsd: round2(cur.mean_usd), lowerUsd: round2(cur.lower_usd), upperUsd: round2(cur.upper_usd), source: cur.source,
+      } : null,
+      history: history.map((r) => ({
+        generatedOn: r.generated_on, meanUsd: round2(r.mean_usd), lowerUsd: round2(r.lower_usd), upperUsd: round2(r.upper_usd), source: r.source,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/finops/unit-economics?days=|from=&to=&tz=&metric= */
+router.get('/finops/unit-economics', [METRIC_VALIDATOR, ...RANGE_VALIDATORS], validate, (req, res, next) => {
+  try {
+    const range = rangeOf(req, res);
+    if (!range) return;
+    const metric = finopsMetric(req);
+    const result = awsFinops.unitEconomics({ metric, from: range.fromDay, to: range.toDay });
+    res.json({ range: rangeBlock(range), metric, ...result });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/finops/capabilities - status rows, request cost and the IAM policy for what is missing. */
+router.get('/finops/capabilities', (req, res, next) => {
+  try {
+    const capabilities = awsFinops.capabilityRows();
+    const info = captureInfo(capabilities);
+    const missing = awsFinops.missingActions();
+    res.json({
+      capabilities, ...info,
+      estimatedDailyUsd: round2(info.lastCaptureRequests * 0.01),
+      missingActions: missing,
+      policy: { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: missing, Resource: '*' }] },
+    });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/aws/finops/refresh - clear the FinOps daily gate on the elected row and re-poll it. */
+router.post('/finops/refresh', (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM aws_accounts').all().find((a) => isElected(a));
+    if (!row) return res.status(404).json({ error: 'No elected account to capture from.' });
+    db.prepare('UPDATE aws_accounts SET last_finops_capture_at = NULL WHERE id = ?').run(row.id);
+    awsPoller.trigger(db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(row.id)).catch(() => {});
+    res.status(202).json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/aws/finops/digest/send - send the weekly FinOps digest now. */
+router.post('/finops/digest/send', async (req, res, next) => {
+  try {
+    const out = await awsFinops.sendFinopsDigest({ force: true });
+    res.status(202).json({ ok: true, recipients: (out && out.recipients) || [] });
+  } catch (err) {
+    if (err && (err.code === 'SMTP_NOT_CONFIGURED' || err.code === 'NO_RECIPIENTS')) {
+      return res.status(503).json({ error: err.message || 'SMTP is not configured.' });
+    }
+    next(err);
+  }
 });
 
 // ── AI Advisor ───────────────────────────────────────────────────────────────

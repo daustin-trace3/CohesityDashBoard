@@ -629,4 +629,200 @@ module.exports = [
       `);
     },
   },
+  {
+    // FinOps round (2026-10-27): amortized cost beside unblended (Cost Explorer returns both
+    // metrics in one request), usage quantities per usage type, allocation by tag / cost category
+    // / linked account, Savings Plan and Reserved Instance utilization and coverage, Cost Anomaly
+    // Detection plus ICC's own per-service anomalies, forecasts, ICC-defined budgets, a lifecycle
+    // per recommendation with realized savings, and a per-capability status map so every new
+    // Cost Explorer call degrades visibly (denied / not_enabled) instead of failing the poll.
+    // last_cost_capture_at is reset so the next poll refetches 35 days with both metrics.
+    version: 11,
+    up(db) {
+      const colsOf = (table) => db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name);
+      const add = (table, name, ddl) => {
+        if (!colsOf(table).includes(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+      };
+      add('aws_cost_daily', 'amortized_usd', 'REAL');
+      add('aws_cost_usage_daily', 'amortized_usd', 'REAL');
+      add('aws_cost_usage_daily', 'usage_qty', 'REAL');
+      add('aws_cost_usage_daily', 'usage_unit', 'TEXT');
+      add('aws_cost_instance_type_daily', 'amortized_usd', 'REAL');
+      add('aws_accounts', 'last_finops_capture_at', 'DATETIME');
+      add('aws_accounts', 'finops_backfill_at', 'DATETIME');
+      db.exec('UPDATE aws_accounts SET last_cost_capture_at = NULL');
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_cost_alloc_daily (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id    INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day           TEXT NOT NULL,
+          dimension     TEXT NOT NULL,
+          key           TEXT NOT NULL,
+          value         TEXT NOT NULL DEFAULT '',
+          service       TEXT NOT NULL DEFAULT '',
+          amount_usd    REAL,
+          amortized_usd REAL,
+          UNIQUE(account_id, day, dimension, key, value, service)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_alloc_lookup ON aws_cost_alloc_daily(account_id, dimension, key, day);
+
+        CREATE TABLE IF NOT EXISTS aws_sp_utilization_daily (
+          id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id                INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day                       TEXT NOT NULL,
+          utilization_pct           REAL,
+          commitment_usd            REAL,
+          used_usd                  REAL,
+          unused_usd                REAL,
+          net_savings_usd           REAL,
+          on_demand_equivalent_usd  REAL,
+          UNIQUE(account_id, day)
+        );
+        CREATE TABLE IF NOT EXISTS aws_sp_coverage_daily (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id     INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day            TEXT NOT NULL,
+          coverage_pct   REAL,
+          covered_usd    REAL,
+          on_demand_usd  REAL,
+          total_usd      REAL,
+          UNIQUE(account_id, day)
+        );
+        CREATE TABLE IF NOT EXISTS aws_ri_utilization_daily (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id       INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day              TEXT NOT NULL,
+          utilization_pct  REAL,
+          purchased_hours  REAL,
+          used_hours       REAL,
+          unused_hours     REAL,
+          net_savings_usd  REAL,
+          UNIQUE(account_id, day)
+        );
+        CREATE TABLE IF NOT EXISTS aws_ri_coverage_daily (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id       INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day              TEXT NOT NULL,
+          coverage_pct     REAL,
+          reserved_hours   REAL,
+          on_demand_hours  REAL,
+          total_hours      REAL,
+          UNIQUE(account_id, day)
+        );
+        CREATE TABLE IF NOT EXISTS aws_savings_plans (
+          id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id             INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          sp_arn                 TEXT NOT NULL,
+          sp_type                TEXT,
+          payment_option         TEXT,
+          term                   TEXT,
+          hourly_commitment_usd  REAL,
+          region                 TEXT,
+          instance_family        TEXT,
+          start_at               TEXT,
+          end_at                 TEXT,
+          utilization_pct        REAL,
+          net_savings_usd        REAL,
+          captured_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, sp_arn)
+        );
+        CREATE TABLE IF NOT EXISTS aws_cost_anomalies (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id       INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          anomaly_id       TEXT NOT NULL,
+          source           TEXT NOT NULL,
+          monitor_arn      TEXT,
+          monitor_name     TEXT,
+          scope            TEXT NOT NULL,
+          scope_key        TEXT NOT NULL,
+          start_day        TEXT NOT NULL,
+          end_day          TEXT,
+          actual_usd       REAL,
+          expected_usd     REAL,
+          impact_usd       REAL,
+          impact_pct       REAL,
+          root_causes_json TEXT,
+          feedback         TEXT,
+          status           TEXT NOT NULL DEFAULT 'open',
+          normal_days      INTEGER NOT NULL DEFAULT 0,
+          superseded_by    TEXT,
+          first_seen_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+          last_seen_at     DATETIME,
+          UNIQUE(account_id, anomaly_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_anomalies_status ON aws_cost_anomalies(account_id, status, start_day);
+        CREATE TABLE IF NOT EXISTS aws_cost_forecast (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id    INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          scope         TEXT NOT NULL DEFAULT 'total',
+          metric        TEXT NOT NULL,
+          period_start  TEXT NOT NULL,
+          period_end    TEXT NOT NULL,
+          generated_on  TEXT NOT NULL,
+          mean_usd      REAL,
+          lower_usd     REAL,
+          upper_usd     REAL,
+          source        TEXT NOT NULL,
+          UNIQUE(account_id, scope, metric, period_start, generated_on)
+        );
+        CREATE TABLE IF NOT EXISTS aws_budgets (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          name            TEXT NOT NULL UNIQUE,
+          scope_type      TEXT NOT NULL,
+          scope_key       TEXT,
+          scope_value     TEXT,
+          amount_usd      REAL NOT NULL,
+          warn_pct        INTEGER NOT NULL DEFAULT 80,
+          crit_pct        INTEGER NOT NULL DEFAULT 100,
+          forecast_alert  INTEGER NOT NULL DEFAULT 1,
+          enabled         INTEGER NOT NULL DEFAULT 1,
+          notes           TEXT,
+          created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS aws_budget_status (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          budget_id        INTEGER NOT NULL REFERENCES aws_budgets(id) ON DELETE CASCADE,
+          month            TEXT NOT NULL,
+          actual_usd       REAL,
+          forecast_usd     REAL,
+          forecast_source  TEXT,
+          pct_actual       REAL,
+          pct_forecast     REAL,
+          state            TEXT NOT NULL,
+          evaluated_at     DATETIME,
+          UNIQUE(budget_id, month)
+        );
+        CREATE TABLE IF NOT EXISTS aws_recommendation_state (
+          id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id               INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          rec_key                  TEXT NOT NULL,
+          status                   TEXT NOT NULL DEFAULT 'open',
+          note                     TEXT,
+          updated_by               TEXT,
+          resolved_by              TEXT,
+          est_monthly_savings_usd  REAL,
+          realized_usd             REAL,
+          realized_at              DATETIME,
+          first_seen_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+          last_seen_at             DATETIME,
+          updated_at               DATETIME,
+          UNIQUE(account_id, rec_key)
+        );
+        CREATE TABLE IF NOT EXISTS aws_capability_status (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id       INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          capability       TEXT NOT NULL,
+          status           TEXT NOT NULL,
+          error            TEXT,
+          requests         INTEGER DEFAULT 0,
+          last_ok_at       DATETIME,
+          last_checked_at  DATETIME,
+          UNIQUE(account_id, capability)
+        );
+      `);
+    },
+  },
 ];
+

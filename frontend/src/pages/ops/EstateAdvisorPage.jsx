@@ -1,4 +1,4 @@
-import { Sunrise, FileKey, UserCheck, ShieldCheck, History, Network } from 'lucide-react';
+import { Sunrise, FileKey, UserCheck, ShieldCheck, History, Network, Coins } from 'lucide-react';
 import PlatformAdvisorPage from '../../components/PlatformAdvisorPage';
 
 const BRAND = '#8FA3B0';
@@ -16,6 +16,8 @@ const TABS = [
     blurb: 'How much each application leans on the network under it - sites, WAN circuits, single-switch servers, open latency episodes.' },
   { slug: 'change-ledger', label: 'Change Ledger', icon: History,
     blurb: '30 days of recorded config changes — NFS exports, CIFS shares, AD group membership — with access-widening flags.' },
+  { slug: 'cloud-cost-posture', label: 'Cloud Cost Posture', icon: Coins,
+    blurb: 'AWS spend, forecast, budgets, anomalies, commitment coverage and the savings worth doing first.' },
 ];
 
 export default function EstateAdvisorPage() {

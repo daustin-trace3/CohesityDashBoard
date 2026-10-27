@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Gauge, Server, DollarSign, Container, Database, BrainCircuit, ShieldAlert, Activity, Network, HardDrive, Boxes } from 'lucide-react';
+import { Gauge, Server, DollarSign, Container, Database, BrainCircuit, ShieldAlert, Activity, Network, HardDrive, Boxes, Target, Coins } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -42,6 +42,7 @@ export default function AwsOverviewPage() {
   const iss = data?.issues || {};
   const totalIssues = (iss.critical || 0) + (iss.warning || 0) + (iss.info || 0);
   const topServices = cost.topServices || [];
+  const budgetState = cost.budgetState || { worst: null, count: 0 };
   const accountsDetail = data?.accountsDetail || [];
   const estate = data?.estate || {};
   const topMovers = estate.topMovers || [];
@@ -52,6 +53,9 @@ export default function AwsOverviewPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Gauge} title="AWS Overview" description="EC2, Lightsail, ECS, S3, Bedrock usage and cost across all registered AWS accounts">
+        <Link to="/aws/finops" className="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors">
+          <Coins size={15} /> Open FinOps
+        </Link>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -65,7 +69,7 @@ export default function AwsOverviewPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 2xl:grid-cols-8 gap-3 mb-4">
         <StatCard icon={Server} label="EC2 Instances" value={ec2.total != null ? `${fmtNum(ec2.running)} / ${fmtNum(ec2.total)}` : '—'}
           sub="running / total" tone={ec2.alarmed ? 'crit' : 'brand'}
           onClick={() => navigate('/aws/ec2')} />
@@ -73,10 +77,20 @@ export default function AwsOverviewPage() {
           sub={`${fmtNum(lightsail.databases)} db, ${fmtNum(lightsail.disks)} disks, ${fmtNum(lightsail.buckets)} buckets`}
           onClick={() => navigate('/aws/lightsail')} />
         <StatCard icon={DollarSign} label="MTD Spend" value={fmtUsd(cost.mtdUsd)}
-          sub={cost.deltaPct != null ? `${cost.deltaPct > 0 ? '+' : ''}${cost.deltaPct.toFixed(1)}% vs prior day` : undefined}
+          sub={[
+            cost.deltaPct != null ? `${cost.deltaPct > 0 ? '+' : ''}${cost.deltaPct.toFixed(1)}% vs prior day` : null,
+            cost.forecastUsd != null ? `forecast ${fmtUsd(cost.forecastUsd)} (${cost.forecastSource || 'linear'})` : null,
+          ].filter(Boolean).join(' - ') || undefined}
           trend={cost.deltaPct}
           tone={cost.deltaPct > 0 ? 'warn' : 'default'}
           onClick={() => navigate('/aws/cost')} />
+        {budgetState.count > 0 && (
+          <StatCard icon={Target} label="Budgets"
+            value={{ crit: 'Exceeded', warn: 'Warning', ok: 'On track' }[budgetState.worst] || 'Tracked'}
+            sub={`${budgetState.count} budget${budgetState.count === 1 ? '' : 's'}${cost.openAnomalies ? ` - ${cost.openAnomalies} open anomal${cost.openAnomalies === 1 ? 'y' : 'ies'}` : ''}`}
+            tone={budgetState.worst === 'crit' ? 'crit' : budgetState.worst === 'warn' ? 'warn' : 'ok'}
+            onClick={() => navigate('/aws/finops/budgets')} />
+        )}
         <StatCard icon={Container} label="ECS Degraded" value={fmtNum(ecs.degraded)}
           sub={`${fmtNum(ecs.services)} services · ${fmtNum(ecs.clusters)} clusters`}
           tone={ecs.degraded ? 'crit' : 'ok'}

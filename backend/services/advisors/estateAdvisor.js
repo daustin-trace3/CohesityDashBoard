@@ -439,6 +439,59 @@ function gatherChangeLedger() {
   };
 }
 
+// -- 7. Cloud cost posture ----------------------------------------------------
+
+/** AWS FinOps rollup: the FinOps overview plus budgets, open anomalies and the top open recommendations.
+ *  Returns { unavailable: true, reason } when the AWS tables or the FinOps service are missing. */
+function gatherCloudCostPosture() {
+  if (!tableExists('aws_accounts') || !tableExists('aws_budgets')) {
+    return { unavailable: true, reason: 'AWS FinOps tables are not present on this instance.' };
+  }
+  try {
+    const awsFinops = require('../awsFinops');
+    const metric = getSetting('aws_finops_metric') === 'unblended' ? 'unblended' : 'amortized';
+    const overview = awsFinops.buildFinopsOverview({ metric, accountId: null });
+    const budgets = rows(`
+      SELECT b.name, b.scope_type, b.scope_value, b.amount_usd, s.actual_usd, s.forecast_usd, s.pct_actual, s.state
+      FROM aws_budgets b LEFT JOIN aws_budget_status s ON s.budget_id = b.id AND s.month = ?
+      WHERE b.enabled = 1 ORDER BY s.pct_actual DESC LIMIT 15
+    `, new Date().toISOString().slice(0, 7)).map((r) => ({
+      name: r.name, scope: r.scope_type, scopeValue: r.scope_value || null, amountUsd: r.amount_usd,
+      actualUsd: r.actual_usd, forecastUsd: r.forecast_usd, pctActual: r.pct_actual, state: r.state || 'unknown',
+    }));
+    const anomalies = rows(`
+      SELECT source, scope_key, start_day, actual_usd, expected_usd, impact_usd, impact_pct
+      FROM aws_cost_anomalies WHERE status = 'open' AND superseded_by IS NULL ORDER BY impact_usd DESC LIMIT 10
+    `).map((r) => ({
+      source: r.source, scope: r.scope_key, since: r.start_day, actualUsd: r.actual_usd,
+      expectedUsd: r.expected_usd, impactUsd: r.impact_usd, impactPct: r.impact_pct,
+    }));
+    const recommendations = rows(`
+      SELECT o.finding, o.resource_type, o.resource_id, o.resource_name, o.est_monthly_savings_usd, st.status
+      FROM aws_optimizer_recommendations o
+      LEFT JOIN aws_recommendation_state st ON st.account_id = o.account_id
+        AND st.rec_key = o.source || '|' || o.finding || '|' || o.resource_id
+      WHERE COALESCE(st.status, 'open') IN ('open', 'accepted') AND o.est_monthly_savings_usd > 0
+      ORDER BY o.est_monthly_savings_usd DESC LIMIT 10
+    `).map((r) => ({
+      finding: r.finding, resourceType: r.resource_type, resource: r.resource_name || r.resource_id,
+      estMonthlySavingsUsd: r.est_monthly_savings_usd, status: r.status || 'open',
+    }));
+    return {
+      generatedAt: new Date().toISOString(),
+      metric,
+      kpis: overview.kpis,
+      mix: overview.mix,
+      topMovers: overview.topMovers,
+      budgets,
+      anomalies,
+      recommendations,
+    };
+  } catch (err) {
+    return { unavailable: true, reason: `AWS FinOps data could not be read: ${err.message}` };
+  }
+}
+
 module.exports = createPlatformAdvisor({
   platform: 'estate',
   feature: 'Estate AI Advisor',
@@ -527,6 +580,19 @@ module.exports = createPlatformAdvisor({
         '**Access-widening changes**, **Noisy systems**, **Coverage**. Keep under ~400 words.',
       gather: gatherChangeLedger,
       noun: 'configuration change audit',
+    },
+    cloud_cost_posture: {
+      system:
+        'You are a FinOps analyst summarizing cloud cost posture for an infrastructure team. You are given the AWS ' +
+        'month-to-date spend, the end-of-month forecast with its source, month over month change, commitment ' +
+        '(Savings Plan) coverage and utilization, the cost mix by service, the biggest movers against last month, ' +
+        'budget status, open cost anomalies, the top open savings recommendations and the share of spend with no ' +
+        'allocation tag. Say where the money is going, what changed, which budgets are at risk and which open ' +
+        'recommendation is worth doing first. If the data says unavailable, say the AWS FinOps data is not ' +
+        'present and stop. Do not invent data and do not praise any vendor. Markdown sections: **Spend and ' +
+        'forecast**, **What moved**, **Budgets and anomalies**, **Savings worth doing first**. Keep under ~350 words.',
+      gather: gatherCloudCostPosture,
+      noun: 'cloud cost posture report',
     },
   },
 });

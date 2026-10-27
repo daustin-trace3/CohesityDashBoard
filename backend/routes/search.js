@@ -98,6 +98,14 @@ const CATEGORIES = [
     sql: `SELECT l.name AS title, (COALESCE(l.dns_name, '') || ' - ' || a.name) AS subtitle
           FROM aws_lightsail_load_balancers l JOIN aws_accounts a ON a.id = l.account_id
           WHERE l.name LIKE ? ESCAPE '\\' ORDER BY l.name LIMIT ?` },
+  { key: 'aws-budgets', label: 'AWS Budgets', platform: 'aws', perm: 'aws:finops:view', base: '/aws/finops/budgets',
+    sql: `SELECT name AS title, scope_type || COALESCE(': ' || NULLIF(COALESCE(scope_value, scope_key), ''), '') AS subtitle
+          FROM aws_budgets WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?` },
+  { key: 'aws-recommendations', label: 'AWS Recommendations', platform: 'aws', perm: 'aws:optimizer:view', base: '/aws/optimizer',
+    sql: `SELECT COALESCE(NULLIF(resource_name, ''), resource_id) AS title,
+                 finding || COALESCE(' - $' || printf('%.0f', est_monthly_savings_usd) || '/mo', '') AS subtitle
+          FROM aws_optimizer_recommendations
+          WHERE (resource_name LIKE ? ESCAPE '\\' OR resource_id LIKE ? ESCAPE '\\') ORDER BY est_monthly_savings_usd DESC LIMIT ?`, params: 2 },
   { key: 'aws-lambda', label: 'AWS Lambda Functions', platform: 'aws', perm: 'aws:lambda:view', base: '/aws/lambda',
     sql: `SELECT l.name AS title, (COALESCE(l.runtime, '') || ' · ' || a.name) AS subtitle
           FROM aws_lambda_functions l JOIN aws_accounts a ON a.id = l.account_id

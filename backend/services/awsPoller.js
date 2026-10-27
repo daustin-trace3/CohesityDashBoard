@@ -138,11 +138,15 @@ const upsertCostUsageType = db.transaction((accountId, rows) => {
   const clearLegacy = db.prepare('DELETE FROM aws_cost_usage_daily WHERE account_id = ? AND day = ? AND service IS NULL');
   for (const day of new Set(rows.map((r) => r.day))) clearLegacy.run(accountId, day);
   const stmt = db.prepare(`
-    INSERT INTO aws_cost_usage_daily (account_id, day, service, usage_type, amount_usd)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(account_id, day, service, usage_type) DO UPDATE SET amount_usd = excluded.amount_usd
+    INSERT INTO aws_cost_usage_daily (account_id, day, service, usage_type, amount_usd, amortized_usd, usage_qty, usage_unit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day, service, usage_type) DO UPDATE SET
+      amount_usd = excluded.amount_usd, amortized_usd = excluded.amortized_usd,
+      usage_qty = excluded.usage_qty, usage_unit = excluded.usage_unit
   `);
-  for (const r of rows) stmt.run(accountId, r.day, r.service, r.usageType, r.amountUsd);
+  for (const r of rows) {
+    stmt.run(accountId, r.day, r.service, r.usageType, r.amountUsd, r.amortizedUsd ?? null, r.usageQty ?? null, r.usageUnit ?? null);
+  }
 });
 
 const upsertCostResource = db.transaction((accountId, rows) => {
@@ -167,11 +171,12 @@ const upsertCostResourceUsage = db.transaction((accountId, rows) => {
 
 const upsertCostInstanceType = db.transaction((accountId, rows) => {
   const stmt = db.prepare(`
-    INSERT INTO aws_cost_instance_type_daily (account_id, day, instance_type, amount_usd)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(account_id, day, instance_type) DO UPDATE SET amount_usd = excluded.amount_usd
+    INSERT INTO aws_cost_instance_type_daily (account_id, day, instance_type, amount_usd, amortized_usd)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day, instance_type) DO UPDATE SET
+      amount_usd = excluded.amount_usd, amortized_usd = excluded.amortized_usd
   `);
-  for (const r of rows) stmt.run(accountId, r.day, r.instanceType, r.amountUsd);
+  for (const r of rows) stmt.run(accountId, r.day, r.instanceType, r.amountUsd, r.amortizedUsd ?? null);
 });
 
 // ── AWS Service Health RSS (module-level, not per-account) ─────────────────
@@ -453,6 +458,12 @@ async function collectComputeOptimizer(account) {
   }, { status: 'denied', rows: [] });
 }
 
+/** A price setting as a finite number, falling back to the constant the heuristics shipped with. */
+function priceSetting(key, fallback) {
+  const n = Number(getSetting(key));
+  return Number.isFinite(n) && n >= 0 && getSetting(key) !== '' && getSetting(key) != null ? n : fallback;
+}
+
 const PREV_GEN_MAP = { t2: 't3', m3: 'm5', m4: 'm5', c3: 'c5', c4: 'c5', r3: 'r5', r4: 'r5' };
 const PREV_GEN_RE = /^(t2|m3|m4|c3|c4|r3|r4)\./;
 
@@ -464,6 +475,10 @@ const PREV_GEN_RE = /^(t2|m3|m4|c3|c4|r3|r4)\./;
  */
 function computeHeuristicRecommendations(accountId, elected) {
   const rows = [];
+  const gp2ToGp3PerGb = priceSetting('aws_price_gp2_to_gp3_per_gb', 0.02);
+  const gp2PerGb = priceSetting('aws_price_ebs_gp2_per_gb', 0.10);
+  const gp3PerGb = priceSetting('aws_price_ebs_gp3_per_gb', 0.08);
+  const natPerMonth = priceSetting('aws_price_nat_gateway_month', 32.85);
 
   const volumes = db.prepare('SELECT volume_id, state, size_gb, volume_type, az FROM aws_ebs_volumes WHERE account_id = ?').all(accountId);
   for (const v of volumes) {
@@ -472,11 +487,11 @@ function computeHeuristicRecommendations(accountId, elected) {
         source: 'heuristic', resourceType: 'ebs', resourceId: v.volume_id, resourceName: null, region: v.az,
         finding: 'gp2-to-gp3', currentConfig: 'gp2', recommendedConfig: 'gp3',
         reason: 'gp2 volume type costs more than gp3 for equivalent performance',
-        estMonthlySavingsUsd: (v.size_gb || 0) * 0.02,
+        estMonthlySavingsUsd: (v.size_gb || 0) * gp2ToGp3PerGb,
       });
     }
     if (v.state === 'available') {
-      const perGb = v.volume_type === 'gp2' ? 0.10 : 0.08;
+      const perGb = v.volume_type === 'gp2' ? gp2PerGb : gp3PerGb;
       rows.push({
         source: 'heuristic', resourceType: 'ebs', resourceId: v.volume_id, resourceName: null, region: v.az,
         finding: 'ebs-unattached', currentConfig: v.volume_type, recommendedConfig: 'delete or snapshot-and-delete',
@@ -498,7 +513,7 @@ function computeHeuristicRecommendations(accountId, elected) {
           source: 'heuristic', resourceType: 'ec2', resourceId: i.instance_id, resourceName: null, region: i.az,
           finding: 'stopped-ec2-ebs', currentConfig: i.instance_type, recommendedConfig: null,
           reason: 'stopped instance still pays for attached EBS',
-          estMonthlySavingsUsd: sizeGb * 0.08,
+          estMonthlySavingsUsd: sizeGb * gp3PerGb,
         });
       }
     }
@@ -520,8 +535,8 @@ function computeHeuristicRecommendations(accountId, elected) {
         source: 'heuristic', resourceType: 'vpc', resourceId: v.vpc_id, resourceName: null, region: null,
         finding: 'nat-gateway-consolidation', currentConfig: `${v.nat_gateway_count} NAT gateways`,
         recommendedConfig: 'consolidate to 1 NAT gateway',
-        reason: 'multiple NAT gateways ~$32.85/mo each',
-        estMonthlySavingsUsd: (v.nat_gateway_count - 1) * 32.85,
+        reason: `multiple NAT gateways ~$${natPerMonth}/mo each`,
+        estMonthlySavingsUsd: (v.nat_gateway_count - 1) * natPerMonth,
       });
     }
   }
@@ -543,8 +558,12 @@ function computeHeuristicRecommendations(accountId, elected) {
   return rows;
 }
 
-const storeOptimizer = db.transaction((accountId, coEnrollment, rows) => {
-  db.prepare('DELETE FROM aws_optimizer_recommendations WHERE account_id = ?').run(accountId);
+// The Compute Optimizer and heuristic sources own their rows; the FinOps capture owns 'ce-rightsizing'
+// and 'ce-savings-plan' (storeCeRecommendations), so each delete is scoped to its own sources.
+const OPTIMIZER_SOURCES = ['compute-optimizer', 'heuristic'];
+const CE_SOURCES = ['ce-rightsizing', 'ce-savings-plan'];
+
+function insertOptimizerRows(accountId, rows) {
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO aws_optimizer_recommendations
       (account_id, source, resource_type, resource_id, resource_name, region, finding,
@@ -556,9 +575,49 @@ const storeOptimizer = db.transaction((accountId, coEnrollment, rows) => {
       r.finding ?? null, r.currentConfig ?? null, r.recommendedConfig ?? null, r.reason ?? null,
       r.estMonthlySavingsUsd ?? null);
   }
+}
+
+const storeOptimizerTxn = db.transaction((accountId, coEnrollment, rows) => {
+  db.prepare("DELETE FROM aws_optimizer_recommendations WHERE account_id = ? AND source IN ('compute-optimizer', 'heuristic')").run(accountId);
+  insertOptimizerRows(accountId, rows);
   db.prepare("UPDATE aws_accounts SET last_optimizer_capture_at = datetime('now'), co_enrollment = ? WHERE id = ?")
     .run(coEnrollment, accountId);
 });
+
+/** Replace the Compute Optimizer + heuristic rows, then track their lifecycle (open -> done when they vanish). */
+function storeOptimizer(accountId, coEnrollment, rows) {
+  storeOptimizerTxn(accountId, coEnrollment, rows);
+  try {
+    require('./awsFinops').reconcileRecommendationState(accountId, rows.map(trackedRow), { sources: OPTIMIZER_SOURCES });
+  } catch (err) {
+    logger.warn(`[AwsPoller] recommendation state reconcile failed: ${err.message}`);
+  }
+}
+
+const trackedRow = (r) => ({
+  source: r.source, finding: r.finding ?? null, resourceId: r.resourceId, estMonthlySavingsUsd: r.estMonthlySavingsUsd ?? null,
+});
+
+const storeCeRecommendationsTxn = db.transaction((accountId, rows, sources) => {
+  const del = db.prepare('DELETE FROM aws_optimizer_recommendations WHERE account_id = ? AND source = ?');
+  for (const source of sources) del.run(accountId, source);
+  insertOptimizerRows(accountId, rows);
+});
+
+/**
+ * Cost Explorer sourced recommendations (rightsizing, Savings Plan purchase), in optimizer-row shape
+ * ({ source, resourceType, resourceId, resourceName, region, finding, currentConfig, recommendedConfig,
+ * reason, estMonthlySavingsUsd }). Deletes only the ce-* sources, then reconciles their lifecycle state.
+ * Only the sources named in `sources` are replaced (a capability that failed keeps its previous rows).
+ */
+function storeCeRecommendations(accountId, rows, { sources = CE_SOURCES } = {}) {
+  storeCeRecommendationsTxn(accountId, rows, sources);
+  try {
+    require('./awsFinops').reconcileRecommendationState(accountId, rows.map(trackedRow), { sources });
+  } catch (err) {
+    logger.warn(`[AwsPoller] recommendation state reconcile failed: ${err.message}`);
+  }
+}
 
 async function collectVpc(account) {
   const [vpcs, subnets, natGateways, securityGroups, internetGateways] = await Promise.all([
@@ -805,11 +864,124 @@ const upsertBedrock = db.transaction((accountId, rows) => {
 
 const upsertCost = db.transaction((accountId, rows) => {
   const stmt = db.prepare(`
-    INSERT INTO aws_cost_daily (account_id, day, service, amount_usd)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(account_id, day, service) DO UPDATE SET amount_usd = excluded.amount_usd
+    INSERT INTO aws_cost_daily (account_id, day, service, amount_usd, amortized_usd)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day, service) DO UPDATE SET
+      amount_usd = excluded.amount_usd, amortized_usd = excluded.amortized_usd
   `);
-  for (const r of rows) stmt.run(accountId, r.day, r.service, r.amountUsd);
+  for (const r of rows) stmt.run(accountId, r.day, r.service, r.amountUsd, r.amortizedUsd ?? null);
+});
+
+// -- FinOps upserts (round of 2026-10-27). The capture computes first, these only write. ----
+
+/** Spend grouped by a tag / cost category / linked account: rows [{ day, value, service, amountUsd, amortizedUsd }]. */
+const upsertCostAlloc = db.transaction((accountId, dimension, key, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_cost_alloc_daily (account_id, day, dimension, key, value, service, amount_usd, amortized_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day, dimension, key, value, service) DO UPDATE SET
+      amount_usd = excluded.amount_usd, amortized_usd = excluded.amortized_usd
+  `);
+  for (const r of rows) {
+    stmt.run(accountId, r.day, dimension, key, r.value ?? '', r.service ?? '', r.amountUsd ?? null, r.amortizedUsd ?? null);
+  }
+});
+
+const upsertSpUtilization = db.transaction((accountId, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_sp_utilization_daily (account_id, day, utilization_pct, commitment_usd, used_usd, unused_usd,
+      net_savings_usd, on_demand_equivalent_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day) DO UPDATE SET
+      utilization_pct = excluded.utilization_pct, commitment_usd = excluded.commitment_usd,
+      used_usd = excluded.used_usd, unused_usd = excluded.unused_usd,
+      net_savings_usd = excluded.net_savings_usd, on_demand_equivalent_usd = excluded.on_demand_equivalent_usd
+  `);
+  for (const r of rows) {
+    stmt.run(accountId, r.day, r.utilizationPct ?? null, r.commitmentUsd ?? null, r.usedUsd ?? null,
+      r.unusedUsd ?? null, r.netSavingsUsd ?? null, r.onDemandEquivalentUsd ?? null);
+  }
+});
+
+const upsertSpCoverage = db.transaction((accountId, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_sp_coverage_daily (account_id, day, coverage_pct, covered_usd, on_demand_usd, total_usd)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day) DO UPDATE SET
+      coverage_pct = excluded.coverage_pct, covered_usd = excluded.covered_usd,
+      on_demand_usd = excluded.on_demand_usd, total_usd = excluded.total_usd
+  `);
+  for (const r of rows) stmt.run(accountId, r.day, r.coveragePct ?? null, r.coveredUsd ?? null, r.onDemandUsd ?? null, r.totalUsd ?? null);
+});
+
+const upsertRiUtilization = db.transaction((accountId, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_ri_utilization_daily (account_id, day, utilization_pct, purchased_hours, used_hours, unused_hours, net_savings_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day) DO UPDATE SET
+      utilization_pct = excluded.utilization_pct, purchased_hours = excluded.purchased_hours,
+      used_hours = excluded.used_hours, unused_hours = excluded.unused_hours, net_savings_usd = excluded.net_savings_usd
+  `);
+  for (const r of rows) {
+    stmt.run(accountId, r.day, r.utilizationPct ?? null, r.purchasedHours ?? null, r.usedHours ?? null,
+      r.unusedHours ?? null, r.netSavingsUsd ?? null);
+  }
+});
+
+const upsertRiCoverage = db.transaction((accountId, rows) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_ri_coverage_daily (account_id, day, coverage_pct, reserved_hours, on_demand_hours, total_hours)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, day) DO UPDATE SET
+      coverage_pct = excluded.coverage_pct, reserved_hours = excluded.reserved_hours,
+      on_demand_hours = excluded.on_demand_hours, total_hours = excluded.total_hours
+  `);
+  for (const r of rows) stmt.run(accountId, r.day, r.coveragePct ?? null, r.reservedHours ?? null, r.onDemandHours ?? null, r.totalHours ?? null);
+});
+
+/** Savings Plan inventory: the details call is the whole truth for the window, so replace per account. */
+const upsertSavingsPlans = db.transaction((accountId, rows) => {
+  db.prepare('DELETE FROM aws_savings_plans WHERE account_id = ?').run(accountId);
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO aws_savings_plans (account_id, sp_arn, sp_type, payment_option, term, hourly_commitment_usd,
+      region, instance_family, start_at, end_at, utilization_pct, net_savings_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const r of rows) {
+    stmt.run(accountId, r.spArn, r.spType ?? null, r.paymentOption ?? null, r.term ?? null, r.hourlyCommitmentUsd ?? null,
+      r.region ?? null, r.instanceFamily ?? null, r.startAt ?? null, r.endAt ?? null, r.utilizationPct ?? null, r.netSavingsUsd ?? null);
+  }
+});
+
+/**
+ * AWS Cost Anomaly Detection rows (source 'aws'). rows come from awsApi.fetchAnomalies; monitors
+ * (optional, from fetchAnomalyMonitors) name the monitor and its dimension. A row is open while it has
+ * no end day; first_seen_at survives updates. ICC's own rows (source 'icc') are written by awsFinops.
+ */
+const upsertAnomalies = db.transaction((accountId, rows, monitors = []) => {
+  const byArn = new Map((monitors || []).map((m) => [m.monitorArn, m]));
+  const stmt = db.prepare(`
+    INSERT INTO aws_cost_anomalies (account_id, anomaly_id, source, monitor_arn, monitor_name, scope, scope_key,
+      start_day, end_day, actual_usd, expected_usd, impact_usd, impact_pct, root_causes_json, feedback, status,
+      first_seen_at, last_seen_at)
+    VALUES (?, ?, 'aws', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, anomaly_id) DO UPDATE SET
+      monitor_arn = excluded.monitor_arn, monitor_name = excluded.monitor_name, scope = excluded.scope,
+      scope_key = excluded.scope_key, start_day = excluded.start_day, end_day = excluded.end_day,
+      actual_usd = excluded.actual_usd, expected_usd = excluded.expected_usd, impact_usd = excluded.impact_usd,
+      impact_pct = excluded.impact_pct, root_causes_json = excluded.root_causes_json, feedback = excluded.feedback,
+      status = excluded.status, last_seen_at = excluded.last_seen_at
+  `);
+  const nowStamp = new Date().toISOString();
+  for (const r of rows) {
+    const mon = byArn.get(r.monitorArn);
+    const scopeKey = r.dimensionValue || r.rootCauses?.[0]?.service || mon?.name || 'account';
+    const scope = String(mon?.dimension || (r.dimensionValue ? 'service' : 'custom')).toLowerCase();
+    stmt.run(accountId, r.anomalyId, r.monitorArn ?? null, mon?.name ?? null, scope, scopeKey,
+      r.startDay || String(new Date().toISOString().slice(0, 10)), r.endDay ?? null,
+      r.actualUsd ?? null, r.expectedUsd ?? null, r.impactUsd ?? null, r.impactPct ?? null,
+      JSON.stringify(r.rootCauses || []), r.feedback ?? null, r.endDay ? 'closed' : 'open', nowStamp, nowStamp);
+  }
 });
 
 const storeS3 = db.transaction((accountId, buckets) => {
@@ -960,6 +1132,18 @@ async function pollAccount(account) {
           .map((r) => ({ sizeBytes: r.size_bytes }));
       }
       db.prepare("DELETE FROM aws_s3_size_history WHERE account_id = ? AND day < date('now', '-365 days')").run(account.id);
+
+      // FinOps block (forecast, commitments, anomalies, allocation, budgets, recommendations):
+      // one daily stamp for the whole block, each capability degrades on its own inside it.
+      if (needsDaily(account.last_finops_capture_at)) {
+        try {
+          await require('./awsFinops').captureFinops(account, { skipped });
+        } catch (err) {
+          if (isCredentialError(err)) throw err;
+          logger.warn(`[AwsPoller] ${account.name}: FinOps capture failed: ${safeMsg(err)}`);
+          skipped.push(`FinOps (${err?.name || 'error'})`);
+        }
+      }
     } else {
       // Non-elected row: another account with the same credential owns Cost
       // Explorer / S3 this cycle — self-heal any previously duplicated data.
@@ -1022,4 +1206,6 @@ module.exports = {
   upsertS3SizeHistory, upsertRdsStorageHistory, upsertCostUsageType, upsertCostInstanceType, upsertCostResource, upsertCostResourceUsage, captureCostResources,
   getHealthLastCheckedAt, HEALTH_SERVICES,
   collectComputeOptimizer, computeHeuristicRecommendations, storeOptimizer,
+  needsDaily, storeCeRecommendations, upsertCost, upsertCostAlloc, upsertSpUtilization, upsertSpCoverage,
+  upsertRiUtilization, upsertRiCoverage, upsertSavingsPlans, upsertAnomalies,
 };

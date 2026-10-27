@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal, Coins } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
+import FinopsSettings from './finops/FinopsSettings';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
-const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost', 'rds', 'lambda', 'dynamo', 'ecr', 'vpc'];
+const PROBE_SERVICES = ['ec2', 'ebs', 'lightsail', 'ecs', 's3', 'bedrock', 'cost', 'rds', 'lambda', 'dynamo', 'ecr', 'vpc', 'finops'];
 
 const CRED_TONE = { role: 'ok', stored: 'ok', session: 'warn', profile: 'ok', env: 'brand', none: 'neutral' };
 const CRED_LABEL = { role: 'Assume role', stored: 'Access key', session: 'Session key', profile: 'Named profile', env: 'Env fallback', none: 'Host identity' };
@@ -293,10 +295,12 @@ export default function AwsSettingsPage() {
   const canSubmit = form.name.trim()
     && (form.authMode !== 'role' || form.roleArn.trim())
     && (!usesProfile || form.profileName.trim());
-  const [section, setSection] = useState('sources');
+  const [searchParams] = useSearchParams();
+  const [section, setSection] = useState(() => (['sources', 'thresholds', 'finops', 'notify'].includes(searchParams.get('section')) ? searchParams.get('section') : 'sources'));
   const SECTIONS = [
     { key: 'sources', label: 'Accounts', icon: Server },
     { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal },
+    { key: 'finops', label: 'FinOps', icon: Coins },
     { key: 'notify', label: 'Alert Notifications', icon: BellRing },
   ];
 
@@ -465,6 +469,7 @@ export default function AwsSettingsPage() {
       </div>
 
       </>)}
+      {section === 'finops' && <FinopsSettings />}
       {section === 'notify' && (<>
       <div>
         <PlatformAlertNotifications platform="aws" label="AWS" />

@@ -9,6 +9,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtUsd } from './helpers';
+import MetricToggle from './finops/MetricToggle';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
@@ -97,6 +98,15 @@ export default function AwsCostPage() {
   const [month, setMonth] = useState('');
   const [resources, setResources] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
+  // Cost Explorer keeps unblended as its default; amortized is opt-in through ?metric=amortized.
+  const metric = searchParams.get('metric') === 'amortized' ? 'amortized' : 'unblended';
+  const setMetric = useCallback((m) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (m === 'amortized') next.set('metric', 'amortized'); else next.delete('metric');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   const selectedService = searchParams.get('service') || '';
   const setSelectedService = useCallback((service) => {
     setSearchParams((prev) => {
@@ -120,7 +130,8 @@ export default function AwsCostPage() {
   }, []);
 
   const load = useCallback(() => {
-    const base = accountId ? { days, accountId } : { days };
+    const base0 = accountId ? { days, accountId } : { days };
+    const base = metric === 'amortized' ? { ...base0, metric } : base0;
     const params = month ? { ...base, month } : base;
     const usageBase = selectedDay ? { ...params, day: selectedDay } : params;
     const usageParams = selectedService ? { ...usageBase, service: selectedService } : usageBase;
@@ -134,10 +145,11 @@ export default function AwsCostPage() {
       client.get('/aws/costs', { params }).then(({ data }) => setData(data)),
       client.get('/aws/costs/usage-types', { params: usageParams }).then(({ data }) => setUsageTypes(data?.rows || [])).catch(() => setUsageTypes([])),
       client.get('/aws/costs/resources', { params: resourceParams }).then(({ data }) => setResources(data)).catch(() => setResources({ rows: [], costResources: null })),
-      client.get('/aws/costs/instance-types', { params: base }).then(({ data }) => setInstanceTypes(data?.rows || [])).catch(() => setInstanceTypes([])),
+      // Instance types always read amortized: unblended shows 0 for compute covered by a Savings Plan.
+      client.get('/aws/costs/instance-types', { params: { ...base0, metric: 'amortized' } }).then(({ data }) => setInstanceTypes(data?.rows || [])).catch(() => setInstanceTypes([])),
     ]).then(() => setLastRefreshed(new Date()))
       .catch(() => { setData({ days: [], byService: [] }); toast({ type: 'error', title: 'Failed to load AWS costs' }); });
-  }, [toast, days, accountId, selectedDay, month, selectedService, selectedUsageType]);
+  }, [toast, days, accountId, selectedDay, month, selectedService, selectedUsageType, metric]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -235,7 +247,7 @@ export default function AwsCostPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={DollarSign} title="AWS Cost" description="Daily spend by service across all registered AWS accounts">
+      <PageHeader icon={DollarSign} title="Cost Explorer" description="Daily spend by service across all registered AWS accounts">
         <select
           value={accountId}
           onChange={(e) => setAccountId(e.target.value)}
@@ -274,10 +286,16 @@ export default function AwsCostPage() {
             12m
           </button>
         </div>
+        <MetricToggle value={metric} onChange={setMetric} />
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
 
+      {metric === 'amortized' && (
+        <p className="text-[11px] text-ink-faint mb-3">
+          Amortized cost{data?.amortizedFrom ? ` is available from ${data.amortizedFrom}; earlier days show unblended amounts` : ' has not been captured yet; amounts show unblended until the next daily capture'}.
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3 mb-4">
         <StatCard icon={DollarSign} label={month ? `${fmtMonthLabel(month)} Spend` : 'MTD Spend'} value={fmtUsd(data?.mtdUsd)}
           sub={month ? 'month total' : 'month to date'} tone="brand" />
@@ -485,8 +503,8 @@ export default function AwsCostPage() {
       <div className="panel p-4 mt-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink">Instance Type Costs</p>
         <p className="text-[11px] text-ink-muted mb-3">
-          Estimates divide the type's total cost evenly across currently running instances of that type
-          {month ? ' — rolling window, not affected by the month filter' : ''}
+          Always amortized (a Savings Plan or reservation is spread over the instances it covers). Estimates divide the type's total cost evenly across currently running instances of that type
+          {month ? ' - rolling window, not affected by the month filter' : ''}
         </p>
         {instanceTypes == null ? (
           <LoadingPanel label="Loading…" height={140} />

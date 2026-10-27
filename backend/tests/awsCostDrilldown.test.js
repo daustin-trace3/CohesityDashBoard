@@ -238,7 +238,7 @@ describe('fetchCostByUsageType (stubbed client)', () => {
     expect(sent[1].NextPageToken).toBe('tok-1');
     expect(sent[0].GroupBy).toEqual([{ Type: 'DIMENSION', Key: 'SERVICE' }, { Type: 'DIMENSION', Key: 'USAGE_TYPE' }]);
     expect(rows.map((r) => r.day)).toEqual(['2026-10-01', '2026-10-02', '2026-10-03']);
-    expect(rows[0]).toEqual({ day: '2026-10-01', service: 'Amazon Lightsail', usageType: 'USE1-BundleUsage:1GB', amountUsd: 1.5 });
+    expect(rows[0]).toEqual({ day: '2026-10-01', service: 'Amazon Lightsail', usageType: 'USE1-BundleUsage:1GB', amountUsd: 1.5, amortizedUsd: null, usageQty: null, usageUnit: null });
   });
 });
 
