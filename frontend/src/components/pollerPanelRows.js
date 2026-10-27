@@ -61,7 +61,7 @@ function globalRow(platform, section, p, now) {
 }
 
 function sectionRows(platform, p, now) {
-  if (!p || p.enabled === false) return [];
+  if (!p || p.enabled === false || p.configured === false) return [];
   if (Array.isArray(p.entities)) return p.entities.map((e) => entityRow(platform, e, now));
   if (p.lastDataCapture || p.failedSources?.length) return [globalRow(platform, platform, p, now)];
   return [];

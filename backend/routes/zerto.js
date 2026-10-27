@@ -9,6 +9,7 @@ const { encrypt } = require('../services/encryption');
 const zertoApi = require('../services/zertoApi');
 const { refreshAll, zertoTask } = require('../services/zertoPoller');
 const zertoAdvisor = require('../services/advisors/zertoAdvisor');
+const pollerStatus = require('../services/pollerStatus');
 
 const router = express.Router();
 
@@ -280,6 +281,17 @@ router.get('/trends', [
   } catch (err) { next(err); }
 });
 
+function envFallback() {
+  return !!(process.env.ZERTO_USERNAME && process.env.ZERTO_PASSWORD);
+}
+
+// Tables the poller fills. zerto_alert_catalog (email mute preferences) is
+// deliberately not here: a purge never touches it.
+const COLLECTED_TABLES = [
+  'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_vras',
+  'zerto_licenses', 'zerto_events', 'zerto_metrics_history', 'zerto_ai_reports',
+];
+
 /** GET /api/zerto/account — credential/config status (never returns the password). */
 router.get('/account', (req, res, next) => {
   try {
@@ -290,6 +302,7 @@ router.get('/account', (req, res, next) => {
       baseUrl: cfg.baseUrl,
       hasPassword: !!(getSetting('zerto_password') || process.env.ZERTO_PASSWORD),
       passSource: getSetting('zerto_password') ? 'settings' : (process.env.ZERTO_PASSWORD ? 'env' : 'none'),
+      envFallback: envFallback(),
       pollIntervalMinutes: Number(getSetting('zerto_poll_interval_minutes')) || 15,
       siteCount: db.prepare('SELECT COUNT(*) AS n FROM zerto_sites').get().n,
       lastCapture: (latestSnapshot() || {}).captured_at || null,
@@ -318,6 +331,40 @@ router.put('/account', [
     zertoApi.invalidateToken();
     if (zertoApi.zertoConfigured() && !zertoTask.isRunning()) zertoTask.reschedule();
     res.json({ saved: true, configured: zertoApi.zertoConfigured() });
+  } catch (err) { next(err); }
+});
+
+/** DELETE /api/zerto/account - remove the saved Zerto Analytics credentials.
+ *  The platform stays enabled but unconfigured. purge=1 also deletes the
+ *  collected data (never the alert notification preferences). */
+router.delete('/account', [
+  query('purge').optional().isString().trim(),
+  body('purge').optional(),
+], validate, (req, res, next) => {
+  try {
+    const raw = req.query.purge ?? req.body?.purge;
+    const purge = raw === true || raw === 1 || ['1', 'true'].includes(String(raw).toLowerCase());
+    setSetting('zerto_username', '');
+    setSetting('zerto_password', '');
+    setSetting('zerto_base_url', '');
+    zertoApi.invalidateToken();
+    // Stops the cron of THIS (web) process only; the poller process skips its
+    // ticks through the task's shouldRun gate once the credentials are gone.
+    if (zertoTask.isRunning()) zertoTask.stop();
+    const purgedRows = {};
+    if (purge) {
+      db.transaction(() => {
+        for (const t of COLLECTED_TABLES) purgedRows[t] = db.prepare(`DELETE FROM ${t}`).run().changes;
+      })();
+    }
+    pollerStatus.clear('zerto', 0);
+    res.json({
+      removed: true,
+      configured: zertoApi.zertoConfigured(),
+      envFallback: envFallback(),
+      purged: purge,
+      purgedRows,
+    });
   } catch (err) { next(err); }
 });
 

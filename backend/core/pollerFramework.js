@@ -224,10 +224,16 @@ function createPoller({ id, loadSources, intervalMinutes, poll, shouldRun = null
  * discovery + poll). Same pollerStatus wrapping and error isolation as
  * createPoller, keyed on `${id}:${sourceId}`.
  */
-function createGlobalTask({ id, sourceId = 0, intervalMinutes, run, defaultIntervalMinutes = 15, cronLib = nodeCron }) {
+function createGlobalTask({ id, sourceId = 0, intervalMinutes, run, defaultIntervalMinutes = 15, cronLib = nodeCron, shouldRun }) {
   let task = null;
 
   async function runWrapped() {
+    // Optional gate (e.g. an unconfigured SaaS account): skip without touching
+    // poller_status so nothing records a poll that never happened.
+    if (typeof shouldRun === 'function' && !shouldRun()) {
+      logger.debug(`[${id}] skipped: not configured`);
+      return;
+    }
     pollerStatus.markStart(id, sourceId);
     try {
       await run();

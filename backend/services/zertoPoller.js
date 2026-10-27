@@ -242,6 +242,7 @@ const zertoTask = createGlobalTask({
   id: 'zerto',
   intervalMinutes: () => Number(getSetting('zerto_poll_interval_minutes')) || 15,
   run: refreshAll,
+  shouldRun: zertoConfigured,
   defaultIntervalMinutes: 15,
   cronLib: cron,
 });

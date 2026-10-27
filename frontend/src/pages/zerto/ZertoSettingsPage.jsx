@@ -178,6 +178,8 @@ export default function ZertoSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [purge, setPurge] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   const loadStatus = () => client.get('/zerto/account')
     .then(({ data }) => {
@@ -223,6 +225,28 @@ export default function ZertoSettingsPage() {
       setTestResult(err?.response?.data || { ok: false, error: 'Connection test failed.' });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const disconnect = async () => {
+    const msg = purge
+      ? 'Remove the Zerto Analytics account AND delete all collected Zerto data (sites, VPGs, alerts, VMs, VRAs, licences, events, history and AI reports)? This cannot be undone.'
+      : 'Remove the Zerto Analytics account? Collected Zerto data is kept.';
+    if (!window.confirm(msg)) return;
+    setDisconnecting(true);
+    try {
+      await client.delete(`/zerto/account?purge=${purge ? 1 : 0}`);
+      setUsername('');
+      setPassword('');
+      setBaseUrl('');
+      setTestResult(null);
+      setPurge(false);
+      await loadStatus();
+      toast({ type: 'success', title: purge ? 'Zerto account removed and collected data deleted' : 'Zerto account removed' });
+    } catch (err) {
+      toast({ type: 'error', title: 'Disconnect failed', message: err?.response?.data?.error });
+    } finally {
+      setDisconnecting(false);
     }
   };
 
@@ -297,6 +321,31 @@ export default function ZertoSettingsPage() {
             </div>
           </div>
 
+          {(status.configured || status.hasPassword || status.username) && (
+            <div className="panel p-4">
+              <p className="text-sm font-semibold text-ink mb-1">Disconnect</p>
+              <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
+                Removes the saved Zerto Analytics credentials. ICC stops polling and the Zerto pages show the
+                not-configured state. The platform stays enabled in Global Settings.
+              </p>
+              <label className="flex items-start gap-2 text-xs text-ink mb-1 cursor-pointer">
+                <input type="checkbox" checked={purge} onChange={(e) => setPurge(e.target.checked)} className="mt-0.5" />
+                <span>Also delete the collected Zerto data (sites, VPGs, alerts, VMs, VRAs, licences, events, history and AI reports)</span>
+              </label>
+              <p className="text-[11px] text-ink-faint mb-3 ml-5">Alert notification preferences are kept.</p>
+              {status.envFallback && (
+                <p className="text-[11px] text-status-warn mb-3 leading-relaxed">
+                  Credentials also come from ZERTO_USERNAME and ZERTO_PASSWORD in the server environment; the
+                  platform stays connected until those are removed.
+                </p>
+              )}
+              <button onClick={disconnect} disabled={disconnecting}
+                className="px-4 py-2 rounded-lg text-sm font-semibold border border-status-crit/40 text-status-crit hover:bg-status-crit/10 transition-colors disabled:opacity-50 cursor-pointer">
+                {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+              </button>
+            </div>
+          )}
+
           <div className="panel p-4">
             <p className="text-sm font-semibold text-ink mb-3">Status</p>
             <div className="flex flex-col gap-2 text-sm max-w-md">
@@ -308,6 +357,12 @@ export default function ZertoSettingsPage() {
                 <span className="text-ink-muted">Password source</span>
                 <span className="text-ink-faint text-xs">{status.passSource || '—'}</span>
               </div>
+              {status.envFallback && (
+                <p className="text-[11px] text-status-warn leading-relaxed">
+                  Credentials also come from ZERTO_USERNAME and ZERTO_PASSWORD in the server environment; the
+                  platform stays connected until those are removed.
+                </p>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-ink-muted">Sites discovered</span>
                 <span className="text-ink tnum">{status.siteCount ?? '—'}</span>

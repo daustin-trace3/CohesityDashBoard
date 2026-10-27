@@ -61,6 +61,8 @@ const upsertBackoff = db.prepare(`
     fail_count = excluded.fail_count
 `);
 
+const deleteOne = db.prepare('DELETE FROM poller_status WHERE type = ? AND entity_id = ?');
+
 const selectOne = db.prepare(`
   SELECT last_poll_start AS lastPollStart, last_poll_end AS lastPollEnd,
          last_poll_status AS lastPollStatus, is_syncing AS isSyncing,
@@ -110,6 +112,11 @@ function setBackoff(type, id, untilIso, failCount) {
   upsertBackoff.run(type, id, untilIso, failCount);
 }
 
+/** Forget a source's poll record (header chip and Service Status stop seeing it). */
+function clear(type, id) {
+  return deleteOne.run(type, id).changes;
+}
+
 function getState(type, id) {
   return shape(selectOne.get(type, id));
 }
@@ -122,4 +129,4 @@ function getAll() {
   return map;
 }
 
-module.exports = { markStart, markEnd, setBackoff, getState, getAll };
+module.exports = { markStart, markEnd, setBackoff, clear, getState, getAll };

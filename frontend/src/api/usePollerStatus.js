@@ -50,7 +50,8 @@ function rollup(status, platform = 'cohesity') {
         if (!newestCapture || t > newestCapture) newestCapture = t;
       }
     }
-  } else if (p && p.enabled) {
+  } else if (p && p.enabled && p.configured !== false) {
+    // An account-global section that reports configured:false has nothing to show.
     // Account-global sections (e.g. zerto) have no per-entity structure.
     hasEntities = !!p.lastDataCapture;
     if (p.isSyncing) anySyncing = true;

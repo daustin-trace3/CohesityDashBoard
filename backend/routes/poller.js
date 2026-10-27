@@ -202,6 +202,7 @@ router.get('/status', (req, res, next) => {
     const zertoAge = ageMinutes(zertoCapture);
     const zertoState = pollerStatus.getState('zerto', 0);
     const zertoInterval = Number(getSetting('zerto_poll_interval_minutes')) || 15;
+    const zertoConfigured = require('../services/zertoApi').zertoConfigured();
 
     res.json({
       cohesity: {
@@ -239,11 +240,12 @@ router.get('/status', (req, res, next) => {
       },
       zerto: {
         enabled: zertoPlugin ? zertoPlugin.enabled : false,
+        configured: zertoConfigured,
         isSyncing: zertoState.isSyncing,
         lastRefreshEnd: zertoState.lastPollEnd,
         lastDataCapture: strftime(zertoCapture),
-        ageMinutes: zertoAge,
-        isStale: zertoAge !== null ? zertoAge > zertoInterval * 2 + 5 : false,
+        ageMinutes: zertoConfigured ? zertoAge : null,
+        isStale: zertoConfigured && zertoAge !== null ? zertoAge > zertoInterval * 2 + 5 : false,
         staleAfterMinutes: zertoInterval * 2 + 5,
         failedSources: [],
       },

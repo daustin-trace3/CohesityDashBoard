@@ -71,6 +71,12 @@ const STATUS_ALIASES = {
   pure: [{ type: 'pure1', entityId: 'pure1', name: 'Pure1 fleet' }],
 };
 
+// Platforms with one account-wide task and no source table: when the account
+// is not configured the leftover poller_status row is not a source.
+const GLOBAL_SOURCE_CONFIGURED = {
+  zerto: () => require('./zertoApi').zertoConfigured(),
+};
+
 /** poller_status key suffix to a source id: digits become a number, anything
  *  else (an alias id such as 'pure1') stays a string. */
 function parseEntityId(raw) {
@@ -112,6 +118,7 @@ function polledSourcesFor(platform) {
     const entityId = Number(key.slice(idx + 1));
     const hasSourceTable = !!SOURCE_TABLES[platform];
     if (entityId === 0 && hasSourceTable) continue;
+    if (!hasSourceTable && GLOBAL_SOURCE_CONFIGURED[platform] && !GLOBAL_SOURCE_CONFIGURED[platform]()) continue;
     const source = sourceRowFor(platform, entityId);
     if (!source) continue;
     rows.push({ entityId, sourceName: source.name, ...state });
