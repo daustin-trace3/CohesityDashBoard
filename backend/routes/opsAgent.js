@@ -53,6 +53,14 @@ router.get('/incidents/:id', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.get('/incidents/:id/analyses', (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!agent.getIncident(id)) return res.status(404).json({ error: 'Incident not found.' });
+    res.json(agent.listAnalyses(id, { full: req.query.full === '1' || req.query.full === 'true' }));
+  } catch (err) { next(err); }
+});
+
 router.post('/incidents/:id/retriage', async (req, res, next) => {
   try { res.json(await agent.retriage(Number(req.params.id))); } catch (err) { if (!fail(res, err)) next(err); }
 });

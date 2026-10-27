@@ -310,6 +310,7 @@ function getOpsAgentSettings() {
     stickyRepeats: getSetting('ops_agent_sticky_repeats') !== '0',
     reminderHours: numSetting('ops_agent_reminder_hours', 24, 0, 168),
     patternCooldownDays: numSetting('ops_agent_pattern_cooldown_days', 14, 0, 90),
+    analysisHistoryDays: numSetting('ops_agent_analysis_history_days', 180, 30, 730),
     // 'playbook' runs every enabled check on every target before triage;
     // 'tools' offers them to the model, which calls the ones it needs.
     capabilityMode: getSetting('ops_agent_capability_mode') === 'tools' ? 'tools' : 'playbook',

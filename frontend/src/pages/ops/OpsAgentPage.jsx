@@ -10,6 +10,7 @@ import { useTableControls, SortTh, TablePager } from '../../components/ui/tableT
 import Sparkline from '../../components/ops/Sparkline';
 import ResolveNoteDialog from '../../components/ops/ResolveNoteDialog';
 import ObservationModal, { OBS_STATE_TONE, fmtObs, fmtMinutes, obsDetailLine } from '../../components/ops/ObservationModal';
+import { subjectLink, recordKind } from './incidentLinks';
 import WatchListModal from '../../components/ops/WatchListModal';
 
 const REFRESH_MS = 60_000;   // floor: a full reload even when nothing changed
@@ -147,19 +148,240 @@ function AlertMessage({ text }) {
   );
 }
 
+const STAMP = (v) => { const t = Date.parse(v); return Number.isNaN(t) ? String(v) : new Date(t).toLocaleString(); };
+const isScalar = (v) => v != null && typeof v !== 'object' && v !== '';
+const upDown = (r) => {
+  if (typeof r.up === 'boolean') return r.up ? 'up' : 'down';
+  return null;
+};
+const DETAIL_KEYS = ['connection_state', 'power_state', 'tools_status', 'health', 'state', 'status', 'cluster_name', 'host_name', 'ip_address', 'model'];
+const recordDetail = (r) => {
+  const f = (r && typeof r.fields === 'object' && r.fields) || {};
+  return DETAIL_KEYS.filter((k) => isScalar(f[k])).slice(0, 3).map((k) => `${k} ${f[k]}`).join(', ');
+};
+const parseList = (v) => { if (Array.isArray(v)) return v; try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } };
+
+function NameLink({ platform, kind, name }) {
+  const to = subjectLink(platform, kind, name);
+  return to ? <Link to={to} className="text-brand hover:underline">{name}</Link> : <>{name}</>;
+}
+
+function HostsSection({ hosts }) {
+  if (!hosts.length) return null;
+  return (
+    <Section title={`Hosts (${hosts.length})`}>
+      <div className="space-y-3">
+        {hosts.map((h, i) => {
+          const records = (Array.isArray(h.hostRecords) ? h.hostRecords : []).filter((r) => r && r.table !== 'server360');
+          const polls = (Array.isArray(h.platformPolls) ? h.platformPolls : []).filter((p) => p && p.sourceName);
+          const paths = Array.isArray(h.sanPaths) ? h.sanPaths : [];
+          return (
+            <div key={`${h.host}-${i}`} className="rounded-md border border-cohesity-border px-3 py-2.5">
+              <p className="flex items-center gap-2 flex-wrap text-[13px] text-ink">
+                <span className="font-medium"><NameLink platform={h.platform} kind="server" name={h.host} /></span>
+                {h.platform && <span className="text-[11px] text-ink-faint">{h.platform}</span>}
+                {h.verdict && h.verdict !== 'online' && h.verdict !== 'ok' && <Badge tone={h.verdict === 'offline' ? 'crit' : 'warn'}>{h.verdict}</Badge>}
+              </p>
+              {h.verdictReason && <p className="text-[11px] text-ink-muted mt-0.5">{h.verdictReason}</p>}
+              {records.length > 0 && (
+                <div className="overflow-x-auto mt-2">
+                  <table className="w-full text-[11px]">
+                    <thead><tr className="text-left text-ink-faint border-b border-cohesity-border"><th className="py-1 pr-3 font-semibold">Platform</th><th className="py-1 pr-3 font-semibold">Name</th><th className="py-1 pr-3 font-semibold">State</th><th className="py-1 font-semibold">Detail</th></tr></thead>
+                    <tbody>
+                      {records.map((r, ri) => {
+                        const extra = recordDetail(r);
+                        const ud = upDown(r);
+                        return (
+                          <tr key={ri} className="border-b border-cohesity-border/40 last:border-0 align-top">
+                            <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{r.platform || h.platform || '-'}</td>
+                            <td className="py-1 pr-3 text-ink-muted"><NameLink platform={r.platform || h.platform} kind={recordKind(r.platform || h.platform)} name={r.name || r.host || '-'} /></td>
+                            <td className="py-1 pr-3">{ud ? <Badge tone={/down|crit|offline|disconn|error|fail/i.test(String(ud)) ? 'crit' : /warn|degrad/i.test(String(ud)) ? 'warn' : 'ok'}>{String(ud)}</Badge> : '-'}</td>
+                            <td className="py-1 text-ink-faint break-words">{extra || '-'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {polls.length > 0 && (
+                <ul className="mt-2 space-y-0.5 text-[11px] text-ink-muted">
+                  {polls.map((p, pi) => (
+                    <li key={pi}>
+                      {p.sourceName}: {p.lastPollStatus === 'error' ? <Badge tone="crit">error</Badge> : (p.lastPollStatus || '-')}
+                      {p.lastPollEnd ? <span className="text-ink-faint"> {timeAgo(p.lastPollEnd)}</span> : null}
+                      {p.isSyncing ? <span className="text-ink-faint"> syncing</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {typeof h.metricsFreshness?.ageMinutes === 'number' && <p className="mt-1.5 text-[11px] text-ink-muted">Metrics age: {Math.round(h.metricsFreshness.ageMinutes)} min</p>}
+              {paths.length > 0 && <p className="mt-1.5 text-[11px] text-ink-muted">SAN paths: {paths.length}</p>}
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+const FACT_LABELS = { state: 'State', since: 'Since', openedTimes30d: 'Opened in 30 days', meanMinutesOpen30d: 'Mean minutes open (30 days)' };
+function factRows(facts) {
+  const rows = [];
+  if (!facts || typeof facts !== 'object') return rows;
+  for (const [k, label] of Object.entries(FACT_LABELS)) {
+    if (isScalar(facts[k])) rows.push([label, k === 'since' ? STAMP(facts[k]) : String(facts[k])]);
+  }
+  const m = facts.metric;
+  if (m && typeof m === 'object') {
+    const u = m.unit || '';
+    rows.push([m.name || 'Metric', [m.now != null ? `now ${m.now}${u}` : null, m.avg30d != null ? `avg ${m.avg30d}${u}` : null, m.max30d != null ? `max ${m.max30d}${u}` : null].filter(Boolean).join(', ')]);
+  }
+  const pr = facts.protection;
+  if (pr && typeof pr === 'object') rows.push(['Protection', [pr.kind, pr.lastGoodAt ? `last good ${STAMP(pr.lastGoodAt)}` : null, pr.lastRunStatus ? `newest run ${pr.lastRunStatus}` : null].filter(Boolean).join(', ')]);
+  const rp = facts.replication;
+  if (rp && typeof rp === 'object') rows.push(['Replication', [rp.kind, rp.lagMinutes != null ? `lag ${rp.lagMinutes} min` : null, rp.status].filter(Boolean).join(', ')]);
+  return rows.filter(([, v]) => v);
+}
+
+function PlatformEvidenceSection({ blocks }) {
+  if (!blocks.length) return null;
+  return (
+    <>
+      {blocks.map((b, i) => {
+        const rows = factRows(b.facts);
+        return (
+          <Section key={`pe-${i}`} title={b.title || `Platform evidence${b.platform ? `: ${b.platform}` : ''}`}>
+            {rows.length > 0 && (
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[13px] mb-2">
+                {rows.map(([l, v]) => <Fact key={l} label={l}>{v}</Fact>)}
+              </dl>
+            )}
+            <CollapsibleList className="text-ink-muted" items={b.lines.map(String)} render={(l) => l} limit={8} />
+          </Section>
+        );
+      })}
+    </>
+  );
+}
+
+function RelatedIncidentsSection({ related, concurrent, currentId, onOpenIncident }) {
+  const seen = new Set([currentId]);
+  const list = [];
+  const add = (arr, tag) => (Array.isArray(arr) ? arr : []).forEach((r) => {
+    if (!r || r.id == null || seen.has(r.id)) return;
+    seen.add(r.id);
+    list.push({ ...r, tag });
+  });
+  add(related, 'earlier');
+  add(concurrent, 'open now');
+  if (!list.length) return null;
+  const total = list.length;
+  list.length = Math.min(total, 6);
+  return (
+    <Section title={`Related incidents (${list.length})`}>
+      <ul className="space-y-1.5 text-[13px]">
+        {list.map((r) => (
+          <li key={r.id} className="flex items-start gap-2">
+            {r.severity && <Badge tone={sevTone(r.severity)}>{String(r.severity)}</Badge>}
+            <div className="min-w-0">
+              <Link to={`/ops/agent?incident=${r.id}`} className="text-brand hover:underline"
+                onClick={(e) => { if (onOpenIncident) { e.preventDefault(); onOpenIncident(r.id); } }}>
+                {r.title || r.host || `Incident ${r.id}`}
+              </Link>
+              <span className="text-[11px] text-ink-faint"> #{r.id}, {r.tag}{r.host ? `, ${r.host}` : ''}{parseList(r.platforms).length ? `, ${parseList(r.platforms).join('/')}` : ''}{r.classification ? `, ${r.classification}` : ''}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {total > list.length && <p className="text-[11px] text-ink-faint mt-2">and {total - list.length} more</p>}
+    </Section>
+  );
+}
+
+function FailedJobsSection({ jobs }) {
+  if (!jobs.length) return null;
+  return (
+    <Section title={`Failed backup jobs (${jobs.length})`}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px]">
+          <thead><tr className="text-left text-ink-faint border-b border-cohesity-border"><th className="py-1 pr-3 font-semibold">Platform</th><th className="py-1 pr-3 font-semibold">Job</th><th className="py-1 pr-3 font-semibold">Status</th><th className="py-1 pr-3 font-semibold">When</th><th className="py-1 font-semibold">Error</th></tr></thead>
+          <tbody>
+            {jobs.map((j, i) => (
+              <tr key={i} className="border-b border-cohesity-border/40 last:border-0 align-top">
+                <td className="py-1 pr-3 text-ink-muted whitespace-nowrap">{j.platform || '-'}{j.cluster ? ` / ${j.cluster}` : ''}</td>
+                <td className="py-1 pr-3 text-ink-muted">{j.job || '-'}</td>
+                <td className="py-1 pr-3"><Badge tone="crit">{j.status || 'failed'}</Badge></td>
+                <td className="py-1 pr-3 text-ink-faint whitespace-nowrap">{j.start ? STAMP(j.start) : '-'}</td>
+                <td className="py-1 text-ink-muted break-words">{j.error ? <AlertMessage text={j.error} /> : '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  );
+}
+
+function AnalysisHistorySection({ analyses, viewPass, onView }) {
+  if (!Array.isArray(analyses) || analyses.length === 0) return null;
+  return (
+    <Section title={`Analysis history (${analyses.length})`}>
+      <ul className="space-y-1">
+        {analyses.map((r) => {
+          const active = viewPass === r.id;
+          return (
+            <li key={r.id}>
+              <button type="button" onClick={() => onView(active ? null : r.id)}
+                className={`w-full text-left text-[12px] rounded px-2 py-1 cursor-pointer hover:bg-surface-overlay ${active ? 'bg-surface-overlay ring-1 ring-brand/50 text-ink' : 'text-ink-muted'}`}>
+                pass {r.pass}, {r.trigger}, <span className="text-ink-faint">{r.at ? STAMP(r.at) : '-'}</span>
+                {r.classification ? `, ${r.classification}${r.confidence ? ` (${r.confidence})` : ''}` : ''}
+                {r.model ? <span className="text-ink-faint">, {r.model}</span> : null}
+                {r.error ? <span className="text-status-crit">, error</span> : null}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </Section>
+  );
+}
+
+function HumanNotesSection({ notes }) {
+  if (!notes.length) return null;
+  return (
+    <Section title="Human notes">
+      <ul className="space-y-1.5 text-[12px]">
+        {notes.map((n, i) => (
+          <li key={i} className="text-ink-muted">
+            <span className="text-ink-faint">{n.at ? STAMP(n.at) : ''} {n.by || ''} {n.kind || ''}:</span> {n.text}
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
 const footBtn = 'flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink transition-colors disabled:opacity-50 cursor-pointer';
 
-function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpenObservation, reminderHours = 0 }) {
+function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpenObservation, onOpenIncident, reminderHours = 0 }) {
   const [inc, setInc] = useState(null);
   const [failed, setFailed] = useState(null);
   const [busy, setBusy] = useState(null);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const [analyses, setAnalyses] = useState([]);
+  const [viewPass, setViewPass] = useState(null);
   const { toast } = useToast();
 
-  const load = useCallback(() => client.get(`/ops-agent/incidents/${id}`)
-    .then(({ data }) => setInc(data))
-    .catch((e) => setFailed(e?.response?.data?.error || 'Failed to load incident.')), [id]);
+  const load = useCallback(() => {
+    client.get(`/ops-agent/incidents/${id}/analyses`)
+      .then(({ data }) => setAnalyses(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    return client.get(`/ops-agent/incidents/${id}`)
+      .then(({ data }) => setInc(data))
+      .catch((e) => setFailed(e?.response?.data?.error || 'Failed to load incident.'));
+  }, [id]);
   useEffect(() => { load(); }, [load, pulse]);
 
   const act = async (verb, label, body) => {
@@ -167,6 +389,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
     try {
       const { data } = await client.post(`/ops-agent/incidents/${id}/${verb}`, body);
       setInc(data);
+      if (verb === 'retriage') setViewPass(null);
       onChanged?.();
       toast({ type: 'success', title: label });
       return true;
@@ -181,7 +404,8 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
     if (ok) setResolving(false);
   };
 
-  const a = inc?.analysis;
+  const viewed = viewPass != null ? analyses.find((r) => r.id === viewPass) : null;
+  const a = viewed?.analysis || inc?.analysis;
   const sm = inc ? (STATE_META[inc.state] || STATE_META.collecting) : null;
   const sev = inc ? sevTone(inc.severity) : 'info';
   const networkBlocks = Array.isArray(inc?.evidence?.network) ? inc.evidence.network.filter((n) => n && Array.isArray(n.lines) && n.lines.length > 0) : [];
@@ -203,6 +427,10 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
   const awaiting = !!(inc && inc.awaitingHuman);
   const patternBursts = Array.isArray(inc?.evidence?.pattern?.bursts) ? inc.evidence.pattern.bursts : [];
   const notes = Array.isArray(inc?.notes) ? inc.notes : [];
+  const humanNotes = notes.length > 0 ? notes : (Array.isArray(inc?.evidence?.humanNotes) ? inc.evidence.humanNotes : []);
+  const hostBlocks = Array.isArray(inc?.evidence?.hosts) ? inc.evidence.hosts.filter((h) => h && h.host) : [];
+  const platformBlocks = Array.isArray(inc?.evidence?.platformEvidence) ? inc.evidence.platformEvidence.filter((b) => b && Array.isArray(b.lines) && b.lines.length > 0) : [];
+  const failedJobs = Array.isArray(inc?.evidence?.failedBackupJobs) ? inc.evidence.failedBackupJobs : [];
 
   const badges = inc && (
     <>
@@ -293,6 +521,12 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
                 {inc.emailTo && <p className="text-xs text-ink-faint mb-3">Emailed {inc.notifyCount} time{inc.notifyCount === 1 ? '' : 's'} to {inc.emailTo}{inc.notifiedAt ? `, last ${timeAgo(inc.notifiedAt)}` : ''}.</p>}
                 {inc.state === 'collecting' && !a && (
                   <p className="text-[13px] text-ink-muted mb-4">Collecting related alerts until {new Date(inc.holdUntil).toLocaleTimeString()}; triage runs when the hold window ends.</p>
+                )}
+                {viewed && (
+                  <p className="text-xs text-ink-muted bg-surface-overlay border border-cohesity-border rounded-md px-3 py-2 mb-3">
+                    Showing pass {viewed.pass} ({viewed.trigger}, {viewed.at ? STAMP(viewed.at) : '-'}), not the latest.{' '}
+                    <button type="button" onClick={() => setViewPass(null)} className="text-brand hover:underline cursor-pointer">Back to latest</button>
+                  </p>
                 )}
                 {a && (
                   <>
@@ -433,6 +667,12 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
                     <CollapsibleList className="text-ink-muted" items={a.reviewed} render={(r) => r} />
                   </Section>
                 )}
+                <HostsSection hosts={hostBlocks} />
+                <PlatformEvidenceSection blocks={platformBlocks} />
+                <RelatedIncidentsSection related={inc.evidence?.relatedIncidents} concurrent={inc.evidence?.concurrentOpenIncidents} currentId={inc.id} onOpenIncident={onOpenIncident} />
+                <FailedJobsSection jobs={failedJobs} />
+                <AnalysisHistorySection analyses={analyses} viewPass={viewPass} onView={setViewPass} />
+                {!(inc.requiresHuman && notes.length > 0) && <HumanNotesSection notes={humanNotes} />}
                 {live?.results?.length > 0 && (
                   <Section title={`What ${agentName} checked live (from the ICC server)${live.results.some((c) => c.requestedBy === 'model') ? ' (asked for by the agent)' : ''}`}>
                     <CollapsibleList items={live.results} className="text-ink-muted"
@@ -751,7 +991,7 @@ export default function OpsAgentPage() {
 
       {watchOpen && <WatchListModal Shell={ModalShell} pulse={pulse} onClose={() => setWatchOpen(false)} onOpenObservation={setObsOpenId} />}
       {obsOpenId != null && <ObservationModal id={obsOpenId} Shell={ModalShell} onClose={() => setObsOpenId(null)} />}
-      {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} onOpenObservation={setObsOpenId} reminderHours={Number(s?.settings?.reminderHours) || 0} />}
+      {openId != null && <IncidentModal key={openId} id={openId} onOpenIncident={setOpenId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} onOpenObservation={setObsOpenId} reminderHours={Number(s?.settings?.reminderHours) || 0} />}
     </div>
   );
 }

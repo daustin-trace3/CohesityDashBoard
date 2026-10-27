@@ -1439,6 +1439,27 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   let corr = {};
   try { corr = correlationEvidence(inc, alerts); } catch (err) { logger.warn(`[OpsAgent] correlation evidence failed for #${inc.id}: ${err.message}`); }
   if (corr.siblings && corr.siblings.length) relatedIncidents = [...relatedIncidents, ...corr.siblings].slice(0, 10);
+  // What ICC itself recorded about the affected systems (agentEvidence). Lazy
+  // and guarded: a failing provider must never stop a triage.
+  let platformEvidence = [];
+  try {
+    const peBudgets = {};
+    for (const p of budgetPlatforms) peBudgets[p] = { platformLines: (budgets[p] && budgets[p].platformLines) || 12 };
+    const pe = require('./agentEvidence').gather(db, {
+      platforms: incPlatforms,
+      hosts: hosts.map((h) => ({ host: h.host, platform: h.platform })),
+      subject: inc.host,
+      alerts: alerts.filter((a) => !a.cleared_at),
+      anchorMs,
+      parentPlatform: (corr && corr.blastRadius && corr.blastRadius.parentPlatform) || null,
+      budgets: peBudgets,
+    });
+    platformEvidence = (pe && Array.isArray(pe.blocks)) ? pe.blocks : [];
+  } catch (err) {
+    logger.warn(`[OpsAgent] platform evidence failed for #${inc.id}: ${err.message}`);
+  }
+  const humanNotes = parseNotes(inc).slice(-6)
+    .map((n) => ({ at: n.at, by: n.by, kind: n.kind, text: String(n.text || '').slice(0, 300) }));
   const shownAlerts = budgetedAlerts(alerts, budgets)
     .map((a) => ({ platform: a.platform, severity: a.severity, host: a.host, message: a.message, type: a.type, firstSeen: a.first_seen, cleared: !!a.cleared_at, ...(a.relation ? { relation: a.relation, relationOf: a.relation_of } : {}) }));
   const evidence = {
@@ -1454,6 +1475,8 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     ...(obsEv ? { observations: obsEv } : {}),
     hosts,
     network,
+    ...(platformEvidence.length ? { platformEvidence } : {}),
+    ...(humanNotes.length ? { humanNotes } : {}),
     recurrence,
     ...(pattern ? { pattern } : {}),
     concurrentOpenIncidents: concurrent,
@@ -1500,6 +1523,7 @@ function fallbackTriage(evidence) {
   if (!reviewed.length) reviewed.push('No host-level inventory matched these alerts; only the alert text and platform poll state were available.');
   for (const c of (evidence.liveChecks?.results || [])) reviewed.push(`Live ${c.label || c.capability} on ${c.target.name}${c.target.address && c.target.address !== c.target.name ? ` (${c.target.address})` : ''}: ${c.summary}`);
   if (evidence.liveChecks && !evidence.liveChecks.ran && evidence.liveChecks.skipped) reviewed.push(`No live checks: ${evidence.liveChecks.skipped}.`);
+  for (const b of (evidence.platformEvidence || [])) { if (b && b.title && (b.lines || []).length) reviewed.push(`${b.title}: ${b.lines[0]}`); }
   for (const b of (evidence.network || [])) reviewed.push(`Network, ${b.title}: ${(b.lines || []).slice(0, 3).join('; ')}${(b.lines || []).length > 3 ? ` (+${b.lines.length - 3} more in the Network section)` : ''}`);
   const jobs = evidence.failedBackupJobs || [];
   if (jobs.length) reviewed.push(`Backup job log: ${jobs.length} failed or canceled run(s) in 24h on ${[...new Set(jobs.map((j) => j.source).filter(Boolean))].join(', ') || 'the platform'}; the newest is ${jobs[0].job || 'unnamed'} (${jobs[0].status}${jobs[0].error ? `: ${jobs[0].error.slice(0, 120)}` : ''}).`);
@@ -1550,6 +1574,10 @@ const OBSERVATIONS_SENTENCE = ' Observations are ICC\'s own sustained-signal fin
 
 const BLAST_SENTENCE = ' blastRadius lists alerts that are consequences of one parent fault: triage the parent, name the children under impact, and propose no steps on the children. shared names a component several alerting hosts have in common that has no alert of its own: treat it as the likely common cause and say what to check on it.';
 
+const NOTES_SENTENCE = ' humanNotes are notes people left on this incident (acknowledge, snooze, resolve); treat them as authoritative context for this triage.';
+
+const PLATFORM_SENTENCE = ' platformEvidence holds what ICC itself has recorded about the affected systems (state, components, the platform\'s own alerts, events, history, protection); prefer it over guesses and cite its lines in reviewed.';
+
 const PATTERN_SENTENCE = ' This incident exists because the same short condition keeps returning; judge the cadence and what changed, not the latest burst.';
 
 function systemPromptFor(evidence, { tools = false } = {}) {
@@ -1557,7 +1585,7 @@ function systemPromptFor(evidence, { tools = false } = {}) {
   const platforms = [...new Set([...(inc.platforms || []), ...((evidence && evidence.alerts) || []).map((a) => a.platform)].filter(Boolean))];
   const ec = (getSetting('llm_estate_context') || '').trim();
   const hasObs = !!(evidence && evidence.observations && ((evidence.observations.episodes || []).length || (evidence.observations.history || []).length));
-  const tail = (hasObs ? OBSERVATIONS_SENTENCE : '') + (evidence && evidence.pattern ? PATTERN_SENTENCE : '') + (evidence && (evidence.blastRadius || evidence.shared) ? BLAST_SENTENCE : '') + (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
+  const tail = (hasObs ? OBSERVATIONS_SENTENCE : '') + (evidence && evidence.pattern ? PATTERN_SENTENCE : '') + (evidence && (evidence.blastRadius || evidence.shared) ? BLAST_SENTENCE : '') + (evidence && evidence.humanNotes && evidence.humanNotes.length ? NOTES_SENTENCE : '') + (evidence && evidence.platformEvidence && evidence.platformEvidence.length ? PLATFORM_SENTENCE : '') + (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
   const built = agentProfiles.buildSystemPrompt({ platforms, evidence, reserve: tail.length, tools });
   const system = built.system + tail;
   logger.debug(`[OpsAgent] prompt chars=${system.length} focus=[${built.focusUsed.join(',')}] relations=${((evidence && evidence.relations) || []).length}`);
@@ -1680,7 +1708,9 @@ async function triageWithTools(inc, alerts, evidence, settings, anon, messages) 
   return { content: '', liveChecks: lc, transcript };
 }
 
-async function triageIncident(inc, { force = false } = {}) {
+async function triageIncident(inc, { force = false, trigger = null } = {}) {
+  const triggerKind = trigger || (force ? 'retriage' : (inc.triaged_at ? 'growth' : 'tick'));
+  let promptChars = null;
   const settings = getOpsAgentSettings();
   const alerts = incidentAlerts(inc.id);
   const evidence = gatherIncidentEvidence(inc, alerts, settings);
@@ -1709,6 +1739,7 @@ async function triageIncident(inc, { force = false } = {}) {
       const anon = createAnonymizer();
       const useTools = toolsMode && !isDemo();
       let messages = buildMessages(evidence, anon, { tools: useTools });
+      promptChars = messages.reduce((n, m) => n + String(m.content || '').length, 0);
       const auditId = recordExchange({
         platform: 'ops-agent', feature: 'Operations Agent',
         label: `#${inc.id} ${String(inc.title || '').slice(0, 60)}`, model, messages, mappings: anon.mappings(),
@@ -1723,6 +1754,7 @@ async function triageIncident(inc, { force = false } = {}) {
         // The retry must see the checks, so rebuild the prompt from the
         // evidence as it now stands (liveChecks included, no tools block).
         messages = buildMessages(evidence, anon, { tools: false });
+        promptChars = messages.reduce((n, m) => n + String(m.content || '').length, 0);
       } else {
         content = await chatCompletion(messages, { responseFormat: { type: 'json_object' }, timeout: 90000 });
         attachResponse(auditId, content);
@@ -1780,13 +1812,24 @@ async function triageIncident(inc, { force = false } = {}) {
   }
   const repeatOccurrences = sticky && !isPatternKey && rline ? evidence.recurrence.count : null;
   const now = new Date().toISOString();
-  db.prepare(`
-    UPDATE ops_incidents SET state = 'triaged', triaged_at = ?, classification = ?, confidence = ?, title = ?, summary = ?,
-      analysis_json = ?, evidence_json = ?, model = ?, triage_error = ?,
-      requires_human = CASE WHEN ? THEN 1 ELSE requires_human END, occurrences = COALESCE(?, occurrences)
-    WHERE id = ?
-  `).run(now, analysis.classification, analysis.confidence, analysis.title || inc.title, analysis.summary,
-    JSON.stringify(analysis), JSON.stringify(evidence), model, error, sticky ? 1 : 0, repeatOccurrences, inc.id);
+  const analysisJson = JSON.stringify(analysis);
+  const evidenceJson = JSON.stringify(evidence);
+  // The UPDATE and the history row go in together: ops_incidents keeps the
+  // latest answer, ops_incident_analyses keeps every pass.
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE ops_incidents SET state = 'triaged', triaged_at = ?, classification = ?, confidence = ?, title = ?, summary = ?,
+        analysis_json = ?, evidence_json = ?, model = ?, triage_error = ?,
+        requires_human = CASE WHEN ? THEN 1 ELSE requires_human END, occurrences = COALESCE(?, occurrences)
+      WHERE id = ?
+    `).run(now, analysis.classification, analysis.confidence, analysis.title || inc.title, analysis.summary,
+      analysisJson, evidenceJson, model, error, sticky ? 1 : 0, repeatOccurrences, inc.id);
+    const earlier = db.prepare('SELECT COUNT(*) c FROM ops_incident_analyses WHERE incident_id = ?').get(inc.id).c;
+    db.prepare(`
+      INSERT INTO ops_incident_analyses (incident_id, at, trigger, pass, model, classification, confidence, analysis_json, evidence_json, prompt_chars, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(inc.id, now, triggerKind, earlier + 1, model, analysis.classification, analysis.confidence, analysisJson, evidenceJson, promptChars, error);
+  })();
   if (sticky && !inc.requires_human) act('marked sticky', `#${inc.id} ${inc.title} stays open until a person resolves it${isPatternKey ? ' (repeating observation)' : ` (repeat, ${evidence.recurrence.count} times in ${evidence.recurrence.windowDays} days)`}`);
   return analysis;
 }
@@ -1851,7 +1894,7 @@ function liveCheckMode(checks) {
   return checks.some((c) => c.requestedBy === 'model') ? ' (asked for by the agent)' : ' (playbook)';
 }
 
-function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [], timeline = [], observations: obsEvidence = null, reminder = 0, pattern = null, requiresHuman = false, blast = null, sharedEv = null } = {}) {
+function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [], timeline = [], observations: obsEvidence = null, reminder = 0, pattern = null, requiresHuman = false, blast = null, sharedEv = null, platformEvidence = [], link = null } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
   const rec = recurrence && recurrence.isPattern ? recurrence : null;
@@ -1897,6 +1940,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const obsHistoryLines = obsEpisodes.length ? ((obsEvidence.lines || []).filter((l) => / history \(30 d\): /.test(l))) : [];
   const obsLine = (e) => `- ${obsSentence(e, fmtStamp)}`;
   const netBlocks = (network || []).filter((b) => b && Array.isArray(b.lines) && b.lines.length);
+  const peBlocks = (Array.isArray(platformEvidence) ? platformEvidence : []).filter((b) => b && b.title && Array.isArray(b.lines) && b.lines.length);
   const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
   const happened = String(analysis.summary || '-').split('\n').map((s) => s.trim()).filter(Boolean);
   const reminderLine = reminder ? `This is reminder ${reminder}. The incident stays open until someone resolves it in ICC (Acknowledge stops these reminders, Snooze pauses them).` : null;
@@ -1911,6 +1955,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const text = [
     ...(reminderLine ? [reminderLine, ''] : []),
     `${agentName}, incident #${inc.id}${update ? ` (update ${update})` : ''}`,
+    ...(link ? [`Open in ICC: ${link}`] : []),
     `Severity: ${sev}   Platforms: ${platforms.join(', ')}   Opened: ${fmtStamp(inc.opened_at)}`,
     `Classification: ${cls}`,
     ...(noAi ? [noAi] : []),
@@ -1936,6 +1981,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     ...(sharedRows.length ? ['', sharedHead, ...sharedShown.map(alertLine), ...(sharedMore > 0 ? [`... and ${sharedMore} more.`] : [])] : []),
     ...(relationLines.length ? ['', 'HOW THESE SYSTEMS CONNECT', ...relationLines.map((l) => `- ${l}`)] : []),
     ...(timelineRows.length ? ['', 'TIMELINE (NEWEST FIRST)', ...timelineRows.map((t) => `- ${fmtStamp(t.at)} | ${platformMeta(t.platform).label} | ${t.text}`)] : []),
+    ...(peBlocks.length ? ['', 'PLATFORM EVIDENCE', ...peBlocks.flatMap((b) => [b.title, ...b.lines.slice(0, 6).map((l) => `- ${l}`)])] : []),
     ...(jobsShown.length ? ['', `FAILED BACKUP JOBS (LAST 24H, ${(failedJobs || []).length} total)`,
       ...jobsShown.map(jobLine),
       ...(jobsMore > 0 ? [`... and ${jobsMore} more; see the platform's job pages.`] : [])] : []),
@@ -1975,6 +2021,7 @@ ${reminderLine ? `<p style="margin:0 0 10px;padding:8px 12px;background:#FEF3C7;
 <div style="border-left:5px solid ${sevColor};padding:8px 12px;background:#f8fafc">
 <div style="font-size:16px;font-weight:600">${esc(analysis.title || inc.title)}</div>
 <div style="font-size:12px;color:#475569">Incident #${inc.id}${update ? ` (update ${update})` : ''} &middot; ${esc(sev)} &middot; ${esc(platforms.join(', '))} &middot; opened ${esc(fmtStamp(inc.opened_at))}</div>
+${link ? `<div style="font-size:12px"><a href="${esc(link)}" style="color:#2563EB">Open in ICC</a></div>` : ''}
 <div style="font-size:12px;color:#475569">Classification: ${esc(cls)}</div>
 ${noAi ? `<div style="font-size:12px;color:#92400E">${esc(noAi)}</div>` : ''}
 ${human ? `<div style="font-size:12px;font-weight:600;color:${analysis.human_required ? '#B91C1C' : '#166534'}">${esc(human)}</div>` : ''}
@@ -1987,6 +2034,7 @@ ${!showAlertsBlock ? '' : section(`Alerts in this incident (${direct.length} ope
 ${relHtml}
 ${relationLines.length ? section('How these systems connect', list(relationLines)) : ''}
 ${timelineRows.length ? section('Timeline (newest first)', list(timelineRows.map((t) => `${fmtStamp(t.at)} | ${platformMeta(t.platform).label} | ${t.text}`))) : ''}
+${peBlocks.length ? section('Platform evidence', peBlocks.map((b) => `<p style="margin:6px 0 2px;font-weight:600">${esc(b.title)}</p>${list(b.lines.slice(0, 6))}`).join('')) : ''}
 ${jobsShown.length ? section(`Failed backup jobs (last 24h, ${(failedJobs || []).length} total)`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Source</th><th style="padding:3px 8px">Job</th><th style="padding:3px 8px">Status</th><th style="padding:3px 8px">Finished</th><th style="padding:3px 8px">Error</th></tr>${jobsShown.map((j) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(platformMeta(j.platform).label)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.source || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.job || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.status)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.finished ? fmtStamp(j.finished) : '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.error || '-')}</td></tr>`).join('')}${jobsMore > 0 ? `<tr><td colspan="6" style="padding:6px 8px;color:#64748b">... and ${jobsMore} more; see the platform's job pages.</td></tr>` : ''}</table>`) : ''}
 ${section('Correlation', `<p style="margin:0">${esc(analysis.correlation || '-')}</p>`)}
 ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
@@ -2035,7 +2083,7 @@ async function notifyIncident(inc, settings, config, { force = false, reminder =
   try { healActions = JSON.parse(inc.heal_actions_json || '[]'); } catch { /* ignore */ }
   let storedEvidence = null;
   try { storedEvidence = JSON.parse(inc.evidence_json || 'null'); } catch { storedEvidence = null; }
-  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [], relations: storedEvidence?.relations || [], timeline: storedEvidence?.timeline || [], observations: storedEvidence?.observations || null, reminder, pattern: storedEvidence?.pattern || null, requiresHuman: !!inc.requires_human, blast: storedEvidence?.blastRadius || null, sharedEv: storedEvidence?.shared || null });
+  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [], relations: storedEvidence?.relations || [], timeline: storedEvidence?.timeline || [], observations: storedEvidence?.observations || null, reminder, pattern: storedEvidence?.pattern || null, requiresHuman: !!inc.requires_human, blast: storedEvidence?.blastRadius || null, sharedEv: storedEvidence?.shared || null, platformEvidence: storedEvidence?.platformEvidence || [], link: iccLinkFor(inc, settings) });
   const now = new Date().toISOString();
   try {
     const transport = alertNotifier.createTransport(config);
@@ -2074,6 +2122,13 @@ function teamsBlockedReason(settings) {
 // Single-tenant branch: no tenant segment in the deep link.
 function currentTenant() {
   return null;
+}
+
+/** Deep link to one incident, or null when icc_base_url is not set. */
+function iccLinkFor(inc, settings) {
+  const base = settings && settings.iccBaseUrl;
+  if (!base) return null;
+  return teams.incidentLink(base, currentTenant(), inc.id) || null;
 }
 
 function teamsOpts(settings, extra = {}) {
@@ -2509,6 +2564,7 @@ async function runOnce({ force = false } = {}) {
       db.prepare('INSERT INTO ops_agent_runs (at, alerts_seen, new_alerts, incidents_opened, triaged, emails_sent, error) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(stats.at, stats.alertsSeen, stats.newAlerts, stats.incidentsOpened, stats.triaged, stats.emailsSent, stats.error);
       pruneInBatches(db, 'ops_agent_runs', 'at < ?', [isoAgo(RUN_LOG_DAYS * 86400000)]);
+      pruneAnalyses();
       const did = stats.incidentsOpened + stats.triaged + stats.emailsSent + stats.teamsPosted + stats.reminders + stats.healAttempts + stats.resolvedQuiet + stats.resolvedEvidence;
       if (did) {
         logger.info(`[OpsAgent] tick: ${stats.alertsSeen} alerts seen, ${stats.newAlerts} new, ${stats.incidentsOpened} opened, ${stats.healAttempts} re-poll(s), ${stats.triaged} triaged, ${stats.emailsSent} emailed, ${stats.teamsPosted} posted to Teams, ${stats.resolvedQuiet + stats.resolvedEvidence} resolved`);
@@ -2531,6 +2587,27 @@ async function runOnce({ force = false } = {}) {
 function parseDetail(raw) {
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
+}
+
+/** Drop analysis history older than the configured keep window. */
+function pruneAnalyses(settings = getOpsAgentSettings()) {
+  const days = settings.analysisHistoryDays || 180;
+  return pruneInBatches(db, 'ops_incident_analyses', 'at < ?', [isoAgo(days * 86400000)]);
+}
+
+/** Every triage pass for one incident, newest first. */
+function listAnalyses(id, { full = false } = {}) {
+  const rows = db.prepare('SELECT * FROM ops_incident_analyses WHERE incident_id = ? ORDER BY at DESC, id DESC').all(id);
+  return rows.map((r) => {
+    let analysis = null;
+    try { analysis = JSON.parse(r.analysis_json || 'null'); } catch { analysis = null; }
+    const out = {
+      id: r.id, at: r.at, trigger: r.trigger, pass: r.pass, model: r.model, classification: r.classification,
+      confidence: r.confidence, promptChars: r.prompt_chars, error: r.error, analysis,
+    };
+    if (full) { try { out.evidence = JSON.parse(r.evidence_json || 'null'); } catch { out.evidence = null; } }
+    return out;
+  });
 }
 
 function shapeIncident(row, { withDetail = false } = {}) {
@@ -2606,6 +2683,7 @@ function getIncident(id) {
   out.recurrence = recurrenceFor(row, s);
   out.repeatCount = out.recurrence.count;
   out.isPattern = out.recurrence.isPattern;
+  out.analysesCount = db.prepare('SELECT COUNT(*) c FROM ops_incident_analyses WHERE incident_id = ?').get(id).c;
   return out;
 }
 
@@ -2877,6 +2955,7 @@ module.exports = {
   initOpsAgent, stopOpsAgent, wake, wakeCheck, openObservationIncidents,
   // pure helpers for tests
   systemPromptFor, gatherIncidentEvidence, hostKey, canonicalHostKey, incidentKeyFor, downKindOf, correlationEvidence, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,
+  pruneAnalyses, listAnalyses, NOTES_SENTENCE, PLATFORM_SENTENCE,
   closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson, collectFailedBackupJobs,
   recurrenceFor, recurrenceLine, stickyCooldown, patternEvidence, patternSentence, reminderPass, triageIncident, selfHealPass, makeSiteResolver, gatherNetworkEvidence, collectItems, observationEvidence,
 };

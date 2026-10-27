@@ -736,4 +736,21 @@ module.exports = [
       if (!cols.has('relation_of')) db.exec('ALTER TABLE ops_incident_alerts ADD COLUMN relation_of TEXT');
     },
   },
+  // Analysis history: every triage pass is kept, so a re-triage never loses the
+  // earlier answer. deep_pass_at is reserved for the deep pass.
+  {
+    version: 33, // feat/multi-tenant numbers this v34
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ops_incident_analyses (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id INTEGER NOT NULL, at TEXT NOT NULL,
+          trigger TEXT NOT NULL, pass INTEGER NOT NULL DEFAULT 1, model TEXT, classification TEXT,
+          confidence TEXT, analysis_json TEXT, evidence_json TEXT, prompt_chars INTEGER, error TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ops_incident_analyses_inc ON ops_incident_analyses(incident_id, at);
+      `);
+      const cols = new Set(db.prepare('PRAGMA table_info(ops_incidents)').all().map((c) => c.name));
+      if (!cols.has('deep_pass_at')) db.exec('ALTER TABLE ops_incidents ADD COLUMN deep_pass_at TEXT');
+    },
+  },
 ];

@@ -50,7 +50,7 @@ const TAB_FIELDS = {
   context: ['llmEstateContext', 'llmFlagUnprotected', 'llmAnalysisTtlHours', 'appServiceBackupStaleHours'],
   status: ['serviceStatusMode', 'serviceStatusStaleMinutes', 'serviceStatusAiEnabled', 'serviceStatusAnalysesPerMinute', 'serviceStatusDedupeMinutes'],
   agent: ['agentEnabled', 'agentName', 'agentGrouping', 'agentMinSeverity', 'agentHoldMinutes', 'agentConsequenceMinutes', 'agentOnsetMinutes', 'agentAnalysesPerHour',
-    'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays', 'agentStickyRepeats', 'agentReminderHours', 'agentPatternCooldownDays',
+    'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays', 'agentStickyRepeats', 'agentReminderHours', 'agentPatternCooldownDays', 'agentAnalysisHistoryDays',
     'obsEnabled', 'obsSustainSamples', 'obsClearSamples', 'obsPatternMin', 'obsPatternDays', 'obsHistoryDays', 'obsDisabledIds'],
   email: ['agentEmailEnabled', 'agentRecipients'],
 };
@@ -62,7 +62,7 @@ const DEFAULT_FORM = {
   serviceStatusAiEnabled: true, serviceStatusAnalysesPerMinute: 3, serviceStatusDedupeMinutes: 60,
   agentEnabled: false, agentName: 'ICC Operations Agent', agentGrouping: 'platform', agentMinSeverity: 'warning',
   agentHoldMinutes: 10, agentConsequenceMinutes: 30, agentOnsetMinutes: 10, agentAnalysesPerHour: 20, agentRenotifyMinutes: 60, agentAutoResolveMinutes: 30,
-  agentEvidenceResolve: true, agentPatternMin: 3, agentPatternDays: 14, agentStickyRepeats: true, agentReminderHours: 24, agentPatternCooldownDays: 14,
+  agentEvidenceResolve: true, agentPatternMin: 3, agentPatternDays: 14, agentStickyRepeats: true, agentReminderHours: 24, agentPatternCooldownDays: 14, agentAnalysisHistoryDays: 180,
   agentEmailEnabled: true, agentRecipients: '',
   obsEnabled: true, obsSustainSamples: 3, obsClearSamples: 2, obsPatternMin: 3, obsPatternDays: 7, obsHistoryDays: 90, obsDisabledIds: [],
 };
@@ -92,6 +92,7 @@ function formFromSettings(d) {
     agentAnalysesPerHour: a.analysesPerHour ?? 20,
     agentRenotifyMinutes: a.renotifyMinutes ?? 60,
     agentAutoResolveMinutes: a.autoResolveMinutes ?? 30,
+    agentAnalysisHistoryDays: a.analysisHistoryDays ?? 180,
     agentEvidenceResolve: a.evidenceResolve !== false,
     agentPatternMin: a.patternMin ?? 3,
     agentPatternDays: a.patternDays ?? 14,
@@ -138,6 +139,7 @@ function payloadFor(tab, f) {
           renotifyMinutes: Number(f.agentRenotifyMinutes), autoResolveMinutes: Number(f.agentAutoResolveMinutes),
           evidenceResolve: f.agentEvidenceResolve, patternMin: Number(f.agentPatternMin), patternDays: Number(f.agentPatternDays),
           stickyRepeats: f.agentStickyRepeats, reminderHours: Number(f.agentReminderHours), patternCooldownDays: Number(f.agentPatternCooldownDays),
+          analysisHistoryDays: Number(f.agentAnalysisHistoryDays) || 180,
           observations: {
             enabled: f.obsEnabled, sustainSamples: Number(f.obsSustainSamples), clearSamples: Number(f.obsClearSamples),
             patternMin: Number(f.obsPatternMin), patternDays: Number(f.obsPatternDays), historyDays: Number(f.obsHistoryDays),
@@ -638,6 +640,12 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
                 <SettingRow label="Cooldown after a person resolves (days)" htmlFor="agent-cooldown" dirty={isDirty('agentPatternCooldownDays')}
                   tip="After a person resolves a repeat, the same condition is not held open again until it has repeated the full number of times since the resolve, or this many days have passed. 0 to 90.">
                   <input id="agent-cooldown" type="number" min={0} max={90} value={form.agentPatternCooldownDays} onChange={set('agentPatternCooldownDays')} className={numberCls} />
+                </SettingRow>
+              </SettingGroup>
+              <SettingGroup title="Record">
+                <SettingRow label="Analysis history (days)" htmlFor="agent-analysis-history" dirty={isDirty('agentAnalysisHistoryDays')}
+                  tip="Every triage pass is kept for this long so a re-triage never loses the earlier answer. 30 to 730.">
+                  <input id="agent-analysis-history" type="number" min={30} max={730} value={form.agentAnalysisHistoryDays} onChange={set('agentAnalysisHistoryDays')} className={numberCls} />
                 </SettingRow>
               </SettingGroup>
               <SettingGroup title="Observations">

@@ -1037,3 +1037,70 @@ describe('LogicMonitor signals: check hostKey, collector groupKey, cross-platfor
     expect(plain.html).not.toContain('Timeline (newest first)');
   });
 });
+
+describe('record: human notes and platform evidence', () => {
+  const nodePath = require('path');
+  const evidencePath = nodePath.resolve(__dirname, '../services/agentEvidence/index.js');
+  let saved;
+  const stubGather = (gather) => {
+    require.cache[evidencePath] = { id: evidencePath, filename: evidencePath, loaded: true, exports: { gather, PROVIDERS: [], PLATFORM_EVIDENCE_CHAR_CAP: 6000 } };
+  };
+  beforeEach(() => { saved = require.cache[evidencePath]; });
+  afterEach(() => { if (saved) require.cache[evidencePath] = saved; else delete require.cache[evidencePath]; });
+
+  const open = () => {
+    agent.groupTick(NOW, settings, { items: [item('vcenter', 'v:down-esx-01', { host: 'esx-01' })], failed: [] });
+    return incidents()[0];
+  };
+
+  it('humanNotes reach the evidence after an ack note and the prompt carries NOTES_SENTENCE', () => {
+    stubGather(() => ({ blocks: [], chars: 0 }));
+    const inc = open();
+    agent.acknowledge(inc.id, 'doug', 'Looking at the cabling, do not page again.');
+    const row = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(inc.id);
+    const ev = agent.gatherIncidentEvidence(row, alertsOf(inc.id));
+    expect(ev.humanNotes).toHaveLength(1);
+    expect(ev.humanNotes[0]).toMatchObject({ by: 'doug', kind: 'ack', text: 'Looking at the cabling, do not page again.' });
+    expect(Object.keys(ev)).not.toContain('platformEvidence');
+    expect(agent.systemPromptFor(ev).system).toContain(agent.NOTES_SENTENCE);
+    const bare = agent.gatherIncidentEvidence(incidents()[0] && { ...row, notes_json: null }, alertsOf(inc.id));
+    expect(bare.humanNotes).toBeUndefined();
+    expect(agent.systemPromptFor(bare).system).not.toContain(agent.NOTES_SENTENCE);
+  });
+
+  it('platformEvidence from a stubbed provider lands in evidence and the email', () => {
+    const block = { platform: 'vcenter', subject: 'esx-01', title: 'ESX host esx-01 (cluster PROD-A)', lines: ['ESX host esx-01: connection notResponding since 08:12, 14 VMs placed.', 'vCenter event 08:11 HostConnectionLostEvent on esx-01: Host connection lost'], facts: { state: 'notResponding' } };
+    let seenCtx = null;
+    stubGather((_db, ctx) => { seenCtx = ctx; return { blocks: [block], chars: 120 }; });
+    const inc = open();
+    const row = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(inc.id);
+    const ev = agent.gatherIncidentEvidence(row, alertsOf(inc.id));
+    expect(seenCtx.platforms).toEqual(['vcenter']);
+    expect(seenCtx.hosts[0]).toMatchObject({ host: 'esx-01', platform: 'vcenter' });
+    expect(ev.platformEvidence).toEqual([block]);
+    const keys = Object.keys(ev);
+    expect(keys.indexOf('platformEvidence')).toBe(keys.indexOf('network') + 1);
+    expect(agent.systemPromptFor(ev).system).toContain(agent.PLATFORM_SENTENCE);
+    const digest = agent.fallbackTriage(ev);
+    expect(digest.reviewed.some((r) => r.startsWith('ESX host esx-01 (cluster PROD-A): '))).toBe(true);
+    const mail = agent.renderEmail(row, alertsOf(inc.id), digest, { platformEvidence: ev.platformEvidence, link: 'https://icc.example.com/t/default/ops/agent?incident=1' });
+    expect(mail.text).toContain('PLATFORM EVIDENCE');
+    expect(mail.text).toContain('ESX host esx-01 (cluster PROD-A)');
+    expect(mail.text).toContain('- vCenter event 08:11 HostConnectionLostEvent on esx-01: Host connection lost');
+    expect(mail.text.split('\n')[1]).toBe('Open in ICC: https://icc.example.com/t/default/ops/agent?incident=1');
+    expect(mail.html).toContain('Platform evidence');
+    expect(mail.html).toContain('Open in ICC');
+    const plain = agent.renderEmail(row, alertsOf(inc.id), digest, {});
+    expect(plain.text).not.toContain('PLATFORM EVIDENCE');
+    expect(plain.text).not.toContain('Open in ICC');
+  });
+
+  it('a provider that throws does not stop evidence gathering', () => {
+    stubGather(() => { throw new Error('boom'); });
+    const inc = open();
+    const row = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(inc.id);
+    const ev = agent.gatherIncidentEvidence(row, alertsOf(inc.id));
+    expect(ev.platformEvidence).toBeUndefined();
+    expect(ev.incident.id).toBe(inc.id);
+  });
+});

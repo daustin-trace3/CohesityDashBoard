@@ -258,6 +258,7 @@ router.put('/', (req, res, next) => {
       if (a.consequenceMinutes !== undefined) { const n = Number(a.consequenceMinutes); setSetting('ops_agent_consequence_minutes', n >= 0 && n <= 240 ? String(Math.round(n)) : ''); }
       if (a.onsetMinutes !== undefined) { const n = Number(a.onsetMinutes); setSetting('ops_agent_onset_minutes', n >= 0 && n <= 60 ? String(Math.round(n)) : ''); }
       if (a.analysesPerHour !== undefined) { const n = Number(a.analysesPerHour); setSetting('ops_agent_analyses_per_hour', n >= 1 && n <= 200 ? String(Math.round(n)) : ''); }
+      if (a.analysisHistoryDays !== undefined) { const n = Number(a.analysisHistoryDays); setSetting('ops_agent_analysis_history_days', n >= 30 && n <= 730 ? String(Math.round(n)) : ''); }
       if (a.renotifyMinutes !== undefined) { const n = Number(a.renotifyMinutes); setSetting('ops_agent_renotify_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }
       if (a.autoResolveMinutes !== undefined) { const n = Number(a.autoResolveMinutes); setSetting('ops_agent_auto_resolve_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }
       if (a.evidenceResolve !== undefined) setSetting('ops_agent_evidence_resolve', a.evidenceResolve ? '1' : '0');
