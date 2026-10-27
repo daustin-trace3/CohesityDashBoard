@@ -1984,12 +1984,13 @@ router.get('/finops/capabilities', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-/** POST /api/aws/finops/refresh - clear the FinOps daily gate on the elected row and re-poll it. */
+/** POST /api/aws/finops/refresh - clear the FinOps and daily cost gates on the elected row and re-poll
+ * it (the cost gate too, so the resource-level capability is re-tested with the rest). */
 router.post('/finops/refresh', (req, res, next) => {
   try {
     const row = db.prepare('SELECT * FROM aws_accounts').all().find((a) => isElected(a));
     if (!row) return res.status(404).json({ error: 'No elected account to capture from.' });
-    db.prepare('UPDATE aws_accounts SET last_finops_capture_at = NULL WHERE id = ?').run(row.id);
+    db.prepare('UPDATE aws_accounts SET last_finops_capture_at = NULL, last_cost_capture_at = NULL WHERE id = ?').run(row.id);
     awsPoller.trigger(db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(row.id)).catch(() => {});
     res.status(202).json({ ok: true });
   } catch (err) { next(err); }

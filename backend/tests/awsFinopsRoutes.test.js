@@ -373,11 +373,13 @@ describe('Optimizer lifecycle', () => {
 });
 
 describe('Refresh, digest, probe', () => {
-  it('POST /finops/refresh clears the stamp on the elected row and answers 202', async () => {
-    db.prepare("UPDATE aws_accounts SET last_finops_capture_at = datetime('now') WHERE id = ?").run(accountId);
+  it('POST /finops/refresh clears the FinOps and cost stamps on the elected row and answers 202', async () => {
+    db.prepare("UPDATE aws_accounts SET last_finops_capture_at = datetime('now'), last_cost_capture_at = datetime('now') WHERE id = ?").run(accountId);
     const res = await request(app).post('/api/aws/finops/refresh');
     expect(res.status).toBe(202);
-    expect(db.prepare('SELECT last_finops_capture_at AS c FROM aws_accounts WHERE id = ?').get(accountId).c).toBeNull();
+    const row = db.prepare('SELECT last_finops_capture_at AS c, last_cost_capture_at AS k FROM aws_accounts WHERE id = ?').get(accountId);
+    expect(row.c).toBeNull();
+    expect(row.k).toBeNull();
   });
 
   it('POST /finops/digest/send answers 202 with recipients, 503 when SMTP is not configured, 500 on other errors', async () => {

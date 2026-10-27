@@ -1101,11 +1101,17 @@ async function captureFinops(account, { skipped = [], now = new Date() } = {}) {
   if (fStart < fEnd) {
     await run('forecast', async () => {
       const { rows, requests: n } = await awsApi.fetchCostForecast(account, { metric: metricApi, start: fStart, end: fEnd });
-      const f = rows[0];
-      if (f && f.meanUsd != null) {
+      // Daily buckets for the remaining days; summing the bounds gives a conservative band.
+      const f = rows.filter((r) => r.meanUsd != null).reduce((acc, r) => ({
+        meanUsd: acc.meanUsd + r.meanUsd,
+        lowerUsd: acc.lowerUsd + num(r.lowerUsd, r.meanUsd),
+        upperUsd: acc.upperUsd + num(r.upperUsd, r.meanUsd),
+        days: acc.days + 1,
+      }), { meanUsd: 0, lowerUsd: 0, upperUsd: 0, days: 0 });
+      if (f.days > 0) {
         writeForecast(account.id, {
           metric: settings.finopsMetric, periodStart: monthStart(today), periodEnd: fEnd, generatedOn: today,
-          meanUsd: mtd + f.meanUsd, lowerUsd: mtd + num(f.lowerUsd, f.meanUsd), upperUsd: mtd + num(f.upperUsd, f.meanUsd), source: 'ce',
+          meanUsd: mtd + f.meanUsd, lowerUsd: mtd + f.lowerUsd, upperUsd: mtd + f.upperUsd, source: 'ce',
         });
         ceForecast = true;
       }

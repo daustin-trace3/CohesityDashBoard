@@ -1040,8 +1040,11 @@ function actionFromDeniedMessage(msg) {
  */
 function classifyCeError(err) {
   const msg = String(err?.message || '');
+  // A feature that must be switched on in the console (rightsizing, resource-level data) is reported
+  // by Cost Explorer as AccessDeniedException with an opt-in message, so the message wins over the name.
+  if (/opt[ -]?in|preference|enable this feature|has not been enabled|not enabled|not supported/i.test(msg)) return 'not_enabled';
   if (err?.name === 'AccessDeniedException' || /not authorized/i.test(msg)) return 'denied';
-  if (err?.name === 'ValidationException' || /enable|opt[ -]?in|preference|not supported|has not been/i.test(msg)) return 'not_enabled';
+  if (err?.name === 'ValidationException' && /enable|has not been/i.test(msg)) return 'not_enabled';
   return 'error';
 }
 const classifyCostResourceError = classifyCeError;
@@ -1175,7 +1178,9 @@ async function fetchCostForecast(account, { metric = 'AMORTIZED_COST', start, en
   const resp = await client.send(new GetCostForecastCommand({
     TimePeriod: { Start: ceDay(start), End: ceDay(end) },
     Metric: metric,
-    Granularity: 'MONTHLY',
+    // DAILY on purpose: a MONTHLY bucket covers the whole calendar month regardless of the requested
+    // period, so adding it to month-to-date doubled the forecast (seen live 2026-10-27).
+    Granularity: 'DAILY',
     PredictionIntervalLevel: 80,
   }));
   const rows = (resp?.ForecastResultsByTime || []).map((f) => ({

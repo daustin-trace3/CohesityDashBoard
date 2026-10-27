@@ -105,7 +105,10 @@ describe('fetcher parsers (shapes from the installed SDK types)', () => {
     mockCe((name) => {
       if (name === 'ListCostAllocationTagsCommand') return { CostAllocationTags: [{ TagKey: 'Environment', Type: 'UserDefined', Status: 'Active', LastUpdatedDate: '2026-09-01' }, { TagKey: 'Old', Status: 'Inactive' }] };
       if (name === 'GetDimensionValuesCommand') return { DimensionValues: [{ Value: '111', Attributes: { description: 'prod' } }, { Value: '222' }], ReturnSize: 2, TotalSize: 2 };
-      return { ForecastResultsByTime: [{ TimePeriod: { Start: '2026-10-21', End: '2026-11-01' }, MeanValue: '1234.5', PredictionIntervalLowerBound: '1000', PredictionIntervalUpperBound: '1500.25' }] };
+      return { ForecastResultsByTime: [
+        { TimePeriod: { Start: '2026-10-21', End: '2026-10-22' }, MeanValue: '1234.5', PredictionIntervalLowerBound: '1000', PredictionIntervalUpperBound: '1500.25' },
+        { TimePeriod: { Start: '2026-10-22', End: '2026-10-23' }, MeanValue: '100', PredictionIntervalLowerBound: '90', PredictionIntervalUpperBound: '110' },
+      ] };
     });
     const tags = await awsApi.fetchCostAllocationTags(acct());
     expect(tags.requests).toBe(1);
@@ -115,9 +118,12 @@ describe('fetcher parsers (shapes from the installed SDK types)', () => {
     ]);
     expect((await awsApi.fetchLinkedAccountValues(acct())).rows).toEqual([{ value: '111', description: 'prod' }, { value: '222', description: null }]);
     const f = await awsApi.fetchCostForecast(acct(), { metric: 'AMORTIZED_COST', start: '2026-10-21', end: '2026-11-01' });
-    expect(f).toEqual({ rows: [{ periodStart: '2026-10-21', periodEnd: '2026-11-01', meanUsd: 1234.5, lowerUsd: 1000, upperUsd: 1500.25 }], requests: 1 });
+    expect(f.requests).toBe(1);
+    expect(f.rows[0]).toEqual({ periodStart: '2026-10-21', periodEnd: '2026-10-22', meanUsd: 1234.5, lowerUsd: 1000, upperUsd: 1500.25 });
     const input = spy.mock.calls.at(-1)[0].input;
-    expect(input).toMatchObject({ Metric: 'AMORTIZED_COST', Granularity: 'MONTHLY', PredictionIntervalLevel: 80 });
+    expect(input).toMatchObject({ Metric: 'AMORTIZED_COST', Granularity: 'DAILY', PredictionIntervalLevel: 80 });
+    expect(f.rows).toHaveLength(2);
+    expect(f.rows[1]).toMatchObject({ periodStart: '2026-10-22', meanUsd: 100, lowerUsd: 90, upperUsd: 110 });
   });
 
   it('Savings Plans utilization, details and coverage', async () => {
@@ -188,7 +194,9 @@ describe('fetcher parsers (shapes from the installed SDK types)', () => {
 describe('error classification', () => {
   it('classifies denied, not_enabled and error and parses the action from the message', () => {
     expect(awsApi.classifyCeError(denied('ce:GetCostForecast'))).toBe('denied');
-    expect(awsApi.classifyCeError({ name: 'ValidationException', message: 'bad input' })).toBe('not_enabled');
+    expect(awsApi.classifyCeError({ name: 'ValidationException', message: 'bad input' })).toBe('error');
+    // Cost Explorer reports a console opt-in feature as AccessDeniedException with an opt-in message (rightsizing, live 2026-10-27).
+    expect(awsApi.classifyCeError({ name: 'AccessDeniedException', message: 'Rightsizing EC2 recommendation is an opt-in only feature. You can enable this feature from the PAYER account Cost Explorer Preferences page.' })).toBe('not_enabled');
     expect(awsApi.classifyCeError({ name: 'X', message: 'Resource-level data has not been enabled' })).toBe('not_enabled');
     expect(awsApi.classifyCeError({ name: 'ThrottlingException', message: 'slow down' })).toBe('error');
     expect(awsApi.classifyCostResourceError).toBe(awsApi.classifyCeError);
