@@ -14,8 +14,9 @@
 //     acknowledged by "demo" two hours ago with a note
 // The matching vcenter_vms / vcenter_hosts usage columns are set so the
 // inventory pages agree with the episodes. The demo has no agent tick, so the
-// scenario also opens the incidents the tick would have opened (watching,
-// degrading and critical episodes, plus the pattern item) through the agent's
+// scenario also opens the incidents the tick would have opened (degrading and
+// critical episodes, plus the pattern item; the watching episode opens nothing
+// and shows only in the Ops Agent watch list) through the agent's
 // own grouping code, and gives the critical one a canned triaged analysis built
 // from the real evidence gatherer so the demo shows the full incident page.
 // Re-runnable: it deletes the observer rows for these four observers and the

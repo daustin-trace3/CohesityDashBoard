@@ -1054,8 +1054,13 @@ describe('seedDemo.js', () => {
     expect(analysis.classification).toBe('incident');
     expect(analysis.next_steps.length).toBeGreaterThan(0);
     expect(JSON.parse(inc.evidence_json).observations.episodes.length).toBeGreaterThan(0);
-    const watching = db.prepare("SELECT i.state, i.severity FROM ops_incidents i JOIN ops_observations o ON o.incident_id = i.id WHERE o.state = 'watching'").get();
-    expect(watching).toMatchObject({ state: 'collecting', severity: 'info' });
+    // The watching episode opens nothing: it lives only in the watch list.
+    const watching = db.prepare("SELECT incident_id FROM ops_observations WHERE state = 'watching'").get();
+    expect(watching.incident_id).toBeNull();
+    expect(db.prepare("SELECT COUNT(*) c FROM ops_incident_alerts WHERE severity = 'info' AND source_key LIKE 'obs:%'").get().c).toBe(0);
+    // The critical incident keeps the peak and the first crossing on its alert row.
+    const detail = db.prepare("SELECT a.detail_json FROM ops_incident_alerts a JOIN ops_observations o ON o.incident_id = a.incident_id AND a.source_key = o.issue_key WHERE o.state = 'critical'").get();
+    expect(JSON.parse(detail.detail_json)).toMatchObject({ state: 'critical', peak: 124 });
     const degrading = db.prepare("SELECT i.severity FROM ops_incidents i JOIN ops_observations o ON o.incident_id = i.id WHERE o.state = 'degrading'").get();
     expect(degrading.severity).toBe('warning');
   });

@@ -365,6 +365,13 @@ function attachedKeys() {
   return new Map(rows.map((r) => [`${r.platform}:${r.source_key}`, r.incident_id]));
 }
 
+const LEGACY_WATCH_RESOLUTION = 'Watching episodes no longer open incidents; this one was opened under the earlier rule and the episode continues in the watch list.';
+
+/** The observation detail an alert row stores (null for every other alert). */
+function detailOf(it) {
+  return it && it.observation ? JSON.stringify(it.observation) : null;
+}
+
 /** Wording for an incident that was opened on a watching observation and
  *  closed before it was ever triaged. Null when no closed episode points at it. */
 function watchedClosure(incidentId) {
@@ -480,7 +487,7 @@ function patternPass(now, settings, items, suppressed, byKey, baseline, stats) {
 function groupTick(now, settings, collected, { baseline = false } = {}) {
   const minRank = rank(settings.minSeverity);
   // Observations bypass the minimum severity: the observer's own warn and
-  // crit thresholds are the filter, and a watching item is info by design.
+  // crit thresholds are the filter (only promoted episodes reach this point).
   const items = collected.items.filter((it) => it.kind === 'observation' || it.kind === 'observation-pattern' || rank(it.severity) >= minRank);
   const attached = attachedKeys();
   // An alert someone resolved by hand stays quiet for the rest of that
@@ -509,7 +516,7 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
   // 'platform' mode folds; the others keep each component apart.
   const wide = new Set();
   const perPlatform = new Map();
-  for (const it of fresh) if (!it.watch) perPlatform.set(it.platform, (perPlatform.get(it.platform) || 0) + 1);
+  for (const it of fresh) if (it.kind !== 'observation') perPlatform.set(it.platform, (perPlatform.get(it.platform) || 0) + 1);
   if (mode === 'platform' || mode === 'site') {
     for (const it of items) if (/^(poll|stale):/.test(String(it.sourceKey)) && it.platform !== 'appservice') wide.add(it.platform);
     for (const [p, n] of perPlatform) if (n >= WIDE_BURST) wide.add(p);
@@ -524,22 +531,24 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
   // A re-firing alert with the same key re-arms its cleared row instead of
   // staying "cleared" forever (which made every flap cycle read as new).
   const insertAlert = db.prepare(`
-    INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, type, first_seen, attached_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, type, first_seen, attached_at, detail_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(incident_id, platform, source_key) DO UPDATE SET
       cleared_at = NULL, severity = excluded.severity, message = excluded.message,
-      first_seen = excluded.first_seen, attached_at = excluded.attached_at
+      first_seen = excluded.first_seen, attached_at = excluded.attached_at, detail_json = excluded.detail_json
   `);
 
   db.transaction(() => {
     const byKey = new Map(openIncidents().map((i) => [i.incident_key, i]));
     patternPass(now, settings, items, suppressed, byKey, baseline, stats);
     for (const it of fresh) {
-      // A watching observation is never folded into a platform-wide incident.
-      const key = incidentKeyFor(it, it.watch ? new Set() : wide, { mode, appOf, siteOf });
+      // An observation is never folded into a platform-wide incident.
+      const key = incidentKeyFor(it, it.kind === 'observation' ? new Set() : wide, { mode, appOf, siteOf });
       let inc = byKey.get(key);
       if (!inc) {
-        const holdUntil = new Date(Date.parse(now) + holdMs).toISOString();
+        // A promoted observation already held for its sustain samples, so it
+        // is due for triage in the tick that opens it.
+        const holdUntil = new Date(Date.parse(now) + (it.kind === 'observation' ? 0 : holdMs)).toISOString();
         const meta = platformMeta(it.platform);
         const isWide = key.endsWith(':wide');
         const isSite = key.startsWith('site:');
@@ -564,7 +573,7 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         const info = it.siteKey ? { siteName: it.siteName || it.siteKey } : (siteOf ? siteOf(it) : null);
         siteTouched.set(key, { id: inc.id, name: (info && info.siteName) || (siteTouched.get(key) || {}).name || key.slice(5) });
       }
-      insertAlert.run(inc.id, it.platform, String(it.sourceKey), normalizeSeverity(it.severity), it.host || null, String(it.message || '').slice(0, 1000), it.type || null, it.firstSeen || null, now);
+      insertAlert.run(inc.id, it.platform, String(it.sourceKey), normalizeSeverity(it.severity), it.host || null, String(it.message || '').slice(0, 1000), it.type || null, it.firstSeen || null, now, detailOf(it));
       if (it.observationId) db.prepare('UPDATE ops_observations SET incident_id = ? WHERE id = ?').run(inc.id, it.observationId);
       const platforms = new Set(JSON.parse(inc.platforms || '[]'));
       platforms.add(it.platform);
@@ -577,8 +586,7 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
       // incident every tick — one model call a minute, update counts past 90.
       const cooldownMs = Math.max(15, Number(settings.renotifyMinutes) || 60) * 60000;
       const recentlyTriaged = inc.triaged_at && (Date.parse(now) - Date.parse(inc.triaged_at)) < cooldownMs;
-      // A watching observation joining a triaged incident adds context only.
-      const reopen = !it.watch && (inc.state === 'notified' || inc.state === 'triaged' || inc.state === 'clearing') && !recentlyTriaged;
+      const reopen = (inc.state === 'notified' || inc.state === 'triaged' || inc.state === 'clearing') && !recentlyTriaged;
       // Inside the cooldown, a clearing incident whose alerts return still
       // leaves 'clearing' (the quiet-close clock must not run while an alert
       // is live); it goes back to its post-triage state without a new triage.
@@ -609,16 +617,17 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
       if (it.kind !== 'observation') continue;
       const iid = attached.get(`${it.platform}:${it.sourceKey}`);
       if (!iid) continue;
-      const stored = db.prepare('SELECT severity, message FROM ops_incident_alerts WHERE incident_id = ? AND platform = ? AND source_key = ?').get(iid, it.platform, String(it.sourceKey));
+      const stored = db.prepare('SELECT severity, message, detail_json FROM ops_incident_alerts WHERE incident_id = ? AND platform = ? AND source_key = ?').get(iid, it.platform, String(it.sourceKey));
       if (!stored) continue;
       const sev = normalizeSeverity(it.severity);
       const msg = String(it.message || '').slice(0, 1000);
-      if (stored.severity !== sev || stored.message !== msg) {
-        db.prepare('UPDATE ops_incident_alerts SET severity = ?, message = ? WHERE incident_id = ? AND platform = ? AND source_key = ?').run(sev, msg, iid, it.platform, String(it.sourceKey));
+      const detail = detailOf(it);
+      if (stored.severity !== sev || stored.message !== msg || (stored.detail_json || null) !== detail) {
+        db.prepare('UPDATE ops_incident_alerts SET severity = ?, message = ?, detail_json = ? WHERE incident_id = ? AND platform = ? AND source_key = ?').run(sev, msg, detail, iid, it.platform, String(it.sourceKey));
       }
       const inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(iid);
       if (!inc) continue;
-      if (it.watch && it.title && !inc.triaged_at && db.prepare('SELECT COUNT(*) c FROM ops_incident_alerts WHERE incident_id = ? AND cleared_at IS NULL').get(iid).c === 1) {
+      if (it.title && !inc.triaged_at && db.prepare('SELECT COUNT(*) c FROM ops_incident_alerts WHERE incident_id = ? AND cleared_at IS NULL').get(iid).c === 1) {
         db.prepare('UPDATE ops_incidents SET title = ? WHERE id = ?').run(it.title, iid);
       }
       if (rank(sev) <= rank(stored.severity)) continue;
@@ -646,6 +655,23 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
     for (const [key, { id, item }] of groupHeads) {
       const n = db.prepare('SELECT COUNT(*) c FROM ops_incident_alerts WHERE incident_id = ? AND cleared_at IS NULL').get(id).c;
       db.prepare('UPDATE ops_incidents SET title = ? WHERE id = ? AND triaged_at IS NULL').run(groupTitle(key, item, Math.max(1, n - 1)), id);
+    }
+
+    // Retire incidents opened under the earlier rule (a watching episode opened
+    // an info incident). A watching episode now opens nothing, so such an
+    // incident, if it was never triaged and holds only info observation
+    // alerts, closes here. This runs before the clearing pass, which would
+    // otherwise close it with the generic self-cleared wording.
+    const legacy = db.prepare(`
+      SELECT i.id FROM ops_incidents i
+      WHERE i.state IN ('collecting', 'clearing') AND i.triaged_at IS NULL AND i.requires_human = 0
+        AND EXISTS (SELECT 1 FROM ops_incident_alerts a WHERE a.incident_id = i.id AND a.cleared_at IS NULL)
+        AND NOT EXISTS (SELECT 1 FROM ops_incident_alerts a WHERE a.incident_id = i.id AND a.cleared_at IS NULL
+          AND NOT (a.severity = 'info' AND a.source_key LIKE 'obs:%'))
+    `).all();
+    for (const r of legacy) {
+      closeIncident(r.id, { now, classification: 'one-off', resolution: LEGACY_WATCH_RESOLUTION });
+      act('retired watching incident', `#${r.id} opened under the earlier watching rule, closed without triage or email`);
     }
 
     // Clear alerts that are gone (skip platforms whose collector failed).
@@ -700,21 +726,6 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
           act('resolved incident', `#${id} every alert cleared (no quiet window set)`);
         }
       }
-    }
-
-    // A collecting incident whose live alerts are all watching observations
-    // never comes due: push its hold out every tick.
-    const watchOnly = db.prepare(`
-      SELECT i.id FROM ops_incidents i
-      WHERE i.state = 'collecting'
-        AND EXISTS (SELECT 1 FROM ops_incident_alerts a WHERE a.incident_id = i.id AND a.cleared_at IS NULL)
-        AND NOT EXISTS (SELECT 1 FROM ops_incident_alerts a WHERE a.incident_id = i.id AND a.cleared_at IS NULL
-          AND NOT (a.severity = 'info' AND a.source_key LIKE 'obs:%'))
-    `).all();
-    if (watchOnly.length) {
-      const pushed = new Date(Date.parse(now) + Math.max(holdMs, 60000)).toISOString();
-      const push = db.prepare('UPDATE ops_incidents SET hold_until = ? WHERE id = ?');
-      for (const r of watchOnly) push.run(pushed, r.id);
     }
   })();
   return stats;
@@ -863,6 +874,14 @@ function budgetedAlerts(alerts, budgets) {
 
 const fmtNum = (v) => (v == null ? '?' : String(Math.round(v * 10) / 10));
 
+/** One sentence per observed episode: the value now, the peak and when, and the sample that first crossed the line. */
+function obsSentence(e, stamp = (t) => t) {
+  const u = e.unit || '';
+  const warn = e.warn != null ? e.warn : e.thresholdWarn;
+  const promoted = e.promoteReason ? `, promoted: ${e.promoteReason}` : '';
+  return `${e.label} on ${e.subject}: ${e.state}, now ${fmtNum(e.value)}${u}, peak ${fmtNum(e.peak)}${u} at ${e.peakAt ? stamp(e.peakAt) : '?'}, first over ${fmtNum(warn)}${u} at ${fmtNum(e.openedValue)}${u} on ${e.openedAt ? stamp(e.openedAt) : '?'}, ${e.elevatedSamples} of ${e.samples} samples elevated${promoted}`;
+}
+
 /** The observation block of an incident's evidence: open episodes attached to
  *  this incident or sitting on one of its hosts, the closed history of those
  *  subjects, and the pattern items. Null when there is nothing to say. */
@@ -879,15 +898,12 @@ function observationEvidence(alerts) {
     .filter((r) => subjects.has(r.subject_key) || (r.host && hostKeys.includes(hostKey(r.host))));
   if (!rows.length && !closed.length && !patterns.length) return null;
   const obs = new Map(observations.listObservers().map((o) => [o.id, o]));
-  const episodes = rows.map(({ row, attached }) => ({ ...observations.describe(row), attached }));
+  const episodes = rows.map(({ row, attached }) => ({ ...observations.describe(row), attached, warn: row.threshold_warn, crit: row.threshold_crit }));
   const history = closed.slice(0, 12).map((r) => ({
     subject: r.subject_label, observerId: r.observer_id, label: (obs.get(r.observer_id) || {}).label || r.observer_id,
     closedAt: r.closed_at, outcome: r.outcome, minutes: observations.minutesOf(r), peak: r.peak_value,
   }));
-  const lines = episodes.map((e) => {
-    const tail = e.series.slice(-12).map((p) => fmtNum(p.v)).join(' ');
-    return `${e.label} ${e.subject}: ${e.state}, ${fmtNum(e.value)}${e.unit || ''} now, peak ${fmtNum(e.peak)}${e.unit || ''} at ${e.peakAt || '?'}, elevated ${e.minutes} min, ${e.samples} samples, warn ${fmtNum(e.thresholdWarn)} crit ${fmtNum(e.thresholdCrit)}; series ${tail}`;
-  });
+  const lines = episodes.map((e) => `${obsSentence(e)}; series ${e.series.slice(-12).map((p) => fmtNum(p.v)).join(' ')}`);
   const bySubject = new Map();
   for (const h of closed) {
     const k = h.subject_key;
@@ -1073,7 +1089,7 @@ function fallbackTriage(evidence) {
   const obsEv = evidence.observations || null;
   const promoted = ((obsEv && obsEv.episodes) || []).filter((e) => e.state === 'degrading' || e.state === 'critical');
   const obsPatterns = (obsEv && obsEv.patterns) || [];
-  for (const e of ((obsEv && obsEv.episodes) || [])) reviewed.push(`Observation, ${e.label} ${e.subject}: ${e.state}, ${fmtNum(e.value)}${e.unit || ''} now, peak ${fmtNum(e.peak)}${e.unit || ''}, elevated ${e.minutes} min over ${e.samples} samples.`);
+  for (const e of ((obsEv && obsEv.episodes) || [])) reviewed.push(`Observation, ${obsSentence(e)}.`);
   reviewed.push(`Incident history: ${rec.occurrences.length ? `${rec.occurrences.length} earlier occurrence(s) of this same incident in ${rec.windowDays} days, the most recent ${fmtStamp(rec.occurrences[0].openedAt)}` : `none on this key in ${rec.windowDays} days`}.`);
   const down = evidence.hosts.some((h) => h.verdict === 'offline');
   const pollTrouble = alive.some((a) => /stale|could not reach/i.test(a.message || ''));
@@ -1439,7 +1455,7 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const timelineRows = (Array.isArray(timeline) ? timeline : []).filter((t) => t && t.at && t.text);
   const obsEpisodes = (obsEvidence && Array.isArray(obsEvidence.episodes)) ? obsEvidence.episodes : [];
   const obsHistoryLines = obsEpisodes.length ? ((obsEvidence.lines || []).filter((l) => / history \(30 d\): /.test(l))) : [];
-  const obsLine = (e) => `- ${e.label} | ${e.subject} | ${e.state} | now ${fmtNum(e.value)}${e.unit || ''} | peak ${fmtNum(e.peak)}${e.unit || ''} | elevated ${e.minutes} min | since ${fmtStamp(e.openedAt)}`;
+  const obsLine = (e) => `- ${obsSentence(e, fmtStamp)}`;
   const netBlocks = (network || []).filter((b) => b && Array.isArray(b.lines) && b.lines.length);
   const alertLine = (a) => `- ${platformMeta(a.platform).label} | ${String(a.severity).toUpperCase()} | ${a.host || '-'} | ${a.message}${a.first_seen ? ` (since ${fmtStamp(a.first_seen)})` : ''}`;
   const happened = String(analysis.summary || '-').split('\n').map((s) => s.trim()).filter(Boolean);
@@ -1532,7 +1548,7 @@ ${section(`What ${esc(agentName)} reviewed`, list(analysis.reviewed || []))}
 ${netBlocks.length ? section('Network', netBlocks.map((b) => `<p style="margin:6px 0 2px;font-weight:600">${esc(b.title)}</p>${list(b.lines)}`).join('')) : ''}
 ${did.length ? section(`What ${esc(agentName)} did`, list(did.map((d) => d.replace(/^- /, '')))) : ''}
 ${checkLines.length ? section(`What ${esc(agentName)} checked live (from the ICC server)${esc(liveCheckMode(checks))}`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Check</th><th style="padding:3px 8px">Target</th><th style="padding:3px 8px">Result</th></tr>${checks.map((c) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.label || c.capability)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(c.target.name)}${c.target.address && c.target.address !== c.target.name ? ` <span style="color:#64748b">${esc(c.target.address)}</span>` : ''}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0"><span style="font-weight:600;color:${c.ok ? '#166534' : '#B91C1C'}">${c.ok ? 'OK' : 'FAILED'}</span> ${esc(c.summary)}${c.requestedBy === 'model' && c.reason ? ` <span style="color:#64748b">(asked for by the agent: ${esc(c.reason)})</span>` : ''}</td></tr>`).join('')}</table>`) : ''}
-${obsEpisodes.length ? section(`What ${esc(agentName)} observed`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Observer</th><th style="padding:3px 8px">Subject</th><th style="padding:3px 8px">State</th><th style="padding:3px 8px">Now</th><th style="padding:3px 8px">Peak</th><th style="padding:3px 8px">Elevated</th><th style="padding:3px 8px">Since</th></tr>${obsEpisodes.map((e) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(e.label)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(e.subject)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(e.state)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(fmtNum(e.value) + (e.unit || ''))}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(fmtNum(e.peak) + (e.unit || ''))}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(String(e.minutes))} min</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(fmtStamp(e.openedAt))}</td></tr>`).join('')}</table>${obsHistoryLines.length ? list(obsHistoryLines) : ''}`) : ''}
+${obsEpisodes.length ? section(`What ${esc(agentName)} observed`, `${list(obsEpisodes.map((e) => obsSentence(e, fmtStamp)))}${obsHistoryLines.length ? list(obsHistoryLines) : ''}`) : ''}
 ${section('Likely cause', `<p style="margin:0">${esc(analysis.likely_cause || '-')}</p>`)}
 ${section('Next steps for the next level', `<ol style="margin:0;padding-left:18px">${(analysis.next_steps || []).map((s) => `<li style="margin:2px 0"><b>${esc(s.owner)}</b>: ${esc(s.action)}</li>`).join('')}</ol>`)}
 ${section('Escalation', `<p style="margin:0">${esc(analysis.escalate || '-')}</p>${stickyLine ? `<p style="margin:6px 0 0;font-weight:600">${esc(stickyLine)}</p>` : ''}`)}
@@ -2065,24 +2081,12 @@ async function runOnce({ force = false } = {}) {
 // ---------------------------------------------------------------------------
 
 
-/** Ids (from `ids`, or every collecting incident when null) that are watching:
- *  collecting, with live alerts that are all info-level observations. One
- *  grouped query, never per row. */
-function watchingIncidentIds(ids = null) {
-  const rows = db.prepare(`
-    SELECT a.incident_id id, COUNT(*) live,
-      SUM(CASE WHEN a.severity = 'info' AND a.source_key LIKE 'obs:%' THEN 1 ELSE 0 END) watch
-    FROM ops_incident_alerts a JOIN ops_incidents i ON i.id = a.incident_id
-    WHERE i.state = 'collecting' AND a.cleared_at IS NULL
-    GROUP BY a.incident_id
-  `).all();
-  const want = ids ? new Set(ids) : null;
-  const out = new Set();
-  for (const r of rows) if ((!want || want.has(r.id)) && r.live > 0 && r.live === r.watch) out.add(r.id);
-  return out;
+function parseDetail(raw) {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
-function shapeIncident(row, { withDetail = false, watching = false } = {}) {
+function shapeIncident(row, { withDetail = false } = {}) {
   const out = {
     id: row.id, key: row.incident_key, title: row.title, host: row.host,
     platforms: JSON.parse(row.platforms || '[]'), severity: row.severity, state: row.state,
@@ -2095,7 +2099,6 @@ function shapeIncident(row, { withDetail = false, watching = false } = {}) {
     healAttempted: !!row.heal_attempted, healAt: row.heal_at || null,
     resolution: row.resolution || null, clearedSince: row.cleared_since || null,
     teamsNotifiedAt: row.teams_notified_at || null, teamsError: row.teams_error || null,
-    watching: !!watching,
     requiresHuman: !!row.requires_human,
     acknowledgedAt: row.acknowledged_at || null, acknowledgedBy: row.acknowledged_by || null,
     snoozedUntil: row.snoozed_until || null,
@@ -2124,12 +2127,10 @@ function shapeIncident(row, { withDetail = false, watching = false } = {}) {
     out.evidence = ev;
     const rawAlerts = incidentAlerts(row.id);
     const liveAlerts = rawAlerts.filter((a) => !a.cleared_at);
-    out.watching = row.state === 'collecting' && liveAlerts.length > 0
-      && liveAlerts.every((a) => a.severity === 'info' && String(a.source_key || '').startsWith('obs:'));
     out.alerts = rawAlerts.map((a) => ({
       platform: a.platform, platformLabel: platformMeta(a.platform).label, sourceKey: a.source_key, severity: a.severity,
       host: a.host, message: a.message, type: a.type, firstSeen: a.first_seen, attachedAt: a.attached_at, clearedAt: a.cleared_at,
-      source_key: a.source_key,
+      source_key: a.source_key, detail: parseDetail(a.detail_json),
       kind: String(a.source_key || '').startsWith('obs-pattern:') ? 'observation-pattern' : String(a.source_key || '').startsWith('obs:') ? 'observation' : null,
     }));
   }
@@ -2143,9 +2144,8 @@ function listIncidents({ state = 'open', limit = 100, needsHuman = false } = {})
   const repeats = new Map();
   for (const r of db.prepare('SELECT incident_key k, COUNT(*) c FROM ops_incidents WHERE opened_at >= ? GROUP BY incident_key HAVING c > 1').all(isoAgo(s.patternDays * 86400000))) repeats.set(r.k, r.c);
   const rows = db.prepare(`SELECT * FROM ops_incidents ${where} ORDER BY opened_at DESC LIMIT ?`).all(Math.min(500, Math.max(1, limit)));
-  const watching = watchingIncidentIds(rows.filter((r) => r.state === 'collecting').map((r) => r.id));
   return rows
-    .map((r) => { const o = shapeIncident(r, { watching: watching.has(r.id) }); o.repeatCount = repeats.get(r.incident_key) || 1; o.isPattern = o.repeatCount >= s.patternMin; return o; })
+    .map((r) => { const o = shapeIncident(r); o.repeatCount = repeats.get(r.incident_key) || 1; o.isPattern = o.repeatCount >= s.patternMin; return o; })
     .sort((x, y) => (y.impactScore - x.impactScore) || (Date.parse(y.openedAt) - Date.parse(x.openedAt)));
 }
 
@@ -2192,7 +2192,7 @@ function status() {
   counts.emails24h = db.prepare('SELECT COALESCE(SUM(emails_sent), 0) c FROM ops_agent_runs WHERE at >= ?').get(isoAgo(86400000)).c;
   counts.baseline = db.prepare("SELECT COUNT(*) c FROM ops_incidents WHERE baseline = 1 AND state != 'resolved'").get().c;
   counts.triagedLastHour = db.prepare('SELECT COUNT(*) c FROM ops_incidents WHERE triaged_at >= ?').get(isoAgo(3600000)).c;
-  counts.watching = watchingIncidentIds().size;
+  counts.watching = db.prepare("SELECT COUNT(*) c FROM ops_observations WHERE state = 'watching'").get().c;
   const statNow = new Date().toISOString();
   const sticky = db.prepare("SELECT acknowledged_at, snoozed_until FROM ops_incidents WHERE requires_human = 1 AND state != 'resolved'").all();
   counts.awaitingHuman = sticky.filter((r) => !r.acknowledged_at && !(r.snoozed_until && r.snoozed_until > statNow)).length;

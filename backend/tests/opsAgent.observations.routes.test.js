@@ -102,8 +102,9 @@ describe('status counts', () => {
   it('reports watching, observing and the observer block', async () => {
     feed('vcenter:vm-cpu', [sample('vcenter:1:vm:w', 'w', 0, 95)]);
     feed('vcenter:vm-cpu', [sample('vcenter:1:vm:x', 'x', 0, 95), sample('vcenter:1:vm:x', 'x', 1, 95), sample('vcenter:1:vm:x', 'x', 2, 95)]);
-    // watching counts watching incidents, so open the incidents first
+    // watching counts watching episodes; only the promoted one opens an incident
     agent.openObservationIncidents(NOW);
+    expect(db.prepare('SELECT COUNT(*) c FROM ops_incidents').get().c).toBe(1);
     const res = await get('/api/ops-agent/status');
     expect(res.status).toBe(200);
     expect(res.body.counts).toMatchObject({ watching: 1, observing: 2 });
@@ -119,6 +120,17 @@ describe('status counts', () => {
     const res = await get(`/api/ops-agent/incidents/${id}`);
     expect(res.status).toBe(200);
     expect(res.body.alerts[0]).toMatchObject({ source_key: `obs:vcenter:vm-cpu:${k}`, kind: 'observation', type: 'vm-cpu-hot' });
+    expect(res.body.alerts[0].detail).toMatchObject({ value: 95, peak: 95, openedValue: 95, samples: 3, elevatedSamples: 3, warn: 90, crit: 100, unit: '%', state: 'degrading' });
+  });
+
+  it('scope=watching lists only open watching episodes with the series the watch list draws', async () => {
+    feed('vcenter:vm-cpu', [sample('vcenter:1:vm:w', 'w', 0, 95), sample('vcenter:1:vm:w', 'w', 1, 50)]);
+    feed('vcenter:vm-cpu', [sample('vcenter:1:vm:x', 'x', 0, 95), sample('vcenter:1:vm:x', 'x', 1, 95), sample('vcenter:1:vm:x', 'x', 2, 95)]);
+    const res = await get('/api/ops-agent/observations?scope=watching');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0]).toMatchObject({ subject: 'w', state: 'watching', value: 50, peak: 95, samples: 2, elevatedSamples: 1, openedValue: 95, inPattern: false });
+    expect(res.body[0].series).toEqual([{ t: at(0), v: 95 }, { t: at(1), v: 50 }]);
   });
 });
 

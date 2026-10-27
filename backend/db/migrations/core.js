@@ -716,4 +716,13 @@ module.exports = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_ops_incidents_human ON ops_incidents(requires_human, state)');
     },
   },
+  // Observation detail on the alert row: the peak, when it peaked and the
+  // sample that first crossed the line, kept with the incident that it opened.
+  {
+    version: 31, // feat/multi-tenant numbers this v32
+    up(db) {
+      const cols = new Set(db.prepare('PRAGMA table_info(ops_incident_alerts)').all().map((c) => c.name));
+      if (!cols.has('detail_json')) db.exec('ALTER TABLE ops_incident_alerts ADD COLUMN detail_json TEXT');
+    },
+  },
 ];

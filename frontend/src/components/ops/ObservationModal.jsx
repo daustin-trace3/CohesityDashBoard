@@ -23,6 +23,26 @@ export const fmtMinutes = (m) => {
   return `${(n / 60).toFixed(n % 60 === 0 ? 0 : 1)} h`;
 };
 
+const fmtWhen = (t) => (t ? new Date(t).toLocaleString() : '-');
+
+/**
+ * One sentence for an observation that opened (or sits behind) an incident: the
+ * value now, the peak and when, the sample that first crossed the line.
+ * `d` is the alert's stored detail or an episode from the evidence block.
+ */
+export const obsDetailLine = (d, label = '') => {
+  if (!d) return '';
+  const u = d.unit || '';
+  const warn = d.warn != null ? d.warn : d.thresholdWarn;
+  const parts = [
+    `${label ? `${label} ` : ''}${fmtObs(d.value, u)}`,
+    `peak ${fmtObs(d.peak, u)}${d.peakAt ? ` at ${fmtWhen(d.peakAt)}` : ''}`,
+    `first over ${warn != null ? fmtObs(warn, u) : 'the line'}${d.openedValue != null ? ` at ${fmtObs(d.openedValue, u)}` : ''}${d.openedAt ? ` on ${fmtWhen(d.openedAt)}` : ''}`,
+    `${d.elevatedSamples ?? '-'} of ${d.samples ?? '-'} samples`,
+  ];
+  return parts.join(', ') + (d.promoteReason ? `, promoted: ${d.promoteReason}` : '');
+};
+
 const CTX_LABEL = {
   cluster: 'Cluster', esxHost: 'ESX host', cpuCount: 'vCPUs', cpuCores: 'Cores', memoryMb: 'Memory (MB)', vcenter: 'vCenter',
 };

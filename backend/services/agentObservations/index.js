@@ -8,8 +8,8 @@
 //   watching -> degrading -> critical -> closed
 //
 // driven by sample counts (the poll interval is the clock), the same shape as
-// the LogicMonitor latency watch. A watching episode opens an info-level
-// "watching" incident that is never triaged or emailed; a degrading or critical
+// the LogicMonitor latency watch. A watching episode opens nothing (it
+// shows only in the watch list); a degrading or critical
 // one is handed to the agent as an ordinary item (collectItems) so it triages
 // and emails like an alert.
 // An episode that closes without ever being promoted is a one-off; enough
@@ -117,6 +117,14 @@ function minutesOf(row) {
 
 const num = (v) => (v == null ? '?' : String(Math.round(v)));
 
+/** The value of the sample that first crossed the line (the sample the row opened on). */
+function openedValueOf(row) {
+  const series = parseJson(row.series_json, []);
+  const hit = series.find((p) => p.t === row.opened_at);
+  const first = hit || series[0];
+  return first && first.v != null ? first.v : null;
+}
+
 /** Default message for a promoted episode (contract section 4). */
 function defaultMessage(o, row) {
   const ctx = parseJson(row.context_json, {});
@@ -127,19 +135,9 @@ function defaultMessage(o, row) {
   const min = minutesOf(row);
   const head = `${noun} ${row.subject_label}${metric ? ` ${metric}` : ''} at ${num(row.last_value)}${unit}${cap ? ` of ${cap}` : ''}`;
   const crit = row.state === 'critical';
-  const tail = `(peak ${num(row.peak_value)}${unit}, warn ${num(row.threshold_warn)}${unit}, crit ${num(row.threshold_crit)}${unit})`;
-  return crit ? `${head}, over the critical line for ${min} min ${tail}` : `${head} for ${min} min ${tail}`;
-}
-
-/** Message for a watching episode: elevated but not yet held long enough. */
-function watchMessage(o, row) {
-  const ctx = parseJson(row.context_json, {});
-  const unit = row.unit || '';
-  const noun = o.noun || o.label || 'Subject';
-  const metric = o.metric ? ` ${o.metric}` : '';
-  const cap = typeof o.capacity === 'function' ? o.capacity(ctx) : null;
-  return `${noun} ${row.subject_label}${metric} at ${num(row.last_value)}${unit}${cap ? ` of ${cap}` : ''}, watching `
-    + `(${row.elevated_samples} elevated of ${row.samples} samples, warn ${num(row.threshold_warn)}${unit}, crit ${num(row.threshold_crit)}${unit})`;
+  const crossed = row.opened_at ? `, first over the line at ${num(openedValueOf(row))}${unit} on ${row.opened_at}` : '';
+  const tail = `${crossed} (peak ${num(row.peak_value)}${unit}, warn ${num(row.threshold_warn)}${unit}, crit ${num(row.threshold_crit)}${unit})`;
+  return crit ? `${head}, over the critical line for ${min} min${tail}` : `${head} for ${min} min${tail}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,12 +335,24 @@ function patternMessage(o, group, settings) {
 // ---------------------------------------------------------------------------
 // items for the agent
 
+/** What an incident stores about the episode that opened it (ops_incident_alerts.detail_json). */
+function observationDetail(row) {
+  return {
+    episodeId: row.id, value: row.last_value, peak: row.peak_value ?? null, peakAt: row.peak_at ?? null,
+    openedAt: row.opened_at, openedValue: openedValueOf(row), elevatedRunStart: row.elevated_run_start ?? null,
+    samples: row.samples, elevatedSamples: row.elevated_samples, warn: row.threshold_warn, crit: row.threshold_crit,
+    unit: row.unit || '', promoteReason: row.promote_reason ?? null, promotedAt: row.promoted_at ?? null, state: row.state,
+  };
+}
+
 function collectItems(nowIso, settings = getObservationSettings()) {
   if (!settings.enabled) return [];
   const obs = allObservers();
   const off = new Set(settings.disabledIds || []);
   const items = [];
-  const open = db.prepare("SELECT * FROM ops_observations WHERE state IN ('watching', 'degrading', 'critical') ORDER BY id").all();
+  // A watching episode is context only: it opens nothing. Only a promoted
+  // (degrading or critical) episode and a pattern group reach the agent.
+  const open = db.prepare("SELECT * FROM ops_observations WHERE state IN ('degrading', 'critical') ORDER BY id").all();
   const backfill = db.prepare('UPDATE ops_observations SET issue_key = ? WHERE id = ?');
   for (const ep of open) {
     const o = obs.get(ep.observer_id);
@@ -352,20 +362,14 @@ function collectItems(nowIso, settings = getObservationSettings()) {
       backfill.run(ep.issue_key, ep.id);
     }
     const unit = ep.unit || '';
-    const title = `${ep.subject_label}: ${o.label || o.id} ${num(ep.last_value)}${unit}`;
-    if (ep.state === 'watching') {
-      items.push({
-        platform: ep.platform, sourceKey: ep.issue_key, severity: 'info', watch: true, kind: 'observation',
-        observationId: ep.id, host: ep.host, type: o.issueType, firstSeen: ep.opened_at, lastSeen: nowIso,
-        title, message: watchMessage(o, ep),
-      });
-      continue;
-    }
+    const peakNote = ep.peak_value != null && Math.round(ep.peak_value) !== Math.round(ep.last_value) ? ` (peak ${num(ep.peak_value)}${unit})` : '';
+    const title = `${ep.subject_label}: ${o.label || o.id} ${num(ep.last_value)}${unit}${peakNote}`;
     const message = typeof o.message === 'function' ? o.message(ep, ep.state) : defaultMessage(o, ep);
     items.push({
       platform: ep.platform, sourceKey: ep.issue_key, severity: ep.state === 'critical' ? 'critical' : 'warning',
-      host: ep.host, type: o.issueType, message: message || defaultMessage(o, ep), title, watch: false,
+      host: ep.host, type: o.issueType, message: message || defaultMessage(o, ep), title,
       firstSeen: ep.promoted_at, lastSeen: nowIso, kind: 'observation', observationId: ep.id,
+      observation: observationDetail(ep),
     });
   }
   for (const group of patternGroups(nowIso, settings)) {
@@ -405,7 +409,15 @@ function describe(row, { seriesCap = 24, obs = null } = {}) {
     promoteReason: row.promote_reason, closedAt: row.closed_at, lastSampleAt: row.last_sample_at, minutes: minutesOf(row),
     samples: row.samples, elevatedSamples: row.elevated_samples, series: seriesCap ? series.slice(-seriesCap) : series,
     context: parseJson(row.context_json, {}), incidentId: row.incident_id, issueKey: row.issue_key,
+    openedValue: openedValueOf(row), elevatedRunStart: row.elevated_run_start ?? null,
   };
+}
+
+/** Open watching episodes, shaped like describe() with a 24 point series (status count, route, watch list). */
+function watchingEpisodes({ obs = null } = {}) {
+  const map = obs || allObservers();
+  return db.prepare("SELECT * FROM ops_observations WHERE state = 'watching' ORDER BY id DESC").all()
+    .map((r) => describe(r, { seriesCap: 24, obs: map }));
 }
 
 /**
@@ -450,7 +462,7 @@ function prune(settings = getObservationSettings()) {
 
 module.exports = {
   registerBuiltins, listObservers, getObserver, evaluate, ingest, collectItems, openEpisodes, episodeHistory,
-  listEpisodes, getEpisode, prune,
+  listEpisodes, getEpisode, prune, watchingEpisodes, observationDetail,
   // helpers shared with the agent, routes and tests
   describe, minutesOf, defaultMessage, patternGroups, closeStale, OPEN_STATES,
 };

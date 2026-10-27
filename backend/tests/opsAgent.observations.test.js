@@ -43,12 +43,58 @@ describe('observations feeding the agent', () => {
     expect(ep.incident_id).toBe(inc.id);
   });
 
-  it('a watching episode opens a collecting info incident', () => {
+  it('a watching episode opens no incident', () => {
     feed([sample(0, 95)]);
     const stats = agent.groupTick(NOW, settings, { items: items(), failed: [] });
-    expect(stats.incidentsOpened).toBe(1);
+    expect(stats.incidentsOpened).toBe(0);
+    expect(incidents()).toEqual([]);
+    expect(db.prepare('SELECT state, incident_id FROM ops_observations').get()).toMatchObject({ state: 'watching', incident_id: null });
+  });
+
+  it('a promoted episode stores peak and the first crossing on the alert row, and the title carries the peak', () => {
+    feed([sample(0, 95), sample(1, 108), sample(2, 99), sample(3, 98)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
     const [inc] = incidents();
-    expect(inc).toMatchObject({ incident_key: 'host:web-01', severity: 'info', state: 'collecting' });
+    expect(inc.title).toBe('web-01: VM CPU 98% (peak 108%)');
+    const [a] = alertsOf(inc.id);
+    const d = JSON.parse(a.detail_json);
+    expect(d).toMatchObject({ value: 98, peak: 108, peakAt: at(1), openedAt: at(0), openedValue: 95, samples: 4, elevatedSamples: 4, warn: 90, crit: 100, unit: '%', state: 'degrading' });
+    expect(a.message).toContain(`first over the line at 95% on ${at(0)}`);
+    const shaped = agent.getIncident(inc.id);
+    expect(shaped.alerts[0].detail).toMatchObject({ peak: 108, openedValue: 95 });
+  });
+
+  it('the stored detail and title refresh on the next tick while the incident is untriaged', () => {
+    feed([sample(0, 95), sample(1, 99), sample(2, 99)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    const [inc] = incidents();
+    expect(inc.title).toBe('web-01: VM CPU 99%');
+    feed([sample(3, 97)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    expect(db.prepare('SELECT title FROM ops_incidents WHERE id = ?').get(inc.id).title).toBe('web-01: VM CPU 97% (peak 99%)');
+    expect(JSON.parse(alertsOf(inc.id)[0].detail_json)).toMatchObject({ value: 97, peak: 99, samples: 4 });
+  });
+
+  it('after triage the model title stands', () => {
+    feed([sample(0, 95), sample(1, 99), sample(2, 99)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    const [inc] = incidents();
+    db.prepare("UPDATE ops_incidents SET triaged_at = ?, title = 'Model title', state = 'triaged' WHERE id = ?").run(NOW, inc.id);
+    feed([sample(3, 97)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    expect(db.prepare('SELECT title FROM ops_incidents WHERE id = ?').get(inc.id).title).toBe('Model title');
+  });
+
+  it('a legacy watching incident is retired on the next tick with the stated resolution', () => {
+    feed([sample(0, 95)]);
+    const id = db.prepare("INSERT INTO ops_incidents (incident_key, title, host, platforms, severity, state, opened_at, hold_until, last_event_at, event_count, baseline) VALUES ('host:web-01', 'web-01: VM CPU 95%', 'web-01', '[\"vcenter\"]', 'info', 'collecting', ?, ?, ?, 1, 0)").run(NOW, NOW, NOW).lastInsertRowid;
+    db.prepare("INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, type, first_seen, attached_at) VALUES (?, 'vcenter', ?, 'info', 'web-01', 'watching', 'vm-cpu-hot', ?, ?)").run(id, `obs:vcenter:vm-cpu:${KEY}`, NOW, NOW);
+    agent.groupTick(at(11), settings, { items: items(), failed: [] });
+    const row = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
+    expect(row).toMatchObject({ state: 'resolved', resolved_by: 'agent', classification: 'one-off' });
+    expect(row.resolution).toBe('Watching episodes no longer open incidents; this one was opened under the earlier rule and the episode continues in the watch list.');
+    expect(db.prepare('SELECT state FROM ops_observations').get().state).toBe('watching');
+    expect(row.notify_count || 0).toBe(0);
   });
 
   it('closing the episode clears the alert at the next tick', () => {
@@ -94,7 +140,8 @@ describe('observation evidence', () => {
     const e = ev.observations.episodes[0];
     expect(e).toMatchObject({ observerId: 'vcenter:vm-cpu', label: 'VM CPU', subject: 'web-01', state: 'watching', unit: '%', attached: false, thresholdWarn: 90, thresholdCrit: 100 });
     expect(e.series.map((p) => p.v)).toEqual([95, 99]);
-    expect(ev.observations.lines[0]).toMatch(/^VM CPU web-01: watching, 99% now, peak 99% at .*warn 90 crit 100; series 95 99$/);
+    expect(ev.observations.lines[0]).toBe(`VM CPU on web-01: watching, now 99%, peak 99% at ${at(1)}, first over 90% at 95% on ${at(0)}, 2 of 2 samples elevated; series 95 99`);
+    expect(e).toMatchObject({ openedValue: 95, openedAt: at(0), peakAt: at(1), elevatedSamples: 2, samples: 2, warn: 90, crit: 100 });
     // placed right after the alerts block
     const keys = Object.keys(ev);
     expect(keys.indexOf('observations')).toBe(keys.indexOf('alertsOmitted') + 1);
@@ -152,7 +199,8 @@ describe('prompt, fallback digest and email', () => {
     const f = agent.fallbackTriage(ev);
     expect(f.summary).toContain('VM CPU web-01 has been over the critical line for 30 min (peak 112%)');
     expect(f.next_steps.some((s) => s.owner === 'Virtualization' && s.action.startsWith('Check what is driving web-01 (top processes'))).toBe(true);
-    expect(f.reviewed.some((r) => r.startsWith('Observation, VM CPU web-01: critical'))).toBe(true);
+    expect(f.reviewed.some((r) => r.startsWith('Observation, VM CPU on web-01: critical, now 112%, peak 112%'))).toBe(true);
+    expect(f.reviewed.some((r) => r.includes('first over 90% at 105% on') && r.includes('3 of 3 samples elevated, promoted: '))).toBe(true);
   });
 
   it('a pattern item adds the burst-time correlation step', () => {
@@ -173,7 +221,7 @@ describe('prompt, fallback digest and email', () => {
     const analysis = agent.fallbackTriage(ev);
     const mail = agent.renderEmail(inc, alerts, analysis, { agentName: 'Otis', observations: ev.observations });
     expect(mail.text).toContain('WHAT OTIS OBSERVED');
-    expect(mail.text).toMatch(/- VM CPU \| web-01 \| critical \| now 112% \| peak 112% \| elevated 30 min \| since /);
+    expect(mail.text).toMatch(/- VM CPU on web-01: critical, now 112%, peak 112% at .*, first over 90% at 105% on .*, 3 of 3 samples elevated, promoted: /);
     expect(mail.html).toContain('What Otis observed');
     const plain = agent.renderEmail(inc, alerts, analysis, { agentName: 'Otis' });
     expect(plain.text).not.toContain('OBSERVED');
@@ -182,9 +230,10 @@ describe('prompt, fallback digest and email', () => {
 });
 
 describe('status and pulse', () => {
-  it('status counts watching incidents and observing episodes and reports the observer count', () => {
+  it('status counts watching episodes (not incidents) and observing episodes and reports the observer count', () => {
     feed([sample(0, 95)]);
     agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    expect(incidents()).toEqual([]);
     const s = agent.status();
     expect(s.counts.watching).toBe(1);
     expect(s.counts.observing).toBe(1);
@@ -210,42 +259,33 @@ const T = (min) => new Date(Date.parse(NOW) + min * 60000).toISOString();
 const dueIds = (nowIso) => db.prepare("SELECT id FROM ops_incidents WHERE state = 'collecting' AND hold_until <= ?").all(nowIso).map((r) => r.id);
 const listed = (id) => agent.listIncidents({ state: 'all' }).find((i) => i.id === id);
 
-describe('watching observations as incidents', () => {
-  it('a watching episode is one collecting info incident, listed as watching, never due for triage', () => {
+describe('watching observations stay quiet; promotion opens the incident', () => {
+  it('a watching episode opens nothing, stays out of the incident list and counts in the watch tile', () => {
     feed([sample(0, 94)]);
     const stats = agent.groupTick(NOW, settings, { items: items(), failed: [] });
-    expect(stats.incidentsOpened).toBe(1);
-    const [inc] = incidents();
-    expect(inc).toMatchObject({ severity: 'info', state: 'collecting', title: 'web-01: VM CPU 94%' });
-    expect(listed(inc.id)).toMatchObject({ watching: true, severity: 'info' });
-    expect(Date.parse(inc.hold_until)).toBeGreaterThanOrEqual(Date.parse(NOW) + 10 * 60000);
-    const [a] = alertsOf(inc.id);
-    expect(a).toMatchObject({ severity: 'info', source_key: `obs:vcenter:vm-cpu:${KEY}` });
-    expect(a.message).toContain('VM web-01 CPU at 94% of 4 vCPU, watching');
-    // a second tick pushes the hold again; nothing is ever due
+    expect(stats.incidentsOpened).toBe(0);
+    expect(incidents()).toEqual([]);
+    expect(agent.listIncidents({ state: 'all' })).toEqual([]);
     const later = T(5);
     agent.groupTick(later, settings, { items: engine.collectItems(later, OBS_SETTINGS), failed: [] });
-    const again = incidents()[0];
-    expect(Date.parse(again.hold_until)).toBeGreaterThanOrEqual(Date.parse(later) + 10 * 60000);
-    expect(dueIds(T(8))).toEqual([]);
+    expect(incidents()).toEqual([]);
     expect(agent.status().counts.watching).toBe(1);
   });
 
-  it('promotion to degrading raises the alert and incident to warning and makes it due at once', () => {
+  it('promotion to degrading opens a warning incident that is due in the same tick', () => {
     feed([sample(0, 95)]);
     agent.groupTick(NOW, settings, { items: items(), failed: [] });
-    const [inc] = incidents();
+    expect(incidents()).toEqual([]);
     feed([sample(1, 95), sample(2, 95)]);
     const now2 = T(1);
     const stats = agent.groupTick(now2, settings, { items: engine.collectItems(now2, OBS_SETTINGS), failed: [] });
-    expect(stats.incidentsOpened).toBe(0);
-    const after = incidents()[0];
+    expect(stats.incidentsOpened).toBe(1);
+    const [inc] = incidents();
     expect(alertsOf(inc.id)[0].severity).toBe('warning');
     expect(alertsOf(inc.id)[0].message).toContain('for 30 min');
-    expect(after.severity).toBe('warning');
-    expect(after.state).toBe('collecting');
-    expect(listed(inc.id).watching).toBe(false);
+    expect(inc).toMatchObject({ severity: 'warning', state: 'collecting', title: 'web-01: VM CPU 95%' });
     expect(dueIds(now2)).toEqual([inc.id]);
+    expect(agent.status().counts.watching).toBe(0);
   });
 
   it('degrading to critical after a triage reopens the incident, due now', () => {
@@ -274,35 +314,44 @@ describe('watching observations as incidents', () => {
     expect(incidents()[0]).toMatchObject({ severity: 'critical', state: 'triaged' });
   });
 
-  it('a watching episode that closes as a one-off resolves its incident with an observation-aware reason', () => {
+  it('a watching episode that closes as a one-off opens no incident and stays in history', () => {
     feed([sample(0, 95), sample(1, 96)]);
     agent.groupTick(NOW, settings, { items: items(), failed: [] });
-    const [inc] = incidents();
     feed([sample(2, 40), sample(3, 40)]);
     expect(items()).toEqual([]);
-    const now2 = T(1);
-    agent.groupTick(now2, settings, { items: [], failed: [] });
+    agent.groupTick(T(1), settings, { items: [], failed: [] });
+    expect(incidents()).toEqual([]);
+    expect(db.prepare('SELECT state, outcome, peak_value FROM ops_observations').get()).toMatchObject({ state: 'closed', outcome: 'one-off', peak_value: 96 });
+    expect(engine.episodeHistory(KEY, 3650)).toHaveLength(1);
+  });
+
+  it('a promoted episode that clears before triage resolves its incident with an observation-aware reason', () => {
+    feed([sample(0, 95), sample(1, 96), sample(2, 97)]);
+    agent.groupTick(NOW, settings, { items: items(), failed: [] });
+    const [inc] = incidents();
+    feed([sample(3, 40), sample(4, 40)]);
+    expect(items()).toEqual([]);
+    agent.groupTick(T(1), settings, { items: [], failed: [] });
     const done = incidents()[0];
-    expect(done).toMatchObject({ id: inc.id, state: 'resolved', classification: 'one-off', resolved_by: 'agent' });
+    expect(done).toMatchObject({ id: inc.id, state: 'resolved', resolved_by: 'agent' });
     expect(done.resolution).toContain('web-01');
     expect(done.resolution).toContain('VM CPU');
-    expect(done.resolution).toContain('one-off');
-    expect(done.resolution).toContain('(peak 96%)');
+    expect(done.resolution).toContain('(peak 97%)');
     expect(done.notify_count || 0).toBe(0);
   });
 
-  it('a watching item stays keyed host:<vm> in a wide platform, and a burst of watching items never folds', () => {
-    const watchItem = (i) => ({
-      platform: 'vcenter', sourceKey: `obs:vcenter:vm-cpu:k${i}`, severity: 'info', watch: true, kind: 'observation',
-      host: `vm-${i}`, type: 'vm-cpu-hot', title: `vm-${i}: VM CPU 95%`, message: 'watching', firstSeen: NOW, lastSeen: NOW,
+  it('a promoted item stays keyed host:<vm> in a wide platform, and a burst of them never folds', () => {
+    const promotedItem = (i) => ({
+      platform: 'vcenter', sourceKey: `obs:vcenter:vm-cpu:k${i}`, severity: 'warning', kind: 'observation',
+      host: `vm-${i}`, type: 'vm-cpu-hot', title: `vm-${i}: VM CPU 95%`, message: 'hot', firstSeen: NOW, lastSeen: NOW,
     });
-    const burst = Array.from({ length: 12 }, (_, i) => watchItem(i));
+    const burst = Array.from({ length: 12 }, (_, i) => promotedItem(i));
     const poll = { platform: 'vcenter', sourceKey: 'poll:1', severity: 'critical', host: 'vc-a', type: 'poll-failed', message: 'down', firstSeen: NOW, lastSeen: NOW };
     agent.groupTick(NOW, settings, { items: [...burst, poll], failed: [] });
     const keys = incidents().map((i) => i.incident_key);
     expect(keys.filter((k) => /^host:vm-\d+$/.test(k))).toHaveLength(12);
     expect(keys).toContain('platform:vcenter:wide');
-    // twelve watching items alone make no platform-wide incident
+    // twelve promoted observations alone make no platform-wide incident
     db.exec('DELETE FROM ops_incident_alerts; DELETE FROM ops_incidents;');
     agent.groupTick(NOW, settings, { items: burst, failed: [] });
     expect(incidents().some((i) => i.incident_key.endsWith(':wide'))).toBe(false);
@@ -312,7 +361,7 @@ describe('watching observations as incidents', () => {
   it('observation items bypass the minimum severity', () => {
     const strict = { ...settings, minSeverity: 'critical' };
     const other = (n, label) => ({ ...sample(n, 95), subjectKey: `vcenter:1:vm:${label}`, label, host: label });
-    feed([sample(0, 95)]);                                              // watching (info)
+    feed([sample(0, 95), sample(1, 95), sample(2, 95)]);                // degrading (warning)
     engine.ingest(cpu(), [other(0, 'db-01'), other(1, 'db-01'), other(2, 'db-01')], T(3), OBS_SETTINGS, { warn: 90, crit: 100 });   // degrading (warning)
     const stats = agent.groupTick(NOW, strict, { items: items(), failed: [] });
     expect(stats.incidentsOpened).toBe(2);
@@ -323,7 +372,7 @@ describe('watching observations as incidents', () => {
     agent.groupTick(NOW, settings, { items: [
       { platform: 'vcenter', sourceKey: 'v-guest-9', severity: 'warning', host: 'file-01', type: 'guest-volume-full', message: 'Guest volume D: is 95% full', firstSeen: NOW, lastSeen: NOW },
     ], failed: [] });
-    feed([sample(0, 95)]);
+    feed([sample(0, 95), sample(1, 95), sample(2, 95)]);
     const r = agent.openObservationIncidents(NOW);
     expect(r.incidentsOpened).toBe(1);
     const keys = incidents().map((i) => i.incident_key).sort();
@@ -331,6 +380,12 @@ describe('watching observations as incidents', () => {
     const other = incidents().find((i) => i.incident_key === 'host:file-01');
     expect(alertsOf(other.id)[0].cleared_at).toBeNull();
     const mine = incidents().find((i) => i.incident_key === 'host:web-01');
-    expect(listed(mine.id).watching).toBe(true);
+    expect(listed(mine.id)).toMatchObject({ severity: 'warning', state: 'collecting' });
+  });
+
+  it('openObservationIncidents opens nothing for a watching episode', () => {
+    feed([sample(0, 95)]);
+    expect(agent.openObservationIncidents(NOW).incidentsOpened).toBe(0);
+    expect(incidents()).toEqual([]);
   });
 });

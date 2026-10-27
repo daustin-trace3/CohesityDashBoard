@@ -9,12 +9,12 @@ import { useToast } from '../../components/ui/Toaster';
 import { useTableControls, SortTh, TablePager } from '../../components/ui/tableTools';
 import Sparkline from '../../components/ops/Sparkline';
 import ResolveNoteDialog from '../../components/ops/ResolveNoteDialog';
-import ObservationModal, { OBS_STATE_TONE, fmtObs, fmtMinutes } from '../../components/ops/ObservationModal';
+import ObservationModal, { OBS_STATE_TONE, fmtObs, fmtMinutes, obsDetailLine } from '../../components/ops/ObservationModal';
+import WatchListModal from '../../components/ops/WatchListModal';
 
 const REFRESH_MS = 60_000;   // floor: a full reload even when nothing changed
 const PULSE_MS = 5_000;      // change probe, so a tick shows up within seconds
 const STATE_META = {
-  watching: { label: 'Watching', tone: 'info', hint: 'The agent opened this on its own observation and is watching whether the condition holds' },
   collecting: { label: 'Collecting', tone: 'info', hint: 'Holding for related alerts before triage' },
   triaged: { label: 'Triaged', tone: 'warn', hint: 'Analysis written, email pending or off' },
   notified: { label: 'Notified', tone: 'ok', hint: 'Analysis emailed' },
@@ -182,11 +182,20 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
   };
 
   const a = inc?.analysis;
-  const sm = inc ? (STATE_META[inc.watching ? 'watching' : inc.state] || STATE_META.collecting) : null;
+  const sm = inc ? (STATE_META[inc.state] || STATE_META.collecting) : null;
   const sev = inc ? sevTone(inc.severity) : 'info';
   const networkBlocks = Array.isArray(inc?.evidence?.network) ? inc.evidence.network.filter((n) => n && Array.isArray(n.lines) && n.lines.length > 0) : [];
   const live = inc?.evidence?.liveChecks;
-  const observedEpisodes = Array.isArray(inc?.evidence?.observations?.episodes) ? inc.evidence.observations.episodes : [];
+  const evidenceEpisodes = Array.isArray(inc?.evidence?.observations?.episodes) ? inc.evidence.observations.episodes : [];
+  // The alert row keeps what the episode looked like when it opened this incident
+  // (peak, when, the first crossing), so it survives the episode closing. Show
+  // each episode through that detail, and any alert whose episode left the evidence.
+  const alertDetails = new Map((inc?.alerts || []).filter((x) => x.detail && x.detail.episodeId != null).map((x) => [x.detail.episodeId, x]));
+  const observedEpisodes = [
+    ...evidenceEpisodes.map((ep) => ({ ...ep, detail: (alertDetails.get(ep.id) || {}).detail || null })),
+    ...[...alertDetails.entries()].filter(([id]) => !evidenceEpisodes.some((ep) => ep.id === id))
+      .map(([id, x]) => ({ id, label: x.type || 'Observation', subject: x.host || '', state: x.detail.state, unit: x.detail.unit, series: [], detail: x.detail })),
+  ];
   const observedHistory = Array.isArray(inc?.evidence?.observations?.history) ? inc.evidence.observations.history : [];
   const openAlerts = inc ? inc.alerts.filter((x) => !x.clearedAt).length : 0;
   const isOpen = !!inc && inc.state !== 'resolved';
@@ -282,10 +291,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
                 )}
                 {inc.state === 'clearing' && inc.clearedSince && <p className="text-xs text-ink-faint mb-3">Alerts cleared {timeAgo(inc.clearedSince)}; the incident closes itself if nothing fires again inside the quiet window.</p>}
                 {inc.emailTo && <p className="text-xs text-ink-faint mb-3">Emailed {inc.notifyCount} time{inc.notifyCount === 1 ? '' : 's'} to {inc.emailTo}{inc.notifiedAt ? `, last ${timeAgo(inc.notifiedAt)}` : ''}.</p>}
-                {inc.watching && !a && (
-                  <p className="text-[13px] text-ink-muted mb-4">{agentName} is watching this condition. It triages once the condition holds for the configured samples, or closes the incident if it returns to normal.</p>
-                )}
-                {inc.state === 'collecting' && !inc.watching && !a && (
+                {inc.state === 'collecting' && !a && (
                   <p className="text-[13px] text-ink-muted mb-4">Collecting related alerts until {new Date(inc.holdUntil).toLocaleTimeString()}; triage runs when the hold window ends.</p>
                 )}
                 {a && (
@@ -322,7 +328,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
                     <Fact label="Platforms">{inc.platforms.join(', ')}</Fact>
                     <Fact label="Host">{inc.host || '-'}</Fact>
                     <Fact label="Opened">{new Date(inc.openedAt).toLocaleString()}</Fact>
-                    {inc.state === 'collecting' && !inc.watching && <Fact label="Hold until">{new Date(inc.holdUntil).toLocaleString()}</Fact>}
+                    {inc.state === 'collecting' && <Fact label="Hold until">{new Date(inc.holdUntil).toLocaleString()}</Fact>}
                     <Fact label="Alerts">{inc.alerts.length} ({openAlerts} open, {inc.alerts.length - openAlerts} cleared)</Fact>
                     <Fact label="Emailed">{inc.notifyCount ? `${inc.notifyCount} time${inc.notifyCount === 1 ? '' : 's'}${inc.emailTo ? ` to ${inc.emailTo}` : ''}${inc.notifiedAt ? `, last ${new Date(inc.notifiedAt).toLocaleString()}` : ''}` : 'not yet'}</Fact>
                     <Fact label="Teams">{inc.teamsNotifiedAt ? `posted ${new Date(inc.teamsNotifiedAt).toLocaleString()}` : 'not posted'}</Fact>
@@ -449,7 +455,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
                           className="flex items-center gap-3 rounded-md border border-cohesity-border bg-surface-overlay px-3 py-2 cursor-pointer hover:ring-1 hover:ring-brand/50 focus:ring-1 focus:ring-brand/50 outline-none">
                           <div className="min-w-0 flex-1">
                             <p className="text-[13px] text-ink truncate">{ep.label} <span className="text-ink-muted">{ep.subject}</span></p>
-                            <p className="text-[11px] text-ink-faint">now {fmtObs(ep.value, ep.unit)}, peak {fmtObs(ep.peak, ep.unit)}, elevated {fmtMinutes(ep.minutes)}</p>
+                            <p className="text-[11px] text-ink-faint">{ep.detail ? obsDetailLine(ep.detail) : `${obsDetailLine(ep)}, elevated ${fmtMinutes(ep.minutes)}`}</p>
                           </div>
                           <Badge tone={OBS_STATE_TONE[ep.state] || 'neutral'}>{ep.state}</Badge>
                           <Sparkline values={obsValues(ep.series)} color={OBS_SPARK[ep.state] || OBS_SPARK.watching} width={90} height={22} fill={false} />
@@ -535,6 +541,7 @@ export default function OpsAgentPage() {
   const [rows, setRows] = useState(null);
   const [scope, setScope] = useState('open');
   const [obsOpenId, setObsOpenId] = useState(null);
+  const [watchOpen, setWatchOpen] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   // ?incident=<id> (the Open in ICC link on a Teams card) opens that incident.
   const [params] = useSearchParams();
@@ -598,14 +605,14 @@ export default function OpsAgentPage() {
     } finally { setRunning(false); }
   };
 
-  const list = useMemo(() => (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', '), idLabel: '#' + r.id, stateKey: r.watching ? 'watching' : r.state })), [rows]);
+  const list = useMemo(() => (rows || []).map((r) => ({ ...r, platformsLabel: r.platforms.join(', '), idLabel: '#' + r.id, stateKey: r.state })), [rows]);
   const ctl = useTableControls(list, { searchKeys: ['idLabel', 'title', 'host', 'platformsLabel', 'classification', 'summary', 'stateKey'], defaultSortKey: 'openedAt', defaultSortDir: 'desc', paginate: true });
   const s = status;
   const counts = s?.counts || {};
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and unreachable sources into incidents, re-polls what it can, triages each against the evidence ICC holds and emails the analysis. It also watches polled metrics: a VM or host over its line becomes a watching incident that is triaged if the condition holds.">
+      <PageHeader icon={Bot} title={s?.settings?.name || 'Operations Agent'} description="Folds open alerts, app service state and unreachable sources into incidents, re-polls what it can, triages each against the evidence ICC holds and emails the analysis. It also watches polled metrics: a VM or host over its line is watched quietly and becomes an incident only if the condition holds or keeps coming back.">
         <span className={`inline-flex items-center gap-1.5 text-[11px] ${live ? 'text-status-ok' : 'text-status-warn'}`} title={live ? `Watching for changes every ${PULSE_MS / 1000}s` : 'Lost contact with ICC; retrying'}>
           <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-status-ok animate-pulse' : 'bg-status-warn'}`} />
           {live ? 'Live' : 'Reconnecting'}
@@ -636,7 +643,7 @@ export default function OpsAgentPage() {
 
       <div className="grid grid-cols-2 md:grid-cols-7 gap-3 mb-4">
         <Stat label="Collecting" value={counts.collecting || 0} tone="text-status-info" />
-        <span className="block" title="Incidents the agent opened on its own observations that have not yet held long enough to triage"><Stat label="Watching" value={counts.watching || 0} tone="text-status-info" /></span>
+        <button type="button" onClick={() => setWatchOpen(true)} className="block text-left cursor-pointer rounded-lg hover:ring-1 hover:ring-brand/50 focus:ring-1 focus:ring-brand/50 outline-none" title="Episodes over their line that are not incidents yet. Click to see them."><Stat label="Watching" value={counts.watching || 0} tone="text-status-info" /></button>
         <span className="block" title="Incidents that stay open until a person looks: not acknowledged and not snoozed"><Stat label="Awaiting investigation" value={counts.awaitingHuman || 0} tone={counts.awaitingHuman > 0 ? 'text-status-crit' : undefined} /></span>
         <Stat label="Triaged, not emailed" value={counts.triaged || 0} tone="text-status-warn" />
         <Stat label="Notified" value={counts.notified || 0} tone="text-status-ok" />
@@ -673,7 +680,7 @@ export default function OpsAgentPage() {
                 </tr></thead>
                 <tbody>
                   {ctl.pageRows.map((r) => {
-                    const sm = STATE_META[r.watching ? 'watching' : r.state] || STATE_META.collecting;
+                    const sm = STATE_META[r.state] || STATE_META.collecting;
                     return (
                       <tr key={r.id} className="border-b border-cohesity-border/50">
                         <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">#{r.id}</td>
@@ -704,6 +711,7 @@ export default function OpsAgentPage() {
         <TablePager ctl={ctl} />
       </Panel>
 
+      {watchOpen && <WatchListModal Shell={ModalShell} pulse={pulse} onClose={() => setWatchOpen(false)} onOpenObservation={setObsOpenId} />}
       {obsOpenId != null && <ObservationModal id={obsOpenId} Shell={ModalShell} onClose={() => setObsOpenId(null)} />}
       {openId != null && <IncidentModal id={openId} onClose={() => setOpenId(null)} onChanged={load} pulse={pulse} agentName={s?.settings?.name || 'ICC'} onOpenObservation={setObsOpenId} reminderHours={Number(s?.settings?.reminderHours) || 0} />}
     </div>

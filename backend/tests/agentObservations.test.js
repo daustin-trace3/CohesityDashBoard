@@ -175,18 +175,24 @@ describe('evaluate', () => {
 });
 
 describe('collectItems', () => {
-  it('hands over a watching episode as an info item flagged watch, with a title and a watching message', () => {
+  it('emits no item for a watching episode', () => {
     feed([sample(0, 95)]);
-    const [it] = engine.collectItems(NOW, S);
-    expect(it).toMatchObject({
-      platform: 'fakeplat', sourceKey: `obs:${OBS}:fk:1:box:b1`, severity: 'info', watch: true, kind: 'observation',
-      observationId: rows()[0].id, host: 'b1', type: 'fake-hot', firstSeen: at(0), lastSeen: NOW, title: 'b1: Fake load 95%',
-    });
-    expect(it.message).toBe('Box b1 load at 95% of 4 cores, watching (1 elevated of 1 samples, warn 90%, crit 100%)');
+    expect(rows()[0].state).toBe('watching');
+    expect(engine.collectItems(NOW, S)).toEqual([]);
+  });
+
+  it('lists a watching episode through watchingEpisodes with a capped series', () => {
+    feed([sample(0, 95), sample(1, 50)]);
+    const [w] = engine.watchingEpisodes();
+    expect(w).toMatchObject({ id: rows()[0].id, state: 'watching', subject: 'b1', value: 50, peak: 95, samples: 2, elevatedSamples: 1, openedValue: 95 });
+    expect(w.series).toEqual([{ t: at(0), v: 95 }, { t: at(1), v: 50 }]);
+    feed([sample(2, 95), sample(3, 95), sample(4, 95)]);
+    expect(engine.watchingEpisodes()).toEqual([]);
   });
 
   it('backfills a null issue_key on a watching row opened before the key was written at open', () => {
     feed([sample(0, 95)]);
+    feed([sample(1, 95), sample(2, 95)]);
     db.prepare('UPDATE ops_observations SET issue_key = NULL').run();
     const [it] = engine.collectItems(NOW, S);
     expect(it.sourceKey).toBe(`obs:${OBS}:fk:1:box:b1`);
@@ -198,21 +204,34 @@ describe('collectItems', () => {
     const [it] = engine.collectItems(NOW, S);
     expect(it).toMatchObject({
       platform: 'fakeplat', sourceKey: `obs:${OBS}:fk:1:box:b1`, severity: 'warning', host: 'b1', type: 'fake-hot',
-      firstSeen: at(2), lastSeen: NOW, kind: 'observation', observationId: rows()[0].id, watch: false, title: 'b1: Fake load 99%',
+      firstSeen: at(2), lastSeen: NOW, kind: 'observation', observationId: rows()[0].id, title: 'b1: Fake load 99%',
     });
-    expect(it.message).toBe('Box b1 load at 99% of 4 cores for 30 min (peak 99%, warn 90%, crit 100%)');
+    expect(it.message).toBe(`Box b1 load at 99% of 4 cores for 30 min, first over the line at 95% on ${at(0)} (peak 99%, warn 90%, crit 100%)`);
+    expect(it.observation).toMatchObject({
+      episodeId: rows()[0].id, value: 99, peak: 99, peakAt: at(1), openedAt: at(0), openedValue: 95, elevatedRunStart: at(0),
+      samples: 3, elevatedSamples: 3, warn: 90, crit: 100, unit: '%', state: 'degrading', promotedAt: at(2),
+    });
+    expect(it.observation.promoteReason).toContain('elevated for 3 samples');
+  });
+
+  it('puts the peak in the title when it differs from the last value, and the detail carries peak time', () => {
+    feed([sample(0, 95), sample(1, 99), sample(2, 97)]);
+    const [it] = engine.collectItems(NOW, S);
+    expect(it.title).toBe('b1: Fake load 97% (peak 99%)');
+    expect(it.observation).toMatchObject({ value: 97, peak: 99, peakAt: at(1), openedValue: 95 });
   });
 
   it('critical item: critical with the over-the-line wording', () => {
     feed([sample(0, 104), sample(1, 112), sample(2, 118)]);
     const [it] = engine.collectItems(NOW, S);
     expect(it.severity).toBe('critical');
-    expect(it.message).toBe('Box b1 load at 118% of 4 cores, over the critical line for 30 min (peak 118%, warn 90%, crit 100%)');
+    expect(it.message).toBe(`Box b1 load at 118% of 4 cores, over the critical line for 30 min, first over the line at 104% on ${at(0)} (peak 118%, warn 90%, crit 100%)`);
+    expect(it.title).toBe('b1: Fake load 118%');
   });
 
   it('omits the "of ..." part when context lacks the capacity', () => {
     feed([sample(0, 95, { context: {} }), sample(1, 95, { context: {} }), sample(2, 95, { context: {} })]);
-    expect(engine.collectItems(NOW, S)[0].message).toBe('Box b1 load at 95% for 30 min (peak 95%, warn 90%, crit 100%)');
+    expect(engine.collectItems(NOW, S)[0].message).toBe(`Box b1 load at 95% for 30 min, first over the line at 95% on ${at(0)} (peak 95%, warn 90%, crit 100%)`);
   });
 
   it('uses the observer message hook when it has one', () => {

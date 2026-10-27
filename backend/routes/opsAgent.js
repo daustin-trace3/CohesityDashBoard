@@ -96,13 +96,19 @@ router.post('/run', async (req, res, next) => {
 router.get('/observations', (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store');
-    const scope = ['active', 'closed', 'all'].includes(req.query.scope) ? req.query.scope : 'active';
+    const scope = ['active', 'closed', 'all', 'watching'].includes(req.query.scope) ? req.query.scope : 'active';
     const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
     const settings = getObservationSettings();
     const obs = new Map(observations.listObservers(settings).map((o) => [o.id, o]));
-    const rows = observations.listEpisodes({ scope, limit });
     const patterns = new Map();
     for (const g of observations.patternGroups(new Date().toISOString(), settings)) patterns.set(`${g[0].observer_id}|${g[0].subject_key}`, g.length);
+    if (scope === 'watching') {
+      return res.json(observations.watchingEpisodes({ obs }).slice(0, limit).map((e) => {
+        const n = patterns.get(`${e.observerId}|${e.subjectKey}`) || 0;
+        return { ...e, inPattern: n > 0, patternCount: n };
+      }));
+    }
+    const rows = observations.listEpisodes({ scope, limit });
     res.json(rows.map((r) => {
       const n = patterns.get(`${r.observer_id}|${r.subject_key}`) || 0;
       return { ...observations.describe(r, { obs }), inPattern: n > 0, patternCount: n };
