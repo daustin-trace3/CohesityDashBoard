@@ -382,6 +382,13 @@ describe('finopsSettings and buildFinopsOverview', () => {
   it('returns the documented overview keys on an empty and a seeded database', () => {
     const o = finops.buildFinopsOverview({ metric: 'unblended', now: NOW });
     for (const k of ['metric', 'amortizedFrom', 'month', 'kpis', 'mix', 'trend', 'topMovers', 'budgets', 'anomalies']) expect(o).toHaveProperty(k);
+    // Movers: increases first (largest to smallest), then decreases (largest to smallest), at most 8.
+    expect(o.topMovers.length).toBeLessThanOrEqual(8);
+    const signs = o.topMovers.map((m) => (m.deltaUsd >= 0 ? 1 : -1));
+    expect(signs.indexOf(-1) === -1 || signs.lastIndexOf(1) < signs.indexOf(-1)).toBe(true);
+    for (let i = 1; i < o.topMovers.length; i++) {
+      if (signs[i] === signs[i - 1]) expect(Math.abs(o.topMovers[i].deltaUsd)).toBeLessThanOrEqual(Math.abs(o.topMovers[i - 1].deltaUsd));
+    }
     expect(o.trend).toHaveLength(13);
     expect(o.trend[12].month).toBe('2026-10');
     for (const k of ['mtdUsd', 'forecastUsd', 'forecastSource', 'lastMonthUsd', 'momPct', 'runRatePerDayUsd', 'commitmentCoveragePct',

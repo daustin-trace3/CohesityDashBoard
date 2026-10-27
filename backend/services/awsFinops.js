@@ -807,7 +807,13 @@ function buildFinopsOverview({ metric, accountId, now = new Date() } = {}) {
     const l = lastByService.get(service) || 0;
     movers.push({ service, thisMonthUsd: round2(t), lastMonthUsd: round2(l), deltaUsd: round2(t - l), deltaPct: l > 0 ? round2(((t - l) / l) * 100) : null });
   }
+  // Top 8 by magnitude, shown increases first (largest to smallest) then decreases (largest to
+  // smallest): a list ordered purely by magnitude reads as scrambled once the signs mix.
   movers.sort((a, b) => Math.abs(b.deltaUsd) - Math.abs(a.deltaUsd));
+  const topMovers = movers.slice(0, 8).sort((a, b) => {
+    if ((a.deltaUsd >= 0) !== (b.deltaUsd >= 0)) return a.deltaUsd >= 0 ? -1 : 1;
+    return Math.abs(b.deltaUsd) - Math.abs(a.deltaUsd);
+  });
 
   const firstMonth = addMonths(today, -12);
   const monthly = new Map(db.prepare(`
@@ -859,7 +865,7 @@ function buildFinopsOverview({ metric, accountId, now = new Date() } = {}) {
       openAnomalies, potentialSavingsUsd: round2(potential), realizedSavings90dUsd: round2(realized),
       unallocatedPct: round2(unallocatedPct), unallocatedTagKey: tagKey,
     },
-    mix, trend, topMovers: movers.slice(0, 8), budgets, anomalies,
+    mix, trend, topMovers, budgets, anomalies,
   };
 }
 
