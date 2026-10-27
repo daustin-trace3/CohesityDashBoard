@@ -14,6 +14,7 @@ const { getSetting } = require('./settings');
 const MAX_LINES = 8;
 const MAX_LINE_CHARS = 200;
 const MAX_HOSTS = 6;
+const LEAD_LINE_CHARS = 600;
 
 function platformOn(id) {
   if (id === 'cohesity') return getSetting('platform_cohesity_enabled') !== '0';
@@ -199,6 +200,11 @@ function relationLines(evidence, alerts) {
   const lines = [];
   const add = (l) => { if (l) { const t = String(l).slice(0, MAX_LINE_CHARS); if (!lines.includes(t)) lines.push(t); } };
   try {
+    // The parent-fault sentence leads: it is the one thing the model must not
+    // miss. It is longer than an ordinary line, so it gets its own cap.
+    for (const lead of [evidence && evidence.blastRadius, evidence && evidence.shared]) {
+      if (lead && lead.sentence) lines.push(String(lead.sentence).slice(0, LEAD_LINE_CHARS));
+    }
     const hosts = [];
     for (const h of (evidence && evidence.hosts) || []) if (h && h.host) hosts.push(cleanHost(h.host));
     for (const a of alerts || []) if (a && a.host && !a.cleared_at) hosts.push(cleanHost(a.host));

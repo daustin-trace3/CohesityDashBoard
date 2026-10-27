@@ -76,6 +76,9 @@ function buildCard(inc, analysis, opts = {}) {
   if (inc.host) facts.push({ title: 'Host', value: String(inc.host) });
   if (labels.length) facts.push({ title: 'Platforms', value: labels.join(', ') });
   if (a.classification) facts.push({ title: 'Classification', value: `${a.classification} (${a.confidence || 'low'} confidence)` });
+  // Alerts folded under another component's fault (a host, datastore, switch).
+  const consequences = Number(opts.consequenceCount ?? inc.consequenceCount ?? 0);
+  if (consequences > 0) facts.push({ title: 'Consequences', value: `${consequences} alert${consequences === 1 ? '' : 's'} folded in` });
   if (inc.requires_human && !inc.acknowledged_at) facts.push({ title: 'Awaiting investigation', value: 'yes' });
   if (facts.length) body.push({ type: 'FactSet', facts });
 

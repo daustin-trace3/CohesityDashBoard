@@ -725,4 +725,15 @@ module.exports = [
       if (!cols.has('detail_json')) db.exec('ALTER TABLE ops_incident_alerts ADD COLUMN detail_json TEXT');
     },
   },
+  // Correlation: an alert folded under another host's fault ('consequence',
+  // relation_of = the parent host) or under a shared component with no alert
+  // of its own ('shared', relation_of = '<kind>:<parentKey>').
+  {
+    version: 32, // feat/multi-tenant numbers this v33
+    up(db) {
+      const cols = new Set(db.prepare('PRAGMA table_info(ops_incident_alerts)').all().map((c) => c.name));
+      if (!cols.has('relation')) db.exec('ALTER TABLE ops_incident_alerts ADD COLUMN relation TEXT');
+      if (!cols.has('relation_of')) db.exec('ALTER TABLE ops_incident_alerts ADD COLUMN relation_of TEXT');
+    },
+  },
 ];

@@ -49,7 +49,7 @@ const TAB_FIELDS = {
   provider: ['llmProvider', 'llmCustomEndpoint', 'llmModel'],
   context: ['llmEstateContext', 'llmFlagUnprotected', 'llmAnalysisTtlHours', 'appServiceBackupStaleHours'],
   status: ['serviceStatusMode', 'serviceStatusStaleMinutes', 'serviceStatusAiEnabled', 'serviceStatusAnalysesPerMinute', 'serviceStatusDedupeMinutes'],
-  agent: ['agentEnabled', 'agentName', 'agentGrouping', 'agentMinSeverity', 'agentHoldMinutes', 'agentAnalysesPerHour',
+  agent: ['agentEnabled', 'agentName', 'agentGrouping', 'agentMinSeverity', 'agentHoldMinutes', 'agentConsequenceMinutes', 'agentOnsetMinutes', 'agentAnalysesPerHour',
     'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays', 'agentStickyRepeats', 'agentReminderHours', 'agentPatternCooldownDays',
     'obsEnabled', 'obsSustainSamples', 'obsClearSamples', 'obsPatternMin', 'obsPatternDays', 'obsHistoryDays', 'obsDisabledIds'],
   email: ['agentEmailEnabled', 'agentRecipients'],
@@ -61,7 +61,7 @@ const DEFAULT_FORM = {
   serviceStatusMode: 'platform', serviceStatusStaleMinutes: 120,
   serviceStatusAiEnabled: true, serviceStatusAnalysesPerMinute: 3, serviceStatusDedupeMinutes: 60,
   agentEnabled: false, agentName: 'ICC Operations Agent', agentGrouping: 'platform', agentMinSeverity: 'warning',
-  agentHoldMinutes: 10, agentAnalysesPerHour: 20, agentRenotifyMinutes: 60, agentAutoResolveMinutes: 30,
+  agentHoldMinutes: 10, agentConsequenceMinutes: 30, agentOnsetMinutes: 10, agentAnalysesPerHour: 20, agentRenotifyMinutes: 60, agentAutoResolveMinutes: 30,
   agentEvidenceResolve: true, agentPatternMin: 3, agentPatternDays: 14, agentStickyRepeats: true, agentReminderHours: 24, agentPatternCooldownDays: 14,
   agentEmailEnabled: true, agentRecipients: '',
   obsEnabled: true, obsSustainSamples: 3, obsClearSamples: 2, obsPatternMin: 3, obsPatternDays: 7, obsHistoryDays: 90, obsDisabledIds: [],
@@ -87,6 +87,8 @@ function formFromSettings(d) {
     agentGrouping: a.grouping || 'platform',
     agentMinSeverity: a.minSeverity || 'warning',
     agentHoldMinutes: a.holdMinutes ?? 10,
+    agentConsequenceMinutes: a.consequenceMinutes ?? 30,
+    agentOnsetMinutes: a.onsetMinutes ?? 10,
     agentAnalysesPerHour: a.analysesPerHour ?? 20,
     agentRenotifyMinutes: a.renotifyMinutes ?? 60,
     agentAutoResolveMinutes: a.autoResolveMinutes ?? 30,
@@ -132,7 +134,7 @@ function payloadFor(tab, f) {
       return {
         opsAgent: {
           enabled: f.agentEnabled, name: f.agentName, minSeverity: f.agentMinSeverity, grouping: f.agentGrouping,
-          holdMinutes: Number(f.agentHoldMinutes), analysesPerHour: Number(f.agentAnalysesPerHour) || 20,
+          holdMinutes: Number(f.agentHoldMinutes), consequenceMinutes: Number(f.agentConsequenceMinutes), onsetMinutes: Number(f.agentOnsetMinutes), analysesPerHour: Number(f.agentAnalysesPerHour) || 20,
           renotifyMinutes: Number(f.agentRenotifyMinutes), autoResolveMinutes: Number(f.agentAutoResolveMinutes),
           evidenceResolve: f.agentEvidenceResolve, patternMin: Number(f.agentPatternMin), patternDays: Number(f.agentPatternDays),
           stickyRepeats: f.agentStickyRepeats, reminderHours: Number(f.agentReminderHours), patternCooldownDays: Number(f.agentPatternCooldownDays),
@@ -588,6 +590,14 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
                 <SettingRow label="Hold window (minutes)" htmlFor="agent-hold" dirty={isDirty('agentHoldMinutes')}
                   tip="How long a new incident collects related alerts before triage. 0 to 120.">
                   <input id="agent-hold" type="number" min={0} max={120} value={form.agentHoldMinutes} onChange={set('agentHoldMinutes')} className={numberCls} />
+                </SettingRow>
+                <SettingRow label="Fold consequences within (minutes)" htmlFor="agent-consequence" dirty={isDirty('agentConsequenceMinutes')}
+                  tip="A VM, VPG or object alert that opens inside this window after its host, datastore, switch or site went down joins that incident as a consequence. 0 turns folding off.">
+                  <input id="agent-consequence" type="number" min={0} max={240} value={form.agentConsequenceMinutes} onChange={set('agentConsequenceMinutes')} className={numberCls} />
+                </SettingRow>
+                <SettingRow label="Shared component window (minutes)" htmlFor="agent-onset" dirty={isDirty('agentOnsetMinutes')}
+                  tip="Three or more alerts on different hosts that share a component with no alert of its own fold into one incident when they open inside this window. 0 turns it off.">
+                  <input id="agent-onset" type="number" min={0} max={60} value={form.agentOnsetMinutes} onChange={set('agentOnsetMinutes')} className={numberCls} />
                 </SettingRow>
                 <SettingRow label="Triages per hour" htmlFor="agent-cap" dirty={isDirty('agentAnalysesPerHour')}
                   tip="Cap on AI analyses; incidents past the cap wait for the next hour. 1 to 200.">

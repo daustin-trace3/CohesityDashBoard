@@ -164,16 +164,25 @@ function collectZertoAlerts() {
 /** Open vCenter computed issues — reconcileIssueHistory keeps
  *  vcenter_issue_history current with a stable issue_key per issue, and
  *  resolving drops the row out of this query (which is what ends reminders). */
+const VCENTER_HOST_TARGET_TYPES = new Set(['host-down', 'host-maintenance', 'guest-volume-full']);
+function vcenterSubjectKind(type) {
+  if (type === 'host-down' || type === 'host-maintenance') return 'host';
+  if (type === 'guest-volume-full') return 'vm';
+  if (type === 'datastore-usage') return 'datastore';
+  return 'vcenter';
+}
 function collectVcenterIssues() {
   const rows = db.prepare(`
-    SELECT issue_key AS issueKey, vcenter, severity, type, message,
+    SELECT issue_key AS issueKey, vcenter, severity, type, target, message,
            first_seen AS firstSeen, last_seen AS lastSeen
     FROM vcenter_issue_history WHERE status = 'open'
   `).all();
   return rows.map((r) => ({
     sourceKey: `v:${r.issueKey}`,
     severity: String(r.severity || '').toLowerCase(),
-    host: r.vcenter,
+    host: VCENTER_HOST_TARGET_TYPES.has(r.type) && r.target ? r.target : r.vcenter,
+    subject: { kind: vcenterSubjectKind(r.type), name: r.target || r.vcenter },
+    vcenter: r.vcenter,
     message: r.message || '',
     firstSeen: toIso(r.firstSeen),
     lastSeen: toIso(r.lastSeen),

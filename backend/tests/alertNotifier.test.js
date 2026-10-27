@@ -5,7 +5,7 @@
  *
  * No network: every test injects a fake transport via _setTransportFactory.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -292,13 +292,25 @@ describe('alertNotifier', () => {
     configureSmtp({ alert_email_reminder_hours: '1' });
     await alertNotifier.run();
     expect(sent).toHaveLength(1);
-    expect(sent[0].subject).toContain('vc-01');
+    expect(sent[0].subject).toContain('esx-01');
 
     db.prepare("UPDATE vcenter_issue_history SET status = 'resolved'").run();
     db.prepare("UPDATE alert_notifications SET last_notified_at = datetime('now', '-2 hours')").run();
     sent.length = 0;
     await alertNotifier.run();
     expect(sent).toHaveLength(0);
+  });
+
+  it('(k2) vcenter host-down carries host = target and subject kind host', () => {
+    insertVcenterIssue({ issueKey: 'host-down|vc-01|esx-01', severity: 'critical', message: 'Host esx-01 is not responding' });
+    const registry = require('../core/registry');
+    const spy = vi.spyOn(registry, 'getPlugin').mockReturnValue({ enabled: true });
+    let item;
+    try { item = alertNotifier.collectOpenAlerts().items.find((i) => i.platform === 'vcenter'); } finally { spy.mockRestore(); }
+    expect(item.host).toBe('esx-01');
+    expect(item.subject).toEqual({ kind: 'host', name: 'esx-01' });
+    expect(item.vcenter).toBe('vc-01');
+    expect(item.sourceKey).toBe('v:host-down|vc-01|esx-01');
   });
 
   it('(l) dell acknowledged alerts are excluded and normal maps to info', async () => {

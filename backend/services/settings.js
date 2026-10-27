@@ -290,6 +290,11 @@ function getOpsAgentSettings() {
     minSeverity: ['info', 'warning', 'error', 'critical'].includes(sev) ? sev : 'warning',
     grouping: ['platform', 'service', 'component', 'site'].includes(getSetting('ops_agent_grouping')) ? getSetting('ops_agent_grouping') : 'platform',
     holdMinutes: numSetting('ops_agent_hold_minutes', 10, 0, 120),
+    // Correlation: how long after a parent fault (host, datastore, switch, site)
+    // a child alert still counts as its consequence, and how close together
+    // alerts on a shared component must open to fold as one. 0 turns each off.
+    consequenceMinutes: numSetting('ops_agent_consequence_minutes', 30, 0, 240),
+    onsetMinutes: numSetting('ops_agent_onset_minutes', 10, 0, 60),
     analysesPerHour: numSetting('ops_agent_analyses_per_hour', 20, 1, 200),
     renotifyMinutes: numSetting('ops_agent_renotify_minutes', 60, 0, 1440),
     autoResolveMinutes: numSetting('ops_agent_auto_resolve_minutes', 30, 0, 1440),

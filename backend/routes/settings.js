@@ -255,6 +255,8 @@ router.put('/', (req, res, next) => {
       if (a.minSeverity !== undefined && ['info', 'warning', 'error', 'critical'].includes(a.minSeverity)) setSetting('ops_agent_min_severity', a.minSeverity);
       if (a.grouping !== undefined && ['platform', 'service', 'component', 'site'].includes(a.grouping)) setSetting('ops_agent_grouping', a.grouping);
       if (a.holdMinutes !== undefined) { const n = Number(a.holdMinutes); setSetting('ops_agent_hold_minutes', n >= 0 && n <= 120 ? String(Math.round(n)) : ''); }
+      if (a.consequenceMinutes !== undefined) { const n = Number(a.consequenceMinutes); setSetting('ops_agent_consequence_minutes', n >= 0 && n <= 240 ? String(Math.round(n)) : ''); }
+      if (a.onsetMinutes !== undefined) { const n = Number(a.onsetMinutes); setSetting('ops_agent_onset_minutes', n >= 0 && n <= 60 ? String(Math.round(n)) : ''); }
       if (a.analysesPerHour !== undefined) { const n = Number(a.analysesPerHour); setSetting('ops_agent_analyses_per_hour', n >= 1 && n <= 200 ? String(Math.round(n)) : ''); }
       if (a.renotifyMinutes !== undefined) { const n = Number(a.renotifyMinutes); setSetting('ops_agent_renotify_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }
       if (a.autoResolveMinutes !== undefined) { const n = Number(a.autoResolveMinutes); setSetting('ops_agent_auto_resolve_minutes', n >= 0 && n <= 1440 ? String(Math.round(n)) : ''); }

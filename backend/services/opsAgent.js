@@ -29,6 +29,9 @@ const { platformMeta } = require('./platformMeta');
 const capabilities = require('./agentCapabilities');
 const agentProfiles = require('./agentProfiles');
 const agentRelations = require('./agentRelations');
+const agentDeps = require('./agentDependencies');
+const hostIdentity = require('./hostIdentity');
+const { memoByDbState } = require('../core/dbMemo');
 const agentTimeline = require('./agentTimeline');
 const observations = require('./agentObservations');
 const teams = require('./opsAgentTeams');
@@ -48,6 +51,7 @@ const STALE_MINUTES = 120;       // a source with no completed poll for this lon
 const HEAL_HOLD_MINUTES = 3;     // time given to a triggered re-poll before triage judges it
 const STUCK_MINUTES = 30;        // a tick still running after this is treated as wedged
 const TICK_MARK = 'ops_agent_tick_started';  // so the API process can see a tick in flight
+const ONSET_MIN = 3;             // distinct hosts alerting under one shared component before it counts as the cause
 const CLASS_WEIGHT = { incident: 300, recurring: 250, 'one-off': 100, noise: 0, 'self-healed': 0, 'self-cleared': 0 };
 
 // Timestamps in these tables are JS ISO strings (2026-10-01T05:00:00.000Z).
@@ -90,6 +94,28 @@ function hostKey(host) {
   return h;
 }
 
+/**
+ * Grouping token that survives a platform naming the same machine differently
+ * (a Dell "R740-07 (ABC1234)" that is the vCenter host esx-01). Resolution goes
+ * through the host identity index and is used only when it is unambiguous; any
+ * other outcome keeps today's hostKey. The index refKey is the lower-cased
+ * primary name, so an FQDN host still yields the same short token as before.
+ * Callers never pass poll:/stale:/obs: items (they key by source).
+ */
+function canonicalHostKey(host, idx, cache) {
+  const plain = hostKey(host);
+  if (!plain || !idx || String(host).indexOf(' @ ') > 0) return plain;
+  const token = String(host);
+  if (cache && cache.has(token)) return cache.get(token);
+  let out = plain;
+  try {
+    const { ref, reason } = hostIdentity.explainToken(idx, token);
+    if (reason === null && ref && typeof ref.refKey === 'string' && ref.refKey) out = hostKey(ref.refKey) || plain;
+  } catch { out = plain; }
+  if (cache) cache.set(token, out);
+  return out;
+}
+
 /** The source an alert came from, as its collector encodes it: c<clusterId>,
  *  a<arrayId>, d<omeId>, v, z, ar, aws, or the entity id of a poll/stale item.
  *  Used to keep one cluster, array or appliance apart from the next. */
@@ -110,14 +136,14 @@ function sourceTokenOf(item) {
  *   site      - alerts whose host a site provider (LogicMonitor) places at a
  *               site fold into one incident per site; the rest follow the
  *               platform rule. */
-function incidentKeyFor(item, wide, { mode = 'platform', appOf = null, siteOf = null } = {}) {
+function incidentKeyFor(item, wide, { mode = 'platform', appOf = null, siteOf = null, canon = null } = {}) {
   if (item.platform === 'appservice') return `app:${item.sourceKey}`;
   // A repeating observation is one sticky incident per subject, in every mode.
   if (item.kind === 'observation-pattern' && item.groupKey) return String(item.groupKey);
   // A collector can fold related items itself (probe-location latency, a burst
   // of link-downs). Component and service grouping keep the items apart.
   if (item.groupKey && (mode === 'platform' || mode === 'site')) return String(item.groupKey);
-  const hk = hostKey(item.host);
+  const hk = canon ? canon(item) : hostKey(item.host);
   // site: every alert from one site folds into one incident; an alert with no
   // site (or a poll:/stale: item, which names a source) takes the platform rule.
   if (mode === 'site') {
@@ -125,7 +151,7 @@ function incidentKeyFor(item, wide, { mode = 'platform', appOf = null, siteOf = 
     if (site && site.siteKey) return `site:${site.siteKey}`;
   }
   if (mode === 'service' && hk && appOf) {
-    const app = appOf.get(hk);
+    const app = appOf.get(hk) || appOf.get(hostKey(item.host));
     if (app) return `app:usage:${app.usageId}`;
   }
   if (mode === 'component') {
@@ -177,6 +203,7 @@ function kindOfKey(key) {
     : k.startsWith('lm-location:') ? 'location'
     : k.startsWith('lm-burst:') ? 'network-burst'
     : k.startsWith('src:') ? 'source'
+    : k.startsWith('shared:') ? 'shared-component'
     : k.startsWith('pattern:') ? 'pattern' : 'host';
 }
 
@@ -487,6 +514,224 @@ function patternPass(now, settings, items, suppressed, byKey, baseline, stats) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Correlation: an alert lands in the incident of the thing that broke
+// ---------------------------------------------------------------------------
+
+// platform -> alert type -> parent kind, for alerts that say a component is
+// down. Any poll:/stale: item is a down 'source' too. A LogicMonitor
+// device-dead is a down 'switch'; it only matters when some host's uplinks
+// name that device.
+const DOWN_CLASS = {
+  vcenter: { 'host-down': 'host' },
+  hyperv: { 'node-down': 'host', 'host-unreachable': 'host' },
+  brocade: { switch_unreachable: 'switch', switch_critical: 'switch' },
+  logicmonitor: { 'device-dead': 'switch' },
+};
+const DOWN_TYPES = [...new Set(Object.values(DOWN_CLASS).flatMap((m) => Object.keys(m)))];
+const SHARED_KINDS = ['host', 'datastore', 'switch', 'vpg', 'site', 'cluster'];
+const CHILD_LABEL = { host: 'VMs', datastore: 'VMs', vpg: 'VMs', switch: 'hosts', site: 'VPGs', cluster: 'objects' };
+const SKIP_SOURCE_RE = /^(poll|stale|obs|obs-pattern):/;
+
+/** Items that can be folded under another component's fault. Observations,
+ *  app services, source health and collector-folded groups keep their own keys. */
+function correlatable(it) {
+  return !(it.platform === 'appservice' || it.kind === 'observation' || it.kind === 'observation-pattern'
+    || it.groupKey || SKIP_SOURCE_RE.test(String(it.sourceKey || '')));
+}
+
+/** The parent kind an item makes when it says its own component is down, else null. */
+function downKindOf(it) {
+  if (!it || it.platform === 'appservice' || it.kind === 'observation' || it.kind === 'observation-pattern') return null;
+  if (/^(poll|stale):/.test(String(it.sourceKey || ''))) return 'source';
+  const m = DOWN_CLASS[it.platform];
+  return (m && m[it.type]) || null;
+}
+
+const tsMs = (v) => { const t = Date.parse(v); return Number.isNaN(t) ? null : t; };
+
+/** "N VMs on datastore X: <worst message>" for a shared-component incident. */
+function sharedTitle(kind, parent, n, rows) {
+  const top = [...rows].sort((a, b) => rank(b.severity) - rank(a.severity))[0];
+  const msg = top ? String(top.message || '').slice(0, 80) : '';
+  return `${n} ${CHILD_LABEL[kind] || 'systems'} on ${kind} ${parent}${msg ? `: ${msg}` : ''}`;
+}
+
+/** " (affects 2 app services: Payroll, CRM)": the app blast radius of a parent fault. */
+function appsSuffix(apps) {
+  if (!apps || !apps.length) return '';
+  const names = apps.map((a) => a.label || a.displayId || a.usageId);
+  const more = names.length > 3 ? ` and ${names.length - 3} more` : '';
+  return ` (affects ${apps.length} app service${apps.length === 1 ? '' : 's'}: ${names.slice(0, 3).join(', ')}${more})`;
+}
+const APPS_SUFFIX_RE = / \(affects \d+ app services?: [^)]*\)$/;
+
+/**
+ * Decide, before the tick's transaction opens, which fresh items fold under a
+ * parent fault (consequence) or under a component they share (shared). Reads
+ * only: the open down-class alert rows (one SELECT), the open incidents and
+ * the dependency index. The in-transaction loop then does Map lookups.
+ *   plan.order        fresh items, down-class first so their incident exists
+ *                     when the children attach
+ *   plan.consequence  item -> { kind, parentKey, parent, dkey, incidentId, stored, platform }
+ *   plan.shared       item -> { kind, parentKey, parent, siblings }
+ *   plan.downKeys     item -> [dkey] for down-class fresh items
+ */
+function planCorrelation({ fresh, items, failed = [], mode, wide, settings, now, baseline, canon }) {
+  const plan = { order: fresh, consequence: new Map(), shared: new Map(), downKeys: new Map() };
+  if (mode === 'component') return plan;
+  const consMs = Number(settings.consequenceMinutes ?? 30) * 60000;
+  const onsetMs = Number(settings.onsetMinutes ?? 10) * 60000;
+  const nowMs = Date.parse(now);
+
+  const isDown = (it) => !!downKindOf(it);
+  const order = [...fresh].sort((a, b) => Number(isDown(b)) - Number(isDown(a)));
+  plan.order = order;
+
+  // Down parents: open alert rows already in incidents, this tick's fresh
+  // down-class items, and stored state with no alert row at all.
+  const downParents = new Map();   // `${kind}|${key}` -> entry
+  const addDown = (kind, key, entry) => {
+    if (!key) return null;
+    const dkey = `${kind}|${key}`;
+    const cur = downParents.get(dkey);
+    if (!cur) { downParents.set(dkey, entry); return dkey; }
+    if (entry.firstSeen != null && (cur.firstSeen == null || entry.firstSeen < cur.firstSeen)) cur.firstSeen = entry.firstSeen;
+    if (cur.incidentId == null && entry.incidentId != null) cur.incidentId = entry.incidentId;
+    return dkey;
+  };
+  // A host parent is known by its plain key and by its identity key.
+  const keysFor = (kind, host, it) => {
+    const out = new Set([agentDeps.parentKeyFor(kind, host)]);
+    if (it && kind === 'host') out.add(canon(it));
+    return [...out].filter(Boolean);
+  };
+
+  let rows = [];
+  try {
+    const ph = DOWN_TYPES.map(() => '?').join(',');
+    rows = db.prepare(`
+      SELECT a.incident_id, a.platform, a.source_key, a.host, a.type, a.first_seen FROM ops_incident_alerts a
+      JOIN ops_incidents i ON i.id = a.incident_id
+      WHERE i.state != 'resolved' AND a.cleared_at IS NULL AND COALESCE(a.relation, '') != 'consequence'
+        AND (a.type IN (${ph}) OR a.source_key LIKE 'poll:%' OR a.source_key LIKE 'stale:%')
+    `).all(...DOWN_TYPES);
+  } catch (err) { logger.warn(`[OpsAgent] down-parent lookup failed: ${err.message}`); }
+  // A parent whose alert is no longer reported is already clearing (the clearing
+  // pass runs at the end of the tick): a child that fires now is its own fault.
+  const present = new Set(items.map((it) => `${it.platform}:${it.sourceKey}`));
+  for (const r of rows) {
+    const kind = downKindOf({ platform: r.platform, sourceKey: r.source_key, type: r.type });
+    if (!kind || !r.host) continue;
+    if (!present.has(`${r.platform}:${r.source_key}`) && !failed.includes(r.platform)) continue;
+    for (const k of keysFor(kind, r.host, { host: r.host })) {
+      addDown(kind, k, { incidentId: r.incident_id, host: r.host, label: r.host, firstSeen: tsMs(r.first_seen), platform: r.platform, stored: false });
+    }
+  }
+  for (const it of order) {
+    const kind = downKindOf(it);
+    if (!kind || !it.host) continue;
+    const dkeys = [];
+    for (const k of keysFor(kind, it.host, it)) {
+      const dk = addDown(kind, k, { incidentId: null, host: it.host, label: it.host, firstSeen: tsMs(it.firstSeen), platform: it.platform, stored: false, fresh: it });
+      if (dk) dkeys.push(dk);
+    }
+    plan.downKeys.set(it, dkeys);
+  }
+  try {
+    for (const p of agentDeps.downParentsStored(db)) {
+      addDown(p.kind, p.parentKey, { incidentId: null, host: p.parent, label: p.parent, firstSeen: null, platform: p.platform, stored: true });
+    }
+  } catch (err) { logger.warn(`[OpsAgent] stored down-parent lookup failed: ${err.message}`); }
+
+  const lmDown = rows.some((r) => r.platform === 'logicmonitor') || order.some((it) => it.platform === 'logicmonitor' && it.type === 'device-dead');
+  const candidates = order.filter((it) => correlatable(it) && !plan.downKeys.has(it));
+  const parentsByItem = new Map();
+  for (const it of candidates) {
+    const ck = canon(it);
+    const rk = hostKey(it.host);
+    const list = [...agentDeps.parentsOf(db, ck, { lm: lmDown })];
+    if (rk && rk !== ck) for (const p of agentDeps.parentsOf(db, rk, { lm: lmDown })) if (!list.some((q) => q.kind === p.kind && q.parentKey === p.parentKey)) list.push(p);
+    parentsByItem.set(it, list);
+  }
+
+  // Consequences: a child that opened shortly after its parent went down.
+  if (consMs > 0) {
+    for (const it of candidates) {
+      const itMs = tsMs(it.firstSeen) ?? nowMs;
+      for (const p of parentsByItem.get(it)) {
+        const entry = downParents.get(`${p.kind}|${p.parentKey}`);
+        if (!entry || entry.fresh === it) continue;
+        if (p.kind === 'source' && entry.platform === it.platform) continue;   // cross-platform only
+        if (!baseline && entry.firstSeen != null) {
+          if (entry.firstSeen > itMs + 60000) continue;       // the child came first: not a consequence
+          if (itMs - entry.firstSeen > consMs) continue;      // too long after
+        }
+        plan.consequence.set(it, { kind: p.kind, parentKey: p.parentKey, parent: entry.label || p.parent, dkey: `${p.kind}|${p.parentKey}`, incidentId: entry.incidentId, stored: entry.stored, platform: entry.platform });
+        break;
+      }
+    }
+  }
+
+  // Shared component: several hosts alert under one parent that has no alert.
+  if (onsetMs > 0) {
+    const openRows = openIncidents();
+    const openKeys = new Set(openRows.map((r) => r.incident_key));
+    const groups = new Map();
+    for (const it of candidates) {
+      if (plan.consequence.has(it) || wide.has(it.platform)) continue;
+      for (const p of parentsByItem.get(it)) {
+        if (!SHARED_KINDS.includes(p.kind) || downParents.has(`${p.kind}|${p.parentKey}`)) continue;
+        const gk = `${p.kind}|${p.parentKey}`;
+        if (!groups.has(gk)) groups.set(gk, { kind: p.kind, parentKey: p.parentKey, parent: p.parent, items: [] });
+        groups.get(gk).items.push(it);
+      }
+    }
+    const hostsOf = (list) => new Set(list.map((it) => canon(it)).filter(Boolean));
+    const chosen = new Map();   // group key -> { members:Set<item>, siblings }
+    for (const [gk, g] of groups) {
+      const exists = openKeys.has(`shared:${g.kind}:${g.parentKey}`);
+      const kids = new Set(agentDeps.childrenOf(db, g.parent, g.kind).map((c) => c.hostKey));
+      const siblings = new Set();
+      for (const r of openRows) {
+        const hk = r.host ? hostKey(r.host) : '';
+        if (hk && kids.has(hk) && !String(r.incident_key).startsWith('shared:')) siblings.add(hk);
+      }
+      let members = g.items;
+      if (!exists && !baseline) {
+        // The largest set of children whose onsets all sit inside the window.
+        const sorted = [...g.items].sort((a, b) => (tsMs(a.firstSeen) ?? nowMs) - (tsMs(b.firstSeen) ?? nowMs));
+        let best = [];
+        for (let i = 0; i < sorted.length; i += 1) {
+          const t0 = tsMs(sorted[i].firstSeen) ?? nowMs;
+          const win = sorted.filter((x, j) => j >= i && (tsMs(x.firstSeen) ?? nowMs) - t0 <= onsetMs);
+          if (hostsOf(win).size > hostsOf(best).size) best = win;
+        }
+        members = best;
+      }
+      const distinct = hostsOf(members);
+      const sibs = [...siblings].filter((sk) => !distinct.has(sk)).length;
+      if (!members.length || (!exists && distinct.size + sibs < ONSET_MIN)) continue;
+      chosen.set(gk, { members: new Set(members), siblings: sibs });
+    }
+    for (const it of candidates) {
+      if (plan.consequence.has(it) || wide.has(it.platform)) continue;
+      for (const p of parentsByItem.get(it)) {
+        const c = chosen.get(`${p.kind}|${p.parentKey}`);
+        if (!c || !c.members.has(it)) continue;
+        plan.shared.set(it, { kind: p.kind, parentKey: p.parentKey, parent: p.parent, siblings: c.siblings });
+        break;
+      }
+    }
+  }
+  return plan;
+}
+
+/** The identity index for this tick, rebuilt only when the database changed. */
+function identityIndex() {
+  try { return memoByDbState(db, 'opsAgentIdentity', () => hostIdentity.buildIdentityIndex(db, { fresh: true })); } catch { return null; }
+}
+
 /** One tick: attach new alerts, open incidents, clear gone alerts, resolve. */
 function groupTick(now, settings, collected, { baseline = false } = {}) {
   const minRank = rank(settings.minSeverity);
@@ -519,12 +764,27 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
   // Platform-wide: a source unreachable, or a burst of new alerts. Only the
   // 'platform' mode folds; the others keep each component apart.
   const wide = new Set();
-  const perPlatform = new Map();
-  for (const it of fresh) if (it.kind !== 'observation') perPlatform.set(it.platform, (perPlatform.get(it.platform) || 0) + 1);
+  // Identity first: a Dell "R740-07 (TAG)" and the vCenter host esx-01 are one
+  // machine, so they share an incident key. Built before the transaction.
+  const idx = identityIndex();
+  const canonCache = new Map();
+  const canon = (it) => (it.platform === 'appservice' || it.kind === 'observation' || it.kind === 'observation-pattern' || SKIP_SOURCE_RE.test(String(it.sourceKey || ''))
+    ? hostKey(it.host) : canonicalHostKey(it.host, idx, canonCache));
   if (mode === 'platform' || mode === 'site') {
     for (const it of items) if (/^(poll|stale):/.test(String(it.sourceKey)) && it.platform !== 'appservice') wide.add(it.platform);
+  }
+  const plan = planCorrelation({ fresh, items, failed: collected.failed || [], mode, wide, settings, now, baseline, canon });
+  // An alert folded under its parent's fault is not a burst of its own.
+  const perPlatform = new Map();
+  for (const it of plan.order) if (it.kind !== 'observation' && !plan.consequence.has(it)) perPlatform.set(it.platform, (perPlatform.get(it.platform) || 0) + 1);
+  if (mode === 'platform' || mode === 'site') {
     for (const [p, n] of perPlatform) if (n >= WIDE_BURST) wide.add(p);
   }
+  // Platform-wide outranks shared.
+  for (const it of [...plan.shared.keys()]) if (wide.has(it.platform)) plan.shared.delete(it);
+  const parentTouched = new Map();   // incident id -> { kind, parent }: parent faults that get the app blast radius
+  const sharedTouched = new Map();   // incident id -> { kind, parent, siblings }
+  const downInc = new Map();         // `${kind}|${key}` -> incident id of a down-class item seen this tick
 
   const stats = { alertsSeen: items.length, newAlerts: fresh.length, incidentsOpened: 0 };
   const holdMs = settings.holdMinutes * 60000;
@@ -535,8 +795,8 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
   // A re-firing alert with the same key re-arms its cleared row instead of
   // staying "cleared" forever (which made every flap cycle read as new).
   const insertAlert = db.prepare(`
-    INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, type, first_seen, attached_at, detail_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ops_incident_alerts (incident_id, platform, source_key, severity, host, message, type, first_seen, attached_at, detail_json, relation, relation_of)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(incident_id, platform, source_key) DO UPDATE SET
       cleared_at = NULL, severity = excluded.severity, message = excluded.message,
       first_seen = excluded.first_seen, attached_at = excluded.attached_at, detail_json = excluded.detail_json
@@ -544,11 +804,50 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
 
   db.transaction(() => {
     const byKey = new Map(openIncidents().map((i) => [i.incident_key, i]));
+    const byId = new Map([...byKey.values()].map((i) => [i.id, i]));
     patternPass(now, settings, items, suppressed, byKey, baseline, stats);
-    for (const it of fresh) {
+
+    /** The incident a consequence attaches to: the parent's own, or, for a
+     *  stored-state parent (inaccessible datastore, disconnected site) that has
+     *  no alert row, one opened here on shared:<kind>:<key>. */
+    const parentIncidentFor = (cons, it) => {
+      const id = downInc.get(cons.dkey) ?? cons.incidentId;
+      const found = id != null ? byId.get(id) : null;
+      if (found) return found;
+      if (!cons.stored) return null;
+      const skey = `shared:${cons.kind}:${cons.parentKey}`;
+      let sinc = byKey.get(skey);
+      if (!sinc) {
+        const title = cons.kind === 'datastore' ? `Datastore ${cons.parent} inaccessible` : cons.kind === 'site' ? `Zerto site ${cons.parent} is not connected` : `${cons.kind} ${cons.parent} is down`;
+        const sid = insertIncident.run(skey, title, null, JSON.stringify([cons.platform]), normalizeSeverity(it.severity), now, new Date(Date.parse(now) + holdMs).toISOString(), now, baseline ? 1 : 0).lastInsertRowid;
+        sinc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(sid);
+        byKey.set(skey, sinc); byId.set(sid, sinc);
+        stats.incidentsOpened += 1;
+        act('opened incident', `#${sid} ${title} [${skey}] stored-state parent with no alert of its own${baseline ? ', baseline (pre-existing backlog, will not email)' : ''}`);
+      }
+      return sinc;
+    };
+
+    for (const it of plan.order) {
+      // Precedence: a consequence outranks platform-wide, platform-wide
+      // outranks a shared component, and a shared component outranks site,
+      // service and host grouping (incidentKeyFor holds the rest).
+      const cons = plan.consequence.get(it);
+      const forced = cons ? parentIncidentFor(cons, it) : null;
+      const share = !forced ? plan.shared.get(it) : null;
+      const relation = forced ? 'consequence' : share ? 'shared' : null;
+      const relationOf = forced ? cons.parent : share ? `${share.kind}:${share.parentKey}` : null;
       // An observation is never folded into a platform-wide incident.
-      const key = incidentKeyFor(it, it.kind === 'observation' ? new Set() : wide, { mode, appOf, siteOf });
-      let inc = byKey.get(key);
+      let key = forced ? forced.incident_key
+        : share ? `shared:${share.kind}:${share.parentKey}`
+        : incidentKeyFor(it, it.kind === 'observation' ? new Set() : wide, { mode, appOf, siteOf, canon });
+      // An open incident keeps the key it was created with: before identity
+      // resolution this host's key was its plain hostKey.
+      if (!forced && !share && key.startsWith('host:') && !byKey.has(key)) {
+        const legacy = `host:${hostKey(it.host)}`;
+        if (legacy !== key && byKey.has(legacy)) key = legacy;
+      }
+      let inc = forced || byKey.get(key);
       if (!inc) {
         // A promoted observation already held for its sustain samples, so it
         // is due for triage in the tick that opens it.
@@ -557,18 +856,20 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         const isWide = key.endsWith(':wide');
         const isSite = key.startsWith('site:');
         const isGroup = isGroupKey(key);
+        const isShared = key.startsWith('shared:');
         const siteInfo = isSite ? (it.siteKey ? { siteName: it.siteName || it.siteKey } : (siteOf ? siteOf(it) : null)) : null;
         const app = key.startsWith('app:') && it.platform !== 'appservice' && appOf ? appOf.get(hostKey(it.host)) : null;
         const title = it.platform === 'appservice' ? `App service ${it.host || it.sourceKey}`
           : app ? `App service ${app.displayId}${app.label ? ` (${app.label})` : ''}`
           : isGroup ? groupTitle(key, it, 1)
+          : isShared ? sharedTitle(share.kind, share.parent, 1, [it])
           : isSite ? `${siteInfo && siteInfo.siteName ? siteInfo.siteName : key.slice(5)}: 1 alert across 1 device`
           : isWide ? `${meta.label}: platform-wide alerts`
           : (it.title && (key.startsWith('host:') || /^platform:[^:]+$/.test(key))) ? it.title
           : (it.host ? `${it.host}` : `${meta.label} alerts`);
-        const id = insertIncident.run(key, title, isWide || isSite || isGroup || (key.startsWith('src:') && !it.host) ? null : (it.host || null), JSON.stringify([it.platform]), normalizeSeverity(it.severity), now, holdUntil, now, baseline ? 1 : 0).lastInsertRowid;
+        const id = insertIncident.run(key, title, isWide || isSite || isGroup || isShared || (key.startsWith('src:') && !it.host) ? null : (it.host || null), JSON.stringify([it.platform]), normalizeSeverity(it.severity), now, holdUntil, now, baseline ? 1 : 0).lastInsertRowid;
         inc = db.prepare('SELECT * FROM ops_incidents WHERE id = ?').get(id);
-        byKey.set(key, inc);
+        byKey.set(key, inc); byId.set(id, inc);
         stats.incidentsOpened += 1;
         act('opened incident', `#${inc.id} ${title} [${key}] first alert ${platformMeta(it.platform).label} ${normalizeSeverity(it.severity)}${baseline ? ', baseline (pre-existing backlog, will not email)' : ''}`);
       }
@@ -577,7 +878,18 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         const info = it.siteKey ? { siteName: it.siteName || it.siteKey } : (siteOf ? siteOf(it) : null);
         siteTouched.set(key, { id: inc.id, name: (info && info.siteName) || (siteTouched.get(key) || {}).name || key.slice(5) });
       }
-      insertAlert.run(inc.id, it.platform, String(it.sourceKey), normalizeSeverity(it.severity), it.host || null, String(it.message || '').slice(0, 1000), it.type || null, it.firstSeen || null, now, detailOf(it));
+      insertAlert.run(inc.id, it.platform, String(it.sourceKey), normalizeSeverity(it.severity), it.host || null, String(it.message || '').slice(0, 1000), it.type || null, it.firstSeen || null, now, detailOf(it), relation, relationOf);
+      for (const dk of plan.downKeys.get(it) || []) {
+        downInc.set(dk, inc.id);
+        parentTouched.set(inc.id, { kind: dk.split('|')[0], parent: it.host });
+      }
+      if (forced) {
+        parentTouched.set(inc.id, { kind: cons.kind, parent: cons.parent });
+        act('folded consequence', `#${inc.id} ${it.host || it.sourceKey} ${platformMeta(it.platform).label} under ${cons.kind} ${cons.parent}`);
+      } else if (share) {
+        sharedTouched.set(inc.id, { kind: share.kind, parent: share.parent, siblings: share.siblings });
+        act('folded shared component', `#${inc.id} ${it.host || it.sourceKey} ${platformMeta(it.platform).label} on ${share.kind} ${share.parent}`);
+      }
       if (it.observationId) db.prepare('UPDATE ops_observations SET incident_id = ? WHERE id = ?').run(inc.id, it.observationId);
       const platforms = new Set(JSON.parse(inc.platforms || '[]'));
       platforms.add(it.platform);
@@ -644,6 +956,24 @@ function groupTick(now, settings, collected, { baseline = false } = {}) {
         db.prepare("UPDATE ops_incidents SET state = 'collecting', hold_until = ?, cleared_since = NULL WHERE id = ?").run(now, iid);
       }
       act('observation promoted', `#${iid} ${inc.title} ${stored.severity} -> ${sev}`);
+    }
+
+    // Shared-component incidents carry a live count and the worst message until triage.
+    for (const [id, sh] of sharedTouched) {
+      const live = db.prepare('SELECT host, severity, message FROM ops_incident_alerts WHERE incident_id = ? AND cleared_at IS NULL').all(id);
+      const hosts = new Set(live.map((r) => hostKey(r.host)).filter(Boolean));
+      db.prepare('UPDATE ops_incidents SET title = ? WHERE id = ? AND triaged_at IS NULL').run(sharedTitle(sh.kind, sh.parent, hosts.size + (sh.siblings || 0), live), id);
+    }
+
+    // A parent fault names the watched app services that ride on what broke.
+    for (const [id, pt] of parentTouched) {
+      if (pt.kind !== 'host' && pt.kind !== 'datastore') continue;   // apps ride on VMs, which sit under hosts and datastores
+      let apps = [];
+      try { apps = agentDeps.appsOn(db, pt.parent, pt.kind); } catch { apps = []; }
+      if (!apps.length) continue;
+      const row = db.prepare('SELECT title, triaged_at FROM ops_incidents WHERE id = ?').get(id);
+      if (!row || row.triaged_at) continue;
+      db.prepare('UPDATE ops_incidents SET title = ? WHERE id = ?').run(row.title.replace(APPS_SUFFIX_RE, '') + appsSuffix(apps), id);
     }
 
     // Site incident titles carry live counts until triage sets its own.
@@ -953,6 +1283,86 @@ function patternEvidence(inc, settings) {
   };
 }
 
+const PARENT_NOUN = { host: 'Host', datastore: 'Datastore', switch: 'Switch', site: 'Zerto site', source: 'Source', vpg: 'VPG', cluster: 'Cluster' };
+const PARENT_STATE = { datastore: 'is inaccessible', site: 'is not connected', source: 'is not answering polls' };
+const CHILD_OF = { host: 'VMs that run on it', datastore: 'VMs that use it', switch: 'hosts cabled to it', site: 'workloads protected at it', source: 'systems it polls', vpg: 'VMs in it', cluster: 'objects it protects' };
+const listNames = (names, cap = 6) => `${names.slice(0, cap).join(', ')}${names.length > cap ? ` and ${names.length - cap} more` : ''}`;
+const spanMinutes = (stamps) => {
+  const ms = stamps.map(tsMs).filter((x) => x != null);
+  return ms.length > 1 ? Math.max(1, Math.ceil((Math.max(...ms) - Math.min(...ms)) / 60000)) : null;
+};
+
+/**
+ * Evidence for the alerts an incident folded under another component:
+ *   blastRadius  consequences of one parent fault (rows with relation = consequence)
+ *   shared       hosts that alerted under a component with no alert of its own
+ *   siblings     for a shared incident, open incidents of other children of that component
+ * Built from the stored alert rows, so it is the same at triage, in the email
+ * and in the modal.
+ */
+function correlationEvidence(inc, alerts) {
+  const out = {};
+  const cons = alerts.filter((a) => a.relation === 'consequence');
+  const shr = alerts.filter((a) => a.relation === 'shared');
+  if (cons.length) {
+    const tally = new Map();
+    for (const a of cons) tally.set(a.relation_of, (tally.get(a.relation_of) || 0) + 1);
+    const parent = [...tally.entries()].sort((x, y) => y[1] - x[1])[0][0];
+    const mine = cons.filter((a) => a.relation_of === parent);
+    const parentRow = alerts.find((a) => !a.relation && hostKey(a.host) === hostKey(parent)
+      && downKindOf({ platform: a.platform, sourceKey: a.source_key, type: a.type }));
+    const keyKind = String(inc.incident_key || '').startsWith('shared:') ? String(inc.incident_key).split(':')[1] : null;
+    const kind = (parentRow && downKindOf({ platform: parentRow.platform, sourceKey: parentRow.source_key, type: parentRow.type })) || keyKind || 'host';
+    let stored = null;
+    if (!parentRow) {
+      try { stored = agentDeps.downParentsStored(db).find((x) => x.kind === kind && x.parentKey === agentDeps.parentKeyFor(kind, parent)) || null; } catch { stored = null; }
+    }
+    const parentCleared = parentRow ? !!parentRow.cleared_at : !stored;
+    let apps = [];
+    if (kind === 'host' || kind === 'datastore') {
+      try { apps = agentDeps.appsOn(db, parent, kind); } catch { apps = []; }
+    }
+    const within = spanMinutes([...(parentRow ? [parentRow.first_seen] : []), ...mine.map((a) => a.first_seen)]);
+    const names = [...new Set(mine.map((a) => a.host).filter(Boolean))];
+    const noun = PARENT_NOUN[kind] || 'Component';
+    const state = parentCleared ? 'was down (its own alert has since cleared)' : (PARENT_STATE[kind] || 'is down');
+    const n = mine.length;
+    const appText = apps.length
+      ? ` ${apps.length} watched app service${apps.length === 1 ? '' : 's'} run${apps.length === 1 ? 's' : ''} on these VMs: ${listNames(apps.map((a) => a.label || a.displayId || a.usageId), 4)}.` : '';
+    out.blastRadius = {
+      parent, kind, parentPlatform: (parentRow && parentRow.platform) || (stored && stored.platform) || null, parentCleared,
+      childrenTotal: n,
+      children: mine.slice(0, 12).map((a) => ({ host: a.host, platform: a.platform, severity: a.severity, type: a.type, cleared: !!a.cleared_at })),
+      appsAffected: apps.slice(0, 10).map((a) => ({ usageId: a.usageId, label: a.label || a.displayId || a.usageId, servers: a.servers.slice(0, 6) })),
+      sentence: `${noun} ${parent} ${state}; ${n} alert${n === 1 ? '' : 's'} on ${CHILD_OF[kind] || 'systems that depend on it'} opened${within ? ` within ${within} minute${within === 1 ? '' : 's'}` : ''} and ${n === 1 ? 'is' : 'are'} treated as ${n === 1 ? 'a consequence' : 'consequences'} of the ${kind} fault, not separate faults: ${listNames(names)}.${appText}`,
+    };
+  }
+  if (shr.length) {
+    const [kind, ...rest] = String(shr[0].relation_of || '').split(':');
+    const parentKey = rest.join(':');
+    // The display name of the shared component comes from the first child's parents.
+    let parent = parentKey;
+    try {
+      const hit = agentDeps.parentsOf(db, shr[0].host).find((x) => x.kind === kind && x.parentKey === parentKey);
+      if (hit) parent = hit.parent;
+    } catch { /* keep the key */ }
+    const names = [...new Set(shr.map((a) => a.host).filter(Boolean))];
+    const within = spanMinutes(shr.map((a) => a.first_seen));
+    const n = names.length;
+    out.shared = {
+      kind, parent, childrenTotal: n,
+      children: shr.slice(0, 12).map((a) => ({ host: a.host, platform: a.platform, severity: a.severity, type: a.type, cleared: !!a.cleared_at })),
+      sentence: `${n} ${CHILD_LABEL[kind] || 'systems'} that share ${kind} ${parent} alerted${within ? ` within ${within} minute${within === 1 ? '' : 's'}` : ''} and the ${kind} itself has no alert; the shared component is the likely common cause.`,
+    };
+    try {
+      const kids = new Set(agentDeps.childrenOf(db, parent, kind).map((c) => c.hostKey));
+      out.siblings = db.prepare("SELECT id, title, host, platforms, severity, state, classification, summary FROM ops_incidents WHERE id != ? AND state != 'resolved' AND host IS NOT NULL").all(inc.id)
+        .filter((r) => kids.has(hostKey(r.host))).slice(0, 10);
+    } catch { /* siblings are optional */ }
+  }
+  return out;
+}
+
 function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   const hosts = [];
   const seen = new Set();
@@ -1026,8 +1436,11 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
   }
   let obsEv = null;
   try { obsEv = observationEvidence(alerts); } catch (err) { logger.warn(`[OpsAgent] observation evidence failed for #${inc.id}: ${err.message}`); }
+  let corr = {};
+  try { corr = correlationEvidence(inc, alerts); } catch (err) { logger.warn(`[OpsAgent] correlation evidence failed for #${inc.id}: ${err.message}`); }
+  if (corr.siblings && corr.siblings.length) relatedIncidents = [...relatedIncidents, ...corr.siblings].slice(0, 10);
   const shownAlerts = budgetedAlerts(alerts, budgets)
-    .map((a) => ({ platform: a.platform, severity: a.severity, host: a.host, message: a.message, type: a.type, firstSeen: a.first_seen, cleared: !!a.cleared_at }));
+    .map((a) => ({ platform: a.platform, severity: a.severity, host: a.host, message: a.message, type: a.type, firstSeen: a.first_seen, cleared: !!a.cleared_at, ...(a.relation ? { relation: a.relation, relationOf: a.relation_of } : {}) }));
   const evidence = {
     incident: { id: inc.id, key: inc.incident_key, title: inc.title, host: inc.host, platforms: incPlatforms, severity: inc.severity, openedAt: inc.opened_at, kind: kindOfKey(inc.incident_key) },
     relatedIncidents,
@@ -1035,6 +1448,8 @@ function gatherIncidentEvidence(inc, alerts, settings = getOpsAgentSettings()) {
     alerts: shownAlerts,
     alertsTotal: alerts.length,
     alertsOmitted: Math.max(0, alerts.length - shownAlerts.length),
+    ...(corr.blastRadius ? { blastRadius: corr.blastRadius } : {}),
+    ...(corr.shared ? { shared: corr.shared } : {}),
     // Right after the alerts, where the prompt expects to read it.
     ...(obsEv ? { observations: obsEv } : {}),
     hosts,
@@ -1088,6 +1503,8 @@ function fallbackTriage(evidence) {
   for (const b of (evidence.network || [])) reviewed.push(`Network, ${b.title}: ${(b.lines || []).slice(0, 3).join('; ')}${(b.lines || []).length > 3 ? ` (+${b.lines.length - 3} more in the Network section)` : ''}`);
   const jobs = evidence.failedBackupJobs || [];
   if (jobs.length) reviewed.push(`Backup job log: ${jobs.length} failed or canceled run(s) in 24h on ${[...new Set(jobs.map((j) => j.source).filter(Boolean))].join(', ') || 'the platform'}; the newest is ${jobs[0].job || 'unnamed'} (${jobs[0].status}${jobs[0].error ? `: ${jobs[0].error.slice(0, 120)}` : ''}).`);
+  if (evidence.blastRadius) reviewed.push(`Blast radius: ${evidence.blastRadius.childrenTotal} consequence${evidence.blastRadius.childrenTotal === 1 ? '' : 's'} under ${evidence.blastRadius.parent}`);
+  if (evidence.shared) reviewed.push(`Shared component: ${evidence.shared.childrenTotal} ${CHILD_LABEL[evidence.shared.kind] || 'systems'} alerting on ${evidence.shared.kind} ${evidence.shared.parent}`);
   const pat = evidence.pattern || null;
   if (pat) reviewed.push(`Pattern: ${pat.count} one-off bursts of ${pat.observerLabel} on ${pat.subjectLabel} in ${pat.windowDays} days${pat.typicalGapMinutes != null ? `, typically ${pat.typicalGapMinutes} min apart` : ''}; each lasted ${pat.bursts.map((b) => b.minutes).join(', ')} min and cleared on its own.`);
   const obsEv = evidence.observations || null;
@@ -1131,6 +1548,8 @@ function humanFromEvidence(evidence) {
  *  note. Shared by the triage call and the prompt preview route. */
 const OBSERVATIONS_SENTENCE = ' Observations are ICC\'s own sustained-signal findings over polled metrics (an episode with its samples, peak and outcome history); treat a watching episode as context, a promoted one as a confirmed condition, and use the history to say whether this is a blip, a repeat, or a change.';
 
+const BLAST_SENTENCE = ' blastRadius lists alerts that are consequences of one parent fault: triage the parent, name the children under impact, and propose no steps on the children. shared names a component several alerting hosts have in common that has no alert of its own: treat it as the likely common cause and say what to check on it.';
+
 const PATTERN_SENTENCE = ' This incident exists because the same short condition keeps returning; judge the cadence and what changed, not the latest burst.';
 
 function systemPromptFor(evidence, { tools = false } = {}) {
@@ -1138,7 +1557,7 @@ function systemPromptFor(evidence, { tools = false } = {}) {
   const platforms = [...new Set([...(inc.platforms || []), ...((evidence && evidence.alerts) || []).map((a) => a.platform)].filter(Boolean))];
   const ec = (getSetting('llm_estate_context') || '').trim();
   const hasObs = !!(evidence && evidence.observations && ((evidence.observations.episodes || []).length || (evidence.observations.history || []).length));
-  const tail = (hasObs ? OBSERVATIONS_SENTENCE : '') + (evidence && evidence.pattern ? PATTERN_SENTENCE : '') + (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
+  const tail = (hasObs ? OBSERVATIONS_SENTENCE : '') + (evidence && evidence.pattern ? PATTERN_SENTENCE : '') + (evidence && (evidence.blastRadius || evidence.shared) ? BLAST_SENTENCE : '') + (ec ? ` Operator context describing what is NORMAL for this estate, treat as authoritative: ${ec}` : '') + PROMPT_NOTE;
   const built = agentProfiles.buildSystemPrompt({ platforms, evidence, reserve: tail.length, tools });
   const system = built.system + tail;
   logger.debug(`[OpsAgent] prompt chars=${system.length} focus=[${built.focusUsed.join(',')}] relations=${((evidence && evidence.relations) || []).length}`);
@@ -1432,7 +1851,7 @@ function liveCheckMode(checks) {
   return checks.some((c) => c.requestedBy === 'model') ? ' (asked for by the agent)' : ' (playbook)';
 }
 
-function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [], timeline = [], observations: obsEvidence = null, reminder = 0, pattern = null, requiresHuman = false } = {}) {
+function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Operations Agent', healActions = [], recurrence = null, failedJobs = [], liveChecks = null, network = [], relations = [], timeline = [], observations: obsEvidence = null, reminder = 0, pattern = null, requiresHuman = false, blast = null, sharedEv = null } = {}) {
   const platforms = JSON.parse(inc.platforms || '[]').map((p) => platformMeta(p).label);
   const sev = String(inc.severity || 'warning').toUpperCase();
   const rec = recurrence && recurrence.isPattern ? recurrence : null;
@@ -1444,9 +1863,26 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   // in the section heading and the rest is a count pointing at the page.
   const EMAIL_ALERT_CAP = 5;
   const newestFirst = (arr) => [...arr].sort((x, y) => String(y.first_seen || '').localeCompare(String(x.first_seen || '')));
-  const aliveShown = newestFirst(alive).slice(0, EMAIL_ALERT_CAP);
+  // Alerts folded under another component's fault list in their own block.
+  const consRows = alive.filter((a) => a.relation === 'consequence');
+  const sharedRows = alive.filter((a) => a.relation === 'shared');
+  const hasRel = consRows.length > 0 || sharedRows.length > 0;
+  const direct = hasRel ? alive.filter((a) => !a.relation) : alive;
+  const showAlertsBlock = !hasRel || direct.length > 0 || cleared.length > 0;
+  const consShown = newestFirst(consRows).slice(0, EMAIL_ALERT_CAP);
+  const consMore = consRows.length - consShown.length;
+  const sharedShown = newestFirst(sharedRows).slice(0, EMAIL_ALERT_CAP);
+  const sharedMore = sharedRows.length - sharedShown.length;
+  const consParent = (blast && blast.parent) || (consRows[0] && consRows[0].relation_of) || '-';
+  const sharedParts = String((sharedRows[0] && sharedRows[0].relation_of) || '').split(':');
+  const sharedKind = (sharedEv && sharedEv.kind) || sharedParts[0] || 'component';
+  const sharedParent = (sharedEv && sharedEv.parent) || sharedParts.slice(1).join(':') || '-';
+  const consHead = `CONSEQUENCES (${consRows.length}) OF ${consParent}`;
+  const sharedHead = `SHARED ON ${sharedKind.toUpperCase()} ${sharedParent} (${sharedRows.length})`;
+  const impactFallback = (blast && blast.sentence) || (sharedEv && sharedEv.sentence) || null;
+  const aliveShown = newestFirst(direct).slice(0, EMAIL_ALERT_CAP);
   const clearedShown = newestFirst(cleared).slice(0, EMAIL_ALERT_CAP);
-  const aliveMore = alive.length - aliveShown.length;
+  const aliveMore = direct.length - aliveShown.length;
   const clearedMore = cleared.length - clearedShown.length;
   const cls = `${analysis.classification || 'unknown'} (${analysis.confidence || 'low'} confidence${analysis.source === 'fallback' ? ', rule-based digest, no AI narrative' : ''})`;
   const noAi = analysis.source === 'fallback' && inc.triage_error ? `No AI narrative: ${inc.triage_error}` : null;
@@ -1489,13 +1925,15 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
     ...(happened.length > 1 ? happened.map((l) => `- ${l}`) : [happened[0] || '-']),
     '',
     'IMPACT',
-    analysis.impact || '-',
+    analysis.impact || impactFallback || '-',
     '',
-    `ALERTS IN THIS INCIDENT (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`,
-    ...aliveShown.map(alertLine),
-    ...(aliveMore > 0 ? [`... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.`] : []),
-    ...(cleared.length ? ['Cleared while collecting:', ...clearedShown.map(alertLine),
-      ...(clearedMore > 0 ? [`... and ${clearedMore} more cleared.`] : [])] : []),
+    ...(showAlertsBlock ? [`ALERTS IN THIS INCIDENT (${direct.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`,
+      ...aliveShown.map(alertLine),
+      ...(aliveMore > 0 ? [`... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.`] : []),
+      ...(cleared.length ? ['Cleared while collecting:', ...clearedShown.map(alertLine),
+        ...(clearedMore > 0 ? [`... and ${clearedMore} more cleared.`] : [])] : [])] : []),
+    ...(consRows.length ? ['', consHead, ...consShown.map(alertLine), ...(consMore > 0 ? [`... and ${consMore} more.`] : [])] : []),
+    ...(sharedRows.length ? ['', sharedHead, ...sharedShown.map(alertLine), ...(sharedMore > 0 ? [`... and ${sharedMore} more.`] : [])] : []),
     ...(relationLines.length ? ['', 'HOW THESE SYSTEMS CONNECT', ...relationLines.map((l) => `- ${l}`)] : []),
     ...(timelineRows.length ? ['', 'TIMELINE (NEWEST FIRST)', ...timelineRows.map((t) => `- ${fmtStamp(t.at)} | ${platformMeta(t.platform).label} | ${t.text}`)] : []),
     ...(jobsShown.length ? ['', `FAILED BACKUP JOBS (LAST 24H, ${(failedJobs || []).length} total)`,
@@ -1530,6 +1968,8 @@ function renderEmail(inc, alerts, analysis, { update = 0, agentName = 'ICC Opera
   const section = (title, body) => `<h3 style="margin:18px 0 6px;font-size:13px;letter-spacing:.04em;color:#334155">${esc(title)}</h3>${body}`;
   const list = (items) => `<ul style="margin:0;padding-left:18px">${items.map((i) => `<li style="margin:2px 0">${esc(i)}</li>`).join('')}</ul>`;
   const alertRows = (arr) => arr.map((a) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(platformMeta(a.platform).label)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(String(a.severity).toUpperCase())}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(a.host || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(a.message)}</td></tr>`).join('');
+  const relTable = (rows, more) => `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(rows)}${more > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${more} more.</td></tr>` : ''}</table>`;
+  const relHtml = `${consRows.length ? section(`Consequences (${consRows.length}) of ${consParent}`, relTable(consShown, consMore)) : ''}${sharedRows.length ? section(`Shared on ${sharedKind} ${sharedParent} (${sharedRows.length})`, relTable(sharedShown, sharedMore)) : ''}`;
   const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#0f172a;max-width:820px">
 ${reminderLine ? `<p style="margin:0 0 10px;padding:8px 12px;background:#FEF3C7;color:#92400E;font-size:13px">${esc(reminderLine)}</p>` : ''}
 <div style="border-left:5px solid ${sevColor};padding:8px 12px;background:#f8fafc">
@@ -1542,8 +1982,9 @@ ${human ? `<div style="font-size:12px;font-weight:600;color:${analysis.human_req
 ${recLine ? section(`This is a repeat (${rec.count} times in ${rec.windowDays} days)`, `<p style="margin:0 0 6px">${esc(recLine)}</p><table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Opened</th><th style="padding:3px 8px">Lasted</th><th style="padding:3px 8px">Closed by</th><th style="padding:3px 8px">Resolution</th></tr>${occurrenceRows(rec, esc)}</table>`) : ''}
 ${pattern && pattern.bursts && pattern.bursts.length ? section(`Bursts in the last ${pattern.windowDays} days (${pattern.count})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Started</th><th style="padding:3px 8px">Lasted</th><th style="padding:3px 8px">Peak</th></tr>${pattern.bursts.map((b) => `<tr><td style="padding:3px 8px">${esc(fmtStamp(b.openedAt))}</td><td style="padding:3px 8px">${esc(burstText(b))}</td><td style="padding:3px 8px">${esc(fmtNum(b.peak) + burstUnit)}</td></tr>`).join('')}</table>`) : ''}
 ${section('What happened', happened.length > 1 ? list(happened) : `<p style="margin:0">${esc(happened[0] || '-')}</p>`)}
-${section('Impact', `<p style="margin:0">${esc(analysis.impact || '-')}</p>`)}
-${section(`Alerts in this incident (${alive.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(aliveShown)}${aliveMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.</td></tr>` : ''}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(clearedShown)}${clearedMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${clearedMore} more cleared.</td></tr>` : ''}` : ''}</table>`)}
+${section('Impact', `<p style="margin:0">${esc(analysis.impact || impactFallback || '-')}</p>`)}
+${!showAlertsBlock ? '' : section(`Alerts in this incident (${direct.length} open${cleared.length ? `, ${cleared.length} cleared` : ''}${aliveMore > 0 || clearedMore > 0 ? ', newest shown' : ''})`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Severity</th><th style="padding:3px 8px">Host</th><th style="padding:3px 8px">Alert</th></tr>${alertRows(aliveShown)}${aliveMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${aliveMore} more open alert${aliveMore === 1 ? '' : 's'}; the full list is on the Ops Agent page.</td></tr>` : ''}${cleared.length ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">Cleared while collecting</td></tr>${alertRows(clearedShown)}${clearedMore > 0 ? `<tr><td colspan="4" style="padding:6px 8px;color:#64748b">... and ${clearedMore} more cleared.</td></tr>` : ''}` : ''}</table>`)}
+${relHtml}
 ${relationLines.length ? section('How these systems connect', list(relationLines)) : ''}
 ${timelineRows.length ? section('Timeline (newest first)', list(timelineRows.map((t) => `${fmtStamp(t.at)} | ${platformMeta(t.platform).label} | ${t.text}`))) : ''}
 ${jobsShown.length ? section(`Failed backup jobs (last 24h, ${(failedJobs || []).length} total)`, `<table style="border-collapse:collapse;font-size:12px;width:100%"><tr style="text-align:left;color:#64748b"><th style="padding:3px 8px">Platform</th><th style="padding:3px 8px">Source</th><th style="padding:3px 8px">Job</th><th style="padding:3px 8px">Status</th><th style="padding:3px 8px">Finished</th><th style="padding:3px 8px">Error</th></tr>${jobsShown.map((j) => `<tr><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(platformMeta(j.platform).label)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.source || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.job || '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.status)}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.finished ? fmtStamp(j.finished) : '-')}</td><td style="padding:3px 8px;border-bottom:1px solid #e2e8f0">${esc(j.error || '-')}</td></tr>`).join('')}${jobsMore > 0 ? `<tr><td colspan="6" style="padding:6px 8px;color:#64748b">... and ${jobsMore} more; see the platform's job pages.</td></tr>` : ''}</table>`) : ''}
@@ -1594,7 +2035,7 @@ async function notifyIncident(inc, settings, config, { force = false, reminder =
   try { healActions = JSON.parse(inc.heal_actions_json || '[]'); } catch { /* ignore */ }
   let storedEvidence = null;
   try { storedEvidence = JSON.parse(inc.evidence_json || 'null'); } catch { storedEvidence = null; }
-  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [], relations: storedEvidence?.relations || [], timeline: storedEvidence?.timeline || [], observations: storedEvidence?.observations || null, reminder, pattern: storedEvidence?.pattern || null, requiresHuman: !!inc.requires_human });
+  const mail = renderEmail(inc, incidentAlerts(inc.id), analysis, { update, agentName: settings.name, healActions, recurrence: storedEvidence?.recurrence || null, failedJobs: storedEvidence?.failedBackupJobs || [], liveChecks: storedEvidence?.liveChecks || null, network: storedEvidence?.network || [], relations: storedEvidence?.relations || [], timeline: storedEvidence?.timeline || [], observations: storedEvidence?.observations || null, reminder, pattern: storedEvidence?.pattern || null, requiresHuman: !!inc.requires_human, blast: storedEvidence?.blastRadius || null, sharedEv: storedEvidence?.shared || null });
   const now = new Date().toISOString();
   try {
     const transport = alertNotifier.createTransport(config);
@@ -1651,7 +2092,8 @@ async function notifyTeams(inc, settings, { reminder = 0 } = {}) {
   try { analysis = JSON.parse(inc.analysis_json || 'null'); } catch { analysis = null; }
   if (!analysis) analysis = fallbackTriage(gatherIncidentEvidence(inc, incidentAlerts(inc.id)));
   const update = !!inc.teams_notified_at;
-  const card = teams.buildCard(inc, analysis, teamsOpts(settings, { update, reminder }));
+  const consequenceCount = db.prepare("SELECT COUNT(*) c FROM ops_incident_alerts WHERE incident_id = ? AND relation = 'consequence' AND cleared_at IS NULL").get(inc.id).c;
+  const card = teams.buildCard(inc, analysis, teamsOpts(settings, { update, reminder, consequenceCount }));
   const now = new Date().toISOString();
   try {
     const r = await teams.postCard(url, card);
@@ -2110,6 +2552,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
     reminderAt: row.reminder_at || null, reminderCount: row.reminder_count || 0,
     occurrences: row.occurrences || 1,
     notes: parseNotes(row),
+    consequenceCount: db.prepare("SELECT COUNT(*) c FROM ops_incident_alerts WHERE incident_id = ? AND relation = 'consequence' AND cleared_at IS NULL").get(row.id).c,
   };
   const nowIso = new Date().toISOString();
   out.snoozed = !!(row.snoozed_until && row.snoozed_until > nowIso);
@@ -2136,6 +2579,7 @@ function shapeIncident(row, { withDetail = false } = {}) {
       platform: a.platform, platformLabel: platformMeta(a.platform).label, sourceKey: a.source_key, severity: a.severity,
       host: a.host, message: a.message, type: a.type, firstSeen: a.first_seen, attachedAt: a.attached_at, clearedAt: a.cleared_at,
       source_key: a.source_key, detail: parseDetail(a.detail_json),
+      relation: a.relation || null, relationOf: a.relation_of || null,
       kind: String(a.source_key || '').startsWith('obs-pattern:') ? 'observation-pattern' : String(a.source_key || '').startsWith('obs:') ? 'observation' : null,
     }));
   }
@@ -2432,7 +2876,7 @@ module.exports = {
   sampleTeamsCard, sendSampleTeams, notifyTeams, notifyResolved, teamsBlockedReason,
   initOpsAgent, stopOpsAgent, wake, wakeCheck, openObservationIncidents,
   // pure helpers for tests
-  systemPromptFor, gatherIncidentEvidence, hostKey, incidentKeyFor, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,
+  systemPromptFor, gatherIncidentEvidence, hostKey, canonicalHostKey, incidentKeyFor, downKindOf, correlationEvidence, sourceTokenOf, fallbackTriage, renderEmail, groupTick, maxSeverity, staleItems, humanFromEvidence, triggerPoll, shapeAnalysis,
   closeIncident, evidenceResolveEligible, resolvePass, emailBlockedReason, act, describeUnparsed, parseModelJson, collectFailedBackupJobs,
   recurrenceFor, recurrenceLine, stickyCooldown, patternEvidence, patternSentence, reminderPass, triageIncident, selfHealPass, makeSiteResolver, gatherNetworkEvidence, collectItems, observationEvidence,
 };

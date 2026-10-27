@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Bot, X, Mail, RefreshCw, CheckCircle2, Play, Settings, Bell, BellOff, Clock } from 'lucide-react';
@@ -22,7 +22,7 @@ const STATE_META = {
   resolved: { label: 'Resolved', tone: 'neutral', hint: 'Every alert cleared or closed by hand' },
 };
 const CLASS_TONE = { incident: 'crit', recurring: 'warn', 'one-off': 'info', noise: 'neutral', 'self-cleared': 'neutral', 'self-healed': 'ok' };
-const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', source: 'Source', host: 'Host', site: 'Site', location: 'Probe location', 'network-burst': 'Link-down burst', pattern: 'Pattern' };
+const KIND_LABEL = { 'app-service': 'App service', 'platform-wide': 'Platform-wide', source: 'Source', host: 'Host', site: 'Site', location: 'Probe location', 'network-burst': 'Link-down burst', pattern: 'Pattern', 'shared-component': 'Shared component' };
 const SNOOZE_DAYS = [1, 3, 7, 14, 30];
 const fmtDays = (n) => `${n} day${n === 1 ? '' : 's'}`;
 const fmtLasted = (m) => (m == null ? '-' : m >= 60 ? `${(m / 60).toFixed(1)} h` : `${m} min`);
@@ -330,6 +330,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
                     <Fact label="Opened">{new Date(inc.openedAt).toLocaleString()}</Fact>
                     {inc.state === 'collecting' && <Fact label="Hold until">{new Date(inc.holdUntil).toLocaleString()}</Fact>}
                     <Fact label="Alerts">{inc.alerts.length} ({openAlerts} open, {inc.alerts.length - openAlerts} cleared)</Fact>
+                    {inc.consequenceCount > 0 && <Fact label="Consequences">{inc.consequenceCount}</Fact>}
                     <Fact label="Emailed">{inc.notifyCount ? `${inc.notifyCount} time${inc.notifyCount === 1 ? '' : 's'}${inc.emailTo ? ` to ${inc.emailTo}` : ''}${inc.notifiedAt ? `, last ${new Date(inc.notifiedAt).toLocaleString()}` : ''}` : 'not yet'}</Fact>
                     <Fact label="Teams">{inc.teamsNotifiedAt ? `posted ${new Date(inc.teamsNotifiedAt).toLocaleString()}` : 'not posted'}</Fact>
                     <Fact label="Model">{inc.model || '-'}</Fact>
@@ -503,16 +504,7 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
                     <th className="py-1.5 pr-3">Platform</th><th className="py-1.5 pr-3">Severity</th><th className="py-1.5 pr-3">Host</th><th className="py-1.5 pr-3">Alert</th><th className="py-1.5 pr-3">Since</th><th className="py-1.5">State</th>
                   </tr></thead>
                   <tbody>
-                    {inc.alerts.map((al, i) => (
-                      <tr key={i} className="border-b border-cohesity-border/40 align-top">
-                        <td className="py-1.5 pr-3 text-ink">{al.platformLabel}</td>
-                        <td className="py-1.5 pr-3"><Badge tone={sevTone(al.severity)}>{al.severity}</Badge></td>
-                        <td className="py-1.5 pr-3 text-ink-muted whitespace-nowrap">{al.host || '-'}</td>
-                        <td className="py-1.5 pr-3 text-ink-muted">{isObservationAlert(al) && <span className="mr-1.5 inline-block px-1.5 rounded border border-status-info/40 text-[10px] text-status-info align-middle">observation</span>}<AlertMessage text={al.message} /></td>
-                        <td className="py-1.5 pr-3 text-ink-faint tnum whitespace-nowrap">{al.firstSeen ? <span title={timeAgo(al.firstSeen)}>{new Date(al.firstSeen).toLocaleString()}</span> : '-'}</td>
-                        <td className="py-1.5">{al.clearedAt ? <Badge tone="neutral">cleared</Badge> : <Badge tone="ok">open</Badge>}</td>
-                      </tr>
-                    ))}
+                    <AlertRows alerts={inc.alerts} />
                   </tbody>
                 </table>
               </div>
@@ -523,6 +515,52 @@ function IncidentModal({ id, onClose, onChanged, pulse, agentName = 'ICC', onOpe
         <ResolveNoteDialog required={!!inc.requiresHuman} busy={busy === 'resolve'} onSubmit={doResolve} onCancel={() => setResolving(false)} />
       )}
     </ModalShell>
+  );
+}
+
+function relationHeading(al) {
+  if (al.relation === 'shared') {
+    const [kind, ...rest] = String(al.relationOf || '').split(':');
+    return `Shared on ${kind} ${rest.join(':')}`.trim();
+  }
+  return null;
+}
+
+function AlertRows({ alerts }) {
+  const renderRow = (al, i) => (
+    <tr key={`${al.relationOf || 'direct'}-${i}`} className="border-b border-cohesity-border/40 align-top">
+      <td className="py-1.5 pr-3 text-ink">{al.platformLabel}</td>
+      <td className="py-1.5 pr-3"><Badge tone={sevTone(al.severity)}>{al.severity}</Badge></td>
+      <td className="py-1.5 pr-3 text-ink-muted whitespace-nowrap">{al.host || '-'}</td>
+      <td className="py-1.5 pr-3 text-ink-muted">{al.relation && <span className="mr-1.5 inline-block px-1.5 rounded border border-status-warn/40 text-[10px] text-status-warn align-middle">{al.relation}</span>}{isObservationAlert(al) && <span className="mr-1.5 inline-block px-1.5 rounded border border-status-info/40 text-[10px] text-status-info align-middle">observation</span>}<AlertMessage text={al.message} /></td>
+      <td className="py-1.5 pr-3 text-ink-faint tnum whitespace-nowrap">{al.firstSeen ? <span title={timeAgo(al.firstSeen)}>{new Date(al.firstSeen).toLocaleString()}</span> : '-'}</td>
+      <td className="py-1.5">{al.clearedAt ? <Badge tone="neutral">cleared</Badge> : <Badge tone="ok">open</Badge>}</td>
+    </tr>
+  );
+  const direct = alerts.map((al, i) => [al, i]).filter(([al]) => !al.relation);
+  const groups = new Map();
+  alerts.forEach((al, i) => {
+    if (!al.relation) return;
+    const key = `${al.relation}|${al.relationOf || ''}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push([al, i]);
+  });
+  return (
+    <>
+      {direct.map(([al, i]) => renderRow(al, i))}
+      {[...groups.entries()].map(([key, list]) => {
+        const first = list[0][0];
+        const title = first.relation === 'shared'
+          ? `${relationHeading(first)} (${list.length})`
+          : `Consequences (${list.length}) of ${first.relationOf || 'the parent'}`;
+        return (
+          <Fragment key={key}>
+            <tr className="bg-cohesity-border/20"><td colSpan={6} className="py-1.5 px-2 text-[11px] font-semibold text-ink-muted">{title}</td></tr>
+            {list.map(([al, i]) => renderRow(al, i))}
+          </Fragment>
+        );
+      })}
+    </>
   );
 }
 
