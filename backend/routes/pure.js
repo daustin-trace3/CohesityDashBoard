@@ -44,6 +44,9 @@ function publicArray(row) {
     ssl_verify: row.ssl_verify,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    last_poll_at: row.last_poll_at || null,
+    last_poll_status: row.last_poll_status || null,
+    last_poll_error: row.last_poll_error || null,
   };
 }
 

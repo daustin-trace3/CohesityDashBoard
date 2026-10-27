@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Plus, Pencil, Trash2, PlugZap, Save, X } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { LoadingPanel, Badge } from '../../components/ui/primitives';
+import { LoadingPanel, Badge, timeAgo } from '../../components/ui/primitives';
 import { BRAND } from './helpers';
 import { inp, Field } from './PureSettingsPage';
 
@@ -307,6 +307,11 @@ export default function PureDirectArraysTab() {
               <Badge tone={row.ssl_verify ? 'ok' : 'neutral'} className="hidden md:inline-flex">
                 {row.ssl_verify ? 'SSL verify' : 'SSL relaxed'}
               </Badge>
+              {row.last_poll_status && (
+                <Badge tone={row.last_poll_status === 'success' ? 'ok' : row.last_poll_status === 'partial' ? 'warn' : 'crit'}>
+                  {row.last_poll_status}{row.last_poll_at ? ` ${timeAgo(row.last_poll_at)}` : ''}
+                </Badge>
+              )}
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <button onClick={() => handlePoll(row)} disabled={pollingId === row.id} title="Poll now"
                   className="inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1.5 border border-cohesity-border text-ink-muted rounded-lg hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-40">
@@ -321,6 +326,11 @@ export default function PureDirectArraysTab() {
                   <Trash2 size={12} /> {deletingId === row.id ? 'Deleting…' : 'Delete'}
                 </button>
               </div>
+              {row.last_poll_error && (
+                <p className={`basis-full text-[11px] break-words ${row.last_poll_status === 'partial' ? 'text-status-warn' : 'text-status-crit'}`}>
+                  {row.last_poll_error}
+                </p>
+              )}
             </div>
           ))}
         </div>

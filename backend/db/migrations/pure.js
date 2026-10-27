@@ -441,4 +441,15 @@ module.exports = [
       `);
     },
   },
+  // 2026-10-27 per-array poll outcome, so an all-failed poll is visible.
+  {
+    version: 9,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(pure_arrays)').all().map((c) => c.name);
+      if (cols.length === 0) return;
+      for (const col of ['last_poll_at', 'last_poll_status', 'last_poll_error']) {
+        if (!cols.includes(col)) db.exec(`ALTER TABLE pure_arrays ADD COLUMN ${col} TEXT`);
+      }
+    },
+  },
 ];

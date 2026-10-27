@@ -394,6 +394,37 @@ async function doPollArray(array) {
       fetchPods(array),
     ]);
 
+  // A poll where EVERY fetch failed is a FAILED poll (mirrors the Cohesity rule),
+  // otherwise the framework would record success while nothing is stored.
+  const outcomes = [
+    ['array-info', infoResult], ['alerts', alertResult], ['volumes', volumeResult],
+    ['hosts', hostResult], ['volume-perf', volPerfResult],
+    ['array-connections', connResult], ['protection-groups', pgResult],
+    ['hardware', hwResult], ['drives', driveResult], ['controllers', ctrlResult],
+    ['certificates', certResult], ['network-interfaces', netResult],
+    ['ports', portResult], ['connections', connsResult], ['pods', podResult],
+  ];
+  const failed = outcomes.filter(([, r]) => r.status === 'rejected');
+  const firstReason = failed.length ? safeErrorMessage(failed[0][1].reason) : null;
+  const pollNow = new Date().toISOString();
+  const recordOutcome = (status, error) => {
+    try {
+      db.prepare('UPDATE pure_arrays SET last_poll_at = ?, last_poll_status = ?, last_poll_error = ? WHERE id = ?')
+        .run(pollNow, status, error, array.id);
+    } catch (err) {
+      logger.error(`[PurePoller] Could not record poll outcome for array ${array.id}:`, err.message);
+    }
+  };
+  if (failed.length === outcomes.length) {
+    recordOutcome('error', `every fetch failed; first error: ${safeErrorMessage(infoResult.reason)}`.slice(0, 1000));
+    throw new Error(`every fetch failed for array ${array.id} (${array.name}); first error: ${safeErrorMessage(infoResult.reason)}`);
+  }
+  if (failed.length) {
+    recordOutcome('partial', `Failed: ${failed.map(([l]) => l).join(', ')}; first error: ${firstReason}`.slice(0, 1000));
+  } else {
+    recordOutcome('success', null);
+  }
+
     let volumeCount = null;
     if (volumeResult.status === 'fulfilled') {
       volumeCount = volumeResult.value.length;

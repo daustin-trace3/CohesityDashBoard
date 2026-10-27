@@ -275,6 +275,8 @@ const NEW_TABLES = [
   // v12 alerts.closed_reason), so their
   // post-migration SQL no longer matches the schema.sql original.
   'netapp_volumes', 'netapp_arrays',
+  // pure v9 last_poll_at/_status/_error on pure_arrays.
+  'pure_arrays',
   'cohesity_objects', 'cohesity_agents', 'alerts',
 ];
 
