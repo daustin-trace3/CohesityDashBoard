@@ -30,6 +30,7 @@ const DEFAULT_CACHE_TTL_MIN = 10;
 const DEFAULT_WARN_PCT = 75;
 const DEFAULT_CRIT_PCT = 90;
 const DEFAULT_POLL_INTERVAL_MIN = 15;
+const DEFAULT_METRICS_STALE_HOURS = 48;
 
 const CAPACITY_METRICS = [
   'array_total_capacity',
@@ -469,6 +470,12 @@ function lastRefresh() {
   };
 }
 
+/** Hours without a Pure1 metric point before an array counts as metrics-stale (1..720). */
+function getMetricsStaleHours() {
+  const n = Number(getSetting('pure1_metrics_stale_hours'));
+  return Number.isFinite(n) && n >= 1 ? Math.min(720, Math.round(n)) : DEFAULT_METRICS_STALE_HOURS;
+}
+
 /** Display prefs safe to expose broadly (no secrets) — used by /status. */
 function getDisplayPrefs() {
   return {
@@ -504,6 +511,7 @@ function getConfig() {
     critPct: Number(getSetting('pure1_crit_pct')) || DEFAULT_CRIT_PCT,
     showHiddenAlerts: getSetting('pure1_show_hidden_alerts') === '1',
     pollIntervalMinutes: Number(getSetting('pure1_poll_interval_minutes')) || DEFAULT_POLL_INTERVAL_MIN,
+    metricsStaleHours: getMetricsStaleHours(),
     lastRefresh: lastRefresh(),
   };
 }
@@ -532,6 +540,10 @@ function setConfig(patch = {}) {
   if (patch.pollIntervalMinutes != null) {
     const n = Math.min(1440, Math.max(5, Number(patch.pollIntervalMinutes) || DEFAULT_POLL_INTERVAL_MIN));
     setSetting('pure1_poll_interval_minutes', String(n));
+  }
+  if (patch.metricsStaleHours != null) {
+    const n = Math.min(720, Math.max(1, Math.round(Number(patch.metricsStaleHours)) || DEFAULT_METRICS_STALE_HOURS));
+    setSetting('pure1_metrics_stale_hours', String(n));
   }
   invalidate();
   return getConfig();
@@ -713,5 +725,6 @@ module.exports = {
   testConnection,
   invalidate,
   getDisplayPrefs,
+  getMetricsStaleHours,
   getEnrichment,
 };

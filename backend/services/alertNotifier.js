@@ -74,7 +74,34 @@ function collectPureAlerts() {
         lastSeen: toIso(r.updatedAtMs),
         ...(type ? { type, typeLabel: type } : {}),
       };
-    });
+    })
+    .concat(collectPure1StaleItems());
+}
+
+/** One synthetic warning per Pure1 array that has gone quiet (no recent capacity
+ *  or performance point). Pure1 itself reports nothing in that case. */
+function collectPure1StaleItems() {
+  let rows;
+  try {
+    rows = db.prepare('SELECT pure1_id, name, metrics_captured_at, perf_captured_at FROM pure1_arrays').all();
+  } catch { return []; }
+  if (!rows.length) return [];
+  const { metricsStaleness } = require('./pure1Poller');
+  const pure1Api = require('./pure1Api');
+  const { stale } = metricsStaleness(rows, pure1Api.getMetricsStaleHours());
+  return stale.map((r) => {
+    const newest = toIso([r.metrics_captured_at, r.perf_captured_at].filter(Boolean).sort().pop() || null);
+    return {
+      sourceKey: `pure1-metrics-stale:${r.pure1_id}`,
+      severity: 'warning',
+      host: r.name,
+      message: `Pure1 has reported no capacity or performance points for ${r.name} since ${newest || 'ever'}; figures shown are the last ICC received.`,
+      firstSeen: newest || new Date().toISOString(),
+      lastSeen: newest || new Date().toISOString(),
+      type: 'pure1-metrics-stale',
+      typeLabel: 'pure1-metrics-stale',
+    };
+  });
 }
 
 /** Active NetApp alerts — netapp_alerts is wiped+reloaded every poll, so the
@@ -456,6 +483,16 @@ function upsertTypeCatalog(items) {
  *  returns { type, typeLabel, firstSeen, lastSeen } rows, timestamps already
  *  normalized to the 'YYYY-MM-DD HH:MM:SS' UTC text upsertTypeCatalog writes
  *  with datetime('now') (epoch-ms columns converted via unixepoch). */
+/** Catalog row for the synthetic pure1-metrics-stale type, listed whenever Pure1
+ *  arrays are on record so it can be switched on before it first fires. */
+function pure1StaleCatalogRows() {
+  try {
+    const r = db.prepare("SELECT datetime(MIN(captured_at)) AS firstSeen, datetime(MAX(captured_at)) AS lastSeen FROM pure1_arrays").get();
+    if (!r || !r.firstSeen) return [];
+    return [{ type: 'pure1-metrics-stale', firstSeen: r.firstSeen, lastSeen: r.lastSeen }];
+  } catch { return []; }
+}
+
 const CATALOG_BACKFILL = {
   // Mirrors collectCohesityAlerts' type/label rule (alert_category + cohesityTypeLabel).
   cohesity: () => db.prepare(`
@@ -471,7 +508,7 @@ const CATALOG_BACKFILL = {
            datetime(MAX(updated_at_ms) / 1000, 'unixepoch') AS lastSeen
     FROM pure_alerts WHERE LOWER(COALESCE(severity, '')) != 'hidden'
     GROUP BY type HAVING type IS NOT NULL
-  `).all(),
+  `).all().concat(pure1StaleCatalogRows()),
 
   // Mirrors collectNetappAlerts' type rule (source, when non-empty).
   netapp: () => db.prepare(`

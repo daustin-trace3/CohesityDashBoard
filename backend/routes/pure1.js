@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db/database');
 const pure1Api = require('../services/pure1Api');
-const { pure1Task } = require('../services/pure1Poller');
+const { pure1Task, metricsStaleness } = require('../services/pure1Poller');
 const { isDemo } = require('../services/demoMode');
 const { getSetting } = require('../services/settings');
 const cacheControl = require('../middleware/cache');
@@ -33,6 +33,7 @@ function rowToOverview(row) {
     snapshotSpace: row.snapshots_bytes || 0,
     sharedSpace: row.shared_bytes || 0,
     capturedAt: toEpoch(row.captured_at),
+    metricsCapturedAt: row.metrics_captured_at || null,
     tags: row.tags ? JSON.parse(row.tags) : [],
   };
 }
@@ -65,7 +66,11 @@ function rowToPod(row) {
 }
 
 function dbOverview() {
-  return db.prepare('SELECT * FROM pure1_arrays').all().map(rowToOverview).sort((a, b) => a.name.localeCompare(b.name));
+  const raw = db.prepare('SELECT * FROM pure1_arrays').all();
+  const stale = new Set(metricsStaleness(raw, pure1Api.getMetricsStaleHours()).stale.map((r) => r.pure1_id));
+  return raw
+    .map((row) => ({ ...rowToOverview(row), metricsStale: stale.has(row.pure1_id) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function dbAlerts() {
@@ -94,8 +99,13 @@ function dbPods() {
 router.get('/status', (req, res) => {
   const lastRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM pure1_metrics_history').get();
   const lastDataCapture = lastRow && lastRow.captured_at ? `${lastRow.captured_at}Z` : null;
+  const st = metricsStaleness(
+    db.prepare('SELECT pure1_id, metrics_captured_at, perf_captured_at FROM pure1_arrays').all(),
+    pure1Api.getMetricsStaleHours()
+  );
   res.json({
     configured: pure1Api.isConfigured(),
+    metricsStale: { count: st.count, total: st.total, newestPointAt: st.newestPointAt, staleHours: st.staleHours },
     lastRefresh: pure1Api.lastRefresh(),
     lastDataCapture,
     pollIntervalMinutes: Number(getSetting('pure1_poll_interval_minutes')) || 15,

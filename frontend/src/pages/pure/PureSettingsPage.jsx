@@ -49,6 +49,7 @@ function Pure1SaaSTab() {
   const [privateKey, setPrivateKey] = useState('');
   const [ttl, setTtl] = useState(10);
   const [pollInterval, setPollInterval] = useState(15);
+  const [staleHours, setStaleHours] = useState(48);
   const [warnPct, setWarnPct] = useState(75);
   const [critPct, setCritPct] = useState(90);
   const [showHidden, setShowHidden] = useState(false);
@@ -65,6 +66,7 @@ function Pure1SaaSTab() {
       setAppId('');
       setTtl(data.cacheTtlMin || 10);
       setPollInterval(data.pollIntervalMinutes || 15);
+      setStaleHours(data.metricsStaleHours || 48);
       setWarnPct(data.warnPct || 75);
       setCritPct(data.critPct || 90);
       setShowHidden(!!data.showHiddenAlerts);
@@ -92,7 +94,7 @@ function Pure1SaaSTab() {
     setSavingPrefs(true);
     try {
       const { data } = await client.put('/pure1/settings', {
-        cacheTtlMin: Number(ttl), pollIntervalMinutes: Number(pollInterval),
+        cacheTtlMin: Number(ttl), pollIntervalMinutes: Number(pollInterval), metricsStaleHours: Number(staleHours),
         warnPct: Number(warnPct), critPct: Number(critPct), showHiddenAlerts: showHidden,
       });
       setCfg(data);
@@ -181,6 +183,9 @@ function Pure1SaaSTab() {
           </Field>
           <Field label="Poll interval (minutes)" hint="How often the background poller refreshes Pure1 fleet data.">
             <div className="flex items-center gap-2"><Clock size={14} className="text-ink-faint" /><input type="number" min={5} max={1440} value={pollInterval} onChange={(e) => setPollInterval(e.target.value)} className={inp} /></div>
+          </Field>
+          <Field label="Metrics stale after (hours)" hint="Warn when Pure1 has sent no capacity or performance point newer than this.">
+            <input type="number" min={1} max={720} value={staleHours} onChange={(e) => setStaleHours(e.target.value)} className={inp} />
           </Field>
           <Field label="Capacity warning %" hint="Amber bar at/above this % full.">
             <input type="number" min={1} max={100} value={warnPct} onChange={(e) => setWarnPct(e.target.value)} className={inp} />

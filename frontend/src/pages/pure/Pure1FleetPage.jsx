@@ -235,6 +235,16 @@ export default function Pure1FleetPage() {
         <StatCard icon={AlertTriangle} label="Open Alerts" value={fmtNum(openAlerts.length)} tone={openAlerts.length > 0 ? 'warn' : 'ok'} />
       </div>
 
+      {status && status.metricsStale && status.metricsStale.count > 0 && (
+        <div className="panel p-3 mb-4 border border-status-warn/40 text-sm text-status-warn flex items-center gap-2">
+          <AlertTriangle size={14} className="flex-shrink-0" />
+          <span>
+            Pure1 has no metric points newer than {status.metricsStale.newestPointAt ? timeAgo(Date.parse(status.metricsStale.newestPointAt)) : 'ever'} for {status.metricsStale.count} of {status.metricsStale.total} arrays.
+            {' '}Capacity and performance below are the last values ICC received; check the arrays' Pure1 connection.
+          </span>
+        </div>
+      )}
+
       {/* Open alerts — front and center for ops */}
       <div className="panel p-4 mb-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <p className="text-sm font-semibold text-ink mb-3">Open Alerts {rows ? `(${openAlerts.length})` : ''}</p>
@@ -302,7 +312,7 @@ export default function Pure1FleetPage() {
               <thead className="sticky top-0 bg-surface"><tr className="text-[11px] uppercase tracking-wide text-ink-faint border-b border-cohesity-border">
                 <Th k="name">Array</Th><Th k="model">Model</Th><Th k="version">Purity</Th>
                 <Th k="total" right>Capacity</Th><Th k="used" right>Used</Th><Th k="pctUsed" right>% Full</Th>
-                <Th k="dataReduction" right>Reduction</Th><Th k="provisioned" right>Provisioned</Th><th className="py-2 pr-3 text-right">Alerts</th><th className="py-2 pr-3 text-left">FQDN</th>
+                <Th k="dataReduction" right>Reduction</Th><Th k="provisioned" right>Provisioned</Th><th className="py-2 pr-3 text-right">Alerts</th><th className="py-2 pr-3 text-left">Metrics as of</th><th className="py-2 pr-3 text-left">FQDN</th>
               </tr></thead>
               <tbody>
                 {pageItems.map((r) => (
@@ -343,6 +353,7 @@ export default function Pure1FleetPage() {
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtRatio(r.dataReduction)}</td>
                     <td className="py-2 pr-3 text-right">{(() => { const en = enrichment[r.id]; if (!en || !en.provisioned) return <span className="text-ink-faint">—</span>; const ratio = r.total ? en.provisioned / r.total : null; return <span className="tnum text-ink-muted" title={ratio ? `${ratio.toFixed(1)}× of usable capacity provisioned` : ''}>{fmtBytes(en.provisioned)}{ratio ? <span className="text-ink-faint"> ({ratio.toFixed(1)}×)</span> : ''}</span>; })()}</td>
                     <td className="py-2 pr-3 text-right">{(() => { const al = alertsByArray.get(r.name); return al ? <Badge tone={severityTone(al.worst)}>{al.count}</Badge> : <span className="text-ink-faint">—</span>; })()}</td>
+                    <td className={`py-2 pr-3 text-[11px] tnum ${r.metricsStale ? 'text-status-warn' : 'text-ink-faint'}`}>{r.metricsCapturedAt ? timeAgo(Date.parse(r.metricsCapturedAt)) : '-'}</td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px]">{r.fqdn || '—'}</td>
                   </tr>
                 ))}
@@ -377,7 +388,7 @@ export default function Pure1FleetPage() {
           </div>
         )}
         {status && status.lastRefresh && status.lastRefresh.overview && (
-          <p className="text-[11px] text-ink-faint mt-2">Data as of {timeAgo(status.lastRefresh.overview)} · Pure capacity metrics update daily. Select a row for charts.</p>
+          <p className="text-[11px] text-ink-faint mt-2">Fetched from Pure1 {timeAgo(status.lastRefresh.overview)}; newest metric point {status.metricsStale && status.metricsStale.newestPointAt ? timeAgo(Date.parse(status.metricsStale.newestPointAt)) : 'unknown'}. Select a row for charts.</p>
         )}
       </div>
 

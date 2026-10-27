@@ -452,4 +452,13 @@ module.exports = [
       }
     },
   },
+  // 2026-10-27 Pure1's newest capacity point per array, so a silent gap is visible.
+  {
+    version: 10,
+    up(db) {
+      const cols = db.prepare('PRAGMA table_info(pure1_arrays)').all().map((c) => c.name);
+      if (cols.length === 0) return;
+      if (!cols.includes('metrics_captured_at')) db.exec('ALTER TABLE pure1_arrays ADD COLUMN metrics_captured_at TEXT');
+    },
+  },
 ];

@@ -12,14 +12,40 @@ const { isDemo } = require('./demoMode');
 const pure1Api = require('./pure1Api');
 const logger = require('../utils/logger');
 
+/**
+ * Which Pure1 arrays have gone quiet. An array is metrics-stale when its newest
+ * capacity point AND its newest performance point are both older than `hours`
+ * (or both missing). rows carry metrics_captured_at and perf_captured_at (ISO).
+ * Shared by the poller, the notifier and the routes so they agree.
+ */
+function metricsStaleness(rows, hours, nowMs = Date.now()) {
+  const cutoff = nowMs - hours * 3600 * 1000;
+  const stale = [];
+  let newest = 0;
+  for (const row of rows) {
+    const m = row.metrics_captured_at ? Date.parse(row.metrics_captured_at) : NaN;
+    const p = row.perf_captured_at ? Date.parse(row.perf_captured_at) : NaN;
+    const best = Math.max(Number.isNaN(m) ? 0 : m, Number.isNaN(p) ? 0 : p);
+    if (best > newest) newest = best;
+    if (best < cutoff) stale.push(row);
+  }
+  return {
+    stale,
+    count: stale.length,
+    total: rows.length,
+    newestPointAt: newest ? new Date(newest).toISOString() : null,
+    staleHours: hours,
+  };
+}
+
 const replaceArrays = db.transaction((rows, enrichment) => {
   db.prepare('DELETE FROM pure1_arrays').run();
   const stmt = db.prepare(`
     INSERT INTO pure1_arrays (pure1_id, name, fqdn, model, os, version,
       capacity_bytes, used_bytes, data_reduction, effective_used_bytes,
       volume_bytes, shared_bytes, snapshots_bytes, provisioned_bytes,
-      health, health_detail, chassis_serial, controller_serials, tags, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      health, health_detail, chassis_serial, controller_serials, tags, metrics_captured_at, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
   for (const r of rows) {
     if (!r.id) continue;
@@ -33,7 +59,8 @@ const replaceArrays = db.transaction((rows, enrichment) => {
       en ? JSON.stringify({ unhealthy: en.unhealthy }) : null,
       en ? en.chassisSerial || null : null,
       en ? JSON.stringify(en.controllerSerials || []) : null,
-      JSON.stringify(r.tags || [])
+      JSON.stringify(r.tags || []),
+      r._metricsAt || null
     );
   }
 });
@@ -113,6 +140,15 @@ async function refreshAll() {
     r.snapshotSpace = r.snapshotSpace || old.snapshots_bytes;
   }
 
+  // Last-good metric time: when this poll got no capacity point for an array,
+  // keep the time of the newest point ICC ever received for it.
+  const priorMetricsAt = new Map(db.prepare(
+    'SELECT pure1_id, metrics_captured_at FROM pure1_arrays WHERE metrics_captured_at IS NOT NULL'
+  ).all().map((r) => [r.pure1_id, r.metrics_captured_at]));
+  for (const r of rows) {
+    r._metricsAt = r.capturedAt ? new Date(r.capturedAt).toISOString() : (priorMetricsAt.get(r.id) || null);
+  }
+
   let enrichment = {};
   try {
     enrichment = await pure1Api.getEnrichment({ force: true });
@@ -129,12 +165,14 @@ async function refreshAll() {
     }
   }
 
-  let alerts = [];
+  // null = fetch failed: skip replaceAlerts entirely (the old id-only reconstruction
+  // here used to re-insert every alert with everything but its id nulled out, which
+  // looked like "last-good" but actually destroyed the stored alert detail).
+  let alerts = null;
   try {
     alerts = await pure1Api.getAlerts({ force: true });
   } catch (err) {
-    logger.error('[Pure1Poller] Alerts fetch failed, keeping last-good:', err.message);
-    alerts = db.prepare('SELECT * FROM pure1_alerts').all().map((a) => ({ id: a.pure1_alert_id }));
+    logger.warn('[Pure1Poller] Alerts fetch failed; keeping existing alert inventory:', err.message);
   }
 
   try {
@@ -151,8 +189,10 @@ async function refreshAll() {
     FROM pure1_arrays WHERE read_iops IS NOT NULL OR perf_captured_at IS NOT NULL
   `).all().map((r) => [r.pure1_id, r]));
   replaceArrays(rows, enrichment);
-  replaceAlerts(alerts);
-  appendSnapshot(rowsForSnapshot, alerts);
+  if (alerts !== null) replaceAlerts(alerts);
+  const alertCountForSnapshot = alerts !== null ? alerts.length
+    : db.prepare('SELECT COUNT(*) AS n FROM pure1_alerts').get().n;
+  appendSnapshot(rowsForSnapshot, { length: alertCountForSnapshot });
 
   // Per-array performance snapshot. replaceArrays() above rebuilt the rows
   // with null perf columns, so re-apply fresh values where the fetch worked
@@ -182,7 +222,14 @@ async function refreshAll() {
       r.id
     );
   }
-  logger.info(`[Pure1Poller] Refreshed ${rows.length} array(s), ${alerts.length} alert(s)`);
+  const staleness = metricsStaleness(
+    db.prepare('SELECT pure1_id, name, metrics_captured_at, perf_captured_at FROM pure1_arrays').all(),
+    pure1Api.getMetricsStaleHours()
+  );
+  if (staleness.count > 0) {
+    logger.warn(`[Pure1Poller] Pure1 has no recent metric points for ${staleness.count} of ${staleness.total} arrays (newest point ${staleness.newestPointAt || 'none'}); capacity and performance figures are last-good`);
+  }
+  logger.info(`[Pure1Poller] Refreshed ${rows.length} array(s), ${alertCountForSnapshot} alert(s)`);
 }
 
 const pure1Task = createGlobalTask({
@@ -201,4 +248,4 @@ function initPure1Poller() {
   return pure1Task;
 }
 
-module.exports = { initPure1Poller, refreshAll, pure1Task };
+module.exports = { initPure1Poller, refreshAll, pure1Task, metricsStaleness };
