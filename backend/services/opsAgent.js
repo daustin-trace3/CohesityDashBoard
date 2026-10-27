@@ -332,6 +332,10 @@ function triggerPoll(platform, entityId, name) {
       require('./poller').triggerPoll(entityId).catch((err) => logger.warn(`[OpsAgent] re-poll of cohesity #${entityId} failed: ${err.message}`));
       return rec('poll triggered');
     }
+    if (platform === 'pure' && entityId === 'pure1') {
+      Promise.resolve(require('./pure1Poller').pure1Task.trigger()).catch((err) => logger.warn(`[OpsAgent] re-poll of pure1 fleet failed: ${err.message}`));
+      return rec('poll triggered');
+    }
     const handle = registry.getPollerHandle(platform);
     if (!handle || typeof handle.trigger !== 'function') return rec('this platform has no on-demand poll ICC can trigger');
     // The framework resolves the full source row from the id; a name-only row
@@ -1931,7 +1935,8 @@ function selfHealPass(now) {
       try { for (const s of serviceStatus.polledSourcesFor(t.platform)) if (s.isSyncing) syncing.add(`${t.platform}:${s.entityId}`); } catch { /* ignore */ }
     }
     const actions = targets.map((a) => {
-      const eid = Number(a.source_key.split(':')[1]);
+      const rawEid = a.source_key.split(':')[1];
+      const eid = /^\d+$/.test(rawEid) ? Number(rawEid) : rawEid;
       const why = a.source_key.startsWith('stale:') ? 'data went stale' : 'ICC could not reach it';
       const rec = syncing.has(`${a.platform}:${eid}`)
         ? { at: now, action: 'repoll', platform: a.platform, target: a.host || String(eid), result: 'already polling, left to finish' }

@@ -60,7 +60,7 @@ beforeAll(() => {
 
   // Registry-gated platforms (Service Status enablement is registry-driven,
   // not the settings platform toggles) , a minimal fake manifest per id.
-  for (const id of ['dell', 'zerto']) {
+  for (const id of ['dell', 'zerto', 'pure']) {
     registry.registerPlugin({
       id, name: id, apiVersion: registry.PLUGIN_API_VERSION, migrations: [],
       createRouter: () => (req, res, next) => next(),
@@ -741,5 +741,87 @@ describe('platform mode (default)', () => {
     expect(lastTimeline('dell').state).toBe('degraded');
     expect(lastTimeline('dell').reason).toBe('1 open critical alert');
     expect(svc.getBoard({ days: 7 }).mode).toBe('alerts');
+  });
+});
+
+describe('Pure1 fleet poller as a Pure source', () => {
+  beforeEach(() => {
+    setSetting('service_status_mode', 'platform');
+    db.exec('DELETE FROM pure_arrays');
+    db.exec('DELETE FROM pure_metrics_history');
+    db.exec('DELETE FROM pure1_metrics_history');
+  });
+  afterEach(() => {
+    db.exec('DELETE FROM pure_arrays');
+    db.exec('DELETE FROM pure_metrics_history');
+    db.exec('DELETE FROM pure1_metrics_history');
+  });
+
+  function addArray(name) {
+    db.prepare(`
+      INSERT INTO pure_arrays (name, mgmt_host, client_id, key_id, username, encrypted_credentials)
+      VALUES (?, 'host', 'cid', 'kid', 'user', 'x')
+    `).run(name);
+  }
+
+  it('a successful Pure1 poll alone is one polled source and the platform is ok', async () => {
+    pollerStatus.markEnd('pure1', 0, 'success');
+    const sources = svc.polledSourcesFor('pure');
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ entityId: 'pure1', sourceName: 'Pure1 fleet', lastPollStatus: 'success' });
+    expect(svc.sourceRowFor('pure', 'pure1')).toEqual({ name: 'Pure1 fleet' });
+
+    await svc.sweep();
+    expect(lastTimeline('pure').state).toBe('ok');
+    expect(lastTimeline('pure').reason).toBe('ICC reaches all 1 source');
+  });
+
+  it('no Pure1 row means no source', () => {
+    expect(svc.polledSourcesFor('pure')).toHaveLength(0);
+  });
+
+  it('a failed Pure1 poll raises poll:pure1 and the platform is offline', async () => {
+    pollerStatus.markEnd('pure1', 0, 'error');
+    await svc.sweep();
+    const ev = openEvents('pure');
+    expect(ev.map((e) => e.source_key)).toEqual(['poll:pure1']);
+    expect(ev[0].host).toBe('Pure1 fleet');
+    expect(lastTimeline('pure').state).toBe('offline');
+    expect(svc.deriveVerdict(ev[0], null).verdict).toBe('offline');
+
+    // The next sweep keeps the event open: it is not mistaken for a removed source.
+    await svc.sweep();
+    expect(openEvents('pure').map((e) => e.source_key)).toEqual(['poll:pure1']);
+    expect(openEvents('pure')[0].host).toBe('Pure1 fleet');
+  });
+
+  it('a stale Pure1 poll raises stale:pure1', async () => {
+    const old = new Date(Date.now() - 300 * 60000).toISOString();
+    db.prepare(`
+      INSERT INTO poller_status (type, entity_id, last_poll_end, last_poll_status, is_syncing)
+      VALUES ('pure1', 0, ?, 'success', 0)
+    `).run(old);
+    await svc.sweep();
+    expect(openEvents('pure').map((e) => e.source_key)).toEqual(['stale:pure1']);
+  });
+
+  it('a direct array and the Pure1 fleet count as two sources', async () => {
+    addArray('arr-direct-1');
+    const id = db.prepare('SELECT id FROM pure_arrays WHERE name = ?').get('arr-direct-1').id;
+    pollerStatus.markEnd('pure', id, 'success');
+    pollerStatus.markEnd('pure1', 0, 'error');
+    expect(svc.polledSourcesFor('pure')).toHaveLength(2);
+    await svc.sweep();
+    expect(lastTimeline('pure').state).toBe('degraded');
+    expect(lastTimeline('pure').reason).toBe('1 of 2 sources unreachable');
+  });
+
+  it('metricsFreshnessFor reads pure1_metrics_history when the array history is empty', () => {
+    expect(svc._metricsFreshnessFor('pure')).toBeNull();
+    db.prepare("INSERT INTO pure1_metrics_history (captured_at, array_count) VALUES (?, 3)").run(new Date(Date.now() - 10 * 60000).toISOString());
+    const f = svc._metricsFreshnessFor('pure');
+    expect(f.table).toBe('pure1_metrics_history');
+    expect(f.ageMinutes).toBeGreaterThanOrEqual(9);
+    expect(f.ageMinutes).toBeLessThanOrEqual(11);
   });
 });

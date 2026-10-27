@@ -63,11 +63,27 @@ const SOURCE_TABLES = {
   logicmonitor: 'lm_sources',
 };
 
+// Fleet-level pollers that record their outcome under their own poller_status
+// type (entity 0) but feed a platform that also has a source table. Pure1 polls
+// the whole fleet as one task, so a box that reaches Pure only through Pure1 has
+// no pure_arrays rows. Counted as one polled source once the task has run.
+const STATUS_ALIASES = {
+  pure: [{ type: 'pure1', entityId: 'pure1', name: 'Pure1 fleet' }],
+};
+
+/** poller_status key suffix to a source id: digits become a number, anything
+ *  else (an alias id such as 'pure1') stays a string. */
+function parseEntityId(raw) {
+  return /^\d+$/.test(raw) ? Number(raw) : raw;
+}
+
 /** The source row behind a poller_status key, or null when the platform has a
  *  source table and the row is gone (a source that was deleted or re-added
  *  leaves its poller_status row behind forever) or the lookup failed. Platforms
  *  without a source table poll one global target and always resolve. */
 function sourceRowFor(platform, entityId) {
+  const alias = (STATUS_ALIASES[platform] || []).find((a) => a.entityId === entityId);
+  if (alias) return { name: alias.name };
   const table = SOURCE_TABLES[platform];
   if (!table) return { name: platform };
   try {
@@ -88,7 +104,8 @@ function sourceNameFor(platform, entityId) {
  *  neither raise a reachability event nor count toward "all sources down". */
 function polledSourcesFor(platform) {
   const rows = [];
-  for (const [key, state] of pollerStatus.getAll()) {
+  const all = pollerStatus.getAll();
+  for (const [key, state] of all) {
     const idx = key.indexOf(':');
     const type = idx === -1 ? key : key.slice(0, idx);
     if (type !== platform) continue;
@@ -98,6 +115,11 @@ function polledSourcesFor(platform) {
     const source = sourceRowFor(platform, entityId);
     if (!source) continue;
     rows.push({ entityId, sourceName: source.name, ...state });
+  }
+  for (const alias of STATUS_ALIASES[platform] || []) {
+    // Only once the task has run at least once (its poller_status row exists).
+    const state = all.get(`${alias.type}:0`);
+    if (state) rows.push({ entityId: alias.entityId, sourceName: alias.name, ...state });
   }
   return rows;
 }
@@ -338,7 +360,7 @@ async function sweep() {
         // that reason, not because the source came back; say so in the label
         // that past-day modals will keep showing.
         if (/^(poll|stale):/.test(ev.sourceKey) && SOURCE_TABLES[ev.platform]) {
-          const entityId = Number(ev.sourceKey.slice(ev.sourceKey.indexOf(':') + 1));
+          const entityId = parseEntityId(ev.sourceKey.slice(ev.sourceKey.indexOf(':') + 1));
           if (!sourceRowFor(ev.platform, entityId)) {
             db.prepare(`
               UPDATE service_alert_events
@@ -578,6 +600,9 @@ const METRICS_MAP = {
   logicmonitor: ['lm_metrics_history', 'captured_at'],
 };
 
+// Extra history tables whose newest row also counts as fresh data for a platform.
+const FRESHNESS_EXTRA = { pure: [['pure1_metrics_history', 'captured_at']] };
+
 function metricsFreshnessFor(platform) {
   let table;
   let tsCol = 'captured_at';
@@ -593,15 +618,19 @@ function metricsFreshnessFor(platform) {
     } catch { /* no contributor config for this platform */ }
   }
   if (!table) return null;
-  try {
-    const row = db.prepare(`SELECT MAX(${tsCol}) AS c FROM ${table}`).get();
-    if (!row || !row.c) return null;
-    const ms = Date.parse(row.c.includes('T') ? row.c : `${row.c.replace(' ', 'T')}Z`);
-    const ageMinutes = Number.isFinite(ms) ? Math.round((Date.now() - ms) / 60000) : null;
-    return { table, latestCapturedAt: row.c, ageMinutes };
-  } catch {
-    return null;
+  const toMs = (c) => Date.parse(c.includes('T') ? c : `${c.replace(' ', 'T')}Z`);
+  let best = null;
+  for (const [t, col] of [[table, tsCol], ...(FRESHNESS_EXTRA[platform] || [])]) {
+    try {
+      const row = db.prepare(`SELECT MAX(${col}) AS c FROM ${t}`).get();
+      if (!row || !row.c) continue;
+      const ms = toMs(row.c);
+      if (!best || (Number.isFinite(ms) && !(ms <= best.ms))) best = { table: t, c: row.c, ms };
+    } catch { /* table missing on this install */ }
   }
+  if (!best) return null;
+  const ageMinutes = Number.isFinite(best.ms) ? Math.round((Date.now() - best.ms) / 60000) : null;
+  return { table: best.table, latestCapturedAt: best.c, ageMinutes };
 }
 
 /** SAN paths for the host: Brocade fabric logins (device ports) matched the
@@ -1274,6 +1303,7 @@ module.exports = {
   polledSourcesFor,
   sourceRowFor,
   _platformPollsFor: platformPollsFor,
+  _metricsFreshnessFor: metricsFreshnessFor,
   _setCollector,
   _setChat,
   _resetTestSeams,
