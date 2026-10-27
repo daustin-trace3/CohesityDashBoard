@@ -131,7 +131,8 @@ describe('seedDemo.js', () => {
   });
 
   it('seeds zerto inventory with valid enums and breaches', () => {
-    expect(db.prepare('SELECT COUNT(*) c FROM zerto_sites').get().c).toBe(6);
+    // 7 = six demo ZVM sites + aws-use1-zca-01 added by scenarios/appServiceLinking.js (9f45c2bf, 2026-09-30).
+    expect(db.prepare('SELECT COUNT(*) c FROM zerto_sites').get().c).toBe(7);
     expect(db.prepare('SELECT COUNT(*) c FROM zerto_vras').get().c).toBeGreaterThan(10);
     expect(db.prepare('SELECT COUNT(*) c FROM zerto_vpgs').get().c).toBeGreaterThan(30);
     for (const r of db.prepare('SELECT DISTINCT health FROM zerto_vpgs').all()) {
@@ -181,8 +182,13 @@ describe('seedDemo.js', () => {
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE in_maintenance = 1').get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_datastores WHERE free_bytes < capacity_bytes * 0.2').get().c).toBeGreaterThan(0);
     // vm rows match the per-host counts, and version/BIOS columns are filled.
-    const hostVms = db.prepare('SELECT SUM(vm_count) s FROM vcenter_hosts').get().s;
-    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vms').get().c).toBe(hostVms);
+    // scenarios/sanBootPathDown.js (d66df7eb) zeroes vm_count on the down host nyc-esx-0102 but keeps
+    // its VM rows (they are the offline servers of the incident), so tie every other host and pin that one.
+    const DOWN_HOST = 'nyc-esx-0102.icc.demo';
+    const hostVms = db.prepare('SELECT SUM(vm_count) s FROM vcenter_hosts WHERE name != ?').get(DOWN_HOST).s;
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vms WHERE host_name != ?').get(DOWN_HOST).c).toBe(hostVms);
+    expect(db.prepare('SELECT vm_count FROM vcenter_hosts WHERE name = ?').get(DOWN_HOST).vm_count).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vms WHERE host_name = ?').get(DOWN_HOST).c).toBe(3);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_hosts WHERE esx_version IS NULL OR bios_version IS NULL').get().c).toBe(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_vcenters WHERE version IS NULL').get().c).toBe(0);
     expect(db.prepare('SELECT COUNT(*) c FROM vcenter_metrics_history').get().c).toBe(8 * 31);
@@ -902,9 +908,14 @@ describe('seedDemo.js', () => {
     expect(c("SELECT COUNT(*) c FROM vcenter_networks WHERE host_name = 'nyc-esx-0101.icc.demo' AND kind = 'vmkernel' AND name = 'vmk0' AND switch_name = 'Management Network'")).toBe(1);
     if (typeof ep.backupLoad === 'function') {
       const load = ep.backupLoad(db, { nowMs: Date.now() });
-      const five = load.filter((w) => w.runCount === 5);
+      // Round 9 wave 2 (5fe0318c) adds the target side: the Cohesity node's own ports (rule node-ports,
+      // side target) see the same five runs on nyc-acc-01 beside the ESX client side (rule vmkernel).
+      const five = load.filter((w) => w.runCount === 5 && w.side !== 'target');
       expect(five.length).toBeGreaterThanOrEqual(1);
       expect(five.every((w) => w.deviceName === 'nyc-acc-01' && w.uplinkRule === 'vmkernel')).toBe(true);
+      const fiveTarget = load.filter((w) => w.runCount === 5 && w.side === 'target');
+      expect(fiveTarget.length).toBeGreaterThanOrEqual(1);
+      expect(fiveTarget.every((w) => w.deviceName === 'nyc-acc-01' && w.uplinkRule === 'node-ports')).toBe(true);
       const shares = five[0].runs.map((r) => r.sharePct);
       expect(shares.reduce((a, b) => a + b, 0)).toBeGreaterThan(99);
       expect(shares.reduce((a, b) => a + b, 0)).toBeLessThan(101);
@@ -961,7 +972,9 @@ describe('seedDemo.js', () => {
     const noNeighbor = db.prepare(`SELECT display_name FROM lm_devices d WHERE d.is_network = 1 AND d.role = 'switch'
       AND NOT EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = d.source_id AND x.lm_device_id = d.lm_device_id AND x.is_neighbor = 1)
       ORDER BY display_name`).all().map((r) => r.display_name);
-    expect(noNeighbor).toEqual(['den-acc-03', 'slc-acc-03']);
+    // phx-esa-01 (IronPort, round 11 generators/logicmonitorAppsDemo.js, 3d22818b) is classed role 'switch' by
+    // lmApi.classifyRole's Cisco vendor fallback (category CiscoESA matches no role) and has no neighbor DataSource.
+    expect(noNeighbor).toEqual(['den-acc-03', 'phx-esa-01', 'slc-acc-03']);
     const thin = db.prepare("SELECT check_id FROM lm_check_history WHERE checkpoint_id != 'overall' GROUP BY check_id, checkpoint_id HAVING COUNT(*) < 48").all();
     expect(thin.length).toBe(2);
     // Governance coverageScore (routes/logicmonitor.js buildDataQuality) is 82 on this seed. The first

@@ -2193,8 +2193,10 @@ function seedDsMetrics(db, { sid, devices, ifaces, nowMs }) {
     put(d, 'PaloAlto_FW_GlobalSessions', 'PAN global sessions', 'firewall', 'global', {
       sessions_active: sessions, sessions_max: cfg.max, sessions_util_pct: util, sessions_tcp: tcp, sessions_udp: udp, sessions_icmp: sessions - tcp - udp,
     }, {
-      sessions_active: series(sessions, { amp: 0.18, lo: 0, hi: cfg.max, ramp: d.name === 'phx-fw-01' ? climb(0.65) : null }).map((v) => Math.round(v)),
-      sessions_util_pct: series(util, { amp: 0.18, ramp: d.name === 'phx-fw-01' ? climb(0.65) : null }),
+      // The story host (phx-fw-01) climbs from 0.65 x now; a small diurnal amplitude keeps that
+      // start under 70 whatever hour the seed runs (the diurnal term is wall-clock dependent).
+      sessions_active: series(sessions, { amp: d.name === 'phx-fw-01' ? 0.05 : 0.18, lo: 0, hi: cfg.max, ramp: d.name === 'phx-fw-01' ? climb(0.65) : null }).map((v) => Math.round(v)),
+      sessions_util_pct: series(util, { amp: d.name === 'phx-fw-01' ? 0.05 : 0.18, ramp: d.name === 'phx-fw-01' ? climb(0.65) : null }),
     });
     put(d, 'PaloAlto_FW_GlobalPerformance', 'PAN global performance', 'firewall', 'global', {
       pkt_rate: Math.round(sessions / 3), throughput_kbps: Math.round(sessions * 4.5), session_rate: Math.round(sessions / 400),

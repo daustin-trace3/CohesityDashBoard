@@ -5,7 +5,7 @@
  * issue, issue hysteresis and the frozen reference. Rows are seeded by hand
  * into the per-file test DB through the migration.
  */
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -366,6 +366,11 @@ describe('episodeSummary and pruneEpisodes', () => {
   it('counts by outcome and state, lists the newest first and matches check names', () => {
     play([...flat(6, 30), 100, ...flat(8, 30)]);
     play([...flat(2, 30), ...flat(6, 100)], cursor);
+    // The episodes are stamped from the fixed T0 (2026-10-16); episodeSummary windows from the wall clock,
+    // so without a pinned Date this fixture ages out of the 7 and 30 day windows (it did on 2026-10-23).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(sampleAt(cursor) * 1000);
+    try {
     const all = lmWatch.episodeSummary(db, { sourceId: sid, days: 7 });
     expect(all.total).toBe(2);
     expect(all.byOutcome.oneOff).toBe(1);
@@ -377,6 +382,7 @@ describe('episodeSummary and pruneEpisodes', () => {
     expect(lmWatch.episodeSummary(db, { siteKey: 'denver' }).total).toBe(2);
     const lines = lmWatch.watchLines(db, { names: ['PHX core'] });
     expect(lines.lines[0]).toMatch(/^Episode history: 2 latency episodes in 30 days for PHX core: 1 one-off/);
+    } finally { vi.useRealTimers(); }
   });
 
   it('prunes closed episodes older than the window and keeps open ones', () => {
