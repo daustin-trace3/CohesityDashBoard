@@ -824,5 +824,96 @@ module.exports = [
       `);
     },
   },
-];
+  {
+    // FinOps round 2 (2026-10-27): inventory tags, estimated resource cost, price catalog, EC2 CPU
+    // history, Savings Plan inventory fields, AWS Budgets rows, cost comparison drivers and the
+    // Cost Optimization Hub columns on recommendations.
+    version: 12,
+    up(db) {
+      const colsOf = (table) => db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name);
+      const add = (table, name, ddl) => {
+        if (!colsOf(table).includes(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+      };
+      for (const t of ['aws_ec2_instances', 'aws_ebs_volumes', 'aws_rds_instances', 'aws_s3_buckets', 'aws_lightsail_instances', 'aws_lightsail_databases']) {
+        add(t, 'tags_json', 'TEXT');
+      }
+      add('aws_savings_plans', 'state', 'TEXT');
+      add('aws_savings_plans', 'upfront_usd', 'REAL');
+      add('aws_savings_plans', 'recurring_usd', 'REAL');
+      add('aws_savings_plans', 'offering_id', 'TEXT');
+      add('aws_savings_plans', 'product_types_json', 'TEXT');
+      add('aws_savings_plans', 'description', 'TEXT');
+      add('aws_savings_plans', 'source', "TEXT NOT NULL DEFAULT 'details'");
+      add('aws_budgets', 'source', "TEXT NOT NULL DEFAULT 'icc'");
+      add('aws_budgets', 'scope_match', "TEXT NOT NULL DEFAULT 'exact'");
+      add('aws_budgets', 'external_name', 'TEXT');
+      add('aws_budgets', 'time_unit', 'TEXT');
+      add('aws_budgets', 'aws_actual_usd', 'REAL');
+      add('aws_budgets', 'aws_forecast_usd', 'REAL');
+      add('aws_budgets', 'last_synced_at', 'DATETIME');
+      add('aws_optimizer_recommendations', 'effort', 'TEXT');
+      add('aws_optimizer_recommendations', 'restart_needed', 'INTEGER');
+      add('aws_optimizer_recommendations', 'rollback_possible', 'INTEGER');
+      add('aws_optimizer_recommendations', 'action_type', 'TEXT');
+      add('aws_optimizer_recommendations', 'lookback_days', 'INTEGER');
+      add('aws_optimizer_recommendations', 'after_discounts', 'INTEGER');
+      add('aws_optimizer_recommendations', 'detail_json', 'TEXT');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aws_cost_resource_estimate_daily (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id     INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          day            TEXT NOT NULL,
+          service        TEXT NOT NULL,
+          usage_type     TEXT NOT NULL,
+          resource_kind  TEXT NOT NULL,
+          resource_id    TEXT NOT NULL,
+          amount_usd     REAL,
+          amortized_usd  REAL,
+          share_rule     TEXT,
+          UNIQUE(account_id, day, usage_type, resource_kind, resource_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aws_est_resource ON aws_cost_resource_estimate_daily(account_id, resource_kind, resource_id, day);
+        CREATE INDEX IF NOT EXISTS idx_aws_est_day ON aws_cost_resource_estimate_daily(account_id, day);
 
+        CREATE TABLE IF NOT EXISTS aws_price_catalog (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          region           TEXT NOT NULL,
+          service_code     TEXT NOT NULL,
+          sku_key          TEXT NOT NULL,
+          unit             TEXT,
+          price_usd        REAL,
+          attributes_json  TEXT,
+          captured_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(region, service_code, sku_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS aws_ec2_metrics_daily (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id   INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          instance_id  TEXT NOT NULL,
+          day          TEXT NOT NULL,
+          cpu_avg      REAL,
+          cpu_max      REAL,
+          samples      INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(account_id, instance_id, day)
+        );
+
+        CREATE TABLE IF NOT EXISTS aws_cost_comparison (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_id        INTEGER NOT NULL REFERENCES aws_accounts(id) ON DELETE CASCADE,
+          baseline_month    TEXT NOT NULL,
+          comparison_month  TEXT NOT NULL,
+          metric            TEXT NOT NULL,
+          service           TEXT NOT NULL,
+          baseline_usd      REAL,
+          comparison_usd    REAL,
+          delta_usd         REAL,
+          delta_pct         REAL,
+          drivers_json      TEXT,
+          captured_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(account_id, baseline_month, comparison_month, metric, service)
+        );
+      `);
+    },
+  },
+];

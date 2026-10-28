@@ -245,7 +245,7 @@ const NEW_TABLES = [
   'proxmox_backup_jobs', 'proxmox_tasks', 'proxmox_metrics', 'proxmox_issue_history',
   'proxmox_snapshots', 'proxmox_services', 'proxmox_disks', 'proxmox_node_networks',
   'proxmox_storage_content', 'proxmox_events',
-  'aws_cost_alloc_daily', 'aws_sp_utilization_daily', 'aws_sp_coverage_daily', 'aws_ri_utilization_daily', 'aws_ri_coverage_daily', 'aws_savings_plans', 'aws_cost_anomalies', 'aws_cost_forecast', 'aws_budgets', 'aws_budget_status', 'aws_recommendation_state', 'aws_capability_status',
+  'aws_cost_alloc_daily', 'aws_sp_utilization_daily', 'aws_sp_coverage_daily', 'aws_ri_utilization_daily', 'aws_ri_coverage_daily', 'aws_savings_plans', 'aws_cost_anomalies', 'aws_cost_forecast', 'aws_budgets', 'aws_budget_status', 'aws_recommendation_state', 'aws_capability_status', 'aws_cost_resource_estimate_daily', 'aws_price_catalog', 'aws_ec2_metrics_daily', 'aws_cost_comparison',
   'brocade_sources', 'brocade_fabrics', 'brocade_switches', 'brocade_switch_ports',
   'brocade_device_ports', 'brocade_enclosures', 'brocade_chassis', 'brocade_events',
   'brocade_health_scores', 'brocade_zone_configs', 'brocade_zones', 'brocade_zone_aliases',
