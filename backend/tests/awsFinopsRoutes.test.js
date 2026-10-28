@@ -37,6 +37,7 @@ const FAKES = {
     { capability: 'cost_resources', status: 'denied', error: 'denied', iamActions: ['ce:GetCostAndUsageWithResources'], requests: 40, lastOkAt: null, lastCheckedAt: iso(0) },
   ],
   missingActions: () => ['ce:GetCostForecast', 'ce:GetCostAndUsageWithResources'],
+  allActions: () => ['ce:GetCostAndUsage', 'ce:GetCostAndUsageWithResources', 'ce:GetCostForecast', 'ec2:DescribeInstances'],
   buildFinopsOverview: ({ metric, accountId: acct }) => ({
     metric, amortizedFrom: day(30), month: day(0).slice(0, 7), accountId: acct,
     kpis: { mtdUsd: 12.5 }, mix: [], trend: [], topMovers: [], budgets: [], anomalies: [],
@@ -243,7 +244,7 @@ describe('FinOps GET routes answer with the documented keys', () => {
     expect(res.body.range).toEqual(expect.objectContaining({ days: 10, fromDay: '2026-03-01', toDay: '2026-03-10' }));
   });
 
-  it('GET /finops/capabilities lists the policy for the missing actions only', async () => {
+  it('GET /finops/capabilities lists the policy for the missing actions and the full policy', async () => {
     const res = await request(app).get('/api/aws/finops/capabilities');
     expect(res.status).toBe(200);
     expect(res.body.capabilities).toHaveLength(5);
@@ -254,6 +255,8 @@ describe('FinOps GET routes answer with the documented keys', () => {
       Version: '2012-10-17',
       Statement: [{ Effect: 'Allow', Action: ['ce:GetCostForecast', 'ce:GetCostAndUsageWithResources'], Resource: '*' }],
     });
+    expect(res.body.allActions).toEqual(['ce:GetCostAndUsage', 'ce:GetCostAndUsageWithResources', 'ce:GetCostForecast', 'ec2:DescribeInstances']);
+    expect(res.body.fullPolicy.Statement[0].Action).toEqual(res.body.allActions);
   });
 
   it('GET /overview cost gains the forecast, open anomaly count and budget state', async () => {

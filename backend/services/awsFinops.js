@@ -66,6 +66,37 @@ const CAPABILITY_ACTIONS = {
   cost_resources: ['ce:GetCostAndUsageWithResources'],
 };
 
+/**
+ * IAM actions the poller needs before any FinOps capability: one per SDK command ICC sends
+ * (awsApi.js, awsPricing.js), so the full policy below is the least-privilege set, not a
+ * wildcard. Role mode also needs sts:AssumeRole on the caller, which is a trust-policy matter.
+ */
+const BASE_ACTIONS = [
+  'sts:GetCallerIdentity',
+  'ec2:DescribeInstances', 'ec2:DescribeVolumes', 'ec2:DescribeVpcs', 'ec2:DescribeSubnets',
+  'ec2:DescribeNatGateways', 'ec2:DescribeInternetGateways', 'ec2:DescribeSecurityGroups',
+  'cloudwatch:GetMetricData', 'cloudwatch:ListMetrics',
+  'lightsail:GetInstances', 'lightsail:GetInstanceMetricData', 'lightsail:GetInstanceSnapshots', 'lightsail:GetBundles',
+  'lightsail:GetRelationalDatabases', 'lightsail:GetRelationalDatabaseBundles', 'lightsail:GetDisks',
+  'lightsail:GetBuckets', 'lightsail:GetLoadBalancers', 'lightsail:GetDistributions', 'lightsail:GetDomains',
+  'lightsail:GetStaticIps',
+  'ecs:ListClusters', 'ecs:DescribeClusters', 'ecs:ListServices', 'ecs:DescribeServices',
+  'ecr:DescribeRepositories', 'ecr:DescribeImages',
+  's3:ListAllMyBuckets', 's3:GetBucketLocation', 's3:GetBucketPublicAccessBlock', 's3:GetBucketVersioning',
+  's3:GetLifecycleConfiguration',
+  'rds:DescribeDBInstances', 'lambda:ListFunctions', 'dynamodb:ListTables', 'dynamodb:DescribeTable',
+  'compute-optimizer:GetEnrollmentStatus', 'compute-optimizer:GetEC2InstanceRecommendations',
+  'compute-optimizer:GetEBSVolumeRecommendations', 'compute-optimizer:GetLambdaFunctionRecommendations',
+  'compute-optimizer:GetECSServiceRecommendations',
+];
+
+/** Every IAM action ICC uses for this platform: the poller set plus every capability's actions. */
+function allActions() {
+  const out = new Set(BASE_ACTIONS);
+  for (const list of Object.values(CAPABILITY_ACTIONS)) for (const a of list) out.add(a);
+  return [...out].sort();
+}
+
 const DAY_MS = 86400000;
 const MONTH_DAYS = 30.4;
 
@@ -1572,7 +1603,7 @@ module.exports = {
   syncAwsBudgets,
   awsBudgetScope,
   capabilityRows,
-  missingActions,
+  missingActions, allActions, BASE_ACTIONS,
   finopsSettings,
   _capability: capability, _isoWeekInfo: isoWeekInfo, _deniedActions: deniedActions,
   _db: db, _getSetting: getSetting, _logger: logger,

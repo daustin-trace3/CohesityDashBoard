@@ -102,6 +102,9 @@ export default function FinopsSettings() {
   const [caps, setCaps] = useState(null);
   const [recapturing, setRecapturing] = useState(false);
   const [sendingDigest, setSendingDigest] = useState(false);
+  // 'all' = every action ICC uses for AWS (paste once on the IAM user or role); 'missing' = what the
+  // current policy still lacks, judged by the last capture.
+  const [policyView, setPolicyView] = useState('all');
 
   const loadCaps = useCallback(() => getCapabilities().then(setCaps).catch(() => setCaps({ capabilities: [], missingActions: [], policy: null })), []);
 
@@ -186,7 +189,8 @@ export default function FinopsSettings() {
 
   const copyPolicy = async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(caps.policy, null, 2));
+      const doc = policyView === 'missing' ? caps.policy : caps.fullPolicy;
+      await navigator.clipboard.writeText(JSON.stringify(doc, null, 2));
       toast({ type: 'success', title: 'Policy copied' });
     } catch {
       toast({ type: 'error', title: 'Copy failed', message: 'Select the text and copy it by hand.' });
@@ -204,6 +208,7 @@ export default function FinopsSettings() {
 
   const capRows = caps?.capabilities || [];
   const missing = caps?.missingActions || [];
+  const allActions = caps?.allActions || [];
 
   return (
     <>
@@ -347,17 +352,34 @@ export default function FinopsSettings() {
               </div>
             )}
             <div className="mt-4">
-              <div className="flex items-center justify-between gap-2 mb-1.5">
-                <p className="text-xs font-semibold text-ink">IAM policy for the missing actions</p>
-                {missing.length > 0 && caps.policy && (
+              <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <p className="text-xs font-semibold text-ink mr-1">IAM policy</p>
+                  {[['all', `Everything ICC uses (${allActions.length})`], ['missing', `Missing only (${missing.length})`]].map(([v, text]) => (
+                    <button key={v} type="button" aria-pressed={policyView === v} onClick={() => setPolicyView(v)}
+                      className={`px-2 py-0.5 rounded-md text-[11px] border cursor-pointer ${policyView === v ? 'bg-surface-overlay text-ink font-semibold border-brand/50' : 'text-ink-muted border-cohesity-border hover:text-ink'}`}>
+                      {text}
+                    </button>
+                  ))}
+                </div>
+                {((policyView === 'all' && caps.fullPolicy) || (policyView === 'missing' && missing.length > 0 && caps.policy)) && (
                   <button onClick={copyPolicy}
                     className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
                     <Copy size={12} /> Copy
                   </button>
                 )}
               </div>
-              {missing.length === 0 || !caps.policy ? (
-                <p className="text-[11px] text-ink-faint">No missing actions. Every capability that has run reached its Cost Explorer operation.</p>
+              <p className="text-[11px] text-ink-muted mb-2">
+                {policyView === 'all'
+                  ? 'Every read-only action this plugin calls: inventory polling plus each FinOps source. Attach it to the IAM user or role once, then nothing on this page reads denied. Two items stay console preferences, not IAM: Cost Explorer resource-level data and EC2 rightsizing.'
+                  : 'Only the actions the last capture was refused. Attach these to the current policy to light up the denied sources above.'}
+              </p>
+              {policyView === 'all' ? (
+                caps.fullPolicy
+                  ? <pre className="text-[11px] leading-relaxed text-ink-muted bg-surface-overlay border border-cohesity-border rounded-lg p-3 overflow-x-auto max-h-[420px] overflow-y-auto">{JSON.stringify(caps.fullPolicy, null, 2)}</pre>
+                  : <p className="text-[11px] text-ink-faint">The backend predates the full policy list; restart it on the current build.</p>
+              ) : missing.length === 0 || !caps.policy ? (
+                <p className="text-[11px] text-ink-faint">No missing actions. Every capability that has run reached its AWS operation.</p>
               ) : (
                 <pre className="text-[11px] leading-relaxed text-ink-muted bg-surface-overlay border border-cohesity-border rounded-lg p-3 overflow-x-auto">{JSON.stringify(caps.policy, null, 2)}</pre>
               )}

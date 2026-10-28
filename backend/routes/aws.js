@@ -2256,11 +2256,15 @@ router.get('/finops/capabilities', (req, res, next) => {
     const capabilities = awsFinops.capabilityRows();
     const info = captureInfo(capabilities);
     const missing = awsFinops.missingActions();
+    const all = awsFinops.allActions();
     res.json({
       capabilities, ...info,
       estimatedDailyUsd: round2(info.lastCaptureRequests * 0.01),
       missingActions: missing,
       policy: { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: missing, Resource: '*' }] },
+      // Everything ICC uses for this platform (poller plus every FinOps capability), for a one-time paste.
+      allActions: all,
+      fullPolicy: { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: all, Resource: '*' }] },
     });
   } catch (err) { next(err); }
 });
