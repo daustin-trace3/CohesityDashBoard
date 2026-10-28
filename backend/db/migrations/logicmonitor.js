@@ -962,4 +962,16 @@ module.exports = [
       `);
     },
   },
+
+  // Migration v13. dataSourceType per device DataSource row ("DS" DataSource, "CS"
+  // ConfigSource). The metrics sweep asked the data endpoint for ConfigSource rows and
+  // LogicMonitor answered HTTP 400 "ConfigureSource<id> is not supported" every tick
+  // (CG box, PaloAlto_FW_RunningConfigXML, 2026-10-28).
+  {
+    version: 13,
+    up(db) {
+      const cols = db.prepare("PRAGMA table_info('lm_device_datasources')").all().map((c) => c.name);
+      if (!cols.includes('datasource_type')) db.exec('ALTER TABLE lm_device_datasources ADD COLUMN datasource_type TEXT');
+    },
+  },
 ];

@@ -509,14 +509,14 @@ const storeDeviceDatasources = db.transaction((sourceId, deviceId, rows, ifHdsId
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO lm_device_datasources (source_id, lm_device_id, hds_id, datasource_id, datasource_name,
       datasource_display_name, instance_count, monitoring_instance_count, alert_status, sdt_status, stop_monitoring,
-      is_interface, is_neighbor, refreshed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      is_interface, is_neighbor, datasource_type, refreshed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
   for (const r of rows) {
     if (r.hdsId == null) continue;
     stmt.run(sourceId, deviceId, r.hdsId, r.datasourceId, r.datasourceName, r.datasourceDisplayName, r.instanceCount,
       r.monitoringInstanceCount, r.alertStatus, r.sdtStatus, r.stopMonitoring, r.hdsId === ifHdsId ? 1 : 0,
-      lmApi.NEIGHBOR_DATASOURCES[r.datasourceName] ? 1 : 0);
+      lmApi.NEIGHBOR_DATASOURCES[r.datasourceName] ? 1 : 0, r.datasourceType || null);
   }
 });
 

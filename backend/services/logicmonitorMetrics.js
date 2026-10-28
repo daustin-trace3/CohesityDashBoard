@@ -166,19 +166,43 @@ function callCap(source) {
  * when its family is on (else null, the row is then raw-only) and `catalogEntry` is the
  * entry regardless of family. Raw off: only DataSources the catalog names, as before.
  */
+// LogicMonitor's 400 for a data call against a ConfigSource (LM Config) row. The text seen live
+// is "ConfigureSource<635> is not supported"; the match stays loose on purpose.
+const CONFIGSOURCE_RE = /Config(?:ure)?Source\s*<?\d*>?\s*is not support/i;
+const isConfigSourceError = (msg) => CONFIGSOURCE_RE.test(String(msg || ''));
+
+/** ConfigSource names learned from that 400, kept in lm_sources.features_json.configSources. */
+function learnedConfigSources(sourceId) {
+  const list = readFeatures(sourceId).configSources;
+  return new Set(Array.isArray(list) ? list : []);
+}
+function rememberConfigSource(sourceId, datasourceName) {
+  if (!datasourceName) return;
+  const set = learnedConfigSources(sourceId);
+  if (set.has(datasourceName)) return;
+  set.add(datasourceName);
+  mergeFeatures(sourceId, { configSources: [...set].sort() });
+  try {
+    db.prepare("UPDATE lm_device_datasources SET datasource_type = 'CS' WHERE source_id = ? AND datasource_name = ?").run(sourceId, datasourceName);
+  } catch { /* column arrives with lm migration v13 */ }
+}
+
 function candidateRows(source) {
   const families = enabledFamilies(source);
   const raw = rawEnabled(source);
+  const configSources = learnedConfigSources(source.id);
   const rows = db.prepare(`
     SELECT x.hds_id, x.lm_device_id, x.datasource_name, x.metrics_last_at, x.raw_last_at, d.display_name, d.name
     FROM lm_device_datasources x
     JOIN lm_devices d ON d.source_id = x.source_id AND d.lm_device_id = x.lm_device_id AND d.stale = 0
     WHERE x.source_id = ? AND COALESCE(x.instance_count, 0) > 0 AND COALESCE(x.stop_monitoring, 0) = 0
       AND COALESCE(x.is_interface, 0) = 0 AND COALESCE(x.is_neighbor, 0) = 0
+      AND COALESCE(x.datasource_type, 'DS') <> 'CS'
     ORDER BY COALESCE(${raw ? 'x.raw_last_at, ' : ''}x.metrics_last_at, '') ASC, x.hds_id
   `).all(source.id);
   const out = [];
   for (const r of rows) {
+    if (configSources.has(r.datasource_name)) continue;
     const catalogEntry = catalogFor(r.datasource_name);
     const familyOn = !!catalogEntry && !(families && !families.has(catalogEntry.family));
     if (!raw && !familyOn) continue;
@@ -347,6 +371,13 @@ async function pollMetrics(source) {
   const fail = (cand, err) => {
     failed += 1;
     lastErr = safeMsg(err);
+    if (isConfigSourceError(lastErr)) {
+      // A ConfigSource has no numeric data; remember the name so no later sweep asks again.
+      rememberConfigSource(source.id, cand.datasource_name);
+      logger.info(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} is a ConfigSource (LogicMonitor answered: ${lastErr}); skipped from now on`);
+      try { markFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
+      return;
+    }
     logger.warn(`[LmMetrics] ${cand.display_name || cand.lm_device_id} ${cand.datasource_name} failed: ${lastErr}`);
     try { markFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ }
     if (raw) { try { markRawFailed(source.id, cand.hds_id, lastErr, nowIso); } catch { /* row may be gone */ } }

@@ -341,6 +341,31 @@ describe('pollMetrics', () => {
     expect(db.prepare('SELECT metrics_last_error e FROM lm_device_datasources WHERE hds_id = 802').get().e).toBeNull();
   });
 
+  it('learns a ConfigSource from the HTTP 400 and never asks for it again; typed CS rows are skipped up front', async () => {
+    const sid = insertSource({ raw: 1 });
+    insertDevice(sid, 1);
+    insertDs(sid, 1, 851, 'PaloAlto_FW_RunningConfigXML'); // raw mode polls unknown DataSources too
+    insertDs(sid, 1, 852, 'PaloAlto_FW_Disk');
+    insertDs(sid, 1, 853, 'Cisco_IOS_RunningConfig');
+    db.prepare("UPDATE lm_device_datasources SET datasource_type = 'CS' WHERE hds_id = 853").run();
+    expect(metrics.candidateRows(sourceRow(sid)).map((r) => r.hds_id)).toEqual([851, 852]);
+    spy = vi.spyOn(lmApi, 'fetchDsData').mockImplementation(async (s, dev, hds) => {
+      if (hds === 851) { const e = new Error('HTTP 400: ConfigureSource<635> is not supported'); e.status = 400; throw e; }
+      return { dataSourceName: 'PaloAlto_FW_Disk', dataPoints: ['UsedPercent'], instances: { 'PaloAlto_FW_Disk-/ [ID:5]': { time: [(now() - 30) * 1000], values: [[55]] } } };
+    });
+    const r = await metrics.pollMetrics(sourceRow(sid));
+    expect(r.ok).toBe(1);
+    expect(r.failed).toBe(1);
+    const feats = JSON.parse(sourceRow(sid).features_json);
+    expect(feats.configSources).toEqual(['PaloAlto_FW_RunningConfigXML']);
+    expect(db.prepare('SELECT datasource_type t FROM lm_device_datasources WHERE hds_id = 851').get().t).toBe('CS');
+    // Second sweep: the learned row is not a candidate and the API is not asked for it.
+    spy.mockClear();
+    expect(metrics.candidateRows(sourceRow(sid)).map((r) => r.hds_id)).toEqual([852]);
+    await metrics.pollMetrics(sourceRow(sid));
+    expect(spy.mock.calls.map((c) => c[2])).toEqual([852]);
+  });
+
   it('throws when every call fails', async () => {
     const sid = insertSource();
     insertDevice(sid, 1);

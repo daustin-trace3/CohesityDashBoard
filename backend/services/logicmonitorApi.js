@@ -674,6 +674,8 @@ function normalizeDeviceDatasource(r) {
     datasourceId: numOrNull(r.dataSourceId),
     datasourceName: strOrNull(r.dataSourceName),
     datasourceDisplayName: strOrNull(r.dataSourceDisplayName),
+    // "DS" DataSource, "CS" ConfigSource (no numeric data; the data endpoint answers 400). UNVERIFIED field name.
+    datasourceType: strOrNull(r.dataSourceType),
     instanceCount: numOrNull(r.instanceNumber),
     monitoringInstanceCount: numOrNull(r.monitoringInstanceNumber),
     alertStatus: strOrNull(r.alertStatus),
@@ -933,7 +935,7 @@ function normalizeRole(r) {
 
 const DEVICE_FIELDS = 'id,name,displayName,description,deviceType,hostStatus,alertStatus,alertStatusPriority,sdtStatus,alertDisableStatus,disableAlerting,hostGroupIds,currentCollectorId,preferredCollectorId,collectorDescription,enableNetflow,netflowCollectorId,createdOn,updatedOn,upTimeInSeconds,deletedTimeInMs,systemProperties,autoProperties,customProperties,type';
 const GROUP_FIELDS = 'id,name,fullPath,parentId,description,groupType,appliesTo,numOfHosts,numOfDirectDevices,groupStatus,disableAlerting,customProperties';
-const DDS_FIELDS = 'id,dataSourceId,dataSourceName,dataSourceDisplayName,instanceNumber,monitoringInstanceNumber,alertStatus,sdtStatus,stopMonitoring,status';
+const DDS_FIELDS = 'id,dataSourceId,dataSourceName,dataSourceDisplayName,dataSourceType,instanceNumber,monitoringInstanceNumber,alertStatus,sdtStatus,stopMonitoring,status';
 const INSTANCE_FIELDS = 'id,name,displayName,description,wildValue,wildValue2,stopMonitoring,disableAlerting,alertStatus,sdtStatus,customProperties,autoProperties,systemProperties';
 const COLLECTOR_FIELDS = 'id,description,hostname,collectorGroupId,collectorGroupName,status,isDown,acked,inSDT,numberOfHosts,numberOfInstances,build,platform,arch,collectorSize,upTime,updatedOn,createdOn,lastSentNotificationOn,backupAgentId,enableFailBack,collectorDeviceId,ea';
 const ADMIN_FIELDS = 'id,username,email,status,roles,apiTokens,apionly,lastLoginOn,twoFAEnabled,createdBy';
