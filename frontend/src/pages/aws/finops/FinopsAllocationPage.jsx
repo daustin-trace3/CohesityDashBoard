@@ -150,8 +150,9 @@ export default function FinopsAllocationPage() {
 
           {data.coverageGapFlag && (
             <div className="panel p-3 mb-4 border border-status-warn/40 text-xs text-ink-muted">
-              This key accounts for {pct1(100 - (data.coverageGapPct || 0))} of total cost in the window. A tag reports only from the day it was
-              activated, so earlier days are missing from this view, not unallocated.
+              {data.estimated
+                ? <>Estimates cover {pct1(100 - (data.coverageGapPct || 0))} of total cost in the window. The rest is cost with no usage-type row to split, not unallocated.</>
+                : <>This key accounts for {pct1(100 - (data.coverageGapPct || 0))} of total cost in the window. A tag reports only from the day it was activated, so earlier days are missing from this view, not unallocated.</>}
             </div>
           )}
 
