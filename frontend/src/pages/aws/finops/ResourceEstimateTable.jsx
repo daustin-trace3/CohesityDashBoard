@@ -12,6 +12,9 @@ export const KIND_LABELS = {
 };
 export const kindLabel = (k) => KIND_LABELS[k] || k || '-';
 
+// Page sizes for the Resources page tables (Doug, 2026-10-28).
+export const RESOURCE_PAGE_SIZES = [5, 10, 25, 50, 'all'];
+
 function TagChips({ tags }) {
   const entries = Object.entries(tags || {});
   if (entries.length === 0) return <span className="text-ink-faint">-</span>;
@@ -35,7 +38,7 @@ export default function ResourceEstimateTable({ rows, onRowClick, showKind = tru
   })), [rows]);
   const ctl = useTableControls(data, {
     searchKeys: ['label', 'resourceId', 'resourceKind', 'servicesText', 'tagsText'],
-    defaultSortKey: 'usd', defaultSortDir: 'desc', paginate: true,
+    defaultSortKey: 'usd', defaultSortDir: 'desc', paginate: true, defaultPageSize: 10,
     sortValues: { usd: (r) => r.usd ?? -Infinity, estMonthlyUsd: (r) => r.estMonthlyUsd ?? -Infinity, pct: (r) => r.pct ?? -Infinity },
   });
   return (
@@ -75,7 +78,7 @@ export default function ResourceEstimateTable({ rows, onRowClick, showKind = tru
           </table>
         </div>
       )}
-      <TablePager ctl={ctl} />
+      <TablePager ctl={ctl} sizes={RESOURCE_PAGE_SIZES} />
     </>
   );
 }

@@ -8,10 +8,11 @@ import { PageHeader, Panel, StatCard, Badge, LoadingPanel, RefreshButton, LastUp
 import { useDateRange, DateRangeControl } from '../../../components/ui/DateRangeControl';
 import { ModalShell } from '../../../components/hyperv/HvUi';
 import { downloadCsv } from '../../../api/download';
+import { useTableControls, TablePager } from '../../../components/ui/tableTools';
 import { fmtUsd } from '../helpers';
 import { getResources, getResourceSeries, RESOURCES_CSV, errMsg } from './finopsApi';
 import MetricToggle from './MetricToggle';
-import ResourceEstimateTable, { ESTIMATE_NOTE, kindLabel } from './ResourceEstimateTable';
+import ResourceEstimateTable, { ESTIMATE_NOTE, kindLabel, RESOURCE_PAGE_SIZES } from './ResourceEstimateTable';
 import { useUrlParam, pct1, chartOptions, thCls } from './shared';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
@@ -94,6 +95,8 @@ export default function FinopsResourcesPage() {
   const totals = data?.totals || {};
   const rows = data?.rows || [];
   const unattributed = data?.unattributed || [];
+  // Second table on the page: deepLink off so it does not share the ?q= / sort params with the resource table.
+  const unattrCtl = useTableControls(unattributed, { defaultSortKey: 'usd', defaultSortDir: 'desc', paginate: true, defaultPageSize: 10, deepLink: false });
   const byKind = data?.byKind || [];
   const kindCount = (k) => byKind
     .filter((b) => k === '' || b.kind === k || (k === 'bedrock' && b.kind === 'bedrock-model') || (k === 'lightsail' && String(b.kind).startsWith('lightsail')))
@@ -164,7 +167,7 @@ export default function FinopsResourcesPage() {
                   <th className="py-2 pr-3">Service</th><th className="py-2 pr-3 text-right">Usage types</th><th className="py-2 pr-3 text-right">Cost</th>
                 </tr></thead>
                 <tbody>
-                  {unattributed.map((u) => (
+                  {unattrCtl.pageRows.map((u) => (
                     <tr key={u.service} className="border-b border-cohesity-border/50">
                       <td className="py-2 pr-3 text-ink">{u.service}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{u.usageTypes ?? '-'}</td>
@@ -173,6 +176,7 @@ export default function FinopsResourcesPage() {
                   ))}
                 </tbody>
               </table>
+              <TablePager ctl={unattrCtl} sizes={RESOURCE_PAGE_SIZES} />
             </div>
           )}
       </Panel>

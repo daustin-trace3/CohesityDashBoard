@@ -58,6 +58,8 @@ describe('parsing a PriceList entry', () => {
     });
     expect(pricing.parsePriceListEntry(JSON.parse(entry({ usd: '0.1' }))).priceUsd).toBe(0.1);
     expect(pricing.parsePriceListEntry('not json')).toBeNull();
+    // The SDK returns a smithy LazyJsonString: a String OBJECT wrapping the JSON text (live 2026-10-28).
+    expect(pricing.parsePriceListEntry(new String(entry({ usd: '0.25' }))).priceUsd).toBe(0.25);
     expect(pricing.parsePriceListEntry(JSON.stringify({ product: { sku: 'x' }, terms: {} }))).toBeNull();
   });
 });

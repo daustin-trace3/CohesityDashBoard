@@ -121,8 +121,11 @@ function catalogSummary() {
  */
 function parsePriceListEntry(entry) {
   let doc = entry;
-  if (typeof entry === 'string') {
-    try { doc = JSON.parse(entry); } catch { return null; }
+  // The SDK hands each entry back as a smithy LazyJsonString (a String object, typeof 'object'), so a
+  // typeof check alone misses it and every price reads as an object without terms (live 2026-10-28).
+  if (doc != null && typeof doc === 'object' && !doc.product && !doc.terms) doc = String(doc);
+  if (typeof doc === 'string') {
+    try { doc = JSON.parse(doc); } catch { return null; }
   }
   if (!doc || typeof doc !== 'object') return null;
   const offers = doc.terms?.OnDemand ? Object.values(doc.terms.OnDemand) : [];

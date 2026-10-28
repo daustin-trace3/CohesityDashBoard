@@ -11,7 +11,6 @@ import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated } fr
 import { fmtUsd } from '../helpers';
 import { getOverview, getComparison, errMsg } from './finopsApi';
 import KpiBand from './KpiBand';
-import CapabilityStrip from './CapabilityStrip';
 import MetricToggle from './MetricToggle';
 import BudgetBar from './BudgetBar';
 import {
@@ -64,7 +63,6 @@ export default function FinopsOverviewPage() {
   const movers = data?.topMovers || [];
   const budgets = data?.budgets || [];
   const anomalies = data?.anomalies || [];
-  const capabilities = data?.capabilities || [];
   const cmpRows = comparison?.rows || [];
   const cmpCaption = `AWS driver analysis, ${comparison?.comparisonMonth || '-'} vs ${comparison?.baselineMonth || '-'}`;
 
@@ -139,7 +137,6 @@ export default function FinopsOverviewPage() {
       )}
 
       <KpiBand tiles={tiles} loading={data == null} />
-      <CapabilityStrip capabilities={capabilities} />
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-4">
         <Panel title="Cost mix, month to date" className="xl:col-span-1">
