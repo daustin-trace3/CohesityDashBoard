@@ -228,6 +228,21 @@ function getPlatformSettings() {
   };
 }
 
+
+/** Whether alert platform `id` is live on this instance: an installed or built-in pack that is
+ *  enabled (and not errored), or a compiled-in platform whose platform_<id>_enabled flag is on.
+ *  Global Settings > Alert Filtering lists only these; the stored on/off value of a platform that
+ *  is absent is kept untouched for the day it is installed. */
+function alertPlatformActive(id) {
+  if (id === 'cohesity') return getSetting('platform_cohesity_enabled') !== '0';
+  try {
+    const registry = require('../core/registry');
+    const p = registry.getPlugin(id);
+    if (p) return !!p.enabled && p.status !== 'error';
+  } catch { /* registry not ready yet */ }
+  return getSetting(`platform_${id}_enabled`) === '1';
+}
+
 /** SMTP alert-notification settings in a typed shape (contract C10.1/C10.2).
  *  smtpPassword itself is never included — only whether one is set. */
 function getNotificationSettings() {
@@ -253,6 +268,9 @@ function getNotificationSettings() {
     alertMinSeverity: getSetting('alert_email_min_severity') || 'warning',
     alertPlatforms: Object.fromEntries(
       Object.keys(platformDefaults).map((k) => [k, alertPlatforms[k] !== false])
+    ),
+    alertPlatformsActive: Object.fromEntries(
+      Object.keys(platformDefaults).map((k) => [k, alertPlatformActive(k)])
     ),
     reminderHours: Number(getSetting('alert_email_reminder_hours')) || 0,
   };

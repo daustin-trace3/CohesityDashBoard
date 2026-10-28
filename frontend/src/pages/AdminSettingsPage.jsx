@@ -589,8 +589,12 @@ export default function AdminSettingsPage() {
             </select>
           </div>
 
+            <p className="text-[11px] text-ink-faint">
+              Only platforms installed and enabled on this instance are listed. Each platform's own Settings page holds
+              its recipients, minimum severity and alert types.
+            </p>
           <div className="flex flex-col gap-2">
-            {NOTIFY_PLATFORMS.map(p => (
+            {NOTIFY_PLATFORMS.filter(p => notify?.alertPlatformsActive?.[p.key] !== false).map(p => (
               <label key={p.key} className="flex items-start gap-2.5 cursor-pointer select-none">
                 <input
                   type="checkbox"

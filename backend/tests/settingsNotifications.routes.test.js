@@ -39,6 +39,24 @@ describe('GET/PUT /api/settings/notifications', () => {
     });
   });
 
+  it('GET reports which alert platforms are live on this instance (Alert Filtering lists only those)', async () => {
+    const { setSetting } = require('../services/settings');
+    let res = await get();
+    expect(res.status).toBe(200);
+    // Cohesity is on unless its flag says 0; a compiled-in platform with its flag at the default 0 is not live.
+    expect(res.body.alertPlatformsActive.cohesity).toBe(true);
+    expect(res.body.alertPlatformsActive.pure).toBe(false);
+    // The stored on/off value of an absent platform is still carried (kept for the day it is installed).
+    expect(res.body.alertPlatforms.pure).toBe(true);
+    setSetting('platform_pure_enabled', '1');
+    setSetting('platform_cohesity_enabled', '0');
+    res = await get();
+    expect(res.body.alertPlatformsActive.pure).toBe(true);
+    expect(res.body.alertPlatformsActive.cohesity).toBe(false);
+    setSetting('platform_pure_enabled', '0');
+    setSetting('platform_cohesity_enabled', '1');
+  });
+
   it('PUT roundtrips non-secret fields', async () => {
     const res = await put({
       smtpEnabled: true,
