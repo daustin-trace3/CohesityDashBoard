@@ -4,7 +4,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtNum } from './helpers';
+import { BRAND, fmtNum, fmtUsd } from './helpers';
 
 const stateTone = (s) => {
   const v = String(s || '').toLowerCase();
@@ -39,6 +39,7 @@ export default function AwsEc2Page() {
   const ctl = useTableControls(list, {
     searchKeys: ['name', 'instanceId', 'instanceType', 'az', 'privateIp', 'publicIp', 'account'],
     defaultSortKey: 'name', defaultSortDir: 'asc',
+    sortValues: { estMonthlyUsd: (r) => (r.estMonthlyUsd == null ? -Infinity : r.estMonthlyUsd) },
     paginate: true,
   });
 
@@ -46,6 +47,7 @@ export default function AwsEc2Page() {
   const volCtl = useTableControls(volList, {
     searchKeys: ['volumeId', 'volumeType', 'az', 'attachedInstanceId', 'account'],
     defaultSortKey: 'volumeId', defaultSortDir: 'asc',
+    sortValues: { estMonthlyUsd: (r) => (r.estMonthlyUsd == null ? -Infinity : r.estMonthlyUsd) },
     paginate: true,
   });
   const unattachedCount = volList.filter((v) => v.state === 'available').length;
@@ -81,6 +83,7 @@ export default function AwsEc2Page() {
                 <SortTh k="cpuUtil" label="CPU" ctl={ctl} align="right" />
                 <SortTh k="statusCheck" label="Status Check" ctl={ctl} />
                 <SortTh k="account" label="Account" ctl={ctl} />
+                <SortTh k="estMonthlyUsd" label="Est. cost / mo" ctl={ctl} align="right" />
               </tr></thead>
               <tbody>
                 {ctl.pageRows.map((i) => (
@@ -95,12 +98,14 @@ export default function AwsEc2Page() {
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{i.cpuUtil != null ? `${Number(i.cpuUtil).toFixed(0)}%` : '—'}</td>
                     <td className="py-2 pr-3"><Badge tone={statusTone(i.statusCheck)}>{i.statusCheck || '—'}</Badge></td>
                     <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{i.account}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{i.estMonthlyUsd != null ? fmtUsd(i.estMonthlyUsd) : '-'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        {list.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Est. cost / mo is estimated: billed usage types split across inventory by weight, 30 day average.</p>}
         <TablePager ctl={ctl} />
       </div>
 
@@ -128,6 +133,7 @@ export default function AwsEc2Page() {
                 <SortTh k="az" label="AZ" ctl={volCtl} />
                 <SortTh k="attachedInstanceId" label="Attached Instance" ctl={volCtl} />
                 <SortTh k="account" label="Account" ctl={volCtl} />
+                <SortTh k="estMonthlyUsd" label="Est. cost / mo" ctl={volCtl} align="right" />
               </tr></thead>
               <tbody>
                 {volCtl.pageRows.map((v) => (
@@ -139,12 +145,14 @@ export default function AwsEc2Page() {
                     <td className="py-2 pr-3 text-ink-muted text-[11px]">{v.az || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted tnum text-[11px]">{v.attachedInstanceId || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{v.account}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{v.estMonthlyUsd != null ? fmtUsd(v.estMonthlyUsd) : '-'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        {volList.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Est. cost / mo is estimated: billed usage types split across inventory by weight, 30 day average.</p>}
         <TablePager ctl={volCtl} />
       </div>
     </div>

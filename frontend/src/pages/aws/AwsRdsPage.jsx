@@ -6,7 +6,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import TrendChart from '../../components/TrendChart';
-import { BRAND, fmtNum, fmtBytes, fmtPct, fmtWhen } from './helpers';
+import { BRAND, fmtNum, fmtBytes, fmtPct, fmtWhen, fmtUsd } from './helpers';
 
 const STORAGE_WARN_DEFAULT = 15;
 
@@ -93,6 +93,7 @@ export default function AwsRdsPage() {
   const ctl = useTableControls(list, {
     searchKeys: ['dbId', 'engine', 'instanceClass', 'endpoint', 'account'],
     defaultSortKey: 'dbId', defaultSortDir: 'asc',
+    sortValues: { estMonthlyUsd: (r) => (r.estMonthlyUsd == null ? -Infinity : r.estMonthlyUsd) },
     paginate: true,
   });
   const lowStorageCount = list.filter((i) => isLowStorage(i, warnPct)).length;
@@ -133,6 +134,7 @@ export default function AwsRdsPage() {
                 <SortTh k="backupRetentionDays" label="Backup Retention" ctl={ctl} align="right" />
                 <SortTh k="latestBackupAt" label="Latest Backup" ctl={ctl} />
                 <SortTh k="account" label="Account" ctl={ctl} />
+                <SortTh k="estMonthlyUsd" label="Est. cost / mo" ctl={ctl} align="right" />
                 <th className="py-2 pr-3 text-right">Growth</th>
               </tr></thead>
               <tbody>
@@ -152,6 +154,7 @@ export default function AwsRdsPage() {
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{i.backupRetentionDays != null ? `${fmtNum(i.backupRetentionDays)}d` : '—'}</td>
                       <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(i.latestBackupAt)}</td>
                       <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{i.account}</td>
+                      <td className="py-2 pr-3 text-right tnum text-ink-muted">{i.estMonthlyUsd != null ? fmtUsd(i.estMonthlyUsd) : '-'}</td>
                       <td className="py-2 pr-3 text-right">
                         <button onClick={() => setHistoryInstance(i)} title={`${i.dbId} storage history`} aria-label={`${i.dbId} storage history`}
                           className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-brand hover:border-brand/40 transition-colors cursor-pointer">
@@ -165,6 +168,7 @@ export default function AwsRdsPage() {
             </table>
           </div>
         )}
+        {list.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Est. cost / mo is estimated: billed usage types split across inventory by weight, 30 day average.</p>}
         <TablePager ctl={ctl} />
       </div>
 

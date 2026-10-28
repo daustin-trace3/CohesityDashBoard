@@ -40,7 +40,23 @@ export const getCapabilities = () => get('/finops/capabilities');
 export const refreshFinops = () => client.post('/aws/finops/refresh').then((r) => r.data);
 export const sendDigest = () => client.post('/aws/finops/digest/send').then((r) => r.data);
 
-// GET /optimizer?status= ; POST /optimizer/state { key, status, note }
+// GET /finops/resources?days|from,to&tz&metric&kind&service&usageType&q&accountId&limit
+// { range, metric, totals{totalUsd,attributedUsd,unattributedUsd,attributedPct}, byKind[{kind,usd,count}],
+//   rows[{resourceKind,resourceId,label,link,services[],usd,pct,dailyAvgUsd,estMonthlyUsd,days,tags{}}],
+//   unattributed[{service,usd,usageTypes}], note, computedAt }
+export const getResources = (params, timeout) => get('/finops/resources', params, timeout);
+export const RESOURCES_CSV = '/aws/finops/resources/export.csv';
+// GET /finops/resources/series?kind&resourceId&days|from,to -> { rows[{day,usd,usageTypes[{usageType,usd}]}] }
+export const getResourceSeries = (params, timeout) => get('/finops/resources/series', params, timeout);
+
+// GET /finops/comparison -> { baselineMonth, comparisonMonth, metric, capturedAt, rows[{service,baselineUsd,comparisonUsd,deltaUsd,deltaPct,drivers[]}] }
+export const getComparison = () => get('/finops/comparison');
+
+// GET /finops/pricing -> { refreshedAt, rows, byService[{serviceCode,n}], sample[] }; POST /finops/pricing/refresh
+export const getPricing = () => get('/finops/pricing');
+export const refreshPricing = () => client.post('/aws/finops/pricing/refresh').then((r) => r.data);
+
+// GET /optimizer?status=&includeShadowed=1 ; POST /optimizer/state { key, status, note }
 export const getOptimizer = (params) => get('/optimizer', params);
 export const setRecState = (body) => client.post('/aws/optimizer/state', body).then((r) => r.data);
 

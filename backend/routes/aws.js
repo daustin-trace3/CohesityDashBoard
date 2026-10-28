@@ -28,6 +28,29 @@ const validate = (req, res, next) => {
 
 const round2 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 100) / 100);
 
+// Round 2: inventory tags and the local per-resource cost estimate. awsCostEstimate is required lazily so
+// the routes load (and the inventory pages answer) even when the estimate module is not present.
+const parseTags = (text) => {
+  if (!text) return {};
+  try { const v = JSON.parse(text); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; }
+};
+const utcDayStr = (offsetDays = 0) => new Date(Date.now() - offsetDays * 86400000).toISOString().slice(0, 10);
+function loadCostEstimate() {
+  try { return require('../services/awsCostEstimate'); } catch { return null; }
+}
+/** resource id -> estimate entry (30 day window, amortized); empty when the module or data is absent. */
+function monthlyEstimates(kind, ids) {
+  const mod = loadCostEstimate();
+  if (!mod || typeof mod.estimateForResources !== 'function' || !ids.length) return new Map();
+  try {
+    return mod.estimateForResources(kind, ids, { fromDay: utcDayStr(29), toDay: utcDayStr(0), metric: 'amortized' }) || new Map();
+  } catch { return new Map(); }
+}
+const estMonthly = (map, id) => {
+  const e = map.get(id);
+  return e && e.estMonthlyUsd != null ? round2(e.estMonthlyUsd) : null;
+};
+
 // Cost metric: unblended stays the default for the Cost Explorer routes (output unchanged when the
 // param is omitted); amortized falls back to the unblended figure for rows captured before v11.
 const costMetric = (req) => (req.query.metric === 'amortized' ? 'amortized' : 'unblended');
@@ -283,12 +306,15 @@ async function probeFinops(row) {
     }),
     rightsizing: () => awsApi.fetchRightsizingRecommendations(row),
     sp_recommendation: () => awsApi.fetchSavingsPlansPurchaseRecommendation(row),
+    // Round 2 feeds (comparison, savings plans, budgets, hub, pricing, idle, rds); each step resolves { result, raw }.
+    ...(awsApi.finopsExtraProbeSteps ? awsApi.finopsExtraProbeSteps(row, { now }) : {}),
   };
   const out = {};
   for (const [id, fn] of Object.entries(steps)) {
     if (!fn) { out[id] = { ok: false, status: 'skipped', error: 'No cost allocation tag key is configured.' }; continue; }
     try {
-      const r = await fn();
+      let r = await fn();
+      if (r && typeof r === 'object' && !Array.isArray(r) && 'raw' in r && 'result' in r) r = r.raw ?? r.result;
       const pick = (x) => (Array.isArray(x) ? x : (x && Array.isArray(x.rows) ? x.rows : x));
       const sample = (r && !Array.isArray(r) && !Array.isArray(r.rows) && typeof r === 'object')
         ? Object.fromEntries(Object.entries(r).map(([k, v]) => [k, truncate(pick(v))]))
@@ -444,6 +470,12 @@ function finopsConfig() {
     finopsDigestRecipients: getSetting('aws_finops_digest_recipients') || '',
     finopsDigestWeekday: intSetting('aws_finops_digest_weekday', 1, 7, 1),
     tagKeysSeen: settingList('aws_finops_tag_keys_seen'),
+    priceRefreshDays: intSetting('aws_price_refresh_days', 1, 90, 7),
+    rightsizeCpuMaxPct: intSetting('aws_rightsize_cpu_max_pct', 1, 100, 10),
+    rightsizeMinDays: intSetting('aws_rightsize_min_days', 1, 30, 7),
+    comparisonEnabled: getSetting('aws_finops_comparison_enabled') !== '0',
+    costCategoriesMax: intSetting('aws_finops_cost_categories_max', 0, 20, 5),
+    estimateWindowDays: intSetting('aws_estimate_window_days', 7, 90, 35),
   };
 }
 
@@ -472,6 +504,12 @@ const FINOPS_PUT = {
   finopsDigestEnabled: ['aws_finops_digest_enabled', (v) => (v ? '1' : '0')],
   finopsDigestRecipients: ['aws_finops_digest_recipients', (v) => String(v).trim()],
   finopsDigestWeekday: ['aws_finops_digest_weekday', String],
+  priceRefreshDays: ['aws_price_refresh_days', String],
+  rightsizeCpuMaxPct: ['aws_rightsize_cpu_max_pct', String],
+  rightsizeMinDays: ['aws_rightsize_min_days', String],
+  comparisonEnabled: ['aws_finops_comparison_enabled', (v) => (v ? '1' : '0')],
+  costCategoriesMax: ['aws_finops_cost_categories_max', String],
+  estimateWindowDays: ['aws_estimate_window_days', String],
 };
 
 /** PUT /api/aws/config — save alert thresholds. */
@@ -497,6 +535,12 @@ router.put('/config', [
   body('finopsDigestEnabled').optional().isBoolean().toBoolean(),
   body('finopsDigestRecipients').optional().isString().isLength({ max: 1000 }),
   body('finopsDigestWeekday').optional().isInt({ min: 1, max: 7 }).toInt(),
+  body('priceRefreshDays').optional().isInt({ min: 1, max: 90 }).toInt(),
+  body('rightsizeCpuMaxPct').optional().isInt({ min: 1, max: 100 }).toInt(),
+  body('rightsizeMinDays').optional().isInt({ min: 1, max: 30 }).toInt(),
+  body('comparisonEnabled').optional().isBoolean().toBoolean(),
+  body('costCategoriesMax').optional().isInt({ min: 0, max: 20 }).toInt(),
+  body('estimateWindowDays').optional().isInt({ min: 7, max: 90 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     setSetting('aws_cost_spike_pct', String(req.body.costSpikePct));
@@ -788,11 +832,13 @@ router.get('/ec2', (req, res, next) => {
       SELECT e.*, a.name AS account_name FROM aws_ec2_instances e
       JOIN aws_accounts a ON a.id = e.account_id ORDER BY a.name, e.name, e.instance_id
     `).all();
+    const est = monthlyEstimates('ec2', rows.map((r) => r.instance_id));
     res.json({
       instances: rows.map((r) => ({
         id: r.id, instanceId: r.instance_id, name: r.name, state: r.state, instanceType: r.instance_type,
         az: r.az, privateIp: r.private_ip, publicIp: r.public_ip, platform: r.platform,
         launchTime: r.launch_time, cpuUtil: r.cpu_util, statusCheck: r.status_check, account: r.account_name,
+        estMonthlyUsd: estMonthly(est, r.instance_id), tags: parseTags(r.tags_json),
       })),
     });
   } catch (err) { next(err); }
@@ -805,10 +851,12 @@ router.get('/ebs', (req, res, next) => {
       SELECT v.*, a.name AS account_name FROM aws_ebs_volumes v
       JOIN aws_accounts a ON a.id = v.account_id ORDER BY a.name, v.volume_id
     `).all();
+    const est = monthlyEstimates('ebs', rows.map((r) => r.volume_id));
     res.json({
       volumes: rows.map((r) => ({
         volumeId: r.volume_id, state: r.state, sizeGb: r.size_gb, volumeType: r.volume_type,
         az: r.az, attachedInstanceId: r.attached_instance_id, account: r.account_name,
+        estMonthlyUsd: estMonthly(est, r.volume_id), tags: parseTags(r.tags_json),
       })),
     });
   } catch (err) { next(err); }
@@ -823,6 +871,7 @@ router.get('/lightsail', [query('accountId').optional().isInt().toInt()], valida
       JOIN aws_accounts a ON a.id = i.account_id
       ${accountId ? 'WHERE i.account_id = ?' : ''} ORDER BY a.name, i.name
     `).all(...(accountId ? [accountId] : []));
+    const est = monthlyEstimates('lightsail', rows.map((r) => r.name));
     res.json({
       instances: rows.map((r) => ({
         name: r.name, state: r.state, blueprint: r.blueprint, bundle: r.bundle, az: r.az,
@@ -830,6 +879,7 @@ router.get('/lightsail', [query('accountId').optional().isInt().toInt()], valida
         latestSnapshotAt: r.latest_snapshot_at, account: r.account_name,
         ramGb: r.ram_gb ?? null, cpuCount: r.cpu_count ?? null, isWindows: !!r.is_windows,
         arn: r.arn || null, privateIp: r.private_ip || null, createdAt: r.created_at || null,
+        estMonthlyUsd: estMonthly(est, r.name), tags: parseTags(r.tags_json),
       })),
     });
   } catch (err) { next(err); }
@@ -953,11 +1003,13 @@ router.get('/s3', (req, res, next) => {
       SELECT b.*, a.name AS account_name FROM aws_s3_buckets b
       JOIN aws_accounts a ON a.id = b.account_id ORDER BY a.name, b.name
     `).all();
+    const est = monthlyEstimates('s3', rows.map((r) => r.name));
     res.json({
       buckets: rows.map((r) => ({
         name: r.name, region: r.region, sizeBytes: r.size_bytes, objectCount: r.object_count,
         publicAccessBlocked: !!r.public_access_blocked, versioning: r.versioning,
         lifecycleRules: r.lifecycle_rules, createdAt: r.created_at_aws, account: r.account_name,
+        estMonthlyUsd: estMonthly(est, r.name), tags: parseTags(r.tags_json),
       })),
     });
   } catch (err) { next(err); }
@@ -994,8 +1046,13 @@ function costResourcesState(accountId) {
     SELECT id, name, cost_resources_status, cost_resources_error FROM aws_accounts
     ${accountId ? 'WHERE id = ?' : ''} ORDER BY id
   `).all(...(accountId ? [accountId] : []));
+  const enabled = getSetting('aws_cost_resources_enabled') !== '0';
+  // Top-level status for the Cost page: ok only when every account reports ok; otherwise the first
+  // non-ok account status (denied, not_enabled, error, ...), 'off' when the capture is switched off.
+  const bad = rows.find((r) => r.cost_resources_status !== 'ok');
+  const status = !enabled ? 'off' : (!rows.length ? 'unknown' : (bad ? (bad.cost_resources_status || 'unknown') : 'ok'));
   return {
-    enabled: getSetting('aws_cost_resources_enabled') !== '0',
+    enabled, status, error: bad ? (bad.cost_resources_error || null) : null,
     accounts: rows.map((r) => ({
       accountId: r.id, name: r.name, status: r.cost_resources_status || null, error: r.cost_resources_error || null,
     })),
@@ -1310,6 +1367,7 @@ router.get('/rds', (req, res, next) => {
       SELECT r.*, a.name AS account_name FROM aws_rds_instances r
       JOIN aws_accounts a ON a.id = r.account_id ORDER BY a.name, r.db_id
     `).all();
+    const est = monthlyEstimates('rds', rows.map((r) => r.db_id));
     res.json({
       instances: rows.map((r) => ({
         dbId: r.db_id, engine: r.engine, engineVersion: r.engine_version, instanceClass: r.instance_class,
@@ -1318,6 +1376,7 @@ router.get('/rds', (req, res, next) => {
         freeStoragePct: r.allocated_gb ? (r.free_storage_bytes / (r.allocated_gb * 1073741824)) * 100 : null,
         cpuUtil: r.cpu_util, connections: r.connections, backupRetentionDays: r.backup_retention_days,
         latestBackupAt: r.latest_backup_at, endpoint: r.endpoint, account: r.account_name,
+        estMonthlyUsd: estMonthly(est, r.db_id), tags: parseTags(r.tags_json),
       })),
     });
   } catch (err) { next(err); }
@@ -1425,54 +1484,94 @@ const mapRecommendation = (r) => ({
   source: r.source, resourceType: r.resource_type, resourceId: r.resource_id, resourceName: r.resource_name,
   region: r.region, finding: r.finding, currentConfig: r.current_config, recommendedConfig: r.recommended_config,
   reason: r.reason, estMonthlySavingsUsd: r.est_monthly_savings_usd, account: r.account_name,
+  effort: r.effort || null,
+  restartNeeded: r.restart_needed == null ? null : !!r.restart_needed,
+  rollbackPossible: r.rollback_possible == null ? null : !!r.rollback_possible,
+  actionType: r.action_type || null,
+  lookbackDays: r.lookback_days == null ? null : r.lookback_days,
+  afterDiscounts: !!r.after_discounts,
+  shadowedBy: r.shadowed_by || null,
   state: {
     status: r.st_status || 'open', note: r.st_note || null, updatedAt: r.st_updated_at || null,
     realizedUsd: r.st_realized_usd == null ? null : r.st_realized_usd,
   },
 });
 
-/** GET /api/aws/optimizer?accountId=&status= - Compute Optimizer, heuristic and Cost Explorer recommendations, savings desc. */
+/**
+ * Shadowing: a Compute Optimizer row whose resource Cost Optimization Hub also recommends on is shadowed
+ * by the Hub (the Hub figure is after discounts); an ICC heuristic row is shadowed by either. Keyed by
+ * source|finding|resource|account; returns Map(key -> shadowing source).
+ */
+function shadowMap(rows) {
+  const hub = new Set();
+  const co = new Set();
+  const k = (r) => `${r.account_id}|${r.resource_id}`;
+  // Only a row that carries a positive estimate can shadow: a Compute Optimizer "Optimized" row with
+  // no savings says nothing about the heuristic finding on the same resource.
+  for (const r of rows) {
+    if (!(Number(r.est_monthly_savings_usd) > 0)) continue;
+    if (r.source === 'cost-optimization-hub') hub.add(k(r));
+    else if (r.source === 'compute-optimizer') co.add(k(r));
+  }
+  const out = new Map();
+  for (const r of rows) {
+    const key = `${r.source}|${r.finding}|${r.resource_id}|${r.account_id}`;
+    if (r.source === 'compute-optimizer' && hub.has(k(r))) out.set(key, 'cost-optimization-hub');
+    else if (r.source === 'heuristic') {
+      if (hub.has(k(r))) out.set(key, 'cost-optimization-hub');
+      else if (co.has(k(r))) out.set(key, 'compute-optimizer');
+    }
+  }
+  return out;
+}
+
+/** GET /api/aws/optimizer?accountId=&status=&includeShadowed= - Compute Optimizer, Hub, heuristic and Cost Explorer recommendations, savings desc. */
 router.get('/optimizer', [
   query('accountId').optional().isInt().toInt(),
   query('status').optional().isIn([...REC_STATUSES, 'all']),
+  query('includeShadowed').optional().isIn(['0', '1', 'true', 'false']),
 ], validate, (req, res, next) => {
   try {
     const accountId = req.query.accountId;
     const status = req.query.status || 'all';
-    const acctSql = accountId ? 'AND o.account_id = ?' : '';
-    const acctArg = accountId ? [accountId] : [];
-    const rows = recommendationRows({ accountId, status });
+    const includeShadowed = ['1', 'true'].includes(String(req.query.includeShadowed || ''));
+    const allRows = recommendationRows({ accountId, status: 'all' });
+    const shadows = shadowMap(allRows);
+    for (const r of allRows) r.shadowed_by = shadows.get(`${r.source}|${r.finding}|${r.resource_id}|${r.account_id}`) || null;
+    const live = allRows.filter((r) => !r.shadowed_by);
+    const rows = (includeShadowed ? allRows : live).filter((r) => status === 'all' || (r.st_status || 'open') === status);
 
     const accounts = db.prepare('SELECT * FROM aws_accounts').all();
     const electedRow = accounts.find((a) => isElected(a));
-
-    const totalsRow = db.prepare(`
-      SELECT COUNT(*) AS n, SUM(est_monthly_savings_usd) AS s FROM aws_optimizer_recommendations o
-      WHERE 1=1 ${acctSql}
-    `).get(...acctArg);
     const lastCaptureRow = accountId
       ? db.prepare('SELECT last_optimizer_capture_at AS c FROM aws_accounts WHERE id = ?').get(accountId)
       : db.prepare('SELECT MAX(last_optimizer_capture_at) AS c FROM aws_accounts').get();
 
+    // Totals, byStatus and the savings figure never count shadowed rows (they would double count).
     const byStatus = { open: 0, accepted: 0, dismissed: 0, done: 0 };
-    for (const r of db.prepare(`
-      SELECT COALESCE(st.status, 'open') AS status, COUNT(*) AS n FROM aws_optimizer_recommendations o
-      LEFT JOIN aws_recommendation_state st ON st.account_id = o.account_id AND st.rec_key = ${REC_KEY_SQL}
-      WHERE 1=1 ${acctSql} GROUP BY COALESCE(st.status, 'open')
-    `).all(...acctArg)) byStatus[r.status] = r.n;
+    const sources = {};
+    let savings = 0;
+    for (const r of live) {
+      const st = r.st_status || 'open';
+      byStatus[st] = (byStatus[st] || 0) + 1;
+      sources[r.source] = (sources[r.source] || 0) + 1;
+      savings += r.est_monthly_savings_usd || 0;
+    }
     const realized = db.prepare(`
       SELECT COALESCE(SUM(realized_usd), 0) AS s FROM aws_recommendation_state
       WHERE status = 'done' AND realized_at >= ? ${accountId ? 'AND account_id = ?' : ''}
-    `).get(new Date(Date.now() - 90 * 86400000).toISOString(), ...acctArg).s || 0;
+    `).get(new Date(Date.now() - 90 * 86400000).toISOString(), ...(accountId ? [accountId] : [])).s || 0;
 
     res.json({
       totals: {
-        count: totalsRow.n || 0,
-        estMonthlySavingsUsd: totalsRow.s || 0,
+        count: live.length,
+        estMonthlySavingsUsd: savings,
         coEnrollment: electedRow?.co_enrollment ?? null,
         lastCapture: lastCaptureRow?.c ?? null,
         byStatus,
         realized90dUsd: round2(realized) || 0,
+        shadowed: allRows.length - live.length,
+        sources,
       },
       recommendations: rows.map(mapRecommendation),
     });
@@ -1594,17 +1693,24 @@ function allocationKeys() {
     tag: [...new Set([...cfg.finopsTagKeys, ...cfg.tagKeysSeen, ...distinct('tag')])],
     cost_category: distinct('cost_category'),
     linked_account: distinct('linked_account'),
+    inventory_tag: settingList('aws_inventory_tag_keys_seen'),
   };
 }
 
 const ALLOC_VALIDATORS = [
-  query('dimension').optional().isIn(['tag', 'cost_category', 'linked_account']),
+  query('dimension').optional().isIn(['tag', 'cost_category', 'linked_account', 'inventory_tag']),
   query('key').optional().isString().trim().isLength({ max: 128 }),
   METRIC_VALIDATOR,
+  query('accountId').optional().isInt().toInt(),
   ...RANGE_VALIDATORS,
 ];
 
-function allocationRows(dimension, key, range, metric) {
+function allocationRows(dimension, key, range, metric, accountId) {
+  if (dimension === 'inventory_tag') {
+    const mod = loadCostEstimate();
+    if (!mod || typeof mod.inventoryTagRows !== 'function') return [];
+    return mod.inventoryTagRows({ key, fromDay: range.fromDay, toDay: range.toDay, metric, accountId: accountId || null }) || [];
+  }
   const amt = amountExpr(metric);
   return db.prepare(`
     SELECT day, value, service, ${amt} AS usd FROM aws_cost_alloc_daily
@@ -1622,7 +1728,7 @@ router.get('/finops/allocation', ALLOC_VALIDATORS, validate, (req, res, next) =>
     const dimension = req.query.dimension || 'tag';
     const keysAvailable = allocationKeys();
     const key = req.query.key || (keysAvailable[dimension] || [])[0] || '';
-    const rows = key ? allocationRows(dimension, key, range, metric) : [];
+    const rows = key ? allocationRows(dimension, key, range, metric, req.query.accountId) : [];
     const costRows = db.prepare(`
       SELECT day, SUM(${amountExpr(metric)}) AS usd FROM aws_cost_daily WHERE day >= ? AND day <= ? GROUP BY day ORDER BY day ASC
     `).all(range.fromDay, range.toDay);
@@ -1631,6 +1737,7 @@ router.get('/finops/allocation', ALLOC_VALIDATORS, validate, (req, res, next) =>
       dimension, key, keysAvailable, metric, range: rangeBlock(range),
       ...summary,
       coverageGapFlag: summary.coverageGapPct != null && summary.coverageGapPct > 1,
+      ...(dimension === 'inventory_tag' ? { estimated: true } : {}),
     });
   } catch (err) { next(err); }
 });
@@ -1644,10 +1751,167 @@ router.get('/finops/allocation/export.csv', ALLOC_VALIDATORS, validate, (req, re
     if (!range) return;
     const metric = finopsMetric(req);
     const dimension = req.query.dimension || 'tag';
-    const rows = allocationRows(dimension, key, range, metric);
+    const rows = allocationRows(dimension, key, range, metric, req.query.accountId);
     sendCsv(res, `aws-allocation-${key.replace(/[^\w.-]+/g, '_')}-${range.fromDay}_${range.toDay}.csv`,
       ['Day', 'Dimension', 'Key', 'Value', 'Service', `Cost USD (${metric})`],
       rows.map((r) => [r.day, dimension, key, r.value || '(unallocated)', r.service, round2(r.usd)]));
+  } catch (err) { next(err); }
+});
+
+// Estimated resource cost ----------------------------------------------------
+
+const RESOURCE_NOTE = 'Estimated by splitting billed usage types across the current inventory they name, by weight '
+  + '(instance count, GB, bytes). The current inventory is applied to every day in the window. Resource-level billing '
+  + 'data from AWS replaces this when enabled.';
+
+const RESOURCE_VALIDATORS = [
+  METRIC_VALIDATOR,
+  query('kind').optional().isString().trim().isLength({ min: 1, max: 40 }),
+  query('service').optional().isString().trim().isLength({ min: 1, max: 200 }),
+  query('usageType').optional().isString().trim().isLength({ min: 1, max: 200 }),
+  query('q').optional().isString().trim().isLength({ max: 200 }),
+  query('accountId').optional().isInt().toInt(),
+  query('limit').optional().isInt({ min: 1, max: 5000 }).toInt(),
+  ...RANGE_VALIDATORS,
+];
+
+const tagsText = (tags) => Object.entries(tags || {}).map(([k, v]) => `${k}=${v}`).join('; ');
+
+/** The estimate module, or null after answering 503 (the module is a separate file the routes load lazily). */
+function estimateModule(res) {
+  const mod = loadCostEstimate();
+  if (!mod) { res.status(503).json({ error: 'Resource cost estimates are not available on this build.' }); return null; }
+  return mod;
+}
+
+function resourceArgs(req, range, defaultLimit, maxLimit) {
+  return {
+    fromDay: range.fromDay, toDay: range.toDay, metric: finopsMetric(req),
+    kind: req.query.kind || undefined, service: req.query.service || undefined, usageType: req.query.usageType || undefined,
+    q: req.query.q || undefined, accountId: req.query.accountId || undefined,
+    limit: Math.min(maxLimit, Math.max(1, req.query.limit || defaultLimit)),
+  };
+}
+
+/** GET /api/aws/finops/resources?days=|from=&to=&tz=&metric=&kind=&service=&usageType=&q=&accountId=&limit= */
+router.get('/finops/resources', RESOURCE_VALIDATORS, validate, (req, res, next) => {
+  try {
+    const range = rangeOf(req, res);
+    if (!range) return;
+    const mod = estimateModule(res);
+    if (!mod) return;
+    const args = resourceArgs(req, range, 200, 500);
+    const out = mod.resourceRollup(args) || {};
+    res.json({
+      range: rangeBlock(range), metric: args.metric,
+      totals: out.totals || { totalUsd: 0, attributedUsd: 0, unattributedUsd: 0, attributedPct: null },
+      byKind: out.byKind || [], rows: out.rows || [], unattributed: out.unattributed || [],
+      note: RESOURCE_NOTE, computedAt: out.computedAt || null,
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/finops/resources/export.csv - same params, one row per resource. */
+router.get('/finops/resources/export.csv', RESOURCE_VALIDATORS, validate, (req, res, next) => {
+  try {
+    const range = rangeOf(req, res);
+    if (!range) return;
+    const mod = estimateModule(res);
+    if (!mod) return;
+    const args = resourceArgs(req, range, 5000, 5000);
+    const out = mod.resourceRollup(args) || {};
+    sendCsv(res, `aws-resource-cost-${range.fromDay}_${range.toDay}.csv`,
+      ['Kind', 'Resource', 'Label', 'Services', `Cost USD (${args.metric})`, 'Est monthly USD', 'Tags'],
+      (out.rows || []).map((r) => [r.resourceKind, r.resourceId, r.label, (r.services || []).join('; '),
+        round2(r.usd), round2(r.estMonthlyUsd), tagsText(r.tags)]));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/finops/resources/series?kind=&resourceId=&days=|from=&to=&metric=&accountId= */
+router.get('/finops/resources/series', [
+  query('kind').isString().trim().isLength({ min: 1, max: 40 }),
+  query('resourceId').isString().trim().isLength({ min: 1, max: 600 }),
+  METRIC_VALIDATOR,
+  query('accountId').optional().isInt().toInt(),
+  ...RANGE_VALIDATORS,
+], validate, (req, res, next) => {
+  try {
+    const range = rangeOf(req, res);
+    if (!range) return;
+    const mod = estimateModule(res);
+    if (!mod) return;
+    const metric = finopsMetric(req);
+    const out = mod.resourceSeries({
+      kind: req.query.kind, resourceId: req.query.resourceId, fromDay: range.fromDay, toDay: range.toDay,
+      metric, accountId: req.query.accountId || undefined,
+    }) || {};
+    res.json({ range: rangeBlock(range), metric, kind: req.query.kind, resourceId: req.query.resourceId, rows: out.rows || [] });
+  } catch (err) { next(err); }
+});
+
+// Month comparison and price catalog -------------------------------------------
+
+/** GET /api/aws/finops/comparison - the newest stored month pair with per-service deltas and drivers. */
+router.get('/finops/comparison', [query('accountId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const accountId = req.query.accountId || null;
+    let latest = null;
+    if (typeof awsFinops.comparisonLatest === 'function') {
+      latest = awsFinops.comparisonLatest({ accountId });
+    } else {
+      const pair = db.prepare(`
+        SELECT baseline_month, comparison_month, metric, MAX(captured_at) AS captured_at FROM aws_cost_comparison
+        ${accountId ? 'WHERE account_id = ?' : ''}
+        GROUP BY baseline_month, comparison_month, metric ORDER BY comparison_month DESC, captured_at DESC LIMIT 1
+      `).get(...(accountId ? [accountId] : []));
+      if (pair) {
+        latest = {
+          baselineMonth: pair.baseline_month, comparisonMonth: pair.comparison_month, metric: pair.metric, capturedAt: pair.captured_at,
+          rows: db.prepare(`
+            SELECT * FROM aws_cost_comparison WHERE baseline_month = ? AND comparison_month = ? AND metric = ?
+            ${accountId ? 'AND account_id = ?' : ''} ORDER BY ABS(COALESCE(delta_usd, 0)) DESC
+          `).all(pair.baseline_month, pair.comparison_month, pair.metric, ...(accountId ? [accountId] : [])),
+        };
+      }
+    }
+    const rows = ((latest && latest.rows) || []).map((r) => ({
+      service: r.service,
+      baselineUsd: round2(r.baselineUsd ?? r.baseline_usd),
+      comparisonUsd: round2(r.comparisonUsd ?? r.comparison_usd),
+      deltaUsd: round2(r.deltaUsd ?? r.delta_usd),
+      deltaPct: round2(r.deltaPct ?? r.delta_pct),
+      drivers: Array.isArray(r.drivers) ? r.drivers : jsonList(r.drivers_json),
+    }));
+    res.json({
+      baselineMonth: latest?.baselineMonth || null, comparisonMonth: latest?.comparisonMonth || null,
+      metric: latest?.metric || null, capturedAt: latest?.capturedAt || null, rows,
+    });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aws/finops/pricing - what the price catalog holds (read from the table). */
+router.get('/finops/pricing', (req, res, next) => {
+  try {
+    const rows = db.prepare('SELECT COUNT(*) AS n FROM aws_price_catalog').get().n || 0;
+    const byService = db.prepare('SELECT service_code, COUNT(*) AS n FROM aws_price_catalog GROUP BY service_code ORDER BY service_code').all()
+      .map((r) => ({ serviceCode: r.service_code, n: r.n }));
+    const sample = db.prepare('SELECT * FROM aws_price_catalog ORDER BY service_code, region, sku_key LIMIT 50').all().map((r) => ({
+      region: r.region, serviceCode: r.service_code, skuKey: r.sku_key, unit: r.unit, priceUsd: r.price_usd,
+      attributes: parseTags(r.attributes_json), capturedAt: r.captured_at,
+    }));
+    res.json({ refreshedAt: getSetting('aws_price_catalog_refreshed_at') || null, rows, byService, sample });
+  } catch (err) { next(err); }
+});
+
+/** POST /api/aws/finops/pricing/refresh - clear the catalog and capture gates on the elected row and re-poll it. */
+router.post('/finops/pricing/refresh', (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM aws_accounts').all().find((a) => isElected(a));
+    if (!row) return res.status(404).json({ error: 'No elected account to capture from.' });
+    setSetting('aws_price_catalog_refreshed_at', '');
+    db.prepare('UPDATE aws_accounts SET last_finops_capture_at = NULL WHERE id = ?').run(row.id);
+    awsPoller.trigger(db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(row.id)).catch(() => {});
+    res.status(202).json({ ok: true });
   } catch (err) { next(err); }
 });
 
@@ -1689,6 +1953,8 @@ router.get('/finops/commitments', RANGE_VALIDATORS, validate, (req, res, next) =
         instanceFamily: p.instance_family || null, startAt: p.start_at, endAt: p.end_at,
         daysToExpiry: Number.isFinite(end) ? Math.ceil((end - now) / 86400000) : null,
         utilizationPct: round2(p.utilization_pct), netSavingsUsd: round2(p.net_savings_usd),
+        state: p.state || null, upfrontUsd: round2(p.upfront_usd), recurringUsd: round2(p.recurring_usd),
+        productTypes: jsonList(p.product_types_json), source: p.source || 'details', description: p.description || null,
       };
     });
     const capabilities = awsFinops.capabilityRows().filter((c) => /^(sp|ri)_/.test(c.capability));
@@ -1769,11 +2035,15 @@ router.get('/finops/anomalies', [
 // Budgets -------------------------------------------------------------------
 
 const SCOPE_TYPES = ['total', 'account', 'service', 'tag'];
+const AWS_BUDGET_MSG = 'This budget is managed in AWS Budgets.';
 
 const publicBudget = (b, st) => ({
   id: b.id, name: b.name, scopeType: b.scope_type, scopeKey: b.scope_key || null, scopeValue: b.scope_value || null,
   amountUsd: round2(b.amount_usd), warnPct: b.warn_pct, critPct: b.crit_pct, forecastAlert: !!b.forecast_alert,
   enabled: !!b.enabled, notes: b.notes || null, createdAt: b.created_at, updatedAt: b.updated_at,
+  source: b.source || 'icc', scopeMatch: b.scope_match || 'exact', externalName: b.external_name || null,
+  timeUnit: b.time_unit || null, awsActualUsd: round2(b.aws_actual_usd), awsForecastUsd: round2(b.aws_forecast_usd),
+  lastSyncedAt: b.last_synced_at || null,
   status: st ? {
     month: st.month, actualUsd: round2(st.actual_usd), forecastUsd: round2(st.forecast_usd), forecastSource: st.forecast_source || null,
     pctActual: round2(st.pct_actual), pctForecast: round2(st.pct_forecast), state: st.state,
@@ -1795,6 +2065,7 @@ function ledgerBudgets() {
       value: JSON.stringify({
         scopeType: b.scope_type, scopeKey: b.scope_key || null, scopeValue: b.scope_value || null, amountUsd: b.amount_usd,
         warnPct: b.warn_pct, critPct: b.crit_pct, forecastAlert: !!b.forecast_alert, enabled: !!b.enabled,
+        ...(b.scope_match === 'contains' ? { scopeMatch: 'contains' } : {}),
       }),
     }));
     recordSnapshot({ platform: 'aws', scope: 'finops', system: 'budgets', items });
@@ -1816,6 +2087,7 @@ const budgetValidators = (required) => {
     opt(body('scopeType')).isIn(SCOPE_TYPES),
     body('scopeKey').optional({ nullable: true }).isString().trim().isLength({ max: 200 }),
     body('scopeValue').optional({ nullable: true }).isString().trim().isLength({ max: 200 }),
+    body('scopeMatch').optional().isIn(['exact', 'contains']),
     opt(body('amountUsd')).isFloat({ gt: 0, max: 1e9 }).toFloat(),
     body('warnPct').optional().isInt({ min: 1, max: 100 }).toInt(),
     body('critPct').optional().isInt({ min: 1, max: 1000 }).toInt(),
@@ -1861,13 +2133,15 @@ router.post('/finops/budgets', budgetValidators(true), validate, (req, res, next
     };
     const scopeErr = budgetScopeError(scope);
     if (scopeErr) return res.status(400).json({ error: scopeErr });
+    const scopeMatch = b.scopeMatch || 'exact';
+    if (scopeMatch === 'contains' && scope.scopeType !== 'service') return res.status(400).json({ error: 'scopeMatch contains only applies to a service budget.' });
     if (db.prepare('SELECT id FROM aws_budgets WHERE name = ?').get(b.name)) return res.status(409).json({ error: 'duplicate' });
     ledgerBudgets(); // seeds the baseline silently on the first budget ever saved
     const info = db.prepare(`
-      INSERT INTO aws_budgets (name, scope_type, scope_key, scope_value, amount_usd, warn_pct, crit_pct, forecast_alert, enabled, notes,
+      INSERT INTO aws_budgets (name, scope_type, scope_key, scope_value, scope_match, amount_usd, warn_pct, crit_pct, forecast_alert, enabled, notes,
         created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(b.name, scope.scopeType, scope.scopeKey, scope.scopeValue, b.amountUsd, warnPct, critPct,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(b.name, scope.scopeType, scope.scopeKey, scope.scopeValue, scopeMatch, b.amountUsd, warnPct, critPct,
       (b.forecastAlert ?? true) ? 1 : 0, (b.enabled ?? true) ? 1 : 0, b.notes || null, new Date().toISOString(), new Date().toISOString());
     ledgerBudgets();
     awsFinops.evaluateBudgets();
@@ -1880,8 +2154,10 @@ router.put('/finops/budgets/:id', [param('id').isInt().toInt(), ...budgetValidat
   try {
     const cur = db.prepare('SELECT * FROM aws_budgets WHERE id = ?').get(req.params.id);
     if (!cur) return res.status(404).json({ error: 'Budget not found.' });
+    if (cur.source === 'aws') return res.status(409).json({ error: AWS_BUDGET_MSG });
     const b = req.body;
     const merged = {
+      scopeMatch: b.scopeMatch ?? cur.scope_match ?? 'exact',
       name: b.name ?? cur.name,
       scopeType: b.scopeType ?? cur.scope_type,
       scopeKey: b.scopeKey !== undefined ? (b.scopeKey || null) : cur.scope_key,
@@ -1898,13 +2174,17 @@ router.put('/finops/budgets/:id', [param('id').isInt().toInt(), ...budgetValidat
     if (merged.scopeType === 'account') merged.scopeValue = null;
     const scopeErr = budgetScopeError(merged);
     if (scopeErr) return res.status(400).json({ error: scopeErr });
+    if (merged.scopeType !== 'service') {
+      if (b.scopeMatch === 'contains') return res.status(400).json({ error: 'scopeMatch contains only applies to a service budget.' });
+      merged.scopeMatch = 'exact';
+    }
     const dup = db.prepare('SELECT id FROM aws_budgets WHERE name = ? AND id <> ?').get(merged.name, cur.id);
     if (dup) return res.status(409).json({ error: 'duplicate' });
     ledgerBudgets();
     db.prepare(`
-      UPDATE aws_budgets SET name = ?, scope_type = ?, scope_key = ?, scope_value = ?, amount_usd = ?, warn_pct = ?, crit_pct = ?,
+      UPDATE aws_budgets SET name = ?, scope_type = ?, scope_key = ?, scope_value = ?, scope_match = ?, amount_usd = ?, warn_pct = ?, crit_pct = ?,
         forecast_alert = ?, enabled = ?, notes = ?, updated_at = ? WHERE id = ?
-    `).run(merged.name, merged.scopeType, merged.scopeKey, merged.scopeValue, merged.amountUsd, merged.warnPct, merged.critPct,
+    `).run(merged.name, merged.scopeType, merged.scopeKey, merged.scopeValue, merged.scopeMatch, merged.amountUsd, merged.warnPct, merged.critPct,
       merged.forecastAlert ? 1 : 0, merged.enabled ? 1 : 0, merged.notes, new Date().toISOString(), cur.id);
     ledgerBudgets();
     awsFinops.evaluateBudgets();
@@ -1915,8 +2195,9 @@ router.put('/finops/budgets/:id', [param('id').isInt().toInt(), ...budgetValidat
 /** DELETE /api/aws/finops/budgets/:id */
 router.delete('/finops/budgets/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
   try {
-    const cur = db.prepare('SELECT id FROM aws_budgets WHERE id = ?').get(req.params.id);
+    const cur = db.prepare('SELECT id, source FROM aws_budgets WHERE id = ?').get(req.params.id);
     if (!cur) return res.status(404).json({ error: 'Budget not found.' });
+    if (cur.source === 'aws') return res.status(409).json({ error: AWS_BUDGET_MSG });
     ledgerBudgets();
     db.prepare('DELETE FROM aws_budgets WHERE id = ?').run(cur.id);
     ledgerBudgets();

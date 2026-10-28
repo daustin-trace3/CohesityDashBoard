@@ -110,6 +110,7 @@ const SEEDED_TABLES = [
   'aws_cost_alloc_daily', 'aws_sp_utilization_daily', 'aws_sp_coverage_daily', 'aws_ri_utilization_daily',
   'aws_ri_coverage_daily', 'aws_savings_plans', 'aws_cost_anomalies', 'aws_cost_forecast',
   'aws_budget_status', 'aws_budgets', 'aws_recommendation_state', 'aws_capability_status',
+  'aws_cost_resource_estimate_daily', 'aws_ec2_metrics_daily', 'aws_cost_comparison',
   'aws_accounts',
   // proxmox (children before the parent)
   'proxmox_guests', 'proxmox_storage', 'proxmox_backup_jobs', 'proxmox_tasks',

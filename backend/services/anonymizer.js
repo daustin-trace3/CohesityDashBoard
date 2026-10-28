@@ -217,6 +217,21 @@ function loadDictionary() {
   } catch { /* AWS v11 tables not present until migration v11 lands */ }
 
   try {
+    // AWS migration v12: inventory tag VALUES (keys stay clear) and AWS Budgets external names.
+    add(db.prepare("SELECT external_name AS name FROM aws_budgets WHERE external_name IS NOT NULL AND external_name != ''").all(), 'JOB');
+    const tagValues = new Set();
+    for (const table of ['aws_ec2_instances', 'aws_ebs_volumes', 'aws_rds_instances', 'aws_s3_buckets', 'aws_lightsail_instances', 'aws_lightsail_databases']) {
+      for (const r of db.prepare(`SELECT tags_json FROM ${table} WHERE tags_json IS NOT NULL AND tags_json != ''`).all()) {
+        try {
+          const tags = JSON.parse(r.tags_json);
+          if (tags && typeof tags === 'object') for (const v of Object.values(tags)) if (typeof v === 'string' && v) tagValues.add(v);
+        } catch { /* a malformed tags_json row adds nothing */ }
+      }
+    }
+    add([...tagValues].map((name) => ({ name })), 'OBJECT');
+  } catch { /* AWS v12 columns not present until migration v12 lands */ }
+
+  try {
     add(db.prepare("SELECT name FROM bluecat_sources WHERE name IS NOT NULL AND name != ''").all(), 'CLUSTER');
     addHostOrIp(db.prepare("SELECT host AS name FROM bluecat_sources WHERE host IS NOT NULL AND host != ''").all());
     add(db.prepare("SELECT name FROM bluecat_views WHERE name IS NOT NULL AND name != ''").all(), 'VIEW');

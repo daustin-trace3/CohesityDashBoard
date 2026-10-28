@@ -18,6 +18,8 @@ const db = require('../db/database');
 const { getSetting, setSetting } = require('./settings');
 const { pruneInBatches } = require('../core/dbPrune');
 const awsApi = require('./awsApi');
+const awsPricing = require('./awsPricing');
+const awsCostEstimate = require('./awsCostEstimate');
 const logger = require('../utils/logger');
 
 // awsPoller requires this module lazily (inside pollAccount); this module needs the poller's
@@ -29,7 +31,14 @@ const poller = () => require('./awsPoller');
 const CAPABILITIES = [
   'cost_tags', 'tag_keys', 'linked_accounts', 'forecast', 'sp_utilization', 'sp_coverage',
   'ri_utilization', 'ri_coverage', 'anomalies', 'rightsizing', 'sp_recommendation',
+  'cost_categories', 'cost_comparison', 'savings_plans_inventory', 'aws_budgets', 'optimization_hub', 'pricing',
+  'co_idle', 'co_rds', 'inventory_tags', 'resource_estimate',
 ];
+
+/** Capabilities whose calls cost nothing (every Cost Explorer call is 0.01 USD); the Settings table prints "free". */
+const FREE_CAPABILITIES = new Set([
+  'pricing', 'savings_plans_inventory', 'aws_budgets', 'optimization_hub', 'co_idle', 'co_rds', 'inventory_tags', 'resource_estimate',
+]);
 
 /** IAM action each capability needs; printed in the policy snippet when the status is denied. */
 const CAPABILITY_ACTIONS = {
@@ -44,6 +53,16 @@ const CAPABILITY_ACTIONS = {
   anomalies: ['ce:GetAnomalyMonitors', 'ce:GetAnomalies'],
   rightsizing: ['ce:GetRightsizingRecommendation'],
   sp_recommendation: ['ce:GetSavingsPlansPurchaseRecommendation'],
+  cost_categories: ['ce:ListCostCategoryDefinitions', 'ce:GetCostAndUsage'],
+  cost_comparison: ['ce:GetCostAndUsageComparisons', 'ce:GetCostComparisonDrivers'],
+  savings_plans_inventory: ['savingsplans:DescribeSavingsPlans'],
+  aws_budgets: ['budgets:ViewBudget'],
+  optimization_hub: ['cost-optimization-hub:ListEnrollmentStatuses', 'cost-optimization-hub:ListRecommendations'],
+  pricing: ['pricing:GetProducts'],
+  co_idle: ['compute-optimizer:GetIdleRecommendations'],
+  co_rds: ['compute-optimizer:GetRDSDatabaseRecommendations'],
+  inventory_tags: ['s3:GetBucketTagging'],
+  resource_estimate: [],
   cost_resources: ['ce:GetCostAndUsageWithResources'],
 };
 
@@ -114,6 +133,12 @@ function finopsSettings() {
     finopsDigestRecipients: String(getSetting('aws_finops_digest_recipients') || ''),
     finopsDigestWeekday: clampInt(getSetting('aws_finops_digest_weekday'), 1, 1, 7),
     tagKeysSeen: parseJsonArray(getSetting('aws_finops_tag_keys_seen')).map(String),
+    priceRefreshDays: clampInt(getSetting('aws_price_refresh_days'), 7, 1, 90),
+    rightsizeCpuMaxPct: clampFloat(getSetting('aws_rightsize_cpu_max_pct'), 10, 1, 100),
+    rightsizeMinDays: clampInt(getSetting('aws_rightsize_min_days'), 7, 1, 30),
+    comparisonEnabled: getSetting('aws_finops_comparison_enabled') !== '0',
+    costCategoriesMax: clampInt(getSetting('aws_finops_cost_categories_max'), 5, 0, 20),
+    estimateWindowDays: clampInt(getSetting('aws_estimate_window_days'), 35, 7, 90),
   };
 }
 
@@ -391,11 +416,19 @@ function scopeDailyTotals(budget, metric, fromDay, toDay) {
     `).all(Number(budget.scope_key) || 0, fromDay, toDay);
   }
   if (budget.scope_type === 'service') {
+    if (budget.scope_match === 'contains') {
+      return db.prepare(`
+        SELECT day, SUM(${expr}) AS usd FROM aws_cost_daily WHERE service LIKE '%' || ? || '%' AND day >= ? AND day <= ?
+        GROUP BY day ORDER BY day
+      `).all(budget.scope_value || '', fromDay, toDay);
+    }
     return db.prepare(`
       SELECT day, SUM(${expr}) AS usd FROM aws_cost_daily WHERE service = ? AND day >= ? AND day <= ?
       GROUP BY day ORDER BY day
     `).all(budget.scope_value || '', fromDay, toDay);
   }
+  // A budget whose scope ICC cannot reproduce locally is judged from AWS's own figures only.
+  if (budget.scope_type === 'external') return [];
   return db.prepare(`
     SELECT day, SUM(${expr}) AS usd FROM aws_cost_daily WHERE day >= ? AND day <= ? GROUP BY day ORDER BY day
   `).all(fromDay, toDay);
@@ -420,11 +453,16 @@ function evaluateBudgets({ now = new Date() } = {}) {
   const results = [];
   for (const b of budgets) {
     const monthRows = scopeDailyTotals(b, metric, start, today);
-    const actualUsd = monthRows.reduce((n, r) => n + num(r.usd), 0);
+    const useAws = b.source === 'aws';
+    const actualUsd = useAws && b.aws_actual_usd != null ? num(b.aws_actual_usd) : monthRows.reduce((n, r) => n + num(r.usd), 0);
     const recent = scopeDailyTotals(b, metric, addDays(today, -10), today).map((r) => ({ day: r.day, usd: num(r.usd) }));
     let forecastUsd = null;
     let forecastSource = null;
-    if (b.scope_type === 'total') {
+    if (useAws && b.aws_forecast_usd != null) {
+      forecastUsd = num(b.aws_forecast_usd);
+      forecastSource = 'aws';
+    }
+    if (forecastUsd == null && b.scope_type === 'total') {
       const f = storedForecast(metric, month);
       if (f && f.mean_usd != null) { forecastUsd = f.mean_usd; forecastSource = f.source; }
     }
@@ -705,6 +743,7 @@ function capabilityRows(accountId) {
       capability: id, status: r?.status || 'unknown', error: r?.error || null,
       iamActions: actionsFor(id, r?.status, r?.error), requests: r?.requests || 0,
       lastOkAt: r?.last_ok_at || null, lastCheckedAt: r?.last_checked_at || null,
+      free: FREE_CAPABILITIES.has(id),
     };
   });
   const acct = accountId
@@ -714,7 +753,7 @@ function capabilityRows(accountId) {
   rows.push({
     capability: 'cost_resources', status: cr, error: acct?.cost_resources_error || null,
     iamActions: actionsFor('cost_resources', cr, acct?.cost_resources_error), requests: 0,
-    lastOkAt: null, lastCheckedAt: acct?.last_cost_capture_at || null,
+    lastOkAt: null, lastCheckedAt: acct?.last_cost_capture_at || null, free: false,
   });
   return rows;
 }
@@ -896,6 +935,109 @@ const writeForecast = db.transaction((accountId, f) => {
   `).run(accountId, f.metric, f.periodStart, f.periodEnd, f.generatedOn, f.meanUsd, f.lowerUsd, f.upperUsd, f.source);
 });
 
+/** Last segment of an ARN after the final / or :. */
+const arnLeaf = (arn) => { const t = String(arn || ''); return t.slice(Math.max(t.lastIndexOf('/'), t.lastIndexOf(':')) + 1); };
+
+/**
+ * Scope of an AWS budget in ICC terms. CostFilters (legacy) or a single-node FilterExpression map to
+ * total, service (one exact name) or tag (key + value); anything else is 'external' and is judged from
+ * AWS's own figures. TagKeyValue values look like 'user:Environment$prod'.
+ */
+function awsBudgetScope(b) {
+  const filters = { ...(b.costFilters || {}) };
+  const expr = b.filterExpression;
+  if (!Object.keys(filters).length && expr) {
+    if (expr.Dimensions && expr.Dimensions.Key === 'SERVICE') filters.Service = expr.Dimensions.Values || [];
+    else if (expr.Tags && expr.Tags.Key) filters.TagKeyValue = (expr.Tags.Values || []).map((v) => `user:${expr.Tags.Key}$${v}`);
+    else return { scopeType: 'external', scopeKey: null, scopeValue: null };
+  }
+  const keys = Object.keys(filters).filter((k) => (filters[k] || []).length);
+  if (!keys.length) return { scopeType: 'total', scopeKey: null, scopeValue: null };
+  if (keys.length === 1 && keys[0] === 'Service' && filters.Service.length === 1) {
+    return { scopeType: 'service', scopeKey: null, scopeValue: filters.Service[0] };
+  }
+  if (keys.length === 1 && keys[0] === 'TagKeyValue' && filters.TagKeyValue.length === 1) {
+    const raw = String(filters.TagKeyValue[0]);
+    const at = raw.indexOf('$');
+    const key = (at >= 0 ? raw.slice(0, at) : raw).replace(/^user:/, '');
+    return { scopeType: 'tag', scopeKey: key, scopeValue: at >= 0 ? raw.slice(at + 1) : '' };
+  }
+  return { scopeType: 'external', scopeKey: null, scopeValue: null };
+}
+
+/**
+ * Mirror AWS Budgets into aws_budgets (source 'aws'). Cost budgets only. A row is keyed by its AWS name
+ * (external_name); the ICC-side name gets ' (AWS)' when an ICC budget already holds the name. AWS rows
+ * that no longer exist in AWS are deleted. Returns { upserted, removed }.
+ */
+const syncAwsBudgets = db.transaction((rows, iso) => {
+  const costRows = (rows || []).filter((r) => (!r.budgetType || r.budgetType === 'COST') && r.limitUsd != null);
+  const existing = db.prepare("SELECT id, name, external_name FROM aws_budgets WHERE source = 'aws'").all();
+  const byExternal = new Map(existing.map((e) => [e.external_name, e]));
+  const iccNames = new Set(db.prepare("SELECT name FROM aws_budgets WHERE source = 'icc'").all().map((r) => r.name));
+  const insert = db.prepare(`
+    INSERT INTO aws_budgets (name, scope_type, scope_key, scope_value, amount_usd, warn_pct, crit_pct, forecast_alert, enabled,
+      source, scope_match, external_name, time_unit, aws_actual_usd, aws_forecast_usd, last_synced_at)
+    VALUES (?, ?, ?, ?, ?, ?, 100, ?, 1, 'aws', 'exact', ?, ?, ?, ?, ?)
+  `);
+  const update = db.prepare(`
+    UPDATE aws_budgets SET scope_type = ?, scope_key = ?, scope_value = ?, amount_usd = ?, warn_pct = ?, forecast_alert = ?,
+      time_unit = ?, aws_actual_usd = ?, aws_forecast_usd = ?, last_synced_at = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `);
+  const keep = new Set();
+  let upserted = 0;
+  for (const b of costRows) {
+    const scope = awsBudgetScope(b);
+    const actualNotes = (b.notifications || []).filter((n) => n.type === 'ACTUAL' && (n.thresholdType || 'PERCENTAGE') === 'PERCENTAGE' && n.thresholdPct != null);
+    const warnPct = actualNotes.length ? Math.max(1, Math.round(Math.min(...actualNotes.map((n) => n.thresholdPct)))) : 80;
+    const forecastAlert = (b.notifications || []).some((n) => n.type === 'FORECASTED') ? 1 : 0;
+    const row = byExternal.get(b.name);
+    keep.add(b.name);
+    if (row) {
+      update.run(scope.scopeType, scope.scopeKey, scope.scopeValue, b.limitUsd, warnPct, forecastAlert, b.timeUnit ?? null,
+        b.actualUsd ?? null, b.forecastUsd ?? null, iso, row.id);
+    } else {
+      const name = iccNames.has(b.name) ? `${b.name} (AWS)` : b.name;
+      insert.run(name, scope.scopeType, scope.scopeKey, scope.scopeValue, b.limitUsd, warnPct, forecastAlert, b.name,
+        b.timeUnit ?? null, b.actualUsd ?? null, b.forecastUsd ?? null, iso);
+    }
+    upserted++;
+  }
+  let removed = 0;
+  for (const e of existing) {
+    if (keep.has(e.external_name)) continue;
+    db.prepare('DELETE FROM aws_budgets WHERE id = ?').run(e.id);
+    removed++;
+  }
+  return { upserted, removed };
+});
+
+/** Newest stored month comparison: { baselineMonth, comparisonMonth, metric, capturedAt, rows, total } or nulls with rows []. */
+function comparisonLatest({ accountId } = {}) {
+  const acct = accountId ? ' WHERE account_id = ?' : '';
+  const args = accountId ? [Number(accountId)] : [];
+  const head = db.prepare(`
+    SELECT baseline_month, comparison_month, metric, MAX(captured_at) AS captured_at FROM aws_cost_comparison${acct}
+    GROUP BY baseline_month, comparison_month, metric ORDER BY comparison_month DESC, baseline_month DESC, captured_at DESC LIMIT 1
+  `).get(...args);
+  if (!head) return { baselineMonth: null, comparisonMonth: null, metric: null, capturedAt: null, rows: [], total: null };
+  const stored = db.prepare(`
+    SELECT * FROM aws_cost_comparison WHERE baseline_month = ? AND comparison_month = ? AND metric = ?${accountId ? ' AND account_id = ?' : ''}
+  `).all(head.baseline_month, head.comparison_month, head.metric, ...args);
+  const shape = (r) => ({
+    service: r.service, baselineUsd: round2(r.baseline_usd), comparisonUsd: round2(r.comparison_usd),
+    deltaUsd: round2(r.delta_usd), deltaPct: round2(r.delta_pct), drivers: parseJsonArray(r.drivers_json),
+  });
+  const rows = stored.filter((r) => r.service !== '(total)').map(shape)
+    .sort((a, b) => Math.abs(num(b.deltaUsd)) - Math.abs(num(a.deltaUsd)));
+  const total = stored.find((r) => r.service === '(total)');
+  return {
+    baselineMonth: head.baseline_month, comparisonMonth: head.comparison_month, metric: head.metric,
+    capturedAt: head.captured_at, rows, total: total ? shape(total) : null,
+  };
+}
+
 function runPrunes(now) {
   const cutoffDay = (days) => addDays(utcDay(now), -days);
   const cutoffIso = (days) => new Date(new Date(now).getTime() - days * DAY_MS).toISOString();
@@ -906,6 +1048,9 @@ function runPrunes(now) {
   pruneInBatches(db, 'aws_cost_anomalies', "status = 'closed' AND last_seen_at < ?", [cutoffIso(180)]);
   pruneInBatches(db, 'aws_budget_status', 'month < ?', [monthOf(addMonths(utcDay(now), -24))]);
   pruneInBatches(db, 'aws_recommendation_state', "status IN ('dismissed', 'done') AND updated_at < ?", [cutoffIso(365)]);
+  pruneInBatches(db, 'aws_cost_resource_estimate_daily', 'day < ?', [cutoffDay(400)]);
+  pruneInBatches(db, 'aws_ec2_metrics_daily', 'day < ?', [cutoffDay(400)]);
+  pruneInBatches(db, 'aws_cost_comparison', 'comparison_month < ?', [monthOf(addMonths(utcDay(now), -26))]);
 }
 
 /** The Savings Plan arn tail ("abc-123" from "arn:aws:savingsplans::1234:savingsplan/abc-123"). */
@@ -926,6 +1071,14 @@ function recordLedger(account, settings) {
       value: JSON.stringify({ term: sp.term, paymentOption: sp.payment_option, hourlyCommitmentUsd: sp.hourly_commitment_usd, endAt: sp.end_at }),
     });
   }
+  for (const b of db.prepare("SELECT * FROM aws_budgets WHERE source = 'aws' ORDER BY external_name").all()) {
+    items.push({
+      item: `aws_budget:${b.external_name}`,
+      value: JSON.stringify({ limitUsd: b.amount_usd, timeUnit: b.time_unit, scopeType: b.scope_type, scopeValue: b.scope_value }),
+    });
+  }
+  const refreshed = getSetting('aws_price_catalog_refreshed_at');
+  if (refreshed) items.push({ item: 'price_catalog_refreshed', value: String(refreshed).slice(0, 10) });
   require('./configLedger').recordSnapshot({ platform: 'aws', scope: 'finops', system: account.name, items });
 }
 
@@ -1220,6 +1373,155 @@ async function captureFinops(account, { skipped = [], now = new Date() } = {}) {
     catch (err) { logger.warn(`[AwsFinops] ${account.name}: storing Cost Explorer recommendations failed: ${err.message}`); }
   }
 
+  // 8b. Round 2 capabilities. Free ones return requests 0; Cost Explorer ones count their pages.
+  const okNote = (id, text) => {
+    setCapabilityStatus(account.id, id, { status: 'ok', error: text, requests: 0, ok: true }, now);
+    statuses[id] = 'ok';
+  };
+
+  // Cost category definitions, then one grouping call per definition (cap aws_finops_cost_categories_max).
+  if (settings.costCategoriesMax <= 0) {
+    note('cost_categories', 'unknown', 'Cost category capture is switched off (limit 0).');
+  } else {
+    await run('cost_categories', async () => {
+      const defs = await awsApi.fetchCostCategoryDefinitions(account);
+      let n = defs.requests;
+      if (!defs.rows.length) return { requests: n, note: 'No cost categories are defined on this account.' };
+      const names = defs.rows.map((r) => r.name).slice(0, settings.costCategoriesMax);
+      for (const name of names) {
+        const { rows, requests: pages } = await awsApi.fetchCostAndUsageGrouped(account, {
+          start: winStart, end: today, groupBy: [{ Type: 'COST_CATEGORY', Key: name }, { Type: 'DIMENSION', Key: 'SERVICE' }],
+        });
+        n += pages;
+        up.upsertCostAlloc(account.id, 'cost_category', name, rows.map((x) => {
+          const raw = x.keys[0] || '';
+          const at = raw.indexOf('$');
+          return { day: x.day, value: at >= 0 ? raw.slice(at + 1) : raw, service: x.keys[1] || '', amountUsd: x.amountUsd, amortizedUsd: x.amortizedUsd };
+        }));
+      }
+      const more = defs.rows.length - names.length;
+      return { requests: n, note: more > 0 ? `Captured ${names.length} of ${defs.rows.length} cost categories (limit ${settings.costCategoriesMax}).` : null };
+    });
+  }
+
+  // Month over month with drivers: once per (baseline, comparison) pair. Rows are stored only when the
+  // comparison and every driver call worked, so a denial retries tomorrow instead of freezing a partial pair.
+  if (!settings.comparisonEnabled) {
+    note('cost_comparison', 'unknown', 'Monthly cost comparison is switched off.');
+  } else {
+    const comparisonMonth = monthOf(addMonths(today, -1));
+    const baselineMonth = monthOf(addMonths(today, -2));
+    const have = db.prepare('SELECT COUNT(*) AS n FROM aws_cost_comparison WHERE account_id = ? AND baseline_month = ? AND comparison_month = ? AND metric = ?')
+      .get(account.id, baselineMonth, comparisonMonth, settings.finopsMetric).n;
+    if (have > 0) {
+      note('cost_comparison', 'unknown', `Already captured for ${comparisonMonth}`);
+    } else {
+      await run('cost_comparison', async () => {
+        const periods = {
+          metric: settings.finopsMetric,
+          baselineStart: addMonths(today, -2), baselineEnd: addMonths(today, -1),
+          comparisonStart: addMonths(today, -1), comparisonEnd: monthStart(today),
+        };
+        const comp = await awsApi.fetchCostAndUsageComparisons(account, periods);
+        let n = comp.requests;
+        const movers = [...comp.rows].sort((a, b) => Math.abs(num(b.deltaUsd)) - Math.abs(num(a.deltaUsd))).slice(0, 8);
+        const driversBy = new Map();
+        try {
+          for (const m of movers) {
+            const d = await awsApi.fetchCostComparisonDrivers(account, { ...periods, service: m.service });
+            n += d.requests;
+            driversBy.set(m.service, d.rows.map((r) => ({
+              usageType: r.usageType, baselineUsd: r.baselineUsd, comparisonUsd: r.comparisonUsd, deltaUsd: r.deltaUsd, drivers: r.drivers,
+            })));
+          }
+        } catch (err) {
+          err.requests = n;
+          throw err;
+        }
+        const iso = nowIso(now);
+        const list = [...comp.rows];
+        if (comp.total) list.push({ service: '(total)', ...comp.total });
+        db.transaction(() => {
+          const stmt = db.prepare(`
+            INSERT INTO aws_cost_comparison (account_id, baseline_month, comparison_month, metric, service, baseline_usd, comparison_usd,
+              delta_usd, delta_pct, drivers_json, captured_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, baseline_month, comparison_month, metric, service) DO UPDATE SET
+              baseline_usd = excluded.baseline_usd, comparison_usd = excluded.comparison_usd, delta_usd = excluded.delta_usd,
+              delta_pct = excluded.delta_pct, drivers_json = excluded.drivers_json, captured_at = excluded.captured_at
+          `);
+          for (const r of list) {
+            const pct = num(r.baselineUsd) > 0 ? (num(r.deltaUsd) / num(r.baselineUsd)) * 100 : null;
+            stmt.run(account.id, baselineMonth, comparisonMonth, settings.finopsMetric, r.service, r.baselineUsd, r.comparisonUsd,
+              r.deltaUsd, pct, JSON.stringify(driversBy.get(r.service) || []), iso);
+          }
+        })();
+        return { requests: n };
+      });
+    }
+  }
+
+  // Savings Plans inventory (free). Details rows from the Cost Explorer call keep their own source.
+  await run('savings_plans_inventory', async () => {
+    const { rows } = await awsApi.fetchSavingsPlans(account);
+    up.upsertSavingsPlans(account.id, rows, 'api');
+    return { requests: 0 };
+  });
+
+  // AWS Budgets mirror (free).
+  await run('aws_budgets', async () => {
+    const { rows } = await awsApi.fetchAwsBudgets(account);
+    const out = syncAwsBudgets(rows, nowIso(now));
+    return { requests: 0, note: out.upserted ? null : 'No cost budgets are defined in AWS Budgets.' };
+  });
+
+  // Cost Optimization Hub recommendations (free), shown beside Compute Optimizer and the heuristics.
+  const hubRows = [];
+  const hub = await run('optimization_hub', async () => {
+    const { rows } = await awsApi.fetchOptimizationHub(account);
+    for (const r of rows) {
+      const id = r.resourceId || arnLeaf(r.resourceArn);
+      if (!id) continue;
+      hubRows.push({
+        source: 'cost-optimization-hub', resourceType: String(r.currentResourceType || 'resource').toLowerCase(), resourceId: id,
+        resourceName: r.tags?.Name || null, region: r.region, finding: r.actionType, currentConfig: r.currentSummary,
+        recommendedConfig: r.recommendedSummary, reason: `Cost Optimization Hub, ${r.lookbackDays ?? 'n/a'} day lookback`,
+        estMonthlySavingsUsd: r.estMonthlySavingsUsd, effort: r.effort, restartNeeded: r.restartNeeded,
+        rollbackPossible: r.rollbackPossible, actionType: r.actionType, lookbackDays: r.lookbackDays, afterDiscounts: 1,
+        detailJson: JSON.stringify(r),
+      });
+    }
+    return { requests: 0 };
+  });
+  if (hub.status === 'ok') {
+    try { up.storeCeRecommendations(account.id, hubRows, { sources: ['cost-optimization-hub'] }); }
+    catch (err) { logger.warn(`[AwsFinops] ${account.name}: storing Cost Optimization Hub recommendations failed: ${err.message}`); }
+  }
+
+  // Public price catalog (free) when it is older than aws_price_refresh_days.
+  const refreshedAt = getSetting('aws_price_catalog_refreshed_at');
+  const priceAgeMs = refreshedAt ? new Date(now).getTime() - Date.parse(refreshedAt) : Infinity;
+  if (!Number.isFinite(priceAgeMs) || priceAgeMs > settings.priceRefreshDays * DAY_MS) {
+    await run('pricing', async () => {
+      const r = await awsPricing.refreshPriceCatalog(account, { now });
+      const total = db.prepare('SELECT COUNT(*) AS n FROM aws_price_catalog').get().n;
+      return { requests: 0, note: `Catalog is ${total} rows, refreshed ${utcDay(now)} (${r.rows} prices from ${r.requests} requests).` };
+    });
+  } else {
+    const total = db.prepare('SELECT COUNT(*) AS n FROM aws_price_catalog').get().n;
+    okNote('pricing', `Catalog is ${total} rows, refreshed ${String(refreshedAt).slice(0, 10)}`);
+  }
+
+  // Local resource estimate over the window (no API call).
+  await run('resource_estimate', async () => {
+    const fromDay = addDays(today, -(settings.estimateWindowDays - 1));
+    const est = awsCostEstimate.computeResourceEstimates(account.id, { fromDay, toDay: today, now });
+    awsCostEstimate.storeResourceEstimates(account.id, { fromDay, toDay: today, rows: est.rows });
+    const total = est.attributedUsd + est.unattributedUsd;
+    const pct = total > 0 ? Math.round((est.attributedUsd / total) * 100) : 0;
+    return { requests: 0, note: `Computed locally from inventory and billing usage types. ${est.rows.length} rows, ${pct}% attributed.` };
+  });
+
   // 9. Evaluate everything that reads stored rows, then retention, the ledger and the digest.
   const guarded = (label, fn) => { try { return fn(); } catch (err) { logger.warn(`[AwsFinops] ${account.name}: ${label} failed: ${err.message}`); return null; } };
   guarded('ICC anomaly rule', () => detectIccAnomalies(account.id, { now }));
@@ -1247,6 +1549,8 @@ async function captureFinops(account, { skipped = [], now = new Date() } = {}) {
 module.exports = {
   CAPABILITIES,
   CAPABILITY_ACTIONS,
+  FREE_CAPABILITIES,
+  setCapabilityStatus,
   // Collector entry points (async, called by awsPoller on the elected row).
   captureFinops,
   backfillCostHistory,
@@ -1264,6 +1568,9 @@ module.exports = {
   bedrockModelForService,
   // Read helpers for routes.
   buildFinopsOverview,
+  comparisonLatest,
+  syncAwsBudgets,
+  awsBudgetScope,
   capabilityRows,
   missingActions,
   finopsSettings,

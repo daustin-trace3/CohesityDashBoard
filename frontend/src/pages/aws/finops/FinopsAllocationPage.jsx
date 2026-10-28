@@ -12,6 +12,7 @@ import { fmtUsd } from '../helpers';
 import { getAllocation, ALLOCATION_CSV, errMsg } from './finopsApi';
 import MetricToggle from './MetricToggle';
 import { SETTINGS_LINK } from './CapabilityStrip';
+import { ESTIMATE_NOTE } from './ResourceEstimateTable';
 import { useUrlParam, pct1, chartOptions, PALETTE, selectCls, thCls } from './shared';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
@@ -20,6 +21,7 @@ const DIMENSIONS = [
   { value: 'tag', label: 'Tag key' },
   { value: 'cost_category', label: 'Cost category' },
   { value: 'linked_account', label: 'Linked account' },
+  { value: 'inventory_tag', label: 'Inventory tag (estimated)' },
 ];
 const UNALLOCATED = '(unallocated)';
 const valueName = (v) => (v === '' || v == null ? UNALLOCATED : v);
@@ -132,6 +134,12 @@ export default function FinopsAllocationPage() {
         </Panel>
       ) : (
         <>
+          {data.estimated && (
+            <p className="text-[11px] text-ink-muted mb-3">
+              <Badge tone="warn" className="mr-2">Estimated</Badge>
+              Spend by inventory tag. Tags come from the current inventory, not from billing, so they apply to all history. {ESTIMATE_NOTE}
+            </p>
+          )}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
             <StatCard icon={PieChart} label="Total spend" value={fmtUsd(data.totalUsd)} sub={dr.label} tone="brand" />
             <StatCard label="Allocated" value={fmtUsd(data.allocatedUsd)} sub={`${values.filter((v) => v.value !== '').length} value(s)`} />

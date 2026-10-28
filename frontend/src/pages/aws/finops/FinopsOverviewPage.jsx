@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, Fragment } from 'react';
 import { Link } from 'react-router-dom';
-import { Coins } from 'lucide-react';
+import { Coins, ChevronRight, ChevronDown } from 'lucide-react';
 import { Bar, Doughnut } from 'react-chartjs-2';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Filler, Tooltip, Legend,
@@ -9,7 +9,7 @@ import client from '../../../api/client';
 import { useToast } from '../../../components/ui/Toaster';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../../components/ui/primitives';
 import { fmtUsd } from '../helpers';
-import { getOverview, errMsg } from './finopsApi';
+import { getOverview, getComparison, errMsg } from './finopsApi';
 import KpiBand from './KpiBand';
 import CapabilityStrip from './CapabilityStrip';
 import MetricToggle from './MetricToggle';
@@ -36,6 +36,8 @@ export default function FinopsOverviewPage() {
   const [data, setData] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [comparison, setComparison] = useState(null);
+  const [openMover, setOpenMover] = useState(null);
 
   useEffect(() => {
     client.get('/aws/accounts').then(({ data: d }) => setAccounts(Array.isArray(d) ? d : d?.accounts || [])).catch(() => setAccounts([]));
@@ -51,6 +53,7 @@ export default function FinopsOverviewPage() {
   }, [metricParam, accountId, toast]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { getComparison().then(setComparison).catch(() => setComparison(null)); }, []);
 
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
@@ -62,6 +65,8 @@ export default function FinopsOverviewPage() {
   const budgets = data?.budgets || [];
   const anomalies = data?.anomalies || [];
   const capabilities = data?.capabilities || [];
+  const cmpRows = comparison?.rows || [];
+  const cmpCaption = `AWS driver analysis, ${comparison?.comparisonMonth || '-'} vs ${comparison?.baselineMonth || '-'}`;
 
   const tiles = useMemo(() => {
     const spark = trend.map((t) => t.usd).filter((v) => v != null).slice(-8);
@@ -157,12 +162,25 @@ export default function FinopsOverviewPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className={thCls}>
-                    <th className="py-2 pr-3">Service</th><th className="py-2 pr-3 text-right">This month</th>
+                    <th className="py-2 pr-1 w-5" /><th className="py-2 pr-3">Service</th><th className="py-2 pr-3 text-right">This month</th>
                     <th className="py-2 pr-3 text-right">Last month</th><th className="py-2 pr-3 text-right">Change</th>
                   </tr></thead>
                   <tbody>
-                    {movers.map((m) => (
-                      <tr key={m.service} className="border-b border-cohesity-border/50">
+                    {movers.map((m) => {
+                      const cmp = cmpRows.find((c) => c.service === m.service);
+                      const isOpen = openMover === m.service;
+                      return (
+                      <Fragment key={m.service}>
+                      <tr className="border-b border-cohesity-border/50">
+                        <td className="py-2 pr-1">
+                          {cmpRows.length > 0 && (
+                            <button type="button" onClick={() => setOpenMover(isOpen ? null : m.service)} aria-expanded={isOpen}
+                              aria-label={isOpen ? `Hide why ${m.service} moved` : `Why ${m.service} moved`} title="Why it moved"
+                              className="text-ink-faint hover:text-ink cursor-pointer">
+                              {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                            </button>
+                          )}
+                        </td>
                         <td className="py-2 pr-3 text-ink">{m.service}</td>
                         <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(m.thisMonthUsd)}</td>
                         <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(m.lastMonthUsd)}</td>
@@ -170,7 +188,34 @@ export default function FinopsOverviewPage() {
                           {m.deltaUsd > 0 ? '+' : ''}{fmtUsd(m.deltaUsd)} <span className="text-ink-faint text-[11px]">({signedPct(m.deltaPct)})</span>
                         </td>
                       </tr>
-                    ))}
+                      {isOpen && (
+                        <tr className="border-b border-cohesity-border/30 bg-surface-overlay/40">
+                          <td />
+                          <td colSpan={4} className="py-2 pr-3 text-[12px]">
+                            {!cmp || !(cmp.drivers || []).length ? (
+                              <span className="text-ink-faint">No driver analysis yet</span>
+                            ) : (
+                              <>
+                                <ul className="space-y-1">
+                                  {cmp.drivers.map((d, i) => (
+                                    <li key={`${d.type}|${d.name}|${d.usageType}|${i}`} className="flex flex-wrap items-baseline gap-x-2">
+                                      <span className="text-ink-faint text-[11px]">{d.type || 'driver'}</span>
+                                      <span className="text-ink-muted min-w-0 break-all">{d.name || d.usageType || '-'}</span>
+                                      <span className={`ml-auto tnum ${d.deltaUsd > 0 ? 'text-status-warn' : d.deltaUsd < 0 ? 'text-status-ok' : 'text-ink-muted'}`}>
+                                        {d.deltaUsd > 0 ? '+' : ''}{fmtUsd(d.deltaUsd)}
+                                      </span>
+                                    </li>
+                                  ))}
+                                </ul>
+                                <p className="text-[10px] text-ink-faint mt-1.5">{cmpCaption}</p>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

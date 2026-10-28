@@ -160,8 +160,35 @@ function gatherFinopsWaste() {
     `).get().s || 0).toFixed(2);
   } catch { /* FinOps v11 tables not present */ }
 
+  // Cost Optimization Hub rows (savings after discounts) and the ICC CPU-only rightsizing rows.
+  let hubRecommendations = [];
+  let iccRightsizing = [];
+  try {
+    hubRecommendations = db.prepare(`
+      SELECT resource_type, resource_id, resource_name, finding, current_config, recommended_config, effort,
+             restart_needed, rollback_possible, est_monthly_savings_usd
+      FROM aws_optimizer_recommendations WHERE source = 'cost-optimization-hub'
+      ORDER BY (est_monthly_savings_usd IS NULL) ASC, est_monthly_savings_usd DESC LIMIT 15
+    `).all().map((r) => ({
+      resourceType: r.resource_type, resource: r.resource_name || r.resource_id, action: r.finding,
+      current: r.current_config, recommended: r.recommended_config, effort: r.effort || null,
+      restartNeeded: r.restart_needed == null ? null : !!r.restart_needed,
+      rollbackPossible: r.rollback_possible == null ? null : !!r.rollback_possible,
+      estMonthlySavingsUsd: r.est_monthly_savings_usd,
+    }));
+    iccRightsizing = db.prepare(`
+      SELECT resource_id, resource_name, current_config, recommended_config, reason, est_monthly_savings_usd
+      FROM aws_optimizer_recommendations WHERE source = 'heuristic' AND finding = 'ec2-low-utilization'
+      ORDER BY (est_monthly_savings_usd IS NULL) ASC, est_monthly_savings_usd DESC LIMIT 15
+    `).all().map((r) => ({
+      instance: r.resource_name || r.resource_id, current: r.current_config, recommended: r.recommended_config,
+      reason: r.reason, estMonthlySavingsUsd: r.est_monthly_savings_usd,
+    }));
+  } catch { /* FinOps v12 columns not present */ }
+
   const empty = !unattachedEbs.length && !stoppedEc2.length && !natGatewaysByVpc.length
-    && !s3NoLifecycle.length && !instanceTypeCosts.length && !lightsailSnapshots.length && !recommendations.length;
+    && !s3NoLifecycle.length && !instanceTypeCosts.length && !lightsailSnapshots.length && !recommendations.length
+    && !hubRecommendations.length && !iccRightsizing.length;
 
   return {
     generatedAt: new Date().toISOString(),
@@ -172,6 +199,8 @@ function gatherFinopsWaste() {
     instanceTypeCosts,
     lightsailSnapshots,
     recommendations,
+    hubRecommendations,
+    iccRightsizing,
     realizedSavings90dUsd,
     potentialSavingsUsd,
     note: empty ? 'No inventory captured yet.' : undefined,
@@ -267,6 +296,35 @@ function gatherAllocation() {
   };
 }
 
+function gatherResourceCosts() {
+  const empty = { generatedAt: new Date().toISOString(), windowDays: 30, topResources: [], byKind: [], note: 'No estimated resource cost yet.' };
+  let mod;
+  try { mod = require('../awsCostEstimate'); } catch { return empty; }
+  const day = (offset) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
+  const metric = getSetting('aws_finops_metric') === 'unblended' ? 'unblended' : 'amortized';
+  let out;
+  try { out = mod.resourceRollup({ fromDay: day(29), toDay: day(0), metric, limit: 25 }); } catch { return empty; }
+  if (!out || !(out.rows || []).length) return empty;
+  const totals = out.totals || {};
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays: 30,
+    metric,
+    estimated: true,
+    totalUsd: round2(totals.totalUsd),
+    attributedUsd: round2(totals.attributedUsd),
+    unattributedUsd: round2(totals.unattributedUsd),
+    attributedPct: round2(totals.attributedPct),
+    byKind: (out.byKind || []).map((k) => ({ kind: k.kind, usd: round2(k.usd), count: k.count })),
+    topResources: out.rows.slice(0, 25).map((r) => ({
+      kind: r.resourceKind, resource: r.label || r.resourceId, services: r.services, usd: round2(r.usd),
+      sharePct: round2(r.pct), estMonthlyUsd: round2(r.estMonthlyUsd), tags: r.tags || {},
+    })),
+    unattributed: (out.unattributed || []).slice(0, 10).map((u) => ({ service: u.service, usd: round2(u.usd) })),
+    note: 'Costs are local estimates: billed usage types split across the current inventory by weight.',
+  };
+}
+
 function gatherMonthlyTrend() {
   const rows = db.prepare(`
     SELECT strftime('%Y-%m', day) AS month, service, SUM(amount_usd) AS total_usd
@@ -322,7 +380,10 @@ module.exports = createPlatformAdvisor({
         'You are a senior FinOps analyst hunting for AWS waste. You are given unattached EBS volumes, stopped EC2 ' +
         'instances, NAT gateway counts per VPC, S3 buckets with no lifecycle rules, per-instance-type cost vs ' +
         'running count, Lightsail snapshot counts, and the top recommendations with the status a person set ' +
-        '(open, accepted, dismissed, done), the savings still open and the savings realized in the last 90 days. Identify concrete monthly savings opportunities, estimate ' +
+        '(open, accepted, dismissed, done), the savings still open and the savings realized in the last 90 days. ' +
+        'Cost Optimization Hub rows carry savings after discounts, an effort level and restart and rollback flags; ' +
+        'ICC rightsizing rows come from CPU history only (no memory data), so call them candidates to verify, not ' +
+        'sure savings. Identify concrete monthly savings opportunities, estimate ' +
         'rough dollar savings where computable from the given figures, and rank the list by impact. Do not invent ' +
         'data. Markdown, under ~400 words.',
       gather: gatherFinopsWaste,
@@ -348,6 +409,18 @@ module.exports = createPlatformAdvisor({
         'data exists. Do not invent data. Markdown, under ~350 words.',
       gather: gatherAllocation,
       noun: 'cost allocation report',
+    },
+    resource_costs: {
+      system:
+        'You are a senior FinOps analyst reviewing estimated per-resource AWS cost. You are given the 25 most ' +
+        'expensive resources of the last 30 days with kind, services, cost, estimated monthly run rate and tags, ' +
+        'the spend by resource kind, and how much spend could not be attributed to a resource. These figures are ' +
+        'ICC estimates built by splitting each billed usage type across the inventory it names, not AWS resource ' +
+        'billing; say so once. Name the resources that dominate cost, point at anything untagged or expensive for ' +
+        'its kind, and say what the unattributed share means for how far to trust the list. Do not invent data. ' +
+        'Markdown, under ~350 words.',
+      gather: gatherResourceCosts,
+      noun: 'resource cost report',
     },
     monthly_trend: {
       system:

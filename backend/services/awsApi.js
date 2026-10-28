@@ -20,7 +20,7 @@ const {
 } = require('@aws-sdk/client-ecs');
 const {
   S3Client, ListBucketsCommand, GetBucketLocationCommand, GetPublicAccessBlockCommand,
-  GetBucketVersioningCommand, GetBucketLifecycleConfigurationCommand,
+  GetBucketVersioningCommand, GetBucketLifecycleConfigurationCommand, GetBucketTaggingCommand,
 } = require('@aws-sdk/client-s3');
 const { CloudWatchClient, ListMetricsCommand, GetMetricDataCommand } = require('@aws-sdk/client-cloudwatch');
 const {
@@ -29,7 +29,12 @@ const {
   GetSavingsPlansCoverageCommand, GetReservationUtilizationCommand, GetReservationCoverageCommand,
   GetAnomalyMonitorsCommand, GetAnomaliesCommand, GetRightsizingRecommendationCommand,
   GetSavingsPlansPurchaseRecommendationCommand, ListCostAllocationTagsCommand, GetDimensionValuesCommand,
+  ListCostCategoryDefinitionsCommand, GetCostAndUsageComparisonsCommand, GetCostComparisonDriversCommand,
 } = require('@aws-sdk/client-cost-explorer');
+const { PricingClient, GetProductsCommand } = require('@aws-sdk/client-pricing');
+const { SavingsplansClient, DescribeSavingsPlansCommand } = require('@aws-sdk/client-savingsplans');
+const { BudgetsClient, DescribeBudgetsCommand, DescribeBudgetNotificationsForAccountCommand } = require('@aws-sdk/client-budgets');
+const { CostOptimizationHubClient, ListEnrollmentStatusesCommand, ListRecommendationsCommand } = require('@aws-sdk/client-cost-optimization-hub');
 const { RDSClient, DescribeDBInstancesCommand } = require('@aws-sdk/client-rds');
 const { LambdaClient, ListFunctionsCommand } = require('@aws-sdk/client-lambda');
 const {
@@ -39,6 +44,7 @@ const { ECRClient, DescribeRepositoriesCommand, DescribeImagesCommand } = requir
 const {
   ComputeOptimizerClient, GetEnrollmentStatusCommand, GetEC2InstanceRecommendationsCommand,
   GetEBSVolumeRecommendationsCommand, GetLambdaFunctionRecommendationsCommand, GetECSServiceRecommendationsCommand,
+  GetIdleRecommendationsCommand, GetRDSDatabaseRecommendationsCommand,
 } = require('@aws-sdk/client-compute-optimizer');
 const axios = require('axios');
 const { XMLParser } = require('fast-xml-parser');
@@ -215,6 +221,21 @@ const lambdaClient = (account) => new LambdaClient(clientConfig(account));
 const dynamoClient = (account) => new DynamoDBClient(clientConfig(account));
 const ecrClient = (account) => new ECRClient(clientConfig(account));
 const computeOptimizerClient = (account) => new ComputeOptimizerClient(clientConfig(account));
+// Pricing, Savings Plans, Budgets and Cost Optimization Hub are global; their endpoints live in us-east-1.
+const pricingClient = (account) => new PricingClient(clientConfig(account, 'us-east-1'));
+const savingsPlansClient = (account) => new SavingsplansClient(clientConfig(account, 'us-east-1'));
+const budgetsClient = (account) => new BudgetsClient(clientConfig(account, 'us-east-1'));
+const costOptimizationHubClient = (account) => new CostOptimizationHubClient(clientConfig(account, 'us-east-1'));
+
+/** { Key: Value } from an AWS tag list; keyName/valueName differ per service (Key/Value, key/value). */
+function tagsFromList(list, keyName = 'Key', valueName = 'Value') {
+  const out = {};
+  for (const t of Array.isArray(list) ? list : []) {
+    const k = t?.[keyName];
+    if (k) out[k] = t?.[valueName] == null ? '' : String(t[valueName]);
+  }
+  return out;
+}
 
 // ── EC2 ──────────────────────────────────────────────────────────────────────
 
@@ -237,6 +258,7 @@ async function fetchEc2Instances(account) {
           publicIp: i.PublicIpAddress || null,
           platform: i.PlatformDetails || i.Platform || null,
           launchTime: i.LaunchTime ? new Date(i.LaunchTime).toISOString() : null,
+          tags: tagsFromList(i.Tags),
         });
       }
     }
@@ -259,6 +281,7 @@ async function fetchEbsVolumes(account) {
         volumeType: v.VolumeType || null,
         az: v.AvailabilityZone || null,
         attachedInstanceId: v.Attachments?.[0]?.InstanceId || null,
+        tags: tagsFromList(v.Tags),
       });
     }
     nextToken = resp?.NextToken;
@@ -340,6 +363,7 @@ async function fetchLightsailBundles(account) {
         ramGb: b.ramSizeInGb ?? null,
         cpuCount: b.cpuCount ?? null,
         diskGb: b.diskSizeInGb ?? null,
+        price: b.price ?? null,   // USD per month
         isWindows: /win/i.test(b.bundleId) || (platforms.includes('WINDOWS') && !platforms.includes('LINUX_UNIX')),
       });
     }
@@ -391,6 +415,7 @@ async function fetchLightsailInstances(account, bundles) {
         ramGb: i.hardware?.ramSizeInGb ?? bundle?.ramGb ?? null,
         cpuCount: i.hardware?.cpuCount ?? bundle?.cpuCount ?? null,
         isWindows: (bundle?.isWindows || /win/i.test(i.bundleId || '') || /windows/i.test(blueprintText)) ? 1 : 0,
+        tags: tagsFromList(i.tags, 'key', 'value'),
       });
     }
     pageToken = resp?.nextPageToken;
@@ -423,6 +448,7 @@ async function fetchLightsailDatabases(account, dbBundles) {
         publiclyAccessible: flag(d.publiclyAccessible),
         latestRestorableAt: isoOrNull(d.latestRestorableTime),
         createdAt: isoOrNull(d.createdAt),
+        tags: tagsFromList(d.tags, 'key', 'value'),
       });
     }
     pageToken = resp?.nextPageToken;
@@ -783,6 +809,21 @@ async function fetchBucketLifecycleRuleCount(account, bucketName, region) {
   }
 }
 
+/**
+ * { Key: Value } for a bucket. NoSuchTagSet is S3's normal "no tags" answer and gives {}.
+ * Any other failure (AccessDenied included) propagates so the caller can record the capability.
+ */
+async function fetchBucketTags(account, bucketName, region) {
+  try {
+    const client = s3Client(account, region);
+    const resp = await client.send(new GetBucketTaggingCommand({ Bucket: bucketName }));
+    return tagsFromList(resp?.TagSet);
+  } catch (err) {
+    if (err?.name === 'NoSuchTagSet' || err?.Code === 'NoSuchTagSet') return {};
+    throw err;
+  }
+}
+
 /** { sizeBytes, objectCount } — newest AWS/S3 daily datapoint over the last 3 days. */
 async function fetchBucketStorageMetrics(account, bucketName, region) {
   try {
@@ -1040,6 +1081,9 @@ function actionFromDeniedMessage(msg) {
  */
 function classifyCeError(err) {
   const msg = String(err?.message || '');
+  if (/^Cost Optimization Hub is not enrolled/i.test(msg)) return 'not_enabled';
+  // An IAM denial that names a non-Cost-Explorer action is a plain denial whatever else the text mentions.
+  if (/perform:\s*(savingsplans|budgets|cost-optimization-hub|pricing|compute-optimizer|s3):/i.test(msg)) return 'denied';
   // A feature that must be switched on in the console (rightsizing, resource-level data) is reported
   // by Cost Explorer as AccessDeniedException with an opt-in message, so the message wins over the name.
   if (/opt[ -]?in|preference|enable this feature|has not been enabled|not enabled|not supported/i.test(msg)) return 'not_enabled';
@@ -1467,6 +1511,7 @@ async function fetchRdsInstances(account) {
         backupRetentionDays: d.BackupRetentionPeriod ?? null,
         latestBackupAt: d.LatestRestorableTime ? new Date(d.LatestRestorableTime).toISOString() : null,
         endpoint: d.Endpoint?.Address || null,
+        tags: tagsFromList(d.TagList),
       });
     }
     marker = resp?.Marker;
@@ -1869,6 +1914,379 @@ async function fetchCoEcsRecommendations(account) {
   return out;
 }
 
+// -- FinOps round 2 fetchers (2026-10-27). Same contract as the round 1 fetchers: { rows, requests },
+// errors propagate, awsFinops.capability() classifies. opts.tap(resp) receives each raw response
+// (the finops probe uses it to show the wire shape). Shapes are coded from the installed SDK types
+// and, where the coordinator probed Doug's account, from those answers; the rest says UNVERIFIED.
+
+const tapOf = (opts) => (typeof opts?.tap === 'function' ? opts.tap : () => {});
+const CE_METRIC_NAMES = { amortized: 'AmortizedCost', unblended: 'UnblendedCost', AMORTIZED_COST: 'AmortizedCost', UNBLENDED_COST: 'UnblendedCost' };
+const ceMetricName = (m) => CE_METRIC_NAMES[m] || (m === 'UnblendedCost' ? 'UnblendedCost' : 'AmortizedCost');
+
+/** [{ name, arn, values }] - ListCostCategoryDefinitions. Values may be empty (UNVERIFIED which rule values it lists). */
+async function fetchCostCategoryDefinitions(account, opts = {}) {
+  const tap = tapOf(opts);
+  const rows = [];
+  const requests = await cePaged(account,
+    (extra) => new ListCostCategoryDefinitionsCommand({ MaxResults: 100, ...extra }), 'NextToken', 'NextToken', 5,
+    (resp) => {
+      tap(resp);
+      for (const c of resp?.CostCategoryReferences || []) {
+        if (c.Name) rows.push({ name: c.Name, arn: c.CostCategoryArn || null, values: c.Values || [] });
+      }
+    });
+  return { rows, requests };
+}
+
+/** The first dimension value for `key` (any key when key is null) in a Cost Explorer Expression, or null. */
+function selectorValue(expr, key = 'SERVICE') {
+  if (!expr || typeof expr !== 'object') return null;
+  if (expr.Dimensions && (!key || expr.Dimensions.Key === key)) return expr.Dimensions.Values?.[0] ?? null;
+  for (const k of ['And', 'Or']) {
+    for (const e of expr[k] || []) { const v = selectorValue(e, key); if (v != null) return v; }
+  }
+  return expr.Not ? selectorValue(expr.Not, key) : null;
+}
+
+const metricTriple = (metrics, name) => {
+  const m = metrics?.[name] || (metrics ? Object.values(metrics)[0] : null);
+  return {
+    baselineUsd: numOrNull(m?.BaselineTimePeriodAmount),
+    comparisonUsd: numOrNull(m?.ComparisonTimePeriodAmount),
+    deltaUsd: numOrNull(m?.Difference),
+  };
+};
+
+/**
+ * Month against month by SERVICE (GetCostAndUsageComparisons, live-verified 2026-10-27: the service
+ * is CostAndUsageSelector.Dimensions.Values[0], amounts are strings under Metrics.<Metric>, and
+ * TotalCostAndUsage.<Metric> carries the account total). Returns { rows, total, requests } with
+ * rows [{ service, baselineUsd, comparisonUsd, deltaUsd }] and total {baselineUsd, comparisonUsd, deltaUsd} | null.
+ */
+async function fetchCostAndUsageComparisons(account, { metric, baselineStart, baselineEnd, comparisonStart, comparisonEnd, ...opts } = {}) {
+  const tap = tapOf(opts);
+  const name = ceMetricName(metric);
+  const rows = [];
+  let total = null;
+  const requests = await cePaged(account,
+    (extra) => new GetCostAndUsageComparisonsCommand({
+      BaselineTimePeriod: { Start: ceDay(baselineStart), End: ceDay(baselineEnd) },
+      ComparisonTimePeriod: { Start: ceDay(comparisonStart), End: ceDay(comparisonEnd) },
+      MetricForComparison: name,
+      GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
+      MaxResults: 100, ...extra,
+    }), 'NextPageToken', 'NextPageToken', 5,
+    (resp) => {
+      tap(resp);
+      if (resp?.TotalCostAndUsage && !total) total = metricTriple(resp.TotalCostAndUsage, name);
+      for (const c of resp?.CostAndUsageComparisons || []) {
+        const service = selectorValue(c.CostAndUsageSelector, 'SERVICE') ?? selectorValue(c.CostAndUsageSelector, null);
+        if (service) rows.push({ service, ...metricTriple(c.Metrics, name) });
+      }
+    });
+  return { rows, total, requests };
+}
+
+/**
+ * Drivers for ONE service (GetCostComparisonDrivers, live-verified: MaxResults is capped at 10 and each
+ * result is one SERVICE + USAGE_TYPE pair, so the capture calls this once per top mover with a SERVICE
+ * filter and does not page). Returns { rows, requests: 1 } with rows
+ * [{ service, usageType, baselineUsd, comparisonUsd, deltaUsd, drivers: [{ type, name, deltaUsd, usageDelta, usageUnit }] }].
+ */
+async function fetchCostComparisonDrivers(account, { metric, baselineStart, baselineEnd, comparisonStart, comparisonEnd, service, ...opts } = {}) {
+  const tap = tapOf(opts);
+  const name = ceMetricName(metric);
+  const client = costExplorerClient(account);
+  const resp = await client.send(new GetCostComparisonDriversCommand({
+    BaselineTimePeriod: { Start: ceDay(baselineStart), End: ceDay(baselineEnd) },
+    ComparisonTimePeriod: { Start: ceDay(comparisonStart), End: ceDay(comparisonEnd) },
+    MetricForComparison: name,
+    ...(service ? { Filter: { Dimensions: { Key: 'SERVICE', Values: [service] } } } : {}),
+    GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
+    MaxResults: 10,
+  }));
+  tap(resp);
+  const rows = (resp?.CostComparisonDrivers || []).map((d) => ({
+    service: selectorValue(d.CostSelector, 'SERVICE') ?? service ?? null,
+    usageType: selectorValue(d.CostSelector, 'USAGE_TYPE'),
+    ...metricTriple(d.Metrics, name),
+    drivers: (d.CostDrivers || []).map((c) => ({
+      type: c.Type || null, name: c.Name || null,
+      deltaUsd: numOrNull((c.Metrics?.[name] || {}).Difference),
+      usageDelta: numOrNull(c.Metrics?.UsageQuantity?.Difference),
+      usageUnit: c.Metrics?.UsageQuantity?.Unit || null,
+    })),
+  })).filter((r) => r.service);
+  return { rows, requests: 1 };
+}
+
+const SP_TYPE_NAMES = { Compute: 'COMPUTE_SP', EC2Instance: 'EC2_INSTANCE_SP', Database: 'DATABASE_SP', SageMaker: 'SAGEMAKER_SP' };
+const upperUnderscore = (s) => (s == null ? null : String(s).trim().toUpperCase().replace(/[\s-]+/g, '_'));
+
+/**
+ * DescribeSavingsPlans (free), every state. Type, payment and term are normalised to the vocabulary the
+ * Cost Explorer details rows use (COMPUTE_SP, NO_UPFRONT, 1yr) so both sources read the same.
+ * [{ spArn, spId, spType, paymentOption, term, region, start, end, state, offeringId, productTypes,
+ *    commitmentUsd, upfrontUsd, recurringUsd, description, instanceFamily }]
+ */
+async function fetchSavingsPlans(account, opts = {}) {
+  const tap = tapOf(opts);
+  const client = savingsPlansClient(account);
+  const rows = [];
+  let nextToken;
+  let requests = 0;
+  for (let page = 0; page < 5; page++) {
+    const resp = await client.send(new DescribeSavingsPlansCommand({
+      maxResults: 100, ...(nextToken ? { nextToken } : {}),
+    }));
+    requests++;
+    tap(resp);
+    for (const p of resp?.savingsPlans || []) {
+      if (!p.savingsPlanArn) continue;
+      const years = p.termDurationInSeconds ? Math.round(p.termDurationInSeconds / 31536000) : null;
+      rows.push({
+        spArn: p.savingsPlanArn, spId: p.savingsPlanId || null,
+        spType: SP_TYPE_NAMES[p.savingsPlanType] || upperUnderscore(p.savingsPlanType),
+        paymentOption: upperUnderscore(p.paymentOption),
+        term: years ? `${years}yr` : null,
+        region: p.region || null, start: p.start || null, end: p.end || null, state: p.state || null,
+        offeringId: p.offeringId || null, productTypes: p.productTypes || [],
+        commitmentUsd: numOrNull(p.commitment), upfrontUsd: numOrNull(p.upfrontPaymentAmount),
+        recurringUsd: numOrNull(p.recurringPaymentAmount), description: p.description || null,
+        instanceFamily: p.ec2InstanceFamily || null,
+      });
+    }
+    nextToken = resp?.nextToken;
+    if (!nextToken) break;
+  }
+  return { rows, requests };
+}
+
+/**
+ * DescribeBudgets (free) plus DescribeBudgetNotificationsForAccount. Needs the account number; falls back
+ * to the STS identity. Money fields arrive as strings; FilterExpression is requested and returned raw
+ * (UNVERIFIED which accounts populate it, CostFilters is the legacy form).
+ * [{ name, budgetType, timeUnit, limitUsd, actualUsd, forecastUsd, costFilters, filterExpression,
+ *    notifications: [{ type, comparison, thresholdPct, thresholdType }] }]
+ */
+async function fetchAwsBudgets(account, opts = {}) {
+  const tap = tapOf(opts);
+  const accountId = account.account_number || await fetchCallerAccount(account);
+  if (!accountId) throw new Error('The AWS account number is not known yet (STS GetCallerIdentity failed), so budgets cannot be listed.');
+  const client = budgetsClient(account);
+  const rows = [];
+  let requests = 0;
+  let nextToken;
+  for (let page = 0; page < 5; page++) {
+    const resp = await client.send(new DescribeBudgetsCommand({
+      AccountId: String(accountId), MaxResults: 100, ShowFilterExpression: true, ...(nextToken ? { NextToken: nextToken } : {}),
+    }));
+    requests++;
+    tap(resp);
+    for (const b of resp?.Budgets || []) {
+      if (!b.BudgetName) continue;
+      rows.push({
+        name: b.BudgetName, budgetType: b.BudgetType || null, timeUnit: b.TimeUnit || null,
+        limitUsd: numOrNull(b.BudgetLimit?.Amount),
+        actualUsd: numOrNull(b.CalculatedSpend?.ActualSpend?.Amount),
+        forecastUsd: numOrNull(b.CalculatedSpend?.ForecastedSpend?.Amount),
+        costFilters: b.CostFilters || {}, filterExpression: b.FilterExpression || null, notifications: [],
+      });
+    }
+    nextToken = resp?.NextToken;
+    if (!nextToken) break;
+  }
+  const byName = new Map(rows.map((r) => [r.name, r]));
+  nextToken = undefined;
+  for (let page = 0; page < 5; page++) {
+    const resp = await client.send(new DescribeBudgetNotificationsForAccountCommand({
+      AccountId: String(accountId), MaxResults: 100, ...(nextToken ? { NextToken: nextToken } : {}),
+    }));
+    requests++;
+    for (const n of resp?.BudgetNotificationsForAccount || []) {
+      const row = byName.get(n.BudgetName);
+      if (!row) continue;
+      for (const x of n.Notifications || []) {
+        row.notifications.push({
+          type: x.NotificationType || null, comparison: x.ComparisonOperator || null,
+          thresholdPct: numOrNull(x.Threshold), thresholdType: x.ThresholdType || 'PERCENTAGE',
+        });
+      }
+    }
+    nextToken = resp?.NextToken;
+    if (!nextToken) break;
+  }
+  return { rows, requests };
+}
+
+/**
+ * Cost Optimization Hub: enrollment first (throws NotEnrolled when no account status is Active), then
+ * ListRecommendations, all recommendations per resource, 10 pages of 100 at most.
+ */
+async function fetchOptimizationHub(account, opts = {}) {
+  const tap = tapOf(opts);
+  const client = costOptimizationHubClient(account);
+  let requests = 0;
+  const enr = await client.send(new ListEnrollmentStatusesCommand({}));
+  requests++;
+  const active = (enr?.items || []).some((i) => i.status === 'Active');
+  if (!active) {
+    const err = new Error('Cost Optimization Hub is not enrolled for this account (enable it in the Billing console).');
+    err.name = 'NotEnrolled';
+    err.requests = requests;
+    throw err;
+  }
+  const rows = [];
+  let nextToken;
+  for (let page = 0; page < 10; page++) {
+    const resp = await client.send(new ListRecommendationsCommand({
+      maxResults: 100, includeAllRecommendations: true, ...(nextToken ? { nextToken } : {}),
+    }));
+    requests++;
+    tap(resp);
+    for (const r of resp?.items || []) {
+      rows.push({
+        recommendationId: r.recommendationId || null, resourceId: r.resourceId || null, resourceArn: r.resourceArn || null,
+        region: r.region || null, currentResourceType: r.currentResourceType || null,
+        recommendedResourceType: r.recommendedResourceType || null, actionType: r.actionType || null,
+        estMonthlySavingsUsd: numOrNull(r.estimatedMonthlySavings), estSavingsPct: numOrNull(r.estimatedSavingsPercentage),
+        estMonthlyCostUsd: numOrNull(r.estimatedMonthlyCost), effort: r.implementationEffort || null,
+        restartNeeded: r.restartNeeded == null ? null : (r.restartNeeded ? 1 : 0),
+        rollbackPossible: r.rollbackPossible == null ? null : (r.rollbackPossible ? 1 : 0),
+        currentSummary: r.currentResourceSummary || null, recommendedSummary: r.recommendedResourceSummary || null,
+        lookbackDays: r.recommendationLookbackPeriodInDays ?? null,
+        lastRefreshAt: r.lastRefreshTimestamp ? new Date(r.lastRefreshTimestamp).toISOString() : null,
+        tags: tagsFromList(r.tags, 'key', 'value'), source: r.source || null,
+      });
+    }
+    nextToken = resp?.nextToken;
+    if (!nextToken) break;
+  }
+  return { rows, requests };
+}
+
+/** Compute Optimizer idle-resource recommendations, 3 page cap. resourceType is 'idle-<type>'. */
+async function fetchCoIdleRecommendations(account, opts = {}) {
+  const tap = tapOf(opts);
+  const client = computeOptimizerClient(account);
+  const out = [];
+  let nextToken;
+  for (let page = 0; page < 3; page++) {
+    const resp = await client.send(new GetIdleRecommendationsCommand({ nextToken }));
+    tap(resp);
+    for (const r of resp?.idleRecommendations || []) {
+      const after = r.savingsOpportunityAfterDiscounts?.estimatedMonthlySavings?.value;
+      const before = r.savingsOpportunity?.estimatedMonthlySavings?.value;
+      const finding = r.finding || null;
+      out.push({
+        resourceId: r.resourceId || arnTail(r.resourceArn), region: arnRegion(r.resourceArn),
+        resourceType: `idle-${String(r.resourceType || 'resource').toLowerCase()}`,
+        resourceName: tagsFromList(r.tags, 'key', 'value').Name || null,
+        finding, currentConfig: null,
+        recommendedConfig: finding === 'Unattached' ? 'delete or snapshot-and-delete' : 'stop or terminate',
+        reason: r.findingDescription || null,
+        estMonthlySavingsUsd: after ?? before ?? null, afterDiscounts: after != null ? 1 : 0,
+        lookbackDays: r.lookBackPeriodInDays ?? null,
+      });
+    }
+    nextToken = resp?.nextToken;
+    if (!nextToken) break;
+  }
+  return out;
+}
+
+const dbStorageText = (c) => (c ? `${c.storageType || ''} ${c.allocatedStorage ?? ''}GiB`.trim() : null);
+
+/** Compute Optimizer RDS and Aurora recommendations: an 'rds' row per instance finding, an 'rds-storage' row per non-optimized storage finding. */
+async function fetchCoRdsRecommendations(account, opts = {}) {
+  const tap = tapOf(opts);
+  const client = computeOptimizerClient(account);
+  const out = [];
+  let nextToken;
+  const top = (list) => (list || []).find((o) => o.rank === 1) || list?.[0] || null;
+  const savings = (o) => {
+    const a = o?.savingsOpportunityAfterDiscounts?.estimatedMonthlySavings?.value;
+    const b = o?.savingsOpportunity?.estimatedMonthlySavings?.value;
+    return { est: a ?? b ?? null, afterDiscounts: a != null ? 1 : 0 };
+  };
+  for (let page = 0; page < 3; page++) {
+    const resp = await client.send(new GetRDSDatabaseRecommendationsCommand({ nextToken }));
+    tap(resp);
+    for (const r of resp?.rdsDBRecommendations || []) {
+      const id = arnTail(r.resourceArn);
+      const region = arnRegion(r.resourceArn);
+      const name = tagsFromList(r.tags, 'key', 'value').Name || null;
+      if (r.instanceFinding) {
+        const o = top(r.instanceRecommendationOptions);
+        const s = savings(o);
+        out.push({
+          resourceId: id, region, resourceType: 'rds', resourceName: name, finding: r.instanceFinding,
+          currentConfig: r.currentDBInstanceClass || null, recommendedConfig: o?.dbInstanceClass || null,
+          reason: (r.instanceFindingReasonCodes || []).join(', ') || null,
+          estMonthlySavingsUsd: s.est, afterDiscounts: s.afterDiscounts, lookbackDays: r.lookbackPeriodInDays ?? null,
+        });
+      }
+      if (r.storageFinding && r.storageFinding !== 'Optimized') {
+        const o = top(r.storageRecommendationOptions);
+        const s = savings(o);
+        out.push({
+          resourceId: id, region, resourceType: 'rds-storage', resourceName: name, finding: r.storageFinding,
+          currentConfig: dbStorageText(r.currentStorageConfiguration), recommendedConfig: dbStorageText(o?.storageConfiguration),
+          reason: (r.storageFindingReasonCodes || []).join(', ') || null,
+          estMonthlySavingsUsd: s.est, afterDiscounts: s.afterDiscounts, lookbackDays: r.lookbackPeriodInDays ?? null,
+        });
+      }
+    }
+    nextToken = resp?.nextToken;
+    if (!nextToken) break;
+  }
+  return out;
+}
+
+/**
+ * Extra steps for the finops probe (routes/aws.js probeFinops spreads these into its step table).
+ * Each step resolves { result, raw }: the parsed answer plus the first raw page, so the wire shape is visible.
+ */
+function finopsExtraProbeSteps(row, { now = Date.now() } = {}) {
+  const first = (fn) => async () => {
+    let raw = null;
+    const res = await fn((resp) => { if (raw == null) raw = resp; });
+    return { result: Array.isArray(res) ? { rows: res } : res, raw };
+  };
+  const d = new Date(now);
+  const mo = (n) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1)).toISOString().slice(0, 10);
+  const periods = { baselineStart: mo(-2), baselineEnd: mo(-1), comparisonStart: mo(-1), comparisonEnd: mo(0), metric: 'amortized' };
+  return {
+    cost_categories: first((tap) => fetchCostCategoryDefinitions(row, { tap })),
+    cost_comparison: first((tap) => fetchCostAndUsageComparisons(row, { ...periods, tap })),
+    cost_comparison_drivers: first(async (tap) => {
+      const c = await fetchCostAndUsageComparisons(row, periods);
+      const top = [...c.rows].sort((a, b) => Math.abs(b.deltaUsd || 0) - Math.abs(a.deltaUsd || 0))[0];
+      return top ? fetchCostComparisonDrivers(row, { ...periods, service: top.service, tap }) : { rows: [], requests: 0 };
+    }),
+    savings_plans_inventory: first((tap) => fetchSavingsPlans(row, { tap })),
+    aws_budgets: first((tap) => fetchAwsBudgets(row, { tap })),
+    optimization_hub: first((tap) => fetchOptimizationHub(row, { tap })),
+    pricing: first(async (tap) => {
+      const resp = await pricingClient(row).send(new GetProductsCommand({
+        ServiceCode: 'AmazonEC2', FormatVersion: 'aws_v1', MaxResults: 1,
+        Filters: [
+          { Type: 'TERM_MATCH', Field: 'instanceType', Value: 't3.medium' },
+          { Type: 'TERM_MATCH', Field: 'regionCode', Value: 'us-east-1' },
+          { Type: 'TERM_MATCH', Field: 'operatingSystem', Value: 'Linux' },
+          { Type: 'TERM_MATCH', Field: 'tenancy', Value: 'Shared' },
+          { Type: 'TERM_MATCH', Field: 'preInstalledSw', Value: 'NA' },
+          { Type: 'TERM_MATCH', Field: 'capacitystatus', Value: 'Used' },
+        ],
+      }));
+      tap({ ...resp, PriceList: (resp?.PriceList || []).slice(0, 1).map((p) => { try { return typeof p === 'string' ? JSON.parse(p) : p; } catch { return p; } }) });
+      return { rows: resp?.PriceList || [], requests: 1 };
+    }),
+    co_idle: first((tap) => fetchCoIdleRecommendations(row, { tap })),
+    co_rds: first((tap) => fetchCoRdsRecommendations(row, { tap })),
+  };
+}
+
 // ── Test connection ──────────────────────────────────────────────────────────
 
 /** Validate a saved or candidate account. Never throws. */
@@ -1931,5 +2349,9 @@ module.exports = {
   computeOptimizerClient,
   fetchCoEnrollmentStatus, fetchCoEc2Recommendations, fetchCoEbsRecommendations,
   fetchCoLambdaRecommendations, fetchCoEcsRecommendations,
+  fetchCoIdleRecommendations, fetchCoRdsRecommendations,
+  fetchBucketTags, tagsFromList, pricingClient, savingsPlansClient, budgetsClient, costOptimizationHubClient,
+  fetchCostCategoryDefinitions, fetchCostAndUsageComparisons, fetchCostComparisonDrivers, fetchSavingsPlans,
+  fetchAwsBudgets, fetchOptimizationHub, finopsExtraProbeSteps, selectorValue,
   testConnection,
 };

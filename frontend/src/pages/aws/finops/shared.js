@@ -49,6 +49,9 @@ export const CAP_LABELS = {
   cost_tags: 'Tag spend', tag_keys: 'Tag keys', linked_accounts: 'Linked accounts', forecast: 'Forecast',
   sp_utilization: 'SP utilization', sp_coverage: 'SP coverage', ri_utilization: 'RI utilization', ri_coverage: 'RI coverage',
   anomalies: 'Anomaly detection', rightsizing: 'Rightsizing', sp_recommendation: 'SP purchase rec', cost_resources: 'Resource-level cost',
+  cost_categories: 'Cost categories', cost_comparison: 'Month comparison drivers', savings_plans_inventory: 'Savings Plans inventory',
+  aws_budgets: 'AWS Budgets', optimization_hub: 'Cost Optimization Hub', pricing: 'Price catalog', co_idle: 'Compute Optimizer idle',
+  co_rds: 'Compute Optimizer RDS', inventory_tags: 'Inventory tags', resource_estimate: 'Estimated resource cost',
 };
 
 export const selectCls = 'bg-surface-overlay border border-cohesity-border rounded-lg px-2.5 py-1.5 text-xs text-ink focus:border-brand/60 outline-none cursor-pointer';

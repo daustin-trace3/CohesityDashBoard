@@ -4,7 +4,7 @@ import { useToast } from '../../../components/ui/Toaster';
 import { Panel, Badge, LoadingPanel } from '../../../components/ui/primitives';
 import { SettingRow, SettingGroup, Toggle, TabSaveBar, InfoTip, inputCls, numberCls, selectCls } from '../../../components/settings/SettingRow';
 import { fmtWhen } from '../helpers';
-import { getConfig, putConfig, getCapabilities, refreshFinops, sendDigest, errMsg } from './finopsApi';
+import { getConfig, putConfig, getCapabilities, refreshFinops, sendDigest, getPricing, refreshPricing, errMsg } from './finopsApi';
 import { CAP_LABELS } from './shared';
 
 // One entry per numeric FinOps setting: key in /config, label, range and unit for the row.
@@ -18,6 +18,11 @@ const NUMBERS = {
   priceGp2ToGp3PerGb: { label: 'gp2 to gp3 saving (USD per GB-month)', min: 0, max: 10, tip: 'Used by the Optimizer heuristics.' },
   priceEbsGp2PerGb: { label: 'EBS gp2 (USD per GB-month)', min: 0, max: 10, tip: 'Used by the Optimizer heuristics.' },
   priceEbsGp3PerGb: { label: 'EBS gp3 (USD per GB-month)', min: 0, max: 10, tip: 'Used by the Optimizer heuristics.' },
+  priceRefreshDays: { label: 'Price catalog refresh (days)', min: 1, max: 90, int: true, tip: 'How often the public on-demand price list is fetched. Free of charge.' },
+  rightsizeCpuMaxPct: { label: 'Rightsizing CPU ceiling (%)', min: 1, max: 100, int: true, tip: 'ICC suggests a smaller size when the peak CPU of a running instance stayed under this. CPU only, no memory data.' },
+  rightsizeMinDays: { label: 'Rightsizing minimum days', min: 1, max: 30, int: true, tip: 'Days of CPU history an instance needs inside the last 14 days before ICC suggests a smaller size.' },
+  costCategoriesMax: { label: 'Cost categories to capture', min: 0, max: 20, int: true, tip: 'Cost category definitions to break spend out by. Each costs one Cost Explorer request a day. 0 turns it off.' },
+  estimateWindowDays: { label: 'Resource estimate window (days)', min: 7, max: 90, int: true, tip: 'Days of estimated resource cost kept up to date. Computed locally from inventory and billing usage types.' },
   priceNatGatewayMonth: { label: 'NAT gateway (USD per month)', min: 0, max: 1000, tip: 'Used by the Optimizer heuristics.' },
 };
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -31,6 +36,7 @@ function toDraft(c) {
     finopsDigestEnabled: !!c.finopsDigestEnabled,
     finopsDigestRecipients: c.finopsDigestRecipients || '',
     finopsDigestWeekday: String(c.finopsDigestWeekday ?? 1),
+    comparisonEnabled: c.comparisonEnabled == null ? true : !!c.comparisonEnabled,
   };
   Object.keys(NUMBERS).forEach((k) => { d[k] = c[k] == null ? '' : String(c[k]); });
   return d;
@@ -43,6 +49,48 @@ function numberError(k, v) {
   if (def.int && !Number.isInteger(n)) return 'Whole number only.';
   if (n < def.min || n > def.max) return `Between ${def.min} and ${def.max}.`;
   return null;
+}
+
+function PriceCatalogPanel() {
+  const { toast } = useToast();
+  const [info, setInfo] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => getPricing().then(setInfo).catch(() => setInfo({ rows: null, byService: [], refreshedAt: null })), []);
+  useEffect(() => { load(); }, [load]);
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      await refreshPricing();
+      toast({ type: 'success', title: 'Price refresh queued', message: 'The catalog is fetched on the next poll of the elected account.' });
+      setTimeout(load, 4000);
+    } catch (err) {
+      toast({ type: 'error', title: 'Could not queue the refresh', message: errMsg(err, '') });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Panel title="Price catalog" actions={(
+      <button onClick={refresh} disabled={busy}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
+        <RefreshCw size={12} className={busy ? 'animate-spin' : ''} /> {busy ? 'Queueing...' : 'Refresh'}
+      </button>
+    )}>
+      {info == null ? <LoadingPanel height={60} /> : (
+        <>
+          <p className="text-[11px] text-ink-muted mb-2">
+            {info.rows != null ? `${info.rows} price row(s)` : 'No price rows'}, refreshed {info.refreshedAt ? fmtWhen(info.refreshedAt) : 'never'}.
+          </p>
+          {(info.byService || []).length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {info.byService.map((b) => <span key={b.serviceCode} className="chip bg-surface-overlay text-ink border-cohesity-border">{b.serviceCode} <span className="text-ink-faint tnum">{b.n}</span></span>)}
+            </div>
+          )}
+          <p className="text-[11px] text-ink-faint">Public on-demand list prices from the AWS Price List API. Heuristic savings use these when present and the manual prices above otherwise.</p>
+        </>
+      )}
+    </Panel>
+  );
 }
 
 export default function FinopsSettings() {
@@ -97,6 +145,7 @@ export default function FinopsSettings() {
         finopsDigestEnabled: draft.finopsDigestEnabled,
         finopsDigestRecipients: draft.finopsDigestRecipients.trim(),
         finopsDigestWeekday: Number(draft.finopsDigestWeekday),
+        comparisonEnabled: !!draft.comparisonEnabled,
       };
       Object.keys(NUMBERS).forEach((k) => { body[k] = Number(draft[k]); });
       const data = await putConfig(body);
@@ -214,6 +263,13 @@ export default function FinopsSettings() {
         <SettingGroup title="Commitments">
           {['spUtilWarnPct', 'spExpiryWarnDays'].map(num)}
         </SettingGroup>
+        <SettingGroup title="Estimates and recommendations">
+          {['estimateWindowDays', 'rightsizeCpuMaxPct', 'rightsizeMinDays', 'costCategoriesMax', 'priceRefreshDays'].map(num)}
+          <SettingRow label="Monthly cost comparison" htmlFor="fo-compare" dirty={draft.comparisonEnabled !== base.comparisonEnabled}
+            tip="Monthly cost comparison with drivers, two Cost Explorer calls a month.">
+            <Toggle id="fo-compare" checked={draft.comparisonEnabled} onChange={(v) => set('comparisonEnabled', v)} />
+          </SettingRow>
+        </SettingGroup>
         <SettingGroup title="Heuristic prices">
           {['priceGp2ToGp3PerGb', 'priceEbsGp2PerGb', 'priceEbsGp3PerGb', 'priceNatGatewayMonth'].map(num)}
         </SettingGroup>
@@ -245,6 +301,8 @@ export default function FinopsSettings() {
         </TabSaveBar>
       </Panel>
 
+      <PriceCatalogPanel />
+
       <Panel title="Data sources" actions={(
         <button onClick={recapture} disabled={recapturing}
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors disabled:opacity-50 cursor-pointer">
@@ -271,7 +329,10 @@ export default function FinopsSettings() {
                   <tbody>
                     {capRows.map((c) => (
                       <tr key={c.capability} className="border-b border-cohesity-border/50 align-top">
-                        <td className="py-2 pr-3 text-ink">{CAP_LABELS[c.capability] || c.capability}</td>
+                        <td className="py-2 pr-3 text-ink">
+                          {CAP_LABELS[c.capability] || c.capability}
+                          {c.free && <span className="chip bg-surface-overlay text-ink-faint border-cohesity-border ml-2 text-[10px]">free</span>}
+                        </td>
                         <td className="py-2 pr-3">
                           <Badge tone={STATUS_TONE[c.status] || 'neutral'}>{String(c.status || 'unknown').replace('_', ' ')}</Badge>
                           {c.error && c.status !== 'ok' && <p className="text-[10px] text-ink-faint mt-0.5 max-w-[320px] break-words">{String(c.error).slice(0, 300)}</p>}

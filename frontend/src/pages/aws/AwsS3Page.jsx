@@ -6,7 +6,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated, Spinner } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
 import TrendChart from '../../components/TrendChart';
-import { BRAND, fmtBytes, fmtNum, fmtWhen } from './helpers';
+import { BRAND, fmtBytes, fmtNum, fmtWhen, fmtUsd } from './helpers';
 
 const isPublic = (b) => !b.publicAccessBlocked;
 
@@ -85,6 +85,7 @@ export default function AwsS3Page() {
   const ctl = useTableControls(list, {
     searchKeys: ['name', 'region', 'account'],
     defaultSortKey: 'name', defaultSortDir: 'asc',
+    sortValues: { estMonthlyUsd: (r) => (r.estMonthlyUsd == null ? -Infinity : r.estMonthlyUsd) },
     paginate: true,
   });
   const publicCount = list.filter(isPublic).length;
@@ -122,6 +123,7 @@ export default function AwsS3Page() {
                 <SortTh k="lifecycleRules" label="Lifecycle Rules" ctl={ctl} align="right" />
                 <SortTh k="createdAt" label="Created" ctl={ctl} />
                 <SortTh k="account" label="Account" ctl={ctl} />
+                <SortTh k="estMonthlyUsd" label="Est. cost / mo" ctl={ctl} align="right" />
                 <th className="py-2 pr-3 text-right">Growth</th>
               </tr></thead>
               <tbody>
@@ -138,6 +140,7 @@ export default function AwsS3Page() {
                     <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtNum(b.lifecycleRules)}</td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(b.createdAt)}</td>
                     <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{b.account}</td>
+                    <td className="py-2 pr-3 text-right tnum text-ink-muted">{b.estMonthlyUsd != null ? fmtUsd(b.estMonthlyUsd) : '-'}</td>
                     <td className="py-2 pr-3 text-right">
                       <button onClick={() => setHistoryBucket(b)} title={`${b.name} growth history`} aria-label={`${b.name} growth history`}
                         className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-brand hover:border-brand/40 transition-colors cursor-pointer">
@@ -150,6 +153,7 @@ export default function AwsS3Page() {
             </table>
           </div>
         )}
+        {list.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Est. cost / mo is estimated: billed usage types split across inventory by weight, 30 day average.</p>}
         <TablePager ctl={ctl} />
       </div>
 

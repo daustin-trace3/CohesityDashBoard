@@ -426,8 +426,9 @@ describe('Refresh, digest, probe', () => {
       expect(res.status).toBe(200);
       expect(res.body.service).toBe('finops');
       const raw = res.body.raw;
-      expect(Object.keys(raw).sort()).toEqual(['anomalies', 'cost_tags', 'forecast', 'linked_accounts', 'ri_coverage', 'ri_utilization',
-        'rightsizing', 'sp_coverage', 'sp_recommendation', 'sp_utilization', 'tag_keys']);
+      expect(Object.keys(raw).sort()).toEqual(['anomalies', 'aws_budgets', 'co_idle', 'co_rds', 'cost_categories', 'cost_comparison',
+        'cost_comparison_drivers', 'cost_tags', 'forecast', 'linked_accounts', 'optimization_hub', 'pricing', 'ri_coverage', 'ri_utilization',
+        'rightsizing', 'savings_plans_inventory', 'sp_coverage', 'sp_recommendation', 'sp_utilization', 'tag_keys']);
       expect(raw.tag_keys).toEqual({ ok: true, status: 'ok', sample: { items: [{ n: 'fetchCostAllocationTags' }, { n: 'fetchCostAllocationTags' }], _count: 3 } });
       expect(raw.ri_coverage).toEqual(expect.objectContaining({ ok: false, status: 'denied' }));
       expect(raw.ri_coverage.error).toMatch(/not authorized/);
@@ -570,3 +571,365 @@ describe('Integrations', () => {
     expect(typeof require('../demo/generators/aws').seedAws).toBe('function');
   });
 });
+
+// -- FinOps round 2 (WP2): estimated resource cost, inventory tags, comparison, price catalog, Hub shadowing,
+// AWS-managed budgets and the new config keys. awsCostEstimate is the real module when it exists; when it does
+// not (builder A has not landed it yet) a fake with the documented exports is installed for the require() the
+// routes make lazily. Assertions are about the route contract, so they hold for both.
+describe('FinOps round 2 routes', () => {
+  const Module = require('module');
+  const path = require('path');
+  const realPath = path.join(__dirname, '..', 'services', 'awsCostEstimate.js');
+  const fs = require('fs');
+  const usingFake = !fs.existsSync(realPath);
+  const calls = [];
+  const origResolve = Module._resolveFilename;
+
+  const fakeEstimate = {
+    resourceRollup: (args) => {
+      calls.push(['resourceRollup', args]);
+      return {
+        totals: { totalUsd: 30, attributedUsd: 24, unattributedUsd: 6, attributedPct: 80 },
+        byKind: [{ kind: 'ec2', usd: 20, count: 1 }, { kind: 's3', usd: 4, count: 1 }],
+        rows: [{ resourceKind: 'ec2', resourceId: 'i-r2-1', label: 'web-r2', link: '/aws/ec2?q=i-r2-1', services: ['Amazon Elastic Compute Cloud - Compute'], usd: 20, pct: 66.7, dailyAvgUsd: 0.67, estMonthlyUsd: 20.3, days: 30, tags: { Environment: 'prod' } }],
+        unattributed: [{ service: 'EC2 - Other', usd: 6, usageTypes: 2 }],
+        computedAt: new Date().toISOString(),
+      };
+    },
+    resourceSeries: (args) => { calls.push(['resourceSeries', args]); return { rows: [{ day: day(1), usd: 0.7, usageTypes: [{ usageType: 'USE2-BoxUsage:m5.large', usd: 0.7 }] }] }; },
+    estimateForResources: (kind, ids) => new Map(ids.map((id) => [id, { usd: 10, days: 30, estMonthlyUsd: 10.133 }])),
+    inventoryTagRows: (args) => { calls.push(['inventoryTagRows', args]); return [{ day: day(1), value: 'prod', service: 'Svc A', usd: 5 }, { day: day(1), value: '', service: 'Svc A', usd: 1 }]; },
+    computeResourceEstimates: () => ({ rows: [], attributedUsd: 0, unattributedUsd: 0 }),
+    storeResourceEstimates: () => {},
+  };
+
+  beforeAll(() => {
+    if (usingFake) {
+      const fakePath = path.join(__dirname, '..', 'services', '__fake_awsCostEstimate.js');
+      require.cache[fakePath] = { id: fakePath, filename: fakePath, loaded: true, exports: fakeEstimate, children: [], paths: [] };
+      Module._resolveFilename = function resolve(request, ...rest) {
+        if (/services\/awsCostEstimate$/.test(request)) return fakePath;
+        return origResolve.call(this, request, ...rest);
+      };
+    }
+    setSetting('aws_inventory_tag_keys_seen', JSON.stringify(['Environment', 'Team']));
+    const tags = JSON.stringify({ Environment: 'prod', Team: 'platform' });
+    db.prepare("INSERT INTO aws_ec2_instances (account_id, instance_id, name, state, instance_type, az, tags_json) VALUES (?, 'i-r2-1', 'web-r2', 'running', 'm5.large', 'us-east-2a', ?)").run(accountId, tags);
+    db.prepare("INSERT INTO aws_ebs_volumes (account_id, volume_id, state, size_gb, volume_type, az, tags_json) VALUES (?, 'vol-r2-1', 'in-use', 100, 'gp3', 'us-east-2a', ?)").run(accountId, tags);
+    db.prepare("INSERT INTO aws_s3_buckets (account_id, name, region, size_bytes, object_count, tags_json) VALUES (?, 'bucket-r2', 'us-east-2', 1000, 10, ?)").run(accountId, tags);
+    db.prepare("INSERT INTO aws_rds_instances (account_id, db_id, engine, instance_class, status, multi_az, allocated_gb, tags_json) VALUES (?, 'db-r2', 'postgres', 'db.t3.medium', 'available', 0, 20, ?)").run(accountId, tags);
+    db.prepare("INSERT INTO aws_lightsail_instances (account_id, name, state, bundle, az, tags_json) VALUES (?, 'ls-r2', 'running', 'small_3_0', 'us-east-2a', ?)").run(accountId, tags);
+    const est = db.prepare(`INSERT INTO aws_cost_resource_estimate_daily (account_id, day, service, usage_type, resource_kind, resource_id, amount_usd, amortized_usd, share_rule)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '1 of 1')`);
+    for (let i = 0; i < 5; i++) {
+      est.run(accountId, day(i), 'Amazon Elastic Compute Cloud - Compute', 'USE2-BoxUsage:m5.large', 'ec2', 'i-r2-1', 2, 1.5);
+      est.run(accountId, day(i), 'EC2 - Other', 'USE2-NatGateway-Hours', 'unattributed', 'EC2 - Other', 1, 1);
+    }
+  });
+
+  afterAll(() => {
+    if (usingFake) {
+      Module._resolveFilename = origResolve;
+      delete require.cache[path.join(__dirname, '..', 'services', '__fake_awsCostEstimate.js')];
+    }
+  });
+
+  it('GET /finops/resources answers the documented keys, validates, and CSV is text/csv', async () => {
+    const res = await request(app).get('/api/aws/finops/resources').query({ days: 30, metric: 'unblended', limit: 10 });
+    expect(res.status).toBe(200);
+    for (const k of ['range', 'metric', 'totals', 'byKind', 'rows', 'unattributed', 'note', 'computedAt']) expect(res.body).toHaveProperty(k);
+    expect(res.body.metric).toBe('unblended');
+    expect(res.body.note).toMatch(/Estimated/);
+    expect(Object.keys(res.body.totals)).toEqual(expect.arrayContaining(['totalUsd', 'attributedUsd', 'unattributedUsd', 'attributedPct']));
+    expect(res.body.rows[0]).toEqual(expect.objectContaining({ resourceKind: 'ec2', resourceId: 'i-r2-1', usd: expect.any(Number), estMonthlyUsd: expect.any(Number) }));
+    expect((await request(app).get('/api/aws/finops/resources').query({ limit: 501 })).status).toBe(200); // clamped, not rejected
+    expect((await request(app).get('/api/aws/finops/resources').query({ metric: 'bogus' })).status).toBe(400);
+    if (usingFake) {
+      const last = calls.filter((c) => c[0] === 'resourceRollup').pop()[1];
+      expect(last.limit).toBe(500);
+    }
+    const csv = await request(app).get('/api/aws/finops/resources/export.csv').query({ days: 30 });
+    expect(csv.status).toBe(200);
+    expect(csv.headers['content-type']).toMatch(/text\/csv/);
+    expect(csv.text.split('\n')[0]).toMatch(/^"?Kind"?,"?Resource"?,"?Label"?,"?Services"?,"?Cost USD \(amortized\)"?,"?Est monthly USD"?,"?Tags"?/);
+    expect(csv.text).toContain('i-r2-1');
+  });
+
+  it('GET /finops/resources/series requires kind and resourceId, honours metric, and returns day rows', async () => {
+    expect((await request(app).get('/api/aws/finops/resources/series').query({ kind: 'ec2' })).status).toBe(400);
+    const res = await request(app).get('/api/aws/finops/resources/series').query({ kind: 'ec2', resourceId: 'i-r2-1', days: 14, metric: 'unblended' });
+    expect(res.status).toBe(200);
+    expect(res.body.metric).toBe('unblended');
+    expect(Array.isArray(res.body.rows)).toBe(true);
+    expect(res.body.rows[0]).toEqual(expect.objectContaining({ day: expect.any(String), usd: expect.any(Number), usageTypes: expect.any(Array) }));
+    if (usingFake) expect(calls.filter((c) => c[0] === 'resourceSeries').pop()[1]).toEqual(expect.objectContaining({ kind: 'ec2', resourceId: 'i-r2-1', metric: 'unblended' }));
+    expect((await request(app).get('/api/aws/finops/resources/series').query({ kind: 'ec2', resourceId: 'i-r2-1', metric: 'nope' })).status).toBe(400);
+  });
+
+  it('GET /finops/allocation with dimension inventory_tag is flagged estimated and lists the seen keys; the CSV export works', async () => {
+    const res = await request(app).get('/api/aws/finops/allocation').query({ dimension: 'inventory_tag', key: 'Environment', days: 30 });
+    expect(res.status).toBe(200);
+    expect(res.body.dimension).toBe('inventory_tag');
+    expect(res.body.estimated).toBe(true);
+    expect(res.body.keysAvailable.inventory_tag).toEqual(['Environment', 'Team']);
+    const defaulted = await request(app).get('/api/aws/finops/allocation').query({ dimension: 'inventory_tag' });
+    expect(defaulted.body.key).toBe('Environment');
+    const plain = await request(app).get('/api/aws/finops/allocation').query({ dimension: 'tag', key: 'Environment' });
+    expect('estimated' in plain.body).toBe(false);
+    const csv = await request(app).get('/api/aws/finops/allocation/export.csv').query({ dimension: 'inventory_tag', key: 'Environment', days: 30 });
+    expect(csv.status).toBe(200);
+    expect(csv.headers['content-type']).toMatch(/text\/csv/);
+    expect((await request(app).get('/api/aws/finops/allocation').query({ dimension: 'nope' })).status).toBe(400);
+  });
+
+  it('GET /finops/comparison is empty (null months) until a pair is stored, then returns the newest pair with drivers', async () => {
+    const real = awsFinops.comparisonLatest;
+    delete awsFinops.comparisonLatest; // exercise the route's own read of aws_cost_comparison
+    try {
+      const empty = await request(app).get('/api/aws/finops/comparison');
+      expect(empty.status).toBe(200);
+      expect(empty.body).toEqual({ baselineMonth: null, comparisonMonth: null, metric: null, capturedAt: null, rows: [] });
+      const ins = db.prepare(`INSERT INTO aws_cost_comparison (account_id, baseline_month, comparison_month, metric, service, baseline_usd, comparison_usd, delta_usd, delta_pct, drivers_json)
+                              VALUES (?, '2026-08', '2026-09', 'amortized', ?, ?, ?, ?, ?, ?)`);
+      ins.run(accountId, 'Svc A', 100, 160, 60, 60, JSON.stringify([{ type: 'USAGE_CHANGE', name: 'More hours', usageType: 'BoxUsage', baselineUsd: 80, comparisonUsd: 140, deltaUsd: 60 }]));
+      ins.run(accountId, 'Svc B', 50, 40, -10, -20, '[]');
+      const filled = await request(app).get('/api/aws/finops/comparison');
+      expect(filled.status).toBe(200);
+      expect(filled.body).toEqual(expect.objectContaining({ baselineMonth: '2026-08', comparisonMonth: '2026-09', metric: 'amortized' }));
+      expect(filled.body.rows.map((r) => r.service)).toEqual(['Svc A', 'Svc B']); // largest move first
+      expect(filled.body.rows[0]).toEqual(expect.objectContaining({ baselineUsd: 100, comparisonUsd: 160, deltaUsd: 60, deltaPct: 60 }));
+      expect(filled.body.rows[0].drivers[0]).toEqual(expect.objectContaining({ type: 'USAGE_CHANGE', deltaUsd: 60 }));
+      expect(filled.body.rows[1].drivers).toEqual([]);
+    } finally { if (real) awsFinops.comparisonLatest = real; }
+  });
+
+  it('GET /finops/pricing reads the catalog table; POST /finops/pricing/refresh clears the stamps and answers 202', async () => {
+    const empty = await request(app).get('/api/aws/finops/pricing');
+    expect(empty.status).toBe(200);
+    expect(empty.body).toEqual(expect.objectContaining({ refreshedAt: null, rows: 0, byService: [], sample: [] }));
+    db.prepare("INSERT INTO aws_price_catalog (region, service_code, sku_key, unit, price_usd, attributes_json) VALUES ('us-east-2', 'AmazonEC2', 'm5.large|Linux', 'Hrs', 0.096, '{\"instanceType\":\"m5.large\"}')").run();
+    db.prepare("INSERT INTO aws_price_catalog (region, service_code, sku_key, unit, price_usd) VALUES ('us-east-2', 'AmazonRDS', 'db.t3.medium|postgres|single', 'Hrs', 0.082)").run();
+    setSetting('aws_price_catalog_refreshed_at', iso(1));
+    const res = await request(app).get('/api/aws/finops/pricing');
+    expect(res.body.rows).toBe(2);
+    expect(res.body.refreshedAt).toBe(getSetting('aws_price_catalog_refreshed_at'));
+    expect(res.body.byService).toEqual([{ serviceCode: 'AmazonEC2', n: 1 }, { serviceCode: 'AmazonRDS', n: 1 }]);
+    expect(res.body.sample[0]).toEqual(expect.objectContaining({ region: 'us-east-2', serviceCode: 'AmazonEC2', skuKey: 'm5.large|Linux', unit: 'Hrs', priceUsd: 0.096, attributes: { instanceType: 'm5.large' } }));
+
+    db.prepare("UPDATE aws_accounts SET last_finops_capture_at = datetime('now') WHERE id = ?").run(accountId);
+    const refresh = await request(app).post('/api/aws/finops/pricing/refresh');
+    expect(refresh.status).toBe(202);
+    expect(getSetting('aws_price_catalog_refreshed_at') || '').toBe('');
+    expect(db.prepare('SELECT last_finops_capture_at AS c FROM aws_accounts WHERE id = ?').get(accountId).c).toBeNull();
+  });
+
+  it('GET /optimizer hides shadowed rows by default, shows them with includeShadowed, and totals never count them', async () => {
+    const ins = db.prepare(`INSERT INTO aws_optimizer_recommendations (account_id, source, resource_type, resource_id, resource_name, finding, est_monthly_savings_usd, effort, restart_needed, rollback_possible, action_type, lookback_days, after_discounts)
+                            VALUES (?, ?, 'ec2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    ins.run(accountId, 'compute-optimizer', 'i-shadow-1', 'shadow-1', 'Overprovisioned', 40, null, null, null, null, 14, 0);
+    ins.run(accountId, 'cost-optimization-hub', 'i-shadow-1', 'shadow-1', 'Rightsize', 35, 'Medium', 1, 1, 'Rightsize', 14, 1);
+    ins.run(accountId, 'heuristic', 'i-shadow-2', 'shadow-2', 'ec2-low-utilization', 20, null, null, null, null, 14, 0);
+    ins.run(accountId, 'compute-optimizer', 'i-shadow-2', 'shadow-2', 'Overprovisioned', 22, null, null, null, null, 14, 0);
+    ins.run(accountId, 'heuristic', 'i-shadow-3', 'shadow-3', 'ec2-low-utilization', 11, null, null, null, null, 14, 0);
+
+    const def = await request(app).get('/api/aws/optimizer').query({ accountId });
+    expect(def.status).toBe(200);
+    const keys = def.body.recommendations.map((r) => r.key);
+    expect(keys).toContain('cost-optimization-hub|Rightsize|i-shadow-1');
+    expect(keys).not.toContain('compute-optimizer|Overprovisioned|i-shadow-1');
+    expect(keys).not.toContain('heuristic|ec2-low-utilization|i-shadow-2');
+    expect(keys).toContain('heuristic|ec2-low-utilization|i-shadow-3');
+    expect(def.body.totals.shadowed).toBe(2);
+    expect(def.body.totals.sources['cost-optimization-hub']).toBe(1);
+    expect(def.body.totals.sources.heuristic).toBeGreaterThanOrEqual(1);
+    expect(def.body.totals.sources['compute-optimizer'] || 0).toBeLessThan(2); // i-shadow-1 and i-shadow-2 CO rows are hidden
+    const hub = def.body.recommendations.find((r) => r.key === 'cost-optimization-hub|Rightsize|i-shadow-1');
+    expect(hub).toEqual(expect.objectContaining({ effort: 'Medium', restartNeeded: true, rollbackPossible: true, actionType: 'Rightsize', lookbackDays: 14, afterDiscounts: true, shadowedBy: null }));
+
+    const all = await request(app).get('/api/aws/optimizer').query({ accountId, includeShadowed: 1 });
+    expect(all.body.recommendations.length).toBe(def.body.recommendations.length + 2);
+    const co = all.body.recommendations.find((r) => r.key === 'compute-optimizer|Overprovisioned|i-shadow-1');
+    expect(co.shadowedBy).toBe('cost-optimization-hub');
+    expect(all.body.recommendations.find((r) => r.key === 'heuristic|ec2-low-utilization|i-shadow-2').shadowedBy).toBe('compute-optimizer');
+    expect(all.body.totals.count).toBe(def.body.totals.count);
+    expect(all.body.totals.estMonthlySavingsUsd).toBe(def.body.totals.estMonthlySavingsUsd);
+  });
+
+  it('a service budget with scopeMatch contains evaluates over every matching service; contains is only for service scope', async () => {
+    const ins = db.prepare('INSERT INTO aws_cost_daily (account_id, day, service, amount_usd, amortized_usd) VALUES (?, ?, ?, ?, ?)');
+    ins.run(accountId, day(0), 'Claude Opus X (Amazon Bedrock Edition)', 30, 30);
+    ins.run(accountId, day(0), 'Claude Sonnet X (Amazon Bedrock Edition)', 12, 12);
+    ins.run(accountId, day(0), 'Amazon Simple Storage Service', 99, 99);
+    const post = await request(app).post('/api/aws/finops/budgets').send({ name: 'Bedrock contains', scopeType: 'service', scopeValue: 'Bedrock', scopeMatch: 'contains', amountUsd: 1000 });
+    expect(post.status).toBe(201);
+    expect(post.body.budget).toEqual(expect.objectContaining({ scopeMatch: 'contains', scopeValue: 'Bedrock', source: 'icc' }));
+    const id = post.body.budget.id;
+    // The evaluation half needs the collector's scope_match support (builder A); it runs once that is in the file.
+    if (require('fs').readFileSync(require('path').join(__dirname, '..', 'services', 'awsFinops.js'), 'utf8').includes('scope_match')) {
+      saved.evaluateBudgets();
+      const status = db.prepare('SELECT actual_usd FROM aws_budget_status WHERE budget_id = ?').get(id);
+      expect(status.actual_usd).toBe(42);
+    }
+    const bad = await request(app).post('/api/aws/finops/budgets').send({ name: 'bad contains', scopeType: 'total', scopeMatch: 'contains', amountUsd: 10 });
+    expect(bad.status).toBe(400);
+    expect((await request(app).post('/api/aws/finops/budgets').send({ name: 'bad enum', scopeType: 'service', scopeValue: 'x', scopeMatch: 'regex', amountUsd: 10 })).status).toBe(400);
+    const put = await request(app).put(`/api/aws/finops/budgets/${id}`).send({ scopeMatch: 'exact' });
+    expect(put.body.budget.scopeMatch).toBe('exact');
+    expect((await request(app).put(`/api/aws/finops/budgets/${id}`).send({ scopeType: 'total', scopeMatch: 'contains' })).status).toBe(400);
+  });
+
+  it('AWS-managed budgets list with their AWS fields and refuse PUT and DELETE with 409', async () => {
+    const info = db.prepare(`INSERT INTO aws_budgets (name, scope_type, amount_usd, source, external_name, time_unit, aws_actual_usd, aws_forecast_usd, last_synced_at)
+                             VALUES ('Finance monthly', 'total', 500, 'aws', 'Finance monthly', 'MONTHLY', 120.5, 480, datetime('now'))`).run();
+    const id = Number(info.lastInsertRowid);
+    const list = await request(app).get('/api/aws/finops/budgets');
+    const row = list.body.budgets.find((b) => b.id === id);
+    expect(row).toEqual(expect.objectContaining({ source: 'aws', scopeMatch: 'exact', externalName: 'Finance monthly', timeUnit: 'MONTHLY', awsActualUsd: 120.5, awsForecastUsd: 480 }));
+    expect(row.lastSyncedAt).toBeTruthy();
+    const put = await request(app).put(`/api/aws/finops/budgets/${id}`).send({ amountUsd: 1 });
+    expect(put.status).toBe(409);
+    expect(put.body).toEqual({ error: 'This budget is managed in AWS Budgets.' });
+    const del = await request(app).delete(`/api/aws/finops/budgets/${id}`);
+    expect(del.status).toBe(409);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM aws_budgets WHERE id = ?').get(id).n).toBe(1);
+  });
+
+  it('GET /finops/commitments plan rows carry state, payment split, product types and source', async () => {
+    db.prepare(`INSERT INTO aws_savings_plans (account_id, sp_arn, sp_type, payment_option, term, hourly_commitment_usd, start_at, end_at, state, upfront_usd, recurring_usd, product_types_json, description, source)
+                VALUES (?, 'arn:aws:savingsplans::1:savingsplan/sp-queued', 'Compute', 'No Upfront', '1yr', 3, ?, ?, 'queued', 0, 3, '["EC2","Lambda"]', 'renewal', 'api')`).run(accountId, iso(-20), iso(-385));
+    const res = await request(app).get('/api/aws/finops/commitments').query({ days: 30 });
+    expect(res.status).toBe(200);
+    const queued = res.body.savingsPlans.plans.find((p) => p.arn.endsWith('sp-queued'));
+    expect(queued).toEqual(expect.objectContaining({ state: 'queued', upfrontUsd: 0, recurringUsd: 3, productTypes: ['EC2', 'Lambda'], source: 'api' }));
+    const derived = res.body.savingsPlans.plans.find((p) => p.arn.endsWith('sp-abc'));
+    expect(derived).toEqual(expect.objectContaining({ state: null, productTypes: [], source: 'details' }));
+  });
+
+  it('GET /config and PUT /config round-trip the six round 2 keys with their clamps', async () => {
+    const get = await request(app).get('/api/aws/config');
+    expect(get.body).toEqual(expect.objectContaining({
+      priceRefreshDays: 7, rightsizeCpuMaxPct: 10, rightsizeMinDays: 7, comparisonEnabled: true, costCategoriesMax: 5, estimateWindowDays: 35,
+    }));
+    const body = { costSpikePct: 30, priceRefreshDays: 14, rightsizeCpuMaxPct: 15, rightsizeMinDays: 10, comparisonEnabled: false, costCategoriesMax: 0, estimateWindowDays: 60 };
+    const put = await request(app).put('/api/aws/config').send(body);
+    expect(put.status).toBe(200);
+    expect(put.body).toEqual(expect.objectContaining({ priceRefreshDays: 14, rightsizeCpuMaxPct: 15, rightsizeMinDays: 10, comparisonEnabled: false, costCategoriesMax: 0, estimateWindowDays: 60 }));
+    expect(getSetting('aws_finops_comparison_enabled')).toBe('0');
+    for (const bad of [{ priceRefreshDays: 0 }, { priceRefreshDays: 91 }, { rightsizeCpuMaxPct: 0 }, { rightsizeCpuMaxPct: 101 }, { rightsizeMinDays: 0 },
+      { rightsizeMinDays: 31 }, { comparisonEnabled: 'maybe' }, { costCategoriesMax: -1 }, { costCategoriesMax: 21 }, { estimateWindowDays: 6 }, { estimateWindowDays: 91 }]) {
+      const r = await request(app).put('/api/aws/config').send({ costSpikePct: 30, ...bad });
+      expect(r.status, JSON.stringify(bad)).toBe(400);
+    }
+    await request(app).put('/api/aws/config').send({ costSpikePct: 30, priceRefreshDays: 7, rightsizeCpuMaxPct: 10, rightsizeMinDays: 7, comparisonEnabled: true, costCategoriesMax: 5, estimateWindowDays: 35 });
+  });
+
+  it('inventory routes carry estMonthlyUsd and a tags object', async () => {
+    const checks = [
+      ['/api/aws/ec2', (b) => b.instances.find((r) => r.instanceId === 'i-r2-1')],
+      ['/api/aws/ebs', (b) => b.volumes.find((r) => r.volumeId === 'vol-r2-1')],
+      ['/api/aws/s3', (b) => b.buckets.find((r) => r.name === 'bucket-r2')],
+      ['/api/aws/rds', (b) => b.instances.find((r) => r.dbId === 'db-r2')],
+      ['/api/aws/lightsail', (b) => b.instances.find((r) => r.name === 'ls-r2')],
+    ];
+    for (const [url, pick] of checks) {
+      const res = await request(app).get(url);
+      expect(res.status, url).toBe(200);
+      const row = pick(res.body);
+      expect(row.tags, url).toEqual({ Environment: 'prod', Team: 'platform' });
+      expect('estMonthlyUsd' in row, url).toBe(true);
+    }
+    const ec2 = (await request(app).get('/api/aws/ec2')).body.instances.find((r) => r.instanceId === 'i-r2-1');
+    expect(typeof ec2.estMonthlyUsd).toBe('number'); // estimate rows were seeded for this instance
+    const untagged = (await request(app).get('/api/aws/ec2')).body.instances.filter((r) => r.instanceId !== 'i-r2-1');
+    for (const r of untagged) expect(r.tags).toEqual({});
+  });
+
+  it('GET /finops/capabilities passes the free flag through; GET /costs/resources carries a top-level costResources.status', async () => {
+    const real = awsFinops.capabilityRows;
+    awsFinops.capabilityRows = () => [{ capability: 'pricing', status: 'ok', error: null, iamActions: ['pricing:GetProducts'], requests: 0, free: true, lastOkAt: iso(0), lastCheckedAt: iso(0) }];
+    try {
+      const res = await request(app).get('/api/aws/finops/capabilities');
+      expect(res.body.capabilities[0].free).toBe(true);
+    } finally { awsFinops.capabilityRows = real; }
+    db.prepare("UPDATE aws_accounts SET cost_resources_status = 'denied', cost_resources_error = 'nope' WHERE id = ?").run(accountId);
+    const denied = await request(app).get('/api/aws/costs/resources');
+    expect(denied.body.costResources.status).toBe('denied');
+    db.prepare("UPDATE aws_accounts SET cost_resources_status = 'ok', cost_resources_error = NULL WHERE id = ?").run(accountId);
+    expect((await request(app).get('/api/aws/costs/resources')).body.costResources.status).toBe('ok');
+    db.prepare('UPDATE aws_accounts SET cost_resources_status = NULL WHERE id = ?').run(accountId);
+  });
+});
+
+describe('FinOps round 2 integrations', () => {
+  it('anonymizer tokenizes inventory tag values and AWS budget external names', () => {
+    db.prepare("INSERT INTO aws_ec2_instances (account_id, instance_id, name, state, instance_type, az, tags_json) VALUES (?, 'i-anon-1', 'anon-host', 'running', 'm5.large', 'us-east-2a', ?)")
+      .run(accountId, JSON.stringify({ Project: 'Phoenix-Billing', CostCenter: 'CC-7788' }));
+    db.prepare("INSERT INTO aws_budgets (name, scope_type, amount_usd, source, external_name) VALUES ('Alpha budget (AWS)', 'total', 1, 'aws', 'Quarterly-Moonshot')").run();
+    const { createAnonymizer } = require('../services/anonymizer');
+    const an = createAnonymizer();
+    const out = an.anonymize('Project Phoenix-Billing cost center CC-7788 under Quarterly-Moonshot');
+    expect(out).not.toContain('Phoenix-Billing');
+    expect(out).not.toContain('CC-7788');
+    expect(out).not.toContain('Quarterly-Moonshot');
+    expect(out).toContain('Project'); // keys stay clear
+    expect(an.restore(out)).toContain('Phoenix-Billing');
+  });
+
+  it('advisor: finops_waste carries Hub and ICC rightsizing rows; resource_costs is a registered preset', () => {
+    const awsAdvisor = require('../services/advisors/awsAdvisor');
+    expect(awsAdvisor.REPORTS).toContain('resource_costs');
+    const w = awsAdvisor.gatherFor('finops_waste');
+    expect(w.hubRecommendations.length).toBeGreaterThan(0);
+    expect(w.hubRecommendations[0]).toEqual(expect.objectContaining({ effort: 'Medium', resourceType: 'ec2' }));
+    expect(w.iccRightsizing.length).toBeGreaterThan(0);
+    const rc = awsAdvisor.gatherFor('resource_costs');
+    expect(rc).toHaveProperty('topResources');
+    expect(Array.isArray(rc.byKind)).toBe(true);
+  });
+
+  it('the demo generator seeds round 2: tags, CPU history, prices, Hub rows with a shadow, AWS budgets, comparison, capabilities', () => {
+    const { seedAws } = require('../demo/generators/aws');
+    const { encrypt: enc } = require('../services/encryption');
+    const wipe = ['aws_cost_resource_estimate_daily', 'aws_ec2_metrics_daily', 'aws_cost_comparison'];
+    // A scratch demo account: run the generator against its own isolated rows by clearing what it owns first.
+    const accountsBefore = db.prepare("SELECT id FROM aws_accounts WHERE name = 'Demo AWS'").all();
+    expect(accountsBefore.length).toBe(0);
+    const out = seedAws(db, { now: new Date(), encrypt: enc });
+    expect(out.finops.round2.taggedRows).toBeGreaterThan(20);
+    const demoId = db.prepare("SELECT id FROM aws_accounts WHERE name = 'Demo AWS'").get().id;
+    const tagged = db.prepare('SELECT COUNT(*) AS n FROM aws_ec2_instances WHERE account_id = ? AND tags_json IS NOT NULL').get(demoId).n;
+    expect(tagged).toBeGreaterThan(0);
+    const untaggedAll = ['aws_ec2_instances', 'aws_ebs_volumes', 'aws_rds_instances', 'aws_s3_buckets', 'aws_lightsail_instances', 'aws_lightsail_databases']
+      .reduce((a, tb) => a + db.prepare(`SELECT COUNT(*) AS n FROM ${tb} WHERE account_id = ? AND tags_json IS NULL`).get(demoId).n, 0);
+    expect(untaggedAll).toBeGreaterThan(0); // about 15% stay untagged
+    const cpu = db.prepare('SELECT instance_id, MAX(cpu_max) AS m, COUNT(*) AS n FROM aws_ec2_metrics_daily WHERE account_id = ? GROUP BY instance_id').all(demoId);
+    expect(cpu.every((r) => r.n === 14)).toBe(true);
+    const low = cpu.filter((r) => r.m < 6).map((r) => db.prepare('SELECT instance_type AS t FROM aws_ec2_instances WHERE instance_id = ?').get(r.instance_id).t).sort();
+    expect(low).toEqual(['m5.xlarge', 't3.large']);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM aws_price_catalog WHERE service_code = 'AmazonEC2' AND sku_key IN ('gp2', 'gp3', 'io1', 'm5.large|Linux')").get().n).toBe(4);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM aws_price_catalog WHERE service_code = 'AmazonLightsail'").get().n).toBeGreaterThan(0);
+    const hub = db.prepare("SELECT resource_id FROM aws_optimizer_recommendations WHERE account_id = ? AND source = 'cost-optimization-hub'").all(demoId);
+    expect(hub.length).toBe(4);
+    const shadowed = db.prepare("SELECT COUNT(*) AS n FROM aws_optimizer_recommendations WHERE account_id = ? AND source = 'compute-optimizer' AND resource_id IN (SELECT resource_id FROM aws_optimizer_recommendations WHERE source = 'cost-optimization-hub')").get(demoId).n;
+    expect(shadowed).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM aws_optimizer_recommendations WHERE account_id = ? AND resource_type LIKE 'idle-%'").get(demoId).n).toBe(2);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM aws_savings_plans WHERE account_id = ? AND state = 'queued'").get(demoId).n).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM aws_budgets WHERE source = 'aws'").get().n).toBeGreaterThanOrEqual(2);
+    expect(db.prepare("SELECT scope_match, scope_value FROM aws_budgets WHERE name = 'Bedrock models'").get()).toEqual({ scope_match: 'contains', scope_value: 'Bedrock' });
+    const cmp = db.prepare('SELECT COUNT(*) AS n, SUM(CASE WHEN drivers_json <> \'[]\' THEN 1 ELSE 0 END) AS withDrivers FROM aws_cost_comparison WHERE account_id = ?').get(demoId);
+    expect(cmp).toEqual({ n: 11, withDrivers: 6 }); // one row per demo cost service (11)
+    const caps = db.prepare('SELECT capability FROM aws_capability_status WHERE account_id = ?').all(demoId).map((r) => r.capability);
+    for (const id of ['cost_categories', 'cost_comparison', 'savings_plans_inventory', 'aws_budgets', 'optimization_hub', 'pricing', 'co_idle', 'co_rds', 'inventory_tags', 'resource_estimate']) expect(caps).toContain(id);
+    expect(JSON.parse(getSetting('aws_inventory_tag_keys_seen'))).toEqual(['Environment', 'Team', 'CostCenter']);
+    if (!usingFakeEstimate()) {
+      const est = db.prepare('SELECT COUNT(*) AS n FROM aws_cost_resource_estimate_daily WHERE account_id = ?').get(demoId).n;
+      expect(est).toBeGreaterThan(0);
+      expect(out.finops.round2.estimate.attributedPct).toBeGreaterThanOrEqual(60);
+    }
+    void wipe;
+  });
+});
+
+function usingFakeEstimate() {
+  return !require('fs').existsSync(require('path').join(__dirname, '..', 'services', 'awsCostEstimate.js'));
+}

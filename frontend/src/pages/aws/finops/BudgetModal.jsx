@@ -19,6 +19,7 @@ export default function BudgetModal({ budget, scopes, onClose, onSaved }) {
     scopeType: budget?.scopeType || 'total',
     scopeKey: budget?.scopeKey || '',
     scopeValue: budget?.scopeValue || '',
+    scopeMatch: budget?.scopeMatch === 'contains' ? 'contains' : 'exact',
     amountUsd: budget?.amountUsd != null ? String(budget.amountUsd) : '',
     warnPct: String(budget?.warnPct ?? 80),
     critPct: String(budget?.critPct ?? 100),
@@ -34,7 +35,7 @@ export default function BudgetModal({ budget, scopes, onClose, onSaved }) {
   const accounts = scopes?.accounts || [];
   const tagValues = useMemo(() => (scopes?.tagValues || {})[form.scopeKey] || [], [scopes, form.scopeKey]);
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
-  const setType = (e) => setForm((f) => ({ ...f, scopeType: e.target.value, scopeKey: '', scopeValue: '' }));
+  const setType = (e) => setForm((f) => ({ ...f, scopeType: e.target.value, scopeKey: '', scopeValue: '', scopeMatch: 'exact' }));
 
   const amount = Number(form.amountUsd);
   const warn = Number(form.warnPct);
@@ -55,6 +56,7 @@ export default function BudgetModal({ budget, scopes, onClose, onSaved }) {
     };
     if (form.scopeType === 'account' || form.scopeType === 'tag') body.scopeKey = form.scopeKey.trim();
     if (form.scopeType === 'service' || form.scopeType === 'tag') body.scopeValue = form.scopeValue.trim();
+    if (form.scopeType === 'service') body.scopeMatch = form.scopeMatch === 'contains' ? 'contains' : 'exact';
     try {
       const res = editing ? await updateBudget(budget.id, body) : await createBudget(body);
       toast({ type: 'success', title: editing ? 'Budget updated' : 'Budget added' });
@@ -100,11 +102,24 @@ export default function BudgetModal({ budget, scopes, onClose, onSaved }) {
         {form.scopeType === 'service' && (
           <div className="sm:col-span-2">
             <label className={label} htmlFor="bm-svc">Service</label>
-            <select id="bm-svc" value={form.scopeValue} onChange={set('scopeValue')} className={`${field} cursor-pointer`}>
-              <option value="">Select a service</option>
-              {form.scopeValue && !services.includes(form.scopeValue) && <option value={form.scopeValue}>{form.scopeValue}</option>}
-              {services.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            {form.scopeMatch === 'contains' ? (
+              <input id="bm-svc" list="bm-svcs" value={form.scopeValue} onChange={set('scopeValue')} placeholder="Bedrock" className={field} spellCheck={false} />
+            ) : (
+              <select id="bm-svc" value={form.scopeValue} onChange={set('scopeValue')} className={`${field} cursor-pointer`}>
+                <option value="">Select a service</option>
+                {form.scopeValue && !services.includes(form.scopeValue) && <option value={form.scopeValue}>{form.scopeValue}</option>}
+                {services.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+            <datalist id="bm-svcs">{services.map((x) => <option key={x} value={x} />)}</datalist>
+            <label className="flex items-center gap-2 text-xs text-ink cursor-pointer mt-2">
+              <input type="checkbox" checked={form.scopeMatch === 'contains'}
+                onChange={(e) => setForm((f) => ({ ...f, scopeMatch: e.target.checked ? 'contains' : 'exact' }))} className="accent-brand" />
+              Match every service whose name contains this text
+            </label>
+            {form.scopeMatch === 'contains' && form.scopeValue && (
+              <p className="text-[11px] text-ink-faint mt-1">Services containing: {form.scopeValue}</p>
+            )}
           </div>
         )}
         {form.scopeType === 'tag' && (

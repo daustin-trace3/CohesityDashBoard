@@ -106,18 +106,31 @@ export default function FinopsCommitmentsPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead><tr className={thCls}>
-                  <th className="py-2 pr-3">Plan</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Term</th>
-                  <th className="py-2 pr-3">Payment</th><th className="py-2 pr-3 text-right">Commitment / h</th>
+                  <th className="py-2 pr-3">Plan</th><th className="py-2 pr-3">State</th><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Term</th>
+                  <th className="py-2 pr-3">Payment</th><th className="py-2 pr-3">Product types</th><th className="py-2 pr-3 text-right">Commitment / h</th>
                   <th className="py-2 pr-3">Region / family</th><th className="py-2 pr-3">Ends</th>
                   <th className="py-2 pr-3 text-right">Utilization</th><th className="py-2 pr-3 text-right">Net savings</th>
+                  <th className="py-2 pr-3">Source</th>
                 </tr></thead>
                 <tbody>
                   {plans.map((p) => (
                     <tr key={p.arn || p.arnTail} className="border-b border-cohesity-border/50">
                       <td className="py-2 pr-3 text-ink" title={p.arn}>{p.arnTail || p.arn}</td>
+                      <td className="py-2 pr-3 whitespace-nowrap">
+                        {p.state
+                          ? <Badge tone={String(p.state).toLowerCase() === 'active' ? 'ok' : String(p.state).toLowerCase() === 'queued' ? 'info' : 'neutral'}>
+                            {String(p.state).toLowerCase() === 'queued' ? 'Scheduled renewal' : String(p.state)}</Badge>
+                          : <span className="text-ink-faint">-</span>}
+                      </td>
                       <td className="py-2 pr-3 text-ink-muted">{p.type || '-'}</td>
                       <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{p.term || '-'}</td>
-                      <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{p.paymentOption || '-'}</td>
+                      <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">
+                        {p.paymentOption || '-'}
+                        {(p.upfrontUsd != null || p.recurringUsd != null) && (
+                          <span className="block text-[11px] text-ink-faint tnum">{p.upfrontUsd != null ? `${fmtUsd(p.upfrontUsd)} upfront` : ''}{p.upfrontUsd != null && p.recurringUsd != null ? ', ' : ''}{p.recurringUsd != null ? `${fmtUsd(p.recurringUsd)} recurring` : ''}</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px]">{Array.isArray(p.productTypes) && p.productTypes.length ? p.productTypes.join(', ') : '-'}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{p.hourlyCommitmentUsd != null ? `$${Number(p.hourlyCommitmentUsd).toFixed(3)}` : '-'}</td>
                       <td className="py-2 pr-3 text-ink-muted text-[11px]">{[p.region, p.instanceFamily].filter(Boolean).join(' / ') || '-'}</td>
                       <td className="py-2 pr-3 whitespace-nowrap">
@@ -130,6 +143,7 @@ export default function FinopsCommitmentsPage() {
                       </td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{p.utilizationPct != null ? pct1(p.utilizationPct) : '-'}</td>
                       <td className="py-2 pr-3 text-right tnum text-ink-muted">{fmtUsd(p.netSavingsUsd)}</td>
+                      <td className="py-2 pr-3 text-ink-muted text-[11px] whitespace-nowrap">{p.source === 'api' ? 'AWS API' : p.source ? 'derived' : '-'}</td>
                     </tr>
                   ))}
                 </tbody>

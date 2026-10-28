@@ -203,6 +203,209 @@ const VPCS = [
     ] },
 ];
 
+// -- FinOps round 2 (2026-10-27): inventory tags, CPU history, price catalog, estimated resource cost,
+// Hub / idle / RDS recommendations, plan state, AWS Budgets rows, month comparison and the new capabilities.
+// Runs after every inventory and usage row exists so the estimate module sees the whole estate.
+function seedFinopsRound2(db, accountId, ctx) {
+  const { utcDay, isoAgo, r2, upsertSetting } = ctx;
+  const rng = rngFor('aws-finops2');
+  const nowIso = new Date().toISOString();
+
+  db.prepare('DELETE FROM aws_ec2_metrics_daily WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_cost_comparison WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_cost_resource_estimate_daily WHERE account_id = ?').run(accountId);
+  db.prepare('DELETE FROM aws_price_catalog').run(); // global table, rewritten whole
+
+  // Inventory tags: Environment, Team, CostCenter; about 15% of rows stay untagged.
+  const ENVS = ['prod', 'dev', 'staging'];
+  const TEAMS = ['platform', 'data', 'payments', 'mobile'];
+  let taggedRows = 0;
+  for (const table of ['aws_ec2_instances', 'aws_ebs_volumes', 'aws_rds_instances', 'aws_s3_buckets', 'aws_lightsail_instances', 'aws_lightsail_databases']) {
+    const rows = db.prepare(`SELECT rowid AS rid FROM ${table} WHERE account_id = ? ORDER BY rowid`).all(accountId);
+    const upd = db.prepare(`UPDATE ${table} SET tags_json = ? WHERE rowid = ?`);
+    for (const row of rows) {
+      if (chance(rng, 0.15)) continue;
+      const tags = {
+        Environment: ENVS[randInt(rng, 0, ENVS.length - 1)],
+        Team: TEAMS[randInt(rng, 0, TEAMS.length - 1)],
+        CostCenter: `CC-${1010 + 10 * randInt(rng, 0, 3)}`,
+      };
+      upd.run(JSON.stringify(tags), row.rid);
+      taggedRows++;
+    }
+  }
+
+  // CPU history: 14 days for every running instance. jenkins-ci (t3.large) and app-01 (m5.xlarge) idle
+  // under 6% max CPU so the ICC rightsizing heuristic has something to say about them.
+  const LOW = { 'i-0aaa8888demo08': { avg: 2.4, max: 5.2 }, 'i-0aaa3333demo03': { avg: 3.1, max: 5.8 } };
+  const insertCpu = db.prepare(`
+    INSERT INTO aws_ec2_metrics_daily (account_id, instance_id, day, cpu_avg, cpu_max, samples) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  let cpuRows = 0;
+  for (const e of EC2_INSTANCES.filter((x) => x.state === 'running')) {
+    const low = LOW[e.instanceId];
+    for (let i = 13; i >= 0; i--) {
+      const avg = low ? randFloat(rng, low.avg * 0.8, low.avg * 1.1, 2) : randFloat(rng, e.cpuUtil * 0.8, e.cpuUtil * 1.2, 2);
+      const max = low ? Math.min(low.max, r2(avg + randFloat(rng, 0.8, 2.4, 2))) : Math.min(100, r2(avg + randFloat(rng, 10, 30, 2)));
+      insertCpu.run(accountId, e.instanceId, utcDay(i), r2(avg), r2(max), 144);
+      cpuRows++;
+    }
+  }
+  db.prepare("UPDATE aws_ec2_instances SET cpu_util = 2.4 WHERE account_id = ? AND instance_id = 'i-0aaa8888demo08'").run(accountId);
+  db.prepare("UPDATE aws_ec2_instances SET cpu_util = 3.1 WHERE account_id = ? AND instance_id = 'i-0aaa3333demo03'").run(accountId);
+
+  // Price catalog (us-east-2 on-demand, plausible figures) and Lightsail bundle prices.
+  const insertPrice = db.prepare(`
+    INSERT INTO aws_price_catalog (region, service_code, sku_key, unit, price_usd, attributes_json, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const prices = [
+    ...[['m5.large', 0.096], ['m5.xlarge', 0.192], ['r5.large', 0.126], ['t3.small', 0.0208], ['t3.medium', 0.0416], ['t3.large', 0.0832]]
+      .map(([t, p]) => ['us-east-2', 'AmazonEC2', `${t}|Linux`, 'Hrs', p, { instanceType: t, operatingSystem: 'Linux' }]),
+    ...[['gp2', 0.10], ['gp3', 0.08], ['io1', 0.125]]
+      .map(([t, p]) => ['us-east-2', 'AmazonEC2', t, 'GB-Mo', p, { volumeApiName: t }]),
+    ['us-east-2', 'AmazonRDS', 'db.r5.large|postgres|multi', 'Hrs', 0.50, { instanceType: 'db.r5.large', deploymentOption: 'Multi-AZ' }],
+    ['us-east-2', 'AmazonRDS', 'db.m5.large|mysql|single', 'Hrs', 0.171, { instanceType: 'db.m5.large', deploymentOption: 'Single-AZ' }],
+    ['us-east-2', 'AmazonRDS', 'db.t3.medium|aurora-postgresql|single', 'Hrs', 0.082, { instanceType: 'db.t3.medium', deploymentOption: 'Single-AZ' }],
+    ['us-east-2', 'AmazonRDS', 'db.t3.small|aurora-postgresql|single', 'Hrs', 0.041, { instanceType: 'db.t3.small', deploymentOption: 'Single-AZ' }],
+    ...[['nano_3_0', 5], ['micro_3_0', 7], ['small_3_0', 12], ['medium_3_0', 24], ['micro_2_0', 15], ['small_2_0', 30]]
+      .map(([t, p]) => ['us-east-2', 'AmazonLightsail', t, 'month', p, { bundleId: t }]),
+  ];
+  for (const [region, code, sku, unit, price, attrs] of prices) {
+    insertPrice.run(region, code, sku, unit, price, JSON.stringify(attrs), nowIso);
+  }
+  upsertSetting.run('aws_price_catalog_refreshed_at', nowIso);
+
+  // Estimated resource cost through the real module when it exists; the seed still runs without it.
+  let estimate = null;
+  try {
+    // eslint-disable-next-line global-require
+    const est = require('../../services/awsCostEstimate');
+    const window = { fromDay: utcDay(34), toDay: utcDay(0) };
+    const computed = est.computeResourceEstimates(accountId, { ...window, now: new Date() });
+    est.storeResourceEstimates(accountId, { ...window, rows: computed.rows });
+    const total = (computed.attributedUsd || 0) + (computed.unattributedUsd || 0);
+    estimate = { rows: computed.rows.length, attributedPct: total ? r2((computed.attributedUsd / total) * 100) : null };
+  } catch (err) {
+    console.log(`[seedDemo] aws resource estimates skipped (awsCostEstimate not available): ${err.message}`);
+  }
+
+  // Recommendations: Cost Optimization Hub (after discounts), Compute Optimizer idle and RDS, ICC rightsizing.
+  const insertRec = db.prepare(`
+    INSERT INTO aws_optimizer_recommendations (account_id, source, resource_type, resource_id, resource_name, region, finding,
+      current_config, recommended_config, reason, est_monthly_savings_usd, captured_at, effort, restart_needed, rollback_possible,
+      action_type, lookback_days, after_discounts, detail_json)
+    VALUES (?, ?, ?, ?, ?, 'us-east-2', ?, ?, ?, ?, ?, datetime('now', '-3 hours'), ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const hubReason = (d) => `Cost Optimization Hub, ${d} day lookback`;
+  const REC_ROWS = [
+    ['cost-optimization-hub', 'ec2', 'i-0aaa4444demo04', 'app-02', 'Rightsize', 'm5.xlarge', 'm5.large', hubReason(14), 38.20, 'Medium', 1, 1, 'Rightsize', 14, 1],
+    ['cost-optimization-hub', 'ebs', 'vol-0bbb9999demo09', 'vol-0bbb9999demo09', 'Upgrade', 'gp2, 100 GiB', 'gp3, 100 GiB', hubReason(14), 1.80, 'Low', 0, 1, 'Upgrade', 14, 1],
+    ['cost-optimization-hub', 'lambda', 'demo-report-generator', 'demo-report-generator', 'Rightsize', '512 MB', '256 MB', hubReason(14), 1.10, 'Low', 0, 1, 'Rightsize', 14, 1],
+    ['cost-optimization-hub', 'ec2', 'i-0aaa1111demo01', 'web-01', 'MigrateToGraviton', 'm5.large', 'm6g.large', hubReason(14), 6.40, 'High', 1, 0, 'MigrateToGraviton', 14, 1],
+    ['compute-optimizer', 'idle-ec2instance', 'i-0aaa9999demo09', 'legacy-reports-01', 'Idle', 't3.medium, max CPU 2%', 'stop or terminate', 'Idle: CPU and network near zero for 14 days', 28.40, null, null, null, 'Idle', 14, 1],
+    ['compute-optimizer', 'idle-loadbalancer', 'arn:aws:elasticloadbalancing:us-east-2:893373391538:loadbalancer/app/demo-legacy-alb/50dc6c495c0c9188', 'demo-legacy-alb', 'Idle', 'application load balancer, 0 requests', 'delete', 'Idle: no requests in the last 14 days', 17.50, null, null, null, 'Idle', 14, 1],
+    ['compute-optimizer', 'rds', 'demo-staging-postgres', 'demo-staging-postgres', 'Overprovisioned', 'db.t3.medium', 'db.t3.small', 'CPU and connections are well under capacity over the last 14 days', 12.30, null, null, null, 'Rightsize', 14, 0],
+    ['heuristic', 'ec2', 'i-0aaa3333demo03', 'app-01', 'ec2-low-utilization', 'm5.xlarge', 'm5.large', 'ICC rightsizing: max CPU 5.8% over 14 days (CPU only, no memory data)', 70.08, null, null, null, null, 14, 0],
+    ['heuristic', 'ec2', 'i-0aaa8888demo08', 'jenkins-ci', 'ec2-low-utilization', 't3.large', 't3.medium', 'ICC rightsizing: max CPU 5.2% over 14 days (CPU only, no memory data)', 30.37, null, null, null, null, 14, 0],
+  ];
+  for (const [source, type, id, name, finding, cur, rec, reason, usd, effort, restart, rollback, action, lookback, after] of REC_ROWS) {
+    insertRec.run(accountId, source, type, id, name, finding, cur, rec, reason, usd, effort, restart, rollback, action, lookback, after,
+      source === 'cost-optimization-hub' ? JSON.stringify({ recommendationId: `demo-${id}`, currentSummary: cur, recommendedSummary: rec }) : null);
+  }
+
+  // Savings plans: state, payment split, product types, one queued renewal of the plan ending in 21 days.
+  const updPlan = db.prepare(`
+    UPDATE aws_savings_plans SET state = ?, upfront_usd = ?, recurring_usd = ?, offering_id = ?, product_types_json = ?, description = ?, source = 'api'
+    WHERE account_id = ? AND sp_arn = ?
+  `);
+  updPlan.run('active', 0, 3.0, 'off-demo-compute-1yr-nu', JSON.stringify(['EC2', 'Fargate', 'Lambda']), 'Compute Savings Plan, 1 year, no upfront',
+    accountId, 'arn:aws:savingsplans::893373391538:savingsplan/sp-0demo1111compute');
+  updPlan.run('active', 7500, 0.85, 'off-demo-ec2-3yr-pu', JSON.stringify(['EC2']), 'EC2 Instance Savings Plan m5 us-east-2, 3 years, partial upfront',
+    accountId, 'arn:aws:savingsplans::893373391538:savingsplan/sp-0demo2222ec2');
+  db.prepare(`
+    INSERT INTO aws_savings_plans (account_id, sp_arn, sp_type, payment_option, term, hourly_commitment_usd, region, instance_family,
+      start_at, end_at, utilization_pct, net_savings_usd, captured_at, state, upfront_usd, recurring_usd, offering_id, product_types_json, description, source)
+    VALUES (?, 'arn:aws:savingsplans::893373391538:savingsplan/sp-0demo3333renew', 'ComputeSavingsPlans', 'No Upfront', '1yr', 3.2, NULL, NULL,
+      ?, ?, NULL, NULL, ?, 'queued', 0, 3.2, 'off-demo-compute-1yr-nu', ?, 'Scheduled renewal of the plan ending soon', 'api')
+  `).run(accountId, isoAgo(-21), isoAgo(-(365 + 21)), nowIso, JSON.stringify(['EC2', 'Fargate', 'Lambda']));
+
+  // AWS Budgets rows (read-only in ICC): one total with AWS figures, one external scope.
+  const insertAwsBudget = db.prepare(`
+    INSERT INTO aws_budgets (name, scope_type, scope_key, scope_value, amount_usd, warn_pct, crit_pct, forecast_alert, enabled, notes,
+      created_at, updated_at, source, scope_match, external_name, time_unit, aws_actual_usd, aws_forecast_usd, last_synced_at)
+    VALUES (?, ?, NULL, NULL, ?, 80, 100, 1, 1, 'Synced from AWS Budgets.', ?, ?, 'aws', 'exact', ?, ?, ?, ?, ?)
+  `);
+  const insertStatus = db.prepare(`
+    INSERT INTO aws_budget_status (budget_id, month, actual_usd, forecast_usd, forecast_source, pct_actual, pct_forecast, state, evaluated_at)
+    VALUES (?, ?, ?, ?, 'aws', ?, ?, ?, ?)
+  `);
+  const month = utcDay(0).slice(0, 7);
+  const awsBudgets = [
+    { name: 'Finance monthly cost budget', type: 'total', amount: 6000, actual: 3980, forecast: 5420, unit: 'MONTHLY' },
+    { name: 'Data platform quarterly', type: 'external', amount: 18000, actual: 9650, forecast: 15900, unit: 'QUARTERLY' },
+  ];
+  for (const b of awsBudgets) {
+    const id = insertAwsBudget.run(b.name, b.type, b.amount, isoAgo(120), isoAgo(120), b.name, b.unit, b.actual, b.forecast, nowIso).lastInsertRowid;
+    const pct = r2((b.actual / b.amount) * 100);
+    insertStatus.run(id, month, b.actual, b.forecast, pct, r2((b.forecast / b.amount) * 100), pct >= 100 ? 'crit' : (pct >= 80 ? 'warn' : 'ok'), nowIso);
+  }
+
+  // Month comparison: last complete month against the one before, twelve services, drivers on the top six.
+  const monthStart = (offset) => {
+    const d = new Date(Date.UTC(Number(utcDay(0).slice(0, 4)), Number(utcDay(0).slice(5, 7)) - 1 + offset, 1));
+    return d.toISOString().slice(0, 10);
+  };
+  const daysIn = (offset) => Math.round((Date.parse(monthStart(offset + 1)) - Date.parse(monthStart(offset))) / 86400000);
+  const baselineMonth = monthStart(-2).slice(0, 7);
+  const comparisonMonth = monthStart(-1).slice(0, 7);
+  const MOVERS = {
+    [BEDROCK_OPUS_SERVICE]: 1.55, 'EC2 - Other': 1.32, [S3_SERVICE]: 1.18, 'Amazon Relational Database Service': 0.82,
+    'AmazonCloudWatch': 1.4, [COMPUTE_SERVICE]: 1.08,
+  };
+  const comparison = COST_SERVICES.map((s) => {
+    const baseline = r2(s.base * daysIn(-2) * randFloat(rng, 0.92, 1.05, 3));
+    const factor = MOVERS[s.service] || randFloat(rng, 0.96, 1.05, 3);
+    const comp = r2(baseline * factor * (s.service === SP_SERVICE ? 1 : randFloat(rng, 0.98, 1.03, 3)));
+    return { service: s.service, baseline, comp, delta: r2(comp - baseline) };
+  });
+  const top6 = new Set([...comparison].sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 6).map((c) => c.service));
+  const driversFor = (c) => {
+    const kinds = [
+      { type: 'USAGE_CHANGE', name: 'Usage increase', usageType: c.service === COMPUTE_SERVICE ? 'USE2-BoxUsage:m5.xlarge' : (c.service === S3_SERVICE ? 'USE2-TimedStorage-ByteHrs' : 'USE2-Usage'), share: 0.6 },
+      { type: 'NEW_RESOURCE', name: 'New resource', usageType: c.service === BEDROCK_OPUS_SERVICE ? 'USE2-MP:USE2_CacheReadInputTokenCount-Units' : 'USE2-NewResource', share: 0.3 },
+      { type: 'PRICE_CHANGE', name: 'Price change', usageType: null, share: 0.1 },
+    ];
+    return kinds.slice(0, c.delta < 0 ? 2 : 3).map((k) => {
+      const delta = r2(c.delta * (c.delta < 0 && k.type === 'PRICE_CHANGE' ? 0.1 : k.share));
+      return { type: k.type, name: k.name, usageType: k.usageType, baselineUsd: r2(Math.max(0, c.baseline * k.share)), comparisonUsd: r2(Math.max(0, c.baseline * k.share + delta)), deltaUsd: delta };
+    });
+  };
+  const insertCmp = db.prepare(`
+    INSERT INTO aws_cost_comparison (account_id, baseline_month, comparison_month, metric, service, baseline_usd, comparison_usd,
+      delta_usd, delta_pct, drivers_json, captured_at)
+    VALUES (?, ?, ?, 'amortized', ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const c of comparison) {
+    insertCmp.run(accountId, baselineMonth, comparisonMonth, c.service, c.baseline, c.comp, c.delta,
+      c.baseline > 0 ? r2((c.delta / c.baseline) * 100) : null, JSON.stringify(top6.has(c.service) ? driversFor(c) : []), nowIso);
+  }
+
+  // Capability status for every round 2 capability (all ok; pricing and the other free ones cost nothing).
+  const insertCap = db.prepare(`
+    INSERT OR REPLACE INTO aws_capability_status (account_id, capability, status, error, requests, last_ok_at, last_checked_at)
+    VALUES (?, ?, 'ok', ?, ?, ?, ?)
+  `);
+  for (const [id, requests, note] of [
+    ['cost_categories', 2, null], ['cost_comparison', 2, null], ['savings_plans_inventory', 1, null], ['aws_budgets', 2, null],
+    ['optimization_hub', 2, null], ['pricing', 0, null], ['co_idle', 1, null], ['co_rds', 1, null], ['inventory_tags', 0, null],
+    ['resource_estimate', 0, 'Computed locally from inventory and billing usage types.'],
+  ]) insertCap.run(accountId, id, note, requests, isoAgo(0.25), isoAgo(0.25));
+
+  upsertSetting.run('aws_inventory_tag_keys_seen', JSON.stringify(['Environment', 'Team', 'CostCenter']));
+  return { taggedRows, cpuRows, prices: prices.length, estimate, recommendations: REC_ROWS.length, budgetsAws: awsBudgets.length, comparisonRows: comparison.length };
+}
+
 function seedAws(db, { now, encrypt }) {
   void now;
 
@@ -653,7 +856,7 @@ function seedAws(db, { now, encrypt }) {
     'aws_recommendation_state', 'aws_capability_status',
   ];
   for (const t of FINOPS_TABLES) db.prepare(`DELETE FROM ${t} WHERE account_id = ?`).run(accountId);
-  const DEMO_BUDGETS = ['Total AWS spend', 'Bedrock models', 'Environment dev'];
+  const DEMO_BUDGETS = ['Total AWS spend', 'Bedrock models', 'Environment dev', 'Finance monthly cost budget', 'Data platform quarterly'];
   db.prepare(`DELETE FROM aws_budgets WHERE name IN (${DEMO_BUDGETS.map(() => '?').join(',')})`).run(...DEMO_BUDGETS);
   db.prepare("DELETE FROM aws_optimizer_recommendations WHERE account_id = ? AND source = 'ce-savings-plan'").run(accountId);
 
@@ -703,7 +906,7 @@ function seedAws(db, { now, encrypt }) {
       amortizedTotal += d.amortized;
       if (utcDay(i).startsWith(monthPrefix)) {
         totalMtd += d.amortized;
-        if (service === BEDROCK_OPUS_SERVICE) opusMtd += d.amortized;
+        if (service.includes('Bedrock')) opusMtd += d.amortized; // every Bedrock model service (budget matches by name)
       }
     }
     dayTotals.push(amortizedTotal);
@@ -815,7 +1018,7 @@ function seedAws(db, { now, encrypt }) {
   const dim = new Date(Date.UTC(Number(utcDay(0).slice(0, 4)), Number(utcDay(0).slice(5, 7)), 0)).getUTCDate();
   const budgetDefs = [
     { name: 'Total AWS spend', type: 'total', key: null, value: null, actual: totalMtd, amount: Math.max(5000, Math.ceil(totalMtd / 0.7 / 100) * 100), notes: 'Monthly ceiling for the whole account.' },
-    { name: 'Bedrock models', type: 'service', key: null, value: BEDROCK_OPUS_SERVICE, actual: opusMtd, amount: Math.max(50, Math.round(opusMtd / 1.25)), notes: 'Opus spend against the model budget.' },
+    { name: 'Bedrock models', type: 'service', key: null, value: 'Bedrock', actual: opusMtd, amount: Math.max(50, Math.round(opusMtd / 1.25)), notes: 'Every Bedrock model service against one budget (scope matches names containing Bedrock).' },
     { name: 'Environment dev', type: 'tag', key: 'Environment', value: 'dev', actual: devMtd, amount: Math.max(50, Math.round(devMtd / 0.85)), notes: 'Development spend by Environment tag.' },
   ];
   for (const b of budgetDefs) {
@@ -826,6 +1029,7 @@ function seedAws(db, { now, encrypt }) {
     const state = pct >= 100 ? 'crit' : (pct >= 80 ? 'warn' : (forecast >= b.amount ? 'forecast_warn' : 'ok'));
     insertBudgetStatus.run(id, monthPrefix, actual, forecast, pct, r2(forecast / b.amount * 100), state, nowIso);
   }
+  db.prepare("UPDATE aws_budgets SET scope_match = 'contains' WHERE name = 'Bedrock models'").run();
 
   // Recommendation lifecycle: two accepted, one dismissed, two done (one booked by hand, one by the next poll).
   const insertRecState = db.prepare(`
@@ -867,7 +1071,8 @@ function seedAws(db, { now, encrypt }) {
   upsertSetting.run('aws_finops_anomaly_monitors', JSON.stringify([
     { monitorArn: MONITOR_ARN, name: 'Services monitor', type: 'DIMENSIONAL', dimension: 'SERVICE' },
   ]));
-  const finops = { allocRows, spRows, plans: 2, anomalies: 6, forecasts: 10, budgets: budgetDefs.length, recStates: 5, capabilities: CAPS.length };
+  const round2 = seedFinopsRound2(db, accountId, { utcDay, isoAgo, r2, upsertSetting });
+  const finops = { allocRows, spRows, plans: 3, anomalies: 6, forecasts: 10, budgets: budgetDefs.length + round2.budgetsAws, recStates: 5, capabilities: CAPS.length + 10, round2 };
 
   // ── Issue history: one open row per demoed trouble scenario ────────────
   const accountName = 'Demo AWS';

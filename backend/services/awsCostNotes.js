@@ -151,7 +151,8 @@ const OBJECT_CAP = 25;
  * volume type, engine class). Returns { mode: 'inventory', objects, objectCount, rule }.
  * objects: [{ resourceId, label, kind, link }], at most 25; objectCount is the full match count.
  */
-function usageTypeObjects(usageType, service, db, accountId) {
+function usageTypeObjects(usageType, service, db, accountId, opts) {
+  if (opts && opts.withWeights) return weightedUsageObjects(usageType, service, db, accountId);
   const raw = String(usageType || '');
   const m = /^([A-Z]{3,4}\d)-(.+)$/.exec(raw);
   const prefixRegion = m && REGION_PREFIXES[m[1]] ? REGION_PREFIXES[m[1]] : null;
@@ -265,5 +266,125 @@ function usageTypeObjects(usageType, service, db, accountId) {
   return empty();
 }
 
-module.exports = { serviceNotes, lightsailComponent, resolveCostResource, stripRegion, usageTypeObjects, REGION_PREFIXES };
+// EBS usage-type suffixes that are not the API volume type name.
+const EBS_TYPE_ALIASES = { piops: 'io1', 'piops-io2': 'io2', ssd: 'gp2' };
+
+/**
+ * Weighted form of the matcher, used by the local cost estimate (awsCostEstimate.js). Returns EVERY
+ * matching object, not the first 25: { mode: 'inventory', objects: [{ resourceId, label, kind, weight }],
+ * objectCount, totalWeight, rule }. kind is the estimate's resource_kind (ec2, ebs, s3, rds, lightsail,
+ * lightsail-db, lightsail-disk, lightsail-lb, lambda, dynamo); the weight follows the contract table
+ * (instance count, volume GB, bucket bytes or objects, RDS Multi-AZ x2 or allocated GB, table bytes).
+ * No match gives objects [] and rule null; the estimator then books the line as unattributed.
+ * Bedrock model services and the Savings Plans discount line are decided by the estimator by service name.
+ */
+function weightedUsageObjects(usageType, service, db, accountId) {
+  const raw = String(usageType || '');
+  const m = /^([A-Z]{3,4}\d)-(.+)$/.exec(raw);
+  const prefixRegion = m && REGION_PREFIXES[m[1]] ? REGION_PREFIXES[m[1]] : null;
+  const body = prefixRegion ? m[2] : raw;
+  const svc = String(service || '');
+  const isLightsail = /lightsail/i.test(svc) || /^(BundleUsage|DatabaseUsage|LoadBalancerUsage|DiskUsage)/i.test(body);
+  const region = prefixRegion || (isLightsail ? null : 'us-east-1');
+  const regionText = region || 'any region';
+  const acct = accountId ? ' AND account_id = ?' : '';
+  const acctArg = accountId ? [accountId] : [];
+  const azLike = region ? ' AND az LIKE ?' : '';
+  const azArg = region ? [`${region}%`] : [];
+  const q = (sql, args = []) => {
+    try { return db.prepare(`${sql}${acct}`).all(...args, ...acctArg); } catch { return []; }
+  };
+  const none = { mode: 'inventory', objects: [], objectCount: 0, totalWeight: 0, rule: null };
+  const build = (rows, kind, pick, weight, rule) => {
+    const objects = rows.map((r) => {
+      const id = pick(r);
+      return { resourceId: id, label: id, kind, weight: Math.max(0, Number(weight(r)) || 0) };
+    }).filter((o) => o.resourceId && o.weight > 0);
+    return { mode: 'inventory', objects, objectCount: objects.length, totalWeight: objects.reduce((n, o) => n + o.weight, 0), rule };
+  };
+  const one = () => 1;
+  const isS3 = /simple storage|s3/i.test(svc);
+  const isRds = /relational database/i.test(svc);
+  let t;
+
+  if (isLightsail) {
+    if ((t = /^BundleUsage:(\d+(?:\.\d+)?)GB(_win)?$/i.exec(body))) {
+      const win = t[2] ? 1 : 0;
+      const rows = q(`SELECT name FROM aws_lightsail_instances WHERE ram_gb = ? AND COALESCE(is_windows, 0) = ?${azLike}`, [Number(t[1]), win, ...azArg]);
+      return build(rows, 'lightsail', (r) => r.name, one, `${win ? 'Windows ' : ''}instances on a ${t[1]} GB bundle in ${regionText}`);
+    }
+    if ((t = /^DatabaseUsage:(\d+(?:\.\d+)?)GB/i.exec(body))) {
+      const rows = q(`SELECT name FROM aws_lightsail_databases WHERE ram_gb = ?${azLike}`, [Number(t[1]), ...azArg]);
+      return build(rows, 'lightsail-db', (r) => r.name, one, `databases on a ${t[1]} GB bundle in ${regionText}`);
+    }
+    const lower = body.toLowerCase();
+    if (lower.startsWith('disk')) {
+      return build(q(`SELECT name, size_gb FROM aws_lightsail_disks WHERE 1=1${azLike}`, azArg), 'lightsail-disk', (r) => r.name,
+        (r) => r.size_gb || 1, `disks in ${regionText}, by size`);
+    }
+    if (lower.startsWith('loadbalancer')) {
+      const lbAz = region ? " AND (az LIKE ? OR az = 'all' OR az IS NULL)" : '';
+      return build(q(`SELECT name FROM aws_lightsail_load_balancers WHERE 1=1${lbAz}`, azArg), 'lightsail-lb', (r) => r.name, one, `load balancers in ${regionText}`);
+    }
+    return none;
+  }
+
+  if (/dynamo/i.test(svc)) {
+    return build(q('SELECT name, size_bytes FROM aws_dynamo_tables WHERE 1=1'), 'dynamo', (r) => r.name,
+      (r) => Math.max(1, r.size_bytes || 0), 'DynamoDB tables, by size');
+  }
+  if ((t = /^(?:BoxUsage|SpotUsage|DedicatedUsage|HeavyUsage):(.+)$/i.exec(body))) {
+    const rows = q(`SELECT instance_id, state FROM aws_ec2_instances WHERE instance_type = ?${azLike}`, [t[1], ...azArg]);
+    const running = rows.filter((r) => r.state === 'running');
+    const use = running.length ? running : rows;
+    return build(use, 'ec2', (r) => r.instance_id, one, `${t[1]} in ${regionText}${running.length ? ' (running)' : ''}`);
+  }
+  if ((t = /^EBS:(VolumeUsage|VolumeP-IOPS|VolumeThroughput)(?:\.(.+))?$/i.exec(body))) {
+    const isUsage = /^VolumeUsage$/i.test(t[1]);
+    const suffix = t[2] ? t[2].toLowerCase() : null;
+    const byType = (vt) => q(`SELECT volume_id, size_gb FROM aws_ebs_volumes WHERE volume_type = ?${azLike}`, [vt, ...azArg]);
+    let rows;
+    let typeText;
+    if (isUsage || suffix) {
+      const vt = suffix || 'standard';
+      rows = byType(vt);
+      if (!rows.length && EBS_TYPE_ALIASES[vt]) rows = byType(EBS_TYPE_ALIASES[vt]);
+      typeText = vt;
+    } else {
+      rows = q(`SELECT volume_id, size_gb FROM aws_ebs_volumes WHERE 1=1${azLike}`, azArg);
+      typeText = 'all';
+    }
+    return build(rows, 'ebs', (r) => r.volume_id, (r) => r.size_gb || 1, `${typeText} volumes in ${regionText}, by size`);
+  }
+  if (isS3 && /^TimedStorage-/i.test(body)) {
+    return build(q('SELECT name, size_bytes FROM aws_s3_buckets WHERE region = ?', [region]), 's3', (r) => r.name,
+      (r) => Math.max(1, r.size_bytes || 0), `S3 buckets in ${regionText}, by size`);
+  }
+  if (isS3 && (/^Requests-/i.test(body) || /DataTransfer/i.test(body))) {
+    return build(q('SELECT name, object_count FROM aws_s3_buckets WHERE region = ?', [region]), 's3', (r) => r.name,
+      (r) => Math.max(1, r.object_count || 0), `S3 buckets in ${regionText}, by object count`);
+  }
+  if (isRds || /^(InstanceUsage|Multi-AZUsage|Aurora:|RDS:)/i.test(body)) {
+    if ((t = /^(InstanceUsage|Multi-AZUsage):(.+)$/i.exec(body))) {
+      const extra = /^Multi-AZ/i.test(t[1]) ? ' AND multi_az = 1' : '';
+      const rows = q(`SELECT db_id, multi_az FROM aws_rds_instances WHERE instance_class = ?${extra}`, [t[2]]);
+      return build(rows, 'rds', (r) => r.db_id, (r) => (r.multi_az ? 2 : 1), `RDS instances of class ${t[2]}, Multi-AZ counts double`);
+    }
+    if (/^Aurora:(StorageUsage|BackupUsage|StorageIOUsage)/i.test(body)) {
+      return build(q("SELECT db_id, allocated_gb FROM aws_rds_instances WHERE LOWER(engine) LIKE 'aurora%'"), 'rds', (r) => r.db_id,
+        (r) => Math.max(1, r.allocated_gb || 0), 'Aurora instances, by allocated GB');
+    }
+    if (/^RDS:.*Storage|^RDS:ChargedBackupUsage/i.test(body)) {
+      return build(q('SELECT db_id, allocated_gb FROM aws_rds_instances WHERE 1=1'), 'rds', (r) => r.db_id,
+        (r) => Math.max(1, r.allocated_gb || 0), 'RDS instances, by allocated GB');
+    }
+    return none;
+  }
+  if (/lambda/i.test(svc) && /^(Lambda-GB-Second|Request)/i.test(body)) {
+    return build(q('SELECT name FROM aws_lambda_functions WHERE 1=1'), 'lambda', (r) => r.name, one, 'Lambda functions, equal shares');
+  }
+  return none;
+}
+
+module.exports = { weightedUsageObjects, serviceNotes, lightsailComponent, resolveCostResource, stripRegion, usageTypeObjects, REGION_PREFIXES };
 

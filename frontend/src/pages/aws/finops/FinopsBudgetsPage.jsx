@@ -13,7 +13,8 @@ const iconBtn = 'flex items-center justify-center h-7 w-7 rounded-md border bord
 function scopeText(b, accounts) {
   if (b.scopeType === 'total') return 'Total spend';
   if (b.scopeType === 'account') return `Account: ${accounts.find((a) => String(a.id) === String(b.scopeKey))?.name || b.scopeKey}`;
-  if (b.scopeType === 'service') return `Service: ${b.scopeValue}`;
+  if (b.scopeType === 'external') return `AWS budget: ${b.externalName || b.name}`;
+  if (b.scopeType === 'service') return b.scopeMatch === 'contains' ? `Services containing: ${b.scopeValue}` : `Service: ${b.scopeValue}`;
   return `Tag: ${b.scopeKey} = ${b.scopeValue}`;
 }
 
@@ -110,12 +111,14 @@ export default function FinopsBudgetsPage() {
                       <tr key={b.id} className={`border-b border-cohesity-border/50 ${b.enabled ? '' : 'opacity-60'}`}>
                         <td className="py-2 pr-3 text-ink">
                           {b.name}
+                          {b.source === 'aws' && <span title="Imported from AWS Budgets"><Badge tone="brand" className="ml-2">AWS</Badge></span>}
+                          {b.source === 'aws' && b.timeUnit && <span className="block text-[11px] text-ink-faint">{String(b.timeUnit).toLowerCase()}{b.lastSyncedAt ? `, synced ${String(b.lastSyncedAt).slice(0, 10)}` : ''}</span>}
                           {b.notes && <span className="block text-[11px] text-ink-faint max-w-[220px] truncate" title={b.notes}>{b.notes}</span>}
                         </td>
                         <td className="py-2 pr-3 text-ink-muted text-[12px]">{scopeText(b, accounts)}</td>
                         <td className="py-2 pr-3 text-right tnum text-ink">{fmtUsd(b.amountUsd)}</td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{st ? fmtUsd(st.actualUsd) : '-'}</td>
-                        <td className="py-2 pr-3 text-right tnum text-ink-muted" title={st?.forecastSource ? `Source: ${st.forecastSource}` : undefined}>{st?.forecastUsd != null ? fmtUsd(st.forecastUsd) : '-'}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted">{st ? fmtUsd(st.actualUsd) : (b.awsActualUsd != null ? fmtUsd(b.awsActualUsd) : '-')}</td>
+                        <td className="py-2 pr-3 text-right tnum text-ink-muted" title={st?.forecastSource ? `Source: ${st.forecastSource}` : undefined}>{st?.forecastUsd != null ? fmtUsd(st.forecastUsd) : (b.awsForecastUsd != null ? fmtUsd(b.awsForecastUsd) : '-')}</td>
                         <td className="py-2 pr-3">
                           {st ? <BudgetBar showName={false} budget={{ ...b, actualUsd: st.actualUsd, forecastUsd: st.forecastUsd, pctActual: st.pctActual, state: st.state }} />
                             : <span className="text-[11px] text-ink-faint">not evaluated yet</span>}
@@ -124,15 +127,20 @@ export default function FinopsBudgetsPage() {
                           {st ? <Badge tone={BUDGET_TONE[st.state] || 'neutral'}>{BUDGET_LABEL[st.state] || st.state}</Badge> : <Badge>pending</Badge>}
                         </td>
                         <td className="py-2 pr-3">
-                          <input type="checkbox" checked={!!b.enabled} disabled={busyId === b.id} onChange={() => toggleEnabled(b)}
+                          <input type="checkbox" checked={!!b.enabled} disabled={busyId === b.id || b.source === 'aws'} onChange={() => toggleEnabled(b)}
+                            title={b.source === 'aws' ? 'Managed in AWS Budgets' : undefined}
                             aria-label={`Enable ${b.name}`} className="accent-brand cursor-pointer" />
                         </td>
                         <td className="py-2 pr-3">
-                          <div className="flex items-center justify-end gap-1.5">
-                            <button onClick={() => setModal({ budget: b })} title="Edit" aria-label={`Edit ${b.name}`} className={iconBtn}><Pencil size={13} /></button>
-                            <button onClick={() => remove(b)} disabled={busyId === b.id} title="Delete" aria-label={`Delete ${b.name}`}
-                              className={`${iconBtn} hover:!text-status-crit hover:!border-status-crit/50`}><Trash2 size={13} /></button>
-                          </div>
+                          {b.source === 'aws' ? (
+                            <div className="flex items-center justify-end text-[11px] text-ink-faint" title="Managed in AWS Budgets">Managed in AWS Budgets</div>
+                          ) : (
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button onClick={() => setModal({ budget: b })} title="Edit" aria-label={`Edit ${b.name}`} className={iconBtn}><Pencil size={13} /></button>
+                              <button onClick={() => remove(b)} disabled={busyId === b.id} title="Delete" aria-label={`Delete ${b.name}`}
+                                className={`${iconBtn} hover:!text-status-crit hover:!border-status-crit/50`}><Trash2 size={13} /></button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );

@@ -21,9 +21,14 @@ const db = require('../db/database');
 const { createPoller } = require('../core/pollerFramework');
 const { mapLimit, valuesOrThrow, callsInFlight } = require('../core/concurrency');
 const awsApi = require('./awsApi');
-const { getSetting } = require('./settings');
+const awsPricing = require('./awsPricing');
+const { getSetting, setSetting } = require('./settings');
 const { reconcileIssueHistory } = require('./awsIssues');
 const logger = require('../utils/logger');
+
+/** Tags object -> JSON text, or null when there are none. */
+const tagsJson = (t) => (t && typeof t === 'object' && Object.keys(t).length ? JSON.stringify(t) : null);
+const finopsMod = () => require('./awsFinops');
 
 const safeMsg = (e) => e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e));
 const DAILY_GATE_MS = 20 * 3600 * 1000;
@@ -252,6 +257,10 @@ async function collectLightsail(account, skipped = [], elected = true) {
       logger.debug(`[AwsPoller] ${account.name}: Lightsail bundles failed: ${safeMsg(err)}`);
       return null;
     });
+    if (elected && bundles) {
+      try { awsPricing.storeLightsailBundlePrices(account.region, bundles); }
+      catch (err) { logger.warn(`[AwsPoller] ${account.name}: storing Lightsail bundle prices failed: ${safeMsg(err)}`); }
+    }
     dbBundles = await awsApi.fetchLightsailDatabaseBundles(account).catch((err) => {
       if (isCredentialError(err)) throw err;
       logger.debug(`[AwsPoller] ${account.name}: Lightsail database bundles failed: ${safeMsg(err)}`);
@@ -344,6 +353,8 @@ async function collectBedrock(account) {
 
 async function collectS3(account) {
   const buckets = await awsApi.fetchS3Buckets(account);
+  // One denied tagging call records the inventory_tags capability once and leaves every bucket's tags null.
+  const tagState = { denied: false, ok: false, error: null };
   const perBucket = await mapLimit(buckets, callsInFlight('aws'), async (b) => {
     const region = await awsApi.fetchBucketLocation(account, b.name);
     const [publicAccessBlocked, versioning, lifecycleRules, storage] = await Promise.all([
@@ -352,13 +363,38 @@ async function collectS3(account) {
       awsApi.fetchBucketLifecycleRuleCount(account, b.name, region),
       awsApi.fetchBucketStorageMetrics(account, b.name, region),
     ]);
+    let tags = null;
+    if (!tagState.denied) {
+      try {
+        tags = await awsApi.fetchBucketTags(account, b.name, region);
+        tagState.ok = true;
+      } catch (err) {
+        if (isCredentialError(err)) throw err;
+        if (/AccessDenied/i.test(String(err?.name || '')) || awsApi.classifyCeError(err) === 'denied') {
+          tagState.denied = true;
+          tagState.error = String(err?.message || err).slice(0, 500);
+        } else {
+          logger.debug(`[AwsPoller] ${account.name}: GetBucketTagging failed for ${b.name}: ${safeMsg(err)}`);
+        }
+      }
+    }
     return {
       name: b.name, region, createdAtAws: b.createdAt,
       publicAccessBlocked: publicAccessBlocked ? 1 : 0, versioning, lifecycleRules,
       sizeBytes: storage.sizeBytes, objectCount: storage.objectCount,
+      tags: tagState.denied ? null : tags,
     };
   });
-  return valuesOrThrow(perBucket);
+  const out = valuesOrThrow(perBucket);
+  if (tagState.denied) {
+    // Tags fetched before the denial landed are dropped too: a half-tagged estate would mislead allocation.
+    for (const r of out) r.tags = null;
+    logger.warn(`[AwsPoller] ${account.name}: S3 bucket tags unavailable (s3:GetBucketTagging denied)`);
+    finopsMod().setCapabilityStatus(account.id, 'inventory_tags', { status: 'denied', error: tagState.error, requests: 0 });
+  } else if (tagState.ok) {
+    finopsMod().setCapabilityStatus(account.id, 'inventory_tags', { status: 'ok', error: null, requests: 0, ok: true });
+  }
+  return out;
 }
 
 async function collectRds(account) {
@@ -441,6 +477,25 @@ async function collectComputeOptimizer(account) {
     const enrollment = await awsApi.fetchCoEnrollmentStatus(account);
     let rows = [];
     if (enrollment.status === 'Active') {
+      // Idle and RDS recommendations are newer capabilities: each records its own status and never fails the poll.
+      const capRows = async (id, fn) => {
+        try {
+          const rows = await fn();
+          finopsMod().setCapabilityStatus(account.id, id, { status: 'ok', error: null, requests: 0, ok: true });
+          return rows;
+        } catch (err) {
+          if (isCredentialError(err)) throw err;
+          const status = /AccessDenied/i.test(String(err?.name || '')) ? 'denied' : awsApi.classifyCeError(err);
+          const message = String(err?.message || err).slice(0, 500);
+          finopsMod().setCapabilityStatus(account.id, id, { status, error: message, requests: 0 });
+          logger.warn(`[AwsPoller] ${account.name}: ${id} ${status}: ${message.slice(0, 160)}`);
+          return [];
+        }
+      };
+      const [idle, rdsRecs] = await Promise.all([
+        capRows('co_idle', () => awsApi.fetchCoIdleRecommendations(account)),
+        capRows('co_rds', () => awsApi.fetchCoRdsRecommendations(account)),
+      ]);
       const [ec2, ebs, lambdaRecs, ecs] = await Promise.all([
         degradeGracefully(account, 'CO EC2 recommendations', () => awsApi.fetchCoEc2Recommendations(account), []),
         degradeGracefully(account, 'CO EBS recommendations', () => awsApi.fetchCoEbsRecommendations(account), []),
@@ -452,6 +507,8 @@ async function collectComputeOptimizer(account) {
         ...ebs.map((r) => ({ ...r, resourceType: 'ebs' })),
         ...lambdaRecs.map((r) => ({ ...r, resourceType: 'lambda' })),
         ...ecs.map((r) => ({ ...r, resourceType: 'ecs' })),
+        ...idle,
+        ...rdsRecs,
       ];
     }
     return { status: enrollment.status || 'Inactive', rows };
@@ -473,7 +530,7 @@ const PREV_GEN_RE = /^(t2|m3|m4|c3|c4|r3|r4)\./;
  * consolidation always run; s3-no-lifecycle only when `elected` (S3 rows
  * only live on the elected row, see Fix #0 above).
  */
-function computeHeuristicRecommendations(accountId, elected) {
+function computeHeuristicRecommendations(accountId, elected, opts = {}) {
   const rows = [];
   const gp2ToGp3PerGb = priceSetting('aws_price_gp2_to_gp3_per_gb', 0.02);
   const gp2PerGb = priceSetting('aws_price_ebs_gp2_per_gb', 0.10);
@@ -482,16 +539,21 @@ function computeHeuristicRecommendations(accountId, elected) {
 
   const volumes = db.prepare('SELECT volume_id, state, size_gb, volume_type, az FROM aws_ebs_volumes WHERE account_id = ?').all(accountId);
   for (const v of volumes) {
+    // List prices from the price catalog win over the manual price settings when the region has both rows.
+    const regionOfVol = awsPricing.regionOfAz(v.az);
+    const catGp2 = awsPricing.priceFor('ebs', { volumeType: 'gp2', region: regionOfVol });
+    const catGp3 = awsPricing.priceFor('ebs', { volumeType: 'gp3', region: regionOfVol });
+    const catThis = awsPricing.priceFor('ebs', { volumeType: v.volume_type, region: regionOfVol });
     if (v.volume_type === 'gp2') {
       rows.push({
         source: 'heuristic', resourceType: 'ebs', resourceId: v.volume_id, resourceName: null, region: v.az,
         finding: 'gp2-to-gp3', currentConfig: 'gp2', recommendedConfig: 'gp3',
         reason: 'gp2 volume type costs more than gp3 for equivalent performance',
-        estMonthlySavingsUsd: (v.size_gb || 0) * gp2ToGp3PerGb,
+        estMonthlySavingsUsd: (v.size_gb || 0) * (catGp2 != null && catGp3 != null ? Math.max(0, catGp2 - catGp3) : gp2ToGp3PerGb),
       });
     }
     if (v.state === 'available') {
-      const perGb = v.volume_type === 'gp2' ? gp2PerGb : gp3PerGb;
+      const perGb = catThis != null ? catThis : (v.volume_type === 'gp2' ? gp2PerGb : gp3PerGb);
       rows.push({
         source: 'heuristic', resourceType: 'ebs', resourceId: v.volume_id, resourceName: null, region: v.az,
         finding: 'ebs-unattached', currentConfig: v.volume_type, recommendedConfig: 'delete or snapshot-and-delete',
@@ -528,6 +590,8 @@ function computeHeuristicRecommendations(accountId, elected) {
     }
   }
 
+  rows.push(...awsPricing.ec2RightsizeRecommendations(accountId, {}, { skipIds: opts.skipIds }));
+
   const vpcs = db.prepare('SELECT vpc_id, nat_gateway_count FROM aws_vpcs WHERE account_id = ?').all(accountId);
   for (const v of vpcs) {
     if ((v.nat_gateway_count || 0) > 1) {
@@ -561,19 +625,22 @@ function computeHeuristicRecommendations(accountId, elected) {
 // The Compute Optimizer and heuristic sources own their rows; the FinOps capture owns 'ce-rightsizing'
 // and 'ce-savings-plan' (storeCeRecommendations), so each delete is scoped to its own sources.
 const OPTIMIZER_SOURCES = ['compute-optimizer', 'heuristic'];
-const CE_SOURCES = ['ce-rightsizing', 'ce-savings-plan'];
+const CE_SOURCES = ['ce-rightsizing', 'ce-savings-plan', 'cost-optimization-hub'];
 
 function insertOptimizerRows(accountId, rows) {
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO aws_optimizer_recommendations
       (account_id, source, resource_type, resource_id, resource_name, region, finding,
-       current_config, recommended_config, reason, est_monthly_savings_usd)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       current_config, recommended_config, reason, est_monthly_savings_usd,
+       effort, restart_needed, rollback_possible, action_type, lookback_days, after_discounts, detail_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const r of rows) {
     stmt.run(accountId, r.source, r.resourceType, r.resourceId, r.resourceName ?? null, r.region ?? null,
       r.finding ?? null, r.currentConfig ?? null, r.recommendedConfig ?? null, r.reason ?? null,
-      r.estMonthlySavingsUsd ?? null);
+      r.estMonthlySavingsUsd ?? null,
+      r.effort ?? null, r.restartNeeded ?? null, r.rollbackPossible ?? null, r.actionType ?? null,
+      r.lookbackDays ?? null, r.afterDiscounts ?? null, r.detailJson ?? null);
   }
 }
 
@@ -654,12 +721,12 @@ function storeLightsailInventory(accountId, ls) {
   const dbStmt = prep(`
     INSERT OR REPLACE INTO aws_lightsail_databases (account_id, name, arn, engine, engine_version, bundle,
       ram_gb, disk_gb, state, az, master_endpoint, port, backup_retention, publicly_accessible,
-      latest_restorable_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      latest_restorable_at, created_at, tags_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const d of ls.databases || []) {
     dbStmt.run(accountId, d.name, d.arn, d.engine, d.engineVersion, d.bundle, d.ramGb, d.diskGb, d.state,
-      d.az, d.masterEndpoint, d.port, d.backupRetention, d.publiclyAccessible, d.latestRestorableAt, d.createdAt);
+      d.az, d.masterEndpoint, d.port, d.backupRetention, d.publiclyAccessible, d.latestRestorableAt, d.createdAt, tagsJson(d.tags));
   }
 
   del('aws_lightsail_disks');
@@ -729,34 +796,35 @@ const storeCore = db.transaction((accountId, { ec2, lightsail, ecs, lightsailInv
   db.prepare('DELETE FROM aws_ec2_instances WHERE account_id = ?').run(accountId);
   const ec2Stmt = db.prepare(`
     INSERT INTO aws_ec2_instances (account_id, instance_id, name, state, instance_type, az,
-      private_ip, public_ip, platform, launch_time, cpu_util, status_check)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      private_ip, public_ip, platform, launch_time, cpu_util, status_check, tags_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const i of ec2.instances) {
     ec2Stmt.run(accountId, i.instanceId, i.name, i.state, i.instanceType, i.az,
-      i.privateIp, i.publicIp, i.platform, i.launchTime, i.cpuUtil, i.statusCheck);
+      i.privateIp, i.publicIp, i.platform, i.launchTime, i.cpuUtil, i.statusCheck, tagsJson(i.tags));
   }
 
   db.prepare('DELETE FROM aws_ebs_volumes WHERE account_id = ?').run(accountId);
   const ebsStmt = db.prepare(`
-    INSERT INTO aws_ebs_volumes (account_id, volume_id, state, size_gb, volume_type, az, attached_instance_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO aws_ebs_volumes (account_id, volume_id, state, size_gb, volume_type, az, attached_instance_id, tags_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const v of ec2.volumes) {
-    ebsStmt.run(accountId, v.volumeId, v.state, v.sizeGb, v.volumeType, v.az, v.attachedInstanceId);
+    ebsStmt.run(accountId, v.volumeId, v.state, v.sizeGb, v.volumeType, v.az, v.attachedInstanceId, tagsJson(v.tags));
   }
 
   db.prepare('DELETE FROM aws_lightsail_instances WHERE account_id = ?').run(accountId);
   const lsStmt = db.prepare(`
     INSERT INTO aws_lightsail_instances (account_id, name, state, blueprint, bundle, az,
       public_ip, cpu_util, snapshot_count, latest_snapshot_at, ram_gb, cpu_count, is_windows,
-      arn, private_ip, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      arn, private_ip, created_at, tags_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const i of lightsail) {
     lsStmt.run(accountId, i.name, i.state, i.blueprint, i.bundle, i.az,
       i.publicIp, i.cpuUtil, i.snapshotCount, i.latestSnapshotAt,
-      i.ramGb ?? null, i.cpuCount ?? null, i.isWindows ?? null, i.arn ?? null, i.privateIp ?? null, i.createdAt ?? null);
+      i.ramGb ?? null, i.cpuCount ?? null, i.isWindows ?? null, i.arn ?? null, i.privateIp ?? null, i.createdAt ?? null,
+      tagsJson(i.tags));
   }
   if (lightsailInventory) storeLightsailInventory(accountId, lightsailInventory);
 
@@ -788,13 +856,13 @@ const storeR2 = db.transaction((accountId, { rds, lambda, dynamo, ecr, vpc }) =>
   const rdsStmt = db.prepare(`
     INSERT INTO aws_rds_instances (account_id, db_id, engine, engine_version, instance_class, status,
       multi_az, allocated_gb, free_storage_bytes, cpu_util, connections, backup_retention_days,
-      latest_backup_at, endpoint)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      latest_backup_at, endpoint, tags_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const i of rds) {
     rdsStmt.run(accountId, i.dbId, i.engine, i.engineVersion, i.instanceClass, i.status,
       i.multiAz ? 1 : 0, i.allocatedGb, i.freeStorageBytes, i.cpuUtil, i.connections,
-      i.backupRetentionDays, i.latestBackupAt, i.endpoint);
+      i.backupRetentionDays, i.latestBackupAt, i.endpoint, tagsJson(i.tags));
   }
 
   db.prepare('DELETE FROM aws_lambda_functions WHERE account_id = ?').run(accountId);
@@ -939,13 +1007,46 @@ const upsertRiCoverage = db.transaction((accountId, rows) => {
   for (const r of rows) stmt.run(accountId, r.day, r.coveragePct ?? null, r.reservedHours ?? null, r.onDemandHours ?? null, r.totalHours ?? null);
 });
 
-/** Savings Plan inventory: the details call is the whole truth for the window, so replace per account. */
-const upsertSavingsPlans = db.transaction((accountId, rows) => {
-  db.prepare('DELETE FROM aws_savings_plans WHERE account_id = ?').run(accountId);
+/**
+ * Savings Plan inventory from two sources. 'details' rows (Cost Explorer utilization details) are replaced
+ * per account each call; 'api' rows (DescribeSavingsPlans) are upserted and carry state, payments, product
+ * types and offering. A plan both sources name keeps the API columns: the details call only refreshes its
+ * utilization and savings, and the API call never touches those two.
+ */
+const upsertSavingsPlans = db.transaction((accountId, rows, source = 'details') => {
+  if (source === 'api') {
+    const stmt = db.prepare(`
+      INSERT INTO aws_savings_plans (account_id, sp_arn, sp_type, payment_option, term, hourly_commitment_usd, region, instance_family,
+        start_at, end_at, state, upfront_usd, recurring_usd, offering_id, product_types_json, description, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'api')
+      ON CONFLICT(account_id, sp_arn) DO UPDATE SET
+        sp_type = COALESCE(excluded.sp_type, sp_type), payment_option = COALESCE(excluded.payment_option, payment_option),
+        term = COALESCE(excluded.term, term), hourly_commitment_usd = COALESCE(excluded.hourly_commitment_usd, hourly_commitment_usd),
+        region = COALESCE(excluded.region, region), instance_family = COALESCE(excluded.instance_family, instance_family),
+        start_at = COALESCE(excluded.start_at, start_at), end_at = COALESCE(excluded.end_at, end_at),
+        state = excluded.state, upfront_usd = excluded.upfront_usd, recurring_usd = excluded.recurring_usd,
+        offering_id = excluded.offering_id, product_types_json = excluded.product_types_json,
+        description = excluded.description, source = 'api'
+    `);
+    for (const r of rows) {
+      stmt.run(accountId, r.spArn, r.spType ?? null, r.paymentOption ?? null, r.term ?? null, r.commitmentUsd ?? null,
+        r.region ?? null, r.instanceFamily ?? null, r.start ?? null, r.end ?? null, r.state ?? null, r.upfrontUsd ?? null,
+        r.recurringUsd ?? null, r.offeringId ?? null, JSON.stringify(r.productTypes || []), r.description ?? null);
+    }
+    // A plan AWS no longer lists is gone; rows from the details call are not this call's to remove.
+    const fresh = new Set(rows.map((r) => r.spArn));
+    for (const e of db.prepare("SELECT sp_arn FROM aws_savings_plans WHERE account_id = ? AND source = 'api'").all(accountId)) {
+      if (!fresh.has(e.sp_arn)) db.prepare('DELETE FROM aws_savings_plans WHERE account_id = ? AND sp_arn = ?').run(accountId, e.sp_arn);
+    }
+    return;
+  }
+  db.prepare("DELETE FROM aws_savings_plans WHERE account_id = ? AND source = 'details'").run(accountId);
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO aws_savings_plans (account_id, sp_arn, sp_type, payment_option, term, hourly_commitment_usd,
-      region, instance_family, start_at, end_at, utilization_pct, net_savings_usd)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO aws_savings_plans (account_id, sp_arn, sp_type, payment_option, term, hourly_commitment_usd,
+      region, instance_family, start_at, end_at, utilization_pct, net_savings_usd, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'details')
+    ON CONFLICT(account_id, sp_arn) DO UPDATE SET
+      utilization_pct = excluded.utilization_pct, net_savings_usd = excluded.net_savings_usd
   `);
   for (const r of rows) {
     stmt.run(accountId, r.spArn, r.spType ?? null, r.paymentOption ?? null, r.term ?? null, r.hourlyCommitmentUsd ?? null,
@@ -988,12 +1089,12 @@ const storeS3 = db.transaction((accountId, buckets) => {
   db.prepare('DELETE FROM aws_s3_buckets WHERE account_id = ?').run(accountId);
   const stmt = db.prepare(`
     INSERT INTO aws_s3_buckets (account_id, name, region, size_bytes, object_count,
-      public_access_blocked, versioning, lifecycle_rules, created_at_aws)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      public_access_blocked, versioning, lifecycle_rules, created_at_aws, tags_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const b of buckets) {
     stmt.run(accountId, b.name, b.region, b.sizeBytes, b.objectCount,
-      b.publicAccessBlocked, b.versioning, b.lifecycleRules, b.createdAtAws);
+      b.publicAccessBlocked, b.versioning, b.lifecycleRules, b.createdAtAws, tagsJson(b.tags));
   }
 });
 
@@ -1042,6 +1143,36 @@ async function captureCostResources(account, serviceRows) {
   }
 }
 
+/** Sorted unique tag keys across the six tagged inventory tables (cap 200), stored for the Allocation dimension picker. */
+function refreshInventoryTagKeysSeen() {
+  const keys = new Set();
+  for (const t of ['aws_ec2_instances', 'aws_ebs_volumes', 'aws_rds_instances', 'aws_s3_buckets', 'aws_lightsail_instances', 'aws_lightsail_databases']) {
+    for (const r of db.prepare(`SELECT tags_json FROM ${t} WHERE tags_json IS NOT NULL`).all()) {
+      try { for (const k of Object.keys(JSON.parse(r.tags_json) || {})) keys.add(k); } catch { /* skip a bad row */ }
+    }
+  }
+  setSetting('aws_inventory_tag_keys_seen', JSON.stringify([...keys].sort().slice(0, 200)));
+}
+
+/**
+ * Fold today's CloudWatch CPU sample of each instance into the per-day history: running mean, running
+ * max, sample count (UTC day). No new API call: the sample is the one collectEc2 already holds.
+ */
+const upsertEc2CpuDaily = db.transaction((accountId, instances, day) => {
+  const stmt = db.prepare(`
+    INSERT INTO aws_ec2_metrics_daily (account_id, instance_id, day, cpu_avg, cpu_max, samples)
+    VALUES (?, ?, ?, ?, ?, 1)
+    ON CONFLICT(account_id, instance_id, day) DO UPDATE SET
+      cpu_avg = (COALESCE(cpu_avg, excluded.cpu_avg) * samples + excluded.cpu_avg) / (samples + 1),
+      cpu_max = MAX(COALESCE(cpu_max, excluded.cpu_max), excluded.cpu_max),
+      samples = samples + 1
+  `);
+  for (const i of instances) {
+    if (i.cpuUtil == null || !Number.isFinite(Number(i.cpuUtil))) continue;
+    stmt.run(accountId, i.instanceId, day, Number(i.cpuUtil), Number(i.cpuUtil));
+  }
+});
+
 async function pollAccount(account) {
   // Pasted session credentials carry an expiry; once past it every call would
   // fail with ExpiredToken, so record the state and skip the round.
@@ -1072,6 +1203,13 @@ async function pollAccount(account) {
     const lightsail = lightsailInventory.instances;
     const ecs = await collectService(account, 'ECS', () => collectEcs(account), { clusters: [], services: [] }, skipped);
     storeCore(account.id, { ec2, lightsail, ecs, lightsailInventory });
+    try {
+      upsertEc2CpuDaily(account.id, ec2.instances, new Date().toISOString().slice(0, 10));
+      pruneInBatches(db, 'aws_ec2_metrics_daily', 'day < ?', [new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10)]);
+      refreshInventoryTagKeysSeen();
+    } catch (err) {
+      logger.warn(`[AwsPoller] ${account.name}: EC2 CPU history or tag keys failed: ${safeMsg(err)}`);
+    }
 
     const [rds, lambdaFns, dynamo, ecr, vpc] = await Promise.all([
       collectService(account, 'RDS', () => collectRds(account), [], skipped),
@@ -1081,6 +1219,7 @@ async function pollAccount(account) {
       collectService(account, 'VPC', () => collectVpc(account), { vpcs: [], subnets: [] }, skipped),
     ]);
     storeR2(account.id, { rds, lambda: lambdaFns, dynamo, ecr, vpc });
+    try { refreshInventoryTagKeysSeen(); } catch (err) { logger.warn(`[AwsPoller] ${account.name}: tag keys failed: ${safeMsg(err)}`); }
 
     upsertRdsStorageHistory(account.id, rds);
     pruneInBatches(db, 'aws_rds_storage_history', "account_id = ? AND day < date('now', '-365 days')", [account.id]);
@@ -1119,6 +1258,7 @@ async function pollAccount(account) {
         try {
           s3Rows = await collectS3(account);
           storeS3(account.id, s3Rows);
+          try { refreshInventoryTagKeysSeen(); } catch (err) { logger.warn(`[AwsPoller] ${account.name}: tag keys failed: ${safeMsg(err)}`); }
           upsertS3SizeHistory(account.id, s3Rows);
           db.prepare('UPDATE aws_accounts SET last_s3_capture_at = datetime(\'now\') WHERE id = ?').run(account.id);
         } catch (err) {
@@ -1154,7 +1294,8 @@ async function pollAccount(account) {
     if (needsDaily(account.last_optimizer_capture_at)) {
       try {
         const co = await collectComputeOptimizer(account);
-        const heuristics = computeHeuristicRecommendations(account.id, elected);
+        const coEc2Ids = new Set(co.rows.filter((r) => r.resourceType === 'ec2').map((r) => r.resourceId));
+        const heuristics = computeHeuristicRecommendations(account.id, elected, { skipIds: coEc2Ids });
         const rows = [...co.rows.map((r) => ({ ...r, source: 'compute-optimizer' })), ...heuristics];
         storeOptimizer(account.id, co.status, rows);
       } catch (err) {
@@ -1208,4 +1349,5 @@ module.exports = {
   collectComputeOptimizer, computeHeuristicRecommendations, storeOptimizer,
   needsDaily, storeCeRecommendations, upsertCost, upsertCostAlloc, upsertSpUtilization, upsertSpCoverage,
   upsertRiUtilization, upsertRiCoverage, upsertSavingsPlans, upsertAnomalies,
+  collectS3, refreshInventoryTagKeysSeen, upsertEc2CpuDaily, storeCore, storeS3, storeR2,
 };

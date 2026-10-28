@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Wrench, DollarSign, ListChecks, BadgeCheck, PiggyBank } from 'lucide-react';
+import { Wrench, DollarSign, ListChecks, BadgeCheck, PiggyBank, RotateCcw, Power } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
@@ -15,8 +15,12 @@ const SOURCE_BADGE = {
   'compute-optimizer': { tone: 'brand', text: 'CO', title: 'AWS Compute Optimizer' },
   'ce-rightsizing': { tone: 'info', text: 'CE', title: 'Cost Explorer rightsizing' },
   'ce-savings-plan': { tone: 'ok', text: 'SP', title: 'Cost Explorer Savings Plan purchase recommendation' },
+  'cost-optimization-hub': { tone: 'ok', text: 'Hub', title: 'AWS Cost Optimization Hub (savings after your discounts)' },
   heuristic: { tone: 'neutral', text: 'Heuristic', title: 'ICC heuristic' },
 };
+const ICC_RIGHTSIZE = { tone: 'info', text: 'ICC', title: 'ICC rightsizing heuristic: CPU only, no memory data' };
+const EFFORT_TONE = { low: 'ok', medium: 'warn', high: 'crit' };
+const effortLabel = (e) => { const t = String(e || '').toLowerCase(); return t === 'verylow' ? 'Low' : t ? t.charAt(0).toUpperCase() + t.slice(1) : ''; };
 const statusOf = (r) => r?.state?.status || 'open';
 
 export default function AwsOptimizerPage() {
@@ -25,11 +29,13 @@ export default function AwsOptimizerPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [status, setStatus] = useUrlParam('status', 'all');
+  const [dupParam, setDupParam] = useUrlParam('includeShadowed', '');
+  const includeShadowed = dupParam === '1';
 
   // Always loads every status; the chips filter the loaded rows so the tiles and counts stay whole.
-  const load = useCallback(() => getOptimizer({ status: 'all' })
+  const load = useCallback(() => getOptimizer(includeShadowed ? { status: 'all', includeShadowed: 1 } : { status: 'all' })
     .then((d) => { setData(d); setLastRefreshed(new Date()); })
-    .catch(() => { setData({ totals: { count: 0, estMonthlySavingsUsd: 0, coEnrollment: null, lastCapture: null }, recommendations: [] }); toast({ type: 'error', title: 'Failed to load Optimizer data' }); }), [toast]);
+    .catch(() => { setData({ totals: { count: 0, estMonthlySavingsUsd: 0, coEnrollment: null, lastCapture: null }, recommendations: [] }); toast({ type: 'error', title: 'Failed to load Optimizer data' }); }), [toast, includeShadowed]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -52,8 +58,9 @@ export default function AwsOptimizerPage() {
     all.forEach((r) => { const s = statusOf(r); if (c[s] != null) c[s] += 1; });
     return c;
   }, [all]);
+  const hubCount = useMemo(() => all.filter((r) => r.source === 'cost-optimization-hub' && !r.shadowedBy).length, [all]);
   const potentialUsd = useMemo(
-    () => all.filter((r) => ['open', 'accepted'].includes(statusOf(r))).reduce((s, r) => s + (Number(r.estMonthlySavingsUsd) || 0), 0),
+    () => all.filter((r) => ['open', 'accepted'].includes(statusOf(r)) && !r.shadowedBy).reduce((s, r) => s + (Number(r.estMonthlySavingsUsd) || 0), 0),
     [all],
   );
   const recs = useMemo(() => (status === 'all' ? all : all.filter((r) => statusOf(r) === status)), [all, status]);
@@ -76,7 +83,7 @@ export default function AwsOptimizerPage() {
       </PageHeader>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
-        <StatCard icon={DollarSign} label="Potential Monthly Savings" value={fmtUsd(data ? potentialUsd : null)} sub="open and accepted" tone="brand" />
+        <StatCard icon={DollarSign} label="Potential Monthly Savings" value={fmtUsd(data ? potentialUsd : null)} sub={hubCount > 0 ? 'open and accepted, Hub rows are after discounts' : 'open and accepted'} tone="brand" />
         <StatCard icon={PiggyBank} label="Realized (90 days)" value={fmtUsd(totals.realized90dUsd ?? 0)} sub="recommendations resolved" tone={totals.realized90dUsd > 0 ? 'ok' : 'default'} />
         <StatCard icon={ListChecks} label="Open Recommendations" value={counts.open + counts.accepted} sub={`${counts.open} open, ${counts.accepted} accepted`} />
         <StatCard icon={BadgeCheck} label="Compute Optimizer" value={enrollment || 'Unknown'}
@@ -87,6 +94,11 @@ export default function AwsOptimizerPage() {
       <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <p className="text-sm font-semibold text-ink">Recommendations</p>
+          <label className="flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer ml-auto"
+            title="Show recommendations that another source already covers for the same resource">
+            <input type="checkbox" checked={includeShadowed} onChange={(e) => setDupParam(e.target.checked ? '1' : '')} className="accent-brand cursor-pointer" />
+            Show duplicates{totals.shadowed ? <span className="text-ink-faint tnum">{totals.shadowed}</span> : null}
+          </label>
           <div className="flex rounded-lg border border-cohesity-border overflow-hidden" role="group" aria-label="Status">
             {STATUS_CHIPS.map(([v, text]) => (
               <button key={v} type="button" aria-pressed={status === v} onClick={() => setStatus(v)}
@@ -118,6 +130,8 @@ export default function AwsOptimizerPage() {
                 <th className="py-2 pr-3">Current</th>
                 <th className="py-2 pr-3">Recommended</th>
                 <SortTh k="account" label="Account" ctl={ctl} />
+                <SortTh k="effort" label="Effort" ctl={ctl} />
+                <th className="py-2 pr-3">Flags</th>
                 <SortTh k="estMonthlySavingsUsd" label="Est. Savings" ctl={ctl} align="right" />
                 <SortTh k="status" label="Status" ctl={ctl} />
                 <th className="py-2 pr-3">Action</th>
@@ -125,9 +139,11 @@ export default function AwsOptimizerPage() {
               <tbody>
                 {ctl.pageRows.map((r) => {
                   const st = statusOf(r);
-                  const src = SOURCE_BADGE[r.source] || { tone: 'neutral', text: r.source, title: r.source };
+                  const src = r.source === 'heuristic' && r.finding === 'ec2-low-utilization'
+                    ? ICC_RIGHTSIZE
+                    : (SOURCE_BADGE[r.source] || { tone: 'neutral', text: r.source, title: r.source });
                   return (
-                    <tr key={r.key || `${r.account}|${r.source}|${r.resourceType}|${r.resourceId}`} className={`border-b border-cohesity-border/50 ${st === 'dismissed' ? 'opacity-60' : ''}`}>
+                    <tr key={r.key || `${r.account}|${r.source}|${r.resourceType}|${r.resourceId}`} className={`border-b border-cohesity-border/50 ${st === 'dismissed' || r.shadowedBy ? 'opacity-60' : ''}`}>
                       <td className="py-2 pr-3"><span title={src.title}><Badge tone={src.tone}>{src.text}</Badge></span></td>
                       <td className="py-2 pr-3 text-ink-muted uppercase text-[11px]">{r.resourceType}</td>
                       <td className="py-2 pr-3 text-ink">
@@ -137,12 +153,26 @@ export default function AwsOptimizerPage() {
                         )}
                       </td>
                       <td className="py-2 pr-3 text-ink-muted text-[11px]">{r.region || '-'}</td>
-                      <td className="py-2 pr-3 text-ink-muted">{r.finding || '-'}</td>
+                      <td className="py-2 pr-3 text-ink-muted">
+                        {r.finding || '-'}
+                        {r.shadowedBy && <span className="block text-[11px] text-ink-faint">shadowed by {r.shadowedBy}</span>}
+                      </td>
                       <td className="py-2 pr-3 text-ink-muted text-[11px]">{r.currentConfig || '-'}</td>
                       <td className="py-2 pr-3 text-ink-muted text-[11px]">{r.recommendedConfig || '-'}</td>
                       <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{r.account}</td>
+                      <td className="py-2 pr-3 whitespace-nowrap">
+                        {r.effort ? <Badge tone={EFFORT_TONE[String(r.effort).toLowerCase()] || 'neutral'}>{effortLabel(r.effort)}</Badge> : <span className="text-ink-faint">-</span>}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5 text-ink-muted">
+                          {r.restartNeeded ? <span title="Needs a restart"><Power size={13} /></span> : null}
+                          {r.rollbackPossible ? <span title="Can be rolled back"><RotateCcw size={13} /></span> : null}
+                          {!r.restartNeeded && !r.rollbackPossible && <span className="text-ink-faint">-</span>}
+                        </span>
+                      </td>
                       <td className="py-2 pr-3 text-right tnum text-ink">
                         {fmtUsd(r.estMonthlySavingsUsd)}
+                        {r.afterDiscounts ? <span className="block text-[11px] text-ink-faint">after discounts</span> : null}
                         {st === 'done' && r.state?.realizedUsd != null && (
                           <span className="block text-[11px] text-status-ok">realized {fmtUsd(r.state.realizedUsd)}</span>
                         )}

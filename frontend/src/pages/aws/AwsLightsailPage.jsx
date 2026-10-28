@@ -5,7 +5,7 @@ import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
-import { BRAND, fmtNum, dateAgo } from './helpers';
+import { BRAND, fmtNum, dateAgo, fmtUsd } from './helpers';
 
 const OK_STATES = new Set(['running', 'available', 'active', 'ok', 'deployed', 'attached', 'in-use', 'enabled', 'backing-up', 'modifying']);
 const stateTone = (s) => {
@@ -44,6 +44,7 @@ const TABS = [
       { k: 'snapshotCount', label: 'Snapshots', align: 'right', render: (r) => <span className="text-ink-muted tnum">{fmtNum(r.snapshotCount)}</span> },
       { k: 'latestSnapshotAt', label: 'Latest Snapshot', render: (r) => <span className="text-ink-faint text-[11px] tnum whitespace-nowrap">{dateAgo(r.latestSnapshotAt)}</span> },
       { k: 'account', label: 'Account', render: acctCell },
+      { k: 'estMonthlyUsd', label: 'Est. cost / mo', align: 'right', render: (r) => <span className="text-ink-muted tnum">{r.estMonthlyUsd != null ? fmtUsd(r.estMonthlyUsd) : '-'}</span> },
     ],
   },
   {
@@ -159,6 +160,7 @@ const TABS = [
 function InventoryTable({ tab, rows }) {
   const ctl = useTableControls(rows, {
     searchKeys: tab.searchKeys, defaultSortKey: 'name', defaultSortDir: 'asc', paginate: true,
+    sortValues: { estMonthlyUsd: (r) => (r.estMonthlyUsd == null ? -Infinity : r.estMonthlyUsd) },
   });
   if (rows == null) return <LoadingPanel label="Loading..." height={140} />;
   return (
@@ -186,6 +188,7 @@ function InventoryTable({ tab, rows }) {
           </table>
         </div>
       )}
+      {tab.id === 'instances' && rows.length > 0 && <p className="text-[11px] text-ink-faint mt-2">Est. cost / mo is estimated: billed usage types split across inventory by weight, 30 day average.</p>}
       <TablePager ctl={ctl} />
     </>
   );

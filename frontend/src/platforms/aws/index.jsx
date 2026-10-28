@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Coins, Receipt, PieChart, Handshake, Activity, Target, Scale, Bell, Server, Boxes, Zap, Container, Package, Database, Table2, Network, BrainCircuit, Settings, Sparkles, Wrench, ShieldCheck as PrivacyIcon } from 'lucide-react';
+import { Gauge, Coins, Receipt, PieChart, Layers, Handshake, Activity, Target, Scale, Bell, Server, Boxes, Zap, Container, Package, Database, Table2, Network, BrainCircuit, Settings, Sparkles, Wrench, ShieldCheck as PrivacyIcon } from 'lucide-react';
 
 const AwsOverviewPage = lazy(() => import('../../pages/aws/AwsOverviewPage'));
 const AwsCostPage = lazy(() => import('../../pages/aws/AwsCostPage'));
@@ -18,6 +18,7 @@ const AwsVpcPage = lazy(() => import('../../pages/aws/AwsVpcPage'));
 const AwsBedrockPage = lazy(() => import('../../pages/aws/AwsBedrockPage'));
 const FinopsOverviewPage = lazy(() => import('../../pages/aws/finops/FinopsOverviewPage'));
 const FinopsAllocationPage = lazy(() => import('../../pages/aws/finops/FinopsAllocationPage'));
+const FinopsResourcesPage = lazy(() => import('../../pages/aws/finops/FinopsResourcesPage'));
 const FinopsCommitmentsPage = lazy(() => import('../../pages/aws/finops/FinopsCommitmentsPage'));
 const FinopsAnomaliesPage = lazy(() => import('../../pages/aws/finops/FinopsAnomaliesPage'));
 const FinopsBudgetsPage = lazy(() => import('../../pages/aws/finops/FinopsBudgetsPage'));
@@ -42,6 +43,7 @@ const navGroups = [
       { label: 'Overview', route: '/aws/finops', icon: Coins, isActive: (p) => p === '/aws/finops' },
       { label: 'Cost Explorer', route: '/aws/cost', icon: Receipt, isActive: (p) => p.startsWith('/aws/cost') },
       { label: 'Allocation', route: '/aws/finops/allocation', icon: PieChart, isActive: (p) => p.startsWith('/aws/finops/allocation') },
+      { label: 'Resources', route: '/aws/finops/resources', icon: Layers, isActive: (p) => p.startsWith('/aws/finops/resources') },
       { label: 'Commitments', route: '/aws/finops/commitments', icon: Handshake, isActive: (p) => p.startsWith('/aws/finops/commitments') },
       { label: 'Anomalies', route: '/aws/finops/anomalies', icon: Activity, isActive: (p) => p.startsWith('/aws/finops/anomalies') },
       { label: 'Budgets', route: '/aws/finops/budgets', icon: Target, isActive: (p) => p.startsWith('/aws/finops/budgets') },
@@ -114,6 +116,7 @@ export default {
     { path: 'aws', Component: AwsOverviewPage },
     { path: 'aws/finops', Component: FinopsOverviewPage },
     { path: 'aws/finops/allocation', Component: FinopsAllocationPage },
+    { path: 'aws/finops/resources', Component: FinopsResourcesPage },
     { path: 'aws/finops/commitments', Component: FinopsCommitmentsPage },
     { path: 'aws/finops/anomalies', Component: FinopsAnomaliesPage },
     { path: 'aws/finops/budgets', Component: FinopsBudgetsPage },

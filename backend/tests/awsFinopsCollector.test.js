@@ -40,7 +40,46 @@ let spy;
 function mockCe(handler) {
   spy = vi.spyOn(CE.CostExplorerClient.prototype, 'send').mockImplementation(async (cmd) => handler(cmd.constructor.name, cmd.input));
 }
-afterEach(() => { if (spy) { spy.mockRestore(); spy = null; } });
+const SP = require('@aws-sdk/client-savingsplans');
+const BUD = require('@aws-sdk/client-budgets');
+const HUB = require('@aws-sdk/client-cost-optimization-hub');
+const PRC = require('@aws-sdk/client-pricing');
+const CO = require('@aws-sdk/client-compute-optimizer');
+const S3 = require('@aws-sdk/client-s3');
+const CW = require('@aws-sdk/client-cloudwatch');
+
+let otherSpies = [];
+const DENY_ACTIONS = {
+  DescribeSavingsPlansCommand: 'savingsplans:DescribeSavingsPlans',
+  DescribeBudgetsCommand: 'budgets:ViewBudget',
+  DescribeBudgetNotificationsForAccountCommand: 'budgets:ViewBudget',
+  ListEnrollmentStatusesCommand: 'cost-optimization-hub:ListEnrollmentStatuses',
+  ListRecommendationsCommand: 'cost-optimization-hub:ListRecommendations',
+  GetProductsCommand: 'pricing:GetProducts',
+  GetEnrollmentStatusCommand: 'compute-optimizer:GetEnrollmentStatus',
+  GetIdleRecommendationsCommand: 'compute-optimizer:GetIdleRecommendations',
+  GetRDSDatabaseRecommendationsCommand: 'compute-optimizer:GetRDSDatabaseRecommendations',
+  GetBucketTaggingCommand: 's3:GetBucketTagging',
+};
+/**
+ * Route every non-Cost-Explorer send (Savings Plans, Budgets, Cost Optimization Hub, Pricing, Compute Optimizer,
+ * S3, CloudWatch) through handlers[commandName](input). A command with no handler answers AccessDenied naming its
+ * IAM action, so a test only spells out the services it exercises.
+ */
+function mockOthers(handlers = {}) {
+  for (const C of [SP.SavingsplansClient, BUD.BudgetsClient, HUB.CostOptimizationHubClient, PRC.PricingClient, CO.ComputeOptimizerClient, S3.S3Client, CW.CloudWatchClient]) {
+    otherSpies.push(vi.spyOn(C.prototype, 'send').mockImplementation(async (cmd) => {
+      const name = cmd.constructor.name;
+      if (handlers[name]) return handlers[name](cmd.input);
+      throw denied(DENY_ACTIONS[name] || `unknown:${name}`);
+    }));
+  }
+}
+afterEach(() => {
+  if (spy) { spy.mockRestore(); spy = null; }
+  for (const o of otherSpies) o.mockRestore();
+  otherSpies = [];
+});
 
 const denied = (action) => Object.assign(new Error(`User: arn:aws:iam::123456789012:user/dashboard-readonly is not authorized to perform: ${action} on resource: arn:aws:ce:us-east-1:123456789012:/x because no identity-based policy allows the ${action} action`), { name: 'AccessDeniedException' });
 
@@ -274,6 +313,8 @@ describe('captureFinops', () => {
         case 'GetAnomaliesCommand': return { Anomalies: [{ AnomalyId: 'an-9', AnomalyStartDate: '2026-10-17', DimensionValue: 'Amazon RDS', MonitorArn: 'arn:mon/1', AnomalyScore: { CurrentScore: 40 }, Impact: { TotalImpact: 30, TotalActualSpend: 80, TotalExpectedSpend: 50, TotalImpactPercentage: 60 } }] };
         case 'GetRightsizingRecommendationCommand': return { RightsizingRecommendations: [{ RightsizingType: 'Terminate', CurrentInstance: { ResourceId: 'i-9', ResourceDetails: { EC2ResourceDetails: { InstanceType: 't3.large', Region: 'us-east-1' } } }, TerminateRecommendationDetail: { EstimatedMonthlySavings: '45' } }] };
         case 'GetSavingsPlansPurchaseRecommendationCommand': return { SavingsPlansPurchaseRecommendation: { SavingsPlansType: 'COMPUTE_SP', TermInYears: 'ONE_YEAR', PaymentOption: 'NO_UPFRONT', SavingsPlansPurchaseRecommendationDetails: [{ HourlyCommitmentToPurchase: '1.5', EstimatedMonthlySavingsAmount: '120', EstimatedOnDemandCost: '900' }] } };
+        case 'ListCostCategoryDefinitionsCommand': return { CostCategoryReferences: [] };
+        case 'GetCostAndUsageComparisonsCommand': return { CostAndUsageComparisons: [] };
         default: throw new Error(`unexpected command ${name}`);
       }
     };
@@ -282,6 +323,7 @@ describe('captureFinops', () => {
   beforeEach(() => {
     setSetting('aws_finops_tag_keys', JSON.stringify(['Environment']));
     setSetting('aws_finops_linked_accounts', 'auto');
+    mockOthers();   // the round 2 services answer AccessDenied unless a test says otherwise
   });
 
   it('continues after a denied capability, stores what worked and stamps the account', async () => {
@@ -423,5 +465,367 @@ describe('migration v11', () => {
     const v11 = awsMigrations.find((m) => m.version === 11);
     expect(() => v11.up(scratch)).not.toThrow();
     scratch.close();
+  });
+});
+
+// -- Round 2 capabilities (2026-10-27): comparison, categories, budgets, hub, idle/RDS, savings plan inventory, S3 tags --
+
+describe('round 2 capture', () => {
+  const NOW = new Date('2026-10-20T12:00:00Z');
+
+  /** Cost Explorer answers: anything not overridden is denied, so a test only wires what it checks. */
+  const ceBase = (overrides = {}) => (name, input) => {
+    if (overrides[name]) return overrides[name](input);
+    if (name === 'GetCostAndUsageCommand') return { ResultsByTime: [] };
+    throw denied(`ce:${name.replace(/Command$/, '')}`);
+  };
+  const acctWithNumber = (name) => {
+    const a = insertAccount(name);
+    db.prepare("UPDATE aws_accounts SET account_number = '123456789012' WHERE id = ?").run(a.id);
+    return db.prepare('SELECT * FROM aws_accounts WHERE id = ?').get(a.id);
+  };
+  const capStatus = (acct, id) => db.prepare('SELECT * FROM aws_capability_status WHERE account_id = ? AND capability = ?').get(acct.id, id);
+
+  beforeEach(() => {
+    setSetting('aws_finops_tag_keys', '[]');
+    setSetting('aws_finops_linked_accounts', 'off');
+    setSetting('aws_finops_comparison_enabled', '1');
+    setSetting('aws_finops_cost_categories_max', '5');
+    db.prepare('DELETE FROM aws_budgets').run();
+  });
+
+  it('skips the comparison when its month pair is already stored, and fetches nothing', async () => {
+    mockCe(ceBase());
+    mockOthers();
+    const acct = insertAccount('cmp-skip');
+    db.prepare(`INSERT INTO aws_cost_comparison (account_id, baseline_month, comparison_month, metric, service, baseline_usd, comparison_usd, delta_usd)
+      VALUES (?, '2026-08', '2026-09', 'amortized', 'Amazon EC2', 10, 20, 10)`).run(acct.id);
+    const out = await finops.captureFinops(acct, { skipped: [], now: NOW });
+    expect(out.capabilities.cost_comparison).toBe('unknown');
+    expect(capStatus(acct, 'cost_comparison').error).toBe('Already captured for 2026-09');
+    expect(spy.mock.calls.some(([c]) => c.constructor.name === 'GetCostAndUsageComparisonsCommand')).toBe(false);
+  });
+
+  it('stores the comparison with a driver call per top mover and a (total) row', async () => {
+    const comparison = (name, base, comp) => ({
+      CostAndUsageSelector: { Dimensions: { Key: 'SERVICE', Values: [name] } },
+      Metrics: { AmortizedCost: { BaselineTimePeriodAmount: String(base), ComparisonTimePeriodAmount: String(comp), Difference: String(comp - base), Unit: 'USD' } },
+    });
+    const driverCalls = [];
+    mockCe(ceBase({
+      GetCostAndUsageComparisonsCommand: (input) => {
+        expect(input).toMatchObject({
+          BaselineTimePeriod: { Start: '2026-08-01', End: '2026-09-01' }, ComparisonTimePeriod: { Start: '2026-09-01', End: '2026-10-01' },
+          MetricForComparison: 'AmortizedCost', GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
+        });
+        return {
+          CostAndUsageComparisons: [comparison('Amazon Lightsail', 300, 450), comparison('Amazon S3', 50, 40), comparison('Amazon RDS', 0, 80)],
+          TotalCostAndUsage: { AmortizedCost: { BaselineTimePeriodAmount: '350', ComparisonTimePeriodAmount: '570', Difference: '220', Unit: 'USD' } },
+        };
+      },
+      GetCostComparisonDriversCommand: (input) => {
+        driverCalls.push(input);
+        const service = input.Filter.Dimensions.Values[0];
+        return { CostComparisonDrivers: [{
+          CostSelector: { And: [{ Dimensions: { Key: 'SERVICE', Values: [service] } }, { Dimensions: { Key: 'USAGE_TYPE', Values: ['USE1-BundleUsage:16GB_win'] } }] },
+          Metrics: { AmortizedCost: { BaselineTimePeriodAmount: '43.5', ComparisonTimePeriodAmount: '120', Difference: '76.5' } },
+          CostDrivers: [{ Type: 'USAGE_CHANGE', Name: 'Usage', Metrics: { AmortizedCost: { Difference: '76.5' }, UsageQuantity: { Difference: '458.6', Unit: 'Hrs' } } }],
+        }] };
+      },
+    }));
+    mockOthers();
+    const acct = insertAccount('cmp-store');
+    const out = await finops.captureFinops(acct, { skipped: [], now: NOW });
+    expect(out.capabilities.cost_comparison).toBe('ok');
+    expect(driverCalls).toHaveLength(3);   // fewer than 8 services: one per service
+    expect(driverCalls[0]).toMatchObject({ MaxResults: 10, GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }] });
+    expect(capStatus(acct, 'cost_comparison').requests).toBe(4);   // 1 comparison page + 3 driver calls
+    const latest = finops.comparisonLatest({ accountId: acct.id });
+    expect(latest).toMatchObject({ baselineMonth: '2026-08', comparisonMonth: '2026-09', metric: 'amortized' });
+    expect(latest.rows.map((r) => r.service)).toEqual(['Amazon Lightsail', 'Amazon RDS', 'Amazon S3']);   // by |delta|
+    expect(latest.rows[0]).toMatchObject({ baselineUsd: 300, comparisonUsd: 450, deltaUsd: 150, deltaPct: 50 });
+    expect(latest.rows[0].drivers[0]).toEqual({
+      usageType: 'USE1-BundleUsage:16GB_win', baselineUsd: 43.5, comparisonUsd: 120, deltaUsd: 76.5,
+      drivers: [{ type: 'USAGE_CHANGE', name: 'Usage', deltaUsd: 76.5, usageDelta: 458.6, usageUnit: 'Hrs' }],
+    });
+    expect(latest.total).toMatchObject({ service: '(total)', deltaUsd: 220 });
+  });
+
+  it('stores nothing when a driver call is denied, so the pair is retried', async () => {
+    mockCe(ceBase({
+      GetCostAndUsageComparisonsCommand: () => ({ CostAndUsageComparisons: [{ CostAndUsageSelector: { Dimensions: { Key: 'SERVICE', Values: ['Amazon EC2'] } }, Metrics: { AmortizedCost: { BaselineTimePeriodAmount: '1', ComparisonTimePeriodAmount: '2', Difference: '1' } } }] }),
+      GetCostComparisonDriversCommand: () => { throw denied('ce:GetCostComparisonDrivers'); },
+    }));
+    mockOthers();
+    const acct = insertAccount('cmp-denied');
+    const out = await finops.captureFinops(acct, { skipped: [], now: NOW });
+    expect(out.capabilities.cost_comparison).toBe('denied');
+    expect(finops.comparisonLatest({ accountId: acct.id }).rows).toEqual([]);
+    expect(finops.capabilityRows(acct.id).find((r) => r.capability === 'cost_comparison').iamActions).toEqual(['ce:GetCostComparisonDrivers']);
+  });
+
+  it('caps cost category grouping calls at aws_finops_cost_categories_max and splits the key after the dollar sign', async () => {
+    setSetting('aws_finops_cost_categories_max', '2');
+    mockCe(ceBase({
+      ListCostCategoryDefinitionsCommand: () => ({ CostCategoryReferences: ['Team', 'Product', 'Unit'].map((Name) => ({ Name, CostCategoryArn: `arn:cc/${Name}` })) }),
+      GetCostAndUsageCommand: (input) => (input.GroupBy[0].Type === 'COST_CATEGORY'
+        ? { ResultsByTime: [{ TimePeriod: { Start: '2026-10-18', End: '2026-10-19' }, Groups: [{ Keys: [`${input.GroupBy[0].Key}$core`, 'Amazon EC2'], Metrics: { UnblendedCost: { Amount: '4' }, AmortizedCost: { Amount: '3' } } }] }] }
+        : { ResultsByTime: [] }),
+    }));
+    mockOthers();
+    const acct = insertAccount('cat-cap');
+    const out = await finops.captureFinops(acct, { skipped: [], now: NOW });
+    expect(out.capabilities.cost_categories).toBe('ok');
+    const catCalls = spy.mock.calls.filter(([c]) => c.input.GroupBy?.[0]?.Type === 'COST_CATEGORY');
+    expect(catCalls.map(([c]) => c.input.GroupBy[0].Key)).toEqual(['Team', 'Product']);
+    const rows = db.prepare("SELECT key, value, service, amortized_usd FROM aws_cost_alloc_daily WHERE account_id = ? AND dimension = 'cost_category' ORDER BY key").all(acct.id);
+    expect(rows).toEqual([
+      { key: 'Product', value: 'core', service: 'Amazon EC2', amortized_usd: 3 },
+      { key: 'Team', value: 'core', service: 'Amazon EC2', amortized_usd: 3 },
+    ]);
+  });
+
+  it('records a note when no cost categories exist', async () => {
+    mockCe(ceBase({ ListCostCategoryDefinitionsCommand: () => ({ CostCategoryReferences: [] }) }));
+    mockOthers();
+    const acct = insertAccount('cat-none');
+    const out = await finops.captureFinops(acct, { skipped: [], now: NOW });
+    expect(out.capabilities.cost_categories).toBe('ok');
+    expect(capStatus(acct, 'cost_categories').error).toBe('No cost categories are defined on this account.');
+  });
+
+  it('mirrors AWS budgets: scope mapping, an (AWS) suffix on a name clash, and removal of vanished rows', async () => {
+    db.prepare("INSERT INTO aws_budgets (name, scope_type, amount_usd) VALUES ('Platform', 'total', 100)").run();
+    const budget = (name, extra = {}) => ({
+      BudgetName: name, BudgetType: 'COST', TimeUnit: 'MONTHLY', BudgetLimit: { Amount: '500', Unit: 'USD' },
+      CalculatedSpend: { ActualSpend: { Amount: '120.5', Unit: 'USD' }, ForecastedSpend: { Amount: '480', Unit: 'USD' } }, CostFilters: {}, ...extra,
+    });
+    let list = [
+      budget('Platform'),
+      budget('Compute', { CostFilters: { Service: ['Amazon Elastic Compute Cloud - Compute'] } }),
+      budget('EnvProd', { CostFilters: { TagKeyValue: ['user:Environment$prod'] } }),
+      budget('Mixed', { CostFilters: { Service: ['Amazon S3', 'Amazon RDS'] } }),
+      budget('Usage', { BudgetType: 'USAGE' }),
+    ];
+    mockCe(ceBase());
+    mockOthers({
+      DescribeBudgetsCommand: (input) => {
+        expect(input).toMatchObject({ AccountId: '123456789012', ShowFilterExpression: true });
+        return { Budgets: list };
+      },
+      DescribeBudgetNotificationsForAccountCommand: () => ({ BudgetNotificationsForAccount: [
+        { BudgetName: 'Platform', Notifications: [
+          { NotificationType: 'ACTUAL', ComparisonOperator: 'GREATER_THAN', Threshold: 60, ThresholdType: 'PERCENTAGE' },
+          { NotificationType: 'ACTUAL', ComparisonOperator: 'GREATER_THAN', Threshold: 90, ThresholdType: 'PERCENTAGE' },
+          { NotificationType: 'FORECASTED', ComparisonOperator: 'GREATER_THAN', Threshold: 100, ThresholdType: 'PERCENTAGE' },
+        ] },
+      ] }),
+    });
+    const acct = acctWithNumber('bud-acct');
+    const out = await finops.captureFinops(acct, { skipped: [], now: NOW });
+    expect(out.capabilities.aws_budgets).toBe('ok');
+    const rows = db.prepare("SELECT name, scope_type, scope_key, scope_value, amount_usd, warn_pct, forecast_alert, external_name, time_unit, aws_actual_usd, aws_forecast_usd FROM aws_budgets WHERE source = 'aws' ORDER BY external_name").all();
+    expect(rows.map((r) => r.name)).toEqual(['Compute', 'EnvProd', 'Mixed', 'Platform (AWS)']);
+    const by = Object.fromEntries(rows.map((r) => [r.external_name, r]));
+    expect(by.Platform).toMatchObject({ scope_type: 'total', warn_pct: 60, forecast_alert: 1, amount_usd: 500, aws_actual_usd: 120.5, aws_forecast_usd: 480, time_unit: 'MONTHLY' });
+    expect(by.Compute).toMatchObject({ scope_type: 'service', scope_value: 'Amazon Elastic Compute Cloud - Compute', warn_pct: 80, forecast_alert: 0 });
+    expect(by.EnvProd).toMatchObject({ scope_type: 'tag', scope_key: 'Environment', scope_value: 'prod' });
+    expect(by.Mixed.scope_type).toBe('external');
+    expect(db.prepare("SELECT name FROM aws_budgets WHERE source = 'icc'").all()).toEqual([{ name: 'Platform' }]);   // the ICC budget is untouched
+
+    // The AWS figures drive the evaluation of an AWS row.
+    const state = db.prepare(`SELECT s.actual_usd, s.forecast_usd, s.forecast_source FROM aws_budget_status s JOIN aws_budgets b ON b.id = s.budget_id
+      WHERE b.external_name = 'Mixed' AND s.month = '2026-10'`).get();
+    expect(state).toEqual({ actual_usd: 120.5, forecast_usd: 480, forecast_source: 'aws' });
+
+    // A budget that vanished from AWS is removed on the next capture.
+    list = [budget('Platform')];
+    db.prepare('UPDATE aws_accounts SET last_finops_capture_at = NULL WHERE id = ?').run(acct.id);
+    await finops.captureFinops(acct, { skipped: [], now: NOW });
+    expect(db.prepare("SELECT name FROM aws_budgets WHERE source = 'aws'").all()).toEqual([{ name: 'Platform (AWS)' }]);
+  });
+
+  it('evaluates a service budget with scope_match contains against every matching service line', () => {
+    const acct = insertAccount('bud-contains');
+    for (const [service, usd] of [['Claude Opus 4.6 (Amazon Bedrock Edition)', 30], ['Claude Sonnet 4.6 (Amazon Bedrock Edition)', 20], ['Amazon S3', 99]]) {
+      db.prepare("INSERT INTO aws_cost_daily (account_id, day, service, amount_usd, amortized_usd) VALUES (?, '2026-10-05', ?, ?, ?)").run(acct.id, service, usd, usd);
+    }
+    const id = db.prepare("INSERT INTO aws_budgets (name, scope_type, scope_value, scope_match, amount_usd) VALUES ('Bedrock', 'service', 'Bedrock', 'contains', 100)").run().lastInsertRowid;
+    const exact = db.prepare("INSERT INTO aws_budgets (name, scope_type, scope_value, scope_match, amount_usd) VALUES ('BedrockExact', 'service', 'Bedrock', 'exact', 100)").run().lastInsertRowid;
+    finops.evaluateBudgets({ now: NOW });
+    const st = (budgetId) => db.prepare("SELECT actual_usd FROM aws_budget_status WHERE budget_id = ? AND month = '2026-10'").get(budgetId);
+    expect(st(id).actual_usd).toBe(50);
+    expect(st(exact).actual_usd).toBe(0);
+  });
+
+  it('Cost Optimization Hub: not enrolled is not_enabled; enrolled rows land in the optimizer table with the new columns', async () => {
+    mockCe(ceBase());
+    mockOthers({ ListEnrollmentStatusesCommand: () => ({ items: [{ accountId: '1', status: 'Inactive' }] }) });
+    const first = insertAccount('hub-off');
+    const out = await finops.captureFinops(first, { skipped: [], now: NOW });
+    expect(out.capabilities.optimization_hub).toBe('not_enabled');
+    expect(capStatus(first, 'optimization_hub').error).toMatch(/^Cost Optimization Hub is not enrolled/);
+
+    for (const o of otherSpies) o.mockRestore();
+    otherSpies = [];
+    mockOthers({
+      ListEnrollmentStatusesCommand: () => ({ items: [{ accountId: '1', status: 'Active' }] }),
+      ListRecommendationsCommand: (input) => {
+        expect(input).toMatchObject({ includeAllRecommendations: true, maxResults: 100 });
+        return { items: [{
+          recommendationId: 'r-1', resourceId: 'i-0abc', resourceArn: 'arn:aws:ec2:us-east-2:1:instance/i-0abc', region: 'us-east-2',
+          currentResourceType: 'Ec2Instance', recommendedResourceType: 'Ec2Instance', actionType: 'Rightsize', estimatedMonthlySavings: 42.5,
+          estimatedSavingsPercentage: 30, estimatedMonthlyCost: 140, implementationEffort: 'Medium', restartNeeded: true, rollbackPossible: true,
+          currentResourceSummary: 'm5.2xlarge', recommendedResourceSummary: 'm5.xlarge', recommendationLookbackPeriodInDays: 14,
+          source: 'ComputeOptimizer', tags: [{ key: 'Name', value: 'web-1' }],
+        }] };
+      },
+    });
+    const second = insertAccount('hub-on');
+    const ok = await finops.captureFinops(second, { skipped: [], now: NOW });
+    expect(ok.capabilities.optimization_hub).toBe('ok');
+    expect(capStatus(second, 'optimization_hub').requests).toBe(0);   // free
+    const row = db.prepare("SELECT * FROM aws_optimizer_recommendations WHERE account_id = ? AND source = 'cost-optimization-hub'").get(second.id);
+    expect(row).toMatchObject({
+      resource_type: 'ec2instance', resource_id: 'i-0abc', resource_name: 'web-1', finding: 'Rightsize', current_config: 'm5.2xlarge',
+      recommended_config: 'm5.xlarge', est_monthly_savings_usd: 42.5, effort: 'Medium', restart_needed: 1, rollback_possible: 1,
+      action_type: 'Rightsize', lookback_days: 14, after_discounts: 1, reason: 'Cost Optimization Hub, 14 day lookback',
+    });
+    expect(JSON.parse(row.detail_json).recommendationId).toBe('r-1');
+    expect(db.prepare("SELECT status FROM aws_recommendation_state WHERE account_id = ? AND rec_key = 'cost-optimization-hub|Rightsize|i-0abc'").get(second.id).status).toBe('open');
+  });
+
+  it('Savings Plans inventory keeps its API columns over the details call and refreshes only utilization', () => {
+    const acct = insertAccount('sp-api');
+    const arn = 'arn:aws:savingsplans::1:savingsplan/sp-1';
+    poller.upsertSavingsPlans(acct.id, [{ spArn: arn, spType: 'COMPUTE_SP', paymentOption: 'NO_UPFRONT', term: '1yr', commitmentUsd: 3, state: 'active',
+      upfrontUsd: 0, recurringUsd: 3, offeringId: 'off-1', productTypes: ['EC2', 'Fargate'], description: 'one year', start: '2026-01-01T00:00:00Z', end: '2027-01-01T00:00:00Z' },
+    { spArn: `${arn}-q`, spType: 'COMPUTE_SP', state: 'queued', commitmentUsd: 3 }], 'api');
+    poller.upsertSavingsPlans(acct.id, [{ spArn: arn, spType: 'ignored', hourlyCommitmentUsd: 99, utilizationPct: 91, netSavingsUsd: 12.5 },
+      { spArn: `${arn}-d`, spType: 'COMPUTE_SP', hourlyCommitmentUsd: 1, utilizationPct: 50 }], 'details');
+    const rows = db.prepare('SELECT sp_arn, sp_type, hourly_commitment_usd, state, source, utilization_pct, net_savings_usd, product_types_json, offering_id FROM aws_savings_plans WHERE account_id = ? ORDER BY sp_arn').all(acct.id);
+    expect(rows.find((r) => r.sp_arn === arn)).toEqual({
+      sp_arn: arn, sp_type: 'COMPUTE_SP', hourly_commitment_usd: 3, state: 'active', source: 'api', utilization_pct: 91, net_savings_usd: 12.5,
+      product_types_json: '["EC2","Fargate"]', offering_id: 'off-1',
+    });
+    expect(rows.find((r) => r.sp_arn === `${arn}-d`).source).toBe('details');
+    // A later details call replaces details-only rows and leaves API rows; a later API call drops plans AWS no longer lists.
+    poller.upsertSavingsPlans(acct.id, [], 'details');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM aws_savings_plans WHERE account_id = ?').get(acct.id).n).toBe(2);
+    poller.upsertSavingsPlans(acct.id, [{ spArn: arn, state: 'retired' }], 'api');
+    expect(db.prepare('SELECT sp_arn, state FROM aws_savings_plans WHERE account_id = ?').all(acct.id)).toEqual([{ sp_arn: arn, state: 'retired' }]);
+  });
+
+  it('collectComputeOptimizer adds idle and RDS rows and records co_idle / co_rds status', async () => {
+    mockOthers({
+      GetEnrollmentStatusCommand: () => ({ status: 'Active' }),
+      GetEC2InstanceRecommendationsCommand: () => ({ instanceRecommendations: [] }),
+      GetEBSVolumeRecommendationsCommand: () => ({ volumeRecommendations: [] }),
+      GetLambdaFunctionRecommendationsCommand: () => ({ lambdaFunctionRecommendations: [] }),
+      GetECSServiceRecommendationsCommand: () => ({ ecsServiceRecommendations: [] }),
+      GetIdleRecommendationsCommand: () => ({ idleRecommendations: [{
+        resourceArn: 'arn:aws:ec2:us-east-2:1:instance/i-idle', resourceId: 'i-idle', resourceType: 'EC2Instance', finding: 'Idle',
+        findingDescription: 'CPU under 5 percent', savingsOpportunityAfterDiscounts: { estimatedMonthlySavings: { currency: 'USD', value: 21 } },
+        savingsOpportunity: { estimatedMonthlySavings: { currency: 'USD', value: 30 } }, lookBackPeriodInDays: 14, tags: [{ key: 'Name', value: 'idle-box' }],
+      }, {
+        resourceArn: 'arn:aws:ec2:us-east-2:1:volume/vol-1', resourceType: 'EBSVolume', finding: 'Unattached',
+        savingsOpportunity: { estimatedMonthlySavings: { value: 8 } },
+      }] }),
+      GetRDSDatabaseRecommendationsCommand: () => ({ rdsDBRecommendations: [{
+        resourceArn: 'arn:aws:rds:us-east-2:1:db:orders', currentDBInstanceClass: 'db.m5.xlarge', instanceFinding: 'Overprovisioned',
+        instanceFindingReasonCodes: ['CPUOverprovisioned'], storageFinding: 'NotOptimized',
+        currentStorageConfiguration: { storageType: 'gp2', allocatedStorage: 500 },
+        instanceRecommendationOptions: [{ rank: 2, dbInstanceClass: 'db.m5.large' }, { rank: 1, dbInstanceClass: 'db.m5.2xlarge-nope', savingsOpportunity: { estimatedMonthlySavings: { value: 100 } }, savingsOpportunityAfterDiscounts: { estimatedMonthlySavings: { value: 70 } } }],
+        storageRecommendationOptions: [{ rank: 1, storageConfiguration: { storageType: 'gp3', allocatedStorage: 500 }, savingsOpportunity: { estimatedMonthlySavings: { value: 15 } } }],
+        lookbackPeriodInDays: 14,
+      }, { resourceArn: 'arn:aws:rds:us-east-2:1:db:fine', instanceFinding: 'Optimized', storageFinding: 'Optimized' }] }),
+    });
+    const acct = insertAccount('co-extra');
+    const out = await poller.collectComputeOptimizer(acct);
+    expect(out.status).toBe('Active');
+    const by = (type) => out.rows.filter((r) => r.resourceType === type);
+    expect(by('idle-ec2instance')).toEqual([expect.objectContaining({ resourceId: 'i-idle', finding: 'Idle', resourceName: 'idle-box', estMonthlySavingsUsd: 21, afterDiscounts: 1, lookbackDays: 14, reason: 'CPU under 5 percent' })]);
+    expect(by('idle-ebsvolume')[0]).toMatchObject({ resourceId: 'vol-1', finding: 'Unattached', estMonthlySavingsUsd: 8, afterDiscounts: 0 });
+    expect(by('rds').find((r) => r.resourceId === 'orders')).toMatchObject({ finding: 'Overprovisioned', currentConfig: 'db.m5.xlarge', recommendedConfig: 'db.m5.2xlarge-nope', estMonthlySavingsUsd: 70, afterDiscounts: 1 });
+    expect(by('rds-storage')).toEqual([expect.objectContaining({ resourceId: 'orders', finding: 'NotOptimized', currentConfig: 'gp2 500GiB', recommendedConfig: 'gp3 500GiB', estMonthlySavingsUsd: 15 })]);
+    expect(capStatus(acct, 'co_idle').status).toBe('ok');
+    expect(capStatus(acct, 'co_rds').status).toBe('ok');
+    // Stored through the optimizer path, the idle row keeps its own resource type and discount flag.
+    poller.storeOptimizer(acct.id, 'Active', out.rows.map((r) => ({ ...r, source: 'compute-optimizer' })));
+    expect(db.prepare("SELECT resource_type, after_discounts FROM aws_optimizer_recommendations WHERE account_id = ? AND resource_id = 'i-idle'").get(acct.id))
+      .toEqual({ resource_type: 'idle-ec2instance', after_discounts: 1 });
+  });
+
+  it('a denied idle call records co_idle denied with its action and leaves the other rows', async () => {
+    mockOthers({
+      GetEnrollmentStatusCommand: () => ({ status: 'Active' }),
+      GetEC2InstanceRecommendationsCommand: () => ({ instanceRecommendations: [] }),
+      GetEBSVolumeRecommendationsCommand: () => ({ volumeRecommendations: [] }),
+      GetLambdaFunctionRecommendationsCommand: () => ({ lambdaFunctionRecommendations: [] }),
+      GetECSServiceRecommendationsCommand: () => ({ ecsServiceRecommendations: [] }),
+      GetRDSDatabaseRecommendationsCommand: () => ({ rdsDBRecommendations: [] }),
+    });
+    const acct = insertAccount('co-denied');
+    const out = await poller.collectComputeOptimizer(acct);
+    expect(out.rows).toEqual([]);
+    expect(capStatus(acct, 'co_idle').status).toBe('denied');
+    expect(finops.capabilityRows(acct.id).find((r) => r.capability === 'co_idle')).toMatchObject({ status: 'denied', iamActions: ['compute-optimizer:GetIdleRecommendations'], free: true });
+  });
+
+  it('S3 tags: tags are read per bucket, NoSuchTagSet is an empty set, and one denial records inventory_tags once and nulls every tag', async () => {
+    const wire = (tagging) => ({
+      ListBucketsCommand: () => ({ Buckets: [{ Name: 'b-one', CreationDate: new Date('2025-01-01') }, { Name: 'b-two', CreationDate: new Date('2025-02-01') }] }),
+      GetBucketLocationCommand: () => ({}),
+      GetPublicAccessBlockCommand: () => { throw Object.assign(new Error('none'), { name: 'NoSuchPublicAccessBlockConfiguration' }); },
+      GetBucketVersioningCommand: () => ({ Status: 'Enabled' }),
+      GetBucketLifecycleConfigurationCommand: () => { throw Object.assign(new Error('none'), { name: 'NoSuchLifecycleConfiguration' }); },
+      GetBucketTaggingCommand: tagging,
+      GetMetricDataCommand: () => ({ MetricDataResults: [] }),
+    });
+    mockOthers(wire((input) => {
+      if (input.Bucket === 'b-two') throw Object.assign(new Error('The specified bucket does not have a TagSet'), { name: 'NoSuchTagSet' });
+      return { TagSet: [{ Key: 'Team', Value: 'data' }, { Key: 'Environment', Value: 'prod' }] };
+    }));
+    const acct = insertAccount('s3-tags');
+    const rows = await poller.collectS3(acct);
+    expect(rows.find((r) => r.name === 'b-one').tags).toEqual({ Team: 'data', Environment: 'prod' });
+    expect(rows.find((r) => r.name === 'b-two').tags).toEqual({});
+    expect(capStatus(acct, 'inventory_tags').status).toBe('ok');
+    poller.storeS3(acct.id, rows);
+    expect(db.prepare("SELECT tags_json FROM aws_s3_buckets WHERE account_id = ? AND name = 'b-one'").get(acct.id).tags_json).toBe('{"Team":"data","Environment":"prod"}');
+    expect(db.prepare("SELECT tags_json FROM aws_s3_buckets WHERE account_id = ? AND name = 'b-two'").get(acct.id).tags_json).toBeNull();
+    poller.refreshInventoryTagKeysSeen();
+    expect(JSON.parse(getSetting('aws_inventory_tag_keys_seen'))).toEqual(expect.arrayContaining(['Environment', 'Team']));
+
+    for (const o of otherSpies) o.mockRestore();
+    otherSpies = [];
+    mockOthers(wire(() => { throw denied('s3:GetBucketTagging'); }));
+    const acct2 = insertAccount('s3-tags-denied');
+    const logs = vi.spyOn(finops._logger, 'warn');
+    const denies = await poller.collectS3(acct2);
+    expect(denies.every((r) => r.tags === null)).toBe(true);
+    expect(capStatus(acct2, 'inventory_tags')).toMatchObject({ status: 'denied' });
+    expect(capStatus(acct2, 'inventory_tags').error).toContain('s3:GetBucketTagging');
+    expect(logs.mock.calls.filter(([m]) => /bucket tags unavailable/.test(String(m)))).toHaveLength(1);   // once, not per bucket
+    logs.mockRestore();
+  });
+});
+
+describe('round 2 error classification and capability rows', () => {
+  it('classifies non-ce denials, the hub enrollment message, and lists the new actions', () => {
+    for (const action of ['savingsplans:DescribeSavingsPlans', 'budgets:ViewBudget', 'cost-optimization-hub:ListRecommendations', 'pricing:GetProducts', 'compute-optimizer:GetIdleRecommendations', 's3:GetBucketTagging']) {
+      expect(awsApi.classifyCeError(denied(action))).toBe('denied');
+      expect(finops._deniedActions(denied(action).message)).toEqual([action]);
+    }
+    // Pricing's message has no "on resource" clause.
+    expect(finops._deniedActions('User: arn:aws:iam::1:user/x is not authorized to perform: pricing:GetProducts')).toEqual(['pricing:GetProducts']);
+    expect(awsApi.classifyCeError({ name: 'NotEnrolled', message: 'Cost Optimization Hub is not enrolled for this account (enable it in the Billing console).' })).toBe('not_enabled');
+    const rows = finops.capabilityRows(null);
+    const ids = rows.map((r) => r.capability);
+    expect(ids.slice(ids.indexOf('sp_recommendation'), -1)).toEqual(['sp_recommendation', 'cost_categories', 'cost_comparison', 'savings_plans_inventory', 'aws_budgets',
+      'optimization_hub', 'pricing', 'co_idle', 'co_rds', 'inventory_tags', 'resource_estimate']);
+    expect(rows.filter((r) => r.free).map((r) => r.capability).sort()).toEqual([...finops.FREE_CAPABILITIES].sort());
+    expect(finops.CAPABILITY_ACTIONS.optimization_hub).toContain('cost-optimization-hub:ListEnrollmentStatuses');
+    expect(finops.CAPABILITY_ACTIONS.aws_budgets).toEqual(['budgets:ViewBudget']);
   });
 });

@@ -7,9 +7,11 @@ import {
 } from 'chart.js';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
-import { PageHeader, StatCard, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
+import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtUsd } from './helpers';
 import MetricToggle from './finops/MetricToggle';
+import { getResources } from './finops/finopsApi';
+import ResourceEstimateTable, { ESTIMATE_NOTE } from './finops/ResourceEstimateTable';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 
@@ -97,6 +99,7 @@ export default function AwsCostPage() {
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [month, setMonth] = useState('');
   const [resources, setResources] = useState(null);
+  const [estimate, setEstimate] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
   // Cost Explorer keeps unblended as its default; amortized is opt-in through ?metric=amortized.
   const metric = searchParams.get('metric') === 'amortized' ? 'amortized' : 'unblended';
@@ -201,6 +204,28 @@ export default function AwsCostPage() {
     if (accts.every((a) => !a.status)) return { text: 'Waiting for the next daily cost capture.' };
     return { text: 'No resource-level rows in the window.', detail: accts.find((a) => a.status === 'error')?.error };
   }, [resources]);
+
+  // Third mode: when AWS resource-level billing data is not flowing, show ICC's estimate instead.
+  const estimateMode = useMemo(() => {
+    const cr = resources?.costResources;
+    if (!cr) return false;
+    if (cr.enabled === false) return true;
+    const status = cr.status ?? ((cr.accounts || []).some((a) => a.status === 'ok') ? 'ok' : 'unknown');
+    return status !== 'ok';
+  }, [resources]);
+
+  useEffect(() => {
+    if (!estimateMode) { setEstimate(null); return undefined; }
+    let live = true;
+    const params = { days, limit: 200, metric };
+    if (accountId) params.accountId = accountId;
+    if (selectedService) params.service = selectedService;
+    if (selectedUsageType) params.usageType = selectedUsageType;
+    getResources(params, 60000)
+      .then((d) => { if (live) setEstimate(d || { rows: [] }); })
+      .catch(() => { if (live) setEstimate({ rows: [] }); });
+    return () => { live = false; };
+  }, [estimateMode, days, metric, accountId, selectedService, selectedUsageType]);
 
   // 12m mode: aggregate the daily series into months client-side (day granularity doesn't apply).
   const byMonth = useMemo(() => {
@@ -436,7 +461,11 @@ export default function AwsCostPage() {
               className="text-[11px] text-brand hover:underline cursor-pointer">Clear usage type</button>
           )}
         </div>
-        <p className="text-[11px] text-ink-muted mb-3">Resource-level cost from Cost Explorer, last 14 days, newest capture</p>
+        <p className="text-[11px] text-ink-muted mb-3">
+          {estimateMode && !inventoryView
+            ? <>Estimated resource cost, last {days} days <Badge tone="warn">Estimated</Badge></>
+            : 'Resource-level cost from Cost Explorer, last 14 days, newest capture'}
+        </p>
         {inventoryView ? (
           <div>
             <p className="text-[11px] text-ink-muted mb-2">
@@ -466,6 +495,13 @@ export default function AwsCostPage() {
           </div>
         ) : resources == null ? (
           <LoadingPanel label="Loading..." height={140} />
+        ) : estimateMode ? (
+          estimate == null ? <LoadingPanel label="Loading..." height={140} /> : (
+            <div>
+              <p className="text-[11px] text-ink-muted mb-2">{ESTIMATE_NOTE}</p>
+              <ResourceEstimateTable rows={estimate.rows || []} emptyText="No estimated resource cost for this selection." />
+            </div>
+          )
         ) : resourceNotice ? (
           <div className="text-sm text-ink-muted py-6 text-center">
             <p>{resourceNotice.text}</p>
