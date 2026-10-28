@@ -1,12 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, LayoutGrid, Check, Hexagon, ShieldCheck, Activity } from 'lucide-react';
-import dellLogo from '../assets/platform-logos/dell.svg';
-import vcenterLogo from '../assets/platform-logos/vcenter.svg';
+import { ChevronDown, LayoutGrid, Check, Activity } from 'lucide-react';
+import dellLogo from '../assets/platform-logos/dell.png';
+import vcenterLogo from '../assets/platform-logos/vcenter.png';
 import netappLogo from '../assets/platform-logos/netapp.svg';
 import pureLogo from '../assets/platform-logos/pure.svg';
-import ariaLogo from '../assets/platform-logos/aria.svg';
+import ariaLogo from '../assets/platform-logos/aria.png';
+import zertoLogo from '../assets/platform-logos/zerto.png';
+import nutanixLogo from '../assets/platform-logos/nutanix.png';
+import proxmoxLogo from '../assets/platform-logos/proxmox.png';
+import awsLogo from '../assets/platform-logos/aws.png';
+import unifiLogo from '../assets/platform-logos/unifi.png';
+import cohesityLogo from '../assets/platform-logos/cohesity.png';
+import rubrikLogo from '../assets/platform-logos/rubrik.png';
+import netbackupLogo from '../assets/platform-logos/netbackup.png';
 import bluecatLogo from '../assets/platform-logos/bluecat.png';
+import eonLogo from '../assets/platform-logos/eon.png';
 import logicmonitorLogo from '../assets/platform-logos/logicmonitor.png';
+import hypervLogo from '../assets/platform-logos/hyperv.svg';
 
 // Three experimental platform-switcher styles (dropdown | rail | grid), trialed
 // side-by-side against the original tab row. The active style is a per-browser
@@ -56,22 +66,14 @@ const monogram = (label) => label.slice(0, 2);
 // Official brand marks (bundled SVGs, tinted to each platform's color).
 // Cohesity reuses the app's own hexagon+shield identity; platforms without
 // a mark (Zerto, future plugins) fall back to the monogram.
-const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, bluecat: bluecatLogo, logicmonitor: logicmonitorLogo };
+const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, zerto: zertoLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo, rubrik: rubrikLogo, netbackup: netbackupLogo, unifi: unifiLogo, bluecat: bluecatLogo, eon: eonLogo, logicmonitor: logicmonitorLogo, hyperv: hypervLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {
     return <Activity size={size} strokeWidth={2} style={{ color: platform.color }} />;
   }
-  if (platform.id === 'cohesity') {
-    return (
-      <span className="relative flex items-center justify-center" style={{ width: size, height: size }}>
-        <Hexagon size={size} strokeWidth={1.75} style={{ color: platform.color }} />
-        <ShieldCheck size={Math.round(size * 0.46)} className="absolute" strokeWidth={2.5} style={{ color: platform.color }} />
-      </span>
-    );
-  }
-  const src = LOGOS[platform.id];
-  if (src) return <img src={src} alt="" style={{ width: size, height: size }} draggable={false} />;
+  const src = LOGOS[platform.id] || platform.logo;
+  if (src) return <img src={src} alt="" style={{ width: size, height: size, objectFit: 'contain', borderRadius: 2 }} draggable={false} />;
   return <>{monogram(platform.label)}</>;
 }
 
