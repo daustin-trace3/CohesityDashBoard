@@ -3,6 +3,7 @@ import { Target, Pencil, Trash2, Plus, RefreshCw } from 'lucide-react';
 import { useToast } from '../../../components/ui/Toaster';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../../components/ui/primitives';
 import { fmtUsd } from '../helpers';
+import FinopsTabs from './FinopsTabs';
 import { getBudgets, updateBudget, deleteBudget, evaluateBudgets, errMsg } from './finopsApi';
 import BudgetBar from './BudgetBar';
 import BudgetModal from './BudgetModal';
@@ -91,6 +92,7 @@ export default function FinopsBudgetsPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={onRefresh} refreshing={refreshing} />
       </PageHeader>
+      <FinopsTabs />
 
       <Panel title="Budgets">
         {data == null ? <LoadingPanel height={160} /> : budgets.length === 0

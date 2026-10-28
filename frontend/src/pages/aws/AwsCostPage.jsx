@@ -10,6 +10,7 @@ import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { BRAND, fmtUsd } from './helpers';
 import MetricToggle from './finops/MetricToggle';
+import FinopsTabs from './finops/FinopsTabs';
 import { getResources } from './finops/finopsApi';
 import ResourceEstimateTable, { ESTIMATE_NOTE } from './finops/ResourceEstimateTable';
 
@@ -315,6 +316,7 @@ export default function AwsCostPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
+      <FinopsTabs />
 
       {metric === 'amortized' && (
         <p className="text-[11px] text-ink-faint mb-3">

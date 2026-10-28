@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Coins, Receipt, PieChart, Layers, Handshake, Activity, Target, Scale, Bell, Server, Boxes, Zap, Container, Package, Database, Table2, Network, BrainCircuit, Settings, Sparkles, Wrench, ShieldCheck as PrivacyIcon } from 'lucide-react';
+import { Gauge, Coins, Bell, Server, Boxes, Zap, Container, Package, Database, Table2, Network, BrainCircuit, Settings, Sparkles, ShieldCheck as PrivacyIcon } from 'lucide-react';
 
 const AwsOverviewPage = lazy(() => import('../../pages/aws/AwsOverviewPage'));
 const AwsCostPage = lazy(() => import('../../pages/aws/AwsCostPage'));
@@ -32,62 +32,24 @@ const navGroups = [
   {
     label: 'Monitor',
     items: [
-      { label: 'Overview', route: '/aws', icon: Gauge, isActive: (p) => p === '/aws' },
+      { label: 'Estate', route: '/aws', icon: Gauge, isActive: (p) => p === '/aws' },
+      { label: 'FinOps', route: '/aws/finops', icon: Coins, isActive: (p) => p.startsWith('/aws/finops') || p.startsWith('/aws/cost') || p.startsWith('/aws/optimizer') },
       { label: 'AI Advisor', route: '/aws/advisor', icon: Sparkles, isActive: (p) => p.startsWith('/aws/advisor'), requiresAi: true },
       { label: 'Alerts', route: '/aws/alerts', icon: Bell, isActive: (p) => p.startsWith('/aws/alerts') },
     ],
   },
   {
-    label: 'FinOps',
-    items: [
-      { label: 'Overview', route: '/aws/finops', icon: Coins, isActive: (p) => p === '/aws/finops' },
-      { label: 'Cost Explorer', route: '/aws/cost', icon: Receipt, isActive: (p) => p.startsWith('/aws/cost') },
-      { label: 'Allocation', route: '/aws/finops/allocation', icon: PieChart, isActive: (p) => p.startsWith('/aws/finops/allocation') },
-      { label: 'Resources', route: '/aws/finops/resources', icon: Layers, isActive: (p) => p.startsWith('/aws/finops/resources') },
-      { label: 'Commitments', route: '/aws/finops/commitments', icon: Handshake, isActive: (p) => p.startsWith('/aws/finops/commitments') },
-      { label: 'Anomalies', route: '/aws/finops/anomalies', icon: Activity, isActive: (p) => p.startsWith('/aws/finops/anomalies') },
-      { label: 'Budgets', route: '/aws/finops/budgets', icon: Target, isActive: (p) => p.startsWith('/aws/finops/budgets') },
-      { label: 'Optimizer', route: '/aws/optimizer', icon: Wrench, isActive: (p) => p.startsWith('/aws/optimizer') },
-      { label: 'Unit Economics', route: '/aws/finops/unit-economics', icon: Scale, isActive: (p) => p.startsWith('/aws/finops/unit-economics') },
-    ],
-  },
-  {
-    label: 'Compute',
+    label: 'Services',
     items: [
       { label: 'EC2', route: '/aws/ec2', icon: Server, isActive: (p) => p.startsWith('/aws/ec2') },
       { label: 'Lightsail', route: '/aws/lightsail', icon: Boxes, isActive: (p) => p.startsWith('/aws/lightsail') },
       { label: 'Lambda', route: '/aws/lambda', icon: Zap, isActive: (p) => p.startsWith('/aws/lambda') },
-    ],
-  },
-  {
-    label: 'Containers',
-    items: [
       { label: 'ECS', route: '/aws/ecs', icon: Container, isActive: (p) => p.startsWith('/aws/ecs') },
       { label: 'ECR', route: '/aws/ecr', icon: Package, isActive: (p) => p.startsWith('/aws/ecr') },
-    ],
-  },
-  {
-    label: 'Database',
-    items: [
       { label: 'RDS', route: '/aws/rds', icon: Database, isActive: (p) => p.startsWith('/aws/rds') },
       { label: 'DynamoDB', route: '/aws/dynamo', icon: Table2, isActive: (p) => p.startsWith('/aws/dynamo') },
-    ],
-  },
-  {
-    label: 'Storage',
-    items: [
       { label: 'S3', route: '/aws/s3', icon: Database, isActive: (p) => p.startsWith('/aws/s3') },
-    ],
-  },
-  {
-    label: 'Network',
-    items: [
       { label: 'VPC', route: '/aws/vpc', icon: Network, isActive: (p) => p.startsWith('/aws/vpc') },
-    ],
-  },
-  {
-    label: 'AI',
-    items: [
       { label: 'Bedrock', route: '/aws/bedrock', icon: BrainCircuit, isActive: (p) => p.startsWith('/aws/bedrock') },
     ],
   },

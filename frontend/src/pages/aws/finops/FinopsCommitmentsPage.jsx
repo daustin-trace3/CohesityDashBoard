@@ -7,6 +7,7 @@ import { useToast } from '../../../components/ui/Toaster';
 import { PageHeader, Panel, StatCard, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../../components/ui/primitives';
 import { useDateRange, DateRangeControl } from '../../../components/ui/DateRangeControl';
 import { fmtUsd } from '../helpers';
+import FinopsTabs from './FinopsTabs';
 import { getCommitments, errMsg } from './finopsApi';
 import { CapabilityNotice } from './CapabilityStrip';
 import { pct1, deniedCaps, chartOptions, thCls } from './shared';
@@ -71,6 +72,7 @@ export default function FinopsCommitmentsPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={onRefresh} refreshing={refreshing} />
       </PageHeader>
+      <FinopsTabs />
 
       <CapabilityNotice caps={notice} />
 

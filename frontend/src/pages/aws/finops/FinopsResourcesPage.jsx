@@ -10,6 +10,7 @@ import { ModalShell } from '../../../components/hyperv/HvUi';
 import { downloadCsv } from '../../../api/download';
 import { useTableControls, TablePager } from '../../../components/ui/tableTools';
 import { fmtUsd } from '../helpers';
+import FinopsTabs from './FinopsTabs';
 import { getResources, getResourceSeries, RESOURCES_CSV, errMsg } from './finopsApi';
 import MetricToggle from './MetricToggle';
 import ResourceEstimateTable, { ESTIMATE_NOTE, kindLabel, RESOURCE_PAGE_SIZES } from './ResourceEstimateTable';
@@ -126,6 +127,7 @@ export default function FinopsResourcesPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={onRefresh} refreshing={refreshing} />
       </PageHeader>
+      <FinopsTabs />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
         <StatCard label="Attributed" value={fmtUsd(totals.attributedUsd)} sub={totals.attributedPct != null ? `${pct1(totals.attributedPct)} of spend` : dr.label} tone="brand" />

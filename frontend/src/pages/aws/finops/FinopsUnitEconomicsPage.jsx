@@ -6,6 +6,7 @@ import { PageHeader, Panel, StatCard, LoadingPanel, RefreshButton, LastUpdated }
 import { useDateRange, DateRangeControl } from '../../../components/ui/DateRangeControl';
 import TrendChart from '../../../components/TrendChart';
 import { fmtUsd } from '../helpers';
+import FinopsTabs from './FinopsTabs';
 import { getUnitEconomics, errMsg } from './finopsApi';
 import MetricToggle from './MetricToggle';
 import { useUrlParam, num2, thCls } from './shared';
@@ -66,6 +67,7 @@ export default function FinopsUnitEconomicsPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={onRefresh} refreshing={refreshing} />
       </PageHeader>
+      <FinopsTabs />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
         <StatCard label="S3 per TB-month" loading={loading} value={s3?.usdPerTbMonth != null ? fmtUsd(s3.usdPerTbMonth) : '-'}

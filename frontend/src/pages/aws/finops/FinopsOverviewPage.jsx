@@ -9,6 +9,7 @@ import client from '../../../api/client';
 import { useToast } from '../../../components/ui/Toaster';
 import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../../components/ui/primitives';
 import { fmtUsd } from '../helpers';
+import FinopsTabs from './FinopsTabs';
 import { getOverview, getComparison, errMsg } from './finopsApi';
 import KpiBand from './KpiBand';
 import MetricToggle from './MetricToggle';
@@ -117,7 +118,7 @@ export default function FinopsOverviewPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Coins} title="FinOps Overview" description="Spend, forecast, commitments, anomalies, budgets and savings across the registered AWS accounts">
+      <PageHeader icon={Coins} title="FinOps" description="Spend, forecast, commitments, anomalies, budgets and savings across the registered AWS accounts">
         {accounts.length > 1 && (
           <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={selectCls} aria-label="Account">
             <option value="">All accounts</option>
@@ -128,6 +129,7 @@ export default function FinopsOverviewPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={onRefresh} refreshing={refreshing} />
       </PageHeader>
+      <FinopsTabs />
 
       {data && data.amortizedFrom == null && metric === 'amortized' && (
         <p className="text-[11px] text-status-warn mb-3">No amortized cost has been captured yet; figures fall back to unblended until the next daily capture.</p>

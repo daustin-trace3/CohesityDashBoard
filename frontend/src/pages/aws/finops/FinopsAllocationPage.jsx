@@ -9,6 +9,7 @@ import { useTableControls, SortTh, TableControls, TablePager } from '../../../co
 import { useDateRange, DateRangeControl } from '../../../components/ui/DateRangeControl';
 import { downloadCsv } from '../../../api/download';
 import { fmtUsd } from '../helpers';
+import FinopsTabs from './FinopsTabs';
 import { getAllocation, ALLOCATION_CSV, errMsg } from './finopsApi';
 import MetricToggle from './MetricToggle';
 import { SETTINGS_LINK } from './CapabilityStrip';
@@ -117,6 +118,7 @@ export default function FinopsAllocationPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={onRefresh} refreshing={refreshing} />
       </PageHeader>
+      <FinopsTabs />
 
       {data == null ? (
         <Panel><LoadingPanel height={260} /></Panel>

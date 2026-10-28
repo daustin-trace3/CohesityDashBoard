@@ -6,6 +6,7 @@ import { PageHeader, Panel, Badge, LoadingPanel, RefreshButton, LastUpdated } fr
 import { useTableControls, SortTh, TableControls, TablePager, CsvExportButton } from '../../../components/ui/tableTools';
 import { useDateRange, DateRangeControl } from '../../../components/ui/DateRangeControl';
 import { fmtUsd } from '../helpers';
+import FinopsTabs from './FinopsTabs';
 import { getAnomalies, errMsg } from './finopsApi';
 import { CapabilityNotice } from './CapabilityStrip';
 import { useUrlParam, signedPct, deniedCaps, thCls } from './shared';
@@ -75,6 +76,7 @@ export default function FinopsAnomaliesPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={onRefresh} refreshing={refreshing} />
       </PageHeader>
+      <FinopsTabs />
 
       <CapabilityNotice caps={notice} />
 

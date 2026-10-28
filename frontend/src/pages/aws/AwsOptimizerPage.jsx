@@ -8,6 +8,7 @@ import { BRAND, fmtUsd } from './helpers';
 import { getOptimizer } from './finops/finopsApi';
 import RecStateMenu from './finops/RecStateMenu';
 import { useUrlParam } from './finops/shared';
+import FinopsTabs from './finops/FinopsTabs';
 
 const STATUS_CHIPS = [['all', 'All'], ['open', 'Open'], ['accepted', 'Accepted'], ['dismissed', 'Dismissed'], ['done', 'Done']];
 const STATUS_TONE = { open: 'neutral', accepted: 'brand', dismissed: 'neutral', done: 'ok' };
@@ -81,6 +82,7 @@ export default function AwsOptimizerPage() {
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={onRefresh} refreshing={refreshing} />
       </PageHeader>
+      <FinopsTabs />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
         <StatCard icon={DollarSign} label="Potential Monthly Savings" value={fmtUsd(data ? potentialUsd : null)} sub={hubCount > 0 ? 'open and accepted, Hub rows are after discounts' : 'open and accepted'} tone="brand" />
