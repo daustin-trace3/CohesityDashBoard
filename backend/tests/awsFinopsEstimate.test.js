@@ -17,8 +17,9 @@ const notes = require('../services/awsCostNotes');
 beforeAll(() => { runMigrations(db, 'aws', awsMigrations); });
 
 let n = 0;
-const account = () => db.prepare("INSERT INTO aws_accounts (name, access_key_id, region, polling_interval_minutes) VALUES (?, 'AKIATEST', 'us-east-2', 10)")
-  .run(`est-${++n}-${Math.random().toString(36).slice(2, 6)}`).lastInsertRowid;
+// Each test account gets its own credential: inventory matching spans every row that shares a key.
+const account = () => db.prepare("INSERT INTO aws_accounts (name, access_key_id, region, polling_interval_minutes) VALUES (?, ?, 'us-east-2', 10)")
+  .run(`est-${++n}-${Math.random().toString(36).slice(2, 6)}`, `AKIAEST${n}${Math.random().toString(36).slice(2, 6)}`).lastInsertRowid;
 
 const WIN = { fromDay: '2026-10-01', toDay: '2026-10-20' };
 const usage = (acct, day, service, usageType, amount, amortized) => db.prepare(`
@@ -152,6 +153,34 @@ describe('weights per usage type', () => {
     const out = run(a);
     expect(stored(a)).toEqual([expect.objectContaining({ resource_kind: 'unattributed', resource_id: EC2_SVC, amount_usd: 100, amortized_usd: 100 })]);
     expect(out.unattributedUsd).toBe(100);
+  });
+
+  it('attributes dedicated host hours to the family instances and NAT hours to VPCs by gateway count', () => {
+    const a = account();
+    ec2(a, 'i-mac1', 'mac1.metal', 'running', null, 'us-east-1a');
+    ec2(a, 'i-mac2', 'mac1.metal', 'running', null, 'us-east-1b');
+    db.prepare('INSERT INTO aws_vpcs (account_id, vpc_id, name, nat_gateway_count) VALUES (?, ?, ?, ?)').run(a, 'vpc-1', 'core', 2);
+    db.prepare('INSERT INTO aws_vpcs (account_id, vpc_id, name, nat_gateway_count) VALUES (?, ?, ?, ?)').run(a, 'vpc-2', 'edge', 0);
+    usage(a, '2026-10-05', EC2_SVC, 'HostUsage:mac1', 40);
+    usage(a, '2026-10-05', 'EC2 - Other', 'NatGateway-Hours', 6);
+    run(a);
+    const rows = stored(a);
+    const mac = rows.filter((r) => r.usage_type === 'HostUsage:mac1');
+    expect(mac.map((r) => [r.resource_kind, r.resource_id, r.amortized_usd])).toEqual([['ec2', 'i-mac1', 20], ['ec2', 'i-mac2', 20]]);
+    const nat = rows.filter((r) => r.usage_type === 'NatGateway-Hours');
+    expect(nat.map((r) => [r.resource_kind, r.resource_id, r.amortized_usd])).toEqual([['vpc', 'vpc-1', 6]]);
+  });
+
+  it('matches inventory on every account row that shares the elected credential (other regions)', () => {
+    const a = account();
+    const key = db.prepare('SELECT access_key_id FROM aws_accounts WHERE id = ?').get(a).access_key_id;
+    const sibling = db.prepare("INSERT INTO aws_accounts (name, access_key_id, region, polling_interval_minutes) VALUES (?, ?, 'us-west-2', 10)")
+      .run(`est-sib-${Math.random().toString(36).slice(2, 6)}`, key).lastInsertRowid;
+    ec2(sibling, 'i-west', 'm6id.large', 'running', null, 'us-west-2a');
+    usage(a, '2026-10-06', EC2_SVC, 'USW2-BoxUsage:m6id.large', 12);
+    run(a);
+    const rows = stored(a).filter((r) => r.usage_type === 'USW2-BoxUsage:m6id.large');
+    expect(rows.map((r) => [r.resource_kind, r.resource_id, r.amortized_usd])).toEqual([['ec2', 'i-west', 12]]);
   });
 
   it('keeps the default matcher output when no weights are asked for', () => {

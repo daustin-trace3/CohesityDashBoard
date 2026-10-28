@@ -287,8 +287,11 @@ function weightedUsageObjects(usageType, service, db, accountId) {
   const isLightsail = /lightsail/i.test(svc) || /^(BundleUsage|DatabaseUsage|LoadBalancerUsage|DiskUsage)/i.test(body);
   const region = prefixRegion || (isLightsail ? null : 'us-east-1');
   const regionText = region || 'any region';
-  const acct = accountId ? ' AND account_id = ?' : '';
-  const acctArg = accountId ? [accountId] : [];
+  // accountId may be one id or an array of ids (every registered row that shares the elected
+  // credential, because the elected row's bill covers every region row of that AWS account).
+  const acctIds = Array.isArray(accountId) ? accountId.filter((x) => x != null) : (accountId ? [accountId] : []);
+  const acct = acctIds.length ? ` AND account_id IN (${acctIds.map(() => '?').join(',')})` : '';
+  const acctArg = acctIds;
   const azLike = region ? ' AND az LIKE ?' : '';
   const azArg = region ? [`${region}%`] : [];
   const q = (sql, args = []) => {
@@ -338,6 +341,17 @@ function weightedUsageObjects(usageType, service, db, accountId) {
     const running = rows.filter((r) => r.state === 'running');
     const use = running.length ? running : rows;
     return build(use, 'ec2', (r) => r.instance_id, one, `${t[1]} in ${regionText}${running.length ? ' (running)' : ''}`);
+  }
+  if ((t = /^HostUsage:(.+)$/i.exec(body))) {
+    // Dedicated Host hours (mac1, mac2, ...): the instances of that family running on the host.
+    const rows = q(`SELECT instance_id, state FROM aws_ec2_instances WHERE instance_type LIKE ?${azLike}`, [`${t[1]}.%`, ...azArg]);
+    const running = rows.filter((r) => r.state === 'running');
+    const use = running.length ? running : rows;
+    return build(use, 'ec2', (r) => r.instance_id, one, `${t[1]} dedicated host instances in ${regionText}, equal shares`);
+  }
+  if (/^NatGateway-/i.test(body)) {
+    return build(q('SELECT vpc_id, nat_gateway_count FROM aws_vpcs WHERE nat_gateway_count > 0'), 'vpc', (r) => r.vpc_id,
+      (r) => r.nat_gateway_count || 1, 'VPCs with NAT gateways, by gateway count');
   }
   if ((t = /^EBS:(VolumeUsage|VolumeP-IOPS|VolumeThroughput)(?:\.(.+))?$/i.exec(body))) {
     const isUsage = /^VolumeUsage$/i.test(t[1]);

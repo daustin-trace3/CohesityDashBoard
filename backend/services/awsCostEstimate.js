@@ -51,9 +51,21 @@ const SP_DISCOUNT_RE = /^Savings Plans for AWS Compute usage/i;
  * Returns { rows: [{ day, service, usageType, resourceKind, resourceId, amountUsd, amortizedUsd, shareRule }],
  * attributedUsd, unattributedUsd } (the totals use the amortized figure, falling back to unblended).
  */
+/** Every registered row that shares `accountId`'s effective credential (the regions of one AWS account). */
+function siblingAccountIds(accountId) {
+  try {
+    const rows = db.prepare('SELECT id, access_key_id FROM aws_accounts').all();
+    const keyOf = (r) => r.access_key_id || process.env.AWS_ACCESS_KEY_ID || '';
+    const me = rows.find((r) => r.id === Number(accountId));
+    if (!me) return [Number(accountId)];
+    return rows.filter((r) => keyOf(r) === keyOf(me)).map((r) => r.id);
+  } catch { return [Number(accountId)]; }
+}
+
 function computeResourceEstimates(accountId, { fromDay, toDay, now = new Date() } = {}) {
   const to = toDay || utcDay(now);
   const from = fromDay || addDays(to, -34);
+  const inventoryIds = siblingAccountIds(accountId);
   const usage = db.prepare(`
     SELECT day, service, usage_type, amount_usd, amortized_usd FROM aws_cost_usage_daily
     WHERE account_id = ? AND service IS NOT NULL AND day >= ? AND day <= ?
@@ -69,7 +81,7 @@ function computeResourceEstimates(accountId, { fromDay, toDay, now = new Date() 
     } else if (/bedrock/i.test(service)) {
       plan = { objects: [{ resourceId: service, kind: 'bedrock-model', weight: 1 }], totalWeight: 1, rule: 'Bedrock model service, billed as one line.' };
     } else {
-      plan = usageTypeObjects(usageType, service, db, accountId, { all: true, withWeights: true });
+      plan = usageTypeObjects(usageType, service, db, inventoryIds, { all: true, withWeights: true });
       if (!plan.objects.length) plan = { objects: [], rule: plan.rule ? `No inventory matches (${plan.rule}).` : 'No inventory object matches this usage type.' };
     }
     cache.set(key, plan);
@@ -171,6 +183,7 @@ const KIND_TABLES = {
   'lightsail-lb': { table: 'aws_lightsail_load_balancers', idCol: 'name', nameCol: null, link: '/aws/lightsail', noTags: true },
   lambda: { table: 'aws_lambda_functions', idCol: 'name', nameCol: null, link: '/aws/lambda', noTags: true },
   dynamo: { table: 'aws_dynamo_tables', idCol: 'name', nameCol: null, link: '/aws/dynamo', noTags: true },
+  vpc: { table: 'aws_vpcs', idCol: 'vpc_id', nameCol: 'name', link: '/aws/vpc', noTags: true },
 };
 
 const parseTags = (raw) => { try { const v = raw ? JSON.parse(raw) : {}; return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; } };
