@@ -26,15 +26,45 @@ const HARDWARE = [
 const NTP_BASELINE = ['0.pool.ntp.icc.demo', '1.pool.ntp.icc.demo'];
 const DNS_BASELINE = ['10.0.10.53', '10.0.11.53'];
 const TOOLS_VERSIONS = { current: '12352', old: ['11365', '11269', '10346'] };
+// Guest OS catalogue. `os` is the configured name (config.guestFullName),
+// `detailed` the guest.guestDetailedData variants Tools 11+ would report.
+const winDetailed = (pretty, build) =>
+  `architecture='X86' bitness='64' buildNumber='${build}' familyName='Windows' kernelVersion='10.0' prettyName='${pretty}'`;
+const linDetailed = (name, ver, pretty, kernel) =>
+  `architecture='X86' bitness='64' distroName='${name}' distroVersion='${ver}' familyName='Linux' kernelVersion='${kernel}' prettyName='${pretty}'`;
 const GUEST_OS = [
-  'Microsoft Windows Server 2022 (64-bit)',
-  'Microsoft Windows Server 2019 (64-bit)',
-  'Ubuntu Linux (64-bit)',
-  'Red Hat Enterprise Linux 9 (64-bit)',
-  'Red Hat Enterprise Linux 8 (64-bit)',
-  'SUSE Linux Enterprise 15 (64-bit)',
-  'CentOS 7 (64-bit)',
-  'Other Linux (64-bit)',
+  { os: 'Microsoft Windows Server 2022 (64-bit)', guestId: 'windows2019srvNext_64Guest', family: 'windowsGuest',
+    detailed: [winDetailed('Windows Server 2022 Standard, 64-bit (Build 20348)', '20348'),
+      winDetailed('Windows Server 2022 Datacenter, 64-bit (Build 20348)', '20348')] },
+  { os: 'Microsoft Windows Server 2019 (64-bit)', guestId: 'windows2019srv_64Guest', family: 'windowsGuest',
+    detailed: [winDetailed('Windows Server 2019 Standard, 64-bit (Build 17763)', '17763'),
+      winDetailed('Windows Server 2019 Datacenter, 64-bit (Build 17763)', '17763')] },
+  { os: 'Ubuntu Linux (64-bit)', guestId: 'ubuntu64Guest', family: 'linuxGuest',
+    detailed: [linDetailed('Ubuntu', '22.04', 'Ubuntu 22.04.4 LTS', '5.15.0-105-generic'),
+      linDetailed('Ubuntu', '20.04', 'Ubuntu 20.04.6 LTS', '5.4.0-177-generic'),
+      linDetailed('Ubuntu', '24.04', 'Ubuntu 24.04 LTS', '6.8.0-31-generic')] },
+  { os: 'Red Hat Enterprise Linux 9 (64-bit)', guestId: 'rhel9_64Guest', family: 'linuxGuest',
+    detailed: ['9.2', '9.4', '9.5'].map((x) => linDetailed('Red Hat Enterprise Linux', x, `Red Hat Enterprise Linux ${x} (Plow)`, `5.14.0-${x === '9.2' ? '284' : '427'}.el9.x86_64`)) },
+  { os: 'Red Hat Enterprise Linux 8 (64-bit)', guestId: 'rhel8_64Guest', family: 'linuxGuest',
+    detailed: ['8.6', '8.8', '8.10'].map((x) => linDetailed('Red Hat Enterprise Linux', x, `Red Hat Enterprise Linux ${x} (Ootpa)`, '4.18.0-477.el8.x86_64')) },
+  { os: 'SUSE Linux Enterprise 15 (64-bit)', guestId: 'sles15_64Guest', family: 'linuxGuest',
+    detailed: ['15.4', '15.5'].map((x) => linDetailed('SLES', x, `SUSE Linux Enterprise Server ${x}`, '5.14.21-150400.x86_64')) },
+  { os: 'CentOS 7 (64-bit)', guestId: 'centos7_64Guest', family: 'linuxGuest',
+    detailed: [linDetailed('CentOS Linux', '7', 'CentOS Linux 7 (Core)', '3.10.0-1160.el7.x86_64')] },
+  { os: 'Other Linux (64-bit)', guestId: 'otherLinux64Guest', family: 'linuxGuest',
+    detailed: [`architecture='X86' bitness='64' familyName='Linux' kernelVersion='5.10.0'`] },
+  { os: 'Red Hat Enterprise Linux 6 (64-bit)', guestId: 'rhel6_64Guest', family: 'linuxGuest',
+    detailed: ['6.9', '6.10'].map((x) => linDetailed('Red Hat Enterprise Linux', x, `Red Hat Enterprise Linux Server ${x} (Santiago)`, '2.6.32-754.el6.x86_64')) },
+  { os: 'Red Hat Enterprise Linux 7 (64-bit)', guestId: 'rhel7_64Guest', family: 'linuxGuest',
+    detailed: ['7.6', '7.9'].map((x) => linDetailed('Red Hat Enterprise Linux', x, `Red Hat Enterprise Linux Server ${x} (Maipo)`, '3.10.0-1160.el7.x86_64')) },
+  { os: 'Microsoft Windows Server 2016 (64-bit)', guestId: 'windows9Server64Guest', family: 'windowsGuest',
+    detailed: [winDetailed('Windows Server 2016 Standard, 64-bit (Build 14393)', '14393'),
+      winDetailed('Windows Server 2016 Datacenter, 64-bit (Build 14393)', '14393')] },
+  { os: 'Microsoft Windows Server 2025 (64-bit)', guestId: 'windows2022srvNext_64Guest', family: 'windowsGuest',
+    detailed: [winDetailed('Windows Server 2025 Standard, 64-bit (Build 26100)', '26100'),
+      winDetailed('Windows Server 2025 Datacenter, 64-bit (Build 26100)', '26100')] },
+  { os: 'Oracle Linux 8 (64-bit)', guestId: 'oracleLinux8_64Guest', family: 'linuxGuest',
+    detailed: ['8.6', '8.9'].map((x) => linDetailed('Oracle Linux Server', x, `Oracle Linux Server ${x}`, '5.15.0-100.el8uek.x86_64')) },
 ];
 const VM_ROLES = ['app', 'db', 'web', 'dc', 'file', 'mon', 'ci', 'jump'];
 // App Services demo tag pool: mixed-case usage-ids matching Doug's estate
@@ -97,8 +127,9 @@ function seedVcenter(db, { now, encrypt }) {
       guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version,
       tools_version, tools_version_status, networks, datastores, tags, guest_nics,
       uptime_seconds, storage_committed_bytes, annotation,
-      cpu_usage_mhz, mem_usage_mb, overall_status, guest_hostname, captured_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cpu_usage_mhz, mem_usage_mb, overall_status, guest_hostname, captured_at,
+      guest_id, guest_os_running, guest_family, guest_detailed)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertDisk = db.prepare(`
     INSERT INTO vcenter_vm_disks (vcenter_id, vm_id, vm_name, disk_key, label, capacity_bytes, used_bytes, thin, datastore, file_name, captured_at)
@@ -218,7 +249,11 @@ function seedVcenter(db, { now, encrypt }) {
           const role = pick(rng, VM_ROLES);
           // Same rng draw as before so nothing else shifts; VMs on the down host are off.
           const poweredOn = chance(rng, 0.9) && !down;
-          const guestOs = pick(rng, GUEST_OS);
+          const guestEntry = pick(rng, GUEST_OS);
+          const guestOs = guestEntry.os;
+          // Tools detail without a new rng draw: variant by (v + h), about 15% of VMs report none.
+          const toolsAbsent = (v * 7 + h) % 100 < 15;
+          const guestDetailed = toolsAbsent ? null : guestEntry.detailed[(v + h) % guestEntry.detailed.length];
           // ~8% of VMs run outdated Tools so Governance has action items.
           const outdated = chance(rng, 0.08);
           const ip = poweredOn ? `10.${100 + vcIdx}.${c * 10 + h}.${v + 10}` : null;
@@ -272,7 +307,8 @@ function seedVcenter(db, { now, encrypt }) {
             memPct != null ? Math.round((memPct / 100) * vmMemMb) : null,
             poweredOn ? (down ? 'gray' : hot ? 'yellow' : chance(rng, 0.02) ? 'yellow' : 'green') : 'gray',
             poweredOn ? `${vmName}.icc.demo` : null,
-            nowIso);
+            nowIso,
+            guestEntry.guestId, toolsAbsent ? null : guestOs, toolsAbsent ? null : guestEntry.family, guestDetailed);
           vmTotal++;
 
           // Guest storage: 1-3 volumes per VM (Windows drive letters or Linux
@@ -353,7 +389,9 @@ function seedVcenter(db, { now, encrypt }) {
           JSON.stringify([{ network: 'dvpg-prod-100', mac: `00:50:56:aa:00:0${i}`, connected: true, ips: [`10.100.5.${20 + i}`] }]),
           randInt(rng, 20, 120) * 86400, randInt(rng, 60, 200) * GIB, null,
           Math.round((s.cpuPct / 100) * 2400 * s.cpus), Math.round((s.memPct / 100) * s.memGb * 1024),
-          s.status, s.ghost, nowIso);
+          s.status, s.ghost, nowIso,
+          'vmwarePhoton64Guest', 'VMware Photon OS (64-bit)', 'linuxGuest',
+          "architecture='X86' bitness='64' distroName='VMware Photon OS' distroVersion='4.0' familyName='Linux' kernelVersion='5.10.0' prettyName='VMware Photon OS/Linux'");
         vmTotal++;
       });
       // Keep the VM-count tie (host vm_count sums must equal vcenter_vms rows).

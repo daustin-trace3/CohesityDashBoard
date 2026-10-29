@@ -490,4 +490,16 @@ module.exports = [
       if (!cols.includes('created_at_src')) db.exec('ALTER TABLE vcenter_vms ADD COLUMN created_at_src TEXT');
     },
   },
+  {
+    version: 15,
+    up(db) {
+      // Guest OS detail for the Guest OS governance page: config.guestId,
+      // what Tools reports (guest.guestFullName, guest.guestFamily) and the
+      // Tools 11+ guestDetailedData string. All NULL when Tools is absent.
+      const cols = db.prepare("PRAGMA table_info('vcenter_vms')").all().map((c) => c.name);
+      for (const c of ['guest_id', 'guest_os_running', 'guest_family', 'guest_detailed']) {
+        if (!cols.includes(c)) db.exec(`ALTER TABLE vcenter_vms ADD COLUMN ${c} TEXT`);
+      }
+    },
+  },
 ];

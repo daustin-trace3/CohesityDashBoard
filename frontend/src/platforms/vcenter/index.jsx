@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell, Building2, TrendingUp, ArrowLeftRight, Tag, HardDrive } from 'lucide-react';
+import { Gauge, Server, Database, Settings, MonitorSmartphone, Network, ClipboardCheck, History, Sparkles, ShieldCheck, Bell, Building2, TrendingUp, ArrowLeftRight, Tag, HardDrive, AppWindow } from 'lucide-react';
 
 const VcOverviewPage = lazy(() => import('../../pages/vcenter/VcOverviewPage'));
 const PrivacyInspectorPage = lazy(() => import('../../components/PrivacyInspectorPage'));
@@ -12,6 +12,7 @@ const VcInventoryPage = lazy(() => import('../../pages/vcenter/VcInventoryPage')
 const VcTagsPage = lazy(() => import('../../pages/vcenter/VcTagsPage'));
 const VcNetworkPage = lazy(() => import('../../pages/vcenter/VcNetworkPage'));
 const VcGovernancePage = lazy(() => import('../../pages/vcenter/VcGovernancePage'));
+const VcGuestOsPage = lazy(() => import('../../pages/vcenter/VcGuestOsPage'));
 const VcEventsPage = lazy(() => import('../../pages/vcenter/VcEventsPage'));
 const VcSettingsPage = lazy(() => import('../../pages/vcenter/VcSettingsPage'));
 const VcAdvisorPage = lazy(() => import('../../pages/vcenter/VcAdvisorPage'));
@@ -54,6 +55,7 @@ const navGroups = [
     label: 'Audit',
     items: [
       { label: 'Governance', route: '/vcenter/governance', icon: ClipboardCheck, isActive: (p) => p.startsWith('/vcenter/governance') },
+      { label: 'Guest OS', route: '/vcenter/guest-os', icon: AppWindow, isActive: (p) => p.startsWith('/vcenter/guest-os') },
     ],
   },
   {
@@ -91,6 +93,7 @@ export default {
     { path: 'vcenter/network', Component: VcNetworkPage },
     { path: 'vcenter/events', Component: VcEventsPage },
     { path: 'vcenter/governance', Component: VcGovernancePage },
+    { path: 'vcenter/guest-os', Component: VcGuestOsPage },
     { path: 'vcenter/advisor', Component: VcAdvisorPage },
     { path: 'vcenter/privacy', Component: VcPrivacyPage },
     { path: 'vcenter/settings', Component: VcSettingsPage },

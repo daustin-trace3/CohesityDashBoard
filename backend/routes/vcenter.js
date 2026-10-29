@@ -14,6 +14,7 @@ const {
   DS_USED_WARN_PCT, CLUSTER_FREE_WARN_PCT, certWarnDays, guestDiskThresholds, computeIssues,
 } = require('../services/vcenterIssues');
 const guestStorage = require('../services/vcenterGuestStorage');
+const guestOs = require('../services/vcenterGuestOs');
 const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
 const { RETENTION_DEFS, retentionDays, writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites, pairSummary } = require('../services/vcenterCapacity');
 
@@ -500,6 +501,70 @@ router.get('/governance', (req, res, next) => {
       driftDataAvailable: db.prepare(
         'SELECT COUNT(*) AS n FROM vcenter_hosts WHERE ntp_servers IS NOT NULL OR esx_build IS NOT NULL'
       ).get().n > 0,
+    });
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/vcenter/guest-os[?vcenterId=1,2] — every VM classified by guest OS
+ * and version, with release and version rollups. The selection narrows vms and
+ * the rollups; `vcenters` always lists every registered vCenter.
+ */
+router.get('/guest-os', (req, res, next) => {
+  try {
+    const wanted = new Set();
+    for (const raw of [].concat(req.query.vcenterId || [])) {
+      for (const tok of String(raw).split(',')) {
+        const n = Number(tok.trim());
+        if (tok.trim() !== '' && Number.isInteger(n)) wanted.add(n);
+      }
+    }
+    const vcs = db.prepare(
+      'SELECT id, name, last_poll_at, last_poll_status FROM vcenter_vcenters ORDER BY name'
+    ).all();
+    const rows = db.prepare(`
+      SELECT m.id, m.vm_id, m.name, m.vcenter_id, v.name AS vcenter_name, m.cluster_name, m.host_name,
+             m.power_state, m.guest_os, m.guest_os_running, m.guest_id, m.guest_family, m.guest_detailed,
+             m.tools_status, m.tools_version, m.tools_version_status, m.hw_version, m.cpu_count, m.memory_mb
+      FROM vcenter_vms m JOIN vcenter_vcenters v ON v.id = m.vcenter_id
+      ORDER BY v.name, m.name
+    `).all();
+    const classified = rows.map((r) => {
+      const c = guestOs.classifyGuestOs(r);
+      return {
+        id: r.id, vm_id: r.vm_id, name: r.name, vcenter_id: r.vcenter_id, vcenter_name: r.vcenter_name,
+        cluster_name: r.cluster_name, host_name: r.host_name, power_state: r.power_state,
+        guest_os: r.guest_os, guest_os_running: r.guest_os_running, guest_id: r.guest_id,
+        tools_status: r.tools_status, tools_version: r.tools_version,
+        tools_version_status: r.tools_version_status, hw_version: r.hw_version,
+        cpu_count: r.cpu_count, memory_mb: r.memory_mb,
+        family: c.family, vendor: c.vendor, product: c.product, major: c.major, version: c.version,
+        label: c.label, versionLabel: c.versionLabel, edition: c.edition, build: c.build,
+        bits: c.bits, source: c.source,
+      };
+    });
+    const perVc = new Map();
+    for (const c of classified) {
+      const e = perVc.get(c.vcenter_id) || { vms: 0, covered: 0 };
+      e.vms++;
+      if (c.source === 'tools-detailed' || c.source === 'tools') e.covered++;
+      perVc.set(c.vcenter_id, e);
+    }
+    const vcenters = vcs.map((v) => {
+      const e = perVc.get(v.id) || { vms: 0, covered: 0 };
+      return {
+        id: v.id, name: v.name, vms: e.vms, lastPollAt: v.last_poll_at || null,
+        lastPollStatus: v.last_poll_status || null,
+        detailCoverage: e.vms ? e.covered / e.vms : 0,
+      };
+    });
+    const selected = wanted.size ? classified.filter((c) => wanted.has(c.vcenter_id)) : classified;
+    const polls = vcs.filter((v) => !wanted.size || wanted.has(v.id)).map((v) => v.last_poll_at).filter(Boolean).sort();
+    res.json({
+      lastPolled: polls.length ? polls[polls.length - 1] : null,
+      vcenters,
+      vms: selected,
+      ...guestOs.rollupGuestOs(selected, vcs),
     });
   } catch (err) { next(err); }
 });

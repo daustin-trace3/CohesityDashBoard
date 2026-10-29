@@ -247,6 +247,7 @@ const VM_PROPS = [
   'summary.config.numCpu', 'summary.config.memorySizeMB',
   'guest.ipAddress', 'guest.toolsRunningStatus',
   'guest.toolsVersion', 'guest.toolsVersionStatus2',
+  'config.guestId', 'guest.guestFullName', 'guest.guestFamily',
   'layoutEx.file', // every file backing the VM — feeds the orphaned-VMDK diff
   // Associations + detail (VM detail modal, portgroup/datastore VM counts)
   'network', 'datastore', 'guest.net',
@@ -730,6 +731,14 @@ async function fetchInventorySoap(vc) {
       const raw = flat(r['config.createDate']);
       if (raw != null && Number.isFinite(Date.parse(String(raw)))) vmCreatedByMoref.set(String(r._moref), String(raw));
     }
+    // guest.guestDetailedData (vSphere 7.0 U1+, filled by Tools 11+) is fetched on
+    // its own for the same reason: an older vCenter faults on the unknown property.
+    const vmDetailRows = await retrieveOptional('VirtualMachine', ['guest.guestDetailedData']);
+    const vmDetailedByMoref = new Map();
+    for (const r of vmDetailRows) {
+      const raw = flat(r['guest.guestDetailedData']);
+      if (raw != null && String(raw).trim()) vmDetailedByMoref.set(String(r._moref), String(raw).slice(0, 2000));
+    }
 
     const networkNameByMoref = new Map();
     for (const r of [...netRows, ...dvpgRows]) {
@@ -819,6 +828,10 @@ async function fetchInventorySoap(vc) {
         hostName: hostNameByMoref.get(String(v['runtime.host'])) || null,
         powerState: normalizePowerState(v['runtime.powerState']),
         guestOs: v['config.guestFullName'] ?? null,
+        guestId: v['config.guestId'] != null ? String(flat(v['config.guestId'])) : null,
+        guestOsRunning: v['guest.guestFullName'] != null ? String(flat(v['guest.guestFullName'])) : null,
+        guestFamily: v['guest.guestFamily'] != null ? String(flat(v['guest.guestFamily'])) : null,
+        guestDetailed: vmDetailedByMoref.get(String(v._moref)) ?? null,
         cpuCount: v['summary.config.numCpu'] != null ? Number(v['summary.config.numCpu']) : null,
         memoryMb: v['summary.config.memorySizeMB'] != null ? Number(v['summary.config.memorySizeMB']) : null,
         ipAddress: v['guest.ipAddress'] ?? null,
