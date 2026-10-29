@@ -121,6 +121,103 @@ describe('thresholds', () => {
   });
 });
 
+describe('VM age and hold', () => {
+  const NOW = Date.parse('2026-10-22T18:00:00.000Z');
+  const hoursAgo = (h) => new Date(NOW - h * 3600000).toISOString();
+  const web = () => byLabel(samples('vcenter:vm-cpu'))['web-01'];
+  let inst;
+
+  beforeEach(() => {
+    db.exec('DELETE FROM aria_deployment_resources; DELETE FROM aria_deployments; DELETE FROM aria_instances; DELETE FROM vcenter_vm_daily;');
+    setSetting('ops_obs_vm_min_age_hours', '');
+    inst = db.prepare("INSERT INTO aria_instances (name, host, username, encrypted_credentials) VALUES ('ar1', 'ar1.lab', 'u', 'x')").run().lastInsertRowid;
+  });
+
+  const deploy = (depId, depName, createdAt, resName) => {
+    db.prepare('INSERT INTO aria_deployments (instance_id, deployment_id, name, created_at_src) VALUES (?, ?, ?, ?)').run(inst, depId, depName, createdAt);
+    db.prepare("INSERT INTO aria_deployment_resources (instance_id, deployment_id, resource_id, name, type, state) VALUES (?, ?, ?, ?, 'Cloud.vSphere.Machine', 'OK')").run(inst, depId, `r-${depId}`, resName);
+  };
+  const daily = (name, day) => db.prepare('INSERT INTO vcenter_vm_daily (vcenter_id, vm_name, day) VALUES (?, ?, ?)').run(vc, name, day);
+  // The fixture poll stamp is 2026-10-22 18:00:00 UTC, so ages are measured to that instant.
+
+  it('an Aria deployment match by VM name wins over vCenter created_at_src', () => {
+    deploy('d1', 'web-tier-03', hoursAgo(20.5), 'WEB-01');
+    db.prepare("UPDATE vcenter_vms SET created_at_src = ? WHERE name = 'web-01'").run(hoursAgo(500));
+    const s = web();
+    expect(s.context).toMatchObject({ createdSource: 'aria', createdDetail: 'web-tier-03', ageHours: 20.5, createdAt: hoursAgo(20.5) });
+    expect(s.hold.reason).toBe('new VM, created 20.5 h ago (Aria deployment "web-tier-03"), grace 72 h');
+  });
+
+  it('falls back to the guest hostname (before the first dot) for the Aria match', () => {
+    deploy('d2', 'pool-a', hoursAgo(10), 'web-guest');
+    db.prepare("UPDATE vcenter_vms SET guest_hostname = 'web-guest.corp.example' WHERE name = 'web-01'").run();
+    expect(web().context).toMatchObject({ createdSource: 'aria', createdDetail: 'pool-a', ageHours: 10 });
+  });
+
+  it('uses vCenter created_at_src when no Aria row matches', () => {
+    db.prepare("UPDATE vcenter_vms SET created_at_src = ? WHERE name = 'web-01'").run(hoursAgo(30));
+    const s = web();
+    expect(s.context).toMatchObject({ createdSource: 'vcenter', createdDetail: null, ageHours: 30 });
+    expect(s.hold.reason).toBe('new VM, created 30 h ago (vCenter created date), grace 72 h');
+  });
+
+  it('uses ICC first sight only when the VM first day is after the vCenter first day', () => {
+    daily('idle-01', '2026-10-01');
+    daily('web-01', '2026-10-22');
+    const s = web();
+    expect(s.context).toMatchObject({ createdSource: 'icc', createdAt: '2026-10-22T00:00:00.000Z', ageHours: 18 });
+    expect(s.hold.reason).toBe('new VM, created 18 h ago (first seen by ICC), grace 72 h');
+  });
+
+  it('a VM first seen on the vCenter first day has an unknown age and no hold', () => {
+    daily('web-01', '2026-10-22');
+    daily('idle-01', '2026-10-22');
+    const s = web();
+    expect(s.hold).toBeUndefined();
+    expect(s.context.createdAt).toBeUndefined();
+  });
+
+  it('unknown age means no hold', () => {
+    const s = web();
+    expect(s.hold).toBeUndefined();
+    expect(s.context.createdAt).toBeUndefined();
+  });
+
+  it('a VM older than the grace carries its age but no hold', () => {
+    db.prepare("UPDATE vcenter_vms SET created_at_src = ? WHERE name = 'web-01'").run(hoursAgo(100));
+    const s = web();
+    expect(s.hold).toBeUndefined();
+    expect(s.context).toMatchObject({ createdSource: 'vcenter', ageHours: 100 });
+  });
+
+  it('vmMinAgeHours 0 turns the hold off but the context still carries createdAt', () => {
+    setSetting('ops_obs_vm_min_age_hours', '0');
+    db.prepare("UPDATE vcenter_vms SET created_at_src = ? WHERE name = 'web-01'").run(hoursAgo(5));
+    const s = web();
+    expect(s.hold).toBeUndefined();
+    expect(s.context.createdAt).toBe(hoursAgo(5));
+  });
+
+  it('a held sample has hold.until = createdAt + 72 h', () => {
+    db.prepare("UPDATE vcenter_vms SET created_at_src = ? WHERE name = 'web-01'").run(hoursAgo(8));
+    const s = web();
+    expect(s.hold.until).toBe(new Date(Date.parse(hoursAgo(8)) + 72 * 3600000).toISOString());
+  });
+
+  it('vmAges returns only VMs with a known age, keyed by vcenter id and lower-cased name', () => {
+    expect(vcenterObs.vmAges(db, { nowMs: NOW }).size).toBe(0);
+    db.prepare("UPDATE vcenter_vms SET created_at_src = ? WHERE name = 'web-01'").run(hoursAgo(3));
+    expect(vcenterObs.vmAges(db, { nowMs: NOW }).get(`${vc}|web-01`)).toMatchObject({ source: 'vcenter' });
+  });
+
+  it('host observers carry no age fields', () => {
+    db.prepare("UPDATE vcenter_vms SET created_at_src = ? WHERE name = 'web-01'").run(hoursAgo(3));
+    const h = byLabel(samples('vcenter:host-cpu'))['esx-01'];
+    expect(h.hold).toBeUndefined();
+    expect(h.context.createdAt).toBeUndefined();
+  });
+});
+
 describe('GET/PUT /api/vcenter/config thresholds', () => {
   const app = express();
   app.use(express.json());

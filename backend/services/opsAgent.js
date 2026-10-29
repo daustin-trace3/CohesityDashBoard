@@ -1213,7 +1213,14 @@ function obsSentence(e, stamp = (t) => t) {
   const u = e.unit || '';
   const warn = e.warn != null ? e.warn : e.thresholdWarn;
   const promoted = e.promoteReason ? `, promoted: ${e.promoteReason}` : '';
-  return `${e.label} on ${e.subject}: ${e.state}, now ${fmtNum(e.value)}${u}, peak ${fmtNum(e.peak)}${u} at ${e.peakAt ? stamp(e.peakAt) : '?'}, first over ${fmtNum(warn)}${u} at ${fmtNum(e.openedValue)}${u} on ${e.openedAt ? stamp(e.openedAt) : '?'}, ${e.elevatedSamples} of ${e.samples} samples elevated${promoted}`;
+  let age = '';
+  if (e.createdAt) {
+    const word = e.createdSource === 'aria' ? `Aria deployment${e.createdDetail ? ` "${e.createdDetail}"` : ''}`
+      : (e.createdSource === 'vcenter' ? 'vCenter created date' : 'first seen by ICC');
+    age = `, VM created ${stamp(e.createdAt)} (${word})`;
+  }
+  if (e.hold) age += `, held: ${e.hold.reason}, until ${stamp(e.hold.until)}`;
+  return `${e.label} on ${e.subject}: ${e.state}, now ${fmtNum(e.value)}${u}, peak ${fmtNum(e.peak)}${u} at ${e.peakAt ? stamp(e.peakAt) : '?'}, first over ${fmtNum(warn)}${u} at ${fmtNum(e.openedValue)}${u} on ${e.openedAt ? stamp(e.openedAt) : '?'}, ${e.elevatedSamples} of ${e.samples} samples elevated${promoted}${age}`;
 }
 
 /** The observation block of an incident's evidence: open episodes attached to

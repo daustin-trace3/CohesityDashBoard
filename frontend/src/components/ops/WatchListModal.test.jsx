@@ -28,6 +28,15 @@ describe('WatchListModal', () => {
     expect(onOpen).toHaveBeenCalledWith(7);
   });
 
+  it('marks a held new VM with a chip and a muted Held line', async () => {
+    const hold = { reason: 'new VM, created 5 h ago (vCenter created date), grace 72 h', until: '2026-10-25T12:00:00.000Z' };
+    client.get.mockResolvedValue({ data: [row({ id: 9, subject: 'build-01', hold }), row()] });
+    render(<WatchListModal Shell={Shell} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByTestId('watch-row')).toHaveLength(2));
+    expect(screen.getAllByText('new VM')).toHaveLength(1);
+    expect(screen.getByTestId('watch-hold').textContent).toContain('Held: new VM, created 5 h ago');
+  });
+
   it('says nothing is watched when the list is empty', async () => {
     client.get.mockResolvedValue({ data: [] });
     render(<WatchListModal Shell={Shell} onClose={() => {}} />);

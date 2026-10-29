@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Eye } from 'lucide-react';
 import client from '../../api/client';
-import { LoadingPanel, timeAgo } from '../ui/primitives';
+import { Badge, LoadingPanel, timeAgo } from '../ui/primitives';
 import Sparkline from './Sparkline';
 import { fmtObs } from './ObservationModal';
 
@@ -47,7 +47,15 @@ export default function WatchListModal({ onClose, Shell, onOpenObservation, puls
                     onClick={() => onOpenObservation?.(r.id)}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenObservation?.(r.id); } }}
                     className="border-b border-cohesity-border/50 cursor-pointer hover:bg-surface-overlay focus:bg-surface-overlay outline-none">
-                    <td className="py-2 pr-3 text-ink">{r.subject}</td>
+                    <td className="py-2 pr-3 text-ink">
+                      {r.subject}
+                      {r.hold && <Badge tone="info" className="ml-2">new VM</Badge>}
+                      {r.hold && (
+                        <div className="text-[11px] text-ink-faint font-normal" data-testid="watch-hold">
+                          Held: {r.hold.reason} until {r.hold.until ? new Date(r.hold.until).toLocaleString() : '-'}
+                        </div>
+                      )}
+                    </td>
                     <td className="py-2 pr-3 text-ink-muted">{r.label}</td>
                     <td className="py-2 pr-3 text-right tnum">{fmtObs(r.value, r.unit)}</td>
                     <td className="py-2 pr-3 text-right tnum">{fmtObs(r.peak, r.unit)}</td>

@@ -12,6 +12,8 @@
 //     pattern incident is emailed 30 h ago, reminded once, and still waiting
 //     on a person; the four-burst VM above has the same kind of incident,
 //     acknowledged by "demo" two hours ago with a note
+//   - a sixth VM, deployed 30 h ago by an Aria Automation deployment, with six
+//     elevated CPU samples that the new-VM grace holds in watching (never promoted)
 // The matching vcenter_vms / vcenter_hosts usage columns are set so the
 // inventory pages agree with the episodes. The demo has no agent tick, so the
 // scenario also opens the incidents the tick would have opened (degrading and
@@ -22,7 +24,7 @@
 // Re-runnable: it deletes the observer rows for these four observers and the
 // incidents made only of their alerts first.
 const STEP_MS = 15 * 60 * 1000;
-const PREFERRED = { cpuCritical: 'app-db-01', memDegrading: 'web-02', cpuWatching: 'batch-01', cpuPattern: 'report-01', cpuPatternSticky: 'file-01' };
+const PREFERRED = { cpuCritical: 'app-db-01', memDegrading: 'web-02', cpuWatching: 'batch-01', cpuPattern: 'report-01', cpuPatternSticky: 'file-01', cpuHeld: 'build-01' };
 const OBSERVER_IDS = ['vcenter:vm-cpu', 'vcenter:vm-memory', 'vcenter:host-cpu', 'vcenter:host-memory'];
 const SETTINGS = { enabled: true, sustainSamples: 3, clearSamples: 2, patternMin: 3, patternDays: 7, historyDays: 90, disabledIds: [] };
 
@@ -49,6 +51,7 @@ function pickVms(db) {
     cpuWatching: take(PREFERRED.cpuWatching),
     cpuPattern: take(PREFERRED.cpuPattern),
     cpuPatternSticky: take(PREFERRED.cpuPatternSticky),
+    cpuHeld: take(PREFERRED.cpuHeld),
   };
 }
 
@@ -89,6 +92,30 @@ function replay(observer, samples, settings, getSetting, engine) {
 }
 
 const isObsKey = (col) => `(${col} LIKE 'obs:vcenter:%' OR ${col} LIKE 'obs-pattern:vcenter:%')`;
+
+/**
+ * The Aria deployment that "built" the held VM, re-runnable (fixed deployment
+ * id). Returns the creation ISO, or null when the aria tables or an instance
+ * row are missing (the subject is then skipped).
+ */
+function seedHeldDeployment(db, vm, now) {
+  const have = db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type = 'table' AND name IN ('aria_instances', 'aria_deployments', 'aria_deployment_resources')").get().c === 3;
+  if (!have) return null;
+  const inst = db.prepare('SELECT id FROM aria_instances ORDER BY id LIMIT 1').get();
+  if (!inst) return null;
+  const project = db.prepare('SELECT name FROM aria_projects WHERE name IS NOT NULL ORDER BY id LIMIT 1').get();
+  const createdAt = new Date(now - 30 * 3600000).toISOString();
+  db.transaction(() => {
+    db.prepare("DELETE FROM aria_deployment_resources WHERE deployment_id = 'dep-obs-held'").run();
+    db.prepare("DELETE FROM aria_deployments WHERE deployment_id = 'dep-obs-held'").run();
+    db.prepare(`INSERT INTO aria_deployments (instance_id, deployment_id, name, project_name, status, created_by, created_at_src, resource_count)
+                VALUES (?, 'dep-obs-held', 'build-agent-pool', ?, 'CREATE_SUCCESSFUL', 'alice@demo.local', ?, 1)`)
+      .run(inst.id, project ? project.name : 'Platform', createdAt);
+    db.prepare(`INSERT INTO aria_deployment_resources (instance_id, deployment_id, resource_id, name, type, state)
+                VALUES (?, 'dep-obs-held', 'res-obs-held', ?, 'Cloud.vSphere.Machine', 'OK')`).run(inst.id, vm.name);
+  })();
+  return createdAt;
+}
 
 /** Remove incidents (and their alert rows) made only of these observers' alerts. */
 function clearOldIncidents(db) {
@@ -221,7 +248,7 @@ function applyOpsObservations(db, { now = Date.now() } = {}) {
 
   // Lazy requires: the engine pulls in the db module and the registry.
   const engine = require('../../services/agentObservations');
-  const { getSetting } = require('../../services/settings');
+  const { getSetting, getObservationSettings } = require('../../services/settings');
   engine.registerBuiltins();
   const cpu = engine.getObserver('vcenter:vm-cpu');
   const mem = engine.getObserver('vcenter:vm-memory');
@@ -279,6 +306,22 @@ function applyOpsObservations(db, { now = Date.now() } = {}) {
     context: { cluster: host.cluster_name, cpuCores: host.cpu_cores },
   })), SETTINGS, getSetting, engine);
 
+  // 6. A VM deployed 30 h ago: hot CPU, held by the new-VM grace.
+  let heldRows = 0;
+  if (vms.cpuHeld && seedHeldDeployment(db, vms.cpuHeld, now)) {
+    const vcObs = require('../../services/agentObservations/observers/vcenter');
+    const age = vcObs.vmAges(db, { nowMs: now }).get(`${vms.cpuHeld.vcenter_id}|${vms.cpuHeld.name.toLowerCase()}`);
+    if (age) {
+      const grace = getObservationSettings().vmMinAgeHours;
+      const heldSamples = vmSamples(vms.cpuHeld, 'cpu', stepped([96, 98, 101, 99, 97, 98], end)).map((smp) => {
+        const f = vcObs.ageFields(age, smp.capturedAt, grace);
+        return { ...smp, context: { ...smp.context, ...f.context }, ...(f.hold ? { hold: f.hold } : {}) };
+      });
+      replay(cpu, heldSamples, SETTINGS, getSetting, engine);
+      heldRows = 1;
+    }
+  }
+
   // Make the inventory agree with the episodes' latest values.
   const setVmCpu = db.prepare(`UPDATE vcenter_vms SET cpu_usage_mhz = ? WHERE vcenter_id = ? AND name = ?`);
   const setVmMem = db.prepare(`UPDATE vcenter_vms SET mem_usage_mb = ? WHERE vcenter_id = ? AND name = ?`);
@@ -289,6 +332,7 @@ function applyOpsObservations(db, { now = Date.now() } = {}) {
   setVmCpu.run(cpuMhz(vms.cpuWatching, 95), vms.cpuWatching.vcenter_id, vms.cpuWatching.name);
   setVmCpu.run(cpuMhz(vms.cpuPattern, 35), vms.cpuPattern.vcenter_id, vms.cpuPattern.name);
   setVmCpu.run(cpuMhz(vms.cpuPatternSticky, 33), vms.cpuPatternSticky.vcenter_id, vms.cpuPatternSticky.name);
+  if (heldRows && vms.cpuHeld) setVmCpu.run(cpuMhz(vms.cpuHeld, 98), vms.cpuHeld.vcenter_id, vms.cpuHeld.name);
   db.prepare('UPDATE vcenter_hosts SET mem_bytes_used = ? WHERE vcenter_id = ? AND name = ?')
     .run(Math.round(0.6 * host.mem_bytes_capacity), host.vcenter_id, host.name);
 
@@ -299,7 +343,8 @@ function applyOpsObservations(db, { now = Date.now() } = {}) {
   return {
     applied: true,
     incidents,
-    subjects: { ...Object.fromEntries(Object.entries(vms).map(([k, v]) => [k, v.name])), hostMemory: host.name },
+    held: heldRows,
+    subjects: { ...Object.fromEntries(Object.entries(vms).filter(([, v]) => v).map(([k, v]) => [k, v.name])), hostMemory: host.name },
     byState: Object.fromEntries(counts.map((r) => [r.state, r.c])),
   };
 }

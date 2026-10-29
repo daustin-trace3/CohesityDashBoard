@@ -64,18 +64,138 @@ const HOST_SQL = `
   WHERE v.last_poll_status = 'success'
 `;
 
+// ---------------------------------------------------------------------------
+// VM age (new-VM grace). Creation time, first known wins: the Aria Automation
+// deployment that built the VM, vCenter's own config.createDate, the day ICC
+// first saw the VM on a vCenter it was already watching. Never uptime.
+
+const log = (...a) => { try { require('../../../utils/logger').debug(...a); } catch { /* logging is optional */ } };
+
+let ariaTablesOk = null;
+let ariaWarned = false;
+let colsMemo = null; // { at, hasCreated, hasGuest }
+const RECHECK_MS = 60000;
+
+function ariaPresent(db) {
+  if (ariaTablesOk != null) return ariaTablesOk;
+  try {
+    const n = db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type = 'table' AND name IN ('aria_deployments', 'aria_deployment_resources')").get().c;
+    ariaTablesOk = n === 2;
+  } catch { ariaTablesOk = false; }
+  return ariaTablesOk;
+}
+
+/** Which optional vcenter_vms columns exist. A "no" is re-checked at most once a minute so a later migration is picked up. */
+function vmColumns(db, nowMs) {
+  if (colsMemo && colsMemo.hasCreated && colsMemo.hasGuest) return colsMemo;
+  if (colsMemo && nowMs - colsMemo.at < RECHECK_MS) return colsMemo;
+  let names = [];
+  try { names = db.prepare("PRAGMA table_info('vcenter_vms')").all().map((c) => c.name); } catch { /* no table, no columns */ }
+  colsMemo = { at: nowMs, hasCreated: names.includes('created_at_src'), hasGuest: names.includes('guest_hostname') };
+  return colsMemo;
+}
+
+const keyOf = (vcenterId, name) => `${vcenterId}|${String(name).toLowerCase()}`;
+const validIso = (v) => {
+  if (v == null || String(v).trim() === '') return null;
+  const s = String(v);
+  const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : `${s.replace(' ', 'T')}Z`);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+};
+
+/**
+ * Creation time of every VM whose age is known, keyed `${vcenter_id}|${lower name}`:
+ * { createdAt (ISO), source: 'aria' | 'vcenter' | 'icc', detail }. At most one
+ * query per source. A VM with no known age is absent (no hold).
+ */
+function vmAges(db, { nowMs = Date.now() } = {}) {
+  const out = new Map();
+
+  const aria = new Map(); // lower resource name -> { createdAt, detail }, newest wins
+  if (ariaPresent(db)) {
+    try {
+      const rows = db.prepare(`
+        SELECT LOWER(r.name) AS rname, d.created_at_src AS created, d.name AS dname
+          FROM aria_deployment_resources r
+          JOIN aria_deployments d ON d.instance_id = r.instance_id AND d.deployment_id = r.deployment_id
+         WHERE r.name IS NOT NULL AND d.created_at_src IS NOT NULL`).all();
+      for (const r of rows) {
+        const createdAt = validIso(r.created);
+        if (!createdAt) continue;
+        const cur = aria.get(r.rname);
+        if (!cur || createdAt > cur.createdAt) aria.set(r.rname, { createdAt, detail: r.dname || null });
+      }
+    } catch (err) {
+      if (!ariaWarned) { ariaWarned = true; log(`[Observations] aria deployment ages unavailable: ${err.message}`); }
+    }
+  }
+
+  const cols = vmColumns(db, nowMs);
+  let vms = [];
+  try {
+    vms = db.prepare(`SELECT vcenter_id, name, ${cols.hasGuest ? 'guest_hostname' : 'NULL'} AS guest_hostname, ${cols.hasCreated ? 'created_at_src' : 'NULL'} AS created_at_src FROM vcenter_vms WHERE name IS NOT NULL`).all();
+  } catch (err) { log(`[Observations] vm age lookup failed: ${err.message}`); }
+
+  const vcFirst = new Map();
+  const vmFirst = new Map();
+  try {
+    for (const r of db.prepare('SELECT vcenter_id, MIN(day) AS day FROM vcenter_vm_daily GROUP BY vcenter_id').all()) vcFirst.set(r.vcenter_id, r.day);
+    for (const r of db.prepare('SELECT vcenter_id, vm_name, MIN(day) AS day FROM vcenter_vm_daily GROUP BY vcenter_id, vm_name').all()) vmFirst.set(keyOf(r.vcenter_id, r.vm_name), r.day);
+  } catch { /* no daily table: no icc ages */ }
+
+  for (const v of vms) {
+    const k = keyOf(v.vcenter_id, v.name);
+    let hit = aria.get(String(v.name).toLowerCase());
+    if (!hit && v.guest_hostname) hit = aria.get(String(v.guest_hostname).split('.')[0].toLowerCase());
+    if (hit) { out.set(k, { createdAt: hit.createdAt, source: 'aria', detail: hit.detail }); continue; }
+    const vcIso = validIso(v.created_at_src);
+    if (vcIso) { out.set(k, { createdAt: vcIso, source: 'vcenter', detail: null }); continue; }
+    const first = vmFirst.get(k);
+    const base = vcFirst.get(v.vcenter_id);
+    if (first && base && first > base) out.set(k, { createdAt: `${first}T00:00:00.000Z`, source: 'icc', detail: null });
+  }
+  return out;
+}
+
+function holdReason(age, ageHours, graceHours) {
+  const via = age.source === 'aria' ? `Aria deployment${age.detail ? ` "${age.detail}"` : ''}` : (age.source === 'vcenter' ? 'vCenter created date' : 'first seen by ICC');
+  return `new VM, created ${round1(ageHours)} h ago (${via}), grace ${graceHours} h`;
+}
+
+/** Context fields (and the hold, when the VM is inside the grace) for one VM age at a sample time. Shared with the demo replay. */
+function ageFields(age, capturedAt, graceHours) {
+  const ageHours = Math.max(0, (Date.parse(capturedAt) - Date.parse(age.createdAt)) / 3600000);
+  const context = { createdAt: age.createdAt, createdSource: age.source, createdDetail: age.detail, ageHours: round1(ageHours) };
+  const hold = graceHours > 0 && ageHours < graceHours
+    ? { reason: holdReason(age, ageHours, graceHours), until: new Date(Date.parse(age.createdAt) + graceHours * 3600000).toISOString() }
+    : null;
+  return { context, hold };
+}
+
 function vmSamples(db, pick) {
   const out = [];
-  for (const r of db.prepare(VM_SQL).all()) {
+  const rows = db.prepare(VM_SQL).all();
+  let grace = 72;
+  try { grace = require('../../settings').getObservationSettings().vmMinAgeHours; } catch { /* default grace */ }
+  let ages = new Map();
+  try { ages = vmAges(db); } catch (err) { log(`[Observations] vm ages failed: ${err.message}`); }
+  for (const r of rows) {
     const capturedAt = isoOf(r.last_poll_at);
     if (!capturedAt || !r.name) continue;
     const s = pick(r);
     if (s == null) continue;
-    out.push({
+    const sample = {
       subjectKey: `vcenter:${r.vcenter_id}:vm:${r.name}`, label: r.name, host: r.name,
       sourceId: r.vcenter_id, sourceName: r.vcenter_name, value: s.value, capturedAt,
       context: { cluster: r.cluster_name || null, esxHost: r.host_name || null, ...s.context },
-    });
+    };
+    const age = ages.get(keyOf(r.vcenter_id, r.name));
+    if (age) {
+      const f = ageFields(age, capturedAt, grace);
+      Object.assign(sample.context, f.context);
+      if (f.hold) sample.hold = f.hold;
+    }
+    out.push(sample);
   }
   return out;
 }
@@ -118,7 +238,7 @@ const hostMem = (r) => {
 };
 
 module.exports = {
-  KEYS, pairOf, isoOf,
+  KEYS, pairOf, isoOf, vmAges, ageFields,
   observers: [
     {
       id: 'vcenter:vm-cpu', platform: 'vcenter', label: 'VM CPU', unit: '%', kind: 'sustained',

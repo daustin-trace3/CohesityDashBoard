@@ -10,7 +10,8 @@ const agent = require('../services/opsAgent');
 const { createApp } = require('../app');
 
 const API_KEY = 'test-api-key';
-const T0 = Date.parse('2026-10-22T12:00:00.000Z');
+// A day ago, rounded to the hour: the pattern and history windows are measured from Date.now().
+const T0 = Math.floor((Date.now() - 86400000) / 3600000) * 3600000;
 const at = (n) => new Date(T0 + n * 15 * 60000).toISOString();
 const NOW = at(12);
 const S = { enabled: true, sustainSamples: 3, clearSamples: 2, patternMin: 3, patternDays: 7, historyDays: 90, disabledIds: [] };
@@ -140,13 +141,23 @@ describe('PUT /api/settings opsAgent.observations', () => {
   it('saves a valid block and GET /api/settings returns it', async () => {
     const res = await save({ enabled: false, sustainSamples: 5, clearSamples: 4, patternMin: 4, patternDays: 10, historyDays: 120, disabledIds: ['vcenter:vm-memory'] });
     expect(res.status).toBe(200);
-    expect(getOpsAgentSettings().observations).toEqual({ enabled: false, sustainSamples: 5, clearSamples: 4, patternMin: 4, patternDays: 10, historyDays: 120, disabledIds: ['vcenter:vm-memory'] });
+    expect(getOpsAgentSettings().observations).toEqual({ enabled: false, sustainSamples: 5, clearSamples: 4, patternMin: 4, patternDays: 10, historyDays: 120, vmMinAgeHours: 72, disabledIds: ['vcenter:vm-memory'] });
     const got = await get('/api/settings');
     expect(got.body.opsAgent.observations).toMatchObject({ enabled: false, sustainSamples: 5, disabledIds: ['vcenter:vm-memory'] });
   });
 
+  it('vmMinAgeHours round-trips, including a saved 0 (grace off)', async () => {
+    expect((await save({ vmMinAgeHours: 48 })).status).toBe(200);
+    expect(getOpsAgentSettings().observations.vmMinAgeHours).toBe(48);
+    expect((await save({ vmMinAgeHours: 0 })).status).toBe(200);
+    expect(getOpsAgentSettings().observations.vmMinAgeHours).toBe(0);
+    expect((await get('/api/settings')).body.opsAgent.observations.vmMinAgeHours).toBe(0);
+    setSetting('ops_obs_vm_min_age_hours', '');
+    expect(getOpsAgentSettings().observations.vmMinAgeHours).toBe(72);
+  });
+
   it('refuses out-of-range numbers and names the field', async () => {
-    for (const [field, value] of [['sustainSamples', 0], ['sustainSamples', 25], ['clearSamples', 13], ['patternMin', 1], ['patternMin', 11], ['patternDays', 31], ['historyDays', 6], ['historyDays', 366], ['historyDays', 'abc'], ['historyDays', 7.5]]) {
+    for (const [field, value] of [['sustainSamples', 0], ['sustainSamples', 25], ['clearSamples', 13], ['patternMin', 1], ['patternMin', 11], ['patternDays', 31], ['historyDays', 6], ['historyDays', 366], ['historyDays', 'abc'], ['historyDays', 7.5], ['vmMinAgeHours', 721], ['vmMinAgeHours', -1], ['vmMinAgeHours', 1.5]]) {
       const res = await save({ [field]: value });
       expect(res.status).toBe(400);
       expect(res.body.field).toBe(field);

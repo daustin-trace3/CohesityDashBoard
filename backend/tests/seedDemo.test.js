@@ -1029,8 +1029,9 @@ describe('seedDemo.js', () => {
     expect(byState('critical')[0].observer_id).toBe('vcenter:vm-cpu');
     expect(byState('degrading')).toHaveLength(1);
     expect(byState('degrading')[0].observer_id).toBe('vcenter:vm-memory');
-    expect(byState('watching')).toHaveLength(1);
-    expect(byState('watching')[0].observer_id).toBe('vcenter:vm-cpu');
+    // Two watching: the short blip, and the new VM held by the grace period.
+    expect(byState('watching')).toHaveLength(2);
+    expect(byState('watching').every((r) => r.observer_id === 'vcenter:vm-cpu')).toBe(true);
 
     const critical = db.prepare("SELECT * FROM ops_observations WHERE state = 'critical'").get();
     expect(critical.samples).toBe(10);
@@ -1040,11 +1041,15 @@ describe('seedDemo.js', () => {
     const vmRow = db.prepare('SELECT cpu_usage_mhz FROM vcenter_vms WHERE name = ?').get(critical.subject_label);
     expect(vmRow.cpu_usage_mhz).toBeGreaterThan(0);
 
-    const watching = byState('watching')[0];
-    const w = db.prepare("SELECT promoted_at, elevated_samples FROM ops_observations WHERE state = 'watching'").get();
-    expect(w.promoted_at).toBeNull();
-    expect(w.elevated_samples).toBe(2);
-    expect(watching.subject_label).toBeTruthy();
+    const watchRows = db.prepare("SELECT promoted_at, elevated_samples, context_json FROM ops_observations WHERE state = 'watching' ORDER BY id").all();
+    expect(watchRows.every((w) => w.promoted_at === null)).toBe(true);
+    const blip = watchRows.find((w) => !JSON.parse(w.context_json).hold);
+    expect(blip.elevated_samples).toBe(2);
+    const heldRow = watchRows.find((w) => JSON.parse(w.context_json).hold);
+    expect(heldRow.elevated_samples).toBe(6);
+    const heldCtx = JSON.parse(heldRow.context_json);
+    expect(heldCtx).toMatchObject({ createdSource: 'aria', createdDetail: 'build-agent-pool' });
+    expect(heldCtx.hold.reason).toMatch(/^new VM, created .* h ago \(Aria deployment "build-agent-pool"\), grace 72 h$/);
 
     // Two pattern subjects: report-01 style with four closed one-offs inside
     // 7 days, and a sticky-incident VM with five.

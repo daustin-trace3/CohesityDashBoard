@@ -159,7 +159,7 @@ function openRow(observer, s, t, nowIso) {
  * Apply one new sample to an episode row (a plain object, mutated). Returns
  * 'promoted' | 'closed' | null.
  */
-function applySample(ep, s, level, st) {
+function applySample(ep, s, level, st, held = false) {
   const v = s.value;
   ep.samples += 1;
   ep.last_sample_at = s.capturedAt;
@@ -182,7 +182,7 @@ function applySample(ep, s, level, st) {
 
   let event = null;
   const runMin = () => Math.round(((ms(s.capturedAt) - ms(ep.elevated_run_start)) / 60000));
-  if (ep.state === 'watching' && elevated) {
+  if (ep.state === 'watching' && elevated && !held) {
     const runSamples = series.filter((p) => ms(p.t) >= ms(ep.elevated_run_start)).length;
     let reason = null;
     if (runSamples >= st.sustainSamples) reason = `elevated for ${runSamples} samples (${runMin()} min)`;
@@ -194,7 +194,7 @@ function applySample(ep, s, level, st) {
       event = 'promoted';
     }
   }
-  if (ep.state === 'degrading' && ep.severe_run >= st.sustainSamples) {
+  if (ep.state === 'degrading' && !held && ep.severe_run >= st.sustainSamples) {
     ep.state = 'critical';
     ep.promote_reason = `severe for ${ep.severe_run} samples (${runMin()} min)`;
     event = 'promoted';
@@ -204,6 +204,8 @@ function applySample(ep, s, level, st) {
     ep.state = 'closed';
     ep.closed_at = s.capturedAt;
     event = 'closed';
+    // A burst that ended inside the new-VM grace never counts toward a pattern.
+    if (held) ep.context_json = JSON.stringify({ ...parseJson(ep.context_json, {}), held: true });
   }
   return event;
 }
@@ -263,9 +265,12 @@ function ingest(observer, samples, nowIso, settings, thresholds) {
       ep.threshold_warn = thresholds.warn;
       ep.threshold_crit = thresholds.crit;
       ep.source_name = s.sourceName ?? ep.source_name;
-      ep.context_json = JSON.stringify({ ...parseJson(ep.context_json, {}), ...(s.context || {}) });
+      const held = !!s.hold;
+      const ctx = { ...parseJson(ep.context_json, {}), ...(s.context || {}) };
+      if (held) ctx.hold = s.hold; else delete ctx.hold;
+      ep.context_json = JSON.stringify(ctx);
       counts.sampled += 1;
-      const event = applySample(ep, s, level, st);
+      const event = applySample(ep, s, level, st, held);
       if (event === 'promoted') {
         counts.promoted += 1;
         if (!ep.issue_key) ep.issue_key = `obs:${observer.id}:${ep.subject_key}`;
@@ -312,7 +317,8 @@ function evaluate(nowIso, settings = getObservationSettings()) {
 /** Subjects holding patternMin or more one-off episodes inside the window. */
 function patternGroups(nowIso, settings) {
   const since = new Date(ms(nowIso) - (settings.patternDays ?? 7) * 86400000).toISOString();
-  const rows = db.prepare("SELECT * FROM ops_observations WHERE state = 'closed' AND outcome = 'one-off' AND closed_at >= ? ORDER BY closed_at").all(since);
+  const rows = db.prepare("SELECT * FROM ops_observations WHERE state = 'closed' AND outcome = 'one-off' AND closed_at >= ? ORDER BY closed_at").all(since)
+    .filter((r) => !parseJson(r.context_json, {}).held);
   const groups = new Map();
   for (const r of rows) {
     const k = `${r.observer_id}|${r.subject_key}`;
@@ -335,6 +341,14 @@ function patternMessage(o, group, settings) {
 // ---------------------------------------------------------------------------
 // items for the agent
 
+/** New-VM fields carried in the episode context, for the API, evidence and incident detail. */
+function ageFields(ctx) {
+  return {
+    hold: ctx.hold || null, createdAt: ctx.createdAt || null, createdSource: ctx.createdSource || null,
+    createdDetail: ctx.createdDetail || null, ageHours: ctx.ageHours ?? null,
+  };
+}
+
 /** What an incident stores about the episode that opened it (ops_incident_alerts.detail_json). */
 function observationDetail(row) {
   return {
@@ -342,6 +356,7 @@ function observationDetail(row) {
     openedAt: row.opened_at, openedValue: openedValueOf(row), elevatedRunStart: row.elevated_run_start ?? null,
     samples: row.samples, elevatedSamples: row.elevated_samples, warn: row.threshold_warn, crit: row.threshold_crit,
     unit: row.unit || '', promoteReason: row.promote_reason ?? null, promotedAt: row.promoted_at ?? null, state: row.state,
+    ...ageFields(parseJson(row.context_json, {})),
   };
 }
 
@@ -401,6 +416,7 @@ function collectItems(nowIso, settings = getObservationSettings()) {
 function describe(row, { seriesCap = 24, obs = null } = {}) {
   const o = (obs || allObservers()).get(row.observer_id);
   const series = parseJson(row.series_json, []);
+  const context = parseJson(row.context_json, {});
   return {
     id: row.id, observerId: row.observer_id, label: o ? (o.label || o.id) : row.observer_id, platform: row.platform,
     subject: row.subject_label, subjectKey: row.subject_key, host: row.host, sourceName: row.source_name, kind: row.kind,
@@ -408,8 +424,9 @@ function describe(row, { seriesCap = 24, obs = null } = {}) {
     thresholdWarn: row.threshold_warn, thresholdCrit: row.threshold_crit, openedAt: row.opened_at, promotedAt: row.promoted_at,
     promoteReason: row.promote_reason, closedAt: row.closed_at, lastSampleAt: row.last_sample_at, minutes: minutesOf(row),
     samples: row.samples, elevatedSamples: row.elevated_samples, series: seriesCap ? series.slice(-seriesCap) : series,
-    context: parseJson(row.context_json, {}), incidentId: row.incident_id, issueKey: row.issue_key,
+    context, incidentId: row.incident_id, issueKey: row.issue_key,
     openedValue: openedValueOf(row), elevatedRunStart: row.elevated_run_start ?? null,
+    ...ageFields(context),
   };
 }
 

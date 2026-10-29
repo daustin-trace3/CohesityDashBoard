@@ -150,6 +150,54 @@ describe('episode state machine', () => {
   });
 });
 
+describe('new-VM hold', () => {
+  const HOLD = { reason: 'new VM, created 5 h ago (vCenter created date), grace 72 h', until: '2026-10-25T12:00:00.000Z' };
+  const held = (n, v) => sample(n, v, { hold: HOLD, context: { cores: 4, createdAt: '2026-10-22T07:00:00.000Z', createdSource: 'vcenter', createdDetail: null, ageHours: 5 } });
+
+  it('never promotes across six elevated held samples', () => {
+    feed([held(0, 95), held(1, 99), held(2, 101), held(3, 99), held(4, 100), held(5, 98)]);
+    const r = rows()[0];
+    expect(r).toMatchObject({ state: 'watching', samples: 6, elevated_samples: 6, promoted_at: null });
+    expect(JSON.parse(r.context_json).hold).toEqual(HOLD);
+    expect(engine.collectItems(NOW, S)).toEqual([]);
+  });
+
+  it('the first unheld elevated sample promotes at once when the run already covers sustainSamples', () => {
+    feed([held(0, 95), held(1, 99), held(2, 101)]);
+    expect(rows()[0].state).toBe('watching');
+    feed([sample(3, 97)]);
+    const r = rows()[0];
+    expect(r.state).toBe('degrading');
+    expect(JSON.parse(r.context_json).hold).toBeUndefined();
+  });
+
+  it('a held one-off close sets context.held and is excluded from pattern groups', () => {
+    for (const base of [0, 10, 20]) feed([held(base, 95), held(base + 1, 50), held(base + 2, 50)]);
+    const closed = rows();
+    expect(closed).toHaveLength(3);
+    for (const r of closed) {
+      expect(r).toMatchObject({ state: 'closed', outcome: 'one-off' });
+      expect(JSON.parse(r.context_json).held).toBe(true);
+    }
+    expect(engine.patternGroups(NOW, S)).toEqual([]);
+    expect(engine.collectItems(NOW, S)).toEqual([]);
+  });
+
+  it('unheld one-offs still form a pattern', () => {
+    for (const base of [0, 10, 20]) feed([sample(base, 95), sample(base + 1, 50), sample(base + 2, 50)]);
+    expect(engine.patternGroups(NOW, S)).toHaveLength(1);
+  });
+
+  it('describe and observationDetail expose hold and the created fields', () => {
+    feed([held(0, 95)]);
+    const row = rows()[0];
+    expect(engine.describe(row)).toMatchObject({ hold: HOLD, createdAt: '2026-10-22T07:00:00.000Z', createdSource: 'vcenter', ageHours: 5 });
+    expect(engine.observationDetail(row)).toMatchObject({ hold: HOLD, createdAt: '2026-10-22T07:00:00.000Z', createdSource: 'vcenter', ageHours: 5 });
+    feed([sample(1, 50)]);
+    expect(engine.describe(rows()[0]).hold).toBeNull();
+  });
+});
+
 describe('evaluate', () => {
   it('samples enabled observers and skips disabled ones', () => {
     fakeSamples = [sample(0, 95)];

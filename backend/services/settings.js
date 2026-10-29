@@ -302,6 +302,7 @@ function getObservationSettings() {
     patternMin: numSetting('ops_obs_pattern_min', 3, 2, 10),
     patternDays: numSetting('ops_obs_pattern_days', 7, 1, 30),
     historyDays: numSetting('ops_obs_history_days', 90, 7, 365),
+    vmMinAgeHours: numSetting('ops_obs_vm_min_age_hours', 72, 0, 720),
     disabledIds,
   };
 }

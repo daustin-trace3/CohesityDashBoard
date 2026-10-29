@@ -481,4 +481,13 @@ module.exports = [
       `);
     },
   },
+  {
+    version: 14,
+    up(db) {
+      // config.createDate from vCenter (ISO 8601, NULL when the property is
+      // absent). The Ops Agent uses it to hold back new VMs from promotion.
+      const cols = db.prepare("PRAGMA table_info('vcenter_vms')").all().map((c) => c.name);
+      if (!cols.includes('created_at_src')) db.exec('ALTER TABLE vcenter_vms ADD COLUMN created_at_src TEXT');
+    },
+  },
 ];

@@ -722,6 +722,14 @@ async function fetchInventorySoap(vc) {
     const dvpgRows = await retrieveOptional('DistributedVirtualPortgroup', DVPG_PROPS);
     const vmStorageRows = await retrieveOptional('VirtualMachine', VM_STORAGE_PROPS);
     const vmStorageByMoref = new Map(vmStorageRows.map(r => [String(r._moref), r]));
+    // config.createDate (vSphere 6.7+) is fetched on its own: an InvalidProperty
+    // fault on an older vCenter must not blank the VM inventory.
+    const vmCreateRows = await retrieveOptional('VirtualMachine', ['config.createDate']);
+    const vmCreatedByMoref = new Map();
+    for (const r of vmCreateRows) {
+      const raw = flat(r['config.createDate']);
+      if (raw != null && Number.isFinite(Date.parse(String(raw)))) vmCreatedByMoref.set(String(r._moref), String(raw));
+    }
 
     const networkNameByMoref = new Map();
     for (const r of [...netRows, ...dvpgRows]) {
@@ -828,6 +836,7 @@ async function fetchInventorySoap(vc) {
         memUsageMb: num(v['summary.quickStats.guestMemoryUsage']),
         overallStatus: v['overallStatus'] != null ? String(flat(v['overallStatus'])) : null,
         guestHostname: v['guest.hostName'] != null ? String(flat(v['guest.hostName'])) : null,
+        createdAt: vmCreatedByMoref.get(String(v._moref)) ?? null,
       };
     });
 

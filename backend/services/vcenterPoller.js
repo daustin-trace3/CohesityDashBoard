@@ -157,8 +157,8 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
       guest_os, cpu_count, memory_mb, ip_address, tools_status, hw_version,
       tools_version, tools_version_status, networks, datastores, tags, guest_nics,
       uptime_seconds, storage_committed_bytes, annotation,
-      cpu_usage_mhz, mem_usage_mb, overall_status, guest_hostname)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cpu_usage_mhz, mem_usage_mb, overall_status, guest_hostname, created_at_src)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const clusterByHost = new Map(hosts.map(h => [h.name, h.clusterName]));
   for (const v of (vms || [])) {
@@ -171,7 +171,8 @@ const store = db.transaction((vcId, { clusters, hosts, datastores, cert, vms, ab
       v.tags?.length ? JSON.stringify(v.tags) : null,
       v.guestNics?.length ? JSON.stringify(v.guestNics) : null,
       v.uptimeSeconds ?? null, v.storageCommittedBytes ?? null, v.annotation ?? null,
-      v.cpuUsageMhz ?? null, v.memUsageMb ?? null, v.overallStatus ?? null, v.guestHostname ?? null);
+      v.cpuUsageMhz ?? null, v.memUsageMb ?? null, v.overallStatus ?? null, v.guestHostname ?? null,
+      v.createdAt ?? null);
   }
 
   // Guest storage rows are replaced only when the storage retrieval worked

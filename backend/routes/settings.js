@@ -279,7 +279,7 @@ router.put('/', (req, res, next) => {
       if (a.observations !== undefined) {
         const o = a.observations;
         if (!o || typeof o !== 'object' || Array.isArray(o)) return res.status(400).json({ error: 'observations must be an object', field: 'observations' });
-        const ranges = { sustainSamples: [1, 24, 'ops_obs_sustain_samples'], clearSamples: [1, 12, 'ops_obs_clear_samples'], patternMin: [2, 10, 'ops_obs_pattern_min'], patternDays: [1, 30, 'ops_obs_pattern_days'], historyDays: [7, 365, 'ops_obs_history_days'] };
+        const ranges = { sustainSamples: [1, 24, 'ops_obs_sustain_samples'], clearSamples: [1, 12, 'ops_obs_clear_samples'], patternMin: [2, 10, 'ops_obs_pattern_min'], patternDays: [1, 30, 'ops_obs_pattern_days'], historyDays: [7, 365, 'ops_obs_history_days'], vmMinAgeHours: [0, 720, 'ops_obs_vm_min_age_hours'] };
         const writes = [];
         for (const [field, [lo, hi, key]] of Object.entries(ranges)) {
           if (o[field] === undefined) continue;

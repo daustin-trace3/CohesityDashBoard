@@ -47,6 +47,10 @@ const CTX_LABEL = {
   cluster: 'Cluster', esxHost: 'ESX host', cpuCount: 'vCPUs', cpuCores: 'Cores', memoryMb: 'Memory (MB)', vcenter: 'vCenter',
 };
 
+// Age and grace keys render as their own lines, not in the raw context list.
+const AGE_KEYS = new Set(['hold', 'held', 'createdAt', 'createdSource', 'createdDetail', 'ageHours']);
+const CREATED_WORD = { aria: 'Aria deployment', vcenter: 'vCenter created date', icc: 'first seen by ICC' };
+
 function Fact({ label, children }) {
   return (<><dt className="text-ink-faint">{label}</dt><dd className="text-ink min-w-0 break-words">{children}</dd></>);
 }
@@ -112,10 +116,12 @@ export default function ObservationModal({ id, onClose, Shell }) {
     <>
       <Badge tone={OBS_STATE_TONE[o.state] || 'neutral'}>{o.state}</Badge>
       {o.state === 'closed' && o.outcome && <Badge tone="neutral">{o.outcome}</Badge>}
+      {o.hold && <Badge tone="info">new VM</Badge>}
       {o.inPattern && <Badge tone="warn">pattern: {o.patternCount} one-offs</Badge>}
     </>
   );
-  const ctx = o?.context && typeof o.context === 'object' ? Object.entries(o.context).filter(([, v]) => v != null && v !== '') : [];
+  const ctx = o?.context && typeof o.context === 'object'
+    ? Object.entries(o.context).filter(([k, v]) => v != null && v !== '' && !AGE_KEYS.has(k)) : [];
   const history = Array.isArray(o?.history) ? o.history : [];
 
   return (
@@ -137,6 +143,16 @@ export default function ObservationModal({ id, onClose, Shell }) {
                 <Fact label="Peak">{fmtObs(o.peak, o.unit)}{o.peakAt ? ` at ${new Date(o.peakAt).toLocaleString()}` : ''}</Fact>
                 <Fact label="Warn / critical">{fmtObs(o.thresholdWarn, o.unit)} / {fmtObs(o.thresholdCrit, o.unit)}</Fact>
                 <Fact label="Elevated">{fmtMinutes(o.minutes)} ({o.elevatedSamples} of {o.samples} samples)</Fact>
+                {o.createdAt && (
+                  <Fact label="Created">
+                    {new Date(o.createdAt).toLocaleString()} ({CREATED_WORD[o.createdSource] || o.createdSource || 'unknown source'}{o.createdDetail ? `: ${o.createdDetail}` : ''})
+                  </Fact>
+                )}
+                {o.hold && (
+                  <Fact label="Held">
+                    <span data-testid="obs-hold">{o.hold.reason} until {o.hold.until ? new Date(o.hold.until).toLocaleString() : '-'}</span>
+                  </Fact>
+                )}
                 <Fact label="Opened">{new Date(o.openedAt).toLocaleString()}</Fact>
                 {o.promotedAt && <Fact label="Promoted">{new Date(o.promotedAt).toLocaleString()}{o.promoteReason ? `: ${o.promoteReason}` : ''}</Fact>}
                 {o.closedAt && <Fact label="Closed">{new Date(o.closedAt).toLocaleString()}</Fact>}

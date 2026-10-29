@@ -51,7 +51,7 @@ const TAB_FIELDS = {
   status: ['serviceStatusMode', 'serviceStatusStaleMinutes', 'serviceStatusAiEnabled', 'serviceStatusAnalysesPerMinute', 'serviceStatusDedupeMinutes'],
   agent: ['agentEnabled', 'agentName', 'agentGrouping', 'agentMinSeverity', 'agentHoldMinutes', 'agentConsequenceMinutes', 'agentOnsetMinutes', 'agentAnalysesPerHour',
     'agentRenotifyMinutes', 'agentAutoResolveMinutes', 'agentEvidenceResolve', 'agentPatternMin', 'agentPatternDays', 'agentStickyRepeats', 'agentReminderHours', 'agentPatternCooldownDays', 'agentAnalysisHistoryDays',
-    'obsEnabled', 'obsSustainSamples', 'obsClearSamples', 'obsPatternMin', 'obsPatternDays', 'obsHistoryDays', 'obsDisabledIds'],
+    'obsEnabled', 'obsSustainSamples', 'obsClearSamples', 'obsPatternMin', 'obsPatternDays', 'obsHistoryDays', 'obsVmMinAgeHours', 'obsDisabledIds'],
   email: ['agentEmailEnabled', 'agentRecipients'],
 };
 
@@ -64,7 +64,7 @@ const DEFAULT_FORM = {
   agentHoldMinutes: 10, agentConsequenceMinutes: 30, agentOnsetMinutes: 10, agentAnalysesPerHour: 20, agentRenotifyMinutes: 60, agentAutoResolveMinutes: 30,
   agentEvidenceResolve: true, agentPatternMin: 3, agentPatternDays: 14, agentStickyRepeats: true, agentReminderHours: 24, agentPatternCooldownDays: 14, agentAnalysisHistoryDays: 180,
   agentEmailEnabled: true, agentRecipients: '',
-  obsEnabled: true, obsSustainSamples: 3, obsClearSamples: 2, obsPatternMin: 3, obsPatternDays: 7, obsHistoryDays: 90, obsDisabledIds: [],
+  obsEnabled: true, obsSustainSamples: 3, obsClearSamples: 2, obsPatternMin: 3, obsPatternDays: 7, obsHistoryDays: 90, obsVmMinAgeHours: 72, obsDisabledIds: [],
 };
 
 function formFromSettings(d) {
@@ -107,6 +107,7 @@ function formFromSettings(d) {
     obsPatternMin: a.observations?.patternMin ?? 3,
     obsPatternDays: a.observations?.patternDays ?? 7,
     obsHistoryDays: a.observations?.historyDays ?? 90,
+    obsVmMinAgeHours: a.observations?.vmMinAgeHours ?? 72,
     obsDisabledIds: Array.isArray(a.observations?.disabledIds) ? a.observations.disabledIds : [],
   };
 }
@@ -143,6 +144,7 @@ function payloadFor(tab, f) {
           observations: {
             enabled: f.obsEnabled, sustainSamples: Number(f.obsSustainSamples), clearSamples: Number(f.obsClearSamples),
             patternMin: Number(f.obsPatternMin), patternDays: Number(f.obsPatternDays), historyDays: Number(f.obsHistoryDays),
+            vmMinAgeHours: Number(f.obsVmMinAgeHours),
             disabledIds: f.obsDisabledIds,
           },
         },
@@ -665,6 +667,13 @@ export default function IntelligenceSettingsPage({ defaultTab = 'provider' }) {
                   <div className="flex items-center gap-2">
                     <input id="obs-clear" type="number" min={1} max={12} value={form.obsClearSamples} onChange={set('obsClearSamples')} className={numberCls} />
                     <span className="text-[11px] text-ink-faint">samples</span>
+                  </div>
+                </SettingRow>
+                <SettingRow label="New VM grace (hours)" htmlFor="obs-vm-grace" dirty={isDirty('obsVmMinAgeHours')}
+                  tip="A VM younger than this is watched but never becomes an incident, so a fresh deployment installing software does not alert. Age comes from the Aria Automation deployment that created it, else vCenter's created date, else the day ICC first saw it. 0 turns the grace off.">
+                  <div className="flex items-center gap-2">
+                    <input id="obs-vm-grace" type="number" min={0} max={720} value={form.obsVmMinAgeHours} onChange={set('obsVmMinAgeHours')} className={numberCls} />
+                    <span className="text-[11px] text-ink-faint">hours</span>
                   </div>
                 </SettingRow>
                 <SettingRow label="Call it a pattern after" htmlFor="obs-pattern-min" dirty={isDirty('obsPatternMin') || isDirty('obsPatternDays')}
