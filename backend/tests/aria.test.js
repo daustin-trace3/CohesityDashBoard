@@ -215,7 +215,10 @@ describe('routes/aria.js basic CRUD (minimal express app, no dispatcher)', () =>
   it('GET/PUT /api/aria/config round-trips clamped thresholds', async () => {
     const before = await request(app).get('/api/aria/config');
     expect(before.status).toBe(200);
-    expect(before.body).toEqual({ leaseWarnDays: 7, certWarnDays: 30, requestFailLookbackHours: 24 });
+    expect(before.body).toEqual({
+      leaseWarnDays: 7, certWarnDays: 30, requestFailLookbackHours: 24,
+      deploymentFetchCap: 2000, resourceFetchCap: 300, ledgerRetentionDays: 0,
+    });
 
     const saved = await request(app).put('/api/aria/config').send({
       leaseWarnDays: 14, certWarnDays: 45, requestFailLookbackHours: 48,
@@ -223,6 +226,7 @@ describe('routes/aria.js basic CRUD (minimal express app, no dispatcher)', () =>
     expect(saved.status).toBe(200);
     expect(saved.body).toEqual({
       saved: true, leaseWarnDays: 14, certWarnDays: 45, requestFailLookbackHours: 48,
+      deploymentFetchCap: 2000, resourceFetchCap: 300, ledgerRetentionDays: 0,
     });
 
     const invalid = await request(app).put('/api/aria/config').send({
@@ -263,5 +267,52 @@ describe('routes/aria.js basic CRUD (minimal express app, no dispatcher)', () =>
     expect(names(owner)).toEqual(['db-prod', 'web-prod']);
     const none = await request(app).get('/api/aria/deployments').query({ project: 'Nope' });
     expect(none.body).toEqual([]);
+  });
+  it('GET /deployments?history=1 returns ledger rows including removed ones, plus ledger detail, csv and overview counts', async () => {
+    const inst = db.prepare("SELECT id FROM aria_instances ORDER BY id LIMIT 1").get().id;
+    db.exec("DELETE FROM aria_deployment_resource_ledger WHERE deployment_id LIKE 'hist-%'; DELETE FROM aria_deployment_ledger WHERE deployment_id LIKE 'hist-%'");
+    const ins = db.prepare(`
+      INSERT INTO aria_deployment_ledger (instance_id, deployment_id, name, status, created_at_src, first_seen_at, last_seen_at, removed_at)
+      VALUES (?, ?, ?, 'CREATE_SUCCESSFUL', '2026-01-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z', ?)
+    `);
+    const gone = ins.run(inst, 'hist-gone', 'hist-removed', '2026-03-02T00:00:00.000Z').lastInsertRowid;
+    ins.run(inst, 'hist-here', 'hist-present', null);
+    db.prepare("INSERT INTO aria_deployment_resource_ledger (instance_id, deployment_id, resource_id, name, type, ip_addresses, first_seen_at, last_seen_at, removed_at) VALUES (?, 'hist-gone', 'r1', 'hist-removed-vm-01', 'Cloud.vSphere.Machine', '[\"10.1.1.1\"]', '2026-02-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z', '2026-03-02T00:00:00.000Z')").run(inst);
+
+    const hist = await request(app).get('/api/aria/deployments').query({ history: 1, project: '' });
+    expect(hist.status).toBe(200);
+    const removed = hist.body.find((d) => d.name === 'hist-removed');
+    expect(removed).toMatchObject({ source: 'ledger', removed: 1, resource_names: 'hist-removed-vm-01' });
+    expect(hist.body.find((d) => d.name === 'hist-present')).toMatchObject({ source: 'ledger', removed: 0 });
+
+    const live = await request(app).get('/api/aria/deployments');
+    expect(live.body.every((d) => d.source === 'live')).toBe(true);
+    expect(live.body.find((d) => d.name === 'hist-removed')).toBeUndefined();
+
+    const one = await request(app).get(`/api/aria/deployments/ledger/${gone}`);
+    expect(one.status).toBe(200);
+    expect(one.body.resources[0]).toMatchObject({ name: 'hist-removed-vm-01', ip_addresses: ['10.1.1.1'] });
+    expect((await request(app).get('/api/aria/deployments/ledger/99999999')).status).toBe(404);
+
+    const csv = await request(app).get('/api/aria/deployments/history.csv');
+    expect(csv.status).toBe(200);
+    expect(csv.text.split('\r\n')[0]).toBe('Instance,Deployment ID,Name,Project,Owner,Status,Created,First seen,Last seen,Removed,Resources');
+    expect(csv.text).toContain('hist-removed');
+
+    const ov = await request(app).get('/api/aria/overview');
+    expect(ov.body.ledger.total).toBeGreaterThanOrEqual(2);
+    expect(ov.body.ledger.removed).toBeGreaterThanOrEqual(1);
+  });
+
+  it('PUT/GET /config round-trips the ledger settings and rejects a deployment cap below 200', async () => {
+    const base = { leaseWarnDays: 7, certWarnDays: 30, requestFailLookbackHours: 24 };
+    const ok = await request(app).put('/api/aria/config').send({ ...base, deploymentFetchCap: 3000, resourceFetchCap: 400, ledgerRetentionDays: 90 });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ deploymentFetchCap: 3000, resourceFetchCap: 400, ledgerRetentionDays: 90 });
+    const got = await request(app).get('/api/aria/config');
+    expect(got.body).toMatchObject({ deploymentFetchCap: 3000, resourceFetchCap: 400, ledgerRetentionDays: 90 });
+    const bad = await request(app).put('/api/aria/config').send({ ...base, deploymentFetchCap: 100 });
+    expect(bad.status).toBe(400);
+    await request(app).put('/api/aria/config').send({ ...base, deploymentFetchCap: 2000, resourceFetchCap: 300, ledgerRetentionDays: 0 });
   });
 });

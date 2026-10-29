@@ -15,6 +15,7 @@ const {
   fetchApprovals, fetchAbout, fetchHealth, fetchTlsCert, getBearer,
 } = require('./ariaApi');
 const { reconcileIssueHistory } = require('./ariaIssues');
+const ariaLedger = require('./ariaLedger');
 const logger = require('../utils/logger');
 
 const safeMsg = (e) => (e?.response ? `HTTP ${e.response.status}` : (e?.message || String(e)));
@@ -39,9 +40,14 @@ async function collect(row) {
 
   const about = await safe('about', row, () => fetchAbout(row));
   const cert = await safe('tls cert', row, () => fetchTlsCert(row));
-  const deployments = await safe('deployments', row, () => fetchDeployments(row));
+  const depCap = ariaLedger.deploymentFetchCap();
+  const resCap = ariaLedger.resourceFetchCap();
+  const deployments = await safe('deployments', row, () => fetchDeployments(row, depCap));
+  // New deployments first, then oldest-refreshed, so the resource cap rotates over the estate.
   const deploymentResources = deployments === null ? null
-    : await safe('deployment resources', row, () => fetchDeploymentResources(row, deployments));
+    : await safe('deployment resources', row, () => fetchDeploymentResources(row, deployments, {
+      cap: resCap, order: ariaLedger.resourceFetchOrder(db, row.id, deployments),
+    }));
   const requests = deployments === null ? null
     : await safe('requests', row, () => fetchRequests(row, deployments));
   const cloudAccounts = await safe('cloud accounts', row, () => fetchCloudAccounts(row));
@@ -62,6 +68,8 @@ async function collect(row) {
     about, cert, deployments, deploymentResources, requests, cloudAccounts, integrations,
     projects, catalogSources, fabricImages, imageProfiles, flavorProfiles,
     blueprints, abxRuns, pipelineExecutions, approvals,
+    deploymentsCapped: deployments !== null && deployments.length >= depCap,
+    resourcesFetchedFor: deploymentResources ? deploymentResources.visited || new Set() : null,
   };
 }
 
@@ -397,10 +405,29 @@ const store = db.transaction((instanceId, data) => {
     reqAgg.total, reqAgg.failed, epAgg.total, epAgg.unhealthy, runsFailed, approvalsPending);
 });
 
+// Append-only ledger beside the live tables. A ledger failure must not fail the poll.
+function recordLedger(row, data) {
+  if (data.deployments === null) return;
+  try {
+    const r = ariaLedger.recordPoll(db, {
+      instanceId: row.id, nowIso: new Date().toISOString(), deployments: data.deployments,
+      deploymentsCapped: data.deploymentsCapped, deploymentResources: data.deploymentResources,
+      resourcesFetchedFor: data.resourcesFetchedFor,
+    });
+    if (r.inserted || r.removed || r.resourcesInserted || r.resourcesRemoved) {
+      logger.info(`[AriaPoller] ledger ${row.name}: +${r.inserted} new, ${r.removed} removed, resources for ${data.resourcesFetchedFor ? data.resourcesFetchedFor.size : 0} deployments`);
+    }
+    ariaLedger.pruneRemoved(db, ariaLedger.ledgerRetentionDays());
+  } catch (err) {
+    logger.warn(`[AriaPoller] ${row.name}: ledger update failed: ${err.message}`);
+  }
+}
+
 async function pollAria(row) {
   try {
     const data = await collect(row);
     store(row.id, data);
+    recordLedger(row, data);
     pruneInBatches(db, 'aria_metrics_history', "captured_at < datetime('now', '-365 days')");
     db.prepare(`
       UPDATE aria_instances SET last_poll_status = 'success', last_poll_error = NULL,

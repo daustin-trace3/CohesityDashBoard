@@ -218,6 +218,7 @@ const NEW_TABLES = [
   'aria_projects', 'aria_catalog_sources', 'aria_runs', 'aria_approvals',
   'aria_metrics_history', 'aria_issue_history', 'aria_images',
   'aria_image_mappings', 'aria_flavor_mappings', 'aria_blueprints', 'aria_deployment_resources',
+  'aria_deployment_ledger', 'aria_deployment_resource_ledger',
   'ariaops_instances', 'ariaops_resources', 'ariaops_alerts', 'ariaops_metrics_history',
   'netbackup_sources', 'netbackup_jobs', 'netbackup_policies', 'netbackup_storage_units',
   'netbackup_disk_pools', 'netbackup_media_servers', 'netbackup_appliances', 'netbackup_alerts',

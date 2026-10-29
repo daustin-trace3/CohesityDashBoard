@@ -304,4 +304,52 @@ module.exports = [
       db.exec("UPDATE aria_deployments SET owned_by = json_extract(raw_json, '$.ownedBy') WHERE owned_by IS NULL AND raw_json IS NOT NULL AND json_valid(raw_json)");
     },
   },
+  {
+    version: 8,
+    up(db) {
+      // Append-only ledger beside the live tables: ICC keeps its own record of
+      // every deployment (and the machine names under it) it has ever seen.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS aria_deployment_ledger (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id     INTEGER NOT NULL REFERENCES aria_instances(id) ON DELETE CASCADE,
+          deployment_id   TEXT NOT NULL,
+          name            TEXT,
+          project_name    TEXT,
+          project_id      TEXT,
+          status          TEXT,
+          created_by      TEXT,
+          owned_by        TEXT,
+          created_at_src  TEXT,
+          updated_at_src  TEXT,
+          lease_expire_at TEXT,
+          resource_count  INTEGER,
+          first_seen_at   TEXT NOT NULL,
+          last_seen_at    TEXT NOT NULL,
+          removed_at      TEXT,
+          resources_at    TEXT,
+          UNIQUE (instance_id, deployment_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aria_dep_ledger_instance ON aria_deployment_ledger(instance_id);
+        CREATE INDEX IF NOT EXISTS idx_aria_dep_ledger_removed ON aria_deployment_ledger(removed_at);
+
+        CREATE TABLE IF NOT EXISTS aria_deployment_resource_ledger (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id    INTEGER NOT NULL REFERENCES aria_instances(id) ON DELETE CASCADE,
+          deployment_id  TEXT NOT NULL,
+          resource_id    TEXT NOT NULL,
+          name           TEXT,
+          type           TEXT,
+          state          TEXT,
+          ip_addresses   TEXT,
+          first_seen_at  TEXT NOT NULL,
+          last_seen_at   TEXT NOT NULL,
+          removed_at     TEXT,
+          UNIQUE (instance_id, deployment_id, resource_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_aria_res_ledger_dep ON aria_deployment_resource_ledger(instance_id, deployment_id);
+        CREATE INDEX IF NOT EXISTS idx_aria_res_ledger_name ON aria_deployment_resource_ledger(name);
+      `);
+    },
+  },
 ];

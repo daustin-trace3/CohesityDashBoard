@@ -15,6 +15,8 @@ const {
   leaseWarnDays, certWarnDays, requestFailLookbackHours, computeIssues,
 } = require('../services/ariaIssues');
 const ariaAdvisor = require('../services/advisors/ariaAdvisor');
+const ariaLedger = require('../services/ariaLedger');
+const { sendCsv } = require('../utils/csv');
 
 const router = express.Router();
 
@@ -260,26 +262,60 @@ router.get('/overview', (req, res, next) => {
       return { ...v, ip_addresses: v.ip_addresses ? JSON.parse(v.ip_addresses) : [], vcenter };
     });
 
-    res.json({ instances: perInstance, totals, recentVms });
+    let ledger = { total: 0, removed: 0 };
+    try {
+      const l = db.prepare('SELECT COUNT(*) AS total, SUM(CASE WHEN removed_at IS NOT NULL THEN 1 ELSE 0 END) AS removed FROM aria_deployment_ledger').get();
+      ledger = { total: l.total || 0, removed: l.removed || 0 };
+    } catch { /* ledger table absent */ }
+    res.json({ instances: perInstance, totals, recentVms, ledger });
   } catch (err) { next(err); }
 });
 
-/** GET /api/aria/deployments?instanceId&project&ownedBy&status (all optional). */
+const MACHINE_RES = "LOWER(COALESCE(type, '')) LIKE '%machine%'";
+
+function deploymentFilters(req) {
+  const clauses = [];
+  const params = [];
+  if (req.query.instanceId) { clauses.push('d.instance_id = ?'); params.push(req.query.instanceId); }
+  // ?project= matches the project name or id (case-insensitive); ?ownedBy= and
+  // ?status= match their columns case-insensitively; ?instanceId= as before.
+  if (req.query.project) {
+    clauses.push("(LOWER(COALESCE(d.project_name, '')) = LOWER(?) OR LOWER(COALESCE(d.project_id, '')) = LOWER(?))");
+    params.push(String(req.query.project), String(req.query.project));
+  }
+  if (req.query.ownedBy) { clauses.push("LOWER(COALESCE(d.owned_by, '')) = LOWER(?)"); params.push(String(req.query.ownedBy)); }
+  if (req.query.status) { clauses.push("LOWER(COALESCE(d.status, '')) = LOWER(?)"); params.push(String(req.query.status)); }
+  return { where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+}
+
+const leaseDaysLeft = (iso) => (iso ? Math.round((new Date(iso).getTime() - Date.now()) / 86400000) : null);
+
+function ledgerRows(req) {
+  const { where, params } = deploymentFilters(req);
+  return db.prepare(`
+    SELECT d.*, i.name AS instance_name, res.resource_names
+    FROM aria_deployment_ledger d
+    JOIN aria_instances i ON i.id = d.instance_id
+    LEFT JOIN (
+      SELECT instance_id, deployment_id, GROUP_CONCAT(name, ', ') AS resource_names
+      FROM aria_deployment_resource_ledger
+      WHERE ${MACHINE_RES}
+      GROUP BY instance_id, deployment_id
+    ) res ON res.instance_id = d.instance_id AND res.deployment_id = d.deployment_id
+    ${where}
+    ORDER BY i.name, d.name
+  `).all(...params).map((d) => ({
+    ...d, removed: d.removed_at ? 1 : 0, source: 'ledger', lease_days_left: leaseDaysLeft(d.lease_expire_at),
+  }));
+}
+
+/** GET /api/aria/deployments?instanceId&project&ownedBy&status&history=1 (all optional). */
 router.get('/deployments', [query('instanceId').optional().isInt().toInt()], validate, (req, res, next) => {
   try {
-    const clauses = [];
-    const params = [];
-    if (req.query.instanceId) { clauses.push('d.instance_id = ?'); params.push(req.query.instanceId); }
-    // ?project= matches the project name or id (case-insensitive); ?ownedBy= and
-    // ?status= match their columns case-insensitively; ?instanceId= as before.
-    if (req.query.project) {
-      clauses.push("(LOWER(COALESCE(d.project_name, '')) = LOWER(?) OR LOWER(COALESCE(d.project_id, '')) = LOWER(?))");
-      params.push(String(req.query.project), String(req.query.project));
-    }
-    if (req.query.ownedBy) { clauses.push("LOWER(COALESCE(d.owned_by, '')) = LOWER(?)"); params.push(String(req.query.ownedBy)); }
-    if (req.query.status) { clauses.push("LOWER(COALESCE(d.status, '')) = LOWER(?)"); params.push(String(req.query.status)); }
+    if (String(req.query.history) === '1') return res.json(ledgerRows(req));
+    const { where, params } = deploymentFilters(req);
     const rows = db.prepare(`
-      SELECT d.*, i.name AS instance_name, res.resource_names
+      SELECT d.*, i.name AS instance_name, res.resource_names, l.first_seen_at
       FROM aria_deployments d
       JOIN aria_instances i ON i.id = d.instance_id
       LEFT JOIN (
@@ -287,18 +323,47 @@ router.get('/deployments', [query('instanceId').optional().isInt().toInt()], val
         -- names, and network/LB components would crowd them out.
         SELECT instance_id, deployment_id, GROUP_CONCAT(name, ', ') AS resource_names
         FROM aria_deployment_resources
-        WHERE LOWER(COALESCE(type, '')) LIKE '%machine%'
+        WHERE ${MACHINE_RES}
         GROUP BY instance_id, deployment_id
       ) res ON res.instance_id = d.instance_id AND res.deployment_id = d.deployment_id
-      ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+      LEFT JOIN aria_deployment_ledger l ON l.instance_id = d.instance_id AND l.deployment_id = d.deployment_id
+      ${where}
       ORDER BY i.name, d.name
     `).all(...params);
     res.json(rows.map(({ raw_json, ...d }) => ({
-      ...d,
-      lease_days_left: d.lease_expire_at
-        ? Math.round((new Date(d.lease_expire_at).getTime() - Date.now()) / 86400000)
-        : null,
+      ...d, source: 'live', lease_days_left: leaseDaysLeft(d.lease_expire_at),
     })));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aria/deployments/history.csv - the ledger view with the same filters. */
+router.get('/deployments/history.csv', [query('instanceId').optional().isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const rows = ledgerRows(req);
+    sendCsv(res, 'aria-deployments-history.csv',
+      ['Instance', 'Deployment ID', 'Name', 'Project', 'Owner', 'Status', 'Created', 'First seen', 'Last seen', 'Removed', 'Resources'],
+      rows.map((d) => [d.instance_name, d.deployment_id, d.name, d.project_name, d.owned_by || d.created_by,
+        d.status, d.created_at_src, d.first_seen_at, d.last_seen_at, d.removed_at, d.resource_names]));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/aria/deployments/ledger/:id - one ledger row with its resource ledger rows. */
+router.get('/deployments/ledger/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const d = db.prepare(`
+      SELECT d.*, i.name AS instance_name FROM aria_deployment_ledger d
+      JOIN aria_instances i ON i.id = d.instance_id WHERE d.id = ?
+    `).get(req.params.id);
+    if (!d) return res.status(404).json({ error: 'Deployment not found.' });
+    const resources = db.prepare(`
+      SELECT * FROM aria_deployment_resource_ledger WHERE instance_id = ? AND deployment_id = ? ORDER BY name
+    `).all(d.instance_id, d.deployment_id).map((r) => ({
+      ...r, ip_addresses: r.ip_addresses ? JSON.parse(r.ip_addresses) : [],
+    }));
+    res.json({
+      ...d, removed: d.removed_at ? 1 : 0, source: 'ledger', lease_days_left: leaseDaysLeft(d.lease_expire_at),
+      resources, raw: null,
+    });
   } catch (err) { next(err); }
 });
 
@@ -660,6 +725,9 @@ router.get('/config', (req, res, next) => {
       leaseWarnDays: leaseWarnDays(),
       certWarnDays: certWarnDays(),
       requestFailLookbackHours: requestFailLookbackHours(),
+      deploymentFetchCap: ariaLedger.deploymentFetchCap(),
+      resourceFetchCap: ariaLedger.resourceFetchCap(),
+      ledgerRetentionDays: ariaLedger.ledgerRetentionDays(),
     });
   } catch (err) { next(err); }
 });
@@ -669,14 +737,23 @@ router.put('/config', [
   body('leaseWarnDays').isInt({ min: 1, max: 60 }).toInt(),
   body('certWarnDays').isInt({ min: 1, max: 365 }).toInt(),
   body('requestFailLookbackHours').isInt({ min: 1, max: 168 }).toInt(),
+  body('deploymentFetchCap').optional().isInt({ min: 200, max: 20000 }).toInt(),
+  body('resourceFetchCap').optional().isInt({ min: 50, max: 2000 }).toInt(),
+  body('ledgerRetentionDays').optional().isInt({ min: 0, max: 3650 }).toInt(),
 ], validate, (req, res, next) => {
   try {
     setSetting('aria_lease_warn_days', String(req.body.leaseWarnDays));
     setSetting('aria_cert_warn_days', String(req.body.certWarnDays));
     setSetting('aria_request_fail_lookback_hours', String(req.body.requestFailLookbackHours));
+    if (req.body.deploymentFetchCap != null) setSetting('aria_deployment_fetch_cap', String(req.body.deploymentFetchCap));
+    if (req.body.resourceFetchCap != null) setSetting('aria_resource_fetch_cap', String(req.body.resourceFetchCap));
+    if (req.body.ledgerRetentionDays != null) setSetting('aria_ledger_retention_days', String(req.body.ledgerRetentionDays));
     res.json({
       saved: true, leaseWarnDays: leaseWarnDays(), certWarnDays: certWarnDays(),
       requestFailLookbackHours: requestFailLookbackHours(),
+      deploymentFetchCap: ariaLedger.deploymentFetchCap(),
+      resourceFetchCap: ariaLedger.resourceFetchCap(),
+      ledgerRetentionDays: ariaLedger.ledgerRetentionDays(),
     });
   } catch (err) { next(err); }
 });

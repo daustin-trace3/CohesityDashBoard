@@ -315,6 +315,54 @@ function seedAria(db, { now, encrypt }) {
       `${dep.name}-vm-01`, JSON.stringify([`10.100.11.1${1 + i}`]), nowIso);
   });
 
+  // -- Deployment ledger: ICC's own append-only record. Filled from the live
+  // rows, plus six deployments that were deleted in Aria after ICC saw them.
+  const DAY = 86400000;
+  const ledStmt = db.prepare(`
+    INSERT INTO aria_deployment_ledger
+      (instance_id, deployment_id, name, project_name, project_id, status, created_by, owned_by,
+       created_at_src, updated_at_src, lease_expire_at, resource_count, first_seen_at, last_seen_at, removed_at, resources_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const resLedStmt = db.prepare(`
+    INSERT INTO aria_deployment_resource_ledger
+      (instance_id, deployment_id, resource_id, name, type, state, ip_addresses, first_seen_at, last_seen_at, removed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const thirtyAgo = now - 30 * DAY;
+  const hasRes = new Set(db.prepare('SELECT DISTINCT instance_id || char(31) || deployment_id AS k FROM aria_deployment_resources').all().map((r) => r.k));
+  for (const d of db.prepare(`
+    SELECT instance_id, deployment_id, name, project_name, status, created_by, owned_by, created_at_src,
+           updated_at_src, lease_expire_at, resource_count FROM aria_deployments
+  `).all()) {
+    const created = d.created_at_src ? Date.parse(d.created_at_src) : NaN;
+    const first = new Date(Number.isFinite(created) ? Math.max(created, thirtyAgo) : thirtyAgo).toISOString();
+    const withRes = hasRes.has(`${d.instance_id}${String.fromCharCode(31)}${d.deployment_id}`);
+    ledStmt.run(d.instance_id, d.deployment_id, d.name, d.project_name, null, d.status, d.created_by, d.owned_by,
+      d.created_at_src, d.updated_at_src, d.lease_expire_at, d.resource_count, first, nowIso, null, withRes ? nowIso : null);
+  }
+  for (const r of db.prepare('SELECT * FROM aria_deployment_resources').all()) {
+    const l = db.prepare('SELECT first_seen_at FROM aria_deployment_ledger WHERE instance_id = ? AND deployment_id = ?').get(r.instance_id, r.deployment_id);
+    resLedStmt.run(r.instance_id, r.deployment_id, r.resource_id, r.name, r.type, r.state, r.ip_addresses,
+      l ? l.first_seen_at : nowIso, nowIso, null);
+  }
+  const firstInst = db.prepare('SELECT id FROM aria_instances ORDER BY id LIMIT 1').get();
+  if (firstInst) {
+    const rmRng = rngFor('aria-ledger-removed');
+    for (let i = 1; i <= 6; i++) {
+      const name = `retired-batch-0${i}`;
+      const createdMs = now - randInt(rmRng, 60, 200) * DAY;
+      const removedMs = now - randInt(rmRng, 2, 40) * DAY;
+      const depId = `dep-retired-${i}`;
+      const created = new Date(createdMs).toISOString();
+      const removed = new Date(removedMs).toISOString();
+      ledStmt.run(firstInst.id, depId, name, pick(rmRng, PROJECT_NAMES), null, 'CREATE_SUCCESSFUL',
+        'alice@demo.local', 'alice@demo.local', created, removed, null, 1, created, removed, removed, removed);
+      resLedStmt.run(firstInst.id, depId, `res-${depId}-0`, `${name}-vm-01`, 'Cloud.vSphere.Machine', 'OK',
+        JSON.stringify([`10.100.12.${i}`]), created, removed, removed);
+    }
+  }
+
   // ── Issue lifecycle history — the real reconcile against the just-seeded
   // inventory so aria_issue_history keys match computeIssues exactly. ─────
   const { reconcileIssueHistory } = require('../../services/ariaIssues');
@@ -323,6 +371,8 @@ function seedAria(db, { now, encrypt }) {
   return {
     ...totals,
     issueHistory: db.prepare('SELECT COUNT(*) n FROM aria_issue_history').get().n,
+    ledger: db.prepare('SELECT COUNT(*) n FROM aria_deployment_ledger').get().n,
+    ledgerRemoved: db.prepare('SELECT COUNT(*) n FROM aria_deployment_ledger WHERE removed_at IS NOT NULL').get().n,
   };
 }
 

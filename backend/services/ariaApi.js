@@ -141,10 +141,19 @@ async function fetchDeployments(row, cap = 2000) {
  * deployment, capped, sequential — shapes unverified: resources may expose
  * IPs at properties.address / properties.networks[].address / networks[].
  */
-async function fetchDeploymentResources(row, deployments) {
-  const CAP_DEPLOYMENTS = 300;
+async function fetchDeploymentResources(row, deployments, opts = {}) {
+  const cap = Number.isFinite(Number(opts.cap)) && Number(opts.cap) > 0 ? Number(opts.cap) : 300;
+  let list = deployments || [];
+  if (Array.isArray(opts.order) && opts.order.length) {
+    const rank = new Map(opts.order.map((id, i) => [String(id), i]));
+    const idOf = (d) => String(d.id || d.deploymentId);
+    const inOrder = list.filter((d) => rank.has(idOf(d))).sort((a, b) => rank.get(idOf(a)) - rank.get(idOf(b)));
+    const rest = list.filter((d) => !rank.has(idOf(d)));
+    list = [...inOrder, ...rest];
+  }
+  const visited = new Set();
   const out = [];
-  for (const dep of (deployments || []).slice(0, CAP_DEPLOYMENTS)) {
+  for (const dep of list.slice(0, cap)) {
     const depId = dep.id || dep.deploymentId;
     if (!depId) continue;
     let items;
@@ -153,6 +162,7 @@ async function fetchDeploymentResources(row, deployments) {
     } catch {
       continue; // per-deployment failures shouldn't sink the section
     }
+    visited.add(String(depId));
     for (const r of items) {
       const props = r.properties || {};
       const ips = new Set();
@@ -176,6 +186,9 @@ async function fetchDeploymentResources(row, deployments) {
       });
     }
   }
+  // Deployment ids whose resources call succeeded; the ledger needs them to tell
+  // "no resources" from "not looked at". Non-enumerable so the array stays plain.
+  Object.defineProperty(out, 'visited', { value: visited, enumerable: false });
   return out;
 }
 

@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Search, X, SlidersHorizontal, Database } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
 import PlatformSettingsLayout from '../../components/PlatformSettingsLayout';
 import { BRAND, fmtWhen } from './helpers';
 import PlatformAlertNotifications from '../../components/PlatformAlertNotifications';
+import { SettingRow, SettingGroup, TabSaveBar, numberCls } from '../../components/settings/SettingRow';
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -82,6 +83,13 @@ export default function AriaSettingsPage() {
   const [certWarnDays, setCertWarnDays] = useState('');
   const [requestFailLookbackHours, setRequestFailLookbackHours] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
+  // Data retention (deployment ledger). `saved*` is the last server value, used for the unsaved marker
+  // and so a retention save never sends half-edited alert thresholds.
+  const [deploymentFetchCap, setDeploymentFetchCap] = useState('');
+  const [resourceFetchCap, setResourceFetchCap] = useState('');
+  const [ledgerRetentionDays, setLedgerRetentionDays] = useState('');
+  const [savedCfg, setSavedCfg] = useState(null);
+  const [savingRetention, setSavingRetention] = useState(false);
 
   const loadInstances = () => client.get('/aria/instances')
     .then(({ data }) => setInstances(data))
@@ -94,8 +102,15 @@ export default function AriaSettingsPage() {
         setLeaseWarnDays(String(data.leaseWarnDays));
         setCertWarnDays(String(data.certWarnDays));
         setRequestFailLookbackHours(String(data.requestFailLookbackHours));
+        setDeploymentFetchCap(String(data.deploymentFetchCap ?? 2000));
+        setResourceFetchCap(String(data.resourceFetchCap ?? 300));
+        setLedgerRetentionDays(String(data.ledgerRetentionDays ?? 0));
+        setSavedCfg(data);
       })
-      .catch(() => { setLeaseWarnDays('7'); setCertWarnDays('30'); setRequestFailLookbackHours('24'); });
+      .catch(() => {
+        setLeaseWarnDays('7'); setCertWarnDays('30'); setRequestFailLookbackHours('24');
+        setDeploymentFetchCap('2000'); setResourceFetchCap('300'); setLedgerRetentionDays('0');
+      });
   }, []);
 
   const saveConfig = async () => {
@@ -108,11 +123,43 @@ export default function AriaSettingsPage() {
       setLeaseWarnDays(String(data.leaseWarnDays));
       setCertWarnDays(String(data.certWarnDays));
       setRequestFailLookbackHours(String(data.requestFailLookbackHours));
+      setSavedCfg(data);
       toast({ type: 'success', title: 'Thresholds saved' });
     } catch (err) {
       toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Check the threshold values are within range.' });
     } finally {
       setSavingConfig(false);
+    }
+  };
+
+  const retentionValid = Number.isInteger(Number(deploymentFetchCap)) && Number(deploymentFetchCap) >= 200 && Number(deploymentFetchCap) <= 20000
+    && Number.isInteger(Number(resourceFetchCap)) && Number(resourceFetchCap) >= 50 && Number(resourceFetchCap) <= 2000
+    && Number.isInteger(Number(ledgerRetentionDays)) && Number(ledgerRetentionDays) >= 0 && Number(ledgerRetentionDays) <= 3650
+    && deploymentFetchCap !== '' && resourceFetchCap !== '' && ledgerRetentionDays !== '';
+  const retentionDirty = !!savedCfg && (
+    String(savedCfg.deploymentFetchCap) !== deploymentFetchCap
+    || String(savedCfg.resourceFetchCap) !== resourceFetchCap
+    || String(savedCfg.ledgerRetentionDays) !== ledgerRetentionDays);
+
+  const saveRetention = async () => {
+    if (!savedCfg) return;
+    setSavingRetention(true);
+    try {
+      const { data } = await client.put('/aria/config', {
+        leaseWarnDays: savedCfg.leaseWarnDays, certWarnDays: savedCfg.certWarnDays,
+        requestFailLookbackHours: savedCfg.requestFailLookbackHours,
+        deploymentFetchCap: Number(deploymentFetchCap), resourceFetchCap: Number(resourceFetchCap),
+        ledgerRetentionDays: Number(ledgerRetentionDays),
+      });
+      setDeploymentFetchCap(String(data.deploymentFetchCap));
+      setResourceFetchCap(String(data.resourceFetchCap));
+      setLedgerRetentionDays(String(data.ledgerRetentionDays));
+      setSavedCfg(data);
+      toast({ type: 'success', title: 'Data retention saved' });
+    } catch (err) {
+      toast({ type: 'error', title: 'Save failed', message: err?.response?.data?.error || 'Check the values are within range.' });
+    } finally {
+      setSavingRetention(false);
     }
   };
 
@@ -210,6 +257,7 @@ export default function AriaSettingsPage() {
   const SECTIONS = [
     { key: 'sources', label: 'Instances', icon: Server },
     { key: 'thresholds', label: 'Alert Thresholds', icon: SlidersHorizontal },
+    { key: 'retention', label: 'Data retention', icon: Database },
     { key: 'notify', label: 'Alert Notifications', icon: BellRing },
   ];
 
@@ -310,6 +358,33 @@ export default function AriaSettingsPage() {
             {savingConfig ? 'Saving…' : 'Save'}
           </button>
         </div>
+      </div>
+
+      </>)}
+      {section === 'retention' && (<>
+      <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+        <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Database size={15} className="text-brand" /> Data retention</p>
+        <p className="text-[11px] text-ink-muted mb-3 leading-relaxed">
+          ICC keeps its own record of every deployment it has seen, including ones deleted in Aria.
+        </p>
+        <SettingGroup>
+          <SettingRow label="Deployments per poll" htmlFor="aria-dep-cap" dirty={!!savedCfg && String(savedCfg.deploymentFetchCap) !== deploymentFetchCap}
+            tip="How many deployments one poll lists from Aria. Above this ICC cannot tell a removed deployment from one past the cap, so removed dates are only recorded when the list fits. Range 200 to 20000, default 2000.">
+            <input id="aria-dep-cap" type="number" min={200} max={20000} value={deploymentFetchCap}
+              onChange={(e) => setDeploymentFetchCap(e.target.value)} className={numberCls} />
+          </SettingRow>
+          <SettingRow label="Resource lookups per poll" htmlFor="aria-res-cap" dirty={!!savedCfg && String(savedCfg.resourceFetchCap) !== resourceFetchCap}
+            tip="How many deployments get a resources call per poll. New deployments go first, then the oldest refreshed; a fresh install covers the estate in a few polls. Range 50 to 2000, default 300.">
+            <input id="aria-res-cap" type="number" min={50} max={2000} value={resourceFetchCap}
+              onChange={(e) => setResourceFetchCap(e.target.value)} className={numberCls} />
+          </SettingRow>
+          <SettingRow label="Keep removed deployments (days)" htmlFor="aria-keep-days" dirty={!!savedCfg && String(savedCfg.ledgerRetentionDays) !== ledgerRetentionDays}
+            tip="ICC keeps its own record of every deployment it has seen, including ones deleted in Aria. 0 keeps them forever. Range 0 to 3650, default 0.">
+            <input id="aria-keep-days" type="number" min={0} max={3650} value={ledgerRetentionDays}
+              onChange={(e) => setLedgerRetentionDays(e.target.value)} className={numberCls} />
+          </SettingRow>
+        </SettingGroup>
+        <TabSaveBar onSave={saveRetention} saving={savingRetention} dirty={retentionDirty && retentionValid} />
       </div>
 
       </>)}

@@ -319,6 +319,9 @@ describe('seedDemo.js', () => {
     expect(db.prepare("SELECT COUNT(*) c FROM aria_catalog_sources WHERE last_import_errors IS NOT NULL").get().c).toBeGreaterThan(0);
     expect(db.prepare("SELECT COUNT(*) c FROM aria_approvals WHERE status = 'PENDING'").get().c).toBeGreaterThan(0);
     expect(db.prepare('SELECT COUNT(*) c FROM aria_issue_history').get().c).toBeGreaterThan(0);
+    const live = db.prepare('SELECT COUNT(*) c FROM aria_deployments').get().c;
+    expect(db.prepare('SELECT COUNT(*) c FROM aria_deployment_ledger').get().c).toBeGreaterThanOrEqual(live);
+    expect(db.prepare('SELECT COUNT(*) c FROM aria_deployment_ledger WHERE removed_at IS NOT NULL').get().c).toBe(6);
   });
 
   it('seeds the netbackup platform with sources, policies, and jobs', () => {

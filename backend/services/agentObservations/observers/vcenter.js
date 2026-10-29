@@ -72,6 +72,7 @@ const HOST_SQL = `
 const log = (...a) => { try { require('../../../utils/logger').debug(...a); } catch { /* logging is optional */ } };
 
 let ariaTablesOk = null;
+let ariaLedgerOk = null;
 let ariaWarned = false;
 let colsMemo = null; // { at, hasCreated, hasGuest }
 const RECHECK_MS = 60000;
@@ -83,6 +84,16 @@ function ariaPresent(db) {
     ariaTablesOk = n === 2;
   } catch { ariaTablesOk = false; }
   return ariaTablesOk;
+}
+
+/** The deployment ledger exists on hosts that ran aria migration v8; packs without it fall back to the live tables. */
+function ariaLedgerPresent(db) {
+  if (ariaLedgerOk != null) return ariaLedgerOk;
+  try {
+    const n = db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type = 'table' AND name IN ('aria_deployment_ledger', 'aria_deployment_resource_ledger')").get().c;
+    ariaLedgerOk = n === 2;
+  } catch { ariaLedgerOk = false; }
+  return ariaLedgerOk;
 }
 
 /** Which optional vcenter_vms columns exist. A "no" is re-checked at most once a minute so a later migration is picked up. */
@@ -111,20 +122,39 @@ const validIso = (v) => {
 function vmAges(db, { nowMs = Date.now() } = {}) {
   const out = new Map();
 
-  const aria = new Map(); // lower resource name -> { createdAt, detail }, newest wins
+  const aria = new Map(); // lower resource name -> { createdAt, detail, removed }, newest wins
+  const addAria = (rows, ledgerRows) => {
+    for (const r of rows) {
+      const createdAt = validIso(r.created);
+      if (!createdAt) continue;
+      const cur = aria.get(r.rname);
+      // The ledger wins over a live row on a key collision (same value, ledger is the longer record).
+      if (cur && cur.fromLedger && !ledgerRows) continue;
+      if (!cur || (ledgerRows && !cur.fromLedger) || createdAt > cur.createdAt) {
+        const entry = { createdAt, detail: r.dname || null, fromLedger: ledgerRows };
+        if (ledgerRows && r.removed_at) entry.removed = true;
+        aria.set(r.rname, entry);
+      }
+    }
+  };
+  if (ariaLedgerPresent(db)) {
+    try {
+      addAria(db.prepare(`
+        SELECT LOWER(r.name) AS rname, d.created_at_src AS created, d.name AS dname, d.removed_at AS removed_at
+          FROM aria_deployment_resource_ledger r
+          JOIN aria_deployment_ledger d ON d.instance_id = r.instance_id AND d.deployment_id = r.deployment_id
+         WHERE r.name IS NOT NULL AND d.created_at_src IS NOT NULL`).all(), true);
+    } catch (err) {
+      if (!ariaWarned) { ariaWarned = true; log(`[Observations] aria ledger ages unavailable: ${err.message}`); }
+    }
+  }
   if (ariaPresent(db)) {
     try {
-      const rows = db.prepare(`
+      addAria(db.prepare(`
         SELECT LOWER(r.name) AS rname, d.created_at_src AS created, d.name AS dname
           FROM aria_deployment_resources r
           JOIN aria_deployments d ON d.instance_id = r.instance_id AND d.deployment_id = r.deployment_id
-         WHERE r.name IS NOT NULL AND d.created_at_src IS NOT NULL`).all();
-      for (const r of rows) {
-        const createdAt = validIso(r.created);
-        if (!createdAt) continue;
-        const cur = aria.get(r.rname);
-        if (!cur || createdAt > cur.createdAt) aria.set(r.rname, { createdAt, detail: r.dname || null });
-      }
+         WHERE r.name IS NOT NULL AND d.created_at_src IS NOT NULL`).all(), false);
     } catch (err) {
       if (!ariaWarned) { ariaWarned = true; log(`[Observations] aria deployment ages unavailable: ${err.message}`); }
     }
@@ -147,7 +177,7 @@ function vmAges(db, { nowMs = Date.now() } = {}) {
     const k = keyOf(v.vcenter_id, v.name);
     let hit = aria.get(String(v.name).toLowerCase());
     if (!hit && v.guest_hostname) hit = aria.get(String(v.guest_hostname).split('.')[0].toLowerCase());
-    if (hit) { out.set(k, { createdAt: hit.createdAt, source: 'aria', detail: hit.detail }); continue; }
+    if (hit) { out.set(k, { createdAt: hit.createdAt, source: 'aria', detail: hit.detail, ...(hit.removed ? { removed: true } : {}) }); continue; }
     const vcIso = validIso(v.created_at_src);
     if (vcIso) { out.set(k, { createdAt: vcIso, source: 'vcenter', detail: null }); continue; }
     const first = vmFirst.get(k);
@@ -158,7 +188,7 @@ function vmAges(db, { nowMs = Date.now() } = {}) {
 }
 
 function holdReason(age, ageHours, graceHours) {
-  const via = age.source === 'aria' ? `Aria deployment${age.detail ? ` "${age.detail}"` : ''}` : (age.source === 'vcenter' ? 'vCenter created date' : 'first seen by ICC');
+  const via = age.source === 'aria' ? `Aria deployment${age.detail ? ` "${age.detail}"` : ''}${age.removed ? ', since removed from Aria' : ''}` : (age.source === 'vcenter' ? 'vCenter created date' : 'first seen by ICC');
   return `new VM, created ${round1(ageHours)} h ago (${via}), grace ${graceHours} h`;
 }
 

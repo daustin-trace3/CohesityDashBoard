@@ -128,7 +128,7 @@ describe('VM age and hold', () => {
   let inst;
 
   beforeEach(() => {
-    db.exec('DELETE FROM aria_deployment_resources; DELETE FROM aria_deployments; DELETE FROM aria_instances; DELETE FROM vcenter_vm_daily;');
+    db.exec('DELETE FROM aria_deployment_resource_ledger; DELETE FROM aria_deployment_ledger; DELETE FROM aria_deployment_resources; DELETE FROM aria_deployments; DELETE FROM aria_instances; DELETE FROM vcenter_vm_daily;');
     setSetting('ops_obs_vm_min_age_hours', '');
     inst = db.prepare("INSERT INTO aria_instances (name, host, username, encrypted_credentials) VALUES ('ar1', 'ar1.lab', 'u', 'x')").run().lastInsertRowid;
   });
@@ -152,6 +152,27 @@ describe('VM age and hold', () => {
     deploy('d2', 'pool-a', hoursAgo(10), 'web-guest');
     db.prepare("UPDATE vcenter_vms SET guest_hostname = 'web-guest.corp.example' WHERE name = 'web-01'").run();
     expect(web().context).toMatchObject({ createdSource: 'aria', createdDetail: 'pool-a', ageHours: 10 });
+  });
+
+  const ledgerDeploy = (depId, depName, createdAt, resName, removedAt) => {
+    db.prepare('INSERT INTO aria_deployment_ledger (instance_id, deployment_id, name, created_at_src, first_seen_at, last_seen_at, removed_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(inst, depId, depName, createdAt, createdAt, createdAt, removedAt);
+    db.prepare("INSERT INTO aria_deployment_resource_ledger (instance_id, deployment_id, resource_id, name, type, state, first_seen_at, last_seen_at, removed_at) VALUES (?, ?, ?, ?, 'Cloud.vSphere.Machine', 'OK', ?, ?, ?)").run(inst, depId, `r-${depId}`, resName, createdAt, createdAt, removedAt);
+  };
+
+  it('a deployment that exists only in the ledger and was removed from Aria still ages the VM', () => {
+    ledgerDeploy('gone1', 'retired-batch-01', hoursAgo(20), 'web-01', hoursAgo(2));
+    const s = web();
+    expect(s.context).toMatchObject({ createdSource: 'aria', createdDetail: 'retired-batch-01', ageHours: 20 });
+    expect(vcenterObs.vmAges(db).get(`${vc}|web-01`)).toMatchObject({ source: 'aria', removed: true });
+    expect(s.hold.reason).toBe('new VM, created 20 h ago (Aria deployment "retired-batch-01", since removed from Aria), grace 72 h');
+  });
+
+  it('the ledger wins over the live tables on a key collision', () => {
+    deploy('live1', 'live-name', hoursAgo(10), 'web-01');
+    ledgerDeploy('led1', 'ledger-name', hoursAgo(30), 'web-01', null);
+    const age = vcenterObs.vmAges(db).get(`${vc}|web-01`);
+    expect(age).toMatchObject({ source: 'aria', detail: 'ledger-name' });
+    expect(age.removed).toBeUndefined();
   });
 
   it('uses vCenter created_at_src when no Aria row matches', () => {

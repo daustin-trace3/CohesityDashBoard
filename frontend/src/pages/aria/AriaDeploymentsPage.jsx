@@ -1,13 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Package, X, Loader2 } from 'lucide-react';
+import { Package, X, Loader2, Download } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, RefreshButton, LastUpdated } from '../../components/ui/primitives';
 import { useTableControls, SortTh, TableControls, TablePager } from '../../components/ui/tableTools';
+import { downloadCsv } from '../../api/download';
 import { BRAND, fmtNum, fmtWhen, statusTone, leaseTone } from './helpers';
 
-function DetailModal({ detail, loading, onClose }) {
+function DetailModal({ detail, loading, onClose, ledger = false }) {
   if (!loading && !detail) return null;
   const facts = detail ? [
     { label: 'Instance', value: detail.instance_name },
@@ -19,6 +21,7 @@ function DetailModal({ detail, loading, onClose }) {
     { label: 'Updated', value: detail.updated_at_src ? fmtWhen(detail.updated_at_src) : null },
     { label: 'Lease Expires', value: detail.lease_expire_at ? fmtWhen(detail.lease_expire_at) : null },
     { label: 'Resources', value: detail.resource_count != null ? fmtNum(detail.resource_count) : null },
+    { label: 'First seen by ICC', value: detail.first_seen_at ? fmtWhen(detail.first_seen_at) : null },
   ] : [];
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
@@ -34,6 +37,13 @@ function DetailModal({ detail, loading, onClose }) {
           <div className="p-8 flex justify-center"><Loader2 size={18} className="animate-spin text-ink-faint" /></div>
         ) : (
           <div className="p-4 space-y-4">
+            {ledger && (
+              <div className="text-xs text-ink-muted bg-surface-overlay border border-cohesity-border rounded px-2 py-1.5">
+                {detail.removed_at
+                  ? `Removed from Aria on ${fmtWhen(detail.removed_at)}, first seen by ICC ${fmtWhen(detail.first_seen_at)}, last seen ${fmtWhen(detail.last_seen_at)}.`
+                  : `Still listed by Aria. First seen by ICC ${fmtWhen(detail.first_seen_at)}, last seen ${fmtWhen(detail.last_seen_at)}.`}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-x-4 gap-y-2">
               {facts.filter((f) => f.value != null && f.value !== '').map((f) => (
                 <div key={f.label} className="min-w-0">
@@ -47,7 +57,7 @@ function DetailModal({ detail, loading, onClose }) {
                 Resources{detail.resources.length ? ` (${detail.resources.length})` : ''}
               </div>
               {detail.resources.length === 0 ? (
-                <div className="text-xs text-ink-muted">No child resources collected for this deployment (resource collection covers a capped subset per poll).</div>
+                <div className="text-xs text-ink-muted">{ledger ? 'No resources on record for this deployment.' : 'No child resources collected for this deployment (resource collection covers a capped subset per poll).'}</div>
               ) : (
                 <ul className="space-y-1">
                   {detail.resources.map((r) => (
@@ -79,22 +89,44 @@ export default function AriaDeploymentsPage() {
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailLedger, setDetailLedger] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  // ?history=1 keeps the include-removed view in the link.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const history = searchParams.get('history') === '1';
+  const setHistory = (on) => {
+    setRows(null);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (on) next.set('history', '1'); else next.delete('history');
+      return next;
+    }, { replace: true });
+  };
 
-  const load = useCallback(() => client.get('/aria/deployments')
+  const load = useCallback(() => client.get('/aria/deployments', { params: history ? { history: 1 } : {} })
     .then(({ data }) => { setRows(data); setLastRefreshed(new Date()); })
-    .catch(() => { setRows([]); toast({ type: 'error', title: 'Failed to load deployments' }); }), [toast]);
+    .catch(() => { setRows([]); toast({ type: 'error', title: 'Failed to load deployments' }); }), [toast, history]);
 
   useEffect(() => { load(); }, [load]);
 
   const openDetail = (d) => {
     setDetailLoading(true);
     setDetail(null);
-    client.get(`/aria/deployments/${d.id}`)
+    const isLedger = d.source === 'ledger';
+    setDetailLedger(isLedger);
+    client.get(isLedger ? `/aria/deployments/ledger/${d.id}` : `/aria/deployments/${d.id}`)
       .then(({ data }) => setDetail(data))
       .catch(() => toast({ type: 'error', title: 'Failed to load deployment detail' }))
       .finally(() => setDetailLoading(false));
   };
   const closeDetail = () => { setDetail(null); setDetailLoading(false); };
+
+  const exportCsv = async () => {
+    setExporting(true);
+    try { await downloadCsv('/aria/deployments/history.csv', {}, 'aria-deployments-history.csv'); }
+    catch (err) { toast({ type: 'error', title: 'Export failed', message: err.message }); }
+    finally { setExporting(false); }
+  };
 
   const list = rows || [];
   const ctl = useTableControls(list, {
@@ -106,6 +138,16 @@ export default function AriaDeploymentsPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader icon={Package} title="Deployments" description="Aria Automation deployments across all registered instances">
+        <label className="flex items-center gap-1.5 text-xs text-ink-muted cursor-pointer select-none">
+          <input type="checkbox" className="accent-brand cursor-pointer" checked={history} onChange={(e) => setHistory(e.target.checked)} />
+          Include removed
+        </label>
+        {history && (
+          <button onClick={exportCsv} disabled={exporting}
+            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 bg-surface-overlay border border-cohesity-border rounded-lg text-ink-muted hover:text-ink disabled:opacity-50 cursor-pointer">
+            <Download size={13} /> {exporting ? 'Exporting...' : 'Export CSV'}
+          </button>
+        )}
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -133,14 +175,17 @@ export default function AriaDeploymentsPage() {
                 <SortTh k="created_by" label="Created By" ctl={ctl} />
                 <SortTh k="owned_by" label="Owned By" ctl={ctl} />
                 <SortTh k="created_at_src" label="Created" ctl={ctl} />
+                {history && <SortTh k="first_seen_at" label="First seen" ctl={ctl} />}
+                {history && <SortTh k="removed_at" label="Removed" ctl={ctl} />}
               </tr></thead>
               <tbody>
                 {ctl.pageRows.map((d) => (
-                  <tr key={`${d.instance_id}|${d.deployment_id}`} className="border-b border-cohesity-border/50">
+                  <tr key={`${d.instance_id}|${d.deployment_id}|${d.source}`} className="border-b border-cohesity-border/50">
                     <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{d.instance_name}</td>
                     <td className="py-2 pr-3 text-ink-muted max-w-[220px] truncate" title={d.resource_names || ''}>{d.resource_names || '—'}</td>
                     <td className="py-2 pr-3 max-w-[280px] truncate">
                       <button onClick={() => openDetail(d)} className="text-ink hover:text-brand cursor-pointer text-left truncate" title="Show deployment details">{d.name || '—'}</button>
+                      {d.removed ? <Badge tone="neutral" className="ml-2">removed from Aria</Badge> : null}
                     </td>
                     <td className="py-2 pr-3 text-ink-muted">{d.project_name || '—'}</td>
                     <td className="py-2 pr-3"><Badge tone={statusTone(d.status)}>{d.status || '—'}</Badge></td>
@@ -155,6 +200,8 @@ export default function AriaDeploymentsPage() {
                     <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{d.created_by || '—'}</td>
                     <td className="py-2 pr-3 text-ink-muted whitespace-nowrap">{d.owned_by || '—'}</td>
                     <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(d.created_at_src)}</td>
+                    {history && <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{d.first_seen_at ? fmtWhen(d.first_seen_at) : ''}</td>}
+                    {history && <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{d.removed_at ? fmtWhen(d.removed_at) : ''}</td>}
                   </tr>
                 ))}
               </tbody>
@@ -163,7 +210,7 @@ export default function AriaDeploymentsPage() {
         )}
         <TablePager ctl={ctl} />
       </div>
-      {(detail || detailLoading) && <DetailModal detail={detail} loading={detailLoading} onClose={closeDetail} />}
+      {(detail || detailLoading) && <DetailModal detail={detail} loading={detailLoading} onClose={closeDetail} ledger={detailLedger} />}
     </div>
   );
 }
