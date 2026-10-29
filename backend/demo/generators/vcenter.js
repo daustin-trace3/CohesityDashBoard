@@ -541,6 +541,19 @@ function seedVcenter(db, { now, encrypt }) {
       `-${openedMinAgo} minutes`, `-${resolvedMinAgo} minutes`, `-${resolvedMinAgo} minutes`);
   }
 
+  // vCenter groups (free tags), resolved by vCenter name, no rng draws.
+  db.exec('DELETE FROM vcenter_group_members');
+  db.exec('DELETE FROM vcenter_groups');
+  [['Site1', '#0091DA', ['nyc', 'chi', 'dal', 'tor']],
+    ['EMEA', '#6CB33F', ['lon', 'fra']],
+    ['APAC', '#F59E0B', ['sgp', 'syd']]].forEach(([gName, gColor, gSites], gIdx) => {
+    const gid = db.prepare('INSERT INTO vcenter_groups (name, color, sort_order) VALUES (?, ?, ?)').run(gName, gColor, gIdx).lastInsertRowid;
+    for (const st of gSites) {
+      const r = db.prepare('SELECT id FROM vcenter_vcenters WHERE name = ?').get(`${st}-vc-prd-01`);
+      if (r) db.prepare('INSERT OR IGNORE INTO vcenter_group_members (group_id, vcenter_id) VALUES (?, ?)').run(gid, r.id);
+    }
+  });
+
   // ── Dual-site capacity planning: sites, site_members, and history ─────────────
   const insertSite = db.prepare(`
     INSERT INTO vcenter_sites (name, color, sort_order) VALUES (?, ?, ?)

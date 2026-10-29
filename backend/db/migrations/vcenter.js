@@ -502,4 +502,25 @@ module.exports = [
       }
     },
   },
+  {
+    version: 16,
+    up(db) {
+      // Free-form vCenter groups (tags). A vCenter may sit in several.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vcenter_groups (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          color TEXT,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS vcenter_group_members (
+          group_id INTEGER NOT NULL REFERENCES vcenter_groups(id) ON DELETE CASCADE,
+          vcenter_id INTEGER NOT NULL REFERENCES vcenter_vcenters(id) ON DELETE CASCADE,
+          PRIMARY KEY (group_id, vcenter_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_vcenter_group_members_vc ON vcenter_group_members(vcenter_id);
+      `);
+    },
+  },
 ];

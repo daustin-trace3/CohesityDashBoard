@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Building2, Layers, ArrowLeftRight, Database } from 'lucide-react';
+import { Settings, Server, CheckCircle2, XCircle, Trash2, RefreshCw, BellRing, Pencil, Building2, Layers, ArrowLeftRight, Database, Tags } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
 import { PageHeader, Badge, LoadingPanel, Spinner } from '../../components/ui/primitives';
@@ -10,6 +10,7 @@ import PlatformAlertNotifications from '../../components/PlatformAlertNotificati
 
 const SECTIONS = [
   { key: 'registration', label: 'Registration', icon: Server },
+  { key: 'groups', label: 'Groups', icon: Tags },
   { key: 'sites', label: 'Sites', icon: Building2 },
   { key: 'clusters', label: 'Cluster assignments', icon: Layers },
   { key: 'pairs', label: 'Failover pairs', icon: ArrowLeftRight },
@@ -36,9 +37,154 @@ const USAGE_ROWS = [
 ];
 const USAGE_DEFAULTS = Object.fromEntries(USAGE_ROWS.flatMap(([, wk, wd, ck, cd]) => [[wk, String(wd)], [ck, String(cd)]]));
 const tabFromHash = () => {
-  const h = (typeof window !== 'undefined' ? window.location.hash : '').replace('#', '');
-  return SECTIONS.some((x) => x.key === h) ? h : 'registration';
+  if (typeof window === 'undefined') return 'registration';
+  const h = window.location.hash.replace('#', '');
+  if (SECTIONS.some((x) => x.key === h)) return h;
+  let q = '';
+  try { q = new URLSearchParams(window.location.search).get('section') || ''; } catch { /* ignore */ }
+  return SECTIONS.some((x) => x.key === q) ? q : 'registration';
 };
+
+function GroupDot({ color }) {
+  return <span className="inline-block h-[7px] w-[7px] rounded-full shrink-0" style={{ background: color || BRAND }} />;
+}
+
+function GroupsSection({ vcs, groups, reload, flash }) {
+  const [name, setName] = useState('');
+  const [color, setColor] = useState('#0091DA');
+  const [creating, setCreating] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameVal, setRenameVal] = useState('');
+  const errText = (err, fallback) => (err?.response?.status === 409 ? 'A group with that name exists' : (err?.response?.data?.error || fallback));
+
+  const create = async () => {
+    setCreating(true);
+    try {
+      await client.post('/vcenter/groups', { name: name.trim(), color });
+      setName('');
+      await reload();
+    } catch (err) {
+      flash('error', 'Could not create the group', errText(err, 'Check the name (1 to 80 characters).'));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const toggleMember = async (g, vcId, on) => {
+    const ids = new Set(g.vcenterIds || []);
+    if (on) ids.add(vcId); else ids.delete(vcId);
+    setBusyId(g.id);
+    try {
+      await client.put(`/vcenter/groups/${g.id}`, { vcenterIds: [...ids] });
+      await reload();
+    } catch (err) {
+      flash('error', `Could not save ${g.name}`, errText(err, 'Save failed.'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const rename = async (g) => {
+    const next = renameVal.trim();
+    setRenamingId(null);
+    if (!next || next === g.name) return;
+    setBusyId(g.id);
+    try {
+      await client.put(`/vcenter/groups/${g.id}`, { name: next });
+      await reload();
+    } catch (err) {
+      flash('error', `Could not rename ${g.name}`, errText(err, 'Rename failed.'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const removeGroup = async (g) => {
+    if (!window.confirm(`Delete group "${g.name}"? The vCenters stay registered; only the grouping is removed.`)) return;
+    setBusyId(g.id);
+    try {
+      await client.delete(`/vcenter/groups/${g.id}`);
+      await reload();
+    } catch (err) {
+      flash('error', `Could not delete ${g.name}`, errText(err, 'Delete failed.'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="panel p-4" style={{ borderTop: `3px solid ${BRAND}` }}>
+      <p className="text-sm font-semibold text-ink mb-1 flex items-center gap-2"><Tags size={15} className="text-brand" /> Groups</p>
+      <p className="text-[11px] text-ink-muted mb-4 leading-relaxed">
+        A group is a free tag. Tick the vCenters that belong to it; a vCenter can sit in several groups. On Guest OS, picking a group
+        selects its vCenters. Capacity sites are listed there too but are edited under Sites.
+      </p>
+      <div className="flex flex-wrap items-end gap-3 mb-5">
+        <div className="w-56">
+          <label className="block text-xs font-semibold text-ink mb-1">New group</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} placeholder="Site1" className={inp} spellCheck={false}
+            onKeyDown={(e) => { if (e.key === 'Enter' && name.trim() && !creating) create(); }} />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-ink mb-1">Colour</label>
+          <input type="color" value={color} onChange={(e) => setColor(e.target.value)}
+            className="h-[38px] w-14 bg-surface-overlay border border-cohesity-border rounded-lg p-1 cursor-pointer" />
+        </div>
+        <button onClick={create} disabled={creating || !name.trim()}
+          className="px-4 py-2 rounded-lg text-sm font-semibold bg-brand text-cohesity-black hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
+          {creating ? 'Creating...' : 'Create'}
+        </button>
+      </div>
+
+      {groups == null ? (
+        <LoadingPanel label="Loading..." height={80} />
+      ) : groups.length === 0 ? (
+        <div className="text-sm text-ink-muted py-6 text-center">No groups yet.</div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {groups.map((g) => (
+            <div key={g.id} className="rounded-lg border border-cohesity-border p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <GroupDot color={g.color} />
+                {renamingId === g.id ? (
+                  <input autoFocus value={renameVal} onChange={(e) => setRenameVal(e.target.value)} maxLength={80}
+                    onKeyDown={(e) => { if (e.key === 'Enter') rename(g); else if (e.key === 'Escape') setRenamingId(null); }}
+                    onBlur={() => setRenamingId(null)}
+                    className="bg-surface-overlay border border-cohesity-border rounded-lg px-2 py-1 text-sm text-ink focus:border-brand/60 outline-none" />
+                ) : (
+                  <span className="text-sm font-semibold text-ink">{g.name}</span>
+                )}
+                <span className="tnum text-[11px] text-ink-faint">{(g.vcenterIds || []).length} of {vcs.length} vCenters</span>
+                {busyId === g.id && <Spinner size={12} />}
+                <div className="ml-auto flex items-center gap-1.5">
+                  <button onClick={() => { setRenamingId(g.id); setRenameVal(g.name); }} title="Rename" aria-label={`Rename ${g.name}`}
+                    className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer">
+                    <Pencil size={13} />
+                  </button>
+                  <button onClick={() => removeGroup(g)} title="Delete group" aria-label={`Delete ${g.name}`}
+                    className="flex items-center justify-center h-7 w-7 rounded-md border border-cohesity-border text-ink-muted hover:text-status-crit hover:border-status-crit/50 transition-colors cursor-pointer">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+              <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-x-4 gap-y-1">
+                {vcs.map((v) => (
+                  <label key={v.id} className="flex items-center gap-2 text-xs text-ink-muted cursor-pointer select-none">
+                    <input type="checkbox" className="accent-brand cursor-pointer" disabled={busyId === g.id}
+                      checked={(g.vcenterIds || []).includes(v.id)} onChange={(e) => toggleMember(g, v.id, e.target.checked)} />
+                    <span className="text-ink">{v.name}</span>
+                    <span className="text-ink-faint tnum truncate">{v.host}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const inp = 'w-full bg-surface-overlay border border-cohesity-border rounded-lg px-3 py-2 text-sm text-ink focus:border-brand/60 outline-none';
 
@@ -73,9 +219,15 @@ export default function VcSettingsPage() {
   const loadVcs = () => client.get('/vcenter/vcenters')
     .then(({ data }) => setVcs(data))
     .catch(() => setVcs([]));
+  const [groups, setGroups] = useState(null);
+  const loadGroups = () => client.get('/vcenter/groups', { params: { _: Date.now() } })
+    .then(({ data }) => setGroups(Array.isArray(data?.groups) ? data.groups : []))
+    .catch(() => setGroups([]));
+  const reloadGroups = async () => { await Promise.all([loadGroups(), loadVcs()]); };
 
   useEffect(() => {
     loadVcs();
+    loadGroups();
     client.get('/vcenter/config')
       .then(({ data }) => {
         setCertWarnDays(String(data.certWarnDays));
@@ -319,6 +471,7 @@ export default function VcSettingsPage() {
                 <th className="py-2 pr-3">Status</th>
                 <th className="py-2 pr-3">Last Poll</th>
                 <th className="py-2 pr-3" title="Tag category that names the VM owner on this vCenter (shown on Guest Storage and in alerts)">Owner Tag</th>
+                <th className="py-2 pr-3" title="Groups this vCenter belongs to (edit under Groups)">Groups</th>
                 <th className="py-2 pr-3 text-right">Actions</th>
               </tr></thead>
               <tbody>
@@ -335,7 +488,7 @@ export default function VcSettingsPage() {
                         <p className="text-[10px] text-status-crit mt-0.5 max-w-[260px] truncate" title={v.lastPollError}>{v.lastPollError}</p>
                       )}
                     </td>
-                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum">{fmtWhen(v.lastPollAt)}</td>
+                    <td className="py-2 pr-3 text-ink-faint text-[11px] tnum whitespace-nowrap">{fmtWhen(v.lastPollAt)}</td>
                     <td className="py-2 pr-3">
                       <select value={v.ownerTagCategory || ''} disabled={savingOwnerId === v.id}
                         onChange={(e) => saveOwnerTag(v, e.target.value)}
@@ -347,6 +500,18 @@ export default function VcSettingsPage() {
                         )}
                         {tagCategories.map((c) => <option key={c.category} value={c.category}>{c.category}</option>)}
                       </select>
+                    </td>
+                    <td className="py-2 pr-3">
+                      {Array.isArray(v.groups) && v.groups.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {v.groups.map((g) => (
+                            <button key={g.id} type="button" onClick={() => selectTab('groups')} title="Edit under Groups"
+                              className="chip cursor-pointer bg-surface-overlay text-ink-muted border-cohesity-border hover:text-ink inline-flex items-center gap-1.5">
+                              <GroupDot color={g.color} />{g.name}
+                            </button>
+                          ))}
+                        </div>
+                      ) : <span className="text-ink-faint">-</span>}
                     </td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center justify-end gap-1.5">
@@ -377,6 +542,7 @@ export default function VcSettingsPage() {
 
             </>
           )}
+          {tab === 'groups' && <GroupsSection vcs={vcs || []} groups={groups} reload={reloadGroups} flash={flash} />}
           {tab === 'sites' && <SitesSection flash={flash} />}
           {tab === 'clusters' && <ClusterAssignmentsSection flash={flash} />}
           {tab === 'pairs' && <FailoverPairsSection flash={flash} />}

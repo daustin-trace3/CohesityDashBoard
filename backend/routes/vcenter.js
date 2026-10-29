@@ -15,6 +15,7 @@ const {
 } = require('../services/vcenterIssues');
 const guestStorage = require('../services/vcenterGuestStorage');
 const guestOs = require('../services/vcenterGuestOs');
+const vcGroups = require('../services/vcenterGroups');
 const vcenterAdvisor = require('../services/advisors/vcenterAdvisor');
 const { RETENTION_DEFS, retentionDays, writeCapacitySample, n1Usable, rollupSite, failoverMatrix, siteMap, clusterStats, bucketHistory, growthOf, autoCreateSites, pairSummary } = require('../services/vcenterCapacity');
 
@@ -37,7 +38,9 @@ const publicVc = (row) => ({
 /** GET /api/vcenter/vcenters — registered vCenters (never the credentials). */
 router.get('/vcenters', (req, res, next) => {
   try {
-    res.json(db.prepare('SELECT * FROM vcenter_vcenters ORDER BY name').all().map(publicVc));
+    const gmap = vcGroups.groupsByVcenter(db);
+    res.json(db.prepare('SELECT * FROM vcenter_vcenters ORDER BY name').all()
+      .map((r) => ({ ...publicVc(r), groups: gmap.get(r.id) || [] })));
   } catch (err) { next(err); }
 });
 
@@ -106,6 +109,7 @@ router.delete('/vcenters/:id', [param('id').isInt().toInt()], validate, (req, re
     if (!row) return res.status(404).json({ error: 'vCenter not found.' });
     vcenterPoller.cancel(row.id);
     vcenterApi.invalidateSession(row.id);
+    db.prepare('DELETE FROM vcenter_group_members WHERE vcenter_id = ?').run(row.id);
     db.prepare('DELETE FROM vcenter_vcenters WHERE id = ?').run(row.id);
     res.json({ deleted: true });
   } catch (err) { next(err); }
@@ -329,6 +333,81 @@ router.put('/vcenters/:id/owner-tag', [
     const category = req.body.category ? String(req.body.category).trim() : null;
     db.prepare("UPDATE vcenter_vcenters SET owner_tag_category = ?, updated_at = datetime('now') WHERE id = ?").run(category, row.id);
     res.json(publicVc(db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(row.id)));
+  } catch (err) { next(err); }
+});
+
+const groupValidators = [
+  body('color').optional({ nullable: true }).matches(/^#[0-9a-fA-F]{6}$/),
+  body('vcenterIds').optional().isArray(),
+  body('vcenterIds.*').optional().isInt().toInt(),
+  body('sortOrder').optional().isInt().toInt(),
+];
+
+/** GET /api/vcenter/groups — free-tag groups plus the read-only capacity sites. */
+router.get('/groups', (req, res, next) => {
+  try { res.json({ groups: vcGroups.listGroups(db), sites: vcGroups.listSites(db) }); } catch (err) { next(err); }
+});
+
+router.post('/groups', [
+  body('name').isString().trim().isLength({ min: 1, max: 80 }),
+  ...groupValidators,
+], validate, (req, res, next) => {
+  try {
+    const name = req.body.name.trim();
+    if (db.prepare('SELECT id FROM vcenter_groups WHERE name = ?').get(name)) {
+      return res.status(409).json({ error: 'A group with that name exists.' });
+    }
+    const max = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM vcenter_groups').get().m;
+    const id = db.prepare('INSERT INTO vcenter_groups (name, color, sort_order) VALUES (?, ?, ?)')
+      .run(name, req.body.color || null, req.body.sortOrder != null ? req.body.sortOrder : max + 1).lastInsertRowid;
+    if (req.body.vcenterIds) vcGroups.setGroupMembers(db, id, req.body.vcenterIds);
+    res.status(201).json(vcGroups.getGroup(db, id));
+  } catch (err) { next(err); }
+});
+
+router.put('/groups/:id', [
+  param('id').isInt().toInt(),
+  body('name').optional().isString().trim().isLength({ min: 1, max: 80 }),
+  ...groupValidators,
+], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM vcenter_groups WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Group not found.' });
+    const b = req.body;
+    if (b.name !== undefined) {
+      const name = String(b.name).trim();
+      const dup = db.prepare('SELECT id FROM vcenter_groups WHERE name = ? AND id <> ?').get(name, row.id);
+      if (dup) return res.status(409).json({ error: 'A group with that name exists.' });
+      db.prepare('UPDATE vcenter_groups SET name = ? WHERE id = ?').run(name, row.id);
+    }
+    if (b.color !== undefined) db.prepare('UPDATE vcenter_groups SET color = ? WHERE id = ?').run(b.color || null, row.id);
+    if (b.sortOrder !== undefined) db.prepare('UPDATE vcenter_groups SET sort_order = ? WHERE id = ?').run(b.sortOrder, row.id);
+    if (b.vcenterIds !== undefined) vcGroups.setGroupMembers(db, row.id, b.vcenterIds);
+    res.json(vcGroups.getGroup(db, row.id));
+  } catch (err) { next(err); }
+});
+
+router.delete('/groups/:id', [param('id').isInt().toInt()], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT id FROM vcenter_groups WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Group not found.' });
+    db.prepare('DELETE FROM vcenter_group_members WHERE group_id = ?').run(row.id);
+    db.prepare('DELETE FROM vcenter_groups WHERE id = ?').run(row.id);
+    res.status(204).end();
+  } catch (err) { next(err); }
+});
+
+/** PUT /api/vcenter/vcenters/:id/groups — replace this vCenter's group membership. */
+router.put('/vcenters/:id/groups', [
+  param('id').isInt().toInt(),
+  body('groupIds').isArray(),
+  body('groupIds.*').isInt().toInt(),
+], validate, (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM vcenter_vcenters WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'vCenter not found.' });
+    vcGroups.setVcenterGroups(db, row.id, req.body.groupIds);
+    res.json({ ...publicVc(row), groups: vcGroups.groupsByVcenter(db).get(row.id) || [] });
   } catch (err) { next(err); }
 });
 
@@ -563,6 +642,8 @@ router.get('/guest-os', (req, res, next) => {
     res.json({
       lastPolled: polls.length ? polls[polls.length - 1] : null,
       vcenters,
+      groups: vcGroups.listGroups(db),
+      sites: vcGroups.listSites(db),
       vms: selected,
       ...guestOs.rollupGuestOs(selected, vcs),
     });

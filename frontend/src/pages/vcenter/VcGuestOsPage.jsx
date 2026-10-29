@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import {
   AppWindow, MonitorSmartphone, Power, Layers, GitCommitVertical, Boxes, Cpu, HelpCircle, ScanSearch,
 } from 'lucide-react';
@@ -115,6 +115,31 @@ export default function VcGuestOsPage() {
   const toggleVc = (id) => {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id); else next.add(id);
+    setParam('vc', allVcs.filter((vc) => next.has(vc.id)).map((vc) => vc.id).join(','));
+  };
+
+  // Groups (settings-managed tags) and sites (capacity sites, read-only). An old backend sends neither.
+  const groups = useMemo(() => (Array.isArray(data?.groups) ? data.groups : []), [data]);
+  const sites = useMemo(() => (Array.isArray(data?.sites) ? data.sites : []), [data]);
+  const knownVcIds = useMemo(() => new Set(allVcs.map((vc) => vc.id)), [allVcs]);
+  const memberIdsOf = (g) => (g.vcenterIds || []).filter((id) => knownVcIds.has(id));
+  const isLit = (g) => {
+    const ids = memberIdsOf(g);
+    return selected.size > 0 && ids.length > 0 && ids.every((id) => selected.has(id));
+  };
+  const pickGroup = (g, e) => {
+    const ids = memberIdsOf(g);
+    if (!ids.length) return;
+    let next;
+    if (isLit(g)) {
+      next = new Set(selected);
+      ids.forEach((id) => next.delete(id));
+    } else if (e && (e.ctrlKey || e.metaKey || e.shiftKey)) {
+      next = new Set(selected);
+      ids.forEach((id) => next.add(id));
+    } else {
+      next = new Set(ids);
+    }
     setParam('vc', allVcs.filter((vc) => next.has(vc.id)).map((vc) => vc.id).join(','));
   };
 
@@ -268,6 +293,37 @@ export default function VcGuestOsPage() {
       ) : (
         <>
           <div className="panel p-3 mb-4">
+            {groups.length === 0 && sites.length === 0 ? (
+              <p className="text-[11px] text-ink-muted mb-3">
+                No groups yet. Group vCenters under Settings &gt; Groups.{' '}
+                <Link to="/vcenter/settings?section=groups#groups" className="text-brand hover:underline">Manage</Link>
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-cohesity-border/60">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint mr-1">Groups</span>
+                {[...groups.map((g) => ({ ...g, isSite: false })), ...sites.map((s) => ({ ...s, isSite: true }))].map((g) => {
+                  const count = memberIdsOf(g).length;
+                  const lit = isLit(g);
+                  const empty = count === 0;
+                  return (
+                    <button
+                      key={`${g.isSite ? 'site' : 'group'}-${g.id}`}
+                      type="button"
+                      aria-pressed={lit}
+                      disabled={empty}
+                      onClick={(e) => pickGroup(g, e)}
+                      title={empty ? 'No vCenters in this group' : 'Click to select its vCenters. Ctrl-click or Shift-click adds to the selection.'}
+                      className={`chip transition-colors ${empty ? 'opacity-50 cursor-default' : 'cursor-pointer'} ${lit ? 'bg-brand/15 text-brand border-brand/40 font-semibold' : 'bg-surface-overlay text-ink-muted border-cohesity-border hover:text-ink'}`}
+                    >
+                      {g.isSite && <span className="text-[9px] uppercase tracking-wide rounded px-1 py-px mr-1.5 bg-surface-base text-ink-faint border border-cohesity-border">Site</span>}
+                      <span className="inline-block h-[7px] w-[7px] rounded-full mr-1.5" style={{ background: g.color || BRAND }} />
+                      {g.name} <span className="tnum opacity-70 ml-1">{count}</span>
+                    </button>
+                  );
+                })}
+                <Link to="/vcenter/settings?section=groups#groups" className="text-[11px] text-brand hover:underline ml-1">Manage</Link>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
@@ -305,7 +361,7 @@ export default function VcGuestOsPage() {
             <StatCard icon={AppWindow} label="Windows" value={fmtNum(summary.windows)} />
             <StatCard icon={Cpu} label="Linux" value={fmtNum(summary.linux)} />
             <StatCard icon={HelpCircle} label="Other" value={fmtNum(summary.other + summary.unknown)} sub={summary.unknown ? `${fmtNum(summary.unknown)} unknown` : undefined} />
-            <StatCard icon={ScanSearch} label="Tools detail" value={fmtNum(summary.detailed)}
+            <StatCard icon={ScanSearch} label="Detail" value={fmtNum(summary.detailed)}
               sub={`of ${fmtNum(summary.vms)} VMs report an OS version`} tone={summary.vms && detailPct < 0.5 ? 'warn' : 'default'} />
           </div>
 

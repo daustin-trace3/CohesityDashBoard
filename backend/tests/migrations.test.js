@@ -260,7 +260,7 @@ const NEW_TABLES = [
   'alert_notify_platform', 'alert_notify_types',
   'ops_incidents', 'ops_incident_alerts', 'ops_incident_analyses', 'ops_agent_runs', 'ops_capability_runs', 'ops_observations',
   'vcenter_vm_disks', 'vcenter_vm_filesystems', 'vcenter_vm_filesystem_history',
-  'vcenter_host_nic_neighbors', 'vcenter_host_capacity_history', 'vcenter_vm_daily', 'vcenter_host_daily',
+  'vcenter_host_nic_neighbors', 'vcenter_host_capacity_history', 'vcenter_vm_daily', 'vcenter_host_daily', 'vcenter_groups', 'vcenter_group_members',
   'zerto_events', 'estate_ai_reports', 'config_state', 'config_changes',
   'lm_sources', 'lm_devices', 'lm_device_groups', 'lm_device_datasources',
   'lm_interfaces', 'lm_interface_history', 'lm_interface_daily', 'lm_alerts',
