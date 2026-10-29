@@ -120,7 +120,8 @@ export default function VcGuestOsPage() {
 
   // Groups (settings-managed tags) and sites (capacity sites, read-only). An old backend sends neither.
   const groups = useMemo(() => (Array.isArray(data?.groups) ? data.groups : []), [data]);
-  const sites = useMemo(() => (Array.isArray(data?.sites) ? data.sites : []), [data]);
+  // A site that holds a single vCenter adds nothing over that vCenter's own chip.
+  const sites = useMemo(() => (Array.isArray(data?.sites) ? data.sites : []).filter((s) => (s.vcenterIds || []).length >= 2), [data]);
   const knownVcIds = useMemo(() => new Set(allVcs.map((vc) => vc.id)), [allVcs]);
   const memberIdsOf = (g) => (g.vcenterIds || []).filter((id) => knownVcIds.has(id));
   const isLit = (g) => {
