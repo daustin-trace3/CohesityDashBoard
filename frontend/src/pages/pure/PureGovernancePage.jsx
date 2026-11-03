@@ -755,7 +755,15 @@ export default function PureGovernancePage() {
         <p>
           Hardware EOL, contract and subscription dates come from Pure1 subscription assets, support contracts and
           subscriptions as of {data.asOf ? new Date(data.asOf).toLocaleString() : 'an unknown time'}.
+          {data.fetched && ` Last poll stored ${data.fetched.assets} assets, ${data.fetched.contracts} support contracts, ${data.fetched.subscriptions} subscriptions and ${data.fetched.licenses} licenses.`}
         </p>
+        {data.fetched && data.fetched.assets > 0 && (data.fetched.contracts === 0 || data.fetched.subscriptions === 0) && (
+          <p className="text-status-warn">
+            Pure1 returned {data.fetched.contracts === 0 ? 'no support contracts' : ''}{data.fetched.contracts === 0 && data.fetched.subscriptions === 0 ? ' and ' : ''}{data.fetched.subscriptions === 0 ? 'no subscriptions' : ''} on the last poll,
+            so those columns show dashes. Check the poller log for a lifecycle fetch failure; if the fetch succeeded with an empty
+            list, the Pure1 API registration may lack the role that exposes contract and subscription data.
+          </p>
+        )}
       </div>
 
       {detailRow && <ArrayDetailModal row={detailRow} onClose={() => setDetailId(null)} />}

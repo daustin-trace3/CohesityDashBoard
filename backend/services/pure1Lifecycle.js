@@ -121,12 +121,25 @@ function evaluate(now = new Date(), opts = {}) {
     // Several assets on one array: prefer one that carries an end of life date.
     if (!cur || (cur.end_of_life_date_ms == null && a.end_of_life_date_ms != null)) assetByArray.set(a.pure1_array_id, a);
   }
+  // Contracts key on the Pure1 array id; the array name and fqdn are
+  // fallbacks in case a tenant reports a resource id in another form.
   const contractByResource = new Map();
+  const contractByName = new Map();
+  const keepNewest = (map, key, c) => {
+    if (!key) return;
+    const cur = map.get(key);
+    if (!cur || (c.end_date_ms || 0) > (cur.end_date_ms || 0)) map.set(key, c);
+  };
   for (const c of contractRows) {
-    const cur = contractByResource.get(c.resource_id);
-    if (!cur || (c.end_date_ms || 0) > (cur.end_date_ms || 0)) contractByResource.set(c.resource_id, c);
+    keepNewest(contractByResource, c.resource_id, c);
+    keepNewest(contractByName, normName(c.resource_name), c);
+    keepNewest(contractByName, normName(c.fqdn), c);
   }
   const subById = new Map(subRows.map((s) => [s.subscription_id, s]));
+  // Assets reference their subscription by id and name; the name (the
+  // subscription number on real tenants) is the fallback join.
+  const subByName = new Map();
+  for (const s of subRows) { if (s.name && !subByName.has(normName(s.name))) subByName.set(normName(s.name), s); }
   const licById = new Map(licRows.map((l) => [l.license_id, l]));
   const licByResource = new Map();
   for (const l of licRows) {
@@ -175,7 +188,8 @@ function evaluate(now = new Date(), opts = {}) {
       upgrade,
     };
 
-    const c = contractByResource.get(r.pure1_id) || null;
+    const c = contractByResource.get(r.pure1_id) || contractByName.get(normName(r.name))
+      || contractByName.get(normName(r.fqdn)) || null;
     const cDays = c ? daysUntil(c.end_date_ms, today) : null;
     const contract = {
       startDate: c ? c.start_date_ms : null,
@@ -185,6 +199,7 @@ function evaluate(now = new Date(), opts = {}) {
     };
 
     let subRow = asset && asset.subscription_id ? subById.get(asset.subscription_id) : null;
+    if (!subRow && asset && asset.subscription_name) subRow = subByName.get(normName(asset.subscription_name)) || null;
     let subscription = null;
     if (subRow) subscription = subscriptionView(subRow);
     else if (asset && (asset.subscription_id || asset.subscription_name)) {
@@ -278,6 +293,9 @@ function evaluate(now = new Date(), opts = {}) {
 
   return {
     asOf: newestCapture([assetRows, contractRows, subRows, licRows]),
+    // Row counts per Pure1 list as stored by the last successful fetch, so the
+    // page can say when a list came back empty instead of showing dashes.
+    fetched: { assets: assetRows.length, contracts: contractRows.length, subscriptions: subRows.length, licenses: licRows.length },
     thresholds,
     purityTable: purityTableInfo(),
     summary: {

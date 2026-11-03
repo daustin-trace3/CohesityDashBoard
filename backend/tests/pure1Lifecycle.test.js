@@ -191,6 +191,23 @@ describe('evaluate()', () => {
   });
 });
 
+describe('evaluate() join fallbacks', () => {
+  it('joins a subscription by name and a contract by array name when the ids do not line up', () => {
+    insertArray('A1', 'fa-one', '6.9.4', 'SN-1');
+    insertSub('sub-uuid-1', '00063878', FIXED_DAY + 200 * DAY);
+    // The asset carries a subscription id Pure1 never listed, but the number matches.
+    insertAsset('asset-1', 'A1', { eol: FIXED_DAY + 900 * DAY, subId: 'sub-other', subName: '00063878', serial: 'SN-1' });
+    // The contract names the array instead of carrying its Pure1 id.
+    db.prepare('INSERT INTO pure1_support_contracts (resource_id, resource_name, fqdn, start_date_ms, end_date_ms) VALUES (?, ?, ?, ?, ?)')
+      .run('legacy-id', 'FA-ONE', 'fa-one.test', FIXED_DAY - 300 * DAY, FIXED_DAY + 300 * DAY);
+    const g = evaluate(FIXED_NOW);
+    const a = g.arrays.find((r) => r.id === 'A1');
+    expect(a.subscription).toMatchObject({ id: 'sub-uuid-1', name: '00063878', service: 'Evergreen//One', state: 'ok' });
+    expect(a.contract).toMatchObject({ state: 'ok', daysLeft: 300 });
+    expect(g.fetched).toEqual({ assets: 1, contracts: 1, subscriptions: 1, licenses: 0 });
+  });
+});
+
 describe('thresholds setting', () => {
   it('clamps saved values and reads them back', () => {
     pure1Api.setConfig({ hwEolWarnDays: 5000, contractWarnDays: 1, purityEolWarnDays: 365 });
@@ -210,7 +227,7 @@ describe('GET /api/pure1/governance', () => {
     const res = await request(app).get('/api/pure1/governance');
     expect(res.status).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual(
-      ['arrays', 'asOf', 'assetsUnmatched', 'models', 'purityTable', 'subscriptions', 'summary', 'thresholds', 'versions'].sort()
+      ['arrays', 'asOf', 'assetsUnmatched', 'fetched', 'models', 'purityTable', 'subscriptions', 'summary', 'thresholds', 'versions'].sort()
     );
     expect(res.body.summary.arrays).toBe(4);
     expect(res.body.summary.assetsUnmatched).toBe(1);
