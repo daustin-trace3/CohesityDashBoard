@@ -57,6 +57,20 @@ export function fmtDateMs(ms) {
   return new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+/** Date for an epoch-ms value that Pure1 stamps at 00:00 UTC; rendered in UTC so a western timezone does not show the day before. */
+export function fmtDateUtcMs(ms) {
+  if (!ms) return '-';
+  return new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+/** Date for a YYYY-MM-DD string (Purity table dates), no timezone shift. */
+export function fmtIsoDay(s) {
+  if (!s) return '-';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s));
+  if (!m) return String(s);
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
 /** Days until a millisecond timestamp (negative = already past). */
 export function daysUntilMs(ms) {
   if (!ms) return null;

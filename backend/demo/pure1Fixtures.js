@@ -42,7 +42,9 @@ function pick(rng, arr) {
 // ── Fleet naming (contract C11.2 — MUST match the seedDemo naming scheme) ──
 
 const MODELS = ['FlashArray//X70R3', 'FlashArray//X50R3', 'FlashArray//C60R3', 'FlashArray//XL170'];
-const PURITY_VERSIONS = ['6.5.1', '6.4.10'];
+// Five entries against four models so version and model do not move together.
+// Lines: 6.5 and 6.10 are past end of development, 6.7 and 6.9 are supported.
+const PURITY_VERSIONS = ['6.5.1', '6.7.9', '6.10.2', '6.9.4', '6.7.9'];
 
 // site -> array-suffix plan; name pattern is `${site}-fa-${suffix}` where
 // suffix already contains env + zero-padded index (e.g. "prd-01"). 20 arrays total.
@@ -477,7 +479,140 @@ async function fetchPerformanceHistory(arrayId, days = 1) {
   return { start, end, resolution, series };
 }
 
+// -- Lifecycle: subscription assets, support contracts, subscriptions, licenses --
+// Deterministic apart from the clock. Every date is epoch ms at 00:00 UTC, the
+// way Pure1 reports them. Shapes match the camelCase objects pure1Api returns.
+
+const DAY = 86400000;
+function dayMs(offsetDays) {
+  return Math.floor((Date.now() + offsetDays * DAY) / DAY) * DAY;
+}
+
+const SITE_ADDRESS = {
+  nyc: ['New York', 'NY', 'US'], lon: ['London', '', 'GB'], fra: ['Frankfurt', '', 'DE'],
+  sgp: ['Singapore', '', 'SG'], syd: ['Sydney', 'NSW', 'AU'], chi: ['Chicago', 'IL', 'US'],
+  dal: ['Dallas', 'TX', 'US'], tor: ['Toronto', 'ON', 'CA'],
+};
+
+// Arrays with no end of life date on the asset record.
+const NO_EOL_IDX = new Set([7, 11]);
+
+function subscriptionIdxFor(idx) {
+  if (idx < 6) return 0;
+  if (idx < 18) return 1;
+  return 2;
+}
+
+function lifecycleSubscriptions() {
+  return [
+    {
+      id: 'demo-sub-evergreen-one', name: 'Evergreen//One Demo Bank', initialName: 'Evergreen//One Demo Bank',
+      customerName: 'Demo Bank', partnerName: 'Demo Partner', service: 'Evergreen//One',
+      serviceTier: 'Premium', serviceSla: 'Gold', status: 'active',
+      startDate: dayMs(-700), expirationDate: dayMs(60), subscriptionTerm: 24, lastUpdated: dayMs(-30),
+    },
+    {
+      id: 'demo-sub-evergreen-forever', name: 'Evergreen//Forever Demo Bank', initialName: 'Evergreen//Forever Demo Bank',
+      customerName: 'Demo Bank', partnerName: 'Demo Partner', service: 'Evergreen//Forever',
+      serviceTier: 'Standard', serviceSla: 'Silver', status: 'active',
+      startDate: dayMs(-400), expirationDate: dayMs(1095), subscriptionTerm: 60, lastUpdated: dayMs(-90),
+    },
+    {
+      id: 'demo-sub-evergreen-foundation', name: 'Evergreen//Foundation Demo Bank', initialName: 'Evergreen//Foundation Demo Bank',
+      customerName: 'Demo Bank', partnerName: 'Demo Partner', service: 'Evergreen//Foundation',
+      serviceTier: 'Standard', serviceSla: 'Silver', status: 'terminated',
+      startDate: dayMs(-900), expirationDate: dayMs(-100), subscriptionTerm: 24, lastUpdated: dayMs(-100),
+    },
+  ];
+}
+
+let _lifecycle = null;
+
+function buildLifecycle() {
+  const fleet = getFleet();
+  const subs = lifecycleSubscriptions();
+  const licenses = subs.map((s, i) => ({
+    id: `demo-lic-${i + 1}`, name: `${s.service} license`, subscriptionId: s.id, subscriptionName: s.name,
+    serviceTier: s.serviceTier, startDate: s.startDate, expirationDate: s.expirationDate, lastUpdated: s.lastUpdated,
+    siteAddress: null, reservation: null, usage: null, resources: [],
+  }));
+  const assets = [];
+  const contracts = [];
+  fleet.forEach((a, idx) => {
+    const rng = rngFor(`${a.name}-lifecycle`);
+    const si = subscriptionIdxFor(idx);
+    const sub = subs[si];
+    const lic = licenses[si];
+    lic.resources.push({ id: a.id, name: a.name, resourceType: 'arrays' });
+
+    let eol;
+    if (NO_EOL_IDX.has(idx)) eol = null;
+    else if (idx === 0) eol = dayMs(-200);
+    else if (idx === 1) eol = dayMs(-40);
+    else if (idx === 2) eol = dayMs(60);
+    else eol = dayMs(Math.round(randRange(rng, 730, 1825)));
+    const site = a.name.split('-')[0];
+    const [city, state, country] = SITE_ADDRESS[site] || ['', '', ''];
+    assets.push({
+      id: `demo-asset-${idx}`,
+      name: a.name,
+      asOf: dayMs(0),
+      activationDate: dayMs(-Math.round(randRange(rng, 365, 1500))),
+      endOfLifeDate: eol,
+      customerName: sub.customerName,
+      installAddress: { streetAddress: `${100 + idx} Demo Way`, city, state, country, postalCode: `${10000 + idx}` },
+      license: { id: lic.id, name: lic.name },
+      subscription: { id: sub.id, name: sub.name },
+      array: { model: a.model, version: a.version, chassisSerialNumber: `SN-${1000 + idx}` },
+      upgradeDetails: idx <= 1
+        ? { actionNeeded: 'Controller upgrade', commitmentDate: dayMs(-30), eligibilityDate: dayMs(-400) }
+        : null,
+    });
+
+    let end;
+    if (idx === 4) end = dayMs(-20);
+    else if (idx === 5) end = dayMs(30);
+    else end = dayMs(Math.round(randRange(rng, 365, 1095)));
+    contracts.push({ resourceId: a.id, resourceName: a.name, resourceType: 'arrays', fqdn: a.fqdn, startDate: end - 3 * 365 * DAY, endDate: end });
+    // One array with an older, already ended contract beside the current one:
+    // the newest end date must win.
+    if (idx === 6) {
+      contracts.push({ resourceId: a.id, resourceName: a.name, resourceType: 'arrays', fqdn: a.fqdn, startDate: dayMs(-1460), endDate: dayMs(-365) });
+    }
+  });
+  // One asset Pure1 reports that no array in the fleet matches.
+  assets.push({
+    id: 'demo-asset-orphan',
+    name: 'orphan-fa-01',
+    asOf: dayMs(0),
+    activationDate: dayMs(-900),
+    endOfLifeDate: dayMs(730),
+    customerName: subs[1].customerName,
+    installAddress: { streetAddress: '1 Orphan Way', city: 'Austin', state: 'TX', country: 'US', postalCode: '73301' },
+    license: { id: licenses[1].id, name: licenses[1].name },
+    subscription: { id: subs[1].id, name: subs[1].name },
+    array: { model: 'FlashArray//X50R3', version: '6.7.9', chassisSerialNumber: 'SN-9999' },
+    upgradeDetails: null,
+  });
+  return { assets, contracts, subscriptions: subs, licenses };
+}
+
+function getLifecycle() {
+  if (!_lifecycle) _lifecycle = buildLifecycle();
+  return _lifecycle;
+}
+
+async function fetchSubscriptionAssets() { return getLifecycle().assets; }
+async function fetchSupportContracts() { return getLifecycle().contracts; }
+async function fetchSubscriptions() { return getLifecycle().subscriptions; }
+async function fetchSubscriptionLicenses() { return getLifecycle().licenses; }
+
 module.exports = {
+  fetchSubscriptionAssets,
+  fetchSupportContracts,
+  fetchSubscriptions,
+  fetchSubscriptionLicenses,
+  getLifecycle,
   getOverview,
   getAlerts,
   getEnrichment,

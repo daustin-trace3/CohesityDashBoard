@@ -461,4 +461,77 @@ module.exports = [
       if (!cols.includes('metrics_captured_at')) db.exec('ALTER TABLE pure1_arrays ADD COLUMN metrics_captured_at TEXT');
     },
   },
+  // 2026-11-03 Pure1 lifecycle: subscription assets (hardware end of life),
+  // support contracts, subscriptions and licenses. All dates are epoch ms at
+  // 00:00 UTC as Pure1 reports them; each table is replaced wholesale per poll.
+  {
+    version: 11,
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS pure1_subscription_assets (
+          asset_id                    TEXT PRIMARY KEY,
+          name                        TEXT,
+          pure1_array_id              TEXT,
+          array_name                  TEXT,
+          chassis_serial              TEXT,
+          model                       TEXT,
+          version                     TEXT,
+          customer_name               TEXT,
+          activation_date_ms          INTEGER,
+          end_of_life_date_ms         INTEGER,
+          install_address             TEXT,
+          subscription_id             TEXT,
+          subscription_name           TEXT,
+          license_id                  TEXT,
+          license_name                TEXT,
+          upgrade_action_needed       TEXT,
+          upgrade_commitment_date_ms  INTEGER,
+          upgrade_eligibility_date_ms INTEGER,
+          as_of_ms                    INTEGER,
+          captured_at                 DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS pure1_subscriptions (
+          subscription_id       TEXT PRIMARY KEY,
+          name                  TEXT,
+          initial_name          TEXT,
+          customer_name         TEXT,
+          partner_name          TEXT,
+          service               TEXT,
+          service_tier          TEXT,
+          service_sla           TEXT,
+          status                TEXT,
+          start_date_ms         INTEGER,
+          expiration_date_ms    INTEGER,
+          subscription_term     INTEGER,
+          last_updated_ms       INTEGER,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS pure1_subscription_licenses (
+          license_id            TEXT PRIMARY KEY,
+          name                  TEXT,
+          subscription_id       TEXT,
+          subscription_name     TEXT,
+          service_tier          TEXT,
+          start_date_ms         INTEGER,
+          expiration_date_ms    INTEGER,
+          last_updated_ms       INTEGER,
+          site_address          TEXT,
+          resources             TEXT,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS pure1_support_contracts (
+          resource_id           TEXT NOT NULL,
+          resource_name         TEXT,
+          fqdn                  TEXT,
+          start_date_ms         INTEGER,
+          end_date_ms           INTEGER,
+          captured_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (resource_id, start_date_ms, end_date_ms)
+        );
+      `);
+    },
+  },
 ];

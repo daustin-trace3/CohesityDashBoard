@@ -52,6 +52,9 @@ function Pure1SaaSTab() {
   const [staleHours, setStaleHours] = useState(48);
   const [warnPct, setWarnPct] = useState(75);
   const [critPct, setCritPct] = useState(90);
+  const [hwEolWarnDays, setHwEolWarnDays] = useState(180);
+  const [contractWarnDays, setContractWarnDays] = useState(90);
+  const [purityEolWarnDays, setPurityEolWarnDays] = useState(180);
   const [showHidden, setShowHidden] = useState(false);
   const [savingCreds, setSavingCreds] = useState(false);
   const [savingPrefs, setSavingPrefs] = useState(false);
@@ -69,6 +72,9 @@ function Pure1SaaSTab() {
       setStaleHours(data.metricsStaleHours || 48);
       setWarnPct(data.warnPct || 75);
       setCritPct(data.critPct || 90);
+      setHwEolWarnDays(data.hwEolWarnDays || 180);
+      setContractWarnDays(data.contractWarnDays || 90);
+      setPurityEolWarnDays(data.purityEolWarnDays || 180);
       setShowHidden(!!data.showHiddenAlerts);
     })
     .catch(() => { setCfg({ configured: false }); toast({ type: 'error', title: 'Failed to load Pure settings' }); }), [toast]);
@@ -96,6 +102,7 @@ function Pure1SaaSTab() {
       const { data } = await client.put('/pure1/settings', {
         cacheTtlMin: Number(ttl), pollIntervalMinutes: Number(pollInterval), metricsStaleHours: Number(staleHours),
         warnPct: Number(warnPct), critPct: Number(critPct), showHiddenAlerts: showHidden,
+        hwEolWarnDays: Number(hwEolWarnDays), contractWarnDays: Number(contractWarnDays), purityEolWarnDays: Number(purityEolWarnDays),
       });
       setCfg(data);
       toast({ type: 'success', title: 'Preferences saved' });
@@ -192,6 +199,15 @@ function Pure1SaaSTab() {
           </Field>
           <Field label="Capacity critical %" hint="Red bar at/above this % full.">
             <input type="number" min={1} max={100} value={critPct} onChange={(e) => setCritPct(e.target.value)} className={inp} />
+          </Field>
+          <Field label="Hardware EOL warning (days)" hint="Governance flags arrays whose hardware reaches end of life within this many days.">
+            <input type="number" min={30} max={1095} value={hwEolWarnDays} onChange={(e) => setHwEolWarnDays(e.target.value)} className={inp} />
+          </Field>
+          <Field label="Support contract warning (days)" hint="Flag a support contract or subscription ending within this many days.">
+            <input type="number" min={7} max={730} value={contractWarnDays} onChange={(e) => setContractWarnDays(e.target.value)} className={inp} />
+          </Field>
+          <Field label="Purity EOL warning (days)" hint="Flag a Purity release line this many days before its end of development.">
+            <input type="number" min={30} max={1095} value={purityEolWarnDays} onChange={(e) => setPurityEolWarnDays(e.target.value)} className={inp} />
           </Field>
         </div>
         <label className="flex items-center gap-2 text-xs text-ink-muted cursor-pointer mt-3 select-none">

@@ -5,6 +5,8 @@ const { pure1Task, metricsStaleness } = require('../services/pure1Poller');
 const { isDemo } = require('../services/demoMode');
 const { getSetting } = require('../services/settings');
 const cacheControl = require('../middleware/cache');
+const { evaluate } = require('../services/pure1Lifecycle');
+const { sendCsv } = require('../utils/csv');
 
 const router = express.Router();
 
@@ -172,6 +174,41 @@ router.get('/enrichment', cacheControl(120), async (req, res, next) => {
     if (isDemo()) return res.json(await pure1Api.getEnrichment({ force: req.query.refresh === '1' }));
     if (!pure1Api.isConfigured()) return res.json({});
     res.json(dbEnrichment());
+  } catch (err) { next(err); }
+});
+
+// Lifecycle governance: hardware end of life, support contracts, subscriptions
+// and Purity code end of life per array. Reads the poller-filled tables only
+// (the demo generator seeds the same tables), so it never calls Pure1.
+router.get('/governance', cacheControl(30), (req, res, next) => {
+  try {
+    res.json(evaluate(new Date()));
+  } catch (err) { next(err); }
+});
+
+const isoDate = (ms) => (ms == null ? '' : new Date(ms).toISOString().slice(0, 10));
+
+router.get('/governance.csv', (req, res, next) => {
+  try {
+    const g = evaluate(new Date());
+    const header = [
+      'Array', 'FQDN', 'Model', 'Purity version', 'Purity line', 'Purity end of development', 'Purity days left', 'Purity phase',
+      'Chassis serial', 'Hardware end of life', 'Hardware days left', 'Hardware state', 'Activation date',
+      'Support contract start', 'Support contract end', 'Support days left', 'Support state',
+      'Subscription', 'Service', 'Service tier', 'Subscription status', 'Subscription expiration', 'Subscription days left', 'Subscription state',
+      'License', 'Customer', 'Worst',
+    ];
+    const rows = g.arrays.map((a) => [
+      a.name, a.fqdn, a.model, a.version, a.purity.line, a.purity.end_of_development, a.purity.days_to_eol, a.purity.phase,
+      a.chassisSerial, isoDate(a.hardware.endOfLifeDate), a.hardware.daysToEol, a.hardware.state, isoDate(a.hardware.activationDate),
+      isoDate(a.contract.startDate), isoDate(a.contract.endDate), a.contract.daysLeft, a.contract.state,
+      a.subscription ? a.subscription.name : '', a.subscription ? a.subscription.service : '',
+      a.subscription ? a.subscription.serviceTier : '', a.subscription ? a.subscription.status : '',
+      a.subscription ? isoDate(a.subscription.expirationDate) : '', a.subscription ? a.subscription.daysLeft : '',
+      a.subscription ? a.subscription.state : '',
+      a.license ? a.license.name : '', a.hardware.customerName, a.worst,
+    ]);
+    sendCsv(res, `pure-governance-${new Date().toISOString().slice(0, 10)}.csv`, header, rows);
   } catch (err) { next(err); }
 });
 

@@ -2,7 +2,7 @@
 // list). The Pure data pages themselves are served from the in-memory
 // pure1Fixtures.js fleet — its name list is the single source of truth so
 // Settings shows exactly the arrays the fleet pages render.
-const { buildArrayNames, getFleet, buildAlerts } = require('../pure1Fixtures');
+const { buildArrayNames, getFleet, buildAlerts, getLifecycle } = require('../pure1Fixtures');
 const { randInt, rngFor } = require('./core');
 
 function buildArrayList() {
@@ -10,6 +10,60 @@ function buildArrayList() {
     const [site, , env] = name.split('-');
     return { name, site, env: env.replace(/\d+$/, '') };
   });
+}
+
+// Pure1 lifecycle tables (hardware end of life, support contracts, subscriptions,
+// licenses) from the same deterministic fixtures the demo Pure1 API serves.
+// Assets match arrays by chassis serial SN-<1000+idx>, the serial seeded above.
+function seedLifecycle(db, fleet) {
+  const { assets, contracts, subscriptions, licenses } = getLifecycle();
+  const bySerial = new Map(fleet.map((a, idx) => [`SN-${1000 + idx}`, a]));
+
+  const assetStmt = db.prepare(`
+    INSERT OR REPLACE INTO pure1_subscription_assets (asset_id, name, pure1_array_id, array_name,
+      chassis_serial, model, version, customer_name, activation_date_ms, end_of_life_date_ms,
+      install_address, subscription_id, subscription_name, license_id, license_name,
+      upgrade_action_needed, upgrade_commitment_date_ms, upgrade_eligibility_date_ms, as_of_ms, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const a of assets) {
+    const serial = a.array.chassisSerialNumber;
+    const arr = bySerial.get(serial) || null;
+    const up = a.upgradeDetails;
+    assetStmt.run(
+      a.id, a.name, arr ? arr.id : null, arr ? arr.name : null, serial, a.array.model, a.array.version,
+      a.customerName, a.activationDate, a.endOfLifeDate, JSON.stringify(a.installAddress),
+      a.subscription.id, a.subscription.name, a.license.id, a.license.name,
+      up ? up.actionNeeded : null, up ? up.commitmentDate : null, up ? up.eligibilityDate : null, a.asOf
+    );
+  }
+
+  const contractStmt = db.prepare(`
+    INSERT OR REPLACE INTO pure1_support_contracts (resource_id, resource_name, fqdn, start_date_ms, end_date_ms, captured_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const c of contracts) contractStmt.run(c.resourceId, c.resourceName, c.fqdn, c.startDate, c.endDate);
+
+  const subStmt = db.prepare(`
+    INSERT OR REPLACE INTO pure1_subscriptions (subscription_id, name, initial_name, customer_name,
+      partner_name, service, service_tier, service_sla, status, start_date_ms, expiration_date_ms,
+      subscription_term, last_updated_ms, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const s of subscriptions) {
+    subStmt.run(s.id, s.name, s.initialName, s.customerName, s.partnerName, s.service, s.serviceTier,
+      s.serviceSla, s.status, s.startDate, s.expirationDate, s.subscriptionTerm, s.lastUpdated);
+  }
+
+  const licStmt = db.prepare(`
+    INSERT OR REPLACE INTO pure1_subscription_licenses (license_id, name, subscription_id, subscription_name,
+      service_tier, start_date_ms, expiration_date_ms, last_updated_ms, site_address, resources, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const l of licenses) {
+    licStmt.run(l.id, l.name, l.subscriptionId, l.subscriptionName, l.serviceTier, l.startDate,
+      l.expirationDate, l.lastUpdated, l.siteAddress ? JSON.stringify(l.siteAddress) : null, JSON.stringify(l.resources));
+  }
 }
 
 function seedPure(db, { now, encrypt }) {
@@ -79,6 +133,8 @@ function seedPure(db, { now, encrypt }) {
       al.componentType || null, al.component || null, al.summary || null, al.state || null,
       al.flagged ? 1 : 0, al.created || null, al.updated || null);
   }
+  seedLifecycle(db, fleet);
+
   db.prepare(`
     INSERT INTO pure1_metrics_history (captured_at, array_count, arrays_warn, arrays_crit,
       total_capacity_bytes, total_used_bytes, open_alerts)

@@ -11,6 +11,7 @@ const PureVolumesPage = lazy(() => import('../../pages/pure/PureVolumesPage'));
 const PureReplicationPage = lazy(() => import('../../pages/pure/PureReplicationPage'));
 const PureHardwarePage = lazy(() => import('../../pages/pure/PureHardwarePage'));
 const PureConnectivityPage = lazy(() => import('../../pages/pure/PureConnectivityPage'));
+const PureGovernancePage = lazy(() => import('../../pages/pure/PureGovernancePage'));
 const PureSettingsPage = lazy(() => import('../../pages/pure/PureSettingsPage'));
 const PureEstatePage = lazy(() => import('../../pages/pure/PureEstatePage'));
 const PureAdvisorPage = lazy(() => import('../../pages/pure/PureAdvisorPage'));
@@ -40,6 +41,7 @@ const navGroups = [
     items: [
       { label: 'Hardware', route: '/pure/hardware', icon: HardDrive, isActive: (p) => p.startsWith('/pure/hardware') },
       { label: 'Connectivity', route: '/pure/connectivity', icon: Network, isActive: (p) => p.startsWith('/pure/connectivity') },
+      { label: 'Governance', route: '/pure/governance', icon: ShieldCheck, isActive: (p) => p.startsWith('/pure/governance') },
     ],
   },
   {
@@ -72,6 +74,7 @@ export default {
     { path: 'pure/replication', Component: PureReplicationPage },
     { path: 'pure/hardware', Component: PureHardwarePage },
     { path: 'pure/connectivity', Component: PureConnectivityPage },
+    { path: 'pure/governance', Component: PureGovernancePage },
     { path: 'pure/alerts', Component: PureAlertsPage },
     { path: 'pure/advisor', Component: PureAdvisorPage },
     { path: 'pure/privacy', Component: PurePrivacyPage },

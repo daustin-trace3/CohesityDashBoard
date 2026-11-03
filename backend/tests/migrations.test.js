@@ -206,6 +206,7 @@ const NEW_TABLES = [
   'cohesity_views', 'cohesity_nodes', 'workload_history', 'cluster_gflags', 'gflag_changes',
   'zerto_sites', 'zerto_vpgs', 'zerto_alerts', 'zerto_vms', 'zerto_metrics_history', 'zerto_vras', 'zerto_licenses', 'zerto_alert_catalog',
   'pure1_arrays', 'pure1_alerts', 'pure1_pods', 'pure1_metrics_history',
+  'pure1_subscription_assets', 'pure1_subscriptions', 'pure1_subscription_licenses', 'pure1_support_contracts',
   'vcenter_vcenters', 'vcenter_hosts', 'vcenter_clusters', 'vcenter_datastores', 'vcenter_certs', 'vcenter_metrics_history', 'vcenter_vms',
   'vcenter_networks', 'vcenter_orphaned_vmdks', 'vcenter_events', 'vcenter_issue_history',
   'vcenter_sites', 'vcenter_site_members', 'vcenter_site_pairs', 'vcenter_capacity_history', 'vcenter_datastore_history', 'vcenter_vm_capacity_history',

@@ -1,0 +1,12 @@
+{
+  "source": "Pure Storage community Purity//FA general availability announcements (not the login-gated Purity//FA Release and End-of-Life Schedule KB)",
+  "captured": "2026-11-03",
+  "note": "Dates come from Pure's own community GA posts, not from the support KB release schedule, which needs a Pure support login. Pure1 has no API field for Purity code end of life. Only Purity//FA lines 6.5 to 6.10 are listed; any other line, including Purity//FA 6.11 and the FlashBlade lines, reads unknown. A release line is treated as end of life the day after its end-of-development date. Re-capture this file when the KB page is supplied.",
+  "lines": [
+    { "product": "Purity//FA", "line": "6.5", "kind": "llr", "end_of_development": "2026-09-30", "eol_after_end_of_development": true },
+    { "product": "Purity//FA", "line": "6.7", "kind": "llr", "end_of_development": "2027-10-31", "eol_after_end_of_development": true },
+    { "product": "Purity//FA", "line": "6.8", "kind": "feature", "end_of_development": "2025-06-30", "eol_after_end_of_development": true },
+    { "product": "Purity//FA", "line": "6.9", "kind": "llr", "end_of_development": "2028-06-30", "eol_after_end_of_development": true },
+    { "product": "Purity//FA", "line": "6.10", "kind": "feature", "end_of_development": "2026-03-31", "eol_after_end_of_development": true }
+  ]
+}

@@ -31,6 +31,9 @@ const DEFAULT_WARN_PCT = 75;
 const DEFAULT_CRIT_PCT = 90;
 const DEFAULT_POLL_INTERVAL_MIN = 15;
 const DEFAULT_METRICS_STALE_HOURS = 48;
+const DEFAULT_HW_EOL_WARN_DAYS = 180;
+const DEFAULT_CONTRACT_WARN_DAYS = 90;
+const DEFAULT_PURITY_EOL_WARN_DAYS = 180;
 
 const CAPACITY_METRICS = [
   'array_total_capacity',
@@ -470,6 +473,119 @@ function lastRefresh() {
   };
 }
 
+// -- Lifecycle (subscription assets, support contracts, subscriptions) ---------
+// Every date Pure1 returns here is epoch ms at 00:00 UTC. Items are mapped to
+// plain camelCase objects; the demo fixtures return the same shapes.
+
+const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
+/** Subscription assets, one per appliance, with hardware end-of-life date. */
+async function fetchSubscriptionAssets() {
+  if (isDemo()) return demoFixtures.fetchSubscriptionAssets();
+  const items = await fetchAllForArray('/subscription-assets', null);
+  return items.map((a) => {
+    const addr = a.install_address || null;
+    const arr = a.array || {};
+    const up = a.upgrade_details || null;
+    return {
+      id: a.id,
+      name: a.name || null,
+      asOf: num(a._as_of),
+      activationDate: num(a.activation_date),
+      endOfLifeDate: num(a.end_of_life_date),
+      customerName: a.customer_name || null,
+      installAddress: addr ? {
+        ...addr,
+        streetAddress: addr.street_address || null,
+        postalCode: addr.postal_code || null,
+      } : null,
+      license: a.license ? { id: a.license.id || null, name: a.license.name || null } : null,
+      subscription: a.subscription ? { id: a.subscription.id || null, name: a.subscription.name || null } : null,
+      array: { model: arr.model || null, version: arr.version || null, chassisSerialNumber: arr.chassis_serial_number || null },
+      upgradeDetails: up ? {
+        actionNeeded: up.action_needed ?? null,
+        commitmentDate: num(up.commitment_date),
+        eligibilityDate: num(up.upgrade_eligibility_date),
+      } : null,
+    };
+  });
+}
+
+/** Array support contracts (resource.id is the Pure1 array id). */
+async function fetchSupportContracts() {
+  if (isDemo()) return demoFixtures.fetchSupportContracts();
+  const items = await fetchAllForArray('/arrays/support-contracts', null);
+  return items.map((c) => {
+    const r = c.resource || {};
+    return {
+      resourceId: r.id || null,
+      resourceName: r.name || null,
+      resourceType: r.resource_type || null,
+      fqdn: r.fqdn || null,
+      startDate: num(c.start_date),
+      endDate: num(c.end_date),
+    };
+  });
+}
+
+/** Subscriptions (Evergreen//One, Forever, Foundation, ...). */
+async function fetchSubscriptions() {
+  if (isDemo()) return demoFixtures.fetchSubscriptions();
+  const items = await fetchAllForArray('/subscriptions', null);
+  return items.map((s) => {
+    const d = s.service_details || {};
+    return {
+      id: s.id,
+      name: s.name || null,
+      initialName: s.initial_name || null,
+      customerName: s.customer_name || null,
+      partnerName: s.partner_name || null,
+      service: s.service || null,
+      serviceTier: d.service_tier || null,
+      serviceSla: d.service_sla || null,
+      status: s.status || null,
+      startDate: num(s.start_date),
+      expirationDate: num(s.expiration_date),
+      subscriptionTerm: num(s.subscription_term),
+      lastUpdated: num(s.last_updated_date),
+    };
+  });
+}
+
+/** Subscription licenses and the resources each one covers. */
+async function fetchSubscriptionLicenses() {
+  if (isDemo()) return demoFixtures.fetchSubscriptionLicenses();
+  const items = await fetchAllForArray('/subscription-licenses', null);
+  return items.map((l) => ({
+    id: l.id,
+    name: l.name || null,
+    subscriptionId: l.subscription ? l.subscription.id || null : null,
+    subscriptionName: l.subscription ? l.subscription.name || null : null,
+    serviceTier: l.service_tier || null,
+    startDate: num(l.start_date),
+    expirationDate: num(l.expiration_date),
+    lastUpdated: num(l.last_updated_date),
+    siteAddress: l.site_address || null,
+    reservation: l.reservation ?? null,
+    usage: l.usage ?? null,
+    resources: (l.resources || []).map((r) => ({ id: r.id || null, name: r.name || null, resourceType: r.resource_type || null })),
+  }));
+}
+
+function clampSetting(key, def, min, max) {
+  const n = Number(getSetting(key));
+  return Number.isFinite(n) && n >= min ? Math.min(max, Math.round(n)) : def;
+}
+
+/** Lifecycle warning windows in days. */
+function getLifecycleThresholds() {
+  return {
+    hwEolWarnDays: clampSetting('pure1_hw_eol_warn_days', DEFAULT_HW_EOL_WARN_DAYS, 30, 1095),
+    contractWarnDays: clampSetting('pure1_contract_warn_days', DEFAULT_CONTRACT_WARN_DAYS, 7, 730),
+    purityEolWarnDays: clampSetting('pure1_purity_eol_warn_days', DEFAULT_PURITY_EOL_WARN_DAYS, 30, 1095),
+  };
+}
+
 /** Hours without a Pure1 metric point before an array counts as metrics-stale (1..720). */
 function getMetricsStaleHours() {
   const n = Number(getSetting('pure1_metrics_stale_hours'));
@@ -512,6 +628,7 @@ function getConfig() {
     showHiddenAlerts: getSetting('pure1_show_hidden_alerts') === '1',
     pollIntervalMinutes: Number(getSetting('pure1_poll_interval_minutes')) || DEFAULT_POLL_INTERVAL_MIN,
     metricsStaleHours: getMetricsStaleHours(),
+    ...getLifecycleThresholds(),
     lastRefresh: lastRefresh(),
   };
 }
@@ -544,6 +661,17 @@ function setConfig(patch = {}) {
   if (patch.metricsStaleHours != null) {
     const n = Math.min(720, Math.max(1, Math.round(Number(patch.metricsStaleHours)) || DEFAULT_METRICS_STALE_HOURS));
     setSetting('pure1_metrics_stale_hours', String(n));
+  }
+  const lifecycleKeys = [
+    ['hwEolWarnDays', 'pure1_hw_eol_warn_days', DEFAULT_HW_EOL_WARN_DAYS, 30, 1095],
+    ['contractWarnDays', 'pure1_contract_warn_days', DEFAULT_CONTRACT_WARN_DAYS, 7, 730],
+    ['purityEolWarnDays', 'pure1_purity_eol_warn_days', DEFAULT_PURITY_EOL_WARN_DAYS, 30, 1095],
+  ];
+  for (const [field, key, def, min, max] of lifecycleKeys) {
+    if (patch[field] != null) {
+      const n = Math.min(max, Math.max(min, Math.round(Number(patch[field])) || def));
+      setSetting(key, String(n));
+    }
   }
   invalidate();
   return getConfig();
@@ -727,4 +855,9 @@ module.exports = {
   getDisplayPrefs,
   getMetricsStaleHours,
   getEnrichment,
+  fetchSubscriptionAssets,
+  fetchSupportContracts,
+  fetchSubscriptions,
+  fetchSubscriptionLicenses,
+  getLifecycleThresholds,
 };

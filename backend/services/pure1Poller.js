@@ -10,6 +10,7 @@ const { createGlobalTask } = require('../core/pollerFramework');
 const { getSetting } = require('./settings');
 const { isDemo } = require('./demoMode');
 const pure1Api = require('./pure1Api');
+const { matchAssetsToArrays } = require('./pure1Lifecycle');
 const logger = require('../utils/logger');
 
 /**
@@ -94,6 +95,110 @@ const replacePods = db.transaction((pods) => {
     stmt.run(p.id || null, p.name || null, p.mediator || null, JSON.stringify(p.arrays || []));
   }
 });
+
+// Lifecycle tables: each is replaced wholesale in one transaction, and only
+// after its own fetch succeeded (a failed fetch leaves the old rows in place).
+const replaceAssets = db.transaction((matched) => {
+  db.prepare('DELETE FROM pure1_subscription_assets').run();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO pure1_subscription_assets (asset_id, name, pure1_array_id, array_name,
+      chassis_serial, model, version, customer_name, activation_date_ms, end_of_life_date_ms,
+      install_address, subscription_id, subscription_name, license_id, license_name,
+      upgrade_action_needed, upgrade_commitment_date_ms, upgrade_eligibility_date_ms, as_of_ms, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const { asset: a, array } of matched) {
+    if (!a.id) continue;
+    const up = a.upgradeDetails || null;
+    stmt.run(
+      a.id, a.name || null,
+      array ? (array.id || array.pure1Id || null) : null, array ? array.name || null : null,
+      (a.array && a.array.chassisSerialNumber) || null, (a.array && a.array.model) || null,
+      (a.array && a.array.version) || null, a.customerName || null,
+      a.activationDate ?? null, a.endOfLifeDate ?? null,
+      a.installAddress ? JSON.stringify(a.installAddress) : null,
+      (a.subscription && a.subscription.id) || null, (a.subscription && a.subscription.name) || null,
+      (a.license && a.license.id) || null, (a.license && a.license.name) || null,
+      up ? up.actionNeeded ?? null : null, up ? up.commitmentDate ?? null : null, up ? up.eligibilityDate ?? null : null,
+      a.asOf ?? null
+    );
+  }
+});
+
+const replaceContracts = db.transaction((contracts) => {
+  db.prepare('DELETE FROM pure1_support_contracts').run();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO pure1_support_contracts (resource_id, resource_name, fqdn, start_date_ms, end_date_ms, captured_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const c of contracts) {
+    if (!c.resourceId) continue;
+    stmt.run(c.resourceId, c.resourceName || null, c.fqdn || null, c.startDate ?? null, c.endDate ?? null);
+  }
+});
+
+const replaceSubscriptions = db.transaction((subs) => {
+  db.prepare('DELETE FROM pure1_subscriptions').run();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO pure1_subscriptions (subscription_id, name, initial_name, customer_name,
+      partner_name, service, service_tier, service_sla, status, start_date_ms, expiration_date_ms,
+      subscription_term, last_updated_ms, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const s of subs) {
+    if (!s.id) continue;
+    stmt.run(
+      s.id, s.name || null, s.initialName || null, s.customerName || null, s.partnerName || null,
+      s.service || null, s.serviceTier || null, s.serviceSla || null, s.status || null,
+      s.startDate ?? null, s.expirationDate ?? null, s.subscriptionTerm ?? null, s.lastUpdated ?? null
+    );
+  }
+});
+
+const replaceLicenses = db.transaction((licenses) => {
+  db.prepare('DELETE FROM pure1_subscription_licenses').run();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO pure1_subscription_licenses (license_id, name, subscription_id, subscription_name,
+      service_tier, start_date_ms, expiration_date_ms, last_updated_ms, site_address, resources, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+  for (const l of licenses) {
+    if (!l.id) continue;
+    stmt.run(
+      l.id, l.name || null, l.subscriptionId || null, l.subscriptionName || null, l.serviceTier || null,
+      l.startDate ?? null, l.expirationDate ?? null, l.lastUpdated ?? null,
+      l.siteAddress ? JSON.stringify(l.siteAddress) : null, JSON.stringify(l.resources || [])
+    );
+  }
+});
+
+/**
+ * Fetch and store the four lifecycle lists, each in its own try/catch so one
+ * failing endpoint keeps its last-good table and never blocks the others.
+ * `arrays` = [{ id, name, chassisSerial }] used to match assets to arrays.
+ */
+async function refreshLifecycle(arrays) {
+  const steps = [
+    ['subscription assets', () => pure1Api.fetchSubscriptionAssets(),
+      (items) => replaceAssets(matchAssetsToArrays(items, arrays))],
+    ['support contracts', () => pure1Api.fetchSupportContracts(), replaceContracts],
+    ['subscriptions', () => pure1Api.fetchSubscriptions(), replaceSubscriptions],
+    ['subscription licenses', () => pure1Api.fetchSubscriptionLicenses(), replaceLicenses],
+  ];
+  for (const [label, fetchFn, store] of steps) {
+    try {
+      store(await fetchFn());
+    } catch (err) {
+      logger.warn(`[Pure1Poller] Lifecycle ${label} fetch failed, keeping last-good: ${err.message}`);
+    }
+  }
+  const n = (sql) => db.prepare(sql).get().n;
+  logger.info(`[Pure1Poller] Lifecycle: ${n('SELECT COUNT(*) AS n FROM pure1_subscription_assets')} assets `
+    + `(${n('SELECT COUNT(*) AS n FROM pure1_subscription_assets WHERE pure1_array_id IS NOT NULL')} matched to arrays), `
+    + `${n('SELECT COUNT(*) AS n FROM pure1_support_contracts')} contracts, `
+    + `${n('SELECT COUNT(*) AS n FROM pure1_subscriptions')} subscriptions, `
+    + `${n('SELECT COUNT(*) AS n FROM pure1_subscription_licenses')} licenses`);
+}
 
 function appendSnapshot(rows, alerts) {
   const arraysWarn = rows.filter((r) => r._health === 'warn').length;
@@ -182,6 +287,12 @@ async function refreshAll() {
     logger.error('[Pure1Poller] Pods fetch failed, keeping last-good:', err.message);
   }
 
+  await refreshLifecycle(rows.filter((r) => r.id).map((r) => ({
+    id: r.id,
+    name: r.name,
+    chassisSerial: enrichment[r.id] ? enrichment[r.id].chassisSerial : null,
+  })));
+
   const rowsForSnapshot = rows.map((r) => ({ ...r, _health: enrichment[r.id] ? enrichment[r.id].health : null }));
   const priorPerf = new Map(db.prepare(`
     SELECT pure1_id, read_iops, write_iops, read_latency_us, write_latency_us,
@@ -248,4 +359,4 @@ function initPure1Poller() {
   return pure1Task;
 }
 
-module.exports = { initPure1Poller, refreshAll, pure1Task, metricsStaleness };
+module.exports = { initPure1Poller, refreshAll, pure1Task, metricsStaleness, matchAssetsToArrays, refreshLifecycle };

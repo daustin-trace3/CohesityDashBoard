@@ -71,6 +71,7 @@ const SEEDED_TABLES = [
   // pure
   'pure_arrays',
   'pure1_arrays', 'pure1_alerts', 'pure1_pods', 'pure1_metrics_history',
+  'pure1_subscription_assets', 'pure1_support_contracts', 'pure1_subscriptions', 'pure1_subscription_licenses',
   // zerto
   'zerto_vras', 'zerto_vms', 'zerto_alerts', 'zerto_vpgs', 'zerto_sites', 'zerto_metrics_history', 'zerto_licenses',
   // vcenter (children before the parent so FK deletes stay explicit)

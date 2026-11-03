@@ -75,7 +75,64 @@ function collectPureAlerts() {
         ...(type ? { type, typeLabel: type } : {}),
       };
     })
-    .concat(collectPure1StaleItems());
+    .concat(collectPure1StaleItems())
+    .concat(collectPure1LifecycleItems());
+}
+
+const PURE1_LIFECYCLE_TYPES = [
+  'pure1-hardware-eol',
+  'pure1-support-expiring',
+  'pure1-subscription-expiring',
+  'pure1-purity-eol',
+];
+
+const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+const daysPhrase = (days) => (days < 0 ? `${-days} days ago` : `${days} days left`);
+
+/** Lifecycle items per Pure1 array: hardware end of life, support contract,
+ *  subscription expiry and Purity code end of life. Evaluated from the same
+ *  tables as GET /api/pure1/governance (services/pure1Lifecycle.js). */
+function collectPure1LifecycleItems() {
+  let result;
+  try {
+    result = require('./pure1Lifecycle').evaluate(new Date());
+  } catch { return []; }
+  const items = [];
+  const nowIso = new Date().toISOString();
+  const first = result.asOf || nowIso;
+  const base = (a, sourceKey, severity, message, type) => ({
+    sourceKey: `${sourceKey}:${a.id}`,
+    severity,
+    host: a.name,
+    message,
+    firstSeen: first,
+    lastSeen: nowIso,
+    type,
+    typeLabel: type,
+  });
+  for (const a of result.arrays) {
+    const hw = a.hardware;
+    if (hw.state === 'past' || hw.state === 'approaching') {
+      items.push(base(a, 'pure1-hw-eol', hw.state === 'past' ? 'critical' : 'warning',
+        `Hardware end of life ${isoDay(hw.endOfLifeDate)} (${daysPhrase(hw.daysToEol)})`, 'pure1-hardware-eol'));
+    }
+    const c = a.contract;
+    if (c.state === 'expired' || c.state === 'expiring') {
+      items.push(base(a, 'pure1-contract', c.state === 'expired' ? 'critical' : 'warning',
+        `Support contract ${c.state === 'expired' ? 'ended' : 'ends'} ${isoDay(c.endDate)} (${daysPhrase(c.daysLeft)})`, 'pure1-support-expiring'));
+    }
+    const s = a.subscription;
+    if (s && (s.state === 'expired' || s.state === 'expiring')) {
+      items.push(base(a, 'pure1-subscription', s.state === 'expired' ? 'critical' : 'warning',
+        `Subscription ${s.name || s.id} ${s.state === 'expired' ? 'expired' : 'expires'} ${isoDay(s.expirationDate)} (${daysPhrase(s.daysLeft)})`, 'pure1-subscription-expiring'));
+    }
+    const p = a.purity;
+    if (p.phase === 'eol' || p.phase === 'approaching') {
+      items.push(base(a, 'pure1-purity', p.phase === 'eol' ? 'critical' : 'warning',
+        `Purity ${a.version} line ${p.line} end of development ${p.end_of_development} (${daysPhrase(p.days_to_eol)})`, 'pure1-purity-eol'));
+    }
+  }
+  return items;
 }
 
 /** One synthetic warning per Pure1 array that has gone quiet (no recent capacity
@@ -498,7 +555,8 @@ function pure1StaleCatalogRows() {
   try {
     const r = db.prepare("SELECT datetime(MIN(captured_at)) AS firstSeen, datetime(MAX(captured_at)) AS lastSeen FROM pure1_arrays").get();
     if (!r || !r.firstSeen) return [];
-    return [{ type: 'pure1-metrics-stale', firstSeen: r.firstSeen, lastSeen: r.lastSeen }];
+    return ['pure1-metrics-stale', ...PURE1_LIFECYCLE_TYPES]
+      .map((type) => ({ type, firstSeen: r.firstSeen, lastSeen: r.lastSeen }));
   } catch { return []; }
 }
 
