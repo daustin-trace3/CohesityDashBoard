@@ -67,40 +67,46 @@ function cohesitySummary() {
 }
 
 async function pureSummary() {
-  // The Pure platform's primary source is the Pure1 SaaS fleet (cached in
-  // pure1Api per its TTL — no extra cloud calls per page load); the direct
-  // pure_* tables only cover locally registered arrays and are the fallback.
-  const pure1 = require('../services/pure1Api');
+  // Reads the rows the Pure1 poller stores (pure1_arrays, pure1_alerts) and
+  // never calls Pure1 from a page load: on the CG box the cloud round trip
+  // inside this summarizer took 7 to 16 s every cache expiry and stalled every
+  // other request on the single Node thread (2026-11-06). The direct pure_*
+  // tables are the fallback when no fleet row exists.
   const directArrays = count('SELECT COUNT(*) c FROM pure_arrays');
   const volumes = countSafe('SELECT COUNT(*) c FROM pure_volumes');
   const hosts = countSafe('SELECT COUNT(*) c FROM pure_hosts');
   const exceptions = [];
   let arrays = directArrays;
   let headline = null;
-  if (pure1.isConfigured()) {
-    try {
-      const [fleet, alerts] = await Promise.all([pure1.getOverview(), pure1.getAlerts()]);
-      arrays = Math.max(fleet.length, directArrays);
-      const sev = { critical: 0, warning: 0 };
-      for (const a of alerts || []) {
-        const s = String(a.severity || '').toLowerCase();
-        if (s === 'critical') sev.critical += 1;
-        else if (s === 'warning') sev.warning += 1;
-      }
-      if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical alert${sev.critical === 1 ? '' : 's'}`, '/pure/alerts'));
-      if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} open warning${sev.warning === 1 ? '' : 's'}`, '/pure/alerts'));
-      const now = Date.now();
-      const notReporting = fleet.filter((a) => !a.capturedAt || (now - a.capturedAt) > 3 * 86400000).length;
-      if (notReporting) exceptions.push(exception('warning', notReporting, `${fnum(notReporting)} array${notReporting === 1 ? '' : 's'} not reporting to Pure1`, '/pure'));
-      const nearFull = fleet.filter((a) => a.pctUsed != null && a.pctUsed >= 90).length;
-      if (nearFull) exceptions.push(exception('warning', nearFull, `${fnum(nearFull)} array${nearFull === 1 ? '' : 's'} ≥ 90% used`, '/pure/capacity'));
-      const total = fleet.reduce((s, a) => s + (a.total || 0), 0);
-      const used = fleet.reduce((s, a) => s + (a.used || 0), 0);
-      headline = [
-        { label: 'Arrays', value: arrays },
-        { label: 'Capacity Used', value: total > 0 ? `${Math.round((used / total) * 100)}%` : '—' },
-      ];
-    } catch { /* Pure1 unreachable — fall back to the direct tables below */ }
+  let fleet = [];
+  try { fleet = all('SELECT capacity_bytes, used_bytes, metrics_captured_at, captured_at FROM pure1_arrays'); } catch { fleet = []; }
+  if (fleet.length) {
+    arrays = Math.max(fleet.length, directArrays);
+    const sev = { critical: 0, warning: 0 };
+    let alertRows = [];
+    try { alertRows = all("SELECT severity, COUNT(*) c FROM pure1_alerts WHERE state IS NULL OR LOWER(state) <> 'closed' GROUP BY severity"); } catch { alertRows = []; }
+    for (const r of alertRows) {
+      const s = String(r.severity || '').toLowerCase();
+      if (s === 'critical') sev.critical += num(r.c);
+      else if (s === 'warning') sev.warning += num(r.c);
+    }
+    if (sev.critical) exceptions.push(exception('critical', sev.critical, `${fnum(sev.critical)} critical alert${sev.critical === 1 ? '' : 's'}`, '/pure/alerts'));
+    if (sev.warning) exceptions.push(exception('warning', sev.warning, `${fnum(sev.warning)} open warning${sev.warning === 1 ? '' : 's'}`, '/pure/alerts'));
+    const now = Date.now();
+    const stampOf = (a) => {
+      const t = Date.parse(a.metrics_captured_at || '') || Date.parse(a.captured_at ? `${String(a.captured_at).replace(' ', 'T')}Z` : '');
+      return Number.isFinite(t) ? t : NaN;
+    };
+    const notReporting = fleet.filter((a) => { const t = stampOf(a); return !Number.isFinite(t) || (now - t) > 3 * 86400000; }).length;
+    if (notReporting) exceptions.push(exception('warning', notReporting, `${fnum(notReporting)} array${notReporting === 1 ? '' : 's'} not reporting to Pure1`, '/pure'));
+    const nearFull = fleet.filter((a) => num(a.capacity_bytes) > 0 && num(a.used_bytes) / num(a.capacity_bytes) >= 0.9).length;
+    if (nearFull) exceptions.push(exception('warning', nearFull, `${fnum(nearFull)} array${nearFull === 1 ? '' : 's'} >= 90% used`, '/pure/capacity'));
+    const total = fleet.reduce((s, a) => s + num(a.capacity_bytes), 0);
+    const used = fleet.reduce((s, a) => s + num(a.used_bytes), 0);
+    headline = [
+      { label: 'Arrays', value: arrays },
+      { label: 'Capacity Used', value: total > 0 ? `${Math.round((used / total) * 100)}%` : '-' },
+    ];
   }
   if (!headline) {
     const sev = {};

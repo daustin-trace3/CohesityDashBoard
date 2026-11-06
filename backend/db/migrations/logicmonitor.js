@@ -1002,4 +1002,16 @@ module.exports = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_lm_ds_metrics_family ON lm_ds_metrics(family, source_id, lm_device_id)');
     },
   },
+  {
+    // History reads keyed by metric (counter rates, the wireless client trend) and by
+    // device plus metric (the per-device metric windows) had no usable index: the only
+    // index starts with source_id, lm_device_id, hds_id, instance_key, so a metric
+    // filter scanned the whole history table (3.6 s and 1.8 s on the CG box per Cisco
+    // overview, 1.1 s over 28 per-device windows).
+    version: 16,
+    up(db) {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lm_ds_hist_metric ON lm_ds_metrics_history(metric, sampled_at_epoch)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lm_ds_hist_dev_metric ON lm_ds_metrics_history(source_id, lm_device_id, metric, sampled_at_epoch)');
+    },
+  },
 ];
