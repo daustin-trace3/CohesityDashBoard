@@ -1,4 +1,5 @@
 const express = require('express');
+const logger = require('../utils/logger');
 const db = require('../db/database');
 const registry = require('../core/registry');
 const { getSetting } = require('../services/settings');
@@ -442,6 +443,11 @@ const SEV_RANK = { critical: 0, warning: 1, info: 2 };
 
 router.get('/summary', async (req, res) => {
   const cards = [];
+  // Per-platform wall time: a slow summary blocks the single Node thread for
+  // every other request, so the log names the platform when the whole takes over 1 s.
+  const t0 = Date.now();
+  const timings = [];
+  const timed = async (id, fn) => { const s = Date.now(); try { return await fn(); } finally { timings.push(`${id} ${Date.now() - s}`); } };
   for (const p of PLATFORMS) {
     // Cohesity is always-on (enabled iff clusters exist — its summarizer
     // returns null when there are none); registry drives the rest.
@@ -449,7 +455,7 @@ router.get('/summary', async (req, res) => {
     if (!registry.isPresent(p.id)) continue;
     const base = { id: p.id, label: p.label, color: p.color, route: p.route };
     try {
-      const s = await p.fn();
+      const s = await timed(p.id, p.fn);
       if (!s) continue;
       // Zero objects with nothing wrong means no source is connected yet —
       // report 'unknown' (NO DATA) rather than a hollow green.
@@ -471,6 +477,8 @@ router.get('/summary', async (req, res) => {
     critical: cards.flatMap((c) => c.exceptions).filter((e) => e.severity === 'critical').reduce((s, e) => s + num(e.count), 0),
     warning: cards.flatMap((c) => c.exceptions).filter((e) => e.severity === 'warning').reduce((s, e) => s + num(e.count), 0),
   };
+  const total = Date.now() - t0;
+  if (total > 1000) logger.warn(`[ops] summary ${total} ms: ${timings.sort((a, b) => Number(b.split(' ')[1]) - Number(a.split(' ')[1])).join(' ms, ')} ms`);
   res.json({ generatedAt: new Date().toISOString(), platforms: cards, attention, totals });
 });
 
