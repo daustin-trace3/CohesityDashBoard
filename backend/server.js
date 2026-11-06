@@ -4,6 +4,7 @@ const logger = require('./utils/logger');
 const registry = require('./core/registry');
 const pluginBoot = require('./services/pluginBoot');
 const { createApp } = require('./app');
+require('./core/sqlProfile').install(require('./utils/logger'));
 const { initPoller } = require('./services/poller');
 const { initAlertNotifier } = require('./services/alertNotifier');
 const { initServiceStatus } = require('./services/serviceStatus');

@@ -50,6 +50,7 @@ const requireLicense = require('./middleware/license');
 const errorHandler = require('./middleware/errorHandler');
 const deprecated = require('./middleware/deprecatedAlias');
 const demoWriteGuard = require('./middleware/demoWriteGuard');
+const { requestTiming } = require('./middleware/requestTiming');
 const lmWebhook = require('./routes/logicmonitorWebhook');
 
 /** cohesity:<name>:view|manage — same permission for a mount and its deprecated alias (contract C8.6). */
@@ -115,6 +116,10 @@ function createApp({ licenseGate = requireLicense } = {}) {
   app.use('/api', limiter);
 
   app.use(express.json({ limit: '1mb' }));
+
+  // Slow request log (ICC_SLOW_REQUEST_MS, default 1500) with the heaviest SQL
+  // statements when ICC_SQL_PROFILE=1. See middleware/requestTiming.js.
+  app.use('/api', requestTiming);
 
   // LogicMonitor alert webhook: LogicMonitor cannot hold a session, so this one
   // route authenticates itself (token header, constant-time compare) and has
