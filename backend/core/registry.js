@@ -1,6 +1,7 @@
 // Plugin registry + request dispatcher (contract C4).
 const { buildCoreApi } = require('./coreApi');
 const { runMigrations } = require('./migrations');
+const { memoByDbState } = require('./dbMemo');
 
 const PLUGIN_API_VERSION = 1;
 
@@ -24,6 +25,9 @@ let isEntitledOverride = null;
  *  module is built in a parallel work package and may not exist yet). */
 function defaultIsEntitled(id) {
   if (id === 'cohesity') return true;
+  // A derived platform is entitled with the platform that owns its connector.
+  const derivedFrom = plugins.get(id)?.manifest?.derivedFrom;
+  if (derivedFrom && derivedFrom !== id) return defaultIsEntitled(derivedFrom);
   let getEntitlements;
   try {
     ({ getEntitlements } = require('../services/license'));
@@ -76,6 +80,35 @@ function validateManifest(manifest) {
   }
   if (typeof createRouter !== 'function') {
     throw new Error(`plugin '${id}': manifest.createRouter must be a function`);
+  }
+  validateDerived(manifest);
+}
+
+/** Derived platforms (derivedFrom + vendorKeys): fed by a connector, no
+ *  poller of their own. The connector must already be registered
+ *  (core/feeds.js) and each vendor key belongs to one platform only. */
+function validateDerived(manifest) {
+  const { id, derivedFrom, vendorKeys } = manifest;
+  if (derivedFrom === undefined && vendorKeys === undefined) return;
+  if (typeof derivedFrom !== 'string' || !derivedFrom) {
+    throw new Error(`plugin '${id}': manifest.derivedFrom must name a connector when vendorKeys is set`);
+  }
+  if (!require('./feeds').hasConnector(derivedFrom)) {
+    throw new Error(`plugin '${id}': derivedFrom connector '${derivedFrom}' is not registered`);
+  }
+  if (!Array.isArray(vendorKeys) || !vendorKeys.length || vendorKeys.some((k) => typeof k !== 'string' || !k)) {
+    throw new Error(`plugin '${id}': manifest.vendorKeys must be a non-empty array of strings`);
+  }
+  if (new Set(vendorKeys).size !== vendorKeys.length) {
+    throw new Error(`plugin '${id}': manifest.vendorKeys lists a key twice`);
+  }
+  for (const other of plugins.values()) {
+    const taken = Array.isArray(other.manifest.vendorKeys) ? other.manifest.vendorKeys : [];
+    const clash = vendorKeys.find((k) => taken.includes(k));
+    if (clash) throw new Error(`plugin '${id}': vendor key '${clash}' is already claimed by '${other.id}'`);
+  }
+  if (typeof manifest.presence !== 'function') {
+    throw new Error(`plugin '${id}': a derived platform needs manifest.presence(coreApi)`);
   }
 }
 
@@ -156,6 +189,8 @@ function toPublic(entry) {
     entitled: isEntitled(entry.id),
     version: entry.manifest.version || null,
     color: entry.manifest.color || null,
+    derived: !!entry.manifest.derivedFrom,
+    derivedFrom: entry.manifest.derivedFrom || null,
   };
 }
 
@@ -196,7 +231,7 @@ function listPlugins() {
  */
 function getServer360Providers() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.server360 === 'function')
+    .filter((e) => liveEntry(e) && typeof e.manifest.server360 === 'function')
     .map((e) => ({
       id: e.id,
       name: e.manifest.name,
@@ -215,7 +250,7 @@ function getServer360Providers() {
  */
 function getTopologyProviders() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.topology === 'function')
+    .filter((e) => liveEntry(e) && typeof e.manifest.topology === 'function')
     .map((e) => ({
       id: e.id,
       name: e.manifest.name,
@@ -233,13 +268,13 @@ function getTopologyProviders() {
  */
 function getIncidentEvidenceProviders() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.incidentEvidence === 'function')
+    .filter((e) => liveEntry(e) && typeof e.manifest.incidentEvidence === 'function')
     .map((e) => ({ id: e.id, name: e.manifest.name, run: (ctx) => e.manifest.incidentEvidence(coreApiRef, ctx) }));
 }
 
 function getSiteProviders() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && typeof e.manifest.siteOf === 'function')
+    .filter((e) => liveEntry(e) && typeof e.manifest.siteOf === 'function')
     .map((e) => ({ id: e.id, name: e.manifest.name, run: (ctx) => e.manifest.siteOf(coreApiRef, ctx) }));
 }
 
@@ -258,7 +293,7 @@ function setEnabled(id, enabled) {
  *  (manifest.agentProfile, partial allowed). */
 function getAgentProfileProviders() {
   return Array.from(plugins.values())
-    .filter((e) => e.manifest && e.manifest.agentProfile && typeof e.manifest.agentProfile === 'object')
+    .filter((e) => liveEntry(e) && e.manifest && e.manifest.agentProfile && typeof e.manifest.agentProfile === 'object')
     .map((e) => ({ id: e.id, profile: e.manifest.agentProfile }));
 }
 
@@ -267,7 +302,7 @@ function getAgentProfileProviders() {
  *  The agent namespaces their ids by pack id. */
 function getAgentCapabilityProviders() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && Array.isArray(e.manifest.agentCapabilities) && e.manifest.agentCapabilities.length)
+    .filter((e) => liveEntry(e) && Array.isArray(e.manifest.agentCapabilities) && e.manifest.agentCapabilities.length)
     .map((e) => ({ id: e.id, name: e.manifest.name, capabilities: e.manifest.agentCapabilities }));
 }
 
@@ -276,8 +311,71 @@ function getAgentCapabilityProviders() {
  *  The engine namespaces their ids by pack id. */
 function getAgentObserverProviders() {
   return Array.from(plugins.values())
-    .filter((e) => e.enabled && e.status !== 'error' && Array.isArray(e.manifest.agentObservers) && e.manifest.agentObservers.length)
+    .filter((e) => liveEntry(e) && Array.isArray(e.manifest.agentObservers) && e.manifest.agentObservers.length)
     .map((e) => ({ id: e.id, name: e.manifest.name, observers: e.manifest.agentObservers }));
+}
+
+/** Derived platforms (manifest.derivedFrom): fed by a connector through
+ *  core/feeds.js, no poller of their own. */
+function isDerived(id) {
+  const entry = plugins.get(id);
+  return !!(entry && entry.manifest.derivedFrom);
+}
+
+/** Matched device count of a derived platform, from manifest.presence(coreApi).
+ *  Memoized per database state; 0 on any throw so a broken feed hides the
+ *  platform instead of breaking a request. */
+function presenceOf(id) {
+  const entry = plugins.get(id);
+  if (!entry || !entry.manifest.derivedFrom || typeof entry.manifest.presence !== 'function') return 0;
+  try {
+    const db = (coreApiRef && coreApiRef.db) || require('../db/database');
+    const n = memoByDbState(db, `presence:${id}`, () => Number(entry.manifest.presence(coreApiRef)) || 0);
+    return n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** True for every platform that is not derived, and for a derived platform
+ *  with at least one matched device. */
+function isPresent(id) {
+  if (!isDerived(id)) return true;
+  const from = plugins.get(id).manifest.derivedFrom;
+  if (plugins.has(from) && !plugins.get(from).enabled) return false;
+  return presenceOf(id) > 0;
+}
+
+/** Enabled, loaded without error and (derived) present. */
+function liveEntry(e) {
+  return e.enabled && e.status !== 'error' && isPresent(e.id);
+}
+
+/** The derived platform that claims a connector vendor key, or null. */
+function derivedPlatformFor(vendorKey) {
+  for (const e of plugins.values()) {
+    if (!Array.isArray(e.manifest.vendorKeys) || !e.manifest.vendorKeys.includes(vendorKey)) continue;
+    if (e.status === 'active' && e.enabled && isPresent(e.id)) return e.id;
+  }
+  return null;
+}
+
+/** Every derived platform with its state (settings and Platforms admin rows). */
+function listDerived() {
+  return Array.from(plugins.values())
+    .filter((e) => e.manifest.derivedFrom)
+    .map((e) => {
+      const matched = presenceOf(e.id);
+      return {
+        id: e.id,
+        label: e.manifest.name,
+        derivedFrom: e.manifest.derivedFrom,
+        vendorKeys: Array.isArray(e.manifest.vendorKeys) ? e.manifest.vendorKeys.slice() : [],
+        enabled: e.enabled && e.status !== 'error',
+        present: matched > 0,
+        matchedDevices: matched,
+      };
+    });
 }
 
 /** Express middleware mounted at `/api/:pluginId`. */
@@ -285,6 +383,9 @@ function dispatch(req, res, next) {
   const entry = plugins.get(req.params.pluginId);
   if (!entry) return next();
   if (!entry.enabled) return res.status(404).json({ error: 'platform_disabled' });
+  if (isDerived(entry.id) && !isPresent(entry.id)) {
+    return res.status(404).json({ error: 'platform_absent', derivedFrom: entry.manifest.derivedFrom });
+  }
   if (entry.status === 'error') return res.status(503).json({ error: 'platform_error' });
   return entry.router(req, res, next);
 }
@@ -300,6 +401,11 @@ function _reset() {
 module.exports = {
   PLUGIN_API_VERSION,
   RESERVED_IDS,
+  isDerived,
+  isPresent,
+  presenceOf,
+  derivedPlatformFor,
+  listDerived,
   init,
   registerPlugin,
   getPlugin,

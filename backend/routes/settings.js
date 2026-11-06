@@ -7,6 +7,16 @@ const registry = require('../core/registry');
 
 const router = express.Router();
 
+/** Derived platforms (fed by a connector) for the rail, Platforms admin and
+ *  Layout: { id, label, derivedFrom, enabled, present, matchedDevices }. */
+function derivedPlatformRows() {
+  try {
+    return registry.listDerived().map((d) => ({
+      id: d.id, label: d.label, derivedFrom: d.derivedFrom, enabled: d.enabled, present: d.present, matchedDevices: d.matchedDevices,
+    }));
+  } catch { return []; }
+}
+
 const ENCRYPTION_VALUES = new Set(['none', 'starttls', 'tls']);
 const AUTH_METHOD_VALUES = new Set(['none', 'login']);
 const SEVERITY_VALUES = new Set(['info', 'warning', 'critical']);
@@ -113,6 +123,7 @@ router.get('/', (req, res, next) => {
     res.json({
       ...getAiSettings(), ...getLicenseSettings(), ...getPlatformSettings(), ...getServiceStatusSettings(),
       opsAgent: getOpsAgentSettings(),
+      derivedPlatforms: derivedPlatformRows(),
       iccBaseUrl: getSetting('icc_base_url') || '',
       pollerWatchdogEmailEnabled: getSetting('poller_watchdog_email_enabled') === '1',
       pollerWatchdogRecipients: getSetting('poller_watchdog_recipients') || '',
@@ -129,7 +140,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, platformF5Enabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -236,6 +247,11 @@ router.put('/', (req, res, next) => {
     if (platformLogicmonitorEnabled !== undefined) {
       setSetting('platform_logicmonitor_enabled', platformLogicmonitorEnabled ? '1' : '0');
       applyPlatformEnabled('logicmonitor', !!platformLogicmonitorEnabled);
+    }
+    if (platformF5Enabled !== undefined) {
+      // Derived platform: not in the last-platform guard above (it follows its connector).
+      setSetting('platform_f5_enabled', platformF5Enabled ? '1' : '0');
+      applyPlatformEnabled('f5', !!platformF5Enabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));

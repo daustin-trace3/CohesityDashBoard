@@ -11,6 +11,7 @@ function errorMessage(err, fallback) {
 }
 
 function SourceBadge({ source }) {
+  if (source === 'derived') return <Badge tone="neutral">Derived</Badge>;
   return <Badge tone={source === 'builtin' ? 'neutral' : 'brand'}>{source === 'builtin' ? 'Built-in' : 'Installed'}</Badge>;
 }
 
@@ -237,8 +238,18 @@ export default function AdminPluginsPage() {
             <tbody>
               {[...plugins].sort((a, b) => (a.source === b.source ? a.name.localeCompare(b.name) : a.source === 'builtin' ? -1 : 1)).map(p => (
                 <Fragment key={p.id}>
-                  <tr className="border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50">
-                    <td className="px-3 py-2 text-ink font-medium">{p.name}</td>
+                  <tr className={`border-b border-cohesity-border/50 last:border-0 hover:bg-surface-overlay/50 ${p.derived && p.present === false ? 'opacity-60' : ''}`}>
+                    <td className="px-3 py-2 text-ink font-medium">
+                      {p.name}
+                      {p.derived && (
+                        <span className="ml-2 inline-flex items-center gap-1.5 align-middle font-normal">
+                          <Badge tone="info">{`Derived from ${p.derivedFrom === 'logicmonitor' ? 'LogicMonitor' : (p.derivedFrom || 'a connector')}`}</Badge>
+                          <span className="text-[11px] text-ink-muted tnum">
+                            {p.present === false ? 'No matching devices' : `${p.matchedDevices ?? 0} device${p.matchedDevices === 1 ? '' : 's'}`}
+                          </span>
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-ink-muted font-mono">{p.id}</td>
                     <td className="px-3 py-2 text-ink-muted tnum">{p.version || '—'}</td>
                     <td className="px-3 py-2"><SourceBadge source={p.source} /></td>

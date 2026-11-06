@@ -14,6 +14,7 @@ const { decrypt } = require('./encryption');
 const logger = require('../utils/logger');
 // icc-phase1: single tenant, one plain Map for the install (keeps the _map() accessor feat's TenantMap has).
 const tenantMap = () => { const m = new Map(); m._map = () => m; return m; };
+const lmVendors = require('./logicmonitorVendors');
 
 const PAGE_SIZE = 1000;
 const ALERT_OFFSET_CAP = 10000;
@@ -463,7 +464,10 @@ function classifyVendor({ sysoid, categories, sysinfo } = {}) {
   return null;
 }
 
-function classifyRole({ ert, categories, vendor } = {}) {
+function classifyRole({ ert, categories, vendor, sysoid, sysinfo, model } = {}) {
+  // Derived platforms round 1: an F5OS rSeries/VELOS unit (enterprise 12276 or banner text) is a load balancer
+  // whatever ERT or topology category rides along (CG: 4 units read as switches).
+  if (lmVendors.isF5os({ sysoid, sysinfo, model })) return 'load-balancer';
   if (ert) {
     const hit = ERT_ROLES.find(([re]) => re.test(String(ert).trim()));
     if (hit) return hit[1];
@@ -576,7 +580,12 @@ function normalizeDevice(d) {
   const ert = findProp(all, 'predef.externalResourceType', 'predef.externalresourcetype');
   const eriRaw = findProp(all, 'predef.externalResourceID', 'predef.externalresourceid');
   const vendor = classifyVendor({ sysoid, categories, sysinfo });
-  const role = classifyRole({ ert, categories, vendor });
+  const model = findProp(all, 'auto.endpoint.model', 'auto.model', 'system.model', 'auto.cisco.model', 'auto.f5.model');
+  const role = classifyRole({ ert, categories, vendor, sysoid, sysinfo, model });
+  // Derived platforms round 1: ICC's own vendor key and kind (migration v14). The DataSource-name rules run in
+  // the poller's post-store pass once the device's DataSources are stored.
+  const vk = lmVendors.classifyVendorKey({ sysoid, categories, sysinfo, model, name: strOrNull(d.displayName) || strOrNull(d.name) });
+  const vendorKind = vk.key ? lmVendors.classifyVendorKind({ key: vk.key, role, categories, model, sysinfo, sysoid, name: strOrNull(d.displayName) || strOrNull(d.name) }) : null;
   const deviceType = numOrNull(d.deviceType);
   const ipsRaw = findProp(all, 'system.ips');
   const ips = ipsRaw ? String(ipsRaw).split(/[,\s]+/).map((x) => x.trim()).filter(Boolean) : [];
@@ -608,8 +617,11 @@ function normalizeDevice(d) {
     sysname: findProp(all, 'system.sysname'),
     hostname: findProp(all, 'system.hostname'),
     // system.model and system.manufacturer are UNVERIFIED names; auto.* first.
-    model: findProp(all, 'auto.endpoint.model', 'auto.model', 'system.model', 'auto.cisco.model', 'auto.f5.model'),
+    model,
     vendor,
+    vendorKey: vk.key,
+    vendorKind,
+    vendorReason: vk.reason,
     role,
     isNetwork: isNetworkDevice({ deviceType, role }) ? 1 : 0,
     categories: categories || null,
@@ -1118,7 +1130,7 @@ async function testConnection(candidate) {
 module.exports = {
   // constants and tables
   PAGE_SIZE, ALERT_OFFSET_CAP, CREDS_REJECTED,
-  SYSOID_VENDORS, CATEGORY_VENDORS, CATEGORY_ROLES, ERT_ROLES, SWITCH_VENDORS, NETWORK_ROLES, ROLES,
+  SYSOID_VENDORS, CATEGORY_VENDORS, SYSINFO_VENDORS, CATEGORY_ROLES, ERT_ROLES, SWITCH_VENDORS, NETWORK_ROLES, ROLES,
   VERSION_PATTERNS, INTERFACE_DATASOURCES, UPTIME_DATASOURCES, NEIGHBOR_DATASOURCES, HEALTH_DATASOURCES,
   // helpers
   numOrNull, strOrNull, boolInt, safeArr, jsonOrNull, propsToMap, stripIdSuffix, toEpochSeconds,

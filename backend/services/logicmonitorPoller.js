@@ -25,6 +25,7 @@ const lmGrammar = require('./logicmonitorGrammar');
 const lmMetrics = require('./logicmonitorMetrics');
 const lmWatch = require('./logicmonitorWatch');
 const lmCircuits = require('./logicmonitorCircuits');
+const lmVendors = require('./logicmonitorVendors');
 const { isDemo } = require('./demoMode');
 const logger = require('../utils/logger');
 
@@ -129,9 +130,9 @@ const storeDevices = db.transaction((sourceId, rows) => {
       alert_status, alert_status_priority, sdt_status, alert_disable_status, disable_alerting, group_ids_json,
       collector_id, preferred_collector_id, collector_description, enable_netflow, uptime_seconds, created_epoch,
       updated_epoch, deleted_time_ms, sysinfo, sysoid, sysname, hostname, model, vendor, role, is_network, categories,
-      ips_json, version, serial, eri_json, ert, system_props_json, auto_props_json, custom_props_json, dead_since,
-      stale, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      ips_json, version, serial, eri_json, ert, system_props_json, auto_props_json, custom_props_json,
+      vendor_key, vendor_kind, vendor_reason, dead_since, stale, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
       CASE WHEN ? = 'dead' THEN datetime('now') ELSE NULL END, 0, datetime('now'))
     ON CONFLICT(source_id, lm_device_id) DO UPDATE SET
       name = excluded.name, display_name = excluded.display_name, description = excluded.description,
@@ -148,6 +149,15 @@ const storeDevices = db.transaction((sourceId, rows) => {
       ips_json = excluded.ips_json, version = excluded.version, serial = excluded.serial, eri_json = excluded.eri_json,
       ert = excluded.ert, system_props_json = excluded.system_props_json, auto_props_json = excluded.auto_props_json,
       custom_props_json = excluded.custom_props_json,
+      -- Derived platforms: a key or kind the DataSource pass (applyDatasourceVendors) set is kept while the
+      -- classifier has nothing stronger, so a tick does not blank it and make the pass rewrite every row.
+      vendor_key = CASE WHEN lm_devices.vendor_reason LIKE 'datasource:%' AND (excluded.vendor_key IS NULL OR excluded.vendor_key = 'netsnmp')
+        THEN lm_devices.vendor_key ELSE excluded.vendor_key END,
+      vendor_reason = CASE WHEN lm_devices.vendor_reason LIKE 'datasource:%' AND (excluded.vendor_key IS NULL OR excluded.vendor_key = 'netsnmp')
+        THEN lm_devices.vendor_reason ELSE excluded.vendor_reason END,
+      vendor_kind = CASE WHEN (lm_devices.vendor_reason LIKE 'datasource:%' AND (excluded.vendor_key IS NULL OR excluded.vendor_key = 'netsnmp'))
+        OR (excluded.vendor_key IS lm_devices.vendor_key AND lm_devices.vendor_kind IN ('gtm', 'ise', 'voice', 'zpa'))
+        THEN lm_devices.vendor_kind ELSE excluded.vendor_kind END,
       dead_since = CASE WHEN excluded.host_status = 'dead' THEN COALESCE(lm_devices.dead_since, datetime('now')) ELSE NULL END,
       stale = 0, updated_at = datetime('now')
   `);
@@ -160,7 +170,8 @@ const storeDevices = db.transaction((sourceId, rows) => {
       d.collectorId, d.preferredCollectorId, d.collectorDescription, d.enableNetflow, d.uptimeSeconds, d.createdEpoch,
       d.updatedEpoch, d.deletedTimeMs, d.sysinfo, d.sysoid, d.sysname, d.hostname, d.model, d.vendor, d.role,
       d.isNetwork, d.categories, JSON.stringify(d.ips || []), d.version, d.serial, jsonOrNull(d.eri), d.ert,
-      jsonOrNull(d.systemProps), jsonOrNull(d.autoProps), jsonOrNull(d.customProps), d.hostStatus);
+      jsonOrNull(d.systemProps), jsonOrNull(d.autoProps), jsonOrNull(d.customProps),
+      d.vendorKey || null, d.vendorKind || null, d.vendorReason || null, d.hostStatus);
   }
   markStale('lm_devices', 'lm_device_id', sourceId, ids);
 });
@@ -1329,6 +1340,12 @@ async function pollSource(source) {
       const freshRes = await trySection('newDeviceRefresh', () => refreshDevices(source, fresh));
       note('newDeviceRefresh', freshRes);
     }
+
+    // Derived platforms: vendor keys and kinds that need the DataSource names just stored (writes only changed rows).
+    try {
+      const v = lmVendors.applyDatasourceVendors(db, source.id);
+      if (v.changed) logger.info(`[LmPoller] ${source.name}: vendor keys updated on ${v.changed} of ${v.checked} device(s)`);
+    } catch (err) { logger.warn(`[LmPoller] vendor keys failed: ${err.message}`); }
 
     const checkDataRes = await trySection('checkData', () => pollCheckData(source));
     if (checkDataRes.ok ? checkDataRes.data.calls > 0 : true) note('checkData', checkDataRes);

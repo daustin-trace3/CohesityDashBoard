@@ -26,6 +26,14 @@ const ariaopsManifest = require('./platforms/ariaops');
 const brocadeManifest = require('./platforms/brocade');
 const logicmonitorManifest = require('./platforms/logicmonitor');
 
+// Connectors and derived platforms (round 1). Guarded requires so boot works
+// while a piece is missing; each failure logs one warning.
+const feeds = require('./core/feeds');
+let logicmonitorConnector = null;
+try { logicmonitorConnector = require('./connectors/logicmonitor'); } catch (err) { logger.warn(`[connectors] logicmonitor connector not loaded: ${err.message}`); }
+let f5Manifest = null;
+try { f5Manifest = require('./platforms/f5'); } catch (err) { logger.warn(`[platforms] f5 platform not loaded: ${err.message}`); }
+
 // Auth boot work (contract C8.3): prune stale sessions and (re-)check the
 // first-run claim token. authService already runs this once at module load
 // (imported transitively via ./app -> routes/auth.js), but calling it again
@@ -41,7 +49,14 @@ registry.init();
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
 // (C9.5) gates enabling regardless of the stored flag.
-const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled } = getPlatformSettings();
+const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, platformF5Enabled } = getPlatformSettings();
+// The LogicMonitor connector registers its feeds before any platform manifest,
+// whether LogicMonitor itself runs as the built-in or as an installed pack.
+if (logicmonitorConnector && !feeds.hasConnector('logicmonitor')) {
+  try {
+    feeds.registerConnector('logicmonitor', { name: 'LogicMonitor', register: logicmonitorConnector.register });
+  } catch (err) { logger.warn(`[connectors] logicmonitor connector failed to register: ${err.message}`); }
+}
 registry.registerPlugin(pureManifest);
 registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
 registry.registerPlugin(netappManifest);
@@ -60,6 +75,12 @@ registry.registerPlugin(brocadeManifest);
 registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
 registry.registerPlugin(logicmonitorManifest);
 registry.setEnabled('logicmonitor', platformLogicmonitorEnabled && registry.isEntitled('logicmonitor'));
+if (f5Manifest) {
+  try {
+    registry.registerPlugin(f5Manifest);
+    registry.setEnabled('f5', platformF5Enabled && registry.isEntitled('f5'));
+  } catch (err) { logger.warn(`[platforms] f5 platform failed to register: ${err.message}`); }
+}
 
 // Scan and register any installed (non-built-in) plugins left in plugins/
 // after the boot swap above.

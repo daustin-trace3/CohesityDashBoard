@@ -75,6 +75,13 @@ describe('migrations/logicmonitor.js', () => {
     expect(views).toEqual(['logicmonitor_alerts', 'logicmonitor_checks', 'logicmonitor_devices', 'logicmonitor_interfaces']);
   });
 
+  it('v14 adds vendor_key, vendor_kind, vendor_reason and the vendor_key index to lm_devices', () => {
+    const cols = db.prepare("PRAGMA table_info('lm_devices')").all().map((c) => c.name);
+    for (const c of ['vendor_key', 'vendor_kind', 'vendor_reason']) expect(cols).toContain(c);
+    const idx = db.prepare("PRAGMA index_info('idx_lm_devices_vendor_key')").all().map((c) => c.name);
+    expect(idx).toEqual(['vendor_key', 'stale']);
+  });
+
   it('the manifest loads and passes registry shape rules', () => {
     const manifest = require('../platforms/logicmonitor');
     expect(manifest.id).toBe('logicmonitor');

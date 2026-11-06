@@ -61,7 +61,7 @@ const navGroups = [
       { label: 'Interfaces', route: `${B}/interfaces`, icon: Cable, isActive: under(`${B}/interfaces`) },
       { label: 'Circuits', route: `${B}/circuits`, icon: Waypoints, isActive: under(`${B}/circuits`) },
       { label: 'Firewalls', route: `${B}/firewalls`, icon: BrickWall, isActive: under(`${B}/firewalls`), requiresFamily: 'firewall' },
-      { label: 'Load Balancers', route: `${B}/load-balancers`, icon: Split, isActive: under(`${B}/load-balancers`), requiresFamily: 'loadbalancer' },
+      { label: 'Load Balancers', route: `${B}/load-balancers`, icon: Split, isActive: under(`${B}/load-balancers`), requiresFamily: 'loadbalancer', hiddenWhenPlatform: 'f5' },
     ],
   },
   {

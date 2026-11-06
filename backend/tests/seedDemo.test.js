@@ -708,6 +708,11 @@ describe('seedDemo.js', () => {
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE host_status = 'dead' AND is_network = 1")).toBe(7);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor = 'Cisco' AND role = 'switch' AND version = '17.6.5'")).toBe(4);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE sdt_status != 'none-none-none'")).toBe(5);
+    // Derived platforms round 1: every demo load balancer carries the F5 vendor key and a BIG-IP family kind.
+    const lbCount = c("SELECT COUNT(*) c FROM lm_devices WHERE role = 'load-balancer'");
+    expect(lbCount).toBeGreaterThan(0);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'f5'")).toBe(lbCount);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'f5' AND vendor_kind IN ('bigip','gtm','f5os')")).toBe(lbCount);
     expect(c('SELECT COUNT(*) c FROM lm_sdts')).toBe(7);
 
     expect(c('SELECT COUNT(*) c FROM lm_interfaces')).toBe(2024);

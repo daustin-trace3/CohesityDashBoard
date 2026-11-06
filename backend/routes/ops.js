@@ -433,6 +433,8 @@ const PLATFORMS = [
   // LogicMonitor's summarizer lives in its manifest (opsSummary); this branch
   // has no manifest-hook loop, so it is listed here by hand.
   { id: 'logicmonitor', label: 'LogicMonitor', color: '#1A73E8', route: '/logicmonitor', fn: () => require('../platforms/logicmonitor').opsSummary() },
+  // F5 is derived from the LogicMonitor connector; its summarizer answers null while no F5 device matches.
+  { id: 'f5', label: 'F5', color: '#E4002B', route: '/f5', fn: () => (registry.isPresent('f5') ? require('../platforms/f5').opsSummary() : null) },
 ];
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };
@@ -443,6 +445,7 @@ router.get('/summary', async (req, res) => {
     // Cohesity is always-on (enabled iff clusters exist — its summarizer
     // returns null when there are none); registry drives the rest.
     if (p.id !== 'cohesity' && registry.getPlugin(p.id)?.enabled !== true) continue;
+    if (!registry.isPresent(p.id)) continue;
     const base = { id: p.id, label: p.label, color: p.color, route: p.route };
     try {
       const s = await p.fn();

@@ -62,8 +62,11 @@ function globalRow(platform, section, p, now) {
 
 function sectionRows(platform, p, now) {
   if (!p || p.enabled === false || p.configured === false) return [];
-  if (Array.isArray(p.entities)) return p.entities.map((e) => entityRow(platform, e, now));
-  if (p.lastDataCapture || p.failedSources?.length) return [globalRow(platform, platform, p, now)];
+  // A derived platform (F5) mirrors its connector's section and names it in `via`;
+  // Poll now then posts to the connector, which owns the poller.
+  const withVia = (row) => (p.via ? { ...row, via: p.via } : row);
+  if (Array.isArray(p.entities)) return p.entities.map((e) => withVia(entityRow(platform, e, now)));
+  if (p.lastDataCapture || p.failedSources?.length) return [withVia(globalRow(platform, platform, p, now))];
   return [];
 }
 

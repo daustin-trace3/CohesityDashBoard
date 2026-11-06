@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams, useNavigate, Navigate } from 'react-router-dom';
 import {
   Scale, Layers, Cpu, Skull, BellRing, Repeat, Waypoints, History,
-  ListTree, Plug, EyeOff, ShieldCheck, Radar,
+  ListTree, Plug, EyeOff, ShieldCheck, Radar, Factory,
 } from 'lucide-react';
 import client from '../../api/client';
 import { useToast } from '../../components/ui/Toaster';
@@ -15,6 +15,7 @@ import {
 import DataQualitySection from './dataQualitySection';
 import { ModelReviewSection, EndpointsSection } from './inventorySections';
 import LmDevice360 from './LmDevice360';
+import VendorsSection from './vendorsSection';
 
 // Round 10: neighbours LogicMonitor's CDP/LLDP discovery sees that nothing monitors.
 const unmonitoredColumns = [
@@ -68,6 +69,7 @@ export default function LmGovernancePage() {
     { label: 'Inventory', items: [
       { id: 'modelReview', label: 'Model Review', icon: ListTree, count: modelReview.length, tone: behindModels ? 'warn' : 'default' },
       { id: 'endpoints', label: 'Switch Ports to Endpoints', icon: Plug, count: g.endpointsSummary?.total ?? endpoints.length, tone: 'default' },
+      { id: 'vendors', label: 'Vendors in this portal', icon: Factory, count: 0, tone: 'default' },
     ] },
     { label: 'Lifecycle', items: [
       { id: 'codeLevels', label: 'Code Levels', icon: Layers, count: behindLevels, tone: behindLevels ? 'warn' : 'default' },
@@ -132,6 +134,7 @@ export default function LmGovernancePage() {
             {section === 'endpoints' && (
               <EndpointsSection key={section} rows={endpoints} summary={g.endpointsSummary} onDevice={showDevice} />
             )}
+            {section === 'vendors' && <VendorsSection key={section} />}
             {section === 'codeLevels' && (
               <ListSection key={section} section={section} icon={Layers} title="Code Levels" rows={g.codeLevels}
                 blurb="Software versions per vendor and model, parsed from sysinfo. Behind means not on the newest version seen in this estate; no vendor end-of-support dates are used."

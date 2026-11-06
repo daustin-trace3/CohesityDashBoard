@@ -974,4 +974,22 @@ module.exports = [
       if (!cols.includes('datasource_type')) db.exec('ALTER TABLE lm_device_datasources ADD COLUMN datasource_type TEXT');
     },
   },
+
+  // Migration v14 (derived platforms, round 1). ICC's own classification of a device:
+  // vendor_key (f5, cisco, paloalto, ...), vendor_kind (bigip, gtm, f5os, firewall, ...) and the
+  // reason string that produced the key. The existing vendor column keeps its meaning; a derived
+  // platform keys on vendor_key. Every row is NULL until the first poll after this migration.
+  {
+    version: 14,
+    up(db) {
+      const addCol = (table, col, ddl) => {
+        const cols = db.prepare(`PRAGMA table_info('${table}')`).all().map((c) => c.name);
+        if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+      };
+      addCol('lm_devices', 'vendor_key', 'TEXT');
+      addCol('lm_devices', 'vendor_kind', 'TEXT');
+      addCol('lm_devices', 'vendor_reason', 'TEXT');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_lm_devices_vendor_key ON lm_devices(vendor_key, stale)');
+    },
+  },
 ];

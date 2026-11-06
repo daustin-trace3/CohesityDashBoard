@@ -2634,6 +2634,12 @@ router.get('/governance', (req, res, next) => {
   try { res.json(buildGovernance()); } catch (err) { next(err); }
 });
 
+// Derived platforms round 1: vendors in this portal (ICC's vendor_key census), unknown enterprise numbers last.
+router.get('/governance/vendors', (req, res, next) => {
+  try {
+    res.json({ generatedAt: new Date().toISOString(), vendors: require('../connectors/logicmonitor').vendorCensus(db) });
+  } catch (err) { next(err); }
+});
 router.get('/governance/unmonitored-neighbors.csv', (req, res, next) => {
   try {
     sendCsv(res, 'unmonitored-neighbors', lmEri().unmonitoredRows(db),
@@ -3331,12 +3337,6 @@ function sourceFamilies(row) {
   return Array.isArray(v) ? v.map(String) : null;
 }
 
-/** Raw numeric -> text for an enum with a name table; unknown values render as the number. */
-const enumText = (table, v) => (v == null ? null : (table[Math.round(v)] != null ? table[Math.round(v)] : String(Math.round(v))));
-// F5 sysCmSyncStatus (UNVERIFIED numbering).
-const SYNC_TEXT = { 0: 'unknown', 1: 'syncing', 2: 'needs manual sync', 3: 'in sync', 4: 'changes pending', 5: 'standalone', 6: 'awaiting initial sync', 7: 'incompatible version', 8: 'partial sync' };
-const availText = (v) => { const s = lmIssues().availState(v); return s === 'unknown' && v != null ? String(Math.round(v)) : s; };
-
 // ---- /metrics/families -----------------------------------------------------
 
 router.get('/metrics/families', (req, res, next) => {
@@ -3399,8 +3399,6 @@ router.get('/metrics/families', (req, res, next) => {
 
 const FW_WHERE = `(d.role = 'firewall' OR d.vendor LIKE 'Palo Alto%' OR EXISTS (
   SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = 'firewall'))`;
-const LB_WHERE = `(d.role = 'load-balancer' OR d.vendor = 'F5' OR EXISTS (
-  SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = 'loadbalancer'))`;
 
 function roleDevices(whereSql, q = {}) {
   const where = ['d.stale = 0', whereSql];
@@ -3650,54 +3648,9 @@ router.get('/firewalls/:deviceId', deviceParams, validate, (req, res, next) => {
 
 // ---- Load balancers -----------------------------------------------------------
 
-function memberName(key, pool) {
-  const k = String(key || '').replace(/^\/+/, '').replace(/^Common\//i, '');
-  return k.length > pool.length + 1 ? k.slice(pool.length + 1) : k;
-}
-
-function lbRow(r, lk, dev, issues, certWarn) {
-  const L = lmIssues();
-  const dv = dev || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
-  const name = r.display_name || r.name;
-  const foRaw = L.devVal(dv, 'failover_state');
-  const syncRaw = L.devVal(dv, 'sync_state');
-  const pools = new Map();
-  for (const i of L.devInstances(dv, 'member_avail')) {
-    const p = L.poolOf(i.key);
-    const e = pools.get(p) || { total: 0, down: 0 };
-    e.total += 1;
-    if (L.availState(i.m.member_avail.value) === 'down') e.down += 1;
-    pools.set(p, e);
-  }
-  const wide = L.devInstances(dv, 'wideip_avail');
-  const vips = L.devInstances(dv, 'vip_avail');
-  const down = (list, metric) => list.filter((i) => L.availState(i.m[metric].value) === 'down').length;
-  const devIssues = issuesOnDevice(issues, name);
-  const hasData = dv.instances.size > 0;
-  return {
-    ...devBase(r, lk),
-    failoverState: foRaw == null ? null : Math.round(foRaw),
-    failoverText: foRaw == null ? null : L.failoverText(foRaw),
-    syncState: enumText(SYNC_TEXT, syncRaw),
-    cpuPct: pctOnly(L.devVal(dv, 'cpu_pct')),
-    memPct: pctOnly(L.devVal(dv, 'mem_pct') ?? L.devVal(dv, 'host_mem_pct')),
-    clientConnections: L.devVal(dv, 'client_connections'),
-    serverConnections: L.devVal(dv, 'server_connections'),
-    pools: pools.size,
-    poolsDegraded: [...pools.values()].filter((e) => e.down > 0).length,
-    membersTotal: [...pools.values()].reduce((s, e) => s + e.total, 0),
-    membersDown: [...pools.values()].reduce((s, e) => s + e.down, 0),
-    wideIps: wide.length,
-    wideIpsDown: down(wide, 'wideip_avail'),
-    vips: vips.length,
-    vipsDown: down(vips, 'vip_avail'),
-    daemonsDown: L.devInstances(dv, 'daemon_state').filter((i) => Math.round(i.m.daemon_state.value) !== 1).length
-      + L.devInstances(dv, 'daemon_exit').filter((i) => i.m.daemon_exit.value != null && Math.round(i.m.daemon_exit.value) !== 0).length,
-    certsExpiring: L.devInstances(dv, 'cert_days_left').filter((i) => i.m.cert_days_left.value < certWarn).length,
-    state: stateFromIssues(devIssues, hasData),
-    sampledAt: epochToIso(maxEpoch(dv)),
-  };
-}
+// The row and 360 model lives in services/logicmonitorLoadBalancers.js (derived platforms, round 1):
+// the F5 platform assembles the same payloads through the connector feeds with vendorKey 'f5'.
+const lmLoadBalancers = () => require('../services/logicmonitorLoadBalancers');
 
 const LB_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'version', 'hostStatus', 'failoverText', 'syncState', 'cpuPct', 'memPct', 'clientConnections',
   'serverConnections', 'pools', 'poolsDegraded', 'membersTotal', 'membersDown', 'wideIps', 'wideIpsDown', 'vips', 'vipsDown', 'daemonsDown', 'certsExpiring', 'state', 'sampledAt'];
@@ -3705,14 +3658,7 @@ const LB_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'version', 'hos
 const lbListRules = dsListRules.filter((x, i) => i !== 2); // no vendor filter: every row is F5
 
 function lbRows(q) {
-  const lk = lookups();
-  const devs = roleDevices(LB_WHERE, q);
-  const index = lmIssues().loadDsIndex(db, { families: ['loadbalancer', 'health'] });
-  const issues = safeIssues();
-  const certWarn = thr('lm_cert_warn_days');
-  let rows = devs.map((r) => lbRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, certWarn));
-  if (q.state) rows = rows.filter((r) => r.state === q.state);
-  return rows;
+  return lmLoadBalancers().listLoadBalancers(db, { vendorKey: null, q: q.q, siteKey: q.siteKey, sourceId: q.sourceId, state: q.state });
 }
 
 router.get('/load-balancers.csv', lbListRules, validate, (req, res, next) => {
@@ -3724,79 +3670,11 @@ router.get('/load-balancers', lbListRules, validate, (req, res, next) => {
 
 router.get('/load-balancers/:deviceId', [...deviceParams, query('page').optional().isInt({ min: 1 }), limitValidator], validate, (req, res, next) => {
   try {
-    const r = roleDevice(LB_WHERE, req.params.deviceId, req.query.sourceId);
-    if (!r) return notFound(res, 'Load balancer');
-    const L = lmIssues();
-    const lk = lookups();
-    const idx = L.loadDsIndex(db, { sourceId: r.source_id, deviceId: r.lm_device_id });
-    const dev = idx.get(`${r.source_id}:${r.lm_device_id}`) || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
-    const issues = safeIssues();
-    const certWarn = thr('lm_cert_warn_days');
-    const summary = lbRow(r, lk, dev, issues, certWarn);
-    const byName = (a, b) => String(a.name).localeCompare(String(b.name));
-    const availOut = (i, metric) => ({ avail: availText(num(i, metric)), availRaw: num(i, metric) });
-
-    // Pool = instance key text before the first '/' or ':' (an assumption, see poolOf).
-    const poolMap = new Map();
-    for (const i of rowsOf(dev, 'member_avail')) {
-      const p = L.poolOf(i.key);
-      if (!poolMap.has(p)) poolMap.set(p, { pool: p, members: [], up: 0, down: 0 });
-      const e = poolMap.get(p);
-      const st = L.availState(num(i, 'member_avail'));
-      if (st === 'down') e.down += 1; else if (st === 'up' || st === 'warn') e.up += 1;
-      e.members.push({
-        member: memberName(i.key, p), key: i.key, ...availOut(i, 'member_avail'),
-        enabled: i.m.member_enabled ? Math.round(i.m.member_enabled.value) === 1 : null, connections: num(i, 'member_connections'),
-      });
-    }
-    const pools = [...poolMap.values()].map((e) => ({ ...e, members: e.members.sort((a, b) => a.member.localeCompare(b.member)) }))
-      .sort((a, b) => (b.down - a.down) || a.pool.localeCompare(b.pool));
-
-    const wideIps = rowsOf(dev, 'wideip_avail').map((i) => ({ name: i.name, ...availOut(i, 'wideip_avail'), requests: num(i, 'wideip_requests') })).sort(byName);
-    const vipAll = rowsOf(dev, 'vip_avail').map((i) => ({
-      name: i.name, ...availOut(i, 'vip_avail'), enabled: i.m.vip_enabled ? Math.round(i.m.vip_enabled.value) === 1 : null,
-    })).sort(byName);
-    const { limit, page, offset } = pageArgs({ query: { page: req.query.page, limit: req.query.limit || '50' } });
-    const gtmServers = rowsOf(dev, 'gtm_server_avail').map((i) => ({ name: i.name, ...availOut(i, 'gtm_server_avail') })).sort(byName);
-    const datacenters = rowsOf(dev, 'dc_avail').map((i) => ({ name: i.name, ...availOut(i, 'dc_avail') })).sort(byName);
-    const daemons = rowsOf(dev, 'daemon_state').map((i) => ({ name: i.name, state: Math.round(num(i, 'daemon_state')) === 1 ? 'running' : 'down', raw: num(i, 'daemon_state') }))
-      .concat(rowsOf(dev, 'daemon_exit').map((i) => ({ name: i.name, state: num(i, 'daemon_exit') == null || Math.round(num(i, 'daemon_exit')) === 0 ? 'running' : 'down', raw: num(i, 'daemon_exit') })))
-      .sort(byName);
-    const certs = rowsOf(dev, 'cert_days_left').map((i) => ({ name: i.name, daysLeft: rnd1(num(i, 'cert_days_left')) })).sort((a, b) => a.daysLeft - b.daysLeft);
-    const hardware = {
-      fans: rowsOf(dev, 'fan_state').concat(rowsOf(dev, 'f5os_fan_state')).map((i) => ({ name: i.name, state: num(i, 'fan_state') ?? num(i, 'f5os_fan_state') })).sort(byName),
-      psus: rowsOf(dev, 'psu_state').map((i) => ({ name: i.name, state: num(i, 'psu_state'), ok: !L.stateIsFault(num(i, 'psu_state')) })).sort(byName),
-      temps: rowsOf(dev, 'temp_c').concat(rowsOf(dev, 'f5os_temp_c')).map((i) => ({ name: i.name, tempC: rnd1(num(i, 'temp_c') ?? num(i, 'f5os_temp_c')) })).sort(byName),
-      filesystems: rowsOf(dev, 'fs_used_pct').map((i) => ({ name: i.name, usedPct: rnd1(num(i, 'fs_used_pct')) })).sort(byName),
-      tmmMemPct: pctOnly(L.devVal(dev, 'tmm_mem_pct')),
-      // F5_BigIP_Memory carries byte counts only (RealMemTotal, RealMemAvailable), so the host
-      // percent is derived when the pick is absent.
-      hostMemPct: pctOnly(L.devVal(dev, 'host_mem_pct') ?? (() => {
-        const total = L.devVal(dev, 'mem_total_bytes');
-        const avail = L.devVal(dev, 'mem_avail_bytes');
-        return total > 0 && avail != null ? (100 * (1 - avail / total)) : null;
-      })()),
-    };
-    // Round 12: F5_BigIP_Interfaces has no status datapoint and reports bytes per second; bps = bytes x 8.
-    const bitsOf = (v) => (v == null ? null : Math.round(v * 8));
-    const interfaces = [...new Map([...rowsOf(dev, 'if_status'), ...rowsOf(dev, 'if_in_bytes')].map((i) => [i.name, i])).values()]
-      .map((i) => ({ name: i.name, status: num(i, 'if_status'), inBps: num(i, 'if_in_bps') ?? bitsOf(num(i, 'if_in_bytes')), outBps: num(i, 'if_out_bps') ?? bitsOf(num(i, 'if_out_bytes')) })).sort(byName);
-    res.json({
-      device: deviceOut(r, lk),
-      summary,
-      pools,
-      wideIps,
-      vips: { items: vipAll.slice(offset, offset + limit), total: vipAll.length, page, limit },
-      gtmServers,
-      datacenters,
-      daemons,
-      certs,
-      hardware,
-      interfaces,
-      cpuHistory: deviceSeries(dev, 'cpu_pct', 24),
-      connectionsHistory: { client: deviceSeries(dev, 'client_connections', 24), server: deviceSeries(dev, 'server_connections', 24) },
-      issues: issuesOnDevice(issues, r.display_name || r.name),
+    const out = lmLoadBalancers().loadBalancerDetail(db, {
+      deviceId: req.params.deviceId, sourceId: req.query.sourceId, vendorKey: null, page: req.query.page, limit: req.query.limit || '50',
     });
+    if (!out) return notFound(res, 'Load balancer');
+    res.json(out);
   } catch (err) { next(err); }
 });
 

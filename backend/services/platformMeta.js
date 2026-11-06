@@ -18,6 +18,8 @@ const BUILTIN = {
   brocade: { label: 'Brocade', color: '#CC092F', route: '/brocade', alertsRoute: '/brocade/issues' },
   bluecat: { label: 'BlueCat', color: '#0057B8', route: '/bluecat', alertsRoute: '/bluecat/alerts' },
   logicmonitor: { label: 'LogicMonitor', color: '#1A73E8', route: '/logicmonitor', alertsRoute: '/logicmonitor/issues' },
+  // Derived from the LogicMonitor connector. Colour is the F5 brand red as remembered (UNVERIFIED).
+  f5: { label: 'F5', color: '#E4002B', route: '/f5', alertsRoute: '/f5/alerts' },
 };
 
 // Not a polled platform, so it stays out of BUILTIN (which drives the platform

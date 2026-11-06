@@ -12,6 +12,7 @@ const lmPath = require('../../services/logicmonitorPath');
 const lmSites = require('../../services/logicmonitorSites');
 const lmEndpoints = require('../../services/logicmonitorEndpoints');
 const lmServers = require('../../services/logicmonitorServers');
+const lmVendors = require('../../services/logicmonitorVendors');
 
 const BRAND = '#1A73E8';
 
@@ -28,11 +29,17 @@ function opsSummary(coreApi) {
   const sourceCount = db.prepare('SELECT COUNT(*) n FROM lm_sources').get().n;
   if (!sourceCount) return null;
 
+  const owner = lmVendors.ownerResolver(db);
   const d = db.prepare(`
-    SELECT COUNT(*) total, SUM(CASE WHEN host_status = 'normal' THEN 1 ELSE 0 END) normal,
-      SUM(CASE WHEN is_network = 1 THEN 1 ELSE 0 END) network
-    FROM lm_devices WHERE stale = 0
-  `).get();
+    SELECT source_id, lm_device_id, host_status, is_network FROM lm_devices WHERE stale = 0
+  `).all().reduce((acc, r) => {
+    // Devices a present derived platform owns (F5 today) are counted under that platform, not here.
+    if (owner({ lmDeviceId: r.lm_device_id, sourceId: r.source_id }) !== 'logicmonitor') { acc.shown += 1; return acc; }
+    acc.total += 1;
+    if (r.host_status === 'normal') acc.normal += 1;
+    if (Number(r.is_network) === 1) acc.network += 1;
+    return acc;
+  }, { total: 0, normal: 0, network: 0, shown: 0 });
   const i = db.prepare("SELECT COUNT(*) total, SUM(CASE WHEN status_text = 'up' THEN 1 ELSE 0 END) up FROM lm_interfaces WHERE stale = 0").get();
   const openAlerts = db.prepare('SELECT COUNT(*) n FROM lm_alerts WHERE cleared = 0 AND duplicate_of IS NULL').get().n;
   const collectorsDown = db.prepare('SELECT COUNT(*) n FROM lm_collectors WHERE stale = 0 AND is_down = 1').get().n;
@@ -65,7 +72,7 @@ function opsSummary(coreApi) {
   return {
     objects: d.network || 0,
     headline: [
-      { label: 'Devices', value: `${d.normal || 0}/${d.total || 0}` },
+      { label: 'Devices', value: `${d.normal || 0}/${d.total || 0}`, ...(d.shown ? { detail: `${d.shown} shown under derived platforms` } : {}) },
       { label: 'Interfaces Up', value: `${i.up || 0}/${i.total || 0}` },
       { label: 'Open Alerts', value: openAlerts },
       { label: 'Collectors Down', value: collectorsDown },
@@ -86,10 +93,13 @@ function opsSummary(coreApi) {
  */
 function collectAlerts(coreApi) {
   const db = coreApi?.db || require('../../db/database');
+  // A device scoped item of a device a present derived platform owns is emitted by that platform.
+  const owner = lmVendors.ownerResolver(db);
   const issues = db.prepare(`
     SELECT issue_key, severity, source, type, target, message, first_seen, last_seen
     FROM lm_issue_history WHERE status = 'open'
-  `).all().filter((row) => !isShadowedIssue(row)).map((row) => ({
+  `).all().filter((row) => !isShadowedIssue(row))
+    .filter((row) => owner({ issueType: row.type, target: row.target }) === 'logicmonitor').map((row) => ({
     sourceKey: row.issue_key,
     severity: row.severity,
     host: row.target || row.source,
@@ -102,7 +112,7 @@ function collectAlerts(coreApi) {
     SELECT condition_key, severity_norm, severity, source_id, lm_device_id, monitor_object_name, resource_template_name,
       instance_name, data_point_name, alert_value, threshold, start_epoch, captured_at
     FROM lm_alerts WHERE cleared = 0 AND COALESCE(sdted, 0) = 0 AND severity >= 3 AND shadowed_by IS NULL AND duplicate_of IS NULL
-  `).all();
+  `).all().filter((a) => owner({ lmDeviceId: a.lm_device_id, sourceId: a.source_id }) === 'logicmonitor');
   // The upstream alert reads "+N downstream shadowed": on the culprit device's
   // most severe alerts, N = alerts hidden beneath it.
   const behind = shadowedAlertCounts(db);

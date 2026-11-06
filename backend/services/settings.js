@@ -73,6 +73,8 @@ const DEFAULTS = {
   bluecat_low_free_warn: '20',
   bluecat_low_free_pct: '10',
   platform_logicmonitor_enabled: '0',
+  // Derived from the LogicMonitor connector: on by default, hidden until a device matches.
+  platform_f5_enabled: '1',
   lm_if_util_warn_pct: '80',
   lm_if_err_warn: '100',
   lm_if_flap_warn: '3',
@@ -219,6 +221,7 @@ function getPlatformSettings() {
     platformAriaopsEnabled: getSetting('platform_ariaops_enabled') === '1',
     platformBrocadeEnabled: getSetting('platform_brocade_enabled') === '1',
     platformLogicmonitorEnabled: getSetting('platform_logicmonitor_enabled') === '1',
+    platformF5Enabled: getSetting('platform_f5_enabled') !== '0',
     opsOverviewStyle: getSetting('ops_overview_style') || 'classic',
     dnsServer: getSetting('dns_server') || '',
     cohesityAlertWindowDays: getCohesityAlertWindowDays(),
@@ -239,7 +242,7 @@ function alertPlatformActive(id) {
   try {
     const registry = require('../core/registry');
     const p = registry.getPlugin(id);
-    if (p) return !!p.enabled && p.status !== 'error';
+    if (p) return !!p.enabled && p.status !== 'error' && registry.isPresent(id);
   } catch { /* registry not ready yet */ }
   return getSetting(`platform_${id}_enabled`) === '1';
 }
@@ -250,6 +253,11 @@ function getNotificationSettings() {
   // Merge over defaults so platforms added after a DB stored its JSON come
   // through enabled instead of silently missing (collector gate reads keys).
   const platformDefaults = { cohesity: true, pure: true, netapp: true, zerto: true, vcenter: true, dell: true, aria: true, netbackup: true, aws: true, proxmox: true, brocade: true, bluecat: true, logicmonitor: true };
+  // A derived platform (F5) lists only while at least one of its devices is matched.
+  try {
+    const registry = require('../core/registry');
+    for (const d of registry.listDerived()) if (d.present) platformDefaults[d.id] = true;
+  } catch { /* registry not ready yet */ }
   let alertPlatforms;
   try {
     alertPlatforms = { ...platformDefaults, ...JSON.parse(getSetting('alert_email_platforms')) };

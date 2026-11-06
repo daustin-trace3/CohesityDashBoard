@@ -6,6 +6,7 @@ const express = require('express');
 const db = require('../db/database');
 const { hasPermission } = require('../services/rbac');
 const { getSetting } = require('../services/settings');
+const registry = require('../core/registry');
 
 const router = express.Router();
 
@@ -139,6 +140,8 @@ const CATEGORIES = [
           WHERE (wwn LIKE ? ESCAPE '\\' OR symbolic_name LIKE ? ESCAPE '\\') AND stale = 0 ORDER BY symbolic_name LIMIT ?` },
   // LogicMonitor declares its categories in the manifest (searchCategories).
   ...require('../platforms/logicmonitor').searchCategories,
+  // F5 (derived from the LogicMonitor connector); platformEnabled() hides it while no device matches.
+  ...require('../platforms/f5').searchCategories,
   // Not a platform: no enabled gate (platform null). A bare number matches the incident id.
   { key: 'ops-incidents', label: 'Ops Agent Incidents', platform: null, perm: 'cohesity:*:view', digitsParam: true,
     sql: `SELECT id, ('#' || id || ' ' || COALESCE(title, host, incident_key)) AS title,
@@ -150,7 +153,9 @@ const CATEGORIES = [
 
 const platformEnabled = (id) => {
   if (id === 'cohesity') return true;
-  return String(getSetting(`platform_${id}_enabled`) ?? '0') === '1';
+  if (String(getSetting(`platform_${id}_enabled`) ?? '0') !== '1') return false;
+  // A derived platform with no matched devices is hidden here too.
+  return typeof registry.isPresent === 'function' ? registry.isPresent(id) : true;
 };
 
 /** GET /api/search?q= — grouped estate-wide entity search (min 2 chars). */

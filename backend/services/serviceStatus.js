@@ -43,7 +43,8 @@ function platformGateOk(id) {
     // Older registries (icc-phase1) have no isBuiltinPresent; cohesity is always-on there.
     return typeof registry.isBuiltinPresent === 'function' ? registry.isBuiltinPresent('cohesity') : true;
   }
-  return entry?.enabled === true;
+  // A derived platform with no matched devices is hidden everywhere.
+  return entry?.enabled === true && registry.isPresent(id);
 }
 
 function getEnabledPlatformIds() {
@@ -109,6 +110,15 @@ function sourceNameFor(platform, entityId) {
  *  platforms). Stale keys for deleted sources are dropped here, so they can
  *  neither raise a reachability event nor count toward "all sources down". */
 function polledSourcesFor(platform) {
+  // A derived platform has no sources of its own: it reports the connector
+  // platform's polled sources (same rows), tagged so the board shows where
+  // they come from. The connector platform owns the poll:/stale: events.
+  if (registry.isDerived(platform)) {
+    const parent = registry.getPlugin(platform)?.derivedFrom;
+    if (!parent || parent === platform || registry.isDerived(parent)) return [];
+    const via = platformMeta(parent).label;
+    return polledSourcesFor(parent).map((s) => ({ ...s, sourceName: `${s.sourceName} (via ${via})` }));
+  }
   const rows = [];
   const all = pollerStatus.getAll();
   for (const [key, state] of all) {
@@ -136,6 +146,7 @@ function polledSourcesFor(platform) {
 function gatherReachabilityItems(enabledIds) {
   const items = [];
   for (const platform of enabledIds) {
+    if (registry.isDerived(platform)) continue; // the connector platform owns poll: events
     for (const source of polledSourcesFor(platform)) {
       if (source.lastPollStatus !== 'error') continue;
       items.push({
@@ -159,6 +170,7 @@ function gatherReachabilityItems(enabledIds) {
 function gatherStaleItems(enabledIds, staleMinutes, nowMs = Date.now()) {
   const items = [];
   for (const platform of enabledIds) {
+    if (registry.isDerived(platform)) continue; // the connector platform owns stale: events
     for (const source of polledSourcesFor(platform)) {
       if (source.lastPollStatus === 'error' || !source.lastPollEnd) continue;
       const endMs = Date.parse(source.lastPollEnd);
@@ -221,7 +233,20 @@ function summarizeOpenEvents(platform, openEvents) {
   const stale = openEvents.filter((e) => e.sourceKey.startsWith('stale:')).length;
   const unreachable = openEvents.filter((e) => e.sourceKey.startsWith('poll:')).length + stale;
   const offlineVerdicts = openEvents.filter((e) => !e.sourceKey.startsWith('poll:') && !e.sourceKey.startsWith('stale:') && e.verdict === 'offline').length;
-  const polled = polledSourcesFor(platform).length;
+  const polledRows = polledSourcesFor(platform);
+  const polled = polledRows.length;
+  if (registry.isDerived(platform)) {
+    // No events of its own; unreachable follows the connector's last poll status.
+    return {
+      openEvents: openEvents.length,
+      polled,
+      unreachable: polledRows.filter((s) => s.lastPollStatus === 'error').length,
+      stale: 0,
+      offlineVerdicts,
+      derivedFrom: registry.getPlugin(platform)?.derivedFrom || null,
+      devices: registry.presenceOf(platform),
+    };
+  }
   return { openEvents: openEvents.length, polled, unreachable, stale, offlineVerdicts };
 }
 
@@ -241,6 +266,9 @@ function platformStateFor(summary, mode = getMode()) {
 }
 
 function platformReasonFor(state, s, mode = getMode()) {
+  if (s.derivedFrom && state === 'ok') {
+    return `Fed by ${platformMeta(s.derivedFrom).label}, ${s.devices} device${s.devices === 1 ? '' : 's'}`;
+  }
   if (mode === 'platform') {
     if (state === 'unknown') return 'No sources configured';
     if (state === 'ok') return `ICC reaches all ${s.polled} source${s.polled === 1 ? '' : 's'}`;
@@ -611,6 +639,10 @@ const METRICS_MAP = {
 const FRESHNESS_EXTRA = { pure: [['pure1_metrics_history', 'captured_at']] };
 
 function metricsFreshnessFor(platform) {
+  if (registry.isDerived(platform)) {
+    const parent = registry.getPlugin(platform)?.derivedFrom;
+    return parent && parent !== platform ? metricsFreshnessFor(parent) : null;
+  }
   let table;
   let tsCol = 'captured_at';
   if (METRICS_MAP[platform]) {

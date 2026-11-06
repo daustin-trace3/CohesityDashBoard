@@ -83,7 +83,7 @@ export default function PollerStatusPanel({ chipState, title, status, scope, lab
   const pollNow = async (row) => {
     setAction(row.key, { phase: 'busy' });
     try {
-      const { data } = await client.post(`/poller/sources/${row.platform}/${row.id}/poll`);
+      const { data } = await client.post(`/poller/sources/${row.via || row.platform}/${row.id}/poll`);
       // The demo poll guard answers 200 { demo: true, triggered: false } before the route runs.
       if (data?.demo || data?.triggered === false) {
         setAction(row.key, { phase: 'error', msg: 'The demo refuses changes' });

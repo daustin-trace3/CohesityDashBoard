@@ -24,6 +24,8 @@ const CONFIG = {
     description: 'Computed IPAM and DNS issues across all registered BlueCat Address Managers, with open/resolved history' },
   logicmonitor: { brand: '#1A73E8', base: '/logicmonitor', instanceKey: 'source', instanceLabel: 'Portal', label: 'LogicMonitor',
     description: 'Computed monitoring issues across connected LogicMonitor portals: dead devices, down interfaces, collector health and site reachability, with open/resolved history' },
+  f5: { brand: '#E4002B', base: '/f5', instanceKey: 'source', instanceLabel: 'Portal', label: 'F5',
+    description: 'Computed F5 issues from the LogicMonitor portals that monitor these devices: failover, pool members, daemons and certificates, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];

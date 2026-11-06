@@ -145,7 +145,7 @@ function DaemonsAndCerts({ daemons, certs }) {
   );
 }
 
-export default function LmLoadBalancer360({ deviceId, sourceId, onClose }) {
+export default function LmLoadBalancer360({ deviceId, sourceId, onClose, apiBase = '/logicmonitor' }) {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -158,11 +158,11 @@ export default function LmLoadBalancer360({ deviceId, sourceId, onClose }) {
     let live = true;
     const params = { page: vipPage, limit: VIP_LIMIT };
     if (sourceId) params.sourceId = sourceId;
-    client.get(`/logicmonitor/load-balancers/${deviceId}`, { params })
+    client.get(`${apiBase}/load-balancers/${deviceId}`, { params })
       .then(({ data: d }) => { if (live) setData(d || {}); })
-      .catch((e) => { if (live) setError(e?.response?.status === 404 ? 'Load balancer not found. It may have been removed or is not an F5.' : 'Failed to load the load balancer.'); });
+      .catch((e) => { if (live) setError(e?.response?.status === 404 ? 'Load balancer not found. It may have been removed or is not an F5.' : `Failed to load the load balancer${e?.response?.status ? ` (HTTP ${e.response.status})` : ''}${e?.response?.data?.error ? `: ${e.response.data.error}` : ''}.`); });
     return () => { live = false; };
-  }, [deviceId, sourceId, vipPage]);
+  }, [deviceId, sourceId, vipPage, apiBase]);
 
   const s = data?.summary || {};
   const d = data?.device || {};
@@ -178,7 +178,7 @@ export default function LmLoadBalancer360({ deviceId, sourceId, onClose }) {
             <Badge tone={stateTone(s.state)}>{stateLabel(s.state)}</Badge>
             <Badge tone={hostStatusTone(s.hostStatus)}>{hostStatusLabel(s.hostStatus)}</Badge>
             <Badge tone={/active/i.test(String(s.failoverText)) ? 'ok' : /standby/i.test(String(s.failoverText)) ? 'info' : /offline/i.test(String(s.failoverText)) ? 'warn' : 'neutral'}>{s.failoverText || 'Failover unknown'}</Badge>
-            <button onClick={() => navigate(`/logicmonitor/issues?q=${encodeURIComponent(s.deviceName || '')}`)} className="text-[11px] text-brand hover:underline cursor-pointer ml-auto">Open issues page</button>
+            <button onClick={() => navigate(`${apiBase}/issues?q=${encodeURIComponent(s.deviceName || '')}`)} className="text-[11px] text-brand hover:underline cursor-pointer ml-auto">Open issues page</button>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
             <Fact label="Site">{s.siteName || s.siteKey}</Fact>

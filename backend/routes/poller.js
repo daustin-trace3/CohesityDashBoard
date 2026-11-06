@@ -181,6 +181,19 @@ router.get('/status', (req, res, next) => {
       };
     }
 
+    // Derived platforms (fed by a connector, no poller of their own) mirror the
+    // connector's section so the header chip on their pages shows the portal's
+    // poll state. `via` names the connector platform. A connector with no
+    // section in this response (LogicMonitor has none on this branch) mirrors nothing.
+    const derivedSections = {};
+    try {
+      for (const d of registry.listDerived()) {
+        if (!d.enabled || !d.present) continue;
+        const src = platformSections[d.derivedFrom];
+        if (src) derivedSections[d.id] = { ...src, via: d.derivedFrom };
+      }
+    } catch { /* degrade: no derived sections surfaced */ }
+
     // Licensing (global, no per-entity structure)
     const licenseRow = db.prepare('SELECT MAX(captured_at) AS captured_at FROM license_usage').get();
     const licenseCapture = licenseRow ? licenseRow.captured_at : null;
@@ -219,6 +232,7 @@ router.get('/status', (req, res, next) => {
       aws: platformSections.aws,
       proxmox: platformSections.proxmox,
       brocade: platformSections.brocade,
+      ...derivedSections,
       licensing: {
         enabled: true,
         isSyncing: licensingState.isSyncing,

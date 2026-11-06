@@ -34,6 +34,14 @@ const ariaopsManifest = require('./platforms/ariaops');
 const brocadeManifest = require('./platforms/brocade');
 const logicmonitorManifest = require('./platforms/logicmonitor');
 
+// Connectors and derived platforms (round 1). Guarded requires so boot works
+// while a piece is missing; each failure logs one warning.
+const feeds = require('./core/feeds');
+let logicmonitorConnector = null;
+try { logicmonitorConnector = require('./connectors/logicmonitor'); } catch (err) { logger.warn(`[connectors] logicmonitor connector not loaded: ${err.message}`); }
+let f5Manifest = null;
+try { f5Manifest = require('./platforms/f5'); } catch (err) { logger.warn(`[platforms] f5 platform not loaded: ${err.message}`); }
+
 if (isDemo()) {
   // Demo instances never poll. Stay alive quietly so pm2 doesn't restart-loop.
   logger.info('[Poller process] Demo mode — pollers disabled, idling.');
@@ -44,7 +52,14 @@ if (isDemo()) {
   // plugin backend is require()'d, then register built-ins + installed plugins.
   pluginBoot.runBootSwap();
   registry.init();
-  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled } = getPlatformSettings();
+  const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, platformF5Enabled } = getPlatformSettings();
+  // The LogicMonitor connector registers its feeds before any platform manifest,
+  // whether LogicMonitor itself runs as the built-in or as an installed pack.
+  if (logicmonitorConnector && !feeds.hasConnector('logicmonitor')) {
+    try {
+      feeds.registerConnector('logicmonitor', { name: 'LogicMonitor', register: logicmonitorConnector.register });
+    } catch (err) { logger.warn(`[connectors] logicmonitor connector failed to register: ${err.message}`); }
+  }
   registry.registerPlugin(pureManifest);
   registry.setEnabled('pure', platformPureEnabled && registry.isEntitled('pure'));
   registry.registerPlugin(netappManifest);
@@ -63,6 +78,12 @@ if (isDemo()) {
   registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
   registry.registerPlugin(logicmonitorManifest);
   registry.setEnabled('logicmonitor', platformLogicmonitorEnabled && registry.isEntitled('logicmonitor'));
+  if (f5Manifest) {
+    try {
+      registry.registerPlugin(f5Manifest);
+      registry.setEnabled('f5', platformF5Enabled && registry.isEntitled('f5'));
+    } catch (err) { logger.warn(`[platforms] f5 platform failed to register: ${err.message}`); }
+  }
   pluginBoot.scanAndRegisterInstalled();
 
   initPoller();

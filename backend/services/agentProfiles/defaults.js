@@ -124,6 +124,12 @@ const DEFAULTS = {
     evidenceBudget: { alerts: 15, failedBackupJobs: 10, networkBlocks: 3 },
     relations: ['host_lm_uplinks', 'identity_links'],
   },
+  f5: {
+    focus: 'BIG-IP pairs: one unit Active and one Standby is healthy; both Active or a unit Offline is the incident, and a failover moves load, so check which unit now carries traffic. A pool degraded names members down: check the member and its monitor before the F5. VIP certificate days left are the earliest hard deadline. A daemon state of 0 on mcpd or tmm is an exit code (0 = running), so non-zero means the daemon is down. GTM wide IPs down follow their pool or datacenter. F5OS (rSeries) alerts are about the tenant platform, not the BIG-IP guest.',
+    ports: { source: [p(443, 'HTTPS', true)], host: [p(443, 'HTTPS', true), p(22, 'SSH', false)] },
+    evidenceBudget: { alerts: 15, failedBackupJobs: 10, networkBlocks: 3 },
+    relations: ['identity_links'],
+  },
   aria: {
     focus: 'Automation alerts are deployments and requests; a failed request names the blueprint and the error. Appliance health is separate from request failures.',
     ports: { source: [p(443, 'HTTPS', true)], host: [p(443, 'HTTPS', true)] },
@@ -175,6 +181,7 @@ const historyMetricFor = {
   netapp: { 'capacity-high': 'netapp_used_pct', 'latency-high': 'netapp_read_latency_us' },
   cohesity: { 'capacity-high': 'cohesity_used_pct' },
   brocade: { 'port-errors': 'brocade_crc_errors', 'crc-errors': 'brocade_crc_errors' },
+  f5: { 'device-cpu-high': 'cpu_pct' },
 };
 
 module.exports = { DEFAULTS, GENERIC, GUEST_PORTS, RELATION_TEMPLATES, BUDGET_DEFAULTS, historyMetricFor };

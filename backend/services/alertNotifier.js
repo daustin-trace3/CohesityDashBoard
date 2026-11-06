@@ -406,6 +406,13 @@ function collectLogicmonitorAlerts() {
   return require('../platforms/logicmonitor').collectAlerts();
 }
 
+/** F5 (derived from the LogicMonitor connector): its manifest collectAlerts,
+ *  empty while the platform is off or no F5 device matches. */
+function collectF5Alerts() {
+  if (registry.getPlugin('f5')?.enabled !== true || !registry.isPresent('f5')) return [];
+  return require('../platforms/f5').collectAlerts();
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -418,6 +425,7 @@ const COLLECTORS = {
   netbackup: collectNetbackupIssues,
   proxmox: collectProxmoxIssues,
   logicmonitor: collectLogicmonitorAlerts,
+  f5: collectF5Alerts,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({
@@ -614,6 +622,9 @@ const CATALOG_BACKFILL = {
   // logicmonitor collectAlerts() emits ICC issues (type from lm_issue_history)
   // plus LM's own alerts typed by resource_template_name (the datasource).
   logicmonitor: () => logicmonitorBackfill(),
+  // Derived platforms read their types through the connector feeds (owner-aware:
+  // only the devices of the platform's vendor keys), never the connector tables.
+  f5: () => derivedBackfill('f5'),
 
   // zerto keeps its own zerto_alert_catalog (per-code toggles) - no entry here.
 };
@@ -628,6 +639,39 @@ function issueHistoryBackfill(table) {
   `).all();
 }
 
+/** Alert types a derived platform has seen, from the connector feeds
+ *  `issues` (type of each open issue) and `alerts` (the LM datasource, the same
+ *  type the connector's own collector uses). Empty while the platform is absent. */
+function derivedBackfill(id) {
+  const info = registry.listDerived().find((d) => d.id === id);
+  if (!info || !info.present) return [];
+  const feeds = require('../core/feeds');
+  const byType = new Map();
+  const add = (type, first, last) => {
+    if (!type) return;
+    const prev = byType.get(type);
+    if (!prev) { byType.set(type, { type, firstSeen: first || null, lastSeen: last || null }); return; }
+    if (first && (!prev.firstSeen || first < prev.firstSeen)) prev.firstSeen = first;
+    if (last && (!prev.lastSeen || last > prev.lastSeen)) prev.lastSeen = last;
+  };
+  const listOf = (res) => (Array.isArray(res) ? res : (res && Array.isArray(res.rows) ? res.rows : []));
+  const toDt = (v) => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return new Date(v < 1e12 ? v * 1000 : v).toISOString().replace('T', ' ').slice(0, 19);
+    return String(v).replace('T', ' ').slice(0, 19);
+  };
+  for (const vendorKey of info.vendorKeys) {
+    for (const r of listOf(feeds.query(info.derivedFrom, 'issues', { vendorKey }))) {
+      add(r.type, toDt(r.firstSeen ?? r.first_seen), toDt(r.lastSeen ?? r.last_seen));
+    }
+    for (const r of listOf(feeds.query(info.derivedFrom, 'alerts', { vendorKey, open: true }))) {
+      add(r.resourceTemplateName ?? r.resource_template_name ?? r.datasource,
+        toDt(r.startEpoch ?? r.start_epoch ?? r.startedAt), toDt(r.capturedAt ?? r.captured_at ?? r.startEpoch ?? r.start_epoch));
+    }
+  }
+  return [...byType.values()];
+}
+
 function logicmonitorBackfill() {
   const has = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
   const byType = new Map();
@@ -637,15 +681,29 @@ function logicmonitorBackfill() {
     if (r.firstSeen && (!prev.firstSeen || r.firstSeen < prev.firstSeen)) prev.firstSeen = r.firstSeen;
     if (r.lastSeen && (!prev.lastSeen || r.lastSeen > prev.lastSeen)) prev.lastSeen = r.lastSeen;
   };
-  if (has('lm_issue_history')) issueHistoryBackfill('lm_issue_history').forEach(add);
+  // Rows owned by a present derived platform (F5 devices and their
+  // device-scoped issue types) belong to that platform's list, not this one.
+  let owner = () => 'logicmonitor';
+  try { owner = require('./logicmonitorVendors').ownerResolver(db); } catch { /* vendors module absent: everything is LM */ }
+  if (has('lm_issue_history')) {
+    db.prepare(`
+      SELECT type, source, target, datetime(MIN(first_seen)) AS firstSeen, datetime(MAX(last_seen)) AS lastSeen
+      FROM lm_issue_history WHERE type IS NOT NULL AND type != ''
+      GROUP BY type, source, target
+    `).all().forEach((r) => {
+      if (owner({ issueType: r.type, target: r.target }) === 'logicmonitor') add({ type: r.type, firstSeen: r.firstSeen, lastSeen: r.lastSeen });
+    });
+  }
   if (has('lm_alerts')) {
     db.prepare(`
-      SELECT resource_template_name AS type,
+      SELECT resource_template_name AS type, source_id AS sourceId, lm_device_id AS lmDeviceId,
              datetime(MIN(start_epoch), 'unixepoch') AS firstSeen,
              datetime(MAX(COALESCE(captured_at, datetime(start_epoch, 'unixepoch')))) AS lastSeen
       FROM lm_alerts WHERE resource_template_name IS NOT NULL AND resource_template_name != ''
-      GROUP BY resource_template_name
-    `).all().forEach(add);
+      GROUP BY resource_template_name, source_id, lm_device_id
+    `).all().forEach((r) => {
+      if (owner({ lmDeviceId: r.lmDeviceId, sourceId: r.sourceId }) === 'logicmonitor') add({ type: r.type, firstSeen: r.firstSeen, lastSeen: r.lastSeen });
+    });
   }
   return [...byType.values()];
 }
@@ -859,7 +917,7 @@ function platformGateOk(id) {
     // Older registries (icc-phase1) have no isBuiltinPresent; cohesity is always-on there.
     return typeof registry.isBuiltinPresent === 'function' ? registry.isBuiltinPresent('cohesity') : true;
   }
-  return entry?.enabled === true;
+  return entry?.enabled === true && registry.isPresent(id);
 }
 
 /**

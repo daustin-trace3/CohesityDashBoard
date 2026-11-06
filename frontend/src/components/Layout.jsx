@@ -73,6 +73,11 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === '1');
   // Pure/NetApp tabs stay hidden until enabled in Settings → Platforms.
   const [enabledPlatformIds, setEnabledPlatformIds] = useState(['cohesity']);
+  // Derived platforms (F5) have no sources of their own: they appear while the
+  // connector (LogicMonitor) has matching devices. Ids of those that are on and present.
+  const [derivedIds, setDerivedIds] = useState([]);
+  // id -> { matchedDevices, derivedFrom, label } for the footer line on a derived platform's pages.
+  const [derivedInfo, setDerivedInfo] = useState({});
   // Custom Dashboards ships dark — nav item hidden until enabled in Settings → Platforms.
   const [switcherMode, setSwitcherMode] = useState(getSwitcherMode);
   // Collapsible nav groups: {label: bool} open-state, persisted per platform.
@@ -149,10 +154,15 @@ export default function Layout() {
     const platform = getPlatform(id);
     return platform ? platform.isActive(pathname) : false;
   };
+  // Derived platform (F5) whose routes match the path: nav, title and chip follow it
+  // through the same branches an installed plugin uses.
+  const derivedActive = !isPlatform
+    ? allPlatforms.find(p => derivedIds.includes(p.id) && p.isActive(navPath))
+    : null;
   // Non-built-in (installed plugin) platform whose routes match the current
   // path, so plugin nav/branding shows up without special-casing each plugin.
   const activePluginPlatform = !isPlatform
-    ? allPlatforms.find(p => !builtinIds.includes(p.id) && p.isActive(navPath))
+    ? (derivedActive || allPlatforms.find(p => !builtinIds.includes(p.id) && p.isActive(navPath)))
     : null;
   const navPlatformKey = platformKey || (activePluginPlatform ? activePluginPlatform.id : 'cohesity');
 
@@ -228,7 +238,7 @@ export default function Layout() {
 
   // Sync chip is scoped to the platform being viewed (Pure pages show Pure
   // freshness, etc.); Cohesity pages also fold in the Helios licensing feed.
-  const syncScope = isOps ? 'all' : (platformKey || 'cohesity');
+  const syncScope = isOps ? 'all' : (platformKey || derivedActive?.id || 'cohesity');
   const { status: pollerStatus, refetch: refetchPoller, anySyncing, anyStale, anyError, anyDelayed, hasEntities, newestCapture } = usePollerStatus(syncScope);
   // What the pill is actually reporting. Error sticks until that source polls
   // cleanly again, so the tooltip has to name it or the pill says nothing.
@@ -512,7 +522,12 @@ export default function Layout() {
       .then(r => {
         return r;
       })
-      .then(r => setEnabledPlatformIds([
+      .then(r => {
+        const derivedRows = (Array.isArray(r.data.derivedPlatforms) ? r.data.derivedPlatforms : [])
+          .filter(d => d && d.enabled && d.present);
+        setDerivedIds(derivedRows.map(d => d.id));
+        setDerivedInfo(Object.fromEntries(derivedRows.map(d => [d.id, d])));
+        return setEnabledPlatformIds([
         ...(r.data.platformCohesityEnabled !== false ? ['cohesity'] : []),
         ...(r.data.platformPureEnabled ? ['pure'] : []),
         ...(r.data.platformNetappEnabled ? ['netapp'] : []),
@@ -524,7 +539,9 @@ export default function Layout() {
         ...(r.data.platformBrocadeEnabled ? ['brocade'] : []),
         ...(r.data.platformLogicmonitorEnabled ? ['logicmonitor'] : []),
         ...allPlatforms.filter(p => !builtinIds.includes(p.id)).map(p => p.id),
-      ]))
+        ...derivedRows.map(d => d.id),
+        ]);
+      })
       .catch(() => {});
     loadPlatforms();
     // SettingsPage fires this after saving so the tabs update without a reload.
@@ -560,6 +577,7 @@ export default function Layout() {
       items: group.items.filter(item =>
         (!item.requiresAi || aiEnabled)
         && (!item.requiresFamily || !lmFamiliesOff.has(item.requiresFamily))
+        && (!item.hiddenWhenPlatform || !enabledPlatformIds.includes(item.hiddenWhenPlatform))
         && (authLoading || hasPermission(requiredNavPermission(navPlatformKey, item)))),
     }))
     .filter(group => group.items.length > 0);
@@ -570,10 +588,13 @@ export default function Layout() {
   const footerOk = isPlatform ? platformAllOk : apiOnline;
   const footerPartial = isPlatform && platformHealthy > 0 && !platformAllOk;
   const footerDot = footerOk ? 'bg-status-ok shadow-glow-green' : footerPartial ? 'bg-status-warn' : 'bg-status-crit';
+  const derivedEntry = derivedActive ? derivedInfo[derivedActive.id] : null;
   const footerHeadline = isPlatform
     ? (platformCount === 0 ? `No ${noun}s connected`
       : platformAllOk ? `All ${noun}s operational`
       : `${platformHealthy} of ${platformCount} operational`)
+    : derivedEntry
+    ? `Fed by ${derivedEntry.derivedFrom === 'logicmonitor' ? 'LogicMonitor' : derivedEntry.derivedFrom}`
     : (apiOnline ? 'All systems operational' : 'API unreachable');
 
   return (
@@ -664,6 +685,8 @@ export default function Layout() {
                     ? (platformObjects != null && isLogicmonitor
                       ? `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''}, ${platformObjects} device${platformObjects !== 1 ? 's' : ''} in LogicMonitor`
                       : `${platformCount} ${noun}${platformCount !== 1 ? 's' : ''} monitored`)
+                    : derivedEntry
+                    ? `${derivedEntry.matchedDevices ?? 0} device${derivedEntry.matchedDevices === 1 ? '' : 's'} matched`
                     : `${clusterCount} cluster${clusterCount !== 1 ? 's' : ''} monitored`}
                 </p>
                 {newestCapture && <LastUpdated date={newestCapture} prefix="Data" />}

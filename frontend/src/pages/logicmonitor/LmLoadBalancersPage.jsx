@@ -34,18 +34,36 @@ function Frac({ bad, total }) {
   );
 }
 
-export default function LmLoadBalancersPage() {
+// apiBase lets the F5 platform reuse this page against /f5/load-balancers.
+export default function LmLoadBalancersPage({
+  apiBase = '/logicmonitor',
+  title = 'Load Balancers',
+  description = 'F5 BIG-IP failover, pools, GTM wide IPs, daemons and certificates, from the DataSource metrics tier',
+}) {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [open, setOpen] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const stateFilter = searchParams.get('state') || '';
 
-  const load = useCallback(() => client.get('/logicmonitor/load-balancers')
-    .then(({ data }) => { setRows(Array.isArray(data) ? data : arr(data?.items)); setLastRefreshed(new Date()); })
-    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load load balancers' }); }), [toast]);
+  const load = useCallback(() => client.get(`${apiBase}/load-balancers`)
+    .then(({ data }) => {
+      if (Array.isArray(data) || Array.isArray(data?.items)) { setLoadError(null); setRows(Array.isArray(data) ? data : arr(data?.items)); } else {
+        setLoadError('The service answered with a shape this page does not read. The service may be on an older version.');
+        setRows((cur) => cur || []);
+      }
+      setLastRefreshed(new Date());
+    })
+    .catch((e) => {
+      const status = e?.response?.status;
+      const text = e?.response?.data?.error || e?.response?.data?.message || e?.message || '';
+      setLoadError(`Failed to load load balancers${status ? ` (HTTP ${status})` : ''}${text ? `: ${text}` : ''}`);
+      setRows((cur) => cur || []);
+      toast({ type: 'error', title: 'Failed to load load balancers' });
+    }), [toast, apiBase]);
 
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
@@ -82,7 +100,7 @@ export default function LmLoadBalancersPage() {
       const site = ctl.filters.siteLabel ? all.find((r) => r.siteLabel === ctl.filters.siteLabel)?.siteKey : null;
       if (site) params.siteKey = site;
       if (stateFilter) params.state = STATE_PARAM[stateFilter];
-      await downloadCsv('/logicmonitor/load-balancers.csv', params, 'logicmonitor-load-balancers');
+      await downloadCsv(`${apiBase}/load-balancers.csv`, params, `${apiBase.replace(/^\//, '')}-load-balancers`);
     } catch { toast({ type: 'error', title: 'Export failed' }); }
     finally { setExporting(false); }
   };
@@ -92,7 +110,7 @@ export default function LmLoadBalancersPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Scale} title="Load Balancers" description="F5 BIG-IP failover, pools, GTM wide IPs, daemons and certificates, from the DataSource metrics tier">
+      <PageHeader icon={Scale} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -117,9 +135,10 @@ export default function LmLoadBalancersPage() {
           <button onClick={exportCsv} disabled={exporting} className={`${btn} ml-auto`}><Download size={12} /> {exporting ? 'Exporting...' : 'Export'}</button>
         </div>
 
+        {loadError && <p className="text-sm text-status-crit mb-3">{loadError}</p>}
         {rows == null ? <LoadingPanel label="Loading load balancers..." height={200} /> : list.length === 0 ? (
           <div className="text-sm text-ink-muted py-6 text-center">
-            {rows.length === 0 ? 'No load balancers collected yet. The metrics tier runs every 30 minutes by default; check Settings > Scope > Metric families.' : 'No load balancers match.'}
+            {rows.length === 0 ? (loadError ? '' : 'No load balancers collected yet. The metrics tier runs every 30 minutes by default; check Settings > Scope > Metric families.') : 'No load balancers match.'}
           </div>
         ) : (
           <>
@@ -168,7 +187,7 @@ export default function LmLoadBalancersPage() {
         )}
       </div>
 
-      {open && <LmLoadBalancer360 deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
+      {open && <LmLoadBalancer360 apiBase={apiBase} deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
     </div>
   );
 }

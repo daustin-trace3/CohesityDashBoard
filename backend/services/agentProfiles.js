@@ -188,7 +188,7 @@ function profileFor(id) {
 function enabledPlatformIds() {
   const ids = [];
   try {
-    for (const p of registry.listPlugins()) if (p.enabled && p.status !== 'error') ids.push(p.id);
+    for (const p of registry.listPlugins()) if (p.enabled && p.status !== 'error' && registry.isPresent(p.id)) ids.push(p.id);
   } catch { /* registry not ready */ }
   if (!ids.includes('cohesity') && getSetting('platform_cohesity_enabled') !== '0') ids.unshift('cohesity');
   return ids;

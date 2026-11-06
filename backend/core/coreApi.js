@@ -27,6 +27,11 @@ function buildCoreApi(overrides = {}) {
       if (overrides.advisor) return overrides.advisor;
       return require('../services/platformAdvisor'); // { createPlatformAdvisor, linReg, parseUtcMs, fmtBytes }
     },
+    get feeds() {
+      if (overrides.feeds) return overrides.feeds;
+      const f = require('./feeds');
+      return Object.freeze({ query: f.query, hasFeed: f.hasFeed, listConnectors: f.listConnectors });
+    },
     get anonymizer() {
       if (overrides.anonymizer) return overrides.anonymizer;
       return require('../services/anonymizer'); // { createAnonymizer, PROMPT_NOTE }

@@ -43,6 +43,13 @@ function cohesityRow() {
   };
 }
 
+/** Derived platforms (fed by a connector, no sources of their own) carry the
+ *  connector id, the matched device count and whether it is present. */
+function derivedFields(id, derivedFrom) {
+  const matchedDevices = registry.presenceOf(id);
+  return { derived: true, derivedFrom, matchedDevices, present: matchedDevices > 0 };
+}
+
 /** GET /api/plugins — built-ins + installed, merged with on-disk pending state. */
 router.get('/', requirePermission('admin:plugins:view'), (req, res) => {
   const pluginsDir = pluginBoot.getPluginsDir();
@@ -58,13 +65,14 @@ router.get('/', requirePermission('admin:plugins:view'), (req, res) => {
       id: entry.id,
       name: entry.name,
       version: entry.version,
-      source: isInstalled ? 'installed' : 'builtin',
+      source: entry.derived ? 'derived' : (isInstalled ? 'installed' : 'builtin'),
       status: entry.status,
       error: entry.error,
       enabled: entry.enabled,
       hasFrontend: isInstalled && fs.existsSync(path.join(pluginsDir, entry.id, 'frontend', 'bundle.js')),
       pendingAction,
       entitled: entry.entitled,
+      ...(entry.derived ? derivedFields(entry.id, entry.derivedFrom) : {}),
     };
   });
 
