@@ -809,8 +809,6 @@ export default function Layout() {
           )}
         </header>
 
-        <LicenseExpiryBar />
-
         {servicesRowVisible && (
           <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Services</span>
