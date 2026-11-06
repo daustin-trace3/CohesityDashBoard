@@ -180,9 +180,7 @@ if (require.main === module) {
         stamp();
         setInterval(stamp, 5 * 60 * 1000).unref();
         // Service group history is rebuilt at boot so the current dot matches the live rollup.
-        forEachTenant(() => {
-          try { require('./demo/scenarios/serviceGroupsStatus').seedServiceGroupsHistory(db); } catch (err) { logger.warn(`[Demo] service group history failed: ${err.message}`); }
-        });
+        try { require('./demo/scenarios/serviceGroupsStatus').seedServiceGroupsHistory(db); } catch (err) { logger.warn(`[Demo] service group history failed: ${err.message}`); }
       } catch (err) {
         logger.warn(`[Demo] poller status refresh failed: ${err.message}`);
       }

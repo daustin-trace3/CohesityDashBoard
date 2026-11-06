@@ -756,7 +756,7 @@ module.exports = [
   // Service groups on the Ops page: one row per state change of a LogicMonitor
   // service group, same rule as service_status_timeline for platforms.
   {
-    version: 35,
+    version: 34, // feat/multi-tenant numbers this v35
     up(db) {
       db.exec(`
         CREATE TABLE IF NOT EXISTS service_group_status_timeline (
