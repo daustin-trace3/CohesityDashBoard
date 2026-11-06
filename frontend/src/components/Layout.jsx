@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot, Sparkles,
-  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HeartPulse, Layers,
+  Bell, Server, HardDrive, PanelLeftClose, PanelLeftOpen, Hexagon, ShieldCheck, Settings, LogOut, Activity, Crosshair, Waypoints, LayoutGrid, ChevronDown, HeartPulse, Layers, ChevronLeft,
 } from 'lucide-react';
 import NotificationBell from './NotificationBell';
 import GlobalSearch from './GlobalSearch';
@@ -17,12 +17,15 @@ import { usePlatforms } from '../platforms/PlatformsContext';
 import { useAuth } from '../auth/AuthContext';
 import { PlatformDropdown, PlatformRail, PlatformGrid, getSwitcherMode } from './PlatformSwitcher';
 import { useAiEnabled } from '../api/useAiEnabled';
+import { useLmServices } from '../api/useLmServices';
 
 const builtinIds = builtinPlatforms.map(p => p.id);
 
 // Cross-platform Ops Monitor — a pseudo-platform entry so every switcher
 // style (tabs/dropdown/rail/grid) offers a way back to the landing page.
 const OPS_ENTRY = { id: 'ops', label: 'Ops', route: '/ops', color: '#8FA3B0' };
+const SERVICE_DOT = { ok: 'bg-status-ok', degraded: 'bg-status-warn', failed: 'bg-status-crit', unknown: 'bg-ink-faint' };
+const SERVICE_WORD = { ok: 'Operational', degraded: 'Degraded', failed: 'Failed', unknown: 'No devices' };
 const opsNavGroups = [{
   label: 'Estate',
   items: [
@@ -198,6 +201,16 @@ export default function Layout() {
       .catch(() => { if (!cancelled) setLmFamiliesOff(new Set()); });
     return () => { cancelled = true; };
   }, [isLogicmonitor, pathname]);
+
+  // Header services row: while the browser is on a LogicMonitor page the platform
+  // tabs give way to one tab per picked service. Gate on the real pathname, since
+  // navPath and isLogicmonitor fall back to the remembered platform on /admin.
+  const onLmPage = pathname === '/logicmonitor' || pathname.startsWith('/logicmonitor/');
+  const lmServices = useLmServices(onLmPage);
+  const [showPlatformsRow, setShowPlatformsRow] = useState(false);
+  useEffect(() => { if (!onLmPage) setShowPlatformsRow(false); }, [onLmPage]);
+  const activeServiceId = onLmPage ? (pathname.match(/^\/logicmonitor\/services\/([^/]+)/)?.[1] ?? null) : null;
+  const servicesRowVisible = switcherMode === 'tabs' && onLmPage && !showPlatformsRow && lmServices.length > 0;
 
   const visiblePlatforms = [OPS_ENTRY, ...platforms.filter(p => enabledPlatformIds.includes(p.id) && (authLoading || hasPermission(`${p.id}:*:view`)))];
   const pathPlatformId = (pathname.startsWith('/admin') || pathname.startsWith('/login'))
@@ -805,14 +818,51 @@ export default function Layout() {
         {/* Vendor platform tabs — hidden entirely while Cohesity is the only enabled platform */}
         {multiPlatform && switcherMode === 'tabs' && (
           <div className="flex items-center gap-1.5 px-5 pt-4 pb-1 flex-shrink-0">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">Platform</span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint mr-2">{servicesRowVisible ? 'Services' : 'Platform'}</span>
+            {servicesRowVisible ? (
+            <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1 min-w-0 overflow-x-auto" role="group" aria-label="LogicMonitor services">
+              <button
+                type="button"
+                onClick={() => setShowPlatformsRow(true)}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer text-ink-muted hover:text-ink flex-shrink-0"
+              >
+                <ChevronLeft size={13} />
+                Platforms
+              </button>
+              <span className="w-px h-4 bg-cohesity-border flex-shrink-0" aria-hidden="true" />
+              {lmServices.map(s => {
+                const active = s.serviceId === activeServiceId;
+                const state = s.state || 'unknown';
+                const word = SERVICE_WORD[state] || SERVICE_WORD.unknown;
+                const c = s.counts || {};
+                return (
+                  <button
+                    key={s.serviceId}
+                    type="button"
+                    onClick={() => { setShowPlatformsRow(false); navigate(`/logicmonitor/services/${encodeURIComponent(s.serviceId)}`); }}
+                    aria-current={active ? 'page' : undefined}
+                    aria-label={`${s.label}, ${word}`}
+                    title={`${s.label}: ${word} (${c.crit || 0} failed, ${c.warn || 0} degraded, ${c.ok || 0} ok of ${c.total || 0})`}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer flex-shrink-0 ${
+                      active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${SERVICE_DOT[state] || SERVICE_DOT.unknown}`} />
+                    <span className="truncate max-w-[160px]">{s.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            ) : (
             <div className="flex items-center gap-1 rounded-lg bg-surface border border-cohesity-border p-1">
               {visiblePlatforms.map(p => {
                 const active = isActivePlatform(p.id, pathname);
                 return (
                   <button
                     key={p.id}
-                    onClick={() => navigate(p.route)}
+                    type="button"
+                    aria-current={active ? 'page' : undefined}
+                    onClick={() => { setShowPlatformsRow(false); navigate(p.route); }}
                     className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md text-[12px] font-medium transition-colors duration-150 cursor-pointer ${
                       active ? 'bg-surface-overlay text-ink shadow-panel' : 'text-ink-muted hover:text-ink'
                     }`}
@@ -823,6 +873,7 @@ export default function Layout() {
                 );
               })}
             </div>
+            )}
           </div>
         )}
 

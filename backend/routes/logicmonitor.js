@@ -2932,6 +2932,151 @@ router.get('/topology-links', [query('deviceId').optional().isInt().toInt(), que
   } catch (err) { next(err); }
 });
 
+// ---- Groups and services (round 14) ----------------------------------------
+
+const lmGroups = () => require('../services/logicmonitorGroups');
+const STATE_RANK = { failed: 0, degraded: 1, ok: 2, unknown: 3 };
+
+function groupDeviceRows(keys, states, lk) {
+  const bySource = new Map();
+  for (const k of keys) {
+    const [sid, did] = k.split(':').map(Number);
+    if (!bySource.has(sid)) bySource.set(sid, []);
+    bySource.get(sid).push(did);
+  }
+  const rows = [];
+  for (const [sid, ids] of bySource) {
+    for (const part of lmGroups().chunks(ids)) {
+      rows.push(...db.prepare(`${DEVICE_SELECT} WHERE d.source_id = ? AND d.stale = 0 AND d.lm_device_id IN (${part.map(() => '?').join(',')})`).all(sid, ...part));
+    }
+  }
+  return rows.map((r) => {
+    const st = states.get(`${r.source_id}:${r.lm_device_id}`) || { state: 'unknown', reasons: [] };
+    return { ...deviceOut(r, lk), state: st.state, reasons: st.reasons, subGroup: null };
+  });
+}
+const sortWorstFirst = (list) => list.sort((a, b) => (STATE_RANK[a.state] - STATE_RANK[b.state])
+  || String(a.displayName || a.name || '').localeCompare(String(b.displayName || b.name || '')));
+
+/** Devices for a tree node: direct members, or the whole branch with subGroup set to the direct child it sits under. */
+function nodeDevices(tree, node, descendants, lk) {
+  const keys = tree.membersOf(node.id, { direct: !descendants });
+  const list = groupDeviceRows(keys, tree.states, lk);
+  if (descendants) {
+    const direct = new Set(tree.membersOf(node.id, { direct: true }));
+    const bySub = new Map();
+    for (const child of tree.childrenOf(node.id)) {
+      for (const k of tree.membersOf(child.id)) if (!bySub.has(k)) bySub.set(k, child.name);
+    }
+    for (const d of list) {
+      const k = `${d.sourceId}:${d.id}`;
+      d.subGroup = direct.has(k) ? null : (bySub.get(k) || null);
+    }
+  }
+  return sortWorstFirst(list).slice(0, 2000);
+}
+
+router.get('/groups', [query('sourceId').optional().isInt({ min: 1 }).toInt(), validate], (req, res, next) => {
+  try {
+    const t = lmGroups().buildGroupTree(db, { sourceId: req.query.sourceId == null ? null : req.query.sourceId });
+    res.json({ generatedAt: t.generatedAt, summary: t.summary, nodes: t.nodes });
+  } catch (err) { next(err); }
+});
+
+router.get('/groups/:groupId/devices', [
+  param('groupId').isInt({ min: 0 }).toInt(),
+  query('sourceId').optional().isInt({ min: 1 }).toInt(),
+  query('descendants').optional().isIn(['0', '1', 'true', 'false']),
+  validate,
+], (req, res, next) => {
+  try {
+    let sourceId = req.query.sourceId;
+    if (sourceId == null) {
+      const srcs = db.prepare('SELECT id FROM lm_sources').all();
+      if (srcs.length > 1) return res.status(400).json({ error: 'Invalid parameters', details: [{ path: 'sourceId', msg: 'sourceId is required when more than one portal is registered' }] });
+      sourceId = srcs.length ? srcs[0].id : null;
+    }
+    if (sourceId == null) return res.status(404).json({ error: 'Group not found' });
+    const tree = lmGroups().buildGroupTree(db, { sourceId });
+    const node = tree.node(`${sourceId}:${req.params.groupId}`);
+    if (!node) return res.status(404).json({ error: 'Group not found' });
+    const descendants = ['1', 'true'].includes(String(req.query.descendants));
+    res.json({ group: node, devices: nodeDevices(tree, node, descendants, lookups()) });
+  } catch (err) { next(err); }
+});
+
+router.get('/services', (req, res, next) => {
+  try {
+    res.json({ generatedAt: new Date().toISOString(), services: lmGroups().services(db) });
+  } catch (err) { next(err); }
+});
+
+/** Open ops incidents whose host (or any alert host) names a device in the branch. Zero when the ops tables are absent. */
+function openIncidentCount(names) {
+  if (!names.size) return 0;
+  try {
+    const ids = new Set();
+    for (const r of db.prepare("SELECT id, host FROM ops_incidents WHERE state NOT IN ('resolved', 'closed')").all()) {
+      if (r.host && names.has(String(r.host).toLowerCase())) ids.add(r.id);
+    }
+    for (const r of db.prepare(`
+      SELECT a.incident_id, a.host FROM ops_incident_alerts a JOIN ops_incidents i ON i.id = a.incident_id
+      WHERE i.state NOT IN ('resolved', 'closed') AND a.host IS NOT NULL
+    `).all()) {
+      if (names.has(String(r.host).toLowerCase())) ids.add(r.incident_id);
+    }
+    return ids.size;
+  } catch { return 0; }
+}
+
+router.get('/services/:serviceId', (req, res, next) => {
+  try {
+    const m = /^(\d+)-(\d+)$/.exec(String(req.params.serviceId));
+    const svc = m ? lmGroups().services(db).find((s) => s.serviceId === req.params.serviceId && !s.missing) : null;
+    if (!svc) return res.status(404).json({ error: 'Service not found' });
+    const tree = lmGroups().buildGroupTree(db, { sourceId: svc.sourceId });
+    const node = tree.node(svc.id);
+    const keys = tree.membersOf(node.id);
+    const lk = lookups();
+    const devices = nodeDevices(tree, node, true, lk);
+    const subGroups = tree.descendantsOf(node.id);
+    let crit = 0; let warn = 0; let issuesOpen = 0;
+    const sites = new Set();
+    const names = new Set();
+    const devIds = [];
+    for (const k of keys) {
+      const st = tree.states.get(k);
+      if (!st) continue;
+      crit += st.openCritAlerts; warn += st.openWarnAlerts; issuesOpen += st.openIssues;
+      if (st.siteKey) sites.add(st.siteKey);
+      if (st.name) names.add(String(st.name).toLowerCase());
+      if (st.displayName) names.add(String(st.displayName).toLowerCase());
+      devIds.push(st.deviceId);
+    }
+    let total = 0; let down = 0;
+    for (const part of lmGroups().chunks(devIds)) {
+      const r = db.prepare(`
+        SELECT COUNT(*) AS n, SUM(CASE WHEN status_text = 'down' AND COALESCE(stop_monitoring, 0) = 0 THEN 1 ELSE 0 END) AS d
+        FROM lm_interfaces WHERE source_id = ? AND stale = 0 AND circuit_role IN ('wan', 'site-link')
+          AND lm_device_id IN (${part.map(() => '?').join(',')})
+      `).get(svc.sourceId, ...part);
+      total += r.n || 0; down += r.d || 0;
+    }
+    res.json({
+      service: svc,
+      subGroups,
+      devices,
+      related: {
+        openAlerts: { critical: crit, warning: warn },
+        issuesOpen,
+        sitesTouched: [...sites].sort(),
+        circuits: { total, down },
+        openIncidents: openIncidentCount(names),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
 // ---- Config ----------------------------------------------------------------
 
 // Circuit map tile positions shared by everyone (round 13b): a JSON object { siteKey: { x, y } } kept as one
@@ -2954,7 +3099,35 @@ function checkMapLayout(v) {
   }
   return null;
 }
-const configPayload = () => ({ thresholds: allThresholds(), [MAP_LAYOUT_KEY]: mapLayoutValue(), ranges: buildRanges(), labels: buildLabels() });
+// Service groups (round 14): a JSON array of { sourceId, groupId, label? } kept as one app_settings text value.
+const SERVICE_KEY = 'lm_service_groups';
+const SERVICE_MAX_BYTES = 16 * 1024;
+const SERVICE_MAX = 64;
+function serviceGroupsValue() {
+  try { return String(getSetting(SERVICE_KEY) || ''); } catch { return ''; }
+}
+/** '' clears the picks. Returns an error string or null. */
+function checkServiceGroups(v) {
+  if (typeof v !== 'string') return 'must be a JSON string';
+  if (Buffer.byteLength(v) > SERVICE_MAX_BYTES) return 'must be 16 KB or less';
+  if (!v.trim()) return null;
+  let a;
+  try { a = JSON.parse(v); } catch { return 'must be valid JSON'; }
+  if (!Array.isArray(a)) return 'must be a JSON array';
+  if (a.length > SERVICE_MAX) return `must have at most ${SERVICE_MAX} entries`;
+  const seen = new Set();
+  for (const p of a) {
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return 'every entry needs sourceId and groupId';
+    if (!Number.isInteger(p.sourceId) || p.sourceId < 1) return 'sourceId must be a positive integer';
+    if (!Number.isInteger(p.groupId) || p.groupId < 0) return 'groupId must be a non-negative integer';
+    if (p.label !== undefined && (typeof p.label !== 'string' || p.label.trim().length < 1 || p.label.trim().length > 60)) return 'label must be 1 to 60 characters';
+    const k = `${p.sourceId}-${p.groupId}`;
+    if (seen.has(k)) return `group ${k} is picked twice`;
+    seen.add(k);
+  }
+  return null;
+}
+const configPayload = () => ({ thresholds: allThresholds(), [MAP_LAYOUT_KEY]: mapLayoutValue(), [SERVICE_KEY]: serviceGroupsValue(), ranges: buildRanges(), labels: buildLabels() });
 
 router.get('/config', (req, res, next) => {
   try { res.json(configPayload()); } catch (err) { next(err); }
@@ -2989,6 +3162,10 @@ router.put('/config', (req, res, next) => {
     if (src[MAP_LAYOUT_KEY] !== undefined) {
       const why = checkMapLayout(src[MAP_LAYOUT_KEY]);
       if (why) bad.push({ path: MAP_LAYOUT_KEY, msg: why }); else writes.push([MAP_LAYOUT_KEY, src[MAP_LAYOUT_KEY].trim()]);
+    }
+    if (src[SERVICE_KEY] !== undefined) {
+      const why = checkServiceGroups(src[SERVICE_KEY]);
+      if (why) bad.push({ path: SERVICE_KEY, msg: why }); else writes.push([SERVICE_KEY, src[SERVICE_KEY].trim()]);
     }
     if (bad.length) return res.status(400).json({ error: 'Invalid parameters', details: bad });
     const circuitKeys = new Set(['lm_wan_overrides', 'lm_carrier_aliases']);

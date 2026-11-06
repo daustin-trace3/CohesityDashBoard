@@ -634,7 +634,7 @@ describe('logicmonitor data routes', () => {
     const g = await request(app).get(`${API}/config`);
     expect(g.body.thresholds.lm_if_util_warn_pct).toBe(80);
     expect(g.body.thresholds.lm_check_data_calls_per_tick).toBe(200);
-    expect(Object.keys(g.body.thresholds)).toHaveLength(69);
+    expect(Object.keys(g.body.thresholds)).toHaveLength(71);
     for (const k of THRESHOLD_KEYS) expect(g.body.thresholds).toHaveProperty(k);
     expect(g.body.ranges.lm_if_util_warn_pct).toEqual({ min: 50, max: 100, default: 80 });
     const put = await request(app).put(`${API}/config`).send({ lm_if_util_warn_pct: 150, lm_if_flap_warn: 0, lm_dead_grace_min: 15 });
@@ -1822,5 +1822,131 @@ describe('logicmonitor round 11 routes: voice, zscaler, ise', () => {
     expect(one.body.issues.map((i) => i.type)).toEqual(['ise-cert-expiring']);
     expect(Object.keys(one.body)).toEqual(expect.arrayContaining(['device', 'summary', 'certificates', 'disks', 'nodes', 'history', 'issues']));
     expect((await request(app).get(`${API}/ise/403`)).status).toBe(404);
+  });
+});
+
+describe('logicmonitor round 14 routes: groups and services', () => {
+  const API = '/api/logicmonitor';
+  let sid;
+  beforeEach(() => {
+    wipe();
+    sid = insertSource({ name: 'Acme' });
+    // Top-level groups carry parent_id 1 with no row for id 1 (demo shape).
+    ins('lm_device_groups', { source_id: sid, lm_group_id: 10, parent_id: 1, name: 'Network', full_path: 'Network' });
+    ins('lm_device_groups', { source_id: sid, lm_group_id: 11, parent_id: 10, name: 'office-connectivity', full_path: 'Network/office-connectivity' });
+    ins('lm_device_groups', { source_id: sid, lm_group_id: 12, parent_id: 10, name: 'Core', full_path: 'Network/Core' });
+    const dev = (id, name, groups, over = {}) => ins('lm_devices', {
+      source_id: sid, lm_device_id: id, name: `10.1.0.${id}`, display_name: name, host_status: 'normal', alert_status: 'none',
+      sdt_status: 'none-none-none', group_ids_json: JSON.stringify(groups), is_network: 1, site_key: 'phx', ...over,
+    });
+    dev(201, 'okay-sw', [11]);
+    dev(202, 'warn-sw', [11]);
+    dev(203, 'dead-rt', [12], { host_status: 'dead', dead_since: sqlTs(2 * HOUR) });
+    dev(204, 'direct-sw', [10]);
+    ins('lm_alerts', { source_id: sid, lm_alert_id: 'G1', type: 'dataSourceAlert', severity: 3, severity_norm: 'warning', lm_device_id: 202,
+      resource_template_name: 'Cisco_CPU', cleared: 0, condition_key: 'g1' });
+    ins('lm_interfaces', { source_id: sid, lm_device_id: 203, instance_id: 9001, display_name: 'Te0/1', status_text: 'down', circuit_role: 'wan' });
+    ins('lm_interfaces', { source_id: sid, lm_device_id: 201, instance_id: 9002, display_name: 'Te0/2', status_text: 'up', circuit_role: 'site-link' });
+  });
+
+  it('GET /groups returns the tree, root-less top level at depth 0', async () => {
+    const res = await request(app).get(`${API}/groups`);
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body)).toEqual(['generatedAt', 'summary', 'nodes']);
+    const byId = Object.fromEntries(res.body.nodes.map((n) => [n.groupId, n]));
+    expect(byId[10]).toMatchObject({ id: `${sid}:10`, parentId: null, depth: 0, name: 'Network', fullPath: 'Network', dynamic: false, directDevices: 1, counts: { crit: 1, warn: 1, ok: 2, total: 4 }, state: 'failed' });
+    expect(byId[11]).toMatchObject({ parentId: 10, depth: 1, counts: { crit: 0, warn: 1, ok: 1, total: 2 }, state: 'degraded' });
+    expect(byId[12]).toMatchObject({ counts: { crit: 1, warn: 0, ok: 0, total: 1 }, state: 'failed' });
+    expect(res.body.summary).toMatchObject({ groups: 3, failed: 2, degraded: 1, devices: { crit: 1, warn: 1, ok: 2, total: 4 } });
+    expect((await request(app).get(`${API}/groups?sourceId=999`)).body.nodes).toEqual([]);
+    expect((await request(app).get(`${API}/groups?sourceId=abc`)).status).toBe(400);
+  });
+
+  it('descendants=1 lists the branch worst first with subGroup', async () => {
+    const res = await request(app).get(`${API}/groups/10/devices?descendants=1`);
+    expect(res.status).toBe(200);
+    expect(res.body.group.groupId).toBe(10);
+    expect(res.body.devices.map((d) => [d.displayName, d.state, d.subGroup])).toEqual([
+      ['dead-rt', 'failed', 'Core'], ['warn-sw', 'degraded', 'office-connectivity'], ['direct-sw', 'ok', null], ['okay-sw', 'ok', 'office-connectivity'],
+    ]);
+    expect(res.body.devices[0].reasons[0]).toMatch(/^dead since /);
+    expect(res.body.devices[0]).toHaveProperty('hostStatus', 'dead');
+    expect((await request(app).get(`${API}/groups/999/devices`)).status).toBe(404);
+  });
+
+  it('descendants absent or 0 lists direct members only', async () => {
+    const absent = await request(app).get(`${API}/groups/10/devices?sourceId=${sid}`);
+    expect(absent.body.devices.map((d) => [d.displayName, d.subGroup])).toEqual([['direct-sw', null]]);
+    const zero = await request(app).get(`${API}/groups/10/devices?descendants=0`);
+    expect(zero.body.devices.map((d) => d.displayName)).toEqual(['direct-sw']);
+    const leaf = await request(app).get(`${API}/groups/11/devices?descendants=0`);
+    expect(leaf.body.devices.map((d) => d.displayName)).toEqual(['warn-sw', 'okay-sw']);
+  });
+
+  it('GET /groups/:id/devices needs sourceId when there are two portals', async () => {
+    insertSource({ name: 'Other', company: 'other' });
+    expect((await request(app).get(`${API}/groups/10/devices`)).status).toBe(400);
+    expect((await request(app).get(`${API}/groups/10/devices?sourceId=${sid}`)).status).toBe(200);
+  });
+
+  it('GET /config carries the group thresholds under thresholds and the picks at top level', async () => {
+    const res = await request(app).get(`${API}/config`);
+    expect(res.body.thresholds.lm_group_fail_pct).toBe(10);
+    expect(res.body.thresholds.lm_group_fail_on_network_dead).toBe('1');
+    expect(res.body.lm_service_groups).toBe('');
+  });
+
+  it('GET /services keeps pick order, derived labels and missing picks; PUT /config validates', async () => {
+    expect((await request(app).get(`${API}/services`)).body.services).toEqual([]);
+    const picks = [{ sourceId: sid, groupId: 11 }, { sourceId: sid, groupId: 12, label: 'Core WAN' }, { sourceId: sid, groupId: 77 }];
+    const put = await request(app).put(`${API}/config`).send({ lm_service_groups: JSON.stringify(picks) });
+    expect(put.status).toBe(200);
+    expect(put.body.lm_service_groups).toBe(JSON.stringify(picks));
+    const res = await request(app).get(`${API}/services`);
+    expect(res.body.services.map((s) => [s.serviceId, s.label, s.state, s.missing])).toEqual([
+      [`${sid}-11`, 'Office Connectivity', 'degraded', false], [`${sid}-12`, 'Core WAN', 'failed', false], [`${sid}-77`, 'Group 77', 'unknown', true],
+    ]);
+    const bad = (v) => request(app).put(`${API}/config`).send({ lm_service_groups: v });
+    expect((await bad('not json')).status).toBe(400);
+    expect((await bad('{"a":1}')).status).toBe(400);
+    expect((await bad(JSON.stringify([{ sourceId: 1.5, groupId: 2 }]))).status).toBe(400);
+    expect((await bad(JSON.stringify([{ sourceId: 1, groupId: '2' }]))).status).toBe(400);
+    expect((await bad(JSON.stringify([{ sourceId: 1, groupId: 2, label: 'x'.repeat(61) }]))).status).toBe(400);
+    expect((await bad(JSON.stringify(Array.from({ length: 65 }, (_, i) => ({ sourceId: 1, groupId: i }))))).status).toBe(400);
+    expect((await bad(5)).status).toBe(400);
+    expect((await bad('')).status).toBe(200);
+    expect((await request(app).get(`${API}/config`)).body.lm_service_groups).toBe('');
+    expect((await request(app).get(`${API}/services`)).body.services).toEqual([]);
+  });
+
+  it('GET /services/:serviceId returns the branch, related counts and 404s unknown ids', async () => {
+    await request(app).put(`${API}/config`).send({ lm_service_groups: JSON.stringify([{ sourceId: sid, groupId: 10 }, { sourceId: sid, groupId: 77 }]) });
+    const res = await request(app).get(`${API}/services/${sid}-10`);
+    expect(res.status).toBe(200);
+    expect(res.body.service).toMatchObject({ serviceId: `${sid}-10`, label: 'Network', state: 'failed', missing: false });
+    expect(res.body.subGroups.map((n) => n.groupId).sort()).toEqual([11, 12]);
+    expect(res.body.devices).toHaveLength(4);
+    expect(res.body.related).toEqual({
+      openAlerts: { critical: 0, warning: 1 }, issuesOpen: 0, sitesTouched: ['phx'], circuits: { total: 2, down: 1 }, openIncidents: 0,
+    });
+    expect((await request(app).get(`${API}/services/${sid}-12`)).status).toBe(404);
+    expect((await request(app).get(`${API}/services/${sid}-77`)).status).toBe(404);
+    expect((await request(app).get(`${API}/services/nope`)).status).toBe(404);
+  });
+
+  it('answers quickly on a 760-group, 350-device estate', async () => {
+    wipe();
+    const s2 = insertSource({ name: 'Big' });
+    ins('lm_device_groups', { source_id: s2, lm_group_id: 1000, parent_id: 1, name: 'Top', full_path: 'Top' });
+    for (let g = 1; g <= 760; g += 1) ins('lm_device_groups', { source_id: s2, lm_group_id: g, parent_id: g <= 40 ? 1000 : 1 + (g % 40), name: `g${g}`, full_path: `Top/g${g}` });
+    for (let d = 1; d <= 350; d += 1) {
+      ins('lm_devices', { source_id: s2, lm_device_id: d, name: `h${d}`, display_name: `h${d}`, host_status: d % 50 === 0 ? 'dead' : 'normal', dead_since: sqlTs(HOUR), sdt_status: 'none-none-none', group_ids_json: JSON.stringify([1 + (d % 760), 1 + ((d * 7) % 760)]) });
+    }
+    const t0 = Date.now();
+    const res = await request(app).get(`${API}/groups`);
+    const ms = Date.now() - t0;
+    expect(res.body.nodes.length).toBeGreaterThan(700);
+    expect(ms).toBeLessThan(1000);
+    console.log(`groups 760 nodes / 350 devices: ${ms} ms`);
   });
 });

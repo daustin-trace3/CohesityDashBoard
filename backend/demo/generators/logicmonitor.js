@@ -123,6 +123,21 @@ const GROUPS = [
   [14, 'Network/Sites/Phoenix DC'], [15, 'Network/Sites/Dallas DC'],
   [16, 'Network/Sites/New York DC'], [17, 'Network/Sites/London DC'],
 ];
+// Round 14: parent rows so the tree is real. Ids 18 to 22 were free.
+const PARENT_GROUPS = [
+  [18, 'Network', 1], [19, 'Servers', 1], [20, 'Cloud', 1], [21, 'Network/Branch', 18], [22, 'Network/Sites', 18],
+];
+function parentGroupId(path) {
+  const parts = path.split('/');
+  if (parts[0] === 'Network') {
+    if (parts[1] === 'Branch') return 21;
+    if (parts[1] === 'Sites') return 22;
+    return 18;
+  }
+  if (parts[0] === 'Servers') return 19;
+  if (parts[0] === 'Cloud') return 20;
+  return 1;
+}
 const DC_SITE_GROUP = { phx: 14, dal: 15, nyc: 16, lon: 17 };
 const GROUP_ID = Object.fromEntries(GROUPS.map(([id, path]) => [path, id]));
 
@@ -1042,15 +1057,29 @@ function seedLogicmonitor(db, { now, encrypt }) {
     const insGroup = db.prepare(`
       INSERT INTO lm_device_groups (source_id, lm_group_id, parent_id, name, full_path, description, group_type,
         applies_to, num_of_hosts, num_of_direct_devices, group_status, disable_alerting, custom_props_json, stale, updated_at)
-      VALUES (?, ?, 1, ?, ?, ?, 'Normal', ?, ?, ?, ?, 0, ?, 0, datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, 'Normal', ?, ?, ?, ?, 0, ?, 0, datetime('now'))
     `);
+    const writeGroup = (gid, path, parentId, members, direct) => {
+      const worst = members.some((d) => d.hostStatus !== 'normal') ? 'dead' : 'normal';
+      insGroup.run(sid, gid, parentId, path.split('/').pop(), path, `${path} devices`, path.startsWith('Cloud') ? 'system.cloud.category == "AWS/EC2"' : '',
+        members.length, direct, worst, JSON.stringify([{ name: 'owner', value: path.startsWith('Network') ? 'netops' : 'infra' }]));
+    };
     for (const [gid, path] of GROUPS) {
       const members = devices.filter((d) => d.groups.includes(gid));
-      const worst = members.some((d) => d.hostStatus !== 'normal') ? 'dead' : 'normal';
-      insGroup.run(sid, gid, path.split('/').pop(), path, `${path} devices`, path.startsWith('Cloud') ? 'system.cloud.category == "AWS/EC2"' : '',
-        members.length, members.length, worst, JSON.stringify([{ name: 'owner', value: path.startsWith('Network') ? 'netops' : 'infra' }]));
+      writeGroup(gid, path, parentGroupId(path), members, members.length);
     }
-    counts.groups = GROUPS.length;
+    // Parent rows: distinct devices under the path prefix, none direct.
+    for (const [gid, path, parentId] of PARENT_GROUPS) {
+      const ids = new Set(GROUPS.filter(([, p]) => p.startsWith(`${path}/`)).map(([g]) => g));
+      writeGroup(gid, path, parentId, devices.filter((d) => d.groups.some((g) => ids.has(g))), 0);
+    }
+    // Services shown in the header row while on a LogicMonitor page.
+    db.prepare(`
+      INSERT INTO app_settings (key, value, updated_at) VALUES ('lm_service_groups', ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(JSON.stringify(['Network/Core', 'Network/Branch', 'Network/Firewalls', 'Servers/Linux', 'Servers/Windows', 'Cloud/AWS']
+      .map((p) => ({ sourceId: sid, groupId: p === 'Network/Branch' ? 21 : GROUP_ID[p] }))));
+    counts.groups = GROUPS.length + PARENT_GROUPS.length;
 
     // Interfaces first so devices get if_count / if_up.
     const insIf = db.prepare(`

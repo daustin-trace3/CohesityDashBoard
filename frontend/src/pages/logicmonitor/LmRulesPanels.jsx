@@ -137,7 +137,7 @@ export function LmInterfacesRulesPanel() {
   );
 }
 
-const DEV_KEYS = ['lm_dead_grace_min', 'lm_new_device_days', 'lm_alert_storm_count', 'lm_shadow_enabled', 'lm_path_max_hops'];
+const DEV_KEYS = ['lm_dead_grace_min', 'lm_new_device_days', 'lm_alert_storm_count', 'lm_shadow_enabled', 'lm_path_max_hops', 'lm_group_fail_pct', 'lm_group_fail_on_network_dead'];
 
 export function LmDevicesRulesPanel() {
   const cfg = useLmConfig(DEV_KEYS);
@@ -159,6 +159,12 @@ export function LmDevicesRulesPanel() {
       <SettingGroup title="Server path">
         <NumRow cfg={cfg} k="lm_path_max_hops" label="Maximum hops from a server" unit="hops"
           tip="How many switch, router or firewall hops ICC follows from a server toward the WAN edge when it builds a server path and picks the likely hop." />
+      </SettingGroup>
+      <SettingGroup title="Groups">
+        <NumRow cfg={cfg} k="lm_group_fail_pct" label="Group failed at" unit="% of devices"
+          tip="A group turns Failed when at least this share of its devices is failed. Below the line a failed device makes the group Degraded." />
+        <ToggleRow cfg={cfg} k="lm_group_fail_on_network_dead" label="A dead network device fails its groups"
+          tip="A dead network device turns every group it belongs to Failed regardless of the share." />
       </SettingGroup>
     </PanelShell>
   );

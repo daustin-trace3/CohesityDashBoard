@@ -694,8 +694,8 @@ describe('seedDemo.js', () => {
     expect(c("SELECT COUNT(*) c FROM lm_sources WHERE last_poll_status = 'error'")).toBe(1);
     expect(c('SELECT COUNT(*) c FROM lm_collectors')).toBe(6);
     expect(c('SELECT COUNT(*) c FROM lm_collectors WHERE is_down = 1')).toBe(1);
-    // 12 v1 groups plus 4 DC site groups (Network/Sites/<site>) added in round 3.
-    expect(c('SELECT COUNT(*) c FROM lm_device_groups')).toBe(16);
+    // 12 v1 groups plus 4 DC site groups (Network/Sites/<site>) added in round 3 plus 5 parent rows (round 14).
+    expect(c('SELECT COUNT(*) c FROM lm_device_groups')).toBe(21);
     // 140 monitored devices plus the 2 LM Uptime ping-check devices (deviceType 19),
     // plus 6 nyc/lon switches (round 2: 1 dist + 2 access per site), plus 7 round 3
     // switches (abq-dist-01 with 3 access switches, 3 unassigned-sw-* in no site group).

@@ -2,12 +2,14 @@ import { lazy } from 'react';
 import { Navigate } from 'react-router-dom';
 import {
   Gauge, Radar, MapPin, Bell, ClipboardCheck, Server, Cable, Waypoints, Cpu, Scale, ShieldAlert, GitMerge, LineChart, Sparkles, ShieldCheck, Settings, BrickWall, Split,
-  Wifi, RadioTower, Radio, Users, AppWindow, Phone, Cloud, Fingerprint, Share2,
+  Wifi, RadioTower, Radio, Users, AppWindow, Phone, Cloud, Fingerprint, Share2, FolderTree,
 } from 'lucide-react';
 import { BRAND } from '../../pages/logicmonitor/helpers';
 
 const LmOverviewPage = lazy(() => import('../../pages/logicmonitor/LmOverviewPage'));
 const LmReachabilityPage = lazy(() => import('../../pages/logicmonitor/LmReachabilityPage'));
+const LmGroupsPage = lazy(() => import('../../pages/logicmonitor/LmGroupsPage'));
+const LmServicePage = lazy(() => import('../../pages/logicmonitor/LmServicePage'));
 const LmSitesPage = lazy(() => import('../../pages/logicmonitor/LmSitesPage'));
 const LmCircuitsPage = lazy(() => import('../../pages/logicmonitor/LmCircuitsPage'));
 const LmCircuitMapPage = lazy(() => import('../../pages/logicmonitor/LmCircuitMapPage'));
@@ -43,6 +45,7 @@ const navGroups = [
     label: 'Monitor',
     items: [
       { label: 'Overview', route: B, icon: Gauge, isActive: (p) => p === B },
+      { label: 'Groups', route: `${B}/groups`, icon: FolderTree, isActive: under(`${B}/groups`) },
       { label: 'AI Advisor', route: `${B}/advisor`, icon: Sparkles, isActive: under(`${B}/advisor`), requiresAi: true },
       { label: 'Site Reachability', route: `${B}/reachability`, icon: Radar, isActive: under(`${B}/reachability`) },
       { label: 'Sites', route: `${B}/sites`, icon: MapPin, isActive: under(`${B}/sites`) },
@@ -118,6 +121,8 @@ export default {
   routes: [
     { path: 'logicmonitor', Component: LmOverviewPage },
     { path: 'logicmonitor/reachability', Component: LmReachabilityPage },
+    { path: 'logicmonitor/groups', Component: LmGroupsPage },
+    { path: 'logicmonitor/services/:serviceId', Component: LmServicePage },
     { path: 'logicmonitor/sites', Component: LmSitesPage },
     { path: 'logicmonitor/alerts', Component: LmAlertsPage },
     { path: 'logicmonitor/issues', Component: LmIssuesPage },
