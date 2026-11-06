@@ -6,7 +6,8 @@
 // and the check rules from logicmonitorChecks. Issue identity is
 // `type|source|target`.
 const { pruneInBatches } = require('../core/dbPrune');
-const { memoByDbState } = require('../core/dbMemo');
+const { memoByDbState, memoByTtl } = require('../core/dbMemo');
+const DS_INDEX_TTL_MS = 60000;
 const db = require('../db/database');
 const { getSetting } = require('./settings');
 const checks = require('./logicmonitorChecks');
@@ -400,7 +401,17 @@ function loadDsIndex(dbh = db, opts = {}) {
   // memoized: it is hundreds of MB on a large estate and must not outlive its tick.
   const narrowed = (Array.isArray(opts.families) && opts.families.length) || Array.isArray(opts.devices) || opts.deviceId != null;
   if (!narrowed) return buildDsIndex(dbh, opts);
-  return memoByDbState(dbh, dsIndexKey(opts), () => buildDsIndex(dbh, opts));
+  // 60 s time memo: the metric rows change on the metrics tick (30 min) while the
+  // database changes every few seconds, so a db-state memo rebuilt on nearly every
+  // page (four family loads at 0.2 s each on CG per Cisco overview).
+  return memoByTtl(dbh, dsIndexKey(opts), DS_INDEX_TTL_MS, () => buildDsIndex(dbh, opts), () => dsIndexToken(dbh));
+}
+
+/** Cheap change token for the metric tables: row counts and max rowids (an insert or delete moves it). */
+function dsIndexToken(dbh) {
+  const m = dbh.prepare('SELECT COUNT(*) c, MAX(rowid) r FROM lm_ds_metrics').get();
+  const i = dbh.prepare('SELECT COUNT(*) c, MAX(rowid) r FROM lm_ds_instances').get();
+  return `${m.c}|${m.r}|${i.c}|${i.r}`;
 }
 
 function buildDsIndex(dbh, opts) {

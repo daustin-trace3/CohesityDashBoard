@@ -1054,13 +1054,14 @@ router.get('/summary', (req, res, next) => {
     let hotInterfaceSeries = [];
     try {
       if (hotRows.length) {
-        const pairs = hotRows.map(() => '(source_id = ? AND instance_id = ?)').join(' OR ');
-        const rows = db.prepare(`
-          SELECT source_id, instance_id, captured_at, in_util_pct, out_util_pct FROM (
-            SELECT h.*, ROW_NUMBER() OVER (PARTITION BY source_id, instance_id ORDER BY datetime(captured_at) DESC, id DESC) rn
-            FROM lm_interface_history h WHERE ${pairs}
-          ) WHERE rn <= 24 ORDER BY datetime(captured_at) ASC
-        `).all(...hotRows.flatMap((i) => [i.source_id, i.instance_id]));
+        // One indexed LIMIT query per interface (idx_lm_if_hist_inst): the former
+        // single window query numbered every history row of these interfaces and
+        // sorted on datetime(captured_at), which no index serves (0.2 s a call on CG).
+        const lastIf = db.prepare(`
+          SELECT source_id, instance_id, captured_at, in_util_pct, out_util_pct FROM lm_interface_history
+          WHERE source_id = ? AND instance_id = ? ORDER BY captured_at DESC, id DESC LIMIT 24
+        `);
+        const rows = hotRows.flatMap((i) => lastIf.all(i.source_id, i.instance_id).reverse());
         hotInterfaceSeries = hotRows.map((i) => ({
           instanceId: i.instance_id, deviceName: i.device_name, displayName: i.display_name,
           points: rows.filter((r) => r.source_id === i.source_id && r.instance_id === i.instance_id)
@@ -1071,15 +1072,14 @@ router.get('/summary', (req, res, next) => {
     let worstLinkSeries = [];
     try {
       if (worstRows.length) {
-        const pairs = worstRows.map(() => '(source_id = ? AND check_id = ? AND checkpoint_id = ?)').join(' OR ');
-        const rows = db.prepare(`
-          SELECT source_id, check_id, checkpoint_id, captured_at, sample_epoch, rtt_avg_ms, loss_pct FROM (
-            SELECT h.*, COALESCE(sample_epoch, CAST(strftime('%s', captured_at) AS INTEGER)) ts,
-              ROW_NUMBER() OVER (PARTITION BY source_id, check_id, checkpoint_id
-                ORDER BY COALESCE(sample_epoch, CAST(strftime('%s', captured_at) AS INTEGER)) DESC, id DESC) rn
-            FROM lm_check_history h WHERE ${pairs}
-          ) WHERE rn <= 24 ORDER BY ts ASC, id ASC
-        `).all(...worstRows.flatMap((w) => [w._sid, w.checkId, w._cp]));
+        // One indexed LIMIT query per check location (idx_lm_check_hist_sample): the
+        // former window query numbered every history row of these checkpoints with a
+        // COALESCE ordering no index serves (0.8 s a call on CG, on every LM page).
+        const lastCk = db.prepare(`
+          SELECT source_id, check_id, checkpoint_id, captured_at, sample_epoch, rtt_avg_ms, loss_pct FROM lm_check_history
+          WHERE source_id = ? AND check_id = ? AND checkpoint_id = ? ORDER BY sample_epoch DESC, id DESC LIMIT 24
+        `);
+        const rows = worstRows.flatMap((w) => lastCk.all(w._sid, w.checkId, w._cp).reverse());
         worstLinkSeries = worstRows.map((w) => ({
           checkId: w.checkId, checkName: w.checkName, checkpointLabel: w.checkpointLabel, baselineRttMs: w.baselineRttMs,
           points: rows.filter((r) => r.source_id === w._sid && r.check_id === w.checkId && r.checkpoint_id === w._cp)

@@ -44,4 +44,33 @@ function memoByDbState(db, key, fn) {
   return value;
 }
 
-module.exports = { memoByDbState };
+
+// Time-based memo for read models whose source tables change on a poll cadence
+// (minutes) while the database as a whole changes every few seconds (poller
+// heartbeat, other platforms): a data_version memo would miss almost every time.
+// A hit may be up to ttlMs stale, which the caller accepts (overview pages
+// refresh every 60 s). Same cache identity rules as memoByDbState.
+const ttlCaches = new WeakMap();
+// tokenFn (optional) returns a cheap change token for the source tables (row
+// count, max rowid); a hit also needs the same token, so an insert or delete
+// invalidates at once and only in-place refreshes ride out the TTL.
+function memoByTtl(db, key, ttlMs, fn, tokenFn) {
+  let bucket;
+  try {
+    let perFile = ttlCaches.get(db);
+    if (!perFile) { perFile = new Map(); ttlCaches.set(db, perFile); }
+    const fileId = typeof db.name === 'string' ? db.name : '';
+    bucket = perFile.get(fileId);
+    if (!bucket) { bucket = new Map(); perFile.set(fileId, bucket); }
+  } catch { return fn(); }
+  let token = '';
+  if (typeof tokenFn === 'function') { try { token = String(tokenFn()); } catch { token = String(Date.now()); } }
+  const hit = bucket.get(key);
+  if (hit && hit.token === token && Date.now() - hit.at < ttlMs) return hit.value;
+  const value = fn();
+  bucket.set(key, { at: Date.now(), value, token });
+  if (bucket.size > MAX_ENTRIES) bucket.delete(bucket.keys().next().value);
+  return value;
+}
+
+module.exports = { memoByDbState, memoByTtl };
