@@ -50,6 +50,25 @@ const DS_VENDOR_HINTS = [
   [/^(Cisco_ISE_|ntm_ise_|ntm_cisco_ise_|Cisco_Wireless_|ntm_wlc_|CiscoASA|Cisco_ASA_|ntm_asa_|Cisco_Nexus_|Cisco_SIP_)/, 'cisco', 'Cisco_'],
 ];
 
+// The kind vocabulary per vendor key (what classifyVendorKind can return) and a display label per kind.
+const VENDOR_KINDS = {
+  f5: ['bigip', 'gtm', 'f5os'],
+  cisco: ['switch', 'nexus', 'router', 'firewall', 'wireless', 'ap', 'ise', 'voice', 'ucs', 'esa'],
+  meraki: ['mx', 'ms', 'mr', 'mv', 'mg', 'other'],
+  paloalto: ['firewall', 'panorama'],
+  zscaler: ['zpa', 'nss'],
+  oracle: ['sbc'],
+  netscout: ['pfs', 'infinistream'],
+};
+const KIND_LABELS = {
+  bigip: 'BIG-IP', gtm: 'GTM', f5os: 'F5OS',
+  switch: 'Switch', nexus: 'Nexus', router: 'Router', firewall: 'Firewall', wireless: 'Wireless controller', ap: 'Access point',
+  ise: 'ISE', voice: 'Voice', ucs: 'UCS', esa: 'Email security',
+  mx: 'MX', ms: 'MS', mr: 'MR', mv: 'MV', mg: 'MG', other: 'Other',
+  panorama: 'Panorama', zpa: 'ZPA', nss: 'NSS', sbc: 'SBC', pfs: 'Packet flow switch', infinistream: 'InfiniStream',
+};
+const kindLabelOf = (kind) => KIND_LABELS[kind] || kind;
+
 const labelOf = (key) => VENDOR_LABELS[key] || key;
 
 /** The integer after 1.3.6.1.4.1. in a sysoid, or null. */
@@ -137,7 +156,9 @@ function vendorKeyFromDatasources(names) {
 }
 
 const hasDs = (names, re) => (names || []).some((n) => re.test(String(n)));
+const CISCO_AP_MODEL = /^(AIR-AP|C9[0-9]{3}AX|CW9)/i;
 const SWITCH_MODEL = /^(N[0-9]K|C9[0-9]{3}|WS-C|C3[0-9]{3}|C2960|C1000|CBS|IE-)/i;
+const CISCO_ROUTER_MODEL = /^(C8[0-9]{3}|C11[0-9]{2}|ISR|ASR|CISCO[0-9]{4})/i;
 
 /** vendor_kind for a keyed device. datasources (names) is optional; the DataSource rules re-run in the post-store pass. */
 function classifyVendorKind({ key, role, categories, model, sysinfo, sysoid, name, datasources } = {}) {
@@ -157,20 +178,31 @@ function classifyVendorKind({ key, role, categories, model, sysinfo, sysoid, nam
       if (/^SNS-/i.test(mdl) || hasDs(datasources, /^(Cisco_ISE_|ntm_ise_|ntm_cisco_ise_)/)) return 'ise';
       if (cats.some((c) => /^CiscoESA/i.test(c)) || /ironport|esa/i.test(mdl)) return 'esa';
       if (cats.some((c) => /^CiscoUCS/i.test(c))) return 'ucs';
-      if (role === 'wireless') return 'wireless';
+      // Access points before the controller test: a CW9xxx or C9xxxAX unit is an AP even when LM gave it role wireless.
+      if (cats.some((c) => /^CiscoCatalystAccessPoint/i.test(c)) || CISCO_AP_MODEL.test(mdl)) return 'ap';
+      // A WLC by model (AIR-CT, C9800) is a controller whatever role LM guessed.
+      if (role === 'wireless' || /^(AIR-CT|C9800)/i.test(mdl)) return 'wireless';
       if (role === 'firewall' || cats.some((c) => /^(CiscoASA|Cisco_FTD)$/i.test(c))) return 'firewall';
+      // A WAN edge router (C8300, C8500, ISR, ASR, C1100) stays a router even when it runs SIP
+      // as a CUBE; the Voice page still lists it through its Cisco_SIP_ DataSources.
+      if (role === 'router' || CISCO_ROUTER_MODEL.test(mdl) || /ISR Software|ASR[0-9]* Software|c8000(aes|aep|be)/i.test(info)) return 'router';
       if (hasDs(datasources, /^Cisco_SIP_/) && !nexus && !SWITCH_MODEL.test(mdl)) return 'voice';
-      if (role === 'router') return 'router';
       if (nexus) return 'nexus';
       return 'switch';
     }
     case 'paloalto':
       return /^M-[0-9]+/i.test(mdl) || /panorama/i.test(info) ? 'panorama' : 'firewall';
-    case 'meraki':
-      if (/^MX/i.test(mdl)) return 'mx';
-      if (/^MS/i.test(mdl)) return 'ms';
-      if (/^(MR|CW)/i.test(mdl)) return 'mr';
+    case 'meraki': {
+      // Model first, then the sysinfo banner ("Meraki MX250 Cloud Managed Security Appliance"); model is often empty.
+      for (const text of [mdl, info]) {
+        if (/\bMX\d/i.test(text)) return 'mx';
+        if (/\bMS\d/i.test(text)) return 'ms';
+        if (/\b(MR|CW)\d/i.test(text)) return 'mr';
+        if (/\bMV\d/i.test(text)) return 'mv';
+        if (/\bMG\d/i.test(text)) return 'mg';
+      }
       return 'other';
+    }
     case 'zscaler':
       return hasDs(datasources, /^ntm_zpa_|^Zscaler ZPA/i) || /zpa/i.test(String(name || '')) ? 'zpa' : 'nss';
     case 'oracle':
@@ -324,6 +356,6 @@ function applyDatasourceVendors(db, sourceId) {
 
 module.exports = {
   VENDOR_KEYS, VENDOR_LABELS, ENTERPRISE, VENDOR_HINTS, DS_VENDOR_HINTS, DEVICE_SCOPED_ISSUE_TYPES, DS_KINDS,
-  labelOf, enterpriseOf, isF5os, classifyVendorKey, classifyVendorKind, vendorKeyFromDatasources,
+  VENDOR_KINDS, KIND_LABELS, kindLabelOf, labelOf, enterpriseOf, isF5os, classifyVendorKey, classifyVendorKind, vendorKeyFromDatasources,
   isDeviceScopedIssueType, buildOwnerIndex, resolveTarget, ownerResolver, ownerPlatformFor, applyDatasourceVendors,
 };

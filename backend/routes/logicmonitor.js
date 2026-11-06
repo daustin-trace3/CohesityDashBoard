@@ -3397,21 +3397,10 @@ router.get('/metrics/families', (req, res, next) => {
 
 // ---- Shared device rollups --------------------------------------------------
 
-const FW_WHERE = `(d.role = 'firewall' OR d.vendor LIKE 'Palo Alto%' OR EXISTS (
-  SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = 'firewall'))`;
-
-function roleDevices(whereSql, q = {}) {
-  const where = ['d.stale = 0', whereSql];
-  const params = [];
-  if (q.q) {
-    where.push("(d.display_name LIKE ? ESCAPE '\\' OR d.name LIKE ? ESCAPE '\\' OR d.model LIKE ? ESCAPE '\\' OR d.ips_json LIKE ? ESCAPE '\\')");
-    const p = likePat(q.q);
-    params.push(p, p, p, p);
-  }
-  if (q.siteKey) { where.push('d.site_key = ?'); params.push(String(q.siteKey)); }
-  if (q.vendor) { where.push("COALESCE(d.vendor, 'Unknown') = ?"); params.push(String(q.vendor)); }
-  if (q.sourceId) { where.push('d.source_id = ?'); params.push(Number(q.sourceId)); }
-  return db.prepare(`${DEVICE_SELECT} WHERE ${where.join(' AND ')} ORDER BY d.display_name, d.source_id`).all(...params);
+const lmShared = () => require('../services/logicmonitorFamilyShared');
+/** Devices matching a role selector and the list filters; scope { vendorKeys, excludeOwned } narrows by vendor ownership. */
+function roleDevices(whereSql, q = {}, scope = {}) {
+  return lmShared().roleDevices(db, whereSql, q, scope);
 }
 
 /** Open computed issues that name this device (target is the device or starts with "<device> "). */
@@ -3437,33 +3426,6 @@ const sumMetric = (dev, metric) => {
   return inst.length ? inst.reduce((s, i) => s + i.m[metric].value, 0) : null;
 };
 
-/** Counter growth per unit time from history (monotonic series only), summed over instances; null when unknown. */
-function counterRates(metric, perSeconds, windowSec = 10800) {
-  const out = new Map();
-  try {
-    const since = nowSec() - windowSec;
-    const series = new Map();
-    for (const r of db.prepare(`
-      SELECT source_id, lm_device_id, hds_id, instance_key, sampled_at_epoch e, value v FROM lm_ds_metrics_history
-      WHERE metric = ? AND sampled_at_epoch >= ? ORDER BY sampled_at_epoch`).all(metric, since)) {
-      const k = `${r.source_id}:${r.lm_device_id}|${r.hds_id}|${r.instance_key}`;
-      if (!series.has(k)) series.set(k, []);
-      series.get(k).push(r);
-    }
-    for (const [k, pts] of series) {
-      if (pts.length < 2) continue;
-      let mono = true;
-      for (let i = 1; i < pts.length; i += 1) if (pts[i].v < pts[i - 1].v) { mono = false; break; }
-      const span = pts[pts.length - 1].e - pts[0].e;
-      if (!mono || span <= 0) continue;
-      const rate = ((pts[pts.length - 1].v - pts[0].v) / span) * perSeconds;
-      const dk = k.split('|')[0];
-      out.set(dk, (out.get(dk) || 0) + rate);
-    }
-  } catch { /* history table missing */ }
-  return out;
-}
-
 function historySeries(sourceId, deviceId, hdsId, key, metric, hours) {
   const since = nowSec() - Math.max(1, Number(hours) || 24) * 3600;
   return db.prepare(`
@@ -3488,61 +3450,13 @@ const devBase = (r, lk) => {
 
 // ---- Firewalls ---------------------------------------------------------------
 
-const fwBool = (v) => (v == null ? null : Math.round(v) === 1);
-// Round 12: a percent outside 0..100 is a wrong catalog pick, never shown as a number.
-const pctOnly = (v) => (v == null || !Number.isFinite(Number(v)) || v < 0 || v > 100 ? null : rnd1(v));
-
-function firewallRow(r, lk, dev, issues, rates) {
-  const L = lmIssues();
-  const dv = dev || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
-  const name = r.display_name || r.name;
-  const haEnabledRaw = L.devVal(dv, 'ha_enabled');
-  const haLocalRaw = L.devVal(dv, 'ha_local_state');
-  const haPeerRaw = L.devVal(dv, 'ha_peer_state');
-  const haOn = L.isHaEnabled(haEnabledRaw, haLocalRaw, haPeerRaw);
-  const haLocal = L.haText(haLocalRaw);
-  const haPeer = L.haText(haPeerRaw);
-  const act = L.devVal(dv, 'sessions_active');
-  const max = L.devVal(dv, 'sessions_max');
-  let util = L.devVal(dv, 'sessions_util_pct');
-  if (util == null && act != null && max) util = (act / max) * 100;
-  const core = L.devMax(dv, 'core_cpu_pct');
-  const mgmt = L.devVal(dv, 'mgmt_cpu_pct') ?? L.devVal(dv, 'asa_cpu_pct') ?? L.devVal(dv, 'cpu_pct');
-  const mem = L.devVal(dv, 'mem_pct') ?? L.devVal(dv, 'asa_mem_pct');
-  const tunnels = L.devInstances(dv, 'tunnel_state');
-  let tUp = L.devVal(dv, 'tunnels_up');
-  let tDown = L.devVal(dv, 'tunnels_down');
-  if (tUp == null && tDown == null && tunnels.length) {
-    tDown = tunnels.filter((i) => L.tunnelIsDown(i.m.tunnel_state.value)).length;
-    tUp = tunnels.length - tDown;
-  }
-  const dk = `${r.source_id}:${r.lm_device_id}`;
-  const devIssues = issuesOnDevice(issues, name);
-  const hasData = dv.instances.size > 0;
-  return {
-    ...devBase(r, lk),
-    haEnabled: hasData ? haOn : null,
-    haLocalState: haLocal,
-    haPeerState: haPeer,
-    haLocalRaw: haLocalRaw == null ? null : Math.round(haLocalRaw),
-    haPeerRaw: haPeerRaw == null ? null : Math.round(haPeerRaw),
-    haText: !hasData || (haLocalRaw == null && haPeerRaw == null) ? null : (haOn ? `${haLocal || 'n/a'} / ${haPeer || 'n/a'}` : 'off'),
-    sessionsActive: act,
-    sessionsMax: max,
-    sessionsUtilPct: pctOnly(util),
-    dataplaneCpuPct: core ? pctOnly(core.value) : null,
-    mgmtCpuPct: pctOnly(mgmt),
-    memPct: pctOnly(mem),
-    tunnelsUp: tUp,
-    tunnelsDown: tDown,
-    gpUsers: L.devVal(dv, 'gp_users_active'),
-    configSynced: fwBool(L.devVal(dv, 'config_synced')),
-    threatsPerHour: rates && rates.threats.has(dk) ? rnd1(rates.threats.get(dk)) : null,
-    droppedPerMin: rates && rates.dropped.has(dk) ? rnd1(rates.dropped.get(dk)) : null,
-    state: stateFromIssues(devIssues, hasData),
-    sampledAt: epochToIso(maxEpoch(dv)),
-  };
-}
+// The row and 360 model lives in services/logicmonitorFirewalls.js (derived platforms, round 2); the wireless,
+// voice and ISE models follow below. Every LogicMonitor route lists every vendor except the devices a PRESENT
+// derived platform owns (one home per device), so the options are built from the whitelisted query keys only.
+const lmFirewalls = () => require('../services/logicmonitorFirewalls');
+const famOpts = (qy, extra = {}) => ({
+  q: qy.q, siteKey: qy.siteKey, vendor: qy.vendor, sourceId: qy.sourceId, state: qy.state, kind: qy.kind, ...extra, vendorKeys: null, excludeOwned: true,
+});
 
 const FW_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'version', 'hostStatus', 'haText', 'sessionsActive', 'sessionsMax', 'sessionsUtilPct',
   'dataplaneCpuPct', 'mgmtCpuPct', 'memPct', 'tunnelsUp', 'tunnelsDown', 'gpUsers', 'configSynced', 'threatsPerHour', 'droppedPerMin', 'state', 'sampledAt'];
@@ -3555,94 +3469,25 @@ const dsListRules = [
   query('state').optional().isIn(['critical', 'warning', 'ok', 'unknown']),
 ];
 
-function firewallRows(q) {
-  const lk = lookups();
-  const devs = roleDevices(FW_WHERE, q);
-  const index = lmIssues().loadDsIndex(db, { families: ['firewall', 'health'] });
-  const issues = safeIssues();
-  const rates = { threats: counterRates('threats_total', 3600), dropped: counterRates('dropped', 60) };
-  let rows = devs.map((r) => firewallRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, rates));
-  if (q.state) rows = rows.filter((r) => r.state === q.state);
-  return rows;
-}
-
 // Literal .csv path before /firewalls/:deviceId.
 router.get('/firewalls.csv', dsListRules, validate, (req, res, next) => {
-  try { sendCsv(res, 'firewalls', firewallRows(req.query), FW_COLUMNS); } catch (err) { next(err); }
+  try { sendCsv(res, 'firewalls', lmFirewalls().listFirewalls(db, famOpts(req.query)), FW_COLUMNS); } catch (err) { next(err); }
 });
 router.get('/firewalls', dsListRules, validate, (req, res, next) => {
-  try { res.json(firewallRows(req.query)); } catch (err) { next(err); }
+  try { res.json(lmFirewalls().listFirewalls(db, famOpts(req.query))); } catch (err) { next(err); }
 });
 
 const deviceParams = [param('deviceId').isInt().toInt(), query('sourceId').optional().isInt().toInt()];
-/** Device row that also matches a role selector, else null. */
-function roleDevice(whereSql, id, sourceId) {
-  const args = [id];
-  let extra = '';
-  if (sourceId) { extra = ' AND d.source_id = ?'; args.push(sourceId); }
-  return db.prepare(`${DEVICE_SELECT} WHERE d.lm_device_id = ? AND d.stale = 0 AND ${whereSql}${extra} ORDER BY d.source_id LIMIT 1`).get(...args) || null;
+/** Device row that also matches a role selector (and the scope), else null. */
+function roleDevice(whereSql, id, sourceId, scope = {}) {
+  return lmShared().roleDevice(db, whereSql, id, sourceId, scope);
 }
-const rowsOf = (dev, metric) => (dev ? lmIssues().devInstances(dev, metric) : []);
-const num = (inst, metric) => (inst.m[metric] ? inst.m[metric].value : null);
 
 router.get('/firewalls/:deviceId', deviceParams, validate, (req, res, next) => {
   try {
-    const r = roleDevice(FW_WHERE, req.params.deviceId, req.query.sourceId);
-    if (!r) return notFound(res, 'Firewall');
-    const L = lmIssues();
-    const lk = lookups();
-    const idx = L.loadDsIndex(db, { sourceId: r.source_id, deviceId: r.lm_device_id });
-    const dev = idx.get(`${r.source_id}:${r.lm_device_id}`) || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
-    const issues = safeIssues();
-    const rates = { threats: counterRates('threats_total', 3600), dropped: counterRates('dropped', 60) };
-    const summary = firewallRow(r, lk, dev, issues, rates);
-    const byKey = (a, b) => String(a.name).localeCompare(String(b.name));
-    const ifState = (v) => (v == null ? null : (Math.round(v) === 1 ? 'up' : Math.round(v) === 0 ? 'down' : String(Math.round(v))));
-    const ha = rowsOf(dev, 'ha_if_state').map((i) => ({ name: i.name, state: ifState(num(i, 'ha_if_state')), raw: num(i, 'ha_if_state') })).sort(byKey);
-    const tunnels = rowsOf(dev, 'tunnel_state').map((i) => ({
-      name: i.name,
-      state: L.tunnelIsDown(num(i, 'tunnel_state')) ? 'down' : 'up',
-      stateRaw: num(i, 'tunnel_state'),
-      inBps: num(i, 'tunnel_in_bps'),
-      outBps: num(i, 'tunnel_out_bps'),
-    })).sort((a, b) => (a.state === b.state ? byKey(a, b) : a.state === 'down' ? -1 : 1));
-    const zoneInst = [...dev.instances.values()].filter((i) => i.m.zone_sessions || i.m.zone_in_bps || i.m.zone_out_bps);
-    const zones = zoneInst
-      .map((i) => ({ name: i.name, inBps: num(i, 'zone_in_bps'), outBps: num(i, 'zone_out_bps'), sessions: num(i, 'zone_sessions') })).sort(byKey);
-    const vsys = rowsOf(dev, 'vsys_sessions').map((i) => ({ name: i.name, sessions: num(i, 'vsys_sessions'), utilPct: rnd1(num(i, 'vsys_util_pct')) })).sort(byKey);
-    const gateways = rowsOf(dev, 'gp_users_active').map((i) => ({ name: i.name, users: num(i, 'gp_users_active'), maxUsers: num(i, 'gp_users_max'), tunnels: num(i, 'gp_tunnels') })).sort(byKey);
-    const logForwarding = rowsOf(dev, 'log_forwarded').map((i) => ({ name: i.name, forwarded: num(i, 'log_forwarded'), dropped: num(i, 'log_dropped') })).sort(byKey);
-    const hardware = {
-      disks: rowsOf(dev, 'disk_used_pct').map((i) => ({ name: i.name, usedPct: rnd1(num(i, 'disk_used_pct')) })).sort(byKey),
-      psus: [...new Map([...rowsOf(dev, 'psu_state'), ...rowsOf(dev, 'psu_low_alarm'), ...rowsOf(dev, 'psu_high_alarm')].map((i) => [i.name, i])).values()].map((i) => {
-        const alarm = (num(i, 'psu_low_alarm') || 0) + (num(i, 'psu_high_alarm') || 0);
-        const st = num(i, 'psu_state');
-        return { name: i.name, state: st != null ? st : alarm, ok: !(L.stateIsFault(st) || alarm >= 1), voltage: rnd1(num(i, 'cur_voltage')) };
-      }).sort(byKey),
-      temps: rowsOf(dev, 'temp_c').map((i) => ({ name: i.name, tempC: rnd1(num(i, 'temp_c')), alarm: i.m.temp_alarm ? Math.round(i.m.temp_alarm.value) !== 0 : null })).sort(byKey),
-      chassisWatts: L.devVal(dev, 'chassis_watts'),
-    };
-    const bgp = rowsOf(dev, 'bgp_peer_state').map((i) => ({
-      name: i.name, state: num(i, 'bgp_peer_state'), established: Math.round(num(i, 'bgp_peer_state')) === 6, prefixes: num(i, 'bgp_prefixes'),
-    })).sort(byKey);
-    const ospf = rowsOf(dev, 'ospf_nbr_state').map((i) => ({ name: i.name, state: num(i, 'ospf_nbr_state'), full: Math.round(num(i, 'ospf_nbr_state')) === 8 })).sort(byKey);
-    const name = r.display_name || r.name;
-    res.json({
-      device: deviceOut(r, lk),
-      summary,
-      ha,
-      tunnels,
-      zones,
-      vsys,
-      globalProtect: {
-        users: L.devVal(dev, 'gp_users_active'), maxUsers: L.devVal(dev, 'gp_users_max'), tunnels: L.devVal(dev, 'gp_tunnels'), gateways,
-      },
-      logForwarding,
-      hardware,
-      routing: { bgp, ospf },
-      sessionsHistory: { utilPct: deviceSeries(dev, 'sessions_util_pct', 24), active: deviceSeries(dev, 'sessions_active', 24) },
-      issues: issuesOnDevice(issues, name),
-    });
+    const out = lmFirewalls().firewallDetail(db, famOpts({}, { deviceId: req.params.deviceId, sourceId: req.query.sourceId }));
+    if (!out) return notFound(res, 'Firewall');
+    res.json(out);
   } catch (err) { next(err); }
 });
 
@@ -3680,261 +3525,9 @@ router.get('/load-balancers/:deviceId', [...deviceParams, query('page').optional
 
 // ---- Wireless (Cisco WLC DataSources) -------------------------------------------
 
-const WLC_WHERE = `(d.role = 'wireless' OR EXISTS (
-  SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = 'wireless'))`;
-const PROFILE_KEYS = { load: 'radio_load_profile', noise: 'radio_noise_profile', interference: 'radio_interference_profile', coverage: 'radio_coverage_profile' };
-const BANDS = ['2.4 GHz', '5 GHz', '5/6 GHz'];
-const profileText = (v) => (v == null ? null : Math.round(v) === 1 ? 'pass' : Math.round(v) === 2 ? 'fail' : String(Math.round(v)));
-const sumOf = (list, pick) => list.reduce((s, x) => s + (Number(pick(x)) || 0), 0);
-const anyVal = (list, pick) => list.some((x) => pick(x) != null);
-const wlcPlatform = (r) => (/C9800|9800/i.test(`${r.model || ''} ${r.sysinfo || ''}`) ? 'Catalyst 9800' : /AIR-CT|Cisco Controller/i.test(`${r.model || ''} ${r.sysinfo || ''}`) ? 'AireOS' : (r.vendor || null));
-
-/** Radios of one controller as page rows. */
-function radioRowsOf(dev, ctrl, util) {
-  const L = lmIssues();
-  const out = [];
-  const seen = new Set();
-  for (const inst of dev.instances.values()) {
-    if (inst.ds !== 'Cisco_Wireless_AccessPointRadio' || seen.has(inst.key)) continue;
-    seen.add(inst.key);
-    const v = (k) => (inst.m[k] ? inst.m[k].value : null);
-    const slot = L.slotOfRadio(inst.key);
-    const disabled = L.isDisabled(v('radio_admin'));
-    const oper = v('radio_oper');
-    out.push({
-      ...ctrl,
-      radio: inst.name,
-      ap: L.apOfRadio(inst.key),
-      slot,
-      band: L.bandOfSlot(slot),
-      // Counted in totals and alerts: enabled, client-serving slot.
-      counted: !disabled && L.isClientSlot(slot),
-      state: disabled ? 'disabled' : L.radioIsUp(oper) ? 'up' : L.radioIsDown(oper) ? 'down' : 'unknown',
-      channelUtilPct: rnd1(v('radio_util_pct')),
-      rxUtilPct: rnd1(v('radio_rx_util_pct')),
-      txUtilPct: rnd1(v('radio_tx_util_pct')),
-      clients: v('radio_clients'),
-      txPowerLevel: v('radio_tx_power'),
-      loadProfile: profileText(v('radio_load_profile')),
-      noiseProfile: profileText(v('radio_noise_profile')),
-      interferenceProfile: profileText(v('radio_interference_profile')),
-      coverageProfile: profileText(v('radio_coverage_profile')),
-      hot: v('radio_util_pct') != null && v('radio_util_pct') >= util,
-    });
-  }
-  return out;
-}
-
-/** AP ethernet ports of one controller grouped by AP name. */
-function apPortsOf(dev) {
-  const L = lmIssues();
-  const byAp = new Map();
-  for (const inst of dev.instances.values()) {
-    if (inst.ds !== 'Cisco_Wireless_AccessPointInterfaces') continue;
-    const v = (k) => (inst.m[k] ? inst.m[k].value : null);
-    const ap = L.apOfIf(inst.key);
-    if (!byAp.has(ap)) byAp.set(ap, []);
-    byAp.get(ap).push({
-      port: inst.key.slice(ap.length).replace(/^\s*-\s*/, '') || inst.key,
-      state: v('apif_oper') == null ? null : Math.round(v('apif_oper')) === 1 ? 'up' : Math.round(v('apif_oper')) === 2 ? 'down' : String(Math.round(v('apif_oper'))),
-      rxBps: v('apif_rx_bytes') == null ? null : v('apif_rx_bytes') * 8,
-      txBps: v('apif_tx_bytes') == null ? null : v('apif_tx_bytes') * 8,
-      inErrors: v('apif_in_errors'),
-      outErrors: v('apif_out_errors'),
-      inDrops: v('apif_in_drops'),
-      outDrops: v('apif_out_drops'),
-    });
-  }
-  return byAp;
-}
-
-/**
- * Everything the wireless pages read, built from one pass over the metric index:
- * controllers with their AP, radio and SSID rows. Filters: q, siteKey, sourceId.
- */
-function wirelessModel(q = {}) {
-  const L = lmIssues();
-  const lk = lookups();
-  const util = thr('lm_wlan_chan_util_warn_pct');
-  const devs = roleDevices(WLC_WHERE, q);
-  const index = L.loadDsIndex(db, { families: ['wireless', 'health'] });
-  const missing = L.loadMissingAps(db);
-  const issues = safeIssues();
-  const controllers = [];
-  for (const r of devs) {
-    const dk = `${r.source_id}:${r.lm_device_id}`;
-    const dev = index.get(dk) || { instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name };
-    const base = devBase(r, lk);
-    const ctrl = { controllerId: base.deviceId, sourceId: base.sourceId, controller: base.deviceName, siteKey: base.siteKey, siteName: base.siteName };
-    const radios = radioRowsOf(dev, ctrl, util);
-    const ports = apPortsOf(dev);
-    const radiosByAp = new Map();
-    for (const rd of radios) {
-      if (!radiosByAp.has(rd.ap)) radiosByAp.set(rd.ap, []);
-      radiosByAp.get(rd.ap).push(rd);
-    }
-    const aps = L.wirelessAps(dev, missing.get(dk)).map((a) => {
-      const all = radiosByAp.get(a.key) || [];
-      const rs = all.filter((x) => x.counted);
-      const ps = ports.get(a.key) || [];
-      const utilMax = rs.reduce((mx, x) => (x.channelUtilPct != null && (mx == null || x.channelUtilPct > mx) ? x.channelUtilPct : mx), null);
-      return {
-        ...ctrl,
-        ap: a.name,
-        apKey: a.key,
-        status: a.status,
-        operText: a.operText,
-        adminText: a.admin == null ? null : L.isDisabled(a.admin) ? 'disabled' : 'enabled',
-        since: a.since || null,
-        radiosTotal: rs.length,
-        radiosUp: rs.filter((x) => x.state === 'up').length,
-        radiosDown: rs.filter((x) => x.state === 'down').length,
-        clients: anyVal(rs, (x) => x.clients) ? sumOf(rs, (x) => x.clients) : null,
-        maxChannelUtilPct: utilMax,
-        util24: rs.find((x) => x.slot === 0)?.channelUtilPct ?? null,
-        util5: rs.find((x) => x.slot === 1)?.channelUtilPct ?? null,
-        uplinkState: ps.length ? (ps.some((p) => p.state === 'up') ? 'up' : 'down') : null,
-        uplinkRxBps: anyVal(ps, (p) => p.rxBps) ? sumOf(ps, (p) => p.rxBps) : null,
-        uplinkTxBps: anyVal(ps, (p) => p.txBps) ? sumOf(ps, (p) => p.txBps) : null,
-        uplinkErrors: anyVal(ps, (p) => p.inErrors) ? rnd1(sumOf(ps, (p) => p.inErrors) + sumOf(ps, (p) => p.outErrors)) : null,
-        sampledAt: epochToIso(a.epoch),
-      };
-    });
-    const ssids = [];
-    for (const inst of dev.instances.values()) {
-      if (!inst.m.ess_clients && !inst.m.ess_admin) continue;
-      const v = (k) => (inst.m[k] ? inst.m[k].value : null);
-      ssids.push({
-        ...ctrl, ssid: inst.name, wlan: inst.key, hdsId: inst.hds,
-        enabled: v('ess_admin') == null ? null : Math.round(v('ess_admin')) === 1,
-        broadcast: v('ess_broadcast') == null ? null : Math.round(v('ess_broadcast')) === 1,
-        clients: v('ess_clients'),
-      });
-    }
-    const radius = L.devInstances(dev, 'radius_status').map((i) => {
-      const v = (k) => (i.m[k] ? i.m[k].value : null);
-      const enabled = Math.round(v('radius_status')) === 1;
-      const answered = (v('radius_accepts') || 0) + (v('radius_rejects') || 0) + (v('radius_challenges') || 0);
-      return {
-        server: i.name, enabled, networkUsers: v('radius_network_user') == null ? null : Math.round(v('radius_network_user')) === 1,
-        requests: v('radius_requests'), accepts: v('radius_accepts'), rejects: v('radius_rejects'), challenges: v('radius_challenges'),
-        timeouts: v('radius_timeouts'), retransmissions: v('radius_retransmissions'), pending: v('radius_pending'),
-        state: !enabled ? 'disabled' : (v('radius_timeouts') || 0) > 0 && answered === 0 ? 'unresponsive' : 'ok',
-      };
-    });
-    const ha = L.devVal(dev, 'wlc_ha_peer_ok');
-    const primary = L.devVal(dev, 'wlc_primary_unit');
-    const mob = L.devVal(dev, 'wlc_mobility_status');
-    const essClients = anyVal(ssids, (s) => s.clients) ? sumOf(ssids, (s) => s.clients) : null;
-    const radioClients = anyVal(radios, (x) => x.clients) ? sumOf(radios, (x) => x.clients) : null;
-    const counted = radios.filter((x) => x.counted);
-    const upRadios = counted.filter((x) => x.state === 'up' && x.channelUtilPct != null);
-    const devIssues = issuesOnDevice(issues, base.deviceName);
-    const managed = aps.filter((a) => a.status !== 'disabled');
-    const cpu = L.devMax(dev, 'cpu_pct');
-    controllers.push({
-      dev,
-      r,
-      issues: devIssues,
-      radios,
-      aps,
-      ssids,
-      radius,
-      row: {
-        ...base,
-        platform: wlcPlatform(r),
-        haText: ha != null ? (Math.round(ha) === 1 ? 'hot standby' : 'degraded') : primary != null ? (Math.round(primary) === 1 ? 'primary' : 'secondary') : null,
-        haDegraded: ha != null && Math.round(ha) === 0,
-        cpuPct: cpu ? rnd1(cpu.value) : null,
-        memPct: rnd1(L.devMax(dev, 'mem_pct')?.value),
-        tempC: rnd1(L.devVal(dev, 'temp_c')),
-        apsTotal: managed.length,
-        apsUp: managed.filter((a) => a.status === 'up' || a.status === 'downloading').length,
-        apsDown: managed.filter((a) => L.apIsDown(a)).length,
-        apsDisabled: aps.length - managed.length,
-        apAvailablePct: (() => { const v = L.devVal(dev, 'wlc_ap_available_pct'); return v == null || v < 0 ? null : rnd1(v); })(),
-        radiosTotal: counted.length,
-        radiosUp: counted.filter((x) => x.state === 'up').length,
-        radiosDown: counted.filter((x) => x.state === 'down').length,
-        radiosDisabled: radios.filter((x) => x.state === 'disabled').length,
-        radiosAux: radios.filter((x) => !L.isClientSlot(x.slot)).length,
-        hotRadios: radios.filter((x) => x.hot).length,
-        avgChannelUtilPct: upRadios.length ? rnd1(sumOf(upRadios, (x) => x.channelUtilPct) / upRadios.length) : null,
-        clients: essClients ?? L.devVal(dev, 'wlc_clients') ?? radioClients,
-        clientsMax: L.devVal(dev, 'wlc_clients_max'),
-        clientUsagePct: rnd1(L.devVal(dev, 'wlc_client_usage_pct')),
-        ssids: ssids.length,
-        radiusServers: radius.length,
-        radiusUnresponsive: radius.filter((x) => x.state === 'unresponsive').length,
-        mobility: mob == null ? null : Math.round(mob) === 0 ? 'ok' : Math.round(mob) === 1 ? 'tunnels down' : 'check error',
-        state: stateFromIssues(devIssues, dev.instances.size > 0),
-        sampledAt: epochToIso(maxEpoch(dev)),
-      },
-    });
-  }
-  return { controllers, util };
-}
-
-/** Summed client series over WLAN instances, 30 minute buckets, last value carried forward per WLAN. */
-function clientTrend(hours = 24, filter = {}) {
-  const since = nowSec() - hours * 3600;
-  const step = 1800;
-  const where = ["metric = 'ess_clients'", 'sampled_at_epoch >= ?'];
-  const args = [since];
-  if (filter.sourceId) { where.push('source_id = ?'); args.push(filter.sourceId); }
-  if (filter.deviceId) { where.push('lm_device_id = ?'); args.push(filter.deviceId); }
-  let rows = [];
-  try {
-    rows = db.prepare(`SELECT source_id, lm_device_id, hds_id, instance_key, sampled_at_epoch e, value v FROM lm_ds_metrics_history WHERE ${where.join(' AND ')} ORDER BY sampled_at_epoch`).all(...args);
-  } catch { return { total: [], bySeries: new Map() }; }
-  const buckets = new Map();
-  for (const r of rows) {
-    const b = Math.floor(r.e / step) * step;
-    if (!buckets.has(b)) buckets.set(b, new Map());
-    buckets.get(b).set(`${r.source_id}:${r.lm_device_id}|${r.hds_id}|${r.instance_key}`, r.v);
-  }
-  const last = new Map();
-  const total = [];
-  const bySeries = new Map();
-  for (const b of [...buckets.keys()].sort((a, c) => a - c)) {
-    for (const [k, v] of buckets.get(b)) last.set(k, v);
-    let sum = 0;
-    for (const [k, v] of last) {
-      sum += v;
-      if (!bySeries.has(k)) bySeries.set(k, []);
-      bySeries.get(k).push({ epoch: b, value: v });
-    }
-    total.push({ epoch: b, value: sum });
-  }
-  return { total, bySeries };
-}
-
-function histogram(values, edges = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]) {
-  const out = edges.map((lo, i) => ({ bucket: `${lo}-${edges[i + 1] ?? 100}%`, count: 0 }));
-  for (const v of values) {
-    if (v == null) continue;
-    let i = edges.length - 1;
-    while (i > 0 && v < edges[i]) i -= 1;
-    out[i].count += 1;
-  }
-  return out;
-}
-
-function ssidSummary(controllers) {
-  const by = new Map();
-  for (const c of controllers) {
-    for (const s of c.ssids) {
-      const k = s.ssid;
-      const e = by.get(k) || { ssid: k, clients: 0, controllers: 0, enabledOn: 0, broadcast: null, hasClients: false };
-      e.controllers += 1;
-      if (s.enabled) e.enabledOn += 1;
-      if (s.broadcast != null) e.broadcast = (e.broadcast || false) || s.broadcast;
-      if (s.clients != null) { e.clients += s.clients; e.hasClients = true; }
-      by.set(k, e);
-    }
-  }
-  return [...by.values()].map(({ hasClients, ...e }) => ({ ...e, clients: hasClients ? e.clients : null })).sort((a, b) => (b.clients || 0) - (a.clients || 0));
-}
+// The model lives in services/logicmonitorWireless.js (derived platforms, round 2): the Cisco platform
+// assembles the same payloads through the connector feeds with vendorKeys ['cisco','meraki'].
+const lmWireless = () => require('../services/logicmonitorWireless');
 
 const WLC_COLUMNS = ['deviceName', 'siteName', 'platform', 'model', 'version', 'hostStatus', 'haText', 'cpuPct', 'memPct', 'apsTotal', 'apsUp', 'apsDown',
   'apsDisabled', 'apAvailablePct', 'radiosTotal', 'radiosUp', 'radiosDown', 'hotRadios', 'avgChannelUtilPct', 'clients', 'clientsMax', 'clientUsagePct',
@@ -3951,121 +3544,29 @@ const wlListRules = [
 ];
 
 router.get('/wireless/overview', wlListRules, validate, (req, res, next) => {
-  try {
-    const { controllers, util } = wirelessModel(req.query);
-    const aps = controllers.flatMap((c) => c.aps);
-    const radios = controllers.flatMap((c) => c.radios);
-    const rows = controllers.map((c) => c.row);
-    const managed = aps.filter((a) => a.status !== 'disabled');
-    const byBand = BANDS.map((band) => {
-      const rs = radios.filter((x) => x.band === band && x.counted);
-      const up = rs.filter((x) => x.state === 'up' && x.channelUtilPct != null);
-      return {
-        band,
-        radios: rs.length,
-        up: rs.filter((x) => x.state === 'up').length,
-        clients: anyVal(rs, (x) => x.clients) ? sumOf(rs, (x) => x.clients) : null,
-        avgChannelUtilPct: up.length ? rnd1(sumOf(up, (x) => x.channelUtilPct) / up.length) : null,
-        hot: rs.filter((x) => x.hot).length,
-      };
-    }).filter((b) => b.radios > 0);
-    const bySite = new Map();
-    for (const c of rows) {
-      const k = c.siteName || c.siteKey || 'Unassigned';
-      const e = bySite.get(k) || { site: k, controllers: 0, aps: 0, apsDown: 0, clients: 0 };
-      e.controllers += 1; e.aps += c.apsTotal; e.apsDown += c.apsDown; e.clients += c.clients || 0;
-      bySite.set(k, e);
-    }
-    const trend = clientTrend(24, { sourceId: req.query.sourceId });
-    const bandsTotal = byBand.reduce((s, b) => s + (b.clients || 0), 0);
-    res.json({
-      totals: {
-        controllers: rows.length,
-        controllersDegraded: rows.filter((c) => c.state === 'critical' || c.state === 'warning').length,
-        aps: managed.length,
-        apsUp: managed.filter((a) => a.status === 'up' || a.status === 'downloading').length,
-        apsDown: managed.filter((a) => ['down', 'silent', 'missing'].includes(a.status)).length,
-        radios: radios.filter((x) => x.counted).length,
-        radiosDown: radios.filter((x) => x.counted && x.state === 'down').length,
-        hotRadios: radios.filter((x) => x.hot).length,
-        clients: rows.some((c) => c.clients != null) ? sumOf(rows, (c) => c.clients) : null,
-        ssids: ssidSummary(controllers).length,
-        radiusUnresponsive: sumOf(rows, (c) => c.radiusUnresponsive),
-      },
-      controllers: rows,
-      analytics: {
-        byBand: byBand.map((b) => ({ ...b, clientSharePct: bandsTotal && b.clients != null ? rnd1((b.clients / bandsTotal) * 100) : null })),
-        bySite: [...bySite.values()].sort((a, b) => b.clients - a.clients),
-        bySsid: ssidSummary(controllers).slice(0, 12),
-        busiestAps: [...aps].filter((a) => a.clients != null).sort((a, b) => b.clients - a.clients).slice(0, 10),
-        hottestRadios: [...radios].filter((x) => x.channelUtilPct != null).sort((a, b) => b.channelUtilPct - a.channelUtilPct).slice(0, 10),
-        downAps: aps.filter((a) => ['down', 'silent', 'missing'].includes(a.status)).slice(0, 50),
-        channelUtilThresholdPct: util,
-      },
-      clientTrend: trend.total,
-    });
-  } catch (err) { next(err); }
+  try { res.json(lmWireless().wirelessOverview(db, famOpts(req.query))); } catch (err) { next(err); }
 });
 
 router.get('/wireless/controllers.csv', wlListRules, validate, (req, res, next) => {
-  try { sendCsv(res, 'wireless-controllers', wirelessModel(req.query).controllers.map((c) => c.row), WLC_COLUMNS); } catch (err) { next(err); }
+  try { sendCsv(res, 'wireless-controllers', lmWireless().listControllers(db, famOpts(req.query)), WLC_COLUMNS); } catch (err) { next(err); }
 });
 router.get('/wireless/controllers', wlListRules, validate, (req, res, next) => {
-  try { res.json(wirelessModel(req.query).controllers.map((c) => c.row)); } catch (err) { next(err); }
+  try { res.json(lmWireless().listControllers(db, famOpts(req.query))); } catch (err) { next(err); }
 });
 
 router.get('/wireless/controllers/:deviceId', deviceParams, validate, (req, res, next) => {
   try {
-    const r = roleDevice(WLC_WHERE, req.params.deviceId, req.query.sourceId);
-    if (!r) return notFound(res, 'Wireless controller');
-    const c = wirelessModel({ sourceId: r.source_id }).controllers.find((x) => x.r.lm_device_id === r.lm_device_id);
-    if (!c) return notFound(res, 'Wireless controller');
-    const L = lmIssues();
-    const dev = c.dev;
-    const val = (k) => L.devVal(dev, k);
-    const byBand = BANDS.map((band) => {
-      const rs = c.radios.filter((x) => x.band === band && x.counted);
-      const up = rs.filter((x) => x.state === 'up' && x.channelUtilPct != null);
-      return { band, radios: rs.length, up: rs.filter((x) => x.state === 'up').length, down: rs.filter((x) => x.state === 'down').length,
-        clients: anyVal(rs, (x) => x.clients) ? sumOf(rs, (x) => x.clients) : null, avgChannelUtilPct: up.length ? rnd1(sumOf(up, (x) => x.channelUtilPct) / up.length) : null, hot: rs.filter((x) => x.hot).length };
-    }).filter((b) => b.radios > 0);
-    const acct = L.devInstances(dev, 'acct_status').map((i) => ({
-      server: i.name, enabled: Math.round(i.m.acct_status.value) === 1,
-      requests: i.m.acct_requests ? i.m.acct_requests.value : null, responses: i.m.acct_responses ? i.m.acct_responses.value : null, timeouts: i.m.acct_timeouts ? i.m.acct_timeouts.value : null,
-    }));
-    const cpuSeries = deviceSeries(dev, 'cpu_pct', 24);
-    const trend = clientTrend(24, { sourceId: r.source_id, deviceId: r.lm_device_id });
-    res.json({
-      device: deviceOut(r, lookups()),
-      summary: c.row,
-      bands: byBand,
-      aps: c.aps,
-      ssids: c.ssids.sort((a, b) => (b.clients || 0) - (a.clients || 0)),
-      radius: { auth: c.radius, accounting: acct },
-      connections: {
-        clients: val('wlc_clients'), clientsMax: val('wlc_clients_max'), clientUsagePct: rnd1(val('wlc_client_usage_pct')),
-        apsJoined: val('wlc_aps_joined'), apAssocFailedPerSec: val('wlc_ap_assoc_failed'), abnormalOfflineRate: val('wlc_abnormal_offline'),
-      },
-      mobility: {
-        status: c.row.mobility, handoffsPerSec: val('mob_handoffs'), requestsPerSec: val('mob_handoff_requests'),
-        errorsPerSec: val('mob_handoff_errors'), deniedPerSec: val('mob_handoff_denied'), droppedPerSec: val('mob_handoff_dropped'),
-      },
-      dhcp: {
-        proxy: val('dhcp_proxy') == null ? null : Math.round(val('dhcp_proxy')) === 1, discoverPerSec: val('dhcp_discover'), offerPerSec: val('dhcp_offer'),
-        ackPerSec: val('dhcp_ack'), nakPerSec: val('dhcp_nak'), txFailuresPerSec: val('dhcp_tx_failures'),
-      },
-      cpuHistory: cpuSeries,
-      clientHistory: trend.total,
-      issues: c.issues,
-    });
+    const out = lmWireless().controllerDetail(db, famOpts({}, { deviceId: req.params.deviceId, sourceId: req.query.sourceId }));
+    if (!out) return notFound(res, 'Wireless controller');
+    res.json(out);
   } catch (err) { next(err); }
 });
 
 router.get('/wireless/aps.csv', wlListRules, validate, (req, res, next) => {
-  try { sendCsv(res, 'wireless-aps', wirelessModel(req.query).controllers.flatMap((c) => c.aps), AP_COLUMNS); } catch (err) { next(err); }
+  try { sendCsv(res, 'wireless-aps', lmWireless().listAps(db, famOpts(req.query)), AP_COLUMNS); } catch (err) { next(err); }
 });
 router.get('/wireless/aps', wlListRules, validate, (req, res, next) => {
-  try { res.json(wirelessModel(req.query).controllers.flatMap((c) => c.aps)); } catch (err) { next(err); }
+  try { res.json(lmWireless().listAps(db, famOpts(req.query))); } catch (err) { next(err); }
 });
 
 router.get('/wireless/ap', [
@@ -4074,79 +3575,21 @@ router.get('/wireless/ap', [
   query('ap').isString().isLength({ min: 1, max: 200 }),
 ], validate, (req, res, next) => {
   try {
-    const r = roleDevice(WLC_WHERE, req.query.controllerId, req.query.sourceId);
-    if (!r) return notFound(res, 'Wireless controller');
-    const c = wirelessModel({ sourceId: r.source_id }).controllers.find((x) => x.r.lm_device_id === r.lm_device_id);
-    const ap = c && c.aps.find((a) => a.apKey === req.query.ap);
-    if (!ap) return notFound(res, 'Access point');
-    const ports = apPortsOf(c.dev).get(ap.apKey) || [];
-    const radios = c.radios.filter((x) => x.ap === ap.apKey).sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
-    const pre = `${c.row.deviceName} ${ap.apKey}`;
-    const issues = c.issues.filter((i) => { const t = String(i.target || ''); return t === pre || t.startsWith(`${pre}:`) || t.startsWith(`${pre} - `); });
-    res.json({ ap, radios, ports, issues });
+    const out = lmWireless().apDetail(db, famOpts({}, { controllerId: req.query.controllerId, sourceId: req.query.sourceId, apKey: req.query.ap }));
+    if (out.missing) return notFound(res, out.missing === 'controller' ? 'Wireless controller' : 'Access point');
+    res.json(out);
   } catch (err) { next(err); }
 });
 
 router.get('/wireless/rf.csv', wlListRules, validate, (req, res, next) => {
-  try { sendCsv(res, 'wireless-radios', wirelessModel(req.query).controllers.flatMap((c) => c.radios), RADIO_COLUMNS); } catch (err) { next(err); }
+  try { sendCsv(res, 'wireless-radios', lmWireless().listRadios(db, famOpts(req.query)), RADIO_COLUMNS); } catch (err) { next(err); }
 });
 router.get('/wireless/rf', wlListRules, validate, (req, res, next) => {
-  try {
-    const { controllers, util } = wirelessModel(req.query);
-    const radios = controllers.flatMap((c) => c.radios);
-    const bands = BANDS.map((band) => {
-      const inBand = radios.filter((x) => x.band === band);
-      const rs = inBand.filter((x) => x.counted);
-      const up = rs.filter((x) => x.state === 'up');
-      const profiles = Object.fromEntries(Object.keys(PROFILE_KEYS).map((p) => [p, rs.filter((x) => x[`${p}Profile`] === 'fail').length]));
-      const power = new Map();
-      for (const x of up) if (x.txPowerLevel != null) power.set(x.txPowerLevel, (power.get(x.txPowerLevel) || 0) + 1);
-      return {
-        band,
-        radios: rs.length,
-        up: up.length,
-        down: rs.filter((x) => x.state === 'down').length,
-        disabled: inBand.filter((x) => x.state === 'disabled').length,
-        clients: anyVal(rs, (x) => x.clients) ? sumOf(rs, (x) => x.clients) : null,
-        avgChannelUtilPct: up.length && anyVal(up, (x) => x.channelUtilPct) ? rnd1(sumOf(up, (x) => x.channelUtilPct) / up.filter((x) => x.channelUtilPct != null).length) : null,
-        avgRxUtilPct: up.length && anyVal(up, (x) => x.rxUtilPct) ? rnd1(sumOf(up, (x) => x.rxUtilPct) / up.filter((x) => x.rxUtilPct != null).length) : null,
-        avgTxUtilPct: up.length && anyVal(up, (x) => x.txUtilPct) ? rnd1(sumOf(up, (x) => x.txUtilPct) / up.filter((x) => x.txUtilPct != null).length) : null,
-        hot: rs.filter((x) => x.hot).length,
-        utilHistogram: histogram(up.map((x) => x.channelUtilPct)),
-        txPower: [...power.entries()].sort((a, b) => a[0] - b[0]).map(([level, count]) => ({ level, count })),
-        profileFailures: profiles,
-      };
-    }).filter((b) => b.radios > 0);
-    res.json({ thresholdPct: util, bands, radios });
-  } catch (err) { next(err); }
+  try { res.json(lmWireless().rfTable(db, famOpts(req.query))); } catch (err) { next(err); }
 });
 
 router.get('/wireless/ssids', wlListRules, validate, (req, res, next) => {
-  try {
-    const { controllers } = wirelessModel(req.query);
-    const rows = controllers.flatMap((c) => c.ssids);
-    const summary = ssidSummary(controllers);
-    const trend = clientTrend(24, { sourceId: req.query.sourceId });
-    // Per-SSID trend: WLAN series are keyed by device, hds and instance key; map them to SSID names.
-    const nameOf = new Map(rows.map((s) => [`${s.sourceId}:${s.controllerId}|${s.hdsId}|${s.wlan}`, s.ssid]));
-    const bySsid = new Map();
-    for (const [k, pts] of trend.bySeries) {
-      const name = nameOf.get(k);
-      if (!name) continue;
-      const cur = bySsid.get(name) || new Map();
-      for (const p of pts) cur.set(p.epoch, (cur.get(p.epoch) || 0) + p.value);
-      bySsid.set(name, cur);
-    }
-    const top = summary.slice(0, 6).map((s) => s.ssid);
-    res.json({
-      summary,
-      rows: rows.map(({ hdsId, ...s }) => s),
-      trend: {
-        total: trend.total,
-        bySsid: top.filter((n) => bySsid.has(n)).map((n) => ({ ssid: n, points: [...bySsid.get(n).entries()].sort((a, b) => a[0] - b[0]).map(([epoch, value]) => ({ epoch, value })) })),
-      },
-    });
-  } catch (err) { next(err); }
+  try { res.json(lmWireless().ssidTable(db, famOpts(req.query))); } catch (err) { next(err); }
 });
 
 // ---- Raw DataSource store (round 11, WP-R) ----------------------------------------
@@ -4224,7 +3667,7 @@ const APP_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'kindLabels', 
 
 function applicationRows(q) {
   const lk = lookups();
-  const devs = roleDevices(APP_WHERE, q);
+  const devs = roleDevices(APP_WHERE, q, { excludeOwned: true });
   const index = lmIssues().loadDsIndex(db, { families: ['apps'] });
   const issues = safeIssues();
   let rows = devs.map((r) => appRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues));
@@ -4245,7 +3688,7 @@ router.get('/applications', appListRules, validate, (req, res, next) => {
 
 router.get('/applications/:deviceId', deviceParams, validate, (req, res, next) => {
   try {
-    const r = roleDevice(APP_WHERE, req.params.deviceId, req.query.sourceId);
+    const r = roleDevice(APP_WHERE, req.params.deviceId, req.query.sourceId, { excludeOwned: true });
     if (!r) return notFound(res, 'Application');
     const L = lmIssues();
     const lk = lookups();
@@ -4294,125 +3737,34 @@ router.get('/applications/:deviceId', deviceParams, validate, (req, res, next) =
 // behind these rows are UNVERIFIED; raw values travel next to every derived flag.
 
 const lmAppliances = () => require('../services/logicmonitorAppliances');
+const lmVoice = () => require('../services/logicmonitorVoice');
 const dsLike = (...prefixes) => prefixes.map((p) => `x.datasource_name LIKE '${p.replace(/_/g, '\\_')}%' ESCAPE '\\'`).join(' OR ');
 const hasDs = (cond) => `EXISTS (SELECT 1 FROM lm_device_datasources x WHERE x.source_id = d.source_id AND x.lm_device_id = d.lm_device_id AND (${cond}))`;
-const hasFamily = (fam) => `EXISTS (SELECT 1 FROM lm_ds_metrics m WHERE m.source_id = d.source_id AND m.lm_device_id = d.lm_device_id AND m.family = '${fam}')`;
-const VOICE_WHERE = `(${hasDs(`${dsLike('ntm_sbc_', 'Cisco_SIP_', 'ntm_ganc_')} OR x.datasource_name = 'ISDN_Channels'`)} OR ${hasFamily('voice')})`;
-const ISE_WHERE = `(${hasDs(`${dsLike('Cisco_ISE_', 'ntm_ise_', 'ntm_cisco_ise_')} OR x.datasource_name = 'ntm_deployment_nodes_status'`)})`;
 const ZPA_WHERE = `(${hasDs(`${dsLike('ntm_zpa_')} OR x.datasource_name = 'Zscaler ZPA Port Exhaustion'`)} OR lower(d.name) LIKE '%zpa%')`;
 const NSS_WHERE = `((d.vendor = 'Zscaler' OR lower(d.name) LIKE '%zsclr%' OR lower(d.name) LIKE '%pxy-log%' OR lower(COALESCE(d.sysinfo, '')) LIKE '%zscaler%') AND NOT ${ZPA_WHERE})`;
 
 const emptyDv = (r) => ({ instances: new Map(), sourceId: r.source_id, deviceId: r.lm_device_id, name: r.display_name || r.name });
-const FAMS_VOICE = ['voice', 'wireless'];
 const FAMS_SEC = ['security', 'health', 'os'];
 
 const voiceListRules = [...dsListRules, query('kind').optional().isIn(['sbc', 'cube', 'ganc'])];
-
-const VOICE_BLANK = {
-  healthRaw: null, healthBad: null, cpuPct: null, memPct: null, fans: null, fansBad: null, psus: null, psusBad: null, tempMaxC: null,
-  pools: null, poolUtilMaxPct: null, poolSessions: null, poolFailures: null, retransmissions: null, localConnectionRaw: null,
-  sipConnections: null, sipServerErrPerSec: null, sipClientErrPerSec: null, sipErrPerSec: null, sipRetries: null, isdnBusy: null,
-  mobilityRaw: null, radiusCheckRaw: null, ssids: null, clients: null, radiusServers: null, radiusServersDown: null,
-};
-
-function voiceKindOf(r, dv) {
-  const k = lmAppliances().voiceKind(dv);
-  if (k) return k;
-  const n = String(r.display_name || r.name || '');
-  return /sbc/i.test(n) ? 'sbc' : /ganc/i.test(n) ? 'ganc' : 'cube';
-}
-
-function voiceRow(r, lk, dev, issues) {
-  const A = lmAppliances();
-  const dv = dev || emptyDv(r);
-  const name = r.display_name || r.name;
-  const kind = voiceKindOf(r, dv);
-  const facts = kind === 'sbc' ? A.sbcFacts(dv) : kind === 'ganc' ? A.gancFacts(dv) : A.cubeFacts(db, dv);
-  const devIssues = issuesOnDevice(issues, name);
-  return {
-    ...devBase(r, lk),
-    kind,
-    ...VOICE_BLANK,
-    ...facts,
-    openIssues: devIssues.length,
-    state: stateFromIssues(devIssues, dv.instances.size > 0),
-    sampledAt: epochToIso(maxEpoch(dv)),
-  };
-}
 
 const VOICE_COLUMNS = ['deviceName', 'kind', 'siteName', 'vendor', 'model', 'version', 'hostStatus', 'healthRaw', 'cpuPct', 'memPct', 'fans', 'fansBad', 'psus', 'psusBad',
   'tempMaxC', 'pools', 'poolUtilMaxPct', 'poolSessions', 'poolFailures', 'retransmissions', 'sipConnections', 'sipServerErrPerSec', 'sipClientErrPerSec', 'ssids', 'clients',
   'mobilityRaw', 'radiusCheckRaw', 'radiusServers', 'radiusServersDown', 'openIssues', 'state', 'sampledAt'];
 
-function voiceRows(q) {
-  const lk = lookups();
-  const devs = roleDevices(VOICE_WHERE, q);
-  const index = lmIssues().loadDsIndex(db, { families: FAMS_VOICE });
-  const issues = safeIssues();
-  let rows = devs.map((r) => voiceRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues));
-  if (q.state) rows = rows.filter((r) => r.state === q.state);
-  if (q.kind) rows = rows.filter((r) => r.kind === q.kind);
-  return rows;
-}
-
 // Literal .csv path before /voice/:deviceId.
 router.get('/voice.csv', voiceListRules, validate, (req, res, next) => {
-  try { sendCsv(res, 'voice', voiceRows(req.query), VOICE_COLUMNS); } catch (err) { next(err); }
+  try { sendCsv(res, 'voice', lmVoice().listVoice(db, famOpts(req.query)), VOICE_COLUMNS); } catch (err) { next(err); }
 });
 router.get('/voice', voiceListRules, validate, (req, res, next) => {
-  try { res.json(voiceRows(req.query)); } catch (err) { next(err); }
+  try { res.json(lmVoice().listVoice(db, famOpts(req.query))); } catch (err) { next(err); }
 });
-
-/** Every metric of the device's instances that pass `pick`, as flat rows with the catalog label and unit. */
-function metricRowsOf(dev, pick, cap = 400) {
-  const out = [];
-  for (const i of dev.instances.values()) {
-    if (!pick(i)) continue;
-    for (const [mk, m] of Object.entries(i.m)) {
-      const meta = metricMeta(i.ds, mk);
-      out.push({ datasource: i.ds, instance: i.name, metric: mk, label: meta.label, unit: meta.unit, value: m.value, datapoint: m.datapoint });
-      if (out.length >= cap) return out;
-    }
-  }
-  return out;
-}
 
 router.get('/voice/:deviceId', deviceParams, validate, (req, res, next) => {
   try {
-    const r = roleDevice(VOICE_WHERE, req.params.deviceId, req.query.sourceId);
-    if (!r) return notFound(res, 'Voice device');
-    const A = lmAppliances();
-    const lk = lookups();
-    const idx = lmIssues().loadDsIndex(db, { sourceId: r.source_id, deviceId: r.lm_device_id });
-    const dev = idx.get(`${r.source_id}:${r.lm_device_id}`) || emptyDv(r);
-    const issues = safeIssues();
-    const summary = voiceRow(r, lk, dev, issues);
-    const byKey = (a, b) => String(a.name).localeCompare(String(b.name));
-    const stateOf = (i, metric) => ({ name: i.name, raw: num(i, metric), bad: A.stateBad(num(i, metric), i.m[metric].datapoint) });
-    const fans = rowsOf(dev, 'sbc_fan_state').map((i) => stateOf(i, 'sbc_fan_state')).sort(byKey);
-    const psus = rowsOf(dev, 'sbc_psu_state').map((i) => stateOf(i, 'sbc_psu_state')).sort(byKey);
-    const temps = rowsOf(dev, 'sbc_temp_c').map((i) => ({ name: i.name, tempC: rnd1(num(i, 'sbc_temp_c')) })).sort(byKey);
-    const pools = [...dev.instances.values()].filter((i) => i.m.sbc_pool_util_pct || i.m.sbc_pool_sessions || i.m.sbc_pool_failures)
-      .map((i) => ({ name: i.name, utilPct: rnd1(num(i, 'sbc_pool_util_pct')), sessions: num(i, 'sbc_pool_sessions'), failures: num(i, 'sbc_pool_failures') })).sort(byKey);
-    const ssids = [...dev.instances.values()].filter((i) => i.m.ess_clients || i.m.ess_admin)
-      .map((i) => ({ name: i.name, clients: num(i, 'ess_clients'), adminRaw: num(i, 'ess_admin') })).sort(byKey);
-    const radius = rowsOf(dev, 'radius_status').map((i) => ({
-      name: i.name, enabled: Math.round(num(i, 'radius_status')) === 1, requests: num(i, 'radius_requests'), rejects: num(i, 'radius_rejects'), timeouts: num(i, 'radius_timeouts'),
-    })).sort(byKey);
-    const sip = metricRowsOf(dev, (i) => /^Cisco_SIP_/i.test(i.ds) || /^ISDN_Channels$/i.test(i.ds));
-    res.json({
-      device: deviceOut(r, lk),
-      summary,
-      fans,
-      psus,
-      temps,
-      pools,
-      ssids,
-      radius,
-      sip,
-      history: { cpuPct: deviceSeries(dev, 'sbc_cpu_pct', 24), memPct: deviceSeries(dev, 'sbc_mem_pct', 24) },
-      issues: issuesOnDevice(issues, r.display_name || r.name),
-    });
+    const out = lmVoice().voiceDetail(db, famOpts({}, { deviceId: req.params.deviceId, sourceId: req.query.sourceId }));
+    if (!out) return notFound(res, 'Voice device');
+    res.json(out);
   } catch (err) { next(err); }
 });
 
@@ -4532,71 +3884,24 @@ router.get('/zscaler', dsListRules, validate, (req, res, next) => {
 });
 
 // ---- Cisco ISE ---------------------------------------------------------------------------
-
-function iseRow(r, lk, dev, issues, modes) {
-  const dv = dev || emptyDv(r);
-  const name = r.display_name || r.name;
-  const devIssues = issuesOnDevice(issues, name);
-  return {
-    ...devBase(r, lk),
-    ...lmAppliances().iseFacts(dv, modes),
-    openIssues: devIssues.length,
-    state: stateFromIssues(devIssues, dv.instances.size > 0),
-    sampledAt: epochToIso(maxEpoch(dv)),
-  };
-}
+// The row and 360 model lives in services/logicmonitorIse.js (derived platforms, round 2).
+const lmIse = () => require('../services/logicmonitorIse');
 
 const ISE_COLUMNS = ['deviceName', 'siteName', 'vendor', 'model', 'version', 'hostStatus', 'sessions', 'diskUsedMaxPct', 'cpuPct', 'memPct', 'appStateRaw', 'certDaysMin',
   'nodeStateRaw', 'nodes', 'nodesDown', 'openIssues', 'state', 'sampledAt'];
 
-function iseRows(q) {
-  const lk = lookups();
-  const devs = roleDevices(ISE_WHERE, q);
-  const index = lmIssues().loadDsIndex(db, { families: FAMS_SEC });
-  const issues = safeIssues();
-  const modes = lmAppliances().modeMap(index, ['connector_state', 'node_state', 'app_state']);
-  let rows = devs.map((r) => iseRow(r, lk, index.get(`${r.source_id}:${r.lm_device_id}`), issues, modes));
-  if (q.state) rows = rows.filter((r) => r.state === q.state);
-  return rows;
-}
-
 router.get('/ise.csv', dsListRules, validate, (req, res, next) => {
-  try { sendCsv(res, 'ise', iseRows(req.query), ISE_COLUMNS); } catch (err) { next(err); }
+  try { sendCsv(res, 'ise', lmIse().listIse(db, famOpts(req.query)), ISE_COLUMNS); } catch (err) { next(err); }
 });
 router.get('/ise', dsListRules, validate, (req, res, next) => {
-  try { res.json(iseRows(req.query)); } catch (err) { next(err); }
+  try { res.json(lmIse().listIse(db, famOpts(req.query))); } catch (err) { next(err); }
 });
 
 router.get('/ise/:deviceId', deviceParams, validate, (req, res, next) => {
   try {
-    const r = roleDevice(ISE_WHERE, req.params.deviceId, req.query.sourceId);
-    if (!r) return notFound(res, 'ISE node');
-    const A = lmAppliances();
-    const lk = lookups();
-    const idxAll = lmIssues().loadDsIndex(db, { families: FAMS_SEC });
-    const dev = idxAll.get(`${r.source_id}:${r.lm_device_id}`) || emptyDv(r);
-    const modes = A.modeMap(idxAll, ['connector_state', 'node_state', 'app_state']);
-    const issues = safeIssues();
-    const summary = iseRow(r, lk, dev, issues, modes);
-    const byKey = (a, b) => String(a.name).localeCompare(String(b.name));
-    const certs = [
-      ...rowsOf(dev, 'cert_days').map((i) => ({ name: i.name, kind: 'Certificate', daysLeft: num(i, 'cert_days') })),
-      ...rowsOf(dev, 'eap_cert_days').map((i) => ({ name: i.name, kind: 'EAP certificate', daysLeft: num(i, 'eap_cert_days') })),
-    ].sort((a, b) => (a.daysLeft - b.daysLeft) || byKey(a, b));
-    const disks = rowsOf(dev, 'disk_used_pct').map((i) => ({ name: i.name, usedPct: rnd1(num(i, 'disk_used_pct')) })).sort((a, b) => (b.usedPct - a.usedPct) || byKey(a, b));
-    const nodes = [
-      ...rowsOf(dev, 'node_state').map((i) => ({ name: i.name, kind: 'Deployment node', raw: num(i, 'node_state'), down: A.readsDown(num(i, 'node_state'), modes.get('node_state')) })),
-      ...rowsOf(dev, 'app_state').map((i) => ({ name: i.name, kind: 'Application', raw: num(i, 'app_state'), down: A.readsDown(num(i, 'app_state'), modes.get('app_state')) })),
-    ].sort(byKey);
-    res.json({
-      device: deviceOut(r, lk),
-      summary,
-      certificates: certs,
-      disks,
-      nodes,
-      history: { sessions: deviceSeries(dev, 'sessions', 24), cpuPct: deviceSeries(dev, 'cpu_pct', 24), memPct: deviceSeries(dev, 'mem_pct', 24) },
-      issues: issuesOnDevice(issues, r.display_name || r.name),
-    });
+    const out = lmIse().iseDetail(db, famOpts({}, { deviceId: req.params.deviceId, sourceId: req.query.sourceId }));
+    if (!out) return notFound(res, 'ISE node');
+    res.json(out);
   } catch (err) { next(err); }
 });
 

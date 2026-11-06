@@ -64,6 +64,62 @@ describe('classifyVendorKey', () => {
   });
 });
 
+describe('Cisco and Meraki kinds (derived platforms round 2)', () => {
+  const kindOf = (args) => V.classifyVendorKind(args);
+  it('Meraki kinds come from the model, then from the sysinfo banner', () => {
+    expect(kindOf({ key: 'meraki', model: 'MX250' })).toBe('mx');
+    expect(kindOf({ key: 'meraki', model: '', sysinfo: 'Meraki MX250 Cloud Managed Security Appliance' })).toBe('mx');
+    expect(kindOf({ key: 'meraki', model: 'MS225-48LP' })).toBe('ms');
+    expect(kindOf({ key: 'meraki', sysinfo: 'Meraki MR46 Cloud Managed AP' })).toBe('mr');
+    expect(kindOf({ key: 'meraki', model: 'MV12W' })).toBe('mv');
+    expect(kindOf({ key: 'meraki', model: 'MG21' })).toBe('mg');
+    expect(kindOf({ key: 'meraki', model: '', sysinfo: 'Meraki Cloud Managed device' })).toBe('other');
+    expect(kindOf({ key: 'meraki' })).toBe('other');
+  });
+  it('catalyst is not a kind: a Catalyst switch stays a switch', () => {
+    expect(kindOf({ key: 'cisco', role: 'switch', model: 'C9300-48P', categories: 'CiscoCatalyst' })).toBe('switch');
+    expect(kindOf({ key: 'cisco', role: 'switch', model: 'WS-C3850-48P' })).toBe('switch');
+  });
+  it('a controller by model is wireless whatever the role, and an AP is ap', () => {
+    expect(kindOf({ key: 'cisco', role: 'wireless', model: 'AIR-CT5520-K9' })).toBe('wireless');
+    expect(kindOf({ key: 'cisco', role: 'other', model: 'AIR-CT5520-K9' })).toBe('wireless');
+    expect(kindOf({ key: 'cisco', role: 'switch', model: 'C9800-40-K9' })).toBe('wireless');
+    expect(kindOf({ key: 'cisco', role: 'wireless', model: 'AIR-AP3802I-B-K9' })).toBe('ap');
+    expect(kindOf({ key: 'cisco', role: 'wireless', model: 'C9120AXI-B' })).toBe('ap');
+    expect(kindOf({ key: 'cisco', role: 'wireless', model: 'CW9166I-B' })).toBe('ap');
+    expect(kindOf({ key: 'cisco', role: 'other', model: 'X1', categories: 'CiscoCatalystAccessPoint' })).toBe('ap');
+    expect(kindOf({ key: 'cisco', role: 'switch', model: 'C9300-24T' })).toBe('switch');
+  });
+  it('ESA and UCS keep their category kinds', () => {
+    expect(kindOf({ key: 'cisco', role: 'other', categories: 'CiscoESA' })).toBe('esa');
+    expect(kindOf({ key: 'cisco', role: 'other', categories: 'CiscoUCS' })).toBe('ucs');
+  });
+  it('VENDOR_KINDS covers every kind the classifier can return and KIND_LABELS labels each', () => {
+    expect(V.VENDOR_KINDS).toEqual({
+      f5: ['bigip', 'gtm', 'f5os'],
+      cisco: ['switch', 'nexus', 'router', 'firewall', 'wireless', 'ap', 'ise', 'voice', 'ucs', 'esa'],
+      meraki: ['mx', 'ms', 'mr', 'mv', 'mg', 'other'],
+      paloalto: ['firewall', 'panorama'],
+      zscaler: ['zpa', 'nss'],
+      oracle: ['sbc'],
+      netscout: ['pfs', 'infinistream'],
+    });
+    for (const kinds of Object.values(V.VENDOR_KINDS)) for (const k of kinds) expect(V.KIND_LABELS[k], k).toBeTruthy();
+    expect(V.kindLabelOf('mx')).toBe('MX');
+    expect(V.kindLabelOf('nope')).toBe('nope');
+  });
+  it('every kind the classifier returns is in VENDOR_KINDS', () => {
+    const samples = [
+      { key: 'cisco', model: 'SNS-3755-K9' }, { key: 'cisco', categories: 'CiscoESA' }, { key: 'cisco', categories: 'CiscoUCS' },
+      { key: 'cisco', role: 'wireless' }, { key: 'cisco', role: 'firewall' }, { key: 'cisco', role: 'router' }, { key: 'cisco', model: 'N9K-C93180' },
+      { key: 'cisco', model: 'C9300' }, { key: 'cisco', model: 'CW9166I' }, { key: 'meraki', model: 'MX64' }, { key: 'meraki' },
+      { key: 'paloalto', model: 'M-300' }, { key: 'paloalto', model: 'PA-440' }, { key: 'zscaler' }, { key: 'oracle' },
+      { key: 'netscout', model: 'PFOS' }, { key: 'f5', model: 'BIG-IP' },
+    ];
+    for (const a of samples) expect(V.VENDOR_KINDS[a.key], JSON.stringify(a)).toContain(V.classifyVendorKind(a));
+  });
+});
+
 describe('vendorKeyFromDatasources', () => {
   it('classifies when every hinted name agrees', () => {
     const r = V.vendorKeyFromDatasources(['HostStatus', 'F5_BigIP_System', 'f5_mcpd_service_status', 'Ping']);
@@ -171,7 +227,7 @@ describe('connector feeds', () => {
   const q = (name, params) => feeds.get(name)(db, params || {});
 
   it('registers every feed name', () => {
-    for (const n of ['devices', 'device', 'alerts', 'issues', 'issueHistory', 'configChanges', 'metrics', 'datasources', 'health', 'loadBalancers', 'loadBalancer', 'vendorCensus', 'sources', 'presence']) expect(feeds.has(n), n).toBe(true);
+    for (const n of ['devices', 'device', 'alerts', 'issues', 'issueHistory', 'configChanges', 'metrics', 'datasources', 'health', 'loadBalancers', 'loadBalancer', 'firewalls', 'firewall', 'wirelessOverview', 'wirelessControllers', 'wirelessController', 'wirelessAps', 'wirelessAp', 'wirelessRf', 'wirelessSsids', 'voice', 'voiceDevice', 'ise', 'iseNode', 'vendorCensus', 'sources', 'presence']) expect(feeds.has(n), n).toBe(true);
   });
   it('also registers through the per-connector facade form', () => {
     const got = [];
@@ -216,6 +272,7 @@ describe('connector feeds', () => {
     const rows = q('vendorCensus');
     const f5 = rows.find((r) => r.vendorKey === 'f5');
     expect(f5).toMatchObject({ label: 'F5', devices: 2, kinds: { bigip: 1, gtm: 1 }, dsNames: 2 });
+    expect(f5.kindLabels).toEqual({ bigip: 'BIG-IP', gtm: 'GTM' });
     expect(['f5', 'logicmonitor']).toContain(f5.platform);
     expect(f5.dsUnmatched).toBeGreaterThanOrEqual(1);
     expect(f5.dsMatched + f5.dsUnmatched).toBe(f5.dsNames);

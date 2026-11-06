@@ -1240,19 +1240,6 @@ function seedLogicmonitor(db, { now, encrypt }) {
       }
     }
     counts.deviceDatasources = ddsRows;
-    // Derived platforms round 1: the poller fills vendor_key/kind/reason through normalizeDevice; the seed never polls.
-    {
-      const lmVendors = require('../../services/logicmonitorVendors');
-      const updVendor = db.prepare('UPDATE lm_devices SET vendor_key = ?, vendor_kind = ?, vendor_reason = ? WHERE source_id = ? AND lm_device_id = ?');
-      const vrows = db.prepare('SELECT lm_device_id, name, display_name, role, categories, model, sysinfo, sysoid FROM lm_devices WHERE source_id = ?').all(sid);
-      for (const r of vrows) {
-        const nm = r.display_name || r.name;
-        const vk = lmVendors.classifyVendorKey({ sysoid: r.sysoid, categories: r.categories, sysinfo: r.sysinfo, model: r.model, name: nm });
-        const kind = vk.key ? lmVendors.classifyVendorKind({ key: vk.key, role: r.role, categories: r.categories, model: r.model, sysinfo: r.sysinfo, sysoid: r.sysoid, name: nm }) : null;
-        updVendor.run(vk.key || null, kind, vk.reason || null, sid, r.lm_device_id);
-      }
-      lmVendors.applyDatasourceVendors(db, sid);
-    }
     counts.dsMetrics = seedDsMetrics(db, { sid, devices, ifaces, nowMs });
 
     // SDTs: 5 effective device SDTs plus a future collector SDT and a weekly group SDT.
@@ -1688,6 +1675,24 @@ function seedLogicmonitor(db, { now, encrypt }) {
     counts.issueBackdated = backdateIssueHistory(db, nowMs);
   }
   counts.openIssueTypes = db.prepare("SELECT DISTINCT type FROM lm_issue_history WHERE status = 'open' ORDER BY type").all().map((r) => r.type);
+
+  // Derived platforms: the poller fills vendor_key/kind/reason through normalizeDevice and the
+  // post-store DataSource pass; the seed never polls, so classify every source here, LAST, once
+  // every lm_device_datasources row (ISE, ZPA, SBC appliances included) is on record.
+  {
+    const lmVendors = require('../../services/logicmonitorVendors');
+    const updVendor = db.prepare('UPDATE lm_devices SET vendor_key = ?, vendor_kind = ?, vendor_reason = ? WHERE source_id = ? AND lm_device_id = ?');
+    for (const src of db.prepare('SELECT id FROM lm_sources').all()) {
+      const vrows = db.prepare('SELECT lm_device_id, name, display_name, role, categories, model, sysinfo, sysoid FROM lm_devices WHERE source_id = ?').all(src.id);
+      for (const r of vrows) {
+        const nm = r.display_name || r.name;
+        const vk = lmVendors.classifyVendorKey({ sysoid: r.sysoid, categories: r.categories, sysinfo: r.sysinfo, model: r.model, name: nm });
+        const kind = vk.key ? lmVendors.classifyVendorKind({ key: vk.key, role: r.role, categories: r.categories, model: r.model, sysinfo: r.sysinfo, sysoid: r.sysoid, name: nm }) : null;
+        updVendor.run(vk.key || null, kind, vk.reason || null, src.id, r.lm_device_id);
+      }
+      lmVendors.applyDatasourceVendors(db, src.id);
+    }
+  }
 
   return { sources: 2, ...counts, wp1 };
 }

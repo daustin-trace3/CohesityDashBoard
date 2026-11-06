@@ -413,6 +413,12 @@ function collectF5Alerts() {
   return require('../platforms/f5').collectAlerts();
 }
 
+/** Cisco (derived from the LogicMonitor connector), same shape as F5. */
+function collectCiscoAlerts() {
+  if (registry.getPlugin('cisco')?.enabled !== true || !registry.isPresent('cisco')) return [];
+  return require('../platforms/cisco').collectAlerts();
+}
+
 const COLLECTORS = {
   cohesity: collectCohesityAlerts,
   pure: collectPureAlerts,
@@ -426,6 +432,7 @@ const COLLECTORS = {
   proxmox: collectProxmoxIssues,
   logicmonitor: collectLogicmonitorAlerts,
   f5: collectF5Alerts,
+  cisco: collectCiscoAlerts,
 };
 
 let transportFactory = (config) => nodemailer.createTransport({
@@ -625,6 +632,7 @@ const CATALOG_BACKFILL = {
   // Derived platforms read their types through the connector feeds (owner-aware:
   // only the devices of the platform's vendor keys), never the connector tables.
   f5: () => derivedBackfill('f5'),
+  cisco: () => derivedBackfill('cisco'),
 
   // zerto keeps its own zerto_alert_catalog (per-code toggles) - no entry here.
 };

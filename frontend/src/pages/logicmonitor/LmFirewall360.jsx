@@ -44,7 +44,7 @@ function TunnelsTable({ rows }) {
   );
 }
 
-export default function LmFirewall360({ deviceId, sourceId, onClose }) {
+export default function LmFirewall360({ deviceId, sourceId, onClose, apiBase = '/logicmonitor' }) {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -52,10 +52,10 @@ export default function LmFirewall360({ deviceId, sourceId, onClose }) {
   useEffect(() => {
     setData(null);
     setError(null);
-    client.get(`/logicmonitor/firewalls/${deviceId}`, { params: sourceId ? { sourceId } : {} })
+    client.get(`${apiBase}/firewalls/${deviceId}`, { params: sourceId ? { sourceId } : {} })
       .then(({ data: d }) => setData(d || {}))
       .catch((e) => setError(e?.response?.status === 404 ? 'Firewall not found. It may have been removed or is not a firewall.' : 'Failed to load the firewall.'));
-  }, [deviceId, sourceId]);
+  }, [deviceId, sourceId, apiBase]);
 
   const s = data?.summary || {};
   const d = data?.device || {};
@@ -75,7 +75,7 @@ export default function LmFirewall360({ deviceId, sourceId, onClose }) {
             <Badge tone={hostStatusTone(s.hostStatus)}>{hostStatusLabel(s.hostStatus)}</Badge>
             {s.haText ? <Badge tone="info">{s.haText}</Badge> : <Badge tone="neutral">{s.haEnabled ? 'HA' : 'Standalone'}</Badge>}
             {synced === false && <Badge tone="warn">Config unsynced</Badge>}
-            <button onClick={() => navigate(`/logicmonitor/issues?q=${encodeURIComponent(s.deviceName || '')}`)} className="text-[11px] text-brand hover:underline cursor-pointer ml-auto">Open issues page</button>
+            <button onClick={() => navigate(`${apiBase}/issues?q=${encodeURIComponent(s.deviceName || '')}`)} className="text-[11px] text-brand hover:underline cursor-pointer ml-auto">Open issues page</button>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
             <Fact label="Site">{s.siteName || s.siteKey}</Fact>

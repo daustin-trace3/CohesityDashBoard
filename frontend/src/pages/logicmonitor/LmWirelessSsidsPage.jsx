@@ -12,14 +12,19 @@ import { ShareBars, WL_EMPTY } from './wirelessShared';
 const REFRESH_MS = 120000;
 const yesNo = (v, on = 'Yes', off = 'No') => (v == null ? <span className="text-ink-faint">{DASH}</span> : <Badge tone={v ? 'ok' : 'neutral'}>{v ? on : off}</Badge>);
 
-export default function LmWirelessSsidsPage() {
+// apiBase lets the Cisco platform reuse this page against /cisco.
+export default function LmWirelessSsidsPage({
+  apiBase = '/logicmonitor',
+  title = 'SSIDs and Clients',
+  description = 'Client counts per WLAN across every controller, with 24 hour trends',
+}) {
   const { toast } = useToast();
   const [data, setData] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
 
-  const load = useCallback(() => client.get('/logicmonitor/wireless/ssids')
+  const load = useCallback(() => client.get(`${apiBase}/wireless/ssids`)
     .then(({ data: d }) => { setData(d || {}); setLastRefreshed(new Date()); })
-    .catch(() => { setData((cur) => cur || {}); toast({ type: 'error', title: 'Failed to load SSIDs' }); }), [toast]);
+    .catch(() => { setData((cur) => cur || {}); toast({ type: 'error', title: 'Failed to load SSIDs' }); }), [toast, apiBase]);
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
 
@@ -31,7 +36,7 @@ export default function LmWirelessSsidsPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Users} title="SSIDs and Clients" description="Client counts per WLAN across every controller, with 24 hour trends">
+      <PageHeader icon={Users} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>

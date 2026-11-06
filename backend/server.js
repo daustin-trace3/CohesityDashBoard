@@ -31,6 +31,8 @@ const logicmonitorManifest = require('./platforms/logicmonitor');
 const feeds = require('./core/feeds');
 let logicmonitorConnector = null;
 try { logicmonitorConnector = require('./connectors/logicmonitor'); } catch (err) { logger.warn(`[connectors] logicmonitor connector not loaded: ${err.message}`); }
+let ciscoManifest = null;
+try { ciscoManifest = require('./platforms/cisco'); } catch (err) { logger.warn(`[platforms] cisco platform not loaded: ${err.message}`); }
 let f5Manifest = null;
 try { f5Manifest = require('./platforms/f5'); } catch (err) { logger.warn(`[platforms] f5 platform not loaded: ${err.message}`); }
 
@@ -49,7 +51,7 @@ registry.init();
 // Register platform plugins, then apply their enable flags (app_settings
 // remains the source of truth in Phase 1 — see contract C4). Entitlement
 // (C9.5) gates enabling regardless of the stored flag.
-const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, platformF5Enabled } = getPlatformSettings();
+const { platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, platformF5Enabled, platformCiscoEnabled } = getPlatformSettings();
 // The LogicMonitor connector registers its feeds before any platform manifest,
 // whether LogicMonitor itself runs as the built-in or as an installed pack.
 if (logicmonitorConnector && !feeds.hasConnector('logicmonitor')) {
@@ -75,6 +77,12 @@ registry.registerPlugin(brocadeManifest);
 registry.setEnabled('brocade', platformBrocadeEnabled && registry.isEntitled('brocade'));
 registry.registerPlugin(logicmonitorManifest);
 registry.setEnabled('logicmonitor', platformLogicmonitorEnabled && registry.isEntitled('logicmonitor'));
+if (ciscoManifest) {
+  try {
+    registry.registerPlugin(ciscoManifest);
+    registry.setEnabled('cisco', platformCiscoEnabled && registry.isEntitled('cisco'));
+  } catch (err) { logger.warn(`[platforms] cisco platform failed to register: ${err.message}`); }
+}
 if (f5Manifest) {
   try {
     registry.registerPlugin(f5Manifest);

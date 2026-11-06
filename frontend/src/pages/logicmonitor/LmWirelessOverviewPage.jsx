@@ -13,7 +13,12 @@ import LmAp360 from './LmAp360';
 
 const REFRESH_MS = 120000;
 
-export default function LmWirelessOverviewPage() {
+// apiBase lets the Cisco platform reuse this page against /cisco.
+export default function LmWirelessOverviewPage({
+  apiBase = '/logicmonitor',
+  title = 'Wireless',
+  description = 'Controllers, access points, RF and clients from the Cisco WLC DataSources in LogicMonitor',
+}) {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -21,9 +26,9 @@ export default function LmWirelessOverviewPage() {
   const [wlc, setWlc] = useState(null);
   const [ap, setAp] = useState(null);
 
-  const load = useCallback(() => client.get('/logicmonitor/wireless/overview')
+  const load = useCallback(() => client.get(`${apiBase}/wireless/overview`)
     .then(({ data: d }) => { setData(d || {}); setLastRefreshed(new Date()); })
-    .catch(() => { setData((cur) => cur || {}); toast({ type: 'error', title: 'Failed to load the wireless overview' }); }), [toast]);
+    .catch(() => { setData((cur) => cur || {}); toast({ type: 'error', title: 'Failed to load the wireless overview' }); }), [toast, apiBase]);
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
 
@@ -34,18 +39,18 @@ export default function LmWirelessOverviewPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Wifi} title="Wireless" description="Controllers, access points, RF and clients from the Cisco WLC DataSources in LogicMonitor">
+      <PageHeader icon={Wifi} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
       {data == null ? <LoadingPanel label="Loading wireless..." height={260} /> : empty ? <div className="panel p-6 text-sm text-ink-muted text-center">{WL_EMPTY}</div> : (
         <div className="flex flex-col gap-4">
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-            <StatCard icon={RadioTower} label="Controllers" value={fmtNum(t.controllers)} sub={t.controllersDegraded ? `${t.controllersDegraded} with issues` : 'all healthy'} tone={t.controllersDegraded ? 'warn' : 'ok'} onClick={() => navigate('/logicmonitor/wireless/controllers')} />
-            <StatCard icon={Wifi} label="APs up" value={`${fmtNum(t.apsUp)} / ${fmtNum(t.aps)}`} onClick={() => navigate('/logicmonitor/wireless/aps')} />
-            <StatCard icon={WifiOff} label="APs down" value={fmtNum(t.apsDown)} tone={t.apsDown ? 'crit' : 'ok'} onClick={() => navigate('/logicmonitor/wireless/aps?status=down')} />
-            <StatCard icon={Flame} label="Hot radios" value={fmtNum(t.hotRadios)} sub={`>= ${a.channelUtilThresholdPct ?? '-'}% channel util`} tone={t.hotRadios ? 'warn' : 'ok'} onClick={() => navigate('/logicmonitor/wireless/rf?view=hot')} />
-            <StatCard icon={Users} label="Clients" value={fmtNum(t.clients)} sub={`${fmtNum(t.ssids)} SSIDs`} onClick={() => navigate('/logicmonitor/wireless/ssids')} />
+            <StatCard icon={RadioTower} label="Controllers" value={fmtNum(t.controllers)} sub={t.controllersDegraded ? `${t.controllersDegraded} with issues` : 'all healthy'} tone={t.controllersDegraded ? 'warn' : 'ok'} onClick={() => navigate(`${apiBase}/wireless/controllers`)} />
+            <StatCard icon={Wifi} label="APs up" value={`${fmtNum(t.apsUp)} / ${fmtNum(t.aps)}`} onClick={() => navigate(`${apiBase}/wireless/aps`)} />
+            <StatCard icon={WifiOff} label="APs down" value={fmtNum(t.apsDown)} tone={t.apsDown ? 'crit' : 'ok'} onClick={() => navigate(`${apiBase}/wireless/aps?status=down`)} />
+            <StatCard icon={Flame} label="Hot radios" value={fmtNum(t.hotRadios)} sub={`>= ${a.channelUtilThresholdPct ?? '-'}% channel util`} tone={t.hotRadios ? 'warn' : 'ok'} onClick={() => navigate(`${apiBase}/wireless/rf?view=hot`)} />
+            <StatCard icon={Users} label="Clients" value={fmtNum(t.clients)} sub={`${fmtNum(t.ssids)} SSIDs`} onClick={() => navigate(`${apiBase}/wireless/ssids`)} />
             <StatCard icon={KeyRound} label="RADIUS unresponsive" value={fmtNum(t.radiusUnresponsive)} tone={t.radiusUnresponsive ? 'warn' : 'ok'} />
           </div>
 
@@ -82,7 +87,7 @@ export default function LmWirelessOverviewPage() {
           </div>
 
           {arr(a.downAps).length > 0 && (
-            <SectionPanel title="Access points down" right={<button onClick={() => navigate('/logicmonitor/wireless/aps?status=down')} className="text-[11px] text-brand hover:underline cursor-pointer">All down APs</button>}>
+            <SectionPanel title="Access points down" right={<button onClick={() => navigate(`${apiBase}/wireless/aps?status=down`)} className="text-[11px] text-brand hover:underline cursor-pointer">All down APs</button>}>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className={headRow}><th className="py-2 pr-3">Access point</th><th className="py-2 pr-3">Controller</th><th className="py-2 pr-3">Site</th><th className="py-2 pr-3">Status</th></tr></thead>
@@ -129,8 +134,8 @@ export default function LmWirelessOverviewPage() {
           </SectionPanel>
         </div>
       )}
-      {wlc && <LmWlc360 deviceId={wlc.deviceId} sourceId={wlc.sourceId} onClose={() => setWlc(null)} />}
-      {ap && <LmAp360 controllerId={ap.controllerId} sourceId={ap.sourceId} apKey={ap.apKey} onClose={() => setAp(null)} />}
+      {wlc && <LmWlc360 apiBase={apiBase} deviceId={wlc.deviceId} sourceId={wlc.sourceId} onClose={() => setWlc(null)} />}
+      {ap && <LmAp360 apiBase={apiBase} controllerId={ap.controllerId} sourceId={ap.sourceId} apKey={ap.apKey} onClose={() => setAp(null)} />}
     </div>
   );
 }

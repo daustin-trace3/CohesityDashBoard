@@ -130,6 +130,12 @@ const DEFAULTS = {
     evidenceBudget: { alerts: 15, failedBackupJobs: 10, networkBlocks: 3 },
     relations: ['identity_links'],
   },
+  cisco: {
+    focus: 'Catalyst and Nexus faults are usually a part: name the failed fan, power supply, line card or stack member and its chassis before blaming the network. A switch port or uplink down takes its downstream hosts with it, so check the uplink first. A WLC down drops every AP it controls: count APs before radios. ISE certificate days left and a deployment node down are the hard deadlines. ASA and Meraki MX pairs: one Active and one Standby is healthy; a degraded pair or unsynced config is the incident. A Meraki device dead in LogicMonitor can be a path or API problem, not the device.',
+    ports: { source: [p(443, 'HTTPS', true)], host: [p(22, 'SSH', false), p(443, 'HTTPS', false), p(161, 'SNMP', false)] },
+    evidenceBudget: { alerts: 15, failedBackupJobs: 10, networkBlocks: 3 },
+    relations: ['identity_links'],
+  },
   aria: {
     focus: 'Automation alerts are deployments and requests; a failed request names the blueprint and the error. Appliance health is separate from request failures.',
     ports: { source: [p(443, 'HTTPS', true)], host: [p(443, 'HTTPS', true)] },
@@ -182,6 +188,7 @@ const historyMetricFor = {
   cohesity: { 'capacity-high': 'cohesity_used_pct' },
   brocade: { 'port-errors': 'brocade_crc_errors', 'crc-errors': 'brocade_crc_errors' },
   f5: { 'device-cpu-high': 'cpu_pct' },
+  cisco: { 'device-cpu-high': 'cpu_pct', 'device-memory-high': 'mem_pct' },
 };
 
 module.exports = { DEFAULTS, GENERIC, GUEST_PORTS, RELATION_TEMPLATES, BUDGET_DEFAULTS, historyMetricFor };

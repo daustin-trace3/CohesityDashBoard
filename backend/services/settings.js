@@ -75,6 +75,7 @@ const DEFAULTS = {
   platform_logicmonitor_enabled: '0',
   // Derived from the LogicMonitor connector: on by default, hidden until a device matches.
   platform_f5_enabled: '1',
+  platform_cisco_enabled: '1',
   lm_if_util_warn_pct: '80',
   lm_if_err_warn: '100',
   lm_if_flap_warn: '3',
@@ -222,6 +223,7 @@ function getPlatformSettings() {
     platformBrocadeEnabled: getSetting('platform_brocade_enabled') === '1',
     platformLogicmonitorEnabled: getSetting('platform_logicmonitor_enabled') === '1',
     platformF5Enabled: getSetting('platform_f5_enabled') !== '0',
+    platformCiscoEnabled: getSetting('platform_cisco_enabled') !== '0',
     opsOverviewStyle: getSetting('ops_overview_style') || 'classic',
     dnsServer: getSetting('dns_server') || '',
     cohesityAlertWindowDays: getCohesityAlertWindowDays(),

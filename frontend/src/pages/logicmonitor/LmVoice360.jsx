@@ -10,7 +10,7 @@ import { Modal, SectionPanel, Fact } from './ui';
 import { TrendLine, AutoTable, IssuesList, pointsOf } from './LmFirewall360';
 import { RawDatapointsSection, RawState } from './servicesShared';
 
-export default function LmVoice360({ deviceId, sourceId, onClose }) {
+export default function LmVoice360({ deviceId, sourceId, onClose, apiBase = '/logicmonitor' }) {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -18,10 +18,10 @@ export default function LmVoice360({ deviceId, sourceId, onClose }) {
   useEffect(() => {
     setData(null);
     setError(null);
-    client.get(`/logicmonitor/voice/${deviceId}`, { params: sourceId ? { sourceId } : {} })
+    client.get(`${apiBase}/voice/${deviceId}`, { params: sourceId ? { sourceId } : {} })
       .then(({ data: d }) => setData(d || {}))
       .catch((e) => setError(e?.response?.status === 404 ? 'Voice device not found. It may have been removed.' : 'Failed to load the voice device.'));
-  }, [deviceId, sourceId]);
+  }, [deviceId, sourceId, apiBase]);
 
   const s = data?.summary || {};
   const d = data?.device || {};
@@ -35,7 +35,7 @@ export default function LmVoice360({ deviceId, sourceId, onClose }) {
           <div className="flex items-center gap-2 flex-wrap">
             <Badge tone={stateTone(s.state)}>{stateLabel(s.state)}</Badge>
             <Badge tone={hostStatusTone(s.hostStatus)}>{hostStatusLabel(s.hostStatus)}</Badge>
-            <button onClick={() => navigate(`/logicmonitor/issues?q=${encodeURIComponent(s.deviceName || '')}`)} className="text-[11px] text-brand hover:underline cursor-pointer ml-auto">Open issues page</button>
+            <button onClick={() => navigate(`${apiBase}/issues?q=${encodeURIComponent(s.deviceName || '')}`)} className="text-[11px] text-brand hover:underline cursor-pointer ml-auto">Open issues page</button>
           </div>
 
           {kind === 'sbc' && (

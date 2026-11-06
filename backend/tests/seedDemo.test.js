@@ -713,6 +713,11 @@ describe('seedDemo.js', () => {
     expect(lbCount).toBeGreaterThan(0);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'f5'")).toBe(lbCount);
     expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'f5' AND vendor_kind IN ('bigip','gtm','f5os')")).toBe(lbCount);
+    // Derived platforms round 2: Cisco and Meraki devices carry vendor keys, and the Meraki kinds are read from the sysinfo.
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'cisco'")).toBeGreaterThan(0);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'meraki'")).toBeGreaterThan(0);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'meraki' AND vendor_kind = 'mr'")).toBeGreaterThan(0);
+    expect(c("SELECT COUNT(*) c FROM lm_devices WHERE vendor_key = 'meraki' AND vendor_kind IS NOT 'other'")).toBeGreaterThan(0);
     expect(c('SELECT COUNT(*) c FROM lm_sdts')).toBe(7);
 
     expect(c('SELECT COUNT(*) c FROM lm_interfaces')).toBe(2024);

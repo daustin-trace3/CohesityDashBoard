@@ -4,6 +4,10 @@
 // only through these feeds, never through lm_* SQL, which is the seam Splunk and Datadog plug into later.
 // Nothing here writes. Every feed tolerates a missing table (an older tenant that never ran the LM
 // migrations) by answering an empty value. Row shapes follow routes/logicmonitor.js.
+// Feeds: devices, device, alerts, issues, issueHistory, configChanges, metrics, datasources, health, loadBalancers,
+// loadBalancer, firewalls, firewall, wirelessOverview, wirelessControllers, wirelessController, wirelessAps,
+// wirelessAp, wirelessRf, wirelessSsids, voice, voiceDevice, ise, iseNode, vendorCensus, sources, presence.
+// The family feeds take { vendorKeys, q, siteKey, sourceId, state, kind, deviceId, controllerId, apKey }.
 const { memoByDbState } = require('../core/dbMemo');
 const lmLb = require('../services/logicmonitorLoadBalancers');
 const lmVendors = require('../services/logicmonitorVendors');
@@ -11,6 +15,10 @@ const lmVendors = require('../services/logicmonitorVendors');
 const CONNECTOR_ID = 'logicmonitor';
 const { DEVICE_SELECT, deviceOut, lookups, sqlIso, parseJson, likePat } = lmLb;
 
+const lmFirewalls = () => require('../services/logicmonitorFirewalls');
+const lmWireless = () => require('../services/logicmonitorWireless');
+const lmVoice = () => require('../services/logicmonitorVoice');
+const lmIse = () => require('../services/logicmonitorIse');
 const lmGroups = () => require('../services/logicmonitorGroups');
 const lmCatalog = () => require('../services/logicmonitorCatalog');
 const lmRaw = () => require('../services/logicmonitorRaw');
@@ -377,6 +385,7 @@ function buildCensus(db) {
       label: g.vendorKey ? lmVendors.labelOf(g.vendorKey) : (g.unknownReason ? `Unknown enterprise ${g.unknownReason.split(':')[1]}` : 'Unclassified'),
       devices: g.devices,
       kinds: g.kinds,
+      kindLabels: Object.fromEntries(Object.keys(g.kinds).map((k) => [k, lmVendors.kindLabelOf(k)])),
       dsNames: g.ds.size,
       dsMatched: matched,
       dsUnmatched: g.ds.size - matched,
@@ -393,6 +402,23 @@ function buildCensus(db) {
 }
 
 const vendorCensus = (db) => memoByDbState(db, 'lmVendorCensus', () => buildCensus(db));
+
+// ---- Family feeds (derived platforms, round 2) -----------------------------------------------
+
+/**
+ * Params for the family services: the whitelisted list filters plus the scope. A feed lists ONLY the vendor
+ * keys it is asked for (vendorKeys array; a single vendorKey string is accepted; absent = every vendor) and
+ * never applies the one-home-per-device exclusion, which belongs to the LogicMonitor routes.
+ */
+function familyParams(p) {
+  const vk = Array.isArray(p.vendorKeys) ? p.vendorKeys.map(String) : (p.vendorKey ? [String(p.vendorKey)] : null);
+  return {
+    q: p.q, siteKey: p.siteKey, vendor: p.vendor, sourceId: p.sourceId, state: p.state, kind: p.kind,
+    deviceId: p.deviceId, controllerId: p.controllerId, apKey: p.apKey,
+    vendorKeys: vk, excludeOwned: false,
+  };
+}
+const family = (fn) => (db, p) => fn(db, familyParams(p));
 
 // ---- Registration ----------------------------------------------------------------------------
 
@@ -421,6 +447,19 @@ function register(feeds) {
   add('loadBalancer', guard(null, (db, p) => lmLb.loadBalancerDetail(db, {
     deviceId: p.deviceId, sourceId: p.sourceId, vendorKey: p.vendorKey || null, page: p.page, limit: p.limit,
   })));
+  add('firewalls', guard(() => [], family((db, o) => lmFirewalls().listFirewalls(db, o))));
+  add('firewall', guard(null, family((db, o) => lmFirewalls().firewallDetail(db, o))));
+  add('wirelessOverview', guard(null, family((db, o) => lmWireless().wirelessOverview(db, o))));
+  add('wirelessControllers', guard(() => [], family((db, o) => lmWireless().listControllers(db, o))));
+  add('wirelessController', guard(null, family((db, o) => lmWireless().controllerDetail(db, o))));
+  add('wirelessAps', guard(() => [], family((db, o) => lmWireless().listAps(db, o))));
+  add('wirelessAp', guard(null, family((db, o) => { const out = lmWireless().apDetail(db, o); return out.missing ? null : out; })));
+  add('wirelessRf', guard(null, family((db, o) => lmWireless().rfTable(db, o))));
+  add('wirelessSsids', guard(null, family((db, o) => lmWireless().ssidTable(db, o))));
+  add('voice', guard(() => [], family((db, o) => lmVoice().listVoice(db, o))));
+  add('voiceDevice', guard(null, family((db, o) => lmVoice().voiceDetail(db, o))));
+  add('ise', guard(() => [], family((db, o) => lmIse().listIse(db, o))));
+  add('iseNode', guard(null, family((db, o) => lmIse().iseDetail(db, o))));
   add('vendorCensus', guard(() => [], (db) => vendorCensus(db)));
   add('sources', guard(() => [], sources));
   add('presence', guard(0, presence));

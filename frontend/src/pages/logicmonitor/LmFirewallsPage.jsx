@@ -14,7 +14,12 @@ import LmFirewall360, { syncedOf, num } from './LmFirewall360';
 const REFRESH_MS = 60000;
 const STATE_PARAM = { crit: 'critical', warn: 'warning', ok: 'ok' };
 
-export default function LmFirewallsPage() {
+// apiBase lets the Cisco platform reuse this page against /cisco.
+export default function LmFirewallsPage({
+  apiBase = '/logicmonitor',
+  title = 'Firewalls',
+  description = 'Palo Alto, Cisco and Meraki firewalls with HA, sessions, tunnels and load, from the DataSource metrics tier',
+}) {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState(null);
@@ -23,9 +28,9 @@ export default function LmFirewallsPage() {
   const [exporting, setExporting] = useState(false);
   const stateFilter = searchParams.get('state') || '';
 
-  const load = useCallback(() => client.get('/logicmonitor/firewalls')
+  const load = useCallback(() => client.get(`${apiBase}/firewalls`)
     .then(({ data }) => { setRows(Array.isArray(data) ? data : arr(data?.items)); setLastRefreshed(new Date()); })
-    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load firewalls' }); }), [toast]);
+    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load firewalls' }); }), [toast, apiBase]);
 
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
@@ -65,7 +70,7 @@ export default function LmFirewallsPage() {
       if (site) params.siteKey = site;
       if (ctl.filters.vendor) params.vendor = ctl.filters.vendor;
       if (stateFilter) params.state = STATE_PARAM[stateFilter];
-      await downloadCsv('/logicmonitor/firewalls.csv', params, 'logicmonitor-firewalls');
+      await downloadCsv(`${apiBase}/firewalls.csv`, params, `${apiBase.replace(/^\//, '')}-firewalls`);
     } catch { toast({ type: 'error', title: 'Export failed' }); }
     finally { setExporting(false); }
   };
@@ -75,7 +80,7 @@ export default function LmFirewallsPage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={ShieldCheck} title="Firewalls" description="Palo Alto, Cisco and Meraki firewalls with HA, sessions, tunnels and load, from the DataSource metrics tier">
+      <PageHeader icon={ShieldCheck} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -164,7 +169,7 @@ export default function LmFirewallsPage() {
       </div>
       <p className="text-[11px] text-ink-faint mt-2 flex items-center gap-1"><AlertTriangle size={11} /> HA enum text and datapoint names are unverified until the first live poll; unknown values show as numbers.</p>
 
-      {open && <LmFirewall360 deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
+      {open && <LmFirewall360 apiBase={apiBase} deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
     </div>
   );
 }

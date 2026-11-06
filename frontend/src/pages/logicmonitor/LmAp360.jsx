@@ -9,17 +9,17 @@ import { ApStatusBadge, RadioStateBadge, ProfileBadge } from './wirelessShared';
 
 const mbps = (bps) => (num(bps) == null ? DASH : fmtMbps(num(bps) / 1e6));
 
-export default function LmAp360({ controllerId, sourceId, apKey, onClose }) {
+export default function LmAp360({ controllerId, sourceId, apKey, onClose, apiBase = '/logicmonitor' }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     setData(null);
     setError(null);
-    client.get('/logicmonitor/wireless/ap', { params: { controllerId, ap: apKey, ...(sourceId ? { sourceId } : {}) } })
+    client.get(`${apiBase}/wireless/ap`, { params: { controllerId, ap: apKey, ...(sourceId ? { sourceId } : {}) } })
       .then(({ data: d }) => setData(d || {}))
       .catch((e) => setError(e?.response?.status === 404 ? 'Access point not found on this controller.' : 'Failed to load the access point.'));
-  }, [controllerId, sourceId, apKey]);
+  }, [controllerId, sourceId, apKey, apiBase]);
 
   const ap = data?.ap || {};
   return (

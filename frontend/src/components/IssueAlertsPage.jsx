@@ -26,6 +26,8 @@ const CONFIG = {
     description: 'Computed monitoring issues across connected LogicMonitor portals: dead devices, down interfaces, collector health and site reachability, with open/resolved history' },
   f5: { brand: '#E4002B', base: '/f5', instanceKey: 'source', instanceLabel: 'Portal', label: 'F5',
     description: 'Computed F5 issues from the LogicMonitor portals that monitor these devices: failover, pool members, daemons and certificates, with open/resolved history' },
+  cisco: { brand: '#049FD9', base: '/cisco', instanceKey: 'source', instanceLabel: 'Portal', label: 'Cisco',
+    description: 'Computed Cisco and Meraki issues from the LogicMonitor portals that monitor these devices: dead devices, interface faults, line cards, optics, wireless, ISE and voice, with open/resolved history' },
 };
 
 const RANGES = [{ label: '7d', days: 7 }, { label: '30d', days: 30 }, { label: '90d', days: 90 }];

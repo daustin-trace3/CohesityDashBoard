@@ -11,11 +11,20 @@ import { useTableControls, SortTh, TableSearch, TablePager, CsvExportButton } fr
 import { fmtNum, fmtWhen, arr } from './helpers';
 import { SectionPanel, headRow } from './ui';
 
-const kindText = (kinds) => Object.entries(kinds && typeof kinds === 'object' ? kinds : {})
-  .filter(([, n]) => n)
-  .sort((a, b) => b[1] - a[1])
-  .map(([k, n]) => `${k} ${fmtNum(n)}`)
-  .join(', ');
+// Derived platform ids to their display names for the Where column.
+const PLATFORM_LABELS = { f5: 'F5', cisco: 'Cisco' };
+
+// kindLabels (optional, from the backend) maps a kind to its display label, so Meraki prints "MX 5, MR 6".
+// A plain string is used as given.
+const kindText = (kinds, kindLabels) => {
+  if (typeof kindLabels === 'string' && kindLabels) return kindLabels;
+  const labels = kindLabels && typeof kindLabels === 'object' ? kindLabels : {};
+  return Object.entries(kinds && typeof kinds === 'object' ? kinds : {})
+    .filter(([, n]) => n)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${labels[k] || k} ${fmtNum(n)}`)
+    .join(', ');
+};
 
 const reasonText = (reasons) => Object.entries(reasons && typeof reasons === 'object' ? reasons : {})
   .sort((a, b) => b[1] - a[1])
@@ -30,7 +39,7 @@ function errorText(e) {
 
 function WhereCell({ row }) {
   if (row.platform && row.platform !== 'logicmonitor') {
-    return <Link to={`/${row.platform}`} className="text-brand hover:underline">{`${row.label || row.vendorKey} platform`}</Link>;
+    return <Link to={`/${row.platform}`} className="text-brand hover:underline">{`${PLATFORM_LABELS[row.platform] || row.platform} platform`}</Link>;
   }
   if (row.platform === 'logicmonitor') return <span>LogicMonitor sections</span>;
   return <span className="text-ink-faint">Inventory and raw values only</span>;
@@ -49,7 +58,7 @@ export default function VendorsSection() {
   const rows = (shapeOk ? data.vendors : []).map((v) => ({
     ...v,
     vendorName: v.label || v.vendorKey || (reasonText(v.reasons) || 'Unclassified'),
-    kindsText: kindText(v.kinds),
+    kindsText: kindText(v.kinds, v.kindLabels),
     critical: Number(v.openAlerts?.critical) || 0,
     warning: Number(v.openAlerts?.warning) || 0,
     unknownEnterprise: v.vendorKey == null,
@@ -60,7 +69,7 @@ export default function VendorsSection() {
   const ctl = useTableControls(known, {
     searchKeys: ['vendorName', 'kindsText', 'platform'], defaultSortKey: 'devices', defaultSortDir: 'desc', paginate: true, deepLink: false,
   });
-  const whereText = (r) => (r.platform && r.platform !== 'logicmonitor' ? `${r.platform} platform` : r.platform === 'logicmonitor' ? 'LogicMonitor sections' : 'Inventory and raw values only');
+  const whereText = (r) => (r.platform && r.platform !== 'logicmonitor' ? `${PLATFORM_LABELS[r.platform] || r.platform} platform` : r.platform === 'logicmonitor' ? 'LogicMonitor sections' : 'Inventory and raw values only');
   const csvColumns = [
     { label: 'Vendor', get: (r) => r.vendorName },
     { label: 'Vendor key', get: (r) => r.vendorKey ?? '' },

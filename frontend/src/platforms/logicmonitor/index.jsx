@@ -68,11 +68,11 @@ const navGroups = [
     label: 'Wireless',
     defaultCollapsed: true,
     items: [
-      { label: 'Wireless Overview', route: `${B}/wireless`, icon: Wifi, isActive: (p) => p === `${B}/wireless`, requiresFamily: 'wireless' },
-      { label: 'Controllers', route: `${B}/wireless/controllers`, icon: RadioTower, isActive: under(`${B}/wireless/controllers`), requiresFamily: 'wireless' },
-      { label: 'Access Points', route: `${B}/wireless/aps`, icon: Wifi, isActive: under(`${B}/wireless/aps`), requiresFamily: 'wireless' },
-      { label: 'RF Analytics', route: `${B}/wireless/rf`, icon: Radio, isActive: under(`${B}/wireless/rf`), requiresFamily: 'wireless' },
-      { label: 'SSIDs & Clients', route: `${B}/wireless/ssids`, icon: Users, isActive: under(`${B}/wireless/ssids`), requiresFamily: 'wireless' },
+      { label: 'Wireless Overview', route: `${B}/wireless`, icon: Wifi, isActive: (p) => p === `${B}/wireless`, requiresFamily: 'wireless', hiddenWhenPlatform: 'cisco' },
+      { label: 'Controllers', route: `${B}/wireless/controllers`, icon: RadioTower, isActive: under(`${B}/wireless/controllers`), requiresFamily: 'wireless', hiddenWhenPlatform: 'cisco' },
+      { label: 'Access Points', route: `${B}/wireless/aps`, icon: Wifi, isActive: under(`${B}/wireless/aps`), requiresFamily: 'wireless', hiddenWhenPlatform: 'cisco' },
+      { label: 'RF Analytics', route: `${B}/wireless/rf`, icon: Radio, isActive: under(`${B}/wireless/rf`), requiresFamily: 'wireless', hiddenWhenPlatform: 'cisco' },
+      { label: 'SSIDs & Clients', route: `${B}/wireless/ssids`, icon: Users, isActive: under(`${B}/wireless/ssids`), requiresFamily: 'wireless', hiddenWhenPlatform: 'cisco' },
     ],
   },
   {
@@ -81,7 +81,7 @@ const navGroups = [
     items: [
       { label: 'Voice', route: `${B}/voice`, icon: Phone, isActive: under(`${B}/voice`), requiresFamily: 'voice' },
       { label: 'Zscaler', route: `${B}/zscaler`, icon: Cloud, isActive: under(`${B}/zscaler`), requiresFamily: 'security' },
-      { label: 'Identity Services', route: `${B}/ise`, icon: Fingerprint, isActive: under(`${B}/ise`), requiresFamily: 'security' },
+      { label: 'Identity Services', route: `${B}/ise`, icon: Fingerprint, isActive: under(`${B}/ise`), requiresFamily: 'security', hiddenWhenPlatform: 'cisco' },
       { label: 'Applications', route: `${B}/applications`, icon: AppWindow, isActive: under(`${B}/applications`), requiresFamily: 'apps' },
     ],
   },

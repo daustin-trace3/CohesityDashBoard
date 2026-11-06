@@ -13,7 +13,12 @@ import LmAp360 from './LmAp360';
 const REFRESH_MS = 120000;
 const PROFILES = [['load', 'Load'], ['noise', 'Noise'], ['interference', 'Interference'], ['coverage', 'Coverage']];
 
-export default function LmWirelessRfPage() {
+// apiBase lets the Cisco platform reuse this page against /cisco.
+export default function LmWirelessRfPage({
+  apiBase = '/logicmonitor',
+  title = 'RF Analytics',
+  description = 'Channel utilization, client load, transmit power and RRM verdicts per band, across every AP radio',
+}) {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState(null);
@@ -22,9 +27,9 @@ export default function LmWirelessRfPage() {
   const [exporting, setExporting] = useState(false);
   const view = searchParams.get('view') || '';
 
-  const load = useCallback(() => client.get('/logicmonitor/wireless/rf')
+  const load = useCallback(() => client.get(`${apiBase}/wireless/rf`)
     .then(({ data: d }) => { setData(d || {}); setLastRefreshed(new Date()); })
-    .catch(() => { setData((cur) => cur || {}); toast({ type: 'error', title: 'Failed to load RF analytics' }); }), [toast]);
+    .catch(() => { setData((cur) => cur || {}); toast({ type: 'error', title: 'Failed to load RF analytics' }); }), [toast, apiBase]);
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
 
@@ -61,14 +66,14 @@ export default function LmWirelessRfPage() {
   };
   const exportCsv = async () => {
     setExporting(true);
-    try { await downloadCsv('/logicmonitor/wireless/rf.csv', {}, 'logicmonitor-wireless-radios'); } catch { toast({ type: 'error', title: 'Export failed' }); } finally { setExporting(false); }
+    try { await downloadCsv(`${apiBase}/wireless/rf.csv`, {}, `${apiBase.replace(/^\//, '')}-wireless-radios`); } catch { toast({ type: 'error', title: 'Export failed' }); } finally { setExporting(false); }
   };
   const btn = 'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50 ml-auto';
   const thr = data?.thresholdPct;
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Radio} title="RF Analytics" description="Channel utilization, client load, transmit power and RRM verdicts per band, across every AP radio">
+      <PageHeader icon={Radio} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -158,7 +163,7 @@ export default function LmWirelessRfPage() {
           </SectionPanel>
         </div>
       )}
-      {open && <LmAp360 controllerId={open.controllerId} sourceId={open.sourceId} apKey={open.apKey} onClose={() => setOpen(null)} />}
+      {open && <LmAp360 apiBase={apiBase} controllerId={open.controllerId} sourceId={open.sourceId} apKey={open.apKey} onClose={() => setOpen(null)} />}
     </div>
   );
 }

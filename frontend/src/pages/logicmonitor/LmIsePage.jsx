@@ -31,7 +31,12 @@ const COLUMNS = [
   { k: 'stateRank', label: 'State', render: (r) => <StateBadge state={r.state} /> },
 ];
 
-export default function LmIsePage() {
+// apiBase lets the Cisco platform reuse this page against /cisco.
+export default function LmIsePage({
+  apiBase = '/logicmonitor',
+  title = 'Identity Services',
+  description = 'Cisco ISE nodes with sessions, resources, application and certificate health, from the DataSource metrics tier',
+}) {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState(null);
@@ -41,9 +46,9 @@ export default function LmIsePage() {
   const [exporting, setExporting] = useState(false);
   const stateFilter = searchParams.get('state') || '';
 
-  const load = useCallback(() => client.get('/logicmonitor/ise')
+  const load = useCallback(() => client.get(`${apiBase}/ise`)
     .then(({ data }) => { setRows(arr(Array.isArray(data) ? data : data?.items)); setLastRefreshed(new Date()); })
-    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load ISE nodes' }); }), [toast]);
+    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load ISE nodes' }); }), [toast, apiBase]);
 
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
@@ -69,14 +74,14 @@ export default function LmIsePage() {
       const params = {};
       if (q.trim()) params.q = q.trim();
       if (stateFilter) params.state = STATE_PARAM[stateFilter];
-      await downloadCsv('/logicmonitor/ise.csv', params, 'logicmonitor-ise');
+      await downloadCsv(`${apiBase}/ise.csv`, params, `${apiBase.replace(/^\//, '')}-ise`);
     } catch { toast({ type: 'error', title: 'Export failed' }); } finally { setExporting(false); }
   };
   const btn = 'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50';
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Fingerprint} title="Identity Services" description="Cisco ISE nodes with sessions, resources, application and certificate health, from the DataSource metrics tier">
+      <PageHeader icon={Fingerprint} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -106,7 +111,7 @@ export default function LmIsePage() {
         </SectionPanel>
       )}
 
-      {open && <LmIse360 deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
+      {open && <LmIse360 apiBase={apiBase} deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
     </div>
   );
 }

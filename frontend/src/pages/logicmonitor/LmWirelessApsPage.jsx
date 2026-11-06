@@ -13,7 +13,12 @@ const REFRESH_MS = 120000;
 const DOWN = ['down', 'silent', 'missing'];
 const FILTERS = [['', 'All'], ['down', 'Down'], ['up', 'Up'], ['radio', 'Radio down'], ['errors', 'Uplink errors'], ['disabled', 'Disabled']];
 
-export default function LmWirelessApsPage() {
+// apiBase lets the Cisco platform reuse this page against /cisco.
+export default function LmWirelessApsPage({
+  apiBase = '/logicmonitor',
+  title = 'Access Points',
+  description = 'Every AP joined to a monitored controller, with radio state, clients, channel utilization and uplink health',
+}) {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState(null);
@@ -22,9 +27,9 @@ export default function LmWirelessApsPage() {
   const [exporting, setExporting] = useState(false);
   const filter = searchParams.get('status') || '';
 
-  const load = useCallback(() => client.get('/logicmonitor/wireless/aps')
+  const load = useCallback(() => client.get(`${apiBase}/wireless/aps`)
     .then(({ data }) => { setRows(arr(data)); setLastRefreshed(new Date()); })
-    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load access points' }); }), [toast]);
+    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load access points' }); }), [toast, apiBase]);
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
 
@@ -54,13 +59,13 @@ export default function LmWirelessApsPage() {
   };
   const exportCsv = async () => {
     setExporting(true);
-    try { await downloadCsv('/logicmonitor/wireless/aps.csv', {}, 'logicmonitor-wireless-aps'); } catch { toast({ type: 'error', title: 'Export failed' }); } finally { setExporting(false); }
+    try { await downloadCsv(`${apiBase}/wireless/aps.csv`, {}, `${apiBase.replace(/^\//, '')}-wireless-aps`); } catch { toast({ type: 'error', title: 'Export failed' }); } finally { setExporting(false); }
   };
   const btn = 'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50 ml-auto';
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Wifi} title="Access Points" description="Every AP joined to a monitored controller, with radio state, clients, channel utilization and uplink health">
+      <PageHeader icon={Wifi} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -80,7 +85,7 @@ export default function LmWirelessApsPage() {
         )}
       </div>
       <p className="text-[11px] text-ink-faint mt-2">Missing = the AP left its controller's AP table in the last 24 hours. Not reporting = its samples are more than 3 hours older than the rest of the controller's APs.</p>
-      {open && <LmAp360 controllerId={open.controllerId} sourceId={open.sourceId} apKey={open.apKey} onClose={() => setOpen(null)} />}
+      {open && <LmAp360 apiBase={apiBase} controllerId={open.controllerId} sourceId={open.sourceId} apKey={open.apKey} onClose={() => setOpen(null)} />}
     </div>
   );
 }

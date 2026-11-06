@@ -11,16 +11,21 @@ import { WL_EMPTY } from './wirelessShared';
 
 const REFRESH_MS = 60000;
 
-export default function LmWirelessControllersPage() {
+// apiBase lets the Cisco platform reuse this page against /cisco.
+export default function LmWirelessControllersPage({
+  apiBase = '/logicmonitor',
+  title = 'Wireless Controllers',
+  description = 'Cisco AireOS and Catalyst 9800 controllers with HA, AP and radio health, clients and RADIUS',
+}) {
   const { toast } = useToast();
   const [rows, setRows] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [open, setOpen] = useState(null);
   const [exporting, setExporting] = useState(false);
 
-  const load = useCallback(() => client.get('/logicmonitor/wireless/controllers')
+  const load = useCallback(() => client.get(`${apiBase}/wireless/controllers`)
     .then(({ data }) => { setRows(arr(data)); setLastRefreshed(new Date()); })
-    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load wireless controllers' }); }), [toast]);
+    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load wireless controllers' }); }), [toast, apiBase]);
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
 
@@ -35,13 +40,13 @@ export default function LmWirelessControllersPage() {
 
   const exportCsv = async () => {
     setExporting(true);
-    try { await downloadCsv('/logicmonitor/wireless/controllers.csv', ctl.q.trim() ? { q: ctl.q.trim() } : {}, 'logicmonitor-wireless-controllers'); } catch { toast({ type: 'error', title: 'Export failed' }); } finally { setExporting(false); }
+    try { await downloadCsv(`${apiBase}/wireless/controllers.csv`, ctl.q.trim() ? { q: ctl.q.trim() } : {}, `${apiBase.replace(/^\//, '')}-wireless-controllers`); } catch { toast({ type: 'error', title: 'Export failed' }); } finally { setExporting(false); }
   };
   const btn = 'flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-cohesity-border text-ink-muted hover:text-ink hover:border-brand/40 transition-colors cursor-pointer disabled:opacity-50';
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={RadioTower} title="Wireless Controllers" description="Cisco AireOS and Catalyst 9800 controllers with HA, AP and radio health, clients and RADIUS">
+      <PageHeader icon={RadioTower} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -101,7 +106,7 @@ export default function LmWirelessControllersPage() {
           </>
         )}
       </div>
-      {open && <LmWlc360 deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
+      {open && <LmWlc360 apiBase={apiBase} deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
     </div>
   );
 }

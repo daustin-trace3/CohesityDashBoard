@@ -53,7 +53,12 @@ const GANC_COLUMNS = [
   stateCol,
 ];
 
-export default function LmVoicePage() {
+// apiBase lets the Cisco platform reuse this page against /cisco.
+export default function LmVoicePage({
+  apiBase = '/logicmonitor',
+  title = 'Voice',
+  description = 'Oracle session border controllers, Cisco CUBE routers and GANC checks, from the DataSource metrics tier',
+}) {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState(null);
@@ -63,9 +68,9 @@ export default function LmVoicePage() {
   const [exporting, setExporting] = useState(false);
   const stateFilter = searchParams.get('state') || '';
 
-  const load = useCallback(() => client.get('/logicmonitor/voice')
+  const load = useCallback(() => client.get(`${apiBase}/voice`)
     .then(({ data }) => { setRows(arr(Array.isArray(data) ? data : data?.items)); setLastRefreshed(new Date()); })
-    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load voice devices' }); }), [toast]);
+    .catch(() => { setRows((cur) => cur || []); toast({ type: 'error', title: 'Failed to load voice devices' }); }), [toast, apiBase]);
 
   useEffect(() => { load(); }, [load]);
   useVisibleInterval(load, REFRESH_MS);
@@ -90,7 +95,7 @@ export default function LmVoicePage() {
       const params = {};
       if (q.trim()) params.q = q.trim();
       if (stateFilter) params.state = STATE_PARAM[stateFilter];
-      await downloadCsv('/logicmonitor/voice.csv', params, 'logicmonitor-voice');
+      await downloadCsv(`${apiBase}/voice.csv`, params, `${apiBase.replace(/^\//, '')}-voice`);
     } catch { toast({ type: 'error', title: 'Export failed' }); } finally { setExporting(false); }
   };
 
@@ -99,7 +104,7 @@ export default function LmVoicePage() {
 
   return (
     <div className="animate-fade-in">
-      <PageHeader icon={Phone} title="Voice" description="Oracle session border controllers, Cisco CUBE routers and GANC checks, from the DataSource metrics tier">
+      <PageHeader icon={Phone} title={title} description={description}>
         <LastUpdated date={lastRefreshed} prefix="Updated" />
         <RefreshButton onClick={load} />
       </PageHeader>
@@ -137,7 +142,7 @@ export default function LmVoicePage() {
       )}
       <p className="text-[11px] text-ink-faint mt-2 flex items-center gap-1"><AlertTriangle size={11} /> Datapoint names and state enums are unverified until the first live poll; raw values show next to every flag.</p>
 
-      {open && <LmVoice360 deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
+      {open && <LmVoice360 apiBase={apiBase} deviceId={open.deviceId} sourceId={open.sourceId} onClose={() => setOpen(null)} />}
     </div>
   );
 }

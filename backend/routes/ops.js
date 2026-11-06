@@ -435,6 +435,7 @@ const PLATFORMS = [
   { id: 'logicmonitor', label: 'LogicMonitor', color: '#1A73E8', route: '/logicmonitor', fn: () => require('../platforms/logicmonitor').opsSummary() },
   // F5 is derived from the LogicMonitor connector; its summarizer answers null while no F5 device matches.
   { id: 'f5', label: 'F5', color: '#E4002B', route: '/f5', fn: () => (registry.isPresent('f5') ? require('../platforms/f5').opsSummary() : null) },
+  { id: 'cisco', label: 'Cisco', color: '#049FD9', route: '/cisco', fn: () => (registry.isPresent('cisco') ? require('../platforms/cisco').opsSummary() : null) },
 ];
 
 const SEV_RANK = { critical: 0, warning: 1, info: 2 };

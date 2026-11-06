@@ -142,6 +142,7 @@ const CATEGORIES = [
   ...require('../platforms/logicmonitor').searchCategories,
   // F5 (derived from the LogicMonitor connector); platformEnabled() hides it while no device matches.
   ...require('../platforms/f5').searchCategories,
+  ...require('../platforms/cisco').searchCategories,
   // Not a platform: no enabled gate (platform null). A bare number matches the incident id.
   { key: 'ops-incidents', label: 'Ops Agent Incidents', platform: null, perm: 'cohesity:*:view', digitsParam: true,
     sql: `SELECT id, ('#' || id || ' ' || COALESCE(title, host, incident_key)) AS title,

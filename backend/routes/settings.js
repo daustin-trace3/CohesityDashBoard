@@ -140,7 +140,7 @@ router.put('/', (req, res, next) => {
       llmEstateContext, llmFlagUnprotected,
       licenseEntitledDataProtectTb, licenseEntitledReplicaTb, licenseEntitledSmartFilesTb,
       licenseExpiry, licenseEdition,
-      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, platformF5Enabled, dnsServer,
+      platformCohesityEnabled, platformPureEnabled, platformNetappEnabled, platformZertoEnabled, platformVcenterEnabled, platformDellEnabled, platformAriaEnabled, platformAriaopsEnabled, platformBrocadeEnabled, platformLogicmonitorEnabled, platformF5Enabled, platformCiscoEnabled, dnsServer,
     } = req.body || {};
 
     // Guard: never let the last platform be turned off, or the app has no tabs.
@@ -252,6 +252,11 @@ router.put('/', (req, res, next) => {
       // Derived platform: not in the last-platform guard above (it follows its connector).
       setSetting('platform_f5_enabled', platformF5Enabled ? '1' : '0');
       applyPlatformEnabled('f5', !!platformF5Enabled);
+    }
+    if (platformCiscoEnabled !== undefined) {
+      // Derived platform: follows its connector, so it is outside the last-platform guard above.
+      setSetting('platform_cisco_enabled', platformCiscoEnabled ? '1' : '0');
+      applyPlatformEnabled('cisco', !!platformCiscoEnabled);
     }
     if (dnsServer !== undefined) {
       setSetting('dns_server', String(dnsServer).trim().slice(0, 253));
