@@ -16,6 +16,8 @@ import netbackupLogo from '../assets/platform-logos/netbackup.png';
 import bluecatLogo from '../assets/platform-logos/bluecat.png';
 import eonLogo from '../assets/platform-logos/eon.png';
 import logicmonitorLogo from '../assets/platform-logos/logicmonitor.png';
+import f5Logo from '../assets/platform-logos/f5.png';
+import ciscoLogo from '../assets/platform-logos/cisco.png';
 import brocadeLogo from '../assets/platform-logos/brocade.png';
 import hypervLogo from '../assets/platform-logos/hyperv.svg';
 
@@ -70,7 +72,7 @@ const monogram = (label) => label.slice(0, 2);
 // Official brand marks (bundled SVGs, tinted to each platform's color).
 // Cohesity reuses the app's own hexagon+shield identity; platforms without
 // a mark (Zerto, future plugins) fall back to the monogram.
-const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, zerto: zertoLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo, rubrik: rubrikLogo, netbackup: netbackupLogo, unifi: unifiLogo, bluecat: bluecatLogo, eon: eonLogo, logicmonitor: logicmonitorLogo, hyperv: hypervLogo, brocade: brocadeLogo };
+const LOGOS = { dell: dellLogo, vcenter: vcenterLogo, netapp: netappLogo, pure: pureLogo, aria: ariaLogo, zerto: zertoLogo, nutanix: nutanixLogo, proxmox: proxmoxLogo, aws: awsLogo, cohesity: cohesityLogo, rubrik: rubrikLogo, netbackup: netbackupLogo, unifi: unifiLogo, bluecat: bluecatLogo, eon: eonLogo, logicmonitor: logicmonitorLogo, hyperv: hypervLogo, brocade: brocadeLogo, f5: f5Logo, cisco: ciscoLogo };
 
 export function PlatformLogo({ platform, size = 18 }) {
   if (platform.id === 'ops') {

@@ -160,8 +160,10 @@ export default function LmServiceGroupsPanel({ sources }) {
   const removeMember = (i, mi) => patch(i, (s) => ({ ...s, members: s.members.filter((_, k) => k !== mi) }));
   const newService = () => {
     if (list.length >= MAX_SERVICES) { toast({ type: 'error', title: `At most ${MAX_SERVICES} services` }); return; }
-    setList((l) => [...l, { id: null, label: '', members: [] }]);
-    setSelected(list.length);
+    // New card goes to the top so it sits beside the Groups list without scrolling; the
+    // arrows move it down the header order later.
+    setList((l) => [{ id: null, label: '', members: [] }, ...l]);
+    setSelected(0);
   };
   const moveService = (i, d) => {
     const j = i + d;
